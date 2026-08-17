@@ -24,8 +24,7 @@ build-backend = "hatchling.build"
 packages = ["src/tree_options"]
 
 [tool.uv]
-# uv.lock is committed; `uv sync --locked` is the canonical install.
-locked = true
+# uv.lock is committed; `uv sync --locked` is the canonical install (CLI flag).
 
 [tool.ruff]
 line-length = 100

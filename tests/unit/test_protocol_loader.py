@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+import pydantic
 
 
 class TestProtocolLoad:
@@ -52,14 +53,14 @@ class TestProtocolLoad:
             line for line in text.splitlines() if "INV-07" not in line
         )
         (tmp_path / "p.yaml").write_text(bad + "\n")
-        with pytest.raises(Exception):
+        with pytest.raises(pydantic.ValidationError):
             load_protocol(tmp_path / "p.yaml")
 
     def test_invalid_protocol_rejected(self, tmp_path):
         from tree_options.protocol.loader import load_protocol
 
         (tmp_path / "p.yaml").write_text("meta: {protocol_version: '9.9.9'}\n")
-        with pytest.raises(Exception):
+        with pytest.raises(pydantic.ValidationError):
             load_protocol(tmp_path / "p.yaml")
 
 
