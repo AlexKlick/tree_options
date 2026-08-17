@@ -1,20 +1,24 @@
-"""Candidate filter predicates (§9.2 / handoff §14 item 8).
-
-Every predicate is evaluated and EVERY rejection is reported — an audit
-decision, not a first-failure gate. Missing required inputs reject with
-DATA_NOT_EVALUABLE: never silently include a candidate you could not check.
-The same-day volume filter applies only when the volume datum is already
-available (protocol: volume_only_if_already_available).
-"""
+"""Tri-state candidate filters (§9.2 + audit §5.2) + fixture inventory §5.3."""
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
-from tree_options.candidates.filters import CandidateFilter, CandidateSnapshot
+from tree_options.candidates.filters import (
+    NOT_APPLICABLE,
+    NOT_EVALUABLE,
+    PASS,
+    AsOf,
+    CandidateFilter,
+    CandidateSnapshot,
+)
+
+DECISION_AT = datetime(2024, 4, 15, 20, 0, tzinfo=UTC)  # 16:00 ET close
+EARLIER = DECISION_AT - timedelta(hours=2)
+LATER = DECISION_AT + timedelta(minutes=1)
 
 
 def _snapshot(**over) -> CandidateSnapshot:
@@ -22,16 +26,17 @@ def _snapshot(**over) -> CandidateSnapshot:
         contract_id="OPT-C-2024-06-21-50",
         underlying_security_id="SEC-001",
         decision_session=date(2024, 4, 15),
-        expiration=date(2024, 5, 17),  # 32 DTE
-        abs_delta=Decimal("0.45"),
-        open_interest=1200,
-        same_day_volume=250,
-        same_day_volume_available=True,
-        bid=Decimal("1.90"),
-        ask=Decimal("2.00"),
+        decision_at=DECISION_AT,
+        expiration=date(2024, 5, 15),  # 30 DTE boundary
+        abs_delta=AsOf(Decimal("0.45"), EARLIER),
+        open_interest=AsOf(1200, EARLIER),
+        same_day_volume=AsOf(250, EARLIER),
+        same_day_volume_applicable=True,
+        bid=AsOf(Decimal("1.90"), EARLIER),
+        ask=AsOf(Decimal("2.00"), EARLIER),
         standard_contract=True,
-        underlying_20d_median_dollar_volume=Decimal("120000000"),
-        spans_earnings=False,
+        underlying_20d_median_dollar_volume=AsOf(Decimal("120000000"), EARLIER),
+        spans_earnings=AsOf(False, EARLIER),
     )
     base.update(over)
     return CandidateSnapshot(**base)
@@ -42,102 +47,112 @@ def filt(protocol):
     return CandidateFilter.from_protocol(protocol)
 
 
-def _codes(decision) -> set[str]:
-    return {r.code for r in decision.rejections}
+def _statuses(decision) -> dict[str, str]:
+    return {r.rule: r.status for r in decision.results}
 
 
-class TestAccepts:
-    def test_clean_candidate_accepted(self, filt):
+class TestTriState:
+    def test_clean_candidate_all_pass(self, filt):
         d = filt.evaluate(_snapshot())
         assert d.accepted
-        assert d.rejections == ()
+        assert set(_statuses(d).values()) == {PASS}
 
-    def test_boundary_values_accepted(self, filt):
-        d = filt.evaluate(_snapshot(abs_delta=Decimal("0.30")))
-        assert d.accepted
-        d = filt.evaluate(_snapshot(abs_delta=Decimal("0.60")))
-        assert d.accepted
-        d = filt.evaluate(_snapshot(expiration=date(2024, 5, 15)))  # 30 DTE
-        assert d.accepted
-        d = filt.evaluate(_snapshot(expiration=date(2024, 6, 14)))  # 60 DTE
-        assert d.accepted
+    def test_fail_blocks_missing_and_future_alike(self, filt):
+        d = filt.evaluate(_snapshot(abs_delta=None))
+        assert not d.accepted
+        assert _statuses(d)["delta"] == NOT_EVALUABLE
 
+    def test_future_available_delta_not_evaluable(self, filt):
+        d = filt.evaluate(_snapshot(abs_delta=AsOf(Decimal("0.45"), LATER)))
+        assert not d.accepted
+        assert _statuses(d)["delta"] == NOT_EVALUABLE
+        assert "future" in next(r for r in d.results if r.rule == "delta").detail
 
-class TestRejections:
-    def test_dte_out_of_range_both_sides(self, filt):
-        assert _codes(filt.evaluate(_snapshot(expiration=date(2024, 4, 29)))) == {"DTE_OUT_OF_RANGE"}  # 14
-        assert _codes(filt.evaluate(_snapshot(expiration=date(2024, 9, 15)))) == {"DTE_OUT_OF_RANGE"}  # 153
-
-    def test_delta_out_of_range(self, filt):
-        assert _codes(filt.evaluate(_snapshot(abs_delta=Decimal("0.20")))) == {"DELTA_OUT_OF_RANGE"}
-        assert _codes(filt.evaluate(_snapshot(abs_delta=Decimal("0.75")))) == {"DELTA_OUT_OF_RANGE"}
-
-    def test_open_interest_below_min(self, filt):
-        assert _codes(filt.evaluate(_snapshot(open_interest=499))) == {"OPEN_INTEREST_BELOW_MIN"}
-
-    def test_spread_fraction_exceeds(self, filt):
-        # mid = 1.75, spread 0.30 -> 17% > 10%
-        assert _codes(filt.evaluate(_snapshot(bid=Decimal("1.60"), ask=Decimal("1.90")))) == {
-            "SPREAD_FRACTION_EXCEEDS"
-        }
-
-    def test_dollar_volume_below_min(self, filt):
-        assert _codes(
-            filt.evaluate(_snapshot(underlying_20d_median_dollar_volume=Decimal("49999999")))
-        ) == {"DOLLAR_VOLUME_BELOW_MIN"}
-
-    def test_earnings_spanning_hold(self, filt):
-        assert _codes(filt.evaluate(_snapshot(spans_earnings=True))) == {"EARNINGS_SPAN_HOLD"}
-
-    def test_nonstandard_deliverable(self, filt):
-        assert _codes(filt.evaluate(_snapshot(standard_contract=False))) == {
-            "NONSTANDARD_DELIVERABLE"
-        }
-
-    def test_multiple_rejections_all_reported(self, filt):
+    def test_unavailable_volume_is_not_applicable_and_recorded(self, filt):
         d = filt.evaluate(
-            _snapshot(abs_delta=Decimal("0.10"), open_interest=10, spans_earnings=True)
+            _snapshot(same_day_volume=None, same_day_volume_applicable=False)
         )
+        assert d.accepted  # optional rule
+        assert _statuses(d)["same_day_volume"] == NOT_APPLICABLE
+
+    def test_applicable_but_missing_volume_not_evaluable(self, filt):
+        d = filt.evaluate(_snapshot(same_day_volume=None))
         assert not d.accepted
-        assert _codes(d) == {"DELTA_OUT_OF_RANGE", "OPEN_INTEREST_BELOW_MIN", "EARNINGS_SPAN_HOLD"}
+        assert _statuses(d)["same_day_volume"] == NOT_EVALUABLE
+
+    def test_every_rule_reported(self, filt):
+        d = filt.evaluate(_snapshot())
+        assert set(_statuses(d)) == {
+            "dte", "delta", "deliverable", "open_interest", "same_day_volume",
+            "spread", "underlying_liquidity", "earnings_span",
+        }
 
 
-class TestVolumeSemantics:
-    def test_volume_check_applied_when_available(self, filt):
-        assert _codes(filt.evaluate(_snapshot(same_day_volume=99))) == {"VOLUME_BELOW_MIN"}
+class TestBandEdges:
+    def test_dte_calendar_day_convention_boundaries(self, filt):
+        # 2024-04-15 + 30 calendar days = 2024-05-15; + 60 = 2024-06-14
+        assert filt.evaluate(_snapshot(expiration=date(2024, 5, 15))).accepted
+        assert filt.evaluate(_snapshot(expiration=date(2024, 6, 14))).accepted
+        assert not filt.evaluate(_snapshot(expiration=date(2024, 5, 14))).accepted  # 29 DTE
+        assert not filt.evaluate(_snapshot(expiration=date(2024, 6, 15))).accepted  # 61 DTE
 
-    def test_volume_check_skipped_when_not_yet_available(self, filt):
-        """Same-day volume is NOT yet available at decision time early in the
-        session: the protocol skips (does not fabricate) the check."""
-        d = filt.evaluate(_snapshot(same_day_volume=None, same_day_volume_available=False))
-        assert d.accepted
+    def test_delta_band_boundaries(self, filt):
+        assert filt.evaluate(_snapshot(abs_delta=AsOf(Decimal("0.30"), EARLIER))).accepted
+        assert filt.evaluate(_snapshot(abs_delta=AsOf(Decimal("0.60"), EARLIER))).accepted
+        assert not filt.evaluate(_snapshot(abs_delta=AsOf(Decimal("0.29"), EARLIER))).accepted
 
-    def test_volume_flag_true_but_value_missing_is_not_evaluable(self, filt):
-        d = filt.evaluate(_snapshot(same_day_volume=None, same_day_volume_available=True))
+    def test_spread_fraction_boundary(self, filt):
+        # bid 1.90 ask 2.10: spread 0.20 / mid 2.00 = exactly 0.10 -> PASS
+        d = filt.evaluate(_snapshot(bid=AsOf(Decimal("1.90"), EARLIER),
+                                    ask=AsOf(Decimal("2.10"), EARLIER)))
+        assert _statuses(d)["spread"] == PASS
+
+    def test_crossed_quote_not_evaluable(self, filt):
+        d = filt.evaluate(_snapshot(bid=AsOf(Decimal("2.10"), EARLIER),
+                                    ask=AsOf(Decimal("2.00"), EARLIER)))
+        assert _statuses(d)["spread"] == NOT_EVALUABLE
         assert not d.accepted
-        assert _codes(d) == {"DATA_NOT_EVALUABLE"}
+
+    def test_zero_midpoint_rejects_safely(self, filt):
+        d = filt.evaluate(_snapshot(bid=AsOf(Decimal("0.00"), EARLIER),
+                                    ask=AsOf(Decimal("0.00"), EARLIER)))
+        assert _statuses(d)["spread"] == NOT_EVALUABLE
+
+    def test_thresholds_come_from_protocol(self, filt, protocol):
+        p = protocol.option_candidate_defaults
+        assert filt.dte_min == p.dte_min and filt.dte_max == p.dte_max
+        assert filt.min_open_interest == p.min_open_interest
+        assert filt.max_spread_fraction_of_midpoint == p.max_spread_fraction_of_midpoint
+        assert (
+            filt.min_underlying_20d_median_dollar_volume
+            == p.min_underlying_20d_median_dollar_volume
+        )
 
 
-class TestDataNotEvaluable:
-    @pytest.mark.parametrize(
-        "missing",
-        [
-            {"abs_delta": None},
-            {"open_interest": None},
-            {"bid": None},
-            {"ask": None},
-            {"underlying_20d_median_dollar_volume": None},
-            {"spans_earnings": None},
-        ],
-    )
-    def test_missing_required_input_rejects(self, filt, missing):
-        d = filt.evaluate(_snapshot(**missing))
+class TestFixtureInventory:
+    def test_split_adjusted_contract_rejected(self, filt):
+        from tests.fixtures.contracts import split_adjusted_contract
+
+        _contract, _action = split_adjusted_contract()
+        d = filt.evaluate(_snapshot(standard_contract=False))
         assert not d.accepted
-        assert "DATA_NOT_EVALUABLE" in _codes(d)
-        field = next(r for r in d.rejections if r.code == "DATA_NOT_EVALUABLE").field
-        assert field == next(iter(missing))
+        assert _statuses(d)["deliverable"] == "FAIL"
+        assert "nonstandard" in next(r for r in d.results if r.rule == "deliverable").detail
 
-    def test_crossed_quote_inputs_not_evaluable(self, filt):
-        d = filt.evaluate(_snapshot(bid=Decimal("2.10"), ask=Decimal("2.00")))
-        assert not d.accepted
-        assert "DATA_NOT_EVALUABLE" in _codes(d)
+    def test_locked_nbbo_fixture(self):
+        from tests.fixtures.market import locked_quote
+
+        q = locked_quote(DECISION_AT + timedelta(hours=18))
+        assert q.bid == q.ask  # locked, not crossed
+
+    def test_early_assignment_candidate_fixture_registered_as_deferred(self):
+        """Fixture §5.3: an early-assignment CANDIDATE exists and is recorded
+        as a deferred claim — no assignment engine is claimed in M0."""
+        from tests.fixtures.assignment import early_assignment_candidate
+
+        cand = early_assignment_candidate()
+        assert cand.call_put == "C"
+        assert cand.exercise_style == "american"
+        assert cand.itm  # deep ITM: underlier 62.30 vs strike 50
+        assert cand.claim == "DEFERRED_TO_POST_M0"
+        assert cand.note.startswith("no assignment engine in M0")

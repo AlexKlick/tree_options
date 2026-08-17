@@ -68,3 +68,8 @@ def non_tradable_quote(execution_at: datetime, **kwargs) -> QuoteEvent:
 def execution_instant(session_open: datetime, minutes_in: int = 60) -> datetime:
     """A normal intraday execution instant: session open + minutes."""
     return (session_open + timedelta(minutes=minutes_in)).astimezone(UTC)
+
+
+def locked_quote(execution_at: datetime, price: str = "1.05", **kwargs) -> QuoteEvent:
+    """Locked market: bid == ask (fixture §5.3)."""
+    return fresh_quote(bid=price, ask=price, execution_at=execution_at, **kwargs)
