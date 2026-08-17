@@ -7,14 +7,12 @@ DST-correct via zoneinfo and happens ONLY in this package.
 
 from __future__ import annotations
 
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time
 from zoneinfo import ZoneInfo
 
 SESSION_TIMEZONE = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
 SESSION_CLOSE = time(16, 0)
-
-UTC = timezone.utc
 
 
 def session_open_instant(session_date) -> datetime:

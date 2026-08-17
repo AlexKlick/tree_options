@@ -10,6 +10,7 @@ AST scan test).
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 from datetime import date, datetime
 from pathlib import Path
@@ -101,7 +102,7 @@ class StaticSessionCalendar:
         )
         if not sessions:
             raise CalendarIntegrityError("calendar fixture has no sessions")
-        if any(b <= a for a, b in zip(sessions, sessions[1:])):
+        if any(b <= a for a, b in itertools.pairwise(sessions)):
             raise CalendarIntegrityError("calendar sessions not strictly increasing")
         if len(set(sessions)) != len(sessions):
             raise CalendarIntegrityError("calendar sessions contain duplicates")

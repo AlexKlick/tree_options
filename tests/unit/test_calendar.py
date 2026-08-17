@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ast
 import json
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 
 import pytest
 
@@ -85,20 +85,20 @@ class TestSessionInstants:
     def test_close_is_16_et_dst_correct(self, static_calendar):
         # 2024-07-03: EDT (UTC-4) -> close 20:00 UTC
         close_july = static_calendar.session_close(date(2024, 7, 3))
-        assert close_july == datetime(2024, 7, 3, 20, 0, tzinfo=timezone.utc)
+        assert close_july == datetime(2024, 7, 3, 20, 0, tzinfo=UTC)
         # 2024-01-03: EST (UTC-5) -> close 21:00 UTC
         close_jan = static_calendar.session_close(date(2024, 1, 3))
-        assert close_jan == datetime(2024, 1, 3, 21, 0, tzinfo=timezone.utc)
+        assert close_jan == datetime(2024, 1, 3, 21, 0, tzinfo=UTC)
 
     def test_open_is_930_et(self, static_calendar):
         open_july = static_calendar.session_open(date(2024, 7, 3))
-        assert open_july == datetime(2024, 7, 3, 13, 30, tzinfo=timezone.utc)
+        assert open_july == datetime(2024, 7, 3, 13, 30, tzinfo=UTC)
 
     def test_contains_instant(self, static_calendar):
         d = date(2024, 7, 3)
-        assert static_calendar.contains_instant(d, datetime(2024, 7, 3, 15, 0, tzinfo=timezone.utc))
+        assert static_calendar.contains_instant(d, datetime(2024, 7, 3, 15, 0, tzinfo=UTC))
         assert not static_calendar.contains_instant(
-            d, datetime(2024, 7, 3, 12, 0, tzinfo=timezone.utc)
+            d, datetime(2024, 7, 3, 12, 0, tzinfo=UTC)
         )
         with pytest.raises(ValueError):
             static_calendar.contains_instant(d, datetime(2024, 7, 3, 15, 0))  # naive
@@ -121,7 +121,7 @@ class TestSyntheticCalendar:
 class TestNoNaiveArithmetic:
     """Production code must not do naive date arithmetic (handoff §14.3)."""
 
-    BANNED_CALLS = {"timedelta", "toordinal", "fromordinal", "weekday"}
+    BANNED_CALLS = frozenset({"timedelta", "toordinal", "fromordinal", "weekday"})
 
     def test_no_naive_date_arithmetic_in_src(self, repo_root):
         src = repo_root / "src" / "tree_options"
