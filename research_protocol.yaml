@@ -127,8 +127,14 @@ fills:
     long_exit: bid
     short_entry: bid
     short_exit: ask
-  price_improvement_fractions: ["0.25", "0.50"]
+  # fraction_to_midpoint: 0.0 = executable edge (primary), 1.0 = full
+  # midpoint. Sensitivity variants are NON-PRIMARY: they may cross a tick
+  # boundary conservatively and never satisfy the stress-monotonicity gate.
+  fraction_to_midpoint_sensitivity: ["0.5", "1.0"]
   max_quote_age_seconds: 900
+  reject_locked_quotes: true
+  # Max filled quantity = floor(fill_size_fraction * displayed side size).
+  fill_size_fraction: "1.0"
   same_session_execution: reject
   partial_fills: allowed_by_quote_size
   money:

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pydantic
 import pytest
 
@@ -30,7 +32,9 @@ class TestProtocolLoad:
         assert fills.primary.long_exit == "bid"
         assert fills.primary.short_entry == "bid"
         assert fills.primary.short_exit == "ask"
-        assert fills.price_improvement_fractions == ("0.25", "0.50")
+        assert fills.fraction_to_midpoint_sensitivity == ("0.5", "1.0")
+        assert fills.reject_locked_quotes is True
+        assert fills.fill_size_fraction == Decimal("1.0")
         assert fills.same_session_execution == "reject"
 
     def test_inner_loop_cap(self, protocol):

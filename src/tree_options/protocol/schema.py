@@ -96,19 +96,28 @@ class MoneyConfig(_Strict):
 
 class FillConfig(_Strict):
     primary: PrimaryFillPolicy
-    price_improvement_fractions: tuple[str, ...] = Field(min_length=1)
+    fraction_to_midpoint_sensitivity: tuple[str, ...] = Field(min_length=1)
     max_quote_age_seconds: int = Field(gt=0)
+    reject_locked_quotes: bool
+    fill_size_fraction: Decimal
     same_session_execution: Literal["reject"]
     partial_fills: Literal["allowed_by_quote_size"]
     money: MoneyConfig
 
-    @field_validator("price_improvement_fractions")
+    @field_validator("fraction_to_midpoint_sensitivity")
     @classmethod
     def _fractions_in_range(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         for raw in v:
             f = Decimal(raw)
-            if not (Decimal("0") < f <= Decimal("0.5")):
-                raise ValueError(f"improvement fraction {raw} must be in (0, 0.5]")
+            if not (Decimal("0") <= f <= Decimal("1")):
+                raise ValueError(f"fraction_to_midpoint {raw} must be in [0, 1]")
+        return v
+
+    @field_validator("fill_size_fraction")
+    @classmethod
+    def _size_fraction(cls, v: Decimal) -> Decimal:
+        if not (Decimal("0") < v <= Decimal("1")):
+            raise ValueError(f"fill_size_fraction {v} must be in (0, 1]")
         return v
 
 

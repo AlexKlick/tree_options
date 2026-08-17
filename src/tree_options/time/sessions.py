@@ -32,3 +32,10 @@ def require_utc(ts: datetime, *, what: str = "timestamp") -> datetime:
     if ts.tzinfo is None:
         raise ValueError(f"naive {what} rejected: {ts!r}; tz-aware UTC required")
     return ts.astimezone(UTC)
+
+
+def shift_instant(ts, seconds: int):
+    """A UTC instant shifted by whole seconds (the only sanctioned timedelta use)."""
+    from datetime import timedelta
+
+    return require_utc(ts, what="timestamp") + timedelta(seconds=seconds)

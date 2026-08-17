@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pydantic
 import pytest
@@ -271,13 +272,16 @@ class TestOrderFill:
             side="buy",
             quantity=3,
             price="1.10",
+            multiplier=100,
+            deliverable_shares_per_contract="100",
             fees="1.95",
             execution_at=T1,
             execution_session=date(2024, 3, 5),
         )
-        assert f.notional() == f.notional()
-        assert f.notional() == pydantic.TypeAdapter(type(f.notional())).validate_python("3.30")
-        assert str(f.signed_cash()) == "-3.30"
+        assert f.notional() == Decimal("330.00")  # 1.10 * 3 * 100
+        assert f.signed_cash() == Decimal("-330.00")
+        assert f.notional() == pydantic.TypeAdapter(type(f.notional())).validate_python("330.00")
+        assert str(f.signed_cash()) == "-330.00"
 
 
 class TestTrialRecord:

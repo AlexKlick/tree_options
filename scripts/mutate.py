@@ -206,8 +206,9 @@ def run_mutant(mutant: dict) -> tuple[str, str]:
         detail = next((ln for ln in reversed(tail) if ln.strip()), "")
     finally:
         path.write_text(original)
-        if path.read_text() != original:
-            return "RESTORE_FAILED", "file not byte-identical after restore"
+        restored = path.read_text() == original
+    if not restored:
+        return "HARNESS_ERROR", "file not byte-identical after restore"
     return verdict, detail[:100]
 
 

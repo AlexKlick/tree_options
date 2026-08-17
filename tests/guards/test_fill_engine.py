@@ -254,7 +254,7 @@ class TestSideRuleAndImprovement:
         )
         assert sell.price == Decimal("1.00")
 
-    @pytest.mark.parametrize("fraction", ["0.25", "0.50"])
+    @pytest.mark.parametrize("fraction", ["0.5", "1.0"])
     def test_improvement_moves_toward_midpoint_never_past(
         self, synthetic_calendar, fraction
     ):
@@ -265,12 +265,12 @@ class TestSideRuleAndImprovement:
         buy = engine.execute(
             _order(), q, standard_call(),
             execution_session=ex_session, execution_at=exec_at,
-            improvement_fraction=f,
+            fraction_to_midpoint_f=f,
         )
         sell = engine.execute(
             _order(side="sell", intent="close_long"), q, standard_call(),
             execution_session=ex_session, execution_at=exec_at,
-            improvement_fraction=f,
+            fraction_to_midpoint_f=f,
         )
         mid = (Decimal("1.00") + Decimal("1.10")) / 2
         assert Decimal("1.10") >= buy.price >= mid
@@ -283,9 +283,9 @@ class TestSideRuleAndImprovement:
             engine.execute(
                 _order(), fresh_quote(execution_at=exec_at), standard_call(),
                 execution_session=ex_session, execution_at=exec_at,
-                improvement_fraction=Decimal("0.9"),
+                fraction_to_midpoint_f=Decimal("0.9"),
             )
-        assert ei.value.code == "INVALID_IMPROVEMENT_FRACTION"
+        assert ei.value.code == "INVALID_FRACTION_TO_MIDPOINT"
 
 
 class TestPartialFillsAndLimits:
@@ -339,4 +339,4 @@ class TestFees:
         )
         assert fill.fees == Decimal("2.60")  # 4 * 0.65
         # cash identity: buy of 4 @ ask 1.10 with 2.60 fees
-        assert fill.signed_cash() == Decimal("-4.40")
+        assert fill.signed_cash() == Decimal("-440.00")  # 4 * 1.10 * 100 multiplier
