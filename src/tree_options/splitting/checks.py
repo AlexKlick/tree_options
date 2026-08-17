@@ -34,10 +34,12 @@ def check_folds(
     base = sessions[0]
 
     for fold in folds:
-        if fold.train_sessions & fold.validation_sessions or fold.train_sessions & fold.test_sessions or fold.validation_sessions & fold.test_sessions:
-            raise FoldInvariantViolation(
-                "SETS_DISJOINT", f"fold {fold.fold_id} role sets overlap"
-            )
+        if (
+            fold.train_sessions & fold.validation_sessions
+            or fold.train_sessions & fold.test_sessions
+            or fold.validation_sessions & fold.test_sessions
+        ):
+            raise FoldInvariantViolation("SETS_DISJOINT", f"fold {fold.fold_id} role sets overlap")
         # Purge: for every train session s and eval session t, the label
         # window [s+1, s+H] must not touch t: ordinal(t) - ordinal(s) > H.
         for s in fold.train_sessions:
@@ -63,7 +65,10 @@ def check_folds(
         # Refit set purge vs test.
         for s in fold.final_fit_train_sessions - fold.train_sessions:
             for t in fold.test_sessions:
-                if calendar.ordinal(t) - calendar.ordinal(s) <= label_horizon_sessions + embargo_sessions:
+                if (
+                    calendar.ordinal(t) - calendar.ordinal(s)
+                    <= label_horizon_sessions + embargo_sessions
+                ):
                     raise FoldInvariantViolation(
                         "FINAL_FIT_PURGE",
                         f"fold {fold.fold_id}: retained val {s} within gap of test {t}",

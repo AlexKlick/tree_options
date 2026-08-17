@@ -64,9 +64,7 @@ class TestForm4:
             guard.check_feature(compliant, guard.decision_instant(t))
         with pytest.raises(FutureDataError):
             guard.check_feature(compliant, guard.decision_instant(t2))
-        guard.check_feature(
-            compliant, guard.decision_instant(static_calendar.nth_after(t2, 1))
-        )
+        guard.check_feature(compliant, guard.decision_instant(static_calendar.nth_after(t2, 1)))
 
     def test_wrong_source_record_rejected(self, guard, static_calendar):
         filing, compliant, _ = ten_q_fixture(static_calendar)

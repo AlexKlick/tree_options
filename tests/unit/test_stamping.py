@@ -16,7 +16,19 @@ def _make_repo(tmp_path: Path, *, dirty: bool) -> Path:
     subprocess.run(["git", "-C", str(repo), "init", "-q"], check=True)
     subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
     subprocess.run(
-        ["git", "-C", str(repo), "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "init"],
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@t",
+            "commit",
+            "-q",
+            "-m",
+            "init",
+        ],
         check=True,
     )
     if dirty:
@@ -86,8 +98,12 @@ class TestBuildStamp:
         from tree_options.protocol.stamping import build_stamp
 
         repo = _make_repo(tmp_path, dirty=False)
-        s1 = build_stamp(protocol, trial_id="T", config={"a": 1}, dataset_manifest_hash="1" * 64, repo=repo)
-        s2 = build_stamp(protocol, trial_id="T", config={"a": 2}, dataset_manifest_hash="1" * 64, repo=repo)
+        s1 = build_stamp(
+            protocol, trial_id="T", config={"a": 1}, dataset_manifest_hash="1" * 64, repo=repo
+        )
+        s2 = build_stamp(
+            protocol, trial_id="T", config={"a": 2}, dataset_manifest_hash="1" * 64, repo=repo
+        )
         assert s1.config_hash != s2.config_hash
 
 

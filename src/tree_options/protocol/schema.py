@@ -173,9 +173,7 @@ class ResearchProtocol(_Strict):
     short_options: ShortOptionsConfig
     trials: TrialsConfig
 
-    EXPECTED_INVARIANT_IDS: ClassVar[tuple[str, ...]] = tuple(
-        f"INV-{i:02d}" for i in range(1, 15)
-    )
+    EXPECTED_INVARIANT_IDS: ClassVar[tuple[str, ...]] = tuple(f"INV-{i:02d}" for i in range(1, 15))
 
     @field_validator("invariants")
     @classmethod
@@ -184,7 +182,5 @@ class ResearchProtocol(_Strict):
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate invariant ids")
         if tuple(ids) != cls.EXPECTED_INVARIANT_IDS:
-            raise ValueError(
-                f"invariants must be exactly {cls.EXPECTED_INVARIANT_IDS}, got {ids}"
-            )
+            raise ValueError(f"invariants must be exactly {cls.EXPECTED_INVARIANT_IDS}, got {ids}")
         return v

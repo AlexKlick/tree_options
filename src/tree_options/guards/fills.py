@@ -142,9 +142,7 @@ class _StressedFeeModel:
         self._extra = extra_per_contract
 
     def order_fees(self, quantity: int) -> Decimal:
-        return (self._base.order_fees(quantity) + self._extra * quantity).quantize(
-            Decimal("0.01")
-        )
+        return (self._base.order_fees(quantity) + self._extra * quantity).quantize(Decimal("0.01"))
 
 
 class FillEngine:
@@ -264,20 +262,28 @@ class FillEngine:
             price = price - Decimal(stress.slippage_ticks_sell) / 100
         if not (Decimal(0) < price):
             raise PriceOutsideBounds(f"stressed price {price} non-positive")
-        if order.side == "buy" and price > tq.ask + Decimal(stress.slippage_ticks_buy) / 100 + Decimal("0.01"):
+        if order.side == "buy" and price > tq.ask + Decimal(
+            stress.slippage_ticks_buy
+        ) / 100 + Decimal("0.01"):
             raise PriceOutsideBounds(f"buy price {price} beyond ask+slippage")
 
         if order.order_type == "limit" and order.limit_price is not None:
             if order.side == "buy" and order.limit_price < price:
-                raise FillRejection("UNMARKETABLE_LIMIT", f"buy limit {order.limit_price} < fill {price}")
+                raise FillRejection(
+                    "UNMARKETABLE_LIMIT", f"buy limit {order.limit_price} < fill {price}"
+                )
             if order.side == "sell" and order.limit_price > price:
-                raise FillRejection("UNMARKETABLE_LIMIT", f"sell limit {order.limit_price} > fill {price}")
+                raise FillRejection(
+                    "UNMARKETABLE_LIMIT", f"sell limit {order.limit_price} > fill {price}"
+                )
 
         displayed = tq.ask_size if order.side == "buy" else tq.bid_size
         capacity = math.floor(self.fill_size_fraction * displayed)
         quantity = min(order.quantity, capacity)
         if quantity < 1:
-            raise FillRejection("NO_LIQUIDITY", f"fill capacity {capacity} from displayed {displayed}")
+            raise FillRejection(
+                "NO_LIQUIDITY", f"fill capacity {capacity} from displayed {displayed}"
+            )
 
         fee_model = (
             _StressedFeeModel(self.fee_model, stress.extra_fee_per_contract)

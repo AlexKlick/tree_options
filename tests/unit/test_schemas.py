@@ -82,7 +82,14 @@ def _security(**over):
         listing_start=date(2015, 1, 2),
         source="listing_vendor",
         available_at=datetime(2015, 1, 2, 22, 0, tzinfo=UTC),
-        ticker_mappings=(TickerMappingRecord(security_id="SEC1", ticker="OLDA", effective_from=date(2015, 1, 2), effective_to=date(2020, 6, 30)),),
+        ticker_mappings=(
+            TickerMappingRecord(
+                security_id="SEC1",
+                ticker="OLDA",
+                effective_from=date(2015, 1, 2),
+                effective_to=date(2020, 6, 30),
+            ),
+        ),
     )
     base.update(over)
     return SecurityMasterRecord(**base)
@@ -92,8 +99,15 @@ class TestSecurityMaster:
     def test_rename_keeps_identity_and_dated_mappings(self):
         sec = _security(
             ticker_mappings=(
-                TickerMappingRecord(security_id="SEC1", ticker="OLDA", effective_from=date(2015, 1, 2), effective_to=date(2020, 6, 30)),
-                TickerMappingRecord(security_id="SEC1", ticker="NEWA", effective_from=date(2020, 7, 1)),
+                TickerMappingRecord(
+                    security_id="SEC1",
+                    ticker="OLDA",
+                    effective_from=date(2015, 1, 2),
+                    effective_to=date(2020, 6, 30),
+                ),
+                TickerMappingRecord(
+                    security_id="SEC1", ticker="NEWA", effective_from=date(2020, 7, 1)
+                ),
             )
         )
         assert sec.ticker_on(date(2019, 1, 2)) == "OLDA"
@@ -105,8 +119,15 @@ class TestSecurityMaster:
         with pytest.raises(pydantic.ValidationError):
             _security(
                 ticker_mappings=(
-                    TickerMappingRecord(security_id="SEC1", ticker="A", effective_from=date(2015, 1, 2), effective_to=date(2020, 7, 15)),
-                    TickerMappingRecord(security_id="SEC1", ticker="B", effective_from=date(2020, 7, 1)),
+                    TickerMappingRecord(
+                        security_id="SEC1",
+                        ticker="A",
+                        effective_from=date(2015, 1, 2),
+                        effective_to=date(2020, 7, 15),
+                    ),
+                    TickerMappingRecord(
+                        security_id="SEC1", ticker="B", effective_from=date(2020, 7, 1)
+                    ),
                 )
             )
 
@@ -114,13 +135,19 @@ class TestSecurityMaster:
         with pytest.raises(pydantic.ValidationError):
             _security(
                 listing_end=date(2022, 6, 2),
-                delisting=DelistingRecord(delisting_session=date(2022, 6, 3), reason="delisted", final_price_available=True),
+                delisting=DelistingRecord(
+                    delisting_session=date(2022, 6, 3),
+                    reason="delisted",
+                    final_price_available=True,
+                ),
             )
 
     def test_delisted_name_in_universe_until_end(self):
         sec = _security(
             listing_end=date(2022, 6, 2),
-            delisting=DelistingRecord(delisting_session=date(2022, 6, 2), reason="delisted", final_price_available=True),
+            delisting=DelistingRecord(
+                delisting_session=date(2022, 6, 2), reason="delisted", final_price_available=True
+            ),
         )
         assert sec.listed_on(date(2022, 6, 1))
         assert not sec.listed_on(date(2022, 6, 3))
@@ -311,13 +338,23 @@ def _trial(**over):
 
 class TestLedgerEntry:
     def test_entry_shape(self):
-        e = LedgerEntry(entry_id="E1", ts=T1, session=date(2024, 3, 5), kind="fee", amount="-0.65", contract_id="OPT1", ref_id="F1")
+        e = LedgerEntry(
+            entry_id="E1",
+            ts=T1,
+            session=date(2024, 3, 5),
+            kind="fee",
+            amount="-0.65",
+            contract_id="OPT1",
+            ref_id="F1",
+        )
         assert str(e.amount) == "-0.65"
 
 
 class TestPanelRow:
     def test_row_groups_features_and_label_by_session(self):
-        row = PanelRow(security_id="SEC1", decision_session=date(2024, 3, 4), features=(_feature(),))
+        row = PanelRow(
+            security_id="SEC1", decision_session=date(2024, 3, 4), features=(_feature(),)
+        )
         assert row.label is None
         with pytest.raises(pydantic.ValidationError):
             PanelRow(security_id="SEC2", decision_session=date(2024, 3, 4), features=(_feature(),))

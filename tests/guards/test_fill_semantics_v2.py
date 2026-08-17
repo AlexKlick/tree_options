@@ -47,7 +47,15 @@ def _sessions(synthetic_calendar):
     return cal, d, cal.nth_after(d, 1)
 
 
-def _order(cal, decision_session, side="buy", qty=2, order_type="market", limit=None, contract_id=CONTRACT_ID):
+def _order(
+    cal,
+    decision_session,
+    side="buy",
+    qty=2,
+    order_type="market",
+    limit=None,
+    contract_id=CONTRACT_ID,
+):
     return Order(
         order_id="ORD-1",
         contract_id=contract_id,
@@ -67,12 +75,12 @@ class TestFractionToMidpointArithmetic:
     @pytest.mark.parametrize(
         ("bid", "ask", "f", "want_buy", "want_sell"),
         [
-            ("1.00", "1.10", "0", "1.10", "1.00"),      # edge (primary)
-            ("1.00", "1.10", "1", "1.05", "1.05"),      # exact midpoint
-            ("1.00", "1.10", "0.5", "1.08", "1.02"),    # conservative tick rounding
-            ("1.00", "1.11", "0.5", "1.09", "1.02"),    # odd spread, mid 1.055
+            ("1.00", "1.10", "0", "1.10", "1.00"),  # edge (primary)
+            ("1.00", "1.10", "1", "1.05", "1.05"),  # exact midpoint
+            ("1.00", "1.10", "0.5", "1.08", "1.02"),  # conservative tick rounding
+            ("1.00", "1.11", "0.5", "1.09", "1.02"),  # odd spread, mid 1.055
             ("2.30", "2.32", "1", "2.31", "2.31"),
-            ("0.50", "0.53", "1", "0.52", "0.51"),      # odd-cent mid: 0.515
+            ("0.50", "0.53", "1", "0.52", "0.51"),  # odd-cent mid: 0.515
         ],
     )
     def test_exact_prices(self, bid, ask, f, want_buy, want_sell):
@@ -102,11 +110,17 @@ class TestFractionToMidpointArithmetic:
 class TestMultiplierSnapshot:
     def test_fill_carries_multiplier_and_deliverable(self, synthetic_calendar):
         cal, decision, ex = _sessions(synthetic_calendar)
-        engine = FillEngine.from_protocol(cal, __import__("tree_options.protocol.loader", fromlist=["load_protocol"]).load_protocol())
+        engine = FillEngine.from_protocol(
+            cal,
+            __import__("tree_options.protocol.loader", fromlist=["load_protocol"]).load_protocol(),
+        )
         at = execution_instant(cal.session_open(ex))
         fill = engine.execute(
-            _order(cal, decision), fresh_quote(bid="1.00", ask="1.10", execution_at=at),
-            standard_call(), execution_session=ex, execution_at=at,
+            _order(cal, decision),
+            fresh_quote(bid="1.00", ask="1.10", execution_at=at),
+            standard_call(),
+            execution_session=ex,
+            execution_at=at,
         )
         assert fill.multiplier == 100
         assert fill.deliverable_shares_per_contract == Decimal("100")
@@ -122,7 +136,8 @@ class TestMultiplierSnapshot:
 
         cal, decision, ex = _sessions(synthetic_calendar)
         engine = FillEngine.from_protocol(
-            cal, __import__("tree_options.protocol.loader", fromlist=["load_protocol"]).load_protocol()
+            cal,
+            __import__("tree_options.protocol.loader", fromlist=["load_protocol"]).load_protocol(),
         )
         contract, _action = split_adjusted_contract()
         at = execution_instant(cal.session_open(ex))
@@ -144,7 +159,9 @@ class TestExecutionStressMonotonicity:
         from tree_options.guards.fills import ExecutionStress
 
         base = ExecutionStress.zero()
-        worse = ExecutionStress(slippage_ticks_buy=1, slippage_ticks_sell=1, extra_fee_per_contract="0.10")
+        worse = ExecutionStress(
+            slippage_ticks_buy=1, slippage_ticks_sell=1, extra_fee_per_contract="0.10"
+        )
         worse2 = ExecutionStress(latency_seconds=120)
         assert worse.buy_price_delta_ticks >= 0
         assert -worse.sell_price_delta_ticks >= 0
@@ -163,16 +180,26 @@ class TestExecutionStressMonotonicity:
         at2 = execution_instant(cal.session_open(ex2))
 
         def net(stress):
-            q1 = fresh_quote(bid="1.20", ask="1.26", execution_at=at + timedelta(seconds=stress.latency_seconds))
+            q1 = fresh_quote(
+                bid="1.20", ask="1.26", execution_at=at + timedelta(seconds=stress.latency_seconds)
+            )
             buy = engine.execute(
-                _order(cal, decision), q1, standard_call(),
-                execution_session=ex, execution_at=at + timedelta(seconds=stress.latency_seconds),
+                _order(cal, decision),
+                q1,
+                standard_call(),
+                execution_session=ex,
+                execution_at=at + timedelta(seconds=stress.latency_seconds),
                 stress=stress,
             )
-            q2 = fresh_quote(bid="1.20", ask="1.26", execution_at=at2 + timedelta(seconds=stress.latency_seconds))
+            q2 = fresh_quote(
+                bid="1.20", ask="1.26", execution_at=at2 + timedelta(seconds=stress.latency_seconds)
+            )
             sell = engine.execute(
-                _order(cal, ex, side="sell"), q2, standard_call(),
-                execution_session=ex2, execution_at=at2 + timedelta(seconds=stress.latency_seconds),
+                _order(cal, ex, side="sell"),
+                q2,
+                standard_call(),
+                execution_session=ex2,
+                execution_at=at2 + timedelta(seconds=stress.latency_seconds),
                 stress=stress,
             )
             return (buy.price - sell.price) * buy.quantity * buy.multiplier + buy.fees + sell.fees
@@ -187,7 +214,10 @@ class TestExecutionStressMonotonicity:
         try:
             assert net(ExecutionStress(latency_seconds=600)) >= base_cost
         except FillRejection as exc:
-            assert exc.code in {"STALE_QUOTE", "EXECUTION_INSTANT_MISMATCH"} or "stale" in str(exc).lower()
+            assert (
+                exc.code in {"STALE_QUOTE", "EXECUTION_INSTANT_MISMATCH"}
+                or "stale" in str(exc).lower()
+            )
 
     def test_quote_stream_selection_monotone_in_time(self, synthetic_calendar):
         from tree_options.schemas.market import select_quote
@@ -272,8 +302,11 @@ class TestDecisionTimeCoherence:
         )
         with pytest.raises(FillRejection) as ei:
             engine.execute(
-                bad, fresh_quote(execution_at=at), standard_call(),
-                execution_session=ex, execution_at=at,
+                bad,
+                fresh_quote(execution_at=at),
+                standard_call(),
+                execution_session=ex,
+                execution_at=at,
             )
         assert ei.value.code == "DECISION_INSTANT_NOT_CLOSE"
 
@@ -285,7 +318,10 @@ class TestDecisionTimeCoherence:
         at = execution_instant(cal.session_open(ex))
         q = fresh_quote(bid="1.00", ask="1.10", execution_at=at)
         fill = engine.execute(
-            _order(cal, decision, order_type="limit", limit=Decimal("1.15")), q,
-            standard_call(), execution_session=ex, execution_at=at,
+            _order(cal, decision, order_type="limit", limit=Decimal("1.15")),
+            q,
+            standard_call(),
+            execution_session=ex,
+            execution_at=at,
         )
         assert fill.price == Decimal("1.10")  # executable, not the limit

@@ -98,9 +98,7 @@ class StaticSessionCalendar:
         if payload["close"] != SESSION_CLOSE.strftime("%H:%M"):
             raise CalendarIntegrityError(f"calendar close {payload['close']!r} unexpected")
 
-        sessions: tuple[date, ...] = tuple(
-            date.fromisoformat(s) for s in payload["sessions"]
-        )
+        sessions: tuple[date, ...] = tuple(date.fromisoformat(s) for s in payload["sessions"])
         if not sessions:
             raise CalendarIntegrityError("calendar fixture has no sessions")
         if any(b <= a for a, b in itertools.pairwise(sessions)):
@@ -113,9 +111,7 @@ class StaticSessionCalendar:
         )
         unknown_early = [d for d in early_closes if d not in set(sessions)]
         if unknown_early:
-            raise CalendarIntegrityError(
-                f"early-close sessions not sessions: {unknown_early[:3]}"
-            )
+            raise CalendarIntegrityError(f"early-close sessions not sessions: {unknown_early[:3]}")
 
         self._sessions = sessions
         self._ordinals = {d: i for i, d in enumerate(sessions)}
@@ -146,9 +142,7 @@ class StaticSessionCalendar:
         start = self.ordinal(d)
         idx = start + n
         if idx >= len(self._sessions):
-            raise NotASessionError(
-                f"only {len(self._sessions) - start} sessions remain after {d}"
-            )
+            raise NotASessionError(f"only {len(self._sessions) - start} sessions remain after {d}")
         return self._sessions[idx]
 
     def session_open(self, d: date) -> datetime:

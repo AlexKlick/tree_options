@@ -127,8 +127,11 @@ class TestQuoteReality:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         with pytest.raises(CrossedQuoteError):
             engine.execute(
-                _order(), crossed_quote(exec_at), standard_call(),
-                execution_session=ex_session, execution_at=exec_at,
+                _order(),
+                crossed_quote(exec_at),
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
             )
 
     def test_zero_size_quote_rejected(self, synthetic_calendar):
@@ -136,8 +139,11 @@ class TestQuoteReality:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         with pytest.raises(ZeroSizeQuoteError):
             engine.execute(
-                _order(), zero_size_quote(exec_at), standard_call(),
-                execution_session=ex_session, execution_at=exec_at,
+                _order(),
+                zero_size_quote(exec_at),
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
             )
 
     def test_stale_quote_rejected(self, synthetic_calendar):
@@ -146,8 +152,11 @@ class TestQuoteReality:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         with pytest.raises(StaleQuoteError):
             engine.execute(
-                _order(), stale_quote(exec_at), standard_call(),
-                execution_session=ex_session, execution_at=exec_at,
+                _order(),
+                stale_quote(exec_at),
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
             )
 
     def test_over_age_quote_rejected(self, synthetic_calendar):
@@ -155,8 +164,11 @@ class TestQuoteReality:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         with pytest.raises(StaleQuoteError):
             engine.execute(
-                _order(), over_age_quote(exec_at), standard_call(),
-                execution_session=ex_session, execution_at=exec_at,
+                _order(),
+                over_age_quote(exec_at),
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
             )
 
     def test_non_tradable_condition_rejected(self, synthetic_calendar):
@@ -164,8 +176,11 @@ class TestQuoteReality:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         with pytest.raises(NonTradableConditionError):
             engine.execute(
-                _order(), non_tradable_quote(exec_at), standard_call(),
-                execution_session=ex_session, execution_at=exec_at,
+                _order(),
+                non_tradable_quote(exec_at),
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
             )
 
 
@@ -176,8 +191,11 @@ class TestContractLifecycle:
         saturday = ex_session + timedelta(days=(5 - ex_session.weekday()) % 7 or 7)
         with pytest.raises(FillRejection) as ei:
             engine.execute(
-                _order(), fresh_quote(execution_at=exec_at), standard_call(),
-                execution_session=saturday, execution_at=exec_at,
+                _order(),
+                fresh_quote(execution_at=exec_at),
+                standard_call(),
+                execution_session=saturday,
+                execution_at=exec_at,
             )
         assert ei.value.code == "SESSION_NOT_IN_CALENDAR"
 
@@ -187,8 +205,11 @@ class TestContractLifecycle:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         with pytest.raises(FillRejection) as ei:
             engine.execute(
-                _order(), fresh_quote(execution_at=exec_at), contract,
-                execution_session=ex_session, execution_at=exec_at,
+                _order(),
+                fresh_quote(execution_at=exec_at),
+                contract,
+                execution_session=ex_session,
+                execution_at=exec_at,
             )
         assert ei.value.code == "CONTRACT_NOT_LISTED"
 
@@ -233,8 +254,11 @@ class TestContractLifecycle:
         wrong = fresh_quote(contract_id="OPT-C-9999-01-01-1", execution_at=exec_at)
         with pytest.raises(FillRejection) as ei:
             engine.execute(
-                _order(), wrong, standard_call(),
-                execution_session=ex_session, execution_at=exec_at,
+                _order(),
+                wrong,
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
             )
         assert ei.value.code == "CONTRACT_MISMATCH"
 
@@ -255,21 +279,25 @@ class TestSideRuleAndImprovement:
         assert sell.price == Decimal("1.00")
 
     @pytest.mark.parametrize("fraction", ["0.5", "1.0"])
-    def test_improvement_moves_toward_midpoint_never_past(
-        self, synthetic_calendar, fraction
-    ):
+    def test_improvement_moves_toward_midpoint_never_past(self, synthetic_calendar, fraction):
         engine = _engine(synthetic_calendar)
         ex_session, exec_at = _next_exec(synthetic_calendar)
         q = fresh_quote(bid="1.00", ask="1.10", execution_at=exec_at)
         f = Decimal(fraction)
         buy = engine.execute(
-            _order(), q, standard_call(),
-            execution_session=ex_session, execution_at=exec_at,
+            _order(),
+            q,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
             fraction_to_midpoint_f=f,
         )
         sell = engine.execute(
-            _order(side="sell", intent="close_long"), q, standard_call(),
-            execution_session=ex_session, execution_at=exec_at,
+            _order(side="sell", intent="close_long"),
+            q,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
             fraction_to_midpoint_f=f,
         )
         mid = (Decimal("1.00") + Decimal("1.10")) / 2
@@ -281,8 +309,11 @@ class TestSideRuleAndImprovement:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         with pytest.raises(FillRejection) as ei:
             engine.execute(
-                _order(), fresh_quote(execution_at=exec_at), standard_call(),
-                execution_session=ex_session, execution_at=exec_at,
+                _order(),
+                fresh_quote(execution_at=exec_at),
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
                 fraction_to_midpoint_f=Decimal("0.9"),
             )
         assert ei.value.code == "INVALID_FRACTION_TO_MIDPOINT"
@@ -294,8 +325,11 @@ class TestPartialFillsAndLimits:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         q = fresh_quote(bid="1.00", ask="1.10", ask_size=3, execution_at=exec_at)
         fill = engine.execute(
-            _order(quantity=10), q, standard_call(),
-            execution_session=ex_session, execution_at=exec_at,
+            _order(quantity=10),
+            q,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
         )
         assert fill.quantity == 3  # min(order, ask_size) — never invented size
 
@@ -305,8 +339,11 @@ class TestPartialFillsAndLimits:
         q = fresh_quote(bid="1.00", ask="1.10", execution_at=exec_at)
         with pytest.raises(FillRejection) as ei:
             engine.execute(
-                _order(order_type="limit", limit_price=Decimal("1.05")), q, standard_call(),
-                execution_session=ex_session, execution_at=exec_at,
+                _order(order_type="limit", limit_price=Decimal("1.05")),
+                q,
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
             )
         assert ei.value.code == "UNMARKETABLE_LIMIT"
 
@@ -315,8 +352,11 @@ class TestPartialFillsAndLimits:
         ex_session, exec_at = _next_exec(synthetic_calendar)
         q = fresh_quote(bid="1.00", ask="1.10", execution_at=exec_at)
         fill = engine.execute(
-            _order(order_type="limit", limit_price=Decimal("1.10")), q, standard_call(),
-            execution_session=ex_session, execution_at=exec_at,
+            _order(order_type="limit", limit_price=Decimal("1.10")),
+            q,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
         )
         assert fill.price == Decimal("1.10")
 
@@ -334,8 +374,11 @@ class TestFees:
         engine = _engine(synthetic_calendar)
         ex_session, exec_at = _next_exec(synthetic_calendar)
         fill = engine.execute(
-            _order(quantity=4), fresh_quote(execution_at=exec_at), standard_call(),
-            execution_session=ex_session, execution_at=exec_at,
+            _order(quantity=4),
+            fresh_quote(execution_at=exec_at),
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
         )
         assert fill.fees == Decimal("2.60")  # 4 * 0.65
         # cash identity: buy of 4 @ ask 1.10 with 2.60 fees

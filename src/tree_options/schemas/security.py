@@ -62,7 +62,9 @@ class SecurityMasterRecord(StrictModel):
             if len(maps) > 1:
                 raise ValueError(f"duplicate ticker mapping for {ticker}")
         starts = sorted(m.effective_from for m in self.ticker_mappings)
-        ends = [m.effective_to for m in sorted(self.ticker_mappings, key=lambda m: m.effective_from)]
+        ends = [
+            m.effective_to for m in sorted(self.ticker_mappings, key=lambda m: m.effective_from)
+        ]
         for prev_end, next_start in zip(ends[:-1], starts[1:], strict=False):
             if prev_end is None or prev_end >= next_start:
                 raise ValueError("overlapping ticker mapping windows")

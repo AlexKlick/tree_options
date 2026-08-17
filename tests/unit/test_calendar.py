@@ -97,9 +97,7 @@ class TestSessionInstants:
     def test_contains_instant(self, static_calendar):
         d = date(2024, 7, 3)
         assert static_calendar.contains_instant(d, datetime(2024, 7, 3, 15, 0, tzinfo=UTC))
-        assert not static_calendar.contains_instant(
-            d, datetime(2024, 7, 3, 12, 0, tzinfo=UTC)
-        )
+        assert not static_calendar.contains_instant(d, datetime(2024, 7, 3, 12, 0, tzinfo=UTC))
         with pytest.raises(ValueError):
             static_calendar.contains_instant(d, datetime(2024, 7, 3, 15, 0))  # naive
 
@@ -134,7 +132,11 @@ class TestNoNaiveArithmetic:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
                     fn = node.func
-                    name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else None)
+                    name = (
+                        fn.id
+                        if isinstance(fn, ast.Name)
+                        else (fn.attr if isinstance(fn, ast.Attribute) else None)
+                    )
                     if name in self.BANNED_CALLS:
                         offenders.append(f"{rel}:{node.lineno} calls {name}()")
                 if isinstance(node, ast.Attribute) and node.attr in self.BANNED_CALLS:
@@ -162,8 +164,11 @@ class TestNoNaiveArithmetic:
 def _fixture_path():
     from pathlib import Path
 
-    return Path(__file__).resolve().parents[2] / "data" / "calendar" / (
-        "nyse_sessions_2018_01_02_2026_12_31.json"
+    return (
+        Path(__file__).resolve().parents[2]
+        / "data"
+        / "calendar"
+        / ("nyse_sessions_2018_01_02_2026_12_31.json")
     )
 
 
@@ -173,7 +178,10 @@ class TestTemporalCoherenceCalendar:
     def test_holiday_gap_mlK(self, static_calendar):
         # MLK 2024-01-15 (Monday) closed: Thursday -> Tuesday spans it.
         assert not static_calendar.is_session(date(2024, 1, 15))
-        assert static_calendar.ordinal(date(2024, 1, 16)) == static_calendar.ordinal(date(2024, 1, 12)) + 1  # Fri -> Tue spans the Monday holiday
+        assert (
+            static_calendar.ordinal(date(2024, 1, 16))
+            == static_calendar.ordinal(date(2024, 1, 12)) + 1
+        )  # Fri -> Tue spans the Monday holiday
 
     def test_early_close_session(self, static_calendar):
         # 2024-07-03: NYSE half day, 13:00 ET close = 17:00 UTC (EDT).

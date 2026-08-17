@@ -103,9 +103,7 @@ class TrialRegistry:
 
     def is_registered(self, trial_id: str) -> bool:
         return (
-            self._conn.execute(
-                "SELECT 1 FROM trials WHERE trial_id = ?", (trial_id,)
-            ).fetchone()
+            self._conn.execute("SELECT 1 FROM trials WHERE trial_id = ?", (trial_id,)).fetchone()
             is not None
         )
 
@@ -165,7 +163,9 @@ class TrialRegistry:
                     record.created_at.isoformat(),
                 ),
             )
-            self._event(record.trial_id, "REGISTERED", {"scope": record.scope_key}, record.created_at)
+            self._event(
+                record.trial_id, "REGISTERED", {"scope": record.scope_key}, record.created_at
+            )
             self._conn.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
             self._conn.execute("ROLLBACK")
@@ -233,9 +233,7 @@ class TrialRegistry:
                 trial_id, f"{current} -> {to_status} is not a legal transition"
             )
         payload_json = payload if isinstance(payload, dict) else {"detail": payload}
-        self._conn.execute(
-            "UPDATE trials SET status = ? WHERE trial_id = ?", (to_status, trial_id)
-        )
+        self._conn.execute("UPDATE trials SET status = ? WHERE trial_id = ?", (to_status, trial_id))
         self._event(trial_id, to_status, payload_json, at)
 
     # -- test/ops helper -------------------------------------------------------

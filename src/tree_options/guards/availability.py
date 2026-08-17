@@ -73,8 +73,7 @@ class AvailabilityGuard:
             return
         raise FutureDataError(
             "AVAILABLE_AFTER_DECISION",
-            f"feature {ev.feature_name!r} available {ev.available_at} "
-            f"after decision {decision_at}",
+            f"feature {ev.feature_name!r} available {ev.available_at} after decision {decision_at}",
         )
 
     def check_filing_provenance(self, ev: FeatureEvent, filing: FilingRecord) -> None:

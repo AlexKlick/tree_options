@@ -53,9 +53,7 @@ class TestProtocolLoad:
 
         text = protocol_path.read_text()
         # Remove INV-07 entirely.
-        bad = "\n".join(
-            line for line in text.splitlines() if "INV-07" not in line
-        )
+        bad = "\n".join(line for line in text.splitlines() if "INV-07" not in line)
         (tmp_path / "p.yaml").write_text(bad + "\n")
         with pytest.raises(pydantic.ValidationError):
             load_protocol(tmp_path / "p.yaml")

@@ -71,7 +71,9 @@ class WalkForwardSplitter:
         self.min_train_sessions = min_train_sessions
 
     @classmethod
-    def from_protocol(cls, calendar: SessionCalendar, protocol: ResearchProtocol) -> WalkForwardSplitter:
+    def from_protocol(
+        cls, calendar: SessionCalendar, protocol: ResearchProtocol
+    ) -> WalkForwardSplitter:
         f = protocol.folds
         return cls(
             calendar,

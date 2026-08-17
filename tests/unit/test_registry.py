@@ -83,8 +83,11 @@ class TestStateMachine:
         registry.register(_record())
         assert registry.status("TRIAL-1") == "REGISTERED"
         registry.mark_running(
-            "TRIAL-1", git_sha="4a3eede", config_hash="cfg-1",
-            dataset_manifest_hash="ds-1", at=T1,
+            "TRIAL-1",
+            git_sha="4a3eede",
+            config_hash="cfg-1",
+            dataset_manifest_hash="ds-1",
+            at=T1,
         )
         assert registry.status("TRIAL-1") == "RUNNING"
         registry.complete("TRIAL-1", "s3://m.json", outcome_at=T2)
@@ -100,8 +103,11 @@ class TestStateMachine:
     def test_no_double_outcome(self, registry):
         registry.register(_record())
         registry.mark_running(
-            "TRIAL-1", git_sha="4a3eede", config_hash="cfg-1",
-            dataset_manifest_hash="ds-1", at=T1,
+            "TRIAL-1",
+            git_sha="4a3eede",
+            config_hash="cfg-1",
+            dataset_manifest_hash="ds-1",
+            at=T1,
         )
         registry.complete("TRIAL-1", "s3://a.json", outcome_at=T2)
         with pytest.raises(InvalidTransitionError):
@@ -111,16 +117,22 @@ class TestStateMachine:
         registry.register(_record())
         with pytest.raises(InvalidTransitionError) as ei:
             registry.mark_running(
-                "TRIAL-1", git_sha="WRONG", config_hash="cfg-1",
-                dataset_manifest_hash="ds-1", at=T1,
+                "TRIAL-1",
+                git_sha="WRONG",
+                config_hash="cfg-1",
+                dataset_manifest_hash="ds-1",
+                at=T1,
             )
         assert "provenance" in ei.value.detail
 
     def test_failure_path(self, registry):
         registry.register(_record())
         registry.mark_running(
-            "TRIAL-1", git_sha="4a3eede", config_hash="cfg-1",
-            dataset_manifest_hash="ds-1", at=T1,
+            "TRIAL-1",
+            git_sha="4a3eede",
+            config_hash="cfg-1",
+            dataset_manifest_hash="ds-1",
+            at=T1,
         )
         registry.fail("TRIAL-1", "diverged", at=T2)
         assert registry.status("TRIAL-1") == "FAILED"
@@ -136,8 +148,11 @@ class TestStateMachine:
     def test_append_only_event_history(self, registry):
         registry.register(_record())
         registry.mark_running(
-            "TRIAL-1", git_sha="4a3eede", config_hash="cfg-1",
-            dataset_manifest_hash="ds-1", at=T1,
+            "TRIAL-1",
+            git_sha="4a3eede",
+            config_hash="cfg-1",
+            dataset_manifest_hash="ds-1",
+            at=T1,
         )
         registry.complete("TRIAL-1", "s3://m.json", outcome_at=T2)
         kinds = [k for k, _payload in registry.events("TRIAL-1")]
@@ -198,8 +213,7 @@ class TestStorageIntegrity:
                 "INSERT INTO trials (trial_id, scope_key, hypothesis, hyperparameters_json,"
                 " git_sha, config_hash, dataset_manifest_hash, registered_at)"
                 " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                ("TRIAL-X", "scope-v1:" + "0" * 64, "short", "{}", "g", "c", "d",
-                 T0.isoformat()),
+                ("TRIAL-X", "scope-v1:" + "0" * 64, "short", "{}", "g", "c", "d", T0.isoformat()),
             )
 
     def test_persistence_across_reopen(self, tmp_path):

@@ -55,16 +55,24 @@ def _order(i, side, intent, qty, decision_session):
 def _buy_fill(engine, contract, exec_session, exec_at, qty, bid, ask, f, decision_session):
     q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
     return engine.execute(
-        _order(1, "buy", "open_long", qty, decision_session), q, contract,
-        execution_session=exec_session, execution_at=exec_at, fraction_to_midpoint_f=f,
+        _order(1, "buy", "open_long", qty, decision_session),
+        q,
+        contract,
+        execution_session=exec_session,
+        execution_at=exec_at,
+        fraction_to_midpoint_f=f,
     )
 
 
 def _sell_fill(engine, contract, exec_session, exec_at, qty, bid, ask, f, decision_session, i=2):
     q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
     return engine.execute(
-        _order(i, "sell", "close_long", qty, decision_session), q, contract,
-        execution_session=exec_session, execution_at=exec_at, fraction_to_midpoint_f=f,
+        _order(i, "sell", "close_long", qty, decision_session),
+        q,
+        contract,
+        execution_session=exec_session,
+        execution_at=exec_at,
+        fraction_to_midpoint_f=f,
     )
 
 
@@ -82,9 +90,13 @@ class TestQuoteBound:
         _, decision_session, exec_session, exec_at, engine, contract = ctx
         bid = Decimal(bid_units) / 100
         ask = bid + Decimal(half_spread_cents) / 50  # ask - bid = 2 * half_spread cents
-        buy = _buy_fill(engine, contract, exec_session, exec_at, 1, bid, ask, fraction, decision_session)
+        buy = _buy_fill(
+            engine, contract, exec_session, exec_at, 1, bid, ask, fraction, decision_session
+        )
         assert bid <= buy.price <= ask
-        sell = _sell_fill(engine, contract, exec_session, exec_at, 1, bid, ask, fraction, decision_session)
+        sell = _sell_fill(
+            engine, contract, exec_session, exec_at, 1, bid, ask, fraction, decision_session
+        )
         assert bid <= sell.price <= ask
         assert sell.price <= buy.price  # you buy at the worse level
 
@@ -125,22 +137,26 @@ class TestCostMonotonicity:
                 return self.amount
 
         e1 = FillEngine(synthetic_calendar, fee_model=_Fee(Decimal(fee1) / 100))
-        e2 = FillEngine(
-            synthetic_calendar, fee_model=_Fee(Decimal(fee1 + fee_extra) / 100)
-        )
+        e2 = FillEngine(synthetic_calendar, fee_model=_Fee(Decimal(fee1 + fee_extra) / 100))
 
         def net(engine, ask):
             q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
             buy = engine.execute(
-                _order(1, "buy", "open_long", 1, decision_session), q, contract,
-                execution_session=exec_session, execution_at=exec_at,
+                _order(1, "buy", "open_long", 1, decision_session),
+                q,
+                contract,
+                execution_session=exec_session,
+                execution_at=exec_at,
             )
             exec2 = cal.nth_after(exec_session, 1)
             at2 = execution_instant(cal.session_open(exec2))
             q2 = fresh_quote(bid=str(bid), ask=str(ask), execution_at=at2)
             sell = engine.execute(
-                _order(2, "sell", "close_long", 1, exec_session), q2, contract,
-                execution_session=exec2, execution_at=at2,
+                _order(2, "sell", "close_long", 1, exec_session),
+                q2,
+                contract,
+                execution_session=exec2,
+                execution_at=at2,
             )
             return (buy.price - sell.price) + buy.fees + sell.fees
 
@@ -183,16 +199,22 @@ class TestCostMonotonicity:
             engine = FillEngine(synthetic_calendar, fee_model=_Fee(fee_amount))
             q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
             buy = engine.execute(
-                _order(1, "buy", "open_long", 1, decision_session), q, contract,
-                execution_session=exec_session, execution_at=exec_at,
+                _order(1, "buy", "open_long", 1, decision_session),
+                q,
+                contract,
+                execution_session=exec_session,
+                execution_at=exec_at,
                 fraction_to_midpoint_f=fraction,
             )
             exec2 = cal.nth_after(exec_session, 1)
             at2 = execution_instant(cal.session_open(exec2))
             q2 = fresh_quote(bid=str(bid), ask=str(ask), execution_at=at2)
             sell = engine.execute(
-                _order(2, "sell", "close_long", 1, exec_session), q2, contract,
-                execution_session=exec2, execution_at=at2,
+                _order(2, "sell", "close_long", 1, exec_session),
+                q2,
+                contract,
+                execution_session=exec2,
+                execution_at=at2,
                 fraction_to_midpoint_f=fraction,
             )
             return (buy.price - sell.price) + buy.fees + sell.fees
@@ -220,16 +242,22 @@ class TestCostMonotonicity:
         ask = bid + Decimal(spread_cents) / 100
         q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
         buy = engine.execute(
-            _order(1, "buy", "open_long", 1, decision_session), q, contract,
-            execution_session=exec_session, execution_at=exec_at,
+            _order(1, "buy", "open_long", 1, decision_session),
+            q,
+            contract,
+            execution_session=exec_session,
+            execution_at=exec_at,
             fraction_to_midpoint_f=fraction,
         )
         exec2 = cal.nth_after(exec_session, 1)
         at2 = execution_instant(cal.session_open(exec2))
         q2 = fresh_quote(bid=str(bid), ask=str(ask), execution_at=at2)
         sell = engine.execute(
-            _order(2, "sell", "close_long", 1, exec_session), q2, contract,
-            execution_session=exec2, execution_at=at2,
+            _order(2, "sell", "close_long", 1, exec_session),
+            q2,
+            contract,
+            execution_session=exec2,
+            execution_at=at2,
             fraction_to_midpoint_f=fraction,
         )
         tick = Decimal("0.01")
@@ -255,12 +283,18 @@ class TestCostMonotonicity:
         )
         q = fresh_quote(bid="1.00", ask="1.10", execution_at=exec_at)
         cheap = cheap_engine.execute(
-            _order(1, "buy", "open_long", 2, decision_session), q, contract,
-            execution_session=exec_session, execution_at=exec_at,
+            _order(1, "buy", "open_long", 2, decision_session),
+            q,
+            contract,
+            execution_session=exec_session,
+            execution_at=exec_at,
         )
         dear = dear_engine.execute(
-            _order(1, "buy", "open_long", 2, decision_session), q, contract,
-            execution_session=exec_session, execution_at=exec_at,
+            _order(1, "buy", "open_long", 2, decision_session),
+            q,
+            contract,
+            execution_session=exec_session,
+            execution_at=exec_at,
         )
         assert dear.fees > cheap.fees
         assert dear.price == cheap.price
@@ -286,12 +320,25 @@ class TestConservation:
                 ask = bid + Decimal(rng.choice(["0.05", "0.10", "0.25"]))
                 if held == 0 or (held > 0 and rng.random() < 0.55):
                     qty = rng.randint(1, 5)
-                    fill = _buy_fill(engine, contract, session, at, qty, bid, ask, Decimal(0), decision_session)
+                    fill = _buy_fill(
+                        engine, contract, session, at, qty, bid, ask, Decimal(0), decision_session
+                    )
                     book.apply(fill)
                     held += fill.quantity
                 else:
                     qty = rng.randint(1, held)
-                    fill = _sell_fill(engine, contract, session, at, qty, bid, ask, Decimal(0), decision_session, i=step)
+                    fill = _sell_fill(
+                        engine,
+                        contract,
+                        session,
+                        at,
+                        qty,
+                        bid,
+                        ask,
+                        Decimal(0),
+                        decision_session,
+                        i=step,
+                    )
                     book.apply(fill)
                     held -= fill.quantity
             book.assert_conservation()
@@ -304,8 +351,11 @@ class TestConservation:
         # buy: decided at decision_session, executes on exec_session
         q = fresh_quote(bid="1.00", ask="1.10", execution_at=exec_at)
         buy = engine.execute(
-            _order(1, "buy", "open_long", 3, decision_session), q, contract,
-            execution_session=exec_session, execution_at=exec_at,
+            _order(1, "buy", "open_long", 3, decision_session),
+            q,
+            contract,
+            execution_session=exec_session,
+            execution_at=exec_at,
         )
         book.apply(buy)
         # sell: decided at exec_session close, executes the next session
@@ -313,26 +363,31 @@ class TestConservation:
         at2 = execution_instant(cal.session_open(sell_session))
         q2 = fresh_quote(bid="1.00", ask="1.10", execution_at=at2)
         sell = engine.execute(
-            _order(2, "sell", "close_long", buy.quantity, exec_session), q2, contract,
-            execution_session=sell_session, execution_at=at2,
+            _order(2, "sell", "close_long", buy.quantity, exec_session),
+            q2,
+            contract,
+            execution_session=sell_session,
+            execution_at=at2,
         )
         book.apply(sell)
         assert book.quantity(CONTRACT_ID) == 0
         book.assert_conservation()
         # cash == initial + realized - fees when the position is flat
-        assert book.cash == (
-            Decimal("1000.00") + book.realized_pnl(CONTRACT_ID) - book.total_fees
-        )
+        assert book.cash == (Decimal("1000.00") + book.realized_pnl(CONTRACT_ID) - book.total_fees)
 
     def test_sell_beyond_position_fails_closed(self, synthetic_calendar):
         ctx = _base(synthetic_calendar)
         _, decision_session, exec_session, exec_at, engine, contract = ctx
         book = LedgerBook(initial_cash=Decimal("1000.00"))
-        fill = _buy_fill(engine, contract, exec_session, exec_at, 2, "1.00", "1.10", Decimal(0), decision_session)
+        fill = _buy_fill(
+            engine, contract, exec_session, exec_at, 2, "1.00", "1.10", Decimal(0), decision_session
+        )
         book.apply(fill)
         exec2 = synthetic_calendar.nth_after(exec_session, 1)
         at2 = execution_instant(synthetic_calendar.session_open(exec2))
-        oversell = _sell_fill(engine, contract, exec2, at2, 3, "1.00", "1.10", Decimal(0), exec_session)
+        oversell = _sell_fill(
+            engine, contract, exec2, at2, 3, "1.00", "1.10", Decimal(0), exec_session
+        )
 
         with pytest.raises(LedgerViolation) as ei:
             book.apply(oversell)
@@ -343,13 +398,14 @@ class TestConservation:
         ctx = _base(synthetic_calendar)
         _, decision_session, exec_session, exec_at, engine, contract = ctx
         book = LedgerBook(initial_cash=Decimal("1000.00"))
-        fill = _buy_fill(engine, contract, exec_session, exec_at, 2, "1.00", "1.10", Decimal(0), decision_session)
+        fill = _buy_fill(
+            engine, contract, exec_session, exec_at, 2, "1.00", "1.10", Decimal(0), decision_session
+        )
         book.apply(fill)
         object.__setattr__(book, "_fills", [*book._fills, fill])  # duplicate a fill
 
         with pytest.raises(LedgerViolation):
             book.assert_conservation()
-
 
 
 class TestLedgerIntegrityV2:
@@ -363,12 +419,28 @@ class TestLedgerIntegrityV2:
         book = LedgerBook(initial_cash=Decimal("10000.00"))
         s2 = cal.nth_after(exec_session, 1)
         s3 = cal.nth_after(exec_session, 2)
-        book.apply(_buy_fill(engine, contract, exec_session, exec_at, 2, "1.00", "1.10", Decimal(0), decision_session))
+        book.apply(
+            _buy_fill(
+                engine,
+                contract,
+                exec_session,
+                exec_at,
+                2,
+                "1.00",
+                "1.10",
+                Decimal(0),
+                decision_session,
+            )
+        )
         at2 = execution_instant(cal.session_open(s2))
-        book.apply(_sell_fill(engine, contract, s2, at2, 2, "1.00", "1.10", Decimal(0), exec_session))
+        book.apply(
+            _sell_fill(engine, contract, s2, at2, 2, "1.00", "1.10", Decimal(0), exec_session)
+        )
         assert book.quantity(CONTRACT_ID) == 0
         at3 = execution_instant(cal.session_open(s3))
-        book.apply(_buy_fill(engine, contract, s3, at3, 1, "1.00", "1.10", Decimal(0), decision_session))
+        book.apply(
+            _buy_fill(engine, contract, s3, at3, 1, "1.00", "1.10", Decimal(0), decision_session)
+        )
         assert book.opened_session(CONTRACT_ID) == s3  # reopen session, NOT exec_session
         pos = book.position(CONTRACT_ID)
         assert pos.opened_session == s3
@@ -377,7 +449,9 @@ class TestLedgerIntegrityV2:
         ctx = _base(synthetic_calendar)
         _cal, decision_session, exec_session, exec_at, engine, contract = ctx
         book = LedgerBook(initial_cash=Decimal("10000.00"))
-        fill = _buy_fill(engine, contract, exec_session, exec_at, 3, "1.20", "1.30", Decimal(0), decision_session)
+        fill = _buy_fill(
+            engine, contract, exec_session, exec_at, 3, "1.20", "1.30", Decimal(0), decision_session
+        )
         book.apply(fill)
         (lot,) = book.lots(CONTRACT_ID)
         assert lot.fill_id == fill.fill_id
@@ -391,7 +465,9 @@ class TestLedgerIntegrityV2:
         ctx = _base(synthetic_calendar)
         _, decision_session, exec_session, exec_at, engine, contract = ctx
         book = LedgerBook(initial_cash=Decimal("1000.00"))
-        fill = _buy_fill(engine, contract, exec_session, exec_at, 1, "1.00", "1.10", Decimal(0), decision_session)
+        fill = _buy_fill(
+            engine, contract, exec_session, exec_at, 1, "1.00", "1.10", Decimal(0), decision_session
+        )
         book.apply(fill)
         with pytest.raises(LedgerViolation) as ei:
             book.apply(fill.model_copy())  # same fill_id
@@ -415,13 +491,29 @@ class TestLedgerIntegrityV2:
         ctx = _base(synthetic_calendar)
         cal, decision_session, exec_session, exec_at, engine, contract = ctx
         book = LedgerBook(initial_cash=Decimal("1000.00"))
-        book.apply(_buy_fill(engine, contract, exec_session, exec_at, 2, "1.00", "1.10", Decimal(0), decision_session))
+        book.apply(
+            _buy_fill(
+                engine,
+                contract,
+                exec_session,
+                exec_at,
+                2,
+                "1.00",
+                "1.10",
+                Decimal(0),
+                decision_session,
+            )
+        )
         s2 = cal.nth_after(exec_session, 1)
         at2 = execution_instant(cal.session_open(s2))
-        book.apply(_sell_fill(engine, contract, s2, at2, 1, "1.00", "1.10", Decimal(0), exec_session))
+        book.apply(
+            _sell_fill(engine, contract, s2, at2, 1, "1.00", "1.10", Decimal(0), exec_session)
+        )
         book.assert_conservation()  # includes ENTRY_MISMATCH check
         # hand check: buy -220.00 -1.30 fee; sell +110.00 -1.00 fee (1 contract)
-        assert book.cash == Decimal("1000.00") - Decimal("220.00") - Decimal("1.30") + Decimal("100.00") - Decimal("1.00")
+        assert book.cash == Decimal("1000.00") - Decimal("220.00") - Decimal("1.30") + Decimal(
+            "100.00"
+        ) - Decimal("1.00")
 
     def test_partial_fifo_close_across_lots_hand_calculated(self, synthetic_calendar):
         """Two lots at 1.10 and 1.30; sell 2 of 3 FIFO: realized gross =
@@ -429,15 +521,31 @@ class TestLedgerIntegrityV2:
         ctx = _base(synthetic_calendar)
         cal, decision_session, exec_session, exec_at, engine, contract = ctx
         book = LedgerBook(initial_cash=Decimal("10000.00"))
-        book.apply(_buy_fill(engine, contract, exec_session, exec_at, 1, "1.00", "1.10", Decimal(0), decision_session))
+        book.apply(
+            _buy_fill(
+                engine,
+                contract,
+                exec_session,
+                exec_at,
+                1,
+                "1.00",
+                "1.10",
+                Decimal(0),
+                decision_session,
+            )
+        )
         s2 = cal.nth_after(exec_session, 1)
         at2 = execution_instant(cal.session_open(s2))
-        book.apply(_buy_fill(engine, contract, s2, at2, 2, "1.20", "1.30", Decimal(0), exec_session))
+        book.apply(
+            _buy_fill(engine, contract, s2, at2, 2, "1.20", "1.30", Decimal(0), exec_session)
+        )
         s3 = cal.nth_after(exec_session, 2)
         at3 = execution_instant(cal.session_open(s3))
         book.apply(_sell_fill(engine, contract, s3, at3, 2, "1.20", "1.30", Decimal(0), s2))
         # FIFO: 1 contract from lot1 @1.10 + 1 from lot2 @1.30; sell @1.20
-        expected_realized = (Decimal("1.20") - Decimal("1.10")) * 100 + (Decimal("1.20") - Decimal("1.30")) * 100
+        expected_realized = (Decimal("1.20") - Decimal("1.10")) * 100 + (
+            Decimal("1.20") - Decimal("1.30")
+        ) * 100
         assert book.realized_pnl(CONTRACT_ID) == expected_realized
         assert book.quantity(CONTRACT_ID) == 1
         assert book.lots(CONTRACT_ID)[0].unit_price == Decimal("1.30")
@@ -460,7 +568,9 @@ class TestLedgerIntegrityV2:
             def signed_cash(self):
                 return Decimal("-999.00")
 
-        fill = _buy_fill(engine, contract, exec_session, exec_at, 1, "1.00", "1.10", Decimal(0), decision_session)
+        fill = _buy_fill(
+            engine, contract, exec_session, exec_at, 1, "1.00", "1.10", Decimal(0), decision_session
+        )
         lying = LyingFill(**{**fill.model_dump(), "fill_id": "LIE-1"})
         book = LedgerBook(initial_cash=Decimal("1000.00"))
         book.apply(lying)

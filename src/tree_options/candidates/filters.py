@@ -198,21 +198,15 @@ class CandidateFilter:
                 else:
                     fraction = (ask_v - bid_v) / mid
                     if fraction > self.max_spread_fraction_of_midpoint:
-                        results.append(
-                            RuleResult("spread", FAIL, f"{fraction:.4f} exceeds limit")
-                        )
+                        results.append(RuleResult("spread", FAIL, f"{fraction:.4f} exceeds limit"))
                     else:
                         results.append(RuleResult("spread", PASS, f"{fraction:.4f}"))
 
         # Underlying liquidity.
         if snap.underlying_20d_median_dollar_volume is None:
-            results.append(
-                RuleResult("underlying_liquidity", NOT_EVALUABLE, "missing")
-            )
+            results.append(RuleResult("underlying_liquidity", NOT_EVALUABLE, "missing"))
         elif not snap.underlying_20d_median_dollar_volume.available_by(snap.decision_at):
-            results.append(
-                RuleResult("underlying_liquidity", NOT_EVALUABLE, "future-available")
-            )
+            results.append(RuleResult("underlying_liquidity", NOT_EVALUABLE, "future-available"))
         elif (
             _v(snap.underlying_20d_median_dollar_volume)
             < self.min_underlying_20d_median_dollar_volume

@@ -69,9 +69,7 @@ class TestTriState:
         assert "future" in next(r for r in d.results if r.rule == "delta").detail
 
     def test_unavailable_volume_is_not_applicable_and_recorded(self, filt):
-        d = filt.evaluate(
-            _snapshot(same_day_volume=None, same_day_volume_applicable=False)
-        )
+        d = filt.evaluate(_snapshot(same_day_volume=None, same_day_volume_applicable=False))
         assert d.accepted  # optional rule
         assert _statuses(d)["same_day_volume"] == NOT_APPLICABLE
 
@@ -83,8 +81,14 @@ class TestTriState:
     def test_every_rule_reported(self, filt):
         d = filt.evaluate(_snapshot())
         assert set(_statuses(d)) == {
-            "dte", "delta", "deliverable", "open_interest", "same_day_volume",
-            "spread", "underlying_liquidity", "earnings_span",
+            "dte",
+            "delta",
+            "deliverable",
+            "open_interest",
+            "same_day_volume",
+            "spread",
+            "underlying_liquidity",
+            "earnings_span",
         }
 
 
@@ -103,19 +107,22 @@ class TestBandEdges:
 
     def test_spread_fraction_boundary(self, filt):
         # bid 1.90 ask 2.10: spread 0.20 / mid 2.00 = exactly 0.10 -> PASS
-        d = filt.evaluate(_snapshot(bid=AsOf(Decimal("1.90"), EARLIER),
-                                    ask=AsOf(Decimal("2.10"), EARLIER)))
+        d = filt.evaluate(
+            _snapshot(bid=AsOf(Decimal("1.90"), EARLIER), ask=AsOf(Decimal("2.10"), EARLIER))
+        )
         assert _statuses(d)["spread"] == PASS
 
     def test_crossed_quote_not_evaluable(self, filt):
-        d = filt.evaluate(_snapshot(bid=AsOf(Decimal("2.10"), EARLIER),
-                                    ask=AsOf(Decimal("2.00"), EARLIER)))
+        d = filt.evaluate(
+            _snapshot(bid=AsOf(Decimal("2.10"), EARLIER), ask=AsOf(Decimal("2.00"), EARLIER))
+        )
         assert _statuses(d)["spread"] == NOT_EVALUABLE
         assert not d.accepted
 
     def test_zero_midpoint_rejects_safely(self, filt):
-        d = filt.evaluate(_snapshot(bid=AsOf(Decimal("0.00"), EARLIER),
-                                    ask=AsOf(Decimal("0.00"), EARLIER)))
+        d = filt.evaluate(
+            _snapshot(bid=AsOf(Decimal("0.00"), EARLIER), ask=AsOf(Decimal("0.00"), EARLIER))
+        )
         assert _statuses(d)["spread"] == NOT_EVALUABLE
 
     def test_thresholds_come_from_protocol(self, filt, protocol):
