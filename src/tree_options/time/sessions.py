@@ -12,12 +12,19 @@ from zoneinfo import ZoneInfo
 
 SESSION_TIMEZONE = ZoneInfo("America/New_York")
 SESSION_OPEN = time(9, 30)
+EARLY_CLOSE = time(13, 0)
 SESSION_CLOSE = time(16, 0)
 
 
 def session_open_instant(session_date) -> datetime:
     """09:30 America/New_York on the session date, as a UTC instant."""
     local = datetime.combine(session_date, SESSION_OPEN, tzinfo=SESSION_TIMEZONE)
+    return local.astimezone(UTC)
+
+
+def early_close_instant(session_date) -> datetime:
+    """13:00 America/New_York on early-close (half-day) sessions."""
+    local = datetime.combine(session_date, EARLY_CLOSE, tzinfo=SESSION_TIMEZONE)
     return local.astimezone(UTC)
 
 
