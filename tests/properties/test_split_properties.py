@@ -136,6 +136,66 @@ class TestInvariantProperties:
             check_folds([bad], calendar=cal, label_horizon_sessions=h, embargo_sessions=e)
         assert ei.value.code in {"PURGE_OVERLAP", "EMBARGO_GAP"}
 
+    def test_embargo_only_violation_detected(self, synthetic_calendar):
+        """Adversarial: gap in (H, H+E] — embargo broken, purge intact.
+        Only EMBARGO_GAP may fire here, so a gutted embargo checker fails."""
+        from tree_options.splitting.splitter import Fold
+
+        cal = synthetic_calendar
+        sessions = cal.sessions()
+        bad = Fold(
+            fold_id=0,
+            train_sessions=frozenset(sessions[100:130]),  # last train = ord 129
+            validation_sessions=frozenset(sessions[135:145]),  # gap 6 in (5, 10]
+            test_sessions=frozenset(sessions[160:170]),
+            final_fit_train_sessions=frozenset(sessions[100:130]),
+        )
+        with pytest.raises(FoldInvariantViolation) as ei:
+            check_folds([bad], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)
+        assert ei.value.code == "EMBARGO_GAP"
+
+    def test_anchor_violation_detected(self, synthetic_calendar):
+        """Adversarial: train does not start at session 0, everything else
+        clean — only ANCHOR_MONOTONE may fire."""
+        from tree_options.splitting.splitter import Fold
+
+        cal = synthetic_calendar
+        sessions = cal.sessions()
+        bad = Fold(
+            fold_id=0,
+            train_sessions=frozenset(sessions[5:50]),
+            validation_sessions=frozenset(sessions[70:80]),
+            test_sessions=frozenset(sessions[90:100]),
+            final_fit_train_sessions=frozenset(sessions[5:50]),
+        )
+        with pytest.raises(FoldInvariantViolation) as ei:
+            check_folds([bad], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)
+        assert ei.value.code == "ANCHOR_MONOTONE"
+
+    def test_coverage_violation_detected(self, synthetic_calendar):
+        """Adversarial: two folds share a test session — COVERAGE must fire."""
+        from tree_options.splitting.splitter import Fold
+
+        cal = synthetic_calendar
+        sessions = cal.sessions()
+        f1 = Fold(
+            fold_id=0,
+            train_sessions=frozenset(sessions[0:30]),
+            validation_sessions=frozenset(sessions[40:50]),
+            test_sessions=frozenset(sessions[60:70]),
+            final_fit_train_sessions=frozenset(sessions[0:30]),
+        )
+        f2 = Fold(
+            fold_id=1,
+            train_sessions=frozenset(sessions[0:60]),
+            validation_sessions=frozenset(sessions[75:85]),
+            test_sessions=frozenset(sessions[60:70]),  # same block again
+            final_fit_train_sessions=frozenset(sessions[0:60]),
+        )
+        with pytest.raises(FoldInvariantViolation) as ei:
+            check_folds([f1, f2], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)
+        assert ei.value.code == "COVERAGE"
+
     def test_session_grouping_violation_detected(self, synthetic_calendar):
         cal = synthetic_calendar
         sessions = cal.sessions()
