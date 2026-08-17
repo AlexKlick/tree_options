@@ -26,9 +26,9 @@ def _make_repo(tmp_path: Path, *, dirty: bool) -> Path:
 
 class TestBuildStamp:
     def test_not_a_repo_fails_closed(self, protocol, tmp_path):
-        from tree_options.protocol.stamping import build_stamp
+        from tree_options.protocol.stamping import DirtyWorktreeError, build_stamp
 
-        with pytest.raises(Exception):
+        with pytest.raises(DirtyWorktreeError):
             build_stamp(
                 protocol,
                 trial_id="T-001",
