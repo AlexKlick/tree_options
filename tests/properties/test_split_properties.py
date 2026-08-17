@@ -187,10 +187,13 @@ class TestInvariantProperties:
         )
         f2 = Fold(
             fold_id=1,
-            train_sessions=frozenset(sessions[0:60]),
-            validation_sessions=frozenset(sessions[75:85]),
-            test_sessions=frozenset(sessions[60:70]),  # same block again
-            final_fit_train_sessions=frozenset(sessions[0:60]),
+            # train 0:35, val 45:55, test 65:75 — independently valid
+            # (last train ord 34, first eval ord 45: gap 11 > H+E) so ONLY
+            # the shared test block 65:69 with fold 1 triggers a violation.
+            train_sessions=frozenset(sessions[0:35]),
+            validation_sessions=frozenset(sessions[45:55]),
+            test_sessions=frozenset(sessions[65:75]),  # overlaps fold 1's 60:70
+            final_fit_train_sessions=frozenset(sessions[0:35]),
         )
         with pytest.raises(FoldInvariantViolation) as ei:
             check_folds([f1, f2], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)
