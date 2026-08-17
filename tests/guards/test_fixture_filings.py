@@ -6,14 +6,13 @@ from datetime import date, timedelta
 
 import pytest
 
-from tree_options.guards.availability import AvailabilityGuard, FutureDataError
-from tree_options.schemas.features import FeatureEvent, PanelRow
-
 from tests.fixtures.filings import (
     form4_fixture,
     future_return_event,
     ten_q_fixture,
 )
+from tree_options.guards.availability import AvailabilityGuard, FutureDataError
+from tree_options.schemas.features import FeatureEvent, PanelRow
 
 
 @pytest.fixture()

@@ -14,9 +14,10 @@ instant is the available_at; the private transaction date is not.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Iterable, Literal
+from typing import Literal
 
 from tree_options.schemas.features import FeatureEvent, PanelRow
 from tree_options.schemas.filings import FilingRecord
