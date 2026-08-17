@@ -199,6 +199,10 @@ class TestExecutionStressMonotonicity:
         q3 = fresh_quote(bid="0.95", ask="1.05", execution_at=at, received_offset_seconds=10)
         chosen_early = select_quote([q1, q2, q3], at - timedelta(seconds=300))
         chosen_late = select_quote([q1, q2, q3], at)
+        # Eligibility: a selection may NEVER return a quote received after
+        # its own execution instant (this is what kills reach-back mutants).
+        assert chosen_early.quote.received_timestamp <= at - timedelta(seconds=300)
+        assert chosen_late.quote.received_timestamp <= at
         # A later execution instant never reaches back for an earlier quote.
         assert chosen_late.quote.received_timestamp >= chosen_early.quote.received_timestamp
         assert chosen_late.quote == q3

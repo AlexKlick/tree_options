@@ -442,3 +442,28 @@ class TestLedgerIntegrityV2:
         assert book.quantity(CONTRACT_ID) == 1
         assert book.lots(CONTRACT_ID)[0].unit_price == Decimal("1.30")
         book.assert_conservation()
+
+    def test_conservation_oracle_independent_of_fill_methods(self, synthetic_calendar):
+        """If the replay oracle called Fill.notional()/signed_cash(), a bug in
+        those methods would validate itself. A LYING fill must not disturb
+        conservation: the oracle computes from primitive fields, so a mutant
+        that switches the oracle onto Fill methods raises here."""
+        from tree_options.schemas.trading import Fill
+
+        ctx = _base(synthetic_calendar)
+        _, decision_session, exec_session, exec_at, engine, contract = ctx
+
+        class LyingFill(Fill):
+            def notional(self):
+                return Decimal("999.00")
+
+            def signed_cash(self):
+                return Decimal("-999.00")
+
+        fill = _buy_fill(engine, contract, exec_session, exec_at, 1, "1.00", "1.10", Decimal(0), decision_session)
+        lying = LyingFill(**{**fill.model_dump(), "fill_id": "LIE-1"})
+        book = LedgerBook(initial_cash=Decimal("1000.00"))
+        book.apply(lying)
+        # Running cash used primitive arithmetic: -110.00 - 1.00 fee.
+        assert book.cash == Decimal("889.00")
+        book.assert_conservation()  # independent oracle: still conserved
