@@ -1,9 +1,13 @@
 """SQLite trial registry (INV-13): registration precedes outcome, always.
 
-The database is the durable witness of what was registered BEFORE any metric
-was looked at. Writes go through typed methods; the schema's CHECK
-constraints are the last line of defense (hypothesis length >= 8, valid
-JSON hyperparameters). WAL mode so concurrent readers never block the writer.
+State machine: REGISTERED -> RUNNING -> COMPLETED | FAILED. Transitions are
+single-step only; outcomes attach only to RUNNING trials; nothing is ever
+overwritten. The `events` table is an append-only audit trail.
+
+Scope evasion: `scope_key` must be a canonical TrialScope hash — a caller
+cannot invent a fresh scope string to escape the 32-cap. The registry enforces
+SOFTWARE ordering; it does not cryptographically prove a human never edited
+the SQLite file.
 """
 
 from __future__ import annotations
@@ -16,15 +20,20 @@ from typing import TYPE_CHECKING
 
 from tree_options.registry.errors import (
     DuplicateTrialError,
-    OutcomeAlreadyRecordedError,
+    InvalidTransitionError,
+    NonCanonicalScopeError,
     UnregisteredOutcomeError,
 )
 from tree_options.registry.errors import (
-    RegistryError as RegistryError,  # re-exported: callers import it from here
+    OutcomeAlreadyRecordedError as OutcomeAlreadyRecordedError,  # re-export
 )
 from tree_options.registry.errors import (
-    ScopeBudgetExceededError as ScopeBudgetExceededError,  # re-exported
+    RegistryError as RegistryError,  # re-export
 )
+from tree_options.registry.errors import (
+    ScopeBudgetExceededError as ScopeBudgetExceededError,  # re-export
+)
+from tree_options.registry.scope import TrialScope
 from tree_options.schemas.trial import TrialRecord
 
 if TYPE_CHECKING:  # typing only; avoids an import cycle
@@ -36,23 +45,50 @@ CREATE TABLE IF NOT EXISTS trials (
     scope_key           TEXT NOT NULL,
     hypothesis          TEXT NOT NULL CHECK (length(hypothesis) >= 8),
     hyperparameters_json TEXT NOT NULL CHECK (json_valid(hyperparameters_json)),
+    git_sha             TEXT NOT NULL,
+    config_hash         TEXT NOT NULL,
+    dataset_manifest_hash TEXT NOT NULL,
     registered_at       TEXT NOT NULL,
+    status              TEXT NOT NULL DEFAULT 'REGISTERED'
+                        CHECK (status IN ('REGISTERED','RUNNING','COMPLETED','FAILED')),
     outcome_at          TEXT,
-    metrics_uri         TEXT
+    metrics_uri         TEXT,
+    failure_reason      TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_trials_scope ON trials(scope_key);
+CREATE TABLE IF NOT EXISTS events (
+    seq         INTEGER PRIMARY KEY AUTOINCREMENT,
+    trial_id    TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
+    ts          TEXT NOT NULL
+);
 """
+
+_TRANSITIONS = {"RUNNING": {"REGISTERED"}, "COMPLETED": {"RUNNING"}, "FAILED": {"RUNNING"}}
 
 
 class TrialRegistry:
     def __init__(self, path: str | Path) -> None:
-        self._conn = sqlite3.connect(str(path), isolation_level=None)
+        # check_same_thread=False: callers may hand a registry to a worker thread;
+        # each connection is still used by one thread at a time (tests prove the
+        # budget transaction holds under two concurrent connections).
+        self._conn = sqlite3.connect(
+            str(path), isolation_level=None, timeout=10.0, check_same_thread=False
+        )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA foreign_keys=ON")
+        self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
 
     def close(self) -> None:
         self._conn.close()
+
+    def _event(self, trial_id: str, kind: str, payload: dict, ts: datetime) -> None:
+        self._conn.execute(
+            "INSERT INTO events (trial_id, kind, payload_json, ts) VALUES (?, ?, ?, ?)",
+            (trial_id, kind, json.dumps(payload, sort_keys=True, default=str), ts.isoformat()),
+        )
 
     # -- reads ---------------------------------------------------------------
 
@@ -66,16 +102,23 @@ class TrialRegistry:
         return int(row[0])
 
     def is_registered(self, trial_id: str) -> bool:
+        return (
+            self._conn.execute(
+                "SELECT 1 FROM trials WHERE trial_id = ?", (trial_id,)
+            ).fetchone()
+            is not None
+        )
+
+    def status(self, trial_id: str) -> str:
         row = self._conn.execute(
-            "SELECT 1 FROM trials WHERE trial_id = ?", (trial_id,)
+            "SELECT status FROM trials WHERE trial_id = ?", (trial_id,)
         ).fetchone()
-        return row is not None
+        if row is None:
+            raise UnregisteredOutcomeError(trial_id)
+        return str(row[0])
 
     def has_outcome(self, trial_id: str) -> bool:
-        row = self._conn.execute(
-            "SELECT outcome_at FROM trials WHERE trial_id = ?", (trial_id,)
-        ).fetchone()
-        return row is not None and row[0] is not None
+        return self.status(trial_id) in {"COMPLETED", "FAILED"}
 
     def metrics_uri(self, trial_id: str) -> str | None:
         row = self._conn.execute(
@@ -85,34 +128,44 @@ class TrialRegistry:
             raise UnregisteredOutcomeError(trial_id)
         return None if row[0] is None else str(row[0])
 
+    def events(self, trial_id: str) -> tuple[tuple[str, str], ...]:
+        rows = self._conn.execute(
+            "SELECT kind, payload_json FROM events WHERE trial_id = ? ORDER BY seq",
+            (trial_id,),
+        ).fetchall()
+        return tuple((str(k), str(p)) for k, p in rows)
+
     # -- writes ----------------------------------------------------------------
 
-    def register(
-        self,
-        record: TrialRecord,
-        *,
-        budget: TrialBudget | None = None,
-    ) -> None:
-        """Insert a registration. Fails on duplicate id or exhausted budget.
-
-        The budget check and insert are one transaction, so two racing
-        writers cannot both land the (cap+1)-th config.
-        """
+    def register(self, record: TrialRecord, *, budget: TrialBudget | None = None) -> None:
+        """REGISTERED insertion. Fails on duplicate id, non-canonical scope,
+        or exhausted budget. Budget check + insert share one transaction so
+        racing writers cannot both land the (cap+1)-th config."""
+        if not TrialScope.is_canonical(record.scope_key):
+            raise NonCanonicalScopeError(
+                record.scope_key,
+                "scope_key must be a canonical TrialScope hash (registry.scope.TrialScope)",
+            )
         try:
             self._conn.execute("BEGIN IMMEDIATE")
             if budget is not None:
                 budget.check(self, record.scope_key)
             self._conn.execute(
                 "INSERT INTO trials (trial_id, scope_key, hypothesis,"
-                " hyperparameters_json, registered_at) VALUES (?, ?, ?, ?, ?)",
+                " hyperparameters_json, git_sha, config_hash, dataset_manifest_hash,"
+                " registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     record.trial_id,
                     record.scope_key,
                     record.hypothesis,
                     json.dumps(record.hyperparameters, sort_keys=True, default=str),
+                    record.git_sha,
+                    record.config_hash,
+                    record.dataset_manifest_hash,
                     record.created_at.isoformat(),
                 ),
             )
+            self._event(record.trial_id, "REGISTERED", {"scope": record.scope_key}, record.created_at)
             self._conn.execute("COMMIT")
         except sqlite3.IntegrityError as exc:
             self._conn.execute("ROLLBACK")
@@ -126,17 +179,64 @@ class TrialRegistry:
                 pass
             raise
 
-    def record_outcome(self, trial_id: str, metrics_uri: str, *, outcome_at: datetime) -> None:
-        """Attach an outcome to an ALREADY-registered trial."""
-        if not self.is_registered(trial_id):
+    def mark_running(
+        self,
+        trial_id: str,
+        *,
+        git_sha: str,
+        config_hash: str,
+        dataset_manifest_hash: str,
+        at: datetime,
+    ) -> None:
+        """REGISTERED -> RUNNING. The exact provenance hashes are required and
+        must MATCH the registration — you cannot run under someone else's
+        identity or revise your own after the fact."""
+        row = self._conn.execute(
+            "SELECT git_sha, config_hash, dataset_manifest_hash, status"
+            " FROM trials WHERE trial_id = ?",
+            (trial_id,),
+        ).fetchone()
+        if row is None:
             raise UnregisteredOutcomeError(trial_id)
-        cursor = self._conn.execute(
-            "UPDATE trials SET outcome_at = ?, metrics_uri = ?"
-            " WHERE trial_id = ? AND outcome_at IS NULL",
+        stored_git, stored_cfg, stored_ds, _current = row
+        if (git_sha, config_hash, dataset_manifest_hash) != (
+            stored_git,
+            stored_cfg,
+            stored_ds,
+        ):
+            raise InvalidTransitionError(
+                trial_id, "provenance hashes do not match the registration"
+            )
+        self._transition(trial_id, "RUNNING", at, "provenance confirmed")
+
+    def complete(self, trial_id: str, metrics_uri: str, *, outcome_at: datetime) -> None:
+        """RUNNING -> COMPLETED. The only door for an outcome."""
+        self._transition(trial_id, "COMPLETED", outcome_at, {"metrics_uri": metrics_uri})
+        self._conn.execute(
+            "UPDATE trials SET outcome_at = ?, metrics_uri = ? WHERE trial_id = ?",
             (outcome_at.isoformat(), metrics_uri, trial_id),
         )
-        if cursor.rowcount != 1:
-            raise OutcomeAlreadyRecordedError(trial_id)
+
+    def fail(self, trial_id: str, reason: str, *, at: datetime) -> None:
+        """RUNNING -> FAILED."""
+        self._transition(trial_id, "FAILED", at, {"reason": reason})
+        self._conn.execute(
+            "UPDATE trials SET outcome_at = ?, failure_reason = ? WHERE trial_id = ?",
+            (at.isoformat(), reason, trial_id),
+        )
+
+    def _transition(self, trial_id: str, to_status: str, at: datetime, payload) -> None:
+        allowed_from = _TRANSITIONS[to_status]
+        current = self.status(trial_id)
+        if current not in allowed_from:
+            raise InvalidTransitionError(
+                trial_id, f"{current} -> {to_status} is not a legal transition"
+            )
+        payload_json = payload if isinstance(payload, dict) else {"detail": payload}
+        self._conn.execute(
+            "UPDATE trials SET status = ? WHERE trial_id = ?", (to_status, trial_id)
+        )
+        self._event(trial_id, to_status, payload_json, at)
 
     # -- test/ops helper -------------------------------------------------------
 

@@ -34,3 +34,13 @@ class ScopeBudgetExceededError(RegistryError):
             "SCOPE_BUDGET_EXCEEDED",
             f"scope {scope_key} already holds {cap} registered configs (cap {cap})",
         )
+
+
+class NonCanonicalScopeError(RegistryError):
+    def __init__(self, scope_key: str, detail: str) -> None:
+        super().__init__("NON_CANONICAL_SCOPE", f"{detail}: {scope_key[:40]}")
+
+
+class InvalidTransitionError(RegistryError):
+    def __init__(self, trial_id: str, detail: str) -> None:
+        super().__init__("INVALID_TRANSITION", f"trial {trial_id}: {detail}")
