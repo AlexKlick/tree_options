@@ -36,6 +36,9 @@ SMOKE=$(mktemp -d)
 trap 'rm -rf "$SMOKE"' EXIT
 uv venv "$SMOKE/venv" -q
 uv pip install --python "$SMOKE/venv/bin/python" -q dist/tree_options-*.whl
+# The wheel carries code; the frozen protocol yaml is repo data (single
+# source of truth, never duplicated into the wheel) — point the loader at it.
+TREE_OPTIONS_PROTOCOL="$PWD/research_protocol.yaml" \
 "$SMOKE/venv/bin/python" - <<'PY'
 from decimal import Decimal
 import tree_options
