@@ -1,0 +1,54 @@
+[project]
+name = "tree-options"
+version = "0.1.0"
+description = "Point-in-time equity signal research through options: protocol and invariant harness (M0)"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.2",
+    "hypothesis>=6.100",
+    "ruff>=0.5",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tree_options"]
+
+[tool.uv]
+# uv.lock is committed; `uv sync --locked` is the canonical install.
+locked = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests", "scripts"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # pyflakes
+    "I",   # isort
+    "B",   # bugbear
+    "UP",  # pyupgrade
+    "RUF", # ruff-specific
+]
+ignore = [
+    "E501", # line length handled by formatter tolerance; long Decimal literals allowed
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+# Fail-closed default: strict about unexpected warnings would be nice, but the
+# gate is the mutation harness; keep the run deterministic instead.
+filterwarnings = ["error::DeprecationWarning:tree_options.*"]
