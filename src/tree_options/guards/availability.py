@@ -119,7 +119,6 @@ class AvailabilityGuard:
         compliant: list[PanelRow] = []
         rejections: list[JoinRejection] = []
         for row in rows:
-            decision_at = self.decision_instant(row.decision_session)  # audited below
             row_ok = True
             for f in row.features:
                 if f.observed_at > f.available_at:  # backstop; schema enforces too
