@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS scope_commitments (
 
 _TRANSITIONS = {"RUNNING": {"REGISTERED"}, "COMPLETED": {"RUNNING"}, "FAILED": {"RUNNING"}}
 
+# Sentinel committed_at for scopes whose trials predate the commitment
+# table: their commitment is recorded at the first OPEN under this schema
+# (review round 8, NEW-10), not at a registration.
+_MIGRATED_AT = "migrated-at-open"
+
 _REQUIRED_TRIAL_COLUMNS = {
     "trial_id",
     "scope_key",
@@ -123,6 +128,17 @@ class TrialRegistry:
                 f"trials table at {path} predates the current schema "
                 f"(missing columns: {sorted(missing)}); refusing to open",
             )
+        # Migration (review round 8, NEW-10): a scope populated before the
+        # commitment table existed has no recorded commitment — its first
+        # post-upgrade registration could otherwise loosen under a tampered
+        # budget. Commit every existing scope to the live validated cap AT
+        # OPEN, before any registration can run, so post-open tampering
+        # meets the same fixed commitment as every other scope.
+        self._conn.execute(
+            "INSERT OR IGNORE INTO scope_commitments (scope_key, cap, committed_at)"
+            " SELECT DISTINCT scope_key, ?, ? FROM trials",
+            (self._budget.validated_cap(), _MIGRATED_AT),
+        )
 
     @property
     def budget(self) -> TrialBudget:
@@ -218,14 +234,18 @@ class TrialRegistry:
             # a swapped `_budget` reference would otherwise loosen a
             # pre-registered tightening with pure data writes. The live
             # budget must still agree with what the scope committed to.
-            cap = self.budget.cap
+            # Enforcement reads the budget exactly ONCE (review round 8,
+            # NEW-9): `check` validates + count-checks in one read and
+            # RETURNS the cap — this returned value is what is compared
+            # against the recorded commitment and committed for new scopes,
+            # so a mid-registration data write cannot split the two.
+            cap = self.budget.check(self, record.scope_key)
             committed = self._conn.execute(
                 "SELECT cap FROM scope_commitments WHERE scope_key = ?",
                 (record.scope_key,),
             ).fetchone()
             if committed is not None and int(committed[0]) != cap:
                 raise BudgetCommitmentChangedError(record.scope_key, int(committed[0]), cap)
-            self.budget.check(self, record.scope_key)
             self._conn.execute(
                 "INSERT INTO trials (trial_id, scope_key, scope_json, hypothesis,"
                 " hyperparameters_json, git_sha, config_hash, dataset_manifest_hash,"

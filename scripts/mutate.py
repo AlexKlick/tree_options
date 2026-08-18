@@ -566,12 +566,21 @@ MUTANTS = [
     ),
     dict(
         id="M60-commitment-read-misses",
-        owner="test_committed_cap_cannot_be_loosened_mid_scope",
+        owner="test_swapped_budget_reference_refuses",
         file="src/tree_options/registry/sqlite.py",
         anchor='"SELECT cap FROM scope_commitments WHERE scope_key = ?",',
-        replacement="\"SELECT cap FROM scope_commitments WHERE scope_key = ''\"",
+        replacement="\"SELECT cap FROM scope_commitments WHERE scope_key = ''\",",
         selectors=[f"{U}/test_registry.py"],
-        invariant="the recorded commitment is READ at every registration (a missed read re-opens loosening)",
+        invariant="the recorded commitment is READ at every registration (a missed read re-opens loosening via a swapped budget)",
+    ),
+    dict(
+        id="M61-migration-backfill-empty",
+        owner="test_migrated_scope_is_committed_at_open",
+        file="src/tree_options/registry/sqlite.py",
+        anchor='" SELECT DISTINCT scope_key, ?, ? FROM trials",',
+        replacement='" SELECT DISTINCT scope_key, ?, ? FROM trials WHERE 0",',
+        selectors=[f"{U}/test_registry.py"],
+        invariant="a scope populated before the commitment table is COMMITTED at open (no backfill re-opens its first post-upgrade registration)",
     ),
 ]
 

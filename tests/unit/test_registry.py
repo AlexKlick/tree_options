@@ -314,18 +314,19 @@ class TestRegistryHardening:
         reg.close()
 
     def test_poisoned_backing_field_fails_closed(self, tmp_path):
-        """Round-6 NEW-8: `object.__setattr__(budget, "_cap", nan)` poisons
-        the backing field PAST the read-only property — and a plain
-        `budget._cap = nan` does the same. check() therefore re-validates
-        the cap at the enforcement point: a tampered value refuses
-        registration instead of running without a bounded commitment."""
+        """Round-6 NEW-8, strengthened in round 8: `object.__setattr__(budget,
+        "_cap", nan)` poisons the backing field PAST the read-only property —
+        and a plain `budget._cap = nan` does the same. The stored cap is
+        re-validated at every enforcement point; since round 8 the OPEN path
+        validates too (the migration backfill reads the live cap), so a
+        tampered budget cannot even open a registry. Register-time
+        classification on an already-open registry is proven separately by
+        test_poisoned_cap_on_committed_scope_raises_budget_tampered."""
         budget = TrialBudget(cap=32)
         object.__setattr__(budget, "_cap", float("nan"))
-        reg = TrialRegistry(tmp_path / "t-tamper.db", budget=budget)
         with pytest.raises(RegistryError) as ei:
-            reg.register(_record(), scope=SCOPE)
+            TrialRegistry(tmp_path / "t-tamper.db", budget=budget)
         assert ei.value.code == "BUDGET_TAMPERED"
-        reg.close()
 
     def test_registry_budget_reference_is_read_only(self, tmp_path):
         """Round-6 NEW-8: swapping the registry's budget object after
@@ -365,6 +366,84 @@ class TestRegistryHardening:
         with pytest.raises(RegistryError) as ei:
             reg.register(_record(trial_id="T-2"), scope=SCOPE)
         assert ei.value.code == "BUDGET_COMMITMENT_CHANGED"
+        reg.close()
+
+    def test_enforcement_reads_the_budget_once(self, tmp_path):
+        """Round-8 NEW-9: the commitment comparison and the count check used
+        TWO reads of mutable budget state (`cap = self.budget.cap`, then
+        `check()` re-reading `_cap`). A DATA write landing between them
+        loosened a committed cap=10 scope to 32 and registered the 11th.
+        The flip below schedules exactly that data write inside `check()`
+        (a test scaffold choosing WHEN, not WHAT: the write itself is the
+        ordinary `_cap = 32` data tamper). Enforcement must read the budget
+        exactly ONCE — whatever value was read is the value validated,
+        committed, and enforced — so the mid-flight write changes nothing
+        about this registration."""
+        budget = TrialBudget(cap=10)
+        reg = TrialRegistry(tmp_path / "t-toctou.db", budget=budget)
+        for i in range(10):
+            reg.register(_record(trial_id=f"T-{i}"), scope=SCOPE)
+
+        class FlippingBudget(TrialBudget):
+            def check(self, registry, scope_key):  # type: ignore[override]
+                self._cap = 32  # lands between register()'s cap read and this read
+                return super().check(registry, scope_key)
+
+        reg._budget = FlippingBudget(cap=10)  # same shape as a _budget swap
+        with pytest.raises(RegistryError):
+            reg.register(_record(trial_id="T-10"), scope=SCOPE)
+        assert reg.count_scope(SCOPE.scope_key()) == 10  # the 11th never landed
+        reg.close()
+
+    def test_migrated_scope_is_committed_at_open(self, tmp_path):
+        """Round-8 NEW-10: a DB populated before the commitment table existed
+        has no recorded commitment — its first post-upgrade registration
+        could otherwise loosen under a tampered budget. A migrated scope is
+        COMMITTED at open (to the live validated cap), before any
+        registration can run, so post-open tampering refuses."""
+        path = tmp_path / "t-migrated.db"
+        reg = TrialRegistry(path, budget=TrialBudget(cap=10))
+        for i in range(10):
+            reg.register(_record(trial_id=f"T-{i}"), scope=SCOPE)
+        # Simulate a pre-commitment-schema database: trials present, no
+        # commitment rows (the escape hatch is the integrity-test path).
+        reg._execute_raw("DELETE FROM scope_commitments")
+        reg.close()
+        budget = TrialBudget(cap=10)
+        reg2 = TrialRegistry(path, budget=budget)
+        budget._cap = 32  # post-open tamper, before any new registration
+        with pytest.raises(RegistryError) as ei:
+            reg2.register(_record(trial_id="T-10"), scope=SCOPE)
+        assert ei.value.code == "BUDGET_COMMITMENT_CHANGED"
+        reg2.close()
+
+    def test_migrated_scope_continuity_preserved(self, tmp_path):
+        """NEW-10 guard: migration does not over-tighten — a migrated scope
+        reopened under the SAME budget still refuses only at its cap."""
+        path = tmp_path / "t-migrated2.db"
+        reg = TrialRegistry(path, budget=TrialBudget(cap=10))
+        for i in range(10):
+            reg.register(_record(trial_id=f"T-{i}"), scope=SCOPE)
+        reg._execute_raw("DELETE FROM scope_commitments")
+        reg.close()
+        reg2 = TrialRegistry(path, budget=TrialBudget(cap=10))
+        with pytest.raises(ScopeBudgetExceededError):
+            reg2.register(_record(trial_id="T-10"), scope=SCOPE)
+        reg2.close()
+
+    def test_poisoned_cap_on_committed_scope_raises_budget_tampered(self, tmp_path):
+        """Round-8 NEW-12a: on a scope with an existing commitment, a NaN
+        poison raised BUDGET_COMMITMENT_CHANGED (int(committed) != nan)
+        before check() could classify the value itself. The tamper
+        classification is the honest one: the VALUE is invalid —
+        BUDGET_TAMPERED — whether or not a commitment exists."""
+        budget = TrialBudget(cap=32)
+        reg = TrialRegistry(tmp_path / "t-nan2.db", budget=budget)
+        reg.register(_record(), scope=SCOPE)
+        budget._cap = float("nan")
+        with pytest.raises(RegistryError) as ei:
+            reg.register(_record(trial_id="T-2"), scope=SCOPE)
+        assert ei.value.code == "BUDGET_TAMPERED"
         reg.close()
 
     def test_pre_remediation_database_fails_closed(self, tmp_path):

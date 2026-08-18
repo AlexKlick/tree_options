@@ -52,12 +52,15 @@ class TrialBudget:
     def from_protocol(cls, protocol) -> TrialBudget:
         return cls(cap=protocol.inner_loop.max_registered_configs)
 
-    def check(self, registry: TrialRegistry, scope_key: str) -> None:
-        # Re-validate at the enforcement point (review round 6, NEW-8): the
-        # backing field is poisonable past the read-only property
-        # (object.__setattr__ / direct _cap writes), so trust nothing — a
-        # tampered cap refuses registration rather than running without a
-        # bounded commitment.
+    def validated_cap(self) -> int:
+        """Validate the stored cap ONCE and return it (review round 8,
+        NEW-9): enforcement reads the budget exactly once — the value
+        validated here is the value compared against the scope's recorded
+        commitment and the value committed for new scopes. Re-validation
+        semantics (review round 6, NEW-8): the backing field is poisonable
+        past the read-only property (object.__setattr__ / direct _cap
+        writes), so trust nothing — a tampered cap refuses registration
+        rather than running without a bounded commitment."""
         stored = self._cap
         valid = (
             isinstance(stored, int)
@@ -66,5 +69,16 @@ class TrialBudget:
         )
         if not valid:
             raise BudgetTamperedError(stored)
+        return stored
+
+    def check(self, registry: TrialRegistry, scope_key: str) -> int:
+        """Validate + count-check in ONE read and return the enforced cap
+        (review round 8, NEW-9): the caller uses the RETURNED value for the
+        storage commitment — a second read of `_cap` between the two would
+        re-open a mid-registration TOCTOU window (a `_cap` write landing
+        between the commitment comparison and the count check registered
+        the (cap+1)-th config)."""
+        stored = self.validated_cap()
         if registry.count_scope(scope_key) >= stored:
             raise ScopeBudgetExceededError(scope_key, stored)
+        return stored
