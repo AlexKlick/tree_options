@@ -21,7 +21,9 @@ complete on a moved head), because a commit cannot contain its own hash.
   round-2 closure commit `9c14b81` (+`acfeea7` format), the round-3
   closure `54d6205`+`348f9bb`, the round-4 remediation `3aae606`
   (integer-only cap) plus its closure commit, the round-5 remediation
-  `9ff812a` (read-only cap, strict protocol field) plus this round-5
+  `9ff812a` (read-only cap, strict protocol field) plus its closure
+  commit, the round-6 remediation `e42b389` (enforcement-point
+  re-validation, fixed registry budget reference) plus this round-6
   closure commit. The gate-complete head and clean-clone run are recorded
   in §6 and the PR body.
 
@@ -55,19 +57,19 @@ head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 | lint | `ruff check src tests scripts` | All checks passed |
 | types | `mypy` | Success: no issues found in 36 source files |
 | compile | `python -m compileall -q src tests scripts` | ok |
-| tests | `pytest -W error` | **253 passed, 0 failed, 0 skipped** |
-| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=56, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
+| tests | `pytest -W error` | **255 passed, 0 failed, 0 skipped** |
+| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=58, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
 | build | `uv build` | sdist + wheel built |
 | wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `8bdb64a1a1b0e4a14c952458f10560860a627a7da1a5d0f9714006ec7c1fafec`;
-`artifacts/m0-mutations.md` sha256 `2b6ec2b009675b726f75b46e4bdca8b1189be14ea59f020d4379d7c49193ebe0`.
+`artifacts/m0-mutations.json` sha256 `ea80fc073915dc9100623fb648cb1ed23496bc30f2afb60c97b9e19564257535`;
+`artifacts/m0-mutations.md` sha256 `397048fb9eaa5e2a3e40af76dbd16624e86b0e286052a1ea0f92417753d316c5`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 56}  total=56
+totals: {'KILLED': 58}  total=58
 restoration full-suite pass: True
 ```
 
@@ -94,7 +96,7 @@ proves restoration.
 | INV-10 next-session execution (both levels, calendar close) + order-quantity bounding of partial chains + order-id binding | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39, M48, M53 |
 | INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45, M47 |
 | INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M23, M41 |
-| INV-13 registered-before-outcome + 32-cap (tighten-only INTEGER ceiling at construction, read-only after construction, strict at the protocol source) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42, M54–M56 |
+| INV-13 registered-before-outcome + 32-cap (tighten-only INTEGER ceiling at construction, read-only after construction, re-validated at every enforcement point — tampered values fail closed; registry budget reference fixed at construction; strict at the protocol source) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42, M54–M58 |
 | INV-14 stamped artifacts | protocol/stamping | test_stamping.py | — (structural) |
 | candidate point-in-time inputs + decision/contract coherence | candidates/filters | test_candidate_filters.py, test_leakage_v2.py | M34–M36, M44, M51 |
 | calendar integrity + DST/early-close | time/calendar | test_calendar.py | M38 |
@@ -181,7 +183,28 @@ is claimed nowhere here.
   serialization identical), and mutants M55 (storage fidelity) + M56 (the
   strict flag itself) grew the manifest to 56. The gate at
   `9ff812a`/this head recorded §3's counts and hashes.
-- Round 6 re-review (Codex, this head): verdict recorded verbatim in the PR
+- Round 6 re-review (Codex, head `ec874c2`): NO-GO — NEW-7 verified
+  RESOLVED (strict field; the canonical-hash path is validation-only) and
+  M55/M56 verified as true behavioral kills, but NEW-8 (P1) was held: the
+  backing `_cap` was still poisonable past the read-only property
+  (`object.__setattr__(budget, "_cap", nan)` and direct `_cap` writes —
+  nothing intercepts them, and `check()` compared the raw stored value),
+  and `TrialRegistry.budget` was a public writable attribute (replacing a
+  cap=10 policy with cap=32 loosens a pre-registered tightening); the F18
+  doc item was held because §5/decision 12 still claimed "read-only after
+  construction"/"fixed at construction" while those stood. Final line,
+  verbatim: "NO-GO". Remediated red-first in `e42b389`: `check()`
+  re-validates the stored cap at the enforcement point (int in `[1, 32]`,
+  not bool) and raises the new `BUDGET_TAMPERED` error — registration
+  refuses rather than run without a bounded commitment, so no comparison
+  against a poisoned value ever executes; `TrialRegistry.budget` is a
+  read-only property (policy fixed at construction); M57 (re-validation
+  gutted) and M58 (supplied budget swapped for the default) grew the
+  manifest to 58, and M30's anchor was re-pinned to the enforcement line
+  it now guards (`>= stored:`). The threat-model boundary is recorded as
+  decision 12. The gate at `e42b389`/this head recorded §3's counts and
+  hashes.
+- Round 7 re-review (Codex, this head): verdict recorded verbatim in the PR
   body.
 - Clean-clone proof: the protocol is a fresh `git clone --no-local` to a
   temp dir, `bash scripts/m0_gate.sh` executed inside the clone, exit 0,
@@ -256,15 +279,25 @@ is claimed nowhere here.
     before it passes the honest point-in-time membership answer past
     `listing_start` is True (unknown end), and after it passes a record
     with no delisting event is honored (review round 3, F2).
-12. A scope cap is an INTEGER commitment (review round 4 NEW-5, round 5
-    NEW-6/NEW-7): the `TrialBudget` constructor refuses non-int caps
-    outright — NaN compared False against both bounds and then disabled
-    the cap entirely, a fractional float shifted the effective cap, and a
-    bool silently aliased cap=1 — and the cap is READ-ONLY after
-    construction (a writable `cap` let `registry.budget.cap = float("nan")`
-    re-disable it). The protocol source is strict: `max_registered_configs`
-    refuses bool/str/float instead of coercing them. Integer caps in
-    `[1, 32]`, fixed at construction; tighten-only stands.
+12. A scope cap is an INTEGER commitment, defended in depth (review
+    rounds 4–6): the `TrialBudget` constructor refuses non-int caps
+    outright (NEW-5); the cap is a read-only property after construction
+    (NEW-6); the protocol source is strict — `max_registered_configs`
+    refuses bool/str/float instead of coercing them (NEW-7); `check()`
+    RE-VALIDATES the stored cap at every enforcement point and raises
+    `BUDGET_TAMPERED` on anything but an int in `[1, 32]`, so a poisoned
+    backing field fails closed instead of disabling the cap (NEW-8) — this
+    includes direct `_cap` and `object.__setattr__` writes, which are
+    data tampering and are caught at the enforcement point; and the
+    registry's budget reference is fixed at construction, so a
+    pre-registered tightening cannot be swapped loose. Threat-model
+    boundary (extends decision 5): enforcement is software-only — a
+    caller who substitutes CODE (a subclass overriding `check()` or any
+    other method, a monkeypatched function, direct SQLite edits) has left
+    the bounded API and entered the decision-5 class of act; no in-process
+    software can bound code substitution, and no claim is made against
+    it. Integer caps in `[1, 32]`, fixed at construction; tighten-only
+    stands.
 
 ## 10. Known limitations and nonclaims
 
