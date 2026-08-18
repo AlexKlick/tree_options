@@ -167,6 +167,7 @@ def test_manifest_metadata_is_bound(static_calendar):
         ("security_count", 99),
         ("session_coverage", None),
         ("source_row_hashes", ()),
+        ("schema_version", "m1/999"),
     ):
         tampered_manifest = snapshot.manifest.model_copy(update={field: evil})
         with pytest.raises(DataQualityError, match="manifest"):

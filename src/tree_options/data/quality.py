@@ -16,7 +16,7 @@ from itertools import pairwise
 from tree_options.data.actions import ActionKind, CorporateActionRecord
 from tree_options.data.bars import BarRecord
 from tree_options.data.ingest import DatasetSnapshot
-from tree_options.data.manifest import content_sha256
+from tree_options.data.manifest import MANIFEST_SCHEMA_VERSION, content_sha256
 from tree_options.time.calendar import StaticSessionCalendar
 
 # Declared engineering defaults (not claimed optimal): an overnight close
@@ -130,6 +130,11 @@ def verify_manifest(snapshot: DatasetSnapshot, calendar: StaticSessionCalendar) 
         raise DataQualityError(
             f"manifest content mismatch for {snapshot.snapshot_id}: "
             f"manifest says {snapshot.manifest.content_sha256}, rows hash to {expected}"
+        )
+    if m.schema_version != MANIFEST_SCHEMA_VERSION:
+        raise DataQualityError(
+            f"manifest schema version mismatch for {snapshot.snapshot_id}: "
+            f"claims {m.schema_version!r}, this code writes {MANIFEST_SCHEMA_VERSION!r}"
         )
     if m.bar_count != len(snapshot.bars) or m.action_count != len(snapshot.actions):
         raise DataQualityError(

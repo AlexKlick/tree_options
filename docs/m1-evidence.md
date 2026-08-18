@@ -12,7 +12,8 @@ exact head this packet was gated at invalidates this packet in full.
 - Commits: `34bcfe1` (slice 1: workstreams B/D/E), `840c980` (slice 2:
   workstream C), `952f5d4` (slice 3: merger/bankruptcy fixtures),
   `b5133db` (gate format step on a mutant literal), `761945a` (first
-  evidence packet), and the round-1 remediation (this commit)
+  evidence packet), `1abb96c` (round-1 remediation), `5c2b209` (round-2
+  remediation), and the round-3 remediation (this commit)
 - Working tree: clean at gate time (the gate refuses a dirty tree and
   asserts, at exit, that the head did not move)
 - M0's evidence packet is INVALID past `fb85771` by its own rule; the M0
@@ -29,7 +30,7 @@ next, owner-gated step.
 ## 3. Gate (release authority — local, per standing operator rule)
 
 `bash scripts/m0_gate.sh` at this packet's head
-(log `/tmp/m1-gate-final3.log`, `GATE_EXIT=0`):
+(log `/tmp/m1-gate-final4.log`, `GATE_EXIT=0`):
 
 | Step | Result |
 |---|---|
@@ -43,7 +44,7 @@ next, owner-gated step.
 | `uv build` + wheel smoke | ok |
 
 Mutation artifacts:
-`artifacts/m0-mutations.json` sha256 `4c4a979d97e2fe4a8b747f6e8ce239c49771fa599ef6225813916e4b04c77451`;
+`artifacts/m0-mutations.json` sha256 `33e46f36f8dda9a8e66abb578ad2b207fef10aa1cd7ad779731285ebc5d051ce`;
 `artifacts/m0-mutations.md` sha256 `952d34dca61bc8ff50155b8d7a1336b7a38a3f002d91193ffb52aaa2b2b1b70a`.
 
 ## 4. Mutation totals (verbatim from the JSON artifact)
@@ -87,10 +88,11 @@ the mutation semantics are unchanged.
    available_at <= decision_at
    (`test_features_as_of_enforces_availability_and_provenance`).
 6. **Injected future record refused** — at the READ gate (`visible_bars`,
-   mutant M66), in resolution (mapping visibility, mutant M65; whole-record
-   visibility, mutant M69), and by the schema's naive-timestamp ban. No
-   schema-level decision-time ordering is claimed (a raw row carries no
-   decision context to order against).
+   mutant M66) and in resolution (mapping visibility, mutant M65;
+   whole-record visibility, mutant M69). No schema-level decision-time
+   ordering is claimed (a raw row carries no decision context to order
+   against; the naive-timestamp ban is a timezone-awareness rule, not a
+   future-data control).
 7. **Current-ticker-join mutation killed** — M65 guts the mapping
    visibility check; the owner test fails.
 8. **Byte-identical manifests on re-ingestion** — the manifest is a pure
@@ -159,7 +161,24 @@ the mutation semantics are unchanged.
   future-record control (it is a timezone-awareness rule). Remediated in
   this commit, red-first: verify_manifest binds outer+manifest+per-row
   snapshot identity FIRST (`test_snapshot_identity_is_bound`; mutant M70),
-  checks source_row_count and security_count, and the metadata test now
-  tampers every recomputable field; criterion 6 reworded. Final line of
-  the round-2 verdict, verbatim: "NO-GO"
-- **Round 3** (Codex, this head): verdict recorded in the PR body.
+  checks source_row_count and security_count, and the metadata test
+  tampers every recomputable field except schema_version (closed at
+  round 3); the intended criterion-6 rewording did NOT land in that
+  commit (a silent string-replace miss — caught at round 3). Final line
+  of the round-2 verdict, verbatim: "NO-GO"
+- **Round 3** (Codex, head `5c2b209`): **NO-GO** — P1-3 and P2-3 verified
+  RESOLVED with file:line citations (identity binding + every round-2-named
+  metadata field), the delta sweep found no new executable defect, and the
+  retained gate/clean-clone evidence verified internally consistent — but
+  three doc/evidence P2s: **P2-1 residual** criterion 6 still credited the
+  naive-timestamp ban as a future-record control because the round-2
+  rewording never actually landed (and §7 falsely said it had); **P2-4**
+  `schema_version` is recomputable but was neither verified nor tampered;
+  **P2-5** §1's commit list was stale ("this commit" still meant the
+  round-1 remediation). Remediated in this commit: criterion 6 actually
+  reworded (verified by assertion this time), `verify_manifest` pins
+  `schema_version` (red-first: the metadata test tampers it), §1 names
+  every commit including both remediation hashes, and this §7 record
+  states the round-2 miss honestly. Final line of the round-3 verdict,
+  verbatim: "NO-GO"
+- **Round 4** (Codex, this head): verdict recorded in the PR body.
