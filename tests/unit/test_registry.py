@@ -286,6 +286,19 @@ class TestRegistryHardening:
         assert TrialBudget(cap=32).cap == 32
         assert TrialBudget(cap=10).cap == 10  # tightening stays allowed
 
+    def test_budget_cap_must_be_an_integer(self):
+        """Round-4 NEW-5: the cap is an integer commitment. A float slips
+        past both bound comparisons — float("nan") compared False against
+        >= 1 AND <= 32, then made every `count >= nan` check False,
+        disabling the cap entirely; 2.5 registered a third trial; True
+        aliased cap=1. Non-integer caps are refused at construction."""
+        with pytest.raises(ValueError):
+            TrialBudget(cap=float("nan"))
+        with pytest.raises(ValueError):
+            TrialBudget(cap=float("2.5"))
+        with pytest.raises(ValueError):
+            TrialBudget(cap=True)  # bool is an int subclass — no silent cap=1
+
     def test_pre_remediation_database_fails_closed(self, tmp_path):
         """An existing DB written before scope_json existed cannot be opened:
         CREATE TABLE IF NOT EXISTS would not migrate it, so refuse."""

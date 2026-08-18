@@ -510,6 +510,15 @@ MUTANTS = [
         selectors=[f"{G}/test_fill_integrity_v2.py"],
         invariant="an order_id is bound to the order that first minted a fill",
     ),
+    dict(
+        id="M54-cap-type-gutted",
+        owner="test_budget_cap_must_be_an_integer",
+        file="src/tree_options/registry/budget.py",
+        anchor="if isinstance(cap, bool) or not isinstance(cap, int):",
+        replacement="if False:",
+        selectors=[f"{U}/test_registry.py"],
+        invariant="scope cap is an integer commitment (NaN cap would disable the cap)",
+    ),
 ]
 
 FAILING = ("FAILED",)
