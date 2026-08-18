@@ -29,7 +29,7 @@ next, owner-gated step.
 ## 3. Gate (release authority — local, per standing operator rule)
 
 `bash scripts/m0_gate.sh` at this packet's head
-(log `/tmp/m1-gate-final2.log`, `GATE_EXIT=0`):
+(log `/tmp/m1-gate-final3.log`, `GATE_EXIT=0`):
 
 | Step | Result |
 |---|---|
@@ -38,22 +38,22 @@ next, owner-gated step.
 | `ruff check src tests scripts` | All checks passed |
 | `mypy` | Success: no issues found in 46 source files |
 | `compileall` | ok |
-| `pytest -W error` | **287 passed, 0 failed, 0 skipped** |
-| `scripts/mutate.py` | **KILLED=69, SURVIVED=0, INVALID_MUTANT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0**; restoration full-suite pass=True |
+| `pytest -W error` | **288 passed, 0 failed, 0 skipped** |
+| `scripts/mutate.py` | **KILLED=70, SURVIVED=0, INVALID_MUTANT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0**; restoration full-suite pass=True |
 | `uv build` + wheel smoke | ok |
 
 Mutation artifacts:
-`artifacts/m0-mutations.json` sha256 `3fe2bc5616c0d6bd1c93ab7550b4fe8751b35f40d136c78c9046a6c6d45ce9f4`;
-`artifacts/m0-mutations.md` sha256 `8b75b7389aef9bea2718d422c66f35d864dfcc86a60ebac467f806bbccd757e3`.
+`artifacts/m0-mutations.json` sha256 `4c4a979d97e2fe4a8b747f6e8ce239c49771fa599ef6225813916e4b04c77451`;
+`artifacts/m0-mutations.md` sha256 `952d34dca61bc8ff50155b8d7a1336b7a38a3f002d91193ffb52aaa2b2b1b70a`.
 
 ## 4. Mutation totals (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 69}  total=69
+totals: {'KILLED': 70}  total=70
 restoration full-suite pass: True
 ```
 
-61 M0 mutants unchanged + 8 M1 mutants (M62–M69), each with its OWNING
+61 M0 mutants unchanged + 9 M1 mutants (M62–M70), each with its OWNING
 test; every new kill was verified behavioral in the artifact detail (the
 owner's own FAILED line — the round-9/10 M60 lesson is standing
 practice). Anchor history, recorded honestly: M66/M67 first ran as
@@ -146,4 +146,20 @@ the mutation semantics are unchanged.
   mutant M69); the dividend/reason literals are pinned assertions; §3 cites
   this packet's final gate run. Final line of the round-1 verdict, verbatim:
   "NO-GO"
-- **Round 2** (Codex, this head): verdict recorded in the PR body.
+- **Round 2** (Codex, head `1abb96c`): **NO-GO** — P1-1 and P1-2 verified
+  RESOLVED, P2-2 RESOLVED, delta/mutation/evidence-log items RESOLVED, but
+  three findings: **P1-3** (new) the outer `snapshot_id` was rebindable
+  post-ingest — nothing compared the outer id, the manifest id, and the
+  per-row ids, so a renamed outer snapshot passed verification and the
+  authority then trusted the altered id; **P2-3** (new) the metadata test
+  pinned only provider and bar_count — action_count, session coverage,
+  the row-hash list, source_row_count, and security_count were unchecked,
+  so the round-1 remediation wording overstated the proof; **P2-1
+  residual** criterion 6 still credited the naive-timestamp ban as a
+  future-record control (it is a timezone-awareness rule). Remediated in
+  this commit, red-first: verify_manifest binds outer+manifest+per-row
+  snapshot identity FIRST (`test_snapshot_identity_is_bound`; mutant M70),
+  checks source_row_count and security_count, and the metadata test now
+  tampers every recomputable field; criterion 6 reworded. Final line of
+  the round-2 verdict, verbatim: "NO-GO"
+- **Round 3** (Codex, this head): verdict recorded in the PR body.

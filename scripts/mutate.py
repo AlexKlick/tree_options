@@ -659,6 +659,15 @@ MUTANTS = [
         selectors=[f"{U}/test_data_ingest.py"],
         invariant="M1-C a mapping inside a not-yet-knowable master record is invisible (record.available_at gates the whole record)",
     ),
+    dict(
+        id="M70-snapshot-rebind-accepted",
+        owner="test_snapshot_identity_is_bound",
+        file="src/tree_options/data/quality.py",
+        anchor="identity_ok = snapshot.snapshot_id == m.snapshot_id and rows_identity",
+        replacement="identity_ok = True and rows_identity",
+        selectors=[f"{U}/test_data_quality.py"],
+        invariant="M1-D the outer snapshot id cannot be rebound post-ingest (outer, manifest, and per-row ids must agree)",
+    ),
 ]
 
 FAILING = ("FAILED",)

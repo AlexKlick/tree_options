@@ -115,18 +115,39 @@ def verify_manifest(snapshot: DatasetSnapshot, calendar: StaticSessionCalendar) 
     """The manifest is bound to content AND its own metadata: post-ingest
     swaps of rows, master records, provider, or counts must all fail
     (review round 1, P1-1)."""
+    m = snapshot.manifest
+    rows_identity = all(b.snapshot_id == m.snapshot_id for b in snapshot.bars) and all(
+        a.snapshot_id == m.snapshot_id for a in snapshot.actions
+    )
+    identity_ok = snapshot.snapshot_id == m.snapshot_id and rows_identity
+    if not identity_ok:
+        raise DataQualityError(
+            f"snapshot identity mismatch: outer id {snapshot.snapshot_id!r}, manifest "
+            f"id {m.snapshot_id!r}, or a row disagrees — the id cannot be rebound"
+        )
     expected = content_sha256(snapshot.master, snapshot.bars, snapshot.actions)
     if expected != snapshot.manifest.content_sha256:
         raise DataQualityError(
             f"manifest content mismatch for {snapshot.snapshot_id}: "
             f"manifest says {snapshot.manifest.content_sha256}, rows hash to {expected}"
         )
-    m = snapshot.manifest
     if m.bar_count != len(snapshot.bars) or m.action_count != len(snapshot.actions):
         raise DataQualityError(
             f"manifest count mismatch for {snapshot.snapshot_id}: "
             f"claims {m.bar_count}/{m.action_count}, snapshot has "
             f"{len(snapshot.bars)}/{len(snapshot.actions)}"
+        )
+    if m.source_row_count != len(snapshot.bars) + len(snapshot.actions):
+        raise DataQualityError(
+            f"manifest source-row count mismatch for {snapshot.snapshot_id}: "
+            f"claims {m.source_row_count}, snapshot has "
+            f"{len(snapshot.bars) + len(snapshot.actions)}"
+        )
+    if m.security_count != len({b.security_id for b in snapshot.bars}):
+        raise DataQualityError(
+            f"manifest security count mismatch for {snapshot.snapshot_id}: "
+            f"claims {m.security_count}, snapshot has "
+            f"{len({b.security_id for b in snapshot.bars})}"
         )
     sources = {b.source for b in snapshot.bars} | {a.source for a in snapshot.actions}
     if sources and sources != {m.provider}:

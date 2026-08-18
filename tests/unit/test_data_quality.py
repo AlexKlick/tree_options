@@ -160,3 +160,39 @@ def test_manifest_metadata_is_bound(static_calendar):
             snapshot.model_copy(update={"manifest": wrong_count}, deep=False),
             static_calendar,
         )
+    # P2-3: every recomputable metadata field is pinned, not just provider/bar_count
+    for field, evil in (
+        ("action_count", 0),
+        ("source_row_count", 0),
+        ("security_count", 99),
+        ("session_coverage", None),
+        ("source_row_hashes", ()),
+    ):
+        tampered_manifest = snapshot.manifest.model_copy(update={field: evil})
+        with pytest.raises(DataQualityError, match="manifest"):
+            verify_manifest(
+                snapshot.model_copy(update={"manifest": tampered_manifest}, deep=False),
+                static_calendar,
+            )
+
+
+def test_snapshot_identity_is_bound(static_calendar):
+    """P1-3: the outer snapshot id cannot be rebound post-ingest — it must
+    agree with the manifest AND every row's snapshot_id."""
+    from tree_options.data.quality import verify_manifest
+
+    snapshot = _snapshot(rv.raw_rows())
+    renamed = snapshot.model_copy(update={"snapshot_id": "renamed-snap"}, deep=False)
+    verify_manifest(snapshot, static_calendar)
+    with pytest.raises(DataQualityError, match="snapshot"):
+        verify_manifest(renamed, static_calendar)
+    rebound_row = tuple(
+        b.model_copy(update={"snapshot_id": "renamed-snap"})
+        if b.source_record_id == "RAW-0001"
+        else b
+        for b in snapshot.bars
+    )
+    with pytest.raises(DataQualityError, match="snapshot"):
+        verify_manifest(
+            snapshot.model_copy(update={"bars": rebound_row}, deep=False), static_calendar
+        )
