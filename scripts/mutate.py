@@ -328,7 +328,7 @@ MUTANTS = [
         anchor=(
             "if scope is None:\n"
             "            raise NonCanonicalScopeError(\n"
-            "                record.scope_key, \"the TrialScope must be presented at registration\"\n"
+            '                record.scope_key, "the TrialScope must be presented at registration"\n'
             "            )"
         ),
         replacement=(
