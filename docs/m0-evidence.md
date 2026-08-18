@@ -28,7 +28,9 @@ complete on a moved head), because a commit cannot contain its own hash.
   COMMITTED to storage — in-range loosening and budget-reference swaps
   refuse) plus the round-7 closure commit `8a4e595`, the round-8
   remediation `af00e58` (one-read enforcement, committed-at-open
-  migration) plus this round-8 closure commit. The gate-complete head and
+  migration) plus the round-8 closure commit `6ba35ec`, and the round-10
+  remediation `94480e1` (M60 re-fixed as a true behavioral kill) plus
+  this round-10 closure commit. The gate-complete head and
   clean-clone run are recorded in §6 and the PR body.
 
 ## 2. Protocol identity
@@ -67,8 +69,8 @@ head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 | wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `0a247c4378486ea5d7e9d9052412e1ccb8aefbed399a32ed84b5d3d372bc3b32`;
-`artifacts/m0-mutations.md` sha256 `3a2ed1be5f1a6e5ccc47ec0620670b9e1f8a844ed07f2865834f303af8547b67`.
+`artifacts/m0-mutations.json` sha256 `afd3e99f076299e3999d6a82661f0ea05e2f911f2d9a2d3403d842b185d067b6`;
+`artifacts/m0-mutations.md` sha256 `018b48da18b04969f41a3a5b1bc0ea319f8bfa03e052d0e5da4f6d64ef15c930`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
@@ -257,22 +259,58 @@ is claimed nowhere here.
   the value compared against the commitment and committed for new scopes);
   every scope with existing trials is COMMITTED at open, inside the
   constructor, to the live validated cap (sentinel `committed_at =
-  'migrated-at-open'`, owner decision 13); M60's replacement preserves the
-  call shape (a valid SELECT matching no scope) and its owner is re-aimed
-  to `test_swapped_budget_reference_refuses`, so each round-7 test owns a
-  mutant; the tamper classification now fires first
+  'migrated-at-open'`, owner decision 13); M60's owner was re-aimed to
+  `test_swapped_budget_reference_refuses`, so each round-7 test owns a
+  mutant (the `af00e58` replacement was still malformed — see the
+  round-9 record; it became a true behavioral kill only in the round-10
+  remediation `94480e1`); the tamper classification now fires first
   (`BUDGET_TAMPERED` on a committed scope) and a poisoned budget refuses
   even at open; the red log `/tmp/m0-red-r8.log` is head-bound
-  (`RED_BASE_HEAD`/`RED_END_HEAD` lines, all four red tests FAILED on
-  `8a4e595`); the clean-clone log below is self-contained (command echo +
+  (`RED_BASE_HEAD`/`RED_END_HEAD` lines, the three red tests FAILED on
+  `8a4e595`; the fourth, `test_migrated_scope_continuity_preserved`, is
+  the continuity guard and passes on both heads by design — corrected
+  per round 9, NEW-13); the clean-clone log below is self-contained (command echo +
   in-log artifact comparison). `test_enforcement_reads_the_budget_once`,
   `test_migrated_scope_is_committed_at_open`, and
   `test_poisoned_cap_on_committed_scope_raises_budget_tampered` FAILED on
   `8a4e595` and pass now, with `test_migrated_scope_continuity_preserved`
   guarding against over-tightening; M61 grew the manifest to 61. The gate
   at `af00e58`/this head recorded §3's counts and hashes.
-- Round 9 re-review (Codex, this head): verdict recorded verbatim in the
-  PR body.
+- Round 9 re-review (Codex, head `6ba35ec`): NO-GO — NEW-9 and NEW-10
+  verified RESOLVED (the single-read enforcement and the at-open
+  migration backfill, verified with file:line citations; the
+  FlippingBudget test scaffold was judged legitimate deterministic
+  interleaving — it schedules WHEN the data write lands, it does not
+  substitute enforcement code), and the delta sweep found no new
+  executable enforcement defect in the remediation, but two items held:
+  NEW-11 (P1) — `af00e58`'s M60 replacement still never EXECUTED: it
+  removed the sole `?` placeholder while the call still supplies one
+  binding, so sqlite3 raised ProgrammingError before any query ran (a
+  crash, not DID NOT RAISE, yet the harness counts any owner FAILED
+  line as KILLED — so the kill was falsely credited as behavioral);
+  NEW-12/F18 — §6's round-8 record claimed "all four red tests FAILED
+  on `8a4e595`" while the retained log lists exactly three failures
+  (the fourth is the by-design passing continuity guard), and it called
+  M60 "a valid SELECT", which the placeholder/binding mismatch
+  contradicts. Two new P2s: NEW-13 (the four-red-tests statement is
+  false) and NEW-14 (decisions 12/13 over-specify the refusal — on a
+  tightening below an already-reached count, `check()`'s count test
+  fires before the commitment comparison, so `SCOPE_BUDGET_EXCEEDED`
+  surfaces first; enforcement still refuses, but the documented
+  classification was inaccurate). Final line, verbatim: "NO-GO".
+  Remediated red-first in `94480e1`: M60's replacement appends
+  `AND cap < 0` to the unchanged WHERE clause — the query is VALID and
+  executes (`cap` carries `CHECK (cap >= 1)` in the schema, so it
+  matches no row), the sole `?` placeholder and the
+  `(record.scope_key,)` binding are unchanged, and the kill is
+  behavioral: the missed read yields `committed=None`, the swapped
+  budget registers the (cap+1)-th config, and the owning test observes
+  DID NOT RAISE — the artifact's detail line for M60 is the owner's own
+  FAILED line. The round-8 record above is corrected per NEW-13/NEW-12
+  and the decisions below per NEW-14. The gate at `94480e1` recorded
+  §3's counts and the new artifact hashes.
+- Round 10 re-review (Codex, this head): verdict recorded verbatim in
+  the PR body.
 - Clean-clone proof: the protocol is a fresh `git clone --no-local` to a
   temp dir, `bash scripts/m0_gate.sh` executed inside the clone, exit 0,
   clone tree clean beyond `artifacts/`/`dist/` afterward, and the clone's
@@ -374,7 +412,14 @@ is claimed nowhere here.
     or a caller who substitutes CODE (a subclass overriding `check()` or
     any other method, a monkeypatched function), which has left the
     bounded API; no in-process software can bound code substitution, and
-    no claim is made against it. Integer caps in `[1, 32]`, fixed at
+    no claim is made against it. Error classification (round 9,
+    NEW-14): on a disagreement between the live budget and the recorded
+    commitment, WHICH refusal surfaces depends on the count test —
+    `check()` count-checks in its single read, BEFORE the commitment
+    comparison, so a tightening below an already-reached count raises
+    `SCOPE_BUDGET_EXCEEDED` first; when the count test has not tripped,
+    `BUDGET_COMMITMENT_CHANGED` is the refusal. Either way registration
+    refuses. Integer caps in `[1, 32]`, fixed at
     construction and committed to storage; tighten-only stands.
 13. Pre-commitment-schema databases (review round 8, NEW-10): a scope
     whose trials predate the `scope_commitments` table has no recoverable
@@ -384,7 +429,9 @@ is claimed nowhere here.
     'migrated-at-open'`). From that point the scope is bound exactly as
     every other scope: any later disagreement between the live budget and
     the recorded commitment — loosening OR tightening — refuses
-    (`BUDGET_COMMITMENT_CHANGED`). An operator who deliberately reopens
+    (`BUDGET_COMMITMENT_CHANGED`, or `SCOPE_BUDGET_EXCEEDED` first when
+    the tightened cap is already reached — decision 12's classification
+    note). An operator who deliberately reopens
     an old database under a different in-range budget has made a
     construction-time choice, which is the sanctioned API surface; the
     pre-open budget of a closed registry is outside any running
