@@ -222,7 +222,9 @@ class TestDuplicateOrderExecution:
 
     def test_partial_sequence_cannot_exceed_order_quantity(self, synthetic_calendar):
         """F12: a partial chain is bounded by the order's REMAINING quantity.
-        Kill-test for the PARTIAL_EXCEEDS_ORDER guard (mutant M48)."""
+        Kill-test for the remaining-clamp (mutant M48): under it the second
+        call OVERFILLS the order; the PARTIAL_EXCEEDS_ORDER rejection on the
+        third call is directly asserted here as well."""
         cal = synthetic_calendar
         d = next(x for x in cal.sessions() if x >= date(2024, 4, 1))
         ex = cal.nth_after(d, 1)
@@ -270,6 +272,131 @@ class TestDuplicateOrderExecution:
                 partial_sequence=True,
             )
         assert ei.value.code == "PARTIAL_EXCEEDS_ORDER"
+
+
+class TestOrderRebinding:
+    """Round-3 F12: an order_id that already minted a fill cannot be
+    re-presented with DIFFERENT terms to extend the chain — the cumulative
+    bound belongs to the order first bound at its first mint (kill-test for
+    mutant M53)."""
+
+    def test_rebound_order_id_rejected(self, synthetic_calendar):
+        cal = synthetic_calendar
+        d = next(x for x in cal.sessions() if x >= date(2024, 4, 1))
+        ex = cal.nth_after(d, 1)
+        ex2 = cal.nth_after(d, 2)
+        at = execution_instant(cal.session_open(ex))
+        at2 = execution_instant(cal.session_open(ex2))
+        engine = FillEngine.from_protocol(cal, load_protocol(), fill_size_fraction=Decimal("0.6"))
+        order = Order(
+            order_id="ORD-REBIND",
+            contract_id=CONTRACT_ID,
+            side="buy",
+            intent="open_long",
+            quantity=5,
+            decision_at=cal.session_close(d),
+            decision_session=d,
+        )
+        f1 = engine.execute(
+            order,
+            [fresh_quote(execution_at=at, ask_size=5)],
+            july_contract(),
+            execution_session=ex,
+            execution_at=at,
+        )
+        assert f1.quantity == 3
+        # Same order_id, inflated quantity: the ID is already bound to a
+        # 5-contract order; a 100-contract order under that ID is a rebind.
+        bigger = order.model_copy(update={"quantity": 100})
+        with pytest.raises(FillRejection) as ei:
+            engine.execute(
+                bigger,
+                [fresh_quote(execution_at=at2, ask_size=5)],
+                july_contract(),
+                execution_session=ex2,
+                execution_at=at2,
+                partial_sequence=True,
+            )
+        assert ei.value.code == "ORDER_REBOUND"
+
+    def test_identical_re_presentation_still_partial_fills(self, synthetic_calendar):
+        """The rebind guard must not break the sanctioned chain: presenting
+        the SAME order again with partial_sequence=True still fills the
+        remaining quantity."""
+        cal = synthetic_calendar
+        d = next(x for x in cal.sessions() if x >= date(2024, 4, 1))
+        ex = cal.nth_after(d, 1)
+        ex2 = cal.nth_after(d, 2)
+        at = execution_instant(cal.session_open(ex))
+        at2 = execution_instant(cal.session_open(ex2))
+        engine = FillEngine.from_protocol(cal, load_protocol(), fill_size_fraction=Decimal("0.6"))
+        order = Order(
+            order_id="ORD-REBIND2",
+            contract_id=CONTRACT_ID,
+            side="buy",
+            intent="open_long",
+            quantity=5,
+            decision_at=cal.session_close(d),
+            decision_session=d,
+        )
+        engine.execute(
+            order,
+            [fresh_quote(execution_at=at, ask_size=5)],
+            july_contract(),
+            execution_session=ex,
+            execution_at=at,
+        )
+        f2 = engine.execute(
+            order,  # the SAME object terms — not a rebind
+            [fresh_quote(execution_at=at2, ask_size=5)],
+            july_contract(),
+            execution_session=ex2,
+            execution_at=at2,
+            partial_sequence=True,
+        )
+        assert f2.quantity == 2
+
+
+class TestStateCommitment:
+    """Round-3 P2: engine state is committed only AFTER the Fill validates —
+    a poisoned fee model must not burn the order."""
+
+    def test_failed_fill_construction_commits_no_state(self, synthetic_calendar):
+        from tree_options.ledger.fees import PerContractFeeModel
+
+        class FlippableFeeModel(PerContractFeeModel):
+            def __init__(self) -> None:
+                super().__init__()
+                self.negative = True
+
+            def order_fees(self, quantity: int) -> Decimal:
+                if self.negative:
+                    return Decimal("-1")  # invalid: Fill.fees is ge=0
+                return super().order_fees(quantity)
+
+        cal = synthetic_calendar
+        d = next(x for x in cal.sessions() if x >= date(2024, 4, 1))
+        ex = cal.nth_after(d, 1)
+        at = execution_instant(cal.session_open(ex))
+        engine = FillEngine.from_protocol(cal, load_protocol())
+        engine.fee_model = FlippableFeeModel()
+        order = Order(
+            order_id="ORD-FEEFAIL",
+            contract_id=CONTRACT_ID,
+            side="buy",
+            intent="open_long",
+            quantity=1,
+            decision_at=cal.session_close(d),
+            decision_session=d,
+        )
+        q = fresh_quote(execution_at=at)
+        with pytest.raises(ValidationError):  # Fill rejects the negative fee
+            engine.execute(order, [q], july_contract(), execution_session=ex, execution_at=at)
+        # The failed mint left NO state: the same order retries cleanly.
+        engine.fee_model.negative = False
+        fill = engine.execute(order, [q], july_contract(), execution_session=ex, execution_at=at)
+        assert fill.quantity == 1
+        assert fill.fees == Decimal("1.00")  # order minimum applies
 
 
 class TestFutureQuoteDirect:

@@ -108,10 +108,13 @@ class SecurityMasterRecord(StrictModel):
         """Membership on d given knowledge at `as_of`.
 
         Fails closed to False when the record itself is not yet knowable.
-        A listing END is only knowable at as_of when its delisting record is
-        visible: with no visible delisting the honest point-in-time answer
-        past listing_start is True (unknown end) — answering False would leak
-        the future end date.
+        A listing END is knowable at as_of when its delisting record is
+        visible, OR — when there is no delisting event at all — once the
+        record's declared listing_end has actually PASSED (a finite end with
+        no event must not keep the name listed forever, review round 3 F2).
+        Before either gate opens, the honest point-in-time answer past
+        listing_start is True (unknown end) — answering False would leak the
+        future end date.
         """
         if not self._record_visible(as_of):
             return False
@@ -120,6 +123,8 @@ class SecurityMasterRecord(StrictModel):
         if as_of is None:
             effective_end: date | None = self.listing_end
         else:
-            end_known = self.delisting is not None and self.delisting.available_at <= as_of
+            end_known = (self.delisting is not None and self.delisting.available_at <= as_of) or (
+                self.listing_end is not None and as_of.date() > self.listing_end
+            )
             effective_end = self.listing_end if end_known else None
         return effective_end is None or d <= effective_end

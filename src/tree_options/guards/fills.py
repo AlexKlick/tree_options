@@ -165,6 +165,7 @@ class FillEngine:
         self.fill_size_fraction = fill_size_fraction
         self._fill_seq = 0
         self._executed_orders: set[str] = set()
+        self._orders: dict[str, Order] = {}  # order_id -> the order BOUND at first mint
         self._filled_qty: dict[str, int] = {}
 
     @classmethod
@@ -202,6 +203,10 @@ class FillEngine:
         re-executing an order without it is DUPLICATE_ORDER_EXECUTION, and a
         partial sequence is bounded by the order's REMAINING quantity — the
         cumulative filled amount can never exceed order.quantity (review F12).
+        An order_id that already minted a fill is BOUND to that order:
+        re-presenting the id under different terms is ORDER_REBOUND (review
+        round 3 F12) — the cumulative bound belongs to the order first
+        presented, not to whatever terms ride the id later.
         """
         stress = stress or ExecutionStress.zero()
         effective_at = shift_instant(execution_at, stress.latency_seconds)
@@ -211,6 +216,13 @@ class FillEngine:
                 "DUPLICATE_ORDER_EXECUTION",
                 f"order {order.order_id} already minted a fill; a further fill "
                 "requires partial_sequence=True",
+            )
+        bound = self._orders.get(order.order_id)
+        if bound is not None and bound != order:
+            raise FillRejection(
+                "ORDER_REBOUND",
+                f"order {order.order_id} already minted a fill under different "
+                "terms; an order_id cannot be re-bound to a new order",
             )
         already_filled = self._filled_qty.get(order.order_id, 0)
         if partial_sequence and already_filled >= order.quantity:
@@ -329,11 +341,12 @@ class FillEngine:
         )
         fees = fee_model.order_fees(quantity)
 
-        self._fill_seq += 1
-        self._executed_orders.add(order.order_id)
-        self._filled_qty[order.order_id] = already_filled + quantity
-        return Fill(
-            fill_id=f"{order.order_id}-F{self._fill_seq}",
+        # Construct the Fill FIRST: its validators are the last fail-closed
+        # gate (e.g. a poisoned fee model yields fees < 0). Only a Fill that
+        # validates may commit engine state — a failed mint must leave the
+        # order retryable, not burned (review round 3 P2).
+        fill = Fill(
+            fill_id=f"{order.order_id}-F{self._fill_seq + 1}",
             order_id=order.order_id,
             contract_id=order.contract_id,
             side=order.side,
@@ -346,3 +359,8 @@ class FillEngine:
             execution_session=execution_session,
             fraction_to_midpoint=fraction_to_midpoint_f,
         )
+        self._fill_seq += 1
+        self._executed_orders.add(order.order_id)
+        self._orders[order.order_id] = order
+        self._filled_qty[order.order_id] = already_filled + quantity
+        return fill

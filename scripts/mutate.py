@@ -322,22 +322,13 @@ MUTANTS = [
         invariant="REGISTERED->RUNNING->outcome ordering",
     ),
     dict(
-        id="M33-missing-scope-forged-default",
-        owner="test_missing_scope_rejected",
+        id="M33-scope-json-blanked",
+        owner="test_stored_scope_json_verifiable",
         file="src/tree_options/registry/sqlite.py",
-        anchor=(
-            "if scope is None:\n"
-            "            raise NonCanonicalScopeError(\n"
-            '                record.scope_key, "the TrialScope must be presented at registration"\n'
-            "            )"
-        ),
-        replacement=(
-            'if scope is None: scope = TrialScope(protocol_id="forged", '
-            'protocol_hash="0" * 64, outer_fold_id="F", target_horizon="1", '
-            'feature_set_id="fs", model_family="x")'
-        ),
+        anchor="scope.canonical_json(),",
+        replacement='"{}",',
         selectors=[f"{U}/test_registry.py"],
-        invariant="scope evasion rejected (forged default, not a crash)",
+        invariant="stored scope_json round-trips to the presented scope",
     ),
     dict(
         id="M34-candidate-future-input-accepted",
@@ -466,13 +457,13 @@ MUTANTS = [
         invariant="INV-07 fit-on-train-only detected",
     ),
     dict(
-        id="M48-partial-overfill-accepted",
+        id="M48-partial-remaining-unbounded",
         owner="test_partial_sequence_cannot_exceed_order_quantity",
         file="src/tree_options/guards/fills.py",
-        anchor="if partial_sequence and already_filled >= order.quantity:",
-        replacement="if False:",
+        anchor="remaining = order.quantity - already_filled",
+        replacement="remaining = order.quantity",
         selectors=[f"{G}/test_fill_integrity_v2.py"],
-        invariant="partial chains bounded by order quantity",
+        invariant="partial chains bounded by REMAINING quantity (overfill occurs if unbounded)",
     ),
     dict(
         id="M49-security-record-future-visible",
@@ -500,6 +491,24 @@ MUTANTS = [
         replacement="False",
         selectors=[f"{U}/test_leakage_v2.py"],
         invariant="snapshot fields must agree with the contract object",
+    ),
+    dict(
+        id="M52-finite-listing-end-never-honored",
+        owner="test_listing_end_honored_once_passed",
+        file="src/tree_options/schemas/security.py",
+        anchor="self.listing_end is not None and as_of.date() > self.listing_end",
+        replacement="False",
+        selectors=[f"{U}/test_leakage_v2.py"],
+        invariant="finite listing_end with no delisting is honored once passed",
+    ),
+    dict(
+        id="M53-order-rebind-accepted",
+        owner="test_rebound_order_id_rejected",
+        file="src/tree_options/guards/fills.py",
+        anchor="if bound is not None and bound != order:",
+        replacement="if False:",
+        selectors=[f"{G}/test_fill_integrity_v2.py"],
+        invariant="an order_id is bound to the order that first minted a fill",
     ),
 ]
 

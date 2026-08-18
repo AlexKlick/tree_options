@@ -10,7 +10,7 @@ import pytest
 from pydantic import ValidationError
 
 from tests.fixtures.contracts import split_adjusted_contract, standard_call
-from tests.fixtures.security import renamed_and_delisted_security
+from tests.fixtures.security import finite_listing_end_security, renamed_and_delisted_security
 from tree_options.candidates.filters import (
     NOT_APPLICABLE,
     NOT_EVALUABLE,
@@ -249,6 +249,27 @@ class TestStandardDeliverableActionId:
         data["deliverable"]["corporate_action_id"] = "SPLIT-2024-06"
         with pytest.raises(ValidationError, match="corporate_action_id"):
             OptionContract(**data)
+
+
+class TestFiniteListingEndNoDelisting:
+    """Round-3 F2: a finite listing_end with NO delisting event must be
+    honored once it has passed — otherwise the name stays listed forever
+    under every as_of (kill-test for mutant M52)."""
+
+    def test_listing_end_honored_once_passed(self):
+        sec = finite_listing_end_security()
+        july = datetime(2024, 7, 2, 20, 0, tzinfo=UTC)
+        assert sec.listed_on(date(2024, 7, 2), as_of=july) is False
+        assert sec.listed_on(date(2024, 6, 20), as_of=july) is True
+
+    def test_end_not_leaked_before_it_passes(self):
+        """Before the declared end has passed it is still unknowable: the
+        honest point-in-time answer stays True (answering False would leak
+        the future end date)."""
+        sec = finite_listing_end_security()
+        june = datetime(2024, 6, 15, 20, 0, tzinfo=UTC)
+        assert sec.listed_on(date(2024, 6, 20), as_of=june) is True
+        assert sec.listed_on(date(2024, 7, 15), as_of=june) is True
 
 
 class TestSnapshotContractCoherence:

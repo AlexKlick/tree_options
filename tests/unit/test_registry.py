@@ -259,19 +259,32 @@ class TestRegistryHardening:
         assert ei.value.code == "NON_CANONICAL_SCOPE"
 
     def test_missing_scope_rejected(self, registry):
-        """The error must be the PRESENTATION requirement itself — a forged
-        default scope would raise the derivation check instead and this test
-        would not notice (kill-test for mutant M33; the assert uses the
-        distinctive phrase so the two messages cannot be confused)."""
+        """The error must be the PRESENTATION requirement itself, with the
+        distinctive phrase, so it cannot be confused with the downstream
+        derivation-check rejection (round 3: this defense has no single-mutant
+        kill — the derivation check subsumes the same input — so it is proven
+        by this direct test; M33 instead guards storage fidelity)."""
         with pytest.raises(NonCanonicalScopeError) as ei:
             registry.register(_record())
         assert "must be presented at registration" in ei.value.detail
 
     def test_per_call_budget_override_is_gone(self, registry):
         """F13: the budget is the registry's own — there is no per-call
-        parameter to loosen. Passing one is a TypeError, not a bigger cap."""
+        parameter to loosen. Passing one is a TypeError (the cap ceiling
+        itself is proven by test_budget_cap_cannot_exceed_protocol_maximum)."""
         with pytest.raises(TypeError):
-            registry.register(_record(), scope=SCOPE, budget=TrialBudget(cap=1000))
+            registry.register(_record(), scope=SCOPE, budget=TrialBudget(cap=10))
+
+    def test_budget_cap_cannot_exceed_protocol_maximum(self):
+        """Round-3 F13: a scope budget may TIGHTEN below the protocol's 32
+        but never loosen it — the constructor itself refuses a larger cap,
+        closing the TrialRegistry(budget=TrialBudget(cap=1000)) path."""
+        with pytest.raises(ValueError):
+            TrialBudget(cap=1000)
+        with pytest.raises(ValueError):
+            TrialBudget(cap=33)
+        assert TrialBudget(cap=32).cap == 32
+        assert TrialBudget(cap=10).cap == 10  # tightening stays allowed
 
     def test_pre_remediation_database_fails_closed(self, tmp_path):
         """An existing DB written before scope_json existed cannot be opened:
