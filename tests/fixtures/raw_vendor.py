@@ -30,17 +30,36 @@ def _pub(session: date) -> datetime:
 
 
 def m1_master() -> tuple[SecurityMasterRecord, ...]:
-    """The three M0 fixture securities, reused as the M1 master fixture."""
+    """The M0 fixture securities + SEC-005 (reverse-split fixture)."""
     from tests.fixtures.security import (
         finite_listing_end_security,
         renamed_and_delisted_security,
         successor_security_on_old_ticker,
     )
 
+    rvsp = SecurityMasterRecord(
+        security_id="SEC-005",
+        figi="BBG000FIXTUR5",
+        cik="0000000505",
+        listing_start=date(2024, 1, 2),
+        listing_end=None,
+        exchange="NYSE",
+        source="sec-master-fixture",
+        available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+        ticker_mappings=(
+            TickerMappingRecord(
+                security_id="SEC-005",
+                ticker="RVSP",
+                effective_from=date(2024, 1, 2),
+                available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+            ),
+        ),
+    )
     return (
         renamed_and_delisted_security(),
         finite_listing_end_security(),
         successor_security_on_old_ticker(),
+        rvsp,
     )
 
 
@@ -139,6 +158,29 @@ def raw_rows(
             available_at=_pub(date(2024, 9, 4)),
             source_record_id="RAW-0007",
         ),
+        # SEC-005 across a 1:2 reverse split: 10.00 -> 20.00 exactly
+        dict(
+            vendor_symbol="RVSP",
+            session=date(2024, 7, 3),
+            open="9.90",
+            high="10.10",
+            low="9.80",
+            close="10.00",
+            volume=200_000,
+            available_at=_pub(date(2024, 7, 3)),
+            source_record_id="RAW-0008",
+        ),
+        dict(
+            vendor_symbol="RVSP",
+            session=date(2024, 7, 5),
+            open="19.90",
+            high="20.10",
+            low="19.80",
+            close="20.00",
+            volume=100_000,
+            available_at=_pub(date(2024, 7, 5)),
+            source_record_id="RAW-0009",
+        ),
     ]
     actions: list[dict[str, object]] = [
         dict(
@@ -160,6 +202,17 @@ def raw_rows(
                 ratio_denominator=1,
                 available_at=_pub(date(2024, 6, 28)),
                 source_record_id="ACT-0002",
+            ),
+        )
+        actions.append(
+            dict(
+                vendor_symbol="RVSP",
+                kind="reverse_split",
+                effective_session=date(2024, 7, 5),
+                ratio_numerator=1,
+                ratio_denominator=2,
+                available_at=_pub(date(2024, 7, 3)),
+                source_record_id="ACT-0003",
             ),
         )
     return tuple([*bars, *actions])

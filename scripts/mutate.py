@@ -623,6 +623,24 @@ MUTANTS = [
         selectors=[f"{U}/test_data_ingest.py"],
         invariant="M1-C ticker resolution is point-in-time (a mapping announced after as_of is invisible — the current-ticker join is refused)",
     ),
+    dict(
+        id="M66-future-bar-visible",
+        owner="test_future_bar_is_invisible",
+        file="src/tree_options/data/authority.py",
+        anchor="if bar.available_at <= decision_at",
+        replacement="if True",
+        selectors=[f"{U}/test_data_authority.py"],
+        invariant="M1-C the authority never returns a bar published after decision_at (future data is invisible at the read gate)",
+    ),
+    dict(
+        id="M67-universe-survivorship-gutted",
+        owner="test_universe_is_point_in_time_not_survivors",
+        file="src/tree_options/data/authority.py",
+        anchor="if record.listed_on(decision_at.date(), as_of=decision_at)",
+        replacement="if True",
+        selectors=[f"{U}/test_data_authority.py"],
+        invariant="M1-C universe membership is point-in-time (delisted names leave, pre-IPO names never enter — no current-survivor filtering)",
+    ),
 ]
 
 FAILING = ("FAILED",)
