@@ -79,11 +79,16 @@ def check_folds(
                 "ANCHOR_MONOTONE", f"fold {fold.fold_id} train does not start at anchor"
             )
 
-    # Test blocks strictly increase and are disjoint.
+    # Fold ids are unique; test blocks are disjoint regardless of ids.
+    ids = [fold.fold_id for fold in folds]
+    if len(set(ids)) != len(ids):
+        raise FoldInvariantViolation(
+            "DUPLICATE_FOLD_ID", f"fold ids repeat: {sorted(ids)[:6]}"
+        )
     seen: dict[date, int] = {}
     for fold in folds:
         for t in fold.test_sessions:
-            if t in seen and seen[t] != fold.fold_id:
+            if t in seen:
                 raise FoldInvariantViolation("COVERAGE", f"test session {t} in two folds")
             seen[t] = fold.fold_id
 

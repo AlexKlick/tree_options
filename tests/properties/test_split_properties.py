@@ -73,7 +73,7 @@ class TestInvariantProperties:
     @given(seed=st.integers(0, 2**31 - 1), val=st.integers(8, 40), test=st.integers(5, 20))
     # synthetic_calendar is immutable and identical for every generated input,
     # so not resetting it between examples is safe.
-    @settings(max_examples=10, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_check_folds_passes_on_splitter_output(self, synthetic_calendar, h, seed, val, test):
         import random
 
@@ -232,3 +232,27 @@ class TestInvariantProperties:
         sp = _splitter(synthetic_calendar)
         with pytest.raises(ValueError, match="not in calendar"):
             sp.splits([date(2019, 1, 5)])  # Saturday: not a session
+
+    def test_duplicate_fold_ids_with_overlapping_tests_rejected(self, synthetic_calendar):
+        """F16: two folds sharing a fold_id AND a test block must be caught —
+        the COVERAGE check may not key on the stored id being different."""
+        from tree_options.splitting.splitter import Fold
+
+        cal = synthetic_calendar
+        sessions = cal.sessions()
+        dup = Fold(
+            fold_id=0,  # SAME id as f1 below
+            train_sessions=frozenset(sessions[0:35]),
+            validation_sessions=frozenset(sessions[45:55]),
+            test_sessions=frozenset(sessions[60:70]),
+            final_fit_train_sessions=frozenset(sessions[0:35]),
+        )
+        f1 = Fold(
+            fold_id=0,
+            train_sessions=frozenset(sessions[0:30]),
+            validation_sessions=frozenset(sessions[40:50]),
+            test_sessions=frozenset(sessions[60:70]),
+            final_fit_train_sessions=frozenset(sessions[0:30]),
+        )
+        with pytest.raises(FoldInvariantViolation):
+            check_folds([f1, dup], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)
