@@ -519,6 +519,24 @@ MUTANTS = [
         selectors=[f"{U}/test_registry.py"],
         invariant="scope cap is an integer commitment (NaN cap would disable the cap)",
     ),
+    dict(
+        id="M55-cap-storage-replaced",
+        owner="test_budget_cap_cannot_exceed_protocol_maximum",
+        file="src/tree_options/registry/budget.py",
+        anchor="self._cap = cap",
+        replacement="self._cap = MAX_SCOPE_CAP",
+        selectors=[f"{U}/test_registry.py"],
+        invariant="the constructed cap is the stored cap (read-only storage fidelity)",
+    ),
+    dict(
+        id="M56-protocol-cap-lax",
+        owner="test_max_registered_configs_is_strict",
+        file="src/tree_options/protocol/schema.py",
+        anchor="max_registered_configs: int = Field(gt=0, strict=True)",
+        replacement="max_registered_configs: int = Field(gt=0)",
+        selectors=[f"{U}/test_protocol_loader.py"],
+        invariant="protocol cap field is strict (bool/str/float never coerce into the commitment)",
+    ),
 ]
 
 FAILING = ("FAILED",)

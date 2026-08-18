@@ -40,6 +40,23 @@ class TestProtocolLoad:
     def test_inner_loop_cap(self, protocol):
         assert protocol.inner_loop.max_registered_configs == 32
 
+
+class TestProtocolNumericStrictness:
+    def test_max_registered_configs_is_strict(self):
+        """Round-5 NEW-7: lax coercion let YAML `true` normalize to 1 (the
+        silent bool alias), `"32"` to 32, and 32.0 to 32 into the
+        pre-registration cap. The commitment field is strict: bool, str,
+        and float inputs are refused instead of coerced."""
+        from tree_options.protocol.schema import InnerLoopConfig
+
+        with pytest.raises(pydantic.ValidationError):
+            InnerLoopConfig(max_registered_configs=True)
+        with pytest.raises(pydantic.ValidationError):
+            InnerLoopConfig(max_registered_configs="32")
+        with pytest.raises(pydantic.ValidationError):
+            InnerLoopConfig(max_registered_configs=32.0)
+        assert InnerLoopConfig(max_registered_configs=32).max_registered_configs == 32
+
     def test_unknown_key_rejected(self, protocol_path, tmp_path):
         from tree_options.protocol.loader import load_protocol
 

@@ -39,7 +39,14 @@ class TrialBudget:
                 "(inner_loop.max_registered_configs): a scope budget may "
                 "tighten the commitment, never loosen it"
             )
-        self.cap = cap
+        self._cap = cap
+
+    @property
+    def cap(self) -> int:
+        """Read-only after construction (review round 5, NEW-6): the bounds
+        are checked exactly once, at construction — a writable `cap` let
+        `registry.budget.cap = float("nan")` re-disable the cap afterward."""
+        return self._cap
 
     @classmethod
     def from_protocol(cls, protocol) -> TrialBudget:

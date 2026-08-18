@@ -299,6 +299,20 @@ class TestRegistryHardening:
         with pytest.raises(ValueError):
             TrialBudget(cap=True)  # bool is an int subclass — no silent cap=1
 
+    def test_budget_cap_is_immutable_after_construction(self, tmp_path):
+        """Round-5 NEW-6: `registry.budget.cap = float("nan")` re-disabled
+        the cap AFTER construction — the bounds were checked once, then the
+        stored value was freely mutable. The cap is read-only once set:
+        assignment raises, both on a directly-constructed budget and on
+        the registry's own default budget."""
+        with pytest.raises(AttributeError):
+            TrialBudget(cap=10).cap = float("nan")
+        reg = TrialRegistry(tmp_path / "t-imm.db")
+        with pytest.raises(AttributeError):
+            reg.budget.cap = float("nan")
+        assert reg.budget.cap == 32  # the registry default, untouched
+        reg.close()
+
     def test_pre_remediation_database_fails_closed(self, tmp_path):
         """An existing DB written before scope_json existed cannot be opened:
         CREATE TABLE IF NOT EXISTS would not migrate it, so refuse."""

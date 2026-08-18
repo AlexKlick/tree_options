@@ -79,7 +79,10 @@ class FoldConfig(_Strict):
 
 
 class InnerLoopConfig(_Strict):
-    max_registered_configs: int = Field(gt=0)
+    # strict: this number is a pre-registration commitment — lax coercion
+    # let YAML `true` normalize to 1, "32" to 32, and 32.0 to 32 (round 5,
+    # NEW-7). No bool/str/float may become the cap.
+    max_registered_configs: int = Field(gt=0, strict=True)
 
 
 class PrimaryFillPolicy(_Strict):
