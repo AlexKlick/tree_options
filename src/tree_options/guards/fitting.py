@@ -4,10 +4,11 @@ INV-07: imputation, scaling, feature selection, calibration, and
 hyperparameter search are fit on TRAINING data and applied (never re-fit) to
 validation/test rows. In M0 there is no model pipeline yet, so this guard is
 the EXECUTABLE CORE of that invariant: every fitted artifact records the
-sessions it was fit on, and any use of that artifact refuses sessions
-outside its fit set. The full pipeline enforcement (transform chains,
-selection loops) lands with M2 — the evidence doc claims exactly this much
-and no more.
+sessions it was fit on, refits under the same name are refused, applying an
+unfitted artifact is refused, every application is recorded, and
+`assert_fit_excludes` detects an artifact whose FIT set touched eval
+sessions. The full pipeline enforcement (transform chains, selection loops)
+lands with M2 — the evidence doc claims exactly this much and no more.
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ class FittingLeakError(RuntimeError):
 class FittingGuard:
     def __init__(self) -> None:
         self._fit_sessions: dict[str, frozenset[date]] = {}
+        self._applied_sessions: dict[str, frozenset[date]] = {}
 
     def fit_on(self, name: str, sessions: frozenset[date]) -> None:
         """Register a fitted artifact together with the sessions it saw."""
@@ -40,21 +42,22 @@ class FittingGuard:
         except KeyError:
             raise FittingLeakError("UNFITTED_ARTIFACT", f"{name} was never fitted") from None
 
-    def apply_to(self, name: str, target_sessions: frozenset[date]) -> None:
-        """Refuse to APPLY an artifact to sessions it was not fit on.
+    def applied_sessions(self, name: str) -> frozenset[date]:
+        """Sessions this artifact has been APPLIED to (audit trail)."""
+        return self._applied_sessions.get(name, frozenset())
 
-        Applying a scaler/imputer fitted on train to eval rows is the ONE
-        sanctioned direction; an artifact applied to sessions outside its fit
-        set (e.g. a selector 'fit' on validation) is a leak by construction.
+    def apply_to(self, name: str, target_sessions: frozenset[date]) -> None:
+        """Apply a fitted artifact to target sessions (never re-fit).
+
+        Applying a scaler/imputer fit on train to validation/test rows is the
+        SANCTIONED direction — that is what 'fit on training only' means — so
+        this must NOT reject eval targets (review F1). What it enforces
+        instead: the artifact must have been fit at all (no application of an
+        unfitted transform), and every application is recorded so the audit
+        trail can be inspected later.
         """
-        fit = self.fit_sessions(name)
-        leak = target_sessions - fit
-        if leak:
-            raise FittingLeakError(
-                "FIT_SET_VIOLATION",
-                f"{name} fit on {len(fit)} sessions; applied to {len(leak)} "
-                f"sessions outside the fit set (e.g. {sorted(leak)[:3]})",
-            )
+        self.fit_sessions(name)  # raises UNFITTED_ARTIFACT when never fitted
+        self._applied_sessions[name] = self.applied_sessions(name) | target_sessions
 
     def assert_fit_excludes(self, name: str, forbidden: frozenset[date]) -> None:
         """Assert the fit set contains none of the forbidden (eval) sessions."""

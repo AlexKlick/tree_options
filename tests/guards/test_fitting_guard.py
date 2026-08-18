@@ -20,6 +20,18 @@ def test_fit_on_train_apply_to_train_ok():
     g.assert_fit_excludes("zscore_scaler", VAL | TEST)
 
 
+def test_apply_to_eval_sessions_is_sanctioned_and_recorded():
+    """F1: applying a train-fitted artifact to val/test is THE sanctioned
+    direction — apply_to must not reject it. Every application is recorded."""
+    g = FittingGuard()
+    g.fit_on("scaler", TRAIN)
+    g.apply_to("scaler", VAL)  # must NOT raise
+    g.apply_to("scaler", TEST)
+    assert g.applied_sessions("scaler") == VAL | TEST
+    # and the fit set still excludes eval (the actual INV-07 claim)
+    g.assert_fit_excludes("scaler", VAL | TEST)
+
+
 def test_fit_that_included_eval_is_detected():
     g = FittingGuard()
     leaky = TRAIN | {date(2024, 2, 5)}  # imputer 'accidentally' fit on a val day

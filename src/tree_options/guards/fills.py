@@ -165,6 +165,7 @@ class FillEngine:
         self.fill_size_fraction = fill_size_fraction
         self._fill_seq = 0
         self._executed_orders: set[str] = set()
+        self._filled_qty: dict[str, int] = {}
 
     @classmethod
     def from_protocol(
@@ -198,7 +199,9 @@ class FillEngine:
         quote — the caller cannot cherry-pick a favorable older print.
         `partial_sequence=True` is the explicit, per-call opt-in that lets
         one order mint a further fill (a deliberate partial-fill chain);
-        re-executing an order without it is DUPLICATE_ORDER_EXECUTION.
+        re-executing an order without it is DUPLICATE_ORDER_EXECUTION, and a
+        partial sequence is bounded by the order's REMAINING quantity — the
+        cumulative filled amount can never exceed order.quantity (review F12).
         """
         stress = stress or ExecutionStress.zero()
         effective_at = shift_instant(execution_at, stress.latency_seconds)
@@ -208,6 +211,14 @@ class FillEngine:
                 "DUPLICATE_ORDER_EXECUTION",
                 f"order {order.order_id} already minted a fill; a further fill "
                 "requires partial_sequence=True",
+            )
+        already_filled = self._filled_qty.get(order.order_id, 0)
+        if partial_sequence and already_filled >= order.quantity:
+            raise FillRejection(
+                "PARTIAL_EXCEEDS_ORDER",
+                f"order {order.order_id} is already fully filled "
+                f"({already_filled}/{order.quantity}); a partial sequence cannot "
+                "mint quantity beyond the order",
             )
 
         if not self.calendar.is_session(execution_session):
@@ -304,7 +315,8 @@ class FillEngine:
 
         displayed = tq.ask_size if order.side == "buy" else tq.bid_size
         capacity = math.floor(self.fill_size_fraction * displayed)
-        quantity = min(order.quantity, capacity)
+        remaining = order.quantity - already_filled
+        quantity = min(remaining, capacity)
         if quantity < 1:
             raise FillRejection(
                 "NO_LIQUIDITY", f"fill capacity {capacity} from displayed {displayed}"
@@ -319,6 +331,7 @@ class FillEngine:
 
         self._fill_seq += 1
         self._executed_orders.add(order.order_id)
+        self._filled_qty[order.order_id] = already_filled + quantity
         return Fill(
             fill_id=f"{order.order_id}-F{self._fill_seq}",
             order_id=order.order_id,

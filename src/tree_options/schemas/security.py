@@ -79,14 +79,21 @@ class SecurityMasterRecord(StrictModel):
                 raise ValueError("delisted security must have listing_end == delisting_session")
         return self
 
+    def _record_visible(self, as_of: datetime | None) -> bool:
+        """The master RECORD itself must be knowable at as_of (review F2):
+        a record that arrived after the decision instant is wholly invisible."""
+        return as_of is None or self.available_at <= as_of
+
     def ticker_on(self, d: date, *, as_of: datetime | None = None) -> str:
         """Ticker in force on d, given what was knowable at `as_of`.
 
         as_of=None is the retrospective (settled-history) view. With as_of
-        set, mappings announced after it are INVISIBLE: a January decision
-        cannot see a March rename, and a date covered only by an
-        not-yet-known mapping fails closed with KeyError.
+        set, the record and any mapping announced after it are INVISIBLE: a
+        January decision cannot see a March rename, and a date covered only
+        by an not-yet-known record or mapping fails closed with KeyError.
         """
+        if not self._record_visible(as_of):
+            raise KeyError(f"security {self.security_id} record not knowable as of {as_of}")
         for m in self.ticker_mappings:
             if as_of is not None and m.available_at > as_of:
                 continue
@@ -100,17 +107,19 @@ class SecurityMasterRecord(StrictModel):
     def listed_on(self, d: date, *, as_of: datetime | None = None) -> bool:
         """Membership on d given knowledge at `as_of`.
 
-        A delisting not yet knowable at as_of cannot shorten the member's
-        future: the honest point-in-time answer is True (unknown end).
+        Fails closed to False when the record itself is not yet knowable.
+        A listing END is only knowable at as_of when its delisting record is
+        visible: with no visible delisting the honest point-in-time answer
+        past listing_start is True (unknown end) — answering False would leak
+        the future end date.
         """
+        if not self._record_visible(as_of):
+            return False
         if d < self.listing_start:
             return False
-        effective_end = self.listing_end
-        if (
-            effective_end is not None
-            and self.delisting is not None
-            and as_of is not None
-            and self.delisting.available_at > as_of
-        ):
-            effective_end = None  # delisting invisible at as_of
+        if as_of is None:
+            effective_end: date | None = self.listing_end
+        else:
+            end_known = self.delisting is not None and self.delisting.available_at <= as_of
+            effective_end = self.listing_end if end_known else None
         return effective_end is None or d <= effective_end

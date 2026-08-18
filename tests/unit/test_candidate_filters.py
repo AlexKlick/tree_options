@@ -23,12 +23,13 @@ LATER = DECISION_AT + timedelta(minutes=1)
 
 
 def _snapshot(**over) -> CandidateSnapshot:
+    contract = over.get("contract") or standard_call(expiration=date(2024, 5, 15))
     base = dict(
-        contract=standard_call(),
-        underlying_security_id="SEC-001",
+        contract=contract,
+        underlying_security_id=contract.underlying_security_id,
         decision_session=date(2024, 4, 15),
         decision_at=DECISION_AT,
-        expiration=date(2024, 5, 15),  # 30 DTE boundary
+        expiration=contract.expiration,  # duplicates the contract (coherence-checked)
         abs_delta=AsOf(Decimal("0.45"), EARLIER),
         open_interest=AsOf(1200, EARLIER),
         same_day_volume=AsOf(250, EARLIER),
@@ -94,11 +95,22 @@ class TestTriState:
 
 class TestBandEdges:
     def test_dte_calendar_day_convention_boundaries(self, filt):
-        # 2024-04-15 + 30 calendar days = 2024-05-15; + 60 = 2024-06-14
-        assert filt.evaluate(_snapshot(expiration=date(2024, 5, 15))).accepted
-        assert filt.evaluate(_snapshot(expiration=date(2024, 6, 14))).accepted
-        assert not filt.evaluate(_snapshot(expiration=date(2024, 5, 14))).accepted  # 29 DTE
-        assert not filt.evaluate(_snapshot(expiration=date(2024, 6, 15))).accepted  # 61 DTE
+        # 2024-04-15 + 30 calendar days = 2024-05-15; + 60 = 2024-06-14.
+        # DTE is derived from the CONTRACT's expiration, so each boundary is
+        # exercised by swapping the contract (the duplicated snapshot field
+        # would now trip contract_coherence).
+        assert filt.evaluate(
+            _snapshot(contract=standard_call(expiration=date(2024, 5, 15)))
+        ).accepted
+        assert filt.evaluate(
+            _snapshot(contract=standard_call(expiration=date(2024, 6, 14)))
+        ).accepted
+        assert not filt.evaluate(
+            _snapshot(contract=standard_call(expiration=date(2024, 5, 14)))
+        ).accepted  # 29 DTE
+        assert not filt.evaluate(
+            _snapshot(contract=standard_call(expiration=date(2024, 6, 15)))
+        ).accepted  # 61 DTE
 
     def test_delta_band_boundaries(self, filt):
         assert filt.evaluate(_snapshot(abs_delta=AsOf(Decimal("0.30"), EARLIER))).accepted

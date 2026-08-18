@@ -74,6 +74,19 @@ CREATE TABLE IF NOT EXISTS events (
 
 _TRANSITIONS = {"RUNNING": {"REGISTERED"}, "COMPLETED": {"RUNNING"}, "FAILED": {"RUNNING"}}
 
+_REQUIRED_TRIAL_COLUMNS = {
+    "trial_id",
+    "scope_key",
+    "scope_json",
+    "hypothesis",
+    "hyperparameters_json",
+    "git_sha",
+    "config_hash",
+    "dataset_manifest_hash",
+    "registered_at",
+    "status",
+}
+
 
 class TrialRegistry:
     def __init__(self, path: str | Path, *, budget: TrialBudget | None = None) -> None:
@@ -93,6 +106,17 @@ class TrialRegistry:
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.execute("PRAGMA busy_timeout=5000")
         self._conn.executescript(_SCHEMA)
+        # Fail closed on a pre-existing database written by an older schema:
+        # CREATE TABLE IF NOT EXISTS will NOT have added newer columns (e.g.
+        # scope_json), and every registration would then crash opaquely.
+        cols = {row[1] for row in self._conn.execute("PRAGMA table_info(trials)")}
+        missing = _REQUIRED_TRIAL_COLUMNS - cols
+        if missing:
+            raise RegistryError(
+                "REGISTRY_SCHEMA_TOO_OLD",
+                f"trials table at {path} predates the current schema "
+                f"(missing columns: {sorted(missing)}); refusing to open",
+            )
 
     def close(self) -> None:
         self._conn.close()
@@ -156,19 +180,15 @@ class TrialRegistry:
 
     # -- writes ----------------------------------------------------------------
 
-    def register(
-        self,
-        record: TrialRecord,
-        scope: TrialScope | None = None,
-        *,
-        budget: TrialBudget | None = None,
-    ) -> None:
+    def register(self, record: TrialRecord, scope: TrialScope | None = None) -> None:
         """REGISTERED insertion. The caller must PRESENT the TrialScope whose
         hash the record carries — the registry recomputes and compares, so a
         syntactically valid but fabricated scope_key is rejected. The budget
-        ALWAYS applies (caller budget overrides the default). Budget check +
-        insert share one transaction so racing writers cannot both land the
-        (cap+1)-th config."""
+        is the REGISTRY'S own (fixed at construction) and always applies: a
+        per-call budget override was exactly the cap-evasion vector (review
+        F13), so no such parameter exists. Budget check + insert share one
+        transaction so racing writers cannot both land the (cap+1)-th
+        config."""
         if scope is None:
             raise NonCanonicalScopeError(
                 record.scope_key, "the TrialScope must be presented at registration"
@@ -178,10 +198,9 @@ class TrialRegistry:
                 record.scope_key,
                 "scope_key does not derive from the presented TrialScope",
             )
-        effective_budget = budget or self.budget
         try:
             self._conn.execute("BEGIN IMMEDIATE")
-            effective_budget.check(self, record.scope_key)
+            self.budget.check(self, record.scope_key)
             self._conn.execute(
                 "INSERT INTO trials (trial_id, scope_key, scope_json, hypothesis,"
                 " hyperparameters_json, git_sha, config_hash, dataset_manifest_hash,"

@@ -13,6 +13,7 @@ from tree_options.registry.errors import (
     DuplicateTrialError,
     InvalidTransitionError,
     NonCanonicalScopeError,
+    RegistryError,
     ScopeBudgetExceededError,
     UnregisteredOutcomeError,
 )
@@ -161,31 +162,32 @@ class TestStateMachine:
 
 
 class TestBudgetAndConcurrency:
-    def test_scope_cap_32_enforced(self, registry):
-        budget = TrialBudget(cap=32)
+    def test_scope_cap_32_enforced(self, tmp_path):
+        registry = TrialRegistry(tmp_path / "t32.db", budget=TrialBudget(cap=32))
         for i in range(32):
-            registry.register(_record(trial_id=f"TRIAL-{i}"), scope=SCOPE, budget=budget)
+            registry.register(_record(trial_id=f"TRIAL-{i}"), scope=SCOPE)
         with pytest.raises(ScopeBudgetExceededError) as ei:
-            registry.register(_record(trial_id="TRIAL-33"), scope=SCOPE, budget=budget)
+            registry.register(_record(trial_id="TRIAL-33"), scope=SCOPE)
         assert ei.value.code == "SCOPE_BUDGET_EXCEEDED"
         assert registry.count_scope(SCOPE.scope_key()) == 32
+        registry.close()
 
     def test_two_connections_cannot_exceed_cap(self, tmp_path):
         """Two live connections race registrations; the cap holds."""
         import threading
 
         path = tmp_path / "trials.db"
-        reg1 = TrialRegistry(path)
-        reg2 = TrialRegistry(path)
         budget = TrialBudget(cap=10)
+        reg1 = TrialRegistry(path, budget=budget)
+        reg2 = TrialRegistry(path, budget=budget)
         for i in range(10):
-            reg1.register(_record(trial_id=f"T-{i}"), scope=SCOPE, budget=budget)
+            reg1.register(_record(trial_id=f"T-{i}"), scope=SCOPE)
 
         results = []
 
         def try_register(reg, trial_id):
             try:
-                reg.register(_record(trial_id=trial_id), scope=SCOPE, budget=budget)
+                reg.register(_record(trial_id=trial_id), scope=SCOPE)
                 results.append("registered")
             except (ScopeBudgetExceededError, sqlite3.OperationalError):
                 results.append("rejected")
@@ -257,8 +259,37 @@ class TestRegistryHardening:
         assert ei.value.code == "NON_CANONICAL_SCOPE"
 
     def test_missing_scope_rejected(self, registry):
-        with pytest.raises(NonCanonicalScopeError):
+        """The error must be the PRESENTATION requirement itself — a forged
+        default scope would raise the derivation check instead and this test
+        would not notice (kill-test for mutant M33; the assert uses the
+        distinctive phrase so the two messages cannot be confused)."""
+        with pytest.raises(NonCanonicalScopeError) as ei:
             registry.register(_record())
+        assert "must be presented at registration" in ei.value.detail
+
+    def test_per_call_budget_override_is_gone(self, registry):
+        """F13: the budget is the registry's own — there is no per-call
+        parameter to loosen. Passing one is a TypeError, not a bigger cap."""
+        with pytest.raises(TypeError):
+            registry.register(_record(), scope=SCOPE, budget=TrialBudget(cap=1000))
+
+    def test_pre_remediation_database_fails_closed(self, tmp_path):
+        """An existing DB written before scope_json existed cannot be opened:
+        CREATE TABLE IF NOT EXISTS would not migrate it, so refuse."""
+        path = tmp_path / "old.db"
+        conn = sqlite3.connect(path)
+        conn.execute(
+            "CREATE TABLE trials (trial_id TEXT PRIMARY KEY, scope_key TEXT NOT NULL,"
+            " hypothesis TEXT NOT NULL, hyperparameters_json TEXT NOT NULL,"
+            " git_sha TEXT NOT NULL, config_hash TEXT NOT NULL,"
+            " dataset_manifest_hash TEXT NOT NULL, registered_at TEXT NOT NULL,"
+            " status TEXT NOT NULL DEFAULT 'REGISTERED')"
+        )
+        conn.commit()
+        conn.close()
+        with pytest.raises(RegistryError) as ei:
+            TrialRegistry(path)
+        assert ei.value.code == "REGISTRY_SCHEMA_TOO_OLD"
 
     def test_stored_scope_json_verifiable(self, registry):
         registry.register(_record(), scope=SCOPE)

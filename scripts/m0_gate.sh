@@ -13,6 +13,28 @@ if [ "${M0_GATE_ALLOW_DIRTY:-0}" != "1" ]; then
 fi
 
 echo "== head =="; HEAD_AT_START=$(git rev-parse HEAD); echo "$HEAD_AT_START"
+# Exact-head + clean-tree assertions run from an EXIT trap so they hold on
+# EVERY exit path (mid-run failure included), not only the success tail.
+SMOKE=""
+_gate_exit_check() {
+  local rc=$?
+  if [ -n "${SMOKE:-}" ]; then rm -rf "$SMOKE"; fi
+  local head_at_end
+  head_at_end=$(git rev-parse HEAD 2>/dev/null || echo unknown)
+  if [ "$head_at_end" != "$HEAD_AT_START" ]; then
+    echo "REFUSED: head moved during the gate ($HEAD_AT_START -> $head_at_end)." >&2
+    exit 3
+  fi
+  local unexpected
+  unexpected=$(git status --porcelain | grep -v -E '^[ ?]{2}(artifacts|dist)/' | grep -v -E '^\?\? (artifacts|dist)/' || true)
+  if [ -n "$unexpected" ]; then
+    echo "REFUSED: working tree changed beyond generated artifacts:" >&2
+    echo "$unexpected" >&2
+    exit 4
+  fi
+  return "$rc"
+}
+trap _gate_exit_check EXIT
 echo "== uv sync --frozen (dev group included) =="
 uv sync --frozen
 echo "== ruff format --check =="
@@ -32,8 +54,7 @@ uv run --frozen python scripts/mutate.py \
 echo "== uv build =="
 uv build
 echo "== wheel smoke (fresh environment) =="
-SMOKE=$(mktemp -d)
-trap 'rm -rf "$SMOKE"' EXIT
+SMOKE=$(mktemp -d)  # cleaned by the EXIT trap
 uv venv "$SMOKE/venv" -q
 uv pip install --python "$SMOKE/venv/bin/python" -q dist/tree_options-*.whl
 # The wheel carries code; the frozen protocol yaml is repo data (single
@@ -50,17 +71,6 @@ assert protocol_hash(p)
 assert fraction_to_midpoint(Decimal("1.00"), Decimal("1.10"), "buy", Decimal("1")) == Decimal("1.05")
 print(f"wheel smoke ok: tree_options {tree_options.__version__ if hasattr(tree_options, '__version__') else ''} protocol {p.meta.protocol_version}")
 PY
-echo "== exact-head + clean-tree assertions =="
-HEAD_AT_END=$(git rev-parse HEAD)
-if [ "$HEAD_AT_END" != "$HEAD_AT_START" ]; then
-  echo "REFUSED: head moved during the gate ($HEAD_AT_START -> $HEAD_AT_END)." >&2
-  exit 3
-fi
-UNEXPECTED=$(git status --porcelain | grep -v -E '^[ ?]{2}(artifacts|dist)/' | grep -v -E '^\?\? (artifacts|dist)/' || true)
-if [ -n "$UNEXPECTED" ]; then
-  echo "REFUSED: working tree changed beyond generated artifacts:" >&2
-  echo "$UNEXPECTED" >&2
-  exit 4
-fi
-echo "head unchanged: $HEAD_AT_END; tree clean beyond artifacts/ and dist/"
+echo "== exact-head + clean-tree assertions (enforced by the EXIT trap) =="
+echo "head unchanged: $(git rev-parse HEAD); tree clean beyond artifacts/ and dist/"
 echo "== gate complete =="

@@ -63,6 +63,12 @@ class OptionContract(StrictModel):
         else:
             if self.deliverable.shares_per_contract != Decimal("100"):
                 raise ValueError("standard contract must deliver 100 shares")
+            if self.deliverable.corporate_action_id is not None:
+                raise ValueError(
+                    "standard contract deliverable must carry no corporate_action_id "
+                    f"(got {self.deliverable.corporate_action_id}): an adjusted "
+                    "deliverable is nonstandard by construction"
+                )
             if self.multiplier != 100:
                 raise ValueError(
                     "standard contract multiplier must be 100 "

@@ -7,6 +7,7 @@ from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
+from pydantic import ValidationError
 
 from tests.fixtures.contracts import split_adjusted_contract, standard_call
 from tests.fixtures.security import renamed_and_delisted_security
@@ -20,6 +21,7 @@ from tree_options.candidates.filters import (
 from tree_options.guards.availability import AvailabilityGuard, FutureDataError
 from tree_options.protocol.loader import load_protocol
 from tree_options.schemas.features import FeatureEvent
+from tree_options.schemas.options import OptionContract
 
 DECISION_AT = datetime(2024, 4, 15, 20, 0, tzinfo=UTC)  # 16:00 ET close
 EARLIER = DECISION_AT - timedelta(hours=2)
@@ -27,12 +29,13 @@ LATER = DECISION_AT + timedelta(minutes=1)
 
 
 def _snapshot(**over) -> CandidateSnapshot:
+    contract = over.get("contract") or standard_call(expiration=date(2024, 5, 15))
     base = dict(
-        contract=standard_call(),
-        underlying_security_id="SEC-001",
+        contract=contract,
+        underlying_security_id=contract.underlying_security_id,
         decision_session=date(2024, 4, 15),
         decision_at=DECISION_AT,
-        expiration=date(2024, 5, 15),
+        expiration=contract.expiration,
         abs_delta=AsOf(Decimal("0.45"), EARLIER),
         open_interest=AsOf(1200, EARLIER),
         same_day_volume=AsOf(250, EARLIER),
@@ -210,3 +213,68 @@ class TestDeliverableFromContract:
     def test_bool_only_snapshot_rejected_at_construction(self):
         with pytest.raises(TypeError, match="contract"):
             _snapshot(standard_contract=True)
+
+
+class TestSecurityMasterRecordVisibility:
+    """F2 (record level): the master RECORD's own available_at gates both
+    lookups — a record that arrived after the decision instant is wholly
+    invisible (kill-test for mutant M49)."""
+
+    def _late_record(self):
+        sec = renamed_and_delisted_security()
+        return sec.model_copy(update={"available_at": datetime(2024, 3, 14, 21, 0, tzinfo=UTC)})
+
+    def test_january_cannot_see_record_that_arrived_in_march(self):
+        sec = self._late_record()
+        january = datetime(2024, 2, 1, 21, 0, tzinfo=UTC)
+        with pytest.raises(KeyError):
+            sec.ticker_on(date(2024, 2, 1), as_of=january)
+        assert sec.listed_on(date(2024, 2, 1), as_of=january) is False
+
+    def test_post_arrival_decision_sees_the_record(self):
+        sec = self._late_record()
+        march = datetime(2024, 3, 20, 21, 0, tzinfo=UTC)
+        assert sec.ticker_on(date(2024, 3, 20), as_of=march) == "OLDA"
+        assert sec.listed_on(date(2024, 3, 20), as_of=march) is True
+
+
+class TestStandardDeliverableActionId:
+    """F5 (deliverable level): a standard contract whose DELIVERABLE carries
+    corporate-action provenance is adjusted by construction and must be
+    rejected at the schema layer (kill-test for mutant M50)."""
+
+    def test_standard_contract_with_deliverable_action_id_rejected(self):
+        base = standard_call()
+        data = base.model_dump()
+        data["deliverable"]["corporate_action_id"] = "SPLIT-2024-06"
+        with pytest.raises(ValidationError, match="corporate_action_id"):
+            OptionContract(**data)
+
+
+class TestSnapshotContractCoherence:
+    """Round-2 P1: duplicated snapshot fields must agree with the contract
+    object they accompany; DTE is derived from the CONTRACT's expiration."""
+
+    @pytest.fixture()
+    def filt(self, static_calendar):
+        return CandidateFilter.from_protocol(static_calendar, load_protocol())
+
+    def test_mismatched_expiration_not_evaluable(self, filt):
+        d = filt.evaluate(_snapshot(expiration=date(2024, 12, 20)))
+        assert not d.accepted
+        coherence = next(r for r in d.results if r.rule == "contract_coherence")
+        assert coherence.status == NOT_EVALUABLE
+
+    def test_mismatched_underlier_not_evaluable(self, filt):
+        d = filt.evaluate(_snapshot(underlying_security_id="SEC-OTHER"))
+        assert not d.accepted
+        assert any(r.rule == "contract_coherence" for r in d.results)
+
+    def test_unknown_decision_session_not_evaluable_not_crash(self, filt):
+        """P2: the tri-state promise — an off-calendar session yields a
+        NOT_EVALUABLE audit row, not a NotASessionError crash."""
+        d = filt.evaluate(_snapshot(decision_session=date(2024, 4, 14)))  # a Sunday
+        assert not d.accepted
+        coherence = next(r for r in d.results if r.rule == "decision_coherence")
+        assert coherence.status == NOT_EVALUABLE
+        assert "calendar" in coherence.detail

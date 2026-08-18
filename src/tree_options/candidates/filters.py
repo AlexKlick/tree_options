@@ -26,6 +26,7 @@ from decimal import Decimal
 
 from tree_options.protocol.schema import ResearchProtocol
 from tree_options.schemas.options import OptionContract
+from tree_options.time.calendar import NotASessionError
 
 PASS = "PASS"
 FAIL = "FAIL"
@@ -148,22 +149,52 @@ class CandidateFilter:
 
         # Decision coherence FIRST: a post-close or naive decision instant
         # invalidates the whole evaluation — nothing downstream may run on a
-        # mislabeled decision time.
+        # mislabeled decision time. An unknown decision_session is the same
+        # class of incoherence (the tri-state promise: NOT_EVALUABLE, not a
+        # crash — review round 2, P2).
         coherent = True
         if not _tz_aware(snap.decision_at):
             coherent = False
             results.append(RuleResult("decision_coherence", NOT_EVALUABLE, "naive decision_at"))
         else:
-            expected_close = self.calendar.session_close(snap.decision_session)
-            if snap.decision_at != expected_close:
+            try:
+                expected_close = self.calendar.session_close(snap.decision_session)
+            except NotASessionError:
                 coherent = False
                 results.append(
                     RuleResult(
                         "decision_coherence",
                         NOT_EVALUABLE,
-                        f"decision_at {snap.decision_at} != session close {expected_close}",
+                        f"decision_session {snap.decision_session} not in calendar",
                     )
                 )
+            else:
+                if snap.decision_at != expected_close:
+                    coherent = False
+                    results.append(
+                        RuleResult(
+                            "decision_coherence",
+                            NOT_EVALUABLE,
+                            f"decision_at {snap.decision_at} != session close {expected_close}",
+                        )
+                    )
+
+        # Contract coherence: the snapshot must describe the contract it
+        # carries — duplicated expiration/underlier fields that disagree with
+        # the CONTRACT OBJECT make every rule unevaluable (the contract is
+        # authoritative; the duplicates exist only for audit convenience).
+        if snap.expiration != snap.contract.expiration or snap.underlying_security_id != (
+            snap.contract.underlying_security_id
+        ):
+            coherent = False
+            results.append(
+                RuleResult(
+                    "contract_coherence",
+                    NOT_EVALUABLE,
+                    f"snapshot expiration/underlier disagree with contract "
+                    f"{snap.contract.contract_id}",
+                )
+            )
         if not coherent:
             # Nothing is evaluable at a mislabeled decision time: fail closed
             # for every rule rather than comparing against a bad instant.
@@ -184,8 +215,9 @@ class CandidateFilter:
                 contract_id=snap.contract_id, accepted=False, results=tuple(results)
             )
 
-        # DTE: calendar days (explicit convention).
-        dte = (snap.expiration - snap.decision_session).days
+        # DTE: calendar days (explicit convention), derived from the
+        # CONTRACT's expiration — never the caller-duplicated snapshot field.
+        dte = (snap.contract.expiration - snap.decision_session).days
         if self.dte_min <= dte <= self.dte_max:
             results.append(RuleResult("dte", PASS, f"dte {dte}"))
         else:

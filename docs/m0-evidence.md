@@ -2,8 +2,11 @@
 
 Written only from captured artifacts (logs and generated files cited inline).
 **Invalidation rule:** any change to code, tests, protocol, or dependencies
-after the exact head below invalidates this packet; re-run the gate and
-re-review before relying on it.
+after the exact head this packet was gated at invalidates this packet in
+full; re-run the gate and re-review before relying on it. The exact head is
+pinned in the PR body together with the captured gate and clean-clone logs
+(each log prints and asserts the head it blessed — the gate refuses to
+complete on a moved head), because a commit cannot contain its own hash.
 
 ## 1. Repository coordinates
 
@@ -12,9 +15,11 @@ re-review before relying on it.
 - Working tree: clean at gate time (the gate refuses a dirty tree and
   asserts, at exit, that the head did not move and only `artifacts/`/`dist/`
   changed)
-- History: initial build `3a1887f`→`196fdd0` (first packet, §2–§9), then the
-  independent-review remediation `a2c5b90`→ this head (round-2 findings
-  F1–F18). The gate-complete head and clean-clone run are recorded in §6.
+- History: initial build `3a1887f`→`196fdd0` (first packet, §2–§9), then
+  independent-review remediation `a2c5b90`→`a1cac82` (round-1 findings
+  F1–F18), the owner-scoped-classifier follow-through `0f2fe88`, and the
+  round-2 closure commit at this head (§6). The gate-complete head and
+  clean-clone run are recorded in §6 and the PR body.
 
 ## 2. Protocol identity
 
@@ -46,19 +51,19 @@ head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 | lint | `ruff check src tests scripts` | All checks passed |
 | types | `mypy` | Success: no issues found in 36 source files |
 | compile | `python -m compileall -q src tests scripts` | ok |
-| tests | `pytest -W error` | **235 passed, 0 failed, 0 skipped** |
-| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=47, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
+| tests | `pytest -W error` | **244 passed, 0 failed, 0 skipped** |
+| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=51, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
 | build | `uv build` | sdist + wheel built |
 | wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `ee929ec39bd0d90d362572decc398b8f837d551c377e084ccb79974091c8163f`;
-`artifacts/m0-mutations.md` sha256 `0865432056593853c0e2667de14153ad126e4813b6e94e719a01a8abd3dd04a0`.
+`artifacts/m0-mutations.json` sha256 `664c315944d7bd1f130d534b9eb0a0d69962ad04dc8efaa6c7c70118e5e4b564`;
+`artifacts/m0-mutations.md` sha256 `b6b6ea31efb052d39b7f151d405319b0fff624604c49c193bd8aa96bff18ebb7`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 47}  total=47
+totals: {'KILLED': 51}  total=51
 restoration full-suite pass: True
 ```
 
@@ -80,23 +85,25 @@ proves restoration.
 | INV-05 same-session grouping / anchored / disjoint folds | splitting | test_split_properties.py | M27–M29 |
 | INV-06 purge + embargo | splitting/checks | test_split_properties.py | M26 |
 | INV-07 fit-on-train-only | guards/fitting (NEW) | test_fitting_guard.py | M46 |
-| INV-08 identity ≠ ticker + point-in-time master | schemas/security + fixtures | test_identity_fixtures.py, test_leakage_v2.py | M43 |
-| INV-09 contract existence (decision AND execution) | schemas/options + fills | test_fill_engine.py, test_fill_semantics_v2.py | M06, M09 |
-| INV-10 next-session execution (both levels, calendar close) | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39 |
+| INV-08 identity ≠ ticker + point-in-time master | schemas/security + fixtures | test_identity_fixtures.py, test_leakage_v2.py | M43, M49 |
+| INV-09 contract existence + standard deliverable (incl. deliverable-level action provenance) | schemas/options + fills | test_fill_engine.py, test_fill_semantics_v2.py, test_leakage_v2.py | M06, M09, M50 |
+| INV-10 next-session execution (both levels, calendar close) + order-quantity bounding of partial chains | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39, M48 |
 | INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45, M47 |
 | INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M23, M41 |
 | INV-13 registered-before-outcome + 32-cap + canonical scopes | registry | test_registry.py | M30–M33, M42 |
 | INV-14 stamped artifacts | protocol/stamping | test_stamping.py | — (structural) |
-| candidate point-in-time inputs + decision coherence | candidates/filters | test_candidate_filters.py, test_leakage_v2.py | M34–M36, M44 |
+| candidate point-in-time inputs + decision/contract coherence | candidates/filters | test_candidate_filters.py, test_leakage_v2.py | M34–M36, M44, M51 |
 | calendar integrity + DST/early-close | time/calendar | test_calendar.py | M38 |
 | naive-clock ban | schemas/common + AST test | test_schemas.py, test_calendar.py | M20 |
 
-INV-07 honesty note (review F1): M0 has NO model pipeline; what M0 enforces
-and tests is the executable core — fitted artifacts record their fit
-sessions, refuse refits under the same name, refuse application outside the
-fit set, and `assert_fit_excludes` detects a fit that touched eval
-sessions. Full pipeline enforcement (transform chains, selection loops)
-lands with M2 and is claimed nowhere here.
+INV-07 honesty note (review F1, round-2 corrected): M0 has NO model pipeline;
+what M0 enforces and tests is the executable core — fitted artifacts record
+their fit sessions, refuse refits under the same name, refuse APPLICATION of
+an unfitted artifact, RECORD every application (applying a train-fitted
+artifact to val/test is the sanctioned direction, not a leak), and
+`assert_fit_excludes` detects a fit that touched eval sessions. Full
+pipeline enforcement (transform chains, selection loops) lands with M2 and
+is claimed nowhere here.
 
 ## 6. Independent review and clean-clone proof
 
@@ -109,12 +116,27 @@ lands with M2 and is claimed nowhere here.
   credited by collateral (non-owner) failures — M02 and M19 were re-aimed to
   their true owning tests, the off-tick defense was split into ask/bid
   mutants (M45/M47), and the manifest grew to 47.
-- Clean-clone proof at the final gate head: fresh `git clone` to a temp dir,
-  `bash scripts/m0_gate.sh` executed there, exit 0, `git status --short`
-  empty afterward; head/lock/protocol hashes identical to §2. The complete
-  captured run is the clean-clone gate log referenced in the PR body.
-- Round 2 re-review of the changed areas at the final head: recorded in the
-  PR body (§10 of the packet requires re-review after remediation).
+- Round 2 re-review (Codex, head `0f2fe88`): NO-GO — 7 findings held
+  NOT_RESOLVED (F1 apply_to semantics, F2 record-level as_of, F5
+  deliverable-level action id, F6 caller-omitted quotes, F12 partial-chain
+  overfill, F13 per-call budget override, F18 evidence wording) plus 3 new
+  P1s (snapshot/contract coherence, unmigratable pre-remediation DB, three
+  non-behavioral mutants M31/M33/M39) and 2 P2s (NotASessionError crash,
+  gate assertions not on every exit path). All code-level findings were
+  remediated in the round-2 closure commit at this head (F6 is a declared
+  scope boundary, not a code fix — see owner decision 10); the manifest grew
+  to 51 with M48–M51 covering the new defenses.
+- Round 3 re-review (Codex, this head): verdict recorded verbatim in the PR
+  body.
+- Clean-clone proof: the protocol is a fresh `git clone --no-local` to a
+  temp dir, `bash scripts/m0_gate.sh` executed inside the clone, exit 0,
+  clone tree clean beyond `artifacts/`/`dist/` afterward, and the clone's
+  regenerated `artifacts/m0-mutations.{json,md}` byte-identical (sha256) to
+  the source tree's. The captured gate log and clean-clone log are attached
+  to the PR body together with the exact base/head hashes; both logs carry
+  the head they blessed (the gate prints and asserts it), and this doc does
+  not preclaim their contents beyond §3's table, which is written from the
+  gate run at this packet's head.
 
 ## 7. Fixture inventory (§5.3)
 
@@ -164,6 +186,14 @@ lands with M2 and is claimed nowhere here.
    engine the visible quote stream; the engine selects the latest eligible
    quote at the latency-shifted instant (single-quote calls are a
    one-element stream).
+10. Quote-stream COMPLETENESS is the caller's contract (review round 2, F6):
+    the engine enforces everything reachable inside the stream it is handed
+    (no future quotes, no stale/locked/crossed/off-tick prints, latency-
+    shifted latest-eligible selection — mutation-proven), but a caller that
+    simply omits the newest quote from the stream evades detection by
+    construction. M0 has no market-data replay layer to cross-check the
+    stream against; the first enforceable surface for completeness arrives
+    with the M1 point-in-time dataset, which will own quote provision.
 
 ## 10. Known limitations and nonclaims
 
@@ -172,6 +202,9 @@ lands with M2 and is claimed nowhere here.
 - No strategy backtest, no return or performance claim.
 - No historical options-chain replay; candidate filters are synthetic M0
   plumbing.
+- Quote-stream COMPLETENESS is unverifiable in M0 (owner decision 10): the
+  fill engine can be fed an abridged stream by a caller, and nothing in M0
+  can detect the omission.
 - No calibrated real-world fee/slippage model (placeholder constants).
 - No exercise/assignment engine (deferred fixture only).
 - No paper or live trading authorization.

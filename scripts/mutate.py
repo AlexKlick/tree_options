@@ -308,7 +308,7 @@ MUTANTS = [
         owner="test_duplicate_trial_id_rejected",
         file="src/tree_options/registry/sqlite.py",
         anchor='"INSERT INTO trials (trial_id, scope_key, scope_json, hypothesis,"',
-        replacement='"INSERT OR IGNORE INTO trials (trial_id, scope_key, hypothesis,"',
+        replacement='"INSERT OR IGNORE INTO trials (trial_id, scope_key, scope_json, hypothesis,"',
         selectors=[f"{U}/test_registry.py"],
         invariant="INV-13 duplicate id rejected",
     ),
@@ -322,13 +322,22 @@ MUTANTS = [
         invariant="REGISTERED->RUNNING->outcome ordering",
     ),
     dict(
-        id="M33-missing-scope-accepted",
+        id="M33-missing-scope-forged-default",
         owner="test_missing_scope_rejected",
         file="src/tree_options/registry/sqlite.py",
-        anchor="if scope is None:",
-        replacement="if False:",
+        anchor=(
+            "if scope is None:\n"
+            "            raise NonCanonicalScopeError(\n"
+            "                record.scope_key, \"the TrialScope must be presented at registration\"\n"
+            "            )"
+        ),
+        replacement=(
+            'if scope is None: scope = TrialScope(protocol_id="forged", '
+            'protocol_hash="0" * 64, outer_fold_id="F", target_horizon="1", '
+            'feature_set_id="fs", model_family="x")'
+        ),
         selectors=[f"{U}/test_registry.py"],
-        invariant="scope evasion rejected",
+        invariant="scope evasion rejected (forged default, not a crash)",
     ),
     dict(
         id="M34-candidate-future-input-accepted",
@@ -376,13 +385,13 @@ MUTANTS = [
         invariant="calendar tamper fails closed",
     ),
     dict(
-        id="M39-early-close-decision-ignored",
+        id="M39-decision-close-trusts-caller",
         owner="test_regular_close_on_early_close_session_rejected",
         file="src/tree_options/guards/fills.py",
         anchor="calendar_decision_close = self.calendar.session_close(order.decision_session)",
-        replacement="calendar_decision_close = session_close_instant(order.decision_session)",
+        replacement="calendar_decision_close = order.decision_at",
         selectors=[f"{G}/test_fill_integrity_v2.py"],
-        invariant="decision close is calendar-aware (early closes)",
+        invariant="decision close is calendar-derived, not caller-stamped",
     ),
     dict(
         id="M40-duplicate-order-accepted",
@@ -455,6 +464,42 @@ MUTANTS = [
         replacement="overlap = frozenset()",
         selectors=["tests/guards/test_fitting_guard.py"],
         invariant="INV-07 fit-on-train-only detected",
+    ),
+    dict(
+        id="M48-partial-overfill-accepted",
+        owner="test_partial_sequence_cannot_exceed_order_quantity",
+        file="src/tree_options/guards/fills.py",
+        anchor="if partial_sequence and already_filled >= order.quantity:",
+        replacement="if False:",
+        selectors=[f"{G}/test_fill_integrity_v2.py"],
+        invariant="partial chains bounded by order quantity",
+    ),
+    dict(
+        id="M49-security-record-future-visible",
+        owner="test_january_cannot_see_record_that_arrived_in_march",
+        file="src/tree_options/schemas/security.py",
+        anchor="return as_of is None or self.available_at <= as_of",
+        replacement="return True",
+        selectors=[f"{U}/test_leakage_v2.py"],
+        invariant="master record invisible before its own available_at",
+    ),
+    dict(
+        id="M50-deliverable-action-id-ignored",
+        owner="test_standard_contract_with_deliverable_action_id_rejected",
+        file="src/tree_options/schemas/options.py",
+        anchor="if self.deliverable.corporate_action_id is not None:",
+        replacement="if False:",
+        selectors=[f"{U}/test_leakage_v2.py"],
+        invariant="standard deliverable carries no action provenance",
+    ),
+    dict(
+        id="M51-snapshot-incoherence-accepted",
+        owner="test_mismatched_expiration_not_evaluable",
+        file="src/tree_options/candidates/filters.py",
+        anchor="snap.expiration != snap.contract.expiration",
+        replacement="False",
+        selectors=[f"{U}/test_leakage_v2.py"],
+        invariant="snapshot fields must agree with the contract object",
     ),
 ]
 

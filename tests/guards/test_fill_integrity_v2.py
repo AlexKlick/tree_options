@@ -220,15 +220,19 @@ class TestDuplicateOrderExecution:
             engine.execute(order, [q], july_contract(), execution_session=ex, execution_at=at)
         assert ei.value.code == "DUPLICATE_ORDER_EXECUTION"
 
-    def test_explicit_partial_sequence_allowed(self, synthetic_calendar):
-        """A deliberate partial-fill continuation must say so explicitly."""
+    def test_partial_sequence_cannot_exceed_order_quantity(self, synthetic_calendar):
+        """F12: a partial chain is bounded by the order's REMAINING quantity.
+        Kill-test for the PARTIAL_EXCEEDS_ORDER guard (mutant M48)."""
         cal = synthetic_calendar
         d = next(x for x in cal.sessions() if x >= date(2024, 4, 1))
         ex = cal.nth_after(d, 1)
         ex2 = cal.nth_after(d, 2)
+        ex3 = cal.nth_after(d, 3)
         at = execution_instant(cal.session_open(ex))
         at2 = execution_instant(cal.session_open(ex2))
-        engine = FillEngine.from_protocol(cal, load_protocol())
+        at3 = execution_instant(cal.session_open(ex3))
+        # displayed ask size 5, fraction 0.6 -> capacity 3 per call
+        engine = FillEngine.from_protocol(cal, load_protocol(), fill_size_fraction=Decimal("0.6"))
         order = Order(
             order_id="ORD-PART",
             contract_id=CONTRACT_ID,
@@ -240,20 +244,32 @@ class TestDuplicateOrderExecution:
         )
         f1 = engine.execute(
             order,
-            [fresh_quote(execution_at=at)],
+            [fresh_quote(execution_at=at, ask_size=5)],
             july_contract(),
             execution_session=ex,
             execution_at=at,
         )
         f2 = engine.execute(
             order,
-            [fresh_quote(execution_at=at2)],
+            [fresh_quote(execution_at=at2, ask_size=5)],
             july_contract(),
             execution_session=ex2,
             execution_at=at2,
             partial_sequence=True,
         )
+        assert f1.quantity == 3
+        assert f2.quantity == 2  # the REMAINING quantity, not another capacity fill
         assert f1.fill_id != f2.fill_id
+        with pytest.raises(FillRejection) as ei:
+            engine.execute(
+                order,
+                [fresh_quote(execution_at=at3, ask_size=5)],
+                july_contract(),
+                execution_session=ex3,
+                execution_at=at3,
+                partial_sequence=True,
+            )
+        assert ei.value.code == "PARTIAL_EXCEEDS_ORDER"
 
 
 class TestFutureQuoteDirect:
