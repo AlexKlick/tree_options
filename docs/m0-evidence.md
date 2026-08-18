@@ -23,9 +23,11 @@ complete on a moved head), because a commit cannot contain its own hash.
   (integer-only cap) plus its closure commit, the round-5 remediation
   `9ff812a` (read-only cap, strict protocol field) plus its closure
   commit, the round-6 remediation `e42b389` (enforcement-point
-  re-validation, fixed registry budget reference) plus this round-6
-  closure commit. The gate-complete head and clean-clone run are recorded
-  in §6 and the PR body.
+  re-validation, fixed registry budget reference) plus the round-6
+  closure commit `1286719`, the round-7 remediation `1aa9672` (the cap
+  COMMITTED to storage — in-range loosening and budget-reference swaps
+  refuse) plus this round-7 closure commit. The gate-complete head and
+  clean-clone run are recorded in §6 and the PR body.
 
 ## 2. Protocol identity
 
@@ -57,19 +59,19 @@ head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 | lint | `ruff check src tests scripts` | All checks passed |
 | types | `mypy` | Success: no issues found in 36 source files |
 | compile | `python -m compileall -q src tests scripts` | ok |
-| tests | `pytest -W error` | **255 passed, 0 failed, 0 skipped** |
-| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=58, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
+| tests | `pytest -W error` | **257 passed, 0 failed, 0 skipped** |
+| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=60, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
 | build | `uv build` | sdist + wheel built |
 | wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `ea80fc073915dc9100623fb648cb1ed23496bc30f2afb60c97b9e19564257535`;
-`artifacts/m0-mutations.md` sha256 `397048fb9eaa5e2a3e40af76dbd16624e86b0e286052a1ea0f92417753d316c5`.
+`artifacts/m0-mutations.json` sha256 `ea16ddaaeb054dd4ea7d03a124ce0ef492cf1e473690a8d8a9e552b2451f2679`;
+`artifacts/m0-mutations.md` sha256 `d54d75096a440593b5862d9e588ae7b564f2c4244e00a3bb6d2ee857ebd853f1`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 58}  total=58
+totals: {'KILLED': 60}  total=60
 restoration full-suite pass: True
 ```
 
@@ -96,7 +98,7 @@ proves restoration.
 | INV-10 next-session execution (both levels, calendar close) + order-quantity bounding of partial chains + order-id binding | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39, M48, M53 |
 | INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45, M47 |
 | INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M23, M41 |
-| INV-13 registered-before-outcome + 32-cap (tighten-only INTEGER ceiling at construction, read-only after construction, re-validated at every enforcement point — tampered values fail closed; registry budget reference fixed at construction; strict at the protocol source) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42, M54–M58 |
+| INV-13 registered-before-outcome + 32-cap (tighten-only INTEGER ceiling at construction, read-only after construction, re-validated at every enforcement point — tampered values fail closed; registry budget reference fixed at construction; the cap COMMITTED to storage at the scope's first registration — a live budget that disagrees with the recorded commitment refuses registration, closing in-range `_cap` loosening and `_budget` reference swaps; strict at the protocol source) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42, M54–M60 |
 | INV-14 stamped artifacts | protocol/stamping | test_stamping.py | — (structural) |
 | candidate point-in-time inputs + decision/contract coherence | candidates/filters | test_candidate_filters.py, test_leakage_v2.py | M34–M36, M44, M51 |
 | calendar integrity + DST/early-close | time/calendar | test_calendar.py | M38 |
@@ -204,8 +206,35 @@ is claimed nowhere here.
   it now guards (`>= stored:`). The threat-model boundary is recorded as
   decision 12. The gate at `e42b389`/this head recorded §3's counts and
   hashes.
-- Round 7 re-review (Codex, this head): verdict recorded verbatim in the PR
-  body.
+- Round 7 re-review (Codex, head `1286719`): NO-GO — items 4–5 verified
+  RESOLVED (M57/M58 and the re-pinned M30 are true behavioral kills with
+  owner FAILED lines in the artifact; the delta sweep over `errors.py`,
+  the transaction rollback, the two new tests, and the manifest changes
+  found no new defect), but NEW-8 was held NOT_RESOLVED at a deeper level
+  than round 6 tested: enforcement validates only the current value's
+  DOMAIN, not the original COMMITMENT — an ordinary in-range DATA write
+  (`budget._cap = 32` after registering ten configs under cap=10) passes
+  every domain check and `10 >= 32` is false, so the 11th registers; the
+  read-only `budget` property blocks the public spelling but the
+  reference lives in an ordinarily writable `_budget` attribute, so
+  `reg._budget = TrialBudget(cap=32)` swaps the policy with neither code
+  substitution nor a direct SQLite edit; and F18 was held because §5 and
+  decision 12 still claimed the reference "cannot be swapped loose" while
+  those data writes stood. Final line, verbatim: "NO-GO". Remediated
+  red-first in `1aa9672`: the cap is a COMMITMENT fixed in storage — the
+  new `scope_commitments` table records `(scope_key, cap)` at a scope's
+  FIRST registration inside the registration transaction, and every
+  registration compares the live budget's cap against the recorded
+  commitment, raising the new `BUDGET_COMMITMENT_CHANGED` on any
+  disagreement (either direction — a different cap belongs to a different
+  scope). `test_committed_cap_cannot_be_loosened_mid_scope` and
+  `test_swapped_budget_reference_refuses` both FAILED on `1286719` and
+  pass now; mutants M59 (equality gutted) and M60 (commitment read
+  misses) grew the manifest to 60. The only remaining path past the
+  commitment is a direct SQLite edit of the table — decision 5's excluded
+  class. The gate at `1aa9672`/this head recorded §3's counts and hashes.
+- Round 8 re-review (Codex, this head): verdict recorded verbatim in the
+  PR body.
 - Clean-clone proof: the protocol is a fresh `git clone --no-local` to a
   temp dir, `bash scripts/m0_gate.sh` executed inside the clone, exit 0,
   clone tree clean beyond `artifacts/`/`dist/` afterward, and the clone's
@@ -280,7 +309,7 @@ is claimed nowhere here.
     `listing_start` is True (unknown end), and after it passes a record
     with no delisting event is honored (review round 3, F2).
 12. A scope cap is an INTEGER commitment, defended in depth (review
-    rounds 4–6): the `TrialBudget` constructor refuses non-int caps
+    rounds 4–7): the `TrialBudget` constructor refuses non-int caps
     outright (NEW-5); the cap is a read-only property after construction
     (NEW-6); the protocol source is strict — `max_registered_configs`
     refuses bool/str/float instead of coercing them (NEW-7); `check()`
@@ -288,16 +317,21 @@ is claimed nowhere here.
     `BUDGET_TAMPERED` on anything but an int in `[1, 32]`, so a poisoned
     backing field fails closed instead of disabling the cap (NEW-8) — this
     includes direct `_cap` and `object.__setattr__` writes, which are
-    data tampering and are caught at the enforcement point; and the
-    registry's budget reference is fixed at construction, so a
-    pre-registered tightening cannot be swapped loose. Threat-model
-    boundary (extends decision 5): enforcement is software-only — a
-    caller who substitutes CODE (a subclass overriding `check()` or any
-    other method, a monkeypatched function, direct SQLite edits) has left
-    the bounded API and entered the decision-5 class of act; no in-process
-    software can bound code substitution, and no claim is made against
-    it. Integer caps in `[1, 32]`, fixed at construction; tighten-only
-    stands.
+    data tampering and are caught at the enforcement point; and the cap is
+    COMMITTED to storage: the `scope_commitments` table records the cap
+    at the scope's FIRST registration, and every later registration
+    compares the live budget's cap against that recorded commitment —
+    `BUDGET_COMMITMENT_CHANGED` refuses any disagreement, so an in-range
+    `_cap` loosening or an ordinary `_budget` reference swap (pure DATA
+    writes, no code substitution) cannot loosen a pre-registered
+    tightening. Threat-model boundary (extends decision 5): enforcement is
+    software-only — the only paths past the commitment are a direct
+    SQLite edit of the storage (decision 5's excluded class) or a caller
+    who substitutes CODE (a subclass overriding `check()` or any other
+    method, a monkeypatched function), which has left the bounded API; no
+    in-process software can bound code substitution, and no claim is made
+    against it. Integer caps in `[1, 32]`, fixed at construction and
+    committed to storage; tighten-only stands.
 
 ## 10. Known limitations and nonclaims
 
