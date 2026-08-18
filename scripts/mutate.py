@@ -44,7 +44,7 @@ MUTANTS = [
     ),
     dict(
         id="M02-availability-gutted",
-        owner="test_usable_only_after_publication",
+        owner="test_future_return_feature_rejected",
         file="src/tree_options/guards/availability.py",
         anchor="if ev.available_at <= decision_at:",
         replacement="if True:",
@@ -197,7 +197,7 @@ MUTANTS = [
     ),
     dict(
         id="M19-quote-selection-reaches-back",
-        owner="test_engine_uses_latest_quote_not_most_favorable",
+        owner="test_quote_stream_selection_monotone_in_time",
         file="src/tree_options/schemas/market.py",
         anchor="eligible = [q for q in quotes if q.received_timestamp <= execution_at]",
         replacement="eligible = list(quotes)",
@@ -430,13 +430,22 @@ MUTANTS = [
         invariant="supplied volume always evaluated",
     ),
     dict(
-        id="M45-off-tick-quote-accepted",
+        id="M45-off-tick-ask-accepted",
         owner="test_off_tick_ask_rejected",
+        file="src/tree_options/schemas/market.py",
+        anchor='assert_on_tick(q.ask, "ask")',
+        replacement="pass",
+        selectors=[f"{G}/test_fill_integrity_v2.py"],
+        invariant="off-tick ask rejected",
+    ),
+    dict(
+        id="M47-off-tick-bid-accepted",
+        owner="test_off_tick_bid_rejected",
         file="src/tree_options/schemas/market.py",
         anchor='assert_on_tick(q.bid, "bid")',
         replacement="pass",
         selectors=[f"{G}/test_fill_integrity_v2.py"],
-        invariant="off-tick quotes rejected",
+        invariant="off-tick bid rejected",
     ),
     dict(
         id="M46-fit-on-eval-undetected",
@@ -517,10 +526,16 @@ def run_mutant(worktree: Path, mutant: dict) -> dict:
             result["verdict"], result["detail"] = "TIMEOUT", "owning selectors exceeded 600s"
             return result
         out = proc.stdout + proc.stderr
-        behavioral_fail = any(line.startswith(f) for line in out.splitlines() for f in FAILING)
-        if behavioral_fail:
+        failed_lines = [ln for ln in out.splitlines() if ln.startswith(FAILING)]
+        owner_failures = [ln for ln in failed_lines if mutant["owner"] in ln]
+        if owner_failures:
             result["verdict"] = "KILLED"
-            result["detail"] = next(ln for ln in out.splitlines() if ln.startswith("FAILED"))[:120]
+            result["detail"] = owner_failures[0][:120]
+        elif failed_lines:
+            # Other tests failed but the OWNING test passed: never a kill —
+            # the mutant is provoking collateral damage, not a caught defect.
+            result["verdict"] = "INVALID_MUTANT"
+            result["detail"] = f"non-owner failures only: {failed_lines[0][:90]}"
         elif proc.returncode == 0:
             result["verdict"] = "SURVIVED"
             result["detail"] = "owning selectors passed under the mutant"

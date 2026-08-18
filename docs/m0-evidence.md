@@ -44,21 +44,21 @@ head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 | install | `uv sync --frozen` | ok |
 | format | `ruff format --check src tests scripts` | ok |
 | lint | `ruff check src tests scripts` | All checks passed |
-| types | `mypy` | Success: no issues found in 35 source files |
+| types | `mypy` | Success: no issues found in 36 source files |
 | compile | `python -m compileall -q src tests scripts` | ok |
 | tests | `pytest -W error` | **235 passed, 0 failed, 0 skipped** |
-| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=46, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
+| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=47, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
 | build | `uv build` | sdist + wheel built |
 | wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `dde41d56e5b3bbd2ec0384772bd75224ace63173b252a0a5a2e65b6381a8a1a9`;
-`artifacts/m0-mutations.md` sha256 `f8ffe6d8617eb4828b2866b619d78730dafdc5181250b1ed1f151ca6440f785d`.
+`artifacts/m0-mutations.json` sha256 `ee929ec39bd0d90d362572decc398b8f837d551c377e084ccb79974091c8163f`;
+`artifacts/m0-mutations.md` sha256 `0865432056593853c0e2667de14153ad126e4813b6e94e719a01a8abd3dd04a0`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 46}  total=46
+totals: {'KILLED': 47}  total=47
 restoration full-suite pass: True
 ```
 
@@ -83,7 +83,7 @@ proves restoration.
 | INV-08 identity ≠ ticker + point-in-time master | schemas/security + fixtures | test_identity_fixtures.py, test_leakage_v2.py | M43 |
 | INV-09 contract existence (decision AND execution) | schemas/options + fills | test_fill_engine.py, test_fill_semantics_v2.py | M06, M09 |
 | INV-10 next-session execution (both levels, calendar close) | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39 |
-| INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45 |
+| INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45, M47 |
 | INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M23, M41 |
 | INV-13 registered-before-outcome + 32-cap + canonical scopes | registry | test_registry.py | M30–M33, M42 |
 | INV-14 stamped artifacts | protocol/stamping | test_stamping.py | — (structural) |
@@ -103,7 +103,12 @@ lands with M2 and is claimed nowhere here.
 - Round 1 review (Codex, head `66442f6`): NO-GO with 14 blocking + 4
   secondary findings (F1–F18). All were remediated in commits `a2c5b90`
   (F6–F10, F12), `2d5f930` (F2–F5), `cfba5a2` (F11), `96b6a1a` (F13, F14),
-  `8e222c2` (F16, F17), and this commit (F1, F15, F18).
+  `8e222c2` (F16, F17), and `a1cac82` (F1, F15, F18). F15's owner-scoped
+  kill classification was then enforced for real in the follow-through
+  commit at this head: under it, three of the original 46 verdicts had been
+  credited by collateral (non-owner) failures — M02 and M19 were re-aimed to
+  their true owning tests, the off-tick defense was split into ask/bid
+  mutants (M45/M47), and the manifest grew to 47.
 - Clean-clone proof at the final gate head: fresh `git clone` to a temp dir,
   `bash scripts/m0_gate.sh` executed there, exit 0, `git status --short`
   empty afterward; head/lock/protocol hashes identical to §2. The complete
