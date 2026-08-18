@@ -112,11 +112,41 @@ def _require_ratio_match(action: CorporateActionRecord, factor: Decimal) -> None
 
 
 def verify_manifest(snapshot: DatasetSnapshot, calendar: StaticSessionCalendar) -> None:
-    """The manifest is bound to content: post-ingest row swaps must fail."""
-    expected = content_sha256(snapshot.bars, snapshot.actions)
+    """The manifest is bound to content AND its own metadata: post-ingest
+    swaps of rows, master records, provider, or counts must all fail
+    (review round 1, P1-1)."""
+    expected = content_sha256(snapshot.master, snapshot.bars, snapshot.actions)
     if expected != snapshot.manifest.content_sha256:
         raise DataQualityError(
             f"manifest content mismatch for {snapshot.snapshot_id}: "
             f"manifest says {snapshot.manifest.content_sha256}, rows hash to {expected}"
+        )
+    m = snapshot.manifest
+    if m.bar_count != len(snapshot.bars) or m.action_count != len(snapshot.actions):
+        raise DataQualityError(
+            f"manifest count mismatch for {snapshot.snapshot_id}: "
+            f"claims {m.bar_count}/{m.action_count}, snapshot has "
+            f"{len(snapshot.bars)}/{len(snapshot.actions)}"
+        )
+    sources = {b.source for b in snapshot.bars} | {a.source for a in snapshot.actions}
+    if sources and sources != {m.provider}:
+        raise DataQualityError(
+            f"manifest provider mismatch for {snapshot.snapshot_id}: "
+            f"manifest says {m.provider!r}, rows carry {sorted(sources)}"
+        )
+    row_hashes = tuple(
+        sorted(
+            [b.source_row_hash for b in snapshot.bars]
+            + [a.source_row_hash for a in snapshot.actions]
+        )
+    )
+    if row_hashes != m.source_row_hashes:
+        raise DataQualityError(f"manifest source-row hash list mismatch for {snapshot.snapshot_id}")
+    sessions = sorted(b.session for b in snapshot.bars)
+    coverage = (sessions[0], sessions[-1]) if sessions else None
+    if coverage != m.session_coverage:
+        raise DataQualityError(
+            f"manifest session coverage mismatch for {snapshot.snapshot_id}: "
+            f"manifest says {m.session_coverage}, bars span {coverage}"
         )
     validate_snapshot(snapshot, calendar)

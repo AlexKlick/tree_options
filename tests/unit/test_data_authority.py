@@ -9,6 +9,7 @@ filtering (M1 acceptance 3/5; packet workstream C).
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -70,7 +71,13 @@ def test_merger_and_bankruptcy_delistings_are_point_in_time(static_calendar):
     assert master["SEC-006"].delisting is not None
     assert master["SEC-006"].delisting.reason == "merger"
     assert master["SEC-007"].delisting is not None
+    assert master["SEC-007"].delisting.reason == "bankruptcy_11"
     assert master["SEC-007"].delisting.final_price_available is False
+    assert master["SEC-001"].delisting is not None
+    assert master["SEC-001"].delisting.reason == "voluntary_delisting"
+    dividends = [a for a in snapshot.actions if a.kind == "cash_dividend"]
+    assert len(dividends) == 1
+    assert dividends[0].cash_amount == Decimal("0.25")
     mergers = [a for a in snapshot.actions if a.kind == "merger"]
     assert len(mergers) == 1
     assert mergers[0].security_id == "SEC-006"

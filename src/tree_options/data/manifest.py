@@ -19,14 +19,25 @@ from tree_options.data.actions import CorporateActionRecord
 from tree_options.data.bars import BarRecord
 from tree_options.data.digest import canonical_bytes
 from tree_options.schemas.common import IdStr, StrictModel, UTCDatetime
+from tree_options.schemas.security import SecurityMasterRecord
 
 MANIFEST_SCHEMA_VERSION = "m1/1"
 CONTENT_DOMAIN = b"tree-options-m1-content-v1"
 
 
-def content_sha256(bars: Iterable[BarRecord], actions: Iterable[CorporateActionRecord]) -> str:
+def content_sha256(
+    master: Iterable[SecurityMasterRecord],
+    bars: Iterable[BarRecord],
+    actions: Iterable[CorporateActionRecord],
+) -> str:
+    """Binds the snapshot's ENTIRE normalized content: the master records
+    (listing windows, delistings — the universe definition) plus every
+    bar and action row. Swapping any of them after ingest changes this
+    digest (review round 1, P1-1)."""
     digest = hashlib.sha256()
     digest.update(CONTENT_DOMAIN)
+    for record in sorted(master, key=lambda r: r.security_id):
+        digest.update(canonical_bytes(record))
     for bar in sorted(bars, key=lambda r: (r.security_id, r.session, r.source_record_id)):
         digest.update(canonical_bytes(bar))
     for action in sorted(

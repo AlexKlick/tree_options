@@ -188,3 +188,35 @@ def test_ambiguous_ticker_windows_raise():
     resolver = TickerResolver(clash)
     with pytest.raises(AmbiguousTickerError):
         resolver.resolve("TWO", date(2024, 2, 1), datetime(2024, 2, 1, 23, 0, tzinfo=UTC))
+
+
+def test_resolver_respects_master_record_availability():
+    """P1-2: a mapping inside a record that is itself not yet knowable must
+    be invisible — record.available_at gates the whole record (M0 contract,
+    schemas/security.py _record_visible)."""
+    from datetime import date as _date
+
+    from tests.fixtures.raw_vendor import PROVIDER as _P  # noqa: F401  (symmetry)
+    from tree_options.data.resolve import TickerResolver, UnknownTickerError
+    from tree_options.schemas.security import SecurityMasterRecord, TickerMappingRecord
+
+    late_record = SecurityMasterRecord(
+        security_id="SEC-LATE",
+        listing_start=_date(2024, 1, 2),
+        exchange="NASDAQ",
+        source="t",
+        available_at=datetime(2024, 3, 1, 21, 0, tzinfo=UTC),  # record arrives in March
+        ticker_mappings=(
+            TickerMappingRecord(
+                security_id="SEC-LATE",
+                ticker="LATE",
+                effective_from=_date(2024, 1, 2),
+                available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),  # mapping is early
+            ),
+        ),
+    )
+    resolver = TickerResolver((late_record,))
+    with pytest.raises(UnknownTickerError):
+        resolver.resolve("LATE", _date(2024, 2, 1), datetime(2024, 2, 1, 23, 0, tzinfo=UTC))
+    got = resolver.resolve("LATE", _date(2024, 3, 4), datetime(2024, 3, 4, 23, 0, tzinfo=UTC))
+    assert got == "SEC-LATE"

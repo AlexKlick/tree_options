@@ -1,11 +1,12 @@
 """Point-in-time ticker resolution (M1 packet workstream C join authority).
 
-The ONLY sanctioned ticker→security join. A ticker resolves through
-dated mapping windows AND their available_at instants: a mapping
-announced after `as_of` is invisible, a ticker claimed by two issuers on
-overlapping windows is a vendor-data defect (ambiguity), and the
-current-ticker join (today's mapping applied to historical rows) is
-structurally impossible here because both `on` and `as_of` are required.
+The ONLY sanctioned ticker→security join. A mapping resolves only when
+BOTH its record and the mapping itself are knowable at `as_of` (the M0
+master contract: a record that arrives after the decision instant is
+wholly invisible, mappings included), the effective window covers `on`,
+and no second issuer claims the same ticker (ambiguity = vendor-data
+defect). The current-ticker join is structurally impossible here because
+both `on` and `as_of` are required.
 """
 
 from __future__ import annotations
@@ -27,17 +28,19 @@ class AmbiguousTickerError(ValueError):
 
 class TickerResolver:
     def __init__(self, records: tuple[SecurityMasterRecord, ...] | list[SecurityMasterRecord]):
-        index: dict[str, list[TickerMappingRecord]] = defaultdict(list)
+        index: dict[str, list[tuple[datetime, TickerMappingRecord]]] = defaultdict(list)
         for record in records:
             for mapping in record.ticker_mappings:
-                index[mapping.ticker].append(mapping)
-        self._index: dict[str, tuple[TickerMappingRecord, ...]] = {
-            t: tuple(ms) for t, ms in index.items()
+                index[mapping.ticker].append((record.available_at, mapping))
+        self._index: dict[str, tuple[tuple[datetime, TickerMappingRecord], ...]] = {
+            t: tuple(entries) for t, entries in index.items()
         }
 
     def resolve(self, symbol: str, on: date, as_of: datetime) -> IdStr:
         candidates: list[TickerMappingRecord] = []
-        for m in self._index.get(symbol, ()):
+        for record_available, m in self._index.get(symbol, ()):
+            if record_available > as_of:
+                continue
             if not (m.effective_from <= on and (m.effective_to is None or on <= m.effective_to)):
                 continue
             if m.available_at > as_of:

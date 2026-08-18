@@ -107,7 +107,7 @@ def ingest_snapshot(
         security_count=len({b.security_id for b in bars}),
         session_coverage=(sessions[0], sessions[-1]) if sessions else None,
         source_row_hashes=tuple(row_hashes),
-        content_sha256=content_sha256(bars, actions),
+        content_sha256=content_sha256(tuple(master), bars, actions),
     )
     return DatasetSnapshot(
         snapshot_id=snapshot_id,

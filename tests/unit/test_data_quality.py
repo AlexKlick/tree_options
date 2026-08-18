@@ -124,3 +124,39 @@ def test_unknown_security_in_actions_rejected(static_calendar):
     )
     with pytest.raises(Exception, match="ACT-GHOST"):
         _snapshot(rows)
+
+
+def test_master_tampering_is_detected(static_calendar):
+    """P1-1: the manifest must bind the MASTER too — swapping listing data
+    after ingest changes universe_as_of and must not survive verification."""
+    snapshot = _snapshot(rv.raw_rows())
+    tampered_master = tuple(
+        r.model_copy(update={"listing_end": None}) if r.security_id == "SEC-001" else r
+        for r in snapshot.master
+    )
+    tampered = snapshot.model_copy(update={"master": tampered_master}, deep=False)
+    from tree_options.data.quality import verify_manifest
+
+    verify_manifest(snapshot, static_calendar)
+    with pytest.raises(DataQualityError, match="manifest"):
+        verify_manifest(tampered, static_calendar)
+
+
+def test_manifest_metadata_is_bound(static_calendar):
+    """P1-1: provider and counts are cross-bound — a swapped provider would
+    be emitted as feature provenance."""
+    from tree_options.data.quality import verify_manifest
+
+    snapshot = _snapshot(rv.raw_rows())
+    evil_provider = snapshot.manifest.model_copy(update={"provider": "evil-vendor"})
+    with pytest.raises(DataQualityError, match="manifest"):
+        verify_manifest(
+            snapshot.model_copy(update={"manifest": evil_provider}, deep=False),
+            static_calendar,
+        )
+    wrong_count = snapshot.manifest.model_copy(update={"bar_count": 0})
+    with pytest.raises(DataQualityError, match="manifest"):
+        verify_manifest(
+            snapshot.model_copy(update={"manifest": wrong_count}, deep=False),
+            static_calendar,
+        )

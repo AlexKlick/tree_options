@@ -641,6 +641,24 @@ MUTANTS = [
         selectors=[f"{U}/test_data_authority.py"],
         invariant="M1-C universe membership is point-in-time (delisted names leave, pre-IPO names never enter — no current-survivor filtering)",
     ),
+    dict(
+        id="M68-master-content-gutted",
+        owner="test_master_tampering_is_detected",
+        file="src/tree_options/data/manifest.py",
+        anchor="digest.update(canonical_bytes(record))",
+        replacement='digest.update(b"")',
+        selectors=[f"{U}/test_data_quality.py"],
+        invariant="M1-D the manifest content hash binds the MASTER records (a post-ingest listing swap must not survive verification)",
+    ),
+    dict(
+        id="M69-resolver-record-visibility-gutted",
+        owner="test_resolver_respects_master_record_availability",
+        file="src/tree_options/data/resolve.py",
+        anchor="if record_available > as_of:",
+        replacement="if False:",
+        selectors=[f"{U}/test_data_ingest.py"],
+        invariant="M1-C a mapping inside a not-yet-knowable master record is invisible (record.available_at gates the whole record)",
+    ),
 ]
 
 FAILING = ("FAILED",)
