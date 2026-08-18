@@ -55,11 +55,65 @@ def m1_master() -> tuple[SecurityMasterRecord, ...]:
             ),
         ),
     )
+    # SEC-006: acquired — merger action names the successor, then a terminal
+    # delisting; SEC-007: chapter-11 terminal delisting with NO final price.
+    merged = SecurityMasterRecord(
+        security_id="SEC-006",
+        figi="BBG000FIXTUR6",
+        cik="0000000606",
+        listing_start=date(2024, 1, 2),
+        listing_end=date(2024, 8, 15),
+        exchange="NASDAQ",
+        source="sec-master-fixture",
+        available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+        ticker_mappings=(
+            TickerMappingRecord(
+                security_id="SEC-006",
+                ticker="MRGD",
+                effective_from=date(2024, 1, 2),
+                effective_to=date(2024, 8, 15),
+                available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+            ),
+        ),
+        delisting=DelistingRecord(
+            delisting_session=date(2024, 8, 15),
+            reason="merger",
+            final_price_available=True,
+            available_at=datetime(2024, 8, 15, 20, 0, tzinfo=UTC),
+        ),
+    )
+    bankrupt = SecurityMasterRecord(
+        security_id="SEC-007",
+        figi="BBG000FIXTUR7",
+        cik="0000000707",
+        listing_start=date(2024, 1, 2),
+        listing_end=date(2024, 10, 1),
+        exchange="NASDAQ",
+        source="sec-master-fixture",
+        available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+        ticker_mappings=(
+            TickerMappingRecord(
+                security_id="SEC-007",
+                ticker="BNKR",
+                effective_from=date(2024, 1, 2),
+                effective_to=date(2024, 10, 1),
+                available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+            ),
+        ),
+        delisting=DelistingRecord(
+            delisting_session=date(2024, 10, 1),
+            reason="bankruptcy_11",
+            final_price_available=False,
+            available_at=datetime(2024, 10, 1, 20, 0, tzinfo=UTC),
+        ),
+    )
     return (
         renamed_and_delisted_security(),
         finite_listing_end_security(),
         successor_security_on_old_ticker(),
         rvsp,
+        merged,
+        bankrupt,
     )
 
 
@@ -190,6 +244,14 @@ def raw_rows(
             cash_amount="0.25",
             available_at=_pub(date(2024, 4, 29)),
             source_record_id="ACT-0001",
+        ),
+        dict(
+            vendor_symbol="MRGD",
+            kind="merger",
+            effective_session=date(2024, 8, 15),
+            successor_security_id="SEC-001",
+            available_at=_pub(date(2024, 8, 14)),
+            source_record_id="ACT-0004",
         ),
     ]
     if include_split_action:

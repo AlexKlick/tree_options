@@ -40,15 +40,41 @@ def _at(session: date, hour: int = 23) -> datetime:
 
 
 def test_universe_is_point_in_time_not_survivors(static_calendar):
-    """February: SEC-001 alive, SEC-002 not yet IPO'd, SEC-005 listed.
-    September: SEC-001 delisted OUT, SEC-002 IN — the survivor-filtered
-    view (everyone still trading today) is a different, wrong set."""
+    """February: SEC-001 alive, SEC-002 not yet IPO'd, SEC-005/006/007 listed.
+    September: SEC-001 (delisted) and SEC-006 (merged away) OUT, SEC-002 IN.
+    November: the chapter-11 name is gone too — the survivor-filtered view
+    (everyone still trading today) is a different, wrong set at every date."""
     ds = _authority(static_calendar)
     february = ds.universe_as_of(_at(date(2024, 2, 1)))
     september = ds.universe_as_of(_at(date(2024, 9, 10)))
-    assert set(february) == {"SEC-001", "SEC-003", "SEC-005"}
-    assert set(september) == {"SEC-002", "SEC-005"}
-    assert "SEC-001" not in september  # delisted 2024-08-02, knowable since
+    november = ds.universe_as_of(_at(date(2024, 11, 1)))
+    assert set(february) == {"SEC-001", "SEC-003", "SEC-005", "SEC-006", "SEC-007"}
+    assert set(september) == {"SEC-002", "SEC-005", "SEC-007"}
+    assert set(november) == {"SEC-002", "SEC-005"}
+
+
+def test_merger_and_bankruptcy_delistings_are_point_in_time(static_calendar):
+    """Acceptance 4 (merger + terminal delisting): the merger action names
+    its successor and the target leaves the universe at its delisting; the
+    bankruptcy delisting carries no final price."""
+    payload = build_payload(
+        provider=rv.PROVIDER,
+        rows=rv.raw_rows(),
+        retrieved_at=rv.RETRIEVED_AT,
+        known_exclusions=rv.KNOWN_EXCLUSIONS,
+    )
+    snapshot = ingest_snapshot(
+        payload, rv.m1_master(), snapshot_id=SNAPSHOT_ID, normalization_code_sha=CODE_SHA
+    )
+    master = {r.security_id: r for r in snapshot.master}
+    assert master["SEC-006"].delisting is not None
+    assert master["SEC-006"].delisting.reason == "merger"
+    assert master["SEC-007"].delisting is not None
+    assert master["SEC-007"].delisting.final_price_available is False
+    mergers = [a for a in snapshot.actions if a.kind == "merger"]
+    assert len(mergers) == 1
+    assert mergers[0].security_id == "SEC-006"
+    assert mergers[0].successor_security_id == "SEC-001"
 
 
 def test_future_bar_is_invisible(static_calendar):
