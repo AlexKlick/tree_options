@@ -84,6 +84,7 @@ def _security(**over):
         available_at=datetime(2015, 1, 2, 22, 0, tzinfo=UTC),
         ticker_mappings=(
             TickerMappingRecord(
+                available_at=datetime(2020, 7, 1, tzinfo=UTC),
                 security_id="SEC1",
                 ticker="OLDA",
                 effective_from=date(2015, 1, 2),
@@ -100,13 +101,17 @@ class TestSecurityMaster:
         sec = _security(
             ticker_mappings=(
                 TickerMappingRecord(
+                    available_at=datetime(2020, 7, 1, tzinfo=UTC),
                     security_id="SEC1",
                     ticker="OLDA",
                     effective_from=date(2015, 1, 2),
                     effective_to=date(2020, 6, 30),
                 ),
                 TickerMappingRecord(
-                    security_id="SEC1", ticker="NEWA", effective_from=date(2020, 7, 1)
+                    available_at=datetime(2020, 7, 1, tzinfo=UTC),
+                    security_id="SEC1",
+                    ticker="NEWA",
+                    effective_from=date(2020, 7, 1),
                 ),
             )
         )
@@ -120,13 +125,17 @@ class TestSecurityMaster:
             _security(
                 ticker_mappings=(
                     TickerMappingRecord(
+                        available_at=datetime(2020, 7, 1, tzinfo=UTC),
                         security_id="SEC1",
                         ticker="A",
                         effective_from=date(2015, 1, 2),
                         effective_to=date(2020, 7, 15),
                     ),
                     TickerMappingRecord(
-                        security_id="SEC1", ticker="B", effective_from=date(2020, 7, 1)
+                        available_at=datetime(2020, 7, 1, tzinfo=UTC),
+                        security_id="SEC1",
+                        ticker="B",
+                        effective_from=date(2020, 7, 1),
                     ),
                 )
             )
@@ -146,7 +155,10 @@ class TestSecurityMaster:
         sec = _security(
             listing_end=date(2022, 6, 2),
             delisting=DelistingRecord(
-                delisting_session=date(2022, 6, 2), reason="delisted", final_price_available=True
+                delisting_session=date(2022, 6, 2),
+                reason="delisted",
+                final_price_available=True,
+                available_at=datetime(2022, 6, 2, 20, 0, tzinfo=UTC),
             ),
         )
         assert sec.listed_on(date(2022, 6, 1))

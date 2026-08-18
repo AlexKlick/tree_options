@@ -6,7 +6,7 @@ dated ticker mappings; the historical universe includes delisted names.
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 
 from pydantic import model_validator
 
@@ -18,6 +18,9 @@ class TickerMappingRecord(StrictModel):
     ticker: IdStr
     effective_from: date
     effective_to: date | None = None
+    # When this mapping became KNOWABLE (announcement/filing), not when it
+    # became effective — the gap between the two is exactly the leak window.
+    available_at: UTCDatetime
 
     @model_validator(mode="after")
     def _ordered(self) -> TickerMappingRecord:
@@ -30,6 +33,7 @@ class DelistingRecord(StrictModel):
     delisting_session: date
     reason: IdStr
     final_price_available: bool
+    available_at: UTCDatetime  # when the delisting became knowable
 
 
 class SecurityMasterRecord(StrictModel):
@@ -75,14 +79,38 @@ class SecurityMasterRecord(StrictModel):
                 raise ValueError("delisted security must have listing_end == delisting_session")
         return self
 
-    def ticker_on(self, d: date) -> str:
-        """Ticker in force on d; fails closed if d is outside all windows."""
+    def ticker_on(self, d: date, *, as_of: datetime | None = None) -> str:
+        """Ticker in force on d, given what was knowable at `as_of`.
+
+        as_of=None is the retrospective (settled-history) view. With as_of
+        set, mappings announced after it are INVISIBLE: a January decision
+        cannot see a March rename, and a date covered only by an
+        not-yet-known mapping fails closed with KeyError.
+        """
         for m in self.ticker_mappings:
+            if as_of is not None and m.available_at > as_of:
+                continue
             if m.effective_from <= d and (m.effective_to is None or d <= m.effective_to):
                 return m.ticker
-        raise KeyError(f"no ticker mapping covers {d} for {self.security_id}")
+        raise KeyError(
+            f"no ticker mapping covers {d} for {self.security_id}"
+            + (f" as of {as_of}" if as_of is not None else "")
+        )
 
-    def listed_on(self, d: date) -> bool:
+    def listed_on(self, d: date, *, as_of: datetime | None = None) -> bool:
+        """Membership on d given knowledge at `as_of`.
+
+        A delisting not yet knowable at as_of cannot shorten the member's
+        future: the honest point-in-time answer is True (unknown end).
+        """
         if d < self.listing_start:
             return False
-        return self.listing_end is None or d <= self.listing_end
+        effective_end = self.listing_end
+        if (
+            effective_end is not None
+            and self.delisting is not None
+            and as_of is not None
+            and self.delisting.available_at > as_of
+        ):
+            effective_end = None  # delisting invisible at as_of
+        return effective_end is None or d <= effective_end

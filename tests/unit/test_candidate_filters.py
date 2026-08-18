@@ -7,6 +7,7 @@ from decimal import Decimal
 
 import pytest
 
+from tests.fixtures.contracts import split_adjusted_contract, standard_call
 from tree_options.candidates.filters import (
     NOT_APPLICABLE,
     NOT_EVALUABLE,
@@ -23,7 +24,7 @@ LATER = DECISION_AT + timedelta(minutes=1)
 
 def _snapshot(**over) -> CandidateSnapshot:
     base = dict(
-        contract_id="OPT-C-2024-06-21-50",
+        contract=standard_call(),
         underlying_security_id="SEC-001",
         decision_session=date(2024, 4, 15),
         decision_at=DECISION_AT,
@@ -34,7 +35,6 @@ def _snapshot(**over) -> CandidateSnapshot:
         same_day_volume_applicable=True,
         bid=AsOf(Decimal("1.90"), EARLIER),
         ask=AsOf(Decimal("2.00"), EARLIER),
-        standard_contract=True,
         underlying_20d_median_dollar_volume=AsOf(Decimal("120000000"), EARLIER),
         spans_earnings=AsOf(False, EARLIER),
     )
@@ -43,8 +43,8 @@ def _snapshot(**over) -> CandidateSnapshot:
 
 
 @pytest.fixture()
-def filt(protocol):
-    return CandidateFilter.from_protocol(protocol)
+def filt(protocol, static_calendar):
+    return CandidateFilter.from_protocol(static_calendar, protocol)
 
 
 def _statuses(decision) -> dict[str, str]:
@@ -138,10 +138,9 @@ class TestBandEdges:
 
 class TestFixtureInventory:
     def test_split_adjusted_contract_rejected(self, filt):
-        from tests.fixtures.contracts import split_adjusted_contract
 
-        _contract, _action = split_adjusted_contract()
-        d = filt.evaluate(_snapshot(standard_contract=False))
+        adjusted, _action = split_adjusted_contract()
+        d = filt.evaluate(_snapshot(contract=adjusted))
         assert not d.accepted
         assert _statuses(d)["deliverable"] == "FAIL"
         assert "nonstandard" in next(r for r in d.results if r.rule == "deliverable").detail

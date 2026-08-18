@@ -67,13 +67,28 @@ class AvailabilityGuard:
             )
         return self.calendar.session_close(session)
 
-    def check_feature(self, ev: FeatureEvent, decision_at: datetime) -> None:
-        """Raise FutureDataError unless the event is usable at decision_at."""
+    def check_feature(self, ev: FeatureEvent, *, decision_session: date) -> None:
+        """Raise FutureDataError unless the event is usable at the close of
+        decision_session.
+
+        The comparison instant is DERIVED from the guard's own calendar —
+        callers no longer supply a datetime, so the basis cannot drift and a
+        mislabeled decision instant cannot be smuggled in.
+        """
+        decision_at = self.decision_instant(decision_session)
+        if ev.decision_at != decision_at:
+            raise FutureDataError(
+                "OBSERVED_AFTER_AVAILABLE",
+                f"feature {ev.feature_name!r} carries decision_at {ev.decision_at} but the "
+                f"decision session {decision_session} closes at {decision_at}: the event's "
+                "own decision binding is incoherent",
+            )
         if ev.available_at <= decision_at:
             return
         raise FutureDataError(
             "AVAILABLE_AFTER_DECISION",
-            f"feature {ev.feature_name!r} available {ev.available_at} after decision {decision_at}",
+            f"feature {ev.feature_name!r} available {ev.available_at} after "
+            f"decision close {decision_at} of session {decision_session}",
         )
 
     def check_filing_provenance(self, ev: FeatureEvent, filing: FilingRecord) -> None:
@@ -104,7 +119,7 @@ class AvailabilityGuard:
         compliant: list[PanelRow] = []
         rejections: list[JoinRejection] = []
         for row in rows:
-            decision_at = self.decision_instant(row.decision_session)
+            decision_at = self.decision_instant(row.decision_session)  # audited below
             row_ok = True
             for f in row.features:
                 if f.observed_at > f.available_at:  # backstop; schema enforces too
@@ -120,7 +135,7 @@ class AvailabilityGuard:
                     row_ok = False
                     continue
                 try:
-                    self.check_feature(f, decision_at)
+                    self.check_feature(f, decision_session=row.decision_session)
                 except FutureDataError as exc:
                     rejections.append(
                         JoinRejection(
