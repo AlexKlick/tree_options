@@ -610,7 +610,7 @@ MUTANTS = [
         owner="test_manifest_tampering_is_detected",
         file="src/tree_options/data/manifest.py",
         anchor="digest.update(canonical_bytes(bar))",
-        replacement="digest.update(b\"\")",
+        replacement='digest.update(b"")',
         selectors=[f"{U}/test_data_quality.py"],
         invariant="M1-D the manifest content hash is bound to the bars (a post-ingest row swap must not survive verification)",
     ),
