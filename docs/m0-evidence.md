@@ -19,9 +19,11 @@ complete on a moved head), because a commit cannot contain its own hash.
   independent-review remediation `a2c5b90`→`a1cac82` (round-1 findings
   F1–F18), the owner-scoped-classifier follow-through `0f2fe88`, the
   round-2 closure commit `9c14b81` (+`acfeea7` format), the round-3
-  closure `54d6205`+`348f9bb`, and the round-4 remediation `3aae606`
-  (integer-only cap) plus this round-4 closure commit. The gate-complete
-  head and clean-clone run are recorded in §6 and the PR body.
+  closure `54d6205`+`348f9bb`, the round-4 remediation `3aae606`
+  (integer-only cap) plus its closure commit, the round-5 remediation
+  `9ff812a` (read-only cap, strict protocol field) plus this round-5
+  closure commit. The gate-complete head and clean-clone run are recorded
+  in §6 and the PR body.
 
 ## 2. Protocol identity
 
@@ -53,19 +55,19 @@ head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 | lint | `ruff check src tests scripts` | All checks passed |
 | types | `mypy` | Success: no issues found in 36 source files |
 | compile | `python -m compileall -q src tests scripts` | ok |
-| tests | `pytest -W error` | **251 passed, 0 failed, 0 skipped** |
-| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=54, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
+| tests | `pytest -W error` | **253 passed, 0 failed, 0 skipped** |
+| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=56, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
 | build | `uv build` | sdist + wheel built |
 | wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `66054424cfd0ea032e882935b1f4a930b20db5ae517dc87ead452a7f29aa0b0e`;
-`artifacts/m0-mutations.md` sha256 `be8a0f2bd484578911d0728fcd887e5a420d687f5a01e183c4fa5463590638c7`.
+`artifacts/m0-mutations.json` sha256 `8bdb64a1a1b0e4a14c952458f10560860a627a7da1a5d0f9714006ec7c1fafec`;
+`artifacts/m0-mutations.md` sha256 `2b6ec2b009675b726f75b46e4bdca8b1189be14ea59f020d4379d7c49193ebe0`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 54}  total=54
+totals: {'KILLED': 56}  total=56
 restoration full-suite pass: True
 ```
 
@@ -92,7 +94,7 @@ proves restoration.
 | INV-10 next-session execution (both levels, calendar close) + order-quantity bounding of partial chains + order-id binding | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39, M48, M53 |
 | INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45, M47 |
 | INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M23, M41 |
-| INV-13 registered-before-outcome + 32-cap (tighten-only INTEGER ceiling at construction) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42, M54 |
+| INV-13 registered-before-outcome + 32-cap (tighten-only INTEGER ceiling at construction, read-only after construction, strict at the protocol source) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42, M54–M56 |
 | INV-14 stamped artifacts | protocol/stamping | test_stamping.py | — (structural) |
 | candidate point-in-time inputs + decision/contract coherence | candidates/filters | test_candidate_filters.py, test_leakage_v2.py | M34–M36, M44, M51 |
 | calendar integrity + DST/early-close | time/calendar | test_calendar.py | M38 |
@@ -162,7 +164,24 @@ is claimed nowhere here.
   12), `test_budget_cap_must_be_an_integer` failed on `348f9bb` and passes
   now, and mutant M54 guards the type check itself — the manifest grew to
   54. The gate at `3aae606`/this head recorded §3's counts and hashes.
-- Round 5 re-review (Codex, this head): verdict recorded verbatim in the PR
+- Round 5 re-review (Codex, head `f48045b`): NO-GO — M54 verified a true
+  behavioral kill, but the integer commitment was held leaky at two edges:
+  NEW-6 (P1) — `TrialBudget.cap` was a public writable attribute, so
+  `registry.budget.cap = float("nan")` AFTER construction re-disabled the
+  cap exactly as NEW-5 did; NEW-7 (P2) — the protocol source of the cap
+  was lax: YAML `true` normalized to 1 (the silent bool alias), and
+  `"32"`/`32.0` coerced to 32 through `InnerLoopConfig`; and the F18 item
+  was held because decision 12's "Integer caps in [1, 32] only;
+  tighten-only stands" was false while the mutable-cap bypass stood.
+  Final line, verbatim: "NO-GO". Remediated red-first in `9ff812a`: the
+  cap is a read-only property after construction (assignment raises
+  AttributeError; the direct test failed on `f48045b`),
+  `InnerLoopConfig.max_registered_configs` is `Field(strict=True)` (the
+  canonical protocol hash is UNCHANGED — validation tightened,
+  serialization identical), and mutants M55 (storage fidelity) + M56 (the
+  strict flag itself) grew the manifest to 56. The gate at
+  `9ff812a`/this head recorded §3's counts and hashes.
+- Round 6 re-review (Codex, this head): verdict recorded verbatim in the PR
   body.
 - Clean-clone proof: the protocol is a fresh `git clone --no-local` to a
   temp dir, `bash scripts/m0_gate.sh` executed inside the clone, exit 0,
@@ -237,11 +256,15 @@ is claimed nowhere here.
     before it passes the honest point-in-time membership answer past
     `listing_start` is True (unknown end), and after it passes a record
     with no delisting event is honored (review round 3, F2).
-12. A scope cap is an INTEGER commitment (review round 4, NEW-5): the
-    `TrialBudget` constructor refuses non-int caps outright — NaN compared
-    False against both bounds and then disabled the cap entirely, a
-    fractional float shifted the effective cap, and a bool silently
-    aliased cap=1. Integer caps in `[1, 32]` only; tighten-only stands.
+12. A scope cap is an INTEGER commitment (review round 4 NEW-5, round 5
+    NEW-6/NEW-7): the `TrialBudget` constructor refuses non-int caps
+    outright — NaN compared False against both bounds and then disabled
+    the cap entirely, a fractional float shifted the effective cap, and a
+    bool silently aliased cap=1 — and the cap is READ-ONLY after
+    construction (a writable `cap` let `registry.budget.cap = float("nan")`
+    re-disable it). The protocol source is strict: `max_registered_configs`
+    refuses bool/str/float instead of coercing them. Integer caps in
+    `[1, 32]`, fixed at construction; tighten-only stands.
 
 ## 10. Known limitations and nonclaims
 
