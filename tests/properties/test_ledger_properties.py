@@ -584,3 +584,23 @@ class TestLedgerIntegrityV2:
         # Running cash used primitive arithmetic: -110.00 - 1.00 fee.
         assert book.cash == Decimal("889.00")
         book.assert_conservation()  # independent oracle: still conserved
+
+    def test_average_cost_exact_after_partial_close(self, synthetic_calendar):
+        """F11 kill-test: partially consuming a lot must reduce its cost basis
+        too, else position().average_cost divides stale basis by remaining
+        quantity (2x error after a half-close)."""
+        ctx = _base(synthetic_calendar)
+        cal, decision_session, exec_session, exec_at, engine, contract = ctx
+        book = LedgerBook(initial_cash=Decimal("10000.00"))
+        # one lot: 2 contracts @ 1.30 -> basis 260.00
+        book.apply(_buy_fill(engine, contract, exec_session, exec_at, 2, "1.20", "1.30", Decimal(0), decision_session))
+        s2 = cal.nth_after(exec_session, 1)
+        at2 = execution_instant(cal.session_open(s2))
+        # close HALF the lot @ 1.00
+        book.apply(_sell_fill(engine, contract, s2, at2, 1, "0.90", "1.00", Decimal(0), exec_session))
+        lot = book.lots(CONTRACT_ID)[0]
+        assert lot.quantity == 1
+        assert lot.cost_basis == Decimal("130.00")  # NOT the stale 260.00
+        pos = book.position(CONTRACT_ID)
+        assert pos.average_cost == Decimal("1.30")
+        book.assert_conservation()

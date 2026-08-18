@@ -165,8 +165,10 @@ class LedgerBook:
             while remaining > 0:
                 head = self._lots[fill.contract_id][0]
                 take = min(head.quantity, remaining)
-                cost_removed += head.unit_price * take * head.multiplier
+                removed = (head.unit_price * take * head.multiplier).quantize(FEE_TICK)
+                cost_removed += removed
                 head.quantity -= take
+                head.cost_basis = (head.cost_basis - removed).quantize(FEE_TICK)
                 remaining -= take
                 if head.quantity == 0:
                     self._lots[fill.contract_id].pop(0)
