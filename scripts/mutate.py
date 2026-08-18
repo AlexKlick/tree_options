@@ -555,6 +555,24 @@ MUTANTS = [
         selectors=[f"{U}/test_registry.py"],
         invariant="the registry enforces the SUPPLIED budget (a tightened cap cannot be swapped for the default)",
     ),
+    dict(
+        id="M59-commitment-equality-gutted",
+        owner="test_committed_cap_cannot_be_loosened_mid_scope",
+        file="src/tree_options/registry/sqlite.py",
+        anchor="if committed is not None and int(committed[0]) != cap:",
+        replacement="if False:",
+        selectors=[f"{U}/test_registry.py"],
+        invariant="the live cap must equal the cap COMMITTED to storage (in-range loosening refuses)",
+    ),
+    dict(
+        id="M60-commitment-read-misses",
+        owner="test_committed_cap_cannot_be_loosened_mid_scope",
+        file="src/tree_options/registry/sqlite.py",
+        anchor='"SELECT cap FROM scope_commitments WHERE scope_key = ?",',
+        replacement="\"SELECT cap FROM scope_commitments WHERE scope_key = ''\"",
+        selectors=[f"{U}/test_registry.py"],
+        invariant="the recorded commitment is READ at every registration (a missed read re-opens loosening)",
+    ),
 ]
 
 FAILING = ("FAILED",)

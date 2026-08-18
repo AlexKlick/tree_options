@@ -338,6 +338,35 @@ class TestRegistryHardening:
         assert reg.budget.cap == 10
         reg.close()
 
+    def test_committed_cap_cannot_be_loosened_mid_scope(self, tmp_path):
+        """Round-7 residual: `budget._cap = 32` after registering under
+        cap=10 is an IN-RANGE loosening — domain validation alone passes
+        it, and 10 >= 32 is false, so the 11th registers. The cap is a
+        COMMITMENT: fixed into the DB at the scope's first registration;
+        a live budget that disagrees with the recorded commitment refuses
+        registration."""
+        budget = TrialBudget(cap=10)
+        reg = TrialRegistry(tmp_path / "t-commit.db", budget=budget)
+        for i in range(10):
+            reg.register(_record(trial_id=f"T-{i}"), scope=SCOPE)
+        budget._cap = 32  # direct private write — in-range loosening
+        with pytest.raises(RegistryError) as ei:
+            reg.register(_record(trial_id="T-10"), scope=SCOPE)
+        assert ei.value.code == "BUDGET_COMMITMENT_CHANGED"
+        reg.close()
+
+    def test_swapped_budget_reference_refuses(self, tmp_path):
+        """Round-7 residual: `reg._budget = TrialBudget(cap=32)` replaces
+        the policy object with no code substitution. The recorded
+        commitment catches the disagreement."""
+        reg = TrialRegistry(tmp_path / "t-swap2.db", budget=TrialBudget(cap=10))
+        reg.register(_record(), scope=SCOPE)
+        reg._budget = TrialBudget(cap=32)
+        with pytest.raises(RegistryError) as ei:
+            reg.register(_record(trial_id="T-2"), scope=SCOPE)
+        assert ei.value.code == "BUDGET_COMMITMENT_CHANGED"
+        reg.close()
+
     def test_pre_remediation_database_fails_closed(self, tmp_path):
         """An existing DB written before scope_json existed cannot be opened:
         CREATE TABLE IF NOT EXISTS would not migrate it, so refuse."""

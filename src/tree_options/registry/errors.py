@@ -45,6 +45,16 @@ class BudgetTamperedError(RegistryError):
         )
 
 
+class BudgetCommitmentChangedError(RegistryError):
+    def __init__(self, scope_key: str, committed: int, live: object) -> None:
+        super().__init__(
+            "BUDGET_COMMITMENT_CHANGED",
+            f"scope {scope_key} committed to cap {committed} at its first "
+            f"registration; the live budget reports {live!r} — the commitment "
+            "is fixed in storage and cannot change mid-scope",
+        )
+
+
 class NonCanonicalScopeError(RegistryError):
     def __init__(self, scope_key: str, detail: str) -> None:
         super().__init__("NON_CANONICAL_SCOPE", f"{detail}: {scope_key[:40]}")

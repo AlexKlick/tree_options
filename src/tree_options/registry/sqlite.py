@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from tree_options.registry.errors import (
+    BudgetCommitmentChangedError,
     DuplicateTrialError,
     InvalidTransitionError,
     NonCanonicalScopeError,
@@ -69,6 +70,11 @@ CREATE TABLE IF NOT EXISTS events (
     kind        TEXT NOT NULL,
     payload_json TEXT NOT NULL CHECK (json_valid(payload_json)),
     ts          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS scope_commitments (
+    scope_key    TEXT PRIMARY KEY,
+    cap          INTEGER NOT NULL CHECK (cap >= 1),
+    committed_at TEXT NOT NULL
 );
 """
 
@@ -207,6 +213,18 @@ class TrialRegistry:
             )
         try:
             self._conn.execute("BEGIN IMMEDIATE")
+            # The cap is a COMMITMENT fixed in storage at the scope's first
+            # registration (review round 7): an in-range `_cap = 32` write or
+            # a swapped `_budget` reference would otherwise loosen a
+            # pre-registered tightening with pure data writes. The live
+            # budget must still agree with what the scope committed to.
+            cap = self.budget.cap
+            committed = self._conn.execute(
+                "SELECT cap FROM scope_commitments WHERE scope_key = ?",
+                (record.scope_key,),
+            ).fetchone()
+            if committed is not None and int(committed[0]) != cap:
+                raise BudgetCommitmentChangedError(record.scope_key, int(committed[0]), cap)
             self.budget.check(self, record.scope_key)
             self._conn.execute(
                 "INSERT INTO trials (trial_id, scope_key, scope_json, hypothesis,"
@@ -223,6 +241,11 @@ class TrialRegistry:
                     record.dataset_manifest_hash,
                     record.created_at.isoformat(),
                 ),
+            )
+            self._conn.execute(
+                "INSERT OR IGNORE INTO scope_commitments (scope_key, cap, committed_at)"
+                " VALUES (?, ?, ?)",
+                (record.scope_key, cap, record.created_at.isoformat()),
             )
             self._event(
                 record.trial_id, "REGISTERED", {"scope": record.scope_key}, record.created_at
