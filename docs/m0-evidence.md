@@ -9,13 +9,12 @@ re-review before relying on it.
 
 - Repository: `/home/alexk/documents/tree_options` (local; push per §11 pending)
 - Branch: `m0/invariant-closure-20260817`, base `main` @ `6bce373`
-- Exact head: `b3bf1be` (gate-complete head; see §6 for the clean-clone run)
-- Working tree: clean at gate time (the gate refuses a dirty tree)
-- Commits on the branch (oldest → newest):
-  `3a1887f` preserve in-flight §6 work → `336541f` coverage-fixture isolation
-  → `bb8bdb5` fill layer v2 → `4a3eede` calendar early closes + DST →
-  `1d5cab6` registry v2 → `62f1766` tri-state filters → `2f486e6` mutation
-  harness v2 → `196fdd0` m0_gate.sh → `b3bf1be` wheel-smoke protocol pointer
+- Working tree: clean at gate time (the gate refuses a dirty tree and
+  asserts, at exit, that the head did not move and only `artifacts/`/`dist/`
+  changed)
+- History: initial build `3a1887f`→`196fdd0` (first packet, §2–§9), then the
+  independent-review remediation `a2c5b90`→ this head (round-2 findings
+  F1–F18). The gate-complete head and clean-clone run are recorded in §6.
 
 ## 2. Protocol identity
 
@@ -31,44 +30,44 @@ re-review before relying on it.
   `469fb08d0c42f8b321ee45e4bfe0d4ec928afc143f864b65c7881e7c6634b2a0`
 - Runtime: uv 0.11.8, CPython 3.12.3
 - Hypothesis profile: `default` — derandomized, `max_examples=50`,
-  `deadline=None` (registered in `tests/conftest.py`; gate banner records it)
+  `deadline=None`, registered in `tests/conftest.py`; no test overrides it
+  below 50 (the fold property's old 10-example override was removed, F17).
 
 ## 3. Exact gate commands and results
 
-`bash scripts/m0_gate.sh` (authoring tree, head `b3bf1be`) executes, in
-order, with `set -euo pipefail` and a dirty-tree refusal:
+`bash scripts/m0_gate.sh` (fail-closed; `set -euo pipefail`; refuses a dirty
+tree without the developer-only `M0_GATE_ALLOW_DIRTY=1`; at exit asserts the
+head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 
 | Step | Command | Result |
 |---|---|---|
-| install | `uv sync --frozen` | ok (21 packages) |
-| format | `ruff format --check src tests scripts` | ok (23 files reformatted in `196fdd0`, then stable) |
+| install | `uv sync --frozen` | ok |
+| format | `ruff format --check src tests scripts` | ok |
 | lint | `ruff check src tests scripts` | All checks passed |
-| types | `mypy` | Success: no issues found in 35 source files (`/tmp/m0-mypy2.log`) |
+| types | `mypy` | Success: no issues found in 35 source files |
 | compile | `python -m compileall -q src tests scripts` | ok |
-| tests | `pytest -W error` | **192 passed, 0 failed, 0 skipped** (`/tmp/m0-suite-fmt.log`) |
-| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=38, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
+| tests | `pytest -W error` | **235 passed, 0 failed, 0 skipped** |
+| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=46, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
 | build | `uv build` | sdist + wheel built |
-| wheel smoke | fresh venv, install wheel, load protocol via `TREE_OPTIONS_PROTOCOL`, tick-price check | ok (see §6 for the clean-clone instance) |
+| wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `28c6cb303fdc38b89789bb399f30e070a7ea76a0935f78e78dcafd32591d2abb`;
-`artifacts/m0-mutations.md` sha256 `af1dd958ad9d579457198aa4a366e59fc9c25288ddb9a69e3d97a17207c0404f`.
+`artifacts/m0-mutations.json` sha256 `dde41d56e5b3bbd2ec0384772bd75224ace63173b252a0a5a2e65b6381a8a1a9`;
+`artifacts/m0-mutations.md` sha256 `f8ffe6d8617eb4828b2866b619d78730dafdc5181250b1ed1f151ca6440f785d`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 38}  total=38
+totals: {'KILLED': 46}  total=46
 restoration full-suite pass: True
 ```
 
-Every mutant maps to one invariant and one owning test selector (table in
-`artifacts/m0-mutations.md`). Harness contract: baseline selector pass
-before each mutant; behavioral kills only (pytest FAILED lines — collection
-errors are INVALID_MUTANT, never kills); disposable worktree; source
-pre-hash recorded; byte-exact restore **plus bytecode-cache purge** (a
-length-identical mutant restored within one mtime second otherwise keeps
-serving the mutated `.pyc` — root-caused during this closure); full suite
-afterward proves restoration.
+Every mutant names its OWNING TEST (`owner` in the manifest): a verdict is
+KILLED only when that exact test's FAILED line appears — failures of other
+tests are INVALID_MUTANT, never kills (review F15). Baseline selector pass
+before each mutant; compile check; disposable worktree; source pre-hash
+recorded; byte-exact restore plus bytecode-cache purge; full suite afterward
+proves restoration.
 
 ## 5. Invariant → component → tests → mutants
 
@@ -77,86 +76,89 @@ afterward proves restoration.
 | INV-01 protocol versioning | protocol/loader | test_protocol_loader.py | M37 |
 | INV-02 reproducible pipeline | stamping (ArtifactStamp) | test_stamping.py | — (structural) |
 | INV-03 point-in-time features | guards/availability | test_fixture_filings.py | M01, M02 |
-| INV-04 filing provenance | guards/availability (check_filing_provenance) | test_fixture_filings.py | M01, M02 |
-| INV-05 same-session grouping / anchored folds | splitting | test_split_properties.py | M27–M29 |
+| INV-04 filing provenance | guards/availability | test_fixture_filings.py | M01, M02 |
+| INV-05 same-session grouping / anchored / disjoint folds | splitting | test_split_properties.py | M27–M29 |
 | INV-06 purge + embargo | splitting/checks | test_split_properties.py | M26 |
-| INV-07 cost monotonicity (stress) | guards/fills ExecutionStress | test_fill_semantics_v2.py | M13 |
-| INV-08 identity ≠ ticker | schemas/security + fixtures | test_identity_fixtures.py | — (structural) |
-| INV-09 contract existence | schemas/options + fills | test_fill_engine.py | M06, M09 |
-| INV-10 next-session execution (both levels) | guards/fills | test_fill_engine.py | M03, M04 |
-| INV-11 executable quotes only | schemas/market + fills | test_fill_engine.py, test_fill_semantics_v2.py | M10–M12, M14–M19 |
-| INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M25 |
-| INV-13 registered-before-outcome + 32-cap | registry | test_registry.py | M30–M33 |
+| INV-07 fit-on-train-only | guards/fitting (NEW) | test_fitting_guard.py | M46 |
+| INV-08 identity ≠ ticker + point-in-time master | schemas/security + fixtures | test_identity_fixtures.py, test_leakage_v2.py | M43 |
+| INV-09 contract existence (decision AND execution) | schemas/options + fills | test_fill_engine.py, test_fill_semantics_v2.py | M06, M09 |
+| INV-10 next-session execution (both levels, calendar close) | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39 |
+| INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45 |
+| INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M23, M41 |
+| INV-13 registered-before-outcome + 32-cap + canonical scopes | registry | test_registry.py | M30–M33, M42 |
 | INV-14 stamped artifacts | protocol/stamping | test_stamping.py | — (structural) |
-| candidate point-in-time inputs | candidates/filters | test_candidate_filters.py | M34–M36 |
-| calendar integrity | time/calendar | test_calendar.py | M38 |
+| candidate point-in-time inputs + decision coherence | candidates/filters | test_candidate_filters.py, test_leakage_v2.py | M34–M36, M44 |
+| calendar integrity + DST/early-close | time/calendar | test_calendar.py | M38 |
 | naive-clock ban | schemas/common + AST test | test_schemas.py, test_calendar.py | M20 |
 
-## 6. Clean-clone proof (§8)
+INV-07 honesty note (review F1): M0 has NO model pipeline; what M0 enforces
+and tests is the executable core — fitted artifacts record their fit
+sessions, refuse refits under the same name, refuse application outside the
+fit set, and `assert_fit_excludes` detects a fit that touched eval
+sessions. Full pipeline enforcement (transform chains, selection loops)
+lands with M2 and is claimed nowhere here.
 
-Clone of head `b3bf1be` into a fresh temp dir (real `git clone`, no parent
-config): `uv 0.11.8`, `Python 3.12.3`, lock/protocol hashes identical to §2
-(`/tmp/m0-clean-env.txt`). Full `scripts/m0_gate.sh` executed there — see
-`/tmp/m0-clean-gate.log` for the complete captured run; exit 0; `git status
---short` empty afterward (no untracked files required, tree clean after the
-gate). An earlier clean-clone run at `196fdd0` failed only at the wheel-smoke
-step (loader expected a repo-relative protocol inside a wheel-only venv);
-fixed by `b3bf1be` (wheel ships code; the frozen yaml is repo data via
-`TREE_OPTIONS_PROTOCOL`) and re-proven at the fixed head.
+## 6. Independent review and clean-clone proof
+
+- Round 1 review (Codex, head `66442f6`): NO-GO with 14 blocking + 4
+  secondary findings (F1–F18). All were remediated in commits `a2c5b90`
+  (F6–F10, F12), `2d5f930` (F2–F5), `cfba5a2` (F11), `96b6a1a` (F13, F14),
+  `8e222c2` (F16, F17), and this commit (F1, F15, F18).
+- Clean-clone proof at the final gate head: fresh `git clone` to a temp dir,
+  `bash scripts/m0_gate.sh` executed there, exit 0, `git status --short`
+  empty afterward; head/lock/protocol hashes identical to §2. The complete
+  captured run is the clean-clone gate log referenced in the PR body.
+- Round 2 re-review of the changed areas at the final head: recorded in the
+  PR body (§10 of the packet requires re-review after remediation).
 
 ## 7. Fixture inventory (§5.3)
 
 | Fixture | Builder | Tested by |
 |---|---|---|
-| 10-Q period-end vs filing availability | tests/fixtures/filings.py | test_fixture_filings.py (period-end keying passes the join gate — provenance gate rejects) |
+| 10-Q period-end vs filing availability | tests/fixtures/filings.py | test_fixture_filings.py |
 | Form 4 filed 2 sessions later | tests/fixtures/filings.py | test_fixture_filings.py |
-| Ticker rename + delisting, stable security_id | tests/fixtures/security.py | test_identity_fixtures.py (naive ticker join provably spawns/merges entities) |
+| Ticker rename + delisting, stable security_id, point-in-time visibility | tests/fixtures/security.py | test_identity_fixtures.py, test_leakage_v2.py |
 | Split-adjusted option deliverable (150 shares) | tests/fixtures/contracts.py | test_identity_fixtures.py + candidate deliverable rule |
 | ITM expiration (tradable ON expiration, dead after) | tests/fixtures/contracts.py | test_fill_engine.py |
 | Early-assignment candidate (DEFERRED_TO_POST_M0) | tests/fixtures/assignment.py | test_candidate_filters.py |
-| Crossed / stale / over-age / zero-size / non-trable NBBO | tests/fixtures/market.py | test_fill_engine.py |
-| Locked (bid == ask) NBBO | tests/fixtures/market.py | test_fill_semantics_v2.py + candidate filter test |
+| Crossed / stale / over-age / zero-size / non-tradable NBBO | tests/fixtures/market.py | test_fill_engine.py + direct as_tradable probe |
+| Locked (bid == ask) NBBO | tests/fixtures/market.py | test_fill_semantics_v2.py |
 
 ## 8. Hand-calculated ledger scenarios
 
-- 2 contracts @ $1.10 × 100 multiplier + $1.30 fees ⇒ cash −$221.30
-  (`test_fill_carries_multiplier_and_deliverable`, by hand in the test).
+- 2 contracts @ $1.10 × 100 multiplier + $1.30 fees ⇒ cash −$221.30.
 - Buy 3 @ $1.30: lot basis $390.00; FIFO close 2 @ $1.20 across lots
-  @1.10/@1.30 ⇒ realized gross $0.00 exactly
-  (`test_partial_fifo_close_across_lots_hand_calculated`).
+  @1.10/@1.30 ⇒ realized gross $0.00 exactly; remaining lot basis $130.00
+  and average_cost $1.30 after a half-close (F11 kill-test).
 - Flat-book identity: cash == initial + Σ realized_gross − Σ fees, exact
-  Decimal (`test_flat_stream_reconciles_to_realized`); random long-only
-  streams conserve to the cent (`test_exact_cash_identity_random_streams`).
-- Independent oracle: a lying `Fill` subclass cannot disturb conservation —
-  the replay computes from primitive fields, not Fill methods
-  (`test_conservation_oracle_independent_of_fill_methods`, kills M25).
+  Decimal; random long-only streams conserve to the cent.
+- Independent oracle: a lying `Fill` subclass cannot disturb conservation.
 
-`realized_pnl` is GROSS of fees everywhere (fees live only in cash and
-`total_fees`).
+`realized_pnl` is GROSS of fees everywhere.
 
 ## 9. Owner decisions recorded
 
-1. **Fill improvement semantics**: `fraction_to_midpoint` — 0.0 executable
-   edge (primary), 1.0 full midpoint; buy `ask − f·(ask−mid)`, sell
-   `bid + f·(mid−bid)`; integer half-tick arithmetic, conservative rounding;
-   sensitivity {0.5, 1.0} explicitly NON-PRIMARY (documented one-tick
-   discretization, excluded from the stress-monotonicity gate).
-2. **Monetary units**: quote price = dollars per deliverable share; cash
-   notional = price × quantity × multiplier (multiplier + deliverable
-   snapshotted per fill); fees per fill; ledger dollars; realized PnL gross.
-3. **DTE convention**: calendar days.
-4. **Fee constants are placeholders** ($0.65/contract, $1.00 order minimum).
-5. **Registry ordering is software-only** — no cryptographic claim against
+1. `fraction_to_midpoint`: 0.0 executable edge (primary), 1.0 midpoint;
+   integer half-tick arithmetic, conservative rounding; sensitivity
+   {0.5, 1.0} explicitly NON-PRIMARY.
+2. Monetary units: price = dollars per deliverable share; cash notional =
+   price × quantity × multiplier (multiplier + deliverable snapshotted per
+   fill; standard contract multiplier pinned to 100 by schema).
+3. DTE convention: calendar days.
+4. Fee constants are placeholders ($0.65/contract, $1.00 order minimum).
+5. Registry ordering is software-only — no cryptographic claim against
    direct SQLite edits.
-6. **Early assignment**: candidate fixture + DEFERRED_TO_POST_M0 record; no
-   engine claimed. Short option legs remain structurally prohibited.
-7. **CI**: audit §8 requests a GitHub Actions workflow — **deviation**: the
+6. Early assignment: candidate fixture + DEFERRED_TO_POST_M0 record; short
+   option legs remain structurally prohibited.
+7. CI: audit §8 requests a GitHub Actions workflow — **deviation**: the
    operator's standing hard rule forbids GitHub Actions permanently; the
    local `scripts/m0_gate.sh` (plus clean-clone proof) is the release
-   authority. Recorded here for the owner to overrule explicitly if ever
-   desired.
-8. **Calendar regen policy**: any range/version change to the vendored
-   calendar is protocol-relevant (regenerate only via the pinned generator).
+   authority.
+8. Calendar regen policy: any range/version change is protocol-relevant.
+9. Quote consumption is engine-internal stream selection: callers hand the
+   engine the visible quote stream; the engine selects the latest eligible
+   quote at the latency-shifted instant (single-quote calls are a
+   one-element stream).
 
 ## 10. Known limitations and nonclaims
 
@@ -168,14 +170,15 @@ fixed by `b3bf1be` (wheel ships code; the frozen yaml is repo data via
 - No calibrated real-world fee/slippage model (placeholder constants).
 - No exercise/assignment engine (deferred fixture only).
 - No paper or live trading authorization.
-- INV-07 stress monotonicity is proven at the primary execution (f=0) with
-  integer ticks; sub-tick sensitivity fills carry documented one-tick
+- INV-07 is enforced at the guard layer only (see §5 note); full pipeline
+  enforcement lands with M2.
+- Stress monotonicity is proven at the primary execution (f=0) with integer
+  ticks; sub-tick sensitivity fills carry documented one-tick
   discretization and are non-primary by definition.
 - Availability "inclusive at close" is a protocol choice (vendor lag
   modeling deferred).
 
-## 11. Independent review
+## 11. Evidence invalidation
 
-Pending: Codex adversarial review of the exact gate-green head (§10 of the
-audit packet); findings + dispositions to be appended here and re-gated if
-any code/test changes.
+Any code, test, protocol, or dependency change after the recorded head
+invalidates this packet in full.

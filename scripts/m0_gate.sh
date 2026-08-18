@@ -12,7 +12,7 @@ if [ "${M0_GATE_ALLOW_DIRTY:-0}" != "1" ]; then
   fi
 fi
 
-echo "== head =="; git rev-parse HEAD
+echo "== head =="; HEAD_AT_START=$(git rev-parse HEAD); echo "$HEAD_AT_START"
 echo "== uv sync --frozen (dev group included) =="
 uv sync --frozen
 echo "== ruff format --check =="
@@ -50,4 +50,17 @@ assert protocol_hash(p)
 assert fraction_to_midpoint(Decimal("1.00"), Decimal("1.10"), "buy", Decimal("1")) == Decimal("1.05")
 print(f"wheel smoke ok: tree_options {tree_options.__version__ if hasattr(tree_options, '__version__') else ''} protocol {p.meta.protocol_version}")
 PY
+echo "== exact-head + clean-tree assertions =="
+HEAD_AT_END=$(git rev-parse HEAD)
+if [ "$HEAD_AT_END" != "$HEAD_AT_START" ]; then
+  echo "REFUSED: head moved during the gate ($HEAD_AT_START -> $HEAD_AT_END)." >&2
+  exit 3
+fi
+UNEXPECTED=$(git status --porcelain | grep -v -E '^[ ?]{2}(artifacts|dist)/' | grep -v -E '^\?\? (artifacts|dist)/' || true)
+if [ -n "$UNEXPECTED" ]; then
+  echo "REFUSED: working tree changed beyond generated artifacts:" >&2
+  echo "$UNEXPECTED" >&2
+  exit 4
+fi
+echo "head unchanged: $HEAD_AT_END; tree clean beyond artifacts/ and dist/"
 echo "== gate complete =="

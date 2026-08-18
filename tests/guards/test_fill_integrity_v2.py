@@ -254,3 +254,23 @@ class TestDuplicateOrderExecution:
             partial_sequence=True,
         )
         assert f1.fill_id != f2.fill_id
+
+
+class TestFutureQuoteDirect:
+    def test_future_quote_rejected_direct(self, static_calendar):
+        """Direct as_tradable probe: a quote received AFTER the execution
+        instant must raise StaleQuoteError here too — the engine-level
+        select_quote filter must not be the only defense."""
+        from tree_options.schemas.market import StaleQuoteError
+
+        at = execution_instant(static_calendar.session_open(date(2024, 7, 5)))
+        from datetime import timedelta as _td
+
+        future = fresh_quote(execution_at=at).model_copy(
+            update={
+                "received_timestamp": at + _td(seconds=30),
+                "exchange_timestamp": at + _td(seconds=31),
+            }
+        )
+        with pytest.raises(StaleQuoteError):
+            as_tradable(future, execution_at=at)
