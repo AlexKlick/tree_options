@@ -569,9 +569,14 @@ MUTANTS = [
         owner="test_swapped_budget_reference_refuses",
         file="src/tree_options/registry/sqlite.py",
         anchor='"SELECT cap FROM scope_commitments WHERE scope_key = ?",',
-        replacement="\"SELECT cap FROM scope_commitments WHERE scope_key = ''\",",
+        replacement='"SELECT cap FROM scope_commitments WHERE scope_key = ? AND cap < 0",',
         selectors=[f"{U}/test_registry.py"],
-        invariant="the recorded commitment is READ at every registration (a missed read re-opens loosening via a swapped budget)",
+        invariant=(
+            "the recorded commitment is READ at every registration (a missed read re-opens"
+            " loosening via a swapped budget; the mutant EXECUTES a valid query that"
+            " matches no row — placeholder and binding counts unchanged — rather than"
+            " crashing, so a kill is behavioral only)"
+        ),
     ),
     dict(
         id="M61-migration-backfill-empty",
