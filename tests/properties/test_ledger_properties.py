@@ -593,11 +593,25 @@ class TestLedgerIntegrityV2:
         cal, decision_session, exec_session, exec_at, engine, contract = ctx
         book = LedgerBook(initial_cash=Decimal("10000.00"))
         # one lot: 2 contracts @ 1.30 -> basis 260.00
-        book.apply(_buy_fill(engine, contract, exec_session, exec_at, 2, "1.20", "1.30", Decimal(0), decision_session))
+        book.apply(
+            _buy_fill(
+                engine,
+                contract,
+                exec_session,
+                exec_at,
+                2,
+                "1.20",
+                "1.30",
+                Decimal(0),
+                decision_session,
+            )
+        )
         s2 = cal.nth_after(exec_session, 1)
         at2 = execution_instant(cal.session_open(s2))
         # close HALF the lot @ 1.00
-        book.apply(_sell_fill(engine, contract, s2, at2, 1, "0.90", "1.00", Decimal(0), exec_session))
+        book.apply(
+            _sell_fill(engine, contract, s2, at2, 1, "0.90", "1.00", Decimal(0), exec_session)
+        )
         lot = book.lots(CONTRACT_ID)[0]
         assert lot.quantity == 1
         assert lot.cost_basis == Decimal("130.00")  # NOT the stale 260.00

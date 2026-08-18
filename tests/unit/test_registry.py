@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime
 
@@ -58,7 +59,7 @@ def registry(tmp_path):
 class TestCanonicalScopes:
     def test_free_form_scope_rejected(self, registry):
         with pytest.raises(NonCanonicalScopeError) as ei:
-            registry.register(_record(scope_key="v0.1.0:fold-0"))
+            registry.register(_record(scope_key="v0.1.0:fold-0"), scope=SCOPE)
         assert ei.value.code == "NON_CANONICAL_SCOPE"
 
     def test_scope_hash_is_deterministic_and_field_sensitive(self):
@@ -80,7 +81,7 @@ class TestStateMachine:
             registry.complete("TRIAL-GHOST", "s3://x.json", outcome_at=T1)
 
     def test_full_lifecycle(self, registry):
-        registry.register(_record())
+        registry.register(_record(), scope=SCOPE)
         assert registry.status("TRIAL-1") == "REGISTERED"
         registry.mark_running(
             "TRIAL-1",
@@ -95,13 +96,13 @@ class TestStateMachine:
         assert registry.metrics_uri("TRIAL-1") == "s3://m.json"
 
     def test_outcome_requires_running(self, registry):
-        registry.register(_record())
+        registry.register(_record(), scope=SCOPE)
         with pytest.raises(InvalidTransitionError) as ei:  # still REGISTERED
             registry.complete("TRIAL-1", "s3://m.json", outcome_at=T2)
         assert ei.value.code == "INVALID_TRANSITION"
 
     def test_no_double_outcome(self, registry):
-        registry.register(_record())
+        registry.register(_record(), scope=SCOPE)
         registry.mark_running(
             "TRIAL-1",
             git_sha="4a3eede",
@@ -114,7 +115,7 @@ class TestStateMachine:
             registry.complete("TRIAL-1", "s3://b.json", outcome_at=T2)
 
     def test_running_requires_matching_provenance(self, registry):
-        registry.register(_record())
+        registry.register(_record(), scope=SCOPE)
         with pytest.raises(InvalidTransitionError) as ei:
             registry.mark_running(
                 "TRIAL-1",
@@ -126,7 +127,7 @@ class TestStateMachine:
         assert "provenance" in ei.value.detail
 
     def test_failure_path(self, registry):
-        registry.register(_record())
+        registry.register(_record(), scope=SCOPE)
         registry.mark_running(
             "TRIAL-1",
             git_sha="4a3eede",
@@ -140,13 +141,13 @@ class TestStateMachine:
             registry.complete("TRIAL-1", "s3://a.json", outcome_at=T2)
 
     def test_duplicate_trial_id_rejected(self, registry):
-        registry.register(_record())
+        registry.register(_record(), scope=SCOPE)
         with pytest.raises(DuplicateTrialError) as ei:
-            registry.register(_record())
+            registry.register(_record(), scope=SCOPE)
         assert ei.value.code == "DUPLICATE_TRIAL_ID"
 
     def test_append_only_event_history(self, registry):
-        registry.register(_record())
+        registry.register(_record(), scope=SCOPE)
         registry.mark_running(
             "TRIAL-1",
             git_sha="4a3eede",
@@ -163,9 +164,9 @@ class TestBudgetAndConcurrency:
     def test_scope_cap_32_enforced(self, registry):
         budget = TrialBudget(cap=32)
         for i in range(32):
-            registry.register(_record(trial_id=f"TRIAL-{i}"), budget=budget)
+            registry.register(_record(trial_id=f"TRIAL-{i}"), scope=SCOPE, budget=budget)
         with pytest.raises(ScopeBudgetExceededError) as ei:
-            registry.register(_record(trial_id="TRIAL-33"), budget=budget)
+            registry.register(_record(trial_id="TRIAL-33"), scope=SCOPE, budget=budget)
         assert ei.value.code == "SCOPE_BUDGET_EXCEEDED"
         assert registry.count_scope(SCOPE.scope_key()) == 32
 
@@ -178,13 +179,13 @@ class TestBudgetAndConcurrency:
         reg2 = TrialRegistry(path)
         budget = TrialBudget(cap=10)
         for i in range(10):
-            reg1.register(_record(trial_id=f"T-{i}"), budget=budget)
+            reg1.register(_record(trial_id=f"T-{i}"), scope=SCOPE, budget=budget)
 
         results = []
 
         def try_register(reg, trial_id):
             try:
-                reg.register(_record(trial_id=trial_id), budget=budget)
+                reg.register(_record(trial_id=trial_id), scope=SCOPE, budget=budget)
                 results.append("registered")
             except (ScopeBudgetExceededError, sqlite3.OperationalError):
                 results.append("rejected")
@@ -210,17 +211,97 @@ class TestStorageIntegrity:
     def test_short_hypothesis_rejected_by_sql_check(self, registry):
         with pytest.raises(Exception, match=r"CHECK|check"):
             registry._execute_raw(
-                "INSERT INTO trials (trial_id, scope_key, hypothesis, hyperparameters_json,"
-                " git_sha, config_hash, dataset_manifest_hash, registered_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                ("TRIAL-X", "scope-v1:" + "0" * 64, "short", "{}", "g", "c", "d", T0.isoformat()),
+                "INSERT INTO trials (trial_id, scope_key, scope_json, hypothesis,"
+                " hyperparameters_json, git_sha, config_hash, dataset_manifest_hash,"
+                " registered_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "TRIAL-X",
+                    "scope-v1:" + "0" * 64,
+                    "{}",
+                    "short",
+                    "{}",
+                    "g",
+                    "c",
+                    "d",
+                    T0.isoformat(),
+                ),
             )
 
     def test_persistence_across_reopen(self, tmp_path):
         path = tmp_path / "trials.db"
         reg = TrialRegistry(path)
-        reg.register(_record())
+        reg.register(_record(), scope=SCOPE)
         reg.close()
         reg2 = TrialRegistry(path)
         assert reg2.count_scope(SCOPE.scope_key()) == 1
+        reg2.close()
+
+
+class TestRegistryHardening:
+    """Review F13 (scope derivation + mandatory cap) and F14 (CAS transitions)."""
+
+    def test_cap_enforced_without_caller_budget(self, registry):
+        """The registry owns a default budget: 33 registrations in one scope
+        fail even when no budget argument is supplied."""
+        for i in range(32):
+            registry.register(_record(trial_id=f"T-{i}"), scope=SCOPE)
+        with pytest.raises(ScopeBudgetExceededError):
+            registry.register(_record(trial_id="T-32"), scope=SCOPE)
+
+    def test_scope_key_must_derive_from_presented_scope(self, registry):
+        """A syntactically valid hash that does not derive from the presented
+        TrialScope is rejected — the registry recomputes and compares."""
+        forged = "scope-v1:" + "a" * 64
+        with pytest.raises(NonCanonicalScopeError) as ei:
+            registry.register(_record(trial_id="T-FORGE", scope_key=forged), scope=SCOPE)
+        assert ei.value.code == "NON_CANONICAL_SCOPE"
+
+    def test_missing_scope_rejected(self, registry):
+        with pytest.raises(NonCanonicalScopeError):
+            registry.register(_record())
+
+    def test_stored_scope_json_verifiable(self, registry):
+        registry.register(_record(), scope=SCOPE)
+        stored = registry.scope_json("TRIAL-1")
+        assert TrialScope(**json.loads(stored)) == SCOPE
+        assert TrialScope(**json.loads(stored)).scope_key() == SCOPE.scope_key()
+
+    def test_concurrent_completion_single_winner(self, tmp_path):
+        """Two connections race complete() on a RUNNING trial: exactly one
+        wins, one COMPLETED event, metrics_uri is the winner's."""
+        import threading
+
+        path = tmp_path / "trials.db"
+        reg1 = TrialRegistry(path)
+        reg2 = TrialRegistry(path)
+        reg1.register(_record(), scope=SCOPE)
+        reg1.mark_running(
+            "TRIAL-1",
+            git_sha="4a3eede",
+            config_hash="cfg-1",
+            dataset_manifest_hash="ds-1",
+            at=T1,
+        )
+        outcomes = []
+
+        def try_complete(reg, uri):
+            try:
+                reg.complete("TRIAL-1", uri, outcome_at=T2)
+                outcomes.append("won")
+            except InvalidTransitionError:
+                outcomes.append("lost")
+
+        t1 = threading.Thread(target=try_complete, args=(reg1, "s3://a.json"))
+        t2 = threading.Thread(target=try_complete, args=(reg2, "s3://b.json"))
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+        assert sorted(outcomes) == ["lost", "won"]
+        assert reg1.status("TRIAL-1") == "COMPLETED"
+        completed_events = [k for k, _ in reg1.events("TRIAL-1") if k == "COMPLETED"]
+        assert len(completed_events) == 1
+        winner = reg1.metrics_uri("TRIAL-1")
+        assert winner in {"s3://a.json", "s3://b.json"}
+        reg1.close()
         reg2.close()
