@@ -56,7 +56,9 @@ class TestRenameDelistingFixture:
         # The ticker join collapses two distinct issuers into one key.
         assert len(ticker_join) < sum(len(s.ticker_mappings) for s in (sec1, sec2))
 
-        identity_join = {(sec.security_id, m.ticker) for sec in (sec1, sec2) for m in sec.ticker_mappings}
+        identity_join = {
+            (sec.security_id, m.ticker) for sec in (sec1, sec2) for m in sec.ticker_mappings
+        }
         assert ("SEC-001", "NEWM") in identity_join
         assert ("SEC-001", "OLDA") in identity_join
         assert ("SEC-002", "NEWM") in identity_join  # same symbol, different issuer
@@ -104,7 +106,9 @@ class TestSplitAdjustedContractFixture:
 
         from tree_options.schemas.options import DeliverableSpec, OptionContract
 
-        with pytest.raises(ValidationError, match=re.escape("nonstandard deliverable requires corporate_action_id")):
+        with pytest.raises(
+            ValidationError, match=re.escape("nonstandard deliverable requires corporate_action_id")
+        ):
             OptionContract(
                 contract_id="OPT-C-2024-06-21-50-BAD",
                 option_root="OPT",

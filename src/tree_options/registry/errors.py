@@ -34,3 +34,32 @@ class ScopeBudgetExceededError(RegistryError):
             "SCOPE_BUDGET_EXCEEDED",
             f"scope {scope_key} already holds {cap} registered configs (cap {cap})",
         )
+
+
+class BudgetTamperedError(RegistryError):
+    def __init__(self, cap: object) -> None:
+        super().__init__(
+            "BUDGET_TAMPERED",
+            f"scope cap fails enforcement validation ({cap!r}): registration "
+            "refuses rather than run without a bounded commitment",
+        )
+
+
+class BudgetCommitmentChangedError(RegistryError):
+    def __init__(self, scope_key: str, committed: int, live: object) -> None:
+        super().__init__(
+            "BUDGET_COMMITMENT_CHANGED",
+            f"scope {scope_key} committed to cap {committed} at its first "
+            f"registration; the live budget reports {live!r} — the commitment "
+            "is fixed in storage and cannot change mid-scope",
+        )
+
+
+class NonCanonicalScopeError(RegistryError):
+    def __init__(self, scope_key: str, detail: str) -> None:
+        super().__init__("NON_CANONICAL_SCOPE", f"{detail}: {scope_key[:40]}")
+
+
+class InvalidTransitionError(RegistryError):
+    def __init__(self, trial_id: str, detail: str) -> None:
+        super().__init__("INVALID_TRANSITION", f"trial {trial_id}: {detail}")

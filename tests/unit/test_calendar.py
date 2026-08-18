@@ -84,8 +84,8 @@ class TestStaticCalendarIntegrity:
 class TestSessionInstants:
     def test_close_is_16_et_dst_correct(self, static_calendar):
         # 2024-07-03: EDT (UTC-4) -> close 20:00 UTC
-        close_july = static_calendar.session_close(date(2024, 7, 3))
-        assert close_july == datetime(2024, 7, 3, 20, 0, tzinfo=UTC)
+        close_july = static_calendar.session_close(date(2024, 7, 10))  # 07-03 is an early close now
+        assert close_july == datetime(2024, 7, 10, 20, 0, tzinfo=UTC)
         # 2024-01-03: EST (UTC-5) -> close 21:00 UTC
         close_jan = static_calendar.session_close(date(2024, 1, 3))
         assert close_jan == datetime(2024, 1, 3, 21, 0, tzinfo=UTC)
@@ -97,9 +97,7 @@ class TestSessionInstants:
     def test_contains_instant(self, static_calendar):
         d = date(2024, 7, 3)
         assert static_calendar.contains_instant(d, datetime(2024, 7, 3, 15, 0, tzinfo=UTC))
-        assert not static_calendar.contains_instant(
-            d, datetime(2024, 7, 3, 12, 0, tzinfo=UTC)
-        )
+        assert not static_calendar.contains_instant(d, datetime(2024, 7, 3, 12, 0, tzinfo=UTC))
         with pytest.raises(ValueError):
             static_calendar.contains_instant(d, datetime(2024, 7, 3, 15, 0))  # naive
 
@@ -134,7 +132,11 @@ class TestNoNaiveArithmetic:
             for node in ast.walk(tree):
                 if isinstance(node, ast.Call):
                     fn = node.func
-                    name = fn.id if isinstance(fn, ast.Name) else (fn.attr if isinstance(fn, ast.Attribute) else None)
+                    name = (
+                        fn.id
+                        if isinstance(fn, ast.Name)
+                        else (fn.attr if isinstance(fn, ast.Attribute) else None)
+                    )
                     if name in self.BANNED_CALLS:
                         offenders.append(f"{rel}:{node.lineno} calls {name}()")
                 if isinstance(node, ast.Attribute) and node.attr in self.BANNED_CALLS:
@@ -162,6 +164,50 @@ class TestNoNaiveArithmetic:
 def _fixture_path():
     from pathlib import Path
 
-    return Path(__file__).resolve().parents[2] / "data" / "calendar" / (
-        "nyse_sessions_2018_01_02_2026_12_31.json"
+    return (
+        Path(__file__).resolve().parents[2]
+        / "data"
+        / "calendar"
+        / ("nyse_sessions_2018_01_02_2026_12_31.json")
     )
+
+
+class TestTemporalCoherenceCalendar:
+    """Audit §4.4: holiday gap, early close, spring + autumn DST (static NYSE)."""
+
+    def test_holiday_gap_mlK(self, static_calendar):
+        # MLK 2024-01-15 (Monday) closed: Thursday -> Tuesday spans it.
+        assert not static_calendar.is_session(date(2024, 1, 15))
+        assert (
+            static_calendar.ordinal(date(2024, 1, 16))
+            == static_calendar.ordinal(date(2024, 1, 12)) + 1
+        )  # Fri -> Tue spans the Monday holiday
+
+    def test_early_close_session(self, static_calendar):
+        # 2024-07-03: NYSE half day, 13:00 ET close = 17:00 UTC (EDT).
+        d = date(2024, 7, 3)
+        assert static_calendar.is_session(d)
+        close = static_calendar.session_close(d)
+        assert (close.hour, close.minute) == (17, 0)
+        # contains_instant honors the early close
+        from tree_options.time.sessions import shift_instant
+
+        just_after = shift_instant(close, 1)
+        assert static_calendar.contains_instant(d, close)
+        assert not static_calendar.contains_instant(d, just_after)
+
+    def test_spring_dst_transition(self, static_calendar):
+        # DST starts 2024-03-10: Jan close 21:00 UTC (EST), late Mar 20:00 UTC (EDT).
+        assert static_calendar.session_close(date(2024, 1, 10)).hour == 21
+        assert static_calendar.session_close(date(2024, 3, 12)).hour == 20
+
+    def test_autumn_dst_transition(self, static_calendar):
+        # DST ends 2024-11-03: late Oct 20:00 UTC (EDT), mid Nov 21:00 UTC (EST).
+        assert static_calendar.session_close(date(2024, 10, 29)).hour == 20
+        assert static_calendar.session_close(date(2024, 11, 5)).hour == 21
+
+    def test_early_closes_are_sessions(self, static_calendar):
+        # integrity: every early close is a session in the fixture
+        payload_sessions = set(static_calendar.sessions())
+        for d in static_calendar._early_closes:
+            assert d in payload_sessions

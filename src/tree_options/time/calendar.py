@@ -20,6 +20,7 @@ from tree_options.time.sessions import (
     SESSION_CLOSE,
     SESSION_OPEN,
     SESSION_TIMEZONE,
+    early_close_instant,
     require_utc,
     session_close_instant,
     session_open_instant,
@@ -97,9 +98,7 @@ class StaticSessionCalendar:
         if payload["close"] != SESSION_CLOSE.strftime("%H:%M"):
             raise CalendarIntegrityError(f"calendar close {payload['close']!r} unexpected")
 
-        sessions: tuple[date, ...] = tuple(
-            date.fromisoformat(s) for s in payload["sessions"]
-        )
+        sessions: tuple[date, ...] = tuple(date.fromisoformat(s) for s in payload["sessions"])
         if not sessions:
             raise CalendarIntegrityError("calendar fixture has no sessions")
         if any(b <= a for a, b in itertools.pairwise(sessions)):
@@ -107,8 +106,16 @@ class StaticSessionCalendar:
         if len(set(sessions)) != len(sessions):
             raise CalendarIntegrityError("calendar sessions contain duplicates")
 
+        early_closes: tuple[date, ...] = tuple(
+            date.fromisoformat(s) for s in payload.get("early_close_sessions", [])
+        )
+        unknown_early = [d for d in early_closes if d not in set(sessions)]
+        if unknown_early:
+            raise CalendarIntegrityError(f"early-close sessions not sessions: {unknown_early[:3]}")
+
         self._sessions = sessions
         self._ordinals = {d: i for i, d in enumerate(sessions)}
+        self._early_closes = frozenset(early_closes)
         self.name = payload["calendar"]
 
     def sessions(self) -> tuple[date, ...]:
@@ -135,9 +142,7 @@ class StaticSessionCalendar:
         start = self.ordinal(d)
         idx = start + n
         if idx >= len(self._sessions):
-            raise NotASessionError(
-                f"only {len(self._sessions) - start} sessions remain after {d}"
-            )
+            raise NotASessionError(f"only {len(self._sessions) - start} sessions remain after {d}")
         return self._sessions[idx]
 
     def session_open(self, d: date) -> datetime:
@@ -146,6 +151,8 @@ class StaticSessionCalendar:
 
     def session_close(self, d: date) -> datetime:
         self.ordinal(d)  # fail closed on unknown session
+        if d in self._early_closes:
+            return early_close_instant(d)
         return session_close_instant(d)
 
     def contains_instant(self, d: date, ts: datetime) -> bool:

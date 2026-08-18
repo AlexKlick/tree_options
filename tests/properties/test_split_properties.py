@@ -73,7 +73,7 @@ class TestInvariantProperties:
     @given(seed=st.integers(0, 2**31 - 1), val=st.integers(8, 40), test=st.integers(5, 20))
     # synthetic_calendar is immutable and identical for every generated input,
     # so not resetting it between examples is safe.
-    @settings(max_examples=10, suppress_health_check=[HealthCheck.function_scoped_fixture])
+    @settings(suppress_health_check=[HealthCheck.function_scoped_fixture])
     def test_check_folds_passes_on_splitter_output(self, synthetic_calendar, h, seed, val, test):
         import random
 
@@ -136,6 +136,69 @@ class TestInvariantProperties:
             check_folds([bad], calendar=cal, label_horizon_sessions=h, embargo_sessions=e)
         assert ei.value.code in {"PURGE_OVERLAP", "EMBARGO_GAP"}
 
+    def test_embargo_only_violation_detected(self, synthetic_calendar):
+        """Adversarial: gap in (H, H+E] — embargo broken, purge intact.
+        Only EMBARGO_GAP may fire here, so a gutted embargo checker fails."""
+        from tree_options.splitting.splitter import Fold
+
+        cal = synthetic_calendar
+        sessions = cal.sessions()
+        bad = Fold(
+            fold_id=0,
+            train_sessions=frozenset(sessions[100:130]),  # last train = ord 129
+            validation_sessions=frozenset(sessions[135:145]),  # gap 6 in (5, 10]
+            test_sessions=frozenset(sessions[160:170]),
+            final_fit_train_sessions=frozenset(sessions[100:130]),
+        )
+        with pytest.raises(FoldInvariantViolation) as ei:
+            check_folds([bad], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)
+        assert ei.value.code == "EMBARGO_GAP"
+
+    def test_anchor_violation_detected(self, synthetic_calendar):
+        """Adversarial: train does not start at session 0, everything else
+        clean — only ANCHOR_MONOTONE may fire."""
+        from tree_options.splitting.splitter import Fold
+
+        cal = synthetic_calendar
+        sessions = cal.sessions()
+        bad = Fold(
+            fold_id=0,
+            train_sessions=frozenset(sessions[5:50]),
+            validation_sessions=frozenset(sessions[70:80]),
+            test_sessions=frozenset(sessions[90:100]),
+            final_fit_train_sessions=frozenset(sessions[5:50]),
+        )
+        with pytest.raises(FoldInvariantViolation) as ei:
+            check_folds([bad], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)
+        assert ei.value.code == "ANCHOR_MONOTONE"
+
+    def test_coverage_violation_detected(self, synthetic_calendar):
+        """Adversarial: two folds share a test session — COVERAGE must fire."""
+        from tree_options.splitting.splitter import Fold
+
+        cal = synthetic_calendar
+        sessions = cal.sessions()
+        f1 = Fold(
+            fold_id=0,
+            train_sessions=frozenset(sessions[0:30]),
+            validation_sessions=frozenset(sessions[40:50]),
+            test_sessions=frozenset(sessions[60:70]),
+            final_fit_train_sessions=frozenset(sessions[0:30]),
+        )
+        f2 = Fold(
+            fold_id=1,
+            # train 0:35, val 45:55, test 65:75 — independently valid
+            # (last train ord 34, first eval ord 45: gap 11 > H+E) so ONLY
+            # the shared test block 65:69 with fold 1 triggers a violation.
+            train_sessions=frozenset(sessions[0:35]),
+            validation_sessions=frozenset(sessions[45:55]),
+            test_sessions=frozenset(sessions[65:75]),  # overlaps fold 1's 60:70
+            final_fit_train_sessions=frozenset(sessions[0:35]),
+        )
+        with pytest.raises(FoldInvariantViolation) as ei:
+            check_folds([f1, f2], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)
+        assert ei.value.code == "COVERAGE"
+
     def test_session_grouping_violation_detected(self, synthetic_calendar):
         cal = synthetic_calendar
         sessions = cal.sessions()
@@ -169,3 +232,27 @@ class TestInvariantProperties:
         sp = _splitter(synthetic_calendar)
         with pytest.raises(ValueError, match="not in calendar"):
             sp.splits([date(2019, 1, 5)])  # Saturday: not a session
+
+    def test_duplicate_fold_ids_with_overlapping_tests_rejected(self, synthetic_calendar):
+        """F16: two folds sharing a fold_id AND a test block must be caught —
+        the COVERAGE check may not key on the stored id being different."""
+        from tree_options.splitting.splitter import Fold
+
+        cal = synthetic_calendar
+        sessions = cal.sessions()
+        dup = Fold(
+            fold_id=0,  # SAME id as f1 below
+            train_sessions=frozenset(sessions[0:35]),
+            validation_sessions=frozenset(sessions[45:55]),
+            test_sessions=frozenset(sessions[60:70]),
+            final_fit_train_sessions=frozenset(sessions[0:35]),
+        )
+        f1 = Fold(
+            fold_id=0,
+            train_sessions=frozenset(sessions[0:30]),
+            validation_sessions=frozenset(sessions[40:50]),
+            test_sessions=frozenset(sessions[60:70]),
+            final_fit_train_sessions=frozenset(sessions[0:30]),
+        )
+        with pytest.raises(FoldInvariantViolation):
+            check_folds([f1, dup], calendar=cal, label_horizon_sessions=5, embargo_sessions=5)

@@ -66,6 +66,13 @@ def main() -> int:
 
     cal = exchange_calendars.get_calendar("XNYS", start=args.start, end=args.end)
     sessions = [d.date().isoformat() for d in cal.sessions_in_range(args.start, args.end)]
+    # Early closes (13:00 ET): post-Thanksgiving / Christmas-eve half days.
+    early_close_set = {d.date() for d in cal.early_closes}
+    early_closes = sorted(
+        d.date().isoformat()
+        for d in cal.sessions_in_range(args.start, args.end)
+        if d.date() in early_close_set
+    )
 
     payload = {
         "calendar": "XNYS",
@@ -73,6 +80,8 @@ def main() -> int:
         "timezone": "America/New_York",
         "open": "09:30",
         "close": "16:00",
+        "early_close": "13:00",
+        "early_close_sessions": early_closes,
         "sessions": sessions,
     }
     body = json.dumps(payload, indent=2) + "\n"
@@ -85,6 +94,7 @@ def main() -> int:
 
     print(f"exchange_calendars=={used_version}")
     print(f"sessions: {len(sessions)}  ({sessions[0]} .. {sessions[-1]})")
+    print(f"early closes: {len(early_closes)}")
     print(f"wrote {args.out}")
     print(f"sha256 {digest}")
     return 0

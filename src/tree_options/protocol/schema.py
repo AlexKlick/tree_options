@@ -79,7 +79,10 @@ class FoldConfig(_Strict):
 
 
 class InnerLoopConfig(_Strict):
-    max_registered_configs: int = Field(gt=0)
+    # strict: this number is a pre-registration commitment — lax coercion
+    # let YAML `true` normalize to 1, "32" to 32, and 32.0 to 32 (round 5,
+    # NEW-7). No bool/str/float may become the cap.
+    max_registered_configs: int = Field(gt=0, strict=True)
 
 
 class PrimaryFillPolicy(_Strict):
@@ -96,19 +99,28 @@ class MoneyConfig(_Strict):
 
 class FillConfig(_Strict):
     primary: PrimaryFillPolicy
-    price_improvement_fractions: tuple[str, ...] = Field(min_length=1)
+    fraction_to_midpoint_sensitivity: tuple[str, ...] = Field(min_length=1)
     max_quote_age_seconds: int = Field(gt=0)
+    reject_locked_quotes: bool
+    fill_size_fraction: Decimal
     same_session_execution: Literal["reject"]
     partial_fills: Literal["allowed_by_quote_size"]
     money: MoneyConfig
 
-    @field_validator("price_improvement_fractions")
+    @field_validator("fraction_to_midpoint_sensitivity")
     @classmethod
     def _fractions_in_range(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         for raw in v:
             f = Decimal(raw)
-            if not (Decimal("0") < f <= Decimal("0.5")):
-                raise ValueError(f"improvement fraction {raw} must be in (0, 0.5]")
+            if not (Decimal("0") <= f <= Decimal("1")):
+                raise ValueError(f"fraction_to_midpoint {raw} must be in [0, 1]")
+        return v
+
+    @field_validator("fill_size_fraction")
+    @classmethod
+    def _size_fraction(cls, v: Decimal) -> Decimal:
+        if not (Decimal("0") < v <= Decimal("1")):
+            raise ValueError(f"fill_size_fraction {v} must be in (0, 1]")
         return v
 
 
@@ -164,9 +176,7 @@ class ResearchProtocol(_Strict):
     short_options: ShortOptionsConfig
     trials: TrialsConfig
 
-    EXPECTED_INVARIANT_IDS: ClassVar[tuple[str, ...]] = tuple(
-        f"INV-{i:02d}" for i in range(1, 15)
-    )
+    EXPECTED_INVARIANT_IDS: ClassVar[tuple[str, ...]] = tuple(f"INV-{i:02d}" for i in range(1, 15))
 
     @field_validator("invariants")
     @classmethod
@@ -175,7 +185,5 @@ class ResearchProtocol(_Strict):
         if len(ids) != len(set(ids)):
             raise ValueError("duplicate invariant ids")
         if tuple(ids) != cls.EXPECTED_INVARIANT_IDS:
-            raise ValueError(
-                f"invariants must be exactly {cls.EXPECTED_INVARIANT_IDS}, got {ids}"
-            )
+            raise ValueError(f"invariants must be exactly {cls.EXPECTED_INVARIANT_IDS}, got {ids}")
         return v

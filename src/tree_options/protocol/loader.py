@@ -34,7 +34,7 @@ def resolve_protocol_path(path: Path | str | None = None) -> Path:
     """
     if path is not None:
         p = Path(path)
-    elif (env := os.environ.get(_PROTOCOL_ENV_VAR)) :
+    elif env := os.environ.get(_PROTOCOL_ENV_VAR):
         p = Path(env)
     else:
         p = _repo_root() / "research_protocol.yaml"
@@ -62,9 +62,7 @@ def default_protocol() -> ResearchProtocol:
 
 
 def canonical_json(protocol: ResearchProtocol) -> str:
-    return json.dumps(
-        protocol.model_dump(mode="json"), sort_keys=True, separators=(",", ":")
-    )
+    return json.dumps(protocol.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
 
 
 def protocol_hash(protocol: ResearchProtocol) -> str:

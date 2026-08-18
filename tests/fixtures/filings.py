@@ -30,9 +30,7 @@ FORM4_FIELDS = dict(
 def ten_q_fixture(calendar):
     """10-Q: period ends 2024-02-29; accepted 2024-04-26 ~16:05 ET."""
     acceptance = calendar.session_close(date(2024, 4, 26)) + timedelta(minutes=5)
-    filing = FilingRecord.quarterly_report(
-        **Q1_10Q_FIELDS, acceptance_instant=acceptance
-    )
+    filing = FilingRecord.quarterly_report(**Q1_10Q_FIELDS, acceptance_instant=acceptance)
     compliant = FeatureEvent(
         security_id="SEC-10Q",
         feature_name="fund_current_ratio",

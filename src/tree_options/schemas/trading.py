@@ -48,23 +48,36 @@ class Order(StrictModel):
 
 
 class Fill(StrictModel):
+    """A minted execution.
+
+    Units contract (audit §4.2), snapshotted at execution — historical cash
+    never depends on later contract-master revisions:
+      price        dollars per deliverable share (unit premium)
+      multiplier   deliverable units per contract (e.g. 100)
+      notional     price * quantity * multiplier      (dollars)
+      fees         dollars per fill
+      signed_cash  +/- notional (excludes fees)       (dollars)
+    """
+
     fill_id: IdStr
     order_id: IdStr
     contract_id: IdStr
     side: Literal["buy", "sell"]
     quantity: int = Field(ge=1)
     price: Price
+    multiplier: int = Field(ge=1)
+    deliverable_shares_per_contract: Decimal = Field(gt=0)
     fees: Money = Field(ge=0)
     execution_at: UTCDatetime
     execution_session: date
-    price_improvement_fraction: Decimal = Field(default=Decimal("0"), ge=0, le=Decimal("0.5"))
+    fraction_to_midpoint: Decimal = Field(default=Decimal("0"), ge=0, le=Decimal("1"))
 
     def notional(self) -> Money:
-        return (self.price * self.quantity).quantize(Decimal("0.01"))
+        return (self.price * self.quantity * self.multiplier).quantize(Decimal("0.01"))
 
     def signed_cash(self) -> Money:
         sign = -1 if self.side == "buy" else 1
-        return (sign * self.price * self.quantity).quantize(Decimal("0.01"))
+        return (sign * self.price * self.quantity * self.multiplier).quantize(Decimal("0.01"))
 
 
 class Position(StrictModel):

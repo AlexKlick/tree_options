@@ -34,10 +34,12 @@ def check_folds(
     base = sessions[0]
 
     for fold in folds:
-        if fold.train_sessions & fold.validation_sessions or fold.train_sessions & fold.test_sessions or fold.validation_sessions & fold.test_sessions:
-            raise FoldInvariantViolation(
-                "SETS_DISJOINT", f"fold {fold.fold_id} role sets overlap"
-            )
+        if (
+            fold.train_sessions & fold.validation_sessions
+            or fold.train_sessions & fold.test_sessions
+            or fold.validation_sessions & fold.test_sessions
+        ):
+            raise FoldInvariantViolation("SETS_DISJOINT", f"fold {fold.fold_id} role sets overlap")
         # Purge: for every train session s and eval session t, the label
         # window [s+1, s+H] must not touch t: ordinal(t) - ordinal(s) > H.
         for s in fold.train_sessions:
@@ -63,7 +65,10 @@ def check_folds(
         # Refit set purge vs test.
         for s in fold.final_fit_train_sessions - fold.train_sessions:
             for t in fold.test_sessions:
-                if calendar.ordinal(t) - calendar.ordinal(s) <= label_horizon_sessions + embargo_sessions:
+                if (
+                    calendar.ordinal(t) - calendar.ordinal(s)
+                    <= label_horizon_sessions + embargo_sessions
+                ):
                     raise FoldInvariantViolation(
                         "FINAL_FIT_PURGE",
                         f"fold {fold.fold_id}: retained val {s} within gap of test {t}",
@@ -74,11 +79,14 @@ def check_folds(
                 "ANCHOR_MONOTONE", f"fold {fold.fold_id} train does not start at anchor"
             )
 
-    # Test blocks strictly increase and are disjoint.
+    # Fold ids are unique; test blocks are disjoint regardless of ids.
+    ids = [fold.fold_id for fold in folds]
+    if len(set(ids)) != len(ids):
+        raise FoldInvariantViolation("DUPLICATE_FOLD_ID", f"fold ids repeat: {sorted(ids)[:6]}")
     seen: dict[date, int] = {}
     for fold in folds:
         for t in fold.test_sessions:
-            if t in seen and seen[t] != fold.fold_id:
+            if t in seen:
                 raise FoldInvariantViolation("COVERAGE", f"test session {t} in two folds")
             seen[t] = fold.fold_id
 

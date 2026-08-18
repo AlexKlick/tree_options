@@ -33,12 +33,12 @@ class TestTenQ:
         """Documented limitation: an EARLY declared available_at passes the
         join gate; only the filing-provenance gate catches it (INV-03)."""
         _, _, violating = ten_q_fixture(static_calendar)
-        guard.check_feature(violating, guard.decision_instant(date(2024, 4, 29)))
+        guard.check_feature(violating, decision_session=date(2024, 4, 29))
 
     def test_acceptance_keying_passes_both_gates(self, guard, static_calendar):
         filing, compliant, _ = ten_q_fixture(static_calendar)
         guard.check_filing_provenance(compliant, filing)
-        guard.check_feature(compliant, guard.decision_instant(date(2024, 4, 29)))
+        guard.check_feature(compliant, decision_session=date(2024, 4, 29))
 
     def test_acceptance_5min_after_close_not_usable_same_session(self, guard, static_calendar):
         _, compliant, _ = ten_q_fixture(static_calendar)
@@ -46,7 +46,7 @@ class TestTenQ:
             update={"decision_at": guard.decision_instant(date(2024, 4, 26))}
         )
         with pytest.raises(FutureDataError):
-            guard.check_feature(same_day, guard.decision_instant(date(2024, 4, 26)))
+            guard.check_feature(same_day, decision_session=date(2024, 4, 26))
 
 
 class TestForm4:
@@ -61,12 +61,10 @@ class TestForm4:
         # Join gate: not usable at transaction session t nor acceptance session
         # t2 (accepted 5 min after t2's close); usable from t2's next session.
         with pytest.raises(FutureDataError):
-            guard.check_feature(compliant, guard.decision_instant(t))
+            guard.check_feature(compliant, decision_session=t)
         with pytest.raises(FutureDataError):
-            guard.check_feature(compliant, guard.decision_instant(t2))
-        guard.check_feature(
-            compliant, guard.decision_instant(static_calendar.nth_after(t2, 1))
-        )
+            guard.check_feature(compliant, decision_session=t2)
+        guard.check_feature(compliant, decision_session=static_calendar.nth_after(t2, 1))
 
     def test_wrong_source_record_rejected(self, guard, static_calendar):
         filing, compliant, _ = ten_q_fixture(static_calendar)
@@ -82,7 +80,7 @@ class TestNegativeControl:
         for session in (sessions[10], sessions[500], sessions[-40]):
             ev = future_return_event(static_calendar, session, horizon=1)
             with pytest.raises(FutureDataError) as ei:
-                guard.check_feature(ev, guard.decision_instant(session))
+                guard.check_feature(ev, decision_session=session)
             assert ei.value.code == "AVAILABLE_AFTER_DECISION"
 
     def test_inclusive_boundary_at_close(self, guard, static_calendar):
@@ -100,10 +98,11 @@ class TestNegativeControl:
             source_record_id="r",
             revision_id="r1",
         )
-        guard.check_feature(ev, close)
+        guard.check_feature(ev, decision_session=session)
         with pytest.raises(FutureDataError):
             guard.check_feature(
-                ev.model_copy(update={"available_at": close + timedelta(seconds=1)}), close
+                ev.model_copy(update={"available_at": close + timedelta(seconds=1)}),
+                decision_session=session,
             )
 
 
@@ -123,12 +122,15 @@ class TestAuditPanel:
             revision_id="r1",
         )
         _, accepted_1605, _ = ten_q_fixture(static_calendar)
+        bound_1605 = accepted_1605.model_copy(
+            update={"decision_at": guard.decision_instant(date(2024, 4, 26))}
+        )
         rows = [
             PanelRow(security_id="SEC-A", decision_session=session, features=(good,)),
             PanelRow(
                 security_id="SEC-10Q",
                 decision_session=date(2024, 4, 26),  # accepted 16:05: 5 min late
-                features=(accepted_1605,),
+                features=(bound_1605,),
             ),
         ]
         result = guard.audit_panel(rows)
