@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from tree_options.registry.errors import ScopeBudgetExceededError
+from tree_options.registry.errors import BudgetTamperedError, ScopeBudgetExceededError
 
 if TYPE_CHECKING:  # import only for typing; avoids an import cycle
     from tree_options.registry.sqlite import TrialRegistry
@@ -53,5 +53,18 @@ class TrialBudget:
         return cls(cap=protocol.inner_loop.max_registered_configs)
 
     def check(self, registry: TrialRegistry, scope_key: str) -> None:
-        if registry.count_scope(scope_key) >= self.cap:
-            raise ScopeBudgetExceededError(scope_key, self.cap)
+        # Re-validate at the enforcement point (review round 6, NEW-8): the
+        # backing field is poisonable past the read-only property
+        # (object.__setattr__ / direct _cap writes), so trust nothing — a
+        # tampered cap refuses registration rather than running without a
+        # bounded commitment.
+        stored = self._cap
+        valid = (
+            isinstance(stored, int)
+            and not isinstance(stored, bool)
+            and 1 <= stored <= MAX_SCOPE_CAP
+        )
+        if not valid:
+            raise BudgetTamperedError(stored)
+        if registry.count_scope(scope_key) >= stored:
+            raise ScopeBudgetExceededError(scope_key, stored)

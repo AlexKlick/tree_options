@@ -95,7 +95,7 @@ class TrialRegistry:
         # supplies none.
         from tree_options.registry.budget import TrialBudget as _TB
 
-        self.budget = budget or _TB()
+        self._budget = budget or _TB()
         # check_same_thread=False: callers may hand a registry to a worker thread;
         # each connection is still used by one thread at a time (tests prove the
         # budget transaction holds under two concurrent connections).
@@ -117,6 +117,13 @@ class TrialRegistry:
                 f"trials table at {path} predates the current schema "
                 f"(missing columns: {sorted(missing)}); refusing to open",
             )
+
+    @property
+    def budget(self) -> TrialBudget:
+        """Read-only after construction (review round 6, NEW-8): swapping
+        the policy object post-construction (cap=10 -> cap=32) would loosen
+        a pre-registered tightening."""
+        return self._budget
 
     def close(self) -> None:
         self._conn.close()

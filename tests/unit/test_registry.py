@@ -313,6 +313,31 @@ class TestRegistryHardening:
         assert reg.budget.cap == 32  # the registry default, untouched
         reg.close()
 
+    def test_poisoned_backing_field_fails_closed(self, tmp_path):
+        """Round-6 NEW-8: `object.__setattr__(budget, "_cap", nan)` poisons
+        the backing field PAST the read-only property — and a plain
+        `budget._cap = nan` does the same. check() therefore re-validates
+        the cap at the enforcement point: a tampered value refuses
+        registration instead of running without a bounded commitment."""
+        budget = TrialBudget(cap=32)
+        object.__setattr__(budget, "_cap", float("nan"))
+        reg = TrialRegistry(tmp_path / "t-tamper.db", budget=budget)
+        with pytest.raises(RegistryError) as ei:
+            reg.register(_record(), scope=SCOPE)
+        assert ei.value.code == "BUDGET_TAMPERED"
+        reg.close()
+
+    def test_registry_budget_reference_is_read_only(self, tmp_path):
+        """Round-6 NEW-8: swapping the registry's budget object after
+        construction (cap=10 -> cap=32) would loosen a pre-registered
+        tightening — the peek-and-extend INV-13 exists to prevent. The
+        registry's policy object is fixed at construction."""
+        reg = TrialRegistry(tmp_path / "t-swap.db", budget=TrialBudget(cap=10))
+        with pytest.raises(AttributeError):
+            reg.budget = TrialBudget(cap=32)
+        assert reg.budget.cap == 10
+        reg.close()
+
     def test_pre_remediation_database_fails_closed(self, tmp_path):
         """An existing DB written before scope_json existed cannot be opened:
         CREATE TABLE IF NOT EXISTS would not migrate it, so refuse."""

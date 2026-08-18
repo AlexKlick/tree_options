@@ -36,6 +36,15 @@ class ScopeBudgetExceededError(RegistryError):
         )
 
 
+class BudgetTamperedError(RegistryError):
+    def __init__(self, cap: object) -> None:
+        super().__init__(
+            "BUDGET_TAMPERED",
+            f"scope cap fails enforcement validation ({cap!r}): registration "
+            "refuses rather than run without a bounded commitment",
+        )
+
+
 class NonCanonicalScopeError(RegistryError):
     def __init__(self, scope_key: str, detail: str) -> None:
         super().__init__("NON_CANONICAL_SCOPE", f"{detail}: {scope_key[:40]}")
