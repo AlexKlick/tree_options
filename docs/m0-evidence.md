@@ -17,9 +17,10 @@ complete on a moved head), because a commit cannot contain its own hash.
   changed)
 - History: initial build `3a1887f`→`196fdd0` (first packet, §2–§9), then
   independent-review remediation `a2c5b90`→`a1cac82` (round-1 findings
-  F1–F18), the owner-scoped-classifier follow-through `0f2fe88`, and the
-  round-2 closure commit at this head (§6). The gate-complete head and
-  clean-clone run are recorded in §6 and the PR body.
+  F1–F18), the owner-scoped-classifier follow-through `0f2fe88`, the
+  round-2 closure commit `9c14b81` (+`acfeea7` format), and the round-3
+  closure commit at this head (§6). The gate-complete head and clean-clone
+  run are recorded in §6 and the PR body.
 
 ## 2. Protocol identity
 
@@ -51,19 +52,19 @@ head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 | lint | `ruff check src tests scripts` | All checks passed |
 | types | `mypy` | Success: no issues found in 36 source files |
 | compile | `python -m compileall -q src tests scripts` | ok |
-| tests | `pytest -W error` | **244 passed, 0 failed, 0 skipped** |
-| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=51, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
+| tests | `pytest -W error` | **250 passed, 0 failed, 0 skipped** |
+| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=53, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
 | build | `uv build` | sdist + wheel built |
 | wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `664c315944d7bd1f130d534b9eb0a0d69962ad04dc8efaa6c7c70118e5e4b564`;
-`artifacts/m0-mutations.md` sha256 `b6b6ea31efb052d39b7f151d405319b0fff624604c49c193bd8aa96bff18ebb7`.
+`artifacts/m0-mutations.json` sha256 `f8f904dc47fb0c766e3073a9c858fa5464ec61d91211606388935133e54f173a`;
+`artifacts/m0-mutations.md` sha256 `ce07050f9258b80aabc333e0698793148f36b9b3d799082cc9f6df46c5f4dec8`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 51}  total=51
+totals: {'KILLED': 53}  total=53
 restoration full-suite pass: True
 ```
 
@@ -85,12 +86,12 @@ proves restoration.
 | INV-05 same-session grouping / anchored / disjoint folds | splitting | test_split_properties.py | M27–M29 |
 | INV-06 purge + embargo | splitting/checks | test_split_properties.py | M26 |
 | INV-07 fit-on-train-only | guards/fitting (NEW) | test_fitting_guard.py | M46 |
-| INV-08 identity ≠ ticker + point-in-time master | schemas/security + fixtures | test_identity_fixtures.py, test_leakage_v2.py | M43, M49 |
+| INV-08 identity ≠ ticker + point-in-time master (incl. finite listing_end honored once passed) | schemas/security + fixtures | test_identity_fixtures.py, test_leakage_v2.py | M43, M49, M52 |
 | INV-09 contract existence + standard deliverable (incl. deliverable-level action provenance) | schemas/options + fills | test_fill_engine.py, test_fill_semantics_v2.py, test_leakage_v2.py | M06, M09, M50 |
-| INV-10 next-session execution (both levels, calendar close) + order-quantity bounding of partial chains | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39, M48 |
+| INV-10 next-session execution (both levels, calendar close) + order-quantity bounding of partial chains + order-id binding | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39, M48, M53 |
 | INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45, M47 |
 | INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M23, M41 |
-| INV-13 registered-before-outcome + 32-cap + canonical scopes | registry | test_registry.py | M30–M33, M42 |
+| INV-13 registered-before-outcome + 32-cap (tighten-only, ceiling at construction) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42 |
 | INV-14 stamped artifacts | protocol/stamping | test_stamping.py | — (structural) |
 | candidate point-in-time inputs + decision/contract coherence | candidates/filters | test_candidate_filters.py, test_leakage_v2.py | M34–M36, M44, M51 |
 | calendar integrity + DST/early-close | time/calendar | test_calendar.py | M38 |
@@ -123,10 +124,30 @@ is claimed nowhere here.
   P1s (snapshot/contract coherence, unmigratable pre-remediation DB, three
   non-behavioral mutants M31/M33/M39) and 2 P2s (NotASessionError crash,
   gate assertions not on every exit path). All code-level findings were
-  remediated in the round-2 closure commit at this head (F6 is a declared
+  remediated in the round-2 closure commit `9c14b81` (F6 is a declared
   scope boundary, not a code fix — see owner decision 10); the manifest grew
   to 51 with M48–M51 covering the new defenses.
-- Round 3 re-review (Codex, this head): verdict recorded verbatim in the PR
+- Round 3 re-review (Codex, head `acfeea7`): NO-GO — 6 of the 11 claimed
+  fixes verified RESOLVED; F2/F12/F13/F18 and P1-c (M33 an incidental
+  message-assertion kill) were held NOT_RESOLVED at a deeper level than
+  round 2 tested (finite `listing_end` with no delisting never honored;
+  same order_id re-presentable under larger quantity;
+  `TrialRegistry(budget=TrialBudget(cap=1000))` constructor path; evidence
+  claims unsupported while those stood), plus 4 new findings (P1: the
+  finite-end schema path; P1: the order-ID rebinding bypass; P1: M48 a
+  false kill — guard removal yields NO_LIQUIDITY, not overfill; P2: engine
+  state committed before Fill validation). All were remediated red-first in
+  the round-3
+  closure commit at this head: `listed_on` honors a passed listing_end
+  (decision 11), order_ids are bound to the order that first minted a fill
+  (`ORDER_REBOUND`), the budget cap is tighten-only with the protocol
+  ceiling enforced at construction, the Fill is validated before any state
+  commits, M33 was re-aimed to the stored-`scope_json` blanking mutant (the
+  presentation defense keeps its direct test — no single-mutant kill exists
+  because the derivation check subsumes the same input), M48 was re-aimed
+  to the remaining-quantity clamp whose removal actually overfills, and the
+  manifest grew to 53 with M52/M53.
+- Round 4 re-review (Codex, this head): verdict recorded verbatim in the PR
   body.
 - Clean-clone proof: the protocol is a fresh `git clone --no-local` to a
   temp dir, `bash scripts/m0_gate.sh` executed inside the clone, exit 0,
@@ -145,6 +166,7 @@ is claimed nowhere here.
 | 10-Q period-end vs filing availability | tests/fixtures/filings.py | test_fixture_filings.py |
 | Form 4 filed 2 sessions later | tests/fixtures/filings.py | test_fixture_filings.py |
 | Ticker rename + delisting, stable security_id, point-in-time visibility | tests/fixtures/security.py | test_identity_fixtures.py, test_leakage_v2.py |
+| Finite listing_end with NO delisting event (end knowable only once passed) | tests/fixtures/security.py | test_leakage_v2.py |
 | Split-adjusted option deliverable (150 shares) | tests/fixtures/contracts.py | test_identity_fixtures.py + candidate deliverable rule |
 | ITM expiration (tradable ON expiration, dead after) | tests/fixtures/contracts.py | test_fill_engine.py |
 | Early-assignment candidate (DEFERRED_TO_POST_M0) | tests/fixtures/assignment.py | test_candidate_filters.py |
@@ -194,6 +216,12 @@ is claimed nowhere here.
     construction. M0 has no market-data replay layer to cross-check the
     stream against; the first enforceable surface for completeness arrives
     with the M1 point-in-time dataset, which will own quote provision.
+11. A master record's declared `listing_end` becomes knowable only once it
+    has PASSED (or a delisting event is visible at `as_of`): a finite end
+    carried by the record is NOT treated as announced future knowledge, so
+    before it passes the honest point-in-time membership answer past
+    `listing_start` is True (unknown end), and after it passes a record
+    with no delisting event is honored (review round 3, F2).
 
 ## 10. Known limitations and nonclaims
 
