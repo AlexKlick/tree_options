@@ -26,7 +26,9 @@ complete on a moved head), because a commit cannot contain its own hash.
   re-validation, fixed registry budget reference) plus the round-6
   closure commit `1286719`, the round-7 remediation `1aa9672` (the cap
   COMMITTED to storage — in-range loosening and budget-reference swaps
-  refuse) plus this round-7 closure commit. The gate-complete head and
+  refuse) plus the round-7 closure commit `8a4e595`, the round-8
+  remediation `af00e58` (one-read enforcement, committed-at-open
+  migration) plus this round-8 closure commit. The gate-complete head and
   clean-clone run are recorded in §6 and the PR body.
 
 ## 2. Protocol identity
@@ -59,19 +61,19 @@ head is unchanged and the tree is clean beyond `artifacts/`/`dist/`):
 | lint | `ruff check src tests scripts` | All checks passed |
 | types | `mypy` | Success: no issues found in 36 source files |
 | compile | `python -m compileall -q src tests scripts` | ok |
-| tests | `pytest -W error` | **257 passed, 0 failed, 0 skipped** |
-| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=60, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
+| tests | `pytest -W error` | **261 passed, 0 failed, 0 skipped** |
+| mutation | `python scripts/mutate.py --json artifacts/m0-mutations.json --markdown artifacts/m0-mutations.md` | **KILLED=61, SURVIVED=0, INVALID_MUTANT=0, TIMEOUT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0; restoration full-suite pass=True** |
 | build | `uv build` | sdist + wheel built |
 | wheel smoke | fresh venv, install wheel, protocol load + tick-price check via `TREE_OPTIONS_PROTOCOL` | ok |
 
 Mutation artifact hashes:
-`artifacts/m0-mutations.json` sha256 `ea16ddaaeb054dd4ea7d03a124ce0ef492cf1e473690a8d8a9e552b2451f2679`;
-`artifacts/m0-mutations.md` sha256 `d54d75096a440593b5862d9e588ae7b564f2c4244e00a3bb6d2ee857ebd853f1`.
+`artifacts/m0-mutations.json` sha256 `0a247c4378486ea5d7e9d9052412e1ccb8aefbed399a32ed84b5d3d372bc3b32`;
+`artifacts/m0-mutations.md` sha256 `3a2ed1be5f1a6e5ccc47ec0620670b9e1f8a844ed07f2865834f303af8547b67`.
 
 ## 4. Mutation totals by classification (verbatim from the JSON artifact)
 
 ```text
-totals: {'KILLED': 60}  total=60
+totals: {'KILLED': 61}  total=61
 restoration full-suite pass: True
 ```
 
@@ -98,7 +100,7 @@ proves restoration.
 | INV-10 next-session execution (both levels, calendar close) + order-quantity bounding of partial chains + order-id binding | guards/fills | test_fill_engine.py, test_fill_integrity_v2.py | M03–M05, M39, M48, M53 |
 | INV-11 executable quotes only (tick-aligned, stream-selected) | schemas/market + fills | test_fill_engine.py, v2 files | M10–M19, M45, M47 |
 | INV-12 exact-Decimal conservation | ledger/book, trading, fees | test_ledger_properties.py, test_schemas.py | M21–M23, M41 |
-| INV-13 registered-before-outcome + 32-cap (tighten-only INTEGER ceiling at construction, read-only after construction, re-validated at every enforcement point — tampered values fail closed; registry budget reference fixed at construction; the cap COMMITTED to storage at the scope's first registration — a live budget that disagrees with the recorded commitment refuses registration, closing in-range `_cap` loosening and `_budget` reference swaps; strict at the protocol source) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42, M54–M60 |
+| INV-13 registered-before-outcome + 32-cap (tighten-only INTEGER ceiling at construction, read-only after construction, re-validated at every enforcement point — tampered values fail closed, at open as well as at registration; registry budget reference fixed at construction; the cap COMMITTED to storage at the scope's first registration — a live budget that disagrees with the recorded commitment refuses registration, closing in-range `_cap` loosening and `_budget` reference swaps; enforcement reads the budget exactly ONCE — the value validated, compared against the commitment, and committed is one and the same; scopes predating the commitment table are committed at open; strict at the protocol source) + canonical scopes (incl. stored scope_json fidelity) | registry | test_registry.py | M30–M33, M42, M54–M61 |
 | INV-14 stamped artifacts | protocol/stamping | test_stamping.py | — (structural) |
 | candidate point-in-time inputs + decision/contract coherence | candidates/filters | test_candidate_filters.py, test_leakage_v2.py | M34–M36, M44, M51 |
 | calendar integrity + DST/early-close | time/calendar | test_calendar.py | M38 |
@@ -233,7 +235,43 @@ is claimed nowhere here.
   misses) grew the manifest to 60. The only remaining path past the
   commitment is a direct SQLite edit of the table — decision 5's excluded
   class. The gate at `1aa9672`/this head recorded §3's counts and hashes.
-- Round 8 re-review (Codex, this head): verdict recorded verbatim in the
+- Round 8 re-review (Codex, head `8a4e595`): NO-GO — the commitment
+  design was upheld against SEQUENTIAL data writes (the table, transaction,
+  insert/event ordering, and rollback were called sound), M59 was upheld as
+  a true behavioral kill, and the delta sweep found no new defect in the
+  remediation itself, but four findings held: NEW-9 (P1) — the commitment
+  comparison and `check()` used TWO reads of mutable budget state, so a
+  data write landing between them (TOCTOU) registered the (cap+1)-th
+  config under a loosened cap; NEW-10 (P1) — scopes populated before the
+  commitment table existed had no recorded commitment, so their first
+  post-upgrade registration could loosen under a tampered budget ("only
+  then commit 32"); NEW-11 (P1) — M60's replacement dropped the argument
+  comma, turning the mutant into a call-on-string TypeError crash falsely
+  credited as a behavioral kill; NEW-12 (P2) — a NaN poison on a committed
+  scope raised `BUDGET_COMMITMENT_CHANGED` before the tamper could be
+  classified, the red log carried no head assertion, and the clean-clone
+  log did not itself record the `--no-local` invocation or the artifact
+  comparison. Final line, verbatim: "NO-GO". Remediated red-first in
+  `af00e58`: enforcement reads the budget exactly ONCE (`check()` validates
+  + count-checks in a single read and RETURNS the enforced cap, which is
+  the value compared against the commitment and committed for new scopes);
+  every scope with existing trials is COMMITTED at open, inside the
+  constructor, to the live validated cap (sentinel `committed_at =
+  'migrated-at-open'`, owner decision 13); M60's replacement preserves the
+  call shape (a valid SELECT matching no scope) and its owner is re-aimed
+  to `test_swapped_budget_reference_refuses`, so each round-7 test owns a
+  mutant; the tamper classification now fires first
+  (`BUDGET_TAMPERED` on a committed scope) and a poisoned budget refuses
+  even at open; the red log `/tmp/m0-red-r8.log` is head-bound
+  (`RED_BASE_HEAD`/`RED_END_HEAD` lines, all four red tests FAILED on
+  `8a4e595`); the clean-clone log below is self-contained (command echo +
+  in-log artifact comparison). `test_enforcement_reads_the_budget_once`,
+  `test_migrated_scope_is_committed_at_open`, and
+  `test_poisoned_cap_on_committed_scope_raises_budget_tampered` FAILED on
+  `8a4e595` and pass now, with `test_migrated_scope_continuity_preserved`
+  guarding against over-tightening; M61 grew the manifest to 61. The gate
+  at `af00e58`/this head recorded §3's counts and hashes.
+- Round 9 re-review (Codex, this head): verdict recorded verbatim in the
   PR body.
 - Clean-clone proof: the protocol is a fresh `git clone --no-local` to a
   temp dir, `bash scripts/m0_gate.sh` executed inside the clone, exit 0,
@@ -309,29 +347,50 @@ is claimed nowhere here.
     `listing_start` is True (unknown end), and after it passes a record
     with no delisting event is honored (review round 3, F2).
 12. A scope cap is an INTEGER commitment, defended in depth (review
-    rounds 4–7): the `TrialBudget` constructor refuses non-int caps
+    rounds 4–8): the `TrialBudget` constructor refuses non-int caps
     outright (NEW-5); the cap is a read-only property after construction
     (NEW-6); the protocol source is strict — `max_registered_configs`
-    refuses bool/str/float instead of coercing them (NEW-7); `check()`
-    RE-VALIDATES the stored cap at every enforcement point and raises
+    refuses bool/str/float instead of coercing them (NEW-7); the stored
+    cap is RE-VALIDATED at every enforcement point and raises
     `BUDGET_TAMPERED` on anything but an int in `[1, 32]`, so a poisoned
     backing field fails closed instead of disabling the cap (NEW-8) — this
     includes direct `_cap` and `object.__setattr__` writes, which are
-    data tampering and are caught at the enforcement point; and the cap is
-    COMMITTED to storage: the `scope_commitments` table records the cap
-    at the scope's FIRST registration, and every later registration
-    compares the live budget's cap against that recorded commitment —
-    `BUDGET_COMMITMENT_CHANGED` refuses any disagreement, so an in-range
-    `_cap` loosening or an ordinary `_budget` reference swap (pure DATA
-    writes, no code substitution) cannot loosen a pre-registered
-    tightening. Threat-model boundary (extends decision 5): enforcement is
-    software-only — the only paths past the commitment are a direct
-    SQLite edit of the storage (decision 5's excluded class) or a caller
-    who substitutes CODE (a subclass overriding `check()` or any other
-    method, a monkeypatched function), which has left the bounded API; no
-    in-process software can bound code substitution, and no claim is made
-    against it. Integer caps in `[1, 32]`, fixed at construction and
-    committed to storage; tighten-only stands.
+    data tampering and are caught at the enforcement point (and, since
+    round 8, at open); and the cap is COMMITTED to storage: the
+    `scope_commitments` table records the cap at the scope's FIRST
+    registration (or at first open for pre-schema scopes, decision 13),
+    and every later registration compares the live budget's cap against
+    that recorded commitment — `BUDGET_COMMITMENT_CHANGED` refuses any
+    disagreement, so an in-range `_cap` loosening or an ordinary
+    `_budget` reference swap (pure DATA writes, no code substitution)
+    cannot loosen a pre-registered tightening. Enforcement reads the
+    budget exactly ONCE per registration (NEW-9): `check()` validates and
+    count-checks in a single read and returns the enforced cap, which is
+    the value compared against the commitment and committed — there is no
+    second read in which a mid-registration data write could split
+    validation from enforcement. Threat-model boundary (extends decision
+    5): enforcement is software-only — the only paths past the commitment
+    are a direct SQLite edit of the storage (decision 5's excluded class)
+    or a caller who substitutes CODE (a subclass overriding `check()` or
+    any other method, a monkeypatched function), which has left the
+    bounded API; no in-process software can bound code substitution, and
+    no claim is made against it. Integer caps in `[1, 32]`, fixed at
+    construction and committed to storage; tighten-only stands.
+13. Pre-commitment-schema databases (review round 8, NEW-10): a scope
+    whose trials predate the `scope_commitments` table has no recoverable
+    original cap — the commitment is therefore fixed at the FIRST OPEN
+    under this schema, inside the constructor and before any registration
+    can run, to the live VALIDATED cap (sentinel `committed_at =
+    'migrated-at-open'`). From that point the scope is bound exactly as
+    every other scope: any later disagreement between the live budget and
+    the recorded commitment — loosening OR tightening — refuses
+    (`BUDGET_COMMITMENT_CHANGED`). An operator who deliberately reopens
+    an old database under a different in-range budget has made a
+    construction-time choice, which is the sanctioned API surface; the
+    pre-open budget of a closed registry is outside any running
+    enforcement. Migration never over-tightens: reopened under the same
+    budget, a migrated scope refuses only at its cap
+    (`test_migrated_scope_continuity_preserved`).
 
 ## 10. Known limitations and nonclaims
 
