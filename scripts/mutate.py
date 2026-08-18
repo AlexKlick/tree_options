@@ -587,6 +587,42 @@ MUTANTS = [
         selectors=[f"{U}/test_registry.py"],
         invariant="a scope populated before the commitment table is COMMITTED at open (no backfill re-opens its first post-upgrade registration)",
     ),
+    dict(
+        id="M62-duplicate-bar-accepted",
+        owner="test_duplicate_bars_rejected",
+        file="src/tree_options/data/quality.py",
+        anchor="if key in seen:",
+        replacement="if False:",
+        selectors=[f"{U}/test_data_quality.py"],
+        invariant="M1-E duplicate (security, session) bars are rejected (duplicates inflate panels)",
+    ),
+    dict(
+        id="M63-split-discontinuity-gutted",
+        owner="test_undeclared_price_discontinuity_rejected",
+        file="src/tree_options/data/quality.py",
+        anchor="if factor <= SPLIT_FACTOR_INVERSE or factor >= SPLIT_FACTOR_BOUND:",
+        replacement="if False:",
+        selectors=[f"{U}/test_data_quality.py"],
+        invariant="M1-E an overnight factor at/beyond the split bounds requires a covering action (unrepresented splits corrupt labels)",
+    ),
+    dict(
+        id="M64-manifest-content-gutted",
+        owner="test_manifest_tampering_is_detected",
+        file="src/tree_options/data/manifest.py",
+        anchor="digest.update(canonical_bytes(bar))",
+        replacement="digest.update(b\"\")",
+        selectors=[f"{U}/test_data_quality.py"],
+        invariant="M1-D the manifest content hash is bound to the bars (a post-ingest row swap must not survive verification)",
+    ),
+    dict(
+        id="M65-current-ticker-join-accepted",
+        owner="test_ticker_resolution_is_point_in_time",
+        file="src/tree_options/data/resolve.py",
+        anchor="if m.available_at > as_of:",
+        replacement="if False:",
+        selectors=[f"{U}/test_data_ingest.py"],
+        invariant="M1-C ticker resolution is point-in-time (a mapping announced after as_of is invisible — the current-ticker join is refused)",
+    ),
 ]
 
 FAILING = ("FAILED",)
