@@ -30,7 +30,9 @@ complete on a moved head), because a commit cannot contain its own hash.
   remediation `af00e58` (one-read enforcement, committed-at-open
   migration) plus the round-8 closure commit `6ba35ec`, and the round-10
   remediation `94480e1` (M60 re-fixed as a true behavioral kill) plus
-  this round-10 closure commit. The gate-complete head and
+  the round-10 closure commit `4cc5067`, and this round-11 remediation
+  commit (NEW-15: M60's documented scenario corrected). The
+  gate-complete head and
   clean-clone run are recorded in §6 and the PR body.
 
 ## 2. Protocol identity
@@ -303,13 +305,42 @@ is claimed nowhere here.
   executes (`cap` carries `CHECK (cap >= 1)` in the schema, so it
   matches no row), the sole `?` placeholder and the
   `(record.scope_key,)` binding are unchanged, and the kill is
-  behavioral: the missed read yields `committed=None`, the swapped
-  budget registers the (cap+1)-th config, and the owning test observes
-  DID NOT RAISE — the artifact's detail line for M60 is the owner's own
-  FAILED line. The round-8 record above is corrected per NEW-13/NEW-12
+  behavioral: the missed read yields `committed=None`, so the owning
+  test's SECOND registration under the swapped budget lands instead of
+  refusing — `test_swapped_budget_reference_refuses` registers ONE
+  config under cap=10, swaps the budget to cap=32, then attempts
+  config #2; under the mutant that second registration succeeds and
+  the test observes DID NOT RAISE — the artifact's detail line for M60
+  is the owner's own FAILED line. (The (cap+1)-th = 11th-config
+  scenario belongs to M59's owner,
+  `test_committed_cap_cannot_be_loosened_mid_scope` — corrected per
+  round 10, NEW-15.) The round-8 record above is corrected per NEW-13/NEW-12
   and the decisions below per NEW-14. The gate at `94480e1` recorded
   §3's counts and the new artifact hashes.
-- Round 10 re-review (Codex, this head): verdict recorded verbatim in
+- Round 10 re-review (Codex, head `4cc5067`): NO-GO — NEW-11 verified
+  RESOLVED (M60 preserves one placeholder and one binding; because the
+  schema enforces `cap >= 1`, `AND cap < 0` executes and returns no
+  row; the owner test reaches DID NOT RAISE and the artifact records
+  its exact FAILED line — a behavioral kill, not a pre-execution
+  crash); NEW-12/F18, NEW-13, and NEW-14 verified RESOLVED (the
+  round-8 record now matches the head-bound log's exactly three FAILED
+  lines, the continuity guard is distinguished, and decisions 12/13
+  correctly distinguish `SCOPE_BUDGET_EXCEEDED` from
+  `BUDGET_COMMITMENT_CHANGED`); the delta sweep confirmed the range
+  `6ba35ec..4cc5067` contains exactly the two stated commits, changes
+  only `scripts/mutate.py` and this doc, and found no new executable
+  enforcement defect or manifest-anchor drift — but flagged one new
+  finding: NEW-15 (P2) — this doc's round-9 record said M60's owner
+  registers the "(cap+1)-th" config, while
+  `test_swapped_budget_reference_refuses` registers ONE config under
+  cap=10, swaps to 32, then attempts config #2; the 11th-config path
+  belongs to M59's owner
+  (`test_committed_cap_cannot_be_loosened_mid_scope`). Final line,
+  verbatim: "NO-GO". Remediated in this
+  commit: the M60 scenario is described exactly as observed (the
+  second registration under the swapped budget lands instead of
+  refusing), with the 11th-config scenario attributed to M59's owner.
+- Round 11 re-review (Codex, this head): verdict recorded verbatim in
   the PR body.
 - Clean-clone proof: the protocol is a fresh `git clone --no-local` to a
   temp dir, `bash scripts/m0_gate.sh` executed inside the clone, exit 0,
