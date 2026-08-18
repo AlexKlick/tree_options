@@ -38,6 +38,9 @@ def _engine(synthetic_calendar) -> FillEngine:
     return FillEngine(synthetic_calendar)
 
 
+_SEQ = [0]
+
+
 def _order(
     *,
     side="buy",
@@ -50,8 +53,9 @@ def _order(
 ):
     from tree_options.time.sessions import session_close_instant
 
+    _SEQ[0] += 1
     return Order(
-        order_id="ORD-1",
+        order_id=f"ORD-{_SEQ[0]}",
         contract_id=contract_id,
         side=side,
         intent=intent,

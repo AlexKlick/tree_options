@@ -39,6 +39,7 @@ from tree_options.time.sessions import session_close_instant
 
 DECISION = None  # filled per-test from the synthetic calendar
 CONTRACT_ID = "OPT-C-2024-06-21-50"
+_SEQ = [0]
 
 
 def _sessions(synthetic_calendar):
@@ -56,8 +57,9 @@ def _order(
     limit=None,
     contract_id=CONTRACT_ID,
 ):
+    _SEQ[0] += 1
     return Order(
-        order_id="ORD-1",
+        order_id=f"ORD-{_SEQ[0]}",
         contract_id=contract_id,
         side=side,
         intent="open_long" if side == "buy" else "close_long",
@@ -231,11 +233,11 @@ class TestExecutionStressMonotonicity:
         chosen_late = select_quote([q1, q2, q3], at)
         # Eligibility: a selection may NEVER return a quote received after
         # its own execution instant (this is what kills reach-back mutants).
-        assert chosen_early.quote.received_timestamp <= at - timedelta(seconds=300)
-        assert chosen_late.quote.received_timestamp <= at
+        assert chosen_early.received_timestamp <= at - timedelta(seconds=300)
+        assert chosen_late.received_timestamp <= at
         # A later execution instant never reaches back for an earlier quote.
-        assert chosen_late.quote.received_timestamp >= chosen_early.quote.received_timestamp
-        assert chosen_late.quote == q3
+        assert chosen_late.received_timestamp >= chosen_early.received_timestamp
+        assert chosen_late == q3
 
 
 class TestQuoteRealityV2:

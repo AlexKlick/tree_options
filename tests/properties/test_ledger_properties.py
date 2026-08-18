@@ -38,6 +38,14 @@ def _base(synthetic_calendar):
     return cal, decision_session, exec_session, exec_at, engine, contract
 
 
+_ORDER_SEQ = [0]
+
+
+def _next_id():
+    _ORDER_SEQ[0] += 1
+    return _ORDER_SEQ[0]
+
+
 def _order(i, side, intent, qty, decision_session):
     from tree_options.time.sessions import session_close_instant
 
@@ -55,7 +63,7 @@ def _order(i, side, intent, qty, decision_session):
 def _buy_fill(engine, contract, exec_session, exec_at, qty, bid, ask, f, decision_session):
     q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
     return engine.execute(
-        _order(1, "buy", "open_long", qty, decision_session),
+        _order(_next_id(), "buy", "open_long", qty, decision_session),
         q,
         contract,
         execution_session=exec_session,
@@ -64,10 +72,10 @@ def _buy_fill(engine, contract, exec_session, exec_at, qty, bid, ask, f, decisio
     )
 
 
-def _sell_fill(engine, contract, exec_session, exec_at, qty, bid, ask, f, decision_session, i=2):
+def _sell_fill(engine, contract, exec_session, exec_at, qty, bid, ask, f, decision_session, i=None):
     q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
     return engine.execute(
-        _order(i, "sell", "close_long", qty, decision_session),
+        _order(i or _next_id(), "sell", "close_long", qty, decision_session),
         q,
         contract,
         execution_session=exec_session,
@@ -142,7 +150,7 @@ class TestCostMonotonicity:
         def net(engine, ask):
             q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
             buy = engine.execute(
-                _order(1, "buy", "open_long", 1, decision_session),
+                _order(_next_id(), "buy", "open_long", 1, decision_session),
                 q,
                 contract,
                 execution_session=exec_session,
@@ -152,7 +160,7 @@ class TestCostMonotonicity:
             at2 = execution_instant(cal.session_open(exec2))
             q2 = fresh_quote(bid=str(bid), ask=str(ask), execution_at=at2)
             sell = engine.execute(
-                _order(2, "sell", "close_long", 1, exec_session),
+                _order(_next_id(), "sell", "close_long", 1, exec_session),
                 q2,
                 contract,
                 execution_session=exec2,
@@ -199,7 +207,7 @@ class TestCostMonotonicity:
             engine = FillEngine(synthetic_calendar, fee_model=_Fee(fee_amount))
             q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
             buy = engine.execute(
-                _order(1, "buy", "open_long", 1, decision_session),
+                _order(_next_id(), "buy", "open_long", 1, decision_session),
                 q,
                 contract,
                 execution_session=exec_session,
@@ -210,7 +218,7 @@ class TestCostMonotonicity:
             at2 = execution_instant(cal.session_open(exec2))
             q2 = fresh_quote(bid=str(bid), ask=str(ask), execution_at=at2)
             sell = engine.execute(
-                _order(2, "sell", "close_long", 1, exec_session),
+                _order(_next_id(), "sell", "close_long", 1, exec_session),
                 q2,
                 contract,
                 execution_session=exec2,
@@ -242,7 +250,7 @@ class TestCostMonotonicity:
         ask = bid + Decimal(spread_cents) / 100
         q = fresh_quote(bid=str(bid), ask=str(ask), execution_at=exec_at)
         buy = engine.execute(
-            _order(1, "buy", "open_long", 1, decision_session),
+            _order(_next_id(), "buy", "open_long", 1, decision_session),
             q,
             contract,
             execution_session=exec_session,
@@ -253,7 +261,7 @@ class TestCostMonotonicity:
         at2 = execution_instant(cal.session_open(exec2))
         q2 = fresh_quote(bid=str(bid), ask=str(ask), execution_at=at2)
         sell = engine.execute(
-            _order(2, "sell", "close_long", 1, exec_session),
+            _order(_next_id(), "sell", "close_long", 1, exec_session),
             q2,
             contract,
             execution_session=exec2,
@@ -283,14 +291,14 @@ class TestCostMonotonicity:
         )
         q = fresh_quote(bid="1.00", ask="1.10", execution_at=exec_at)
         cheap = cheap_engine.execute(
-            _order(1, "buy", "open_long", 2, decision_session),
+            _order(_next_id(), "buy", "open_long", 2, decision_session),
             q,
             contract,
             execution_session=exec_session,
             execution_at=exec_at,
         )
         dear = dear_engine.execute(
-            _order(1, "buy", "open_long", 2, decision_session),
+            _order(_next_id(), "buy", "open_long", 2, decision_session),
             q,
             contract,
             execution_session=exec_session,
@@ -313,7 +321,7 @@ class TestConservation:
             book = LedgerBook(initial_cash=Decimal("10000.00"))
             held = 0
             session = exec_session
-            for step in range(8):
+            for _step in range(8):
                 session = cal.nth_after(session, 1)
                 at = execution_instant(cal.session_open(session))
                 bid = Decimal(rng.choice(["0.80", "1.00", "1.20", "1.45"]))
@@ -337,7 +345,6 @@ class TestConservation:
                         ask,
                         Decimal(0),
                         decision_session,
-                        i=step,
                     )
                     book.apply(fill)
                     held -= fill.quantity

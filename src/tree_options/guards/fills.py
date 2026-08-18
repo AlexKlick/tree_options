@@ -27,6 +27,7 @@ price * quantity * multiplier (snapshotted onto the Fill).
 from __future__ import annotations
 
 import math
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -35,11 +36,11 @@ from fractions import Fraction
 from tree_options.ledger.fees import FeeModel, PerContractFeeModel
 from tree_options.protocol.schema import ResearchProtocol
 from tree_options.schemas.common import PRICE_TICK
-from tree_options.schemas.market import QuoteEvent, as_tradable
+from tree_options.schemas.market import QuoteEvent, as_tradable, select_quote
 from tree_options.schemas.options import OptionContract
 from tree_options.schemas.trading import Fill, Order
 from tree_options.time.calendar import SessionCalendar
-from tree_options.time.sessions import session_close_instant, shift_instant
+from tree_options.time.sessions import shift_instant
 
 ALLOWED_FRACTIONS = (Decimal("0"), Decimal("0.25"), Decimal("0.5"), Decimal("0.75"), Decimal("1"))
 
@@ -158,9 +159,12 @@ class FillEngine:
         self.calendar = calendar
         self.fee_model: FeeModel = fee_model or PerContractFeeModel()
         self.max_quote_age_seconds = max_quote_age_seconds
+        if not (Decimal("0") < fill_size_fraction <= Decimal("1")):
+            raise ValueError(f"fill_size_fraction {fill_size_fraction} must be in (0, 1]")
         self.reject_locked_quotes = reject_locked_quotes
         self.fill_size_fraction = fill_size_fraction
         self._fill_seq = 0
+        self._executed_orders: set[str] = set()
 
     @classmethod
     def from_protocol(
@@ -178,24 +182,43 @@ class FillEngine:
     def execute(
         self,
         order: Order,
-        quote: QuoteEvent,
+        quotes: QuoteEvent | Sequence[QuoteEvent],
         contract: OptionContract,
         *,
         execution_session: date,
         execution_at: datetime,
         fraction_to_midpoint_f: Decimal = Decimal("0"),
         stress: ExecutionStress | None = None,
+        partial_sequence: bool = False,
     ) -> Fill:
+        """Mint a Fill or fail closed.
+
+        `quotes` is the quote STREAM visible at the (latency-shifted)
+        effective instant; the engine itself selects the latest eligible
+        quote — the caller cannot cherry-pick a favorable older print.
+        `partial_sequence=True` is the explicit, per-call opt-in that lets
+        one order mint a further fill (a deliberate partial-fill chain);
+        re-executing an order without it is DUPLICATE_ORDER_EXECUTION.
+        """
         stress = stress or ExecutionStress.zero()
         effective_at = shift_instant(execution_at, stress.latency_seconds)
+        quote_stream = [quotes] if isinstance(quotes, QuoteEvent) else list(quotes)
+        if order.order_id in self._executed_orders and not partial_sequence:
+            raise FillRejection(
+                "DUPLICATE_ORDER_EXECUTION",
+                f"order {order.order_id} already minted a fill; a further fill "
+                "requires partial_sequence=True",
+            )
 
         if not self.calendar.is_session(execution_session):
             raise FillRejection("SESSION_NOT_IN_CALENDAR", f"{execution_session} is not a session")
-        if quote.contract_id != order.contract_id or contract.contract_id != order.contract_id:
+        if contract.contract_id != order.contract_id or any(
+            q.contract_id != order.contract_id for q in quote_stream
+        ):
             raise FillRejection(
                 "CONTRACT_MISMATCH",
-                f"order {order.contract_id} / quote {quote.contract_id} / "
-                f"contract {contract.contract_id} disagree",
+                f"order {order.contract_id} / contract {contract.contract_id} / "
+                f"quotes {[q.contract_id for q in quote_stream]} disagree",
             )
         if not contract.exists_on(execution_session):
             raise FillRejection(
@@ -214,11 +237,12 @@ class FillEngine:
                 f"{contract.contract_id} not listed on decision session "
                 f"{order.decision_session}: unknowable at decision time",
             )
-        if order.decision_at != session_close_instant(order.decision_session):
+        calendar_decision_close = self.calendar.session_close(order.decision_session)
+        if order.decision_at != calendar_decision_close:
             raise FillRejection(
                 "DECISION_INSTANT_NOT_CLOSE",
                 f"decision_at {order.decision_at} != session close "
-                f"{session_close_instant(order.decision_session)}",
+                f"{calendar_decision_close} (early closes are 13:00 ET)",
             )
 
         exec_ord = self.calendar.ordinal(execution_session)
@@ -235,8 +259,9 @@ class FillEngine:
                 f"{effective_at} does not lie inside session {execution_session}",
             )
 
+        selected = select_quote(quote_stream, effective_at)
         tq = as_tradable(
-            quote,
+            selected,
             execution_at=effective_at,
             max_quote_age_seconds=self.max_quote_age_seconds,
             reject_locked=self.reject_locked_quotes,
@@ -293,6 +318,7 @@ class FillEngine:
         fees = fee_model.order_fees(quantity)
 
         self._fill_seq += 1
+        self._executed_orders.add(order.order_id)
         return Fill(
             fill_id=f"{order.order_id}-F{self._fill_seq}",
             order_id=order.order_id,

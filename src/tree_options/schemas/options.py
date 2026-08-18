@@ -63,6 +63,12 @@ class OptionContract(StrictModel):
         else:
             if self.deliverable.shares_per_contract != Decimal("100"):
                 raise ValueError("standard contract must deliver 100 shares")
+            if self.multiplier != 100:
+                raise ValueError(
+                    "standard contract multiplier must be 100 "
+                    f"(got {self.multiplier}): cash notional is price x quantity "
+                    "x multiplier and must match the 100-share deliverable"
+                )
         return self
 
     def exists_on(self, d: date) -> bool:

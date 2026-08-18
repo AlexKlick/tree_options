@@ -48,6 +48,17 @@ class NonpositiveQuoteError(RuntimeError):
     """Zero (or negative) side price — no economically meaningful executable."""
 
 
+class NonTickQuoteError(RuntimeError):
+    """A price not on the 0.01 tick grid — truncating it would fabricate a
+    better-than-quoted executable, so execution refuses sub-tick quotes."""
+
+
+def assert_on_tick(price: Decimal, side: str) -> None:
+    cents = price * 100
+    if cents != cents.to_integral_value():
+        raise NonTickQuoteError(f"{side} {price} is not on the 0.01 tick grid")
+
+
 class ZeroSizeQuoteError(RuntimeError):
     pass
 
@@ -117,6 +128,8 @@ def as_tradable(
         raise StaleQuoteError(f"quote age {age:.0f}s exceeds {max_quote_age_seconds}s")
     if q.bid <= 0 or q.ask <= 0:
         raise NonpositiveQuoteError(f"non-positive quote side: bid={q.bid} ask={q.ask}")
+    assert_on_tick(q.bid, "bid")
+    assert_on_tick(q.ask, "ask")
     if q.bid > q.ask:
         raise CrossedQuoteError(f"crossed quote: bid={q.bid} > ask={q.ask}")
     if reject_locked and q.bid == q.ask:
@@ -128,14 +141,15 @@ def as_tradable(
     return TradableQuote(quote=q)
 
 
-def select_quote(quotes, execution_at) -> TradableQuote:
+def select_quote(quotes, execution_at) -> QuoteEvent:
     """Latest quote received at or before execution_at (fail closed if none).
 
     Monotone in time by construction: a later execution instant can never
-    reach back for an earlier (potentially better) quote.
+    reach back for an earlier (potentially better) quote. Returns the RAW
+    event; tradability grading stays with as_tradable so crossed/locked/
+    stale quotes raise their graded error classes, not constructor errors.
     """
     eligible = [q for q in quotes if q.received_timestamp <= execution_at]
     if not eligible:
         raise StaleQuoteError(f"no quote received at or before {execution_at}")
-    latest = max(eligible, key=lambda q: (q.received_timestamp, q.exchange_timestamp))
-    return TradableQuote(quote=latest)
+    return max(eligible, key=lambda q: (q.received_timestamp, q.exchange_timestamp))
