@@ -762,10 +762,10 @@ MUTANTS = [
         id="M79-split-floor-suppression-gutted",
         owner="test_hostile_rate_spec_stays_gate_clean",
         file="src/tree_options/synth/generate.py",
-        anchor="if factor < 1 and seat.close * factor < RATIO_FLOOR:",
-        replacement="if False:",
+        anchor='RATIO_FLOOR = Decimal("1.00")',
+        replacement='RATIO_FLOOR = Decimal("0.00")',
         selectors=[f"{U}/test_synth_generate.py"],
-        invariant="M2 round-1 P1-2: ratio events that would floor-clamp the close are suppressed, so any accepted spec generates a gate-clean world",
+        invariant="M2 round-1 P1-2: ratio events that would floor-clamp the close are suppressed (the floor exists), so any accepted spec generates a gate-clean world",
     ),
     dict(
         id="M80-session-return-clamp-removed",
@@ -775,6 +775,24 @@ MUTANTS = [
         replacement="return ret",
         selectors=[f"{U}/test_synth_generate.py"],
         invariant="M2 round-1: undeclared overnight moves are clamped strictly inside the 2x discontinuity gate bound",
+    ),
+    dict(
+        id="M81-min-close-floor-removed",
+        owner="test_minimum_close_floor",
+        file="src/tree_options/synth/generate.py",
+        anchor="return max(x.quantize(CENT, rounding=ROUND_HALF_UP), MIN_CLOSE)",
+        replacement="return x.quantize(CENT, rounding=ROUND_HALF_UP)",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2 round-2 P1-1: closes never quantize below $1.00, where cent rounding is too small to land on the 0.5x/2x gate bounds",
+    ),
+    dict(
+        id="M82-suppression-reads-alpha-close",
+        owner="test_suppression_is_alpha_independent",
+        file="src/tree_options/synth/generate.py",
+        anchor="if factor < 1 and seat.base_close * factor < RATIO_FLOOR:",
+        replacement="if factor < 1 and seat.close * factor < RATIO_FLOOR:",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2 round-2 P1-2: suppression reads the alpha-independent base trajectory so null/alpha same-seed worlds decide identically",
     ),
 ]
 

@@ -23,22 +23,35 @@ def test_registry_shape_and_pools() -> None:
     reg = _registry()
     assert reg["registry_version"] == "worlds/1"
     worlds = reg["worlds"]
-    assert isinstance(worlds, list) and len(worlds) >= 6
+    assert isinstance(worlds, list)
     pools = {w["pool"] for w in worlds}  # type: ignore[index]
     assert pools == {"dev", "validation"}
-    validation = [w for w in worlds if w["pool"] == "validation"]  # type: ignore[index]
-    assert len(validation) == 5, "exactly 5 frozen validation worlds per spec version"
-    kinds = {w["spec"]["kind"] for w in validation}  # type: ignore[index]
-    assert kinds == {"null", "alpha"}, "validation pool must cover both world kinds"
-    dev_seeds = {w["spec"]["seed"] for w in worlds if w["pool"] == "dev"}  # type: ignore[index]
-    val_seeds = {w["spec"]["seed"] for w in validation}
-    assert dev_seeds.isdisjoint(val_seeds), "dev and validation seeds must not overlap"
-    # exact frozen composition (round-1 review: shape-only assertions let a
-    # wrong registry pass)
-    assert dev_seeds == {101, 102, 103, 104}, f"dev seeds drifted: {dev_seeds}"
-    assert val_seeds == {701, 702, 703, 704, 705}, f"validation seeds drifted: {val_seeds}"
-    val_kinds = sorted(w["spec"]["kind"] for w in validation)  # type: ignore[index]
-    assert val_kinds == ["alpha", "alpha", "null", "null", "null"]
+    # exact frozen composition (round-2 P2-2: no extra worlds, no duplicate
+    # seeds, no seed->kind reassignment can pass)
+    assert len(worlds) == 9, f"exactly 9 registered worlds, got {len(worlds)}"
+    dev = sorted(
+        (w["spec"]["seed"], w["world_id"])  # type: ignore[index]
+        for w in worlds
+        if w["pool"] == "dev"  # type: ignore[index]
+    )
+    assert dev == [
+        (101, "synth-v1-dev-null-101"),
+        (102, "synth-v1-dev-alpha-102"),
+        (103, "synth-v1-dev-null-103"),
+        (104, "synth-v1-dev-alpha-104"),
+    ], f"dev pool drifted: {dev}"
+    val = sorted(
+        (w["spec"]["seed"], w["spec"]["kind"], w["world_id"])  # type: ignore[index]
+        for w in worlds
+        if w["pool"] == "validation"  # type: ignore[index]
+    )
+    assert val == [
+        (701, "null", "synth-v1-val-null-701"),
+        (702, "null", "synth-v1-val-null-702"),
+        (703, "null", "synth-v1-val-null-703"),
+        (704, "alpha", "synth-v1-val-alpha-704"),
+        (705, "alpha", "synth-v1-val-alpha-705"),
+    ], f"validation pool drifted: {val}"
 
 
 def test_verify_worlds_gates_quality_not_just_hashes() -> None:

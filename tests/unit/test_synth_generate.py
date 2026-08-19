@@ -165,29 +165,80 @@ def test_null_and_alpha_worlds_share_structure(static_calendar) -> None:  # type
     assert alpha_world.payload.bars != null_world.payload.bars, "planted effect must move closes"
 
 
+def _synth_import_offenders(module: str, source: str) -> list[str]:
+    """All import forms that reach tree_options.synth from `module`:
+    absolute, from-root (`from tree_options import synth`), aliased, and
+    RELATIVE imports resolved against the importing module's package
+    (round-2 P2-1)."""
+    offenders: list[str] = []
+
+    def flag(target: str) -> None:
+        if target == "tree_options.synth" or target.startswith("tree_options.synth."):
+            offenders.append(f"{module} imports {target}")
+
+    mod_parts = module.split(".")
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                flag(alias.name)
+        elif isinstance(node, ast.ImportFrom):
+            level = node.level or 0
+            if level == 0:
+                base_parts = (node.module or "").split(".") if node.module else []
+            else:
+                # __init__.py modules carry their package as the last part,
+                # which makes this resolution correct for both file kinds
+                pkg_parts = mod_parts[: len(mod_parts) - level]
+                base_parts = pkg_parts + ((node.module or "").split(".") if node.module else [])
+            base = ".".join(base_parts)
+            flag(base)
+            if base in ("tree_options", "tree_options.synth"):
+                for alias in node.names:
+                    flag(f"{base}.{alias.name}")
+    return offenders
+
+
+def test_import_lint_catches_all_forms() -> None:
+    """Round-2 P2-1: the lint recognizes every import shape that reaches
+    synth — asserted against offender snippets, not just the live tree."""
+    absolute_forms = [
+        "import tree_options.synth",
+        "from tree_options import synth",
+        "from tree_options.synth import generate_world",
+        "from tree_options.synth.truth import WorldTruth",
+        "import tree_options.synth.truth",
+    ]
+    for src in absolute_forms:
+        assert _synth_import_offenders("tree_options.data.foo", src), src
+    relative_forms = [
+        "from ..synth import generate_world",
+        "from ..synth.truth import WorldTruth",
+        "from .. import synth",
+    ]
+    for src in relative_forms:
+        assert _synth_import_offenders("tree_options.data.__init__", src), src
+    assert _synth_import_offenders("tree_options.__init__", "from . import synth")
+    # clean imports stay clean
+    assert not _synth_import_offenders(
+        "tree_options.data.foo", "from tree_options.data import ingest_snapshot"
+    )
+    # synth-internal imports are exempt at the caller, not the helper
+    assert _synth_import_offenders(
+        "tree_options.data.foo", "from tree_options.synth.generate import generate_world"
+    )
+
+
 def test_truth_sidecar_import_boundary() -> None:
     """Ground truth is unreachable from feature-construction code: no module
-    outside tree_options.synth.* may import synth AT ALL (a bare synth import
-    exposes generate_world(...).truth), and nothing outside synth may import
-    synth.truth directly."""
+    outside tree_options.synth.* may import synth in ANY form (round-2 P2-1)."""
     src_root = Path(__file__).resolve().parents[2] / "src" / "tree_options"
     offenders: list[str] = []
     for path in sorted(src_root.rglob("*.py")):
         module = ".".join(path.relative_to(path.parents[2]).with_suffix("").parts)
         if module.startswith("tree_options.synth"):
             continue
-        tree = ast.parse(path.read_text())
-        for node in ast.walk(tree):
-            targets: list[str] = []
-            if isinstance(node, ast.Import):
-                targets = [alias.name for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                targets = [node.module]
-                if node.level == 0 and node.module == "tree_options.synth":
-                    targets += [f"tree_options.synth.{alias.name}" for alias in node.names]
-            for target in targets:
-                if target == "tree_options.synth" or target.startswith("tree_options.synth."):
-                    offenders.append(f"{module} imports {target}")
+        offenders.extend(_synth_import_offenders(module, path.read_text()))
     assert not offenders, f"synth (incl. truth) leaked into: {offenders}"
 
 
@@ -357,3 +408,90 @@ def test_tampered_world_fails_quality_gate(static_calendar) -> None:  # type: ig
     )
     with pytest.raises(DataQualityError, match="duplicate bar"):
         verify_manifest(snapshot, static_calendar)
+
+
+# ---------------------------------------------------------------------------
+# Round-2 remediation tests
+
+
+def _hostile_rates() -> ActionRates:
+    return ActionRates(
+        split=200.0,
+        reverse_split=0.0,
+        cash_dividend=0.0,
+        stock_dividend=0.0,
+        rename=0.0,
+        merger=0.0,
+        bankruptcy=0.0,
+        voluntary_delisting=0.0,
+        coverage_lapse=0.0,
+        ipo_per_year=0.0,
+    )
+
+
+def test_minimum_close_floor() -> None:
+    """Round-2 P1-1: closes never quantize below $1.00, where cent rounding
+    is small enough (<= 0.5%) that no clamped move or bounded bankruptcy can
+    land on the 0.5x/2x gate bounds."""
+    from decimal import Decimal
+
+    from tree_options.synth.generate import MIN_CLOSE, _cents
+
+    assert MIN_CLOSE >= Decimal("1.00")
+    assert _cents(Decimal("0.004")) == MIN_CLOSE
+    assert _cents(Decimal("1.00")) == Decimal("1.00")
+
+
+def test_quantized_moves_stay_inside_gate_property() -> None:
+    """Round-2 P1-1, the universal argument (property, not example): for ANY
+    close at/above the floor and ANY return (clamped) or bounded bankruptcy
+    loss, the cent-quantized next close keeps the pairwise factor strictly
+    inside (0.5, 2.0) — so no accepted spec can emit an undeclared move the
+    discontinuity gate would reject."""
+    import math
+    from decimal import Decimal as D
+
+    from tree_options.synth.generate import MIN_CLOSE, _cents, _clamp_session_return
+
+    worst_down = _cents(MIN_CLOSE * D(repr(math.exp(-_clamp_session_return(99.0)))))
+    assert MIN_CLOSE / worst_down < D(2)
+    worst_bankrupt = _cents(MIN_CLOSE * D("0.51"))
+    assert MIN_CLOSE / worst_bankrupt < D(2)
+    # dense sweep of the boundary region rather than only the corners
+    cents = [D(f"{c:.2f}") for c in [100, 101, 102, 105, 110, 119, 150, 200, 500, 1000, 50000]]
+    rets = [-0.6419, -0.5, -0.3, 0.0, 0.3, 0.5, 0.6419]
+    for c0 in cents:
+        for r in rets:
+            c1 = _cents(D(repr(float(c0) / 100 * math.exp(_clamp_session_return(r)))))
+            factor = (c0 / 100) / c1
+            assert D("0.5") < factor < D(2), (c0, r, factor)
+        for loss in ("0.40", "0.445", "0.49"):
+            c1 = _cents(c0 / 100 * (D(1) - D(loss)))
+            factor = (c0 / 100) / c1
+            assert factor < D(2), (c0, loss, factor)
+
+
+def test_suppression_is_alpha_independent(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """Round-2 P1-2: suppression decisions read the ALPHA-INDEPENDENT base
+    price trajectory, so a null world and its same-seed alpha world make
+    identical suppression choices — identical event timelines even in a
+    hostile floor-hugging spec."""
+    null_world = generate_world(base_spec(rates=_hostile_rates()), static_calendar)
+    alpha_world = generate_world(
+        base_spec(
+            kind="alpha",
+            # a large coefficient deliberately: the planted drift must be
+            # big enough to straddle suppression thresholds, so this test
+            # detects a guard that reads the alpha-moved close (M82)
+            alpha=AlphaSpec(family="linear_momentum", coefficient=0.05),
+            rates=_hostile_rates(),
+        ),
+        static_calendar,
+    )
+    assert alpha_world.truth.events == null_world.truth.events
+    assert [a.source_record_id for a in alpha_world.payload.actions] == [
+        a.source_record_id for a in null_world.payload.actions
+    ]
+    # the hostile spec really does drive seats to the floor: suppressions
+    # must have happened somewhere in the pool
+    assert len(null_world.payload.actions) < 200 * 24 * 160 / 252 / 10, "splits must be suppressed"

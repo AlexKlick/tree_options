@@ -60,25 +60,25 @@ model, no labels, no backtest, no real data, no performance claim.
 
 ## 3. Gate (release authority — local)
 
-`bash scripts/m0_gate.sh` at code head `d96b15d` (`/tmp/m2-gate-3.log`,
-sha256 `c7e6f5c0bcd8ece4…`):
+Current record: the full-gate + verify-all + clean-clone run at the final
+head is retained in `/tmp/m2-final-r3.log` (created by the detached
+round-2 remediation proof; numbers quoted in §6 round-2/round-3 entries
+and attached to the PR). History: the first evidence run at code head
+`d96b15d` (`310 passed`, `KILLED=78`) is superseded; the round-1
+remediation head recorded `316 passed`, `KILLED=80`; the current head
+records **320 passed / 0 failed**, **KILLED=82** (restoration pass), the
+registry verify-all `WORLDS_OK=9 MISMATCH=0 CODE_PIN=match`, and a
+`--no-local` clean clone with identical counts and artifacts.
 
-| Step | Result |
-|---|---|
-| `uv sync --frozen` / format / lint / `mypy` / compileall | clean (50 source files) |
-| `pytest -W error` | **310 passed, 0 failed, 0 skipped** |
-| `scripts/mutate.py` | **KILLED=78, SURVIVED=0, INVALID_MUTANT=0, MUTATION_DRIFT=0, HARNESS_ERROR=0**; restoration full-suite pass |
-| `uv build` + fresh-venv wheel smoke | ok |
-
-61 M0 mutants + 9 M1 mutants unchanged + **8 new M2 mutants M71–M78**
+61 M0 mutants + 9 M1 mutants unchanged + **12 new M2 mutants M71–M82**
 (sector leak window, seed-stream pinning, alpha injection, publication
 hour, ticker-recycle truth, initial-cohort listing, bankruptcy bound,
-split exactness) — every kill behavioral. One anchor re-pin: **M43**
-(security.py) now spans the ticker-specific loop because `sector_on`
-legitimately added the same single-line shape; recorded in its invariant.
-
-The OFFICIAL gate re-runs at this document's head (final head) and is
-attached to the PR alongside a `git clone --no-local` clean-clone proof.
+split exactness, suppression floor, return clamp, minimum-close floor,
+alpha-independent suppression) — every kill behavioral. Two anchor
+events, recorded in invariants: **M43** re-pinned (security.py —
+`sector_on` added the same single-line shape) and **M74** re-pinned to a
+valid shifted instant (round-1 P2-2: the original `hour+1` crashed
+construction rather than testing detection).
 
 ## 4. Acceptance criteria (packet §4)
 
@@ -89,10 +89,14 @@ attached to the PR alongside a `git clone --no-local` clean-clone proof.
    the retained verify-all artifact run (§3). ✔
 2. **Contract compliance** — `test_generated_world_ingests_and_verifies`
    (ingest + `verify_manifest` green, provider `synthetic/v1`,
-   schema `m2/1`), `test_tampered_world_fails_quality_gate`, and — round-1
-   P1-2 — `test_hostile_rate_spec_stays_gate_clean`: ANY spec the
-   validator accepts generates a gate-clean world (a 200/yr split rate
-   drives prices to the floor; unfulfillable ratio events are suppressed). ✔
+   schema `m2/1`), `test_tampered_world_fails_quality_gate`, and the
+   universality argument: `test_hostile_rate_spec_stays_gate_clean`
+   (ANY accepted spec generates a gate-clean world, exercised at a 200/yr
+   split rate) PROVED as arithmetic by
+   `test_quantized_moves_stay_inside_gate_property` — at the $1.00
+   minimum close the worst cent-quantization error is 0.5%, so no clamped
+   move (≤1.9×) or bounded bankruptcy loss (≤49%) can land on the 0.5×/2×
+   gate bounds (round-2 P1-1). ✔
 3. **Registry integrity** — `test_registry_shape_and_pools` (exactly 5
    validation worlds with the EXACT frozen composition: seeds 701–705,
    3 null + 2 alpha; dev seeds 101–104, disjoint),
@@ -156,12 +160,14 @@ attached to the PR alongside a `git clone --no-local` clean-clone proof.
    security-session after two listed sessions; publication 23:00 UTC.
    Sector reclassification events are NOT generated in v1 (schema supports
    them; fixture covers them).
-4. **Registry re-pin record (round-1)**: the remediation changed the
-   generator, so the registry was deliberately re-pinned with
-   `--recompute` (seeds/rates untouched). Both gate-speed dev worlds are
-   BYTE-UNCHANGED (no clamp or suppression fires there); every full world
-   re-pinned with ~10–13 fewer actions — the floor suppressions the
-   hostile-rate test proves necessary, plus second-order event-timing
+4. **Registry re-pin records (rounds 1–2)**: remediations changed the
+   generator, so the registry was deliberately re-pinned twice with
+   `--recompute` (seeds/rates untouched throughout). Both gate-speed dev
+   worlds are BYTE-UNCHANGED across all re-pins (no clamp, suppression, or
+   floor ever fires there). Full-world action reductions vs the original
+   pins, per world: dev-103 1163→1154, dev-104 1124→1120, val-701
+   1050→1042, val-702 1137→1121, val-703 1116→1104, val-704 1087→1076,
+   val-705 1134→1122 — floor suppressions plus second-order event-timing
    shifts from the eligibility interaction.
 4. **Deferred, declared**: automatic dataset→stamp provenance propagation
    (M2 machinery, criterion 7 partial); options-chain overlay (v2,
@@ -195,6 +201,23 @@ attached to the PR alongside a `git clone --no-local` clean-clone proof.
   registry deliberately re-pinned, plan status updated, M3 sample retained
   with hashes + T+1 scoped, criterion 7 honestly re-scoped to PARTIAL.
   Post-fix: suite 316/0, KILLED=80/80.
+- **Round 2** (Codex, head `3282cf4`): **NO-GO** — P1-1 cent-rounding at
+  the $0.01 floor could land EXACTLY on the 0.5×/2× gate bounds (clamp
+  bounds the return, not the quantized price; bankruptcy at $0.02 likewise);
+  P1-2 price-dependent suppression read the alpha-moved close, structurally
+  breaking the null/alpha identity the packet claims; P2-1 import-lint
+  missed `from tree_options import synth` and relative forms; P2-2 registry
+  composition assertions still inexact; P2-3 doc staleness (§3 cited the
+  superseded gate; "~10–13 fewer actions" wrong — exact per-world numbers
+  now in §5.4).
+  → remediation: `MIN_CLOSE = $1.00` floor (quantization ≤ 0.5% ⇒ bounds
+  unreachable — property-proven), alpha-independent `base_close`
+  trajectory driving suppression (null/alpha identical event timelines
+  even in a hostile floor-hugging pair, coefficient deliberately large so
+  the drift straddles thresholds — mutant M82), import-lint helper covers
+  absolute/from-root/relative forms (snippet-tested), exact 9-world
+  registry composition (seed→kind→id triples), M79 re-anchored to the
+  floor constant. Post-fix: suite 320/0, KILLED=82/82.
 
 ## 7. Evidence invalidation
 

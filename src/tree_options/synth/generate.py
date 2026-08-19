@@ -63,6 +63,12 @@ PRICE_FLOOR = Decimal("0.01")
 # a ratio-derived close at/above this keeps quantization error <= 0.5%,
 # safely inside the 2% ratio-match tolerance (round-1 P1-2)
 RATIO_FLOOR = Decimal("1.00")
+# round-2 P1-1: the minimum close. Cent rounding at prices near the old
+# $0.01 floor could land EXACTLY on the 0.5x/2x discontinuity bounds; at
+# $1.00 the worst quantization error is 0.5%, so no clamped move (<= 1.9x)
+# or bounded bankruptcy loss (<= 49%) can reach either bound — proven as a
+# property in test_quantized_moves_stay_inside_gate_property.
+MIN_CLOSE = Decimal("1.00")
 # round-1 remediation: fat-tail idio plus market/sector factors can jointly
 # produce an undeclared >=2x overnight move, which the M1 discontinuity gate
 # rejects — per-session returns are bounded under the gate bound (real
@@ -89,6 +95,7 @@ class _Seat:
     """Mutable simulation state for one security (never part of a payload)."""
 
     __slots__ = (
+        "base_close",
         "base_volume",
         "close",
         "end_idx",
@@ -130,6 +137,10 @@ class _Seat:
         self.pending_ticker: str | None = None
         self.pending_from: date | None = None
         self.factor_override: Decimal | None = None
+        # alpha-independent price trajectory: EXACTLY what the same-seat
+        # null world's close would be at every session (round-2 P1-2) —
+        # suppression decisions read THIS, never the alpha-moved close
+        self.base_close = Decimal("0.00")
         self.timeline: list[_Mapping] = []
 
 
@@ -138,7 +149,7 @@ def _pub(session: date, hour: int) -> datetime:
 
 
 def _cents(x: Decimal) -> Decimal:
-    return max(x.quantize(CENT, rounding=ROUND_HALF_UP), PRICE_FLOOR)
+    return max(x.quantize(CENT, rounding=ROUND_HALF_UP), MIN_CLOSE)
 
 
 def _t_draw(rng: random.Random) -> float:
@@ -207,6 +218,7 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
         seat.base_volume = math.exp(seat.rng_listing.uniform(math.log(1e4), math.log(1e7)))
         initial = math.exp(seat.rng_listing.uniform(math.log(5.0), math.log(500.0)))
         seat.close = _cents(Decimal(repr(initial)))
+        seat.base_close = seat.close
         seat.ticker = allocate_ticker()
         used_tickers.add(seat.ticker)
         seat.timeline = [_Mapping(seat.ticker, sessions[idx], None, _pub(sessions[idx], hour))]
@@ -279,6 +291,7 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
             if fired == "bankruptcy_11":
                 loss = seat.rng_events.uniform(*BANKRUPTCY_LOSS)
                 ret = math.log(1.0 - loss)
+                base_ret = ret
                 seat.end_idx = t_idx
                 seat.end_kind = "bankruptcy_11"
                 events.append(
@@ -288,6 +301,7 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                 ret = _clamp_session_return(
                     market_ret + sector_ret[seat.sector_idx] + IDIO_SCALE * _t_draw(seat.rng_price)
                 )
+                base_ret = ret
                 seat.end_idx = t_idx
                 seat.end_kind = fired
                 events.append(
@@ -325,12 +339,13 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                     else:
                         n, d = STOCK_DIVIDEND_RATIO
                     factor = Decimal(d) / Decimal(n)
-                    if factor < 1 and seat.close * factor < RATIO_FLOOR:
-                        # round-1 P1-2: a floor-clamped close cannot honor
-                        # the declared ratio within the 2% gate tolerance —
-                        # suppress the DOWNWARD event rather than emit a
-                        # world the quality gates must reject (upward ratio
-                        # events never approach the price floor)
+                    if factor < 1 and seat.base_close * factor < RATIO_FLOOR:
+                        # round-1 P1-2 + round-2 P1-2: a floor-clamped close
+                        # cannot honor the declared ratio within the 2% gate
+                        # tolerance — suppress the DOWNWARD event (upward
+                        # ratio events never approach the price floor). The
+                        # decision reads the ALPHA-INDEPENDENT base close so
+                        # null/alpha same-seed worlds suppress identically.
                         fired = None
                     else:
                         seat.factor_override = factor
@@ -371,12 +386,15 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
 
                 if override_today is not None:
                     ret = math.log(float(override_today))
+                    base_ret = ret
                 else:
-                    ret = (
+                    raw_ret = (
                         market_ret
                         + sector_ret[seat.sector_idx]
                         + IDIO_SCALE * _t_draw(seat.rng_price)
                     )
+                    base_ret = _clamp_session_return(raw_ret)
+                    ret = raw_ret
                     if (
                         spec.kind == "alpha"
                         and spec.alpha is not None
@@ -388,11 +406,14 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
 
             if override_today is None:
                 new_close = _cents(Decimal(repr(float(seat.close) * math.exp(ret))))
+                # the null-world twin of this close, chained identically
+                seat.base_close = _cents(Decimal(repr(float(seat.base_close) * math.exp(base_ret))))
             else:
                 # exact ratio-derived close: the declared action must match
                 # the observed factor to the gate's tolerance, so no float
                 # round-trip on split/reverse/stock-dividend sessions
                 new_close = _cents(seat.close * override_today)
+                seat.base_close = _cents(seat.base_close * override_today)
             open_, high, low = _ohlc(new_close, seat.rng_price)
             raw_n += 1
             bar_rows.append(
