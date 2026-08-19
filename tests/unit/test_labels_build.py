@@ -210,6 +210,130 @@ def test_no_label_before_first_history_is_visible(static_calendar) -> None:  # t
     assert labels == ()
 
 
+def _action(
+    sym: str,
+    kind: str,
+    session: date,
+    record: str,
+    pub: datetime,
+    **amounts: object,
+) -> dict[str, object]:
+    return dict(
+        vendor_symbol=sym,
+        kind=kind,
+        effective_session=session,
+        available_at=pub,
+        source_record_id=record,
+        **amounts,
+    )
+
+
+def _cash_after_split_authority(static_calendar, dividend_pub: datetime):  # type: ignore[no-untyped-def]
+    """Sessions s1..s4 with closes 100/100/50/49; decision at s3 (base = the
+    s2 bar, s3's bar publishes after the close), so the H=2 window is
+    (s3, s4): a 2:1 split effective s3 and a $1/share cash dividend
+    effective s4 (paid on post-split shares). Codex review r1 P1-1/P1-2
+    fixture."""
+    from tree_options.schemas.security import (
+        SectorMappingRecord,
+        SecurityMasterRecord,
+        TickerMappingRecord,
+    )
+
+    s1 = date(2024, 6, 3)
+    s2 = static_calendar.nth_after(s1, 1)
+    s3 = static_calendar.nth_after(s1, 2)
+    s4 = static_calendar.nth_after(s1, 3)
+    listed_at = datetime(s1.year, s1.month, s1.day, 21, 0, tzinfo=UTC)
+    master = (
+        SecurityMasterRecord(
+            security_id="SEC-CS",
+            figi="BBG000CASHSPL",
+            cik="0000000910",
+            listing_start=s1,
+            listing_end=None,
+            exchange="NYSE",
+            source="cash-after-split-fixture",
+            available_at=listed_at,
+            ticker_mappings=(
+                TickerMappingRecord(
+                    security_id="SEC-CS",
+                    ticker="CSPL",
+                    effective_from=s1,
+                    available_at=listed_at,
+                ),
+            ),
+            sector_mappings=(
+                SectorMappingRecord(
+                    security_id="SEC-CS",
+                    sector="DISC",
+                    effective_from=s1,
+                    available_at=listed_at,
+                ),
+            ),
+        ),
+    )
+
+    def _bar(session: date, close: str, record: str) -> dict[str, object]:
+        return dict(
+            vendor_symbol="CSPL",
+            session=session,
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+            volume=1_000,
+            available_at=_pub(session),
+            source_record_id=record,
+        )
+
+    rows = (
+        _bar(s1, "100.00", "CS-1"),
+        _bar(s2, "100.00", "CS-2"),
+        _bar(s3, "50.00", "CS-3"),
+        _bar(s4, "49.00", "CS-4"),
+        _action("CSPL", "split", s3, "ACT-CS1", _pub(s3), ratio_numerator=2, ratio_denominator=1),
+        _action("CSPL", "cash_dividend", s4, "ACT-CS2", dividend_pub, cash_amount="1.00"),
+    )
+    payload = build_payload(
+        provider=rv.PROVIDER,
+        rows=rows,
+        retrieved_at=rv.RETRIEVED_AT,
+        known_exclusions=rv.KNOWN_EXCLUSIONS,
+    )
+    snapshot = ingest_snapshot(
+        payload, master, snapshot_id="snap-cash-after-split", normalization_code_sha=CODE_SHA
+    )
+    return PointInTimeDataset(snapshot, static_calendar, universe_id=UNIVERSE_ID), s3, s4
+
+
+def test_h2_cash_dividend_after_split_scales_with_shares_held(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """A dividend paid AFTER an in-window split accrues on post-split shares:
+    base 100, 2:1 split, $1/share dividend, end 49 => wealth exactly 1.0
+    (2x49 + 2x1 = 100), not the unscaled (2x49 + 1)/100 = 0.99."""
+    ds, s3, _s4 = _cash_after_split_authority(
+        static_calendar,
+        _pub(static_calendar.nth_after(date(2024, 6, 3), 3)),
+    )
+    labels = build_labels(ds, static_calendar, horizon_sessions=2, decision_sessions=[s3])
+    lab = _by_key(labels)[("SEC-CS", s3)]
+    assert lab.value == 0.0  # exactly: Decimal arithmetic must land on 1.0
+    assert lab.adjustment_source_record_ids == ("ACT-CS1", "ACT-CS2")
+
+
+def test_label_observed_at_waits_for_late_action_publication(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """The dividend action publishes at 23:30 UTC on s4 — after the end bar's
+    23:00 publication. The label's value embeds that action, so the label
+    cannot be observed before the action's own publication instant."""
+    s4_date = static_calendar.nth_after(date(2024, 6, 3), 3)
+    late_pub = datetime(s4_date.year, s4_date.month, s4_date.day, 23, 30, tzinfo=UTC)
+    ds, s3, s4 = _cash_after_split_authority(static_calendar, late_pub)
+    labels = build_labels(ds, static_calendar, horizon_sessions=2, decision_sessions=[s3])
+    lab = _by_key(labels)[("SEC-CS", s3)]
+    assert lab.observed_at == late_pub
+    assert lab.observed_at > _pub(s4)
+
+
 def test_every_label_observed_strictly_after_decision(static_calendar) -> None:  # type: ignore[no-untyped-def]
     ds = _authority(static_calendar)
     sessions = static_calendar.sessions()

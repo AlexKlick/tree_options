@@ -129,9 +129,20 @@ def build_labels(
             ratio_factor = Decimal(1)
             cash_total = Decimal(0)
             adjusted_ids: list[str] = []
-            for action_ordinal, act in adjustments:
+            # walk in effective-session order so the running share count is
+            # correct when a cash dividend follows a ratio action inside the
+            # window (review r1 P1-1): the dividend accrues on the shares
+            # held when it is PAID, i.e. scaled by the ratio factor accrued
+            # so far
+            latest_input_pub = end.available_at
+            for action_ordinal, act in sorted(adjustments, key=lambda pair: pair[0]):
                 if base_ordinal < action_ordinal <= end_ordinal:
                     adjusted_ids.append(act.source_record_id)
+                    if act.available_at > latest_input_pub:
+                        # the value embeds this action, so the label is not
+                        # observable before the action itself publishes
+                        # (review r1 P1-2)
+                        latest_input_pub = act.available_at
                     if act.kind in _RATIO_KINDS:
                         if act.ratio_numerator is None or act.ratio_denominator is None:
                             raise LabelBuildError(
@@ -145,7 +156,7 @@ def build_labels(
                             raise LabelBuildError(
                                 f"{act.source_record_id}: {act.kind} without a cash amount"
                             )
-                        cash_total += act.cash_amount
+                        cash_total += act.cash_amount * ratio_factor
 
             wealth = (end.close * ratio_factor + cash_total) / base.close
             labels.append(
@@ -155,7 +166,7 @@ def build_labels(
                     horizon_sessions=horizon_sessions,
                     label_window=(sessions[base_ordinal + 1], sessions[end_ordinal]),
                     value=math.log(float(wealth)),
-                    observed_at=end.available_at,
+                    observed_at=latest_input_pub,
                     source=end.source,
                     source_record_id=end.source_record_id,
                     adjustment_source_record_ids=tuple(sorted(adjusted_ids)),

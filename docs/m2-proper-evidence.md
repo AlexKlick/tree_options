@@ -191,6 +191,16 @@ staying positive on 707 — the dev-phase dilution finding (D1 vs D4)
 extends to sign instability at this effect size, reinforcing the §9
 ruling that the univariate is the primary arm.
 
+**Reviewer observation on the pooled statistic (r1 P2, no gate impact).**
+The gate-#1 driver's `_pooled_t` recovers each world's session sd from
+its own (mean, t, n) and combines as a FIXED-EFFECTS pooled session t
+(variance = Σ n·sd², no between-world mean deviation term). Reviewer r1
+reconstructs the between-world-inclusive statistic as H1 0.20992 vs the
+recorded 0.20989 and H5 1.05605 vs 1.05587 — a 4th-decimal difference,
+verdict unchanged against the 2.5 limit on either statistic. The driver
+is frozen with its recorded run; the fixed-effects reading is the one
+the log reports.
+
 ## 5b. Corrected power gate #2 (one-shot, §10)
 
 - Owner disposition of the gate #1 FAIL (ruling recorded in plan §10
@@ -203,8 +213,9 @@ ruling that the univariate is the primary arm.
   (attached to the campaign PR with the gate #1 log).
 - Sealed registry: `artifacts/m2-proper-sealed-2.db` (fresh; driver
   refuses reuse). Artifacts: `artifacts/m2-proper-sealed-2/` (8 trials +
-  summary, stamped git_sha `d1db7da8…`, dataset_manifest_hash = sha256
-  of the amended 13-world registry).
+  summary, stamped git_sha `d1db7da8…`; each TRIAL stamp carries that
+  world's own manifest content hash, the SUMMARY stamp carries the
+  sha256 of the amended 13-world registry — reviewer r1 P2 correction).
 - Worlds 708/709 (coefficient 0.01, fresh seeds, generated for the
   first time by the pre-declaration itself) regenerated and byte-verified
   against the frozen registry: 708/682,238 · 709/703,992 bars; all 13
