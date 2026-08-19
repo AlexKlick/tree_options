@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import datetime
 
+from tree_options.data.actions import CorporateActionRecord
 from tree_options.data.bars import BarRecord
 from tree_options.data.ingest import DatasetSnapshot
 from tree_options.data.quality import verify_manifest
@@ -50,6 +51,16 @@ class PointInTimeDataset:
     @property
     def snapshot_id(self) -> IdStr:
         return self._snapshot.snapshot_id
+
+    @property
+    def actions(self) -> tuple[CorporateActionRecord, ...]:
+        """Normalized corporate actions of the underlying snapshot.
+
+        Label construction consumes these as OUTCOME-side adjustment
+        facts (labels are never availability-gated — INV-06 purge
+        protects them instead; see labels/build.py).
+        """
+        return self._snapshot.actions
 
     def universe_as_of(self, decision_at: datetime) -> tuple[str, ...]:
         """Listing membership at decision_at.date() under decision_at knowledge.
