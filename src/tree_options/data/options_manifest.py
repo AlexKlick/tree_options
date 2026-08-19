@@ -37,6 +37,7 @@ class OptionsManifest(StrictModel):
     synth_options_code_sha: str
     parent_content_sha256: str
     contract_count: NonNegativeInt
+    contract_master_sha256: str
     sample_slice_hashes: tuple[tuple[str, str, str], ...]  # (sid, session, sha256)
     content_sha256: str
 
@@ -65,6 +66,7 @@ def build_options_manifest(
         synth_options_code_sha=synth_options_code_sha,
         parent_content_sha256=parent_content_sha256,
         contract_count=overlay.contract_count(),
+        contract_master_sha256=overlay.contract_master_sha256(),
         sample_slice_hashes=slices,
         content_sha256="",
         overlay_spec=overlay.spec,

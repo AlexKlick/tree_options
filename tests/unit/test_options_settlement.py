@@ -10,6 +10,7 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
+from tree_options.data.bars import BarRecord
 from tree_options.ledger.book import LedgerBook, LedgerViolation
 from tree_options.options import (
     ExerciseElectionInputs,
@@ -49,6 +50,29 @@ def contract(
     )
 
 
+def reference_bar(
+    *,
+    close: str,
+    session: date,
+    security_id: str = "SYN-0001",
+    ref_id: str = "RAW-1",
+) -> BarRecord:
+    return BarRecord(
+        security_id=security_id,
+        session=session,
+        open=D(close),
+        high=D(close),
+        low=D(close),
+        close=D(close),
+        volume=1000,
+        source="synthetic/v1",
+        source_record_id=ref_id,
+        source_row_hash="0" * 64,
+        snapshot_id="x",
+        available_at=datetime(session.year, session.month, session.day, 23, 0, tzinfo=UTC),
+    )
+
+
 def fill(
     *,
     fill_id: str,
@@ -57,6 +81,7 @@ def fill(
     price: str = "2.50",
     at: datetime | None = None,
     session: date = date(2019, 1, 7),
+    side: str = "buy",
 ) -> object:
     from tree_options.schemas.trading import Fill
 
@@ -64,7 +89,7 @@ def fill(
         fill_id=fill_id,
         order_id=f"ORD-{fill_id}",
         contract_id=contract_id,
-        side="buy",
+        side=side,  # type: ignore[arg-type]
         quantity=quantity,
         price=D(price),
         multiplier=100,
@@ -90,12 +115,7 @@ def settle(
         kind=kind,  # type: ignore[arg-type]
         quantity=quantity,
         session=session,
-        reference_close=D(reference_close),
-        # the reference bar publishes 23:00 UTC same-date (v1 convention)
-        reference_available_at=datetime(
-            session.year, session.month, session.day, 23, 0, tzinfo=UTC
-        ),
-        reference_ref_id="RAW-1",
+        reference_bar=reference_bar(close=reference_close, session=session),
     )
 
 
@@ -399,9 +419,7 @@ def test_randomized_fill_settlement_streams_conserve(n_lots, settle_after, close
                     kind="early_exercise",
                     quantity=take,
                     session=day,
-                    reference_close=close,
-                    reference_available_at=datetime(2019, 1, 7 + seq, 23, 0, tzinfo=UTC),
-                    reference_ref_id=f"RAW-{seq}",
+                    reference_bar=reference_bar(close=str(close), session=day, ref_id=f"RAW-{seq}"),
                 )
             )
             remaining -= take
@@ -413,9 +431,7 @@ def test_randomized_fill_settlement_streams_conserve(n_lots, settle_after, close
                 kind="expiry",
                 quantity=remaining,
                 session=c.expiration,
-                reference_close=closes[0],
-                reference_available_at=datetime(2019, 3, 15, 23, 0, tzinfo=UTC),
-                reference_ref_id="RAW-FINAL",
+                reference_bar=reference_bar(close=str(closes[0]), session=c.expiration),
             )
         )
     book.assert_conservation()
@@ -423,3 +439,83 @@ def test_randomized_fill_settlement_streams_conserve(n_lots, settle_after, close
     assert book.cash == book.initial_cash + sum(book._realized.values()) - book.total_fees
     kinds: set[EntryKind] = {e.kind for e in book.entries}
     assert "exercise_settlement" in kinds
+
+
+# ---- review r1 remediation (P1-4/5/6/7) ----------------------------------
+
+
+def test_tied_timestamp_buys_replay_in_application_order() -> None:
+    """P1-4: two buys at the SAME instant applied Z-then-A must conserve —
+    the oracle replays the accepted sequence, never a re-derived ordering
+    that would walk the lots differently."""
+    c = contract()
+    book = LedgerBook(D("10000.00"))
+    ts = datetime(2019, 1, 7, 15, 0, tzinfo=UTC)
+    book.apply(fill(fill_id="Z-BUY", contract_id=c.contract_id, quantity=1, price="1.00", at=ts))
+    book.apply(fill(fill_id="A-BUY", contract_id=c.contract_id, quantity=1, price="2.00", at=ts))
+    book.apply_settlement(
+        settle(contract=c, quantity=1, reference_close="110", session=c.expiration)
+    )
+    # book FIFO removed the Z lot ($1): realized = 1000 - 100 = 900
+    assert book.realized_pnl(c.contract_id) == D("900.00")
+    book.assert_conservation()  # must not raise despite tied timestamps
+
+
+def test_rejected_settlement_does_not_poison_the_timeline() -> None:
+    """P1-5: an over-position settlement is rejected WITHOUT advancing the
+    merged timeline — a later valid settlement at an earlier instant still
+    applies."""
+    book, c = book_with_position()
+    with pytest.raises(LedgerViolation, match="POSITION_UNDERFLOW"):
+        book.apply_settlement(
+            settle(contract=c, quantity=5, reference_close="110", session=c.expiration)
+        )
+    # this March 14 early exercise is EARLIER than the rejected March 15
+    # expiry — it must still be accepted
+    book.apply_settlement(
+        settle(
+            contract=c,
+            quantity=1,
+            reference_close="110",
+            session=date(2019, 3, 14),
+            kind="early_exercise",
+            settlement_id="STL-OK",
+        )
+    )
+    book.assert_conservation()
+
+
+def test_mint_binds_reference_bar_session_and_underlying() -> None:
+    """P1-6: the reference is an authoritative BarRecord — a bar from the
+    wrong session or the wrong underlying is refused."""
+    c = contract()
+    with pytest.raises(SettlementMintError, match="not the settlement session"):
+        mint_settlement(
+            contract=c,
+            settlement_id="STL-X",
+            kind="expiry",
+            quantity=1,
+            session=c.expiration,
+            reference_bar=reference_bar(close="110", session=date(2019, 3, 14)),
+        )
+    with pytest.raises(SettlementMintError, match="not underlying"):
+        mint_settlement(
+            contract=c,
+            settlement_id="STL-X",
+            kind="expiry",
+            quantity=1,
+            session=c.expiration,
+            reference_bar=reference_bar(close="110", session=c.expiration, security_id="SYN-0099"),
+        )
+
+
+def test_oracle_recomputes_settlement_cash_independently() -> None:
+    """P1-7: a model_copy-tampered settlement cash (bypassing construction
+    validation) fails conservation — the oracle derives intrinsic cash
+    itself instead of trusting the recorded field."""
+    book, c = book_with_position()
+    good = settle(contract=c, quantity=1, reference_close="110", session=c.expiration)
+    tampered = good.model_copy(update={"cash": D("9999.00")})  # type: ignore[attr-defined]
+    book.apply_settlement(tampered)  # type: ignore[arg-type]
+    with pytest.raises(LedgerViolation, match="SETTLEMENT_CASH_MISMATCH"):
+        book.assert_conservation()

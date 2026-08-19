@@ -116,17 +116,37 @@ def test_entry_as_of_reads_the_visible_file(surface, built) -> None:  # type: ig
     assert entry is not None and entry.contract_id == contract.contract_id
 
 
-def test_contracts_as_of_honors_listing_windows(surface, built) -> None:  # type: ignore[no-untyped-def]
+def test_contracts_as_of_is_bound_to_the_visible_file(surface, built) -> None:  # type: ignore[no-untyped-def]
+    """P1-2: contracts_as_of applies the T+1 read gate — at close(t) it
+    returns only contracts quotable from file(t-1); before any file exists
+    it returns nothing. Existence-only queries use contracts_existing_on."""
+    overlay, calendar, _snap = built
+    session = _a_session_with_files(overlay)
+    sid = overlay.eligible_on(session)[0]
+    # before any file: the world's first sessions see nothing
+    first = overlay.eligible_sessions(sid)[0]
+    assert surface.contracts_as_of(sid, calendar.session_close(first)) == ()
+    # at close(t): every returned contract is quotable in file(t-1)
+    at_close = surface.contracts_as_of(sid, calendar.session_close(session))
+    visible_session = surface.visible_file_session(sid, calendar.session_close(session))
+    assert visible_session is not None and visible_session < session
+    file = overlay.day_file(sid, visible_session)
+    file_ids = {e.contract_id for e in file.entries}
+    assert at_close
+    assert {c.contract_id for c in at_close} == file_ids
+
+
+def test_contracts_existing_on_keeps_inv09_semantics(surface, built) -> None:  # type: ignore[no-untyped-def]
     overlay, _cal, _snap = built
     sid = overlay.underlyings_ever_eligible()[0]
     contracts = overlay.contracts_for(sid)
     early = min(contracts, key=lambda c: c.listing_start)
     before = early.listing_start - timedelta(days=3)
-    assert surface.contracts_as_of(sid, before) == ()
-    on_listing = surface.contracts_as_of(sid, early.listing_start)
+    assert surface.contracts_existing_on(sid, before) == ()
+    on_listing = surface.contracts_existing_on(sid, early.listing_start)
     assert any(c.contract_id == early.contract_id for c in on_listing)
     past = early.expiration + timedelta(days=3)
-    assert all(c.contract_id != early.contract_id for c in surface.contracts_as_of(sid, past))
+    assert all(c.contract_id != early.contract_id for c in surface.contracts_existing_on(sid, past))
 
 
 # ---- candidate snapshots ----------------------------------------------------
@@ -262,10 +282,13 @@ def test_manifest_parent_binding_detected(built) -> None:  # type: ignore[no-unt
 
 
 def test_manifest_self_hash_detected(built) -> None:  # type: ignore[no-untyped-def]
+    """Defense-in-depth: any post-build mutation of a manifest field fails
+    verification (the specific field checks fire first; the self-hash
+    backstop catches anything not separately compared)."""
     overlay, _cal, snap = built
     manifest = _manifest(built)
     tampered = manifest.model_copy(update={"contract_count": manifest.contract_count + 1})
-    with pytest.raises(OptionsManifestError, match="does not bind"):
+    with pytest.raises(OptionsManifestError):
         verify_options_manifest(
             tampered,
             overlay,
@@ -278,3 +301,112 @@ def test_paired_dataset_hash_is_order_sensitive() -> None:
     a = paired_dataset_hash("A", "B")
     b = paired_dataset_hash("B", "A")
     assert a != b and len(a) == 64
+
+
+# ---- review r1 remediation (P1-1/3/8) --------------------------------------
+
+
+def test_single_entry_access_cannot_quote_what_the_file_omits(built) -> None:  # type: ignore[no-untyped-def]
+    """P1-1: entry_for/quote_history enforce the SAME live-expiry
+    membership as the day file — a contract whose expiry fell out of the
+    live cap is refused, and the file's entry set equals the set of
+    entry_for successes (counts and realization agree)."""
+    overlay, _cal, _snap = built
+    sid = overlay.underlyings_ever_eligible()[0]
+    sessions = overlay.eligible_sessions(sid)
+    found_gap = False
+    for session in sessions[40:60]:
+        file = overlay.day_file(sid, session)
+        file_ids = {e.contract_id for e in file.entries}
+        # a listed-but-not-live contract exists whenever the cap excludes
+        # some expiry — find one and assert refusal
+        for meta in overlay.expiries_for(sid):
+            if not any(
+                m.expiration == meta.expiration for m in overlay.live_expiries_on(sid, session)
+            ):
+                if meta.listing_start <= session <= meta.expiration:
+                    for strike in overlay.ladder_for(sid, meta.expiration):
+                        cid = f"OPT-{sid}-{meta.expiration:%y%m%d}-C-{int(strike * 100):08d}"
+                        if cid not in file_ids:
+                            with pytest.raises(ValueError, match="not in the visible chain"):
+                                overlay.entry_for(sid, session, cid)
+                            found_gap = True
+                            break
+                if found_gap:
+                    break
+        if found_gap:
+            break
+    assert found_gap, "fixture must contain a listed-but-capped-out contract"
+    # realization consistency: entry_for succeeds exactly on the file's rows
+    session = sessions[50]
+    file = overlay.day_file(sid, session)
+    live_ids = set()
+    for meta in overlay.live_expiries_on(sid, session):
+        for strike in overlay.ladder_for(sid, meta.expiration):
+            for cp in ("C", "P"):
+                live_ids.add(f"OPT-{sid}-{meta.expiration:%y%m%d}-{cp}-{int(strike * 100):08d}")
+    assert live_ids == {e.contract_id for e in file.entries}
+    for cid in live_ids:
+        assert overlay.entry_for(sid, session, cid).contract_id == cid
+
+
+def test_manifest_master_description_is_verified(built) -> None:  # type: ignore[no-untyped-def]
+    """P1-3: a rehashed manifest lying about the contract count or master
+    hash is detected — verify recomputes both from the overlay."""
+    overlay, _cal, snap = built
+    manifest = _manifest(built)
+    lying_count = manifest.model_copy(update={"contract_count": manifest.contract_count + 1})
+    with pytest.raises(OptionsManifestError, match="contract count"):
+        verify_options_manifest(
+            lying_count,
+            overlay,
+            parent_content_sha256=snap.manifest.content_sha256,
+            synth_options_code_sha="P" * 64,
+        )
+    lying_master = manifest.model_copy(
+        update={"contract_master_sha256": "0" * 64},
+    )
+    with pytest.raises(OptionsManifestError, match="master hash"):
+        verify_options_manifest(
+            lying_master,
+            overlay,
+            parent_content_sha256=snap.manifest.content_sha256,
+            synth_options_code_sha="P" * 64,
+        )
+
+
+def test_options_verifier_refuses_tampered_parent_pins(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """P1-8: a zeroed equity generator pin OR a tampered expected-content
+    block makes the options verifier refuse before trusting the parent."""
+    import json as json_mod
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import verify_options_worlds as vow
+
+    original = (REPO_ROOT / "data" / "worlds" / "registry.json").read_text()
+    entry = {
+        "world_id": "synth-v1-dev-null-101",
+        "spec": {"world_id": "synth-v1-dev-null-101", "seed": 101},
+    }
+    try:
+        equity = json_mod.loads(original)
+        equity["generator_code_sha"] = "0" * 64
+        path = tmp_path / "registry_genpin.json"
+        path.write_text(json_mod.dumps(equity))
+        vow.EQUITY_REGISTRY_PATH = path
+        with pytest.raises(SystemExit, match="parent pin"):
+            vow._build_overlay(entry)
+
+        equity = json_mod.loads(original)
+        for world in equity["worlds"]:
+            if world["world_id"] == "synth-v1-dev-null-101":
+                world["expected"]["content_sha256"] = "0" * 64
+        path = tmp_path / "registry_content.json"
+        path.write_text(json_mod.dumps(equity))
+        vow.EQUITY_REGISTRY_PATH = path
+        with pytest.raises(SystemExit, match="content_sha256 drifted"):
+            vow._build_overlay(entry)
+    finally:
+        vow.EQUITY_REGISTRY_PATH = REPO_ROOT / "data" / "worlds" / "registry.json"
+        assert (REPO_ROOT / "data" / "worlds" / "registry.json").read_text() == original

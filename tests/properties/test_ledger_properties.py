@@ -401,7 +401,11 @@ class TestConservation:
         assert ei.value.code == "POSITION_UNDERFLOW"
 
     def test_tampered_cash_detected(self, synthetic_calendar):
-        """The checker itself is under test: a wrong cash sum must be caught."""
+        """The checker itself is under test: a wrong cash sum must be caught.
+
+        M3 WS-C: the authoritative event sequence is `_events` (fills and
+        settlements, application order) — the tamper vector follows the
+        authority."""
         ctx = _base(synthetic_calendar)
         _, decision_session, exec_session, exec_at, engine, contract = ctx
         book = LedgerBook(initial_cash=Decimal("1000.00"))
@@ -409,7 +413,7 @@ class TestConservation:
             engine, contract, exec_session, exec_at, 2, "1.00", "1.10", Decimal(0), decision_session
         )
         book.apply(fill)
-        object.__setattr__(book, "_fills", [*book._fills, fill])  # duplicate a fill
+        object.__setattr__(book, "_events", [*book._events, fill])  # duplicate a fill
 
         with pytest.raises(LedgerViolation):
             book.assert_conservation()

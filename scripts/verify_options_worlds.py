@@ -34,9 +34,20 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EQUITY_REGISTRY_PATH = REPO_ROOT / "data" / "worlds" / "registry.json"
 OPTIONS_REGISTRY_PATH = REPO_ROOT / "data" / "worlds" / "options_registry.json"
+SYNTH_SRC = REPO_ROOT / "src" / "tree_options" / "synth"
 SYNTH_OPTIONS_SRC = REPO_ROOT / "src" / "tree_options" / "synth_options"
 CALENDAR_JSON = REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json"
 CALENDAR_SHA = CALENDAR_JSON.with_suffix(".sha256")
+
+
+def equity_generator_code_sha() -> str:
+    """The parent lane's pin: sha over every synth/*.py byte (review r1
+    P1-8 — the options verifier must refuse a tampered equity registry)."""
+    digest = hashlib.sha256()
+    for path in sorted(SYNTH_SRC.glob("*.py")):
+        digest.update(path.name.encode())
+        digest.update(path.read_bytes())
+    return digest.hexdigest()
 
 
 def synth_options_code_sha() -> str:
@@ -53,8 +64,14 @@ def _load_calendar():  # type: ignore[no-untyped-def]
     return StaticSessionCalendar(CALENDAR_JSON, CALENDAR_SHA)
 
 
-def _build_overlay(entry: dict[str, object]):  # type: ignore[no-untyped-def]
-    """Parent equity world -> ingest -> verify -> overlay."""
+def _build_overlay(entry: dict[str, object], *, verify_parent_pins: bool = True):  # type: ignore[no-untyped-def]
+    """Parent equity world -> ingest -> verify -> overlay.
+
+    Review r1 P1-8: the parent's registry commitments are verified HERE —
+    the equity generator pin against the live synth/ bytes, and the
+    regenerated parent's content hash + counts against the registry's
+    expected block. A tampered equity registry cannot smuggle a different
+    parent world under an unchanged overlay pin."""
     from tree_options.data.ingest import ingest_snapshot
     from tree_options.data.quality import verify_manifest
     from tree_options.synth import generate_world
@@ -63,6 +80,14 @@ def _build_overlay(entry: dict[str, object]):  # type: ignore[no-untyped-def]
 
     world_id = entry["world_id"]
     equity = json.loads(EQUITY_REGISTRY_PATH.read_text())
+    if verify_parent_pins:
+        pinned = equity.get("generator_code_sha")
+        live = equity_generator_code_sha()
+        if pinned != live:
+            raise SystemExit(
+                f"FAIL parent pin: equity registry pins {str(pinned)[:12]}… but synth/ "
+                f"hashes to {live[:12]}… — fix the equity lane first (verify_worlds.py)"
+            )
     parent = next((w for w in equity["worlds"] if w["world_id"] == world_id), None)
     if parent is None:
         raise SystemExit(f"overlay {world_id} has no parent equity world in the registry")
@@ -78,6 +103,16 @@ def _build_overlay(entry: dict[str, object]):  # type: ignore[no-untyped-def]
         ),
     )
     verify_manifest(snapshot, calendar)  # quality gates run inside regeneration
+    if verify_parent_pins:
+        expected = parent["expected"]
+        if snapshot.manifest.content_sha256 != expected["content_sha256"]:
+            raise SystemExit(
+                f"FAIL parent world {world_id}: content_sha256 drifted from the "
+                "equity registry's expected block"
+            )
+        for key in ("bar_count", "action_count", "security_count"):
+            if getattr(snapshot.manifest, key) != expected[key]:
+                raise SystemExit(f"FAIL parent world {world_id}: {key} drifted")
     overlay_spec = OptionsOverlaySpec(**entry["spec"])  # type: ignore[arg-type]
     return generate_overlay(
         spec=overlay_spec,

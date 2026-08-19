@@ -34,7 +34,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from tree_options.options.settlement import ExerciseSettlement
+from tree_options.options.settlement import ExerciseSettlement, intrinsic_value
 from tree_options.schemas.common import FEE_TICK
 from tree_options.schemas.ledger import LedgerEntry
 from tree_options.schemas.trading import Fill, Position
@@ -75,15 +75,16 @@ def _primitive_cash(fill: Fill) -> Decimal:
     return -magnitude if fill.side == "buy" else magnitude
 
 
-def _replay(
-    fills: list[Fill], settlements: list[ExerciseSettlement] | None = None
-) -> _ReplayResult:
-    """Deterministic FIFO replay using primitive-field arithmetic only.
+def _replay(events: list[Fill | ExerciseSettlement]) -> _ReplayResult:
+    """Deterministic FIFO replay in APPLICATION order, using
+    primitive-field arithmetic only (review r1 P1-4: replaying the
+    accepted sequence — never a re-derived ordering of tied timestamps,
+    which could disagree with the book's own FIFO walk).
 
-    Fills and settlements are merged on (event ts, event id) — a stable,
-    order-invariant choice for the identity checks (total realized and
-    quantities are invariant to ts-tied interleaving; the book itself
-    enforces non-decreasing application order)."""
+    Settlement cash is INDEPENDENTLY recomputed from (call_put, strike,
+    settlement_price, quantity, multiplier) and compared with the recorded
+    cash (review r1 P1-7): the oracle must not trust the very field it is
+    supposed to check."""
     cash = Decimal("0")
     fees = Decimal("0")
     qty: defaultdict[str, int] = defaultdict(int)
@@ -91,13 +92,7 @@ def _replay(
     lots: defaultdict[str, list[tuple[int, Decimal, int]]] = defaultdict(list)
     seen_fill_ids: set[str] = set()
     seen_settlement_ids: set[str] = set()
-    events: list[tuple[datetime, str, int, Fill | ExerciseSettlement]] = []
-    for fill in fills:
-        events.append((fill.execution_at, fill.fill_id, 0, fill))
-    for settlement in settlements or []:
-        events.append((settlement.ts, settlement.settlement_id, 1, settlement))
-    events.sort(key=lambda e: (e[0], e[1], e[2]))
-    for _ts, _eid, _kind, event in events:
+    for event in events:
         if isinstance(event, Fill):
             fill = event
             if fill.fill_id in seen_fill_ids:
@@ -135,6 +130,17 @@ def _replay(
                     "DUPLICATE_SETTLEMENT", f"settlement {settlement.settlement_id} applied twice"
                 )
             seen_settlement_ids.add(settlement.settlement_id)
+            recomputed_cash = (
+                intrinsic_value(settlement.call_put, settlement.strike, settlement.settlement_price)
+                * settlement.quantity
+                * settlement.multiplier
+            ).quantize(FEE_TICK)
+            if recomputed_cash != settlement.cash:
+                raise LedgerViolation(
+                    "SETTLEMENT_CASH_MISMATCH",
+                    f"settlement {settlement.settlement_id} records cash "
+                    f"{settlement.cash} but intrinsic arithmetic gives {recomputed_cash}",
+                )
             if qty[settlement.contract_id] < settlement.quantity:
                 raise LedgerViolation(
                     "POSITION_UNDERFLOW",
@@ -152,9 +158,9 @@ def _replay(
                     lots[settlement.contract_id].pop(0)
                 else:
                     lots[settlement.contract_id][0] = (head_qty, head_price, head_mult)
-            realized[settlement.contract_id] += (settlement.cash - cost_removed).quantize(FEE_TICK)
+            realized[settlement.contract_id] += (recomputed_cash - cost_removed).quantize(FEE_TICK)
             qty[settlement.contract_id] -= settlement.quantity
-            cash += settlement.cash
+            cash += recomputed_cash
     return _ReplayResult(
         cash_delta=cash.quantize(FEE_TICK),
         fees=fees.quantize(FEE_TICK),
@@ -168,8 +174,11 @@ class LedgerBook:
         self.initial_cash = initial_cash.quantize(FEE_TICK)
         self.cash = self.initial_cash
         self.total_fees = Decimal("0")
-        self._fills: list[Fill] = []
-        self._settlements: list[ExerciseSettlement] = []
+        # the accepted-event sequence in APPLICATION order (review r1
+        # P1-4): the oracle replays exactly what happened, never a
+        # re-derived ordering of tied timestamps. This is the single
+        # authoritative record — no parallel fill/settlement lists.
+        self._events: list[Fill | ExerciseSettlement] = []
         self._lots: defaultdict[str, list[Lot]] = defaultdict(list)
         self._realized: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         self._entries: list[LedgerEntry] = []
@@ -190,8 +199,12 @@ class LedgerBook:
                 f"fill {fill.fill_id} at {fill.execution_at} precedes "
                 f"last applied {self._last_execution_at}",
             )
-        self._last_execution_at = fill.execution_at
         self._apply_fill_arithmetic(fill)
+        # state commits only after the arithmetic succeeded (a rejected
+        # fill must not poison the merged timeline — same rule as
+        # settlements, review r1 P1-5)
+        self._last_execution_at = fill.execution_at
+        self._events.append(fill)
 
     def apply_settlement(self, settlement: ExerciseSettlement) -> None:
         """Apply an exercise settlement: close FIFO lots, add the cash,
@@ -207,14 +220,17 @@ class LedgerBook:
                 f"settlement {settlement.settlement_id} at {settlement.ts} precedes "
                 f"last applied {self._last_execution_at}",
             )
-        self._last_execution_at = settlement.ts
-
         held = sum(lot.quantity for lot in self._lots[settlement.contract_id])
         if held < settlement.quantity:
             raise LedgerViolation(
                 "POSITION_UNDERFLOW",
                 f"settle {settlement.quantity} of {settlement.contract_id} but held {held}",
             )
+        # preflight complete — state mutations begin here (review r1 P1-5:
+        # a rejected settlement must not poison the merged timeline)
+        self._last_execution_at = settlement.ts
+        self._events.append(settlement)
+
         remaining = settlement.quantity
         cost_removed = Decimal("0")
         while remaining > 0:
@@ -232,7 +248,6 @@ class LedgerBook:
         )
         self.cash = (self.cash + settlement.cash).quantize(FEE_TICK)
         self._applied_settlement_ids.add(settlement.settlement_id)
-        self._settlements.append(settlement)
         self._entry_seq += 1
         self._entries.append(
             LedgerEntry(
@@ -287,7 +302,6 @@ class LedgerBook:
         self.cash = (self.cash + _primitive_cash(fill) - fill.fees).quantize(FEE_TICK)
         self.total_fees = (self.total_fees + fill.fees).quantize(FEE_TICK)
         self._applied_fill_ids.add(fill.fill_id)
-        self._fills.append(fill)
         self._record_entries(fill)
 
     def _record_entries(self, fill: Fill) -> None:
@@ -354,7 +368,7 @@ class LedgerBook:
     # -- conservation -------------------------------------------------------
 
     def assert_conservation(self) -> None:
-        result = _replay(self._fills, self._settlements)
+        result = _replay(self._events)
         expected_cash = (self.initial_cash + result.cash_delta).quantize(FEE_TICK)
         if self.cash != expected_cash:
             raise LedgerViolation(

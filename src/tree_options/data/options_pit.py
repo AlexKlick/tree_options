@@ -21,7 +21,12 @@ from decimal import Decimal
 from tree_options.candidates.filters import AsOf, CandidateSnapshot
 from tree_options.schemas.market import QuoteEvent
 from tree_options.schemas.options import OptionContract
-from tree_options.synth_options import GeneratedOptionOverlay, OptionChainEntry, OptionDayFile
+from tree_options.synth_options import (
+    GeneratedOptionOverlay,
+    OptionChainEntry,
+    OptionDayFile,
+    contract_id_of,
+)
 
 
 class NoOptionFileError(RuntimeError):
@@ -71,7 +76,30 @@ class OptionPitSurface:
         except ValueError:
             return None  # not live on the visible file's session
 
-    def contracts_as_of(self, underlying_id: str, session: date) -> tuple[OptionContract, ...]:
+    def contracts_as_of(self, underlying_id: str, as_of: datetime) -> tuple[OptionContract, ...]:
+        """Contracts quotable from the VISIBLE file — the T+1 read gate
+        applies (review r1 P1-2): only contracts present in the file an
+        as_of instant can actually see. Existence-only queries (INV-09
+        listing windows, a session-date fact) use contracts_existing_on."""
+        session = self.visible_file_session(underlying_id, as_of)
+        if session is None:
+            return ()
+        live = self._overlay.live_expiries_on(underlying_id, session)
+        contracts = []
+        for meta in live:
+            for strike in self._overlay.ladder_for(underlying_id, meta.expiration):
+                for call_put in ("C", "P"):
+                    contracts.append(
+                        self._overlay.contract(
+                            contract_id_of(underlying_id, meta.expiration, call_put, strike)
+                        )
+                    )
+        contracts.sort(key=lambda c: c.contract_id)
+        return tuple(contracts)
+
+    def contracts_existing_on(
+        self, underlying_id: str, session: date
+    ) -> tuple[OptionContract, ...]:
         """Contracts of the underlying that EXIST on the session (INV-09
         listing window) — existence is a session-date fact, not an
         availability fact; quoting is separate."""

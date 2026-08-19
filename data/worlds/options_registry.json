@@ -1,7 +1,7 @@
 {
   "options_registry_version": "options-worlds/1",
   "note": "M3 plan \u00a73.A: the options-overlay registry lane. Each overlay is pinned to its parent equity world (registry.json spec, regenerated and manifest-verified first), to its OptionsOverlaySpec (seeds/knobs \u2014 never rewritten by the verifier), and to the generating code (synth_options_code_sha over every synth_options/*.py byte \u2014 re-pinned ONLY by an explicit verify_options_worlds.py --recompute). Verification is sample-based (deterministic anchor slices hashed byte-exactly) plus analytic contract/entry/quote-event counts, because full materialization is infeasible by design. Validation overlays are pinned in the pre-declared amendment window only (plan \u00a73.G); the window closes at the first sealed trial registration.",
-  "synth_options_code_sha": "5dba08163855a870e30e64ab1d729c6c3b9e175e2774b7937c8a6de3b5df557a",
+  "synth_options_code_sha": "98264466f5e035e8b6ed088edc1301283739cb89e741fbaa435171151c918406",
   "overlays": [
     {
       "world_id": "synth-v1-dev-null-101",

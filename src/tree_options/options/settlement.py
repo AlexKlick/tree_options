@@ -21,6 +21,7 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
+from tree_options.data.bars import BarRecord
 from tree_options.schemas.common import FEE_TICK, IdStr, Money, Price, StrictModel, UTCDatetime
 from tree_options.schemas.options import OptionContract
 
@@ -71,14 +72,19 @@ def mint_settlement(
     kind: SettlementKind,
     quantity: int,
     session: date,
-    reference_close: Decimal,
-    reference_available_at,  # datetime
-    reference_ref_id: str,
+    reference_bar: BarRecord,
 ) -> ExerciseSettlement:
     """The single fail-closed door for settlement construction.
 
+    The reference is an AUTHORITATIVE BarRecord (review r1 P1-6): close,
+    publication instant, and provenance id all come from one bar, which
+    must belong to the settlement session and the contract's underlying —
+    free-floating close/timestamp fields could credit cash early or
+    against the wrong name.
+
     Refuses: settling before the contract lists; early exercise of a
-    non-american contract; kind/expiry mismatch; zero quantity."""
+    non-american contract; kind/expiry mismatch; zero quantity; a
+    reference bar from the wrong session or underlying."""
     if quantity < 1:
         raise SettlementMintError(f"settlement quantity must be >= 1, got {quantity}")
     if session < contract.listing_start:
@@ -102,8 +108,19 @@ def mint_settlement(
                 f"early_exercise of {contract.contract_id} on {session} must precede "
                 f"expiration {contract.expiration} (that session is an expiry settlement)"
             )
+    if reference_bar.session != session:
+        raise SettlementMintError(
+            f"reference bar {reference_bar.source_record_id} is from session "
+            f"{reference_bar.session}, not the settlement session {session}"
+        )
+    if reference_bar.security_id != contract.underlying_security_id:
+        raise SettlementMintError(
+            f"reference bar {reference_bar.source_record_id} is for "
+            f"{reference_bar.security_id}, not underlying "
+            f"{contract.underlying_security_id}"
+        )
     cash = (
-        intrinsic_value(contract.call_put, contract.strike, reference_close)
+        intrinsic_value(contract.call_put, contract.strike, reference_bar.close)
         * quantity
         * contract.multiplier
     ).quantize(FEE_TICK)
@@ -115,9 +132,9 @@ def mint_settlement(
         strike=contract.strike,
         call_put=contract.call_put,
         multiplier=contract.multiplier,
-        settlement_price=reference_close,
+        settlement_price=reference_bar.close,
         cash=cash,
         session=session,
-        ts=reference_available_at,
-        ref_id=reference_ref_id,
+        ts=reference_bar.available_at,
+        ref_id=reference_bar.source_record_id,
     )

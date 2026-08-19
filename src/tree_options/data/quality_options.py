@@ -55,6 +55,16 @@ def verify_options_manifest(
     if manifest.synth_options_code_sha != synth_options_code_sha:
         fail("synth_options code pin mismatch")
 
+    # review r1 P1-3: the manifest's master description is checked
+    # against the overlay's own enumeration (count + streaming master
+    # hash). This pays one contract enumeration — the same cost the
+    # registry verifier already pays — and closes the "rehashed manifest
+    # lying about the master" hole.
+    if manifest.contract_count != overlay.contract_count():
+        fail(f"contract count {manifest.contract_count} != overlay {overlay.contract_count()}")
+    if manifest.contract_master_sha256 != overlay.contract_master_sha256():
+        fail("contract master hash mismatch: the manifest misdescribes the master")
+
     expected_slices = overlay.anchor_slices()
     recorded = [(sid, session.isoformat()) for sid, session in expected_slices]
     if [(sid, s) for sid, s, _h in manifest.sample_slice_hashes] != recorded:

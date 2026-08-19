@@ -40,6 +40,7 @@ from pydantic import Field
 
 from tree_options.data.actions import CorporateActionRecord
 from tree_options.data.bars import BarRecord
+from tree_options.data.digest import canonical_bytes
 from tree_options.schemas.common import IdStr, StrictModel, UTCDatetime
 from tree_options.schemas.market import QuoteEvent
 from tree_options.schemas.options import DeliverableSpec, OptionContract
@@ -389,6 +390,11 @@ class GeneratedOptionOverlay:
 
     # ---- chains ---------------------------------------------------------
 
+    def live_expiries_on(self, sid: str, session: date) -> tuple[_ExpiryMeta, ...]:
+        """Public view of the session's live-expiry set (the file's chain
+        composition — same predicate entry_for enforces)."""
+        return self._live_expiries(sid, session)
+
     def _live_expiries(self, sid: str, session: date) -> tuple[_ExpiryMeta, ...]:
         """Nearest `max_live_expiries` listed, unexpired expiries by DTE.
         Metas are expiration-sorted (== DTE order for a fixed session), so
@@ -423,7 +429,12 @@ class GeneratedOptionOverlay:
 
     def entry_for(self, sid: str, session: date, contract_id: str) -> OptionChainEntry:
         """One contract-day entry, computable standalone (the row stream is
-        keyed per contract-day, independent of any iteration order)."""
+        keyed per contract-day, independent of any iteration order).
+        Review r1 P1-1: the single-entry path enforces the SAME membership
+        predicate as the day file — the expiry must be among the session's
+        LIVE expiries (the max-live cap), not merely inside the listing
+        window — so lazy access can never quote a contract the file does
+        not contain."""
         if not self.has_file(sid, session):
             raise ValueError(f"no file for {sid} on {session}")
         if contract_id not in self._contract_index:
@@ -433,6 +444,11 @@ class GeneratedOptionOverlay:
             raise ValueError(f"{contract_id} does not belong to {sid}")
         if not (meta.listing_start <= session <= meta.expiration):
             raise ValueError(f"{contract_id} not live on {session}")
+        if not any(m.expiration == meta.expiration for m in self._live_expiries(sid, session)):
+            raise ValueError(
+                f"{contract_id} not in the visible chain on {session} "
+                f"(expiry {meta.expiration} outside the live-expiry cap)"
+            )
 
         spec = self.spec
         close, _volume = self._by_sid[sid][session]
@@ -561,6 +577,11 @@ class GeneratedOptionOverlay:
         for session in self.eligible_sessions(sid):
             if session < meta.listing_start or session > meta.expiration:
                 continue
+            # same membership predicate as the day file (review r1 P1-1):
+            # sessions where the expiry fell out of the live cap have no
+            # quotes for this contract
+            if not any(m.expiration == meta.expiration for m in self._live_expiries(sid, session)):
+                continue
             entry = self.entry_for(sid, session, contract_id)
             received = self._publication(session)
             snapshots: list[OptionQuoteSnapshot] = []
@@ -587,6 +608,21 @@ class GeneratedOptionOverlay:
 
     def contract_count(self) -> int:
         return sum(len(self.contracts_for(sid)) for sid in self.underlyings_ever_eligible())
+
+    def contract_master_sha256(self) -> str:
+        """Streaming canonical hash over the ENTIRE contract master in
+        enumeration order (review r1 P1-3): binds what the overlay would
+        deliver — style, multiplier, deliverable, listing windows — so a
+        manifest cannot misdescribe the master. Costs the same single
+        enumeration as contract_count."""
+        import hashlib
+
+        digest = hashlib.sha256()
+        digest.update(b"tree-options-m3-contract-master-v1")
+        for sid in self.underlyings_ever_eligible():
+            for contract in self.contracts_for(sid):
+                digest.update(canonical_bytes(contract))
+        return digest.hexdigest()
 
     def entry_and_quote_counts(self) -> tuple[int, int]:
         entries = 0
