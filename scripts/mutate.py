@@ -415,10 +415,18 @@ MUTANTS = [
         id="M43-security-future-mapping-visible",
         owner="test_january_decision_cannot_see_march_rename",
         file="src/tree_options/schemas/security.py",
-        anchor="if as_of is not None and m.available_at > as_of:",
-        replacement="if False:",
+        anchor=(
+            "        for m in self.ticker_mappings:\n"
+            "            if as_of is not None and m.available_at > as_of:\n"
+            "                continue"
+        ),
+        replacement=(
+            "        for m in self.ticker_mappings:\n"
+            "            if False:\n"
+            "                continue"
+        ),
         selectors=[f"{U}/test_leakage_v2.py"],
-        invariant="point-in-time security master hides future mappings",
+        invariant="point-in-time security master hides future mappings (anchor re-pinned M2: sector_on now carries the same single-line shape)",
     ),
     dict(
         id="M44-volume-bypass-restored",
@@ -667,6 +675,88 @@ MUTANTS = [
         replacement="identity_ok = True and rows_identity",
         selectors=[f"{U}/test_data_quality.py"],
         invariant="M1-D the outer snapshot id cannot be rebound post-ingest (outer, manifest, and per-row ids must agree)",
+    ),
+    dict(
+        id="M71-sector-leak-window-open",
+        owner="test_leak_window_returns_prior_sector",
+        file="src/tree_options/schemas/security.py",
+        anchor=(
+            "        best: SectorMappingRecord | None = None\n"
+            "        for m in self.sector_mappings:\n"
+            "            if as_of is not None and m.available_at > as_of:\n"
+            "                continue"
+        ),
+        replacement=(
+            "        best: SectorMappingRecord | None = None\n"
+            "        for m in self.sector_mappings:\n"
+            "            if False:\n"
+            "                continue"
+        ),
+        selectors=[f"{U}/test_sector_pit.py"],
+        invariant="M2-A sector classifications are availability-gated: a reclassification between effective_from and available_at must stay invisible",
+    ),
+    dict(
+        id="M72-seed-stream-shifted",
+        owner="test_small_dev_worlds_reproduce_byte_exact",
+        file="src/tree_options/synth/generate.py",
+        anchor='base = f"{spec.world_id}/{spec.seed}/seat/{self.security_id}"',
+        replacement='base = f"{spec.world_id}/{spec.seed + 1}/seat/{self.security_id}"',
+        selectors=[f"{U}/test_world_registry.py"],
+        invariant="M2-B/C a world is pinned to its registered seed: byte-exact registry reproduction fails if stream seeding drifts",
+    ),
+    dict(
+        id="M73-alpha-injection-gutted",
+        owner="test_null_and_alpha_worlds_share_structure",
+        file="src/tree_options/synth/generate.py",
+        anchor="ret += spec.alpha.coefficient * (seat.prev_ret - cross_mean)",
+        replacement="ret += 0.0",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2-B the planted effect actually moves closes: an alpha world must differ from its same-seed null world",
+    ),
+    dict(
+        id="M74-publication-hour-shifted",
+        owner="test_publication_instant_discipline",
+        file="src/tree_options/synth/generate.py",
+        anchor="datetime(session.year, session.month, session.day, hour, 0, tzinfo=UTC)",
+        replacement="datetime(session.year, session.month, session.day, hour + 1, 0, tzinfo=UTC)",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2-B every row publishes at the spec's fixed 23:00 UTC instant (the availability gates key on it)",
+    ),
+    dict(
+        id="M75-recycle-truth-gutted",
+        owner="test_lifecycle_scenarios_present",
+        file="src/tree_options/synth/generate.py",
+        anchor="recycled.append(ticker)",
+        replacement="recycled.clear()",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2-B the truth sidecar records ticker recycling (the fixture's INV-08 scenario)",
+    ),
+    dict(
+        id="M76-initial-cohort-unlisted",
+        owner="test_small_dev_worlds_reproduce_byte_exact",
+        file="src/tree_options/synth/generate.py",
+        anchor="for seat in seats[:n_initial]:",
+        replacement="for seat in seats[:0]:",
+        selectors=[f"{U}/test_world_registry.py"],
+        invariant="M2-B the initial cohort lists on the first session: registry worlds reproduce only with the listed universe",
+    ),
+    dict(
+        id="M77-bankruptcy-bound-over-gate",
+        owner="test_generated_world_ingests_and_verifies",
+        file="src/tree_options/synth/generate.py",
+        anchor="BANKRUPTCY_LOSS = (0.40, 0.49)",
+        replacement="BANKRUPTCY_LOSS = (0.80, 0.95)",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2-B/E terminal crash losses stay under the 2x undeclared-discontinuity quality gate",
+    ),
+    dict(
+        id="M78-split-override-not-exact",
+        owner="test_generated_world_ingests_and_verifies",
+        file="src/tree_options/synth/generate.py",
+        anchor="new_close = _cents(seat.close * override_today)",
+        replacement="new_close = _cents(seat.close)",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2-B/E split sessions derive the close exactly from the declared ratio (ratio-match quality gate)",
     ),
 ]
 

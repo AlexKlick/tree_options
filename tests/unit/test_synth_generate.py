@@ -143,6 +143,7 @@ def test_null_and_alpha_worlds_share_structure(static_calendar) -> None:  # type
     assert null_world.truth.alpha is None
     # same seed: identical seats/sectors/tickers, different closes
     assert [s.security_id for s in alpha_world.master] == [s.security_id for s in null_world.master]
+    assert alpha_world.payload.bars != null_world.payload.bars, "planted effect must move closes"
 
 
 def test_truth_sidecar_import_boundary() -> None:
