@@ -8,16 +8,23 @@ contract-master revisions.
 realized_pnl is GROSS of fees (fees live only in cash and total_fees); the
 flat-book identity is cash == initial + sum(realized_gross) - total_fees.
 
+M3 (plan §3.C): `apply_settlement` mints the reserved `exercise_settlement`
+entry kind — expiry and early-exercise cash settlements walk the SAME FIFO
+lots as sells, so realized PnL and the flat-book identity extend unchanged
+(settlement cash folds into realized exactly as sell proceeds do). Fills
+and settlements share one non-decreasing application timeline.
+
 The conservation check is an INDEPENDENT oracle: it recomputes cash, fees,
 quantities, and realized PnL from primitive fill fields (price, quantity,
-multiplier, side) rather than calling Fill.notional()/Fill.signed_cash(),
-so a bug in those methods cannot validate itself. Ledger entries are
-conserved too: their signed amounts must sum to the cash delta.
+multiplier, side) and settlement fields (cash, quantity) rather than
+calling Fill.notional()/Fill.signed_cash(), so a bug in those methods
+cannot validate itself. Ledger entries are conserved too: their signed
+amounts must sum to the cash delta.
 
-Integrity (audit §4.3): duplicate fill_id application fails closed; fills
-must arrive in non-decreasing execution order; opened_session is the
-earliest session among the CURRENTLY OPEN lots (reopen reports the reopen
-session).
+Integrity (audit §4.3): duplicate fill_id/settlement_id application fails
+closed; events must arrive in non-decreasing timestamp order;
+opened_session is the earliest session among the CURRENTLY OPEN lots
+(reopen reports the reopen session).
 """
 
 from __future__ import annotations
@@ -27,6 +34,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
+from tree_options.options.settlement import ExerciseSettlement
 from tree_options.schemas.common import FEE_TICK
 from tree_options.schemas.ledger import LedgerEntry
 from tree_options.schemas.trading import Fill, Position
@@ -67,43 +75,86 @@ def _primitive_cash(fill: Fill) -> Decimal:
     return -magnitude if fill.side == "buy" else magnitude
 
 
-def _replay(fills: list[Fill]) -> _ReplayResult:
-    """Deterministic FIFO replay using primitive-field arithmetic only."""
+def _replay(
+    fills: list[Fill], settlements: list[ExerciseSettlement] | None = None
+) -> _ReplayResult:
+    """Deterministic FIFO replay using primitive-field arithmetic only.
+
+    Fills and settlements are merged on (event ts, event id) — a stable,
+    order-invariant choice for the identity checks (total realized and
+    quantities are invariant to ts-tied interleaving; the book itself
+    enforces non-decreasing application order)."""
     cash = Decimal("0")
     fees = Decimal("0")
     qty: defaultdict[str, int] = defaultdict(int)
     realized: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
     lots: defaultdict[str, list[tuple[int, Decimal, int]]] = defaultdict(list)
-    seen_ids: set[str] = set()
+    seen_fill_ids: set[str] = set()
+    seen_settlement_ids: set[str] = set()
+    events: list[tuple[datetime, str, int, Fill | ExerciseSettlement]] = []
     for fill in fills:
-        if fill.fill_id in seen_ids:
-            raise LedgerViolation("DUPLICATE_FILL", f"fill {fill.fill_id} applied twice")
-        seen_ids.add(fill.fill_id)
-        cash += _primitive_cash(fill) - fill.fees
-        fees += fill.fees
-        if fill.side == "buy":
-            qty[fill.contract_id] += fill.quantity
-            lots[fill.contract_id].append((fill.quantity, fill.price, fill.multiplier))
+        events.append((fill.execution_at, fill.fill_id, 0, fill))
+    for settlement in settlements or []:
+        events.append((settlement.ts, settlement.settlement_id, 1, settlement))
+    events.sort(key=lambda e: (e[0], e[1], e[2]))
+    for _ts, _eid, _kind, event in events:
+        if isinstance(event, Fill):
+            fill = event
+            if fill.fill_id in seen_fill_ids:
+                raise LedgerViolation("DUPLICATE_FILL", f"fill {fill.fill_id} applied twice")
+            seen_fill_ids.add(fill.fill_id)
+            cash += _primitive_cash(fill) - fill.fees
+            fees += fill.fees
+            if fill.side == "buy":
+                qty[fill.contract_id] += fill.quantity
+                lots[fill.contract_id].append((fill.quantity, fill.price, fill.multiplier))
+            else:
+                if qty[fill.contract_id] < fill.quantity:
+                    raise LedgerViolation(
+                        "POSITION_UNDERFLOW", f"fill stream goes short {fill.contract_id}"
+                    )
+                remaining = fill.quantity
+                cost_removed = Decimal("0")
+                while remaining > 0:
+                    head_qty, head_price, head_mult = lots[fill.contract_id][0]
+                    take = min(head_qty, remaining)
+                    cost_removed += head_price * take * head_mult
+                    head_qty -= take
+                    remaining -= take
+                    if head_qty == 0:
+                        lots[fill.contract_id].pop(0)
+                    else:
+                        lots[fill.contract_id][0] = (head_qty, head_price, head_mult)
+                proceeds = fill.price * fill.quantity * fill.multiplier
+                realized[fill.contract_id] += (proceeds - cost_removed).quantize(FEE_TICK)
+                qty[fill.contract_id] -= fill.quantity
         else:
-            if qty[fill.contract_id] < fill.quantity:
+            settlement = event
+            if settlement.settlement_id in seen_settlement_ids:
                 raise LedgerViolation(
-                    "POSITION_UNDERFLOW", f"fill stream goes short {fill.contract_id}"
+                    "DUPLICATE_SETTLEMENT", f"settlement {settlement.settlement_id} applied twice"
                 )
-            remaining = fill.quantity
+            seen_settlement_ids.add(settlement.settlement_id)
+            if qty[settlement.contract_id] < settlement.quantity:
+                raise LedgerViolation(
+                    "POSITION_UNDERFLOW",
+                    f"settlement stream goes short {settlement.contract_id}",
+                )
+            remaining = settlement.quantity
             cost_removed = Decimal("0")
             while remaining > 0:
-                head_qty, head_price, head_mult = lots[fill.contract_id][0]
+                head_qty, head_price, head_mult = lots[settlement.contract_id][0]
                 take = min(head_qty, remaining)
                 cost_removed += head_price * take * head_mult
                 head_qty -= take
                 remaining -= take
                 if head_qty == 0:
-                    lots[fill.contract_id].pop(0)
+                    lots[settlement.contract_id].pop(0)
                 else:
-                    lots[fill.contract_id][0] = (head_qty, head_price, head_mult)
-            proceeds = fill.price * fill.quantity * fill.multiplier
-            realized[fill.contract_id] += (proceeds - cost_removed).quantize(FEE_TICK)
-            qty[fill.contract_id] -= fill.quantity
+                    lots[settlement.contract_id][0] = (head_qty, head_price, head_mult)
+            realized[settlement.contract_id] += (settlement.cash - cost_removed).quantize(FEE_TICK)
+            qty[settlement.contract_id] -= settlement.quantity
+            cash += settlement.cash
     return _ReplayResult(
         cash_delta=cash.quantize(FEE_TICK),
         fees=fees.quantize(FEE_TICK),
@@ -118,12 +169,14 @@ class LedgerBook:
         self.cash = self.initial_cash
         self.total_fees = Decimal("0")
         self._fills: list[Fill] = []
+        self._settlements: list[ExerciseSettlement] = []
         self._lots: defaultdict[str, list[Lot]] = defaultdict(list)
         self._realized: defaultdict[str, Decimal] = defaultdict(lambda: Decimal("0"))
         self._entries: list[LedgerEntry] = []
         self._entry_seq = 0
         self._last_execution_at: datetime | None = None
         self._applied_fill_ids: set[str] = set()
+        self._applied_settlement_ids: set[str] = set()
 
     # -- application -------------------------------------------------------
 
@@ -138,7 +191,63 @@ class LedgerBook:
                 f"last applied {self._last_execution_at}",
             )
         self._last_execution_at = fill.execution_at
+        self._apply_fill_arithmetic(fill)
 
+    def apply_settlement(self, settlement: ExerciseSettlement) -> None:
+        """Apply an exercise settlement: close FIFO lots, add the cash,
+        mint exactly one `exercise_settlement` entry. OTM expiry is the
+        zero-cash case — the lots still close."""
+        if settlement.settlement_id in self._applied_settlement_ids:
+            raise LedgerViolation(
+                "DUPLICATE_SETTLEMENT", f"settlement {settlement.settlement_id} applied twice"
+            )
+        if self._last_execution_at is not None and settlement.ts < self._last_execution_at:
+            raise LedgerViolation(
+                "OUT_OF_ORDER_SETTLEMENT",
+                f"settlement {settlement.settlement_id} at {settlement.ts} precedes "
+                f"last applied {self._last_execution_at}",
+            )
+        self._last_execution_at = settlement.ts
+
+        held = sum(lot.quantity for lot in self._lots[settlement.contract_id])
+        if held < settlement.quantity:
+            raise LedgerViolation(
+                "POSITION_UNDERFLOW",
+                f"settle {settlement.quantity} of {settlement.contract_id} but held {held}",
+            )
+        remaining = settlement.quantity
+        cost_removed = Decimal("0")
+        while remaining > 0:
+            head = self._lots[settlement.contract_id][0]
+            take = min(head.quantity, remaining)
+            removed = (head.unit_price * take * head.multiplier).quantize(FEE_TICK)
+            cost_removed += removed
+            head.quantity -= take
+            head.cost_basis = (head.cost_basis - removed).quantize(FEE_TICK)
+            remaining -= take
+            if head.quantity == 0:
+                self._lots[settlement.contract_id].pop(0)
+        self._realized[settlement.contract_id] += (settlement.cash - cost_removed).quantize(
+            FEE_TICK
+        )
+        self.cash = (self.cash + settlement.cash).quantize(FEE_TICK)
+        self._applied_settlement_ids.add(settlement.settlement_id)
+        self._settlements.append(settlement)
+        self._entry_seq += 1
+        self._entries.append(
+            LedgerEntry(
+                entry_id=f"ENT-{self._entry_seq:06d}",
+                ts=settlement.ts,
+                session=settlement.session,
+                kind="exercise_settlement",
+                amount=settlement.cash,
+                contract_id=settlement.contract_id,
+                ref_id=settlement.settlement_id,
+            )
+        )
+
+    def _apply_fill_arithmetic(self, fill: Fill) -> None:
+        """Fill cash/lots/realized (shared by apply; ordering guarded above)."""
         if fill.side == "buy":
             basis = (fill.price * fill.quantity * fill.multiplier).quantize(FEE_TICK)
             self._lots[fill.contract_id].append(
@@ -245,7 +354,7 @@ class LedgerBook:
     # -- conservation -------------------------------------------------------
 
     def assert_conservation(self) -> None:
-        result = _replay(self._fills)
+        result = _replay(self._fills, self._settlements)
         expected_cash = (self.initial_cash + result.cash_delta).quantize(FEE_TICK)
         if self.cash != expected_cash:
             raise LedgerViolation(
