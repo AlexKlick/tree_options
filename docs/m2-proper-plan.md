@@ -98,6 +98,39 @@ unknowable before `observed_at`), wrong-window, horizon-boundary,
 delisting-inside-window, end-of-world truncation, and
 splitter-purge consistency.
 
+**Pre-implementation correction (2026-08-19, discovered before any label
+code was written; the signed text above is preserved as the plan of
+record and this correction supersedes its label formula).** The
+publication instant (23:00 UTC same-date) is 2–3h AFTER
+`session_close`, so at the decision instant of session d the last
+VISIBLE bar is session d−1 and the freshest feature is `ret_{d−1}`.
+The planted effect is `ret_t ← β·ret_{t−1}`, so the first-order
+alignment is feature `ret_{d−1}` → `ret_d` — but the signed window
+(d+1 … d+H) EXCLUDES `ret_d`, capturing the effect only through the
+second-order chain (β² ≈ 4e−6 at the weak stratum) and contradicting
+the signed §7 arithmetic (per-session IC ≈ coefficient, which the
+owner's power-stratum decision was priced on). The label is therefore
+defined from the decision-time information boundary: with b = the
+calendar session immediately preceding d,
+
+    value        = ln(close[b+H] / close[b])
+    label_window = (b+1, b+H) == (d, d+H−1)
+
+The base close is the last decision-time VISIBLE close (the d-session
+bar legitimately postdates the decision); the window is strictly
+post-decision; a security whose last visible bar is older than b
+(lapse straddling the decision) contributes no label that session; the
+bar series must be contiguous b+1…b+H (any gap — delisting, lapse —
+means no label). Purge safety: for a train session s the window ends
+at s+H−1 while the gap invariant requires ordinal(first eval) >
+s+H+E — strictly MORE margin than the original (d+1 … d+H) window.
+`observed_at` = publication instant of the b+H bar; label provenance
+(`source`/`source_record_id`) carries that end bar's provenance, since
+its publication is what makes the value knowable. The executable PnL
+path (backtest, §3.G) necessarily starts at open(d+1) and cannot earn
+ret_d — the label/PnL gap is an honest consequence of the publication
+lag and is recorded in the evidence doc, not papered over.
+
 ### C — Features v2 (cross-sectional, PIT)
 
 Extend feature construction with the momentum family and controls:
