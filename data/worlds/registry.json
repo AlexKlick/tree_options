@@ -1,0 +1,170 @@
+{
+  "registry_version": "worlds/1",
+  "spec_version": "v1",
+  "note": "Frozen world registry (M2 packet workstream C). Validation worlds are the synthetic-era holdout: dev-pool tuning against them is prohibited; final validation runs happen exclusively here. Seeds/rates are never rewritten; expected hashes are re-pinned only by scripts/verify_worlds.py --recompute after a deliberate generator change.",
+  "generator_code_sha": "39ad875b663ff26c5ff0016a9396650da5b310f48ab8f4dcc6fb28a6fa8c6bdf",
+  "worlds": [
+    {
+      "world_id": "synth-v1-dev-null-101",
+      "pool": "dev",
+      "spec": {
+        "world_id": "synth-v1-dev-null-101",
+        "seed": 101,
+        "kind": "null",
+        "n_securities": 24,
+        "n_sessions": 160
+      },
+      "expected": {
+        "content_sha256": "0b560c31b811e9b37228ccb34a3a1af22c6de8f6ed58b7c7ecd0f68a84c8cbd8",
+        "bar_count": 2500,
+        "action_count": 6,
+        "security_count": 19
+      }
+    },
+    {
+      "world_id": "synth-v1-dev-alpha-102",
+      "pool": "dev",
+      "spec": {
+        "world_id": "synth-v1-dev-alpha-102",
+        "seed": 102,
+        "kind": "alpha",
+        "alpha": {
+          "family": "linear_momentum",
+          "coefficient": 0.002
+        },
+        "n_securities": 24,
+        "n_sessions": 160
+      },
+      "expected": {
+        "content_sha256": "14ddbd59b729bc60de2d06d5d30e791751d9b8c1a0f5656ba6ff162649087822",
+        "bar_count": 2532,
+        "action_count": 2,
+        "security_count": 18
+      }
+    },
+    {
+      "world_id": "synth-v1-dev-null-103",
+      "pool": "dev",
+      "spec": {
+        "world_id": "synth-v1-dev-null-103",
+        "seed": 103,
+        "kind": "null",
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "1abb793d284da308a6bea8b72abbe0616538ad2028b9cd6d20274cd32bbbe7cf",
+        "bar_count": 712377,
+        "action_count": 1163,
+        "security_count": 375
+      }
+    },
+    {
+      "world_id": "synth-v1-dev-alpha-104",
+      "pool": "dev",
+      "spec": {
+        "world_id": "synth-v1-dev-alpha-104",
+        "seed": 104,
+        "kind": "alpha",
+        "alpha": {
+          "family": "linear_momentum",
+          "coefficient": 0.002
+        },
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "df5ca01d6c9ea4b5cbc779ea9b86032dc9b750230b665b491ed45fa278e14bba",
+        "bar_count": 704419,
+        "action_count": 1124,
+        "security_count": 366
+      }
+    },
+    {
+      "world_id": "synth-v1-val-null-701",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-null-701",
+        "seed": 701,
+        "kind": "null",
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "e0c72f133b780d6671209ad4044ba1d9796aa9ae068db45560b2b66422c380dc",
+        "bar_count": 672773,
+        "action_count": 1050,
+        "security_count": 372
+      }
+    },
+    {
+      "world_id": "synth-v1-val-null-702",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-null-702",
+        "seed": 702,
+        "kind": "null",
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "617e7565c1eee81477c579073d850c350e6b9a5c2631117c2664a6f9120c8b3e",
+        "bar_count": 699723,
+        "action_count": 1137,
+        "security_count": 376
+      }
+    },
+    {
+      "world_id": "synth-v1-val-null-703",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-null-703",
+        "seed": 703,
+        "kind": "null",
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "de38347a3acec81f0eeb34488134a90cdaf9141f71a334507329c7738275afed",
+        "bar_count": 689203,
+        "action_count": 1116,
+        "security_count": 373
+      }
+    },
+    {
+      "world_id": "synth-v1-val-alpha-704",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-alpha-704",
+        "seed": 704,
+        "kind": "alpha",
+        "alpha": {
+          "family": "linear_momentum",
+          "coefficient": 0.002
+        },
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "e514c452123eb87174939c8d07661b9eee90c1cb4638be00f055dd10c2424cfc",
+        "bar_count": 682354,
+        "action_count": 1087,
+        "security_count": 376
+      }
+    },
+    {
+      "world_id": "synth-v1-val-alpha-705",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-alpha-705",
+        "seed": 705,
+        "kind": "alpha",
+        "alpha": {
+          "family": "linear_momentum",
+          "coefficient": 0.002
+        },
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "b73232bbb4444c79a7305b492f7dfc7c5708d837ae24590bdc93f5888cfa62f7",
+        "bar_count": 684340,
+        "action_count": 1134,
+        "security_count": 365
+      }
+    }
+  ]
+}
