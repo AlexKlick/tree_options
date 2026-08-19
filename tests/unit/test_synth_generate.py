@@ -10,6 +10,7 @@ world must be quality-gate clean.
 from __future__ import annotations
 
 import ast
+import math
 from datetime import UTC, date, datetime
 from pathlib import Path
 
@@ -61,6 +62,16 @@ def test_same_spec_is_byte_identical(static_calendar) -> None:  # type: ignore[n
     assert a.payload == b.payload
     assert a.master == b.master
     assert a.truth == b.truth
+    # byte-level, not just model equality: canonical serialization of every
+    # record must match (Decimal repr drift would pass == but not this)
+    from tree_options.data.digest import canonical_bytes
+
+    for x, y in zip(a.payload.bars, b.payload.bars, strict=True):
+        assert canonical_bytes(x) == canonical_bytes(y)
+    for x, y in zip(a.payload.actions, b.payload.actions, strict=True):
+        assert canonical_bytes(x) == canonical_bytes(y)
+    for x, y in zip(a.master, b.master, strict=True):
+        assert canonical_bytes(x) == canonical_bytes(y)
     # NOTE: snapshot_id is part of every row's canonical bytes (identity
     # binding), so the SAME id must be used to compare content hashes.
     snap_a = ingest_snapshot(
@@ -141,14 +152,24 @@ def test_null_and_alpha_worlds_share_structure(static_calendar) -> None:  # type
     assert alpha_world.truth.alpha is not None
     assert alpha_world.truth.alpha.coefficient == 0.002
     assert null_world.truth.alpha is None
-    # same seed: identical seats/sectors/tickers, different closes
+    # same seed: identical seats/sectors/tickers/events/volumes, different closes
     assert [s.security_id for s in alpha_world.master] == [s.security_id for s in null_world.master]
+    assert alpha_world.truth.sector_of == null_world.truth.sector_of
+    assert alpha_world.truth.events == null_world.truth.events
+    assert [b.volume for b in alpha_world.payload.bars] == [
+        b.volume for b in null_world.payload.bars
+    ]
+    assert [b.session for b in alpha_world.payload.bars] == [
+        b.session for b in null_world.payload.bars
+    ]
     assert alpha_world.payload.bars != null_world.payload.bars, "planted effect must move closes"
 
 
 def test_truth_sidecar_import_boundary() -> None:
-    """synth.truth must be unreachable outside tree_options.synth.* — the
-    planted-effect parameters can never leak into feature construction."""
+    """Ground truth is unreachable from feature-construction code: no module
+    outside tree_options.synth.* may import synth AT ALL (a bare synth import
+    exposes generate_world(...).truth), and nothing outside synth may import
+    synth.truth directly."""
     src_root = Path(__file__).resolve().parents[2] / "src" / "tree_options"
     offenders: list[str] = []
     for path in sorted(src_root.rglob("*.py")):
@@ -165,11 +186,9 @@ def test_truth_sidecar_import_boundary() -> None:
                 if node.level == 0 and node.module == "tree_options.synth":
                     targets += [f"tree_options.synth.{alias.name}" for alias in node.names]
             for target in targets:
-                if target == "tree_options.synth.truth" or target.startswith(
-                    "tree_options.synth.truth."
-                ):
+                if target == "tree_options.synth" or target.startswith("tree_options.synth."):
                     offenders.append(f"{module} imports {target}")
-    assert not offenders, f"truth sidecar leaked into: {offenders}"
+    assert not offenders, f"synth (incl. truth) leaked into: {offenders}"
 
 
 def test_every_security_carries_sector(static_calendar) -> None:  # type: ignore[no-untyped-def]
@@ -182,8 +201,16 @@ def test_every_security_carries_sector(static_calendar) -> None:  # type: ignore
 
 
 def test_lifecycle_scenarios_present(static_calendar) -> None:  # type: ignore[no-untyped-def]
-    """All nine M1 fixture scenarios must be reachable with boosted rates."""
-    world = generate_world(base_spec(n_securities=40), static_calendar)
+    """All nine M1 fixture scenarios must be reachable with boosted rates —
+    and OWNED by the delivered payload/master, not just by the truth sidecar."""
+    spec = base_spec(n_securities=40)
+    world = generate_world(spec, static_calendar)
+    snapshot = ingest_snapshot(
+        world.payload,
+        world.master,
+        snapshot_id=spec.world_id,
+        normalization_code_sha="0" * 64,
+    )
     kinds = {e.kind for e in world.truth.events}
     expected = {
         "split",
@@ -197,10 +224,115 @@ def test_lifecycle_scenarios_present(static_calendar) -> None:  # type: ignore[n
     }
     missing = expected - kinds
     assert not missing, f"missing lifecycle events: {missing}"
+    # payload ownership of the ratio/dividend/merger events
+    action_kinds = {a.kind for a in snapshot.actions}
+    assert {"split", "reverse_split", "cash_dividend", "merger"} <= action_kinds
+    # master ownership of the terminal delistings (reasons pinned)
+    delist_reasons = {r.delisting.reason for r in world.master if r.delisting is not None}
+    assert {"bankruptcy_11", "merger", "voluntary_delisting"} <= delist_reasons
     sessions = static_calendar.sessions()
     later = [r for r in world.master if r.listing_start > sessions[0]]
     assert later, "IPO scenario: later-cohort listings must exist"
     assert world.truth.recycled_tickers, "ticker recycle scenario must occur"
+
+
+def test_hostile_rate_spec_stays_gate_clean(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """Round-1 P1-2: ANY spec the validator accepts must generate a
+    gate-clean world. A split rate of 200/yr drives prices to the floor in
+    sessions — ratio events that cannot honor their declared ratio within
+    the 2% gate tolerance must be suppressed, not emitted."""
+    from tree_options.synth.spec import ActionRates
+
+    spec = base_spec(
+        world_id="synth-v1-test-hostile",
+        rates=ActionRates(
+            split=200.0,
+            reverse_split=0.0,
+            cash_dividend=0.0,
+            stock_dividend=0.0,
+            rename=0.0,
+            merger=0.0,
+            bankruptcy=0.0,
+            voluntary_delisting=0.0,
+            coverage_lapse=0.0,
+            ipo_per_year=0.0,
+        ),
+    )
+    world = generate_world(spec, static_calendar)
+    snapshot = ingest_snapshot(
+        world.payload,
+        world.master,
+        snapshot_id=spec.world_id,
+        normalization_code_sha="0" * 64,
+    )
+    verify_manifest(snapshot, static_calendar)  # must not raise despite floor
+    assert any(a.kind == "split" for a in snapshot.actions), "splits must still fire early"
+
+
+def test_total_hazard_bound_rejected() -> None:
+    """Round-1 P1-2: a rate set whose per-session event hazard reaches 1.0
+    monopolizes the walk and is not a valid world."""
+    from tree_options.synth.spec import ActionRates
+
+    with pytest.raises(ValueError, match="total event hazard"):
+        base_spec(
+            rates=ActionRates(
+                split=252.0,
+                reverse_split=0.0,
+                cash_dividend=0.0,
+                stock_dividend=0.0,
+                rename=0.0,
+                merger=0.0,
+                bankruptcy=0.0,
+                voluntary_delisting=0.0,
+                coverage_lapse=0.0,
+                ipo_per_year=0.0,
+            )
+        )
+
+
+def test_empty_sectors_rejected() -> None:
+    """Round-1 P1-1: sectors=() passes uniqueness but crashes generation."""
+    with pytest.raises(ValueError, match="at least one sector"):
+        base_spec(sectors=())
+
+
+def test_session_returns_bounded_under_gate() -> None:
+    """Round-1 remediation: undeclared overnight moves are clamped strictly
+    inside the 2x discontinuity bound (fat tails cannot emit an ungated
+    doubling)."""
+    from tree_options.synth.generate import DAILY_RET_LIMIT, _clamp_session_return
+
+    assert _clamp_session_return(5.0) == DAILY_RET_LIMIT
+    assert _clamp_session_return(-5.0) == -DAILY_RET_LIMIT
+    assert _clamp_session_return(0.01) == 0.01
+    assert DAILY_RET_LIMIT < math.log(2.0), "clamp must stay under the gate bound"
+
+
+def test_features_panel_passes_availability_audit(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """Packet criterion 5: a features_as_of panel over a generated world is
+    compliant under the AvailabilityGuard's own decision instants."""
+    from tree_options.data.authority import PointInTimeDataset
+    from tree_options.guards.availability import AvailabilityGuard
+
+    spec = base_spec()
+    world = generate_world(spec, static_calendar)
+    snapshot = ingest_snapshot(
+        world.payload,
+        world.master,
+        snapshot_id=spec.world_id,
+        normalization_code_sha="0" * 64,
+    )
+    ds = PointInTimeDataset(snapshot, static_calendar, universe_id="SYNTH-U")
+    guard = AvailabilityGuard(static_calendar)
+    mid = static_calendar.sessions()[100]
+    decision = guard.decision_instant(mid)
+    panel = ds.features_as_of(
+        decision_at=decision, universe_id="SYNTH-U", dataset_snapshot_id=spec.world_id
+    )
+    result = guard.audit_panel(panel)
+    assert result.compliant, "panel must have compliant rows"
+    assert result.n_rejected == 0, f"availability rejections: {result.rejections[:3]}"
 
 
 def test_tampered_world_fails_quality_gate(static_calendar) -> None:  # type: ignore[no-untyped-def]

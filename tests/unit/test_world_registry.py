@@ -33,6 +33,42 @@ def test_registry_shape_and_pools() -> None:
     dev_seeds = {w["spec"]["seed"] for w in worlds if w["pool"] == "dev"}  # type: ignore[index]
     val_seeds = {w["spec"]["seed"] for w in validation}
     assert dev_seeds.isdisjoint(val_seeds), "dev and validation seeds must not overlap"
+    # exact frozen composition (round-1 review: shape-only assertions let a
+    # wrong registry pass)
+    assert dev_seeds == {101, 102, 103, 104}, f"dev seeds drifted: {dev_seeds}"
+    assert val_seeds == {701, 702, 703, 704, 705}, f"validation seeds drifted: {val_seeds}"
+    val_kinds = sorted(w["spec"]["kind"] for w in validation)  # type: ignore[index]
+    assert val_kinds == ["alpha", "alpha", "null", "null", "null"]
+
+
+def test_verify_worlds_gates_quality_not_just_hashes() -> None:
+    """Round-1 P1-3: regeneration runs the M1 quality gates — a
+    quality-invalid world can never be pinned or reported OK."""
+    import sys
+
+    sys.path.insert(0, str(REPO_ROOT / "scripts"))
+    import verify_worlds
+    from tree_options.data import quality
+
+    calls: list[object] = []
+    original = quality.verify_manifest
+
+    def counting_verify(*args: object, **kwargs: object) -> object:
+        calls.append(args)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    quality.verify_manifest = counting_verify  # type: ignore[assignment]
+    try:
+        reg = _registry()
+        small = next(
+            w
+            for w in reg["worlds"]
+            if w["world_id"] == "synth-v1-dev-null-101"  # type: ignore[index]
+        )
+        verify_worlds._generate_and_ingest(small, "0" * 64)  # type: ignore[arg-type]
+    finally:
+        quality.verify_manifest = original  # type: ignore[assignment]
+    assert calls, "verify_manifest must run inside world regeneration"
 
 
 def test_registry_pins_generator_code() -> None:

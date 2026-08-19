@@ -6,6 +6,12 @@ Sources are cited with access dates; facts are marked **[observed]** (from
 the downloaded sample), **[documented]** (vendor page), or **[unverified]**
 (could not be loaded from here — check at adapter time).
 
+The downloaded sample and readme are RETAINED with hashes at
+`~/m2-evidence/cboe-sample/` (zip sha256 `981be1aafe6970e7…`, CSV
+`e45af427934177f9…`, readme `042804c20a146425…`; full list in its
+SHA256SUMS.txt) so every [observed] count below is independently
+recomputable.
+
 ## 1. Field inventory mapped to our schemas
 
 **Cboe DataShop "Option EOD Summary"** ([product page], accessed
@@ -58,11 +64,13 @@ long-only EOD MVP.
 
 - Snapshots are stamped INTRADAY (15:45 ET and close) but the FILE is a
   daily product; historical purchase availability is **T+1** **[documented
-  in sample readme]** → `available_at` (our convention) = next session's
-  publication instant; a 15:45 snapshot is knowable the next morning.
-- Our protocol's decision windows (10:00 ET entry, 15:30 exit) are
-  strictly after T+1 availability → the EOD summary is PIT-safe for
-  next-session decisions with zero leak window.
+  in sample readme]** → `available_at` (our convention) = a next-session
+  retrieval instant; a 15:45 snapshot is knowable no earlier than T+1.
+- The T+1 DATE is documented; the publication HOUR of day is not
+  **[unverified]** — so this spike claims only "available on the next
+  session", NOT a zero-hour leak window. At adapter time the actual file
+  availability clock time must be recorded and the 10:00 ET entry window
+  re-checked against it.
 - Restatement policy unknown **[unverified]** → treat every purchased
   file as frozen-at-receipt (the M1 archive discipline: ingest the exact
   bytes, manifest them, never re-download over history).

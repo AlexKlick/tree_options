@@ -51,13 +51,19 @@ def _generate_and_ingest(entry: dict[str, object], code_sha: str):  # type: igno
     from tree_options.synth.spec import WorldSpec
 
     spec = WorldSpec(**entry["spec"])  # type: ignore[arg-type]
-    world = generate_world(spec, _load_calendar())
+    calendar = _load_calendar()
+    world = generate_world(spec, calendar)
     snapshot = ingest_snapshot(
         world.payload,
         world.master,
         snapshot_id=spec.world_id,
         normalization_code_sha=code_sha,
     )
+    # round-1 P1-3: regeneration runs the M1 quality gates — a
+    # quality-invalid world can never be pinned or reported OK
+    from tree_options.data.quality import verify_manifest
+
+    verify_manifest(snapshot, calendar)
     return snapshot
 
 

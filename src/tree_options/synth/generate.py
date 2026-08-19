@@ -60,6 +60,14 @@ CASH_DIVIDEND_FRACTION = Decimal("0.005")
 SPAN_FRACTION = Decimal("0.004")
 VOLUME_FLOOR = 100
 PRICE_FLOOR = Decimal("0.01")
+# a ratio-derived close at/above this keeps quantization error <= 0.5%,
+# safely inside the 2% ratio-match tolerance (round-1 P1-2)
+RATIO_FLOOR = Decimal("1.00")
+# round-1 remediation: fat-tail idio plus market/sector factors can jointly
+# produce an undeclared >=2x overnight move, which the M1 discontinuity gate
+# rejects — per-session returns are bounded under the gate bound (real
+# venues halt; the generator does too)
+DAILY_RET_LIMIT = math.log(1.9)
 
 
 class GeneratedWorld(StrictModel):
@@ -137,6 +145,11 @@ def _t_draw(rng: random.Random) -> float:
     g = rng.gauss(0.0, 1.0)
     chi2 = sum(rng.gauss(0.0, 1.0) ** 2 for _ in range(T_DF))
     return g / math.sqrt(chi2 / T_DF)
+
+
+def _clamp_session_return(ret: float) -> float:
+    """Bound an undeclared overnight move strictly inside the 2x gate."""
+    return max(-DAILY_RET_LIMIT, min(DAILY_RET_LIMIT, ret))
 
 
 def _ohlc(close: Decimal, rng: random.Random) -> tuple[Decimal, Decimal, Decimal]:
@@ -272,7 +285,7 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                     LifecycleEvent(session=session, security_id=seat.security_id, kind=fired)
                 )
             elif fired in ("merger", "voluntary_delisting", "coverage_lapse"):
-                ret = (
+                ret = _clamp_session_return(
                     market_ret + sector_ret[seat.sector_idx] + IDIO_SCALE * _t_draw(seat.rng_price)
                 )
                 seat.end_idx = t_idx
@@ -311,19 +324,28 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                         n, d = seat.rng_events.choice(REVERSE_RATIOS)
                     else:
                         n, d = STOCK_DIVIDEND_RATIO
-                    seat.factor_override = Decimal(d) / Decimal(n)
-                    act_n += 1
-                    action_rows.append(
-                        dict(
-                            vendor_symbol=seat.ticker,
-                            kind=fired,
-                            effective_session=sessions[t_idx + 1],
-                            ratio_numerator=n,
-                            ratio_denominator=d,
-                            available_at=_pub(session, hour),
-                            source_record_id=f"ACT-{act_n:07d}",
+                    factor = Decimal(d) / Decimal(n)
+                    if factor < 1 and seat.close * factor < RATIO_FLOOR:
+                        # round-1 P1-2: a floor-clamped close cannot honor
+                        # the declared ratio within the 2% gate tolerance —
+                        # suppress the DOWNWARD event rather than emit a
+                        # world the quality gates must reject (upward ratio
+                        # events never approach the price floor)
+                        fired = None
+                    else:
+                        seat.factor_override = factor
+                        act_n += 1
+                        action_rows.append(
+                            dict(
+                                vendor_symbol=seat.ticker,
+                                kind=fired,
+                                effective_session=sessions[t_idx + 1],
+                                ratio_numerator=n,
+                                ratio_denominator=d,
+                                available_at=_pub(session, hour),
+                                source_record_id=f"ACT-{act_n:07d}",
+                            )
                         )
-                    )
                 elif fired == "cash_dividend":
                     cash = max(
                         (seat.close * CASH_DIVIDEND_FRACTION).quantize(
@@ -362,6 +384,7 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                         and cross_mean is not None
                     ):
                         ret += spec.alpha.coefficient * (seat.prev_ret - cross_mean)
+                    ret = _clamp_session_return(ret)
 
             if override_today is None:
                 new_close = _cents(Decimal(repr(float(seat.close) * math.exp(ret))))

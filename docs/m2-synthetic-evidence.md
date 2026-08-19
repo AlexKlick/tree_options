@@ -82,31 +82,52 @@ attached to the PR alongside a `git clone --no-local` clean-clone proof.
 
 ## 4. Acceptance criteria (packet §4)
 
-1. **Determinism** — `test_same_spec_is_byte_identical` (payload, master,
-   truth equal; same-id ingest ⇒ identical `content_sha256`;
-   `test_different_seed_diverges`); registry byte-exact reproduction
-   covers it at full scale in the artifact run. ✔
+1. **Determinism** — `test_same_spec_is_byte_identical` now compares the
+   CANONICAL BYTES of every bar, action, and master record (not just
+   model equality), the same-id ingest `content_sha256`, and
+   `test_different_seed_diverges`. Full-scale byte-exact reproduction is
+   the retained verify-all artifact run (§3). ✔
 2. **Contract compliance** — `test_generated_world_ingests_and_verifies`
    (ingest + `verify_manifest` green, provider `synthetic/v1`,
-   schema `m2/1`) and `test_tampered_world_fails_quality_gate`
-   (duplicate bar caught by the right gate). ✔
+   schema `m2/1`), `test_tampered_world_fails_quality_gate`, and — round-1
+   P1-2 — `test_hostile_rate_spec_stays_gate_clean`: ANY spec the
+   validator accepts generates a gate-clean world (a 200/yr split rate
+   drives prices to the floor; unfulfillable ratio events are suppressed). ✔
 3. **Registry integrity** — `test_registry_shape_and_pools` (exactly 5
-   validation worlds, both kinds, disjoint seeds),
-   `test_registry_pins_generator_code`, `test_verify_worlds_cli_gate_subset`;
-   full-pool artifact run WORLDS_OK=9 MISMATCH=0. ✔
-4. **Scenario coverage** — `test_lifecycle_scenarios_present`: all eight
-   event kinds + later-cohort IPOs + recycled tickers occur in a
-   gate-speed dev world. ✔
-5. **Sector PIT** — `test_sector_pit.py` (8 tests: reclassification,
-   leak window, unknown-sector, invisible record, validation rejections);
-   `test_every_security_carries_sector`. ✔
-6. **Truth separation** — `test_truth_sidecar_import_boundary` (AST walk:
-   no module outside `tree_options.synth.*` imports `synth.truth`). ✔
-7. **Provenance stamps** — world identity rides `snapshot_id` into every
-   manifest and thus into `ArtifactStamp.dataset_manifest_hash`; the
-   amended M2 rule and seed rule are quoted in packet §1 (verbatim). ✔
+   validation worlds with the EXACT frozen composition: seeds 701–705,
+   3 null + 2 alpha; dev seeds 101–104, disjoint),
+   `test_registry_pins_generator_code`, `test_verify_worlds_cli_gate_subset`,
+   and — round-1 P1-3 — `test_verify_worlds_gates_quality_not_just_hashes`:
+   regeneration runs `verify_manifest`, so a quality-invalid world can
+   never be pinned or reported OK. ✔
+4. **Scenario coverage** — `test_lifecycle_scenarios_present` covers all
+   eight event kinds AND their payload/master ownership (snapshot action
+   kinds include split/reverse/cash-dividend/merger; master delisting
+   reasons include all three terminal kinds), plus later-cohort IPOs and
+   recycled tickers. ✔
+5. **Sector PIT** — `test_sector_pit.py` (reclassification, leak window,
+   unknown-sector, invisible record, validation rejections, and — round-1 —
+   bound fixture sector CONTENT, not just mapping presence);
+   `test_every_security_carries_sector`; and
+   `test_features_panel_passes_availability_audit`: a `features_as_of`
+   panel over a generated world passes `AvailabilityGuard.audit_panel`
+   with zero rejections at the guard's own decision instants. ✔
+6. **Truth separation** — round-1 P2-1 strengthened the boundary: the AST
+   test now rejects ANY import of `tree_options.synth` (not just
+   `synth.truth`) from every module outside `synth.*` — a bare synth
+   import would expose `generate_world(...).truth`. ✔
+7. **Provenance stamps — PARTIAL, honestly scoped (round-1)**: world
+   identity rides `snapshot_id` into every manifest (M70 identity binding)
+   and the registry pins content hashes per world. What this campaign does
+   NOT deliver: automatic propagation from a dataset snapshot into
+   `ArtifactStamp.dataset_manifest_hash` — the stamp takes a caller hash
+   by design, and the wiring of `TrialRecord.dataset_manifest_hash` +
+   world id in `TrialScope.feature_set_id` is M2 machinery (packet §6
+   entry criteria). Claimed only as far as built.
 8. **M3 spike delivered** — six sections, samples cited by URL + access
-   date 2026-08-18. ✔
+   date; the sample zip/CSVs/readme are retained with sha256 at
+   `~/m2-evidence/cboe-sample/` (round-1 P2-3) and the T+1 claim is scoped
+   to the documented DATE, not a zero-hour leak window. ✔
 9. **No model/labels/backtest/fill changes; short legs prohibited** — no
    code outside `synth/` + sector schema + registry/script/docs/tests. ✔
 10. **Scope** — no `research_protocol.yaml` edits, no new runtime
@@ -125,21 +146,55 @@ attached to the PR alongside a `git clone --no-local` clean-clone proof.
    criterion. The validation pool (seeds 701–705) is not to be used for
    tuning from this point on.
 3. **Generator engineering defaults (not claims about real markets)**:
-   bankruptcy sessions bounded 40–49% (the 2× discontinuity gate);
-   ratio-event sessions surrender the day's market move (exact closes);
-   events at most one per security-session after two listed sessions;
-   publication 23:00 UTC. Sector reclassification events are NOT
-   generated in v1 (schema supports them; fixture covers them).
-4. **Deferred, declared**: options-chain overlay (v2, informed by the M3
-   spike), post-publication bar revisions (v2), minute bars, real vendor
-   adapter, exchange transfers, earnings events, short legs/assignment.
+   bankruptcy sessions bounded 40–49% and ALL undeclared overnight moves
+   clamped inside the 2× discontinuity gate (`DAILY_RET_LIMIT = ln 1.9`,
+   round-1 remediation — fat tails previously could emit an ungated
+   doubling); downward ratio events that would floor-clamp the close are
+   SUPPRESSED, not emitted (round-1 P1-2); `WorldSpec` rejects empty
+   sector lists and per-session event hazards ≥ 1.0; ratio-event sessions
+   surrender the day's market move (exact closes); events at most one per
+   security-session after two listed sessions; publication 23:00 UTC.
+   Sector reclassification events are NOT generated in v1 (schema supports
+   them; fixture covers them).
+4. **Registry re-pin record (round-1)**: the remediation changed the
+   generator, so the registry was deliberately re-pinned with
+   `--recompute` (seeds/rates untouched). Both gate-speed dev worlds are
+   BYTE-UNCHANGED (no clamp or suppression fires there); every full world
+   re-pinned with ~10–13 fewer actions — the floor suppressions the
+   hostile-rate test proves necessary, plus second-order event-timing
+   shifts from the eligibility interaction.
+4. **Deferred, declared**: automatic dataset→stamp provenance propagation
+   (M2 machinery, criterion 7 partial); options-chain overlay (v2,
+   informed by the M3 spike), post-publication bar revisions (v2), minute
+   bars, real vendor adapter, exchange transfers, earnings events, short
+   legs/assignment.
 5. **Nonclaims**: no real market data anywhere in this campaign; the M3
    spike is sample-based documentation; no statistical property of the
    generator is claimed beyond determinism and gate cleanliness.
 
 ## 6. Review record
 
-- To be appended per round.
+- **Round 1** (Codex, head `2b5c815`): **NO-GO** — P1-1 `sectors=()`
+  accepted then crashes generation; P1-2 unbounded rates (hazard ≥ 1
+  monopolizes the walk; floor-clamped ratio events break the 2% gate, so
+  "every accepted spec is gate-clean" was false); P1-3 `verify_worlds`
+  never ran the quality gates (the pre-fix recompute had silently pinned
+  a quality-INVALID full world — proven live by the fix's first re-pin
+  refusing on an undeclared 2.17× overnight move); P2-1 truth reachable
+  via `generate_world().truth` (boundary test too narrow); P2-2 M74's
+  kill was a construction crash (`hour+1`=24), not detection; P2-3 M3
+  sample unretained + T+1 overclaimed; plus doc-truth items (DRAFT plan
+  status, stale §3 citation, unsupported stamp-propagation claim,
+  shape-only registry/sector assertions, same-process-only determinism).
+  → remediation: spec validators (non-empty sectors, total hazard < 1),
+  floor suppression + `DAILY_RET_LIMIT` clamp (hostile-rate test red
+  first), `verify_manifest` inside regeneration (monkeypatch-proven),
+  strengthened tests (canonical bytes, exact registry composition, bound
+  sector content, payload-owned lifecycle, alpha/null structural identity,
+  audit-panel gate), M74 re-pinned to `hour-1`, new mutants M79/M80,
+  registry deliberately re-pinned, plan status updated, M3 sample retained
+  with hashes + T+1 scoped, criterion 7 honestly re-scoped to PARTIAL.
+  Post-fix: suite 316/0, KILLED=80/80.
 
 ## 7. Evidence invalidation
 

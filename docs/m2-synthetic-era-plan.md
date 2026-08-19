@@ -1,7 +1,10 @@
 # Synthetic era campaign — M2 runway on generated markets + M3 options spike
 
-Status: DRAFT for owner sign-off (2026-08-18). Nothing in this packet is
-implemented yet. Base: `main` @ `8bd34e4` (the PR #2 merge commit).
+Status: IMPLEMENTED 2026-08-18 (owner sign-off "gogo" same day; workstreams
+A–E delivered on `m2/synthetic-era-20260818` — see
+`docs/m2-synthetic-evidence.md` for the delivered state and the review
+record; this document is the signed plan of record, unedited). Base:
+`main` @ `8bd34e4` (the PR #2 merge commit).
 
 ## 1. Context and owner decisions (recorded verbatim)
 

@@ -72,6 +72,28 @@ class WorldSpec(StrictModel):
             raise ValueError("kind='alpha' requires an AlphaSpec")
         if self.kind == "null" and self.alpha is not None:
             raise ValueError("kind='null' must not carry an AlphaSpec")
-        if self.sectors is not None and len(set(self.sectors)) != len(self.sectors):
-            raise ValueError("sector names must be unique")
+        if self.sectors is not None:
+            if not self.sectors:
+                raise ValueError("sectors must contain at least one sector")
+            if len(set(self.sectors)) != len(self.sectors):
+                raise ValueError("sector names must be unique")
+        # round-1 P1-2: the event walk accumulates rates as per-session
+        # probabilities; a total hazard >= 1.0 would monopolize later kinds
+        # and is not a well-formed world
+        per_session = (
+            self.rates.split
+            + self.rates.reverse_split
+            + self.rates.cash_dividend
+            + self.rates.stock_dividend
+            + self.rates.rename
+            + self.rates.merger
+            + self.rates.bankruptcy
+            + self.rates.voluntary_delisting
+            + self.rates.coverage_lapse
+        ) / 252.0
+        if per_session >= 1.0:
+            raise ValueError(
+                f"total event hazard {per_session:.4f} >= 1.0 per session: "
+                "later event kinds would be unreachable"
+            )
         return self

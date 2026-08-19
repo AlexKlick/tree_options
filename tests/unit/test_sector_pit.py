@@ -143,5 +143,9 @@ def test_manifest_schema_version_is_m2_1(static_calendar) -> None:  # type: igno
         normalization_code_sha="0" * 64,
     )
     assert snapshot.manifest.schema_version == "m2/1"
-    # the fixture master carries sector mappings on some securities
-    assert any(r.sector_mappings for r in m1_master())
+    # the fixture master carries BOUND sector content, not just presence
+    sec001 = next(r for r in m1_master() if r.security_id == "SEC-001")
+    assert sec001.sector_on(date(2024, 3, 28), as_of=None) == "TECH"
+    assert sec001.sector_on(RECLASS_EFFECTIVE, as_of=None) == "FIN"
+    sec003 = next(r for r in m1_master() if r.security_id == "SEC-003")
+    assert sec003.sector_on(date(2024, 6, 3), as_of=None) is None

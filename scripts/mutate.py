@@ -718,9 +718,9 @@ MUTANTS = [
         owner="test_publication_instant_discipline",
         file="src/tree_options/synth/generate.py",
         anchor="datetime(session.year, session.month, session.day, hour, 0, tzinfo=UTC)",
-        replacement="datetime(session.year, session.month, session.day, hour + 1, 0, tzinfo=UTC)",
+        replacement="datetime(session.year, session.month, session.day, hour - 1, 0, tzinfo=UTC)",
         selectors=[f"{U}/test_synth_generate.py"],
-        invariant="M2-B every row publishes at the spec's fixed 23:00 UTC instant (the availability gates key on it)",
+        invariant="M2-B every row publishes at the spec's fixed 23:00 UTC instant (the availability gates key on it; round-1 P2-2 re-pinned from hour+1, which crashed construction instead of testing detection)",
     ),
     dict(
         id="M75-recycle-truth-gutted",
@@ -757,6 +757,24 @@ MUTANTS = [
         replacement="new_close = _cents(seat.close)",
         selectors=[f"{U}/test_synth_generate.py"],
         invariant="M2-B/E split sessions derive the close exactly from the declared ratio (ratio-match quality gate)",
+    ),
+    dict(
+        id="M79-split-floor-suppression-gutted",
+        owner="test_hostile_rate_spec_stays_gate_clean",
+        file="src/tree_options/synth/generate.py",
+        anchor="if factor < 1 and seat.close * factor < RATIO_FLOOR:",
+        replacement="if False:",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2 round-1 P1-2: ratio events that would floor-clamp the close are suppressed, so any accepted spec generates a gate-clean world",
+    ),
+    dict(
+        id="M80-session-return-clamp-removed",
+        owner="test_session_returns_bounded_under_gate",
+        file="src/tree_options/synth/generate.py",
+        anchor="return max(-DAILY_RET_LIMIT, min(DAILY_RET_LIMIT, ret))",
+        replacement="return ret",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2 round-1: undeclared overnight moves are clamped strictly inside the 2x discontinuity gate bound",
     ),
 ]
 
