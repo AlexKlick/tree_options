@@ -17,6 +17,7 @@ from bisect import bisect_right
 from collections.abc import Callable
 from datetime import date, datetime
 from decimal import Decimal
+from itertools import pairwise
 
 from tree_options.data.actions import CorporateActionRecord
 from tree_options.data.bars import BarRecord
@@ -61,7 +62,7 @@ class PointInTimeDataset:
         ] = {}
         for security_id, bars in by_security.items():
             available = tuple(bar.available_at for bar in bars)
-            monotone = all(a <= b for a, b in zip(available, available[1:], strict=False))
+            monotone = all(a <= b for a, b in pairwise(available))
             self._bars_by_security[security_id] = (tuple(bars), available, monotone)
 
     @property
@@ -159,7 +160,7 @@ def _contiguous_tail(
         return None
     tail = bars[-count:]
     positions = [ordinals[bar.session] for bar in tail]
-    if any(later - earlier != 1 for earlier, later in zip(positions, positions[1:], strict=False)):
+    if any(later - earlier != 1 for earlier, later in pairwise(positions)):
         return None
     return tail
 

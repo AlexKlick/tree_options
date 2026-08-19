@@ -121,7 +121,7 @@ def test_lapse_inside_lookback_means_absent(static_calendar) -> None:  # type: i
     start = static_calendar.ordinal(date(2024, 7, 8))
     # 8 contiguous bars, one missing session, then 2 more: the last 6
     # bars straddle the hole
-    idxs = list(range(start, start + 8)) + [start + 9, start + 10]
+    idxs = [*range(start, start + 8), start + 9, start + 10]
     rows = [_bar("HOLEY", sess[i], str(300 + k), f"FHC-{k:04d}") for k, i in enumerate(idxs)]
     ds = _features_authority(static_calendar, rows, (("SEC-F3", "HOLEY"),))
     decision = static_calendar.session_close(sess[start + 11])
@@ -173,7 +173,7 @@ def test_visible_bars_fast_path_matches_linear_reference(static_calendar) -> Non
         sessions = static_calendar.sessions()[:170]
         for security_id in {b.security_id for b in snap.bars}:
             all_bars = ds.visible_bars(security_id, datetime(2200, 1, 1, tzinfo=UTC))
-            for i, s in enumerate(sessions[::3]):
+            for s in sessions[::3]:
                 instant = static_calendar.session_close(s)
                 expected = tuple(b for b in all_bars if b.available_at <= instant)
                 assert ds.visible_bars(security_id, instant) == expected
