@@ -191,11 +191,13 @@ Red-first tests (spec validation; two snapshots per contract-day with
 correct exchange/received stamps; ladder width/grid snap; zero-bid tails
 EXIST at a floor rate; ~half untraded; OI concentrated ATM; put-call
 parity within the combined spread (property); |delta| monotone in
-moneyness; two-run and cross-process byte-identical slices; null and
-alpha worlds share eligible sets; receipt never before 09:00 ET t+1;
-DST-correct publication (November/March); stdlib-only import lint; truth
-sidecar import-block lint; registry verify catches a seeded slice tamper
-and a code-pin drift).
+moneyness; two-run and cross-process byte-identical slices; eligibility
+matches an independent dollar-volume oracle (registry nulls/alphas are
+independent worlds — v1 seeds every stream with world_id, so no
+twin-sharing is claimed or relied on anywhere in M3); receipt never
+before 09:00 ET t+1; DST-correct publication (November/March);
+stdlib-only import lint; truth sidecar import-block lint; registry
+verify catches a seeded slice tamper and a code-pin drift).
 
 ### B — Point-in-time options surface (`data/options_manifest.py`, `data/options_pit.py`, `data/quality_options.py`)
 
