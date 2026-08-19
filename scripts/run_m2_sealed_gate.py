@@ -158,8 +158,10 @@ def main(argv: list[str] | None = None) -> int:
     try:
         for world_id, horizon, model_family in sorted(SEALED_CONFIGS):
             dataset = datasets[world_id]
-            feature_names = ("mom_1",) if model_family == UNIVARIATE else (
-                "mom_1", "mom_5", "mom_20", "dol_vol_20"
+            feature_names = (
+                ("mom_1",)
+                if model_family == UNIVARIATE
+                else ("mom_1", "mom_5", "mom_20", "dol_vol_20")
             )
             ridge_lambda = None if model_family == UNIVARIATE else 1.0
             result = run_trial(
@@ -201,9 +203,7 @@ def main(argv: list[str] | None = None) -> int:
     fp_fold = assess_false_positives(fold_t)
     fp_h1_pooled_t = _pooled_t(null_h1)
     fp_h5_pooled_t = _pooled_t(null_h5)
-    power_t = {
-        w: payloads[(w, 1, UNIVARIATE)]["pooled"]["t_stat"] for w in POWER
-    }
+    power_t = {w: payloads[(w, 1, UNIVARIATE)]["pooled"]["t_stat"] for w in POWER}
     checks = {
         "fp_h1_pooled_abs_t_lte_2.5": (
             fp_h1_pooled_t is not None and abs(fp_h1_pooled_t) <= POOL_T_LIMIT
@@ -217,16 +217,10 @@ def main(argv: list[str] | None = None) -> int:
         ),
     }
     reported = {
-        "weak_stratum_h1": {
-            w: payloads[(w, 1, UNIVARIATE)]["pooled"] for w in WEAK
-        },
-        "power_h5_univariate": {
-            w: payloads[(w, 5, UNIVARIATE)]["pooled"] for w in POWER
-        },
+        "weak_stratum_h1": {w: payloads[(w, 1, UNIVARIATE)]["pooled"] for w in WEAK},
+        "power_h5_univariate": {w: payloads[(w, 5, UNIVARIATE)]["pooled"] for w in POWER},
         "ridge_secondary": {
-            f"{w}|h{h}": payloads[(w, h, RIDGE)]["pooled"]
-            for w in POWER
-            for h in (1, 5)
+            f"{w}|h{h}": payloads[(w, h, RIDGE)]["pooled"] for w in POWER for h in (1, 5)
         },
     }
     verdict = "PASS" if all(checks.values()) else "FAIL"
