@@ -133,9 +133,15 @@ def build_labels(
             # correct when a cash dividend follows a ratio action inside the
             # window (review r1 P1-1): the dividend accrues on the shares
             # held when it is PAID, i.e. scaled by the ratio factor accrued
-            # so far
+            # so far. Same-session ties break ratio-before-cash (review r2
+            # P1): the split adjusts the share count first, the dividend
+            # then pays on post-split shares — independent of vendor row
+            # order.
             latest_input_pub = end.available_at
-            for action_ordinal, act in sorted(adjustments, key=lambda pair: pair[0]):
+            for action_ordinal, act in sorted(
+                adjustments,
+                key=lambda pair: (pair[0], 0 if pair[1].kind in _RATIO_KINDS else 1),
+            ):
                 if base_ordinal < action_ordinal <= end_ordinal:
                     adjusted_ids.append(act.source_record_id)
                     if act.available_at > latest_input_pub:

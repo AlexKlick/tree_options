@@ -334,6 +334,90 @@ def test_label_observed_at_waits_for_late_action_publication(static_calendar) ->
     assert lab.observed_at > _pub(s4)
 
 
+def test_same_session_split_then_dividend_order_independent(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """Review r2 P1: a split and a cash dividend effective the SAME session
+    must apply split-then-dividend regardless of vendor row order — the
+    dividend pays on post-split shares even when the cash action is
+    delivered FIRST. base 100 (s2), 2:1 split + $1/share dividend both
+    effective s3 (the s3 close is the clean post-split 50.00 so the
+    ingest split gate holds), wealth = (2x50 + 2x1)/100 = 1.02; the
+    unscaled or wrong-order walks give 1.01."""
+    from tree_options.schemas.security import (
+        SectorMappingRecord,
+        SecurityMasterRecord,
+        TickerMappingRecord,
+    )
+
+    s1 = date(2024, 6, 3)
+    s2 = static_calendar.nth_after(s1, 1)
+    s3 = static_calendar.nth_after(s1, 2)
+    listed_at = datetime(s1.year, s1.month, s1.day, 21, 0, tzinfo=UTC)
+    master = (
+        SecurityMasterRecord(
+            security_id="SEC-SD",
+            figi="BBG000SAMESPL",
+            cik="0000000911",
+            listing_start=s1,
+            listing_end=None,
+            exchange="NYSE",
+            source="same-session-fixture",
+            available_at=listed_at,
+            ticker_mappings=(
+                TickerMappingRecord(
+                    security_id="SEC-SD",
+                    ticker="SPLD",
+                    effective_from=s1,
+                    available_at=listed_at,
+                ),
+            ),
+            sector_mappings=(
+                SectorMappingRecord(
+                    security_id="SEC-SD",
+                    sector="DISC",
+                    effective_from=s1,
+                    available_at=listed_at,
+                ),
+            ),
+        ),
+    )
+
+    def _bar(session: date, close: str, record: str) -> dict[str, object]:
+        return dict(
+            vendor_symbol="SPLD",
+            session=session,
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+            volume=1_000,
+            available_at=_pub(session),
+            source_record_id=record,
+        )
+
+    rows = (
+        _bar(s1, "100.00", "SD-1"),
+        _bar(s2, "100.00", "SD-2"),
+        _bar(s3, "50.00", "SD-3"),
+        # cash row DELIBERATELY delivered before the split row
+        _action("SPLD", "cash_dividend", s3, "ACT-SD2", _pub(s3), cash_amount="1.00"),
+        _action("SPLD", "split", s3, "ACT-SD1", _pub(s3), ratio_numerator=2, ratio_denominator=1),
+    )
+    payload = build_payload(
+        provider=rv.PROVIDER,
+        rows=rows,
+        retrieved_at=rv.RETRIEVED_AT,
+        known_exclusions=rv.KNOWN_EXCLUSIONS,
+    )
+    snapshot = ingest_snapshot(
+        payload, master, snapshot_id="snap-same-session", normalization_code_sha=CODE_SHA
+    )
+    ds = PointInTimeDataset(snapshot, static_calendar, universe_id=UNIVERSE_ID)
+    labels = build_labels(ds, static_calendar, horizon_sessions=1, decision_sessions=[s3])
+    lab = _by_key(labels)[("SEC-SD", s3)]
+    assert lab.value == pytest.approx(math.log(Decimal("1.02")))  # (2x50 + 2x1)/100
+    assert lab.adjustment_source_record_ids == ("ACT-SD1", "ACT-SD2")
+
+
 def test_every_label_observed_strictly_after_decision(static_calendar) -> None:  # type: ignore[no-untyped-def]
     ds = _authority(static_calendar)
     sessions = static_calendar.sessions()
