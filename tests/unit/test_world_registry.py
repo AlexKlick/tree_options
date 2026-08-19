@@ -27,8 +27,11 @@ def test_registry_shape_and_pools() -> None:
     pools = {w["pool"] for w in worlds}  # type: ignore[index]
     assert pools == {"dev", "validation"}
     # exact frozen composition (round-2 P2-2: no extra worlds, no duplicate
-    # seeds, no seed->kind reassignment can pass)
-    assert len(worlds) == 9, f"exactly 9 registered worlds, got {len(worlds)}"
+    # seeds, no seed->kind reassignment can pass). M2-proper §1.1/§3.A: the
+    # pre-trial power extension added 706/707 at coefficient 0.005. §10: the
+    # gate #1 disposition added 708/709 at coefficient 0.01 — each amendment
+    # window closed at that gate's first trial registration.
+    assert len(worlds) == 13, f"exactly 13 registered worlds, got {len(worlds)}"
     dev = sorted(
         (w["spec"]["seed"], w["spec"]["kind"], w["world_id"])  # type: ignore[index]
         for w in worlds
@@ -51,7 +54,29 @@ def test_registry_shape_and_pools() -> None:
         (703, "null", "synth-v1-val-null-703"),
         (704, "alpha", "synth-v1-val-alpha-704"),
         (705, "alpha", "synth-v1-val-alpha-705"),
+        (706, "alpha", "synth-v1-val-alpha-706"),
+        (707, "alpha", "synth-v1-val-alpha-707"),
+        (708, "alpha", "synth-v1-val-alpha-708"),
+        (709, "alpha", "synth-v1-val-alpha-709"),
     ], f"validation pool drifted: {val}"
+    # power stratum frozen: 704/705 weak (0.002), 706/707 gate-#1 power
+    # (0.005), 708/709 gate-#2 power (0.01, §10) — no coefficient may
+    # silently drift
+    coefficients = {
+        w["spec"]["seed"]: w["spec"]["alpha"]["coefficient"]  # type: ignore[index]
+        for w in worlds  # type: ignore[union-attr]
+        if w["spec"].get("alpha") is not None  # type: ignore[union-attr]
+    }
+    assert coefficients == {
+        102: 0.002,
+        104: 0.002,
+        704: 0.002,
+        705: 0.002,
+        706: 0.005,
+        707: 0.005,
+        708: 0.01,
+        709: 0.01,
+    }, f"alpha coefficients drifted: {coefficients}"
     # round-3 P2-1: the OUTER id must equal the spec id (verify_worlds
     # generates and identifies snapshots from the inner spec)
     for w in worlds:  # type: ignore[union-attr]

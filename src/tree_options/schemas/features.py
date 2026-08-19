@@ -45,6 +45,9 @@ class LabelEvent(StrictModel):
     observed_at: UTCDatetime
     source: IdStr
     source_record_id: IdStr
+    # provenance of every corporate action whose ratio/cash adjustment
+    # entered `value` (empty when the window is action-free)
+    adjustment_source_record_ids: tuple[IdStr, ...] = ()
 
     @model_validator(mode="after")
     def _checks(self) -> LabelEvent:

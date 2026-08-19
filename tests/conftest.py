@@ -5,8 +5,14 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 
-import pytest
-from hypothesis import settings
+# Must run before the first numpy import anywhere in the suite: BLAS
+# thread counts change reduction orders (M2-proper §3.D).
+from tree_options.models.determinism import force_single_threaded_blas
+
+force_single_threaded_blas()
+
+import pytest  # noqa: E402 — after the BLAS pin above, on purpose
+from hypothesis import settings  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SYNTHETIC_START = date(2019, 1, 7)  # a Monday
