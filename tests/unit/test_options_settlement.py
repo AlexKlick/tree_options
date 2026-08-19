@@ -519,3 +519,55 @@ def test_oracle_recomputes_settlement_cash_independently() -> None:
     book.apply_settlement(tampered)  # type: ignore[arg-type]
     with pytest.raises(LedgerViolation, match="SETTLEMENT_CASH_MISMATCH"):
         book.assert_conservation()
+
+
+def test_unrepresentable_notional_fill_is_atomic_rejection() -> None:
+    """Review r2 P1: a SCHEMA-VALID sell whose notional exceeds Money's
+    18-digit bound is rejected at the STAGED ledger-entry construction —
+    BEFORE the lot walk, cash, realized, or applied-IDs change. The book
+    must remain exactly as it was."""
+    from pydantic import ValidationError
+
+    from tree_options.schemas.trading import Fill
+
+    c = contract()
+    book = LedgerBook(D("1000000.00"))
+    book.apply(fill(fill_id="F1", contract_id=c.contract_id, quantity=1_000_000, price="0.01"))
+    cash_before = book.cash
+    qty_before = book.quantity(c.contract_id)
+    realized_before = book.realized_pnl(c.contract_id)
+    entries_before = len(book.entries)
+    huge = Fill(
+        fill_id="F2",
+        order_id="ORD-F2",
+        contract_id=c.contract_id,
+        side="sell",
+        quantity=1_000_000,
+        price=D("9999999999.99"),  # 12 digits, 2dp: a VALID Price
+        multiplier=100,
+        deliverable_shares_per_contract=D(100),
+        fees=D("0.65"),
+        execution_at=datetime(2019, 1, 8, 15, 0, tzinfo=UTC),
+        execution_session=date(2019, 1, 8),
+    )
+    with pytest.raises(ValidationError):  # the staged entry, not the book
+        book.apply(huge)
+    # the book is EXACTLY as before the rejected sell
+    assert book.cash == cash_before
+    assert book.quantity(c.contract_id) == qty_before
+    assert book.realized_pnl(c.contract_id) == realized_before
+    assert len(book.entries) == entries_before
+    assert "F2" not in book._applied_fill_ids
+    book.assert_conservation()  # still clean
+    # and the sequence is unpoisoned: a later valid fill still applies
+    book.apply(
+        fill(
+            fill_id="F3",
+            contract_id=c.contract_id,
+            quantity=1,
+            price="0.01",
+            at=datetime(2019, 1, 9, 15, 0, tzinfo=UTC),
+            session=date(2019, 1, 9),
+        )
+    )
+    book.assert_conservation()

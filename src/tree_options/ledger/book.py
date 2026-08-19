@@ -190,7 +190,12 @@ class LedgerBook:
     # -- application -------------------------------------------------------
 
     def apply(self, fill: Fill) -> None:
-        """Apply a fill: cash now, provenance lots now, realized on closes."""
+        """Apply a fill: cash now, provenance lots now, realized on closes.
+
+        Fully atomic (review r2 P1): the two LedgerEntry models are
+        CONSTRUCTED (and therefore schema-validated — an unrepresentable
+        notional fails here) before any state changes. A rejected fill
+        leaves the book exactly as it was."""
         if fill.fill_id in self._applied_fill_ids:
             raise LedgerViolation("DUPLICATE_FILL", f"fill {fill.fill_id} applied twice")
         if self._last_execution_at is not None and fill.execution_at < self._last_execution_at:
@@ -199,12 +204,51 @@ class LedgerBook:
                 f"fill {fill.fill_id} at {fill.execution_at} precedes "
                 f"last applied {self._last_execution_at}",
             )
+        if fill.side == "sell":
+            held = sum(lot.quantity for lot in self._lots[fill.contract_id])
+            if held < fill.quantity:
+                raise LedgerViolation(
+                    "POSITION_UNDERFLOW",
+                    f"sell {fill.quantity} of {fill.contract_id} but held {held}",
+                )
+        # stage + validate the ledger entries BEFORE any mutation: entry
+        # construction is the only step after this that can still fail
+        staged = self._stage_fill_entries(fill)
+        # preflight complete — state mutations begin here
         self._apply_fill_arithmetic(fill)
-        # state commits only after the arithmetic succeeded (a rejected
-        # fill must not poison the merged timeline — same rule as
-        # settlements, review r1 P1-5)
+        self._entries.extend(staged)
+        self._entry_seq += 2
         self._last_execution_at = fill.execution_at
         self._events.append(fill)
+
+    def _stage_fill_entries(self, fill: Fill) -> list[LedgerEntry]:
+        """Construct (and thereby validate) the fill's two ledger entries
+        without touching book state. Raises pydantic ValidationError for a
+        schema-valid fill whose notional/fees are unrepresentable as
+        Money — which is exactly the point: it must fail BEFORE the lot
+        walk, not after it."""
+        first = self._entry_seq + 1
+        second = first + 1
+        return [
+            LedgerEntry(
+                entry_id=f"ENT-{first:06d}",
+                ts=fill.execution_at,
+                session=fill.execution_session,
+                kind="fill_notional",
+                amount=_primitive_cash(fill),
+                contract_id=fill.contract_id,
+                ref_id=fill.fill_id,
+            ),
+            LedgerEntry(
+                entry_id=f"ENT-{second:06d}",
+                ts=fill.execution_at,
+                session=fill.execution_session,
+                kind="fee",
+                amount=-fill.fees,
+                contract_id=fill.contract_id,
+                ref_id=fill.fill_id,
+            ),
+        ]
 
     def apply_settlement(self, settlement: ExerciseSettlement) -> None:
         """Apply an exercise settlement: close FIFO lots, add the cash,
@@ -302,33 +346,6 @@ class LedgerBook:
         self.cash = (self.cash + _primitive_cash(fill) - fill.fees).quantize(FEE_TICK)
         self.total_fees = (self.total_fees + fill.fees).quantize(FEE_TICK)
         self._applied_fill_ids.add(fill.fill_id)
-        self._record_entries(fill)
-
-    def _record_entries(self, fill: Fill) -> None:
-        self._entry_seq += 1
-        self._entries.append(
-            LedgerEntry(
-                entry_id=f"ENT-{self._entry_seq:06d}",
-                ts=fill.execution_at,
-                session=fill.execution_session,
-                kind="fill_notional",
-                amount=_primitive_cash(fill),
-                contract_id=fill.contract_id,
-                ref_id=fill.fill_id,
-            )
-        )
-        self._entry_seq += 1
-        self._entries.append(
-            LedgerEntry(
-                entry_id=f"ENT-{self._entry_seq:06d}",
-                ts=fill.execution_at,
-                session=fill.execution_session,
-                kind="fee",
-                amount=-fill.fees,
-                contract_id=fill.contract_id,
-                ref_id=fill.fill_id,
-            )
-        )
 
     # -- accessors ----------------------------------------------------------
 
