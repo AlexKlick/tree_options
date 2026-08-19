@@ -214,3 +214,24 @@ behind real data.
   the generator recording its generating equations in the spec.
 - **Sample drift** (M3): the spike cites URLs + download dates; it is a
   snapshot document, cheap to refresh.
+
+## Post-implementation corrections (2026-08-19, review rounds 1–3)
+
+The signed text above is preserved as the plan of record; these
+corrections, surfaced by the independent review, supersede specific
+claims and are recorded here rather than edited into the signed prose:
+
+1. Criterion 7 (dataset lineage into `ArtifactStamp.dataset_manifest_hash`)
+   is delivered PARTIAL: world identity reaches every manifest
+   (`snapshot_id`, content hashes pinned per registry entry), but the
+   automatic snapshot→stamp wiring is M2 machinery and is declared not
+   delivered (see `docs/m2-synthetic-evidence.md` §4.7).
+2. "Every generated world passes the quality gates" holds for every
+   accepted spec via the round-1–3 fixes (hazard-bounded specs,
+   $1.00 minimum close, application-time ratio decisions, drift
+   resynchronization) — proven by property arithmetic plus a hostile
+   12-seed sweep and its alpha twin, not by enumeration; see evidence
+   §4.2.
+3. The gate-time registry check verifies the dev-pool small worlds
+   byte-exact; full-pool verification is the teed artifact run retained
+   with the PR evidence.

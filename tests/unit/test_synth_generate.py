@@ -229,6 +229,20 @@ def test_import_lint_catches_all_forms() -> None:
     )
 
 
+def _is_synth_module(module: str) -> bool:
+    """Exact package membership (round-3 P2-2): tree_options.synthesis or
+    tree_options.synth_adapter are NOT synth modules and must be scanned."""
+    return module == "tree_options.synth" or module.startswith("tree_options.synth.")
+
+
+def test_synth_module_predicate_is_exact() -> None:
+    assert _is_synth_module("tree_options.synth.generate")
+    assert _is_synth_module("tree_options.synth.__init__")
+    assert not _is_synth_module("tree_options.synthesis")
+    assert not _is_synth_module("tree_options.synth_adapter.x")
+    assert not _is_synth_module("tree_options.data.synth")
+
+
 def test_truth_sidecar_import_boundary() -> None:
     """Ground truth is unreachable from feature-construction code: no module
     outside tree_options.synth.* may import synth in ANY form (round-2 P2-1)."""
@@ -236,7 +250,7 @@ def test_truth_sidecar_import_boundary() -> None:
     offenders: list[str] = []
     for path in sorted(src_root.rglob("*.py")):
         module = ".".join(path.relative_to(path.parents[2]).with_suffix("").parts)
-        if module.startswith("tree_options.synth"):
+        if _is_synth_module(module):
             continue
         offenders.extend(_synth_import_offenders(module, path.read_text()))
     assert not offenders, f"synth (incl. truth) leaked into: {offenders}"
@@ -495,3 +509,40 @@ def test_suppression_is_alpha_independent(static_calendar) -> None:  # type: ign
     # the hostile spec really does drive seats to the floor: suppressions
     # must have happened somewhere in the pool
     assert len(null_world.payload.actions) < 200 * 24 * 160 / 252 / 10, "splits must be suppressed"
+
+
+def _verify_world(world, calendar, snapshot_suffix: str = "") -> None:  # type: ignore[no-untyped-def]
+    snapshot = ingest_snapshot(
+        world.payload,
+        world.master,
+        snapshot_id=world.spec.world_id + snapshot_suffix,
+        normalization_code_sha="0" * 64,
+    )
+    verify_manifest(snapshot, calendar)
+
+
+def test_hostile_specs_verify_across_seeds(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """Round-3 P1-1: the hostile-rate cleanliness property is not a
+    one-seed accident — a seed sweep must stay gate-clean, catching the
+    announcement/application price gap (a split announced at $2.00 whose
+    intervening return lands the applied product under the floor)."""
+    for seed in range(1, 13):
+        world = generate_world(
+            base_spec(world_id=f"synth-v1-hostile-{seed}", seed=seed, rates=_hostile_rates()),
+            static_calendar,
+        )
+        _verify_world(world, static_calendar)
+
+
+def test_hostile_alpha_world_verifies(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """Round-3 P1-1: the ALPHA trajectory must honor declared ratios too —
+    cumulative planted drift cannot push an override under the floor."""
+    world = generate_world(
+        base_spec(
+            kind="alpha",
+            alpha=AlphaSpec(family="linear_momentum", coefficient=0.05),
+            rates=_hostile_rates(),
+        ),
+        static_calendar,
+    )
+    _verify_world(world, static_calendar)

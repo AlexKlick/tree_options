@@ -91,6 +91,18 @@ class _Mapping:
     available_at: datetime
 
 
+@dataclass
+class _PendingRatio:
+    """A ratio event announced at session t, decided and applied at t+1
+    against the application session's actual prices (round-3 P1-1)."""
+
+    kind: str
+    factor: Decimal
+    n: int
+    d: int
+    announced_at: datetime
+
+
 class _Seat:
     """Mutable simulation state for one security (never part of a payload)."""
 
@@ -105,8 +117,10 @@ class _Seat:
         "index",
         "listed_from_idx",
         "pending_from",
+        "pending_ratio",
         "pending_ticker",
         "prev_ret",
+        "resync_close",
         "rng_events",
         "rng_listing",
         "rng_price",
@@ -137,6 +151,8 @@ class _Seat:
         self.pending_ticker: str | None = None
         self.pending_from: date | None = None
         self.factor_override: Decimal | None = None
+        self.pending_ratio: _PendingRatio | None = None
+        self.resync_close = False
         # alpha-independent price trajectory: EXACTLY what the same-seat
         # null world's close would be at every session (round-2 P1-2) —
         # suppression decisions read THIS, never the alpha-moved close
@@ -266,8 +282,38 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
 
         for seat in live_now:
             assert seat.listed_from_idx is not None
+            # round-3 P1-1: a ratio event announced yesterday is decided
+            # HERE, against THIS session's actual base price — the price the
+            # override will actually multiply. Deciding at announcement time
+            # let an intervening return push the applied product under the
+            # floor. The decision reads base_close only, so null/alpha
+            # same-seed worlds still decide identically.
             override_today = seat.factor_override
             seat.factor_override = None
+            announced = seat.pending_ratio
+            seat.pending_ratio = None
+            if announced is not None:
+                if seat.base_close * announced.factor < RATIO_FLOOR:
+                    override_today = None  # canceled: normal session
+                else:
+                    override_today = announced.factor
+                    act_n += 1
+                    action_rows.append(
+                        dict(
+                            vendor_symbol=seat.ticker,
+                            kind=announced.kind,
+                            effective_session=session,
+                            ratio_numerator=announced.n,
+                            ratio_denominator=announced.d,
+                            available_at=announced.announced_at,
+                            source_record_id=f"ACT-{act_n:07d}",
+                        )
+                    )
+                    events.append(
+                        LifecycleEvent(
+                            session=session, security_id=seat.security_id, kind=announced.kind
+                        )
+                    )
 
             eligible = (
                 t_idx - seat.listed_from_idx >= 2
@@ -338,29 +384,19 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                         n, d = seat.rng_events.choice(REVERSE_RATIOS)
                     else:
                         n, d = STOCK_DIVIDEND_RATIO
-                    factor = Decimal(d) / Decimal(n)
-                    if factor < 1 and seat.base_close * factor < RATIO_FLOOR:
-                        # round-1 P1-2 + round-2 P1-2: a floor-clamped close
-                        # cannot honor the declared ratio within the 2% gate
-                        # tolerance — suppress the DOWNWARD event (upward
-                        # ratio events never approach the price floor). The
-                        # decision reads the ALPHA-INDEPENDENT base close so
-                        # null/alpha same-seed worlds suppress identically.
-                        fired = None
-                    else:
-                        seat.factor_override = factor
-                        act_n += 1
-                        action_rows.append(
-                            dict(
-                                vendor_symbol=seat.ticker,
-                                kind=fired,
-                                effective_session=sessions[t_idx + 1],
-                                ratio_numerator=n,
-                                ratio_denominator=d,
-                                available_at=_pub(session, hour),
-                                source_record_id=f"ACT-{act_n:07d}",
-                            )
-                        )
+                    # round-3 P1-1: DEFER the emission and the decision to
+                    # the application session (decided above); resync the
+                    # alpha drift so both trajectories apply the factor to
+                    # the same price. No action/truth event yet.
+                    seat.pending_ratio = _PendingRatio(
+                        kind=fired,
+                        factor=Decimal(d) / Decimal(n),
+                        n=n,
+                        d=d,
+                        announced_at=_pub(session, hour),
+                    )
+                    seat.resync_close = True
+                    fired = None
                 elif fired == "cash_dividend":
                     cash = max(
                         (seat.close * CASH_DIVIDEND_FRACTION).quantize(
@@ -414,6 +450,12 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                 # round-trip on split/reverse/stock-dividend sessions
                 new_close = _cents(seat.close * override_today)
                 seat.base_close = _cents(seat.base_close * override_today)
+            if seat.resync_close:
+                # round-3 P1-1: a ratio announcement resynchronizes the
+                # planted drift — both trajectories apply the factor to the
+                # SAME price at the application session
+                new_close = seat.base_close
+                seat.resync_close = False
             open_, high, low = _ohlc(new_close, seat.rng_price)
             raw_n += 1
             bar_rows.append(

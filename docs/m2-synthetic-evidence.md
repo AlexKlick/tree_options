@@ -56,29 +56,31 @@ model, no labels, no backtest, no real data, no performance claim.
   delta-gap named, T+1 PIT semantics, SPY coverage stats, storage
   estimate with stated assumptions, priced vendor shortlist). No
   production code, no ingest.
-- **E — this packet** + owner-scoped mutants M71–M78.
+- **E — this packet** + owner-scoped mutants M71–M83.
 
 ## 3. Gate (release authority — local)
 
 Current record: the full-gate + verify-all + clean-clone run at the final
-head is retained in `/tmp/m2-final-r3.log` (created by the detached
-round-2 remediation proof; numbers quoted in §6 round-2/round-3 entries
-and attached to the PR). History: the first evidence run at code head
-`d96b15d` (`310 passed`, `KILLED=78`) is superseded; the round-1
-remediation head recorded `316 passed`, `KILLED=80`; the current head
-records **320 passed / 0 failed**, **KILLED=82** (restoration pass), the
-registry verify-all `WORLDS_OK=9 MISMATCH=0 CODE_PIN=match`, and a
-`--no-local` clean clone with identical counts and artifacts.
+head is retained in `/tmp/m2-final-r4.log` (numbers also recorded in §6's
+round entries; the log is attached to the PR). It records **323 passed /
+0 failed**, **KILLED=83** (restoration pass), the registry verify-all
+`WORLDS_OK=9 MISMATCH=0 CODE_PIN=match`, and a `--no-local` clean clone
+with identical counts and artifacts. History: code head `d96b15d`
+(`310/0`, `KILLED=78`) → round-1 head `3282cf4` (`316/0`, `KILLED=80`) →
+round-2 head `e9836be` (`320/0`, `KILLED=82`) — each superseded by the
+next remediation.
 
-61 M0 mutants + 9 M1 mutants unchanged + **12 new M2 mutants M71–M82**
+61 M0 mutants + 9 M1 mutants unchanged + **13 new M2 mutants M71–M83**
 (sector leak window, seed-stream pinning, alpha injection, publication
 hour, ticker-recycle truth, initial-cohort listing, bankruptcy bound,
 split exactness, suppression floor, return clamp, minimum-close floor,
-alpha-independent suppression) — every kill behavioral. Two anchor
+application-time ratio guard) — every kill behavioral. Three anchor
 events, recorded in invariants: **M43** re-pinned (security.py —
 `sector_on` added the same single-line shape) and **M74** re-pinned to a
 valid shifted instant (round-1 P2-2: the original `hour+1` crashed
-construction rather than testing detection).
+construction rather than testing detection) and **M82** re-anchored to
+the resync assignment when the deferred-decision restructure superseded
+the round-2 guard line.
 
 ## 4. Acceptance criteria (packet §4)
 
@@ -90,13 +92,18 @@ construction rather than testing detection).
 2. **Contract compliance** — `test_generated_world_ingests_and_verifies`
    (ingest + `verify_manifest` green, provider `synthetic/v1`,
    schema `m2/1`), `test_tampered_world_fails_quality_gate`, and the
-   universality argument: `test_hostile_rate_spec_stays_gate_clean`
-   (ANY accepted spec generates a gate-clean world, exercised at a 200/yr
-   split rate) PROVED as arithmetic by
-   `test_quantized_moves_stay_inside_gate_property` — at the $1.00
-   minimum close the worst cent-quantization error is 0.5%, so no clamped
-   move (≤1.9×) or bounded bankruptcy loss (≤49%) can land on the 0.5×/2×
-   gate bounds (round-2 P1-1). ✔
+   universality argument in three parts (rounds 1–3): (i) the arithmetic
+   bound — at the $1.00 minimum close, worst cent-quantization is 0.5%, so
+   no clamped move (≤1.9×) or bounded bankruptcy loss (≤49%) can land on
+   the 0.5×/2× bounds (`test_quantized_moves_stay_inside_gate_property`);
+   (ii) ratio events are DECIDED AT APPLICATION TIME against the actual
+   session price, so an intervening return can no longer push the applied
+   product under the floor (round-3 P1-1; the announcement additionally
+   resynchronizes the alpha drift so both trajectories apply the factor
+   to the same price); (iii) exercised hostile — a 200/yr split rate
+   across a 12-seed sweep AND its alpha twin both verify clean
+   (`test_hostile_specs_verify_across_seeds`,
+   `test_hostile_alpha_world_verifies`). ✔
 3. **Registry integrity** — `test_registry_shape_and_pools` (exactly 5
    validation worlds with the EXACT frozen composition: seeds 701–705,
    3 null + 2 alpha; dev seeds 101–104, disjoint),
@@ -218,6 +225,31 @@ construction rather than testing detection).
   absolute/from-root/relative forms (snippet-tested), exact 9-world
   registry composition (seed→kind→id triples), M79 re-anchored to the
   floor constant. Post-fix: suite 320/0, KILLED=82/82.
+- **Round 3** (Codex, head `e9836be`): **NO-GO** — NEW P1-1: the
+  suppression guard checked the ANNOUNCEMENT session's price, but the
+  override applies to the NEXT session's post-return price, so an
+  intervening move could push the applied product under the floor
+  (2:1 announced at $2.00, down-move to $1.05, applied $0.525 → floor →
+  observed factor 1.05 vs declared 2 — the gate rejects); in alpha
+  worlds the drifted close broke the ratio independently, and the
+  hostile test covered a single null seed. P2-1 registry composition
+  still not fully bound (dev tuples lacked kind; outer/inner world_id
+  unbound); P2-2 the scan exempted any module name merely STARTING with
+  `tree_options.synth` (e.g. a future `tree_options.synthesis`); P2-3
+  residual doc staleness (§2 mutant range, §3 cross-reference,
+  universal claim).
+  → remediation: ratio events DEFER emission and are DECIDED AT
+  APPLICATION TIME against the actual session's base price
+  (`_PendingRatio`; cancellation is silent and draw-neutral); the
+  announcement RESYNCS the alpha drift so both trajectories apply the
+  factor to the same price (mutant M82 re-anchored to the resync, M83
+  added on the application guard); hostile coverage widened to a 12-seed
+  sweep + the alpha twin through `verify_manifest` (both red before the
+  fix); registry binds (seed, kind, world_id) triples for both pools
+  plus outer==inner id equality; exact package-membership predicate
+  `_is_synth_module` for the boundary scan; docs truthed and the signed
+  plan carries a corrections appendix instead of silent edits. Post-fix:
+  suite 323/0, KILLED=83/83.
 
 ## 7. Evidence invalidation
 

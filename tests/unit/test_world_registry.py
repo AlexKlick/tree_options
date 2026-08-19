@@ -30,15 +30,15 @@ def test_registry_shape_and_pools() -> None:
     # seeds, no seed->kind reassignment can pass)
     assert len(worlds) == 9, f"exactly 9 registered worlds, got {len(worlds)}"
     dev = sorted(
-        (w["spec"]["seed"], w["world_id"])  # type: ignore[index]
+        (w["spec"]["seed"], w["spec"]["kind"], w["world_id"])  # type: ignore[index]
         for w in worlds
         if w["pool"] == "dev"  # type: ignore[index]
     )
     assert dev == [
-        (101, "synth-v1-dev-null-101"),
-        (102, "synth-v1-dev-alpha-102"),
-        (103, "synth-v1-dev-null-103"),
-        (104, "synth-v1-dev-alpha-104"),
+        (101, "null", "synth-v1-dev-null-101"),
+        (102, "alpha", "synth-v1-dev-alpha-102"),
+        (103, "null", "synth-v1-dev-null-103"),
+        (104, "alpha", "synth-v1-dev-alpha-104"),
     ], f"dev pool drifted: {dev}"
     val = sorted(
         (w["spec"]["seed"], w["spec"]["kind"], w["world_id"])  # type: ignore[index]
@@ -52,6 +52,10 @@ def test_registry_shape_and_pools() -> None:
         (704, "alpha", "synth-v1-val-alpha-704"),
         (705, "alpha", "synth-v1-val-alpha-705"),
     ], f"validation pool drifted: {val}"
+    # round-3 P2-1: the OUTER id must equal the spec id (verify_worlds
+    # generates and identifies snapshots from the inner spec)
+    for w in worlds:  # type: ignore[union-attr]
+        assert w["world_id"] == w["spec"]["world_id"], w["world_id"]  # type: ignore[index]
 
 
 def test_verify_worlds_gates_quality_not_just_hashes() -> None:

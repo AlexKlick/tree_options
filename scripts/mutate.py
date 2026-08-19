@@ -786,13 +786,22 @@ MUTANTS = [
         invariant="M2 round-2 P1-1: closes never quantize below $1.00, where cent rounding is too small to land on the 0.5x/2x gate bounds",
     ),
     dict(
-        id="M82-suppression-reads-alpha-close",
-        owner="test_suppression_is_alpha_independent",
+        id="M82-ratio-resync-dropped",
+        owner="test_hostile_alpha_world_verifies",
         file="src/tree_options/synth/generate.py",
-        anchor="if factor < 1 and seat.base_close * factor < RATIO_FLOOR:",
-        replacement="if factor < 1 and seat.close * factor < RATIO_FLOOR:",
+        anchor="                new_close = seat.base_close\n                seat.resync_close = False",
+        replacement="                new_close = new_close\n                seat.resync_close = False",
         selectors=[f"{U}/test_synth_generate.py"],
-        invariant="M2 round-2 P1-2: suppression reads the alpha-independent base trajectory so null/alpha same-seed worlds decide identically",
+        invariant="M2 round-3 P1-1: a ratio announcement resyncs the alpha drift so both trajectories apply the factor to the same price (re-anchored from the round-2 base-close guard, which the deferred decision superseded)",
+    ),
+    dict(
+        id="M83-application-guard-gutted",
+        owner="test_hostile_specs_verify_across_seeds",
+        file="src/tree_options/synth/generate.py",
+        anchor="if seat.base_close * announced.factor < RATIO_FLOOR:",
+        replacement="if False:",
+        selectors=[f"{U}/test_synth_generate.py"],
+        invariant="M2 round-3 P1-1: ratio events are decided at APPLICATION time against the actual session price — never canceled-blind at announcement",
     ),
 ]
 
