@@ -9,7 +9,6 @@ change). Validation worlds are the synthetic-era holdout (packet §1.4).
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from tests.conftest import REPO_ROOT
 
