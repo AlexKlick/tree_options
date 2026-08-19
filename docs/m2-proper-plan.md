@@ -312,3 +312,41 @@ adjustment.
 - **Backtest scope creep**: the lane is deliberately minimal (one
   portfolio rule, one fee model, no tuning); anything beyond ships in
   the options-backtester milestone.
+
+## 9. Pre-gate corrections (2026-08-19, owner-ruled after dev trials D1–D4)
+
+The signed text above is preserved; these corrections were ruled on
+BEFORE the sealed gate ran, from dev-world evidence only (all four dev
+trials COMPLETED at head 84027cd; artifacts under
+artifacts/m2-proper-dev/).
+
+1. **D4 tripwire re-calibrated.** The §7 ±20% band on the measured mean
+   IC ignored estimation noise: the band is 0.28 standard errors of the
+   statistic (measured session-level IC sd 0.056, n≈1,546 sessions ⇒
+   SE(mean) ≈ 0.00142), i.e. a ~78% false-fire probability when
+   everything is correct. Corrected criterion: the measured pooled t
+   must lie within 2 SE of the predicted t. D4 measured t=2.048 against
+   a corrected prediction of ≈1.4 — an ordinary 0.65σ draw, PASS. The
+   measured per-session IC SE came in +5% over the Gaussian plan (0.056
+   vs 0.053) — the mild fat-tail inflation §8 anticipated.
+2. **H=5 false-positive arm goes pooled-only.** D3's 8/29 fold-level
+   rejections (with pooled t=0.47) prove that overlapping H=5 label
+   windows (adjacent decision sessions share 4 of 5 window sessions)
+   autocorrelate per-session ICs inside a fold, inflating fold-level
+   |t| in both directions. H=5 FP is therefore evaluated ONLY on the
+   pooled-null |t| ≤ 2.5 criterion; the fold-level exact-binomial arm
+   (threshold computed from the actual fold count; 8 of 87 at the
+   planning estimate) applies to H=1, where D2's non-overlapping labels
+   proved it honest (2/29 on the null dev world).
+3. **Power arm is the univariate aligned score.** D1 showed the
+   4-feature ridge dilutes the aligned signal ~3× (t=0.77 vs D4's
+   2.05); scaled to the power stratum the ridge sits at t≈1.9 (coin
+   flip) while the univariate mom_1 sits at t≈3.7. PRIMARY power arm =
+   univariate H=1, reject on BOTH 706 and 707. The ridge runs as a
+   REPORTED secondary on 706/707 at both horizons and is not a gate
+   criterion.
+
+Sealed trial set (pre-declared before the run; 16 registered trials):
+univariate × {701, 702, 703, 706, 707} × {H1, H5} (10),
+univariate × {704, 705} × {H1} (2, weak stratum, reported only),
+ridge × {706, 707} × {H1, H5} (4, secondary, reported only).
