@@ -1,16 +1,20 @@
 # M2-proper evidence packet — labels, models, trials, sealed validation gate
 
-Status: FINAL record of the one-shot sealed gate (verdict: **FAIL**, one
-check; recorded verbatim in §5 — the FAIL is evidence, and any re-run
-requires a new campaign and an owner decision, plan §9/§6). Branch
-`m2/proper-20260819`, base `main` @ `f459577` (the PR #3 merge commit).
-Plan of record: `docs/m2-proper-plan.md` (§1 owner decisions verbatim;
-§8-signed corrections at §9).
+Status: FINAL record of the one-shot sealed gates. Gate #1 (§5):
+**FAIL** on the power arm, recorded verbatim — the owner-ruled §10
+disposition ran corrected gate #2 over new worlds 708/709 (§5b):
+**PASS**. Together: the false-positive machinery and the sized power
+demonstration both stand. Branch `m2/proper-20260819`, base `main` @
+`f459577` (the PR #3 merge commit). Plan of record:
+`docs/m2-proper-plan.md` (§1 owner decisions verbatim; §8-signed
+corrections at §9; gate-#2 pre-declaration at §10).
 
 ## 1. Coordinates
 
 - Base: `f459577` (merge of PR #3; tree-identical to reviewed `363f774`)
-- Head at gate: `3462910` (pre-gate corrections + sealed driver)
+- Head at gate #1: `3462910` (pre-gate corrections + sealed driver);
+  head at gate #2: `d1db7da` (§10 pre-declaration: worlds 708/709 +
+  driver). Evidence records: `4782ae5` (gate #1 FAIL packet).
 - Commits by workstream (provenance attributed honestly — this campaign
   ran TWO implementers in one checkout before the owner parked the
   second lane and ruled the sealed phase single-driver; see §8):
@@ -26,6 +30,9 @@ Plan of record: `docs/m2-proper-plan.md` (§1 owner decisions verbatim;
   - `46dbe99` runner/backtest integration + univariate baseline (second lane)
   - `84027cd` dev trial driver (second lane; dev trials executed here)
   - `3462910` pre-gate corrections + sealed gate driver (Claude lane)
+  - `4782ae5` gate #1 FAIL evidence packet (Claude lane)
+  - `d1db7da` gate #2 pre-declaration: worlds 708/709 @ 0.01 + driver
+    (Claude lane, post-FAIL, owner-ruled §10)
 
 ## 2. Workstream record (A–G)
 
@@ -184,6 +191,68 @@ staying positive on 707 — the dev-phase dilution finding (D1 vs D4)
 extends to sign instability at this effect size, reinforcing the §9
 ruling that the univariate is the primary arm.
 
+## 5b. Corrected power gate #2 (one-shot, §10)
+
+- Owner disposition of the gate #1 FAIL (ruling recorded in plan §10
+  before anything ran): new power lane in the same campaign.
+- Ran 2026-08-19 ~11:45–12:03 UTC-6 at head `d1db7da` (the §10
+  pre-declaration commit: worlds 708/709 pinned + driver; working tree
+  clean; driver and run share the commit).
+- Retained log: `/tmp/m2p-sealed-gate2.log`,
+  sha256 `7b4cb388594334c6f6d867f66e972efab458a2eb09e440940cce6ec1c2e6792b`
+  (attached to the campaign PR with the gate #1 log).
+- Sealed registry: `artifacts/m2-proper-sealed-2.db` (fresh; driver
+  refuses reuse). Artifacts: `artifacts/m2-proper-sealed-2/` (8 trials +
+  summary, stamped git_sha `d1db7da8…`, dataset_manifest_hash = sha256
+  of the amended 13-world registry).
+- Worlds 708/709 (coefficient 0.01, fresh seeds, generated for the
+  first time by the pre-declaration itself) regenerated and byte-verified
+  against the frozen registry: 708/682,238 · 709/703,992 bars; all 13
+  registry worlds verified byte-exact in the pre-run check
+  (WORLDS_OK=13 MISMATCH=0, generator pin unchanged; the 11 pre-existing
+  entries untouched).
+- All 8 pre-declared trials STATUS=COMPLETED, 29 folds each:
+
+| world (coef 0.01) | model | H | mean IC | pooled t | role |
+|---|---|---|---|---|---|
+| 708 | univar | 1 | 0.008384 | **5.89** | POWER — passes |
+| 709 | univar | 1 | 0.010135 | **7.16** | POWER — passes |
+| 708 | univar | 5 | 0.002673 | 1.92 | reported |
+| 709 | univar | 5 | 0.004646 | 3.27 | reported |
+| 708 | ridge | 1 | 0.006665 | 4.63 | secondary |
+| 709 | ridge | 1 | 0.008708 | 6.13 | secondary |
+| 708 | ridge | 5 | −0.003363 | −2.41 | secondary |
+| 709 | ridge | 5 | 0.000928 | 0.67 | secondary |
+
+- Criterion and outcome, verbatim from the log:
+
+```
+SEALED2_GATE_VERDICT=PASS POWER_H1_T={'synth-v1-val-alpha-708': 5.887, 'synth-v1-val-alpha-709': 7.16}
+SEALED2_CHECK PASS power_h1_univariate_rejects_both
+```
+
+Driver exit code 0. Verdict recorded verbatim.
+
+**What the PASS means.** The §10 sizing held with margin: realized
+per-session rank IC came in at 84% (708) and 101% (709) of the planted
+0.01 — the attenuation band measured at gate #1 (43–84% at 0.005)
+shifted toward unity as the coefficient grew, consistent with the drift
+wall being roughly additive rather than multiplicative. Even the
+pessimistic 0.43× bound would have cleared 1.96 (predicted t ≈ 3.1;
+observed 5.89/7.16). The pipeline detects a planted effect of known
+size on both new worlds. Combined with gate #1: the FP machinery
+restrains itself on three independent nulls at two horizons, and the
+power machinery detects what it is sized to detect — the seal did its
+job in both directions, catching the §7 design error at gate #1 before
+any claim was made.
+
+**Secondary observations (reported only).** At 0.01 the ridge no longer
+dilutes below detection on H1 (4.63/6.13, still below the univariate
+5.89/7.16 — the dilution ordering from dev trials persists). The H5
+single-world statistics remain unstable across model families
+(univariate 1.92/3.27, ridge −2.41/0.67), consistent with the §9.2
+overlap invalidation of fold/H5-level readings; nothing rides on them.
+
 ## 6. Acceptance mapping
 
 1. worlds 706/707 pinned, WORLDS_OK=11 MISMATCH=0 (recompute log 11/11;
@@ -196,7 +265,8 @@ ruling that the univariate is the primary arm.
    §3
 6. backtest: ledger conservation asserted on every run; execution
    ordering invariants — §2.G
-7. sealed gate per §5
+7. sealed gates: #1 recorded FAIL verbatim (§5) + owner-ruled corrected
+   gate #2 PASS (§5b), both one-shot with pre-declared criteria
 8. suite + mutations + clean clone + review at final head — §8
 9. research_protocol.yaml byte-unchanged; synth/ byte-unchanged
    (generator pin proof); no real data; no real-market claim; short
