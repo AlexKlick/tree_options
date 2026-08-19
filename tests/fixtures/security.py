@@ -12,6 +12,7 @@ from datetime import UTC, date, datetime
 from tree_options.schemas.security import (
     DelistingRecord,
     SecurityMasterRecord,
+    SectorMappingRecord,
     TickerMappingRecord,
 )
 
@@ -41,6 +42,23 @@ def renamed_and_delisted_security() -> SecurityMasterRecord:
                 effective_to=date(2024, 8, 2),
                 # rename knowable at the 2024-03-14 close (announced after hours)
                 available_at=datetime(2024, 3, 14, 21, 0, tzinfo=UTC),
+            ),
+        ),
+        sector_mappings=(
+            SectorMappingRecord(
+                security_id="SEC-001",
+                sector="TECH",
+                effective_from=date(2024, 1, 2),
+                available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+            ),
+            # reclassified effective the 2024-04-02 reopen (2024-04-01 is
+            # Easter Monday), knowable a week later — the gap is the leak
+            # window proven in test_sector_pit.py
+            SectorMappingRecord(
+                security_id="SEC-001",
+                sector="FIN",
+                effective_from=date(2024, 4, 2),
+                available_at=datetime(2024, 4, 10, 23, 0, tzinfo=UTC),
             ),
         ),
         delisting=DelistingRecord(
@@ -99,6 +117,15 @@ def successor_security_on_old_ticker() -> SecurityMasterRecord:
                 ticker="NEWM",
                 effective_from=date(2024, 9, 1),
                 available_at=datetime(2024, 9, 1, 21, 0, tzinfo=UTC),
+            ),
+        ),
+        sector_mappings=(
+            # classified with its first session's bar publication
+            SectorMappingRecord(
+                security_id="SEC-002",
+                sector="INDU",
+                effective_from=date(2024, 9, 1),
+                available_at=datetime(2024, 9, 3, 23, 0, tzinfo=UTC),
             ),
         ),
     )

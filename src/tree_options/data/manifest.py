@@ -21,7 +21,7 @@ from tree_options.data.digest import canonical_bytes
 from tree_options.schemas.common import IdStr, StrictModel, UTCDatetime
 from tree_options.schemas.security import SecurityMasterRecord
 
-MANIFEST_SCHEMA_VERSION = "m1/1"
+MANIFEST_SCHEMA_VERSION = "m2/1"  # m1/1 -> m2/1: PIT sector mappings (M2 packet §3.A)
 CONTENT_DOMAIN = b"tree-options-m1-content-v1"
 
 

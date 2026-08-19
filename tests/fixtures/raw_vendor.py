@@ -15,6 +15,7 @@ from decimal import Decimal
 from tree_options.schemas.security import (
     DelistingRecord,
     SecurityMasterRecord,
+    SectorMappingRecord,
     TickerMappingRecord,
 )
 
@@ -54,6 +55,14 @@ def m1_master() -> tuple[SecurityMasterRecord, ...]:
                 available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
             ),
         ),
+        sector_mappings=(
+            SectorMappingRecord(
+                security_id="SEC-005",
+                sector="DISC",
+                effective_from=date(2024, 1, 2),
+                available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+            ),
+        ),
     )
     # SEC-006: acquired — merger action names the successor, then a terminal
     # delisting; SEC-007: chapter-11 terminal delisting with NO final price.
@@ -81,6 +90,14 @@ def m1_master() -> tuple[SecurityMasterRecord, ...]:
             final_price_available=True,
             available_at=datetime(2024, 8, 15, 20, 0, tzinfo=UTC),
         ),
+        sector_mappings=(
+            SectorMappingRecord(
+                security_id="SEC-006",
+                sector="HLTH",
+                effective_from=date(2024, 1, 2),
+                available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+            ),
+        ),
     )
     bankrupt = SecurityMasterRecord(
         security_id="SEC-007",
@@ -105,6 +122,14 @@ def m1_master() -> tuple[SecurityMasterRecord, ...]:
             reason="bankruptcy_11",
             final_price_available=False,
             available_at=datetime(2024, 10, 1, 20, 0, tzinfo=UTC),
+        ),
+        sector_mappings=(
+            SectorMappingRecord(
+                security_id="SEC-007",
+                sector="ENRG",
+                effective_from=date(2024, 1, 2),
+                available_at=datetime(2024, 1, 2, 21, 0, tzinfo=UTC),
+            ),
         ),
     )
     return (

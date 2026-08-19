@@ -36,6 +36,17 @@ class DelistingRecord(StrictModel):
     available_at: UTCDatetime  # when the delisting became knowable
 
 
+class SectorMappingRecord(StrictModel):
+    """Dated sector classification with knowability, like a ticker mapping:
+    a reclassification is effective on `effective_from` but INVISIBLE until
+    `available_at` — the gap is the leak window (M2 packet §3.A)."""
+
+    security_id: IdStr
+    sector: IdStr
+    effective_from: date
+    available_at: UTCDatetime
+
+
 class SecurityMasterRecord(StrictModel):
     security_id: IdStr
     figi: IdStr | None = None
@@ -44,11 +55,11 @@ class SecurityMasterRecord(StrictModel):
     listing_start: date
     listing_end: date | None = None
     exchange: IdStr
-    sector_as_of: date | None = None
     corporate_action_id: IdStr | None = None
     source: IdStr
     available_at: UTCDatetime
     ticker_mappings: tuple[TickerMappingRecord, ...]
+    sector_mappings: tuple[SectorMappingRecord, ...] = ()
     delisting: DelistingRecord | None = None
 
     @model_validator(mode="after")
@@ -58,6 +69,12 @@ class SecurityMasterRecord(StrictModel):
         for m in self.ticker_mappings:
             if m.security_id != self.security_id:
                 raise ValueError("ticker mapping security_id mismatch")
+        for m in self.sector_mappings:
+            if m.security_id != self.security_id:
+                raise ValueError("sector mapping security_id mismatch")
+        sector_starts = [m.effective_from for m in self.sector_mappings]
+        if len(set(sector_starts)) != len(sector_starts):
+            raise ValueError("sector mappings require strictly increasing effective_from")
         # Non-overlapping windows per ticker (renames chain via adjacent windows).
         by_ticker: dict[str, list[TickerMappingRecord]] = {}
         for m in self.ticker_mappings:
@@ -103,6 +120,23 @@ class SecurityMasterRecord(StrictModel):
             f"no ticker mapping covers {d} for {self.security_id}"
             + (f" as of {as_of}" if as_of is not None else "")
         )
+
+    def sector_on(self, d: date, *, as_of: datetime | None = None) -> str | None:
+        """Sector in force on d, given what was knowable at `as_of`.
+
+        Mirrors ticker_on's record gate (an invisible record fails closed),
+        but unknown-sector is legitimate: None when no visible mapping is
+        effective on d — never a leaked future classification.
+        """
+        if not self._record_visible(as_of):
+            raise KeyError(f"security {self.security_id} record not knowable as of {as_of}")
+        best: SectorMappingRecord | None = None
+        for m in self.sector_mappings:
+            if as_of is not None and m.available_at > as_of:
+                continue
+            if m.effective_from <= d and (best is None or m.effective_from > best.effective_from):
+                best = m
+        return best.sector if best is not None else None
 
     def listed_on(self, d: date, *, as_of: datetime | None = None) -> bool:
         """Membership on d given knowledge at `as_of`.
