@@ -1,6 +1,6 @@
 # M2-proper evidence packet — labels, models, trials, sealed validation gate
 
-Status: FINAL record of the one-shot sealed gates. Gate #1 (§5):
+Status: FINAL record (post closeout at `ccb360a`). The one-shot sealed gates. Gate #1 (§5):
 **FAIL** on the power arm, recorded verbatim — the owner-ruled §10
 disposition ran corrected gate #2 over new worlds 708/709 (§5b):
 **PASS**. Together: the false-positive machinery and the sized power
@@ -33,6 +33,11 @@ corrections at §9; gate-#2 pre-declaration at §10).
   - `4782ae5` gate #1 FAIL evidence packet (Claude lane)
   - `d1db7da` gate #2 pre-declaration: worlds 708/709 @ 0.01 + driver
     (Claude lane, post-FAIL, owner-ruled §10)
+  - `ea1768c` gate #2 PASS evidence ·5b (Claude lane)
+  - `570b367` → `4a41cee` → `f35aad6` mutants M85–M107, format
+    catch, kill-strengthening round (Claude lane)
+  - `052ab4c` review r1 label P1 fixes (Claude lane)
+  - `ccb360a` review r2 tie-break fix — FINAL HEAD (Claude lane)
 
 ## 2. Workstream record (A–G)
 
@@ -121,8 +126,9 @@ run; no validation-world payload was loaded by any dev-phase code.
   is attached to the campaign PR.
 - Sealed registry: `artifacts/m2-proper-sealed.db` (fresh; the driver
   refuses reuse). Artifacts: `artifacts/m2-proper-sealed/` (16 trials +
-  summary, all stamped git_sha `3462910c…`, dataset_manifest_hash =
-  sha256 of `data/worlds/registry.json`).
+  summary, all stamped git_sha `3462910c…`; each TRIAL stamp carries that
+  world's own manifest content hash, the SUMMARY stamp carries the
+  sha256 of the frozen world registry — reviewer r1 P2 wording fix).
 - Worlds regenerated and byte-verified against the frozen registry
   (content_sha256 + counts, all 7 exact):
   701/672,773 · 702/699,723 · 703/689,203 · 704/682,354 · 705/684,340 ·
@@ -264,6 +270,78 @@ single-world statistics remain unstable across model families
 (univariate 1.92/3.27, ridge −2.41/0.67), consistent with the §9.2
 overlap invalidation of fold/H5-level readings; nothing rides on them.
 
+## 5c. Post-gate remediation record (review rounds 1–3, gates r0–r3)
+
+The sealed gates are immutable; everything in this section happened AFTER
+gate #2 and is the campaign's closeout loop at the final head.
+
+### Bounded review rounds (Codex, detached, read-only)
+
+- **r1 at `f35aad6`** — 2 P1 + 2 P2, all confirmed:
+  - P1-1 labels: a cash dividend paid after an in-window ratio action
+    accrued on pre-split shares (`cash_total` ignored the running ratio).
+    Fixed red-first (reviewer's exact scenario: base 100, 2:1 split,
+    $1/share, end 49 → wealth exactly 1.0); actions now walked in
+    effective-session order with each dividend scaled by the ratio
+    factor accrued at payment.
+  - P1-2 labels: `observed_at` was the end bar's publication even when
+    an in-window action published later — the label claimed availability
+    before its own input. Fixed: `observed_at = max(end pub,
+    included-action pubs)`, red-first.
+  - P2 pooled-t: the gate-#1 statistic is the fixed-effects pooled
+    session t; the between-world-inclusive reconstruction differs in the
+    4th decimal (0.20992 vs 0.20989 H1; 1.05605 vs 1.05587 H5), verdict
+    unchanged — documented in §5, drivers frozen with their runs.
+  - P2 stamp wording: §5b corrected (per-world manifest hashes on trial
+    stamps; registry hash on the summary only).
+- **r2 at `052ab4c`** — 1 P1, confirmed: same-session ratio+cash actions
+  remained input-order dependent (stable sort preserved vendor row
+  order). Fixed red-first: same-session ties now break ratio-before-cash
+  (split adjusts the share count, the dividend then pays on post-split
+  shares), spot-verified KILLED by reverting the sort key.
+- **r3 at `ccb360a`** — **GO**: "the effective-session/ratio-first sort
+  is correct and complete for all ratio/cash paths".
+
+### Label-fix impact on the sealed results (quantified, controls included)
+
+For every sealed world × horizon, labels were rebuilt under the fixed
+builder and compared value-for-value against a reconstruction of the
+pre-r1 arithmetic (`/tmp/m2p-impact-quant.log`, retained). Control worlds
+(701–703, 708 — zero ratio→dividend pairs) validate the method: values
+identical on 100% of common labels. The reconstruction reproduces ~300
+fewer labels per world uniformly, controls included — a reconstruction
+artifact, not a fix effect; the value comparison is over the common set.
+
+- **H=1: 0 value changes on every world.** Every H=1 criterion input in
+  both gates is therefore numerically identical under the fixed code:
+  the gate-#1 FP pooled statistic and fold binomial (nulls), the weak
+  stratum, the power arm, and the gate-#2 criterion. Both gate verdicts
+  stand exactly.
+- H=5: 3–6 labels of ~680k per world changed on 704/705/706/707/709
+  (max |Δ| = 0.0034); 0 on the nulls and 708. Every H=5 number in either
+  gate is reported-only (§9.2) or was computed on the nulls (zero
+  changes) — no verdict impact.
+- Synth dividends publish at their announcement session (before the
+  effective session's end bar), so the observed_at change affects no
+  synth label; P1-2 is fixture-only on this data.
+
+### Full-gate rounds (retained logs; pointer bumped per remediation)
+
+| round | head | result |
+|---|---|---|
+| r0 | `570b367` | stopped at format-check (gate-#1 driver, committed pre-seal and intentionally untouched mid-run, had never been formatted); no harness |
+| r0h | `4a41cee` | harness ran: 102/106 KILLED (M66 anchor drift from the C-lane bisect; M86/M98 survived; M96 invalid) — per-mutant outputs preserved `/tmp/m2p-final-gate-r0-mutations.{json,md}`; the r0h log itself was lost to an operator-side rm-before-mv during relaunch (sha256 recorded at the time: `72b6d969…`) |
+| r1 | `f35aad6` | 395/0 + KILLED 106/106 after four red-first kill-strengthening fixes (log `/tmp/m2p-final-gate-r1.log`); clean-clone proof + review r1 ran against this head |
+| r2 | `052ab4c` | 397/0 + KILLED 106/106 (label P1 fixes; log `/tmp/m2p-final-gate-r2.log`); review r2 ran against this head |
+| r3/final | `ccb360a` | **398 passed / 0 failed + KILLED 106/106**, restoration pass, wheel
+  smoke ok, exit 0 (log `/tmp/m2p-final-gate.log`, sha256
+  `c7a30b59ccfd2ad0a60493560f2ea92c4fe5a0655639b3bfdfa34d374960fd12`) —
+  THE FINAL HEAD |
+
+Clean-clone proof at `f35aad6`: `--no-local` clone, 13/13 worlds
+byte-identical (`WORLDS_OK=13 MISMATCH=0 CODE_PIN=match`), suite green
+with identical counts, wheel smoke ok.
+
 ## 6. Acceptance mapping
 
 1. worlds 706/707 pinned, WORLDS_OK=11 MISMATCH=0 (recompute log 11/11;
@@ -278,7 +356,8 @@ overlap invalidation of fold/H5-level readings; nothing rides on them.
    ordering invariants — §2.G
 7. sealed gates: #1 recorded FAIL verbatim (§5) + owner-ruled corrected
    gate #2 PASS (§5b), both one-shot with pre-declared criteria
-8. suite + mutations + clean clone + review at final head — §8
+8. final head `ccb360a`: 398/0, KILLED 106/106 (M85–M107 new),
+   clean-clone 13/13 + identical counts, review r3 GO — §5c
 9. research_protocol.yaml byte-unchanged; synth/ byte-unchanged
    (generator pin proof); no real data; no real-market claim; short
    legs nowhere (Order schema long-only by construction)
