@@ -8,6 +8,7 @@ applications recorded, rows outside the declared target set refused.
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import random
 import subprocess
@@ -274,7 +275,34 @@ def test_deterministic_across_runs_and_processes() -> None:
         check=True,
         timeout=120,
     )
-    import json
-
     cross_process = json.loads(result.stdout.strip().splitlines()[-1])
     assert cross_process == in_process
+
+
+def test_package_import_pins_blas_before_numpy() -> None:
+    snippet = """
+import json
+import os
+import sys
+sys.path.insert(0, {src!r})
+for name in {names!r}:
+    os.environ[name] = "8"
+import tree_options.models  # noqa: F401
+import numpy  # noqa: F401
+print(json.dumps({{name: os.environ[name] for name in {names!r}}}, sort_keys=True))
+"""
+    names = (
+        "OPENBLAS_NUM_THREADS",
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", snippet.format(src=str(REPO_ROOT / "src"), names=names)],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=120,
+    )
+    assert set(json.loads(result.stdout).values()) == {"1"}
