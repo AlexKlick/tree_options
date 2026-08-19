@@ -66,7 +66,7 @@ model, no labels, no backtest, no real data, no performance claim.
 ## 3. Gate (release authority — local)
 
 Current record: the full-gate + verify-all + clean-clone run at the final
-head is retained in `/tmp/m2-final-r7.log` (numbers also recorded in §6's
+head is retained in `/tmp/m2-final-r9.log` (numbers also recorded in §6's
 round entries; the log is attached to the PR). It records **324 passed /
 0 failed**, **KILLED=83** (restoration pass), the registry verify-all
 `WORLDS_OK=9 MISMATCH=0 CODE_PIN=match`, and a `--no-local` clean clone
@@ -314,7 +314,7 @@ final invariant is preserved in git history.
   confirmed resolved.
   → remediation: every doc edit reapplied in the foreground with
   per-edit grep verification (this commit); §6 records both rounds;
-  the retained-record pointer moves to the final-head r7 log. Lesson
+  the retained-record pointer was moved to the then-current log; every subsequent remediation bumps it to the new head's run (§3 names the current one). Lesson
   recorded: never dispatch evidence-doc edits in an unobserved batch.
 
 ## 7. Evidence invalidation
