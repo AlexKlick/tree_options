@@ -69,10 +69,10 @@ class SecurityMasterRecord(StrictModel):
         for m in self.ticker_mappings:
             if m.security_id != self.security_id:
                 raise ValueError("ticker mapping security_id mismatch")
-        for m in self.sector_mappings:
-            if m.security_id != self.security_id:
+        for sm in self.sector_mappings:
+            if sm.security_id != self.security_id:
                 raise ValueError("sector mapping security_id mismatch")
-        sector_starts = [m.effective_from for m in self.sector_mappings]
+        sector_starts = [sm.effective_from for sm in self.sector_mappings]
         if len(set(sector_starts)) != len(sector_starts):
             raise ValueError("sector mappings require strictly increasing effective_from")
         # Non-overlapping windows per ticker (renames chain via adjacent windows).

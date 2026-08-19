@@ -14,8 +14,8 @@ from decimal import Decimal
 
 from tree_options.schemas.security import (
     DelistingRecord,
-    SecurityMasterRecord,
     SectorMappingRecord,
+    SecurityMasterRecord,
     TickerMappingRecord,
 )
 

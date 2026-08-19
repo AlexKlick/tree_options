@@ -19,7 +19,7 @@ from tests.fixtures.security import (
     renamed_and_delisted_security,
 )
 from tree_options.data.ingest import ingest_snapshot
-from tree_options.schemas.security import SecurityMasterRecord, SectorMappingRecord
+from tree_options.schemas.security import SectorMappingRecord, SecurityMasterRecord
 
 
 def _at(day: date, hour: int = 16) -> datetime:
