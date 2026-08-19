@@ -3,6 +3,10 @@
 # the recorded promotion run. Dev-only dirty-tree escape: M0_GATE_ALLOW_DIRTY=1.
 set -euo pipefail
 
+# numpy-era determinism: BLAS thread counts change reduction orders
+export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
+       NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
+
 cd "$(dirname "$0")/.."
 
 if [ "${M0_GATE_ALLOW_DIRTY:-0}" != "1" ]; then
