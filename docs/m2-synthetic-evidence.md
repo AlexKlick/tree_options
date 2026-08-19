@@ -16,7 +16,8 @@ model, no labels, no backtest, no real data, no performance claim.
   `d9249a9` workstream E (mutants M71–M78 + M43 re-pin) · two gate-step
   style commits → `d96b15d` (first evidence doc) · `3282cf4` round-1
   remediation · `e9836be` round-2 remediation · `e9e5c67` round-3
-  remediation · round-4 remediation + this doc (see §6).
+  remediation · `5ba53b2`+`fd42790` round-4 remediation · `1fa1b69`
+  rounds-5/6 remediation + this doc (see §6).
 
 ## 2. What was delivered (packet workstreams A–E)
 
@@ -47,7 +48,8 @@ model, no labels, no backtest, no real data, no performance claim.
   scale) are the synthetic-era holdout per packet §1.4; the dev pool has
   2 gate-speed small worlds + 2 full worlds. Seeds are disjoint across
   pools. Artifact run (teed): `WORLDS_OK=9 MISMATCH=0 SELECTED=9
-  CODE_PIN=match` in 3m44s; full worlds carry ~680–712k bars, ~1,100
+  CODE_PIN=match` (3m44s in the round-C run; later runs' timings live
+  in their own retained logs); full worlds carry ~680–712k bars, ~1,100
   actions, ~365–376 listed seats of 500 (300 initial + ~72 IPOs at 8/yr
   × 9y — exactly to spec). The gate runs the dev-pool small-world subset
   in-test; the registry test fails closed on any synth/ code change
@@ -64,7 +66,7 @@ model, no labels, no backtest, no real data, no performance claim.
 ## 3. Gate (release authority — local)
 
 Current record: the full-gate + verify-all + clean-clone run at the final
-head is retained in `/tmp/m2-final-r5.log` (numbers also recorded in §6's
+head is retained in `/tmp/m2-final-r7.log` (numbers also recorded in §6's
 round entries; the log is attached to the PR). It records **324 passed /
 0 failed**, **KILLED=83** (restoration pass), the registry verify-all
 `WORLDS_OK=9 MISMATCH=0 CODE_PIN=match`, and a `--no-local` clean clone
@@ -96,18 +98,20 @@ final invariant is preserved in git history.
 2. **Contract compliance** — `test_generated_world_ingests_and_verifies`
    (ingest + `verify_manifest` green, provider `synthetic/v1`,
    schema `m2/1`), `test_tampered_world_fails_quality_gate`, and the
-   universality argument in three parts (rounds 1–3): (i) the arithmetic
+   universality argument in four parts (rounds 1–4): (i) the arithmetic
    bound — at the $1.00 minimum close, worst cent-quantization is 0.5%, so
    no clamped move (≤1.9×) or bounded bankruptcy loss (≤49%) can land on
    the 0.5×/2× bounds (`test_quantized_moves_stay_inside_gate_property`);
    (ii) ratio events are DECIDED AT APPLICATION TIME against the actual
    session price, so an intervening return can no longer push the applied
    product under the floor (round-3 P1-1); (iii) cumulative alpha drift
-   is WALLED at ±1.5% (`DRIFT_CAP`), bounding the worst combined session
-   factor at 1.9·e^0.03 = 1.958 pre-rounding and every alpha-vs-base
-   wobble at ≤1.5% — strictly inside the 2% ratio tolerance, which also
-   RETIRED the round-3 resync as redundant (round-4 P1-1;
-   `test_alpha_drift_wall_bounds_resync`, mutant M84);
+   is WALLED at ±1.5% pre-rounding (`DRIFT_CAP`): after cent rounding the
+   alpha-vs-base wobble is at most 2.0% (the $1.00 floor, $1.00→$1.02),
+   bounding the worst combined session factor below the 2× gate bound
+   and the worst floor-clamped ratio deviation at ~1.96% — strictly
+   inside the 2% ratio-match tolerance for every supported ratio; this
+   also RETIRED the round-3 resync as redundant (round-4 P1-1;
+   `test_alpha_drift_wall_bounds_wobble`, mutant M84);
    (iv) exercised hostile — a 200/yr split rate across a 12-seed sweep,
    its alpha twin, and an enormous-coefficient (500) drift-wall sweep all
    verify clean (`test_hostile_specs_verify_across_seeds`,
@@ -273,8 +277,11 @@ final invariant is preserved in git history.
   §1 was stale the same way).
   → remediation: ±1.5% cumulative DRIFT WALL (`DRIFT_CAP` — worst
   combined session factor 1.9·e^0.03 = 1.958 pre-rounding, strictly
-  inside the gate even after cent rounding; wall red-verified directly
-  and pinned by mutant M84; enormous-coefficient 500 sweep green); the
+  inside the gate even after cent rounding — wobble ≤2.0% post-rounding,
+  worst ratio deviation ~1.96% < the 2% tolerance; wall verified red by
+  directly disabling it during development (a transcript fact, not a
+  retained-log fact) and pinned permanently by mutant M84;
+  enormous-coefficient 500 sweep green); the
   wall makes the round-3 resync REDUNDANT (worst wobble 1.5% < the 2%
   ratio tolerance), so the resync and mutant M82 were RETIRED together
   rather than defending scaffolding with a contrived test; cancellation
@@ -283,6 +290,32 @@ final invariant is preserved in git history.
   edits, no failed batches) with the re-pin history complete and the
   "both red before the fix" phrasing scoped as a transcript fact.
   Post-fix: suite 324/0, KILLED=83/83 (83 total).
+- **Round 5** (Codex, head `fd42790`): **NO-GO, zero executable
+  findings** — P2-1 the documented "wobble ≤1.5%" was false after cent
+  rounding (at the $1.00 floor, $1.00→$1.02 is exactly 2.0%; executable
+  paths confirmed safe); P2-2 stale resync wording, "three parts" before
+  a four-part enumeration, plan header "rounds 1–3", and two claims
+  resting on transcript facts presented as log facts.
+  → remediation: true post-rounding bounds stated everywhere (wobble
+  ≤2.0%, worst ratio deviation ~1.96% < 2% tolerance); test renamed
+  `test_alpha_drift_wall_bounds_wobble` (M84 owner+invariant updated);
+  transcript facts explicitly scoped. A comment-only generator edit
+  staled the registry pin — the post-edit harness run failed
+  (KILLED=81, HARNESS_ERROR=2, restoration False), an intermediate
+  commit briefly mis-stated 83/83 and was AMENDED with the true record;
+  deliberate `--recompute` moved one line (all nine content hashes
+  byte-identical).
+- **Round 6** (Codex, head `1fa1b69`): **NO-GO** — the round-5
+  documentation edits had been dispatched inside a background batch
+  whose failure went unseen: the committed delta contained NO
+  documentation changes while the commit message claimed them. The
+  packet was also self-invalidating (pointed at the r5 log while the
+  head had moved past it). Zero new P1; all executable carried items
+  confirmed resolved.
+  → remediation: every doc edit reapplied in the foreground with
+  per-edit grep verification (this commit); §6 records both rounds;
+  the retained-record pointer moves to the final-head r7 log. Lesson
+  recorded: never dispatch evidence-doc edits in an unobserved batch.
 
 ## 7. Evidence invalidation
 

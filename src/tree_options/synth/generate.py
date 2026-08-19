@@ -74,11 +74,12 @@ MIN_CLOSE = Decimal("1.00")
 # rejects — per-session returns are bounded under the gate bound (real
 # venues halt; the generator does too)
 DAILY_RET_LIMIT = math.log(1.9)
-# round-4 P1-1: cumulative alpha drift (close/base) is walled at +-1.5%.
-# Every undeclared session factor is then bounded by
-# 1.9 * exp(2*DRIFT_CAP) = 1.958 before cent rounding (worst 1.977 at the
-# $1.00 floor), strictly inside the 2x gate bound — and the ratio-
-# announcement resync jump is bounded by exp(DRIFT_CAP) = 1.015.
+# round-4 P1-1: cumulative alpha drift (close/base) is walled at
+# +-1.5% PRE-rounding. After cent rounding the alpha-vs-base wobble is
+# at most 2.0% (at the $1.00 floor, $1.00 -> $1.02), which keeps every
+# undeclared session factor at <= 1.9*exp(2*DRIFT_CAP)*1.01 < 2 and the
+# worst floor-clamped ratio deviation at ~1.96%, strictly inside the 2%
+# ratio-match tolerance for every supported ratio.
 DRIFT_CAP = 0.015
 
 
@@ -392,10 +393,10 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                         n, d = seat.rng_events.choice(REVERSE_RATIOS)
                     else:
                         n, d = STOCK_DIVIDEND_RATIO
-                    # round-3 P1-1: DEFER the emission and the decision to
-                    # the application session (decided above); resync the
-                    # alpha drift so both trajectories apply the factor to
-                    # the same price. No action/truth event yet.
+                    # round-3 P1-1: DEFER the emission and the decision
+                    # to the application session (decided above). No
+                    # action/truth event yet; the drift wall keeps both
+                    # trajectories' ratio applications inside tolerance.
                     seat.pending_ratio = _PendingRatio(
                         kind=fired,
                         factor=Decimal(d) / Decimal(n),
@@ -452,7 +453,7 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                 # the null-world twin of this close, chained identically
                 seat.base_close = _cents(Decimal(repr(float(seat.base_close) * math.exp(base_ret))))
                 # round-4 P1-1: wall the cumulative drift so the
-                # announcement-session resync can never jump near the gate
+                # alpha-vs-base wobble can never approach the gate bounds
                 drift_up = _cents(Decimal(repr(float(seat.base_close) * math.exp(DRIFT_CAP))))
                 drift_down = _cents(Decimal(repr(float(seat.base_close) * math.exp(-DRIFT_CAP))))
                 if new_close > drift_up:

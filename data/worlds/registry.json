@@ -2,7 +2,7 @@
   "registry_version": "worlds/1",
   "spec_version": "v1",
   "note": "Frozen world registry (M2 packet workstream C). Validation worlds are the synthetic-era holdout: dev-pool tuning against them is prohibited; final validation runs happen exclusively here. Seeds/rates are never rewritten; expected hashes are re-pinned only by scripts/verify_worlds.py --recompute after a deliberate generator change.",
-  "generator_code_sha": "b0a8ad9e55d0cde6751be6fe48fcc1f0e792f753b2f2115c25baced9cf02b45f",
+  "generator_code_sha": "c59fa3df814e4913c7a49d36a2bb51d636eebde4d9df0f18fda9f761bfedc1e7",
   "worlds": [
     {
       "world_id": "synth-v1-dev-null-101",

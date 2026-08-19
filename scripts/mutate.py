@@ -796,12 +796,12 @@ MUTANTS = [
     ),
     dict(
         id="M84-alpha-drift-wall-removed",
-        owner="test_alpha_drift_wall_bounds_resync",
+        owner="test_alpha_drift_wall_bounds_wobble",
         file="src/tree_options/synth/generate.py",
         anchor="                if new_close > drift_up:\n                    new_close = drift_up",
         replacement="                if False:\n                    new_close = drift_up",
         selectors=[f"{U}/test_synth_generate.py"],
-        invariant="M2 round-4 P1-1: cumulative alpha drift is walled so the ratio-announcement resync jump and every combined session factor stay strictly inside the discontinuity gate",
+        invariant="M2 round-4 P1-1: cumulative alpha drift is walled so the alpha-vs-base wobble and every combined session factor stay strictly inside the gate bounds and the ratio-match tolerance",
     ),
 ]
 

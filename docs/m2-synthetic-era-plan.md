@@ -215,7 +215,7 @@ behind real data.
 - **Sample drift** (M3): the spike cites URLs + download dates; it is a
   snapshot document, cheap to refresh.
 
-## Post-implementation corrections (2026-08-19, review rounds 1–3)
+## Post-implementation corrections (2026-08-19, review rounds 1–4)
 
 The signed text above is preserved as the plan of record; these
 corrections, surfaced by the independent review, supersede specific
