@@ -397,8 +397,25 @@ MUTANTS = [
         id="M41-lot-basis-stale",
         owner="test_average_cost_exact_after_partial_close",
         file="src/tree_options/ledger/book.py",
-        anchor="head.cost_basis = (head.cost_basis - removed).quantize(FEE_TICK)",
-        replacement="head.cost_basis = head.cost_basis",
+        # re-pinned M3 WS-C: the settlement lot walk added a second
+        # cost_basis-reduction site, so the anchor now spans the
+        # fill-path-specific block (fill.contract_id) to stay unique
+        anchor=(
+            "                head = self._lots[fill.contract_id][0]\n"
+            "                take = min(head.quantity, remaining)\n"
+            "                removed = (head.unit_price * take * head.multiplier).quantize(FEE_TICK)\n"
+            "                cost_removed += removed\n"
+            "                head.quantity -= take\n"
+            "                head.cost_basis = (head.cost_basis - removed).quantize(FEE_TICK)"
+        ),
+        replacement=(
+            "                head = self._lots[fill.contract_id][0]\n"
+            "                take = min(head.quantity, remaining)\n"
+            "                removed = (head.unit_price * take * head.multiplier).quantize(FEE_TICK)\n"
+            "                cost_removed += removed\n"
+            "                head.quantity -= take\n"
+            "                head.cost_basis = head.cost_basis"
+        ),
         selectors=[f"{P}/test_ledger_properties.py"],
         invariant="partial closes reduce lot basis",
     ),
