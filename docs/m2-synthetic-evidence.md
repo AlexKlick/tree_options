@@ -8,13 +8,15 @@ model, no labels, no backtest, no real data, no performance claim.
 
 - Base: `main` @ `8bd34e4` (the PR #2 merge commit)
 - Branch: `m2/synthetic-era-20260818`
-- Code head (all product work): `d96b15d`; this doc commits on top.
+- Final head: this doc's commit (rounds 1–4 remediation included).
 - Commits (oldest → newest): `a35cf5a` campaign packet · `23df665`
   workstream A (PIT sector schema, manifest m2/1) · `4f45e4d` workstream
   B (synthetic world generator v1) · `e75bb10` workstream C (frozen world
   registry + verify) · `056b6b1` workstream D (M3 options spike, doc) ·
   `d9249a9` workstream E (mutants M71–M78 + M43 re-pin) · two gate-step
-  style commits → `d96b15d`.
+  style commits → `d96b15d` (first evidence doc) · `3282cf4` round-1
+  remediation · `e9836be` round-2 remediation · `e9e5c67` round-3
+  remediation · round-4 remediation + this doc (see §6).
 
 ## 2. What was delivered (packet workstreams A–E)
 
@@ -61,16 +63,17 @@ model, no labels, no backtest, no real data, no performance claim.
 ## 3. Gate (release authority — local)
 
 Current record: the full-gate + verify-all + clean-clone run at the final
-head is retained in `/tmp/m2-final-r4.log` (numbers also recorded in §6's
-round entries; the log is attached to the PR). It records **323 passed /
+head is retained in `/tmp/m2-final-r5.log` (numbers also recorded in §6's
+round entries; the log is attached to the PR). It records **324 passed /
 0 failed**, **KILLED=83** (restoration pass), the registry verify-all
 `WORLDS_OK=9 MISMATCH=0 CODE_PIN=match`, and a `--no-local` clean clone
 with identical counts and artifacts. History: code head `d96b15d`
-(`310/0`, `KILLED=78`) → round-1 head `3282cf4` (`316/0`, `KILLED=80`) →
-round-2 head `e9836be` (`320/0`, `KILLED=82`) — each superseded by the
-next remediation.
+(`310/0`, `KILLED=78`) → round-1 `3282cf4` (`316/0`, `KILLED=80`) →
+round-2 `e9836be` (`320/0`, `KILLED=82`) → round-3 `e9e5c67` (`323/0`,
+`KILLED=83`) — each superseded by the next remediation.
 
-61 M0 mutants + 9 M1 mutants unchanged + **13 new M2 mutants M71–M83**
+61 M0 mutants + 9 M1 mutants unchanged + **13 new M2 mutants
+M71–M84 (M82 retired — see §6 round 4)**
 (sector leak window, seed-stream pinning, alpha injection, publication
 hour, ticker-recycle truth, initial-cohort listing, bankruptcy bound,
 split exactness, suppression floor, return clamp, minimum-close floor,
@@ -98,11 +101,15 @@ the round-2 guard line.
    the 0.5×/2× bounds (`test_quantized_moves_stay_inside_gate_property`);
    (ii) ratio events are DECIDED AT APPLICATION TIME against the actual
    session price, so an intervening return can no longer push the applied
-   product under the floor (round-3 P1-1; the announcement additionally
-   resynchronizes the alpha drift so both trajectories apply the factor
-   to the same price); (iii) exercised hostile — a 200/yr split rate
-   across a 12-seed sweep AND its alpha twin both verify clean
-   (`test_hostile_specs_verify_across_seeds`,
+   product under the floor (round-3 P1-1); (iii) cumulative alpha drift
+   is WALLED at ±1.5% (`DRIFT_CAP`), bounding the worst combined session
+   factor at 1.9·e^0.03 = 1.958 pre-rounding and every alpha-vs-base
+   wobble at ≤1.5% — strictly inside the 2% ratio tolerance, which also
+   RETIRED the round-3 resync as redundant (round-4 P1-1;
+   `test_alpha_drift_wall_bounds_resync`, mutant M84);
+   (iv) exercised hostile — a 200/yr split rate across a 12-seed sweep,
+   its alpha twin, and an enormous-coefficient (500) drift-wall sweep all
+   verify clean (`test_hostile_specs_verify_across_seeds`,
    `test_hostile_alpha_world_verifies`). ✔
 3. **Registry integrity** — `test_registry_shape_and_pools` (exactly 5
    validation worlds with the EXACT frozen composition: seeds 701–705,
@@ -167,15 +174,17 @@ the round-2 guard line.
    security-session after two listed sessions; publication 23:00 UTC.
    Sector reclassification events are NOT generated in v1 (schema supports
    them; fixture covers them).
-4. **Registry re-pin records (rounds 1–2)**: remediations changed the
-   generator, so the registry was deliberately re-pinned twice with
-   `--recompute` (seeds/rates untouched throughout). Both gate-speed dev
-   worlds are BYTE-UNCHANGED across all re-pins (no clamp, suppression, or
-   floor ever fires there). Full-world action reductions vs the original
-   pins, per world: dev-103 1163→1154, dev-104 1124→1120, val-701
-   1050→1042, val-702 1137→1121, val-703 1116→1104, val-704 1087→1076,
-   val-705 1134→1122 — floor suppressions plus second-order event-timing
-   shifts from the eligibility interaction.
+4. **Registry re-pin records (rounds 1–4)**: remediations changed the
+   generator, so the registry was deliberately re-pinned after each
+   generator-touching round with `--recompute` (seeds/rates untouched
+   throughout; every re-pin after round 1 ran the quality gates INSIDE
+   regeneration). The null gate-speed dev world (101) is byte-identical
+   across every re-pin; the alpha twin (102) moved at round 3 (the drift
+   resync touches exactly the worlds where ratio events fire) and again at
+   round 4 (the drift wall). Full-world counts: original → post-round-2
+   1154/1120/1042/1121/1104/1076/1122 (dev-103, dev-104, val-701..705) →
+   later rounds' values live in the committed registry, which the verify-all
+   run reproduces byte-exact.
 4. **Deferred, declared**: automatic dataset→stamp provenance propagation
    (M2 machinery, criterion 7 partial); options-chain overlay (v2,
    informed by the M3 spike), post-publication bar revisions (v2), minute
@@ -240,16 +249,39 @@ the round-2 guard line.
   universal claim).
   → remediation: ratio events DEFER emission and are DECIDED AT
   APPLICATION TIME against the actual session's base price
-  (`_PendingRatio`; cancellation is silent and draw-neutral); the
+  (`_PendingRatio`; a consumed pending — applied OR canceled — consumes
+  the session in both twins, so the walk never runs and the decision is
+  pair-invariant through the shared base_close read); the
   announcement RESYNCS the alpha drift so both trajectories apply the
   factor to the same price (mutant M82 re-anchored to the resync, M83
   added on the application guard); hostile coverage widened to a 12-seed
-  sweep + the alpha twin through `verify_manifest` (both red before the
-  fix); registry binds (seed, kind, world_id) triples for both pools
+  sweep + the alpha twin through `verify_manifest` (both observed red
+  during development — a transcript fact, not a retained-log fact); registry binds (seed, kind, world_id) triples for both pools
   plus outer==inner id equality; exact package-membership predicate
   `_is_synth_module` for the boundary scan; docs truthed and the signed
   plan carries a corrections appendix instead of silent edits. Post-fix:
   suite 323/0, KILLED=83/83.
+- **Round 4** (Codex, head `e9e5c67`): **NO-GO** — NEW P1-1: the round-3
+  RESYNC itself could jump the gate (announcement-session close forced to
+  base while the covering action lands next session; cumulative alpha
+  drift is unbounded, so an accepted large-coefficient spec could emit an
+  undeclared ≥2× move). P2-1 the documented "draw-neutral cancellation"
+  was false as written (a canceled pending re-enabled the walk);
+  P2-2 §5.4 still recorded two re-pins and claimed both small worlds
+  unchanged (a batched doc edit had silently failed on a late assert —
+  §1 was stale the same way).
+  → remediation: ±1.5% cumulative DRIFT WALL (`DRIFT_CAP` — worst
+  combined session factor 1.9·e^0.03 = 1.958 pre-rounding, strictly
+  inside the gate even after cent rounding; wall red-verified directly
+  and pinned by mutant M84; enormous-coefficient 500 sweep green); the
+  wall makes the round-3 resync REDUNDANT (worst wobble 1.5% < the 2%
+  ratio tolerance), so the resync and mutant M82 were RETIRED together
+  rather than defending scaffolding with a contrived test; cancellation
+  made genuinely draw-neutral (a consumed pending — applied OR canceled —
+  consumes the session in both twins); §1/§5.4 rewritten (individual
+  edits, no failed batches) with the re-pin history complete and the
+  "both red before the fix" phrasing scoped as a transcript fact.
+  Post-fix: suite 324/0, KILLED=83/83 (83 total).
 
 ## 7. Evidence invalidation
 

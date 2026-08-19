@@ -546,3 +546,22 @@ def test_hostile_alpha_world_verifies(static_calendar) -> None:  # type: ignore[
         static_calendar,
     )
     _verify_world(world, static_calendar)
+
+
+def test_alpha_drift_wall_bounds_resync(static_calendar) -> None:  # type: ignore[no-untyped-def]
+    """Round-4 P1-1: with an enormous planted coefficient the cumulative
+    drift constantly slams the wall — the ratio-announcement resync jump
+    and every combined session factor must still stay strictly inside the
+    discontinuity gate (an accepted spec cannot emit an ungated move)."""
+    for seed in (7, 8, 9):
+        world = generate_world(
+            base_spec(
+                world_id=f"synth-v1-driftwall-{seed}",
+                seed=seed,
+                kind="alpha",
+                alpha=AlphaSpec(family="linear_momentum", coefficient=500.0),
+                rates=_hostile_rates(),
+            ),
+            static_calendar,
+        )
+        _verify_world(world, static_calendar)

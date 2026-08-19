@@ -74,6 +74,12 @@ MIN_CLOSE = Decimal("1.00")
 # rejects — per-session returns are bounded under the gate bound (real
 # venues halt; the generator does too)
 DAILY_RET_LIMIT = math.log(1.9)
+# round-4 P1-1: cumulative alpha drift (close/base) is walled at +-1.5%.
+# Every undeclared session factor is then bounded by
+# 1.9 * exp(2*DRIFT_CAP) = 1.958 before cent rounding (worst 1.977 at the
+# $1.00 floor), strictly inside the 2x gate bound — and the ratio-
+# announcement resync jump is bounded by exp(DRIFT_CAP) = 1.015.
+DRIFT_CAP = 0.015
 
 
 class GeneratedWorld(StrictModel):
@@ -120,7 +126,6 @@ class _Seat:
         "pending_ratio",
         "pending_ticker",
         "prev_ret",
-        "resync_close",
         "rng_events",
         "rng_listing",
         "rng_price",
@@ -152,7 +157,6 @@ class _Seat:
         self.pending_from: date | None = None
         self.factor_override: Decimal | None = None
         self.pending_ratio: _PendingRatio | None = None
-        self.resync_close = False
         # alpha-independent price trajectory: EXACTLY what the same-seat
         # null world's close would be at every session (round-2 P1-2) —
         # suppression decisions read THIS, never the alpha-moved close
@@ -319,6 +323,10 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                 t_idx - seat.listed_from_idx >= 2
                 and t_idx + 1 < len(sessions)
                 and override_today is None
+                # round-4 P2-1: a consumed pending (applied OR canceled)
+                # consumes the session in both twins — the walk never runs,
+                # so cancellation is genuinely draw-neutral
+                and announced is None
             )
             fired: str | None = None
             if eligible:
@@ -395,7 +403,6 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                         d=d,
                         announced_at=_pub(session, hour),
                     )
-                    seat.resync_close = True
                     fired = None
                 elif fired == "cash_dividend":
                     cash = max(
@@ -444,18 +451,20 @@ def generate_world(spec: WorldSpec, calendar: SessionCalendar) -> GeneratedWorld
                 new_close = _cents(Decimal(repr(float(seat.close) * math.exp(ret))))
                 # the null-world twin of this close, chained identically
                 seat.base_close = _cents(Decimal(repr(float(seat.base_close) * math.exp(base_ret))))
+                # round-4 P1-1: wall the cumulative drift so the
+                # announcement-session resync can never jump near the gate
+                drift_up = _cents(Decimal(repr(float(seat.base_close) * math.exp(DRIFT_CAP))))
+                drift_down = _cents(Decimal(repr(float(seat.base_close) * math.exp(-DRIFT_CAP))))
+                if new_close > drift_up:
+                    new_close = drift_up
+                elif new_close < drift_down:
+                    new_close = drift_down
             else:
                 # exact ratio-derived close: the declared action must match
                 # the observed factor to the gate's tolerance, so no float
                 # round-trip on split/reverse/stock-dividend sessions
                 new_close = _cents(seat.close * override_today)
                 seat.base_close = _cents(seat.base_close * override_today)
-            if seat.resync_close:
-                # round-3 P1-1: a ratio announcement resynchronizes the
-                # planted drift — both trajectories apply the factor to the
-                # SAME price at the application session
-                new_close = seat.base_close
-                seat.resync_close = False
             open_, high, low = _ohlc(new_close, seat.rng_price)
             raw_n += 1
             bar_rows.append(

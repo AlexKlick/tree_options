@@ -2,7 +2,7 @@
   "registry_version": "worlds/1",
   "spec_version": "v1",
   "note": "Frozen world registry (M2 packet workstream C). Validation worlds are the synthetic-era holdout: dev-pool tuning against them is prohibited; final validation runs happen exclusively here. Seeds/rates are never rewritten; expected hashes are re-pinned only by scripts/verify_worlds.py --recompute after a deliberate generator change.",
-  "generator_code_sha": "420cbb26aa692ab96a79fd19038aabe8d3b206a060b06c1cbf5f9c3573795414",
+  "generator_code_sha": "b0a8ad9e55d0cde6751be6fe48fcc1f0e792f753b2f2115c25baced9cf02b45f",
   "worlds": [
     {
       "world_id": "synth-v1-dev-null-101",
@@ -36,7 +36,7 @@
         "n_sessions": 160
       },
       "expected": {
-        "content_sha256": "4401bc4c27ad3631fee6b94babf985baa96b8a1bbbd60e1497dc0c98ec0c3562",
+        "content_sha256": "14ddbd59b729bc60de2d06d5d30e791751d9b8c1a0f5656ba6ff162649087822",
         "bar_count": 2532,
         "action_count": 2,
         "security_count": 18
@@ -52,9 +52,9 @@
         "n_securities": 500
       },
       "expected": {
-        "content_sha256": "772218184eb83b74137f81f7387dc9edcf637a812af26afc14eb76e6bedbbb90",
+        "content_sha256": "f9b338b969a393feeda59259ba8d3eef315ae4ed3b6c8274a82581069d9a25a9",
         "bar_count": 712377,
-        "action_count": 1153,
+        "action_count": 1154,
         "security_count": 375
       }
     },
@@ -72,8 +72,8 @@
         "n_securities": 500
       },
       "expected": {
-        "content_sha256": "6183caebbfb785a72c9d7bed86f8e4c4530e3eb1126970663eff33d42e997cb3",
-        "bar_count": 704418,
+        "content_sha256": "e1f6319bc1e461615cfbdcb2ec663ee652df6428775166a811c1ecdf7c3b5d80",
+        "bar_count": 704419,
         "action_count": 1120,
         "security_count": 366
       }
@@ -88,8 +88,8 @@
         "n_securities": 500
       },
       "expected": {
-        "content_sha256": "0b110cf723d3af263f5845d5bc8f98d3366fcbd1dbd62f1912560f4282826cba",
-        "bar_count": 672771,
+        "content_sha256": "98caaed0d95f346277cceb48125c1c4ab70834dba2f3f5bf4eb19fa0b31664c1",
+        "bar_count": 672773,
         "action_count": 1042,
         "security_count": 372
       }
@@ -104,7 +104,7 @@
         "n_securities": 500
       },
       "expected": {
-        "content_sha256": "d0ce50f5a4c3f8bac2b664804bad500a9274bd549b93c6946f1d8af7b33e5369",
+        "content_sha256": "0616a384705c466f87fff91550f054e16c0d89cd978c66f8edf2e611ff716ea5",
         "bar_count": 699723,
         "action_count": 1121,
         "security_count": 376
@@ -120,8 +120,8 @@
         "n_securities": 500
       },
       "expected": {
-        "content_sha256": "c0a7c9cbe383c9eeed85a4089f101f0a7a0846bd5d95a9d93748d44c64fd9222",
-        "bar_count": 689201,
+        "content_sha256": "c97d5dafdaeebe051524a2c62d54f5b0f5109eaa7c1f4e3c01b9741088707619",
+        "bar_count": 689203,
         "action_count": 1104,
         "security_count": 373
       }
@@ -140,7 +140,7 @@
         "n_securities": 500
       },
       "expected": {
-        "content_sha256": "0a641cf04b2bf9e2da96eb6e02e7fd003b8ce86d0f4d717f2981152b00dc4a86",
+        "content_sha256": "4f1c4e5f43bdc51f76a2de0e4fba770d6a81655599f830cb2b80d9073e836d5e",
         "bar_count": 682354,
         "action_count": 1076,
         "security_count": 376
@@ -160,7 +160,7 @@
         "n_securities": 500
       },
       "expected": {
-        "content_sha256": "9284b9b2bc2162ff4e0555eee45a324decdbe7f51b446daf775aa41f3ffd80f3",
+        "content_sha256": "c355320166bc50571c6d87fe9467e8a2d961390076ff3dab3c6bfca729b7ef0d",
         "bar_count": 684340,
         "action_count": 1122,
         "security_count": 365

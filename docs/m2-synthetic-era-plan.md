@@ -227,11 +227,12 @@ claims and are recorded here rather than edited into the signed prose:
    automatic snapshot→stamp wiring is M2 machinery and is declared not
    delivered (see `docs/m2-synthetic-evidence.md` §4.7).
 2. "Every generated world passes the quality gates" holds for every
-   accepted spec via the round-1–3 fixes (hazard-bounded specs,
-   $1.00 minimum close, application-time ratio decisions, drift
-   resynchronization) — proven by property arithmetic plus a hostile
-   12-seed sweep and its alpha twin, not by enumeration; see evidence
-   §4.2.
+   accepted spec via the round-1–4 fixes (hazard-bounded specs,
+   $1.00 minimum close, application-time ratio decisions, and a ±1.5%
+   cumulative alpha-drift wall that bounds every combined session factor
+   strictly inside the gate) — proven by property arithmetic plus hostile
+   exercise (12-seed sweep, alpha twin, enormous-coefficient drift-wall
+   sweep), not by enumeration; see evidence §4.2.
 3. The gate-time registry check verifies the dev-pool small worlds
    byte-exact; full-pool verification is the teed artifact run retained
    with the PR evidence.
