@@ -8,7 +8,7 @@ model, no labels, no backtest, no real data, no performance claim.
 
 - Base: `main` @ `8bd34e4` (the PR #2 merge commit)
 - Branch: `m2/synthetic-era-20260818`
-- Final head: this doc's commit (rounds 1–4 remediation included).
+- Final head: this doc's commit (rounds 1–7 remediation included).
 - Commits (oldest → newest): `a35cf5a` campaign packet · `23df665`
   workstream A (PIT sector schema, manifest m2/1) · `4f45e4d` workstream
   B (synthetic world generator v1) · `e75bb10` workstream C (frozen world
@@ -16,8 +16,8 @@ model, no labels, no backtest, no real data, no performance claim.
   `d9249a9` workstream E (mutants M71–M78 + M43 re-pin) · two gate-step
   style commits → `d96b15d` (first evidence doc) · `3282cf4` round-1
   remediation · `e9836be` round-2 remediation · `e9e5c67` round-3
-  remediation · `5ba53b2`+`fd42790` round-4 remediation · `1fa1b69`
-  rounds-5/6 remediation + this doc (see §6).
+  remediation · `5ba53b2`+`fd42799` round-4 remediation · `edde7f4`
+  rounds-5/6 remediation (amended) · this doc (see §6).
 
 ## 2. What was delivered (packet workstreams A–E)
 
@@ -282,15 +282,15 @@ final invariant is preserved in git history.
   directly disabling it during development (a transcript fact, not a
   retained-log fact) and pinned permanently by mutant M84;
   enormous-coefficient 500 sweep green); the
-  wall makes the round-3 resync REDUNDANT (worst wobble 1.5% < the 2%
-  ratio tolerance), so the resync and mutant M82 were RETIRED together
+  wall makes the round-3 resync REDUNDANT (worst floor-clamped ratio
+  deviation ~1.96% < the 2% ratio tolerance), so the resync and mutant M82 were RETIRED together
   rather than defending scaffolding with a contrived test; cancellation
   made genuinely draw-neutral (a consumed pending — applied OR canceled —
   consumes the session in both twins); §1/§5.4 rewritten (individual
   edits, no failed batches) with the re-pin history complete and the
   "both red before the fix" phrasing scoped as a transcript fact.
   Post-fix: suite 324/0, KILLED=83/83 (83 total).
-- **Round 5** (Codex, head `fd42790`): **NO-GO, zero executable
+- **Round 5** (Codex, head `fd42799`): **NO-GO, zero executable
   findings** — P2-1 the documented "wobble ≤1.5%" was false after cent
   rounding (at the $1.00 floor, $1.00→$1.02 is exactly 2.0%; executable
   paths confirmed safe); P2-2 stale resync wording, "three parts" before
@@ -305,7 +305,7 @@ final invariant is preserved in git history.
   commit briefly mis-stated 83/83 and was AMENDED with the true record;
   deliberate `--recompute` moved one line (all nine content hashes
   byte-identical).
-- **Round 6** (Codex, head `1fa1b69`): **NO-GO** — the round-5
+- **Round 6** (Codex, at the since-amended head `1fa1b69`, now folded into `edde7f4`): **NO-GO** — the round-5
   documentation edits had been dispatched inside a background batch
   whose failure went unseen: the committed delta contained NO
   documentation changes while the commit message claimed them. The
