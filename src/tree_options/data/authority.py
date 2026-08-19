@@ -70,6 +70,17 @@ class PointInTimeDataset:
         return self._snapshot.snapshot_id
 
     @property
+    def manifest_hash(self) -> str:
+        """content_sha256 of the underlying manifest — the dataset lineage
+        that TrialRecord/ArtifactStamp carry (M2 criterion-7 wiring)."""
+        return self._snapshot.manifest.content_sha256
+
+    @property
+    def universe_id(self) -> str:
+        """Echo of the universe identity features_as_of requires."""
+        return self._universe_id
+
+    @property
     def actions(self) -> tuple[CorporateActionRecord, ...]:
         """Normalized corporate actions of the underlying snapshot.
 
