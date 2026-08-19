@@ -43,7 +43,7 @@ def _bar(
         low=low,
         close=Decimal(close),
         volume=1_000,
-        source="synthetic-generator-v1",
+        source="synthetic/v1",
         source_record_id=f"BAR-{security_id}-{session}",
         source_row_hash=f"HASH-{security_id}-{session}",
         snapshot_id="world-test",
@@ -71,7 +71,7 @@ def _master(
         listing_start=first,
         listing_end=last,
         exchange="NYSE",
-        source="synthetic-generator-v1",
+        source="synthetic/v1",
         available_at=_at(first),
         ticker_mappings=(
             TickerMappingRecord(
@@ -110,6 +110,32 @@ def test_top_quintile_executes_only_at_next_session_open() -> None:
     assert {fill.contract_id for fill in buys} == {"S4"}
     assert {fill.execution_session for fill in result.fills} == {execution}
     assert {fill.execution_at for fill in result.fills} == {cal.session_open(execution)}
+
+
+def test_unavailable_top_rank_stays_cash_without_promoting_lower_rank() -> None:
+    cal = _calendar()
+    decision, execution = cal.sessions()[:2]
+    securities = [f"S{i}" for i in range(5)]
+    # S4 is the sole top-quintile name but has no next-session bar.
+    bars = [_bar(sid, execution, open_="10.00", close="10.00") for sid in securities[:-1]]
+    signals = [
+        BacktestSignal(decision_session=decision, security_id=sid, score=float(i), label=0.01)
+        for i, sid in enumerate(securities)
+    ]
+
+    result = run_equity_backtest(
+        calendar=cal,
+        bars=bars,
+        master=[_master(sid, decision) for sid in securities],
+        actions=[],
+        signals=signals,
+        initial_cash=Decimal("10000.00"),
+        end_session=execution,
+    )
+
+    assert result.fills == ()
+    assert result.positions == ()
+    assert result.terminal_cash == Decimal("10000.00")
 
 
 def test_fixed_five_basis_point_fee_is_applied_per_side() -> None:
@@ -165,7 +191,7 @@ def test_split_conversion_preserves_value_and_fifo_conservation_to_penny() -> No
         effective_session=split_session,
         ratio_numerator=2,
         ratio_denominator=1,
-        source="synthetic-generator-v1",
+        source="synthetic/v1",
         source_record_id="ACT-SPLIT",
         source_row_hash="HASH-SPLIT",
         snapshot_id="world-test",

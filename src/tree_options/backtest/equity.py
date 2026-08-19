@@ -309,7 +309,7 @@ def run_equity_backtest(
         bar_key = (bar.security_id, bar.session)
         if bar_key in bar_map:
             raise EquityBacktestError(f"duplicate bar for {bar.security_id}/{bar.session}")
-        if bar.source != "synthetic-generator-v1":
+        if bar.source != DATASET_PROVENANCE:
             raise EquityBacktestError("M2 equity backtest accepts synthetic/v1 bars only")
         bar_map[bar_key] = bar
         snapshots.add(bar.snapshot_id)
@@ -421,13 +421,20 @@ def run_equity_backtest(
         scheduled_decision = schedule.get(session)
         if scheduled_decision is not None:
             selected = _top_quintile(signals_by_session[scheduled_decision])
-            target_ids = {row.security_id for row in selected}
+            target_ids = {
+                row.security_id for row in selected if (row.security_id, session) in bar_map
+            }
             target_budget = pretrade_equity / len(selected)
             desired: dict[str, int] = {}
             for row in selected:
                 execution_bar = bar_map.get((row.security_id, session))
                 if execution_bar is None:
-                    raise EquityBacktestError(f"MISSING_EXECUTION_BAR: {row.security_id}/{session}")
+                    # The name occupied a genuine top-quintile slot at the
+                    # decision close but cannot execute next session (for
+                    # example, its listing ended at that close).  Keep that
+                    # slice in cash; promoting a lower-ranked name would
+                    # silently change the registered strategy.
+                    continue
                 desired[row.security_id] = engine.fee_model.affordable_quantity(
                     budget=target_budget,
                     price=execution_bar.open,

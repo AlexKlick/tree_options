@@ -25,6 +25,7 @@ from tree_options.data.ingest import DatasetSnapshot
 from tree_options.data.quality import verify_manifest
 from tree_options.schemas.common import IdStr
 from tree_options.schemas.features import FeatureEvent, PanelRow
+from tree_options.schemas.security import SecurityMasterRecord
 from tree_options.time.calendar import StaticSessionCalendar
 
 REVISION_ZERO = "r0"
@@ -89,6 +90,20 @@ class PointInTimeDataset:
         protects them instead; see labels/build.py).
         """
         return self._snapshot.actions
+
+    @property
+    def bars(self) -> tuple[BarRecord, ...]:
+        """Settled outcome-side bars for execution and label machinery.
+
+        Feature construction must continue through ``visible_bars``; this
+        surface exists for the backtest after its decisions are already fixed.
+        """
+        return self._snapshot.bars
+
+    @property
+    def master(self) -> tuple[SecurityMasterRecord, ...]:
+        """Settled security master for execution lifecycle resolution."""
+        return self._snapshot.master
 
     def universe_as_of(self, decision_at: datetime) -> tuple[str, ...]:
         """Listing membership at decision_at.date() under decision_at knowledge.

@@ -20,7 +20,7 @@ from tree_options.registry.scope import TrialScope
 from tree_options.registry.sqlite import TrialRegistry
 from tree_options.synth import ActionRates, WorldSpec, generate_world
 from tree_options.time.calendar import StaticSessionCalendar
-from tree_options.trials import SplitOverride, run_trial
+from tree_options.trials import DEV_TRIAL_CONFIGS, SplitOverride, run_trial
 
 force_single_threaded_blas()
 
@@ -89,7 +89,18 @@ def clean_repo(tmp_path: Path) -> Path:
     return repo
 
 
-def _run(static_calendar, protocol, tmp_path, repo, *, run_index=1, horizon=1, allow_dirty=False):  # type: ignore[no-untyped-def]
+def _run(
+    static_calendar,
+    protocol,
+    tmp_path,
+    repo,
+    *,
+    run_index=1,
+    horizon=1,
+    feature_names=FEATURES,
+    model_family="ridge:v1",
+    allow_dirty=False,
+):  # type: ignore[no-untyped-def]
     dataset = _dataset(static_calendar)
     tmp_path.mkdir(parents=True, exist_ok=True)
     registry = TrialRegistry(tmp_path / "reg.sqlite")
@@ -99,8 +110,9 @@ def _run(static_calendar, protocol, tmp_path, repo, *, run_index=1, horizon=1, a
         protocol=protocol,
         world_id=dataset.snapshot_id,
         horizon_sessions=horizon,
-        feature_names=FEATURES,
-        ridge_lambda=1.0,
+        feature_names=feature_names,
+        ridge_lambda=1.0 if model_family == "ridge:v1" else None,
+        model_family=model_family,
         hypothesis="fixture-scale runner test: machinery only, no claim",
         decision_sessions=static_calendar.sessions()[:160],
         registry=registry,
@@ -137,6 +149,11 @@ def test_end_to_end_register_execute_stamp_complete(
     assert payload["pooled"]["n_rows"] == result.n_scored_rows > 0
     assert payload["fp_gate"]["total"] == payload["n_folds"]
     assert set(payload["feature_names"]) == set(FEATURES)
+    backtest = payload["backtest"]
+    assert backtest["dataset_provenance"] == "synthetic/v1"
+    assert backtest["n_session_returns"] > 0
+    assert len(backtest["per_fold"]) == payload["n_folds"]
+    assert all(fold["terminal_equity"] for fold in backtest["per_fold"])
     # scope committed and canonical, world identity inside feature_set_id
     scope = TrialScope(**json.loads(registry.scope_json(result.trial_id)))
     assert dataset.snapshot_id in scope.feature_set_id
@@ -288,3 +305,40 @@ def test_payload_is_deterministic(static_calendar, protocol, tmp_path, clean_rep
     a = json.loads(first.artifact_path.read_text())["payload"]
     b = json.loads(second.artifact_path.read_text())["payload"]
     assert a == b
+
+
+def test_univariate_mom1_baseline_scores_without_a_fitted_model(
+    static_calendar, protocol, tmp_path, clean_repo
+) -> None:  # type: ignore[no-untyped-def]
+    _, registry, result = _run(
+        static_calendar,
+        protocol,
+        tmp_path,
+        clean_repo,
+        feature_names=("mom_1",),
+        model_family="univariate_ic:v1",
+    )
+    payload = json.loads(result.artifact_path.read_text())["payload"]
+    assert payload["model_family"] == "univariate_ic:v1"
+    assert payload["feature_names"] == ["mom_1"]
+    assert all(fold["model_sha256"] is None for fold in payload["per_fold"])
+    scope = TrialScope(**json.loads(registry.scope_json(result.trial_id)))
+    assert scope.model_family == "univariate_ic:v1"
+
+
+def test_dev_trial_configs_are_the_four_pre_registered_plan_entries() -> None:
+    assert [config.config_id for config in DEV_TRIAL_CONFIGS] == ["D1", "D2", "D3", "D4"]
+    assert [config.world_id for config in DEV_TRIAL_CONFIGS] == [
+        "synth-v1-dev-alpha-104",
+        "synth-v1-dev-null-103",
+        "synth-v1-dev-alpha-104",
+        "synth-v1-dev-alpha-104",
+    ]
+    assert [config.horizon_sessions for config in DEV_TRIAL_CONFIGS] == [1, 1, 5, 1]
+    assert [config.model_family for config in DEV_TRIAL_CONFIGS] == [
+        "ridge:v1",
+        "ridge:v1",
+        "ridge:v1",
+        "univariate_ic:v1",
+    ]
+    assert DEV_TRIAL_CONFIGS[-1].feature_names == ("mom_1",)

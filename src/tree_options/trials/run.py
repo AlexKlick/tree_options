@@ -35,13 +35,20 @@ import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
+from decimal import Decimal
 from pathlib import Path
+from typing import Literal
 
+from tree_options.backtest import BacktestSignal, run_equity_backtest
+from tree_options.data.actions import CorporateActionRecord
 from tree_options.data.authority import PointInTimeDataset
+from tree_options.data.bars import BarRecord
 from tree_options.evaluation import (
+    BacktestSummary,
     FalsePositiveAssessment,
     ScoredLabel,
     assess_false_positives,
+    backtest_summary,
     one_sample_t_statistic,
     per_session_rank_ics,
 )
@@ -56,8 +63,70 @@ from tree_options.schemas.trial import TrialRecord
 from tree_options.splitting.splitter import Fold, WalkForwardSplitter
 from tree_options.time.calendar import SessionCalendar
 
-MODEL_FAMILY = "ridge:v1"
-RUNNER_REVISION = "trials.run/v1"
+ModelFamily = Literal["ridge:v1", "univariate_ic:v1"]
+RIDGE_MODEL_FAMILY: ModelFamily = "ridge:v1"
+UNIVARIATE_MODEL_FAMILY: ModelFamily = "univariate_ic:v1"
+RUNNER_REVISION = "trials.run/v2"
+BACKTEST_INITIAL_CASH = Decimal("1000000.00")
+BACKTEST_CONFIG = {
+    "strategy": "top_quintile_equal_weight",
+    "execution": "next_session_open",
+    "fee_basis_points_per_side": 5,
+    "initial_cash_per_fold": str(BACKTEST_INITIAL_CASH),
+    "ledger": "fifo_decimal",
+}
+
+
+@dataclass(frozen=True)
+class DevTrialConfig:
+    config_id: str
+    world_id: str
+    horizon_sessions: int
+    model_family: ModelFamily
+    feature_names: tuple[str, ...]
+    ridge_lambda: float | None
+    hypothesis: str
+
+
+_RIDGE_FEATURES = ("mom_1", "mom_5", "mom_20", "dol_vol_20")
+DEV_TRIAL_CONFIGS = (
+    DevTrialConfig(
+        "D1",
+        "synth-v1-dev-alpha-104",
+        1,
+        RIDGE_MODEL_FAMILY,
+        _RIDGE_FEATURES,
+        1.0,
+        "H1 ridge on the weak alpha development world; expect t near 1.6",
+    ),
+    DevTrialConfig(
+        "D2",
+        "synth-v1-dev-null-103",
+        1,
+        RIDGE_MODEL_FAMILY,
+        _RIDGE_FEATURES,
+        1.0,
+        "H1 ridge on the null development world; expect no rejection",
+    ),
+    DevTrialConfig(
+        "D3",
+        "synth-v1-dev-alpha-104",
+        5,
+        RIDGE_MODEL_FAMILY,
+        _RIDGE_FEATURES,
+        1.0,
+        "H5 ridge on the weak alpha development world; expect t near 0.7",
+    ),
+    DevTrialConfig(
+        "D4",
+        "synth-v1-dev-alpha-104",
+        1,
+        UNIVARIATE_MODEL_FAMILY,
+        ("mom_1",),
+        None,
+        "H1 univariate mom_1 IC baseline for planted-effect arithmetic",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -152,13 +221,14 @@ def run_trial(
     world_id: str,
     horizon_sessions: int,
     feature_names: tuple[str, ...],
-    ridge_lambda: float,
+    ridge_lambda: float | None,
     hypothesis: str,
     decision_sessions: Sequence[date],
     registry: TrialRegistry,
     artifacts_dir: Path,
     repo: Path,
     clock: Callable[[], datetime],
+    model_family: ModelFamily = RIDGE_MODEL_FAMILY,
     run_index: int = 1,
     split_override: SplitOverride | None = None,
     allow_dirty: bool = False,
@@ -172,8 +242,16 @@ def run_trial(
         raise ValueError("horizon_sessions must be 1 or 5")
     if not feature_names or len(set(feature_names)) != len(feature_names):
         raise ValueError("feature_names must be non-empty and unique")
-    if not math.isfinite(ridge_lambda) or ridge_lambda < 0:
-        raise ValueError("ridge_lambda must be finite and >= 0")
+    if model_family == RIDGE_MODEL_FAMILY:
+        if ridge_lambda is None or not math.isfinite(ridge_lambda) or ridge_lambda < 0:
+            raise ValueError("ridge model requires ridge_lambda finite and >= 0")
+    elif model_family == UNIVARIATE_MODEL_FAMILY:
+        if feature_names != ("mom_1",):
+            raise ValueError("univariate_ic:v1 requires feature_names=('mom_1',)")
+        if ridge_lambda is not None:
+            raise ValueError("univariate_ic:v1 does not accept ridge_lambda")
+    else:  # runtime callers are not protected by the static Literal
+        raise ValueError(f"unsupported model_family {model_family!r}")
     normalized_sessions = tuple(decision_sessions)
     if not normalized_sessions or tuple(sorted(set(normalized_sessions))) != normalized_sessions:
         raise ValueError("decision_sessions must be non-empty, unique, and strictly increasing")
@@ -190,20 +268,22 @@ def run_trial(
         "horizon_sessions": horizon_sessions,
         "feature_names": list(feature_names),
         "ridge_lambda": ridge_lambda,
-        "model_family": MODEL_FAMILY,
+        "model_family": model_family,
         "split": split,
         "decision_sessions_sha256": decision_sessions_sha256,
         "decision_session_count": len(normalized_sessions),
+        "backtest": BACKTEST_CONFIG,
         "run_index": run_index,
     }
-    trial_id = f"m2p-{world_id}-h{horizon_sessions}-ridge-r{run_index}"
+    model_slug = "ridge" if model_family == RIDGE_MODEL_FAMILY else "univariate"
+    trial_id = f"m2p-{world_id}-h{horizon_sessions}-{model_slug}-r{run_index}"
     scope = TrialScope(
         protocol_id="tree_options",
         protocol_hash=protocol_hash(protocol),
         outer_fold_id=world_id,
         target_horizon=f"h{horizon_sessions}",
         feature_set_id=f"{world_id}|{'+'.join(feature_names)}|fv2",
-        model_family=MODEL_FAMILY,
+        model_family=model_family,
     )
 
     splitter = WalkForwardSplitter(
@@ -254,6 +334,8 @@ def run_trial(
             "split": split,
             "decision_sessions_sha256": decision_sessions_sha256,
             "decision_session_count": len(normalized_sessions),
+            "model_family": model_family,
+            "backtest": BACKTEST_CONFIG,
         },
         scope_key=scope.scope_key(),
     )
@@ -275,6 +357,7 @@ def run_trial(
             trial_id=trial_id,
             feature_names=feature_names,
             ridge_lambda=ridge_lambda,
+            model_family=model_family,
             horizon_sessions=horizon_sessions,
             world_id=world_id,
         )
@@ -304,6 +387,15 @@ class _ExecutionStats:
     fp_assessment: FalsePositiveAssessment
 
 
+def _summary_payload(summary: BacktestSummary) -> dict[str, float | int | None]:
+    return {
+        "n_session_returns": len(summary.session_returns),
+        "total_return": summary.total_return,
+        "mean_turnover": summary.mean_turnover,
+        "hit_rate": summary.hit_rate,
+    }
+
+
 def _execute(
     *,
     dataset: PointInTimeDataset,
@@ -312,7 +404,8 @@ def _execute(
     decision_sessions: Sequence[date],
     trial_id: str,
     feature_names: tuple[str, ...],
-    ridge_lambda: float,
+    ridge_lambda: float | None,
+    model_family: ModelFamily,
     horizon_sessions: int,
     world_id: str,
 ) -> tuple[dict[str, object], _ExecutionStats]:
@@ -330,45 +423,112 @@ def _execute(
         label_values=label_values,
         decision_sessions=decision_sessions,
     )
+    bars_by_session: dict[date, list[BarRecord]] = {}
+    for bar in dataset.bars:
+        bars_by_session.setdefault(bar.session, []).append(bar)
+    actions_by_session: dict[date, list[CorporateActionRecord]] = {}
+    for action in dataset.actions:
+        actions_by_session.setdefault(action.effective_session, []).append(action)
 
     per_fold: list[dict[str, object]] = []
+    per_fold_backtests: list[dict[str, object]] = []
+    backtest_returns: list[float] = []
+    backtest_turnovers: list[float] = []
+    backtest_hits: list[bool] = []
     fold_t_statistics: list[float] = []
     scored: list[ScoredLabel] = []
     for fold in folds:
-        fit_rows = [
-            row for s in sorted(fold.final_fit_train_sessions) for row in rows_by_session.get(s, ())
-        ]
-        fit_sessions = frozenset(s for s in fold.final_fit_train_sessions if rows_by_session.get(s))
-        pipe = RidgePipeline(
-            name=f"{trial_id}/fold-{fold.fold_id:03d}",
-            feature_names=feature_names,
-            ridge_lambda=ridge_lambda,
-        )
-        pipe.fit(fit_rows, fit_sessions=fit_sessions)
-        model_sha256 = hashlib.sha256(pipe.artifact_bytes()).hexdigest()
-
-        obs = [
-            ObsRow(session=row.session, security_id=row.security_id, features=row.features)
-            for s in sorted(fold.test_sessions)
-            for row in rows_by_session.get(s, ())
-        ]
-        targets = frozenset(s for s in fold.test_sessions if rows_by_session.get(s))
-        scores = pipe.score(obs, target_sessions=targets)
-        fold_scored = [
-            ScoredLabel(
-                security_id=row.security_id,
-                session=row.session,
-                score=row.score,
-                label=label_values[(row.security_id, row.session)],
+        test_rows = [row for s in sorted(fold.test_sessions) for row in rows_by_session.get(s, ())]
+        if model_family == RIDGE_MODEL_FAMILY:
+            assert ridge_lambda is not None
+            fit_rows = [
+                row
+                for s in sorted(fold.final_fit_train_sessions)
+                for row in rows_by_session.get(s, ())
+            ]
+            fit_sessions = frozenset(
+                s for s in fold.final_fit_train_sessions if rows_by_session.get(s)
             )
-            for row in scores
-        ]
+            pipe = RidgePipeline(
+                name=f"{trial_id}/fold-{fold.fold_id:03d}",
+                feature_names=feature_names,
+                ridge_lambda=ridge_lambda,
+            )
+            pipe.fit(fit_rows, fit_sessions=fit_sessions)
+            model_sha256: str | None = hashlib.sha256(pipe.artifact_bytes()).hexdigest()
+            obs = [
+                ObsRow(session=row.session, security_id=row.security_id, features=row.features)
+                for row in test_rows
+            ]
+            targets = frozenset(s for s in fold.test_sessions if rows_by_session.get(s))
+            scores = pipe.score(obs, target_sessions=targets)
+            fold_scored = [
+                ScoredLabel(
+                    security_id=row.security_id,
+                    session=row.session,
+                    score=row.score,
+                    label=label_values[(row.security_id, row.session)],
+                )
+                for row in scores
+            ]
+        else:
+            model_sha256 = None
+            fold_scored = [
+                ScoredLabel(
+                    security_id=row.security_id,
+                    session=row.session,
+                    score=row.features["mom_1"],
+                    label=row.label,
+                )
+                for row in test_rows
+            ]
         scored.extend(fold_scored)
         ics = per_session_rank_ics(fold_scored)
         t_stat = one_sample_t_statistic([entry.ic for entry in ics])
         if t_stat is None:
             raise ValueError(f"fold {fold.fold_id}: no evaluable per-session ICs on {world_id}")
         fold_t_statistics.append(t_stat)
+        first_execution = calendar.nth_after(min(row.session for row in fold_scored), 1)
+        last_execution = calendar.nth_after(max(row.session for row in fold_scored), 1)
+        execution_sessions = calendar.sessions()[
+            calendar.ordinal(first_execution) : calendar.ordinal(last_execution) + 1
+        ]
+        fold_backtest = run_equity_backtest(
+            calendar=calendar,
+            bars=[
+                bar for session in execution_sessions for bar in bars_by_session.get(session, ())
+            ],
+            master=dataset.master,
+            actions=[
+                action
+                for session in execution_sessions
+                for action in actions_by_session.get(session, ())
+            ],
+            signals=[
+                BacktestSignal(
+                    decision_session=row.session,
+                    security_id=row.security_id,
+                    score=row.score,
+                    label=row.label,
+                )
+                for row in fold_scored
+            ],
+            initial_cash=BACKTEST_INITIAL_CASH,
+            end_session=last_execution,
+        )
+        backtest_returns.extend(fold_backtest.summary.session_returns)
+        backtest_turnovers.extend(fold_backtest.turnovers)
+        backtest_hits.extend(fold_backtest.label_hits)
+        per_fold_backtests.append(
+            {
+                "fold_id": fold.fold_id,
+                **_summary_payload(fold_backtest.summary),
+                "terminal_cash": str(fold_backtest.terminal_cash),
+                "terminal_market_value": str(fold_backtest.terminal_market_value),
+                "terminal_equity": str(fold_backtest.terminal_equity),
+                "fill_count": len(fold_backtest.fills),
+            }
+        )
         per_fold.append(
             {
                 "fold_id": fold.fold_id,
@@ -384,11 +544,16 @@ def _execute(
     pooled_t = one_sample_t_statistic([entry.ic for entry in pooled_ics])
     fold_t_values = tuple(fold_t_statistics)
     assessment = assess_false_positives(list(fold_t_values))
+    aggregate_backtest = backtest_summary(
+        backtest_returns,
+        backtest_turnovers,
+        backtest_hits,
+    )
     payload: dict[str, object] = {
         "runner": RUNNER_REVISION,
         "world_id": world_id,
         "horizon_sessions": horizon_sessions,
-        "model_family": MODEL_FAMILY,
+        "model_family": model_family,
         "feature_names": list(feature_names),
         "n_folds": len(folds),
         "per_fold": per_fold,
@@ -408,6 +573,15 @@ def _execute(
             "max_allowed_rejections": assessment.max_allowed_rejections,
             "exact_upper_tail_probability": assessment.exact_upper_tail_probability,
             "passes": assessment.passes,
+        },
+        "backtest": {
+            "dataset_provenance": "synthetic/v1",
+            "initial_cash_per_fold": str(BACKTEST_INITIAL_CASH),
+            **_summary_payload(aggregate_backtest),
+            "session_returns": list(aggregate_backtest.session_returns),
+            "turnovers": backtest_turnovers,
+            "label_hits": backtest_hits,
+            "per_fold": per_fold_backtests,
         },
     }
     return payload, _ExecutionStats(fold_t_statistics=fold_t_values, fp_assessment=assessment)
