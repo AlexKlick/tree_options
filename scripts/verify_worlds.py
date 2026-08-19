@@ -79,9 +79,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--pool", choices=("dev", "validation"))
     parser.add_argument("--world", action="append", help="world_id (repeatable)")
-    parser.add_argument(
-        "--max-bars", type=int, help="skip worlds with more registered bars"
-    )
+    parser.add_argument("--max-bars", type=int, help="skip worlds with more registered bars")
     parser.add_argument(
         "--recompute",
         action="store_true",
