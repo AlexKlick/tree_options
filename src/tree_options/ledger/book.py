@@ -322,12 +322,8 @@ class LedgerBook:
                 )
             )
         else:
-            held = sum(lot.quantity for lot in self._lots[fill.contract_id])
-            if held < fill.quantity:
-                raise LedgerViolation(
-                    "POSITION_UNDERFLOW",
-                    f"sell {fill.quantity} of {fill.contract_id} but held {held}",
-                )
+            # underflow was rejected in apply()'s preflight (the single
+            # guarded site — M24's anchor); the walk cannot overshoot
             remaining = fill.quantity
             cost_removed = Decimal("0")
             while remaining > 0:
