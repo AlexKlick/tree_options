@@ -350,3 +350,44 @@ Sealed trial set (pre-declared before the run; 16 registered trials):
 univariate × {701, 702, 703, 706, 707} × {H1, H5} (10),
 univariate × {704, 705} × {H1} (2, weak stratum, reported only),
 ridge × {706, 707} × {H1, H5} (4, secondary, reported only).
+
+## 10. Gate #1 disposition: corrected power gate #2 (2026-08-19, owner-ruled)
+
+Sealed gate #1 verdict: **FAIL** (exit 4), recorded verbatim in
+`docs/m2-proper-evidence.md` §5 and the retained log. The FP arm passed
+all three criteria (pooled |t| 0.21 H1 / 1.06 H5 vs the 2.5 limit; 3/87
+fold rejections vs 8 allowed). The power arm failed on one of two
+worlds: 706 t=1.51 < 1.96 (707 t=2.93 passed). Root cause is §7's power
+arithmetic, which assumed realized per-session rank IC ≈ planted
+coefficient and ignored the drift-wall attenuation already measured by
+the workstream-C alignment pin (0.187 realized at coefficient 0.5 =
+37%): worlds 706/707 realized 43%/84% of the coefficient, an ordinary
+draw from the attenuated band, mapping to t ∈ [1.5, 3.1] — exactly what
+was observed. A FAIL is evidence, not a rerun trigger (§9); the owner
+has ruled a NEW power lane in the SAME campaign. Gate #1, its registry,
+artifacts, and FAIL record are immutable and stay in the packet.
+
+**Owner ruling (2026-08-19, disposition question answered "New power
+lane, same campaign"):** add power worlds 708/709 (fresh seeds, never
+generated or observed before this amendment) at coefficient 0.01, sized
+so that even the pessimistic attenuation draw measured at gate #1
+(0.43×) yields per-world t ≈ 3.1. Run sealed gate #2 over them with
+power-only criteria. The FP arm is NOT re-run: it passed at gate #1 and
+worlds 701–705 are frozen forever — no validation payload is re-rolled,
+tuned against, or inspected for this amendment. Sizing arithmetic
+(pre-declared): attenuated per-session rank IC ∈ [0.0043, 0.0100] ⇒
+per-world t = IC·√n/SE with n ≈ 1,546 test sessions and SE 0.056 ⇒
+t ∈ [3.0, 7.0]; criterion requires both worlds ≥ 1.96. Residual risk:
+attenuation at coefficient 0.01 is extrapolated from measurements at
+0.005 (43–84%) and 0.5 (37%); the pessimistic bound covers the worst
+observed draw with ≥1.1 t-units of margin.
+
+Sealed gate #2 trial set (pre-declared before the run; 8 registered
+trials, fresh registry `artifacts/m2-proper-sealed-2.db`, fresh
+artifacts dir `artifacts/m2-proper-sealed-2/`):
+univariate × {708, 709} × {H1} — criterion: pooled t ≥ 1.96 on BOTH;
+univariate × {708, 709} × {H5} + ridge × {708, 709} × {H1, H5} —
+reported only (H5 single-world statistics carry the §9.2 overlap
+inflation; the ridge carries the §9.3 dilution/sign instability).
+Verdict PASS requires the single power criterion; anything else is FAIL
+and is recorded verbatim with no further re-run inside this campaign.

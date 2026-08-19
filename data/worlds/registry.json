@@ -1,7 +1,7 @@
 {
   "registry_version": "worlds/1",
   "spec_version": "v1",
-  "note": "Frozen world registry (M2 packet workstream C). Validation worlds are the synthetic-era holdout: dev-pool tuning against them is prohibited; final validation runs happen exclusively here. Seeds/rates are never rewritten; expected hashes are re-pinned only by scripts/verify_worlds.py --recompute after a deliberate generator change. PRE-TRIAL AMENDMENT 2026-08-19 (M2-proper plan \u00a71.1/\u00a73.A, owner-signed): worlds 706/707 added at coefficient 0.005 as the power stratum \u2014 the frozen 0.002 gives ~50% single-world detection power (per-session rank IC ~ coefficient, n~370, ~1,827 test sessions => pooled t~1.6), declared from arithmetic BEFORE any M2 trial was registered. 701-705 are untouched. The amendment window closed at the first M2 trial registration; from that point the registry is frozen through the campaign.",
+  "note": "Frozen world registry (M2 packet workstream C). Validation worlds are the synthetic-era holdout: dev-pool tuning against them is prohibited; final validation runs happen exclusively here. Seeds/rates are never rewritten; expected hashes are re-pinned only by scripts/verify_worlds.py --recompute after a deliberate generator change. PRE-TRIAL AMENDMENT 2026-08-19 (M2-proper plan \u00a71.1/\u00a73.A, owner-signed): worlds 706/707 added at coefficient 0.005 as the power stratum \u2014 the frozen 0.002 gives ~50% single-world detection power (per-session rank IC ~ coefficient, n~370, ~1,827 test sessions => pooled t~1.6), declared from arithmetic BEFORE any M2 trial was registered. 701-705 are untouched. The amendment window closed at the first M2 trial registration; from that point the registry is frozen through the campaign. POST-GATE-1 AMENDMENT 2026-08-19 (M2-proper plan \u00a710, owner-signed disposition of the gate #1 power-arm FAIL): power worlds 708/709 added at coefficient 0.01, sized from the attenuation measured AT gate #1 (0.43x-0.84x realized; 0.43x pessimistic bound => per-world t~3.1) \u2014 fresh seeds, never generated or observed before this amendment. Gate #1 FAIL, its registry (artifacts/m2-proper-sealed.db) and artifacts are immutable. Worlds 701-705 untouched and frozen forever; no validation payload was re-rolled or tuned against. The gate #2 amendment window closes at the first sealed-2 trial registration.",
   "generator_code_sha": "c59fa3df814e4913c7a49d36a2bb51d636eebde4d9df0f18fda9f761bfedc1e7",
   "worlds": [
     {
@@ -204,6 +204,46 @@
         "bar_count": 680141,
         "action_count": 1125,
         "security_count": 365
+      }
+    },
+    {
+      "world_id": "synth-v1-val-alpha-708",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-alpha-708",
+        "seed": 708,
+        "kind": "alpha",
+        "alpha": {
+          "family": "linear_momentum",
+          "coefficient": 0.01
+        },
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "5d96b5d37e3bcd60d8674fc68f22b974a2cc8f216689d62ce5f23a8da12f6ed9",
+        "bar_count": 682238,
+        "action_count": 1091,
+        "security_count": 364
+      }
+    },
+    {
+      "world_id": "synth-v1-val-alpha-709",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-alpha-709",
+        "seed": 709,
+        "kind": "alpha",
+        "alpha": {
+          "family": "linear_momentum",
+          "coefficient": 0.01
+        },
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "a44c3bd58150555256c09910b8b532f9054d7ff4225ad25d4925a70f90cee98e",
+        "bar_count": 703992,
+        "action_count": 1119,
+        "security_count": 370
       }
     }
   ]
