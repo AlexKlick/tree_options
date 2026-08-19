@@ -115,6 +115,18 @@ def test_standardizer_uses_train_statistics_only() -> None:
     pipe.score(wild, target_sessions=frozenset({HELD}))
     assert pipe._mean is not None
     assert pipe._mean.tolist() == mean.tolist()
+    # ...and the SCORES themselves must be computed from the stored train
+    # statistics: a singleton eval row standardized by its own batch
+    # statistics would collapse to z=0 (score == intercept). Deriving the
+    # expected value by hand from the stored mean/scale/coef/intercept
+    # owns the leakage behaviorally, not just the attribute snapshot.
+    assert pipe._scale is not None and pipe._coef is not None
+    lone = ObsRow(session=HELD, security_id="W9", features={"x1": 3.0, "x2": -4.0})
+    (scored,) = pipe.score([lone], target_sessions=frozenset({HELD}))
+    z1 = (3.0 - float(pipe._mean[0])) / float(pipe._scale[0])
+    z2 = (-4.0 - float(pipe._mean[1])) / float(pipe._scale[1])
+    expected = z1 * float(pipe._coef[0]) + z2 * float(pipe._coef[1]) + pipe._intercept
+    assert scored.score == pytest.approx(expected, rel=1e-9)
 
 
 def test_constant_feature_is_inert() -> None:

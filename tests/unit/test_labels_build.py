@@ -123,6 +123,82 @@ def test_no_label_when_stale_history_straddles_decision(static_calendar) -> None
         ds, static_calendar, horizon_sessions=1, decision_sessions=[date(2024, 6, 28)]
     )
     assert labels == ()
+    # A stale base whose bars DO exist contiguously but publish late is
+    # the case ONLY the staleness check catches: base s1 is the last bar
+    # visible at s3's close (s2/s3 publish after it), yet s2 and s3 are
+    # present in the bar series, so the window-existence check would pass
+    # and the builder would mint a label whose window (s2, s3) reaches
+    # BACK over sessions that predate the decision. Late publication is
+    # gate-legal (only before-own-close is refused), so this must stay a
+    # no-label outcome on its own merits.
+    s1 = date(2024, 6, 3)
+    s2 = static_calendar.nth_after(s1, 1)
+    s3 = static_calendar.nth_after(s1, 2)
+    from tree_options.schemas.security import (
+        SectorMappingRecord,
+        SecurityMasterRecord,
+        TickerMappingRecord,
+    )
+
+    late_master = (
+        SecurityMasterRecord(
+            security_id="SEC-LP",
+            figi="BBG000LATEPUB",
+            cik="0000000909",
+            listing_start=s1,
+            listing_end=None,
+            exchange="NYSE",
+            source="late-pub-fixture",
+            available_at=datetime(s1.year, s1.month, s1.day, 21, 0, tzinfo=UTC),
+            ticker_mappings=(
+                TickerMappingRecord(
+                    security_id="SEC-LP",
+                    ticker="LATE",
+                    effective_from=s1,
+                    available_at=datetime(s1.year, s1.month, s1.day, 21, 0, tzinfo=UTC),
+                ),
+            ),
+            sector_mappings=(
+                SectorMappingRecord(
+                    security_id="SEC-LP",
+                    sector="DISC",
+                    effective_from=s1,
+                    available_at=datetime(s1.year, s1.month, s1.day, 21, 0, tzinfo=UTC),
+                ),
+            ),
+        ),
+    )
+
+    def _row(sym: str, session: date, close: str, record: str, pub: datetime) -> dict[str, object]:
+        return dict(
+            vendor_symbol=sym,
+            session=session,
+            open=close,
+            high=close,
+            low=close,
+            close=close,
+            volume=1_000,
+            available_at=pub,
+            source_record_id=record,
+        )
+
+    rows = (
+        _row("LATE", s1, "10.00", "LP-1", _pub(s1)),
+        # both later bars publish AFTER s3's close (22:00 and 23:00 UTC)
+        _row("LATE", s2, "11.00", "LP-2", datetime(s3.year, s3.month, s3.day, 22, 0, tzinfo=UTC)),
+        _row("LATE", s3, "12.00", "LP-3", _pub(s3)),
+    )
+    payload = build_payload(
+        provider=rv.PROVIDER,
+        rows=rows,
+        retrieved_at=rv.RETRIEVED_AT,
+        known_exclusions=rv.KNOWN_EXCLUSIONS,
+    )
+    snapshot = ingest_snapshot(
+        payload, late_master, snapshot_id="snap-late-pub-fixture", normalization_code_sha=CODE_SHA
+    )
+    late_ds = PointInTimeDataset(snapshot, static_calendar, universe_id=UNIVERSE_ID)
+    assert build_labels(late_ds, static_calendar, horizon_sessions=2, decision_sessions=[s3]) == ()
 
 
 def test_no_label_before_first_history_is_visible(static_calendar) -> None:  # type: ignore[no-untyped-def]

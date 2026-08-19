@@ -635,10 +635,15 @@ MUTANTS = [
         id="M66-future-bar-visible",
         owner="test_future_bar_is_invisible",
         file="src/tree_options/data/authority.py",
-        anchor="if bar.available_at <= decision_at",
-        replacement="if True",
+        anchor="return bars[: bisect_right(available, decision_at)]",
+        replacement="return bars",
         selectors=[f"{U}/test_data_authority.py"],
-        invariant="M1-C the authority never returns a bar published after decision_at (future data is invisible at the read gate)",
+        invariant=(
+            "M1-C the authority never returns a bar published after decision_at "
+            "(future data is invisible at the read gate); anchor re-pinned "
+            "2026-08-19 — the M2-proper C lane replaced the linear filter with "
+            "the monotone bisect fast path, same leak on the new shape"
+        ),
     ),
     dict(
         id="M67-universe-survivorship-gutted",

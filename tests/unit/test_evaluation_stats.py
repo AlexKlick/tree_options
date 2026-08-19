@@ -26,6 +26,14 @@ def test_spearman_perfect_and_inverse_order() -> None:
 
 def test_spearman_assigns_average_ranks_for_ties() -> None:
     assert spearman_rank_ic([1.0, 1.0, 2.0], [1.0, 2.0, 3.0]) == pytest.approx(math.sqrt(3.0) / 2.0)
+    # A tie pair beside singletons pins the WITHIN-GROUP average itself:
+    # rank pattern (1.5, 1.5, 3, 4) gives exactly 3/sqrt(10), while any
+    # non-averaged tie ranking (e.g. last-position 1,1,3,4) gives a
+    # different coefficient — the n=3 case above is invariant to that
+    # shift, so it cannot own this invariant alone.
+    assert spearman_rank_ic([1.0, 1.0, 2.0, 3.0], [1.0, 2.0, 3.0, 4.0]) == pytest.approx(
+        3.0 / math.sqrt(10.0)
+    )
 
 
 @pytest.mark.parametrize(
