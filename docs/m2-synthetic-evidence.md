@@ -58,7 +58,8 @@ model, no labels, no backtest, no real data, no performance claim.
   delta-gap named, T+1 PIT semantics, SPY coverage stats, storage
   estimate with stated assumptions, priced vendor shortlist). No
   production code, no ingest.
-- **E — this packet** + owner-scoped mutants M71–M83.
+- **E — this packet** + owner-scoped mutants M71–M84
+  (M82 retired with the resync it pinned — see §6 round 4).
 
 ## 3. Gate (release authority — local)
 
@@ -81,9 +82,9 @@ application-time ratio guard) — every kill behavioral. Three anchor
 events, recorded in invariants: **M43** re-pinned (security.py —
 `sector_on` added the same single-line shape) and **M74** re-pinned to a
 valid shifted instant (round-1 P2-2: the original `hour+1` crashed
-construction rather than testing detection) and **M82** re-anchored to
-the resync assignment when the deferred-decision restructure superseded
-the round-2 guard line.
+construction rather than testing detection). **M82** lived through two
+re-anchors and was RETIRED with the resync it pinned (round 4) — its
+final invariant is preserved in git history.
 
 ## 4. Acceptance criteria (packet §4)
 
