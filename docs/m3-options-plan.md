@@ -397,6 +397,16 @@ artifacts:
 4. `machinery_terminal_states` — arm B: every position ends in exactly
    one settlement (expiry or early exercise) or a forced close; no
    position open past expiration.
+   Bound interpretation record (post-gate, owner-ruled 2026-08-20 —
+   NOT a criteria amendment; the §3.G window is closed): "past
+   expiration" binds within each fold's clamped window — an open
+   position is a violation only if its contract expiration is ≤ the
+   OWNING fold's last evaluated session. The gate's first encoding
+   compared against `world_last_session`, which no fold-tail position
+   can reach by construction; see
+   `docs/m3-sealed-gate-criterion4-decision.md` for the ruling and the
+   corrected-verdict recomputation (0 violations / 21,895 open arm-B
+   positions on the immutable artifacts).
 5. `vehicle_fidelity_nulls` — pooled per-cohort Spearman(premium return,
    H5 label) on 701 and 702: mean ≥ a floor pre-declared at gate
    registration as (OD1-measured rho − 0.15); prior ≈ 0.8–0.9. Proves
