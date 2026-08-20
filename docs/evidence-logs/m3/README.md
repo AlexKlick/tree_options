@@ -37,3 +37,16 @@ Contents:
   harness).
 - `m3-killcheck-baseline.log` / `m3-round2-tests.log` — the round-2
   kill-strengthening baselines.
+- `m3-mutation3.log` / `m3-mutation3.json` / `m3-mutation3.md` — mutation
+  run 3 at `8479f1f`: **133/133 KILLED** (round-2 strengthening held;
+  zero SURVIVED, zero INVALID). The restoration suite failed a third
+  time on `test_run_options_trial_end_to_end` — root-caused (see
+  commit `bc8b12c`): the harness copytree excludes `.git`, and WS-F
+  stamping fail-closes with `DirtyWorktreeError("not a usable git
+  repository")` in a git-less tree. Deterministic, not load; the
+  retained worktree had no `.git` at all.
+- `m3-fix-validation.log` — the fix validated on the exact failure site:
+  the retained run-3 worktree + a synthetic baseline commit → the e2e
+  trial test passes (TEST_EXIT=0). Full re-run (run 4) queued after the
+  clean-clone gate completes; the final gate re-proves restoration.
+
