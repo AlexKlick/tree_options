@@ -655,11 +655,19 @@ def run_options_backtest(
 
         # -- 5. settlements striking at close(t), applied at bar publication
         settlements_due: list[tuple[str, str, int]] = []
-        # terminal actions whose final bar has published by tomorrow's open
+        # terminal actions striking at close(effective_session): the loop must
+        # BE at (or past) the effective session — the final bar exists then —
+        # and the action must be visible by tomorrow's open (review r1 P1-3:
+        # firing on availability alone settled a pub(t-1)/effective(t) merger
+        # at t-1 against the pre-merger bar)
         next_open = calendar.session_open(calendar.nth_after(session, 1))
         for contract_id in sorted(open_positions):
             for action in actions_by_sid.get(open_positions[contract_id].underlying_id, ()):
-                if classify_action(action.kind) == "terminal" and action.available_at <= next_open:
+                if (
+                    classify_action(action.kind) == "terminal"
+                    and action.effective_session <= session
+                    and action.available_at <= next_open
+                ):
                     settlements_due.append(("terminal", contract_id, ledger.quantity(contract_id)))
                     break
         # SILENT deaths (bankruptcy_11 / voluntary_delisting / coverage_lapse
