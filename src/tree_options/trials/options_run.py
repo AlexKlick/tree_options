@@ -142,6 +142,35 @@ def _t_statistic(values: Sequence[float]) -> float | None:
     return mean * math.sqrt(n) / sd
 
 
+def _cohort_series(
+    closed: list[dict[str, object]],
+) -> tuple[list[tuple[str, float]], list[float], list[int]]:
+    """Per-entry-session cohort ICs and the stride-4 disjoint series.
+
+    The stride grid runs over the cohorts actually measured (defined ICs):
+    an undefined cohort IC (fewer than 3 positions) drops that cohort from
+    the grid WITHOUT shifting later ICs onto earlier sessions.
+    """
+    by_entry: dict[str, list[dict[str, object]]] = {}
+    for p in closed:
+        by_entry.setdefault(str(p["entry_session"]), []).append(p)
+    cohort_ics: list[float] = []
+    cohort_counts: list[int] = []
+    pairs: list[tuple[str, float]] = []
+    for session in sorted(by_entry):
+        rows = by_entry[session]
+        ic = _spearman(
+            [float(p["score"]) for p in rows],  # type: ignore[arg-type]
+            [float(p["signed_premium_return"]) for p in rows],  # type: ignore[arg-type]
+        )
+        if ic is not None:
+            cohort_ics.append(ic)
+            cohort_counts.append(len(rows))
+            pairs.append((session, ic))
+    stride4 = [pair for i, pair in enumerate(pairs) if i % COHORT_STRIDE == 0]
+    return stride4, cohort_ics, cohort_counts
+
+
 def _position_payloads(result: OptionsBacktestResult) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for p in result.positions:
@@ -189,13 +218,9 @@ def _fill_log(result: OptionsBacktestResult) -> list[dict[str, object]]:
                 "execution_session": f.execution_session.isoformat(),
                 # criterion 2 (sealed gate): T+1 discipline + quote receipt,
                 # re-derivable from the stamped artifact alone
-                "decision_session": (
-                    audit.decision_session.isoformat() if audit else None
-                ),
+                "decision_session": (audit.decision_session.isoformat() if audit else None),
                 "decision_at": audit.decision_at.isoformat() if audit else None,
-                "quote_received_at": (
-                    audit.quote_received_at.isoformat() if audit else None
-                ),
+                "quote_received_at": (audit.quote_received_at.isoformat() if audit else None),
             }
         )
     return rows
@@ -563,27 +588,7 @@ def _execute(
     ]
     fidelity_rho = _spearman([a for a, _ in fidelity_pairs], [b for _, b in fidelity_pairs])
 
-    by_entry: dict[str, list[dict[str, object]]] = {}
-    for p in closed:
-        key = str(p["entry_session"])
-        by_entry.setdefault(key, []).append(p)
-    cohort_sessions = sorted(by_entry)
-    cohort_ics: list[float] = []
-    cohort_counts: list[int] = []
-    for session in cohort_sessions:
-        rows = by_entry[session]
-        ic = _spearman(
-            [float(p["score"]) for p in rows],  # type: ignore[arg-type]
-            [float(p["signed_premium_return"]) for p in rows],  # type: ignore[arg-type]
-        )
-        if ic is not None:
-            cohort_ics.append(ic)
-            cohort_counts.append(len(rows))
-    stride4 = [
-        (session, ic)
-        for i, (session, ic) in enumerate(zip(cohort_sessions, cohort_ics, strict=False))
-        if i % COHORT_STRIDE == 0
-    ]
+    stride4, cohort_ics, cohort_counts = _cohort_series(closed)
     stride4_ics = [ic for _, ic in stride4]
     stride4_sd = statistics.stdev(stride4_ics) if len(stride4_ics) >= 2 else None
     stride4_t = _t_statistic(stride4_ics)

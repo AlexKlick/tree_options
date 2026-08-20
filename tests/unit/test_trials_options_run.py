@@ -14,7 +14,12 @@ from tree_options.options import OptionsStrategyConfig
 from tree_options.protocol.loader import load_protocol
 from tree_options.registry.sqlite import TrialRegistry
 from tree_options.trials import OptionsSplitOverride, run_options_trial
-from tree_options.trials.options_run import _lag1_autocorrelation, _spearman, _t_statistic
+from tree_options.trials.options_run import (
+    _cohort_series,
+    _lag1_autocorrelation,
+    _spearman,
+    _t_statistic,
+)
 
 SPLIT = OptionsSplitOverride(
     label_horizon_sessions=5,
@@ -76,6 +81,53 @@ def test_spearman_basics() -> None:
     assert _spearman([1, 2], [2, 3]) is None  # too few
     # monotone nonlinear stays 1.0
     assert _spearman([1, 2, 3, 4], [1, 8, 27, 64]) == pytest.approx(1.0)
+
+
+def test_stride4_series_aligns_sessions_with_defined_ics() -> None:
+    """Review r1 P1-2: an undefined cohort IC (<3 positions) must drop that
+    cohort from the grid WITHOUT shifting later ICs onto earlier sessions.
+    The old expression zipped the full session list with the None-filtered
+    IC list (strict=False), so every IC after a gap was attributed to the
+    wrong session and the stride-4 selection picked the wrong cohorts."""
+
+    def _pos(session: str, score: float, ret: float) -> dict[str, object]:
+        return {"entry_session": session, "score": score, "signed_premium_return": ret}
+
+    # e1 has only 2 positions -> _spearman is None -> cohort undefined.
+    closed = [
+        _pos("2020-01-01", 1.0, 0.10),
+        _pos("2020-01-01", 2.0, 0.30),
+        _pos("2020-01-01", 3.0, 0.20),
+        _pos("2020-01-02", 1.0, 0.30),
+        _pos("2020-01-02", 2.0, 0.10),
+        _pos("2020-01-03", 1.0, 0.10),
+        _pos("2020-01-03", 2.0, 0.20),
+        _pos("2020-01-03", 3.0, 0.30),
+        _pos("2020-01-06", 1.0, 0.30),
+        _pos("2020-01-06", 2.0, 0.10),
+        _pos("2020-01-06", 3.0, 0.20),
+        _pos("2020-01-07", 1.0, 0.20),
+        _pos("2020-01-07", 2.0, 0.10),
+        _pos("2020-01-07", 3.0, 0.30),
+        _pos("2020-01-08", 1.0, 0.30),
+        _pos("2020-01-08", 2.0, 0.20),
+        _pos("2020-01-08", 3.0, 0.10),
+    ]
+    stride4, cohort_ics, counts = _cohort_series(closed)
+    assert len(cohort_ics) == 5  # e1 (2 positions) is undefined and dropped
+    assert counts == [3, 3, 3, 3, 3]
+    sessions = [s for s, _ic in stride4]
+    assert sessions == ["2020-01-01", "2020-01-08"], (
+        "stride-4 over the defined grid picks the 1st and 5th DEFINED cohorts; "
+        "the old zip would hand 2020-01-07 the IC that belongs to 2020-01-08"
+    )
+    # the 5th defined cohort (2020-01-08) must carry ITS OWN IC: its
+    # scores/returns ranks are perfectly descending -> -1.0.
+    own_ic = _spearman([1.0, 2.0, 3.0], [0.30, 0.20, 0.10])
+    assert own_ic == pytest.approx(-1.0)
+    assert stride4[1][1] == pytest.approx(own_ic), (
+        "the session->IC pairing must stay aligned across undefined cohorts"
+    )
 
 
 def test_autocorr_and_t() -> None:
