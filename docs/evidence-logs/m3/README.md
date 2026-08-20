@@ -52,3 +52,4 @@ Contents:
 
 | `m3-verdict-correction2-rejected.log` | 2026-08-20 | Hardened correction driver re-run at 82ad4cc — refused the GENUINE stamped artifacts (exit 2, all 8 `INPUT_REJECTED ... config_hash`): the r1 P1-5 check compared trial config_hash to the gate summary's, an invariant that is false of the ruled run. Red demonstration for the r1.1 fix (569783b). |
 | `m3-fullsuite-p1-fixes.log` | 2026-08-20 | Full pytest suite at the 5-P1-fix head (pre-r1.1): 529/529 passed, SUITE_EXIT=0. |
+| `m3-verdict-correction3-pass.log` | 2026-08-20 | Hardened correction driver re-run after the r1.1 fix (c9f7087): validation passed, all 4 worlds 29 folds, criterion 4 = 0 violations / 0 unmapped across 21,895 open arm-B positions, CORRECTED_VERDICT=PASS, exit 0. |

@@ -154,6 +154,27 @@ draw is ≈ 0.26–0.30, consistent with the dev tripwire's measurement,
 i.e. real options-vehicle theta/spread drag, not gate noise. Pooled
 across both alpha worlds the detection clears 1.96 with margin.
 
+### 5a. Hardened re-validation of the correction (review r1 P1-5 + r1.1)
+
+Review r1 P1-5: the correction driver originally validated nothing — a
+different gate run's summary would have been silently re-verdicted. The
+hardened driver (82ad4cc) refuses anything outside the ruled
+criterion-4 failure class and checks the stamp set. Its first re-run
+REFUSED the genuine ruled artifacts (exit 2, all 8 stamps) — the r1.1
+bug: it required every trial's `config_hash` to equal the gate summary's,
+an invariant that is FALSE of the ruled run (the summary carries the
+gate's own config; each trial's config embeds its world+arm). Corrected
+at `c9f7087` to the invariants that hold: identical `protocol_hash`
+across all 8 trial stamps AND the summary, every `git_sha` in the
+recorded head set, per-world arm agreement on `dataset_manifest_hash`;
+trial config hashes recorded, never compared. The re-run
+(`docs/evidence-logs/m3/m3-verdict-correction3-pass.log`) validated
+cleanly and re-stamped the same measurements above: **PASS**, 0
+violations across 21,895 open arm-B positions, 0 unmapped. The refusal
+log is retained as `m3-verdict-correction2-rejected.log` — the
+fail-closed design refusing on a wrong invariant is itself evidence the
+guard is live.
+
 ### 5b. Mutation campaign
 
 133 mutants (M01–M134; M108–M134 added this campaign). Run 1 at the
