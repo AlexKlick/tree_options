@@ -45,7 +45,7 @@ import math
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -91,6 +91,7 @@ Arm = Literal["A", "B"]
 DATASET_PROVENANCE = "synthetic/v1"
 DECLARED_MAX_QUOTE_AGE_SECONDS = 7200  # owner ruling 4: rides in the config hash
 EXECUTION_OFFSET_SECONDS = 1800  # 10:00 ET = session open (09:30) + 30 min
+BAR_PUBLICATION_HOUR_UTC = 23  # the synthetic vendor's same-date bar wall
 
 # The fill engine's quote-reality rejections propagate as their own error
 # types (frozen M0 contract — tests assert them raw); the backtest treats
@@ -342,7 +343,14 @@ def run_options_backtest(
             position.exit_fill_id = fill_id
             closed_rows.append(_row(position))
 
-    def settle(*, contract: OptionContract, kind: str, quantity: int, session: date) -> None:
+    def settle(
+        *,
+        contract: OptionContract,
+        kind: str,
+        quantity: int,
+        session: date,
+        detect_at=None,
+    ) -> None:
         bar = bar_map.get((contract.underlying_security_id, session))
         if bar is None and kind == "terminal":
             bar = _last_bar_at_or_before(bar_map, contract.underlying_security_id, session)
@@ -355,8 +363,9 @@ def run_options_backtest(
             settlement_id=f"STL-{kind[0].upper()}-{contract.contract_id}-{session:%Y%m%d}",
             kind=kind,  # type: ignore[arg-type]
             quantity=quantity,
-            session=bar.session,
+            session=session if detect_at is not None else bar.session,
             reference_bar=bar,
+            terminal_detect_at=detect_at,
         )
         ledger.apply_settlement(settlement)
         close_position_row(
@@ -572,16 +581,12 @@ def run_options_backtest(
 
         # -- 5. settlements striking at close(t), applied at bar publication
         settlements_due: list[tuple[str, str, int]] = []
+        silent_deaths: set[str] = set()
         for contract_id, quantity in elected_today:
             held_now = ledger.quantity(contract_id)
             if quantity >= 1 and held_now >= 1:
                 settlements_due.append(("early_exercise", contract_id, min(quantity, held_now)))
                 counters.early_exercises += 1
-        for contract_id in sorted(open_positions):
-            contract = surface.contract(contract_id)
-            if contract.expiration == session and ledger.quantity(contract_id) >= 1:
-                settlements_due.append(("expiry", contract_id, ledger.quantity(contract_id)))
-                counters.expiries += 1
         # terminal actions whose final bar has published by tomorrow's open
         next_open = calendar.session_open(calendar.nth_after(session, 1))
         for contract_id in sorted(open_positions):
@@ -590,12 +595,41 @@ def run_options_backtest(
                     settlements_due.append(("terminal", contract_id, ledger.quantity(contract_id)))
                     counters.terminals += 1
                     break
+        # SILENT deaths (bankruptcy_11 / voluntary_delisting / coverage_lapse
+        # emit no action record): the underlying has no bar this session but
+        # has a definitive last bar — the complete-vendor inference. Knowable
+        # exactly at this session's failed bar publication (23:00 UTC, the
+        # vendor wall); settles at the last bar's close, stamped there.
+        detect_at_wall = datetime(
+            session.year, session.month, session.day, BAR_PUBLICATION_HOUR_UTC, tzinfo=UTC
+        )
+        for contract_id in sorted(open_positions):
+            position = open_positions[contract_id]
+            if (position.underlying_id, session) in bar_map:
+                continue  # alive today
+            if _last_bar_at_or_before(bar_map, position.underlying_id, session) is None:
+                continue  # never had a bar in the evaluated window
+            if any(k == "terminal" and c == contract_id for k, c, _q in settlements_due):
+                continue  # the action-driven terminal already claimed it
+            silent_deaths.add(contract_id)
+            settlements_due.append(("terminal_silent", contract_id, ledger.quantity(contract_id)))
+            counters.terminals += 1
+        for contract_id in sorted(open_positions):
+            contract = surface.contract(contract_id)
+            if (
+                contract.expiration == session
+                and ledger.quantity(contract_id) >= 1
+                and contract_id not in silent_deaths
+            ):
+                settlements_due.append(("expiry", contract_id, ledger.quantity(contract_id)))
+                counters.expiries += 1
         for kind, contract_id, quantity in sorted(settlements_due):
             settle(
                 contract=surface.contract(contract_id),
-                kind=kind,
+                kind="terminal" if kind == "terminal_silent" else kind,
                 quantity=quantity,
                 session=session,
+                detect_at=detect_at_wall if kind == "terminal_silent" else None,
             )
 
         # -- 6. conservative mark at close(t) from file(t-1) EOD bid

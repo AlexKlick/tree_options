@@ -262,15 +262,31 @@ def test_deterministic_repeat(world, surface, relaxed_filter) -> None:
 
 
 class _AugmentedDataset(PointInTimeDataset):
-    """Same snapshot, extra injected actions (corporate-action path tests)."""
+    """Same snapshot, extra injected actions / truncated bars (path tests)."""
 
-    def __init__(self, snapshot, calendar, *, universe_id, extra_actions) -> None:
+    def __init__(
+        self,
+        snapshot,
+        calendar,
+        *,
+        universe_id,
+        extra_actions=(),
+        drop_bars_after=None,
+    ) -> None:
         super().__init__(snapshot, calendar, universe_id=universe_id)
         self._extra_actions = tuple(extra_actions)
+        self._drop_bars_after = drop_bars_after  # (sid, last_session_inclusive)
 
     @property
     def actions(self):  # type: ignore[override]
         return (*super().actions, *self._extra_actions)
+
+    @property
+    def bars(self):  # type: ignore[override]
+        if self._drop_bars_after is None:
+            return super().bars
+        sid, last = self._drop_bars_after
+        return tuple(b for b in super().bars if b.security_id != sid or b.session <= last)
 
 
 def _extra_action(**kwargs) -> CorporateActionRecord:
@@ -384,3 +400,72 @@ def test_terminal_action_settles_at_intrinsic(world, surface, relaxed_filter) ->
             "a held position on the merged name must settle at intrinsic, not stay open"
         )
         assert result.counters.terminals >= 1
+
+
+def test_silent_death_settles_at_last_bar(world, surface, relaxed_filter) -> None:
+    """bankruptcy_11 / voluntary_delisting / coverage_lapse deaths emit NO
+    action record (only mergers do) — the dev run crashed on exactly this:
+    a held option rode to a barless expiry and the fail-closed settlement
+    guard fired. The complete-vendor inference (a barless session for a
+    held name) must settle the position at the LAST bar's close, stamped
+    at the detection instant (23:00 UTC of the barless session)."""
+    overlay, calendar, snapshot, _dataset = world
+    sessions = overlay.world_sessions()
+    # pick a name that deterministically ENTERS: dry-run the same signals,
+    # then truncate the underlying of the first entered position right
+    # after its entry session
+    dry = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=_dataset,
+        candidate_filter=relaxed_filter,
+        signals=_signals(world, surface),
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="B",
+        end_session=sessions[108],
+    )
+    assert dry.positions, "the fixture must enter at least one position"
+    victim_row = dry.positions[0]
+    victim = victim_row.underlying_security_id
+    entry_session = victim_row.entry_session
+    barless_session = calendar.nth_after(entry_session, 1)
+    truncated = _AugmentedDataset(
+        snapshot,
+        calendar,
+        universe_id=f"{snapshot.snapshot_id}|pit-universe-v1",
+        drop_bars_after=(victim, entry_session),
+    )
+    result = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=truncated,
+        signals=_signals(world, surface),
+        candidate_filter=relaxed_filter,
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="B",
+        end_session=calendar.nth_after(entry_session, 3),
+    )
+    victim_rows = [p for p in result.positions if p.underlying_security_id == victim]
+    assert victim_rows, "the victim must have entered"
+    row = victim_rows[0]
+    assert row.exit_kind == "terminal"
+    assert row.exit_session == barless_session
+    # exit price == intrinsic vs the LAST bar's close (the entry session's
+    # bar is the victim's final one)
+    last_close = next(
+        Decimal(str(b.close))
+        for b in truncated.bars
+        if b.security_id == victim and b.session == entry_session
+    )
+    contract = surface.contract(row.contract_id)
+    expected = max(
+        (last_close - contract.strike)
+        if contract.call_put == "C"
+        else (contract.strike - last_close),
+        Decimal("0"),
+    )
+    assert row.exit_price == expected
+    assert row.premium_return is not None
+    assert result.counters.terminals >= 1

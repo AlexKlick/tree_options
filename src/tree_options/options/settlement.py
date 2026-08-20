@@ -17,7 +17,7 @@ final bar's close — forced by the exchange, not elected).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -75,6 +75,7 @@ def mint_settlement(
     quantity: int,
     session: date,
     reference_bar: BarRecord,
+    terminal_detect_at: datetime | None = None,
 ) -> ExerciseSettlement:
     """The single fail-closed door for settlement construction.
 
@@ -83,6 +84,15 @@ def mint_settlement(
     must belong to the settlement session and the contract's underlying —
     free-floating close/timestamp fields could credit cash early or
     against the wrong name.
+
+    `terminal_detect_at` is the SILENT-DEATH door (M3 §2 iv completion):
+    bankruptcy_11 / voluntary_delisting / coverage_lapse deaths emit no
+    action record — the death is knowable only at the first barless
+    session (the complete-vendor inference). The reference bar is then
+    the underlying's LAST bar (an earlier session is permitted), cash
+    strikes at that bar's close, and ts is the detection instant so the
+    ledger's application timeline stays non-decreasing. kind="terminal"
+    only.
 
     Refuses: settling before the contract lists; early exercise of a
     non-american contract; kind/expiry mismatch; zero quantity; a
@@ -121,7 +131,24 @@ def mint_settlement(
                 f"early_exercise of {contract.contract_id} on {session} must precede "
                 f"expiration {contract.expiration} (that session is an expiry settlement)"
             )
-    if reference_bar.session != session:
+    if terminal_detect_at is not None:
+        # the silent-death door: an earlier-session LAST bar is permitted,
+        # and ts is the detection instant (>= the bar's publication)
+        if kind != "terminal":
+            raise SettlementMintError(
+                "terminal_detect_at is the silent-death door: kind must be terminal"
+            )
+        if reference_bar.session > session:
+            raise SettlementMintError(
+                f"silent-death reference bar {reference_bar.source_record_id} is from "
+                f"{reference_bar.session}, after the detection session {session}"
+            )
+        if terminal_detect_at < reference_bar.available_at:
+            raise SettlementMintError(
+                f"detection instant {terminal_detect_at} precedes the reference bar's "
+                f"publication {reference_bar.available_at}"
+            )
+    elif reference_bar.session != session:
         raise SettlementMintError(
             f"reference bar {reference_bar.source_record_id} is from session "
             f"{reference_bar.session}, not the settlement session {session}"
@@ -148,6 +175,6 @@ def mint_settlement(
         settlement_price=reference_bar.close,
         cash=cash,
         session=session,
-        ts=reference_bar.available_at,
+        ts=terminal_detect_at if terminal_detect_at is not None else reference_bar.available_at,
         ref_id=reference_bar.source_record_id,
     )

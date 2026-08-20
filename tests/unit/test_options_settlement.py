@@ -489,6 +489,60 @@ def test_terminal_settlement_applies_to_the_ledger() -> None:
     assert book.entries[-1].amount == D("0.00")
 
 
+def test_silent_death_door_guards() -> None:
+    """terminal_detect_at: kind must be terminal, the reference bar may be
+    from an EARLIER session (the last bar of a dead underlying), the
+    detection instant may not precede the bar's publication, and ts is the
+    detection instant (the ledger's application timeline stays ordered)."""
+    from datetime import UTC as _UTC
+
+    c = contract()
+    last_bar = reference_bar(close="110", session=date(2019, 3, 8))
+    detect = datetime(2019, 3, 11, 23, 0, tzinfo=_UTC)
+    s = mint_settlement(
+        contract=c,
+        settlement_id="STL-SD-1",
+        kind="terminal",
+        quantity=1,
+        session=date(2019, 3, 11),
+        reference_bar=last_bar,
+        terminal_detect_at=detect,
+    )
+    assert s.cash == D("1000.00")  # intrinsic vs the LAST bar's close
+    assert s.ts == detect
+    assert s.session == date(2019, 3, 11)
+    with pytest.raises(SettlementMintError, match="kind must be terminal"):
+        mint_settlement(
+            contract=c,
+            settlement_id="STL-SD-2",
+            kind="early_exercise",
+            quantity=1,
+            session=date(2019, 3, 11),
+            reference_bar=last_bar,
+            terminal_detect_at=detect,
+        )
+    with pytest.raises(SettlementMintError, match="precedes the reference bar"):
+        mint_settlement(
+            contract=c,
+            settlement_id="STL-SD-3",
+            kind="terminal",
+            quantity=1,
+            session=date(2019, 3, 11),
+            reference_bar=last_bar,
+            terminal_detect_at=datetime(2019, 3, 8, 22, 0, tzinfo=_UTC),
+        )
+    with pytest.raises(SettlementMintError, match="after the detection session"):
+        mint_settlement(
+            contract=c,
+            settlement_id="STL-SD-4",
+            kind="terminal",
+            quantity=1,
+            session=date(2019, 3, 7),
+            reference_bar=last_bar,
+            terminal_detect_at=detect,
+        )
+
+
 # ---- review r1 remediation (P1-4/5/6/7) ----------------------------------
 
 
