@@ -14,7 +14,9 @@ stratum), and criterion 3 is the amended rejection-path form.
   2 fill_discipline            : every stamped fill executes strictly
       after its decision session, against a quote received by execution
   3 rejection_paths_live       : zero-bid/no-liquidity fill rejections
-      (ZeroSize + Nonpositive + NO_VISIBLE_QUOTE) >= 100 per trial AND
+      (ZeroSize + Nonpositive + NO_VISIBLE_QUOTE) >= 100 PER WORLD,
+      pooled across the world's arms (the owner-ruled amendment's "per
+      world"; review r2 P1-4 corrected the per-trial application) AND
       the same_day_volume FAIL tail >= 5% of rule evaluations
   4 machinery_terminal_states  : arm B - every position closed (sell /
       early_exercise / expiry / terminal) or its contract expires after
@@ -125,6 +127,22 @@ def _measure_overlay(overlay) -> dict:  # type: ignore[no-untyped-def]
     }
 
 
+def zero_bid_floor_failures(zero_bid_by_trial: dict[tuple[str, str], int]) -> list[str]:
+    """Criterion 3's floor clause is PER WORLD, pooled across the world's
+    arms (owner-ruled amendment, docs/m3-od1-tripwire-decision.md: "per
+    world"). Review r2 P1-4: both drivers applied it per arm — a world at
+    60 arm-A + 60 arm-B qualifying rejections passes the ruling (120
+    pooled) but failed twice per-arm."""
+    pooled: dict[str, int] = {}
+    for (world_id, _arm), count in zero_bid_by_trial.items():
+        pooled[world_id] = pooled.get(world_id, 0) + count
+    return [
+        f"{world_id}: pooled zero-bid rejections {count} < {REJECTION_FLOOR}"
+        for world_id, count in sorted(pooled.items())
+        if count < REJECTION_FLOOR
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.registry.exists():
@@ -197,9 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         }
         if observed != entry["expected"]:
             raise RuntimeError(f"registered world mismatch for {world_id}: {observed}")
-        dataset = PointInTimeDataset(
-            snapshot, calendar, universe_id=f"{world_id}|pit-universe-v1"
-        )
+        dataset = PointInTimeDataset(snapshot, calendar, universe_id=f"{world_id}|pit-universe-v1")
         overlay_entry = overlay_by_parent[world_id]
         overlay = generate_overlay(
             spec=OptionsOverlaySpec(**overlay_entry["spec"]),
@@ -377,6 +393,7 @@ def main(argv: list[str] | None = None) -> int:
         return (sum(series) / n) * (n**0.5) / sd
 
     failures: list[str] = []
+    zero_bid_by_trial: dict[tuple[str, str], int] = {}
     reported: dict[str, object] = {"per_trial": {}, "power": {}, "fidelity": {}}
 
     for world_id, arm in SEALED_CONFIGS:
@@ -412,25 +429,32 @@ def main(argv: list[str] | None = None) -> int:
         rejections = counters["rejections"]
         zero_bid = sum(
             rejections.get(bucket, {}).get(code, 0)
-            for bucket in ("entry_fill_rejections", "exit_fill_rejections", "force_close_rejections")
+            for bucket in (
+                "entry_fill_rejections",
+                "exit_fill_rejections",
+                "force_close_rejections",
+            )
             for code in ZERO_BID_CODES
         )
         hist = counters["rule_histogram"]
         rule_evals = sum(sum(statuses_.values()) for statuses_ in hist.values())
         volume_fails = hist.get("same_day_volume", {}).get("FAIL", 0)
-        if zero_bid < REJECTION_FLOOR:
-            failures.append(f"{key}: zero-bid rejections {zero_bid} < {REJECTION_FLOOR}")
+        # the floor clause is evaluated PER WORLD after the loop (r2 P1-4);
+        # the volume-tail clause stays per trial — the stricter form
+        zero_bid_by_trial[(world_id, arm)] = zero_bid
         if rule_evals == 0 or volume_fails / rule_evals < VOLUME_TAIL_FRACTION:
             failures.append(
-                f"{key}: volume tail {volume_fails}/{rule_evals} below "
-                f"{VOLUME_TAIL_FRACTION:.0%}"
+                f"{key}: volume tail {volume_fails}/{rule_evals} below {VOLUME_TAIL_FRACTION:.0%}"
             )
 
         # 4. machinery terminal states (arm B)
         if arm == "B":
             last_session = payload["world_last_session"]
             for position in payload["pooled"]["positions"]:
-                if position["exit_kind"] is None and position["contract_expiration"] <= last_session:
+                if (
+                    position["exit_kind"] is None
+                    and position["contract_expiration"] <= last_session
+                ):
                     failures.append(
                         f"{key}: position {position['underlying_security_id']} open past "
                         f"expiration {position['contract_expiration']}"
@@ -450,6 +474,9 @@ def main(argv: list[str] | None = None) -> int:
                 k: v for k, v in counters.items() if k not in ("rule_histogram", "rejections")
             },
         }
+
+    # 3b. rejection floor, PER WORLD pooled across arms (r2 P1-4)
+    failures.extend(zero_bid_floor_failures(zero_bid_by_trial))
 
     # 5. vehicle fidelity on the nulls (arm A - the calibrated vehicle)
     null_rhos = [payloads[(w, "A")]["pooled"]["fidelity_rho"] for w in NULLS]

@@ -193,6 +193,22 @@ def _owning_fold_end(
     return None
 
 
+def zero_bid_floor_failures(zero_bid_by_trial: dict[tuple[str, str], int]) -> list[str]:
+    """Criterion 3's floor clause is PER WORLD, pooled across the world's
+    arms (owner-ruled amendment, docs/m3-od1-tripwire-decision.md: "per
+    world"). Review r2 P1-4: both drivers applied it per arm — a world at
+    60 arm-A + 60 arm-B qualifying rejections passes the ruling (120
+    pooled) but failed twice per-arm."""
+    pooled: dict[str, int] = {}
+    for (world_id, _arm), count in zero_bid_by_trial.items():
+        pooled[world_id] = pooled.get(world_id, 0) + count
+    return [
+        f"{world_id}: pooled zero-bid rejections {count} < {REJECTION_FLOOR}"
+        for world_id, count in sorted(pooled.items())
+        if count < REJECTION_FLOOR
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=DEFAULT_ARTIFACTS_DIR)
@@ -257,6 +273,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     failures: list[str] = []
+    zero_bid_by_trial: dict[tuple[str, str], int] = {}
     reported: dict[str, object] = {"per_trial": {}, "power": {}, "fidelity": {}}
 
     for world_id, arm in [(w, a) for w in SEALED_WORLDS for a in ARMS]:
@@ -300,8 +317,9 @@ def main(argv: list[str] | None = None) -> int:
         hist = counters["rule_histogram"]
         rule_evals = sum(sum(s.values()) for s in hist.values())
         volume_fails = hist.get("same_day_volume", {}).get("FAIL", 0)
-        if zero_bid < REJECTION_FLOOR:
-            failures.append(f"{key}: zero-bid rejections {zero_bid} < {REJECTION_FLOOR}")
+        # the floor clause is evaluated PER WORLD after the loop (r2 P1-4);
+        # the volume-tail clause stays per trial — the stricter form
+        zero_bid_by_trial[(world_id, arm)] = zero_bid
         if rule_evals == 0 or volume_fails / rule_evals < VOLUME_TAIL_FRACTION:
             failures.append(
                 f"{key}: volume tail {volume_fails}/{rule_evals} below {VOLUME_TAIL_FRACTION:.0%}"
@@ -346,6 +364,9 @@ def main(argv: list[str] | None = None) -> int:
             "n_positions": payload["pooled"]["n_positions"],
             "fidelity_rho": payload["pooled"]["fidelity_rho"],
         }
+
+    # 3b. rejection floor, PER WORLD pooled across arms (r2 P1-4)
+    failures.extend(zero_bid_floor_failures(zero_bid_by_trial))
 
     # 5. vehicle fidelity on the nulls (arm A)
     null_rhos = [payloads[(w, "A")]["pooled"]["fidelity_rho"] for w in NULLS]
