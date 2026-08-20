@@ -1051,7 +1051,7 @@ MUTANTS = [
     ),
     dict(
         id="M109-received-stamped-as-exchange",
-        owner="test_two_snapshots_with_correct_stamps",
+        owner="test_quote_history_receipt_is_t1_publication",
         file="src/tree_options/synth_options/generate.py",
         anchor="received_timestamp=received,",
         replacement="received_timestamp=snap.exchange_timestamp,",
@@ -1087,12 +1087,12 @@ MUTANTS = [
     ),
     dict(
         id="M113-zero-bid-floor-removed",
-        owner="test_premiums_quote_on_tick_and_never_crossed",
+        owner="test_zero_bid_tail_exists_and_never_negative",
         file="src/tree_options/synth_options/generate.py",
-        anchor='return max((x / CENT).to_integral_value(rounding=ROUND_FLOOR) * CENT, Decimal("0.00"))',
-        replacement="return (x / CENT).to_integral_value(rounding=ROUND_FLOOR) * CENT",
+        anchor='bid = _tick_floor(Decimal(repr(mid)) - Decimal(repr(half)))',
+        replacement='bid = _tick_ceil(Decimal(repr(mid)) - Decimal(repr(half)))',
         selectors=[f"{U}/test_synth_options_generate.py"],
-        invariant="M3-A deep wings quantize to a ZERO bid, never a negative price (the zero-bid tail the gate's rejection criterion exercises)",
+        invariant="M3-A re-anchored (round 2): the defensive max(...,0)/never-locked guards are unreachable (the half-spread is proportional to mid); the LIVE zero-bid seam is the bid's tick-FLOOR rounding - sub-cent deep-wing bids quantize DOWN to 0.00, which is the bulk of the tail the gate's rejection criterion exercises",
     ),
     dict(
         id="M114-oi-plumbed-from-wrong-instant",
@@ -1201,7 +1201,7 @@ MUTANTS = [
     ),
     dict(
         id="M124-inv11-fraction-inverted",
-        owner="test_improvement_moves_toward_midpoint_never_past",
+        owner="test_improvement_on_half_tick_mid_rounds_conservatively",
         file="src/tree_options/guards/fills.py",
         anchor="ticks = math.ceil(exact / 2)  # conservative: round the BUY price UP",
         replacement="ticks = math.floor(exact / 2)  # mutant: buy rounds down",
@@ -1230,15 +1230,22 @@ MUTANTS = [
         id="M127-dte-in-sessions",
         owner="test_pick_expiry_uses_calendar_days",
         file="src/tree_options/options/strategy.py",
-        anchor="if config.dte_min <= (expiration - decision_session).days <= config.dte_max",
+        anchor="return min(in_band, key=lambda e: (abs((e - decision_session).days - config.target_dte), e))",
         replacement=(
-            "if config.dte_min <= abs(\n"
-            "                    surface.overlay.calendar.ordinal(expiration)\n"
-            "                    - surface.overlay.calendar.ordinal(decision_session)\n"
-            "                ) <= config.dte_max"
+            "return min(\n"
+            "            in_band,\n"
+            "            key=lambda e: (\n"
+            "                abs(\n"
+            "                    (surface.overlay.calendar.ordinal(e)\n"
+            "                     - surface.overlay.calendar.ordinal(decision_session))\n"
+            "                    - config.target_dte\n"
+            "                ),\n"
+            "                e,\n"
+            "            ),\n"
+            "        )"
         ),
         selectors=[f"{U}/test_options_strategy.py"],
-        invariant="M3-D the DTE band is CALENDAR days (protocol 30-60), never session counts",
+        invariant="M3-D the expiry pick targets 45 CALENDAR days' DTE (re-anchored round 2 to the nearest-target key itself — widening only the band was dominated by the days-based tie-break and semantically equivalent)",
     ),
     dict(
         id="M128-future-file-visible",
@@ -1253,10 +1260,10 @@ MUTANTS = [
         id="M129-dead-contract-tradable",
         owner="test_fill_after_expiration_rejected_itm_fixture",
         file="src/tree_options/guards/fills.py",
-        anchor="if contract.expired_on(execution_session):",
+        anchor="if not contract.exists_on(execution_session):",
         replacement="if False:",
         selectors=[f"{G}/test_fill_engine.py"],
-        invariant="M3 a dead (expired) contract must never trade; re-anchored from the generate.py history filter (redundant there - the live-expiry cap already excludes expired expiries, so the original anchor was semantically equivalent) to the fill engine's expired guard, the site that actually enforces it",
+        invariant="M3 a dead (expired) contract must never trade; re-anchored (round 2) to the listing-window guard - for standard contracts (listing_end == expiration) it is the guard that actually fires; the explicit expired_on check is unreachable behind it (the M0 test now pins the specific rejection code)",
     ),
     dict(
         id="M130-spans-earnings-fed-none",
@@ -1420,6 +1427,7 @@ def main() -> int:
     args = parser.parse_args()
 
     worktree = Path(tempfile.mkdtemp(prefix="tree-options-mutate-"))
+    keep_worktree = False
     try:
         shutil.copytree(
             REPO,
@@ -1431,16 +1439,27 @@ def main() -> int:
             ["uv", "sync", "--frozen"], cwd=wt, capture_output=True, timeout=600, check=True
         )
         results = [run_mutant(wt, m) for m in MUTANTS]
-        # Restoration proof: full suite in the (restored) worktree.
-        final = _run(wt, ["pytest", "-q", "--tb=no"], 900)
+        # Restoration proof: full suite in the (restored) worktree. Failures
+        # print their traceback tail AND keep the worktree for forensics —
+        # a restoration failure that cannot be reproduced in a clean copy
+        # (seen twice on test_run_options_trial_end_to_end, clean in both
+        # isolated replicas) must be diagnosable from the retained state.
+        final = _run(wt, ["pytest", "-q", "--tb=short", "-p", "no:cacheprovider"], 1800)
         restored_suite_ok = final.returncode == 0
         if not restored_suite_ok:
             print("RESTORATION SUITE FAILURES:", flush=True)
-            for ln in (final.stdout + final.stderr).splitlines():
+            lines = (final.stdout + final.stderr).splitlines()
+            for ln in lines:
                 if ln.startswith("FAILED") or ln.startswith("ERROR"):
                     print(" ", ln[:160], flush=True)
+            print("---- traceback tail ----", flush=True)
+            for ln in lines[-60:]:
+                print(" ", ln[:200], flush=True)
+            print(f"RETAINED WORKTREE: {wt}", flush=True)
+            keep_worktree = True
     finally:
-        shutil.rmtree(worktree, ignore_errors=True)
+        if not keep_worktree:
+            shutil.rmtree(worktree, ignore_errors=True)
 
     counts: dict[str, int] = {}
     for r in results:

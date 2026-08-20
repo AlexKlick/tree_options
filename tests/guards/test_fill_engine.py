@@ -235,7 +235,10 @@ class TestContractLifecycle:
                 execution_session=following,
                 execution_at=exec_at,
             )
-        assert ei.value.code in {"CONTRACT_NOT_LISTED", "CONTRACT_EXPIRED"}
+        assert ei.value.code == "CONTRACT_NOT_LISTED", (
+            "a standard contract past listing_end (== expiration) is rejected by "
+            "the listing-window guard first (mutant M129)"
+        )
 
     def test_execution_instant_outside_session_rejected(self, synthetic_calendar):
         """A fill stamped 10:00 UTC but labeled the NEXT session is a lie."""

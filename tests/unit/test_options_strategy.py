@@ -303,6 +303,16 @@ def test_affordable_contracts_fee_inclusive() -> None:
         )
         == 3
     )
+    # the FEE MINIMUM is the case the 0.65/contract estimate cannot see:
+    # one contract costs 100 + max(0.65, 1.00) = 101.00, but the estimate
+    # divides by 100.65 — a budget in (100.65, 101.00) is affordable only
+    # if fees are actually checked (mutant M125)
+    assert (
+        affordable_contracts(
+            budget=D("100.80"), ask=D("1.00"), multiplier=100, fee_model=fees, cap=10
+        )
+        == 0
+    )
     assert (
         affordable_contracts(
             budget=D("50.00"), ask=D("1.00"), multiplier=100, fee_model=fees, cap=10

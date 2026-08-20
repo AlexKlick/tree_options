@@ -165,21 +165,25 @@ def test_zero_bid_tail_exists_and_never_negative(overlay) -> None:  # type: igno
     sids = overlay.underlyings_ever_eligible()
     assert sids
     bids: list[Decimal] = []
-    for sid, session in itertools.islice(
+    for sid_, session in itertools.islice(
         (
-            (sid, session)
+            (sid, sess)
             for sid in sids
-            for session in overlay.eligible_sessions(sid)[-40:]
+            for sess in overlay.eligible_sessions(sid)[-40:]
         ),
         400,
     ):
-        for entry in overlay.day_file(sid, session).entries:
+        for entry in overlay.day_file(sid_, session).entries:
             for snap in (entry.quote_1545, entry.quote_eod):
                 if snap is not None:
                     bids.append(snap.bid)
     assert bids, "the sample must quote something"
     assert min(bids) >= Decimal("0"), "a quoted bid went negative"
-    assert any(bid == Decimal("0") for bid in bids), "the zero-bid tail must exist"
+    zero_rate = sum(1 for bid in bids if bid == Decimal("0")) / len(bids)
+    assert zero_rate >= 0.15, (
+        f"the zero-bid tail must exist at a floor rate (measured {zero_rate:.1%}; the "
+        "tick-FLOOR rounding of sub-cent deep-wing bids is the bulk of it - mutant M113)"
+    )
 
 
 def test_publication_is_dst_correct(overlay) -> None:  # type: ignore[no-untyped-def]

@@ -331,7 +331,6 @@ def _extra_action(**kwargs) -> CorporateActionRecord:
 def test_ratio_action_mid_hold_forces_close(world, surface, relaxed_filter) -> None:
     overlay, calendar, snapshot, _dataset = world
     sessions = overlay.world_sessions()
-    decision = sessions[95]
     signals = _signals(world, surface, n_decision_sessions=3)
     # dry-run first: inject the action on an underlying that DETERMINISTICALLY
     # entered, so the force-close assertion is unconditional (mutant M120)
@@ -480,12 +479,13 @@ def test_election_window_is_ten_oclock_visibility(world, surface, relaxed_filter
     would leak same-evening dividend announcements into the election)."""
     overlay, calendar, snapshot, _dataset = world
     sessions = overlay.world_sessions()
+    signals = _signals(world, surface, n_decision_sessions=3)
     dry = run_options_backtest(
         calendar=calendar,
         surface=surface,
         dataset=_dataset,
         candidate_filter=relaxed_filter,
-        signals=_signals(world, surface, n_decision_sessions=3),
+        signals=signals,
         initial_cash=D("100000.00"),
         config=CONFIG,
         arm="B",
@@ -525,7 +525,7 @@ def test_election_window_is_ten_oclock_visibility(world, surface, relaxed_filter
         surface=surface,
         dataset=augmented,
         candidate_filter=relaxed_filter,
-        signals=_signals(world, surface, n_decision_sessions=1),
+        signals=signals,  # the SAME signals that produced the dry-run victim
         initial_cash=D("100000.00"),
         config=CONFIG,
         arm="B",
