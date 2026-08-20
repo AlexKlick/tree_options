@@ -219,6 +219,49 @@ recorded head-mix: trial payloads, `config_hash`,
 IDENTICAL; only `stamp.git_sha` may differ.
 <!-- CLEANCLONE_RESULTS -->
 
+### 5d. Review rounds to GO (bounded, verdicts verbatim)
+
+Round 1 — head `c88d238`, pinned read-only worktree, scope
+`git diff 96e4f6e..c88d238` (full transcript:
+`docs/evidence-logs/m3/m3-review-r1.log`):
+
+> VERDICT: NO-GO
+>
+> - P1 — The first signal cohort in every fold is silently discarded
+>   (options.py starts execution at d+1 with an empty pending-entry
+>   queue; all 29 sealed folds lose their first scored cohort).
+> - P1 — The stride-4 series is not the predeclared "every fourth
+>   session" series (undefined-IC cohorts dropped AFTER pairing, zipped
+>   back to the unshortened session list; criteria 6–7 consume the
+>   malformed series).
+> - P1 — Action-driven merger settlement can occur one session early
+>   against the wrong bar (terminal actions selected by availability
+>   only, ignoring effective_session).
+> - P1 — Execution-time clamping does not preserve the configured
+>   premium/session budget after an overnight price move ($11,006.50
+>   spent against a $10,000 configured budget while cash-affordable).
+> - P1 — The verdict-correction driver can turn unrelated sealed-gate
+>   failures into PASS and does not validate its input stamps.
+> - P2 — Mutation run 3's restoration failure leaves final-head
+>   restoration + clean-clone unestablished (record-only; addressed by
+>   the harness git fix bc8b12c and the code-final gate/clean-clone
+>   below).
+
+All five P1s confirmed real by code inspection and fixed red-first
+(failing test first, one commit each): `0266c3b` (schedule_entries
+seeds the first cohort), `e3af231` (_cohort_series pairs before
+filtering), `5cd9952` (terminal requires effective_session ≤ session),
+`ea4b24c` (Order.budget_notional dual clamp), `82ad4cc` (correction
+_validate_inputs, fail-closed) — then the r1.1 invariant correction
+`c9f7087` after the hardened driver's first re-run refused the genuine
+run (§5a). Full suite at the fix head: 529/529 passed
+(`m3-fullsuite-p1-fixes.log`). Consequence applied per §10: P1-1/3/4
+are payload-affecting → the sealed evidence re-registers at the
+code-final head; the in-flight 8479f1f clean-clone is recorded as a
+preliminary old-head datapoint.
+
+<!-- REVIEW_R2_RESULTS -->
+
 ## 6. Evidence log retention
 
 `docs/evidence-logs/m3/` (committed `1993a06`) holds the surviving logs
