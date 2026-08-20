@@ -1089,8 +1089,8 @@ MUTANTS = [
         id="M113-zero-bid-floor-removed",
         owner="test_zero_bid_tail_exists_and_never_negative",
         file="src/tree_options/synth_options/generate.py",
-        anchor='bid = _tick_floor(Decimal(repr(mid)) - Decimal(repr(half)))',
-        replacement='bid = _tick_ceil(Decimal(repr(mid)) - Decimal(repr(half)))',
+        anchor="bid = _tick_floor(Decimal(repr(mid)) - Decimal(repr(half)))",
+        replacement="bid = _tick_ceil(Decimal(repr(mid)) - Decimal(repr(half)))",
         selectors=[f"{U}/test_synth_options_generate.py"],
         invariant="M3-A re-anchored (round 2): the defensive max(...,0)/never-locked guards are unreachable (the half-spread is proportional to mid); the LIVE zero-bid seam is the bid's tick-FLOOR rounding - sub-cent deep-wing bids quantize DOWN to 0.00, which is the bulk of the tail the gate's rejection criterion exercises",
     ),
@@ -1132,13 +1132,13 @@ MUTANTS = [
         file="src/tree_options/ledger/book.py",
         anchor=(
             "remaining = settlement.quantity\n"
-            "        cost_removed = Decimal(\"0\")\n"
+            '        cost_removed = Decimal("0")\n'
             "        while remaining > 0:\n"
             "            head = self._lots[settlement.contract_id][0]"
         ),
         replacement=(
             "remaining = 0\n"
-            "        cost_removed = Decimal(\"0\")\n"
+            '        cost_removed = Decimal("0")\n'
             "        while remaining > 0:\n"
             "            head = self._lots[settlement.contract_id][0]"
         ),
@@ -1313,7 +1313,7 @@ MUTANTS = [
         id="M134-election-ignores-dividend-branch",
         owner="test_dividend_branch_elects_for_calls",
         file="src/tree_options/options/exercise.py",
-        anchor="inputs.call_put == \"C\"\n        and inputs.pending_dividend_per_share is not None",
+        anchor='inputs.call_put == "C"\n        and inputs.pending_dividend_per_share is not None',
         replacement="False\n        and inputs.pending_dividend_per_share is not None",
         selectors=[f"{U}/test_options_settlement.py"],
         invariant="M3-C branch (a): a call elects when the visible dividend dominates the file(t-1) time value",
@@ -1435,6 +1435,32 @@ def main() -> int:
             ignore=shutil.ignore_patterns(".venv", "__pycache__", ".git", "*.pyc", ".pytest_cache"),
         )
         wt = worktree / "repo"
+        # The copy excludes .git by design, but WS-F stamping (build_stamp)
+        # fail-closes without a usable repository: git rev-parse HEAD plus a
+        # clean tree. The three runs of the M3 campaign all failed the
+        # restoration suite solely on test_run_options_trial_end_to_end for
+        # exactly this reason (retained worktree: no .git at all). A
+        # synthetic baseline commit provides both without inheriting state
+        # from the source checkout; mutant apply/restore is file-byte based,
+        # so .git is inert to the loop. Committed BEFORE uv sync so the
+        # .venv it creates stays ignored, and .gitignore (copied with the
+        # tree) keeps artifacts/ and dist/ out of the baseline as well.
+        for _cmd in (
+            ["git", "-c", "init.defaultBranch=main", "init", "-q"],
+            ["git", "add", "-A"],
+            [
+                "git",
+                "-c",
+                "user.email=harness@localhost",
+                "-c",
+                "user.name=mutation harness",
+                "commit",
+                "-q",
+                "-m",
+                "mutation harness baseline",
+            ],
+        ):
+            subprocess.run(_cmd, cwd=wt, capture_output=True, check=True)
         subprocess.run(
             ["uv", "sync", "--frozen"], cwd=wt, capture_output=True, timeout=600, check=True
         )
