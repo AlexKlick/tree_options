@@ -503,14 +503,10 @@ def test_pick_expiry_uses_calendar_days(surface, decision_session) -> None:
         decision_at = calendar.session_close(session)
         for sid in sorted(surface.eligible_as_of(session)):
             live = surface.live_expiries_as_of(sid, decision_at)
-            in_band = [
-                e for e in live if CONFIG.dte_min <= (e - session).days <= CONFIG.dte_max
-            ]
+            in_band = [e for e in live if CONFIG.dte_min <= (e - session).days <= CONFIG.dte_max]
             if not in_band:
                 continue
-            expected = min(
-                in_band, key=lambda e: (abs((e - session).days - CONFIG.target_dte), e)
-            )
+            expected = min(in_band, key=lambda e: (abs((e - session).days - CONFIG.target_dte), e))
             assert _pick_expiry(surface, sid, session, CONFIG) == expected, (sid, session)
             checked += 1
     assert checked >= 10, f"the fixture must exercise in-band expiries broadly (checked {checked})"

@@ -166,11 +166,7 @@ def test_zero_bid_tail_exists_and_never_negative(overlay) -> None:  # type: igno
     assert sids
     bids: list[Decimal] = []
     for sid_, session in itertools.islice(
-        (
-            (sid, sess)
-            for sid in sids
-            for sess in overlay.eligible_sessions(sid)[-40:]
-        ),
+        ((sid, sess) for sid in sids for sess in overlay.eligible_sessions(sid)[-40:]),
         400,
     ):
         for entry in overlay.day_file(sid_, session).entries:
@@ -406,9 +402,7 @@ def test_eligibility_matches_independent_dollar_volume_oracle(overlay, calendar)
         rows: list[tuple[float, str]] = []
         for sid_ in sorted(bars_by_sid):
             window = [
-                float(c) * v
-                for s, (c, v) in sorted(bars_by_sid[sid_].items())
-                if s <= session
+                float(c) * v for s, (c, v) in sorted(bars_by_sid[sid_].items()) if s <= session
             ][-overlay.spec.eligibility_window_bars :]
             if len(window) < overlay.spec.min_eligible_bars or session not in bars_by_sid[sid_]:
                 continue

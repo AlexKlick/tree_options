@@ -78,6 +78,15 @@ def _validate_inputs(
     artifact set of the recorded run — anything else refuses (exit 2)
     instead of silently re-verdicting a different gate run. Returns the
     violation list; empty means the inputs are the ruled ones.
+
+    Stamp invariants that HOLD on the ruled run (r1.1 correction — the first
+    hardening wrongly required trial config_hash == the gate summary's, and
+    refused the genuine run): every stamp carries the same frozen
+    protocol_hash (trials AND summary); every git_sha is in the recorded
+    head set; each world's two arms agree on dataset_manifest_hash. Trial
+    config_hashes legitimately DIFFER per stamp — each trial's config embeds
+    its world and arm — so they are recorded in the stamp audit, never
+    compared.
     """
     violations: list[str] = []
     for failure in original.get("failures", ()):
@@ -89,7 +98,13 @@ def _validate_inputs(
         violations.append(
             f"original trials={original.get('trials')!r} != {len(stamps)} stamped payloads"
         )
-    expected_config = summary_stamp.get("config_hash")
+    if summary_stamp.get("protocol_hash") != expected_protocol_hash:
+        violations.append("summary stamp protocol_hash does not match the frozen protocol")
+    if summary_stamp.get("git_sha") not in expected_heads:
+        violations.append(
+            f"summary stamp git_sha {summary_stamp.get('git_sha')!r} not in the recorded "
+            f"head set {[h[:8] for h in expected_heads]}"
+        )
     dataset_by_world: dict[str, str | None] = {}
     for (world_id, arm), stamp in sorted(stamps.items()):
         key = f"{world_id}|{arm}"
@@ -105,8 +120,6 @@ def _validate_inputs(
             )
         if stamp.get("protocol_hash") != expected_protocol_hash:
             violations.append(f"{key}: stamp protocol_hash does not match the frozen protocol")
-        if stamp.get("config_hash") != expected_config:
-            violations.append(f"{key}: stamp config_hash != the summary stamp's")
         dataset_by_world.setdefault(world_id, stamp.get("dataset_manifest_hash"))
         if dataset_by_world[world_id] != stamp.get("dataset_manifest_hash"):
             violations.append(

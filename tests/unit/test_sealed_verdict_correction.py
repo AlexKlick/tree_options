@@ -58,12 +58,16 @@ RULED = [
 ]
 
 
-def _run(original: dict, stamps: dict | None = None) -> list[str]:
+def _run(
+    original: dict, stamps: dict | None = None, summary_stamp: dict | None = None
+) -> list[str]:
     return svc._validate_inputs(
         original,
         stamps if stamps is not None else _stamps(),
         expected_protocol_hash=PROTO,
-        summary_stamp={"config_hash": CONFIG},
+        summary_stamp=summary_stamp
+        if summary_stamp is not None
+        else {"protocol_hash": PROTO, "git_sha": HEADS[1]},
         expected_heads=HEADS,
     )
 
@@ -101,17 +105,38 @@ def test_unknown_source_sha_refuses() -> None:
     assert any("head set" in v for v in _run(_original(RULED), stamps))
 
 
-def test_protocol_or_config_mismatch_refuses() -> None:
+def test_protocol_mismatch_refuses() -> None:
     stamps = _stamps()
     stamps[("synth-v1-val-alpha-710", "A")] = _stamp(
         "synth-v1-val-alpha-710", "A", protocol_hash="x" * 64
     )
-    stamps[("synth-v1-val-alpha-710", "B")] = _stamp(
-        "synth-v1-val-alpha-710", "B", config_hash="y" * 64
-    )
-    violations = _run(_original(RULED), stamps)
-    assert any("protocol_hash" in v for v in violations)
-    assert any("config_hash" in v for v in violations)
+    assert any("protocol_hash" in v for v in _run(_original(RULED), stamps))
+
+
+def test_summary_stamp_outside_the_ruled_run_refuses() -> None:
+    violations = _run(_original(RULED), summary_stamp={"protocol_hash": "z" * 64})
+    assert any("summary stamp protocol_hash" in v for v in violations)
+    violations = _run(_original(RULED), summary_stamp={"protocol_hash": PROTO, "git_sha": "f" * 40})
+    assert any("summary stamp git_sha" in v for v in violations)
+
+
+def test_per_trial_config_hashes_may_differ() -> None:
+    """r1.1 correction: the first hardening required every trial's
+    config_hash to equal the gate summary's and refused the GENUINE ruled
+    run (all 8 stamps INPUT_REJECTED). Each trial's config embeds its
+    world and arm, so the hashes legitimately differ — differing config
+    hashes alone must validate cleanly."""
+    stamps = {
+        (w, a): _stamp(w, a, config_hash=f"cfg-{w}-{a}")
+        for w in (
+            "synth-v1-val-null-701",
+            "synth-v1-val-null-702",
+            "synth-v1-val-alpha-710",
+            "synth-v1-val-alpha-711",
+        )
+        for a in ("A", "B")
+    }
+    assert _run(_original(RULED), stamps) == []
 
 
 def test_dataset_hash_disagreement_across_arms_refuses() -> None:

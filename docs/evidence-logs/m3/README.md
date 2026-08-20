@@ -50,3 +50,5 @@ Contents:
   trial test passes (TEST_EXIT=0). Full re-run (run 4) queued after the
   clean-clone gate completes; the final gate re-proves restoration.
 
+| `m3-verdict-correction2-rejected.log` | 2026-08-20 | Hardened correction driver re-run at 82ad4cc — refused the GENUINE stamped artifacts (exit 2, all 8 `INPUT_REJECTED ... config_hash`): the r1 P1-5 check compared trial config_hash to the gate summary's, an invariant that is false of the ruled run. Red demonstration for the r1.1 fix (569783b). |
+| `m3-fullsuite-p1-fixes.log` | 2026-08-20 | Full pytest suite at the 5-P1-fix head (pre-r1.1): 529/529 passed, SUITE_EXIT=0. |

@@ -1,0 +1,9 @@
+INPUT_REJECTED: synth-v1-val-alpha-710|A: stamp config_hash != the summary stamp's
+INPUT_REJECTED: synth-v1-val-alpha-710|B: stamp config_hash != the summary stamp's
+INPUT_REJECTED: synth-v1-val-alpha-711|A: stamp config_hash != the summary stamp's
+INPUT_REJECTED: synth-v1-val-alpha-711|B: stamp config_hash != the summary stamp's
+INPUT_REJECTED: synth-v1-val-null-701|A: stamp config_hash != the summary stamp's
+INPUT_REJECTED: synth-v1-val-null-701|B: stamp config_hash != the summary stamp's
+INPUT_REJECTED: synth-v1-val-null-702|A: stamp config_hash != the summary stamp's
+INPUT_REJECTED: synth-v1-val-null-702|B: stamp config_hash != the summary stamp's
+CORRECTION2_EXIT=2
