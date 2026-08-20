@@ -55,3 +55,4 @@ Contents:
 | `m3-verdict-correction3-pass.log` | 2026-08-20 | Hardened correction driver re-run after the r1.1 fix (c9f7087): validation passed, all 4 worlds 29 folds, criterion 4 = 0 violations / 0 unmapped across 21,895 open arm-B positions, CORRECTED_VERDICT=PASS, exit 0. |
 | `m3-review-r1.log` | 2026-08-20 | Bounded Codex review round 1 at c88d238 (pinned worktree, read-only): VERDICT NO-GO, 5 P1 + 1 P2. Full transcript retained. |
 | `m3-review-r2.log` | 2026-08-20 | Bounded Codex review round 2 at 4209b82 (pinned worktree, read-only): VERDICT NO-GO, 4 P1 + 1 P2. Full transcript retained. |
+| `m3-fullsuite-p2-fixes.log` | 2026-08-20 | Full pytest suite at the 4-P1-fix head (df2131d): all passed, SUITE_EXIT=0. |

@@ -293,6 +293,21 @@ fixes red-first, one commit per finding.
 
 <!-- REVIEW_R2_FIXES -->
 
+### 5f. Review round 2 disposition (all four P1s fixed red-first)
+
+| P1 | Triage | Fix | Commit |
+|---|---|---|---|
+| 1. Late-published terminal crash | REAL — `settle()` stamped ts at the reference bar's publication; a fill executing between that instant and the settlement crashed `OUT_OF_ORDER_SETTLEMENT` (red test reproduced the exact violation) | action-driven terminals price at the EFFECTIVE session's bar, stamp at `max(action publication, bar publication)`, record the detection session | `939190b` |
+| 2. Ratio-effective-on-decision entry hole | REAL — the strict `effective > decision` predicate admits a split effective ON the decision session; ladders anchor at listing start and never re-strike (`corporate_action_id=None` always) | `_pending_action_at` also returns a ratio action whose effective_session EQUALS the decision date | `2b94837` |
+| 3. Stale reach-back mark | REAL — `visible_file_session` walked to the t-2 file when file(t-1) was absent; the position valued at the stale bid with no miss (red test: wrapped run `mark_misses == 0`) | the marking loop requires the visible file session to BE the previous calendar session; anything older marks at the declared zero | `ba5c13f` |
+| 4. Criterion-3 floor per arm | REAL — the ruling docs say PER WORLD; both drivers (and the gate's own docstring) said per trial/arm | shared `zero_bid_floor_failures()` pools per world in both drivers; docstring aligned; recorded sealed numbers passed per-arm everywhere so no verdict changes | `df2131d` |
+
+P1-1/2/3 are payload-affecting → sealed evidence re-registers at the
+code-final head (§10). P2 (exact-head mutation proof) is closed by the
+final gate's 133/133 + restoration at the code-final head. Full suite at
+the fix head: `m3-fullsuite-p2.log`; corrected-verdict re-stamp under
+the per-world floor: `m3-verdict-correction4.log`.
+
 ## 6. Evidence log retention
 
 `docs/evidence-logs/m3/` (committed `1993a06`) holds the surviving logs
