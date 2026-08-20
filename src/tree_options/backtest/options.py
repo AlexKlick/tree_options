@@ -762,9 +762,16 @@ def run_options_backtest(
 
         # -- 6. conservative mark at close(t) from file(t-1) EOD bid
         close_at = calendar.session_close(session)
+        prev_session = calendar.sessions()[calendar.ordinal(session) - 1]
         market_value = Decimal(0)
         for contract_id in sorted(open_positions):
             position = open_positions[contract_id]
+            # review r2 P1-3: file(t-1) must EXIST for the underlying — an
+            # older visible file is stale (the reach-back marked its bid,
+            # overstating equity); the declared behavior is zero + a miss.
+            if surface.visible_file_session(position.underlying_id, close_at) != prev_session:
+                counters.mark_misses += 1  # marked at 0 — strictly conservative
+                continue
             try:
                 entry = surface.entry_as_of(position.underlying_id, close_at, contract_id)
             except NoOptionFileError:

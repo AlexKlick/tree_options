@@ -379,6 +379,23 @@ def test_deterministic_repeat(world, surface, relaxed_filter) -> None:
     assert [p.contract_id for p in a.positions] == [p.contract_id for p in b.positions]
 
 
+class _DroppedEligibilitySurface(OptionPitSurface):
+    """Review r2 P1-3 fixture: the underlying left the option-eligible
+    top-N after `last_file_session`, so its latest visible file at any
+    later instant is that stale session."""
+
+    def __init__(self, overlay, sid, last_file_session) -> None:
+        super().__init__(overlay)
+        self._drop_sid = sid
+        self._drop_last = last_file_session
+
+    def visible_file_session(self, underlying_id, as_of):
+        session = super().visible_file_session(underlying_id, as_of)
+        if underlying_id == self._drop_sid and session is not None and session > self._drop_last:
+            return self._drop_last
+        return session
+
+
 class _AugmentedDataset(PointInTimeDataset):
     """Same snapshot, extra injected actions / truncated bars (path tests)."""
 
@@ -584,6 +601,40 @@ def test_late_published_merger_settles_without_backdated_stamp(
     assert all(p.exit_session == detect_session for p in terminal_rows), (
         "settlement lands at the detection session (ts = the action's "
         "publication), priced at the effective session's final bar"
+    )
+
+
+def test_mark_is_zero_when_prior_file_absent(world, surface, relaxed_filter) -> None:
+    """Review r2 P1-3: when an open position's underlying has no file(t-1)
+    (it left the option-eligible top-N), the close(t) mark must be the
+    conservative ZERO with a mark_miss — the reach-back through
+    entry_as_of returned the stale t-2 bid instead, overstating equity by
+    bid(t-2) x quantity x 100."""
+    overlay, calendar, _snap, dataset = world
+    sessions = overlay.world_sessions()
+    signals = _signals(world, surface, n_decision_sessions=3)
+    common = dict(
+        calendar=calendar,
+        dataset=dataset,
+        candidate_filter=relaxed_filter,
+        signals=signals,
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="A",
+        end_session=sessions[104],
+    )
+    dry = run_options_backtest(surface=surface, **common)
+    assert dry.positions, "the fixture must enter at least one position"
+    held = dry.positions[0]
+    # the name's files stop after the entry executes: from the second
+    # following close on, file(t-1) no longer exists for it
+    dropped = _DroppedEligibilitySurface(
+        surface.overlay, held.underlying_security_id, held.entry_session
+    )
+    result = run_options_backtest(surface=dropped, **common)
+    assert result.counters.mark_misses > dry.counters.mark_misses, (
+        "marking must treat the absent file(t-1) as a miss at zero, not "
+        "reach back to the stale file's bid"
     )
 
 
