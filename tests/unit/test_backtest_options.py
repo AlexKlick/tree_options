@@ -332,12 +332,27 @@ def test_ratio_action_mid_hold_forces_close(world, surface, relaxed_filter) -> N
     overlay, calendar, snapshot, _dataset = world
     sessions = overlay.world_sessions()
     decision = sessions[95]
-    entry_session = sessions[96]  # 10:00 execution of the close(decision) entry
+    signals = _signals(world, surface, n_decision_sessions=3)
+    # dry-run first: inject the action on an underlying that DETERMINISTICALLY
+    # entered, so the force-close assertion is unconditional (mutant M120)
+    dry = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=_dataset,
+        candidate_filter=relaxed_filter,
+        signals=signals,
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="A",
+        end_session=sessions[100],
+    )
+    assert dry.positions, "the fixture must enter at least one position"
+    held_underlying = dry.positions[0].underlying_security_id
+    entry_session = dry.positions[0].entry_session
     # announced 23:00 UTC of the entry session (after the fill, before the
     # next 10:00 window): the force-close trigger
     announce_at = calendar.session_close(entry_session) + timedelta(hours=7)
-    held_underlying = sorted(surface.eligible_as_of(decision))[-1]  # a bottom-quintile name
-    force_session = sessions[97]
+    force_session = calendar.nth_after(entry_session, 1)
     augmented = _AugmentedDataset(
         snapshot,
         calendar,
@@ -354,23 +369,20 @@ def test_ratio_action_mid_hold_forces_close(world, surface, relaxed_filter) -> N
             )
         ],
     )
-    signals = []
-    for i, sid in enumerate(sorted(surface.eligible_as_of(decision))):
-        signals.append(
-            OptionSignal(decision_session=decision, security_id=sid, score=(i + 1) / 10.0)
-        )
     result = run_options_backtest(
         calendar=calendar,
         surface=surface,
         dataset=augmented,
         candidate_filter=relaxed_filter,
-        signals=tuple(signals),
+        signals=signals,
         initial_cash=D("100000.00"),
         config=CONFIG,
         arm="A",
-        end_session=sessions[100],
+        end_session=sessions[101],
     )
-    assert result.counters.force_closes >= 0  # runs clean with the injected action
+    assert any(p.underlying_security_id == held_underlying for p in result.positions), (
+        "the dry-run-entered name must still enter under the injected action"
+    )
     forced = [
         p
         for p in result.positions
@@ -378,10 +390,8 @@ def test_ratio_action_mid_hold_forces_close(world, surface, relaxed_filter) -> N
         and p.exit_kind == "sell"
         and p.exit_session == force_session
     ]
-    # the held name (if it entered) must exit at the force window — 1 session
-    # after entry, not the scheduled 4
-    if any(p.underlying_security_id == held_underlying for p in result.positions):
-        assert forced, "a held position on the split name must force-close at the next window"
+    assert forced, "a held position on the split name must force-close at the next window"
+    assert result.counters.force_closes >= 1
 
 
 def test_terminal_action_settles_at_intrinsic(world, surface, relaxed_filter) -> None:
@@ -482,7 +492,11 @@ def test_election_window_is_ten_oclock_visibility(world, surface, relaxed_filter
         end_session=sessions[99],
     )
     assert dry.positions, "the fixture must enter at least one position"
-    victim_row = dry.positions[0]
+    # branch (a) of the election applies to CALLS only — pick a call victim
+    # so the dividend leak is the deciding input (mutant M131)
+    victim_row = next((p for p in dry.positions if p.call_put == "C"), None)
+    if victim_row is None:
+        pytest.skip("fixture entered no call positions")
     victim = victim_row.underlying_security_id
     held_contract = victim_row.contract_id
     # the first 10:00 window at which the position is already held (entries

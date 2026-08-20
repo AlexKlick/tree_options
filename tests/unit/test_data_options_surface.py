@@ -195,6 +195,11 @@ def test_contract_absent_from_file_lands_not_evaluable(surface, built, protocol)
     decision = filt.evaluate(snap)
     assert not decision.accepted
     assert any(r.status == "NOT_EVALUABLE" for r in decision.results)
+    # the missing volume itself is NOT_EVALUABLE — the applicability flag
+    # must never excuse a missing input (mutant M115: flag flipped to False
+    # turns the rule NOT_APPLICABLE and silently drops the tail)
+    volume_rule = next(r for r in decision.results if r.rule == "same_day_volume")
+    assert volume_rule.status == "NOT_EVALUABLE", volume_rule
 
 
 def test_in_band_candidate_is_accepted_by_the_filter(surface, built, protocol) -> None:  # type: ignore[no-untyped-def]

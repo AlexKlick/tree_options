@@ -1042,7 +1042,7 @@ MUTANTS = [
     # ---- M3 options era (plan §8, M108-M134) ------------------------------
     dict(
         id="M108-t1-receipt-shifted-same-day",
-        owner="test_publication_is_dst_correct",
+        owner="test_two_snapshots_with_correct_stamps",
         file="src/tree_options/synth_options/generate.py",
         anchor="return _wall(self._sessions[idx + 1], PUB_WALL)",
         replacement="return _wall(self._sessions[idx], PUB_WALL)",
@@ -1069,7 +1069,7 @@ MUTANTS = [
     ),
     dict(
         id="M111-put-delta-sign",
-        owner="test_put_call_parity_within_combined_spread",
+        owner="test_delta_monotone_in_strike",
         file="src/tree_options/synth_options/greeks.py",
         anchor="return abs(norm_cdf(d1) - 1.0)",
         replacement="return abs(norm_cdf(d1))",
@@ -1078,7 +1078,7 @@ MUTANTS = [
     ),
     dict(
         id="M112-spread-halves-swapped",
-        owner="test_premiums_quote_on_tick_and_never_crossed",
+        owner="test_put_call_parity_within_combined_spread",
         file="src/tree_options/synth_options/generate.py",
         anchor="ask = _tick_ceil(Decimal(repr(mid)) + Decimal(repr(half)))",
         replacement="ask = _tick_ceil(Decimal(repr(mid)) - Decimal(repr(half)))",
@@ -1156,7 +1156,7 @@ MUTANTS = [
     ),
     dict(
         id="M119-conservation-oracle-drops-settlements",
-        owner="test_oracle_recomputes_settlement_cash_independently",
+        owner="test_settlement_closes_lots_and_conserves",
         file="src/tree_options/ledger/book.py",
         anchor="cash += recomputed_cash",
         replacement='cash += Decimal("0")  # mutant: oracle drops settlement cash',
@@ -1212,8 +1212,8 @@ MUTANTS = [
         id="M125-sizing-ignores-fees",
         owner="test_affordable_contracts_fee_inclusive",
         file="src/tree_options/options/strategy.py",
-        anchor='int((budget / (per_contract + Decimal("0.65"))).to_integral_value(rounding=ROUND_FLOOR)),',
-        replacement="int((budget / per_contract).to_integral_value(rounding=ROUND_FLOOR)),",
+        anchor="while estimate > 0 and per_contract * estimate + fee_model.order_fees(estimate) > budget:",
+        replacement="while estimate > 0 and per_contract * estimate > budget:",
         selectors=[f"{U}/test_options_strategy.py"],
         invariant="M3-D whole-contract sizing includes per-contract fees; ignoring them overspends the budget",
     ),
@@ -1251,12 +1251,12 @@ MUTANTS = [
     ),
     dict(
         id="M129-dead-contract-tradable",
-        owner="test_quote_history_never_past_expiration",
-        file="src/tree_options/synth_options/generate.py",
-        anchor="if session < meta.listing_start or session > meta.expiration:",
-        replacement="if session < meta.listing_start:",
-        selectors=[f"{U}/test_synth_options_generate.py"],
-        invariant="M3-A a contract quotes only through its expiration session; a dead contract must never trade",
+        owner="test_fill_after_expiration_rejected_itm_fixture",
+        file="src/tree_options/guards/fills.py",
+        anchor="if contract.expired_on(execution_session):",
+        replacement="if False:",
+        selectors=[f"{G}/test_fill_engine.py"],
+        invariant="M3 a dead (expired) contract must never trade; re-anchored from the generate.py history filter (redundant there - the live-expiry cap already excludes expired expiries, so the original anchor was semantically equivalent) to the fill engine's expired guard, the site that actually enforces it",
     ),
     dict(
         id="M130-spans-earnings-fed-none",
