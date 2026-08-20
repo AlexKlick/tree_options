@@ -8,9 +8,11 @@ simplification, plan §5): the long holder receives
 
 struck at a reference UNDERLYING close, knowable only at that bar's
 publication instant (`ts` — the first instant the intrinsic is knowable).
-Two kinds: `expiry` (session == expiration) and `early_exercise`
+Three kinds: `expiry` (session == expiration), `early_exercise`
 (session < expiration, american contracts only — the election policy lives
-in options/exercise.py and consumes only file(t-1) data).
+in options/exercise.py and consumes only file(t-1) data), and `terminal`
+(M3 §2 iv: a delisting/merger death mid-hold settles at intrinsic vs the
+final bar's close — forced by the exchange, not elected).
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from tree_options.data.bars import BarRecord
 from tree_options.schemas.common import FEE_TICK, IdStr, Money, Price, StrictModel, UTCDatetime
 from tree_options.schemas.options import OptionContract
 
-SettlementKind = Literal["expiry", "early_exercise"]
+SettlementKind = Literal["expiry", "early_exercise", "terminal"]
 
 
 def intrinsic_value(call_put: str, strike: Decimal, underlying: Decimal) -> Decimal:
@@ -96,6 +98,17 @@ def mint_settlement(
             raise SettlementMintError(
                 f"expiry settlement of {contract.contract_id} must land on "
                 f"expiration {contract.expiration}, got {session}"
+            )
+    elif kind == "terminal":
+        # plan §2 (iv): a terminal delisting/merger mid-hold settles at
+        # intrinsic vs the final bar's close at its publication instant —
+        # forced by the exchange, not elected, so neither the american
+        # right nor the pre-expiry restriction applies; the session must
+        # still precede expiration (an at-expiry death is an expiry kind).
+        if session > contract.expiration:
+            raise SettlementMintError(
+                f"terminal settlement of {contract.contract_id} on {session} is past "
+                f"expiration {contract.expiration} (that is an expiry settlement)"
             )
     else:
         if contract.exercise_style != "american":
