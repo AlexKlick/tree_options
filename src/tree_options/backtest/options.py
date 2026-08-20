@@ -601,16 +601,26 @@ def run_options_backtest(
             if visible_entry is None:
                 counters.bump(counters.entry_fill_rejections, "NO_VISIBLE_QUOTE")
                 continue
-            clamped = min(
-                order.quantity,
-                affordable_contracts(
-                    budget=ledger.cash,
-                    ask=visible_entry.quote_eod.ask,
-                    multiplier=contract.multiplier,
-                    fee_model=fees,
-                    cap=order.quantity,
-                ),
-            )
+            # clamp against solvency (ledger cash) AND the planner's
+            # per-candidate premium budget — an overnight ask gap must not
+            # spend past the configured session budget (review r1 P1-4:
+            # the old cash-only re-clamp filled 100x-gap entries against
+            # the whole ledger)
+            clamped = order.quantity
+            clamp_budgets: tuple[Decimal, ...] = (ledger.cash,)
+            if order.budget_notional is not None:
+                clamp_budgets += (order.budget_notional,)
+            for budget in clamp_budgets:
+                clamped = min(
+                    clamped,
+                    affordable_contracts(
+                        budget=budget,
+                        ask=visible_entry.quote_eod.ask,
+                        multiplier=contract.multiplier,
+                        fee_model=fees,
+                        cap=clamped,
+                    ),
+                )
             if clamped < 1:
                 counters.bump(counters.entry_fill_rejections, "UNAFFORDABLE_AT_EXECUTION")
                 continue

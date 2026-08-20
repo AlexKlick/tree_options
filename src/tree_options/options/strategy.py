@@ -414,6 +414,7 @@ def plan_orders(
                 side="buy",
                 intent="open_long",
                 quantity=quantity,
+                budget_notional=per_candidate,
                 decision_at=calendar.session_close(decision_session),
                 decision_session=decision_session,
             )

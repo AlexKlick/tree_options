@@ -247,6 +247,70 @@ def test_premium_budget_caps_session_spend(world, surface, relaxed_filter) -> No
         assert spend <= budget + D("1.00"), f"{session} spend {spend} exceeds budget {budget}"
 
 
+class _OvernightAskJumpSurface:
+    """Delegates to the real surface but multiplies every ask visible on ONE
+    session by `factor` — the overnight-gap scenario of review r1 P1-4 (bids
+    unchanged, so marks are unaffected)."""
+
+    def __init__(self, inner, on_date, factor):
+        self._inner = inner
+        self._date = on_date
+        self._factor = factor
+
+    def visible_quotes_as_of(self, contract_id: str, as_of):
+        quotes = self._inner.visible_quotes_as_of(contract_id, as_of)
+        if as_of.date() != self._date:
+            return quotes
+        return tuple(
+            q.model_copy(update={"ask": (q.ask * self._factor).quantize(D("0.01"))}) for q in quotes
+        )
+
+    def entry_as_of(self, underlying_id: str, as_of, contract_id: str):
+        entry = self._inner.entry_as_of(underlying_id, as_of, contract_id)
+        if entry is None or as_of.date() != self._date:
+            return entry
+        bumped = entry.quote_eod.model_copy(
+            update={"ask": (entry.quote_eod.ask * self._factor).quantize(D("0.01"))}
+        )
+        return entry.model_copy(update={"quote_eod": bumped})
+
+    def __getattr__(self, name: str):
+        return getattr(self._inner, name)
+
+
+def test_execution_gap_cannot_spend_past_the_candidate_budget(
+    world, surface, relaxed_filter
+) -> None:
+    """Review r1 P1-4: plan_orders sizes against the decision-visible
+    per-candidate premium budget; the execution re-clamp must PRESERVE that
+    budget when the ask gaps overnight. The old re-clamp checked solvency
+    against total cash only, so a 100x gap still filled against the whole
+    ledger."""
+    overlay, calendar, _snap, dataset = world
+    sessions = overlay.world_sessions()
+    decision = sessions[95]
+    execution = calendar.nth_after(decision, 1)
+    jumped = _OvernightAskJumpSurface(surface, execution, D("100"))
+    result = run_options_backtest(
+        calendar=calendar,
+        surface=jumped,
+        dataset=dataset,
+        candidate_filter=relaxed_filter,
+        signals=_signals(world, surface, n_decision_sessions=1),
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="A",
+        end_session=sessions[105],
+    )
+    entered = [p for p in result.positions if p.entry_session == execution]
+    assert not entered, (
+        "a 100x overnight ask gap must clamp every entry back inside the "
+        "per-candidate premium budget (to zero here), not fill against "
+        "total ledger cash"
+    )
+    assert result.counters.entry_fill_rejections.get("UNAFFORDABLE_AT_EXECUTION", 0) >= 1
+
+
 def test_reentry_into_open_contract_skipped_and_counted(world, surface, relaxed_filter) -> None:
     _overlay, calendar, _snap, dataset = world
     result = run_options_backtest(
