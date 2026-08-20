@@ -342,10 +342,16 @@ payload is touched:
 ### G — Validation-world amendment (one pre-declared window, before the gate)
 
 Add `synth-v1-val-alpha-710` / `synth-v1-val-alpha-711`: full scale, fresh
-seeds never generated before, coefficient **0.05** (re-priced per OD1 —
-§7), pinned via `scripts/verify_worlds.py --recompute`; `synth/` is
+seeds never generated before, coefficient **0.50** — owner-ruled
+2026-08-20 as the disposition of the OD1 tripwire HALT
+(`docs/m3-od1-tripwire-decision.md`): the §7 arithmetic re-priced from
+MEASURED OD1 values gives t = 19.3·c·att over the attenuation band
+[0.43, 1.0], under which the printed 0.05 is underpowered at every draw
+(t ∈ [0.41, 0.96] vs 1.96) while 0.50 passes at every draw with ~2×
+pessimistic margin (t ∈ [4.1, 9.7]) — pinned via
+`scripts/verify_worlds.py --recompute`; `synth/` is
 untouched so `generator_code_sha` stays byte-identical, and the registry
-note records the options-gate rationale and the pre-declared arithmetic
+note records the options-gate rationale and the re-priced arithmetic
 (mirroring the 706–709 amendments). Their options overlays plus the nulls
 701/702 are pinned in `data/worlds/options_registry.json`. The amendment
 window CLOSES at the first sealed trial registration.
@@ -366,7 +372,8 @@ deterministic), one bounded review per merge unit, normal merge commits.
 
 ## 4. Evidence and gate plan (pre-declared criteria)
 
-Worlds: nulls 701/702 (fidelity + FP arms), 710/711 @ 0.05 (transfer).
+Worlds: nulls 701/702 (fidelity + FP arms), 710/711 @ 0.50 (transfer;
+owner-ruled — §3.G and `docs/m3-od1-tripwire-decision.md`).
 Dev evidence comes exclusively from the 103/104 overlays (OD1–OD3).
 
 Criteria — PASS requires every one; all are evaluated from stamped
@@ -377,10 +384,16 @@ artifacts:
 2. `no_same_session_fills` and `quotes_received_le_execution` — zero
    violations across all fills (asserted from the payload's per-fill
    log).
-3. `not_evaluable_floor` — ≥ 2% of candidate evaluations carry at least
-   one NOT_EVALUABLE rule (zero-bid tails) AND zero-bid/no-liquidity
-   execution rejections ≥ 100 per world (the rejection paths are
-   exercised, not decorative).
+3. `rejection_paths_live` — **AMENDED, owner-ruled 2026-08-20**
+   (`docs/m3-od1-tripwire-decision.md`): zero-bid/no-liquidity execution
+   rejections ≥ 100 per world (the rejection paths are exercised, not
+   decorative) AND the filter-audit histogram shows the volume/untraded
+   tail live (measured 62% `same_day_volume` FAILs at OD1). The
+   originally printed "≥ 2% of candidate evaluations carry a NOT_EVALUABLE
+   rule" first clause was structurally zero — the strategy evaluates one
+   pre-selected near-ATM strike per name (always quoted on the file), so
+   zero-bid tails surface as volume FAILs and execution rejections
+   instead — and is dropped.
 4. `machinery_terminal_states` — arm B: every position ends in exactly
    one settlement (expiry or early exercise) or a forced close; no
    position open past expiration.

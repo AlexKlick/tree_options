@@ -26,18 +26,22 @@ def test_registry_shape_and_dev_composition() -> None:
     assert reg["options_registry_version"] == "options-worlds/1"
     overlays = reg["overlays"]
     assert isinstance(overlays, list)
-    # exact frozen composition for MU-1: the four dev overlays, nothing else.
-    # Validation overlays (701/702/710/711) are pinned ONLY inside the
-    # pre-declared amendment window (plan §3.G) — the window closes at the
-    # first sealed trial registration, and this assertion is updated in
-    # THAT change, never silently.
-    assert [o["world_id"] for o in overlays] == [
-        "synth-v1-dev-null-101",
-        "synth-v1-dev-alpha-102",
-        "synth-v1-dev-null-103",
-        "synth-v1-dev-alpha-104",
-    ], f"dev overlay pool drifted: {[o['world_id'] for o in overlays]}"
-    assert all(o["pool"] == "dev" for o in overlays)
+    # exact frozen composition: the four dev overlays plus the validation
+    # overlays pinned in the pre-declared amendment window (plan §3.G),
+    # executed 2026-08-20 (owner ruling recorded in
+    # docs/m3-od1-tripwire-decision.md). The window closes at the first
+    # sealed trial registration; this assertion changes only in another
+    # owner-signed amendment, never silently.
+    assert [(o["world_id"], o["pool"]) for o in overlays] == [
+        ("synth-v1-dev-null-101", "dev"),
+        ("synth-v1-dev-alpha-102", "dev"),
+        ("synth-v1-dev-null-103", "dev"),
+        ("synth-v1-dev-alpha-104", "dev"),
+        ("synth-v1-val-null-701", "validation"),
+        ("synth-v1-val-null-702", "validation"),
+        ("synth-v1-val-alpha-710", "validation"),
+        ("synth-v1-val-alpha-711", "validation"),
+    ], f"overlay pool drifted: {[(o['world_id'], o['pool']) for o in overlays]}"
     equity = json.loads(EQUITY_REGISTRY_PATH.read_text())
     parents = {w["world_id"]: w for w in equity["worlds"]}
     for overlay in overlays:

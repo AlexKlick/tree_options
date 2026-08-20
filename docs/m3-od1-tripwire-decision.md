@@ -5,6 +5,21 @@ Status: **HALT per plan §7** (`DEV_TRIPWIRE=HALT`, exit 3, log
 amendment window (workstream G) stays open until ruled. Nothing past
 this point runs without the owner's coefficient decision.
 
+## Owner ruling (2026-08-20)
+
+1. **Coefficient 0.50** for validation worlds 710/711 (the recommended
+   option: t ∈ [4.1, 9.7] — passes at every draw with ~2× pessimistic
+   margin; the planted family stays linear momentum, just visibly
+   strong).
+2. **Criterion 3 amended** as proposed: keep the ≥100 zero-bid/
+   no-liquidity execution-rejection floor per world and require the
+   filter-audit histogram to show the volume/untraded tail live; the
+   structurally-zero "≥ 2% NOT_EVALUABLE" clause is dropped.
+
+Recorded into `docs/m3-options-plan.md` §3.G/§4 BEFORE workstream G
+pinned anything; the amendment window closes at the first sealed trial
+registration.
+
 ## What ran (all machinery green)
 
 | trial | arm/world | folds | positions | rho | sigma_IC | t |
