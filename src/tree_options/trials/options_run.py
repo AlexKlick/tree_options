@@ -153,6 +153,7 @@ def _position_payloads(result: OptionsBacktestResult) -> list[dict[str, object]]
                 "label": p.label,
                 "entry_session": p.entry_session.isoformat(),
                 "entry_price": str(p.entry_price),
+                "contract_expiration": p.contract_expiration.isoformat(),
                 "exit_kind": p.exit_kind,
                 "exit_session": p.exit_session.isoformat() if p.exit_session else None,
                 "exit_price": str(p.exit_price) if p.exit_price is not None else None,
@@ -173,18 +174,31 @@ def _position_payloads(result: OptionsBacktestResult) -> list[dict[str, object]]
 
 
 def _fill_log(result: OptionsBacktestResult) -> list[dict[str, object]]:
-    return [
-        {
-            "fill_id": f.fill_id,
-            "contract_id": f.contract_id,
-            "side": f.side,
-            "quantity": f.quantity,
-            "price": str(f.price),
-            "execution_at": f.execution_at.isoformat(),
-            "execution_session": f.execution_session.isoformat(),
-        }
-        for f in result.fills
-    ]
+    audit_by_fill = {a.fill_id: a for a in result.fill_audit}
+    rows: list[dict[str, object]] = []
+    for f in result.fills:
+        audit = audit_by_fill.get(f.fill_id)
+        rows.append(
+            {
+                "fill_id": f.fill_id,
+                "contract_id": f.contract_id,
+                "side": f.side,
+                "quantity": f.quantity,
+                "price": str(f.price),
+                "execution_at": f.execution_at.isoformat(),
+                "execution_session": f.execution_session.isoformat(),
+                # criterion 2 (sealed gate): T+1 discipline + quote receipt,
+                # re-derivable from the stamped artifact alone
+                "decision_session": (
+                    audit.decision_session.isoformat() if audit else None
+                ),
+                "decision_at": audit.decision_at.isoformat() if audit else None,
+                "quote_received_at": (
+                    audit.quote_received_at.isoformat() if audit else None
+                ),
+            }
+        )
+    return rows
 
 
 @dataclass(frozen=True)
@@ -494,6 +508,8 @@ def _execute(
                 "n_fills": len(result.fills),
                 "fills_buy": sum(1 for f in result.fills if f.side == "buy"),
                 "fills_sell": sum(1 for f in result.fills if f.side == "sell"),
+                "n_sessions_evaluated": len(result.sessions),
+                "conservation_checks": result.counters.conservation_checks,
                 "force_closes": result.counters.force_closes,
                 "early_exercises": result.counters.early_exercises,
                 "expiries": result.counters.expiries,
@@ -521,6 +537,7 @@ def _execute(
             "terminals",
             "exit_retries",
             "mark_misses",
+            "conservation_checks",
         ):
             aggregated_counters[key] = aggregated_counters.get(key, 0) + getattr(counters, key)
         for bucket_name in (
@@ -589,6 +606,7 @@ def _execute(
         "max_quote_age_seconds": DECLARED_MAX_QUOTE_AGE_SECONDS,
         "cohort_stride": COHORT_STRIDE,
         "n_folds": len(folds),
+        "world_last_session": world_last_session.isoformat(),
         "per_fold": per_fold,
         "pooled": {
             "n_positions": len(all_positions),
@@ -608,6 +626,11 @@ def _execute(
             ),
             "stride4_cohort_ic_sd": stride4_sd,
             "stride4_cohort_t": stride4_t,
+            # the raw series ride in the stamp so the sealed gate re-derives
+            # t (and the two-world pooled t, criterion 7) from the artifact
+            # alone instead of trusting a pre-computed scalar
+            "stride4_cohort_ics": stride4_ics,
+            "cohort_ics": cohort_ics,
             "positions": all_positions,
         },
         "fills_log": all_fills,

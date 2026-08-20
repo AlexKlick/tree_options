@@ -239,6 +239,35 @@ def test_reentry_into_open_contract_skipped_and_counted(world, surface, relaxed_
     assert len(distinct) == len(result.positions), "one row per contract"
 
 
+def test_fill_audit_stamps_t1_discipline(world, surface, relaxed_filter) -> None:
+    """Sealed-gate criterion 2 inputs: every fill carries its decision
+    instant/session and the SELECTED quote's receipt; execution is strictly
+    the session after decision, and the quote was received by execution."""
+    _overlay, calendar, _snap, dataset = world
+    result = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=dataset,
+        candidate_filter=relaxed_filter,
+        signals=_signals(world, surface, n_decision_sessions=3),
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="A",
+    )
+    assert result.fills, "the fixture must mint at least one fill"
+    assert {a.fill_id for a in result.fill_audit} == {f.fill_id for f in result.fills}, (
+        "one audit row per fill"
+    )
+    for audit in result.fill_audit:
+        assert calendar.ordinal(audit.execution_session) > calendar.ordinal(
+            audit.decision_session
+        ), "execution must be the session AFTER decision"
+        assert audit.execution_at > audit.decision_at
+        assert audit.quote_received_at <= audit.execution_at, "quote received by execution"
+    # criterion 1 input: conservation asserted at EVERY evaluated session
+    assert result.counters.conservation_checks == len(result.sessions)
+
+
 def test_deterministic_repeat(world, surface, relaxed_filter) -> None:
     _overlay, calendar, _snap, dataset = world
     signals = _signals(world, surface, n_decision_sessions=3)
@@ -400,6 +429,103 @@ def test_terminal_action_settles_at_intrinsic(world, surface, relaxed_filter) ->
             "a held position on the merged name must settle at intrinsic, not stay open"
         )
         assert result.counters.terminals >= 1
+
+
+def test_mark_uses_prior_file_eod_bid(world, surface, relaxed_filter) -> None:
+    """Open positions are marked at the strictly-knowable file(t-1) EOD BID
+    (mutant M123: marking at the ask inflates equity with a price the
+    position could not realize)."""
+    from tree_options.schemas.common import FEE_TICK
+
+    _overlay, calendar, _snap, dataset = world
+    sessions = world[0].world_sessions()
+    result = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=dataset,
+        candidate_filter=relaxed_filter,
+        signals=_signals(world, surface, n_decision_sessions=3),
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="A",
+        end_session=sessions[97],  # entry at 96, marks at 96/97 closes, no exit yet
+    )
+    open_rows = [p for p in result.positions if p.exit_kind is None]
+    assert open_rows, "positions must still be open inside the mark window"
+    qty_by_contract = {f.contract_id: f.quantity for f in result.fills if f.side == "buy"}
+    close_at = calendar.session_close(sessions[97])
+    expected_mv = Decimal("0")
+    for row in open_rows:
+        entry = surface.entry_as_of(row.underlying_security_id, close_at, row.contract_id)
+        assert entry is not None, f"{row.contract_id} quoted on the visible file"
+        expected_mv += (
+            entry.quote_eod.bid * qty_by_contract[row.contract_id] * 100
+        ).quantize(FEE_TICK)
+    assert result.equities[-1] == (result.terminal_cash + expected_mv).quantize(FEE_TICK)
+
+
+def test_election_window_is_ten_oclock_visibility(world, surface, relaxed_filter) -> None:
+    """The early-exercise election consumes only actions visible by the
+    10:00 ET window (mutant M131: extending visibility to the session close
+    would leak same-evening dividend announcements into the election)."""
+    overlay, calendar, snapshot, _dataset = world
+    sessions = overlay.world_sessions()
+    dry = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=_dataset,
+        candidate_filter=relaxed_filter,
+        signals=_signals(world, surface, n_decision_sessions=3),
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="B",
+        end_session=sessions[99],
+    )
+    assert dry.positions, "the fixture must enter at least one position"
+    victim_row = dry.positions[0]
+    victim = victim_row.underlying_security_id
+    held_contract = victim_row.contract_id
+    # the first 10:00 window at which the position is already held (entries
+    # execute at step 4 of the window, elections at step 3 — one session later)
+    election_session = calendar.nth_after(victim_row.entry_session, 1)
+    # a giant dividend announced AT the session close (hours AFTER the 10:00
+    # election window), effective inside the hold: knowable only at pub time
+    announce_at = calendar.session_close(election_session)
+    augmented = _AugmentedDataset(
+        snapshot,
+        calendar,
+        universe_id=f"{snapshot.snapshot_id}|pit-universe-v1",
+        extra_actions=[
+            _extra_action(
+                security_id=victim,
+                kind="cash_dividend",
+                effective_session=calendar.nth_after(election_session, 1),
+                cash_amount=D("5000.00"),
+                available_at=announce_at,
+                source_record_id="ACT-ELECT-1",
+            )
+        ],
+    )
+    result = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=augmented,
+        candidate_filter=relaxed_filter,
+        signals=_signals(world, surface, n_decision_sessions=1),
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="B",
+        end_session=calendar.nth_after(election_session, 2),
+    )
+    early = [
+        p
+        for p in result.positions
+        if p.contract_id == held_contract and p.exit_kind == "early_exercise"
+    ]
+    assert not early, (
+        "the election must not see a dividend announced after the 10:00 window "
+        f"({held_contract} elected on {early[0].exit_session if early else '-'})"
+    )
 
 
 def test_silent_death_settles_at_last_bar(world, surface, relaxed_filter) -> None:

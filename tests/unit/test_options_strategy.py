@@ -477,3 +477,27 @@ def test_pending_dividend_window() -> None:
         effective_through=expiry,
     )
     assert other is None
+
+
+def test_pick_expiry_uses_calendar_days(surface, decision_session) -> None:
+    """The DTE band is CALENDAR days (protocol 30-60), re-derived
+    independently: the picked expiry is the in-band calendar-day pick,
+    never a session-count approximation (mutant M127)."""
+    from tree_options.options.strategy import _pick_expiry
+
+    calendar = surface.overlay.calendar
+    decision_at = calendar.session_close(decision_session)
+    checked = 0
+    for sid in sorted(surface.eligible_as_of(decision_session)):
+        live = surface.live_expiries_as_of(sid, decision_at)
+        in_band = [
+            e for e in live if CONFIG.dte_min <= (e - decision_session).days <= CONFIG.dte_max
+        ]
+        if not in_band:
+            continue
+        expected = min(
+            in_band, key=lambda e: (abs((e - decision_session).days - CONFIG.target_dte), e)
+        )
+        assert _pick_expiry(surface, sid, decision_session, CONFIG) == expected, sid
+        checked += 1
+    assert checked, "the fixture must exercise at least one in-band expiry"

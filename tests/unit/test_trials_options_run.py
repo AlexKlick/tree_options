@@ -132,12 +132,35 @@ def test_run_options_trial_end_to_end(world, protocol, tmp_path) -> None:
     assert pooled["n_positions"] >= 1
     assert isinstance(pooled["positions"], list) and pooled["positions"]
     assert isinstance(payload["fills_log"], list)
+    # sealed-gate criterion 2 inputs: every stamped fill carries its T+1
+    # decision provenance and the selected quote's receipt, so the gate
+    # re-derives the fill discipline from the artifact alone
+    if payload["fills_log"]:
+        for fill in payload["fills_log"]:
+            assert fill["decision_session"] is not None
+            assert fill["quote_received_at"] is not None
+            assert fill["decision_session"] < fill["execution_session"]
+            assert fill["quote_received_at"] <= fill["execution_at"]
+        assert payload["fills_log"][0]["decision_at"] is not None
+    # criterion 1 input: conservation was asserted at EVERY evaluated session
+    per_fold_sessions = sum(f["n_sessions_evaluated"] for f in payload["per_fold"])
+    assert per_fold_sessions > 0
+    assert payload["counters"]["conservation_checks"] == per_fold_sessions
     assert set(payload["counters"]) >= {
         "not_evaluable_candidates",
         "rejections",
         "rule_histogram",
     }
     assert payload["pooled"]["n_stride4_cohorts"] <= payload["pooled"]["n_cohorts"]
+    # criterion 7 input: the raw stride-4 series is stamped so the gate
+    # re-derives t (and the pooled two-world t) from the artifact alone
+    ics = payload["pooled"]["stride4_cohort_ics"]
+    assert isinstance(ics, list) and len(ics) == payload["pooled"]["n_stride4_cohorts"]
+    # criterion 4 input: per-position contract expiration + the world's
+    # last evaluated session
+    assert payload["world_last_session"]
+    for position in pooled["positions"]:
+        assert position["contract_expiration"]
     # the stamp's config hash binds the strategy + the 7200 override
     stamped_config = body["stamp"]["config"] if "config" in body.get("stamp", {}) else None
     _ = stamped_config  # stamp layout is owned by protocol/stamping; presence checked below

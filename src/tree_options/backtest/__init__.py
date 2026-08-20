@@ -8,6 +8,7 @@ from tree_options.backtest.equity import (
     run_equity_backtest,
 )
 from tree_options.backtest.options import (
+    FillAudit,
     OptionsBacktestResult,
     OptionsCounters,
     PositionRow,
@@ -18,6 +19,7 @@ __all__ = [
     "BacktestSignal",
     "EquityBacktestResult",
     "EquityFillEngine",
+    "FillAudit",
     "FiveBasisPointFeeModel",
     "OptionsBacktestResult",
     "OptionsCounters",

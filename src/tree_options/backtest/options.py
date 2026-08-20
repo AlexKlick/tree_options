@@ -81,6 +81,7 @@ from tree_options.schemas.market import (
     NonTradableConditionError,
     StaleQuoteError,
     ZeroSizeQuoteError,
+    select_quote,
 )
 from tree_options.schemas.options import OptionContract
 from tree_options.schemas.trading import Fill, Order
@@ -127,6 +128,7 @@ class _OpenPosition:
     entry_fill_id: str
     entry_price: Decimal
     entry_session: date
+    contract_expiration: date  # stamped on rows: criterion 4 needs it
     exit_kind: str | None = None  # sell | early_exercise | expiry | terminal
     exit_fill_id: str | None = None
     exit_price: Decimal | None = None
@@ -145,6 +147,7 @@ class PositionRow:
     entry_fill_id: str
     entry_price: Decimal
     entry_session: date
+    contract_expiration: date
     exit_kind: str | None  # None == still open at the end
     exit_fill_id: str | None
     exit_price: Decimal | None
@@ -170,10 +173,26 @@ class OptionsCounters:
     terminals: int = 0
     exit_retries: int = 0
     mark_misses: int = 0
+    conservation_checks: int = 0
     rule_histogram: dict[tuple[str, str], int] = field(default_factory=dict)
 
     def bump(self, bucket: dict[str, int], code: str) -> None:
         bucket[code] = bucket.get(code, 0) + 1
+
+
+@dataclass(frozen=True)
+class FillAudit:
+    """Per-fill provenance for the sealed gate's criterion 2: the order's
+    decision instant/session and the SELECTED quote's receipt (re-derived
+    through the same shared `select_quote` with the same execution instant
+    the engine used — zero stress, so the selections are identical)."""
+
+    fill_id: str
+    decision_session: date
+    decision_at: datetime
+    quote_received_at: datetime
+    execution_at: datetime
+    execution_session: date
 
 
 @dataclass(frozen=True)
@@ -186,6 +205,7 @@ class OptionsBacktestResult:
     equities: tuple[Decimal, ...]
     positions: tuple[PositionRow, ...]
     fills: tuple[Fill, ...]
+    fill_audit: tuple[FillAudit, ...]
     label_hits: tuple[bool, ...]
     counters: OptionsCounters
     audit: CandidateAudit
@@ -232,6 +252,7 @@ def _row(position: _OpenPosition) -> PositionRow:
         entry_fill_id=position.entry_fill_id,
         entry_price=position.entry_price,
         entry_session=position.entry_session,
+        contract_expiration=position.contract_expiration,
         exit_kind=position.exit_kind,
         exit_fill_id=position.exit_fill_id,
         exit_price=position.exit_price,
@@ -310,6 +331,7 @@ def run_options_backtest(
     open_positions: dict[str, _OpenPosition] = {}
     closed_rows: list[PositionRow] = []
     fills: list[Fill] = []
+    fill_audit: list[FillAudit] = []
     pending_entries: dict[date, tuple[Order, ...]] = {}
     pending_exits: dict[date, list[Order]] = defaultdict(list)
     order_signals: dict[str, OptionSignal] = {}
@@ -324,13 +346,27 @@ def run_options_backtest(
     def execute_fill(order: Order, *, session: date, instant: datetime) -> Fill:
         quotes = surface.visible_quotes_as_of(order.contract_id, instant)
         contract = surface.contract(order.contract_id)
-        return engine.execute(
+        fill = engine.execute(
             order,
             quotes,
             contract,
             execution_session=session,
             execution_at=instant,
         )
+        # criterion-2 provenance: the same shared selection the engine ran
+        # (zero stress => identical effective instant), stamped per fill
+        selected = select_quote(quotes, instant)
+        fill_audit.append(
+            FillAudit(
+                fill_id=fill.fill_id,
+                decision_session=order.decision_session,
+                decision_at=order.decision_at,
+                quote_received_at=selected.received_timestamp,
+                execution_at=fill.execution_at,
+                execution_session=fill.execution_session,
+            )
+        )
+        return fill
 
     def close_position_row(
         contract_id: str, *, kind: str, price: Decimal, session: date, fill_id: str | None = None
@@ -561,6 +597,7 @@ def run_options_backtest(
                 entry_fill_id=fill.fill_id,
                 entry_price=fill.price,
                 entry_session=session,
+                contract_expiration=contract.expiration,
             )
             if arm == "A":
                 exit_session = calendar.nth_after(session, config.exit_sessions_after_entry)
@@ -669,6 +706,7 @@ def run_options_backtest(
 
         # -- 7. conservation EVERY session
         ledger.assert_conservation()
+        counters.conservation_checks += 1
         last_window_instant = instant
 
         # -- schedule tomorrow's entries from today's close decision
@@ -718,6 +756,7 @@ def run_options_backtest(
         equities=tuple(equities),
         positions=tuple(all_rows),
         fills=tuple(fills),
+        fill_audit=tuple(fill_audit),
         counters=counters,
         audit=audit,
         terminal_cash=ledger.cash,
