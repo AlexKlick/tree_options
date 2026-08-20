@@ -8,6 +8,7 @@ from tree_options.options.settlement import (
     mint_settlement,
 )
 from tree_options.options.strategy import (
+    CandidateAudit,
     OptionCandidate,
     OptionSignal,
     OptionsStrategyConfig,
@@ -22,6 +23,7 @@ from tree_options.options.strategy import (
 )
 
 __all__ = [
+    "CandidateAudit",
     "ExerciseElectionInputs",
     "ExerciseSettlement",
     "OptionCandidate",

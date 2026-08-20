@@ -223,6 +223,31 @@ def _pending_action_at(
     return None
 
 
+@dataclass
+class CandidateAudit:
+    """Mutable drop-reason counters (the backtest payload's NOT_EVALUABLE /
+    selection audit — OD3's raw material). One instance may span sessions."""
+
+    scored_cross_section: int = 0
+    selected: int = 0
+    excluded_pending_action: int = 0
+    no_in_band_expiry: int = 0
+    no_in_band_strike: int = 0
+    filter_not_evaluable: int = 0
+    filter_fail: int = 0
+    no_visible_quote: int = 0
+    accepted: int = 0
+    rule_histogram: dict[tuple[str, str], int] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.rule_histogram is None:
+            self.rule_histogram = {}
+
+    def tally(self, rule: str, status: str) -> None:
+        key = (rule, status)
+        self.rule_histogram[key] = self.rule_histogram.get(key, 0) + 1
+
+
 def build_candidates(
     *,
     surface: OptionPitSurface,
@@ -231,6 +256,7 @@ def build_candidates(
     scores: tuple[OptionSignal, ...],
     config: OptionsStrategyConfig,
     actions: tuple[CorporateActionRecord, ...] = (),
+    audit: CandidateAudit | None = None,
 ) -> tuple[OptionCandidate, ...]:
     """Cut quintiles over the OPTION-ELIGIBLE scored cross-section and
     resolve each selected name to one §9.2-accepted contract.
@@ -238,8 +264,8 @@ def build_candidates(
     Top quintile → calls, bottom quintile → puts (owner ruling 1). Names
     with a pending corporate action at decision are excluded (§2 i). A
     name whose expiry/strike rule finds no in-band contract, or whose
-    §9.2 evaluation rejects, is simply absent from the returned tuple —
-    the COUNTERS live in the backtest, which wraps this call.
+    §9.2 evaluation rejects, is simply absent from the returned tuple;
+    pass `audit` to capture the drop reasons and the per-rule histogram.
     """
     decision_at = surface.overlay.calendar.session_close(decision_session)
     eligible = frozenset(surface.eligible_as_of(decision_session))
@@ -251,29 +277,48 @@ def build_candidates(
         and not math.isnan(row.score)
         and math.isfinite(row.score)
     )
+    if audit is not None:
+        audit.scored_cross_section += len(cross_section)
     top, bottom = _quintile_cut(cross_section)
     selected: list[tuple[OptionSignal, str]] = [
         *((row, "C") for row in top),
         *((row, "P") for row in bottom),
     ]
+    if audit is not None:
+        audit.selected += len(selected)
 
     candidates: list[OptionCandidate] = []
     for signal, call_put in selected:
         underlying_id = signal.security_id
         if _pending_action_at(actions, underlying_id, decision_at) is not None:
+            if audit is not None:
+                audit.excluded_pending_action += 1
             continue
         expiration = _pick_expiry(surface, underlying_id, decision_session, config)
         if expiration is None:
+            if audit is not None:
+                audit.no_in_band_expiry += 1
             continue
         picked = _pick_strike(
             surface, underlying_id, decision_session, expiration, call_put, config
         )
         if picked is None:
+            if audit is not None:
+                audit.no_in_band_strike += 1
             continue
         strike, abs_delta = picked
         contract = surface.contract(contract_id_of(underlying_id, expiration, call_put, strike))
-        decision = candidate_filter.evaluate(surface.candidate_snapshot(contract, decision_session))
+        snapshot = surface.candidate_snapshot(contract, decision_session)
+        decision = candidate_filter.evaluate(snapshot)
+        if audit is not None:
+            for result in decision.results:
+                audit.tally(result.rule, result.status)
         if not decision.accepted:
+            if audit is not None:
+                if any(r.status == "NOT_EVALUABLE" for r in decision.failed()):
+                    audit.filter_not_evaluable += 1
+                else:
+                    audit.filter_fail += 1
             continue
         entry = surface.entry_as_of(
             underlying_id,
@@ -281,6 +326,8 @@ def build_candidates(
             contract.contract_id,
         )
         if entry is None:  # the filter already rejected this case (spread NOT_EVALUABLE)
+            if audit is not None:
+                audit.no_visible_quote += 1
             continue
         ask = entry.quote_eod.ask
         bid = entry.quote_eod.bid
@@ -300,6 +347,8 @@ def build_candidates(
                 mid=mid,
             )
         )
+        if audit is not None:
+            audit.accepted += 1
     return tuple(candidates)
 
 
