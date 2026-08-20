@@ -1,5 +1,10 @@
-"""Trials (M2-proper workstream F)."""
+"""Trials (M2-proper workstream F; M3 options era)."""
 
+from tree_options.trials.options_run import (
+    OptionsSplitOverride,
+    OptionsTrialResult,
+    run_options_trial,
+)
 from tree_options.trials.run import (
     DEV_TRIAL_CONFIGS,
     DevTrialConfig,
@@ -11,7 +16,10 @@ from tree_options.trials.run import (
 __all__ = [
     "DEV_TRIAL_CONFIGS",
     "DevTrialConfig",
+    "OptionsSplitOverride",
+    "OptionsTrialResult",
     "SplitOverride",
     "TrialResult",
+    "run_options_trial",
     "run_trial",
 ]

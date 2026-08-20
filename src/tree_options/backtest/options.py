@@ -73,6 +73,15 @@ from tree_options.options.exercise import ExerciseElectionInputs, should_elect_e
 from tree_options.options.settlement import mint_settlement
 from tree_options.options.strategy import exit_decision_session
 from tree_options.schemas.common import FEE_TICK
+from tree_options.schemas.market import (
+    CrossedQuoteError,
+    LockedQuoteError,
+    NonpositiveQuoteError,
+    NonTickQuoteError,
+    NonTradableConditionError,
+    StaleQuoteError,
+    ZeroSizeQuoteError,
+)
 from tree_options.schemas.options import OptionContract
 from tree_options.schemas.trading import Fill, Order
 from tree_options.time.calendar import SessionCalendar
@@ -82,6 +91,25 @@ Arm = Literal["A", "B"]
 DATASET_PROVENANCE = "synthetic/v1"
 DECLARED_MAX_QUOTE_AGE_SECONDS = 7200  # owner ruling 4: rides in the config hash
 EXECUTION_OFFSET_SECONDS = 1800  # 10:00 ET = session open (09:30) + 30 min
+
+# The fill engine's quote-reality rejections propagate as their own error
+# types (frozen M0 contract — tests assert them raw); the backtest treats
+# every one as a counted fill rejection, never a crash.
+QUOTE_REJECTION_ERRORS = (
+    CrossedQuoteError,
+    LockedQuoteError,
+    NonpositiveQuoteError,
+    NonTickQuoteError,
+    NonTradableConditionError,
+    StaleQuoteError,
+    ZeroSizeQuoteError,
+)
+
+
+def _rejection_code(exc: Exception) -> str:
+    if isinstance(exc, FillRejection):
+        return exc.code
+    return type(exc).__name__
 
 
 class OptionsBacktestError(RuntimeError):
@@ -157,6 +185,7 @@ class OptionsBacktestResult:
     equities: tuple[Decimal, ...]
     positions: tuple[PositionRow, ...]
     fills: tuple[Fill, ...]
+    label_hits: tuple[bool, ...]
     counters: OptionsCounters
     audit: CandidateAudit
     terminal_cash: Decimal
@@ -385,8 +414,8 @@ def run_options_backtest(
                 )
                 try:
                     fill = execute_fill(order, session=session, instant=instant)
-                except FillRejection as rejection:
-                    counters.bump(counters.force_close_rejections, rejection.code)
+                except (*QUOTE_REJECTION_ERRORS, FillRejection) as rejection:
+                    counters.bump(counters.force_close_rejections, _rejection_code(rejection))
                     retry_sell(contract_id, held, decided_session=session)
                     continue
                 ledger.apply(fill)
@@ -443,8 +472,8 @@ def run_options_backtest(
                 order = order.model_copy(update={"quantity": held})
             try:
                 fill = execute_fill(order, session=session, instant=instant)
-            except FillRejection as rejection:
-                counters.bump(counters.exit_fill_rejections, rejection.code)
+            except (*QUOTE_REJECTION_ERRORS, FillRejection) as rejection:
+                counters.bump(counters.exit_fill_rejections, _rejection_code(rejection))
                 counters.exit_retries += 1
                 retry_sell(order.contract_id, held, decided_session=session)
                 continue
@@ -507,8 +536,8 @@ def run_options_backtest(
                 order = order.model_copy(update={"quantity": clamped})
             try:
                 fill = execute_fill(order, session=session, instant=instant)
-            except FillRejection as rejection:
-                counters.bump(counters.entry_fill_rejections, rejection.code)
+            except (*QUOTE_REJECTION_ERRORS, FillRejection) as rejection:
+                counters.bump(counters.entry_fill_rejections, _rejection_code(rejection))
                 continue
             ledger.apply(fill)
             fills.append(fill)
@@ -639,6 +668,7 @@ def run_options_backtest(
         arm=arm,
         summary=backtest_summary(returns, turnovers, label_hits),
         sessions=sessions,
+        label_hits=tuple(label_hits),
         turnovers=tuple(turnovers),
         equities=tuple(equities),
         positions=tuple(all_rows),
