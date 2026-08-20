@@ -532,6 +532,61 @@ def test_merger_terminal_strikes_at_effective_session(world, surface, relaxed_fi
     )
 
 
+def test_late_published_merger_settles_without_backdated_stamp(
+    world, surface, relaxed_filter
+) -> None:
+    """Review r2 P1-1: a merger effective at t (final bar on t) published at
+    close(t+1) must settle at the DETECTION instant, priced at t's bar. The
+    old path stamped the settlement at bar t's publication instant, so a
+    fill executing at 10:00 on t+1 — between that publication and the
+    settlement application — crashed OUT_OF_ORDER_SETTLEMENT."""
+    overlay, calendar, snapshot, _dataset = world
+    sessions = overlay.world_sessions()
+    effective = sessions[100]
+    detect_session = sessions[101]
+    decision = sessions[100]  # decided at close(t), fills 10:00 on t+1
+    victim = sorted(surface.eligible_as_of(decision))[0]  # a top-quintile name
+    augmented = _AugmentedDataset(
+        snapshot,
+        calendar,
+        universe_id=f"{snapshot.snapshot_id}|pit-universe-v1",
+        extra_actions=[
+            _extra_action(
+                security_id=victim,
+                kind="merger",
+                effective_session=effective,
+                successor_security_id="SYN-9999",
+                available_at=calendar.session_close(detect_session) + timedelta(hours=7),
+                source_record_id="ACT-TERM-LATE",
+            )
+        ],
+        drop_bars_after=(victim, effective),  # the final bar is t; nothing after
+    )
+    signals = tuple(
+        OptionSignal(decision_session=decision, security_id=sid, score=(i + 1) / 10.0)
+        for i, sid in enumerate(sorted(surface.eligible_as_of(decision)))
+    )
+    result = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=augmented,
+        candidate_filter=relaxed_filter,
+        signals=signals,
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="B",
+        end_session=sessions[103],
+    )
+    victim_rows = [p for p in result.positions if p.underlying_security_id == victim]
+    assert victim_rows, "the victim must be held"
+    terminal_rows = [p for p in victim_rows if p.exit_kind == "terminal"]
+    assert terminal_rows, "the late-published merger must still terminate the position"
+    assert all(p.exit_session == detect_session for p in terminal_rows), (
+        "settlement lands at the detection session (ts = the action's "
+        "publication), priced at the effective session's final bar"
+    )
+
+
 def test_terminal_action_settles_at_intrinsic(world, surface, relaxed_filter) -> None:
     overlay, calendar, snapshot, _dataset = world
     sessions = overlay.world_sessions()

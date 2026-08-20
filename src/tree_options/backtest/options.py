@@ -386,20 +386,42 @@ def run_options_backtest(
         quantity: int,
         session: date,
         detect_at=None,
+        action: CorporateActionRecord | None = None,
     ) -> None:
-        bar = bar_map.get((contract.underlying_security_id, session))
-        if bar is None and kind == "terminal":
-            bar = _last_bar_at_or_before(bar_map, contract.underlying_security_id, session)
-        if bar is None:
-            raise OptionsBacktestError(
-                f"MISSING_SETTLEMENT_BAR: {contract.underlying_security_id}/{session}"
-            )
+        if action is not None:
+            # review r2 P1-1: an action-driven terminal prices at the
+            # EFFECTIVE session's final bar (last bar at-or-before as the
+            # degenerate fallback) and stamps at the detection instant —
+            # max(action publication, bar publication) — so the ledger's
+            # application timeline never backdates behind a fill that
+            # executed between the bar's publication and the settlement.
+            bar = bar_map.get((contract.underlying_security_id, action.effective_session))
+            if bar is None:
+                bar = _last_bar_at_or_before(
+                    bar_map, contract.underlying_security_id, action.effective_session
+                )
+            if bar is None:
+                raise OptionsBacktestError(
+                    f"MISSING_SETTLEMENT_BAR: {contract.underlying_security_id}/"
+                    f"{action.effective_session}"
+                )
+            detect_at = max(action.available_at, bar.available_at)
+            mint_session = session
+        else:
+            bar = bar_map.get((contract.underlying_security_id, session))
+            if bar is None and kind == "terminal":
+                bar = _last_bar_at_or_before(bar_map, contract.underlying_security_id, session)
+            if bar is None:
+                raise OptionsBacktestError(
+                    f"MISSING_SETTLEMENT_BAR: {contract.underlying_security_id}/{session}"
+                )
+            mint_session = session if detect_at is not None else bar.session
         settlement = mint_settlement(
             contract=contract,
             settlement_id=f"STL-{kind[0].upper()}-{contract.contract_id}-{session:%Y%m%d}",
             kind=kind,  # type: ignore[arg-type]
             quantity=quantity,
-            session=session if detect_at is not None else bar.session,
+            session=mint_session,
             reference_bar=bar,
             terminal_detect_at=detect_at,
         )
@@ -665,6 +687,7 @@ def run_options_backtest(
 
         # -- 5. settlements striking at close(t), applied at bar publication
         settlements_due: list[tuple[str, str, int]] = []
+        terminal_actions: dict[str, CorporateActionRecord] = {}
         # terminal actions striking at close(effective_session): the loop must
         # BE at (or past) the effective session — the final bar exists then —
         # and the action must be visible by tomorrow's open (review r1 P1-3:
@@ -679,6 +702,7 @@ def run_options_backtest(
                     and action.available_at <= next_open
                 ):
                     settlements_due.append(("terminal", contract_id, ledger.quantity(contract_id)))
+                    terminal_actions[contract_id] = action
                     break
         # SILENT deaths (bankruptcy_11 / voluntary_delisting / coverage_lapse
         # emit no action record): the underlying has no bar this session but
@@ -727,6 +751,7 @@ def run_options_backtest(
                 quantity=quantity,
                 session=session,
                 detect_at=detect_at_wall if kind == "terminal_silent" else None,
+                action=None if kind == "terminal_silent" else terminal_actions.get(contract_id),
             )
             if kind == "early_exercise":
                 counters.early_exercises += 1

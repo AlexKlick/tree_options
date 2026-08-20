@@ -262,6 +262,37 @@ preliminary old-head datapoint.
 
 <!-- REVIEW_R2_RESULTS -->
 
+### 5e. Review round 2 (verdict verbatim)
+
+Head `4209b82`, pinned read-only worktree (full transcript:
+`docs/evidence-logs/m3/m3-review-r2.log`):
+
+> VERDICT: NO-GO
+>
+> - P1 — Late-published terminal actions can crash instead of settling
+>   on the effective-session bar (settlement stamped at bar t's
+>   publication time, backdated before a t+1 fill →
+>   OUT_OF_ORDER_SETTLEMENT).
+> - P1 — Effective corporate actions stop blocking new entries even
+>   though the overlay never creates adjusted contracts (split
+>   effective ON the decision session passes the strict
+>   `effective_session > decision` predicate; cancellation misses it
+>   too — pre-split contract filled against post-split prices).
+> - P1 — Missing prior-session option files do not produce the declared
+>   zero mark (marking reaches back to t-2's stale bid instead of zero,
+>   no mark_miss increment — equity overstated).
+> - P1 — Criterion 3 applies the owner-ruled per-world floor separately
+>   to each arm (60+60 per world passes the ruling; drivers emit two
+>   60 < 100 failures).
+> - P2 — Exact-head mutation/restoration proof remains unclosed
+>   (record-only; the code-final gate runs mutation 133/133 at the head
+>   that merges).
+
+Disposition: each P1 triaged against the code before fixing (§5f);
+fixes red-first, one commit per finding.
+
+<!-- REVIEW_R2_FIXES -->
+
 ## 6. Evidence log retention
 
 `docs/evidence-logs/m3/` (committed `1993a06`) holds the surviving logs
