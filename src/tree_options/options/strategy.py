@@ -214,11 +214,22 @@ def _pending_action_at(
     """Any still-pending action on the underlying visible at the decision
     instant (announced by decision, effective after the decision session).
     Plan §2 (i): such names are excluded from entry — their post-action
-    chains are unknowable at decision."""
+    chains are unknowable at decision. Review r2 P1-2: a RATIO action
+    effective ON the decision session is equally untradeable — the
+    decision-visible file (at best the prior session's) predates the action
+    and the overlay never creates adjusted contracts, so the pre-action
+    fixed-strike deliverable would fill against post-action prices."""
     for action in actions:
         if action.security_id != underlying_id:
             continue
-        if action.available_at <= decision_at and action.effective_session > decision_at.date():
+        if action.available_at > decision_at:
+            continue
+        if action.effective_session > decision_at.date():
+            return action
+        if (
+            classify_action(action.kind) == "ratio"
+            and action.effective_session == decision_at.date()
+        ):
             return action
     return None
 

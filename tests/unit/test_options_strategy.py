@@ -228,6 +228,40 @@ def test_build_candidates_excludes_pending_action(
     assert all(c.underlying_security_id != victim for c in candidates)
 
 
+def test_build_candidates_excludes_ratio_action_effective_on_decision(
+    surface, candidate_filter, decision_session, scores, calendar
+) -> None:
+    """Review r2 P1-2: a split effective ON the decision session (announced
+    by the decision) must also block entry. The decision-visible file (at
+    best the prior session's) necessarily predates the action and the
+    overlay never creates adjusted contracts — the strict
+    effective > decision predicate admitted the name, and the
+    (decision, execution] cancellation window missed the announcement too,
+    so the pre-split fixed-strike deliverable filled against post-split
+    prices."""
+    decision_at = calendar.session_close(decision_session)
+    victim = sorted(scores, key=lambda row: row.score)[-1].security_id  # a bottom name
+    effective_now = _action(
+        record_id="ACT-TEST-EFF-NOW",
+        security_id=victim,
+        kind="split",
+        effective_session=decision_session,  # effective ON the decision session
+        available_at=decision_at - timedelta(hours=1),
+    )
+    candidates = build_candidates(
+        surface=surface,
+        candidate_filter=candidate_filter,
+        decision_session=decision_session,
+        scores=scores,
+        config=CONFIG,
+        actions=(effective_now,),
+    )
+    assert all(c.underlying_security_id != victim for c in candidates), (
+        "a ratio action effective on the decision session must exclude the "
+        "name — its visible file is pre-action and no adjusted contract exists"
+    )
+
+
 def test_scores_outside_decision_session_are_ignored(
     surface, candidate_filter, decision_session, scores
 ) -> None:
