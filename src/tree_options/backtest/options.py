@@ -425,6 +425,43 @@ def run_options_backtest(
             )
         )
 
+    def schedule_entries(decision: date) -> None:
+        """close(d) decision → candidates → orders pending for the next
+        session's execution window (the T+1 discipline)."""
+        decision_rows = tuple(signals_by_session.get(decision, ()))
+        if not decision_rows:
+            return
+        candidates = build_candidates(
+            surface=surface,
+            candidate_filter=candidate_filter,
+            decision_session=decision,
+            scores=decision_rows,
+            config=config,
+            actions=tuple(dataset.actions),
+            audit=audit,
+        )
+        for candidate in candidates:
+            contract_underlying[candidate.contract_id] = candidate.underlying_security_id
+        orders = plan_orders(
+            calendar=calendar,
+            candidates=candidates,
+            cash=ledger.cash,
+            config=config,
+            fee_model=fees,
+        )
+        if orders:
+            pending_entries[calendar.nth_after(decision, 1)] = orders
+        for candidate in candidates:
+            for order in orders:
+                if order.contract_id == candidate.contract_id:
+                    order_signals[order.order_id] = candidate.signal
+
+    # The earliest close(d) decision PRECEDES the first execution session:
+    # seed its pending entries so the fold's first scored cohort is tradable
+    # (review r1 P1-1 — the loop begins at d+1 and section 7 only converted
+    # signals on sessions the loop visits, silently dropping the first cohort).
+    schedule_entries(min(signals_by_session))
+
     for session in sessions:
         instant = _execution_instant(calendar, session)
         traded_notional = Decimal(0)
@@ -709,33 +746,8 @@ def run_options_backtest(
         counters.conservation_checks += 1
         last_window_instant = instant
 
-        # -- schedule tomorrow's entries from today's close decision
-        decision_rows = tuple(signals_by_session.get(session, ()))
-        if decision_rows:
-            candidates = build_candidates(
-                surface=surface,
-                candidate_filter=candidate_filter,
-                decision_session=session,
-                scores=decision_rows,
-                config=config,
-                actions=tuple(dataset.actions),
-                audit=audit,
-            )
-            for candidate in candidates:
-                contract_underlying[candidate.contract_id] = candidate.underlying_security_id
-            orders = plan_orders(
-                calendar=calendar,
-                candidates=candidates,
-                cash=ledger.cash,
-                config=config,
-                fee_model=fees,
-            )
-            if orders:
-                pending_entries[calendar.nth_after(session, 1)] = orders
-            for candidate in candidates:
-                for order in orders:
-                    if order.contract_id == candidate.contract_id:
-                        order_signals[order.order_id] = candidate.signal
+        # -- 7. schedule tomorrow's entries from today's close decision
+        schedule_entries(session)
 
     counters.not_evaluable_candidates = audit.filter_not_evaluable
     counters.failed_candidates = audit.filter_fail

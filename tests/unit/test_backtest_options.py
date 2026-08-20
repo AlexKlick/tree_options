@@ -100,6 +100,31 @@ def test_arm_a_round_trips_sell_in_four_sessions(world, surface, relaxed_filter)
     assert len(result.equities) == len(result.sessions)
 
 
+def test_first_decision_session_cohort_is_tradable(world, surface, relaxed_filter) -> None:
+    """Review r1 P1-1: the fold's earliest close(d) decision precedes the
+    first execution session, so its pending entries must be seeded before
+    the loop — previously the first scored cohort was silently dropped
+    (the loop begins at d+1 and only converted signals on visited sessions)."""
+    overlay, calendar, _snap, dataset = world
+    sessions = overlay.world_sessions()
+    result = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=dataset,
+        candidate_filter=relaxed_filter,
+        signals=_signals(world, surface, n_decision_sessions=1),
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="A",
+        end_session=sessions[105],
+    )
+    assert result.fills, "the first decision session's cohort must generate entries"
+    first_decision = sessions[95]
+    assert {p.entry_session for p in result.positions} == {calendar.nth_after(first_decision, 1)}, (
+        "entries must execute on the session after the first decision"
+    )
+
+
 def test_arm_b_rides_without_time_exit(world, surface, relaxed_filter) -> None:
     overlay, calendar, _snap, dataset = world
     sessions = overlay.world_sessions()
@@ -467,9 +492,9 @@ def test_mark_uses_prior_file_eod_bid(world, surface, relaxed_filter) -> None:
     for row in open_rows:
         entry = surface.entry_as_of(row.underlying_security_id, close_at, row.contract_id)
         assert entry is not None, f"{row.contract_id} quoted on the visible file"
-        expected_mv += (
-            entry.quote_eod.bid * qty_by_contract[row.contract_id] * 100
-        ).quantize(FEE_TICK)
+        expected_mv += (entry.quote_eod.bid * qty_by_contract[row.contract_id] * 100).quantize(
+            FEE_TICK
+        )
     assert result.equities[-1] == (result.terminal_cash + expected_mv).quantize(FEE_TICK)
 
 
