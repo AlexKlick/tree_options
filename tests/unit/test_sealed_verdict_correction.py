@@ -1,0 +1,122 @@
+"""Review r1 P1-5: the verdict-correction driver must refuse inputs that are
+not the ruled run (fail-closed), instead of re-verdicting a different gate
+run whose failures may have nothing to do with criterion 4's bound."""
+
+from __future__ import annotations
+
+import importlib.util
+from pathlib import Path
+
+_spec = importlib.util.spec_from_file_location(
+    "run_m3_sealed_verdict_correction",
+    Path(__file__).resolve().parents[2] / "scripts" / "run_m3_sealed_verdict_correction.py",
+)
+assert _spec is not None and _spec.loader is not None
+svc = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(svc)
+
+HEADS = (
+    "3bbb461508cf7a7d86f73d64a529651b4719c155",
+    "b1c9b45b9b3a6e981cd16f7d58b705bda13b62d5",
+)
+PROTO = "p" * 64
+CONFIG = "c" * 64
+
+
+def _stamp(world: str, arm: str, **overrides) -> dict:
+    base = {
+        "trial_id": f"m3-{world}-{arm.lower()}-r1",
+        "git_sha": HEADS[1],
+        "protocol_hash": PROTO,
+        "config_hash": CONFIG,
+        "dataset_manifest_hash": f"ds-{world}",
+    }
+    base.update(overrides)
+    return base
+
+
+def _stamps() -> dict:
+    return {
+        (w, a): _stamp(w, a)
+        for w in (
+            "synth-v1-val-null-701",
+            "synth-v1-val-null-702",
+            "synth-v1-val-alpha-710",
+            "synth-v1-val-alpha-711",
+        )
+        for a in ("A", "B")
+    }
+
+
+def _original(failures: list[str], trials: int = 8) -> dict:
+    return {"verdict": "FAIL", "trials": trials, "failures": failures}
+
+
+RULED = [
+    "synth-v1-val-null-701|B: position SYN-0023 open past expiration 2019-11-01",
+    "synth-v1-val-alpha-711|B: position SYN-0057 open past expiration 2019-11-01",
+]
+
+
+def _run(original: dict, stamps: dict | None = None) -> list[str]:
+    return svc._validate_inputs(
+        original,
+        stamps if stamps is not None else _stamps(),
+        expected_protocol_hash=PROTO,
+        summary_stamp={"config_hash": CONFIG},
+        expected_heads=HEADS,
+    )
+
+
+def test_ruled_failures_validate_cleanly() -> None:
+    assert _run(_original(RULED)) == []
+
+
+def test_unrelated_failure_refuses() -> None:
+    """The review's scenario: a trial-status failure alongside the ruled ones
+    must refuse — the correction re-verdicts nothing outside its ruling."""
+    violations = _run(_original([*RULED, "synth-v1-val-null-701|A: trial status FAILED"]))
+    assert any("outside the ruled criterion-4 class" in v for v in violations)
+
+
+def test_no_failures_refuses() -> None:
+    assert any("no failures" in v for v in _run(_original([])))
+
+
+def test_trial_count_mismatch_refuses() -> None:
+    assert any("!= 8 stamped payloads" in v for v in _run(_original(RULED, trials=7)))
+
+
+def test_wrong_trial_id_refuses() -> None:
+    stamps = _stamps()
+    stamps[("synth-v1-val-null-701", "B")] = _stamp(
+        "synth-v1-val-null-701", "B", trial_id="m3-synth-v1-val-null-701-b-r2"
+    )
+    assert any("trial_id" in v for v in _run(_original(RULED), stamps))
+
+
+def test_unknown_source_sha_refuses() -> None:
+    stamps = _stamps()
+    stamps[("synth-v1-val-null-702", "A")] = _stamp("synth-v1-val-null-702", "A", git_sha="f" * 40)
+    assert any("head set" in v for v in _run(_original(RULED), stamps))
+
+
+def test_protocol_or_config_mismatch_refuses() -> None:
+    stamps = _stamps()
+    stamps[("synth-v1-val-alpha-710", "A")] = _stamp(
+        "synth-v1-val-alpha-710", "A", protocol_hash="x" * 64
+    )
+    stamps[("synth-v1-val-alpha-710", "B")] = _stamp(
+        "synth-v1-val-alpha-710", "B", config_hash="y" * 64
+    )
+    violations = _run(_original(RULED), stamps)
+    assert any("protocol_hash" in v for v in violations)
+    assert any("config_hash" in v for v in violations)
+
+
+def test_dataset_hash_disagreement_across_arms_refuses() -> None:
+    stamps = _stamps()
+    stamps[("synth-v1-val-alpha-711", "B")] = _stamp(
+        "synth-v1-val-alpha-711", "B", dataset_manifest_hash="ds-other"
+    )
+    assert any("dataset_manifest_hash disagrees" in v for v in _run(_original(RULED), stamps))

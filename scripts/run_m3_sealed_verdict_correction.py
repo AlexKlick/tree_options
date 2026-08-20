@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import statistics
 import sys
 from datetime import UTC, date, datetime
@@ -54,6 +55,64 @@ REJECTION_FLOOR = 100
 VOLUME_TAIL_FRACTION = 0.05
 ZERO_BID_CODES = ("ZeroSizeQuoteError", "NonpositiveQuoteError", "NO_VISIBLE_QUOTE")
 FIXED_CLOCK = datetime(2026, 8, 20, 12, 0, 0, tzinfo=UTC)
+
+# The ONLY original-failure class this correction is ruled to apply to
+# (owner ruling C): a criterion-4 world|B open-past-expiration line. Any
+# other recorded failure (trial status, conservation, fill discipline...)
+# means the run is not the ruled one and the correction must refuse.
+RULED_CRIT4_FAILURE = re.compile(
+    r"^[a-z0-9-]+\|B: position [A-Z0-9-]+ open past expiration \d{4}-\d{2}-\d{2}$"
+)
+
+
+def _validate_inputs(
+    original: dict,
+    stamps: dict[tuple[str, str], dict],
+    *,
+    expected_protocol_hash: str,
+    summary_stamp: dict,
+    expected_heads: tuple[str, ...],
+) -> list[str]:
+    """Fail-closed input validation (review r1 P1-5). The correction applies
+    ONLY to the ruled criterion-4 failure class, over the complete stamped
+    artifact set of the recorded run — anything else refuses (exit 2)
+    instead of silently re-verdicting a different gate run. Returns the
+    violation list; empty means the inputs are the ruled ones.
+    """
+    violations: list[str] = []
+    for failure in original.get("failures", ()):
+        if not RULED_CRIT4_FAILURE.match(failure):
+            violations.append(f"original failure outside the ruled criterion-4 class: {failure!r}")
+    if not original.get("failures"):
+        violations.append("original run recorded no failures; nothing to correct")
+    if original.get("trials") != len(stamps):
+        violations.append(
+            f"original trials={original.get('trials')!r} != {len(stamps)} stamped payloads"
+        )
+    expected_config = summary_stamp.get("config_hash")
+    dataset_by_world: dict[str, str | None] = {}
+    for (world_id, arm), stamp in sorted(stamps.items()):
+        key = f"{world_id}|{arm}"
+        expected_trial_id = f"m3-{world_id}-{arm.lower()}-r1"
+        if stamp.get("trial_id") != expected_trial_id:
+            violations.append(
+                f"{key}: stamp trial_id {stamp.get('trial_id')!r} != {expected_trial_id!r}"
+            )
+        if stamp.get("git_sha") not in expected_heads:
+            violations.append(
+                f"{key}: stamp git_sha {stamp.get('git_sha')!r} not in the recorded "
+                f"head set {[h[:8] for h in expected_heads]}"
+            )
+        if stamp.get("protocol_hash") != expected_protocol_hash:
+            violations.append(f"{key}: stamp protocol_hash does not match the frozen protocol")
+        if stamp.get("config_hash") != expected_config:
+            violations.append(f"{key}: stamp config_hash != the summary stamp's")
+        dataset_by_world.setdefault(world_id, stamp.get("dataset_manifest_hash"))
+        if dataset_by_world[world_id] != stamp.get("dataset_manifest_hash"):
+            violations.append(
+                f"{key}: dataset_manifest_hash disagrees with the same world's other arm"
+            )
+    return violations
 
 
 def _t_from_series(series: list[float]) -> float | None:
@@ -126,7 +185,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--artifacts-dir", type=Path, default=DEFAULT_ARTIFACTS_DIR)
     args = parser.parse_args(argv)
 
-    from tree_options.protocol.loader import load_protocol
+    from tree_options.protocol.loader import load_protocol, protocol_hash
     from tree_options.protocol.stamping import build_stamp, write_artifact
     from tree_options.time.calendar import StaticSessionCalendar
 
@@ -137,17 +196,38 @@ def main(argv: list[str] | None = None) -> int:
     protocol = load_protocol(REPO_ROOT / "research_protocol.yaml")
 
     payloads: dict[tuple[str, str], dict] = {}
-    stamp_audit: dict[str, str] = {}
+    stamps: dict[tuple[str, str], dict] = {}
     for world_id, arm in [*((w, a) for w in SEALED_WORLDS for a in ARMS)]:
         path = args.artifacts_dir / f"m3-{world_id}-{arm.lower()}-r1.json"
         body = json.loads(path.read_text(encoding="utf-8"))
         payloads[(world_id, arm)] = body["payload"]
-        stamp_audit[f"{world_id}|{arm}"] = body["stamp"]["git_sha"][:8]
-    original = json.loads(
+        stamps[(world_id, arm)] = body["stamp"]
+    summary_body = json.loads(
         (args.artifacts_dir / "sealed-gate-summary.json").read_text(encoding="utf-8")
-    )["payload"]
+    )
+    original = summary_body["payload"]
     if original["verdict"] != "FAIL":
         raise RuntimeError("this correction applies to the recorded FAIL run")
+
+    # Fail-closed input validation (review r1 P1-5): the ruling covers THIS
+    # run's criterion-4 failure class only — refuse anything else.
+    violations = _validate_inputs(
+        original,
+        stamps,
+        expected_protocol_hash=protocol_hash(protocol),
+        summary_stamp=summary_body["stamp"],
+        expected_heads=(
+            "3bbb461508cf7a7d86f73d64a529651b4719c155",
+            "b1c9b45b9b3a6e981cd16f7d58b705bda13b62d5",
+        ),
+    )
+    if violations:
+        for violation in violations:
+            print(f"INPUT_REJECTED: {violation}", file=sys.stderr)
+        return 2
+    stamp_audit = {
+        f"{world_id}|{arm}": stamp["git_sha"] for (world_id, arm), stamp in stamps.items()
+    }
 
     geometry_by_world: dict[str, list[tuple[date, date, date]]] = {}
     for world_id in SEALED_WORLDS:
@@ -211,8 +291,7 @@ def main(argv: list[str] | None = None) -> int:
             failures.append(f"{key}: zero-bid rejections {zero_bid} < {REJECTION_FLOOR}")
         if rule_evals == 0 or volume_fails / rule_evals < VOLUME_TAIL_FRACTION:
             failures.append(
-                f"{key}: volume tail {volume_fails}/{rule_evals} below "
-                f"{VOLUME_TAIL_FRACTION:.0%}"
+                f"{key}: volume tail {volume_fails}/{rule_evals} below {VOLUME_TAIL_FRACTION:.0%}"
             )
 
         # 4. machinery terminal states (arm B) — CORRECTED BOUND: the owning
