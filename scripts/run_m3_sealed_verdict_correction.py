@@ -166,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     failures: list[str] = []
     reported: dict[str, object] = {"per_trial": {}, "power": {}, "fidelity": {}}
 
-    for world_id, arm in SEALED_WORLDS:
+    for world_id, arm in [(w, a) for w in SEALED_WORLDS for a in ARMS]:
         payload = payloads[(world_id, arm)]
         counters = payload["counters"]
         per_fold = payload["per_fold"]
