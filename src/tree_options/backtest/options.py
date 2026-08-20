@@ -581,48 +581,53 @@ def run_options_backtest(
 
         # -- 5. settlements striking at close(t), applied at bar publication
         settlements_due: list[tuple[str, str, int]] = []
-        silent_deaths: set[str] = set()
-        for contract_id, quantity in elected_today:
-            held_now = ledger.quantity(contract_id)
-            if quantity >= 1 and held_now >= 1:
-                settlements_due.append(("early_exercise", contract_id, min(quantity, held_now)))
-                counters.early_exercises += 1
         # terminal actions whose final bar has published by tomorrow's open
         next_open = calendar.session_open(calendar.nth_after(session, 1))
         for contract_id in sorted(open_positions):
             for action in actions_by_sid.get(open_positions[contract_id].underlying_id, ()):
                 if classify_action(action.kind) == "terminal" and action.available_at <= next_open:
                     settlements_due.append(("terminal", contract_id, ledger.quantity(contract_id)))
-                    counters.terminals += 1
                     break
         # SILENT deaths (bankruptcy_11 / voluntary_delisting / coverage_lapse
         # emit no action record): the underlying has no bar this session but
         # has a definitive last bar — the complete-vendor inference. Knowable
         # exactly at this session's failed bar publication (23:00 UTC, the
         # vendor wall); settles at the last bar's close, stamped there.
+        # This scan runs BEFORE elections and expiries so a death claims the
+        # position first: an elected option on an underlying that died last
+        # session cannot strike at close(t) (no bar exists) — it settles as a
+        # terminal at the last bar, and an at-expiry death on a barless name
+        # is terminal for the same reason.
         detect_at_wall = datetime(
             session.year, session.month, session.day, BAR_PUBLICATION_HOUR_UTC, tzinfo=UTC
         )
+        silent_deaths: set[str] = set()
+        claimed: set[str] = {c for _k, c, _q in settlements_due}
         for contract_id in sorted(open_positions):
             position = open_positions[contract_id]
             if (position.underlying_id, session) in bar_map:
                 continue  # alive today
             if _last_bar_at_or_before(bar_map, position.underlying_id, session) is None:
                 continue  # never had a bar in the evaluated window
-            if any(k == "terminal" and c == contract_id for k, c, _q in settlements_due):
+            if contract_id in claimed:
                 continue  # the action-driven terminal already claimed it
             silent_deaths.add(contract_id)
+            claimed.add(contract_id)
             settlements_due.append(("terminal_silent", contract_id, ledger.quantity(contract_id)))
-            counters.terminals += 1
+        for contract_id, quantity in elected_today:
+            held_now = ledger.quantity(contract_id)
+            if contract_id in claimed or quantity < 1 or held_now < 1:
+                continue  # a terminal death outranks the election
+            settlements_due.append(("early_exercise", contract_id, min(quantity, held_now)))
+            claimed.add(contract_id)
         for contract_id in sorted(open_positions):
             contract = surface.contract(contract_id)
             if (
                 contract.expiration == session
                 and ledger.quantity(contract_id) >= 1
-                and contract_id not in silent_deaths
+                and contract_id not in claimed
             ):
                 settlements_due.append(("expiry", contract_id, ledger.quantity(contract_id)))
-                counters.expiries += 1
         for kind, contract_id, quantity in sorted(settlements_due):
             settle(
                 contract=surface.contract(contract_id),
@@ -631,6 +636,12 @@ def run_options_backtest(
                 session=session,
                 detect_at=detect_at_wall if kind == "terminal_silent" else None,
             )
+            if kind == "early_exercise":
+                counters.early_exercises += 1
+            elif kind == "expiry":
+                counters.expiries += 1
+            else:
+                counters.terminals += 1
 
         # -- 6. conservative mark at close(t) from file(t-1) EOD bid
         close_at = calendar.session_close(session)

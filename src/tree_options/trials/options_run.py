@@ -12,13 +12,17 @@ alone.
 The 7200 s quote-age override (owner ruling 4) is an EXPLICIT config key —
 hashed into every stamp — while research_protocol.yaml stays byte-frozen.
 
-OD1/OD2/OD3 statistics stamped in the payload:
-- fidelity factor rho = Spearman(premium_return, H5 label) over closed
-  positions (the vehicle transmits underlying exposure);
-- per-cohort IC = Spearman(score, premium_return) over positions entered
-  on one session; the PRIMARY estimator uses DISJOINT cohorts (every 4th
-  session, plan §7) and the payload stamps both the all-cohort series and
-  the stride-4 subset with sd, autocorrelation, and t;
+OD1/OD2/OD3 statistics stamped in the payload (all computed on the
+direction-aligned SIGNED premium return — call return as-is, put return
+sign-flipped — so a mixed long-call/long-put book pools against one label
+direction; the first dev run's mixed-pool rho ~ 0 was exactly this sign
+cancellation, caught by the §7 tripwire):
+- fidelity factor rho = Spearman(signed premium return, H5 label) over
+  closed positions (the vehicle transmits underlying exposure);
+- per-cohort IC = Spearman(score, signed premium return) over positions
+  entered on one session; the PRIMARY estimator uses DISJOINT cohorts
+  (every 4th session, plan §7) and the payload stamps both the all-cohort
+  series and the stride-4 subset with sd, autocorrelation, and t;
 - per-session ICs (SECONDARY, reported only);
 - OD2 machinery oracles: the OptionsCounters + CandidateAudit aggregates.
 
@@ -153,6 +157,16 @@ def _position_payloads(result: OptionsBacktestResult) -> list[dict[str, object]]
                 "exit_session": p.exit_session.isoformat() if p.exit_session else None,
                 "exit_price": str(p.exit_price) if p.exit_price is not None else None,
                 "premium_return": p.premium_return,
+                # direction-aligned return: the premium return a LONG CALL on
+                # the underlying would have earned — puts are sign-flipped so
+                # the vehicle statistics pool both sides against the same
+                # label direction (OD1's mixed-pool rho ~ 0 was exactly this
+                # sign cancellation; found by the §7 tripwire, not tuned)
+                "signed_premium_return": (
+                    p.premium_return
+                    if (p.call_put == "C" or p.premium_return is None)
+                    else -p.premium_return
+                ),
             }
         )
     return rows
@@ -526,7 +540,7 @@ def _execute(
         p for p in all_positions if p["exit_kind"] is not None and p["premium_return"] is not None
     ]
     fidelity_pairs = [
-        (float(p["premium_return"]), float(p["label"]))  # type: ignore[arg-type]
+        (float(p["signed_premium_return"]), float(p["label"]))  # type: ignore[arg-type]
         for p in closed
         if p["label"] is not None
     ]
@@ -543,7 +557,7 @@ def _execute(
         rows = by_entry[session]
         ic = _spearman(
             [float(p["score"]) for p in rows],  # type: ignore[arg-type]
-            [float(p["premium_return"]) for p in rows],  # type: ignore[arg-type]
+            [float(p["signed_premium_return"]) for p in rows],  # type: ignore[arg-type]
         )
         if ic is not None:
             cohort_ics.append(ic)
