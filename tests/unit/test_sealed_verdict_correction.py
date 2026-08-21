@@ -155,3 +155,53 @@ def test_failure_world_outside_the_stamped_set_refuses() -> None:
     stranger = ["not-a-sealed-world|B: position SYN-9999 open past expiration 2019-11-01"]
     violations = _run(_original(stranger))
     assert any("outside the stamped world set" in v for v in violations)
+
+
+def test_expected_heads_flag_parses_and_defaults_to_the_ruled_mix() -> None:
+    """Phase-6 re-registration: --expected-heads carries the code-final run's
+    SHAs explicitly; without it the driver validates against the ORIGINAL
+    ruled mix. The flag exists so the re-registered run's stamps at a new
+    head validate — the fail-closed contract is unchanged (wrong heads
+    still refuse, whatever set is in force)."""
+    parser = svc._build_parser()
+    assert parser.parse_args([]).expected_heads is None
+    heads = "c9e843058a9def39013bdb3d5be8c8bd70f415e4"
+    parsed = parser.parse_args(["--expected-heads", f"{heads}, {heads.upper()}"])
+    assert parsed.expected_heads == f"{heads}, {heads.upper()}"
+    assert svc.RULED_HEAD_MIX == HEADS  # the default mix is the ruled one
+
+
+def test_reregistered_head_set_validates_when_passed() -> None:
+    """The re-registered run stamps every trial + summary at the code-final
+    head; _validate_inputs accepts exactly that head when it is the expected
+    set (and still refuses a third, unrelated head)."""
+    rehead = "c9e843058a9def39013bdb3d5be8c8bd70f415e4"
+    stamps = {
+        (w, a): _stamp(w, a, git_sha=rehead)
+        for w in (
+            "synth-v1-val-null-701",
+            "synth-v1-val-null-702",
+            "synth-v1-val-alpha-710",
+            "synth-v1-val-alpha-711",
+        )
+        for a in ("A", "B")
+    }
+    summary = {"protocol_hash": PROTO, "git_sha": rehead}
+    assert (
+        svc._validate_inputs(
+            _original(RULED),
+            stamps,
+            expected_protocol_hash=PROTO,
+            summary_stamp=summary,
+            expected_heads=(rehead,),
+        )
+        == []
+    )
+    violations = svc._validate_inputs(
+        _original(RULED),
+        stamps,
+        expected_protocol_hash=PROTO,
+        summary_stamp=summary,
+        expected_heads=("f" * 40,),
+    )
+    assert any("head set" in v for v in violations)

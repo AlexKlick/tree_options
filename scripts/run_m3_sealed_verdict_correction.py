@@ -64,6 +64,14 @@ RULED_CRIT4_FAILURE = re.compile(
     r"^[a-z0-9-]+\|B: position [A-Z0-9-]+ open past expiration \d{4}-\d{2}-\d{2}$"
 )
 
+# The ORIGINAL ruled run's recorded head mix (gate summary + trials share it;
+# the trials' stamps mix 3bbb461 and b1c9b45 src-identically). The
+# re-registered code-final run passes --expected-heads explicitly instead.
+RULED_HEAD_MIX = (
+    "3bbb461508cf7a7d86f73d64a529651b4719c155",
+    "b1c9b45b9b3a6e981cd16f7d58b705bda13b62d5",
+)
+
 
 def _validate_inputs(
     original: dict,
@@ -220,9 +228,26 @@ def zero_bid_floor_failures(zero_bid_by_trial: dict[tuple[str, str], int]) -> li
     ]
 
 
-def main(argv: list[str] | None = None) -> int:
+def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifacts-dir", type=Path, default=DEFAULT_ARTIFACTS_DIR)
+    parser.add_argument(
+        "--expected-heads",
+        type=str,
+        default=None,
+        help=(
+            "comma-separated full SHAs of the registered run being corrected "
+            "(trial stamps + gate summary stamp). Default: the ORIGINAL ruled "
+            "run's head mix. The re-registered code-final run "
+            "(packet §10 / mismatch-procedure option (a)) passes its head "
+            "EXPLICITLY — the validation stays fail-closed either way."
+        ),
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = _build_parser()
     args = parser.parse_args(argv)
 
     from tree_options.protocol.loader import load_protocol, protocol_hash
@@ -251,15 +276,17 @@ def main(argv: list[str] | None = None) -> int:
 
     # Fail-closed input validation (review r1 P1-5): the ruling covers THIS
     # run's criterion-4 failure class only — refuse anything else.
+    expected_heads = (
+        tuple(h.strip() for h in args.expected_heads.split(",") if h.strip())
+        if args.expected_heads
+        else RULED_HEAD_MIX
+    )
     violations = _validate_inputs(
         original,
         stamps,
         expected_protocol_hash=protocol_hash(protocol),
         summary_stamp=summary_body["stamp"],
-        expected_heads=(
-            "3bbb461508cf7a7d86f73d64a529651b4719c155",
-            "b1c9b45b9b3a6e981cd16f7d58b705bda13b62d5",
-        ),
+        expected_heads=expected_heads,
     )
     if violations:
         for violation in violations:
