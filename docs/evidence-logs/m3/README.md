@@ -47,7 +47,7 @@ Contents:
   retained worktree had no `.git` at all.
 - `m3-fix-validation.log` — the fix validated on the exact failure site:
   the retained run-3 worktree + a synthetic baseline commit → the e2e
-  trial test passes (TEST_EXIT=0). Full re-run (run 4) queued after the
+  trial test passes (TEST_EXIT=0). Full re-run (run 4) is NOT yet done: it executes inside the Phase-5 final gate (m0_gate.sh) at the code-final head — until that gate records 133/133 KILLED with a passing restoration suite, exact-head mutation closure is PENDING. The 8479f1f result is an old-head datapoint. Originally queued after the
   clean-clone gate completes; the final gate re-proves restoration.
 
 | `m3-verdict-correction2-rejected.log` | 2026-08-20 | Hardened correction driver re-run at 82ad4cc — refused the GENUINE stamped artifacts (exit 2, all 8 `INPUT_REJECTED ... config_hash`): the r1 P1-5 check compared trial config_hash to the gate summary's, an invariant that is false of the ruled run. Red demonstration for the r1.1 fix (569783b). |

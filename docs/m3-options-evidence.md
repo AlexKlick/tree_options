@@ -404,6 +404,11 @@ from this base.
 
 Any change to code, tests, protocol, dependencies, or `synth/` after
 the code-final head invalidates this packet; docs-only commits do not.
+PENDING, not yet done at this revision (review r3 P2): the re-registered
+one-shot sealed gate at the code-final head (r1/r2/r3 fixes are
+payload-affecting), the final gate's 133/133 + passing restoration suite,
+and the clean-clone ARTIFACTS_IDENTICAL=1 proof at that head — this
+packet is updated when Phase 5/6 record them.
 The world and overlay registries fail closed on regeneration drift, and
 the mutation harness must show zero of everything except KILLED with a
 passing restoration suite at the final head.
