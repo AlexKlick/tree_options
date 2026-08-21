@@ -13,6 +13,10 @@ dist/
 
 # Runtime outputs (trial DBs, stamped artifacts)
 artifacts/
+# Vendor response cache (M4-A WS-D1). Redundant under artifacts/ above, but
+# stated explicitly: these bodies are fetched with a paid-quota API key and
+# must never be committed, even if artifacts/ is ever narrowed.
+artifacts/massive-cache/
 *.db
 
 # Editors
