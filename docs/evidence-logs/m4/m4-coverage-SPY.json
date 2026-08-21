@@ -1,0 +1,139 @@
+{
+  "report_version": "m4-coverage/1",
+  "variant": "cgi_or_historical",
+  "source": {
+    "path": "/home/alexk/m2-evidence/cboe-sample/UnderlyingOptionsEODCalcs_2023-08-25_cgi_or_historical.csv",
+    "sha256": "1732795c0b38ad0dec0f66dff30e2de4dbbd41423a375f6a166a137319e74dd7"
+  },
+  "parse_stats": {
+    "rows_total": 32672,
+    "rows_mapped": 7599,
+    "duplicate_rows": 0,
+    "zero_greeks_rows": 31,
+    "zero_bid_rows": 723,
+    "early_close_sessions": 0,
+    "nonstandard_delivery_rows": 0
+  },
+  "issues_count": 5,
+  "issues_head": [
+    "unselected underlying TSLA: 4238 rows counted, not mapped",
+    "unselected underlying ^SPX: 19366 rows counted, not mapped",
+    "unselected underlying ^VIX: 1438 rows counted, not mapped",
+    "zero-greeks rows (not delta-bearing; counted, excluded from chain entries): 31",
+    "zero-bid rows (mapped; every present bid is zero): 723"
+  ],
+  "aggregate": {
+    "underlyings": 1,
+    "underlying_days": 1,
+    "contract_rows": 7599,
+    "distinct_contracts": 7599,
+    "zero_bid_fraction": 0.0,
+    "zero_greeks_fraction": 0.0,
+    "spreads": {
+      "atm": {
+        "n": 711,
+        "median": 0.011741682974559686,
+        "p90": 0.13333333333333333,
+        "prior": "~1-2% of mid at-the-money (spike m3 \u00a76.3)"
+      },
+      "wings": {
+        "n": 6888,
+        "median": 0.031273682471498844,
+        "p90": 2.0,
+        "prior": "wider than ATM (spike m3 \u00a76.3)"
+      }
+    },
+    "concentration": {
+      "delta_band": [
+        0.3,
+        0.6
+      ],
+      "nearest_expiries": 4,
+      "oi_delta_band_share": 0.1609803881788024,
+      "vol_delta_band_share": 0.20546742462416512,
+      "oi_nearest4_share": 0.09300373198024263,
+      "vol_nearest4_share": 0.7059055303512927,
+      "oi_total": 20356753,
+      "vol_total": 9492001
+    },
+    "delivery_code_distribution": {
+      "standard": 7599,
+      "nonstandard": 0
+    },
+    "early_close_sessions": 0,
+    "early_close_sessions_from_files": 0,
+    "underlying_quote_violations": {
+      "crossed_files": 0,
+      "zero_bid_underlying_files": 0
+    }
+  },
+  "per_underlying": {
+    "SPY": {
+      "sessions": [
+        "2023-08-25"
+      ],
+      "contract_rows": 7599,
+      "distinct_contracts": 7599,
+      "zero_bid_fraction": 0.0,
+      "zero_greeks_fraction": 0.0,
+      "spreads": {
+        "atm": {
+          "n": 711,
+          "median": 0.011741682974559686,
+          "p90": 0.13333333333333333,
+          "prior": "~1-2% of mid at-the-money (spike m3 \u00a76.3)"
+        },
+        "wings": {
+          "n": 6888,
+          "median": 0.031273682471498844,
+          "p90": 2.0,
+          "prior": "wider than ATM (spike m3 \u00a76.3)"
+        }
+      },
+      "concentration": {
+        "delta_band": [
+          0.3,
+          0.6
+        ],
+        "nearest_expiries": 4,
+        "oi_delta_band_share": 0.1609803881788024,
+        "vol_delta_band_share": 0.20546742462416512,
+        "oi_nearest4_share": 0.09300373198024263,
+        "vol_nearest4_share": 0.7059055303512927,
+        "oi_total": 20356753,
+        "vol_total": 9492001
+      },
+      "delivery_code_distribution": {
+        "standard": 7599,
+        "nonstandard": 0
+      },
+      "underlying_quote_violations": {
+        "crossed_files": 0,
+        "zero_bid_underlying_files": 0
+      },
+      "days": [
+        {
+          "session": "2023-08-25",
+          "contracts": 7599,
+          "distinct_expiries": 29,
+          "min_strike": 120.0,
+          "max_strike": 720.0,
+          "spot_mid": 440.79,
+          "strike_width_ratio": 6.0,
+          "zero_bid_entries": 0,
+          "zero_greeks_entries": 0,
+          "early_close": false,
+          "delivery_standard": 7599,
+          "delivery_nonstandard": 0,
+          "underlying_quote_crossed": false,
+          "underlying_bid_zero": false
+        }
+      ]
+    }
+  },
+  "spans_earnings": {
+    "status": "NOT_EVALUABLE",
+    "value": null,
+    "note": "no earnings events source exists in the Cboe EOD product (spike \u00a76.7, plan \u00a74): the candidate filter must see NOT_EVALUABLE for real data, never a silently False flag"
+  }
+}

@@ -1,0 +1,146 @@
+{
+  "report_version": "m4-a-shakedown/1",
+  "date": "2026-08-21",
+  "branch": "m4/real-data-20260821",
+  "source_csv": {
+    "name": "UnderlyingOptionsEODCalcs_2023-08-25_cgi_or_historical.csv",
+    "dir": "/home/alexk/m2-evidence/cboe-sample/",
+    "sha256": "1732795c0b38ad0dec0f66dff30e2de4dbbd41423a375f6a166a137319e74dd7"
+  },
+  "log": "/tmp/m4-shakedown.log",
+  "driver": "/tmp/m4_shakedown.py (one-off, not committed)",
+  "parse": {
+    "rows_total_file": 32672,
+    "sessions": 1,
+    "session": "2023-08-25",
+    "per_underlying": {
+      "SPY": {
+        "rows_mapped": 7599,
+        "duplicate_rows": 0,
+        "zero_greeks_rows": 31,
+        "zero_bid_rows": 723,
+        "early_close_sessions": 0,
+        "nonstandard_delivery_rows": 0,
+        "contracts": 7630,
+        "distinct_expiries": 29
+      },
+      "TSLA": {
+        "rows_mapped": 4075,
+        "duplicate_rows": 0,
+        "zero_greeks_rows": 163,
+        "zero_bid_rows": 259,
+        "early_close_sessions": 0,
+        "nonstandard_delivery_rows": 0,
+        "contracts": 4238,
+        "distinct_expiries": 19
+      },
+      "^SPX": {
+        "rows_mapped": 16277,
+        "duplicate_rows": 2972,
+        "zero_greeks_rows": 117,
+        "zero_bid_rows": 864,
+        "early_close_sessions": 0,
+        "nonstandard_delivery_rows": 0,
+        "contracts": 16394,
+        "distinct_expiries": 50
+      },
+      "^VIX": {
+        "refusal": "CboeEodUnderlyingQuoteError",
+        "detail": "session 2023-08-25: degenerate underlying quote 0.0000/0.0000 (zero quotes even in the cgi file)"
+      }
+    },
+    "totals_mapped_underlyings": {
+      "rows_mapped": 27951,
+      "duplicates": 2972,
+      "zero_greeks": 311,
+      "zero_bid": 1846,
+      "contracts": 28262
+    }
+  },
+  "refusals_exercised": [
+    "CboeEodMultiUnderlyingError: unselected multi-underlying file",
+    "IndexUnderlyingNotLicensedError: ^SPX in the no_cgi variant (named license flattening)",
+    "CboeEodUnderlyingQuoteError: same file without the variant declared (degenerate 0/0 backstop)",
+    "NoOptionFileError: candidate_snapshot(decision_session=t) on real data (T+1 gate)"
+  ],
+  "surface_spy": {
+    "publication_of_2023_08_25": "2023-08-28T13:00:00+00:00",
+    "visible_file_session": {
+      "before_wall": null,
+      "at_wall": "2023-08-25",
+      "after_wall": "2023-08-25"
+    },
+    "spot_mid_as_of": "440.7900",
+    "underlying_file_pair": "440.7800/440.8000",
+    "live_expiries": 29,
+    "front_expiry_ladder": {
+      "expiry": "2023-08-25",
+      "depth": 158,
+      "min_strike": "275.00",
+      "max_strike": "540.00"
+    },
+    "deepest_ladder": { "expiry": "2023-12-15", "depth": 240 },
+    "contracts_as_of": 7630,
+    "contracts_existing_on": 7630,
+    "probe_contract": {
+      "contract_id": "OPT-SPY-230825-C-00044100",
+      "abs_delta": "0.4077",
+      "open_interest": 17981,
+      "same_day_volume": 261509,
+      "quote_history_events": 2,
+      "events": [
+        {
+          "exchange": "2023-08-25T19:45:00+00:00",
+          "received": "2023-08-28T13:00:00+00:00",
+          "bid_ask": "0.2700/0.2800",
+          "sizes": "99/291"
+        },
+        {
+          "exchange": "2023-08-25T20:00:00+00:00",
+          "received": "2023-08-28T13:00:00+00:00",
+          "bid_ask": "0.0000/0.0100",
+          "sizes": "0/572"
+        }
+      ]
+    },
+    "manifest": {
+      "verified": true,
+      "content_sha256": "8a8ff05659541f9fdb57f6021ec42046ca5705d3477059c8cdb0cd4383d93ed3",
+      "contract_master_sha256": "e27a9ba74f75c43af11f7306221ed9219d0a34c81929a3bbf116662d33feadf5",
+      "contract_count": 7630
+    }
+  },
+  "inspector": {
+    "SPY": {
+      "contract_rows": 7599,
+      "atm": { "n": 711, "median": 0.011741682974559686, "p90": 0.13333333333333333 },
+      "wings": { "n": 6888, "median": 0.031273682471498844, "p90": 2.0 },
+      "zero_bid_fraction": 0.0,
+      "zero_greeks_fraction": 0.0
+    },
+    "TSLA": {
+      "contract_rows": 4075,
+      "atm": { "n": 485, "median": 0.016713091922005572, "p90": 0.035443037974683546 },
+      "wings": { "n": 3590, "median": 0.03398745840094612, "p90": 1.0 },
+      "zero_bid_fraction": 0.0,
+      "zero_greeks_fraction": 0.0
+    },
+    "^SPX": {
+      "contract_rows": 16277,
+      "atm": { "n": 2133, "median": 0.012924071082390954, "p90": 0.023076923078 },
+      "wings": { "n": 13971, "median": 0.023781212841854936, "p90": 0.6666666666666666 },
+      "zero_bid_fraction": 0.010628494194261841,
+      "zero_greeks_fraction": 0.0
+    }
+  },
+  "metric_definitions_note": {
+    "parse_zero_bid_rows": "every PRESENT snapshot bid == 0 (incl. one-sided EOD 0.00/ask>0)",
+    "inspector_zero_bid": "EOD quartet fully 0/0 (zero-mid rows)",
+    "inspector_zero_greeks": "always 0 by adapter construction (zero-greeks rows are not materialized as entries); the authoritative count is the parse stat echoed in the odd-rows line"
+  },
+  "integration_reconciliation": {
+    "change": "scripts/inspect_options_coverage.py CLI gained --underlying (default None), forwarded to parse_cboe_eod_csv; consumer-side only",
+    "reason": "the retained demo bundles 4 underlyings in one file; the adapter refuses without a selection",
+    "tests": "tests/unit/test_inspect_options_coverage.py::test_cli_forwards_underlying_selection (stub signature extended)"
+  }
+}
