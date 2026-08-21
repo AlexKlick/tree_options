@@ -1,0 +1,5 @@
+GATE3_HEAD=025b07ce8378b8818606c7f263eb46e96765eedf LAUNCHED=2026-08-21T01:47:47-06:00 NOTE=final-docs-only-head-after-evidence-finalize INNER=verbatim-m0_gate.sh-renamed-outputs
+fatal: not a git repository (or any of the parent directories): .git
+REFUSED: dirty worktree (commit or stash first).
+GATE3_INNER_EXIT=2
+GATE3_WRAPPER_DONE=2026-08-21T01:47:47-06:00

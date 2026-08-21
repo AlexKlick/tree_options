@@ -8,7 +8,7 @@ set -euo pipefail
 export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
        NUMEXPR_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1
 
-cd "$(dirname "$0")/.."
+cd /home/alexk/documents/tree_options
 
 if [ "${M0_GATE_ALLOW_DIRTY:-0}" != "1" ]; then
   if ! git diff-index --quiet HEAD -- || [ -n "$(git ls-files --others --exclude-standard)" ]; then

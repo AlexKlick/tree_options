@@ -491,8 +491,19 @@ commits do not. The Phase 6 pendings are recorded:
   `355f116` run's `GATE_EXIT=3` is the exact-head EXIT trap refusing
   the mid-run docs commit `e21e20a` (process error, disclosed §8-era;
   the assertion fired as designed), so gate3 re-ran the full gate
-  verbatim at the docs-only final head on main — its log is committed
-  alongside this section (`m3-final-gate3.log`).
+  verbatim at the docs-only final head on main. Gate3's first launch
+  (01:47:47) misfired on the launcher, not the gate: the /tmp copy of
+  the gate script inherited m0_gate.sh's
+  `cd "$(dirname "$0")/.."`, which from /tmp resolves outside the repo
+  → "fatal: not a git repository" → the entry dirty-check fail-closed
+  (`GATE3_INNER_EXIT=2`, zero phases executed, head/tree untouched —
+  `m3-final-gate3-misfire.log`). With the launcher's cd made absolute
+  (the third and only other mechanical deviation besides the header
+  comment and the mutation-output filenames), gate3 passed cleanly at
+  `025b07c`: 540 passed, mutation 133/133 KILLED with zero
+  SURVIVED/INVALID, restoration TRUE, wheel smoke ok,
+  `GATE3_INNER_EXIT=0`, zero REFUSED (`m3-final-gate3.log`;
+  `m3-gate3-inner.sh` as executed).
 
 **Post-merge disposition (2026-08-21).** PR #6 was merged by the owner
 at 21:55 MDT 2026-08-20 (merge commit `0e010f7`, normal merge — no
