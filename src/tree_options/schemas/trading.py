@@ -27,6 +27,11 @@ class Order(StrictModel):
     quantity: int = Field(ge=1)
     order_type: Literal["market", "limit"] = "market"
     limit_price: Price | None = None
+    # entry-sizing provenance: the per-candidate premium budget the planner
+    # sized against (decision-visible). The execution re-clamp preserves it
+    # when the ask gaps overnight (review r1 P1-4). None = unplanned exit
+    # orders, which clamp against ledger cash only, as before.
+    budget_notional: Money | None = None
     decision_at: UTCDatetime
     decision_session: date
 

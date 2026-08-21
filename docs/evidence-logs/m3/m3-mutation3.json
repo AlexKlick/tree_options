@@ -1,0 +1,1341 @@
+{
+  "mutants": [
+    {
+      "id": "M01-availability-boundary",
+      "invariant": "INV-03/04 inclusive at-close availability",
+      "selectors": [
+        "tests/guards/test_fixture_filings.py"
+      ],
+      "source_sha256": "021054c5b6e1ff861952d112f1c89fc0cbf3e27f15359858bd1348dd569fe797",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fixture_filings.py::TestNegativeControl::test_inclusive_boundary_at_close"
+    },
+    {
+      "id": "M02-availability-gutted",
+      "invariant": "INV-03/04 future data rejected",
+      "selectors": [
+        "tests/guards/test_fixture_filings.py"
+      ],
+      "source_sha256": "021054c5b6e1ff861952d112f1c89fc0cbf3e27f15359858bd1348dd569fe797",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fixture_filings.py::TestNegativeControl::test_future_return_feature_rejected"
+    },
+    {
+      "id": "M03-same-close-instant",
+      "invariant": "INV-10 instant-level same-close",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestSameCloseRule::test_next_session_close_instant_rejected"
+    },
+    {
+      "id": "M04-same-close-ordinal",
+      "invariant": "INV-10 ordinal-level same-close",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestSameCloseRule::test_same_session_160001_rejected"
+    },
+    {
+      "id": "M05-decision-instant-not-close",
+      "invariant": "decision_at pinned to session close",
+      "selectors": [
+        "tests/guards/test_fill_semantics_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_semantics_v2.py::TestDecisionTimeCoherence::test_decision_at_must_be_session_close"
+    },
+    {
+      "id": "M06-contract-unknown-at-decision",
+      "invariant": "contract known at decision time",
+      "selectors": [
+        "tests/guards/test_fill_semantics_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_semantics_v2.py::TestDecisionTimeCoherence::test_contract_must_exist_at_decision_time"
+    },
+    {
+      "id": "M07-execution-not-session",
+      "invariant": "fills only on real sessions",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestContractLifecycle::test_fill_on_non_session_rejected"
+    },
+    {
+      "id": "M08-execution-instant-mismatch",
+      "invariant": "execution instant inside labeled session",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestContractLifecycle::test_execution_instant_outside_session_rejected"
+    },
+    {
+      "id": "M09-nonstandard-deliverable-accepted",
+      "invariant": "multiplier never silently 100",
+      "selectors": [
+        "tests/guards/test_fill_semantics_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_semantics_v2.py::TestMultiplierSnapshot::test_nonstandard_deliverable_rejected_not_silent_"
+    },
+    {
+      "id": "M10-side-size-inverted",
+      "invariant": "buy uses ask size, sell bid size",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestPartialFillsAndLimits::test_partial_fill_capped_at_quote_size"
+    },
+    {
+      "id": "M11-size-fraction-gutted",
+      "invariant": "displayed-size fraction enforced",
+      "selectors": [
+        "tests/guards/test_fill_semantics_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_semantics_v2.py::TestDisplayedSizeFraction::test_fill_capped_at_fraction_of_displayed"
+    },
+    {
+      "id": "M12-unmarketable-limit-gutted",
+      "invariant": "unmarketable limit rejected",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestPartialFillsAndLimits::test_unmarketable_buy_limit_rejected"
+    },
+    {
+      "id": "M13-price-rounding-flipped",
+      "invariant": "conservative tick rounding",
+      "selectors": [
+        "tests/guards/test_fill_semantics_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_semantics_v2.py::TestFractionToMidpointArithmetic::test_exact_prices[1.00-1.10-0.5-1.08-1."
+    },
+    {
+      "id": "M14-quote-age-gutted",
+      "invariant": "stale quote rejected",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "a8ec18e82605a927fa49907b40d148ec3ffb1d0a6beac5fe7132615016fb44e4",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestQuoteReality::test_over_age_quote_rejected"
+    },
+    {
+      "id": "M15-future-quote-gutted",
+      "invariant": "quote from the future rejected",
+      "selectors": [
+        "tests/guards/test_fill_integrity_v2.py"
+      ],
+      "source_sha256": "a8ec18e82605a927fa49907b40d148ec3ffb1d0a6beac5fe7132615016fb44e4",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_integrity_v2.py::TestFutureQuoteDirect::test_future_quote_rejected_direct"
+    },
+    {
+      "id": "M16-crossed-gutted",
+      "invariant": "crossed quote rejected",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "a8ec18e82605a927fa49907b40d148ec3ffb1d0a6beac5fe7132615016fb44e4",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestQuoteReality::test_crossed_quote_rejected"
+    },
+    {
+      "id": "M17-locked-gutted",
+      "invariant": "locked quote rejected",
+      "selectors": [
+        "tests/guards/test_fill_semantics_v2.py"
+      ],
+      "source_sha256": "a8ec18e82605a927fa49907b40d148ec3ffb1d0a6beac5fe7132615016fb44e4",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_semantics_v2.py::TestQuoteRealityV2::test_locked_quote_rejected_distinct_code"
+    },
+    {
+      "id": "M18-nonpositive-gutted",
+      "invariant": "nonpositive side rejected",
+      "selectors": [
+        "tests/guards/test_fill_semantics_v2.py"
+      ],
+      "source_sha256": "a8ec18e82605a927fa49907b40d148ec3ffb1d0a6beac5fe7132615016fb44e4",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_semantics_v2.py::TestQuoteRealityV2::test_nonpositive_quote_rejected_distinct_code"
+    },
+    {
+      "id": "M19-quote-selection-reaches-back",
+      "invariant": "quote selection monotone in time",
+      "selectors": [
+        "tests/guards/test_fill_semantics_v2.py"
+      ],
+      "source_sha256": "a8ec18e82605a927fa49907b40d148ec3ffb1d0a6beac5fe7132615016fb44e4",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_semantics_v2.py::TestExecutionStressMonotonicity::test_quote_stream_selection_monotone_in_"
+    },
+    {
+      "id": "M20-naive-timestamp-accepted",
+      "invariant": "naive datetimes rejected",
+      "selectors": [
+        "tests/unit/test_schemas.py"
+      ],
+      "source_sha256": "d0d4a09a2b8b24db61173b38a4dba1cdf1b1952479dd66933388c0eccf09e13a",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_schemas.py::TestFeatureEvent::test_naive_timestamp_rejected"
+    },
+    {
+      "id": "M21-signed-cash-flipped",
+      "invariant": "signed cash direction",
+      "selectors": [
+        "tests/unit/test_schemas.py"
+      ],
+      "source_sha256": "dbbe1b8f1f60c18d78b039529fb9ec59875b3fe690dbd8165d16003315c9eb1e",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_schemas.py::TestOrderFill::test_fill_money_math - Asse..."
+    },
+    {
+      "id": "M22-fees-zeroed",
+      "invariant": "fees charged",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "98e72ce0ebca835d46044c93ced7afe269d6c255c7aafdac6be97160b33d0d46",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestFees::test_fill_carries_fees - A..."
+    },
+    {
+      "id": "M23-duplicate-fill-accepted",
+      "invariant": "duplicate fill rejected",
+      "selectors": [
+        "tests/properties/test_ledger_properties.py"
+      ],
+      "source_sha256": "b9388a0b4cc96f6b525acb2b175f0e217cd04e4abb3f432cc6484e862eabd6ae",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/properties/test_ledger_properties.py::TestLedgerIntegrityV2::test_duplicate_fill_id_fails_closed"
+    },
+    {
+      "id": "M24-ledger-underflow-gutted",
+      "invariant": "ledger underflow rejected",
+      "selectors": [
+        "tests/properties/test_ledger_properties.py"
+      ],
+      "source_sha256": "b9388a0b4cc96f6b525acb2b175f0e217cd04e4abb3f432cc6484e862eabd6ae",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/properties/test_ledger_properties.py::TestConservation::test_sell_beyond_position_fails_closed"
+    },
+    {
+      "id": "M25-independent-oracle-broken",
+      "invariant": "independent replay oracle",
+      "selectors": [
+        "tests/properties/test_ledger_properties.py"
+      ],
+      "source_sha256": "b9388a0b4cc96f6b525acb2b175f0e217cd04e4abb3f432cc6484e862eabd6ae",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/properties/test_ledger_properties.py::TestLedgerIntegrityV2::test_conservation_oracle_independent_of_fill_m"
+    },
+    {
+      "id": "M26-embargo-checker-gutted",
+      "invariant": "INV-06 embargo checked",
+      "selectors": [
+        "tests/properties/test_split_properties.py"
+      ],
+      "source_sha256": "d1b430ca33e98a858287a8f0bae4c62666a3ab1bd3218fcbafda5e43c9d9b7b1",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/properties/test_split_properties.py::TestInvariantProperties::test_embargo_only_violation_detected"
+    },
+    {
+      "id": "M27-anchor-checker-gutted",
+      "invariant": "INV-05 anchored train",
+      "selectors": [
+        "tests/properties/test_split_properties.py"
+      ],
+      "source_sha256": "d1b430ca33e98a858287a8f0bae4c62666a3ab1bd3218fcbafda5e43c9d9b7b1",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/properties/test_split_properties.py::TestInvariantProperties::test_anchor_violation_detected"
+    },
+    {
+      "id": "M28-coverage-checker-gutted",
+      "invariant": "INV-05 test blocks disjoint",
+      "selectors": [
+        "tests/properties/test_split_properties.py"
+      ],
+      "source_sha256": "d1b430ca33e98a858287a8f0bae4c62666a3ab1bd3218fcbafda5e43c9d9b7b1",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/properties/test_split_properties.py::TestInvariantProperties::test_coverage_violation_detected"
+    },
+    {
+      "id": "M29-session-grouping-gutted",
+      "invariant": "INV-05 same-session grouping",
+      "selectors": [
+        "tests/properties/test_split_properties.py"
+      ],
+      "source_sha256": "d1b430ca33e98a858287a8f0bae4c62666a3ab1bd3218fcbafda5e43c9d9b7b1",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/properties/test_split_properties.py::TestInvariantProperties::test_session_grouping_violation_detected"
+    },
+    {
+      "id": "M30-budget-cap-off-by-one",
+      "invariant": "INV-13 32-cap exact",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "41ab8ccea22bf866c3de01c95b995e1171ca8e18f43a56e9b15623ad91e7aa10",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestBudgetAndConcurrency::test_scope_cap_32_enforced"
+    },
+    {
+      "id": "M31-duplicate-trial-accepted",
+      "invariant": "INV-13 duplicate id rejected",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "0dce5accf0e2ac6d61a269c729a5b49e29613e26749d6a3eadad477de36567cd",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestStateMachine::test_duplicate_trial_id_rejected"
+    },
+    {
+      "id": "M32-outcome-cas-gutted",
+      "invariant": "REGISTERED->RUNNING->outcome ordering",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "0dce5accf0e2ac6d61a269c729a5b49e29613e26749d6a3eadad477de36567cd",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestStateMachine::test_outcome_requires_running"
+    },
+    {
+      "id": "M33-scope-json-blanked",
+      "invariant": "stored scope_json round-trips to the presented scope",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "0dce5accf0e2ac6d61a269c729a5b49e29613e26749d6a3eadad477de36567cd",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestRegistryHardening::test_stored_scope_json_verifiable"
+    },
+    {
+      "id": "M34-candidate-future-input-accepted",
+      "invariant": "future-available inputs rejected",
+      "selectors": [
+        "tests/unit/test_candidate_filters.py"
+      ],
+      "source_sha256": "9b324863c2ef07031d0d8a3ed6fd74cc5c55362e788dd454a3465fbb8262209c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_candidate_filters.py::TestTriState::test_future_available_delta_not_evaluable"
+    },
+    {
+      "id": "M35-candidate-acceptance-gutted",
+      "invariant": "FAIL/NOT_EVALUABLE block acceptance",
+      "selectors": [
+        "tests/unit/test_candidate_filters.py"
+      ],
+      "source_sha256": "9b324863c2ef07031d0d8a3ed6fd74cc5c55362e788dd454a3465fbb8262209c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_candidate_filters.py::TestTriState::test_fail_blocks_missing_and_future_alike"
+    },
+    {
+      "id": "M36-dte-gutted",
+      "invariant": "DTE band enforced",
+      "selectors": [
+        "tests/unit/test_candidate_filters.py"
+      ],
+      "source_sha256": "9b324863c2ef07031d0d8a3ed6fd74cc5c55362e788dd454a3465fbb8262209c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_candidate_filters.py::TestBandEdges::test_dte_calendar_day_convention_boundaries"
+    },
+    {
+      "id": "M37-protocol-hash-constant",
+      "invariant": "INV-01 protocol forks on semantic edit",
+      "selectors": [
+        "tests/unit/test_protocol_loader.py"
+      ],
+      "source_sha256": "ce14750e1db5103f26e5ad575a3cb9aa9dd602ee13da21f72c8851ec8e4c41ac",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_protocol_loader.py::TestProtocolHash::test_hash_changes_on_semantic_edit"
+    },
+    {
+      "id": "M38-calendar-checksum-ignored",
+      "invariant": "calendar tamper fails closed",
+      "selectors": [
+        "tests/unit/test_calendar.py"
+      ],
+      "source_sha256": "3861f8699b34ca1a461fec11ad84d39f89a89aee6e91b7dc48ef0201baa26a1e",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_calendar.py::TestStaticCalendarIntegrity::test_checksum_tamper_fails_closed"
+    },
+    {
+      "id": "M39-decision-close-trusts-caller",
+      "invariant": "decision close is calendar-derived, not caller-stamped",
+      "selectors": [
+        "tests/guards/test_fill_integrity_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_integrity_v2.py::TestEarlyCloseDecisionBoundary::test_regular_close_on_early_close_session"
+    },
+    {
+      "id": "M40-duplicate-order-accepted",
+      "invariant": "one order mints one fill unless explicit partial sequence",
+      "selectors": [
+        "tests/guards/test_fill_integrity_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_integrity_v2.py::TestDuplicateOrderExecution::test_same_order_cannot_mint_two_fills"
+    },
+    {
+      "id": "M41-lot-basis-stale",
+      "invariant": "partial closes reduce lot basis",
+      "selectors": [
+        "tests/properties/test_ledger_properties.py"
+      ],
+      "source_sha256": "b9388a0b4cc96f6b525acb2b175f0e217cd04e4abb3f432cc6484e862eabd6ae",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/properties/test_ledger_properties.py::TestLedgerIntegrityV2::test_average_cost_exact_after_partial_close"
+    },
+    {
+      "id": "M42-scope-derivation-ignored",
+      "invariant": "scope hash derives from presented TrialScope",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "0dce5accf0e2ac6d61a269c729a5b49e29613e26749d6a3eadad477de36567cd",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestRegistryHardening::test_scope_key_must_derive_from_presented_scope"
+    },
+    {
+      "id": "M43-security-future-mapping-visible",
+      "invariant": "point-in-time security master hides future mappings (anchor re-pinned M2: sector_on now carries the same single-line shape)",
+      "selectors": [
+        "tests/unit/test_leakage_v2.py"
+      ],
+      "source_sha256": "361b297809d3d6d7159b05192f236711efa135b9e9401a68655a0b3934168d42",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_leakage_v2.py::TestSecurityMasterPointInTime::test_january_decision_cannot_see_march_rename"
+    },
+    {
+      "id": "M44-volume-bypass-restored",
+      "invariant": "supplied volume always evaluated",
+      "selectors": [
+        "tests/unit/test_leakage_v2.py"
+      ],
+      "source_sha256": "9b324863c2ef07031d0d8a3ed6fd74cc5c55362e788dd454a3465fbb8262209c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_leakage_v2.py::TestVolumeBypass::test_future_volume_with_not_applicable_flag_still_rejected"
+    },
+    {
+      "id": "M45-off-tick-ask-accepted",
+      "invariant": "off-tick ask rejected",
+      "selectors": [
+        "tests/guards/test_fill_integrity_v2.py"
+      ],
+      "source_sha256": "a8ec18e82605a927fa49907b40d148ec3ffb1d0a6beac5fe7132615016fb44e4",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_integrity_v2.py::TestOffTickQuotes::test_off_tick_ask_rejected"
+    },
+    {
+      "id": "M47-off-tick-bid-accepted",
+      "invariant": "off-tick bid rejected",
+      "selectors": [
+        "tests/guards/test_fill_integrity_v2.py"
+      ],
+      "source_sha256": "a8ec18e82605a927fa49907b40d148ec3ffb1d0a6beac5fe7132615016fb44e4",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_integrity_v2.py::TestOffTickQuotes::test_off_tick_bid_rejected"
+    },
+    {
+      "id": "M46-fit-on-eval-undetected",
+      "invariant": "INV-07 fit-on-train-only detected",
+      "selectors": [
+        "tests/guards/test_fitting_guard.py"
+      ],
+      "source_sha256": "7de539b37a95b0b4c1420d7c6828469569b0927e1a0aa665208342e936aa599a",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fitting_guard.py::test_fit_that_included_eval_is_detected"
+    },
+    {
+      "id": "M48-partial-remaining-unbounded",
+      "invariant": "partial chains bounded by REMAINING quantity (overfill occurs if unbounded)",
+      "selectors": [
+        "tests/guards/test_fill_integrity_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_integrity_v2.py::TestDuplicateOrderExecution::test_partial_sequence_cannot_exceed_order_qu"
+    },
+    {
+      "id": "M49-security-record-future-visible",
+      "invariant": "master record invisible before its own available_at",
+      "selectors": [
+        "tests/unit/test_leakage_v2.py"
+      ],
+      "source_sha256": "361b297809d3d6d7159b05192f236711efa135b9e9401a68655a0b3934168d42",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_leakage_v2.py::TestSecurityMasterRecordVisibility::test_january_cannot_see_record_that_arrived_in"
+    },
+    {
+      "id": "M50-deliverable-action-id-ignored",
+      "invariant": "standard deliverable carries no action provenance",
+      "selectors": [
+        "tests/unit/test_leakage_v2.py"
+      ],
+      "source_sha256": "ad1c85d4895551fe1a7dfea2d676878e9bac182c07b64c9c3c3eb485263a7ed6",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_leakage_v2.py::TestStandardDeliverableActionId::test_standard_contract_with_deliverable_action_id"
+    },
+    {
+      "id": "M51-snapshot-incoherence-accepted",
+      "invariant": "snapshot fields must agree with the contract object",
+      "selectors": [
+        "tests/unit/test_leakage_v2.py"
+      ],
+      "source_sha256": "9b324863c2ef07031d0d8a3ed6fd74cc5c55362e788dd454a3465fbb8262209c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_leakage_v2.py::TestSnapshotContractCoherence::test_mismatched_expiration_not_evaluable"
+    },
+    {
+      "id": "M52-finite-listing-end-never-honored",
+      "invariant": "finite listing_end with no delisting is honored once passed",
+      "selectors": [
+        "tests/unit/test_leakage_v2.py"
+      ],
+      "source_sha256": "361b297809d3d6d7159b05192f236711efa135b9e9401a68655a0b3934168d42",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_leakage_v2.py::TestFiniteListingEndNoDelisting::test_listing_end_honored_once_passed"
+    },
+    {
+      "id": "M53-order-rebind-accepted",
+      "invariant": "an order_id is bound to the order that first minted a fill",
+      "selectors": [
+        "tests/guards/test_fill_integrity_v2.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_integrity_v2.py::TestOrderRebinding::test_rebound_order_id_rejected"
+    },
+    {
+      "id": "M54-cap-type-gutted",
+      "invariant": "scope cap is an integer commitment (NaN cap would disable the cap)",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "41ab8ccea22bf866c3de01c95b995e1171ca8e18f43a56e9b15623ad91e7aa10",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestRegistryHardening::test_budget_cap_must_be_an_integer"
+    },
+    {
+      "id": "M55-cap-storage-replaced",
+      "invariant": "the constructed cap is the stored cap (read-only storage fidelity)",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "41ab8ccea22bf866c3de01c95b995e1171ca8e18f43a56e9b15623ad91e7aa10",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestRegistryHardening::test_budget_cap_cannot_exceed_protocol_maximum"
+    },
+    {
+      "id": "M56-protocol-cap-lax",
+      "invariant": "protocol cap field is strict (bool/str/float never coerce into the commitment)",
+      "selectors": [
+        "tests/unit/test_protocol_loader.py"
+      ],
+      "source_sha256": "3c59cc158b9f6f2b7913c1a10f9fc04100f14a802179df5a5baaa0ad48df0b4d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_protocol_loader.py::TestProtocolNumericStrictness::test_max_registered_configs_is_strict"
+    },
+    {
+      "id": "M57-cap-revalidation-gutted",
+      "invariant": "tampered cap fails closed at the enforcement point (registration refuses)",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "41ab8ccea22bf866c3de01c95b995e1171ca8e18f43a56e9b15623ad91e7aa10",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestRegistryHardening::test_poisoned_backing_field_fails_closed"
+    },
+    {
+      "id": "M58-supplied-budget-dropped",
+      "invariant": "the registry enforces the SUPPLIED budget (a tightened cap cannot be swapped for the default)",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "0dce5accf0e2ac6d61a269c729a5b49e29613e26749d6a3eadad477de36567cd",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestBudgetAndConcurrency::test_two_connections_cannot_exceed_cap"
+    },
+    {
+      "id": "M59-commitment-equality-gutted",
+      "invariant": "the live cap must equal the cap COMMITTED to storage (in-range loosening refuses)",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "0dce5accf0e2ac6d61a269c729a5b49e29613e26749d6a3eadad477de36567cd",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestRegistryHardening::test_committed_cap_cannot_be_loosened_mid_scope"
+    },
+    {
+      "id": "M60-commitment-read-misses",
+      "invariant": "the recorded commitment is READ at every registration (a missed read re-opens loosening via a swapped budget; the mutant EXECUTES a valid query that matches no row \u2014 placeholder and binding counts unchanged \u2014 rather than crashing, so a kill is behavioral only)",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "0dce5accf0e2ac6d61a269c729a5b49e29613e26749d6a3eadad477de36567cd",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestRegistryHardening::test_swapped_budget_reference_refuses"
+    },
+    {
+      "id": "M61-migration-backfill-empty",
+      "invariant": "a scope populated before the commitment table is COMMITTED at open (no backfill re-opens its first post-upgrade registration)",
+      "selectors": [
+        "tests/unit/test_registry.py"
+      ],
+      "source_sha256": "0dce5accf0e2ac6d61a269c729a5b49e29613e26749d6a3eadad477de36567cd",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_registry.py::TestRegistryHardening::test_migrated_scope_is_committed_at_open"
+    },
+    {
+      "id": "M62-duplicate-bar-accepted",
+      "invariant": "M1-E duplicate (security, session) bars are rejected (duplicates inflate panels)",
+      "selectors": [
+        "tests/unit/test_data_quality.py"
+      ],
+      "source_sha256": "0967d702743dc3b27b389ad4ec126d50d28b3d94404081556cd0e13a12a55c11",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_quality.py::test_duplicate_bars_rejected - Failed..."
+    },
+    {
+      "id": "M63-split-discontinuity-gutted",
+      "invariant": "M1-E an overnight factor at/beyond the split bounds requires a covering action (unrepresented splits corrupt labels)",
+      "selectors": [
+        "tests/unit/test_data_quality.py"
+      ],
+      "source_sha256": "0967d702743dc3b27b389ad4ec126d50d28b3d94404081556cd0e13a12a55c11",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_quality.py::test_undeclared_price_discontinuity_rejected"
+    },
+    {
+      "id": "M64-manifest-content-gutted",
+      "invariant": "M1-D the manifest content hash is bound to the bars (a post-ingest row swap must not survive verification)",
+      "selectors": [
+        "tests/unit/test_data_quality.py"
+      ],
+      "source_sha256": "a4fe607ad05cbe7a5235415a556f6bdc717a100227b4a156beb77dce52c1c55d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_quality.py::test_manifest_tampering_is_detected"
+    },
+    {
+      "id": "M65-current-ticker-join-accepted",
+      "invariant": "M1-C ticker resolution is point-in-time (a mapping announced after as_of is invisible \u2014 the current-ticker join is refused)",
+      "selectors": [
+        "tests/unit/test_data_ingest.py"
+      ],
+      "source_sha256": "f91521f23e8f230e6079c4bf35dfece88de176844b4cd22b3887985f16558b66",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_ingest.py::test_ticker_resolution_is_point_in_time"
+    },
+    {
+      "id": "M66-future-bar-visible",
+      "invariant": "M1-C the authority never returns a bar published after decision_at (future data is invisible at the read gate); anchor re-pinned 2026-08-19 \u2014 the M2-proper C lane replaced the linear filter with the monotone bisect fast path, same leak on the new shape",
+      "selectors": [
+        "tests/unit/test_data_authority.py"
+      ],
+      "source_sha256": "a1e83c52a2cae3d1ca2858d4288f2b4beba4e24fedea1db32a9733711f7b4a0a",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_authority.py::test_future_bar_is_invisible - asse..."
+    },
+    {
+      "id": "M67-universe-survivorship-gutted",
+      "invariant": "M1-C universe membership is point-in-time (delisted names leave, pre-IPO names never enter \u2014 no current-survivor filtering)",
+      "selectors": [
+        "tests/unit/test_data_authority.py"
+      ],
+      "source_sha256": "a1e83c52a2cae3d1ca2858d4288f2b4beba4e24fedea1db32a9733711f7b4a0a",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_authority.py::test_universe_is_point_in_time_not_survivors"
+    },
+    {
+      "id": "M68-master-content-gutted",
+      "invariant": "M1-D the manifest content hash binds the MASTER records (a post-ingest listing swap must not survive verification)",
+      "selectors": [
+        "tests/unit/test_data_quality.py"
+      ],
+      "source_sha256": "a4fe607ad05cbe7a5235415a556f6bdc717a100227b4a156beb77dce52c1c55d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_quality.py::test_master_tampering_is_detected - F..."
+    },
+    {
+      "id": "M69-resolver-record-visibility-gutted",
+      "invariant": "M1-C a mapping inside a not-yet-knowable master record is invisible (record.available_at gates the whole record)",
+      "selectors": [
+        "tests/unit/test_data_ingest.py"
+      ],
+      "source_sha256": "f91521f23e8f230e6079c4bf35dfece88de176844b4cd22b3887985f16558b66",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_ingest.py::test_resolver_respects_master_record_availability"
+    },
+    {
+      "id": "M70-snapshot-rebind-accepted",
+      "invariant": "M1-D the outer snapshot id cannot be rebound post-ingest (outer, manifest, and per-row ids must agree)",
+      "selectors": [
+        "tests/unit/test_data_quality.py"
+      ],
+      "source_sha256": "0967d702743dc3b27b389ad4ec126d50d28b3d94404081556cd0e13a12a55c11",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_quality.py::test_snapshot_identity_is_bound - Fai..."
+    },
+    {
+      "id": "M71-sector-leak-window-open",
+      "invariant": "M2-A sector classifications are availability-gated: a reclassification between effective_from and available_at must stay invisible",
+      "selectors": [
+        "tests/unit/test_sector_pit.py"
+      ],
+      "source_sha256": "361b297809d3d6d7159b05192f236711efa135b9e9401a68655a0b3934168d42",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_sector_pit.py::test_leak_window_returns_prior_sector"
+    },
+    {
+      "id": "M72-seed-stream-shifted",
+      "invariant": "M2-B/C a world is pinned to its registered seed: byte-exact registry reproduction fails if stream seeding drifts",
+      "selectors": [
+        "tests/unit/test_world_registry.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_world_registry.py::test_small_dev_worlds_reproduce_byte_exact"
+    },
+    {
+      "id": "M73-alpha-injection-gutted",
+      "invariant": "M2-B the planted effect actually moves closes: an alpha world must differ from its same-seed null world",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_null_and_alpha_worlds_share_structure"
+    },
+    {
+      "id": "M74-publication-hour-shifted",
+      "invariant": "M2-B every row publishes at the spec's fixed 23:00 UTC instant (the availability gates key on it; round-1 P2-2 re-pinned from hour+1, which crashed construction instead of testing detection)",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_publication_instant_discipline"
+    },
+    {
+      "id": "M75-recycle-truth-gutted",
+      "invariant": "M2-B the truth sidecar records ticker recycling (the fixture's INV-08 scenario)",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_lifecycle_scenarios_present - ..."
+    },
+    {
+      "id": "M76-initial-cohort-unlisted",
+      "invariant": "M2-B the initial cohort lists on the first session: registry worlds reproduce only with the listed universe",
+      "selectors": [
+        "tests/unit/test_world_registry.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_world_registry.py::test_small_dev_worlds_reproduce_byte_exact"
+    },
+    {
+      "id": "M77-bankruptcy-bound-over-gate",
+      "invariant": "M2-B/E terminal crash losses stay under the 2x undeclared-discontinuity quality gate",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_generated_world_ingests_and_verifies"
+    },
+    {
+      "id": "M78-split-override-not-exact",
+      "invariant": "M2-B/E split sessions derive the close exactly from the declared ratio (ratio-match quality gate)",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_generated_world_ingests_and_verifies"
+    },
+    {
+      "id": "M79-split-floor-suppression-gutted",
+      "invariant": "M2 round-1 P1-2: ratio events that would floor-clamp the close are suppressed (the floor exists), so any accepted spec generates a gate-clean world",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_hostile_rate_spec_stays_gate_clean"
+    },
+    {
+      "id": "M80-session-return-clamp-removed",
+      "invariant": "M2 round-1: undeclared overnight moves are clamped strictly inside the 2x discontinuity gate bound",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_session_returns_bounded_under_gate"
+    },
+    {
+      "id": "M81-min-close-floor-removed",
+      "invariant": "M2 round-2 P1-1: closes never quantize below $1.00, where cent rounding is too small to land on the 0.5x/2x gate bounds",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_minimum_close_floor - Assertio..."
+    },
+    {
+      "id": "M83-application-guard-gutted",
+      "invariant": "M2 round-3 P1-1: ratio events are decided at APPLICATION time against the actual session price \u2014 never canceled-blind at announcement",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_hostile_specs_verify_across_seeds"
+    },
+    {
+      "id": "M84-alpha-drift-wall-removed",
+      "invariant": "M2 round-4 P1-1: cumulative alpha drift is walled so the alpha-vs-base wobble and every combined session factor stay strictly inside the gate bounds and the ratio-match tolerance",
+      "selectors": [
+        "tests/unit/test_synth_generate.py"
+      ],
+      "source_sha256": "d182dfe95f7975c70ecee259be752cbfddb14f89d216c03484e13078ff070f87",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_generate.py::test_alpha_drift_wall_bounds_wobble"
+    },
+    {
+      "id": "M85-label-window-extended",
+      "invariant": "M2-B the label window is exactly H sessions after the base bar (b+1, b+H); extending it changes the label value",
+      "selectors": [
+        "tests/unit/test_labels_build.py"
+      ],
+      "source_sha256": "e62f5e45b0c9a651383bbff8fde9f7ae01f20ec547c3acf5e99b2853bb0f8c5d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_labels_build.py::test_h1_label_value_window_and_provenance"
+    },
+    {
+      "id": "M86-staleness-skip-gutted",
+      "invariant": "M2-B a stale base bar (last visible bar older than d-1) yields NO label, never a lookback-through-the-gap label",
+      "selectors": [
+        "tests/unit/test_labels_build.py"
+      ],
+      "source_sha256": "e62f5e45b0c9a651383bbff8fde9f7ae01f20ec547c3acf5e99b2853bb0f8c5d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_labels_build.py::test_no_label_when_stale_history_straddles_decision"
+    },
+    {
+      "id": "M87-total-return-gutted",
+      "invariant": "M2-B split/reverse/stock-dividend labels are total-return adjusted (uniform n/d wealth multiplier); raw closes would corrupt every in-window action",
+      "selectors": [
+        "tests/unit/test_labels_build.py"
+      ],
+      "source_sha256": "e62f5e45b0c9a651383bbff8fde9f7ae01f20ec547c3acf5e99b2853bb0f8c5d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_labels_build.py::test_h1_label_across_split_is_total_return"
+    },
+    {
+      "id": "M88-cash-dividend-dropped",
+      "invariant": "M2-B cash dividends inside the window are held unreinvested and enter the label value",
+      "selectors": [
+        "tests/unit/test_labels_build.py"
+      ],
+      "source_sha256": "e62f5e45b0c9a651383bbff8fde9f7ae01f20ec547c3acf5e99b2853bb0f8c5d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_labels_build.py::test_cash_dividend_held_as_cash_in_value"
+    },
+    {
+      "id": "M89-window-gap-gutted",
+      "invariant": "M2-B a gap inside the label window (lapse/delisting) yields NO label, never a span-the-gap label",
+      "selectors": [
+        "tests/unit/test_labels_build.py"
+      ],
+      "source_sha256": "e62f5e45b0c9a651383bbff8fde9f7ae01f20ec547c3acf5e99b2853bb0f8c5d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_labels_build.py::test_no_label_when_window_has_a_gap"
+    },
+    {
+      "id": "M90-non-monotone-publication-accepted",
+      "invariant": "M2-B the two-pointer visibility walk fails closed when publication order does not follow session order",
+      "selectors": [
+        "tests/unit/test_labels_build.py"
+      ],
+      "source_sha256": "e62f5e45b0c9a651383bbff8fde9f7ae01f20ec547c3acf5e99b2853bb0f8c5d",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_labels_build.py::test_non_monotone_publication_fails_closed"
+    },
+    {
+      "id": "M91-contiguity-gutted",
+      "invariant": "M2-C calendar-contiguous lookbacks only: a lapse inside the window makes the feature absent, never imputed across the gap",
+      "selectors": [
+        "tests/unit/test_features_v2.py"
+      ],
+      "source_sha256": "a1e83c52a2cae3d1ca2858d4288f2b4beba4e24fedea1db32a9733711f7b4a0a",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_features_v2.py::test_lapse_inside_lookback_means_absent"
+    },
+    {
+      "id": "M92-momentum-horizon-shifted",
+      "invariant": "M2-C mom_H is log(c_b / c_{b-H}) over exactly H+1 aligned bars; a shifted window changes every momentum value",
+      "selectors": [
+        "tests/unit/test_features_v2.py"
+      ],
+      "source_sha256": "a1e83c52a2cae3d1ca2858d4288f2b4beba4e24fedea1db32a9733711f7b4a0a",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_features_v2.py::test_momentum_and_liquidity_values - a..."
+    },
+    {
+      "id": "M93-dol-vol-mean-denominator-shifted",
+      "invariant": "M2-C dol_vol_20 is the mean over exactly the 20 aligned bars",
+      "selectors": [
+        "tests/unit/test_features_v2.py"
+      ],
+      "source_sha256": "a1e83c52a2cae3d1ca2858d4288f2b4beba4e24fedea1db32a9733711f7b4a0a",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_features_v2.py::test_momentum_and_liquidity_values - a..."
+    },
+    {
+      "id": "M94-fit-guard-registration-gutted",
+      "invariant": "M2-D fit-once and fit-session registration are guard-enforced INSIDE the pipeline (INV-07 discharged)",
+      "selectors": [
+        "tests/unit/test_models_pipeline.py"
+      ],
+      "source_sha256": "38a74b4e021ab759e4efeb1cbf38aa25138b33e9ba86e1eb9badd5a7ca9ed2e8",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_models_pipeline.py::test_refit_is_refused - Failed: DI..."
+    },
+    {
+      "id": "M95-fit-eval-disjointness-gutted",
+      "invariant": "M2-D scoring a pipeline on sessions it was fitted on is detected and refused at score time",
+      "selectors": [
+        "tests/unit/test_models_pipeline.py"
+      ],
+      "source_sha256": "38a74b4e021ab759e4efeb1cbf38aa25138b33e9ba86e1eb9badd5a7ca9ed2e8",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_models_pipeline.py::test_fit_on_eval_sessions_is_detected_at_score"
+    },
+    {
+      "id": "M96-score-standardizer-leaks-eval-stats",
+      "invariant": "M2-D the standardizer carries TRAIN statistics only; recomputing them on eval rows is leakage",
+      "selectors": [
+        "tests/unit/test_models_pipeline.py"
+      ],
+      "source_sha256": "38a74b4e021ab759e4efeb1cbf38aa25138b33e9ba86e1eb9badd5a7ca9ed2e8",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_models_pipeline.py::test_standardizer_uses_train_statistics_only"
+    },
+    {
+      "id": "M97-blas-pin-gutted",
+      "invariant": "M2-D single-threaded BLAS is forced for every knob; multi-thread reduction order breaks byte-identical determinism",
+      "selectors": [
+        "tests/unit/test_models_pipeline.py"
+      ],
+      "source_sha256": "18e27fa2e3b7bf49f28e2be2d7f6d6feb4fde40232ea85db09ecb612390f6bef",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_models_pipeline.py::test_package_import_pins_blas_before_numpy"
+    },
+    {
+      "id": "M98-average-rank-ties-gutted",
+      "invariant": "M2-E Spearman coefficients use deterministic average ranks for ties",
+      "selectors": [
+        "tests/unit/test_evaluation_stats.py"
+      ],
+      "source_sha256": "c9dd521e45647e45196600dace0a55478bcb90d83d2b2fe3d578ef0385e7c30c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_evaluation_stats.py::test_spearman_assigns_average_ranks_for_ties"
+    },
+    {
+      "id": "M99-unevaluable-fabricated-zero",
+      "invariant": "M2-E unevaluable cross-sections are None, never a fabricated zero that would dilute pooled statistics",
+      "selectors": [
+        "tests/unit/test_evaluation_stats.py"
+      ],
+      "source_sha256": "c9dd521e45647e45196600dace0a55478bcb90d83d2b2fe3d578ef0385e7c30c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_evaluation_stats.py::test_spearman_returns_none_for_unevaluable_cross_sections[scores0-labels0]"
+    },
+    {
+      "id": "M100-binomial-boundary-term-dropped",
+      "invariant": "M2-E the exact binomial upper tail includes its boundary term P[X = successes]; the FP threshold is exact",
+      "selectors": [
+        "tests/unit/test_evaluation_stats.py"
+      ],
+      "source_sha256": "c9dd521e45647e45196600dace0a55478bcb90d83d2b2fe3d578ef0385e7c30c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_evaluation_stats.py::test_exact_binomial_upper_tail_and_threshold"
+    },
+    {
+      "id": "M101-t-statistic-population-variance",
+      "invariant": "M2-E the one-sample t uses sample variance (ddof=1)",
+      "selectors": [
+        "tests/unit/test_evaluation_stats.py"
+      ],
+      "source_sha256": "c9dd521e45647e45196600dace0a55478bcb90d83d2b2fe3d578ef0385e7c30c",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_evaluation_stats.py::test_one_sample_t_statistic_uses_sample_variance"
+    },
+    {
+      "id": "M102-fold-filter-gutted",
+      "invariant": "M2-F folds whose test blocks run past the world's session range are dropped whole, never half-counted",
+      "selectors": [
+        "tests/unit/test_trials_run.py"
+      ],
+      "source_sha256": "fd838e9c1c2f073debd1a27f2403ec5eca613ec1256350fa054ae3f0b13713e6",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_trials_run.py::test_no_folds_fails_before_registration"
+    },
+    {
+      "id": "M103-fail-through-gutted",
+      "invariant": "M2-F a trial never ends in limbo: any execution error marks the trial FAILED before re-raising",
+      "selectors": [
+        "tests/unit/test_trials_run.py"
+      ],
+      "source_sha256": "fd838e9c1c2f073debd1a27f2403ec5eca613ec1256350fa054ae3f0b13713e6",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_trials_run.py::test_artifact_write_failure_marks_trial_failed"
+    },
+    {
+      "id": "M104-next-open-shifted-to-same-session",
+      "invariant": "M2-G decisions execute at the NEXT session's open, never the decision session's own open (look-ahead)",
+      "selectors": [
+        "tests/unit/test_equity_backtest.py"
+      ],
+      "source_sha256": "f1edff0ef47e80e042ed210e736fe76046a8ecf0dfa46eac764846e8204a7618",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_equity_backtest.py::test_top_quintile_executes_only_at_next_session_open"
+    },
+    {
+      "id": "M105-fee-zeroed",
+      "invariant": "M2-G the campaign-fixed 5bp/side fee is charged on every ordinary trade",
+      "selectors": [
+        "tests/unit/test_equity_backtest.py"
+      ],
+      "source_sha256": "f1edff0ef47e80e042ed210e736fe76046a8ecf0dfa46eac764846e8204a7618",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_equity_backtest.py::test_fixed_five_basis_point_fee_is_applied_per_side"
+    },
+    {
+      "id": "M106-conversion-ratio-inverted",
+      "invariant": "M2-G corporate-action conversion fills use the exact n/d share multiplier; value preservation is asserted by the ledger oracle",
+      "selectors": [
+        "tests/unit/test_equity_backtest.py"
+      ],
+      "source_sha256": "f1edff0ef47e80e042ed210e736fe76046a8ecf0dfa46eac764846e8204a7618",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_equity_backtest.py::test_split_conversion_preserves_value_and_fifo_conservation_to_penny"
+    },
+    {
+      "id": "M107-unavailable-slot-promotes",
+      "invariant": "M2-G an unavailable top-quintile name keeps its slice in cash; promoting a lower-ranked name would silently change the registered strategy",
+      "selectors": [
+        "tests/unit/test_equity_backtest.py"
+      ],
+      "source_sha256": "f1edff0ef47e80e042ed210e736fe76046a8ecf0dfa46eac764846e8204a7618",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_equity_backtest.py::test_unavailable_top_rank_stays_cash_without_promoting_lower_rank"
+    },
+    {
+      "id": "M108-t1-receipt-shifted-same-day",
+      "invariant": "M3-A option files publish 09:00 ET on the NEXT session (T+1); a same-day receipt leaks session-t facts to a close(t) decision",
+      "selectors": [
+        "tests/unit/test_synth_options_generate.py",
+        "tests/unit/test_data_options_surface.py"
+      ],
+      "source_sha256": "e925333fff764728f7a8ceb61ff678f5fb423007bf855978674ce3f7409cebef",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_options_generate.py::test_two_snapshots_with_correct_stamps"
+    },
+    {
+      "id": "M109-received-stamped-as-exchange",
+      "invariant": "M3-A quote receipt is the T+1 publication wall, never the intraday exchange stamp (receipt >= exchange)",
+      "selectors": [
+        "tests/unit/test_synth_options_generate.py"
+      ],
+      "source_sha256": "e925333fff764728f7a8ceb61ff678f5fb423007bf855978674ce3f7409cebef",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_options_generate.py::test_quote_history_receipt_is_t1_publication"
+    },
+    {
+      "id": "M110-eligible-window-unbounded",
+      "invariant": "M3-A eligibility ranks on the bounded trailing 20-bar median dollar volume (the pre-declared 'eligible-set window' mutant: an unbounded window drifts the eligible set away from the independent oracle)",
+      "selectors": [
+        "tests/unit/test_synth_options_generate.py"
+      ],
+      "source_sha256": "e925333fff764728f7a8ceb61ff678f5fb423007bf855978674ce3f7409cebef",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_options_generate.py::test_eligibility_matches_independent_dollar_volume_oracle"
+    },
+    {
+      "id": "M111-put-delta-sign",
+      "invariant": "M3-A put |delta| = |N(d1) - 1|; using the call delta breaks the strike-band selection and put-call parity",
+      "selectors": [
+        "tests/unit/test_synth_options_generate.py"
+      ],
+      "source_sha256": "7468eeff49707ba33264985ba080a196f44f8c04c4ef53bcee7f4979ea4a1c17",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_options_generate.py::test_delta_monotone_in_strike"
+    },
+    {
+      "id": "M112-spread-halves-swapped",
+      "invariant": "M3-A the ask adds the half-spread, the bid subtracts it; swapping crosses the market",
+      "selectors": [
+        "tests/unit/test_synth_options_generate.py"
+      ],
+      "source_sha256": "e925333fff764728f7a8ceb61ff678f5fb423007bf855978674ce3f7409cebef",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_options_generate.py::test_put_call_parity_within_combined_spread"
+    },
+    {
+      "id": "M113-zero-bid-floor-removed",
+      "invariant": "M3-A re-anchored (round 2): the defensive max(...,0)/never-locked guards are unreachable (the half-spread is proportional to mid); the LIVE zero-bid seam is the bid's tick-FLOOR rounding - sub-cent deep-wing bids quantize DOWN to 0.00, which is the bulk of the tail the gate's rejection criterion exercises",
+      "selectors": [
+        "tests/unit/test_synth_options_generate.py"
+      ],
+      "source_sha256": "e925333fff764728f7a8ceb61ff678f5fb423007bf855978674ce3f7409cebef",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_synth_options_generate.py::test_zero_bid_tail_exists_and_never_negative"
+    },
+    {
+      "id": "M114-oi-plumbed-from-wrong-instant",
+      "invariant": "M3-B every candidate input is AsOf-wrapped at the file's receipt instant; OI stamped a session ahead is future-available and must go NOT_EVALUABLE",
+      "selectors": [
+        "tests/unit/test_data_options_surface.py"
+      ],
+      "source_sha256": "fe4560185cc477c92f8884c74366ac37612ac73a412ead82a3bfb23bc564ab67",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_options_surface.py::test_in_band_candidate_is_accepted_by_the_filter"
+    },
+    {
+      "id": "M115-volume-applicability-excuses-missing",
+      "invariant": "M3-B an absent contract's missing volume is NOT_EVALUABLE - the applicability flag must never excuse a missing input (filter F4)",
+      "selectors": [
+        "tests/unit/test_data_options_surface.py"
+      ],
+      "source_sha256": "fe4560185cc477c92f8884c74366ac37612ac73a412ead82a3bfb23bc564ab67",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_options_surface.py::test_contract_absent_from_file_lands_not_evaluable"
+    },
+    {
+      "id": "M116-settlement-pays-strike-side-swapped",
+      "invariant": "M3-C a CALL settles at max(S - K, 0); the put-side intrinsic credits the wrong side",
+      "selectors": [
+        "tests/unit/test_options_settlement.py"
+      ],
+      "source_sha256": "b0ea12d8a65f6c7beef21fc90c502cf6c3ffed59538d923c6ddcb2401c8e7547",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_settlement.py::test_intrinsic_for_calls_and_puts"
+    },
+    {
+      "id": "M117-settlement-skips-lot-removal",
+      "invariant": "M3-C apply_settlement closes FIFO lots; leaving them open corrupts quantity and realized PnL",
+      "selectors": [
+        "tests/unit/test_options_settlement.py"
+      ],
+      "source_sha256": "b9388a0b4cc96f6b525acb2b175f0e217cd04e4abb3f432cc6484e862eabd6ae",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_settlement.py::test_partial_settlement_then_sell"
+    },
+    {
+      "id": "M118-settlement-kind-swapped",
+      "invariant": "M3-E expiry settlements are counted as expiries; miscounting them as terminals hides the machinery oracle",
+      "selectors": [
+        "tests/unit/test_backtest_options.py"
+      ],
+      "source_sha256": "af77ce8bd50901e1c312d89626268aff85cd2086e2ba06535dbf25fea2163cd7",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_backtest_options.py::test_arm_b_expiry_settlements_close_positions"
+    },
+    {
+      "id": "M119-conservation-oracle-drops-settlements",
+      "invariant": "M3-C the replay oracle independently recomputes and includes settlement cash; dropping it would certify a broken book",
+      "selectors": [
+        "tests/unit/test_options_settlement.py"
+      ],
+      "source_sha256": "b9388a0b4cc96f6b525acb2b175f0e217cd04e4abb3f432cc6484e862eabd6ae",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_settlement.py::test_settlement_closes_lots_and_conserves"
+    },
+    {
+      "id": "M120-force-close-missed",
+      "invariant": "M3-E a ratio action announced mid-hold forces the position closed at the next window",
+      "selectors": [
+        "tests/unit/test_backtest_options.py"
+      ],
+      "source_sha256": "af77ce8bd50901e1c312d89626268aff85cd2086e2ba06535dbf25fea2163cd7",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_backtest_options.py::test_ratio_action_mid_hold_forces_close"
+    },
+    {
+      "id": "M121-execution-cancellation-dropped",
+      "invariant": "M3-D orders whose underlying had an action announced overnight are cancelled at execution, never filled blind",
+      "selectors": [
+        "tests/unit/test_options_strategy.py"
+      ],
+      "source_sha256": "7bf1e11d8775a021d0dc72f54a4bebcb250e1cbb88039382250e4518532e5bec",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_strategy.py::test_cancellations_window_and_toggle"
+    },
+    {
+      "id": "M122-exit-same-session",
+      "invariant": "M3-E arm A exits on the 4th session after entry at the 10:00 window - never same-session",
+      "selectors": [
+        "tests/unit/test_backtest_options.py"
+      ],
+      "source_sha256": "af77ce8bd50901e1c312d89626268aff85cd2086e2ba06535dbf25fea2163cd7",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_backtest_options.py::test_arm_a_round_trips_sell_in_four_sessions"
+    },
+    {
+      "id": "M123-mark-at-ask",
+      "invariant": "M3-E open positions are marked at the strictly-knowable file(t-1) EOD BID, never the ask",
+      "selectors": [
+        "tests/unit/test_backtest_options.py"
+      ],
+      "source_sha256": "af77ce8bd50901e1c312d89626268aff85cd2086e2ba06535dbf25fea2163cd7",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_backtest_options.py::test_mark_uses_prior_file_eod_bid"
+    },
+    {
+      "id": "M124-inv11-fraction-inverted",
+      "invariant": "INV-11 buy-side improvement rounds UP (conservative for the taker), never down",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestSideRuleAndImprovement::test_improvement_on_half_tick_mid_rounds_conservati"
+    },
+    {
+      "id": "M125-sizing-ignores-fees",
+      "invariant": "M3-D whole-contract sizing includes per-contract fees; ignoring them overspends the budget",
+      "selectors": [
+        "tests/unit/test_options_strategy.py"
+      ],
+      "source_sha256": "7bf1e11d8775a021d0dc72f54a4bebcb250e1cbb88039382250e4518532e5bec",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_strategy.py::test_affordable_contracts_fee_inclusive"
+    },
+    {
+      "id": "M126-quintile-over-full-universe",
+      "invariant": "M3-D the cut is quintiles (top -> calls, bottom -> puts), never the full cross-section",
+      "selectors": [
+        "tests/unit/test_options_strategy.py"
+      ],
+      "source_sha256": "7bf1e11d8775a021d0dc72f54a4bebcb250e1cbb88039382250e4518532e5bec",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_strategy.py::test_build_candidates_direction_and_bands"
+    },
+    {
+      "id": "M127-dte-in-sessions",
+      "invariant": "M3-D the expiry pick targets 45 CALENDAR days' DTE (re-anchored round 2 to the nearest-target key itself \u2014 widening only the band was dominated by the days-based tie-break and semantically equivalent)",
+      "selectors": [
+        "tests/unit/test_options_strategy.py"
+      ],
+      "source_sha256": "7bf1e11d8775a021d0dc72f54a4bebcb250e1cbb88039382250e4518532e5bec",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_strategy.py::test_pick_expiry_uses_calendar_days"
+    },
+    {
+      "id": "M128-future-file-visible",
+      "invariant": "M3-B a file is visible exactly from its receipt instant; an always-visible file leaks the future chain",
+      "selectors": [
+        "tests/unit/test_data_options_surface.py"
+      ],
+      "source_sha256": "fe4560185cc477c92f8884c74366ac37612ac73a412ead82a3bfb23bc564ab67",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_options_surface.py::test_file_visible_exactly_from_receipt"
+    },
+    {
+      "id": "M129-dead-contract-tradable",
+      "invariant": "M3 a dead (expired) contract must never trade; re-anchored (round 2) to the listing-window guard - for standard contracts (listing_end == expiration) it is the guard that actually fires; the explicit expired_on check is unreachable behind it (the M0 test now pins the specific rejection code)",
+      "selectors": [
+        "tests/guards/test_fill_engine.py"
+      ],
+      "source_sha256": "cacaa13cadf602abbcfbc84a1e44e64b5fc34cadb53f3a4ef7b0b47add5bf7df",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/guards/test_fill_engine.py::TestContractLifecycle::test_fill_after_expiration_rejected_itm_fixture"
+    },
+    {
+      "id": "M130-spans-earnings-fed-none",
+      "invariant": "M3-B spans_earnings is fed AsOf(False, receipt) - the worlds contain no earnings; None collapses every candidate to NOT_EVALUABLE (empty backtest)",
+      "selectors": [
+        "tests/unit/test_data_options_surface.py",
+        "tests/unit/test_backtest_options.py"
+      ],
+      "source_sha256": "fe4560185cc477c92f8884c74366ac37612ac73a412ead82a3bfb23bc564ab67",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_data_options_surface.py::test_candidate_snapshot_carries_file_receipt_and_truthful_earnings"
+    },
+    {
+      "id": "M131-election-visibility-extends-to-close",
+      "invariant": "M3-E the election consumes only actions visible by the 10:00 window; extending visibility to the close leaks same-evening announcements",
+      "selectors": [
+        "tests/unit/test_backtest_options.py"
+      ],
+      "source_sha256": "af77ce8bd50901e1c312d89626268aff85cd2086e2ba06535dbf25fea2163cd7",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_backtest_options.py::test_election_window_is_ten_oclock_visibility"
+    },
+    {
+      "id": "M132-exercise-ignores-style-guard",
+      "invariant": "M3-C european contracts have no early-exercise right; the mint must refuse",
+      "selectors": [
+        "tests/unit/test_options_settlement.py"
+      ],
+      "source_sha256": "b0ea12d8a65f6c7beef21fc90c502cf6c3ffed59538d923c6ddcb2401c8e7547",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_settlement.py::test_early_exercise_of_european_refused"
+    },
+    {
+      "id": "M133-settlement-priced-at-strike-not-close",
+      "invariant": "M3-C the settlement strikes at the reference bar's CLOSE; recording the strike breaks the oracle's independent cash recomputation",
+      "selectors": [
+        "tests/unit/test_options_settlement.py"
+      ],
+      "source_sha256": "b0ea12d8a65f6c7beef21fc90c502cf6c3ffed59538d923c6ddcb2401c8e7547",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_settlement.py::test_settlement_closes_lots_and_conserves"
+    },
+    {
+      "id": "M134-election-ignores-dividend-branch",
+      "invariant": "M3-C branch (a): a call elects when the visible dividend dominates the file(t-1) time value",
+      "selectors": [
+        "tests/unit/test_options_settlement.py"
+      ],
+      "source_sha256": "29eb766077294682c8914e37c50197ce5056ac7d8e74d7bf327e0a5da0258840",
+      "verdict": "KILLED",
+      "detail": "FAILED tests/unit/test_options_settlement.py::test_dividend_branch_elects_for_calls"
+    }
+  ],
+  "totals": {
+    "KILLED": 133
+  },
+  "restoration_suite_passed": false,
+  "total": 133
+}

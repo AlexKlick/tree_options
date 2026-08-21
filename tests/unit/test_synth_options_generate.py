@@ -138,6 +138,50 @@ def test_quote_history_never_past_expiration(overlay) -> None:  # type: ignore[n
     assert received == sorted(received)
 
 
+def test_quote_history_receipt_is_t1_publication(overlay) -> None:  # type: ignore[no-untyped-def]
+    """Every quoted event carries the T+1 09:00 ET publication wall as its
+    receipt — never the intraday exchange stamp (mutant M109)."""
+    sid, session = _first_file(overlay)
+    file = overlay.day_file(sid, session)
+    contract_id = file.entries[0].contract_id
+    for event in overlay.quote_history(contract_id):
+        assert event.received_timestamp > event.exchange_timestamp, (
+            "receipt is the NEXT-session publication wall, strictly after the stamp"
+        )
+        delay = event.received_timestamp - event.exchange_timestamp
+        assert delay.total_seconds() >= 12 * 3600, f"receipt only {delay} after the stamp"
+        assert (event.received_timestamp.hour, event.received_timestamp.minute) in {
+            (13, 0),
+            (14, 0),
+        }, "receipt lands on the 09:00 America/New_York wall (13/14 UTC by DST)"
+
+
+def test_zero_bid_tail_exists_and_never_negative(overlay) -> None:  # type: ignore[no-untyped-def]
+    """Deep wings quantize to a ZERO bid — the tail exists — and no quoted
+    bid is ever negative (mutant M113: removing the floor mints negative
+    prices the engine could fill against)."""
+    import itertools
+
+    sids = overlay.underlyings_ever_eligible()
+    assert sids
+    bids: list[Decimal] = []
+    for sid_, session in itertools.islice(
+        ((sid, sess) for sid in sids for sess in overlay.eligible_sessions(sid)[-40:]),
+        400,
+    ):
+        for entry in overlay.day_file(sid_, session).entries:
+            for snap in (entry.quote_1545, entry.quote_eod):
+                if snap is not None:
+                    bids.append(snap.bid)
+    assert bids, "the sample must quote something"
+    assert min(bids) >= Decimal("0"), "a quoted bid went negative"
+    zero_rate = sum(1 for bid in bids if bid == Decimal("0")) / len(bids)
+    assert zero_rate >= 0.15, (
+        f"the zero-bid tail must exist at a floor rate (measured {zero_rate:.1%}; the "
+        "tick-FLOOR rounding of sub-cent deep-wing bids is the bulk of it - mutant M113)"
+    )
+
+
 def test_publication_is_dst_correct(overlay) -> None:  # type: ignore[no-untyped-def]
     """January (EST) receipts are 14:00 UTC; a July (EDT) receipt is 13:00 UTC."""
     sid, first = _first_file(overlay)
@@ -343,25 +387,29 @@ def test_cross_process_byte_identity(overlay) -> None:  # type: ignore[no-untype
 def test_eligibility_matches_independent_dollar_volume_oracle(overlay, calendar) -> None:  # type: ignore[no-untyped-def]
     """An independent recomputation of the rule (top-N by trailing-median
     close*volume, >= min bars, bar present at the session) names exactly
-    the eligible set. Registry nulls/alphas are independent worlds — no
-    twin-sharing is claimed or relied on anywhere in M3."""
+    the eligible set, across EARLY and late sessions — an unbounded or
+    future-informed window diverges somewhere (mutant M110). Registry
+    nulls/alphas are independent worlds — no twin-sharing is claimed or
+    relied on anywhere in M3."""
     import statistics as stats
 
-    session = overlay.world_sessions()[60]
     bars_by_sid: dict[str, dict[date, tuple[Decimal, int]]] = {}
     for sid_ in overlay.underlyings_ever_eligible():
         bars_by_sid[sid_] = dict(overlay._by_sid[sid_])
-    rows: list[tuple[float, str]] = []
-    for sid_ in sorted(bars_by_sid):
-        window = [float(c) * v for s, (c, v) in sorted(bars_by_sid[sid_].items()) if s <= session][
-            -overlay.spec.eligibility_window_bars :
-        ]
-        if len(window) < overlay.spec.min_eligible_bars or session not in bars_by_sid[sid_]:
-            continue
-        rows.append((stats.median(window), sid_))
-    rows.sort(key=lambda r: (-r[0], r[1]))
-    expected = tuple(sorted(sid_ for _, sid_ in rows[: overlay.spec.eligible_top_n]))
-    assert overlay.eligible_on(session) == expected
+    world_sessions = overlay.world_sessions()
+    for index in (25, 45, 60, 80, 110, 150):
+        session = world_sessions[index]
+        rows: list[tuple[float, str]] = []
+        for sid_ in sorted(bars_by_sid):
+            window = [
+                float(c) * v for s, (c, v) in sorted(bars_by_sid[sid_].items()) if s <= session
+            ][-overlay.spec.eligibility_window_bars :]
+            if len(window) < overlay.spec.min_eligible_bars or session not in bars_by_sid[sid_]:
+                continue
+            rows.append((stats.median(window), sid_))
+        rows.sort(key=lambda r: (-r[0], r[1]))
+        expected = tuple(sorted(sid_ for _, sid_ in rows[: overlay.spec.eligible_top_n]))
+        assert overlay.eligible_on(session) == expected, f"session index {index}"
 
 
 def test_contracts_standard_american_expire_on_listing_end(overlay) -> None:  # type: ignore[no-untyped-def]

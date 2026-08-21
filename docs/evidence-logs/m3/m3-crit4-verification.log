@@ -1,0 +1,14 @@
+=== stamp audit ===
+m3-synth-v1-val-alpha-710-a-r1.json git_sha 3bbb4615
+m3-synth-v1-val-alpha-710-b-r1.json git_sha 3bbb4615
+m3-synth-v1-val-alpha-711-a-r1.json git_sha b1c9b45b
+m3-synth-v1-val-alpha-711-b-r1.json git_sha b1c9b45b
+m3-synth-v1-val-null-701-a-r1.json git_sha b1c9b45b
+m3-synth-v1-val-null-701-b-r1.json git_sha b1c9b45b
+m3-synth-v1-val-null-702-a-r1.json git_sha b1c9b45b
+m3-synth-v1-val-null-702-b-r1.json git_sha b1c9b45b
+synth-v1-val-null-701|B: folds(stamped)=29 folds(derived)=29 open=5719 checked=5719 unmapped=0 violations_of_corrected_criterion=0
+synth-v1-val-null-702|B: folds(stamped)=29 folds(derived)=29 open=5401 checked=5401 unmapped=0 violations_of_corrected_criterion=0
+synth-v1-val-alpha-710|B: folds(stamped)=29 folds(derived)=29 open=5139 checked=5139 unmapped=0 violations_of_corrected_criterion=0
+synth-v1-val-alpha-711|B: folds(stamped)=29 folds(derived)=29 open=5636 checked=5636 unmapped=0 violations_of_corrected_criterion=0
+VERIFY_EXIT=0

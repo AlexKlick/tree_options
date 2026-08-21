@@ -29,9 +29,11 @@ def test_registry_shape_and_pools() -> None:
     # exact frozen composition (round-2 P2-2: no extra worlds, no duplicate
     # seeds, no seed->kind reassignment can pass). M2-proper §1.1/§3.A: the
     # pre-trial power extension added 706/707 at coefficient 0.005. §10: the
-    # gate #1 disposition added 708/709 at coefficient 0.01 — each amendment
-    # window closed at that gate's first trial registration.
-    assert len(worlds) == 13, f"exactly 13 registered worlds, got {len(worlds)}"
+    # gate #1 disposition added 708/709 at coefficient 0.01. M3 §3.G: the
+    # OD1 tripwire disposition added 710/711 at coefficient 0.5 (owner-ruled
+    # 2026-08-20) — each amendment window closed at that gate's first trial
+    # registration.
+    assert len(worlds) == 15, f"exactly 15 registered worlds, got {len(worlds)}"
     dev = sorted(
         (w["spec"]["seed"], w["spec"]["kind"], w["world_id"])  # type: ignore[index]
         for w in worlds
@@ -58,10 +60,13 @@ def test_registry_shape_and_pools() -> None:
         (707, "alpha", "synth-v1-val-alpha-707"),
         (708, "alpha", "synth-v1-val-alpha-708"),
         (709, "alpha", "synth-v1-val-alpha-709"),
+        (710, "alpha", "synth-v1-val-alpha-710"),
+        (711, "alpha", "synth-v1-val-alpha-711"),
     ], f"validation pool drifted: {val}"
     # power stratum frozen: 704/705 weak (0.002), 706/707 gate-#1 power
-    # (0.005), 708/709 gate-#2 power (0.01, §10) — no coefficient may
-    # silently drift
+    # (0.005), 708/709 gate-#2 power (0.01, §10), 710/711 the M3 options
+    # transfer stratum (0.5, OD1-re-priced owner ruling) — no coefficient
+    # may silently drift
     coefficients = {
         w["spec"]["seed"]: w["spec"]["alpha"]["coefficient"]  # type: ignore[index]
         for w in worlds  # type: ignore[union-attr]
@@ -76,6 +81,8 @@ def test_registry_shape_and_pools() -> None:
         707: 0.005,
         708: 0.01,
         709: 0.01,
+        710: 0.5,
+        711: 0.5,
     }, f"alpha coefficients drifted: {coefficients}"
     # round-3 P2-1: the OUTER id must equal the spec id (verify_worlds
     # generates and identifies snapshots from the inner spec)

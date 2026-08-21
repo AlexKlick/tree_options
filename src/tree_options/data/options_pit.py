@@ -105,8 +105,63 @@ class OptionPitSurface:
         availability fact; quoting is separate."""
         return tuple(c for c in self._overlay.contracts_for(underlying_id) if c.exists_on(session))
 
+    def live_expiries_as_of(self, underlying_id: str, as_of: datetime) -> tuple[date, ...]:
+        """Live expiries on the VISIBLE file's session (the chain the file
+        actually contains, T+1 gate applied)."""
+        session = self.visible_file_session(underlying_id, as_of)
+        if session is None:
+            return ()
+        return tuple(
+            meta.expiration for meta in self._overlay.live_expiries_on(underlying_id, session)
+        )
+
+    def strike_ladder(self, underlying_id: str, expiration: date) -> tuple[Decimal, ...]:
+        """The deterministic strike grid for one (underlying, expiry) — a
+        spec/existence fact, not quote data (same class as
+        contracts_existing_on)."""
+        return self._overlay.ladder_for(underlying_id, expiration)
+
     def quote_history(self, contract_id: str) -> tuple[QuoteEvent, ...]:
         return self._overlay.quote_history(contract_id)
+
+    def visible_quotes_as_of(self, contract_id: str, as_of: datetime) -> tuple[QuoteEvent, ...]:
+        """The VISIBLE file's snapshots for the contract as QuoteEvents
+        (received = that file's receipt instant) — the visible stream the
+        fill engine selects from at as_of. Equivalent under select_quote to
+        the full history (older files lose the (received, exchange) max)
+        without materializing it. Empty when the contract did not quote on
+        the visible file's session."""
+        overlay = self._overlay
+        try:
+            underlying = overlay.contract(contract_id).underlying_security_id
+        except ValueError:
+            return ()
+        session = self.visible_file_session(underlying, as_of)
+        if session is None:
+            return ()
+        try:
+            entry = overlay.entry_for(underlying, session, contract_id)
+        except ValueError:
+            return ()
+        received = overlay.publication_of(session)
+        events: list[QuoteEvent] = []
+        for snap in (entry.quote_1545, entry.quote_eod):
+            if snap is None:
+                continue
+            events.append(
+                QuoteEvent(
+                    contract_id=contract_id,
+                    exchange_timestamp=snap.exchange_timestamp,
+                    received_timestamp=received,
+                    bid=snap.bid,
+                    ask=snap.ask,
+                    bid_size=snap.bid_size,
+                    ask_size=snap.ask_size,
+                    quote_condition=entry.quote_condition,
+                    source=overlay.spec.quote_source,
+                )
+            )
+        return tuple(events)
 
     def contract(self, contract_id: str) -> OptionContract:
         return self._overlay.contract(contract_id)

@@ -441,6 +441,108 @@ def test_randomized_fill_settlement_streams_conserve(n_lots, settle_after, close
     assert "exercise_settlement" in kinds
 
 
+# ---- terminal delisting/merger (M3 plan §2 iv) -----------------------------
+
+
+def test_terminal_settlement_mid_hold_mints_intrinsic() -> None:
+    """A delisting death mid-hold settles at intrinsic vs the final bar's
+    close — forced by the exchange: no american requirement (european
+    fixtures settle too), no pre-expiry restriction beyond staying before
+    expiration."""
+    s = settle(
+        contract=contract(style="european"),
+        reference_close="110",
+        session=date(2019, 3, 8),
+        kind="terminal",
+        settlement_id="STL-T1",
+    )
+    assert s.kind == "terminal"
+    assert s.cash == D("1000.00")  # intrinsic 10 x 1 x 100
+
+
+def test_terminal_past_expiration_refused() -> None:
+    with pytest.raises(SettlementMintError, match=r"past expiration"):
+        settle(
+            contract=contract(),
+            reference_close="110",
+            session=date(2019, 3, 18),
+            kind="terminal",
+        )
+
+
+def test_terminal_settlement_applies_to_the_ledger() -> None:
+    book, c = book_with_position()
+    book.apply_settlement(
+        settle(
+            contract=c,
+            quantity=2,
+            reference_close="90",
+            session=date(2019, 3, 8),
+            kind="terminal",
+            settlement_id="STL-T2",
+        )
+    )
+    assert book.quantity(c.contract_id) == 0  # OTM terminal: lots close, zero cash
+    assert book.cash == D("100000.00") - D("500.00") - D("0.65")
+    book.assert_conservation()
+    assert book.entries[-1].kind == "exercise_settlement"
+    assert book.entries[-1].amount == D("0.00")
+
+
+def test_silent_death_door_guards() -> None:
+    """terminal_detect_at: kind must be terminal, the reference bar may be
+    from an EARLIER session (the last bar of a dead underlying), the
+    detection instant may not precede the bar's publication, and ts is the
+    detection instant (the ledger's application timeline stays ordered)."""
+    from datetime import UTC as _UTC
+
+    c = contract()
+    last_bar = reference_bar(close="110", session=date(2019, 3, 8))
+    detect = datetime(2019, 3, 11, 23, 0, tzinfo=_UTC)
+    s = mint_settlement(
+        contract=c,
+        settlement_id="STL-SD-1",
+        kind="terminal",
+        quantity=1,
+        session=date(2019, 3, 11),
+        reference_bar=last_bar,
+        terminal_detect_at=detect,
+    )
+    assert s.cash == D("1000.00")  # intrinsic vs the LAST bar's close
+    assert s.ts == detect
+    assert s.session == date(2019, 3, 11)
+    with pytest.raises(SettlementMintError, match="kind must be terminal"):
+        mint_settlement(
+            contract=c,
+            settlement_id="STL-SD-2",
+            kind="early_exercise",
+            quantity=1,
+            session=date(2019, 3, 11),
+            reference_bar=last_bar,
+            terminal_detect_at=detect,
+        )
+    with pytest.raises(SettlementMintError, match="precedes the reference bar"):
+        mint_settlement(
+            contract=c,
+            settlement_id="STL-SD-3",
+            kind="terminal",
+            quantity=1,
+            session=date(2019, 3, 11),
+            reference_bar=last_bar,
+            terminal_detect_at=datetime(2019, 3, 8, 22, 0, tzinfo=_UTC),
+        )
+    with pytest.raises(SettlementMintError, match="after the detection session"):
+        mint_settlement(
+            contract=c,
+            settlement_id="STL-SD-4",
+            kind="terminal",
+            quantity=1,
+            session=date(2019, 3, 7),
+            reference_bar=last_bar,
+            terminal_detect_at=detect,
+        )
+
+
 # ---- review r1 remediation (P1-4/5/6/7) ----------------------------------
 
 

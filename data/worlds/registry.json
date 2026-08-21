@@ -1,7 +1,7 @@
 {
   "registry_version": "worlds/1",
   "spec_version": "v1",
-  "note": "Frozen world registry (M2 packet workstream C). Validation worlds are the synthetic-era holdout: dev-pool tuning against them is prohibited; final validation runs happen exclusively here. Seeds/rates are never rewritten; expected hashes are re-pinned only by scripts/verify_worlds.py --recompute after a deliberate generator change. PRE-TRIAL AMENDMENT 2026-08-19 (M2-proper plan \u00a71.1/\u00a73.A, owner-signed): worlds 706/707 added at coefficient 0.005 as the power stratum \u2014 the frozen 0.002 gives ~50% single-world detection power (per-session rank IC ~ coefficient, n~370, ~1,827 test sessions => pooled t~1.6), declared from arithmetic BEFORE any M2 trial was registered. 701-705 are untouched. The amendment window closed at the first M2 trial registration; from that point the registry is frozen through the campaign. POST-GATE-1 AMENDMENT 2026-08-19 (M2-proper plan \u00a710, owner-signed disposition of the gate #1 power-arm FAIL): power worlds 708/709 added at coefficient 0.01, sized from the attenuation measured AT gate #1 (0.43x-0.84x realized; 0.43x pessimistic bound => per-world t~3.1) \u2014 fresh seeds, never generated or observed before this amendment. Gate #1 FAIL, its registry (artifacts/m2-proper-sealed.db) and artifacts are immutable. Worlds 701-705 untouched and frozen forever; no validation payload was re-rolled or tuned against. The gate #2 amendment window closes at the first sealed-2 trial registration.",
+  "note": "Frozen world registry (M2 packet workstream C). Validation worlds are the synthetic-era holdout: dev-pool tuning against them is prohibited; final validation runs happen exclusively here. Seeds/rates are never rewritten; expected hashes are re-pinned only by scripts/verify_worlds.py --recompute after a deliberate generator change. PRE-TRIAL AMENDMENT 2026-08-19 (M2-proper plan \u00a71.1/\u00a73.A, owner-signed): worlds 706/707 added at coefficient 0.005 as the power stratum \u2014 the frozen 0.002 gives ~50% single-world detection power (per-session rank IC ~ coefficient, n~370, ~1,827 test sessions => pooled t~1.6), declared from arithmetic BEFORE any M2 trial was registered. 701-705 are untouched. The amendment window closed at the first M2 trial registration; from that point the registry is frozen through the campaign. POST-GATE-1 AMENDMENT 2026-08-19 (M2-proper plan \u00a710, owner-signed disposition of the gate #1 power-arm FAIL): power worlds 708/709 added at coefficient 0.01, sized from the attenuation measured AT gate #1 (0.43x-0.84x realized; 0.43x pessimistic bound => per-world t~3.1) \u2014 fresh seeds, never generated or observed before this amendment. Gate #1 FAIL, its registry (artifacts/m2-proper-sealed.db) and artifacts are immutable. Worlds 701-705 untouched and frozen forever; no validation payload was re-rolled or tuned against. The gate #2 amendment window closes at the first sealed-2 trial registration. POST-OD1 AMENDMENT 2026-08-20 (M3 plan 3.G, owner-signed disposition of the OD1 tripwire HALT): options transfer worlds 710/711 added at coefficient 0.5, sized from arithmetic re-priced on MEASURED OD1 values (t = 19.3*c*att over the attenuation band [0.43, 1.0]; the plan's printed 0.05 was underpowered at every draw, t in [0.41, 0.96] vs 1.96, while 0.5 passes at every draw with ~2x pessimistic margin, t in [4.1, 9.7] - docs/m3-od1-tripwire-decision.md). Fresh seeds 710/711, never generated or observed before this amendment. Worlds 701-709 untouched and frozen forever; no validation payload was re-rolled or tuned against. The M3 sealed-gate amendment window closes at the first sealed options trial registration.",
   "generator_code_sha": "c59fa3df814e4913c7a49d36a2bb51d636eebde4d9df0f18fda9f761bfedc1e7",
   "worlds": [
     {
@@ -244,6 +244,46 @@
         "bar_count": 703992,
         "action_count": 1119,
         "security_count": 370
+      }
+    },
+    {
+      "world_id": "synth-v1-val-alpha-710",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-alpha-710",
+        "seed": 710,
+        "kind": "alpha",
+        "alpha": {
+          "family": "linear_momentum",
+          "coefficient": 0.5
+        },
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "48ea888a1e9a4c2c6ed736505e4d1bb5484753e0213af263275be25190d0319d",
+        "bar_count": 696983,
+        "action_count": 1059,
+        "security_count": 375
+      }
+    },
+    {
+      "world_id": "synth-v1-val-alpha-711",
+      "pool": "validation",
+      "spec": {
+        "world_id": "synth-v1-val-alpha-711",
+        "seed": 711,
+        "kind": "alpha",
+        "alpha": {
+          "family": "linear_momentum",
+          "coefficient": 0.5
+        },
+        "n_securities": 500
+      },
+      "expected": {
+        "content_sha256": "e83460997882ac39a16c1455aafe37330f15cd6c7f6ab2d647784e7bd0a202b1",
+        "bar_count": 681519,
+        "action_count": 1080,
+        "security_count": 372
       }
     }
   ]

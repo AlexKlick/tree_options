@@ -235,7 +235,10 @@ class TestContractLifecycle:
                 execution_session=following,
                 execution_at=exec_at,
             )
-        assert ei.value.code in {"CONTRACT_NOT_LISTED", "CONTRACT_EXPIRED"}
+        assert ei.value.code == "CONTRACT_NOT_LISTED", (
+            "a standard contract past listing_end (== expiration) is rejected by "
+            "the listing-window guard first (mutant M129)"
+        )
 
     def test_execution_instant_outside_session_rejected(self, synthetic_calendar):
         """A fill stamped 10:00 UTC but labeled the NEXT session is a lie."""
@@ -307,6 +310,35 @@ class TestSideRuleAndImprovement:
         mid = (Decimal("1.00") + Decimal("1.10")) / 2
         assert Decimal("1.10") >= buy.price >= mid
         assert mid >= sell.price >= Decimal("1.00")
+
+    @pytest.mark.parametrize("fraction", ["0.5", "0.25"])
+    def test_improvement_on_half_tick_mid_rounds_conservatively(self, synthetic_calendar, fraction):
+        """A one-cent market puts the midpoint on a HALF tick (1.005): the
+        buy price must round UP and the sell DOWN — quantization may only
+        hurt the taker (INV-11; mutant M124 inverts the buy rounding and
+        fills at the bid)."""
+        engine = _engine(synthetic_calendar)
+        ex_session, exec_at = _next_exec(synthetic_calendar)
+        q = fresh_quote(bid="1.00", ask="1.01", execution_at=exec_at)
+        f = Decimal(fraction)
+        buy = engine.execute(
+            _order(),
+            q,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
+            fraction_to_midpoint_f=f,
+        )
+        sell = engine.execute(
+            _order(side="sell", intent="close_long"),
+            q,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
+            fraction_to_midpoint_f=f,
+        )
+        assert buy.price == Decimal("1.01"), "buy rounds the half-tick UP, to the ask"
+        assert sell.price == Decimal("1.00"), "sell rounds the half-tick DOWN, to the bid"
 
     def test_invalid_improvement_fraction_rejected(self, synthetic_calendar):
         engine = _engine(synthetic_calendar)

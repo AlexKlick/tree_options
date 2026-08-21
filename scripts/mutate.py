@@ -1039,6 +1039,285 @@ MUTANTS = [
         selectors=[f"{U}/test_equity_backtest.py"],
         invariant="M2-G an unavailable top-quintile name keeps its slice in cash; promoting a lower-ranked name would silently change the registered strategy",
     ),
+    # ---- M3 options era (plan §8, M108-M134) ------------------------------
+    dict(
+        id="M108-t1-receipt-shifted-same-day",
+        owner="test_two_snapshots_with_correct_stamps",
+        file="src/tree_options/synth_options/generate.py",
+        anchor="return _wall(self._sessions[idx + 1], PUB_WALL)",
+        replacement="return _wall(self._sessions[idx], PUB_WALL)",
+        selectors=[f"{U}/test_synth_options_generate.py", f"{U}/test_data_options_surface.py"],
+        invariant="M3-A option files publish 09:00 ET on the NEXT session (T+1); a same-day receipt leaks session-t facts to a close(t) decision",
+    ),
+    dict(
+        id="M109-received-stamped-as-exchange",
+        owner="test_quote_history_receipt_is_t1_publication",
+        file="src/tree_options/synth_options/generate.py",
+        anchor="received_timestamp=received,",
+        replacement="received_timestamp=snap.exchange_timestamp,",
+        selectors=[f"{U}/test_synth_options_generate.py"],
+        invariant="M3-A quote receipt is the T+1 publication wall, never the intraday exchange stamp (receipt >= exchange)",
+    ),
+    dict(
+        id="M110-eligible-window-unbounded",
+        owner="test_eligibility_matches_independent_dollar_volume_oracle",
+        file="src/tree_options/synth_options/generate.py",
+        anchor="if len(window) > self.spec.eligibility_window_bars:\n                window.pop(0)",
+        replacement="if False:\n                window.pop(0)",
+        selectors=[f"{U}/test_synth_options_generate.py"],
+        invariant="M3-A eligibility ranks on the bounded trailing 20-bar median dollar volume (the pre-declared 'eligible-set window' mutant: an unbounded window drifts the eligible set away from the independent oracle)",
+    ),
+    dict(
+        id="M111-put-delta-sign",
+        owner="test_delta_monotone_in_strike",
+        file="src/tree_options/synth_options/greeks.py",
+        anchor="return abs(norm_cdf(d1) - 1.0)",
+        replacement="return abs(norm_cdf(d1))",
+        selectors=[f"{U}/test_synth_options_generate.py"],
+        invariant="M3-A put |delta| = |N(d1) - 1|; using the call delta breaks the strike-band selection and put-call parity",
+    ),
+    dict(
+        id="M112-spread-halves-swapped",
+        owner="test_put_call_parity_within_combined_spread",
+        file="src/tree_options/synth_options/generate.py",
+        anchor="ask = _tick_ceil(Decimal(repr(mid)) + Decimal(repr(half)))",
+        replacement="ask = _tick_ceil(Decimal(repr(mid)) - Decimal(repr(half)))",
+        selectors=[f"{U}/test_synth_options_generate.py"],
+        invariant="M3-A the ask adds the half-spread, the bid subtracts it; swapping crosses the market",
+    ),
+    dict(
+        id="M113-zero-bid-floor-removed",
+        owner="test_zero_bid_tail_exists_and_never_negative",
+        file="src/tree_options/synth_options/generate.py",
+        anchor="bid = _tick_floor(Decimal(repr(mid)) - Decimal(repr(half)))",
+        replacement="bid = _tick_ceil(Decimal(repr(mid)) - Decimal(repr(half)))",
+        selectors=[f"{U}/test_synth_options_generate.py"],
+        invariant="M3-A re-anchored (round 2): the defensive max(...,0)/never-locked guards are unreachable (the half-spread is proportional to mid); the LIVE zero-bid seam is the bid's tick-FLOOR rounding - sub-cent deep-wing bids quantize DOWN to 0.00, which is the bulk of the tail the gate's rejection criterion exercises",
+    ),
+    dict(
+        id="M114-oi-plumbed-from-wrong-instant",
+        owner="test_in_band_candidate_is_accepted_by_the_filter",
+        file="src/tree_options/data/options_pit.py",
+        anchor="open_interest=AsOf(value=entry.open_interest, available_at=received),",
+        replacement=(
+            "open_interest=AsOf(\n"
+            "                    value=entry.open_interest,\n"
+            "                    available_at=self._overlay.calendar.nth_after(decision_session, 1),\n"
+            "                ),"
+        ),
+        selectors=[f"{U}/test_data_options_surface.py"],
+        invariant="M3-B every candidate input is AsOf-wrapped at the file's receipt instant; OI stamped a session ahead is future-available and must go NOT_EVALUABLE",
+    ),
+    dict(
+        id="M115-volume-applicability-excuses-missing",
+        owner="test_contract_absent_from_file_lands_not_evaluable",
+        file="src/tree_options/data/options_pit.py",
+        anchor="same_day_volume=None,\n                same_day_volume_applicable=True,",
+        replacement="same_day_volume=None,\n                same_day_volume_applicable=False,",
+        selectors=[f"{U}/test_data_options_surface.py"],
+        invariant="M3-B an absent contract's missing volume is NOT_EVALUABLE - the applicability flag must never excuse a missing input (filter F4)",
+    ),
+    dict(
+        id="M116-settlement-pays-strike-side-swapped",
+        owner="test_intrinsic_for_calls_and_puts",
+        file="src/tree_options/options/settlement.py",
+        anchor='return max(underlying - strike, Decimal("0"))',
+        replacement='return max(strike - underlying, Decimal("0"))',
+        selectors=[f"{U}/test_options_settlement.py"],
+        invariant="M3-C a CALL settles at max(S - K, 0); the put-side intrinsic credits the wrong side",
+    ),
+    dict(
+        id="M117-settlement-skips-lot-removal",
+        owner="test_partial_settlement_then_sell",
+        file="src/tree_options/ledger/book.py",
+        anchor=(
+            "remaining = settlement.quantity\n"
+            '        cost_removed = Decimal("0")\n'
+            "        while remaining > 0:\n"
+            "            head = self._lots[settlement.contract_id][0]"
+        ),
+        replacement=(
+            "remaining = 0\n"
+            '        cost_removed = Decimal("0")\n'
+            "        while remaining > 0:\n"
+            "            head = self._lots[settlement.contract_id][0]"
+        ),
+        selectors=[f"{U}/test_options_settlement.py"],
+        invariant="M3-C apply_settlement closes FIFO lots; leaving them open corrupts quantity and realized PnL",
+    ),
+    dict(
+        id="M118-settlement-kind-swapped",
+        owner="test_arm_b_expiry_settlements_close_positions",
+        file="src/tree_options/backtest/options.py",
+        anchor='elif kind == "expiry":\n                counters.expiries += 1',
+        replacement='elif kind == "never":\n                counters.expiries += 1',
+        selectors=[f"{U}/test_backtest_options.py"],
+        invariant="M3-E expiry settlements are counted as expiries; miscounting them as terminals hides the machinery oracle",
+    ),
+    dict(
+        id="M119-conservation-oracle-drops-settlements",
+        owner="test_settlement_closes_lots_and_conserves",
+        file="src/tree_options/ledger/book.py",
+        anchor="cash += recomputed_cash",
+        replacement='cash += Decimal("0")  # mutant: oracle drops settlement cash',
+        selectors=[f"{U}/test_options_settlement.py"],
+        invariant="M3-C the replay oracle independently recomputes and includes settlement cash; dropping it would certify a broken book",
+    ),
+    dict(
+        id="M120-force-close-missed",
+        owner="test_ratio_action_mid_hold_forces_close",
+        file="src/tree_options/backtest/options.py",
+        anchor='if classify_action(action.kind) != "ratio":',
+        replacement="if True:",
+        selectors=[f"{U}/test_backtest_options.py"],
+        invariant="M3-E a ratio action announced mid-hold forces the position closed at the next window",
+    ),
+    dict(
+        id="M121-execution-cancellation-dropped",
+        owner="test_cancellations_window_and_toggle",
+        file="src/tree_options/options/strategy.py",
+        anchor="if order.decision_at < action.available_at <= execution_at:",
+        replacement="if False:",
+        selectors=[f"{U}/test_options_strategy.py"],
+        invariant="M3-D orders whose underlying had an action announced overnight are cancelled at execution, never filled blind",
+    ),
+    dict(
+        id="M122-exit-same-session",
+        owner="test_arm_a_round_trips_sell_in_four_sessions",
+        file="src/tree_options/backtest/options.py",
+        anchor="exit_session = calendar.nth_after(session, config.exit_sessions_after_entry)",
+        replacement="exit_session = session",
+        selectors=[f"{U}/test_backtest_options.py"],
+        invariant="M3-E arm A exits on the 4th session after entry at the 10:00 window - never same-session",
+    ),
+    dict(
+        id="M123-mark-at-ask",
+        owner="test_mark_uses_prior_file_eod_bid",
+        file="src/tree_options/backtest/options.py",
+        anchor="market_value += (entry.quote_eod.bid * ledger.quantity(contract_id) * 100).quantize(",
+        replacement="market_value += (entry.quote_eod.ask * ledger.quantity(contract_id) * 100).quantize(",
+        selectors=[f"{U}/test_backtest_options.py"],
+        invariant="M3-E open positions are marked at the strictly-knowable file(t-1) EOD BID, never the ask",
+    ),
+    dict(
+        id="M124-inv11-fraction-inverted",
+        owner="test_improvement_on_half_tick_mid_rounds_conservatively",
+        file="src/tree_options/guards/fills.py",
+        anchor="ticks = math.ceil(exact / 2)  # conservative: round the BUY price UP",
+        replacement="ticks = math.floor(exact / 2)  # mutant: buy rounds down",
+        selectors=[f"{G}/test_fill_engine.py"],
+        invariant="INV-11 buy-side improvement rounds UP (conservative for the taker), never down",
+    ),
+    dict(
+        id="M125-sizing-ignores-fees",
+        owner="test_affordable_contracts_fee_inclusive",
+        file="src/tree_options/options/strategy.py",
+        anchor="while estimate > 0 and per_contract * estimate + fee_model.order_fees(estimate) > budget:",
+        replacement="while estimate > 0 and per_contract * estimate > budget:",
+        selectors=[f"{U}/test_options_strategy.py"],
+        invariant="M3-D whole-contract sizing includes per-contract fees; ignoring them overspends the budget",
+    ),
+    dict(
+        id="M126-quintile-over-full-universe",
+        owner="test_build_candidates_direction_and_bands",
+        file="src/tree_options/options/strategy.py",
+        anchor="count = max(1, math.ceil(len(rows) / 5))",
+        replacement="count = len(rows)",
+        selectors=[f"{U}/test_options_strategy.py"],
+        invariant="M3-D the cut is quintiles (top -> calls, bottom -> puts), never the full cross-section",
+    ),
+    dict(
+        id="M127-dte-in-sessions",
+        owner="test_pick_expiry_uses_calendar_days",
+        file="src/tree_options/options/strategy.py",
+        anchor="return min(in_band, key=lambda e: (abs((e - decision_session).days - config.target_dte), e))",
+        replacement=(
+            "return min(\n"
+            "            in_band,\n"
+            "            key=lambda e: (\n"
+            "                abs(\n"
+            "                    (surface.overlay.calendar.ordinal(e)\n"
+            "                     - surface.overlay.calendar.ordinal(decision_session))\n"
+            "                    - config.target_dte\n"
+            "                ),\n"
+            "                e,\n"
+            "            ),\n"
+            "        )"
+        ),
+        selectors=[f"{U}/test_options_strategy.py"],
+        invariant="M3-D the expiry pick targets 45 CALENDAR days' DTE (re-anchored round 2 to the nearest-target key itself — widening only the band was dominated by the days-based tie-break and semantically equivalent)",
+    ),
+    dict(
+        id="M128-future-file-visible",
+        owner="test_file_visible_exactly_from_receipt",
+        file="src/tree_options/data/options_pit.py",
+        anchor="if self._overlay.publication_of(session) <= as_of:",
+        replacement="if True:",
+        selectors=[f"{U}/test_data_options_surface.py"],
+        invariant="M3-B a file is visible exactly from its receipt instant; an always-visible file leaks the future chain",
+    ),
+    dict(
+        id="M129-dead-contract-tradable",
+        owner="test_fill_after_expiration_rejected_itm_fixture",
+        file="src/tree_options/guards/fills.py",
+        anchor="if not contract.exists_on(execution_session):",
+        replacement="if False:",
+        selectors=[f"{G}/test_fill_engine.py"],
+        invariant="M3 a dead (expired) contract must never trade; re-anchored (round 2) to the listing-window guard - for standard contracts (listing_end == expiration) it is the guard that actually fires; the explicit expired_on check is unreachable behind it (the M0 test now pins the specific rejection code)",
+    ),
+    dict(
+        id="M130-spans-earnings-fed-none",
+        owner="test_candidate_snapshot_carries_file_receipt_and_truthful_earnings",
+        file="src/tree_options/data/options_pit.py",
+        anchor=(
+            "ask=AsOf(value=entry.quote_eod.ask, available_at=received),\n"
+            "            underlying_20d_median_dollar_volume=AsOf(value=dollar_volume, available_at=received),\n"
+            "            spans_earnings=AsOf(value=False, available_at=received),"
+        ),
+        replacement=(
+            "ask=AsOf(value=entry.quote_eod.ask, available_at=received),\n"
+            "            underlying_20d_median_dollar_volume=AsOf(value=dollar_volume, available_at=received),\n"
+            "            spans_earnings=None,"
+        ),
+        selectors=[f"{U}/test_data_options_surface.py", f"{U}/test_backtest_options.py"],
+        invariant="M3-B spans_earnings is fed AsOf(False, receipt) - the worlds contain no earnings; None collapses every candidate to NOT_EVALUABLE (empty backtest)",
+    ),
+    dict(
+        id="M131-election-visibility-extends-to-close",
+        owner="test_election_window_is_ten_oclock_visibility",
+        file="src/tree_options/backtest/options.py",
+        anchor="visible_by=instant,",
+        replacement="visible_by=calendar.session_close(session),",
+        selectors=[f"{U}/test_backtest_options.py"],
+        invariant="M3-E the election consumes only actions visible by the 10:00 window; extending visibility to the close leaks same-evening announcements",
+    ),
+    dict(
+        id="M132-exercise-ignores-style-guard",
+        owner="test_early_exercise_of_european_refused",
+        file="src/tree_options/options/settlement.py",
+        anchor='if contract.exercise_style != "american":',
+        replacement="if False:",
+        selectors=[f"{U}/test_options_settlement.py"],
+        invariant="M3-C european contracts have no early-exercise right; the mint must refuse",
+    ),
+    dict(
+        id="M133-settlement-priced-at-strike-not-close",
+        owner="test_settlement_closes_lots_and_conserves",
+        file="src/tree_options/options/settlement.py",
+        anchor="settlement_price=reference_bar.close,",
+        replacement="settlement_price=contract.strike,",
+        selectors=[f"{U}/test_options_settlement.py"],
+        invariant="M3-C the settlement strikes at the reference bar's CLOSE; recording the strike breaks the oracle's independent cash recomputation",
+    ),
+    dict(
+        id="M134-election-ignores-dividend-branch",
+        owner="test_dividend_branch_elects_for_calls",
+        file="src/tree_options/options/exercise.py",
+        anchor='inputs.call_put == "C"\n        and inputs.pending_dividend_per_share is not None',
+        replacement="False\n        and inputs.pending_dividend_per_share is not None",
+        selectors=[f"{U}/test_options_settlement.py"],
+        invariant="M3-C branch (a): a call elects when the visible dividend dominates the file(t-1) time value",
+    ),
 ]
 
 FAILING = ("FAILED",)
@@ -1148,6 +1427,7 @@ def main() -> int:
     args = parser.parse_args()
 
     worktree = Path(tempfile.mkdtemp(prefix="tree-options-mutate-"))
+    keep_worktree = False
     try:
         shutil.copytree(
             REPO,
@@ -1155,20 +1435,57 @@ def main() -> int:
             ignore=shutil.ignore_patterns(".venv", "__pycache__", ".git", "*.pyc", ".pytest_cache"),
         )
         wt = worktree / "repo"
+        # The copy excludes .git by design, but WS-F stamping (build_stamp)
+        # fail-closes without a usable repository: git rev-parse HEAD plus a
+        # clean tree. The three runs of the M3 campaign all failed the
+        # restoration suite solely on test_run_options_trial_end_to_end for
+        # exactly this reason (retained worktree: no .git at all). A
+        # synthetic baseline commit provides both without inheriting state
+        # from the source checkout; mutant apply/restore is file-byte based,
+        # so .git is inert to the loop. Committed BEFORE uv sync so the
+        # .venv it creates stays ignored, and .gitignore (copied with the
+        # tree) keeps artifacts/ and dist/ out of the baseline as well.
+        for _cmd in (
+            ["git", "-c", "init.defaultBranch=main", "init", "-q"],
+            ["git", "add", "-A"],
+            [
+                "git",
+                "-c",
+                "user.email=harness@localhost",
+                "-c",
+                "user.name=mutation harness",
+                "commit",
+                "-q",
+                "-m",
+                "mutation harness baseline",
+            ],
+        ):
+            subprocess.run(_cmd, cwd=wt, capture_output=True, check=True)
         subprocess.run(
             ["uv", "sync", "--frozen"], cwd=wt, capture_output=True, timeout=600, check=True
         )
         results = [run_mutant(wt, m) for m in MUTANTS]
-        # Restoration proof: full suite in the (restored) worktree.
-        final = _run(wt, ["pytest", "-q", "--tb=no"], 900)
+        # Restoration proof: full suite in the (restored) worktree. Failures
+        # print their traceback tail AND keep the worktree for forensics —
+        # a restoration failure that cannot be reproduced in a clean copy
+        # (seen twice on test_run_options_trial_end_to_end, clean in both
+        # isolated replicas) must be diagnosable from the retained state.
+        final = _run(wt, ["pytest", "-q", "--tb=short", "-p", "no:cacheprovider"], 1800)
         restored_suite_ok = final.returncode == 0
         if not restored_suite_ok:
             print("RESTORATION SUITE FAILURES:", flush=True)
-            for ln in (final.stdout + final.stderr).splitlines():
+            lines = (final.stdout + final.stderr).splitlines()
+            for ln in lines:
                 if ln.startswith("FAILED") or ln.startswith("ERROR"):
                     print(" ", ln[:160], flush=True)
+            print("---- traceback tail ----", flush=True)
+            for ln in lines[-60:]:
+                print(" ", ln[:200], flush=True)
+            print(f"RETAINED WORKTREE: {wt}", flush=True)
+            keep_worktree = True
     finally:
-        shutil.rmtree(worktree, ignore_errors=True)
+        if not keep_worktree:
+            shutil.rmtree(worktree, ignore_errors=True)
 
     counts: dict[str, int] = {}
     for r in results:
