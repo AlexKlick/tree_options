@@ -1318,6 +1318,109 @@ MUTANTS = [
         selectors=[f"{U}/test_options_settlement.py"],
         invariant="M3-C branch (a): a call elects when the visible dividend dominates the file(t-1) time value",
     ),
+    # ---- M4 real-data adapter era (integration, M135-M142) -----------------
+    dict(
+        id="M135-publication-wall-same-session",
+        owner="test_t_plus_1_wall_friday_publishes_monday",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor="local = datetime.combine(next_trading_session(session), PUB_WALL, tzinfo=SESSION_TIMEZONE)",
+        replacement="local = datetime.combine(session, PUB_WALL, tzinfo=SESSION_TIMEZONE)",
+        selectors=[f"{U}/test_cboe_eod.py"],
+        invariant=(
+            "M4-A session t's file publishes 09:00 ET on the NEXT weekend-skipping"
+            " session (T+1); a same-day wall either leaks session-t facts to a"
+            " close(t) decision or trips the parse-time PIT check"
+        ),
+    ),
+    dict(
+        id="M136-pit-violation-accepted",
+        owner="test_overlay_rejects_pit_violation",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor="if snap.exchange_timestamp > file.received_at:",
+        replacement="if False:",
+        selectors=[f"{U}/test_real_overlay.py"],
+        invariant=(
+            "M4-A every snapshot must satisfy exchange_timestamp <= received_timestamp"
+            " (validate_pit_invariants runs at parse time AND overlay construction);"
+            " a future-exchanged quote accepted into the overlay is a leak"
+        ),
+    ),
+    dict(
+        id="M137-no-cgi-index-zeros-ingested",
+        owner="test_no_cgi_index_refusal_names_symbol",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor='if variant == "no_cgi" and symbol.startswith("^"):',
+        replacement="if False:",
+        selectors=[f"{U}/test_cboe_eod.py"],
+        invariant=(
+            "M4-A a no_cgi file zeroes index underlyings' quotes: the parse refuses"
+            " naming the symbol; only the degenerate-quote backstop would remain"
+            " if the license check were gutted"
+        ),
+    ),
+    dict(
+        id="M138-duplicate-row-overwritten",
+        owner="test_duplicate_contract_refused_never_overwritten",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor="if contract_id in session_seen:",
+        replacement="if False:",
+        selectors=[f"{U}/test_cboe_eod.py"],
+        invariant=(
+            "M4-A a second row for the same (session, contract) is refused and"
+            " counted (first row kept); ingesting both double-counts chains and OI"
+        ),
+    ),
+    dict(
+        id="M139-underlying-pair-swapped",
+        owner="test_file_level_underlying_prefers_1545_pair",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor="return bid, ask",
+        replacement="return ask, bid",
+        selectors=[f"{U}/test_cboe_eod.py"],
+        invariant=(
+            "M4-A the file-level underlying pair keeps its (bid, ask) order; a"
+            " swapped pair inverts every spot mid consumer and the crossed check"
+        ),
+    ),
+    dict(
+        id="M140-abs-delta-sign-flipped",
+        owner="test_normal_row_mapping_and_decimal_exactness",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor="abs_delta = delta.copy_abs()",
+        replacement="abs_delta = -delta.copy_abs()",
+        selectors=[f"{U}/test_cboe_eod.py"],
+        invariant=(
+            "M4-A abs_delta enters the schema as |delta| (ge=0); a sign flip either"
+            " refuses every row at the schema gate or corrupts the ATM band inputs"
+        ),
+    ),
+    dict(
+        id="M141-delivery-code-forced-nonempty",
+        owner="test_empty_delivery_code_is_the_norm",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor="if delivery_code:",
+        replacement="if True:",
+        selectors=[f"{U}/test_cboe_eod.py"],
+        invariant=(
+            "M4-A an EMPTY delivery_code is the standard deliverable (the trailing"
+            " empty field is the norm); treating every row as nonstandard refuses"
+            " the whole file and destroys coverage"
+        ),
+    ),
+    dict(
+        id="M142-early-close-1545-forced-present",
+        owner="test_calendar_protocol",
+        file="src/tree_options/data/real_overlay.py",
+        anchor="if file.entries and all(e.quote_1545 is None for e in file.entries)",
+        replacement="if False",
+        selectors=[f"{U}/test_real_overlay.py"],
+        invariant=(
+            "M4-A an early close is detected from the files (every entry lacks the"
+            " 15:45 snapshot) and the calendar closes the session at 13:00 ET;"
+            " pretending the 1545 snapshot is present stamps decisions past the"
+            " real close"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)
