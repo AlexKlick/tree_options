@@ -387,14 +387,17 @@ def run_options_backtest(
         session: date,
         detect_at=None,
         action: CorporateActionRecord | None = None,
+        ts_floor: datetime | None = None,
     ) -> None:
         if action is not None:
-            # review r2 P1-1: an action-driven terminal prices at the
-            # EFFECTIVE session's final bar (last bar at-or-before as the
+            # review r2 P1-1 + r3 P1-1: an action-driven terminal prices at
+            # the EFFECTIVE session's final bar (last bar at-or-before as the
             # degenerate fallback) and stamps at the detection instant —
-            # max(action publication, bar publication) — so the ledger's
-            # application timeline never backdates behind a fill that
-            # executed between the bar's publication and the settlement.
+            # max(action publication, bar publication) — floored at this
+            # session's execution instant: when publication lands between
+            # the next open and the fills (13:45Z vs 13:30Z/14:00Z), the
+            # due-scan fires a session late and the settlement applies AFTER
+            # that session's fills, so its ts must never precede them.
             bar = bar_map.get((contract.underlying_security_id, action.effective_session))
             if bar is None:
                 bar = _last_bar_at_or_before(
@@ -406,6 +409,8 @@ def run_options_backtest(
                     f"{action.effective_session}"
                 )
             detect_at = max(action.available_at, bar.available_at)
+            if ts_floor is not None:
+                detect_at = max(detect_at, ts_floor)
             mint_session = session
         else:
             bar = bar_map.get((contract.underlying_security_id, session))
@@ -752,6 +757,7 @@ def run_options_backtest(
                 session=session,
                 detect_at=detect_at_wall if kind == "terminal_silent" else None,
                 action=None if kind == "terminal_silent" else terminal_actions.get(contract_id),
+                ts_floor=instant,
             )
             if kind == "early_exercise":
                 counters.early_exercises += 1

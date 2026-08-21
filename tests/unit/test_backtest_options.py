@@ -604,6 +604,70 @@ def test_late_published_merger_settles_without_backdated_stamp(
     )
 
 
+def test_intramorning_publication_settles_after_same_session_fills(
+    world, surface, relaxed_filter
+) -> None:
+    """Review r3 P1-1: a merger published BETWEEN the next session's open
+    and its execution window (13:45Z vs open 13:30Z, fills 14:00Z) makes
+    the due-scan fire one session late — at that session the fills are
+    already applied, and a settlement stamped at the 13:45Z publication
+    backdates behind them (OUT_OF_ORDER_SETTLEMENT)."""
+    overlay, calendar, snapshot, _dataset = world
+    sessions = overlay.world_sessions()
+    effective = sessions[100]
+    detect_session = sessions[101]
+    victim = sorted(surface.eligible_as_of(sessions[95]))[0]
+    others = [sid for sid in sorted(surface.eligible_as_of(effective)) if sid != victim]
+    augmented = _AugmentedDataset(
+        snapshot,
+        calendar,
+        universe_id=f"{snapshot.snapshot_id}|pit-universe-v1",
+        extra_actions=[
+            _extra_action(
+                security_id=victim,
+                kind="merger",
+                effective_session=effective,
+                successor_security_id="SYN-9999",
+                # 15 minutes AFTER the next session's open: past next_open
+                # (scan does not fire at close(t)), before the 14:00Z fills
+                available_at=calendar.session_open(detect_session) + timedelta(minutes=15),
+                source_record_id="ACT-TERM-INTRA",
+            )
+        ],
+        drop_bars_after=(victim, effective),  # the final bar is t; nothing after
+    )
+    signals = (
+        # the victim entered before the merger window...
+        OptionSignal(decision_session=sessions[95], security_id=victim, score=9.9),
+        # ...and unrelated names decide at close(t) so their entries fill
+        # at 14:00Z on t+1, ahead of the settlement application
+        *(
+            OptionSignal(decision_session=effective, security_id=sid, score=(i + 1) / 10.0)
+            for i, sid in enumerate(others)
+        ),
+    )
+    result = run_options_backtest(
+        calendar=calendar,
+        surface=surface,
+        dataset=augmented,
+        candidate_filter=relaxed_filter,
+        signals=signals,
+        initial_cash=D("100000.00"),
+        config=CONFIG,
+        arm="B",
+        end_session=sessions[103],
+    )
+    fills_before_detect = [f for f in result.fills if f.execution_session == detect_session]
+    assert fills_before_detect, "the fixture must fill entries on the detection session"
+    victim_rows = [p for p in result.positions if p.underlying_security_id == victim]
+    terminal_rows = [p for p in victim_rows if p.exit_kind == "terminal"]
+    assert terminal_rows, "the intramorning-published merger must terminate the position"
+    assert all(p.exit_session == detect_session for p in terminal_rows), (
+        "the settlement applies at the detection session, stamped no earlier "
+        "than that session's already-applied fills"
+    )
+
+
 def test_mark_is_zero_when_prior_file_absent(world, surface, relaxed_filter) -> None:
     """Review r2 P1-3: when an open position's underlying has no file(t-1)
     (it left the option-eligible top-N), the close(t) mark must be the
