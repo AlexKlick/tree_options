@@ -355,6 +355,26 @@ defines the code-final head.
 
 <!-- REVIEW_R3_FIXES -->
 
+### 5i. Review round 4 — GO (verdict verbatim; code-final head declared)
+
+Head `74dfd3a`, pinned read-only worktree, the owner-ruled final round
+with the narrow charter (full transcript:
+`docs/evidence-logs/m3/m3-review-r4.log`):
+
+> VERDICT: GO
+> - No P1 or P2 findings. Reviewed anchors:
+>   `src/tree_options/backtest/options.py:411`,
+>   `src/tree_options/trials/options_run.py:163`,
+>   `scripts/run_m3_sealed_verdict_correction.py:92`.
+
+**Code-final head = `74dfd3a`** (GO + 0 P1, per the plan's Phase 4 and
+the round-4 ruling). Review ledger: r1 NO-GO 5 P1 → r2 NO-GO 4 P1 →
+r3 NO-GO 3 P1 → r4 GO 0/0 — twelve real defects found and fixed
+red-first across four rounds, every verdict recorded verbatim in
+§5d/§5e/§5g/§5i with retained transcripts.
+
+<!-- REVIEW_R4_GO -->
+
 ## 6. Evidence log retention
 
 `docs/evidence-logs/m3/` (committed `1993a06`) holds the surviving logs

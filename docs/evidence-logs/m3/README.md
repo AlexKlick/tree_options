@@ -60,3 +60,4 @@ Contents:
 | `m3-review-r3.log` | 2026-08-20 | Bounded Codex review round 3 at 45ca6f5 (pinned worktree, read-only): VERDICT NO-GO, 3 P1 + 1 P2 — round cap reached. Full transcript retained. |
 | `m3-fullsuite-p3-fixes.log` | 2026-08-20 | Full pytest suite at the 3-r3-fix head: all 538 passed, SUITE_EXIT=0. |
 | `m3-verdict-correction5-pass.log` | 2026-08-20 | Correction re-stamp after the r3 fixes (world-bound validation): CORRECTED_VERDICT=PASS, exit 0 — same measurements. |
+| `m3-review-r4.log` | 2026-08-20 | Bounded Codex review round 4 at 74dfd3a (owner-ruled final round, narrow charter — the three r3 fixes + touched-file regression): **VERDICT: GO, no P1/P2 findings**. Code-final head = 74dfd3a. |
