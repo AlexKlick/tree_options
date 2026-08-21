@@ -211,13 +211,41 @@ below).
 
 ### 5c. Clean-clone determinism proof (ruling C's one re-execution)
 
-Fresh `git clone --branch m3/options-20260819 --no-hardlinks` of the
-local repo at head `8479f1f`, `uv sync --frozen`, then the sealed gate
-re-executed end-to-end. Comparison is git_sha-normalized for the
-recorded head-mix: trial payloads, `config_hash`,
+Method: a fresh `--no-local` clone of the code-final head, `uv sync
+--frozen`, the sealed gate re-executed end-to-end in the clone, then a
+git_sha-normalized sha256 comparison of all eight trial payloads
+against the registering lane: trial payloads, `config_hash`,
 `dataset_manifest_hash`, and both lanes' expected hashes must be
-IDENTICAL; only `stamp.git_sha` may differ.
-<!-- CLEANCLONE_RESULTS -->
+IDENTICAL; only `stamp.git_sha` may differ (each lane stamps the head
+it executed).
+
+**Binding run (clean-clone #2, code-final head `355f116`, night of
+2026-08-20/21).** Clone executed the full gate + its own correction +
+the full pytest suite in-clone (`CLONE_PYTEST_EXIT=0`, clone-side
+`CORRECTED_VERDICT=PASS`), then auto-compared against the
+re-registered main-repo run (`artifacts/m3-options-sealed2/`, stamped
+`e21e20a` — the docs-only head the lane was executing; the clone
+stamped `355f116`). Result, verbatim from
+`cleanclone2-work/comparison.log`: **8/8 IDENTICAL** (all four worlds,
+both arms) and **`ARTIFACTS_IDENTICAL=1`** — the re-registered
+artifacts are bit-reproducible from a fresh clone of the code-final
+head, with only the recorded head stamp differing, exactly as ruled.
+Per-world paired-series hashes in the re-registered run
+(`SEALED_WORLD_OK` lines, `m3-sealed2-gate.log`): null-701
+`87f7b2e9c5a2` (BARS=672773, CONTRACTS=1789582), null-702
+`3111fdec03bb` (699723/1691520), alpha-710 `74aad1ae7e99`
+(696983/1692218), alpha-711 `8bbd31af5196` (681519/1715424).
+
+Preliminary old-head datapoint (pre-fix code `8479f1f`, superseded by
+the binding run above and retained for the record): 8/8 IDENTICAL,
+`ARTIFACTS_IDENTICAL=1`, clone-side correction PASS under the
+pre-hardening driver (`old-cleanclone-work/`, `m3-cleanclone.log`).
+
+Retained: `m3-cleanclone2-gate.log` (clone lane, full),
+`cleanclone2-work/` (comparison + both manifests + raw sha256s),
+`m3-sealed2-gate.log` (registering lane),
+`m3-verdict-correction6-pass.log` (the re-registered run's corrected
+verdict).
 
 ### 5d. Review rounds to GO (bounded, verdicts verbatim)
 
@@ -440,16 +468,39 @@ from this base.
 ## 10. Evidence invalidation
 
 Any change to code, tests, protocol, dependencies, or `synth/` after
-the code-final head invalidates this packet; docs-only commits do not.
-PENDING at this revision: the re-registered one-shot sealed gate at the
-code-final head (r1–r3 fixes are payload-affecting; running into
-`artifacts/m3-options-sealed2/` per mismatch-procedure option (a), with
-the correction driver's `--expected-heads` extension at `355f116`), the
-final gate re-run at `355f116` (the first run at `c9e8430` predates that
-additive scripts/tests commit; its record: mutation 133/133 KILLED,
-restoration TRUE — `m3-final-gate.log`), and the clean-clone
-ARTIFACTS_IDENTICAL=1 proof at that head. This packet is updated when
-Phase 6 records them.
-The world and overlay registries fail closed on regeneration drift, and
-the mutation harness must show zero of everything except KILLED with a
-passing restoration suite at the final head.
+the code-final head (`355f116`) invalidates this packet; docs-only
+commits do not. The Phase 6 pendings are recorded:
+
+- **Re-registered one-shot sealed gate — DONE** (night of 2026-08-20/21,
+  into `artifacts/m3-options-sealed2/` per mismatch-procedure option
+  (a)). All eight payloads stamped `e21e20a` (the code-final tree plus
+  the docs-only evidence commit the lane was executing; src-identical
+  to `355f116`). Verdict verbatim: **`SEALED2_GATE_EXIT=4`** — the two
+  ruled criterion-4 failures reproduce at the code-final head with the
+  wrong bound deliberately unchanged (owner ruling C), and no other
+  criterion failed. The lane's inline correction refused the new head
+  set as designed (`SEALED2_CORRECTION_EXIT=2`, fail-closed against the
+  original ruled mix); the owed correction with
+  `--expected-heads e21e20a…` returned **`CORRECTED_VERDICT=PASS`**
+  (`m3-verdict-correction6-pass.log`).
+- **Clean-clone ARTIFACTS_IDENTICAL=1 proof — DONE** (§5c).
+- **Final gate at the final head** — the `c9e8430` full pass (mutation
+  133/133 KILLED, restoration TRUE — `m3-final-gate.log`) and the
+  `355f116` re-run (all phases green: 540 passed, 133/133 KILLED,
+  restoration TRUE — `m3-final-gate2.log`) are both on record. The
+  `355f116` run's `GATE_EXIT=3` is the exact-head EXIT trap refusing
+  the mid-run docs commit `e21e20a` (process error, disclosed §8-era;
+  the assertion fired as designed), so gate3 re-ran the full gate
+  verbatim at the docs-only final head on main — its log is committed
+  alongside this section (`m3-final-gate3.log`).
+
+**Post-merge disposition (2026-08-21).** PR #6 was merged by the owner
+at 21:55 MDT 2026-08-20 (merge commit `0e010f7`, normal merge — no
+squash; `origin/main^{tree}` == branch tree `8891f47`) while both
+sealed lanes were still executing. The remaining proof obligations —
+the re-registered verdict correction, the clean-clone comparison, this
+§5c/§10 record, and gate3 — therefore completed on `main` as follow-up
+docs-only commits after the lanes exited, rather than inside the PR.
+The world and overlay registries fail closed on regeneration drift,
+and the mutation harness must show zero of everything except KILLED
+with a passing restoration suite at the final head.

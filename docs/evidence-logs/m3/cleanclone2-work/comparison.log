@@ -1,0 +1,9 @@
+m3-synth-v1-val-alpha-710-a-r1.json: IDENTICAL main=e21e20ad clone=355f116e
+m3-synth-v1-val-alpha-710-b-r1.json: IDENTICAL main=e21e20ad clone=355f116e
+m3-synth-v1-val-alpha-711-a-r1.json: IDENTICAL main=e21e20ad clone=355f116e
+m3-synth-v1-val-alpha-711-b-r1.json: IDENTICAL main=e21e20ad clone=355f116e
+m3-synth-v1-val-null-701-a-r1.json: IDENTICAL main=e21e20ad clone=355f116e
+m3-synth-v1-val-null-701-b-r1.json: IDENTICAL main=e21e20ad clone=355f116e
+m3-synth-v1-val-null-702-a-r1.json: IDENTICAL main=e21e20ad clone=355f116e
+m3-synth-v1-val-null-702-b-r1.json: IDENTICAL main=e21e20ad clone=355f116e
+ARTIFACTS_IDENTICAL=1

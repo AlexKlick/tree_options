@@ -1,0 +1,34 @@
+{
+ "m3-synth-v1-val-alpha-710-a-r1.json": {
+  "git_sha": "e21e20ade591150fe3630e984604ddc635912e18",
+  "normalized_sha256": "b0995204c8c396ecdc13de38f803df4ebabe78fc9853e8e9404b6e09f08167f5"
+ },
+ "m3-synth-v1-val-alpha-710-b-r1.json": {
+  "git_sha": "e21e20ade591150fe3630e984604ddc635912e18",
+  "normalized_sha256": "e04e72db2968be492527b212c2909066ea838abad762563382387121bb6aad73"
+ },
+ "m3-synth-v1-val-alpha-711-a-r1.json": {
+  "git_sha": "e21e20ade591150fe3630e984604ddc635912e18",
+  "normalized_sha256": "6019a21facf9f864167a202ed52e4dfcd4481779420b9e7e170952f4a64a703d"
+ },
+ "m3-synth-v1-val-alpha-711-b-r1.json": {
+  "git_sha": "e21e20ade591150fe3630e984604ddc635912e18",
+  "normalized_sha256": "b0b0b5fc75035e7452c4f3cd10adb5621b11a5dd0d712c02ca56446e424d6fa5"
+ },
+ "m3-synth-v1-val-null-701-a-r1.json": {
+  "git_sha": "e21e20ade591150fe3630e984604ddc635912e18",
+  "normalized_sha256": "6b3828e95d899df9b22ffc9d264eb4e78d82437c24c230d6dc2975369608b761"
+ },
+ "m3-synth-v1-val-null-701-b-r1.json": {
+  "git_sha": "e21e20ade591150fe3630e984604ddc635912e18",
+  "normalized_sha256": "14e01fb2759751731bdb07e0827aa03168ba66c914a1ea553ac369df938710cb"
+ },
+ "m3-synth-v1-val-null-702-a-r1.json": {
+  "git_sha": "e21e20ade591150fe3630e984604ddc635912e18",
+  "normalized_sha256": "5c36b66fad06d76dd2587b93a43cbc72ac03204ab353be82cfe1422f3c869a84"
+ },
+ "m3-synth-v1-val-null-702-b-r1.json": {
+  "git_sha": "e21e20ade591150fe3630e984604ddc635912e18",
+  "normalized_sha256": "f6eb18a71c551a785c49ef89569550334613cd820390b18ae79beb8b82a8ebd7"
+ }
+}

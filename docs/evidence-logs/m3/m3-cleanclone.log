@@ -1,0 +1,47 @@
+Using CPython 3.12.3 interpreter at: /usr/bin/python3.12
+Creating virtual environment at: .venv
+   Building tree-options @ file:///tmp/m3-cleanclone
+      Built tree-options @ file:///tmp/m3-cleanclone
+Prepared 1 package in 193ms
+Installed 22 packages in 20ms
+ + annotated-types==0.8.0
+ + ast-serialize==0.8.0
+ + hypothesis==6.165.10
+ + iniconfig==2.3.0
+ + librt==0.15.0
+ + mypy==2.3.1
+ + mypy-extensions==1.1.0
+ + numpy==2.5.2
+ + packaging==26.3
+ + pathspec==1.1.1
+ + pluggy==1.6.0
+ + pydantic==2.13.4
+ + pydantic-core==2.46.4
+ + pygments==2.21.0
+ + pytest==9.1.1
+ + pyyaml==6.0.3
+ + ruff==0.16.3
+ + sortedcontainers==2.4.0
+ + tree-options==0.1.0 (from file:///tmp/m3-cleanclone)
+ + types-pyyaml==6.0.12.20260815
+ + typing-extensions==4.16.0
+ + typing-inspection==0.4.4
+SYNC_EXIT=0
+SEALED_WORLD_OK=synth-v1-val-null-701 BARS=672773 CONTRACTS=1789582 PAIRED=87f7b2e9c5a2
+SEALED_WORLD_OK=synth-v1-val-null-702 BARS=699723 CONTRACTS=1691520 PAIRED=3111fdec03bb
+SEALED_WORLD_OK=synth-v1-val-alpha-710 BARS=696983 CONTRACTS=1692218 PAIRED=74aad1ae7e99
+SEALED_WORLD_OK=synth-v1-val-alpha-711 BARS=681519 CONTRACTS=1715424 PAIRED=8bbd31af5196
+SEALED_TRIAL=synth-v1-val-alpha-710 ARM=A STATUS=COMPLETED FOLDS=29 POSITIONS=17279 RHO=0.8531555503702443 T=2.547090156526019
+SEALED_TRIAL=synth-v1-val-alpha-710 ARM=B STATUS=COMPLETED FOLDS=29 POSITIONS=17395 RHO=0.39598514418940195 T=13.64453439195001
+SEALED_TRIAL=synth-v1-val-alpha-711 ARM=A STATUS=COMPLETED FOLDS=29 POSITIONS=18822 RHO=0.8512679755281448 T=2.9292920187091873
+SEALED_TRIAL=synth-v1-val-alpha-711 ARM=B STATUS=COMPLETED FOLDS=29 POSITIONS=18987 RHO=0.3964940442634771 T=13.351590078317408
+SEALED_TRIAL=synth-v1-val-null-701 ARM=A STATUS=COMPLETED FOLDS=29 POSITIONS=17581 RHO=0.8460514070184183 T=0.256547252210442
+SEALED_TRIAL=synth-v1-val-null-701 ARM=B STATUS=COMPLETED FOLDS=29 POSITIONS=17558 RHO=0.3473967329254016 T=10.099483420457256
+SEALED_TRIAL=synth-v1-val-null-702 ARM=A STATUS=COMPLETED FOLDS=29 POSITIONS=17058 RHO=0.8407735954740266 T=-1.1123071186211029
+SEALED_TRIAL=synth-v1-val-null-702 ARM=B STATUS=COMPLETED FOLDS=29 POSITIONS=16931 RHO=0.35336433119987554 T=12.247546904586745
+SEALED_GATE_VERDICT=FAIL
+SEALED_CHECK FAIL synth-v1-val-null-701|B: position SYN-0023 open past expiration 2019-11-01
+SEALED_CHECK FAIL synth-v1-val-null-702|B: position SYN-0037 open past expiration 2019-11-01
+SEALED_CHECK FAIL synth-v1-val-alpha-710|B: position SYN-0020 open past expiration 2019-11-01
+SEALED_CHECK FAIL synth-v1-val-alpha-711|B: position SYN-0057 open past expiration 2019-11-01
+CLONE_GATE_EXIT=4

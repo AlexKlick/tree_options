@@ -1,0 +1,9 @@
+m3-synth-v1-val-alpha-710-a-r1.json: IDENTICAL orig=3bbb4615 clone=8479f1f5
+m3-synth-v1-val-alpha-710-b-r1.json: IDENTICAL orig=3bbb4615 clone=8479f1f5
+m3-synth-v1-val-alpha-711-a-r1.json: IDENTICAL orig=b1c9b45b clone=8479f1f5
+m3-synth-v1-val-alpha-711-b-r1.json: IDENTICAL orig=b1c9b45b clone=8479f1f5
+m3-synth-v1-val-null-701-a-r1.json: IDENTICAL orig=b1c9b45b clone=8479f1f5
+m3-synth-v1-val-null-701-b-r1.json: IDENTICAL orig=b1c9b45b clone=8479f1f5
+m3-synth-v1-val-null-702-a-r1.json: IDENTICAL orig=b1c9b45b clone=8479f1f5
+m3-synth-v1-val-null-702-b-r1.json: IDENTICAL orig=b1c9b45b clone=8479f1f5
+ARTIFACTS_IDENTICAL=1
