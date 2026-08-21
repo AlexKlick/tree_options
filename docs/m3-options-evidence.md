@@ -441,11 +441,15 @@ from this base.
 
 Any change to code, tests, protocol, dependencies, or `synth/` after
 the code-final head invalidates this packet; docs-only commits do not.
-PENDING, not yet done at this revision (review r3 P2): the re-registered
-one-shot sealed gate at the code-final head (r1/r2/r3 fixes are
-payload-affecting), the final gate's 133/133 + passing restoration suite,
-and the clean-clone ARTIFACTS_IDENTICAL=1 proof at that head — this
-packet is updated when Phase 5/6 record them.
+PENDING at this revision: the re-registered one-shot sealed gate at the
+code-final head (r1–r3 fixes are payload-affecting; running into
+`artifacts/m3-options-sealed2/` per mismatch-procedure option (a), with
+the correction driver's `--expected-heads` extension at `355f116`), the
+final gate re-run at `355f116` (the first run at `c9e8430` predates that
+additive scripts/tests commit; its record: mutation 133/133 KILLED,
+restoration TRUE — `m3-final-gate.log`), and the clean-clone
+ARTIFACTS_IDENTICAL=1 proof at that head. This packet is updated when
+Phase 6 records them.
 The world and overlay registries fail closed on regeneration drift, and
 the mutation harness must show zero of everything except KILLED with a
 passing restoration suite at the final head.
