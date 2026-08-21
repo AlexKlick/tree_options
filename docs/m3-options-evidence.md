@@ -336,6 +336,23 @@ r2's P1-2/P1-3/P1-4 fixes verified correct; all 27 M108–M134 anchors
 occur exactly once. The three P1s are triaged REAL (§5h) and fixed
 red-first; disposition of the reached round cap recorded with the owner.
 
+**Round-cap disposition (owner-ruled 2026-08-20 18:32):** the plan's
+3-round cap is exceeded by ONE bounded round 4 — narrow charter
+verifying only the three r3 fixes (59ec8c3, da5fc4e, 2e73d82) plus
+regression on the touched files. Grounds: every round found real defects
+(5 → 4 → 3 per round, all confirmed by code inspection and red tests);
+the sealed re-registration + clean-clone at the chosen head is the most
+expensive place to discover a survivor. Round 4 = final; its GO + 0 P1
+defines the code-final head.
+
+### 5h. Review round 3 fix disposition
+
+| P1 | Triage | Fix | Commit |
+|---|---|---|---|
+| 1. Intramorning publication backdates behind same-session fills | REAL — red test reproduced `13:45Z precedes 14:00Z` | `settle()` takes `ts_floor`; settlements stamp at `max(publications, session execution instant)` | `59ec8c3` |
+| 2. stride-4 still the compressed-grid statistic | REAL — my r1 fix corrected pairing but not grid selection; plan + r1's own e0,e4 example require the full-session grid | `_cohort_series` enumerates ALL cohort sessions, keeps defined ICs at grid points; r1 test corrected to fixed-grid expectations | `da5fc4e` |
+| 3. Validation accepts ruled-shaped failures from unstamped worlds | REAL — regex never bound world IDs to the stamps | `_validate_inputs` extracts each failure's world and requires it in the stamped set | `2e73d82` |
+
 <!-- REVIEW_R3_FIXES -->
 
 ## 6. Evidence log retention
