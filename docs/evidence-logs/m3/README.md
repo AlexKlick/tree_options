@@ -58,3 +58,5 @@ Contents:
 | `m3-fullsuite-p2-fixes.log` | 2026-08-20 | Full pytest suite at the 4-P1-fix head (df2131d): all passed, SUITE_EXIT=0. |
 | `m3-verdict-correction4-pass.log` | 2026-08-20 | Hardened correction re-stamp at 8de3670 after the r2 fixes (per-world criterion-3 floor): CORRECTED_VERDICT=PASS, exit 0 — same measurements, criterion 4 = 0 violations / 0 unmapped across 21,895 open arm-B positions. A first attempt on a dirty tree refused (DirtyWorktreeError, fail-closed). |
 | `m3-review-r3.log` | 2026-08-20 | Bounded Codex review round 3 at 45ca6f5 (pinned worktree, read-only): VERDICT NO-GO, 3 P1 + 1 P2 — round cap reached. Full transcript retained. |
+| `m3-fullsuite-p3-fixes.log` | 2026-08-20 | Full pytest suite at the 3-r3-fix head: all 538 passed, SUITE_EXIT=0. |
+| `m3-verdict-correction5-pass.log` | 2026-08-20 | Correction re-stamp after the r3 fixes (world-bound validation): CORRECTED_VERDICT=PASS, exit 0 — same measurements. |
