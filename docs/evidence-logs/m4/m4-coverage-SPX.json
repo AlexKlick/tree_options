@@ -1,0 +1,154 @@
+{
+  "report_version": "m4-coverage/1",
+  "variant": "cgi_or_historical",
+  "source": {
+    "path": "/home/alexk/m2-evidence/cboe-sample/UnderlyingOptionsEODCalcs_2023-08-25_cgi_or_historical.csv",
+    "sha256": "1732795c0b38ad0dec0f66dff30e2de4dbbd41423a375f6a166a137319e74dd7"
+  },
+  "parse_stats": {
+    "rows_total": 32672,
+    "rows_mapped": 16277,
+    "duplicate_rows": 2972,
+    "zero_greeks_rows": 117,
+    "zero_bid_rows": 864,
+    "early_close_sessions": 0,
+    "nonstandard_delivery_rows": 0
+  },
+  "issues_count": 2977,
+  "issues_head": [
+    "row 22728: duplicate contract row OPT-^SPX-230915-C-00020000 \u2014 refused",
+    "row 22729: duplicate contract row OPT-^SPX-230915-P-00020000 \u2014 refused",
+    "row 22730: duplicate contract row OPT-^SPX-230915-C-00040000 \u2014 refused",
+    "row 22731: duplicate contract row OPT-^SPX-230915-P-00040000 \u2014 refused",
+    "row 22732: duplicate contract row OPT-^SPX-230915-C-00060000 \u2014 refused",
+    "row 22733: duplicate contract row OPT-^SPX-230915-P-00060000 \u2014 refused",
+    "row 22734: duplicate contract row OPT-^SPX-230915-C-00080000 \u2014 refused",
+    "row 22735: duplicate contract row OPT-^SPX-230915-P-00080000 \u2014 refused",
+    "row 22736: duplicate contract row OPT-^SPX-230915-C-00100000 \u2014 refused",
+    "row 22737: duplicate contract row OPT-^SPX-230915-P-00100000 \u2014 refused",
+    "row 22738: duplicate contract row OPT-^SPX-230915-C-00120000 \u2014 refused",
+    "row 22739: duplicate contract row OPT-^SPX-230915-P-00120000 \u2014 refused",
+    "row 22740: duplicate contract row OPT-^SPX-230915-C-00140000 \u2014 refused",
+    "row 22741: duplicate contract row OPT-^SPX-230915-P-00140000 \u2014 refused",
+    "row 22742: duplicate contract row OPT-^SPX-230915-C-00150000 \u2014 refused",
+    "row 22743: duplicate contract row OPT-^SPX-230915-P-00150000 \u2014 refused",
+    "row 22744: duplicate contract row OPT-^SPX-230915-C-00160000 \u2014 refused",
+    "row 22745: duplicate contract row OPT-^SPX-230915-P-00160000 \u2014 refused",
+    "row 22746: duplicate contract row OPT-^SPX-230915-C-00170000 \u2014 refused",
+    "row 22747: duplicate contract row OPT-^SPX-230915-P-00170000 \u2014 refused"
+  ],
+  "aggregate": {
+    "underlyings": 1,
+    "underlying_days": 1,
+    "contract_rows": 16277,
+    "distinct_contracts": 16277,
+    "zero_bid_fraction": 0.010628494194261841,
+    "zero_greeks_fraction": 0.0,
+    "spreads": {
+      "atm": {
+        "n": 2133,
+        "median": 0.012924071082390954,
+        "p90": 0.023076923076923078,
+        "prior": "~1-2% of mid at-the-money (spike m3 \u00a76.3)"
+      },
+      "wings": {
+        "n": 13971,
+        "median": 0.023781212841854936,
+        "p90": 0.6666666666666666,
+        "prior": "wider than ATM (spike m3 \u00a76.3)"
+      }
+    },
+    "concentration": {
+      "delta_band": [
+        0.3,
+        0.6
+      ],
+      "nearest_expiries": 4,
+      "oi_delta_band_share": 0.1411762010858252,
+      "vol_delta_band_share": 0.14880391365579265,
+      "oi_nearest4_share": 0.052949223135542456,
+      "vol_nearest4_share": 0.6848242066858287,
+      "oi_total": 18072522,
+      "vol_total": 3035525
+    },
+    "delivery_code_distribution": {
+      "standard": 16277,
+      "nonstandard": 0
+    },
+    "early_close_sessions": 0,
+    "early_close_sessions_from_files": 0,
+    "underlying_quote_violations": {
+      "crossed_files": 0,
+      "zero_bid_underlying_files": 0
+    }
+  },
+  "per_underlying": {
+    "^SPX": {
+      "sessions": [
+        "2023-08-25"
+      ],
+      "contract_rows": 16277,
+      "distinct_contracts": 16277,
+      "zero_bid_fraction": 0.010628494194261841,
+      "zero_greeks_fraction": 0.0,
+      "spreads": {
+        "atm": {
+          "n": 2133,
+          "median": 0.012924071082390954,
+          "p90": 0.023076923076923078,
+          "prior": "~1-2% of mid at-the-money (spike m3 \u00a76.3)"
+        },
+        "wings": {
+          "n": 13971,
+          "median": 0.023781212841854936,
+          "p90": 0.6666666666666666,
+          "prior": "wider than ATM (spike m3 \u00a76.3)"
+        }
+      },
+      "concentration": {
+        "delta_band": [
+          0.3,
+          0.6
+        ],
+        "nearest_expiries": 4,
+        "oi_delta_band_share": 0.1411762010858252,
+        "vol_delta_band_share": 0.14880391365579265,
+        "oi_nearest4_share": 0.052949223135542456,
+        "vol_nearest4_share": 0.6848242066858287,
+        "oi_total": 18072522,
+        "vol_total": 3035525
+      },
+      "delivery_code_distribution": {
+        "standard": 16277,
+        "nonstandard": 0
+      },
+      "underlying_quote_violations": {
+        "crossed_files": 0,
+        "zero_bid_underlying_files": 0
+      },
+      "days": [
+        {
+          "session": "2023-08-25",
+          "contracts": 16277,
+          "distinct_expiries": 50,
+          "min_strike": 100.0,
+          "max_strike": 12000.0,
+          "spot_mid": 4413.905,
+          "strike_width_ratio": 120.0,
+          "zero_bid_entries": 173,
+          "zero_greeks_entries": 0,
+          "early_close": false,
+          "delivery_standard": 16277,
+          "delivery_nonstandard": 0,
+          "underlying_quote_crossed": false,
+          "underlying_bid_zero": false
+        }
+      ]
+    }
+  },
+  "spans_earnings": {
+    "status": "NOT_EVALUABLE",
+    "value": null,
+    "note": "no earnings events source exists in the Cboe EOD product (spike \u00a76.7, plan \u00a74): the candidate filter must see NOT_EVALUABLE for real data, never a silently False flag"
+  }
+}
