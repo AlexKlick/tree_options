@@ -89,9 +89,20 @@ def _validate_inputs(
     compared.
     """
     violations: list[str] = []
+    stamped_worlds = {world_id for (world_id, _arm) in stamps}
     for failure in original.get("failures", ()):
         if not RULED_CRIT4_FAILURE.match(failure):
             violations.append(f"original failure outside the ruled criterion-4 class: {failure!r}")
+            continue
+        # review r3 P1-3: the shape alone is not identity — the failure's
+        # world must be one of the stamped worlds, or this is an unrelated
+        # summary the correction would silently re-verdict.
+        failure_world = failure.split("|", 1)[0]
+        if failure_world not in stamped_worlds:
+            violations.append(
+                f"original failure names world {failure_world!r} outside the stamped "
+                f"world set {sorted(stamped_worlds)}"
+            )
     if not original.get("failures"):
         violations.append("original run recorded no failures; nothing to correct")
     if original.get("trials") != len(stamps):

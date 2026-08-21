@@ -145,3 +145,13 @@ def test_dataset_hash_disagreement_across_arms_refuses() -> None:
         "synth-v1-val-alpha-711", "B", dataset_manifest_hash="ds-other"
     )
     assert any("dataset_manifest_hash disagrees" in v for v in _run(_original(RULED), stamps))
+
+
+def test_failure_world_outside_the_stamped_set_refuses() -> None:
+    """Review r3 P1-3: a ruled-SHAPED failure naming a world that is not in
+    the stamped artifact set must refuse — the regex alone never bound the
+    failure's world to the stamps, so an unrelated summary carrying such a
+    line would validate cleanly and get re-verdicted."""
+    stranger = ["not-a-sealed-world|B: position SYN-9999 open past expiration 2019-11-01"]
+    violations = _run(_original(stranger))
+    assert any("outside the stamped world set" in v for v in violations)
