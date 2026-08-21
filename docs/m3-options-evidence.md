@@ -308,6 +308,36 @@ final gate's 133/133 + restoration at the code-final head. Full suite at
 the fix head: `m3-fullsuite-p2.log`; corrected-verdict re-stamp under
 the per-world floor: `m3-verdict-correction4.log`.
 
+### 5g. Review round 3 (verdict verbatim — round cap reached)
+
+Head `45ca6f5`, pinned read-only worktree (full transcript:
+`docs/evidence-logs/m3/m3-review-r3.log`):
+
+> VERDICT: NO-GO
+>
+> - P1 — Action-driven settlements can still backdate across same-session
+>   fills (publication landing between the next session's open and its
+>   14:00Z fills: the scan fires a session late, settlement stamps at
+>   13:45Z, applied after 14:00Z fills → OUT_OF_ORDER_SETTLEMENT).
+> - P1 — `_cohort_series()` still computes the old compressed-grid
+>   statistic, not the predeclared every-fourth-session statistic (the
+>   r1 repair corrected the session/IC pairing but left stride selection
+>   over the defined-only compressed list; the fixed session grid
+>   requires e0,e4, not e0,e5).
+> - P1 — Verdict-correction input validation still accepts an unrelated
+>   summary (a ruled-shaped failure naming a world outside the stamped
+>   set validates cleanly; the regex never binds failure-world IDs to
+>   the stamps).
+> - P2 — Code-final sealed and mutation closure is overstated
+>   (re-registration and final-head 133/133 restoration are pending
+>   Phase 5, not done; wording tightened in §9/§10).
+
+r2's P1-2/P1-3/P1-4 fixes verified correct; all 27 M108–M134 anchors
+occur exactly once. The three P1s are triaged REAL (§5h) and fixed
+red-first; disposition of the reached round cap recorded with the owner.
+
+<!-- REVIEW_R3_FIXES -->
+
 ## 6. Evidence log retention
 
 `docs/evidence-logs/m3/` (committed `1993a06`) holds the surviving logs

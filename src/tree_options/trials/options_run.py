@@ -147,27 +147,31 @@ def _cohort_series(
 ) -> tuple[list[tuple[str, float]], list[float], list[int]]:
     """Per-entry-session cohort ICs and the stride-4 disjoint series.
 
-    The stride grid runs over the cohorts actually measured (defined ICs):
-    an undefined cohort IC (fewer than 3 positions) drops that cohort from
-    the grid WITHOUT shifting later ICs onto earlier sessions.
+    The stride selects every COHORT_STRIDE-th session of the FULL
+    entry-session grid — the predeclared every-fourth-session statistic
+    (review r3 P1-2) — and keeps only defined ICs among those grid points:
+    an undefined cohort IC (fewer than 3 positions) drops its POINT
+    without shifting later ICs onto earlier sessions and without
+    advancing which sessions the grid selects.
     """
     by_entry: dict[str, list[dict[str, object]]] = {}
     for p in closed:
         by_entry.setdefault(str(p["entry_session"]), []).append(p)
     cohort_ics: list[float] = []
     cohort_counts: list[int] = []
-    pairs: list[tuple[str, float]] = []
-    for session in sorted(by_entry):
+    stride4: list[tuple[str, float]] = []
+    for index, session in enumerate(sorted(by_entry)):
         rows = by_entry[session]
         ic = _spearman(
             [float(p["score"]) for p in rows],  # type: ignore[arg-type]
             [float(p["signed_premium_return"]) for p in rows],  # type: ignore[arg-type]
         )
-        if ic is not None:
-            cohort_ics.append(ic)
-            cohort_counts.append(len(rows))
-            pairs.append((session, ic))
-    stride4 = [pair for i, pair in enumerate(pairs) if i % COHORT_STRIDE == 0]
+        if ic is None:
+            continue
+        cohort_ics.append(ic)
+        cohort_counts.append(len(rows))
+        if index % COHORT_STRIDE == 0:
+            stride4.append((session, ic))
     return stride4, cohort_ics, cohort_counts
 
 

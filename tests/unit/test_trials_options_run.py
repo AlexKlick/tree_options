@@ -84,11 +84,14 @@ def test_spearman_basics() -> None:
 
 
 def test_stride4_series_aligns_sessions_with_defined_ics() -> None:
-    """Review r1 P1-2: an undefined cohort IC (<3 positions) must drop that
-    cohort from the grid WITHOUT shifting later ICs onto earlier sessions.
-    The old expression zipped the full session list with the None-filtered
-    IC list (strict=False), so every IC after a gap was attributed to the
-    wrong session and the stride-4 selection picked the wrong cohorts."""
+    """Review r1 P1-2 (pairing) + review r3 P1-2 (fixed grid): the stride-4
+    series selects every COHORT_STRIDE-th session of the FULL entry-session
+    grid — the predeclared every-fourth-session statistic — and keeps only
+    defined ICs among those grid points. An undefined cohort IC drops its
+    POINT without shifting later sessions onto earlier grid positions; it
+    must never advance which sessions the grid selects (the r1 repair
+    corrected the session->IC pairing but still ran the stride over the
+    defined-only compressed list, picking e0,e5 instead of e0,e4)."""
 
     def _pos(session: str, score: float, ret: float) -> dict[str, object]:
         return {"entry_session": session, "score": score, "signed_premium_return": ret}
@@ -117,14 +120,15 @@ def test_stride4_series_aligns_sessions_with_defined_ics() -> None:
     assert len(cohort_ics) == 5  # e1 (2 positions) is undefined and dropped
     assert counts == [3, 3, 3, 3, 3]
     sessions = [s for s, _ic in stride4]
-    assert sessions == ["2020-01-01", "2020-01-08"], (
-        "stride-4 over the defined grid picks the 1st and 5th DEFINED cohorts; "
-        "the old zip would hand 2020-01-07 the IC that belongs to 2020-01-08"
+    assert sessions == ["2020-01-01", "2020-01-07"], (
+        "stride-4 runs over the FULL session grid: indices 0 and 4 of "
+        "[01-01, 01-02*, 01-03, 01-06, 01-07, 01-08] — the undefined 01-02 "
+        "drops its point but must not advance the grid onto 01-08"
     )
-    # the 5th defined cohort (2020-01-08) must carry ITS OWN IC: its
-    # scores/returns ranks are perfectly descending -> -1.0.
-    own_ic = _spearman([1.0, 2.0, 3.0], [0.30, 0.20, 0.10])
-    assert own_ic == pytest.approx(-1.0)
+    # grid point 01-07 must carry ITS OWN IC: scores/returns ranks
+    # [1,2,3] vs [0.20,0.10,0.30] -> ranks [2,1,3] -> rho 0.5.
+    own_ic = _spearman([1.0, 2.0, 3.0], [0.20, 0.10, 0.30])
+    assert own_ic == pytest.approx(0.5)
     assert stride4[1][1] == pytest.approx(own_ic), (
         "the session->IC pairing must stay aligned across undefined cohorts"
     )
