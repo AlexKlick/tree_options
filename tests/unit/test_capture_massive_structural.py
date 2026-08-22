@@ -703,6 +703,249 @@ def test_a_contract_with_no_prints_is_not_written_as_an_empty_series(tmp_path: P
     assert any("no prints" in note for note in notes)
 
 
+# ---- atm-grid bar mode ------------------------------------------------------
+
+# A real third Friday 35 DTE out (April 2025's monthly), unlike NEAR (a
+# Thursday) and FAR (the second Friday of May): the monthly filter's probe.
+MONTHLY = date(2025, 4, 18)
+AS_OF2 = date(2025, 3, 17)  # a second slice: NEAR is 31 DTE from here, still in-band
+
+GRID_SPOT = {"SPY": {AS_OF.isoformat(): "560"}}
+GRID_STRIKES = ("554", "556", "558", "560", "562", "564", "566", "568")
+
+
+def _grid_ticker(expiration: date, kind: str, strike: str) -> str:
+    return contract_json("SPY", expiration, strike, kind).split('"ticker":"')[1].split('"')[0]
+
+
+def test_atm_grid_takes_atm_plus_minus_band_distinct_strikes_by_rank() -> None:
+    """The band is a RANK in the ladder (ATM +/- 3 distinct strikes), not an
+    absolute strike-distance range: with 2-point spacing the grid reaches
+    strikes 6 points from spot, which an absolute |strike - spot| <= 3 reading
+    would refuse."""
+    rows = [contract_json("SPY", NEAR, k, "call") for k in GRID_STRIKES]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    picks, notes = cap.select_atm_grid_bars(
+        [master], GRID_SPOT, wanted=99, strike_band=3, sides="call"
+    )
+
+    assert notes == []
+    assert [t for t, _, _ in picks] == [
+        _grid_ticker(NEAR, "call", k) for k in ("560", "558", "562", "556", "564", "554", "566")
+    ], "rank order: ATM, then nearest ties broken by strike ascending"
+    assert _grid_ticker(NEAR, "call", "568") not in {t for t, _, _ in picks}
+    assert len({t for t, _, _ in picks}) == 7, "distinct strikes, one series each"
+
+
+def test_atm_grid_at_a_ladder_edge_takes_the_nearest_ranked_strikes() -> None:
+    """Spot below the whole ladder: the 7 nearest DISTINCT strikes are simply
+    the 7 lowest -- rank-based selection degenerates honestly rather than
+    inventing strikes below the ladder."""
+    rows = [contract_json("SPY", NEAR, k, "call") for k in GRID_STRIKES]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    picks, _ = cap.select_atm_grid_bars(
+        [master], {"SPY": {AS_OF.isoformat(): "100"}}, wanted=99, strike_band=3, sides="call"
+    )
+
+    assert [t for t, _, _ in picks] == [
+        _grid_ticker(NEAR, "call", k) for k in ("554", "556", "558", "560", "562", "564", "566")
+    ]
+
+
+def test_atm_grid_selection_is_deterministic() -> None:
+    rows = [
+        contract_json("SPY", NEAR, k, kind)
+        for k in ("558", "560", "562")
+        for kind in ("call", "put")
+    ]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    first_picks, first_notes = cap.select_atm_grid_bars([master], GRID_SPOT, wanted=99)
+    second_picks, second_notes = cap.select_atm_grid_bars([master], GRID_SPOT, wanted=99)
+
+    assert first_picks == second_picks
+    assert first_notes == second_notes == []
+    # Spot anchors the rank: a moved spot must move the grid.
+    moved = cap.select_atm_grid_bars(
+        [master], {"SPY": {AS_OF.isoformat(): "562"}}, wanted=99, strike_band=1, sides="call"
+    )
+    assert [t for t, _, _ in moved[0]] == [
+        _grid_ticker(NEAR, "call", k) for k in ("562", "560", "558")
+    ]
+
+
+def test_atm_grid_dedups_a_contract_chosen_at_two_as_ofs() -> None:
+    """The same NEAR call is in-band at two as_of slices: ONE series.
+
+    A contract's series is fetched once per run (per contract LIFE) — that is
+    the cost model — so the second slice's pick of the same ticker is dropped
+    and counted, never paid for twice."""
+    rows = [contract_json("SPY", NEAR, "560", "call")]
+    masters = [_master_from(rows, "SPY", AS_OF), _master_from(rows, "SPY", AS_OF2)]
+    spot = {"SPY": {AS_OF.isoformat(): "560", AS_OF2.isoformat(): "561"}}
+
+    picks, notes = cap.select_atm_grid_bars(masters, spot, wanted=99, strike_band=0, sides="call")
+
+    assert [t for t, _, _ in picks] == [_grid_ticker(NEAR, "call", "560")]
+    assert [s for _, s, _ in picks] == [AS_OF], "the earlier slice wins the series"
+    assert any("1 duplicate selection(s) deduped" in note for note in notes)
+
+
+def test_atm_grid_monthly_filter_keeps_only_third_fridays() -> None:
+    rows = [contract_json("SPY", NEAR, "560", "call"), contract_json("SPY", MONTHLY, "560", "call")]
+    monthly = _master_from(rows, "SPY", AS_OF)
+
+    picks, notes = cap.select_atm_grid_bars(
+        [monthly], GRID_SPOT, wanted=99, strike_band=0, sides="call", expiries="monthly"
+    )
+
+    assert notes == []
+    assert [t for t, _, _ in picks] == [_grid_ticker(MONTHLY, "call", "560")]
+    assert [e for _, _, e in picks] == [MONTHLY], "the Thursday expiry is filtered out"
+
+
+def test_atm_grid_with_no_monthly_expiry_in_band_says_so() -> None:
+    rows = [contract_json("SPY", NEAR, "560", "call")]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    picks, notes = cap.select_atm_grid_bars(
+        [master], GRID_SPOT, wanted=99, strike_band=0, sides="call", expiries="monthly"
+    )
+
+    assert picks == []
+    assert any("no monthly expiry in the 30-60 DTE band" in note for note in notes)
+
+
+def test_atm_grid_sides_call_only_halves_the_grid() -> None:
+    rows = [
+        contract_json("SPY", NEAR, k, kind)
+        for k in ("558", "560", "562")
+        for kind in ("call", "put")
+    ]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    calls, call_notes = cap.select_atm_grid_bars(
+        [master], GRID_SPOT, wanted=99, strike_band=1, sides="call"
+    )
+    both, _ = cap.select_atm_grid_bars([master], GRID_SPOT, wanted=99, strike_band=1)
+
+    assert call_notes == []
+    assert [t for t, _, _ in calls] == [
+        _grid_ticker(NEAR, "call", k) for k in ("560", "558", "562")
+    ]
+    assert [t for t, _, _ in both] == [
+        _grid_ticker(NEAR, kind, k) for k in ("560", "558", "562") for kind in ("call", "put")
+    ], "both sides: calls before puts at each strike, in strike-rank order"
+
+
+def test_atm_grid_caps_to_a_deterministic_prefix_and_notes_it() -> None:
+    rows = [contract_json("SPY", NEAR, k, "call") for k in ("558", "560", "562")]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    picks, notes = cap.select_atm_grid_bars(
+        [master], GRID_SPOT, wanted=2, strike_band=1, sides="call"
+    )
+
+    assert [t for t, _, _ in picks] == [
+        _grid_ticker(NEAR, "call", "560"),
+        _grid_ticker(NEAR, "call", "558"),
+    ], "the cap keeps the deterministic prefix of the ranked selection"
+    assert any("--bars 2 caps the selection to 2 of 3 series" in note for note in notes)
+
+
+def test_atm_grid_without_a_spot_close_skips_the_slice_with_a_note() -> None:
+    """No spot anchor -> note + skip. The representative chooser falls back to
+    the median strike, but a grid anchored on a guess would misdescribe
+    at-the-money for every strike it named."""
+    rows = [contract_json("SPY", NEAR, "560", "call")]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    picks, notes = cap.select_atm_grid_bars([master], {}, wanted=99, strike_band=0)
+
+    assert picks == []
+    assert any("no spot close" in note and AS_OF.isoformat() in note for note in notes)
+
+    # A partially covered run: the named slice skips, the anchored one does not.
+    tsla = _master_from([contract_json("TSLA", NEAR, "560", "call")], "TSLA", AS_OF)
+    picks, notes = cap.select_atm_grid_bars(
+        [master, tsla], GRID_SPOT, wanted=99, strike_band=0, sides="call"
+    )
+    assert [t for t, _, _ in picks] == [_grid_ticker(NEAR, "call", "560")]
+    assert any("TSLA 2025-03-14: no spot close" in note for note in notes)
+
+
+def test_atm_grid_names_an_empty_dte_band_and_counts_malformed_rows() -> None:
+    empty = _master_from([contract_json("SPY", OUT, "560", "call")], "SPY", AS_OF)
+    picks, notes = cap.select_atm_grid_bars([empty], GRID_SPOT, wanted=99)
+    assert picks == []
+    assert any("no 30-60 DTE expiry" in note for note in notes)
+
+    rows = [
+        contract_json("SPY", NEAR, "560", "call"),
+        '{"ticker":"O:SPY250417C00560000","contract_type":"call"}',  # no expiration_date
+        '{"expiration_date":"2025-04-17","contract_type":"call","ticker":"O:X"}',  # no strike
+    ]
+    master = _master_from(rows, "SPY", AS_OF)
+    picks, notes = cap.select_atm_grid_bars(
+        [master], GRID_SPOT, wanted=99, strike_band=0, sides="call"
+    )
+    assert [t for t, _, _ in picks] == [_grid_ticker(NEAR, "call", "560")]
+    assert any("SPY: 1 malformed row(s) skipped" in note for note in notes)
+    # Both bad rows fail the ladder scan (the no-expiration one re-fails at
+    # every expiry), matching how the representative chooser counts them.
+    assert any("SPY 2025-04-17: 2 malformed row(s) skipped" in note for note in notes)
+
+
+def test_atm_grid_refuses_unknown_filters() -> None:
+    rows = [contract_json("SPY", NEAR, "560", "call")]
+    master = _master_from(rows, "SPY", AS_OF)
+    for bad in ({"expiries": "quarterly"}, {"sides": "put"}, {"strike_band": -1}):
+        with pytest.raises(ValueError):
+            cap.select_atm_grid_bars([master], GRID_SPOT, wanted=99, **bad)
+
+
+def test_run_capture_refuses_an_unknown_bars_mode(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="unknown bars_mode"):
+        cap.run_capture(None, tmp_path / "out", budget=cap.Budget(limit=1), bars_mode="weird")
+
+
+def test_the_bar_profile_defaults_are_today_s_behavior() -> None:
+    """A drift guard: an unflagged run must stay the representative run."""
+    assert (cap.BARS_MODE, cap.BARS_STRIKE_BAND, cap.BARS_EXPIRIES, cap.BARS_SIDES) == (
+        "representative",
+        3,
+        "all",
+        "both",
+    )
+
+
+def test_the_new_flags_help_names_the_per_contract_life_cost_model(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cap.main(["--help"])
+    assert excinfo.value.code == 0
+    text = capsys.readouterr().out
+    assert "--bars-mode" in text and "--bars-strike-band" in text
+    assert "--bars-expiries" in text and "--bars-sides" in text
+    # argparse wraps help on hyphens and indents continuation lines, so the
+    # check is made against the whitespace-free text.
+    assert "per-contract-LIFE" in "".join(text.split()), (
+        "the cost model is stated where it is chosen"
+    )
+
+
+def test_bars_strike_band_must_be_nonnegative(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as excinfo:
+        cap.main(["--out-dir", str(tmp_path / "out"), "--bars-strike-band", "-1"])
+    assert excinfo.value.code == 2
+    assert "must be >= 0" in capsys.readouterr().err
+
+
 # ---- secret hygiene ---------------------------------------------------------
 
 
@@ -1028,6 +1271,172 @@ def test_budget_must_be_positive(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as excinfo:
         cap.main(["--out-dir", str(tmp_path / "out"), "--budget", "0"])
     assert excinfo.value.code == 2, "parser.error is the refusal, and it is exit 2"
+
+
+def _cli_client(tmp_path: Path, vendor: RoutingVendor, cache_name: str) -> MassiveClient:
+    """A cache-isolated client over the routing vendor, for cap.main() runs."""
+    return MassiveClient(
+        api_key=KEY,
+        transport=vendor,
+        cache_dir=tmp_path / cache_name,
+        governor=RateGovernor(None),
+    )
+
+
+def test_default_flags_route_exactly_as_before(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No new flags on the command line: the representative pick, the same
+    three literal URLs, the same bar file as before atm-grid existed."""
+    vendor = RoutingVendor(_one_master_routes())
+    monkeypatch.setattr(
+        cap, "client_from_environment", lambda **kwargs: _cli_client(tmp_path, vendor, "cache-a")
+    )
+    out = tmp_path / "unchanged"
+
+    assert (
+        cap.main(
+            [
+                "--out-dir",
+                str(out),
+                "--underlyings",
+                "SPY",
+                "--as-of",
+                AS_OF.isoformat(),
+                "--bars",
+                "1",
+                "--budget",
+                "9",
+            ]
+        )
+        == 0
+    )
+
+    bar = aggs_url("O:SPY250417C00560000", AS_OF, NEAR)
+    assert vendor.calls == [
+        spot_url("SPY", AS_OF, AS_OF),
+        contracts_url("SPY", AS_OF),
+        bar,
+    ], "the representative ATM call, routed exactly as before"
+    manifest = load_massive_capture_manifest(out / "capture_manifest.json")
+    assert manifest.bars == ("O_SPY250417C00560000.json",)
+
+
+def test_atm_grid_flags_route_on_the_wire_like_existing_bar_routes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """--bars-mode atm-grid selects monthly calls on a 1-strike band: the
+    pulled series routes through the SAME bar path, keyed on the literal
+    aggregate URL the existing bar routes use."""
+    rows = [contract_json("SPY", MONTHLY, k, "call") for k in ("558", "560", "562")] + [
+        contract_json("SPY", NEAR, "560", "call")
+    ]
+    pick = _grid_ticker(MONTHLY, "call", "560")
+    routes = {
+        spot_url("SPY", AS_OF, AS_OF): spot_page("SPY", [AS_OF]),
+        contracts_url("SPY", AS_OF): contracts_page(rows, request_id="r1"),
+        aggs_url(pick, AS_OF, MONTHLY): bars_page(pick, [date(2025, 3, 17)]),
+    }
+    vendor = RoutingVendor(routes)
+    monkeypatch.setattr(
+        cap, "client_from_environment", lambda **kwargs: _cli_client(tmp_path, vendor, "cache-b")
+    )
+    out = tmp_path / "atm-grid"
+
+    assert (
+        cap.main(
+            [
+                "--out-dir",
+                str(out),
+                "--underlyings",
+                "SPY",
+                "--as-of",
+                AS_OF.isoformat(),
+                "--bars",
+                "1",
+                "--budget",
+                "9",
+                "--bars-mode",
+                "atm-grid",
+                "--bars-expiries",
+                "monthly",
+                "--bars-sides",
+                "call",
+                "--bars-strike-band",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    assert vendor.calls == [
+        spot_url("SPY", AS_OF, AS_OF),
+        contracts_url("SPY", AS_OF),
+        aggs_url(pick, AS_OF, MONTHLY),
+    ], "the Thursday NEAR expiry is filtered out; the monthly ATM call routes"
+    manifest = load_massive_capture_manifest(out / "capture_manifest.json")
+    verify_massive_capture_manifest(manifest, out, capture_version=cap.CAPTURE_VERSION)
+    assert manifest.bars == (pick.replace(":", "_") + ".json",)
+    assert all("no monthly expiry" not in note for note in manifest.notes)
+
+
+def test_atm_grid_default_filters_route_a_both_sides_grid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """atm-grid with only --bars: every in-band expiry, both sides, band 3,
+    and the --bars cap keeping the deterministic prefix."""
+    rows = [
+        contract_json("SPY", exp, k, kind)
+        for exp in (NEAR, MONTHLY)
+        for k in ("558", "560", "562")
+        for kind in ("call", "put")
+    ]
+    call = _grid_ticker(NEAR, "call", "560")
+    put = _grid_ticker(NEAR, "put", "560")
+    routes = {
+        spot_url("SPY", AS_OF, AS_OF): spot_page("SPY", [AS_OF]),
+        contracts_url("SPY", AS_OF): contracts_page(rows, request_id="r1"),
+        aggs_url(call, AS_OF, NEAR): bars_page(call, [date(2025, 3, 17)]),
+        aggs_url(put, AS_OF, NEAR): bars_page(put, [date(2025, 3, 18)]),
+    }
+    vendor = RoutingVendor(routes)
+    monkeypatch.setattr(
+        cap, "client_from_environment", lambda **kwargs: _cli_client(tmp_path, vendor, "cache-c")
+    )
+    out = tmp_path / "grid-defaults"
+
+    assert (
+        cap.main(
+            [
+                "--out-dir",
+                str(out),
+                "--underlyings",
+                "SPY",
+                "--as-of",
+                AS_OF.isoformat(),
+                "--bars",
+                "2",
+                "--budget",
+                "9",
+                "--bars-mode",
+                "atm-grid",
+            ]
+        )
+        == 0
+    )
+
+    assert vendor.calls == [
+        spot_url("SPY", AS_OF, AS_OF),
+        contracts_url("SPY", AS_OF),
+        aggs_url(call, AS_OF, NEAR),
+        aggs_url(put, AS_OF, NEAR),
+    ], "calls before puts at the ATM strike of the nearest in-band expiry"
+    manifest = load_massive_capture_manifest(out / "capture_manifest.json")
+    assert list(manifest.bars) == [
+        call.replace(":", "_") + ".json",
+        put.replace(":", "_") + ".json",
+    ]
+    assert any("--bars 2 caps the selection to 2 of" in note for note in manifest.notes)
 
 
 def test_dry_run_never_touches_the_wire(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
