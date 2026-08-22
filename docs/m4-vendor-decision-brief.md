@@ -85,9 +85,24 @@ tier is new since the spike. Both checked 2026-08-21.
 1. **Now, $0**: owner creates a Polygon account + API key (key file
    under `~/.config/tree_options/`, never committed) → the free 2-year
    EOD tier powers a real multi-session coverage era (~500 sessions,
-   equity top-30 to start) — real spread/OI/ladder stats over time,
-   holiday handling, and the first look at multi-year root stability
-   before any money moves.
+   equity top-30 to start) — ~~real spread/OI/ladder stats~~
+   **structural coverage** over time (amended below), holiday handling,
+   and the first look at multi-year root stability before any money
+   moves.
+
+   > **Amendment 2026-08-21** (after the live M4-B probe): this step
+   > originally promised "real spread/OI/ladder stats" from the free
+   > tier. The probe proved spread, OI, and greeks are
+   > **NOT_AUTHORIZED** on this tier — every quote-bearing endpoint
+   > answered HTTP 200 with a body refusal (evidence:
+   > `docs/evidence-logs/m4/m4-b-massive-structural.md` §4). The free
+   > tier yields **STRUCTURAL coverage only**: universe, ladders,
+   > tenor, exercise style, lifecycle, calendar. The spread/OI/greeks
+   > numbers therefore move to step 2's purchase decision; the Cboe
+   > and ThetaData rows (§4, step 2) are unchanged. The free lane is
+   > live as the $0 structural era; the quote-bearing purchase remains
+   > the open part of G2.
+
 2. **At G2 proper** (after the free coverage run): choose the sealed
    window source —
    - **Cboe DataShop one-time** if checkout pricing for an equity-only

@@ -1,6 +1,7 @@
 # M4-B — Massive (Polygon) free tier: live structural coverage
 
-- date: 2026-08-21, branch `main` (uncommitted integration tree)
+- date: 2026-08-21, branch `m4/massive-lane-20260821` (live capture at
+  `cf39c26`..`be8a5bc`; §9 hardening pass appended on the same branch)
 - vendor: Polygon, branded **Massive**; endpoints still `api.polygon.io`.
   Provider tag `massive-polygon-free/1`, tier `massive-free/options-basic`.
 - stack under test: `scripts/capture_massive_structural.py` (live capture) →
@@ -322,7 +323,8 @@ epoch→session DST mapping, artifact integrity, overclaiming).
 **Could not be refuted** (methodology validated against a planted canary
 first): the API key appears nowhere in the working tree, cache, artifacts,
 docs or `.git` (0 matches, raw and base64); `artifacts/` is gitignored;
-101 lane tests pass with outbound sockets blocked, `HOME` redirected and
+102 lane tests (the count at review time; 142 after the §9 hardening pass)
+pass with outbound sockets blocked, `HOME` redirected and
 a sentinel key in the environment (0 intercepted network attempts).
 `NOT_AUTHORIZED` at HTTP 200 raises and is never cached. The governor's
 `min_interval` is exactly 12.0 s and a cache hit consumes neither a wire
@@ -353,7 +355,75 @@ all in the interpretation layer, none on the wire):
    (`Budget.charge_retries`), so the cap bounds requests rather than
    calls. No 429 occurred in this run (`rate_limit_retries: 0`), so the
    44-request accounting above is unchanged.
+   *[§9 supersedes: `charge_retries` was replaced by pre-charge +
+   refund, which bounds wire requests by reservation — a strictly
+   stronger form of the same guarantee.]*
 5. `artifacts/m4b-captures/capture_manifest.json` was stale relative to
    the two residual capture passes (gitignored, local-audit only); the
    authoritative page/row counts are the ones in §2 of this document,
    which match the master files on disk.
+   *[§9 supersedes: the manifest is now written through the typed
+   `massive_manifest` module on every exit path and hashes every capture
+   file from disk, so it can no longer drift from the directory it
+   describes. The stale file itself predates that fix and remains
+   local-audit-only.]*
+
+## 9. Hardening pass (2026-08-21, same branch)
+
+A three-agent read-only production-readiness review (client robustness,
+test/mutant posture, campaign ops) confirmed the §8 surfaces solid and
+returned **1 P0 + 14 P1 findings + a P2 tail**. All were remediated in
+this PR on `m4/massive-lane-20260821` (6 commits after `be8a5bc`),
+implemented by parallel agents on disjoint file sets with frozen
+interfaces, then integrated.
+
+| # | Finding | Fix | Killed by | Mutant |
+|---|---|---|---|---|
+| P0 | cache write non-atomic; a torn entry poisons its endpoint forever | tmp+`os.replace` staging; undecodable cached bytes evict + refetch from the wire (decode-failure scope only — decodable refusals still raise) | `test_corrupt_cache_entry_self_heals_from_the_wire`, `test_cache_put_leaves_no_partial_or_tmp_artifacts` | M146, M147 |
+| P1 | exit code lies on total failure | exits derived from manifest state: 0 ok/partial, 2 not-entitled, 3 auth-rejected, 4 nothing-captured/budget-exhausted | `test_a_fully_failed_run_exits_nonzero` | M158 |
+| P1 | manifest lost on crash paths; names files never written; describes invocation not directory | typed manifest written in a `finally` on every exit path; envelope written whenever any page exists; every file hashed from disk | `test_a_crashed_run_still_writes_the_manifest`, `test_an_errored_master_with_pages_still_writes_its_envelope`, `test_the_written_manifest_round_trips_and_verifies` | M153 |
+| P1 | HTTP 401/403 generic, no fail-fast | `MassiveAuthRejectedError` (terminal, never retried/cached, rotate-key message); the run aborts on the FIRST probe request | `test_401_and_403_are_terminal_auth_rejections`, `test_a_dead_key_fails_fast_with_one_probe_request` | M148 |
+| P1 | only 429 retried — one transient 502/timeout permanently failed a 12 s-quota item | `RETRYABLE_HTTP_STATUSES {429,502,503,504}` + transport failures retry on the shared backoff; exhaustion names the attempt count; test-double `AssertionError` never retried | `test_503_is_retried_with_backoff_then_succeeds`, `test_transport_failure_is_retried_then_raises_with_attempts` | M149, M150 |
+| P1 | budget charged per call — a retry storm could overspend | pre-charge `max_attempts` before the wire, refund unused: the cap bounds wire requests BY RESERVATION | `test_the_budget_precharges_the_worst_case_and_refunds` (asserts `vendor.calls == 0` when unaffordable) | M157 |
+| P1 | `DEFAULT_CACHE_DIR` hardcoded to one machine's `/home/...` | repo-relative derivation + `TREE_OPTIONS_MASSIVE_CACHE` override + `--cache-dir`; no `/home/` literal anywhere in the lane (guard-asserted) | `test_default_cache_dir_is_repo_relative_with_env_override` | — |
+| P1 | zero mutants for the lane | 16 added (M143–M158); 3 spot-verified KILLED through the harness's own `run_mutant` before the full run | the 16 owner tests named in `scripts/mutate.py` | M143–M158 |
+| P1 | transport-failure path untested | `RaisingTransport` fake; timeout-reaches-transport, redaction, after-N-attempts all pinned | `test_transport_failure_is_retried_then_raises_with_attempts`, `test_timeout_reaches_the_transport` | M150 |
+| P1 | no manifest/verify pair; no `MASSIVE_SCHEMA_VERSION` (G3 blocker) | `massive_manifest` module (domain-separated `content_sha256`, per-file sha256+bytes, disk reconciliation incl. unlisted files); adapter token `m4-massive/1` | `tests/unit/test_massive_manifest.py` (9 tests) | M153 |
+| P1 | committed evidence not bound to its inputs | inspector pins every consumed file into `sources["input_files"]` (path/sha256/bytes) | `test_input_files_are_hashed_into_the_report` | — |
+| P1 | capture profile hardcoded | full CLI (underlyings/as-of/pages/bars/dte/cache-dir/timeout/max-pages/dry-run/budget) — the coverage era can run without editing the script | `test_cli_flags_override_the_profile`, `test_dry_run_never_touches_the_wire` | — |
+| P1 | no runbook; README/plan/brief stale or wrong | `docs/m4-massive-runbook.md` (key rotation, exit semantics, budget math, resume, **entitlement-window roll ≈2026-09-16**); README truth-up; plan gate ledger (G1 DONE, G2 partial); brief amended (free tier is structural-only) | docs-only | — |
+| P2 | Retry-After NaN crash; transport-message redaction gap; cursor loops; ambiguous cache keys; status-less pages accepted; envelope provenance unvalidated; mypy excluded both scripts; `client_from_environment` untested; 2 `type: ignore`; `pages_fetched` always 0 | all fixed in-pass (isfinite guard, redaction at the retry choke point, visited-set cycle refusal, urlencoded canonical keys, fail-closed status/provenance in the inspector, mypy `files` covers both scripts — 83 files clean, no new ignores, the 2 suppressions removed) | the named tests per row above + `test_a_page_without_a_status_field_refuses`, `test_envelope_provenance_is_validated` | M151, M152, M154–M156 |
+
+**Scope decisions recorded.** Bars and spot-proxy files carry no
+provider/capture_version anywhere in their format; per-envelope
+provenance is enforced on master envelopes (where the bridge stamps
+them), and bars/spot lineage is carried by the manifest's per-file
+hashes — a stamped envelope would have changed two storage formats
+mid-PR for no additional guarantee. Inspector provenance constants are
+string literals by design (WS-D2 stays import-free of WS-D1).
+
+**Deferred as non-goals** (runbook §"Non-goals"): cache TTL/size bounds
+(PIT masters are immutable; live-window aggs documented), total-deadline
+timeout (per-op 30 s stands), in-repo scheduling (manual/operator cron),
+DTE constants restated in the bridge while `research_protocol.yaml` is
+frozen (revisit at the G3 amendment window).
+
+**Post-hardening gate posture** (full-capture logs; counts read from
+files): `pytest -W error` **757 passed** (`/tmp/m4h-full-suite.log`;
+615 non-lane + 142 lane), ruff format 154 files / check clean, mypy
+**83 source files** clean incl. both scripts. Mutation authority run:
+**157/157 KILLED, restoration full-suite TRUE** (`/tmp/m4h-mutations.json`,
+exit 0 — M143–M158 all die on their named owners, incl. the two bridge
+mutants M157/M158; M82 has never existed, hence 157 not 158). The gate
+re-runs the harness at the final head and writes the durable copy to
+`artifacts/m0-mutations.json`.
+
+## 9.1 Gate at the final head
+
+The PR's single gate (`bash scripts/m0_gate.sh`, log
+`/tmp/m4h-gate.log`) runs at the head that includes this evidence
+commit. Its counts must equal the authority runs quoted in §9 — pytest
+**757 passed** under `-W error`, mutations per the totals above, ruff /
+mypy (83 files) / compileall / `uv build` + wheel-smoke clean. Any
+deviation between the gate and those runs is disclosed on the PR before
+merge; the gate is the authority and the merge decision is the owner's.

@@ -1,9 +1,12 @@
 # tree_options
 
 Point-in-time equity-signal research implemented through liquid, defined-risk
-option positions. **M0 milestone only: protocol and invariant harness.** No
-vendor data ingestion, no model training, no backtest results exist in this
-repo yet, by design.
+option positions. **M0–M3 complete; M4 (real data) in flight:** a Cboe EOD
+adapter (quotes-bearing, sealed-era capable) plus a Massive (Polygon)
+free-tier lane for structural options coverage. No model training and no
+backtest results exist in this repo yet, by design. The local gate is the
+only CI. M4 plan: `docs/m4-real-data-plan.md`; Massive operator runbook:
+`docs/m4-massive-runbook.md`.
 
 The engineering priority is not model sophistication. It is preventing future
 information, historical-universe reconstruction errors, fantasy fills, and
@@ -49,10 +52,14 @@ fails for each one. A mutant that survives means the tests are too weak.
 - `src/tree_options/ledger/` — fee models + conservation-checked ledgers
 - `src/tree_options/candidates/` — §9.2 candidate predicates (fail-closed)
 - `src/tree_options/registry/` — trial registry (register-before-outcome, 32-cap)
+- `src/tree_options/data/` — real-data ingest: Cboe EOD adapter + Massive
+  (Polygon) free-tier client (see `docs/m4-real-data-plan.md`)
 - `docs/m0-evidence.md` — commands, counts, mutation table, remaining decisions
 
 ## Status
 
-M0 in progress. Later milestones (point-in-time dataset, baselines, option
-backtester, adversarial evaluation, paper adapter) are out of scope until the
-M0 gate is green and the protocol version is frozen.
+M0, M1, M2, and M3 are complete and gated; the protocol (0.1.0) is frozen.
+M4 — real data — is in flight: the Cboe EOD adapter shakedown (M4-A) is green
+on main, and the Massive (Polygon) free-tier structural coverage era (M4-B)
+has begun (operator runbook: `docs/m4-massive-runbook.md`). The sealed-window
+quote-bearing purchase decision and the sealed real-data gate remain open.

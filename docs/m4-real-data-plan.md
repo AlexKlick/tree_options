@@ -27,25 +27,33 @@ decided only after real coverage numbers are in hand.
 ## 2. Decision gates
 
 - **G0 — DONE**: staged lane ruled (this document).
-- **G1 — adapter shakedown green**: the Cboe EOD adapter ingests the
-  retained sample with zero silent drops, correct two-snapshot quote
-  semantics, and a manifest that pins the source bytes. Local gate
-  (ruff/mypy/pytest/mutation on the new module) green.
-- **G2 — coverage brief delivered (owner gate)**: the inspector's
-  numbers (rows/underlying-day, grid width, ladder depth, zero-bid and
-  zero-greeks fractions, spread bands) extrapolated to rows/year and
-  storage, against the spike §5 shortlist re-verified at decision time.
-  The owner rules: vendor, universe, window. No purchase happens
-  before this ruling; pricing requires checkout (owner-executed).
-- **G3 — real ingest + amendment window (owner-gated, post-purchase)**:
-  real-data adapter run on purchased data, coverage re-inspected, then
-  the protocol/world amendment window (new real-world registry entries,
-  provider/schema tokens, holdout declaration) as its own packet.
-- **G4 — sealed real-data gate**: two-lane sealed validation on real
-  worlds per the M3 discipline (one-shot, verdict verbatim, mutation
-  campaign, clean-clone determinism). Separate plan at G3.
+- **G1 — DONE (2026-08-21)**: adapter shakedown green. The Cboe EOD
+  adapter ingested the retained sample with zero silent drops, correct
+  two-snapshot quote semantics, and a manifest pinning the source bytes;
+  full local gate green (615 passed under `-W error`, mutation 141/141
+  KILLED). Evidence: `docs/evidence-logs/m4/m4-a-shakedown.md`.
+- **G2 — PARTIAL ruling (2026-08-21)**: the owner ruled the free
+  Massive (Polygon) lane as the **$0 structural coverage era** (M4-B;
+  evidence `docs/evidence-logs/m4/m4-b-massive-structural.md`). The
+  sealed-window **quote-bearing purchase decision remains OPEN** —
+  Massive Advanced $199/mo vs Cboe DataShop one-time vs ThetaData
+  Standard $80 one-month (brief §4–5). No purchase has happened.
+- **G3 — real ingest + amendment window (owner-gated, post-purchase;
+  NOT started)**: real-data adapter run on purchased data, coverage
+  re-inspected, then the protocol/world amendment window (new real-world
+  registry entries, provider/schema tokens, holdout declaration) as its
+  own packet. Its manifest prerequisite — a manifest/verify pair with
+  input-hash lineage — is now satisfied by the `massive_manifest`
+  module.
+- **G4 — sealed real-data gate (NOT started)**: two-lane sealed
+  validation on real worlds per the M3 discipline (one-shot, verdict
+  verbatim, mutation campaign, clean-clone determinism). Separate plan
+  at G3.
 
-## 3. M4-A workstreams ($0, this stage)
+## 3. M4 workstreams ($0, this stage)
+
+WS-A/B/C are the M4-A shakedown (delivered, on `main`). WS-D is the
+Massive free-tier lane added by the G2 partial ruling of 2026-08-21.
 
 **WS-A — Cboe EOD adapter** (`src/tree_options/data/cboe_eod.py` +
 `src/tree_options/data/real_overlay.py`, ~400 LOC, ~35 tests):
@@ -104,6 +112,25 @@ universe/window options framed for the ruling, and the ThetaData
 free-tier connector status (the connector is a small adapter variant
 gated on an owner-provided API key — account creation is owner-only;
 the key never enters the repo).
+
+**WS-D — Massive (Polygon) free-tier structural lane** (client +
+adapter + capture bridge + structural inspector):
+`src/tree_options/data/massive_client.py` (wire: key custody, 5
+req/min governor, key-redacted content-addressed cache, entitlement
+gate), `src/tree_options/data/massive_options.py` (option semantics;
+`build_option_candidate_inputs()` raises unconditionally — structural
+only), `src/tree_options/data/massive_manifest.py` (manifest/verify
+pair with input-hash lineage), `scripts/capture_massive_structural.py`
+(budget-bounded live capture bridge — the only networked tool), and
+`scripts/inspect_structural_coverage.py` (offline analysis).
+Tests: `tests/unit/test_massive_client.py`,
+`tests/unit/test_massive_options.py`,
+`tests/unit/test_massive_manifest.py`,
+`tests/unit/test_capture_massive_structural.py`,
+`tests/unit/test_inspect_structural_coverage.py` — 142 lane tests.
+First live capture 2026-08-21 (2 underlyings × 4 as_ofs, 44/45
+requests, evidence `docs/evidence-logs/m4/m4-b-massive-structural.md`);
+operator procedures in `docs/m4-massive-runbook.md`.
 
 ## 4. Nonclaims (M4-A)
 
