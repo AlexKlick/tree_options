@@ -1663,8 +1663,8 @@ MUTANTS = [
         id="M159-bisection-bracket-inverted",
         owner="test_implied_vol_round_trips_across_moneyness",
         file="src/tree_options/data/massive_derived.py",
-        anchor=("        if price_mid < premium:\n" "            lo = mid"),
-        replacement=("        if price_mid < premium:\n" "            hi = mid"),
+        anchor=("        if price_mid < premium:\n            lo = mid"),
+        replacement=("        if price_mid < premium:\n            hi = mid"),
         selectors=[f"{U}/test_massive_derived.py"],
         invariant=(
             "M4-C the bisection bracket must TIGHTEN toward the premium: an"
@@ -1836,8 +1836,8 @@ MUTANTS = [
         id="M170-atm-grid-dedup-void",
         owner="test_atm_grid_dedups_a_contract_chosen_at_two_as_ofs",
         file="scripts/capture_massive_structural.py",
-        anchor=("                    if ticker in seen:\n" "                        duplicates += 1"),
-        replacement=("                    if False:\n" "                        duplicates += 1"),
+        anchor=("                    if ticker in seen:\n                        duplicates += 1"),
+        replacement=("                    if False:\n                        duplicates += 1"),
         selectors=[f"{U}/test_capture_massive_structural.py"],
         invariant=(
             "M4-C a contract's bar series is fetched ONCE per run (per"
