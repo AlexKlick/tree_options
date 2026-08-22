@@ -32,12 +32,18 @@ decided only after real coverage numbers are in hand.
   two-snapshot quote semantics, and a manifest pinning the source bytes;
   full local gate green (615 passed under `-W error`, mutation 141/141
   KILLED). Evidence: `docs/evidence-logs/m4/m4-a-shakedown.md`.
-- **G2 — PARTIAL ruling (2026-08-21)**: the owner ruled the free
-  Massive (Polygon) lane as the **$0 structural coverage era** (M4-B;
-  evidence `docs/evidence-logs/m4/m4-b-massive-structural.md`). The
-  sealed-window **quote-bearing purchase decision remains OPEN** —
-  Massive Advanced $199/mo vs Cboe DataShop one-time vs ThetaData
-  Standard $80 one-month (brief §4–5). No purchase has happened.
+- **G2 — RESOLVED (2026-08-21): $0 workaround, purchase lane CLOSED.**
+  First a partial ruling: the free Massive (Polygon) lane as the $0
+  structural coverage era (M4-B; evidence
+  `docs/evidence-logs/m4/m4-b-massive-structural.md`). Then the owner
+  ruled **"no money spent — find a workaround"**: the sealed-window
+  purchase (Massive Advanced / Cboe DataShop / ThetaData) will NOT
+  happen. The quote-bearing capability comes instead from the free
+  tier's per-contract daily aggregates (VWAP/volume/trade-count) plus
+  model-implied greeks from the repo's own pricer — live-proven the
+  same day; see `docs/m4-zero-dollar-workaround.md` for the
+  blocked→workaround matrix, provenance classes, probe, honest limits,
+  and the M4-C build order.
 - **G3 — real ingest + amendment window (owner-gated, post-purchase;
   NOT started)**: real-data adapter run on purchased data, coverage
   re-inspected, then the protocol/world amendment window (new real-world

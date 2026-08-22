@@ -102,6 +102,18 @@ tier is new since the spike. Both checked 2026-08-21.
    > and ThetaData rows (§4, step 2) are unchanged. The free lane is
    > live as the $0 structural era; the quote-bearing purchase remains
    > the open part of G2.
+   >
+   > **Final amendment 2026-08-21 (G2 RESOLVED — $0 ruling)**: the owner
+   > ruled **no money will be spent**. The step-2 purchase rows below are
+   > CLOSED, retained for history only. The quote-bearing capability
+   > comes from the free tier's per-contract DAILY AGGREGATES
+   > (VWAP/volume/trade-count — entitled, live-proven) plus model-implied
+   > greeks inverted from those VWAPs on the repo's own Black-Scholes
+   > pricer: fills at session VWAP (participation-capped, zero-volume
+   > days unfillable), `abs_delta` model-implied with disclosed
+   > provenance, volume/trade-count as liquidity flow proxies, spread
+   > dropped with disclosure. Full matrix, probe, and honest limits:
+   > `docs/m4-zero-dollar-workaround.md`.
 
 2. **At G2 proper** (after the free coverage run): choose the sealed
    window source —
