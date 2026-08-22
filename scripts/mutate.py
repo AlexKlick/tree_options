@@ -163,8 +163,21 @@ MUTANTS = [
         id="M15-future-quote-gutted",
         owner="test_future_quote_rejected_direct",
         file="src/tree_options/schemas/market.py",
-        anchor="if q.received_timestamp > execution_at:",
-        replacement="if False:",
+        # Multi-line since G3: as_tradable_vwap carries the same single-line
+        # publication check for bars, so the bare line matches twice. The
+        # two-sided variant is pinned by its own message text.
+        anchor=(
+            "if q.received_timestamp > execution_at:\n"
+            "        raise StaleQuoteError(\n"
+            '            f"quote received {q.received_timestamp} after execution {execution_at}"\n'
+            "        )"
+        ),
+        replacement=(
+            "if False:\n"
+            "        raise StaleQuoteError(\n"
+            '            f"quote received {q.received_timestamp} after execution {execution_at}"\n'
+            "        )"
+        ),
         selectors=[f"{G}/test_fill_integrity_v2.py"],
         invariant="quote from the future rejected",
     ),
@@ -1907,14 +1920,16 @@ MUTANTS = [
         id="M175-oi-drop-undisclosed",
         owner="test_open_interest_and_spread_dropped_with_disclosure",
         file="src/tree_options/candidates/filters.py",
+        # elif since the review hardening: a SUPPLIED-OI incoherence branch
+        # now precedes the disclosure branch.
         anchor=(
-            '        if self.liquidity_regime == "volume_flow":\n'
+            '        elif self.liquidity_regime == "volume_flow":\n'
             "            results.append(\n"
             "                RuleResult(\n"
             '                    "open_interest",'
         ),
         replacement=(
-            "        if False:\n"
+            "        elif False:\n"
             "            results.append(\n"
             "                RuleResult(\n"
             '                    "open_interest",'
