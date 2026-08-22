@@ -167,7 +167,7 @@ files** (collection count; the gate runs them under `-W error`).
 Mutants: M159+ cover this lane, registered in `scripts/mutate.py` by the
 parallel agent (the registry ended at M158 on `main`). Count: 12 (M159–M170, harness total 169).
 
-Gate at the final head: to be recorded — GATE_COUNTS.
+Gate at the final head: to be recorded. Authority runs at 80eaeb1..63a99f8: pytest -W error 843 passed; mutations 169/169 KILLED, restoration TRUE (/tmp/m4c-mutations.json). The single gate (m0_gate.sh, log /tmp/m4c-gate.log) runs at the final head; any deviation is disclosed before merge.
 
 ## 5. Nonclaims
 
