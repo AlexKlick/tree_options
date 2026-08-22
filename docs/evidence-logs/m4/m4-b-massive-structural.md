@@ -427,3 +427,47 @@ commit. Its counts must equal the authority runs quoted in §9 — pytest
 mypy (83 files) / compileall / `uv build` + wheel-smoke clean. Any
 deviation between the gate and those runs is disclosed on the PR before
 merge; the gate is the authority and the merge decision is the owner's.
+*[Post-merge: gate EXIT 0 at e2922b7, counts identical to §9; PR #8
+merged as d597060 (normal merge), TREE_MATCH verified — origin/main tree
+== e2922b7 tree.]*
+
+## 10. SPY completion (2026-08-21, post-merge, branch m4/coverage-era-20260821)
+
+The §2.1 SPY quarantines are LIFTED: SPY's four captures were completed
+with the hardened bridge (`--underlyings SPY --pages-per-master 25
+--budget 60`, same out-dir; pages 1-4 served free from cache — **33 wire
+requests, 0 retries, 0 self-heals**, exit 0, typed manifest verifies
+against the directory, 16 files pinned).
+
+| master | pages | rows | complete |
+|---|---|---|---|
+| SPY 2024-09-16 | 10 | 9,942 | yes |
+| SPY 2025-03-14 | 11 | 10,516 | yes |
+| SPY 2025-09-15 | 11 | 10,674 | yes |
+| SPY 2026-03-16 | 14 | 13,472 | yes |
+
+Findings over the completed set (inspector report
+`artifacts/m4b-captures/inspector-report.json`, sha256 `59bc07d6…a3c2`;
+machine copy committed as `m4-b-spy-complete.json`):
+
+- **Roots: SPY only, at every as_of** (multi-root = false). The M4-A
+  SPX/SPXW second-root pattern has NO SPY analogue on this tier — the
+  §2.1 root-distribution quarantine resolves to "single root, 100%".
+- **Zero adjustment events, zero active delistings, shares_per_contract
+  = 100 on all 63,488 rows** (SPY 44,604 + TSLA 18,884; 49,580 distinct
+  contracts). With complete captures these are now MEASURED zeros, not
+  the prefix-era "structurally impossible" ones.
+- Expiry taxonomy per as_of: 36-37 distinct expiries from same-day
+  dailies through weeklies/monthlies/quarterlies to LEAPS (out to
+  2028-12 at the 2026-03-16 slice); 550 SPY contracts span all four
+  as_ofs (the long-dated core).
+- TSLA ground truth re-confirmed from disk (the §8.5 stale-manifest had
+  it incomplete): all four TSLA masters were already complete (4/5/5/7
+  pages, no `next_url`).
+
+**Data saved.** Captures + manifest + report tarballed at
+`artifacts/m4b-captures-20260821-complete.tar.gz` (sha256
+`909596a2…d9fb`, 870 KB; host-durable, deliberately NOT committed —
+key-fetched vendor data stays out of git per the lane policy; integrity
+is verifiable from this hash and the manifest's per-file hashes). The
+response cache (15 MB) holds every wire page.

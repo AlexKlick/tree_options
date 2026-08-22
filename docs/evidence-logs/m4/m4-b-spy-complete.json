@@ -1,0 +1,1429 @@
+{
+  "aggregate": {
+    "active_delistings": 0,
+    "adjustment_events": 0,
+    "as_ofs": [
+      "2024-09-16",
+      "2025-03-14",
+      "2025-09-15",
+      "2026-03-16"
+    ],
+    "bars": {
+      "implied_session_calendar": {
+        "calendar_days_spanned": 61,
+        "first": "2024-09-16",
+        "last": "2024-11-15",
+        "sessions": [
+          "2024-09-16",
+          "2024-09-17",
+          "2024-09-18",
+          "2024-09-19",
+          "2024-09-20",
+          "2024-09-23",
+          "2024-09-24",
+          "2024-09-25",
+          "2024-09-26",
+          "2024-09-27",
+          "2024-09-30",
+          "2024-10-01",
+          "2024-10-02",
+          "2024-10-03",
+          "2024-10-04",
+          "2024-10-07",
+          "2024-10-08",
+          "2024-10-09",
+          "2024-10-10",
+          "2024-10-11",
+          "2024-10-14",
+          "2024-10-15",
+          "2024-10-16",
+          "2024-10-17",
+          "2024-10-18",
+          "2024-10-21",
+          "2024-10-22",
+          "2024-10-23",
+          "2024-10-24",
+          "2024-10-25",
+          "2024-10-28",
+          "2024-10-29",
+          "2024-10-30",
+          "2024-10-31",
+          "2024-11-01",
+          "2024-11-04",
+          "2024-11-05",
+          "2024-11-06",
+          "2024-11-07",
+          "2024-11-08",
+          "2024-11-11",
+          "2024-11-12",
+          "2024-11-13",
+          "2024-11-14",
+          "2024-11-15"
+        ],
+        "sessions_observed": 45,
+        "weekday_gap_note": "a weekday with no bar inside the observed span: a CANDIDATE market holiday OR an uncovered session \u2014 this lane's only evidence is the capture itself, so the report never asserts a holiday calendar",
+        "weekday_gaps": [],
+        "weekend_days_skipped": 16
+      },
+      "series": 7,
+      "tickers": [
+        "O:SPY241018C00563000",
+        "O:SPY241018P00546000",
+        "O:SPY241018P00563000",
+        "O:SPY241115C00563000",
+        "O:TSLA241018C00225000",
+        "O:TSLA241018P00225000",
+        "O:TSLA241115C00225000"
+      ],
+      "volume": {
+        "bars": 214,
+        "bars_at_or_above_min_same_day_volume": 170,
+        "max": "123666",
+        "median": "551.5",
+        "min": "2",
+        "min_same_day_volume": 100,
+        "p90": "5031",
+        "total": "865009",
+        "zero_volume_bars": 0
+      }
+    },
+    "contract_rows": 63488,
+    "contract_type": {
+      "call": 31744,
+      "put": 31744
+    },
+    "distinct_contracts": 49580,
+    "exercise_style": {
+      "american": 63488
+    },
+    "masters": 8,
+    "multi_root_underlyings": [],
+    "non_standard_rows": 0,
+    "shares_per_contract": {
+      "100": 63488
+    },
+    "tier": "massive-free/options-basic",
+    "underlyings": 2,
+    "unmatched_bar_tickers": []
+  },
+  "capability": {
+    "available": [
+      "contract universe per as_of",
+      "strike ladder depth and grid width",
+      "expiry set and calendar-day tenor histogram",
+      "exercise_style distribution",
+      "shares_per_contract distribution + non-standard deliverable list",
+      "contract lifecycle (first/last seen, births/deaths)",
+      "root stability per underlying",
+      "daily bar volume",
+      "implied session calendar from bar dates"
+    ],
+    "blocked_lanes": [
+      "M3 candidate filter (needs abs_delta + open_interest + spread fraction)",
+      "backtest INV-11 executable prices (needs bid/ask at the decision instant)"
+    ],
+    "endpoints_entitled": [
+      "/v3/reference/options/contracts?underlying_ticker=X&as_of=YYYY-MM-DD (PIT contract master)",
+      "/v2/aggs/ticker/{optionTicker}/range/1/day/{from}/{to} (daily OHLCV bars)"
+    ],
+    "endpoints_not_entitled": [
+      "/v3/snapshot/options/{underlying} -> HTTP 200 with body status=NOT_AUTHORIZED"
+    ],
+    "protocol_filter_inputs": {
+      "abs_delta_min/abs_delta_max": "BLOCKED \u2014 the free tier carries no greeks (delta rides the NOT_AUTHORIZED snapshot endpoint)",
+      "dte_min/dte_max": "SATISFIABLE (expiration_date - as_of, calendar days)",
+      "exclude_earnings_spanning_hold": "BLOCKED \u2014 no earnings-event source exists in this lane (same NOT_EVALUABLE discipline as M4-A)",
+      "max_spread_fraction_of_midpoint": "BLOCKED \u2014 the free tier carries no bid/ask (quotes ride the NOT_AUTHORIZED snapshot endpoint)",
+      "min_open_interest": "BLOCKED \u2014 the free tier carries no open interest (it rides the NOT_AUTHORIZED snapshot endpoint)",
+      "min_same_day_volume": "SATISFIABLE from daily bar volume (no intraday detail)",
+      "min_underlying_20d_median_dollar_volume": "BLOCKED \u2014 underlying 20d median dollar volume needs the equity aggregates pull, which is a different endpoint than this option-contract/option-bar lane",
+      "standard_deliverable_only": "SATISFIABLE (shares_per_contract == 100)"
+    },
+    "rate_limit": "5 requests/minute on the free tier (HTTP 429 beyond it)",
+    "tier": "massive-free/options-basic",
+    "unavailable": {
+      "bid_ask_quotes": "the free tier carries no bid/ask (quotes ride the NOT_AUTHORIZED snapshot endpoint)",
+      "greeks_delta": "the free tier carries no greeks (delta rides the NOT_AUTHORIZED snapshot endpoint)",
+      "open_interest": "the free tier carries no open interest (it rides the NOT_AUTHORIZED snapshot endpoint)"
+    },
+    "vendor": "Massive (formerly Polygon; api.polygon.io endpoints)"
+  },
+  "elisions": [
+    "per_underlying[].lifecycle.contracts (36k+ entries) -> counts + 6-sample",
+    "as_of_slices[].born/died_expired/died_active lists -> counts + 6-sample"
+  ],
+  "not_evaluable": {
+    "abs_delta": {
+      "note": "the free tier carries no greeks (delta rides the NOT_AUTHORIZED snapshot endpoint)",
+      "status": "NOT_EVALUABLE",
+      "value": null
+    },
+    "open_interest": {
+      "note": "the free tier carries no open interest (it rides the NOT_AUTHORIZED snapshot endpoint)",
+      "status": "NOT_EVALUABLE",
+      "value": null
+    },
+    "spans_earnings": {
+      "note": "no earnings-event source exists in this lane (same NOT_EVALUABLE discipline as M4-A)",
+      "status": "NOT_EVALUABLE",
+      "value": null
+    },
+    "spread_fraction_of_midpoint": {
+      "note": "the free tier carries no bid/ask (quotes ride the NOT_AUTHORIZED snapshot endpoint)",
+      "status": "NOT_EVALUABLE",
+      "value": null
+    },
+    "strike_grid_in_spot_units": {
+      "note": "spot proxy supplied via --spot-json",
+      "status": "EVALUATED",
+      "value": null
+    },
+    "underlying_20d_median_dollar_volume": {
+      "note": "underlying 20d median dollar volume needs the equity aggregates pull, which is a different endpoint than this option-contract/option-bar lane",
+      "status": "NOT_EVALUABLE",
+      "value": null
+    }
+  },
+  "per_underlying": {
+    "SPY": {
+      "active_delistings": [],
+      "adjustment_timeline": [],
+      "as_of_slices": [
+        {
+          "as_of": "2024-09-16",
+          "births": null,
+          "capture_complete": true,
+          "cfi": {
+            "OCASPS": 4971,
+            "OPASPS": 4971
+          },
+          "contract_type": {
+            "call": 4971,
+            "put": 4971
+          },
+          "deaths": null,
+          "distinct_expiries": 36,
+          "exercise_style": {
+            "american": 9942
+          },
+          "expiries": [
+            "2024-09-16",
+            "2024-09-17",
+            "2024-09-18",
+            "2024-09-19",
+            "2024-09-20",
+            "2024-09-23",
+            "2024-09-24",
+            "2024-09-25",
+            "2024-09-26",
+            "2024-09-27",
+            "2024-09-30",
+            "2024-10-04",
+            "2024-10-11",
+            "2024-10-18",
+            "2024-10-25",
+            "2024-10-31",
+            "2024-11-01",
+            "2024-11-15",
+            "2024-11-29",
+            "2024-12-20",
+            "2024-12-31",
+            "2025-01-17",
+            "2025-01-31",
+            "2025-02-28",
+            "2025-03-21",
+            "2025-03-31",
+            "2025-04-17",
+            "2025-06-20",
+            "2025-06-30",
+            "2025-08-15",
+            "2025-09-19",
+            "2025-12-19",
+            "2026-01-16",
+            "2026-06-18",
+            "2026-12-18",
+            "2027-01-15"
+          ],
+          "multi_root": false,
+          "non_standard": [],
+          "primary_exchange": {
+            "BATO": 9942
+          },
+          "roots": {
+            "SPY": 9942
+          },
+          "shares_per_contract": {
+            "100": 9942
+          },
+          "source": "SPY_2024-09-16.json",
+          "strikes": {
+            "ladder_depth": 376,
+            "max_in_spot_units": "1.501315",
+            "max_strike": "845",
+            "min_in_spot_units": "0.213204",
+            "min_strike": "120",
+            "span": "725",
+            "span_in_spot_units": "1.28811",
+            "spot_proxy": "562.84",
+            "spot_units_status": "EVALUATED"
+          },
+          "tenors": {
+            "band_bucket": "dte_30_60",
+            "expiries_in_band": 5,
+            "farthest_days": 851,
+            "histogram": {
+              "dte_0_7": 1862,
+              "dte_181_365": 1758,
+              "dte_30_60": 1526,
+              "dte_61_180": 1740,
+              "dte_8_29": 1700,
+              "dte_gt_365": 1356
+            },
+            "leaps_expiries": 6,
+            "nearest_days": 0,
+            "quarterly_expiries": 7
+          },
+          "universe_size": 9942
+        },
+        {
+          "as_of": "2025-03-14",
+          "births": 7402,
+          "born_count": 7402,
+          "born_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "born_sample": [
+            "O:SPY250314C00375000",
+            "O:SPY250314C00380000",
+            "O:SPY250314C00385000",
+            "\u2026",
+            "O:SPY271217P00905000",
+            "O:SPY271217P00910000",
+            "O:SPY271217P00915000"
+          ],
+          "capture_complete": true,
+          "cfi": {
+            "OCASPS": 5258,
+            "OPASPS": 5258
+          },
+          "contract_type": {
+            "call": 5258,
+            "put": 5258
+          },
+          "deaths": 6828,
+          "died_expired_count": 6828,
+          "died_expired_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "died_expired_sample": [
+            "O:SPY240916C00300000",
+            "O:SPY240916C00305000",
+            "O:SPY240916C00310000",
+            "\u2026",
+            "O:SPY250228P00665000",
+            "O:SPY250228P00670000",
+            "O:SPY250228P00675000"
+          ],
+          "distinct_expiries": 36,
+          "exercise_style": {
+            "american": 10516
+          },
+          "expiries": [
+            "2025-03-14",
+            "2025-03-17",
+            "2025-03-18",
+            "2025-03-19",
+            "2025-03-20",
+            "2025-03-21",
+            "2025-03-24",
+            "2025-03-25",
+            "2025-03-26",
+            "2025-03-27",
+            "2025-03-28",
+            "2025-03-31",
+            "2025-04-04",
+            "2025-04-11",
+            "2025-04-17",
+            "2025-04-25",
+            "2025-04-30",
+            "2025-05-02",
+            "2025-05-16",
+            "2025-05-30",
+            "2025-06-20",
+            "2025-06-30",
+            "2025-07-18",
+            "2025-07-31",
+            "2025-08-15",
+            "2025-08-29",
+            "2025-09-19",
+            "2025-09-30",
+            "2025-12-19",
+            "2025-12-31",
+            "2026-01-16",
+            "2026-03-20",
+            "2026-06-18",
+            "2026-12-18",
+            "2027-01-15",
+            "2027-12-17"
+          ],
+          "multi_root": false,
+          "non_standard": [],
+          "primary_exchange": {
+            "BATO": 10516
+          },
+          "roots": {
+            "SPY": 10516
+          },
+          "shares_per_contract": {
+            "100": 10516
+          },
+          "source": "SPY_2025-03-14.json",
+          "strikes": {
+            "ladder_depth": 346,
+            "max_in_spot_units": "1.625771",
+            "max_strike": "915",
+            "min_in_spot_units": "0.26652",
+            "min_strike": "150",
+            "span": "765",
+            "span_in_spot_units": "1.359251",
+            "spot_proxy": "562.81",
+            "spot_units_status": "EVALUATED"
+          },
+          "tenors": {
+            "band_bucket": "dte_30_60",
+            "expiries_in_band": 4,
+            "farthest_days": 1008,
+            "histogram": {
+              "dte_0_7": 2218,
+              "dte_181_365": 1380,
+              "dte_30_60": 1128,
+              "dte_61_180": 2474,
+              "dte_8_29": 1986,
+              "dte_gt_365": 1330
+            },
+            "leaps_expiries": 5,
+            "nearest_days": 0,
+            "quarterly_expiries": 7
+          },
+          "universe_size": 10516
+        },
+        {
+          "as_of": "2025-09-15",
+          "births": 7964,
+          "born_count": 7964,
+          "born_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "born_sample": [
+            "O:SPY250915C00500000",
+            "O:SPY250915C00501000",
+            "O:SPY250915C00502000",
+            "\u2026",
+            "O:SPY280121P00715000",
+            "O:SPY280121P00720000",
+            "O:SPY280121P00725000"
+          ],
+          "capture_complete": true,
+          "cfi": {
+            "OCASPS": 5337,
+            "OPASPS": 5337
+          },
+          "contract_type": {
+            "call": 5337,
+            "put": 5337
+          },
+          "deaths": 7806,
+          "died_expired_count": 7806,
+          "died_expired_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "died_expired_sample": [
+            "O:SPY250314C00375000",
+            "O:SPY250314C00380000",
+            "O:SPY250314C00385000",
+            "\u2026",
+            "O:SPY250829P00710000",
+            "O:SPY250829P00720000",
+            "O:SPY250829P00730000"
+          ],
+          "distinct_expiries": 34,
+          "exercise_style": {
+            "american": 10674
+          },
+          "expiries": [
+            "2025-09-15",
+            "2025-09-16",
+            "2025-09-17",
+            "2025-09-18",
+            "2025-09-19",
+            "2025-09-22",
+            "2025-09-23",
+            "2025-09-24",
+            "2025-09-25",
+            "2025-09-26",
+            "2025-09-29",
+            "2025-09-30",
+            "2025-10-03",
+            "2025-10-10",
+            "2025-10-17",
+            "2025-10-24",
+            "2025-10-31",
+            "2025-11-21",
+            "2025-11-28",
+            "2025-12-19",
+            "2025-12-31",
+            "2026-01-16",
+            "2026-01-30",
+            "2026-02-20",
+            "2026-02-27",
+            "2026-03-20",
+            "2026-03-31",
+            "2026-06-18",
+            "2026-06-30",
+            "2026-09-18",
+            "2026-12-18",
+            "2027-01-15",
+            "2027-12-17",
+            "2028-01-21"
+          ],
+          "multi_root": false,
+          "non_standard": [],
+          "primary_exchange": {
+            "BATO": 10674
+          },
+          "roots": {
+            "SPY": 10674
+          },
+          "shares_per_contract": {
+            "100": 10674
+          },
+          "source": "SPY_2025-09-15.json",
+          "strikes": {
+            "ladder_depth": 361,
+            "max_in_spot_units": "1.513065",
+            "max_strike": "1000",
+            "min_in_spot_units": "0.22696",
+            "min_strike": "150",
+            "span": "850",
+            "span_in_spot_units": "1.286106",
+            "spot_proxy": "660.91",
+            "spot_units_status": "EVALUATED"
+          },
+          "tenors": {
+            "band_bucket": "dte_30_60",
+            "expiries_in_band": 3,
+            "farthest_days": 858,
+            "histogram": {
+              "dte_0_7": 2528,
+              "dte_181_365": 1112,
+              "dte_30_60": 1222,
+              "dte_61_180": 2372,
+              "dte_8_29": 2226,
+              "dte_gt_365": 1214
+            },
+            "leaps_expiries": 5,
+            "nearest_days": 0,
+            "quarterly_expiries": 6
+          },
+          "universe_size": 10674
+        },
+        {
+          "as_of": "2026-03-16",
+          "births": 11146,
+          "born_count": 11146,
+          "born_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "born_sample": [
+            "O:SPY260316C00500000",
+            "O:SPY260316C00505000",
+            "O:SPY260316C00510000",
+            "\u2026",
+            "O:SPY281215P01330000",
+            "O:SPY281215P01340000",
+            "O:SPY281215P01350000"
+          ],
+          "capture_complete": true,
+          "cfi": {
+            "OCASPS": 6736,
+            "OPASPS": 6736
+          },
+          "contract_type": {
+            "call": 6736,
+            "put": 6736
+          },
+          "deaths": 8348,
+          "died_expired_count": 8348,
+          "died_expired_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "died_expired_sample": [
+            "O:SPY250915C00500000",
+            "O:SPY250915C00501000",
+            "O:SPY250915C00502000",
+            "\u2026",
+            "O:SPY260227P00770000",
+            "O:SPY260227P00780000",
+            "O:SPY260227P00790000"
+          ],
+          "distinct_expiries": 37,
+          "exercise_style": {
+            "american": 13472
+          },
+          "expiries": [
+            "2026-03-16",
+            "2026-03-17",
+            "2026-03-18",
+            "2026-03-19",
+            "2026-03-20",
+            "2026-03-23",
+            "2026-03-24",
+            "2026-03-25",
+            "2026-03-26",
+            "2026-03-27",
+            "2026-03-30",
+            "2026-03-31",
+            "2026-04-02",
+            "2026-04-10",
+            "2026-04-17",
+            "2026-04-24",
+            "2026-04-30",
+            "2026-05-01",
+            "2026-05-15",
+            "2026-05-29",
+            "2026-06-18",
+            "2026-06-30",
+            "2026-07-17",
+            "2026-07-31",
+            "2026-08-21",
+            "2026-08-31",
+            "2026-09-18",
+            "2026-09-30",
+            "2026-12-18",
+            "2026-12-31",
+            "2027-01-15",
+            "2027-03-19",
+            "2027-06-17",
+            "2027-12-17",
+            "2028-01-21",
+            "2028-06-16",
+            "2028-12-15"
+          ],
+          "multi_root": false,
+          "non_standard": [],
+          "primary_exchange": {
+            "BATO": 13472
+          },
+          "roots": {
+            "SPY": 13472
+          },
+          "shares_per_contract": {
+            "100": 13472
+          },
+          "source": "SPY_2026-03-16.json",
+          "strikes": {
+            "ladder_depth": 439,
+            "max_in_spot_units": "2.032794",
+            "max_strike": "1360",
+            "min_in_spot_units": "0.074735",
+            "min_strike": "50",
+            "span": "1310",
+            "span_in_spot_units": "1.958059",
+            "spot_proxy": "669.03",
+            "spot_units_status": "EVALUATED"
+          },
+          "tenors": {
+            "band_bucket": "dte_30_60",
+            "expiries_in_band": 5,
+            "farthest_days": 1005,
+            "histogram": {
+              "dte_0_7": 2186,
+              "dte_181_365": 1716,
+              "dte_30_60": 1880,
+              "dte_61_180": 2218,
+              "dte_8_29": 2900,
+              "dte_gt_365": 2572
+            },
+            "leaps_expiries": 6,
+            "nearest_days": 0,
+            "quarterly_expiries": 7
+          },
+          "universe_size": 13472
+        }
+      ],
+      "as_ofs": [
+        "2024-09-16",
+        "2025-03-14",
+        "2025-09-15",
+        "2026-03-16"
+      ],
+      "bars": {
+        "implied_session_calendar": {
+          "calendar_days_spanned": 61,
+          "first": "2024-09-16",
+          "last": "2024-11-15",
+          "sessions": [
+            "2024-09-16",
+            "2024-09-17",
+            "2024-09-18",
+            "2024-09-19",
+            "2024-09-20",
+            "2024-09-23",
+            "2024-09-24",
+            "2024-09-25",
+            "2024-09-26",
+            "2024-09-27",
+            "2024-09-30",
+            "2024-10-01",
+            "2024-10-02",
+            "2024-10-03",
+            "2024-10-04",
+            "2024-10-07",
+            "2024-10-08",
+            "2024-10-09",
+            "2024-10-10",
+            "2024-10-11",
+            "2024-10-14",
+            "2024-10-15",
+            "2024-10-16",
+            "2024-10-17",
+            "2024-10-18",
+            "2024-10-21",
+            "2024-10-22",
+            "2024-10-23",
+            "2024-10-24",
+            "2024-10-25",
+            "2024-10-28",
+            "2024-10-29",
+            "2024-10-30",
+            "2024-10-31",
+            "2024-11-01",
+            "2024-11-04",
+            "2024-11-05",
+            "2024-11-06",
+            "2024-11-07",
+            "2024-11-08",
+            "2024-11-11",
+            "2024-11-13",
+            "2024-11-14",
+            "2024-11-15"
+          ],
+          "sessions_observed": 44,
+          "weekday_gap_note": "a weekday with no bar inside the observed span: a CANDIDATE market holiday OR an uncovered session \u2014 this lane's only evidence is the capture itself, so the report never asserts a holiday calendar",
+          "weekday_gaps": [
+            "2024-11-12"
+          ],
+          "weekend_days_skipped": 16
+        },
+        "series": 4,
+        "tickers": [
+          "O:SPY241018C00563000",
+          "O:SPY241018P00546000",
+          "O:SPY241018P00563000",
+          "O:SPY241115C00563000"
+        ],
+        "volume": {
+          "bars": 119,
+          "bars_at_or_above_min_same_day_volume": 77,
+          "max": "12867",
+          "median": "212",
+          "min": "2",
+          "min_same_day_volume": 100,
+          "p90": "2491",
+          "total": "114221",
+          "zero_volume_bars": 0
+        }
+      },
+      "contract_rows": 44604,
+      "exercise_style": {
+        "american": 44604
+      },
+      "lifecycle": {
+        "as_ofs": 4,
+        "contracts_count": 36454,
+        "contracts_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+        "contracts_sample_first": {
+          "O:SPY240916C00300000": {
+            "as_of_count": 1,
+            "first_seen": "2024-09-16",
+            "last_seen": "2024-09-16"
+          },
+          "O:SPY240916C00305000": {
+            "as_of_count": 1,
+            "first_seen": "2024-09-16",
+            "last_seen": "2024-09-16"
+          },
+          "O:SPY240916C00310000": {
+            "as_of_count": 1,
+            "first_seen": "2024-09-16",
+            "last_seen": "2024-09-16"
+          }
+        },
+        "contracts_sample_last": {
+          "O:SPY281215P01330000": {
+            "as_of_count": 1,
+            "first_seen": "2026-03-16",
+            "last_seen": "2026-03-16"
+          },
+          "O:SPY281215P01340000": {
+            "as_of_count": 1,
+            "first_seen": "2026-03-16",
+            "last_seen": "2026-03-16"
+          },
+          "O:SPY281215P01350000": {
+            "as_of_count": 1,
+            "first_seen": "2026-03-16",
+            "last_seen": "2026-03-16"
+          }
+        },
+        "distinct_contracts": 36454,
+        "full_span": 550
+      },
+      "multi_root": false,
+      "non_standard_rows": 0,
+      "roots": [
+        "SPY"
+      ],
+      "shares_per_contract": {
+        "100": 44604
+      }
+    },
+    "TSLA": {
+      "active_delistings": [],
+      "adjustment_timeline": [],
+      "as_of_slices": [
+        {
+          "as_of": "2024-09-16",
+          "births": null,
+          "capture_complete": true,
+          "cfi": {
+            "OCASPS": 1597,
+            "OPASPS": 1597
+          },
+          "contract_type": {
+            "call": 1597,
+            "put": 1597
+          },
+          "deaths": null,
+          "distinct_expiries": 21,
+          "exercise_style": {
+            "american": 3194
+          },
+          "expiries": [
+            "2024-09-20",
+            "2024-09-27",
+            "2024-10-04",
+            "2024-10-11",
+            "2024-10-18",
+            "2024-10-25",
+            "2024-11-01",
+            "2024-11-15",
+            "2024-12-20",
+            "2025-01-17",
+            "2025-02-21",
+            "2025-03-21",
+            "2025-04-17",
+            "2025-06-20",
+            "2025-08-15",
+            "2025-09-19",
+            "2025-12-19",
+            "2026-01-16",
+            "2026-06-18",
+            "2026-12-18",
+            "2027-01-15"
+          ],
+          "multi_root": false,
+          "non_standard": [],
+          "primary_exchange": {
+            "BATO": 3194
+          },
+          "roots": {
+            "TSLA": 3194
+          },
+          "shares_per_contract": {
+            "100": 3194
+          },
+          "source": "TSLA_2024-09-16.json",
+          "strikes": {
+            "ladder_depth": 125,
+            "max_in_spot_units": null,
+            "max_strike": "610",
+            "min_in_spot_units": null,
+            "min_strike": "5",
+            "span": "605",
+            "span_in_spot_units": null,
+            "spot_proxy": null,
+            "spot_units_status": "NOT_EVALUABLE"
+          },
+          "tenors": {
+            "band_bucket": "dte_30_60",
+            "expiries_in_band": 4,
+            "farthest_days": 851,
+            "histogram": {
+              "dte_0_7": 240,
+              "dte_181_365": 592,
+              "dte_30_60": 630,
+              "dte_61_180": 474,
+              "dte_8_29": 430,
+              "dte_gt_365": 828
+            },
+            "leaps_expiries": 6,
+            "nearest_days": 4,
+            "quarterly_expiries": 7
+          },
+          "universe_size": 3194
+        },
+        {
+          "as_of": "2025-03-14",
+          "births": 3528,
+          "born_count": 3528,
+          "born_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "born_sample": [
+            "O:TSLA250314C00100000",
+            "O:TSLA250314C00105000",
+            "O:TSLA250314C00110000",
+            "\u2026",
+            "O:TSLA270617P00780000",
+            "O:TSLA270617P00790000",
+            "O:TSLA270617P00800000"
+          ],
+          "capture_complete": true,
+          "cfi": {
+            "OCASPS": 2474,
+            "OPASPS": 2474
+          },
+          "contract_type": {
+            "call": 2474,
+            "put": 2474
+          },
+          "deaths": 1774,
+          "died_expired_count": 1774,
+          "died_expired_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "died_expired_sample": [
+            "O:TSLA240920C00005000",
+            "O:TSLA240920C00010000",
+            "O:TSLA240920C00015000",
+            "\u2026",
+            "O:TSLA250221P00520000",
+            "O:TSLA250221P00530000",
+            "O:TSLA250221P00540000"
+          ],
+          "distinct_expiries": 22,
+          "exercise_style": {
+            "american": 4948
+          },
+          "expiries": [
+            "2025-03-14",
+            "2025-03-21",
+            "2025-03-28",
+            "2025-04-04",
+            "2025-04-11",
+            "2025-04-17",
+            "2025-04-25",
+            "2025-05-02",
+            "2025-05-16",
+            "2025-06-20",
+            "2025-07-18",
+            "2025-08-15",
+            "2025-09-19",
+            "2025-11-21",
+            "2025-12-19",
+            "2026-01-16",
+            "2026-03-20",
+            "2026-06-18",
+            "2026-09-18",
+            "2026-12-18",
+            "2027-01-15",
+            "2027-06-17"
+          ],
+          "multi_root": false,
+          "non_standard": [],
+          "primary_exchange": {
+            "BATO": 4948
+          },
+          "roots": {
+            "TSLA": 4948
+          },
+          "shares_per_contract": {
+            "100": 4948
+          },
+          "source": "TSLA_2025-03-14.json",
+          "strikes": {
+            "ladder_depth": 210,
+            "max_in_spot_units": null,
+            "max_strike": "960",
+            "min_in_spot_units": null,
+            "min_strike": "5",
+            "span": "955",
+            "span_in_spot_units": null,
+            "spot_proxy": null,
+            "spot_units_status": "NOT_EVALUABLE"
+          },
+          "tenors": {
+            "band_bucket": "dte_30_60",
+            "expiries_in_band": 3,
+            "farthest_days": 825,
+            "histogram": {
+              "dte_0_7": 720,
+              "dte_181_365": 970,
+              "dte_30_60": 530,
+              "dte_61_180": 944,
+              "dte_8_29": 638,
+              "dte_gt_365": 1146
+            },
+            "leaps_expiries": 6,
+            "nearest_days": 0,
+            "quarterly_expiries": 7
+          },
+          "universe_size": 4948
+        },
+        {
+          "as_of": "2025-09-15",
+          "births": 2516,
+          "born_count": 2516,
+          "born_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "born_sample": [
+            "O:TSLA250919C00282500",
+            "O:TSLA250919C00287500",
+            "O:TSLA250919C00292500",
+            "\u2026",
+            "O:TSLA280121P00440000",
+            "O:TSLA280121P00450000",
+            "O:TSLA280121P00460000"
+          ],
+          "capture_complete": true,
+          "cfi": {
+            "OCASPS": 2316,
+            "OPASPS": 2316
+          },
+          "contract_type": {
+            "call": 2316,
+            "put": 2316
+          },
+          "deaths": 2832,
+          "died_expired_count": 2832,
+          "died_expired_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "died_expired_sample": [
+            "O:TSLA250314C00100000",
+            "O:TSLA250314C00105000",
+            "O:TSLA250314C00110000",
+            "\u2026",
+            "O:TSLA250815P00940000",
+            "O:TSLA250815P00950000",
+            "O:TSLA250815P00960000"
+          ],
+          "distinct_expiries": 23,
+          "exercise_style": {
+            "american": 4632
+          },
+          "expiries": [
+            "2025-09-19",
+            "2025-09-26",
+            "2025-10-03",
+            "2025-10-10",
+            "2025-10-17",
+            "2025-10-24",
+            "2025-10-31",
+            "2025-11-21",
+            "2025-12-19",
+            "2026-01-16",
+            "2026-02-20",
+            "2026-03-20",
+            "2026-04-17",
+            "2026-05-15",
+            "2026-06-18",
+            "2026-07-17",
+            "2026-08-21",
+            "2026-09-18",
+            "2026-12-18",
+            "2027-01-15",
+            "2027-06-17",
+            "2027-12-17",
+            "2028-01-21"
+          ],
+          "multi_root": false,
+          "non_standard": [],
+          "primary_exchange": {
+            "BATO": 4632
+          },
+          "roots": {
+            "TSLA": 4632
+          },
+          "shares_per_contract": {
+            "100": 4632
+          },
+          "source": "TSLA_2025-09-15.json",
+          "strikes": {
+            "ladder_depth": 212,
+            "max_in_spot_units": null,
+            "max_strike": "960",
+            "min_in_spot_units": null,
+            "min_strike": "5",
+            "span": "955",
+            "span_in_spot_units": null,
+            "spot_proxy": null,
+            "spot_units_status": "NOT_EVALUABLE"
+          },
+          "tenors": {
+            "band_bucket": "dte_30_60",
+            "expiries_in_band": 3,
+            "farthest_days": 858,
+            "histogram": {
+              "dte_0_7": 384,
+              "dte_181_365": 1138,
+              "dte_30_60": 546,
+              "dte_61_180": 832,
+              "dte_8_29": 648,
+              "dte_gt_365": 1084
+            },
+            "leaps_expiries": 6,
+            "nearest_days": 4,
+            "quarterly_expiries": 6
+          },
+          "universe_size": 4632
+        },
+        {
+          "as_of": "2026-03-16",
+          "births": 3888,
+          "born_count": 3888,
+          "born_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "born_sample": [
+            "O:TSLA260316C00250000",
+            "O:TSLA260316C00255000",
+            "O:TSLA260316C00260000",
+            "\u2026",
+            "O:TSLA281215P00850000",
+            "O:TSLA281215P00860000",
+            "O:TSLA281215P00870000"
+          ],
+          "capture_complete": true,
+          "cfi": {
+            "OCASPS": 3055,
+            "OPASPS": 3055
+          },
+          "contract_type": {
+            "call": 3055,
+            "put": 3055
+          },
+          "deaths": 2410,
+          "died_expired_count": 2410,
+          "died_expired_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+          "died_expired_sample": [
+            "O:TSLA250919C00005000",
+            "O:TSLA250919C00010000",
+            "O:TSLA250919C00015000",
+            "\u2026",
+            "O:TSLA260220P00630000",
+            "O:TSLA260220P00640000",
+            "O:TSLA260220P00650000"
+          ],
+          "distinct_expiries": 26,
+          "exercise_style": {
+            "american": 6110
+          },
+          "expiries": [
+            "2026-03-16",
+            "2026-03-18",
+            "2026-03-20",
+            "2026-03-23",
+            "2026-03-25",
+            "2026-03-27",
+            "2026-03-30",
+            "2026-04-02",
+            "2026-04-10",
+            "2026-04-17",
+            "2026-04-24",
+            "2026-05-01",
+            "2026-05-15",
+            "2026-06-18",
+            "2026-07-17",
+            "2026-08-21",
+            "2026-09-18",
+            "2026-11-20",
+            "2026-12-18",
+            "2027-01-15",
+            "2027-03-19",
+            "2027-06-17",
+            "2027-12-17",
+            "2028-01-21",
+            "2028-06-16",
+            "2028-12-15"
+          ],
+          "multi_root": false,
+          "non_standard": [],
+          "primary_exchange": {
+            "BATO": 6110
+          },
+          "roots": {
+            "TSLA": 6110
+          },
+          "shares_per_contract": {
+            "100": 6110
+          },
+          "source": "TSLA_2026-03-16.json",
+          "strikes": {
+            "ladder_depth": 208,
+            "max_in_spot_units": null,
+            "max_strike": "990",
+            "min_in_spot_units": null,
+            "min_strike": "5",
+            "span": "985",
+            "span_in_spot_units": null,
+            "spot_proxy": null,
+            "spot_units_status": "NOT_EVALUABLE"
+          },
+          "tenors": {
+            "band_bucket": "dte_30_60",
+            "expiries_in_band": 4,
+            "farthest_days": 1005,
+            "histogram": {
+              "dte_0_7": 898,
+              "dte_181_365": 1058,
+              "dte_30_60": 1104,
+              "dte_61_180": 764,
+              "dte_8_29": 986,
+              "dte_gt_365": 1300
+            },
+            "leaps_expiries": 6,
+            "nearest_days": 0,
+            "quarterly_expiries": 7
+          },
+          "universe_size": 6110
+        }
+      ],
+      "as_ofs": [
+        "2024-09-16",
+        "2025-03-14",
+        "2025-09-15",
+        "2026-03-16"
+      ],
+      "bars": {
+        "implied_session_calendar": {
+          "calendar_days_spanned": 61,
+          "first": "2024-09-16",
+          "last": "2024-11-15",
+          "sessions": [
+            "2024-09-16",
+            "2024-09-17",
+            "2024-09-18",
+            "2024-09-19",
+            "2024-09-20",
+            "2024-09-23",
+            "2024-09-24",
+            "2024-09-25",
+            "2024-09-26",
+            "2024-09-27",
+            "2024-09-30",
+            "2024-10-01",
+            "2024-10-02",
+            "2024-10-03",
+            "2024-10-04",
+            "2024-10-07",
+            "2024-10-08",
+            "2024-10-09",
+            "2024-10-10",
+            "2024-10-11",
+            "2024-10-14",
+            "2024-10-15",
+            "2024-10-16",
+            "2024-10-17",
+            "2024-10-18",
+            "2024-10-21",
+            "2024-10-22",
+            "2024-10-23",
+            "2024-10-24",
+            "2024-10-25",
+            "2024-10-28",
+            "2024-10-29",
+            "2024-10-30",
+            "2024-10-31",
+            "2024-11-01",
+            "2024-11-04",
+            "2024-11-05",
+            "2024-11-06",
+            "2024-11-07",
+            "2024-11-08",
+            "2024-11-11",
+            "2024-11-12",
+            "2024-11-13",
+            "2024-11-14",
+            "2024-11-15"
+          ],
+          "sessions_observed": 45,
+          "weekday_gap_note": "a weekday with no bar inside the observed span: a CANDIDATE market holiday OR an uncovered session \u2014 this lane's only evidence is the capture itself, so the report never asserts a holiday calendar",
+          "weekday_gaps": [],
+          "weekend_days_skipped": 16
+        },
+        "series": 3,
+        "tickers": [
+          "O:TSLA241018C00225000",
+          "O:TSLA241018P00225000",
+          "O:TSLA241115C00225000"
+        ],
+        "volume": {
+          "bars": 95,
+          "bars_at_or_above_min_same_day_volume": 93,
+          "max": "123666",
+          "median": "1206",
+          "min": "40",
+          "min_same_day_volume": 100,
+          "p90": "9614",
+          "total": "750788",
+          "zero_volume_bars": 0
+        }
+      },
+      "contract_rows": 18884,
+      "exercise_style": {
+        "american": 18884
+      },
+      "lifecycle": {
+        "as_ofs": 4,
+        "contracts_count": 13126,
+        "contracts_elided": "full values pinned by report sha256 59bc07d6\u2026a3c2 (artifacts/m4b-captures/inspector-report.json, tarball 909596a2\u2026d9fb)",
+        "contracts_sample_first": {
+          "O:TSLA240920C00005000": {
+            "as_of_count": 1,
+            "first_seen": "2024-09-16",
+            "last_seen": "2024-09-16"
+          },
+          "O:TSLA240920C00010000": {
+            "as_of_count": 1,
+            "first_seen": "2024-09-16",
+            "last_seen": "2024-09-16"
+          },
+          "O:TSLA240920C00015000": {
+            "as_of_count": 1,
+            "first_seen": "2024-09-16",
+            "last_seen": "2024-09-16"
+          }
+        },
+        "contracts_sample_last": {
+          "O:TSLA281215P00850000": {
+            "as_of_count": 1,
+            "first_seen": "2026-03-16",
+            "last_seen": "2026-03-16"
+          },
+          "O:TSLA281215P00860000": {
+            "as_of_count": 1,
+            "first_seen": "2026-03-16",
+            "last_seen": "2026-03-16"
+          },
+          "O:TSLA281215P00870000": {
+            "as_of_count": 1,
+            "first_seen": "2026-03-16",
+            "last_seen": "2026-03-16"
+          }
+        },
+        "distinct_contracts": 13126,
+        "full_span": 332
+      },
+      "multi_root": false,
+      "non_standard_rows": 0,
+      "roots": [
+        "TSLA"
+      ],
+      "shares_per_contract": {
+        "100": 18884
+      }
+    }
+  },
+  "report_version": "m4-structural/1",
+  "sources": {
+    "adapter": {
+      "module": "tree_options.data.massive_options",
+      "status": "PRESENT (m4-massive/1)"
+    },
+    "bars": [
+      "O_SPY241018C00563000.json",
+      "O_SPY241018P00546000.json",
+      "O_SPY241018P00563000.json",
+      "O_SPY241115C00563000.json",
+      "O_TSLA241018C00225000.json",
+      "O_TSLA241018P00225000.json",
+      "O_TSLA241115C00225000.json"
+    ],
+    "contract_masters": [
+      "SPY_2024-09-16.json",
+      "SPY_2025-03-14.json",
+      "SPY_2025-09-15.json",
+      "SPY_2026-03-16.json",
+      "TSLA_2024-09-16.json",
+      "TSLA_2025-03-14.json",
+      "TSLA_2025-09-15.json",
+      "TSLA_2026-03-16.json"
+    ],
+    "incomplete_captures": [],
+    "input_files": [
+      {
+        "bytes": 2331,
+        "path": "O_SPY241018C00563000.json",
+        "sha256": "ab87dd7967a915af027c56857af333ea89208518b96d8ccc05d47b602c747577"
+      },
+      {
+        "bytes": 2247,
+        "path": "O_SPY241018P00546000.json",
+        "sha256": "53284270d525e3981d00e78a4f508857c4a92487cde82e6dc0aae3c8e901d96e"
+      },
+      {
+        "bytes": 2265,
+        "path": "O_SPY241018P00563000.json",
+        "sha256": "36fe0e6273f9cb2ea614055ddb7435048440fca588560e67ce3479ddf75ae897"
+      },
+      {
+        "bytes": 3964,
+        "path": "O_SPY241115C00563000.json",
+        "sha256": "fe1affc494d7b99593fea19b405d4cb4fd05aea0278e2450015f4e5764ac041e"
+      },
+      {
+        "bytes": 2351,
+        "path": "O_TSLA241018C00225000.json",
+        "sha256": "9ac12a89925f0d9120183f141df2699f2fef1d0a0c881b6642739b908b76df5c"
+      },
+      {
+        "bytes": 2281,
+        "path": "O_TSLA241018P00225000.json",
+        "sha256": "305a89966a5b196cd3474e60d7b09311de086b43dfb8855541c9dc27b237e6b3"
+      },
+      {
+        "bytes": 4083,
+        "path": "O_TSLA241115C00225000.json",
+        "sha256": "dcb7306dd50cffce394ebe329105701082dc54e56af453c1f7b8bba35ba513ae"
+      },
+      {
+        "bytes": 2272288,
+        "path": "SPY_2024-09-16.json",
+        "sha256": "f4b56194e362e7e3cc76d726daba29ed463ff6052fd348771c6a07a1da0fbd2c"
+      },
+      {
+        "bytes": 2404073,
+        "path": "SPY_2025-03-14.json",
+        "sha256": "a5225a8dba8b07f88abd88cfe12b9c53eaf4e1de9ac2e4fd3eaa6a224465c67b"
+      },
+      {
+        "bytes": 2439911,
+        "path": "SPY_2025-09-15.json",
+        "sha256": "a95d3bcea05ca3909a7db4eae1c8263b984a7024b7e8b88c98b6a3671607e327"
+      },
+      {
+        "bytes": 3080344,
+        "path": "SPY_2026-03-16.json",
+        "sha256": "65ee15a6273c9027fc537da4d86057a436100f67d37059e70527b5ec6d3832ba"
+      },
+      {
+        "bytes": 736325,
+        "path": "TSLA_2024-09-16.json",
+        "sha256": "0cc85dc60acf2d91b69986b0de5e89b773894c054e7a59834a760d8b26152109"
+      },
+      {
+        "bytes": 1140408,
+        "path": "TSLA_2025-03-14.json",
+        "sha256": "925fbd1cbd3a1ee661294d21eb58797240b79ab304f620ae5e2c9d5764c991c5"
+      },
+      {
+        "bytes": 1067720,
+        "path": "TSLA_2025-09-15.json",
+        "sha256": "37f1f4f20c3b3da57346944ac6a7e753b3432325d04d9f79d606dad942f0f406"
+      },
+      {
+        "bytes": 1409497,
+        "path": "TSLA_2026-03-16.json",
+        "sha256": "feefd27cc2fc501e7c83622e7ec73df038981f1e830ad33246678fc8101c531e"
+      },
+      {
+        "bytes": 130,
+        "path": "spot_proxy.json",
+        "sha256": "6f4e6eca82b79fd54f3bf5fc517eaea4e2295ce0f0d403c71e275bb8ddc85eee"
+      }
+    ],
+    "spot_proxy_supplied": true,
+    "unknown_result_keys": []
+  }
+}
