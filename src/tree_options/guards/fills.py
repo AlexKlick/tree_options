@@ -174,6 +174,10 @@ class FillEngine:
         self._executed_orders: set[str] = set()
         self._orders: dict[str, Order] = {}  # order_id -> the order BOUND at first mint
         self._filled_qty: dict[str, int] = {}
+        # G3: cumulative contracts filled against one (contract, bar
+        # session) — the participation cap is global to the engine, not
+        # per-order (a session's observed volume cannot be minted twice).
+        self._vwap_consumed: dict[tuple[str, date], int] = {}
 
     @classmethod
     def from_protocol(
@@ -302,6 +306,25 @@ class FillEngine:
             # G3 vwap branch: publication-gated bar, no age-in-seconds rule
             # (a daily summary's validity is its session identity).
             vq = as_tradable_vwap(selected, execution_at=effective_at)
+            # Session-identity coherence: the bar's exchange stamp IS the
+            # close of its own `session` — a label disagreeing with its
+            # stamps is a mislabeled input and refuses by name (review P0:
+            # otherwise a bar stamped at one session's close but LABELED
+            # another session fills as if it were that other session).
+            if not self.calendar.is_session(vq.quote.session):
+                raise FillRejection(
+                    "BAR_SESSION_NOT_IN_CALENDAR",
+                    f"bar session {vq.quote.session} for {vq.quote.contract_id}"
+                    " is not a calendar session",
+                )
+            if self.calendar.session_close(vq.quote.session) != vq.quote.exchange_timestamp:
+                raise FillRejection(
+                    "BAR_SESSION_STAMP_MISMATCH",
+                    f"bar session {vq.quote.session} close"
+                    f" {self.calendar.session_close(vq.quote.session)} !="
+                    f" exchange stamp {vq.quote.exchange_timestamp}"
+                    f" ({vq.quote.contract_id})",
+                )
         else:
             tq = as_tradable(
                 selected,
@@ -367,8 +390,14 @@ class FillEngine:
             # Participation, not displayed size: the cap is the contracts
             # the session actually traded (the bar's own volume), and a
             # zero-volume bar was already refused at as_tradable_vwap.
+            # The cap is PER (contract, bar session) and CUMULATIVE across
+            # fills (review P0: without the ledger, a partial-sequence — or
+            # a second order — could fill twice the session's entire
+            # observed volume against the same bar).
+            participation_key = (selected.contract_id, selected.session)
+            already_participated = self._vwap_consumed.get(participation_key, 0)
             displayed = vq.volume
-            capacity = math.floor(self.fill_size_fraction * vq.volume)
+            capacity = math.floor(self.fill_size_fraction * vq.volume) - already_participated
         else:
             displayed = tq.ask_size if order.side == "buy" else tq.bid_size
             capacity = math.floor(self.fill_size_fraction * displayed)
@@ -408,4 +437,6 @@ class FillEngine:
         self._executed_orders.add(order.order_id)
         self._orders[order.order_id] = order
         self._filled_qty[order.order_id] = already_filled + quantity
+        if isinstance(selected, VwapQuoteEvent):
+            self._vwap_consumed[participation_key] = already_participated + quantity
         return fill

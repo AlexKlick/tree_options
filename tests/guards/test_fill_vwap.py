@@ -293,3 +293,146 @@ class TestVwapFills:
             execution_at=exec_at,
         )
         assert fill.price == Decimal("1.32")  # ask edge: the two-sided path
+
+
+class TestReviewHardening:
+    """Pins from the independent Codex review round (gpt-5.6-sol): each
+    test names the concrete scenario the review showed was possible."""
+
+    def _exec_ctx(self, synthetic_calendar, n_sessions=1, minutes_in=60):
+        ex_session = synthetic_calendar.nth_after(DECISION_SESSION, n_sessions)
+        return (
+            ex_session,
+            execution_instant(synthetic_calendar.session_open(ex_session), minutes_in),
+        )
+
+    def test_mislabeled_bar_session_refuses(self, synthetic_calendar):
+        """P0-1: a bar LABELED a session its exchange stamp does not close
+        must refuse — the label must not ride a foreign stamp into a fill."""
+        ex_session, exec_at = self._exec_ctx(synthetic_calendar)
+        bar = _bar(session=DECISION_SESSION, execution_at=None)
+        # relabel the session but keep the decision-session stamp
+        mislabeled = bar.model_copy(update={"session": date(2024, 6, 3)})
+        engine = _engine(synthetic_calendar)
+        with pytest.raises(FillRejection) as exc:
+            engine.execute(
+                _order(),
+                mislabeled,
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
+            )
+        assert exc.value.code == "BAR_SESSION_STAMP_MISMATCH"
+
+    def test_bar_session_not_in_calendar_refuses(self, synthetic_calendar):
+        ex_session, exec_at = self._exec_ctx(synthetic_calendar)
+        bar = _bar(session=DECISION_SESSION, execution_at=None)
+        bogus = bar.model_copy(
+            update={
+                "session": date(2024, 4, 14),  # a Sunday, not a session
+                "exchange_timestamp": session_close_instant(date(2024, 4, 14)),
+                "received_timestamp": session_close_instant(date(2024, 4, 14)),
+            }
+        )
+        engine = _engine(synthetic_calendar)
+        with pytest.raises(FillRejection) as exc:
+            engine.execute(
+                _order(),
+                bogus,
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
+            )
+        assert exc.value.code == "BAR_SESSION_NOT_IN_CALENDAR"
+
+    def test_partial_sequence_cannot_reuse_vwap_bar_capacity(self, synthetic_calendar):
+        """P0-2: volume 4 caps TOTAL fills at 4 — a partial-sequence second
+        execution against the same bar must find the capacity exhausted."""
+        from tests.fixtures.contracts import standard_call as _sc
+
+        ex_session, exec_at = self._exec_ctx(synthetic_calendar)
+        bar = _bar(session=DECISION_SESSION, volume=4, execution_at=None)
+        engine = _engine(synthetic_calendar)
+        order = _order(quantity=8)
+        first = engine.execute(
+            order, bar, _sc(), execution_session=ex_session, execution_at=exec_at
+        )
+        assert first.quantity == 4
+        with pytest.raises(FillRejection) as exc:
+            engine.execute(
+                order,
+                bar,
+                _sc(),
+                execution_session=ex_session,
+                execution_at=exec_at,
+                partial_sequence=True,
+            )
+        assert exc.value.code == "NO_LIQUIDITY"
+
+    def test_second_order_cannot_reuse_vwap_bar_capacity(self, synthetic_calendar):
+        """P0-2 cross-order: a different order against the same bar also
+        draws from the same cumulative participation budget."""
+        ex_session, exec_at = self._exec_ctx(synthetic_calendar)
+        bar = _bar(session=DECISION_SESSION, volume=4, execution_at=None)
+        engine = _engine(synthetic_calendar)
+        first = engine.execute(
+            _order(quantity=3),
+            bar,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
+        )
+        assert first.quantity == 3
+        second = engine.execute(
+            _order(quantity=9),
+            bar,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
+        )
+        assert second.quantity == 1  # 4 observed - 3 consumed
+
+    def test_float_vwap_refused_at_the_boundary(self):
+        """P0-6: a float price must not be silently Decimal()-ed into the
+        event — exactness lost upstream refuses at the schema. (Fresh
+        construction: model_copy(update=...) skips validators by design.)"""
+        from pydantic import ValidationError
+
+        good = _bar(session=DECISION_SESSION, execution_at=None)
+        fields = good.model_dump()
+        fields["vwap"] = 0.1 + 0.2  # a float, post-validation
+        with pytest.raises(ValidationError, match="got float"):
+            VwapQuoteEvent.model_validate(fields)
+
+    def test_boolean_volume_refused(self):
+        from pydantic import ValidationError
+
+        good = _bar(session=DECISION_SESSION, execution_at=None)
+        fields = good.model_dump()
+        fields["volume"] = True
+        with pytest.raises(ValidationError):
+            VwapQuoteEvent.model_validate(fields)
+
+    def test_cross_kind_tie_refuses_deterministically(self, synthetic_calendar):
+        """P1-8: identical (received, exchange) across kinds is ambiguous —
+        stream order must not decide the fill price."""
+        from tests.fixtures.market import fresh_quote
+
+        ex_session, exec_at = self._exec_ctx(synthetic_calendar)
+        bar = _bar(session=DECISION_SESSION, execution_at=None)
+        q = fresh_quote(execution_at=exec_at, bid="1.30", ask="1.32")
+        tied_quote = q.model_copy(
+            update={
+                "received_timestamp": bar.received_timestamp,
+                "exchange_timestamp": bar.exchange_timestamp,
+            }
+        )
+        engine = _engine(synthetic_calendar)
+        with pytest.raises(ValueError, match="ambiguous cross-kind"):
+            engine.execute(
+                _order(),
+                [bar, tied_quote],
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
+            )

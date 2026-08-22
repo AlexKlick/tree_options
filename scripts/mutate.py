@@ -1867,14 +1867,8 @@ MUTANTS = [
         id="M172-vwap-zero-volume-accepted",
         owner="test_zero_volume_session_unfillable_not_fabricated",
         file="src/tree_options/schemas/market.py",
-        anchor=(
-            "    if q.volume < 1:\n"
-            "        raise ZeroVolumeVwapError("
-        ),
-        replacement=(
-            "    if False:\n"
-            "        raise ZeroVolumeVwapError("
-        ),
+        anchor=("    if q.volume < 1:\n        raise ZeroVolumeVwapError("),
+        replacement=("    if False:\n        raise ZeroVolumeVwapError("),
         selectors=[f"{G}/test_fill_vwap.py"],
         invariant=(
             "G3 a zero-volume session has no executions to participate in:"
@@ -1931,6 +1925,57 @@ MUTANTS = [
             " regime branch a tier with no OI records NOT_EVALUABLE and"
             " rejects every candidate - the audit must say NOT_APPLICABLE"
             " naming the absent input"
+        ),
+    ),
+    dict(
+        id="M176-vwap-participation-ledger-gutted",
+        owner="test_second_order_cannot_reuse_vwap_bar_capacity",
+        file="src/tree_options/guards/fills.py",
+        anchor=(
+            "capacity = math.floor(self.fill_size_fraction * vq.volume) - already_participated"
+        ),
+        replacement=("capacity = math.floor(self.fill_size_fraction * vq.volume) - 0"),
+        selectors=[f"{G}/test_fill_vwap.py"],
+        invariant=(
+            "G3 (review P0-2) participation is CUMULATIVE per (contract, bar"
+            " session): zeroing the ledger lets a second order - or a"
+            " partial-sequence - mint fills beyond the session's entire"
+            " observed volume against the same bar"
+        ),
+    ),
+    dict(
+        id="M177-vwap-session-stamp-unchecked",
+        owner="test_mislabeled_bar_session_refuses",
+        file="src/tree_options/guards/fills.py",
+        anchor=("if self.calendar.session_close(vq.quote.session) != vq.quote.exchange_timestamp:"),
+        replacement="if False:",
+        selectors=[f"{G}/test_fill_vwap.py"],
+        invariant=(
+            "G3 (review P0-1) a bar's session label must be coherent with"
+            " its own exchange stamp (the close of that session): without"
+            " the check a bar LABELED one session but stamped at another's"
+            " close fills as if it were the labeled session"
+        ),
+    ),
+    dict(
+        id="M178-float-vwap-laundered",
+        owner="test_float_vwap_refused_at_the_boundary",
+        file="src/tree_options/schemas/market.py",
+        anchor=(
+            "        if isinstance(v, float):\n"
+            '            raise ValueError(f"vwap must be Decimal, got float {v!r}")'
+        ),
+        replacement=(
+            "        if False:\n"
+            '            raise ValueError(f"vwap must be Decimal, got float {v!r}")'
+        ),
+        selectors=[f"{G}/test_fill_vwap.py"],
+        invariant=(
+            "G3 (review P0-6) a float vwap means exactness was lost"
+            " upstream; pydantic's lax float->Decimal coercion runs before"
+            " after-validators, so only a before-mode gate refuses it at"
+            " the boundary instead of laundering a binary approximation"
+            " into a price"
         ),
     ),
 ]

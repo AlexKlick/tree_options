@@ -53,6 +53,7 @@ class _Cell:
 
         d = _Derived()
         d.abs_delta = abs_delta
+        d.provenance = DERIVED_DELTA_PROVENANCE
         self.derived = d if abs_delta is not None else None
 
 
@@ -133,16 +134,8 @@ class TestRegimeDisclosure:
         assert by_rule["session_volume_flow"].status == "FAIL"
         assert not d.accepted
 
-    def test_missing_volume_not_yet_published_is_not_applicable(self, synthetic_calendar):
-        d = _flow_filter(synthetic_calendar).evaluate(
-            _snapshot(
-                AsOf(Decimal("0.45"), RECEIPT, provenance=DERIVED_DELTA_PROVENANCE),
-                None,
-                applicable=False,
-            )
-        )
-        by_rule = {r.rule: r for r in d.results}
-        assert by_rule["session_volume_flow"].status == "NOT_APPLICABLE"
+    # missing-volume behavior lives in TestReviewHardening: it is the
+    # review's P0-3 pin (NOT_EVALUABLE — the liquidity term is mandatory).
 
 
 class TestProvenanceGate:
@@ -275,3 +268,120 @@ class TestCandidateInputsBuilder:
         from tree_options.data.massive_overlay import DERIVATION_PROVENANCE
 
         assert DERIVATION_PROVENANCE == DERIVED_DELTA_PROVENANCE
+
+
+class TestReviewHardening:
+    """Pins from the independent Codex review round (gpt-5.6-sol)."""
+
+    def _accepting_inputs(self, provenance=DERIVED_DELTA_PROVENANCE):
+        return _snapshot(
+            AsOf(Decimal("0.45"), RECEIPT, provenance=provenance),
+            AsOf(400, RECEIPT),
+        )
+
+    def test_missing_volume_is_not_evaluable_in_flow_regime(self, synthetic_calendar):
+        """P0-3: session volume IS the liquidity term — a candidate with no
+        volume evidence must not be ACCEPTED via NOT_APPLICABLE."""
+        d = _flow_filter(synthetic_calendar).evaluate(
+            _snapshot(
+                AsOf(Decimal("0.45"), RECEIPT, provenance=DERIVED_DELTA_PROVENANCE),
+                None,
+                applicable=False,
+            )
+        )
+        by_rule = {r.rule: r for r in d.results}
+        assert by_rule["session_volume_flow"].status == "NOT_EVALUABLE"
+        assert not d.accepted
+
+    def test_supplied_open_interest_is_regime_incoherent(self, synthetic_calendar):
+        """P1-7: the drop is premised on ABSENCE; a snapshot supplying OI
+        contradicts the premise and fails closed."""
+        snap = _snapshot(
+            AsOf(Decimal("0.45"), RECEIPT, provenance=DERIVED_DELTA_PROVENANCE),
+            AsOf(400, RECEIPT),
+        )
+        with_o = CandidateSnapshot(
+            **{
+                **snap.__dict__,
+                "open_interest": AsOf(1200, RECEIPT),
+            }
+        )
+        d = _flow_filter(synthetic_calendar).evaluate(with_o)
+        by_rule = {r.rule: r for r in d.results}
+        assert by_rule["open_interest"].status == "NOT_EVALUABLE"
+        assert "regime incoherent" in by_rule["open_interest"].detail
+        assert not d.accepted
+
+    def test_supplied_quotes_are_regime_incoherent(self, synthetic_calendar):
+        snap = _snapshot(
+            AsOf(Decimal("0.45"), RECEIPT, provenance=DERIVED_DELTA_PROVENANCE),
+            AsOf(400, RECEIPT),
+        )
+        with_q = CandidateSnapshot(
+            **{
+                **snap.__dict__,
+                "bid": AsOf(Decimal("1.90"), RECEIPT),
+                "ask": AsOf(Decimal("2.00"), RECEIPT),
+            }
+        )
+        d = _flow_filter(synthetic_calendar).evaluate(with_q)
+        by_rule = {r.rule: r for r in d.results}
+        assert by_rule["spread"].status == "NOT_EVALUABLE"
+        assert "regime incoherent" in by_rule["spread"].detail
+
+    def test_zero_flow_threshold_refuses(self, synthetic_calendar):
+        """P0-5b: only None was rejected — a zero threshold must refuse
+        too (it would accept everything)."""
+        with pytest.raises(ValueError, match="flow_min_session_volume"):
+            _flow_filter(synthetic_calendar, threshold=0)
+
+    def test_bool_threshold_refuses_at_protocol_layer(self):
+        """P0-5a: YAML `true` must not coerce to 1 and 'activate' the
+        pending regime (strict int)."""
+        from pydantic import ValidationError
+
+        from tree_options.protocol.schema import LiquidityFlowConfig
+
+        with pytest.raises(ValidationError):
+            LiquidityFlowConfig.model_validate(
+                {
+                    "regime": "volume_flow",
+                    "flow_min_session_volume": True,
+                    "spread_term": "dropped_no_two_sided_market",
+                    "open_interest_term": "dropped_no_open_interest",
+                    "abs_delta_provenance_accepted": ["vendor"],
+                }
+            )
+
+    def test_builder_refuses_unaccepted_derivation_stamp(self):
+        """P0-4: the builder re-stamps nothing — a cell derived under a
+        foreign provenance refuses at the build, never laundered into the
+        ratified token."""
+        cell = _Cell(volume=400, abs_delta=Decimal("0.45"))
+        cell.derived.provenance = "hallucinated"  # type: ignore[attr-defined]
+        with pytest.raises(MassiveCapabilityError, match="re-stamps nothing"):
+            build_option_candidate_inputs(
+                standard_call(expiration=date(2024, 5, 15)),
+                cell,  # type: ignore[arg-type]
+                decision_session=DECISION_SESSION,
+                decision_at=DECISION_AT,
+            )
+
+    def test_declared_version_must_carry_its_content(self):
+        """P1-9: a 0.2.0 protocol with the G3 blocks stripped must refuse
+        to load, and the real protocol carries them."""
+        from pydantic import ValidationError
+
+        from tree_options.protocol.schema import ResearchProtocol
+
+        p = load_protocol()
+        stripped = p.model_copy(
+            update={
+                "option_candidate_defaults": p.option_candidate_defaults.model_copy(
+                    update={"liquidity_volume_flow": None}
+                ),
+                "meta": p.meta.model_copy(update={"amendments": ()}),
+            }
+        )
+        with pytest.raises(ValidationError):
+            ResearchProtocol.model_validate(stripped.model_dump())

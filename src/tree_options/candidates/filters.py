@@ -139,10 +139,12 @@ class CandidateFilter:
             raise ValueError(f"unknown liquidity_regime {liquidity_regime!r}")
         if liquidity_regime == "volume_flow":
             # The era-pending threshold may never default to 0: an unset
-            # flow threshold would accept every candidate (G3 Ask D).
-            if flow_min_session_volume is None:
+            # flow threshold would accept every candidate (G3 Ask D), and
+            # neither may a non-positive value sneak in past the None check
+            # (review P0: model_copy(update=...0) reached the constructor).
+            if flow_min_session_volume is None or flow_min_session_volume < 1:
                 raise ValueError(
-                    "volume_flow regime requires flow_min_session_volume — "
+                    "volume_flow regime requires flow_min_session_volume >= 1 — "
                     "the protocol's threshold is PENDING-era; set it from the "
                     "coverage-era census before building this filter"
                 )
@@ -335,7 +337,19 @@ class CandidateFilter:
         # Open interest. In the volume_flow regime the term is DROPPED WITH
         # DISCLOSURE (G3 Ask D): tiers without two-sided markets carry no
         # OI, and the audit says so instead of fabricating a threshold pass.
-        if self.liquidity_regime == "volume_flow":
+        # A snapshot that SUPPLIES OI contradicts the regime's premise and
+        # is incoherent — the disclosure may not paper over real inputs
+        # (review P1).
+        if self.liquidity_regime == "volume_flow" and snap.open_interest is not None:
+            results.append(
+                RuleResult(
+                    "open_interest",
+                    NOT_EVALUABLE,
+                    f"regime incoherent: volume_flow drops OI as absent, but"
+                    f" the snapshot supplies {_v(snap.open_interest)}",
+                )
+            )
+        elif self.liquidity_regime == "volume_flow":
             results.append(
                 RuleResult(
                     "open_interest",
@@ -387,6 +401,19 @@ class CandidateFilter:
                     if self.liquidity_regime == "volume_flow"
                     else RuleResult(volume_rule, PASS, "above min")
                 )
+        elif self.liquidity_regime == "volume_flow":
+            # In the flow regime the session volume IS the liquidity term:
+            # missing is NOT_EVALUABLE — the candidate cannot be judged
+            # liquid (review P0: NOT_APPLICABLE here accepted candidates
+            # with no volume evidence at all). The two-sided regime keeps
+            # the historical optional-volume semantics below.
+            results.append(
+                RuleResult(
+                    volume_rule,
+                    NOT_EVALUABLE,
+                    "missing: session volume is the liquidity term in the volume_flow regime",
+                )
+            )
         elif self.volume_only_if_already_available and not snap.same_day_volume_applicable:
             results.append(RuleResult(volume_rule, NOT_APPLICABLE, "not yet published at decision"))
         else:
@@ -394,8 +421,20 @@ class CandidateFilter:
 
         # Spread fraction of midpoint. DROPPED WITH DISCLOSURE in the
         # volume_flow regime: with no bid/ask there is no spread to bound,
-        # and no $0 substitute is approximated (G3 Ask D).
-        if self.liquidity_regime == "volume_flow":
+        # and no $0 substitute is approximated (G3 Ask D). Supplied quotes
+        # contradict the premise and are incoherent (review P1).
+        if self.liquidity_regime == "volume_flow" and (
+            snap.bid is not None or snap.ask is not None
+        ):
+            results.append(
+                RuleResult(
+                    "spread",
+                    NOT_EVALUABLE,
+                    "regime incoherent: volume_flow drops the spread as"
+                    " absent, but the snapshot supplies a two-sided quote",
+                )
+            )
+        elif self.liquidity_regime == "volume_flow":
             results.append(
                 RuleResult(
                     "spread",

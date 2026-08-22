@@ -116,8 +116,10 @@ class VwapFillPolicy(_Strict):
 
     executable: Literal["session_vwap_conservative_tick"]
     participation_cap: Literal["bar_volume"]
+    participation_scope: Literal["cumulative_per_contract_session"]
     zero_volume_session: Literal["unfillable"]
     publication_gate: Literal["received_timestamp"]
+    session_stamp: Literal["close_of_bar_session"]
     midpoint_fraction: Literal["not_applicable"]
 
 
@@ -161,7 +163,9 @@ class LiquidityFlowConfig(_Strict):
     threshold may never default to 0 (that would accept everything)."""
 
     regime: Literal["volume_flow"]
-    flow_min_session_volume: int | None = Field(default=None, ge=1)
+    # strict: YAML `true` must NOT coerce to 1 and activate the pending
+    # regime (review P0); null stays the PENDING-era marker.
+    flow_min_session_volume: int | None = Field(default=None, ge=1, strict=True)
     spread_term: Literal["dropped_no_two_sided_market"]
     open_interest_term: Literal["dropped_no_open_interest"]
     # G3 Ask B: model-implied |delta| derived from the bar VWAP under the
@@ -232,6 +236,32 @@ class ResearchProtocol(_Strict):
     trials: TrialsConfig
 
     EXPECTED_INVARIANT_IDS: ClassVar[tuple[str, ...]] = tuple(f"INV-{i:02d}" for i in range(1, 15))
+
+    @model_validator(mode="after")
+    def _version_carries_its_amendments(self) -> ResearchProtocol:
+        """A declared version must CARRY the content that version means
+        (review P1: a 0.2.0-shaped yaml with no amendment record and no
+        volume-flow block validated silently). 0.1.0 is the frozen M0
+        baseline: it carries no amendments and no volume-flow regime. Any
+        later version must record its own amendment and carry the G3
+        content (the vwap fill policy + the ratified liquidity regime)."""
+        version = self.meta.protocol_version
+        major_minor = tuple(int(p) for p in version.split(".")[:2])
+        if version == "0.1.0":
+            if self.meta.amendments:
+                raise ValueError("0.1.0 predates amendments; records present")
+            if self.option_candidate_defaults.liquidity_volume_flow is not None:
+                raise ValueError("0.1.0 predates the volume-flow regime; block present")
+            return self
+        if not any(a.version == version for a in self.meta.amendments):
+            raise ValueError(f"protocol {version} carries no amendment record for itself")
+        if major_minor >= (0, 2):
+            if self.option_candidate_defaults.liquidity_volume_flow is None:
+                raise ValueError(
+                    f"protocol {version} declares >=0.2 without the ratified"
+                    " liquidity_volume_flow block"
+                )
+        return self
 
     @field_validator("invariants")
     @classmethod

@@ -20,7 +20,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from tree_options.schemas.common import IdStr, StrictModel, UTCDatetime
 
@@ -158,11 +158,26 @@ def select_quote(quotes, execution_at) -> QuoteEvent:
     reach back for an earlier (potentially better) quote. Returns the RAW
     event; tradability grading stays with as_tradable so crossed/locked/
     stale quotes raise their graded error classes, not constructor errors.
+
+    An exact (received, exchange) tie ACROSS QUOTE KINDS is ambiguous — a
+    two-sided book and a session summary are not interchangeable at one
+    instant — and refuses rather than letting stream order pick the price
+    (review P1: [bar, quote] and [quote, bar] used to select differently).
     """
     eligible = [q for q in quotes if q.received_timestamp <= execution_at]
     if not eligible:
         raise StaleQuoteError(f"no quote received at or before {execution_at}")
-    return max(eligible, key=lambda q: (q.received_timestamp, q.exchange_timestamp))
+    top = max(eligible, key=lambda q: (q.received_timestamp, q.exchange_timestamp))
+    top_key = (top.received_timestamp, top.exchange_timestamp)
+    tied = [q for q in eligible if (q.received_timestamp, q.exchange_timestamp) == top_key]
+    kinds = {type(q) for q in tied}
+    if len(kinds) > 1:
+        raise ValueError(
+            f"ambiguous cross-kind quote tie at {top_key[0]}: "
+            f"{sorted(k.__name__ for k in kinds)} — stream order must not"
+            " decide the fill price"
+        )
+    return top
 
 
 # ---- G3: the vwap quote kind (protocol 0.2.0) --------------------------------
@@ -190,10 +205,23 @@ class VwapQuoteEvent(StrictModel):
     exchange_timestamp: UTCDatetime
     received_timestamp: UTCDatetime
     vwap: Decimal = Field(gt=0)
-    volume: int = Field(ge=0)
-    trade_count: int = Field(ge=0)
+    volume: int = Field(ge=0, strict=True)
+    trade_count: int = Field(ge=0, strict=True)
     quote_condition: IdStr
     source: IdStr
+
+    @field_validator("vwap", mode="before")
+    @classmethod
+    def _vwap_exact(cls, v: object) -> object:
+        """A float here means exactness was already lost upstream (the lane
+        decodes vendor text with parse_float=Decimal); accepting it would
+        launder a binary approximation into a price field — the same
+        refusal the massive adapter makes for strike text. BEFORE mode:
+        pydantic's lax float->Decimal coercion runs before after-validators
+        and would already have destroyed the signal."""
+        if isinstance(v, float):
+            raise ValueError(f"vwap must be Decimal, got float {v!r}")
+        return v
 
     @model_validator(mode="after")
     def _checks(self) -> VwapQuoteEvent:

@@ -217,6 +217,7 @@ DERIVED_DELTA_PROVENANCE = "model-derived-from-vwap"
 
 class _DerivedPricingLike(Protocol):
     abs_delta: Decimal
+    provenance: str
 
 
 class MassiveDerivedQuoteLike(Protocol):
@@ -256,10 +257,12 @@ def build_option_candidate_inputs(
       two-sided market, and the filter's volume_flow regime DROPS those
       terms WITH disclosure instead of fabricating inputs.
 
-    Fail-closed: the cell must name the same contract, and its receipt
-    instant must be at or before the decision instant — a not-yet-received
-    cell is future data and refuses here rather than launder through
-    the filter's timestamps.
+    Fail-closed: the cell must name the same contract, its receipt
+    instant must be at or before the decision instant (a not-yet-received
+    cell is future data and refuses here rather than launder through the
+    filter's timestamps), and the cell's OWN derivation stamp must BE the
+    ratified token — a cell derived under any other provenance refuses at
+    the build instead of being re-stamped into acceptance (review P0).
     """
     if quote.contract_id != contract.contract_id:
         raise MassiveCapabilityError(
@@ -271,6 +274,13 @@ def build_option_candidate_inputs(
             f"after decision {decision_at}: future data refuses at the build"
         )
     derived = quote.derived
+    if derived is not None and derived.provenance != DERIVED_DELTA_PROVENANCE:
+        raise MassiveCapabilityError(
+            f"cell for {quote.contract_id} carries derivation provenance "
+            f"{derived.provenance!r} != {DERIVED_DELTA_PROVENANCE!r}: the"
+            " builder re-stamps nothing — an unaccepted provenance refuses"
+            " at the build"
+        )
     volume = quote.volume
     abs_delta = (
         AsOf(

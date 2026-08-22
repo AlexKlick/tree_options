@@ -156,8 +156,10 @@ fills:
   vwap:
     executable: session_vwap_conservative_tick
     participation_cap: bar_volume
+    participation_scope: cumulative_per_contract_session
     zero_volume_session: unfillable
     publication_gate: received_timestamp
+    session_stamp: close_of_bar_session
     midpoint_fraction: not_applicable
 
 option_candidate_defaults:
