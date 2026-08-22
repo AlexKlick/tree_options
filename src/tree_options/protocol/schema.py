@@ -120,6 +120,7 @@ class VwapFillPolicy(_Strict):
     zero_volume_session: Literal["unfillable"]
     publication_gate: Literal["received_timestamp"]
     session_stamp: Literal["close_of_bar_session"]
+    bar_recency: Literal["previous_session"]
     midpoint_fraction: Literal["not_applicable"]
 
 
@@ -256,10 +257,17 @@ class ResearchProtocol(_Strict):
         if not any(a.version == version for a in self.meta.amendments):
             raise ValueError(f"protocol {version} carries no amendment record for itself")
         if major_minor >= (0, 2):
-            if self.option_candidate_defaults.liquidity_volume_flow is None:
+            lf = self.option_candidate_defaults.liquidity_volume_flow
+            if lf is None:
                 raise ValueError(
                     f"protocol {version} declares >=0.2 without the ratified"
                     " liquidity_volume_flow block"
+                )
+            if "model-derived-from-vwap" not in lf.abs_delta_provenance_accepted:
+                raise ValueError(
+                    f"protocol {version} declares >=0.2 without the"
+                    " model-derived-from-vwap provenance class the G3"
+                    " amendment ratified"
                 )
         return self
 

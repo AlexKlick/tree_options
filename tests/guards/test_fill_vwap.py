@@ -436,3 +436,42 @@ class TestReviewHardening:
                 execution_session=ex_session,
                 execution_at=exec_at,
             )
+
+
+class TestRoundTwoHardening:
+    """Pins from Codex round 2 (gpt-5.6-sol): recency, type gates, leaks."""
+
+    def test_week_old_coherent_bar_refuses(self, synthetic_calendar):
+        """R2 P0-1: coherence alone let a T+1-published bar fill five
+        sessions later. The bar must be the session IMMEDIATELY before the
+        execution session — an older bar's VWAP fabricates liquidity the
+        intervening zero-volume sessions deny."""
+        ex_session = synthetic_calendar.nth_after(DECISION_SESSION, 3)
+        exec_at = execution_instant(synthetic_calendar.session_open(ex_session), 60)
+        bar = _bar(session=DECISION_SESSION, execution_at=None)
+        engine = _engine(synthetic_calendar)
+        with pytest.raises(FillRejection) as exc:
+            engine.execute(
+                _order(),
+                bar,
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
+            )
+        assert exc.value.code == "BAR_NOT_MOST_RECENT"
+
+    def test_previous_session_bar_fills(self, synthetic_calendar):
+        """The positive case: execution session N consumes session N-1's
+        bar (the massive lane's own T+1 rhythm)."""
+        ex_session = synthetic_calendar.nth_after(DECISION_SESSION, 1)
+        prev = synthetic_calendar.nth_after(DECISION_SESSION, 0)  # decision itself
+        bar = _bar(session=prev, execution_at=None)
+        engine = _engine(synthetic_calendar)
+        fill = engine.execute(
+            _order(),
+            bar,
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=execution_instant(synthetic_calendar.session_open(ex_session), 60),
+        )
+        assert fill.price == Decimal("1.24")

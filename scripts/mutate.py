@@ -1973,6 +1973,21 @@ MUTANTS = [
         ),
     ),
     dict(
+        id="M179-vwap-bar-recency-gutted",
+        owner="test_week_old_coherent_bar_refuses",
+        file="src/tree_options/guards/fills.py",
+        anchor="if exec_ord - bar_ordinal != 1:",
+        replacement="if False:",
+        selectors=[f"{G}/test_fill_vwap.py"],
+        invariant=(
+            "G3 (review r2) a vwap fill may consume ONLY the session"
+            " immediately before the execution session: an older coherent"
+            " bar is the last observed reality merely because intervening"
+            " sessions traded nothing, and filling at its VWAP fabricates"
+            " liquidity those zero-volume sessions deny"
+        ),
+    ),
+    dict(
         id="M178-float-vwap-laundered",
         owner="test_float_vwap_refused_at_the_boundary",
         file="src/tree_options/schemas/market.py",

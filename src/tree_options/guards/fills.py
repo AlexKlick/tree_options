@@ -325,6 +325,21 @@ class FillEngine:
                     f" exchange stamp {vq.quote.exchange_timestamp}"
                     f" ({vq.quote.contract_id})",
                 )
+            # Recency (review round 2): the bar must be the session
+            # IMMEDIATELY before the execution session. An older coherent
+            # bar is the last observed reality only because intervening
+            # sessions traded nothing — filling at its VWAP would fabricate
+            # liquidity those zero-volume sessions deny. Fail closed.
+            bar_ordinal = self.calendar.ordinal(vq.quote.session)
+            if exec_ord - bar_ordinal != 1:
+                raise FillRejection(
+                    "BAR_NOT_MOST_RECENT",
+                    f"bar session {vq.quote.session} (ordinal {bar_ordinal}) is"
+                    f" not the session immediately before execution"
+                    f" {execution_session} (ordinal {exec_ord}): an older"
+                    " session's VWAP cannot fill — the intervening sessions"
+                    " deny its liquidity",
+                )
         else:
             tq = as_tradable(
                 selected,

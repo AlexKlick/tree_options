@@ -385,3 +385,58 @@ class TestReviewHardening:
         )
         with pytest.raises(ValidationError):
             ResearchProtocol.model_validate(stripped.model_dump())
+
+
+class TestRoundTwoHardening:
+    def test_bool_threshold_refuses_at_constructor(self, synthetic_calendar):
+        """R2 P0-5: True == 1 passes the < 1 comparison — the type gate
+        must be explicit (bool is an int)."""
+        with pytest.raises(ValueError, match="an int >= 1"):
+            _flow_filter(synthetic_calendar, threshold=True)  # type: ignore[arg-type]
+
+    def test_nan_threshold_refuses_at_constructor(self, synthetic_calendar):
+        """R2 P0-5: NaN compares false against everything and slipped the
+        bound check."""
+        with pytest.raises(ValueError, match="an int >= 1"):
+            _flow_filter(synthetic_calendar, threshold=float("nan"))  # type: ignore[arg-type]
+
+    def test_020_without_derived_provenance_refuses(self):
+        """R2 P1-9: 0.2.0 must carry the provenance class the amendment
+        ratified — removing it while declaring 0.2.0 is a lie."""
+        from pydantic import ValidationError
+
+        from tree_options.protocol.schema import ResearchProtocol
+
+        p = load_protocol()
+        lf = p.option_candidate_defaults.liquidity_volume_flow
+        assert lf is not None
+        stripped = p.model_copy(
+            update={
+                "option_candidate_defaults": (
+                    p.option_candidate_defaults.model_copy(
+                        update={
+                            "liquidity_volume_flow": lf.model_copy(
+                                update={"abs_delta_provenance_accepted": ("vendor",)}
+                            )
+                        }
+                    )
+                ),
+            }
+        )
+        with pytest.raises(ValidationError, match="provenance class"):
+            ResearchProtocol.model_validate(stripped.model_dump())
+
+    def test_future_oi_value_not_leaked_into_audit(self, synthetic_calendar):
+        """R2 new P1: the incoherence detail must report PRESENCE without
+        dereferencing a value whose availability was never checked."""
+        snap = _snapshot(
+            AsOf(Decimal("0.45"), RECEIPT, provenance=DERIVED_DELTA_PROVENANCE),
+            AsOf(400, RECEIPT),
+        )
+        future_oi = AsOf(987654321, DECISION_AT + timedelta(days=1))
+        with_o = CandidateSnapshot(**{**snap.__dict__, "open_interest": future_oi})
+        d = _flow_filter(synthetic_calendar).evaluate(with_o)
+        by_rule = {r.rule: r for r in d.results}
+        assert by_rule["open_interest"].status == "NOT_EVALUABLE"
+        assert "987654321" not in by_rule["open_interest"].detail
+        assert "value withheld" in by_rule["open_interest"].detail

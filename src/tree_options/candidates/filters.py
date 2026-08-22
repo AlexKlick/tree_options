@@ -141,12 +141,20 @@ class CandidateFilter:
             # The era-pending threshold may never default to 0: an unset
             # flow threshold would accept every candidate (G3 Ask D), and
             # neither may a non-positive value sneak in past the None check
-            # (review P0: model_copy(update=...0) reached the constructor).
-            if flow_min_session_volume is None or flow_min_session_volume < 1:
+            # (review P0). The type gate is explicit because bool IS an int
+            # (True == 1 passes < 1) and float NaN compares false against
+            # everything — both would activate a fully-accepting filter
+            # (review round 2).
+            if (
+                not isinstance(flow_min_session_volume, int)
+                or isinstance(flow_min_session_volume, bool)
+                or flow_min_session_volume < 1
+            ):
                 raise ValueError(
-                    "volume_flow regime requires flow_min_session_volume >= 1 — "
-                    "the protocol's threshold is PENDING-era; set it from the "
-                    "coverage-era census before building this filter"
+                    "volume_flow regime requires flow_min_session_volume to be"
+                    " an int >= 1 — the protocol's threshold is PENDING-era;"
+                    " set it from the coverage-era census before building this"
+                    " filter"
                 )
         self.liquidity_regime = liquidity_regime
         self.flow_min_session_volume = flow_min_session_volume
@@ -345,8 +353,10 @@ class CandidateFilter:
                 RuleResult(
                     "open_interest",
                     NOT_EVALUABLE,
-                    f"regime incoherent: volume_flow drops OI as absent, but"
-                    f" the snapshot supplies {_v(snap.open_interest)}",
+                    "regime incoherent: volume_flow drops OI as absent, but"
+                    " the snapshot supplies open_interest (value withheld:"
+                    " its availability was never checked, and a future value"
+                    " must not leak into the audit)",
                 )
             )
         elif self.liquidity_regime == "volume_flow":
