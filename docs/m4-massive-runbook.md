@@ -60,6 +60,12 @@ before trusting the outputs. A truncated master is also recorded as
 `capture_complete=false` in the capture manifest and the inspector's report;
 truncation is never silent.
 
+A $0 derived-quote capability now exists on top of these captures (the M4-C
+lane, `tree_options.data.massive_derived` + `massive_overlay`; evidence
+`docs/evidence-logs/m4/m4-c-derived-lane.md`), but candidate wiring stays
+gated on the G3 amendment packet — exit 2 remains the honest answer for a
+quote-bearing run.
+
 ## 4. Budget math
 
 - The free tier allows **5 requests/minute**, so the governor spaces real
@@ -102,7 +108,11 @@ PYTHONPATH=src python scripts/capture_massive_structural.py \
 | `--underlyings` | comma-separated underlying tickers |
 | `--as-of` | repeatable ISO dates; each (underlying, as_of) is one contract master |
 | `--pages-per-master` | initial page cap per master; stopping leaves `next_url` in place so truncation is recorded |
-| `--bars` | how many daily bar series to pull for representative in-band contracts |
+| `--bars` | how many daily bar series to pull for representative in-band contracts; under `atm-grid`, the cap on TOTAL series |
+| `--bars-mode` | bar selection strategy: `representative` (default; exactly the pre-flag behavior) or `atm-grid` — see §6.1 |
+| `--bars-strike-band` | atm-grid only: DISTINCT strikes above and below ATM per in-band expiry (default 3; a RANK in the ladder, never an absolute strike range) |
+| `--bars-expiries` | atm-grid only: `all` in-band expiries (default) or `monthly` — third-Friday monthlies only |
+| `--bars-sides` | atm-grid only: `both` calls + puts (default) or `call` alone |
 | `--dte-min`, `--dte-max` | the DTE band used to pick bar contracts (and restated by the inspector) |
 | `--cache-dir` | response cache location (default `artifacts/massive-cache/`) |
 | `--timeout` | per-request HTTP timeout in seconds |
@@ -114,6 +124,33 @@ PYTHONPATH=src python scripts/capture_massive_structural.py \
 Analysis is offline and re-runnable for free:
 `scripts/inspect_structural_coverage.py` reads the capture files, never the
 wire (full invocation in evidence §5).
+
+### 6.1 `--bars-mode atm-grid` and its cost model
+
+`representative` (the default) keeps the original three-picks-per-underlying
+behavior — nothing about an unflagged run changes. `atm-grid` instead covers
+EVERY (underlying, as_of) master, not just the first captured one: expiries
+inside the DTE band (optionally only third-Friday monthlies), and per in-band
+expiry the ATM ± `--bars-strike-band` DISTINCT strikes — ranked by
+|strike − spot| ascending, ties by strike then ticker, on the chosen sides.
+Selection is deterministic: masters in (underlying, as_of) order, expiries
+ascending, strikes in rank order, calls before puts.
+
+The cost model, in one line: **a series is fetched once per contract LIFE.**
+Selection is deduped by ticker across the WHOLE run — a contract picked at
+two `as_of`s costs ONE fetch, duplicates are counted into a manifest note,
+and `--bars` caps TOTAL series, truncating to the deterministic prefix and
+saying so in the same note.
+
+- **monthly = the third-Friday rule** (`tree_options.time.monthlies`, the
+  sanctioned home of weekday arithmetic): a Friday in days 15–21. Its
+  approximation is NAMED in the predicate — when the exchange closes on a
+  third Friday (Good Friday, rare) the traded expiry moves, typically to the
+  Thursday before; the filter answers the calendar question only.
+- **A missing spot close notes + skips the slice.** A master whose
+  (underlying, as_of) has no spot close is skipped with a note: anchoring a
+  grid on the representative mode's median-strike fallback would misdescribe
+  "at-the-money" for every strike it named, so here the fallback is refusal.
 
 ## 7. ENTITLEMENT-WINDOW WARNING — READ BEFORE PLANNING ANY CAPTURE
 
