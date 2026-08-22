@@ -7,12 +7,24 @@
 # raw bytes: comment edits do not fork the protocol.
 
 meta:
-  protocol_version: "0.1.0"
+  protocol_version: "0.2.0"
   created: "2026-08-17"
   owner: "architecture/leakage"
   change_policy: >-
     Invariants are frozen. Weakening an invariant or an acceptance gate
     requires an explicit owner decision and a new protocol version.
+  amendments:
+    - version: "0.2.0"
+      date: "2026-08-22"
+      decision: "G3 amendment packet, PR #11 owner-merged (41dfd2a)"
+      changes: >-
+        Added the vwap quote kind and its fill semantics (session VWAP at a
+        conservative tick, participation-capped by bar volume, zero-volume
+        unfillable, publication-gated); added the volume-flow liquidity
+        regime for tiers without a two-sided market (open interest and the
+        spread term dropped WITH disclosure; threshold pending the
+        coverage-era census); accepted model-derived-from-vwap as an
+        abs_delta provenance class. No existing invariant was weakened.
 
 invariants:
   - id: INV-01
@@ -140,6 +152,13 @@ fills:
   money:
     price_tick: "0.01"
     fee_tick: "0.01"
+  # G3 (0.2.0): fill semantics for the vwap quote kind (daily bars).
+  vwap:
+    executable: session_vwap_conservative_tick
+    participation_cap: bar_volume
+    zero_volume_session: unfillable
+    publication_gate: received_timestamp
+    midpoint_fraction: not_applicable
 
 option_candidate_defaults:
   dte_min: 30
@@ -153,6 +172,17 @@ option_candidate_defaults:
   max_spread_fraction_of_midpoint: "0.10"
   min_underlying_20d_median_dollar_volume: "50000000"
   exclude_earnings_spanning_hold: true
+  # G3 Ask D (0.2.0): the volume-flow liquidity regime, for tiers with no
+  # two-sided market. flow_min_session_volume is PENDING-era: null until
+  # the coverage-era census (era §4) sets it; a volume-flow filter REFUSES
+  # to build while it is null. Open interest and the spread term are
+  # dropped WITH disclosure (NOT_APPLICABLE naming the absence).
+  liquidity_volume_flow:
+    regime: volume_flow
+    flow_min_session_volume: null
+    spread_term: dropped_no_two_sided_market
+    open_interest_term: dropped_no_open_interest
+    abs_delta_provenance_accepted: [vendor, model-derived-from-vwap]
 
 universe:
   include_delisted: true

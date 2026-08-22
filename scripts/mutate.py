@@ -1849,6 +1849,90 @@ MUTANTS = [
             " representative chooser's dedup block)"
         ),
     ),
+    dict(
+        id="M171-vwap-participation-cap-gutted",
+        owner="test_participation_cap_bars_beyond_volume",
+        file="src/tree_options/guards/fills.py",
+        anchor="capacity = math.floor(self.fill_size_fraction * vq.volume)",
+        replacement="capacity = order.quantity",
+        selectors=[f"{G}/test_fill_vwap.py"],
+        invariant=(
+            "G3 a vwap fill's quantity is capped by the session's OBSERVED"
+            " volume (participation, not invention): gutting the cap lets an"
+            " order fill its full quantity against a session that traded"
+            " fewer contracts than the fill claims"
+        ),
+    ),
+    dict(
+        id="M172-vwap-zero-volume-accepted",
+        owner="test_zero_volume_session_unfillable_not_fabricated",
+        file="src/tree_options/schemas/market.py",
+        anchor=(
+            "    if q.volume < 1:\n"
+            "        raise ZeroVolumeVwapError("
+        ),
+        replacement=(
+            "    if False:\n"
+            "        raise ZeroVolumeVwapError("
+        ),
+        selectors=[f"{G}/test_fill_vwap.py"],
+        invariant=(
+            "G3 a zero-volume session has no executions to participate in:"
+            " the door must refuse (unfillable), never pass a volume-less"
+            " bar to an engine that would then price a fabricated VWAP fill"
+        ),
+    ),
+    dict(
+        id="M173-vwap-tick-rounding-flipped",
+        owner="test_buy_fills_at_vwap_rounded_up",
+        file="src/tree_options/schemas/market.py",
+        anchor='return (cents.to_integral_value(rounding="ROUND_CEILING") / 100).quantize(',
+        replacement='return (cents.to_integral_value(rounding="ROUND_FLOOR") / 100).quantize(',
+        selectors=[f"{G}/test_fill_vwap.py"],
+        invariant=(
+            "G3 the sub-tick VWAP rounds AGAINST the taker (buy UP):"
+            " quantization may only worsen the fill. Rounding a buy DOWN"
+            " gifts the taker a better-than-benchmark executable"
+        ),
+    ),
+    dict(
+        id="M174-delta-provenance-gate-gutted",
+        owner="test_unaccepted_provenance_is_not_evaluable",
+        file="src/tree_options/candidates/filters.py",
+        anchor="elif snap.abs_delta.provenance not in self.accepted_delta_provenance:",
+        replacement="elif False:",
+        selectors=[f"{U}/test_candidate_volume_flow.py"],
+        invariant=(
+            "G3 an abs_delta whose provenance the protocol does not accept"
+            " is NOT_EVALUABLE: gutting the gate lets any stamped-or-stale"
+            " provenance flow into the band check as if the protocol had"
+            " ratified it"
+        ),
+    ),
+    dict(
+        id="M175-oi-drop-undisclosed",
+        owner="test_open_interest_and_spread_dropped_with_disclosure",
+        file="src/tree_options/candidates/filters.py",
+        anchor=(
+            '        if self.liquidity_regime == "volume_flow":\n'
+            "            results.append(\n"
+            "                RuleResult(\n"
+            '                    "open_interest",'
+        ),
+        replacement=(
+            "        if False:\n"
+            "            results.append(\n"
+            "                RuleResult(\n"
+            '                    "open_interest",'
+        ),
+        selectors=[f"{U}/test_candidate_volume_flow.py"],
+        invariant=(
+            "G3 the open-interest drop is DISCLOSED, not silent: without the"
+            " regime branch a tier with no OI records NOT_EVALUABLE and"
+            " rejects every candidate - the audit must say NOT_APPLICABLE"
+            " naming the absent input"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)

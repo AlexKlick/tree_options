@@ -17,11 +17,23 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class AmendmentRecord(_Strict):
+    """The provenance of one protocol version bump: what changed, when, and
+    under which owner decision. Empty for 0.1.0-shaped protocols (the
+    frozen M0 baseline); 0.2.0 carries the G3 amendment packet record."""
+
+    version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
+    date: str
+    decision: str = Field(min_length=1)
+    changes: str = Field(min_length=1)
+
+
 class ProtocolMeta(_Strict):
     protocol_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
     created: str
     owner: str
     change_policy: str = Field(min_length=1)
+    amendments: tuple[AmendmentRecord, ...] = ()
 
 
 class Invariant(_Strict):
@@ -97,6 +109,18 @@ class MoneyConfig(_Strict):
     fee_tick: Decimal = Field(gt=0)
 
 
+class VwapFillPolicy(_Strict):
+    """G3 (0.2.0): fill semantics for the vwap quote kind. Every field is a
+    Literal pinning one ratified decision — a semantic change here is a
+    protocol change, not a config tweak."""
+
+    executable: Literal["session_vwap_conservative_tick"]
+    participation_cap: Literal["bar_volume"]
+    zero_volume_session: Literal["unfillable"]
+    publication_gate: Literal["received_timestamp"]
+    midpoint_fraction: Literal["not_applicable"]
+
+
 class FillConfig(_Strict):
     primary: PrimaryFillPolicy
     fraction_to_midpoint_sensitivity: tuple[str, ...] = Field(min_length=1)
@@ -106,6 +130,7 @@ class FillConfig(_Strict):
     same_session_execution: Literal["reject"]
     partial_fills: Literal["allowed_by_quote_size"]
     money: MoneyConfig
+    vwap: VwapFillPolicy
 
     @field_validator("fraction_to_midpoint_sensitivity")
     @classmethod
@@ -124,6 +149,33 @@ class FillConfig(_Strict):
         return v
 
 
+class LiquidityFlowConfig(_Strict):
+    """G3 Ask D: the volume-flow liquidity regime for tiers with no
+    two-sided market (no bid/ask, no open interest). Open interest and the
+    spread term are DROPPED WITH DISCLOSURE — the filter records them
+    NOT_APPLICABLE naming the absence, never a fabricated threshold pass.
+
+    `flow_min_session_volume` is PENDING-era BY DESIGN: None until the
+    coverage-era §4 census lands. Building a volume-flow filter from a
+    protocol whose threshold is still None must fail closed — an unset
+    threshold may never default to 0 (that would accept everything)."""
+
+    regime: Literal["volume_flow"]
+    flow_min_session_volume: int | None = Field(default=None, ge=1)
+    spread_term: Literal["dropped_no_two_sided_market"]
+    open_interest_term: Literal["dropped_no_open_interest"]
+    # G3 Ask B: model-implied |delta| derived from the bar VWAP under the
+    # shared pricer is an ACCEPTED provenance class for the delta rule.
+    abs_delta_provenance_accepted: tuple[Literal["vendor", "model-derived-from-vwap"], ...]
+
+    @field_validator("abs_delta_provenance_accepted")
+    @classmethod
+    def _provenance_nonempty(cls, v):
+        if not v:
+            raise ValueError("abs_delta_provenance_accepted must name at least one class")
+        return v
+
+
 class OptionCandidateDefaults(_Strict):
     dte_min: int = Field(gt=0)
     dte_max: int = Field(gt=0)
@@ -136,6 +188,9 @@ class OptionCandidateDefaults(_Strict):
     max_spread_fraction_of_midpoint: Decimal = Field(gt=0)
     min_underlying_20d_median_dollar_volume: Decimal = Field(gt=0)
     exclude_earnings_spanning_hold: bool
+    # G3: None = the two-sided regime stands alone (M0 default); present =
+    # the volume-flow regime is ratified for tiers without two-sided markets.
+    liquidity_volume_flow: LiquidityFlowConfig | None = None
 
     @model_validator(mode="after")
     def _bands_ordered(self) -> OptionCandidateDefaults:
