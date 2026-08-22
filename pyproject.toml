@@ -57,7 +57,11 @@ filterwarnings = ["error::DeprecationWarning:tree_options.*"]
 
 [tool.mypy]
 python_version = "3.12"
-packages = ["tree_options"]
+files = [
+    "src/tree_options",
+    "scripts/capture_massive_structural.py",
+    "scripts/inspect_structural_coverage.py",
+]
 mypy_path = "src"
 # The point is catching real unit/ordering bugs, not satisfying a strictness
 # profile; individual modules may tighten later.
