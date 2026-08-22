@@ -14,6 +14,7 @@ from decimal import Decimal
 import pytest
 
 from tests.fixtures import massive_responses as fx
+from tree_options.data import massive_options
 from tree_options.data.massive_client import (
     BackoffPolicy,
     MassiveClient,
@@ -26,6 +27,7 @@ from tree_options.data.massive_options import (
     CAP_QUOTES,
     CAP_STRIKE_LADDER,
     MASSIVE_FREE_CAPABILITIES,
+    MASSIVE_SCHEMA_VERSION,
     MassiveCapabilityError,
     MassiveSchemaError,
     build_contract_master,
@@ -365,3 +367,15 @@ def test_candidate_inputs_from_this_source_always_refuse() -> None:
     assert CAP_GREEKS in message
     assert CAP_OPEN_INTEREST in message
     assert "required tier" in message
+
+
+# ---- adapter identity ---------------------------------------------------------
+
+
+def test_adapter_declares_its_schema_version() -> None:
+    """The adapter names its own mapping shape. The capture manifest and the
+    structural coverage inspector pin this token, so a capture made by a
+    different mapping cannot be re-read as if this one had produced it."""
+    assert MASSIVE_SCHEMA_VERSION == "m4-massive/1"
+    assert isinstance(MASSIVE_SCHEMA_VERSION, str)
+    assert "MASSIVE_SCHEMA_VERSION" in massive_options.__all__

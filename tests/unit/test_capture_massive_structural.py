@@ -667,7 +667,7 @@ def test_a_full_capture_round_trips_into_the_inspector(
     assert payload["report_version"] == structural.REPORT_VERSION
     assert payload["sources"]["adapter"] == {
         "module": "tree_options.data.massive_options",
-        "status": "PRESENT (massive-polygon-free/1)",
+        "status": "PRESENT (m4-massive/1)",
     }, "the adapter module must name the provider it captured with"
     assert report.incomplete_captures == ()
     assert report.masters == 2 and report.contract_rows == 5

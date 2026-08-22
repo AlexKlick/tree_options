@@ -67,13 +67,19 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal, NoReturn
+from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
 
 from tree_options.data.massive_client import MASSIVE_PROVIDER, MassiveError
 from tree_options.time.sessions import SESSION_TIMEZONE
 
 if TYPE_CHECKING:
     from tree_options.data.massive_client import MassiveClient
+
+# This adapter's mapping-shape token (the client owns the provider token,
+# `MASSIVE_PROVIDER`). The capture manifest and the structural coverage
+# inspector pin it, so a capture produced by a different mapping cannot be
+# read as if this one had built it.
+MASSIVE_SCHEMA_VERSION = "m4-massive/1"
 
 CONTRACTS_PATH = "/v3/reference/options/contracts"
 AGGS_PATH_TEMPLATE = "/v2/aggs/ticker/{ticker}/range/1/day/{start}/{end}"
@@ -372,6 +378,26 @@ def _as_text(value: Any, *, what: str, allow_empty: bool = False) -> str:
     return text
 
 
+def _as_contract_type(value: Any, *, what: str) -> ContractType:
+    """`call`/`put` exactly — a third kind is a schema break, not a guess.
+
+    Membership in `CONTRACT_TYPES` is checked but cannot narrow a `str` for
+    the type checker, so the narrowed `Literal` is asserted with `cast`
+    rather than widening `MassiveOptionContract` to bare `str`."""
+    text = _as_text(value, what=f"{what} contract_type").lower()
+    if text not in CONTRACT_TYPES:
+        raise MassiveSchemaError(f"{what}: contract_type {text!r} not call/put")
+    return cast(ContractType, text)
+
+
+def _as_exercise_style(value: Any, *, what: str) -> ExerciseStyle:
+    """`american`/`european` exactly, as the `Literal` the record carries."""
+    text = _as_text(value, what=f"{what} exercise_style").lower()
+    if text not in EXERCISE_STYLES:
+        raise MassiveSchemaError(f"{what}: exercise_style {text!r} not american/european")
+    return cast(ExerciseStyle, text)
+
+
 # ---- epoch -> session -------------------------------------------------------
 
 
@@ -401,16 +427,8 @@ def parse_option_contract(record: Mapping[str, Any]) -> MassiveOptionContract:
     """One `/v3/reference/options/contracts` result -> a typed record."""
     ticker = _as_text(_require(record, "ticker", what="contract"), what="ticker")
     what = f"contract {ticker}"
-    contract_type = _as_text(
-        _require(record, "contract_type", what=what), what=f"{what} contract_type"
-    ).lower()
-    if contract_type not in CONTRACT_TYPES:
-        raise MassiveSchemaError(f"{what}: contract_type {contract_type!r} not call/put")
-    exercise_style = _as_text(
-        _require(record, "exercise_style", what=what), what=f"{what} exercise_style"
-    ).lower()
-    if exercise_style not in EXERCISE_STYLES:
-        raise MassiveSchemaError(f"{what}: exercise_style {exercise_style!r} not american/european")
+    contract_type = _as_contract_type(_require(record, "contract_type", what=what), what=what)
+    exercise_style = _as_exercise_style(_require(record, "exercise_style", what=what), what=what)
     strike = _as_decimal(_require(record, "strike_price", what=what), what=f"{what} strike_price")
     if strike <= 0:
         raise MassiveSchemaError(f"{what}: strike {strike} is not positive")
@@ -428,8 +446,8 @@ def parse_option_contract(record: Mapping[str, Any]) -> MassiveOptionContract:
             _require(record, "expiration_date", what=what), what=f"{what} expiration_date"
         ),
         strike=strike,
-        contract_type=contract_type,  # type: ignore[arg-type]
-        exercise_style=exercise_style,  # type: ignore[arg-type]
+        contract_type=contract_type,
+        exercise_style=exercise_style,
         shares_per_contract=shares,
         primary_exchange=_as_text(
             record.get("primary_exchange", ""), what=f"{what} primary_exchange", allow_empty=True
@@ -670,6 +688,7 @@ __all__ = [
     # can name the provider/tier that produced a capture, instead of a bare
     # "PRESENT". Adapter identity belongs on the adapter module.
     "MASSIVE_PROVIDER",
+    "MASSIVE_SCHEMA_VERSION",
     "STANDARD_SHARES_PER_CONTRACT",
     "MassiveCapabilityError",
     "MassiveContractMaster",
