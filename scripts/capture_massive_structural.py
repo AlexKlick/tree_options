@@ -89,6 +89,7 @@ from tree_options.data.massive_options import (  # noqa: E402
     MASSIVE_PROVIDER,
     session_of_epoch_ms,
 )
+from tree_options.time.monthlies import is_monthly_expiry  # noqa: E402
 
 CAPTURE_VERSION = "m4b-capture/1"
 
@@ -107,6 +108,12 @@ PAGES_PER_MASTER = 4
 BARS_WANTED = 6
 DTE_MIN = 30
 DTE_MAX = 60
+# Bar-selection profile. The defaults are the original representative picks:
+# nothing about an unflagged run changes when the atm-grid flags exist.
+BARS_MODE = "representative"
+BARS_STRIKE_BAND = 3
+BARS_EXPIRIES = "all"
+BARS_SIDES = "both"
 
 
 class BudgetExhausted(RuntimeError):
@@ -510,6 +517,141 @@ def choose_bar_contracts(
     return picks[:wanted], notes
 
 
+def select_atm_grid_bars(
+    captures: Sequence[MasterCapture],
+    spot: Mapping[str, Mapping[str, str]],
+    *,
+    wanted: int,
+    dte_min: int | None = None,
+    dte_max: int | None = None,
+    strike_band: int | None = None,
+    expiries: str | None = None,
+    sides: str | None = None,
+) -> tuple[list[tuple[str, date, date]], list[str]]:
+    """Deterministically pick an ATM strike GRID per (underlying, as_of) master.
+
+    Unlike `choose_bar_contracts` (three representative contracts per
+    underlying, from the FIRST capture that has pages), the grid covers EVERY
+    master: expiries inside the DTE band, optionally only third-Friday
+    monthlies (`expiries="monthly"`, via `tree_options.time.monthlies`), and
+    per expiry the `strike_band` distinct strikes above and below spot plus
+    spot itself — RANKED by |strike - spot| ascending with ties broken by
+    strike then ticker, which is a rank in the ladder, never an absolute
+    strike-distance range. `sides="call"` halves the grid to calls only.
+
+    The spot anchor is the in-memory spot map captured earlier in the run: a
+    master whose (underlying, as_of) has no close is NOTED and SKIPPED. The
+    representative chooser falls back to the median strike, but a grid
+    anchored on a guess would misdescribe "at-the-money" for every strike it
+    named, so here the fallback is refusal. A master with no pages was never
+    captured (the run already noted why) and is skipped silently.
+
+    Selection is pure and deterministic: masters in (underlying, as_of)
+    order, expiries ascending, strikes in rank order, calls before puts. It
+    is deduped across the WHOLE run by ticker — a contract's series is
+    fetched once per run, PER CONTRACT LIFE, which is the cost model — and
+    `wanted` still caps TOTAL series, truncating to the deterministic prefix
+    and saying so. Malformed rows are skipped and counted into notes, never a
+    crash and never silent.
+    """
+    dte_min = DTE_MIN if dte_min is None else dte_min
+    dte_max = DTE_MAX if dte_max is None else dte_max
+    strike_band = BARS_STRIKE_BAND if strike_band is None else strike_band
+    expiries = BARS_EXPIRIES if expiries is None else expiries
+    sides = BARS_SIDES if sides is None else sides
+    if expiries not in ("all", "monthly"):
+        raise ValueError(f"unknown expiries filter {expiries!r} (want 'all' or 'monthly')")
+    if sides not in ("call", "both"):
+        raise ValueError(f"unknown sides filter {sides!r} (want 'call' or 'both')")
+    if strike_band < 0:
+        raise ValueError(f"strike_band must be >= 0, got {strike_band}")
+    kinds = ("call",) if sides == "call" else ("call", "put")
+
+    picks: list[tuple[str, date, date]] = []
+    notes: list[str] = []
+    seen: set[str] = set()
+    duplicates = 0
+    for capture in sorted(captures, key=lambda c: (c.underlying, c.as_of)):
+        if not capture.pages:
+            continue
+        underlying = capture.underlying
+        rows = [r for page in capture.pages for r in (page.body.get("results") or ())]
+        band, malformed = _band_expirations(rows, capture.as_of, dte_min=dte_min, dte_max=dte_max)
+        if malformed:
+            notes.append(f"{underlying}: {malformed} malformed row(s) skipped")
+        if not band:
+            notes.append(
+                f"{underlying}: no {dte_min}-{dte_max} DTE expiry in the {capture.as_of} master"
+            )
+            continue
+        if expiries == "monthly":
+            band = [e for e in band if is_monthly_expiry(e)]
+            if not band:
+                notes.append(
+                    f"{underlying} {capture.as_of}: no monthly expiry in the "
+                    f"{dte_min}-{dte_max} DTE band"
+                )
+                continue
+        reference = spot.get(underlying, {}).get(capture.as_of.isoformat())
+        if reference is None:
+            notes.append(
+                f"{underlying} {capture.as_of}: no spot close — ATM grid skipped "
+                "(a median-strike fallback would misdescribe at-the-money)"
+            )
+            continue
+        anchor = Decimal(reference)
+        for expiration in band:
+            ladder: list[tuple[Decimal, str, str]] = []  # (strike, kind, ticker)
+            skipped = 0
+            for r in rows:
+                try:
+                    if date.fromisoformat(str(r["expiration_date"])) != expiration:
+                        continue
+                    kind = str(r["contract_type"])
+                    if kind not in kinds:
+                        continue
+                    ladder.append(
+                        (
+                            _as_decimal(r["strike_price"], f"{r['ticker']}.strike_price"),
+                            kind,
+                            str(r["ticker"]),
+                        )
+                    )
+                except (KeyError, TypeError, ValueError):
+                    skipped += 1
+                    continue
+            if skipped:
+                notes.append(f"{underlying} {expiration}: {skipped} malformed row(s) skipped")
+            if not ladder:
+                continue
+            by_strike: dict[Decimal, list[tuple[Decimal, str, str]]] = {}
+            for item in ladder:
+                by_strike.setdefault(item[0], []).append(item)
+            # ATM +/- band: rank DISTINCT strikes by distance from spot (ties
+            # by strike ascending) and keep the closest 2*band+1 of them.
+            ranked = sorted(by_strike, key=lambda s: (abs(s - anchor), s))
+            for strike in ranked[: 2 * strike_band + 1]:
+                # Within a strike, calls before puts, then ticker.
+                for _, _kind, ticker in sorted(by_strike[strike], key=lambda it: (it[1], it[2])):
+                    if ticker in seen:
+                        duplicates += 1
+                        continue
+                    seen.add(ticker)
+                    picks.append((ticker, capture.as_of, expiration))
+    if duplicates:
+        notes.append(
+            f"atm-grid: {duplicates} duplicate selection(s) deduped — a contract's "
+            "series is fetched once per run (per contract life)"
+        )
+    if len(picks) > wanted:
+        notes.append(
+            f"atm-grid: --bars {wanted} caps the selection to {wanted} of {len(picks)} "
+            "series (deterministic prefix)"
+        )
+        picks = picks[:wanted]
+    return picks, notes
+
+
 def capture_bars(
     client: MassiveClient,
     picks: Sequence[tuple[str, date, date]],
@@ -600,6 +742,10 @@ def run_capture(
     bars_wanted: int | None = None,
     dte_min: int | None = None,
     dte_max: int | None = None,
+    bars_mode: str | None = None,
+    bars_strike_band: int | None = None,
+    bars_expiries: str | None = None,
+    bars_sides: str | None = None,
     dry_run: bool = False,
 ) -> dict[str, Any]:
     """Spot proxy, then contract masters, then bars -- writing as we go.
@@ -608,7 +754,8 @@ def run_capture(
     budget stop still leaves `capture_manifest.json` pinning everything that
     DID land. Omitted profile arguments fall back to this module's globals,
     which is what keeps the CLI defaults and the test monkeypatches on one
-    source of truth.
+    source of truth. `bars_mode` picks the bar strategy: "representative"
+    (the default, unchanged) or the "atm-grid" grid of `select_atm_grid_bars`.
     """
     underlyings = UNDERLYINGS if underlyings is None else tuple(underlyings)
     as_ofs = AS_OF_DATES if as_ofs is None else tuple(as_ofs)
@@ -616,6 +763,12 @@ def run_capture(
     bars_wanted = BARS_WANTED if bars_wanted is None else bars_wanted
     dte_min = DTE_MIN if dte_min is None else dte_min
     dte_max = DTE_MAX if dte_max is None else dte_max
+    bars_mode = BARS_MODE if bars_mode is None else bars_mode
+    if bars_mode not in ("representative", "atm-grid"):
+        raise ValueError(f"unknown bars_mode {bars_mode!r}")
+    bars_strike_band = BARS_STRIKE_BAND if bars_strike_band is None else bars_strike_band
+    bars_expiries = BARS_EXPIRIES if bars_expiries is None else bars_expiries
+    bars_sides = BARS_SIDES if bars_sides is None else bars_sides
 
     masters_dir = out_dir / "masters"
     bars_dir = out_dir / "bars"
@@ -674,9 +827,21 @@ def run_capture(
         notes.extend(deepened)
 
         budget.release(bars_wanted)
-        picks, pick_notes = choose_bar_contracts(
-            captures, spot, wanted=bars_wanted, dte_min=dte_min, dte_max=dte_max
-        )
+        if bars_mode == "atm-grid":
+            picks, pick_notes = select_atm_grid_bars(
+                captures,
+                spot,
+                wanted=bars_wanted,
+                dte_min=dte_min,
+                dte_max=dte_max,
+                strike_band=bars_strike_band,
+                expiries=bars_expiries,
+                sides=bars_sides,
+            )
+        else:
+            picks, pick_notes = choose_bar_contracts(
+                captures, spot, wanted=bars_wanted, dte_min=dte_min, dte_max=dte_max
+            )
         notes.extend(pick_notes)
         bar_files, bar_notes = capture_bars(client, picks, budget=budget, dry_run=dry_run)
         notes.extend(bar_notes)
@@ -803,6 +968,41 @@ def main(argv: list[str] | None = None) -> int:
         "--dte-max", type=int, help="upper edge of the DTE band for bar picks (default: 60)"
     )
     parser.add_argument(
+        "--bars-mode",
+        choices=("representative", "atm-grid"),
+        help=(
+            "bar selection strategy (default: representative). atm-grid ranks each master's "
+            "in-band strikes by |strike - spot| and pulls the ATM +/- --bars-strike-band "
+            "distinct strikes per expiry on the --bars-sides sides; a contract's series is "
+            "fetched once per run (per-contract-LIFE cost), so --bars caps TOTAL series"
+        ),
+    )
+    parser.add_argument(
+        "--bars-strike-band",
+        type=int,
+        help=(
+            "atm-grid only: distinct strikes above and below ATM per expiry "
+            "(default: 3; a rank in the ladder, NOT an absolute strike range). Each strike "
+            "adds one series per side per contract life"
+        ),
+    )
+    parser.add_argument(
+        "--bars-expiries",
+        choices=("all", "monthly"),
+        help=(
+            "atm-grid only: keep every in-band expiry or only third-Friday monthlies "
+            "(default: all). Each expiry multiplies the grid, one series per contract life"
+        ),
+    )
+    parser.add_argument(
+        "--bars-sides",
+        choices=("call", "both"),
+        help=(
+            "atm-grid only: calls alone or calls and puts (default: both). Each side is "
+            "one more series per strike per contract life"
+        ),
+    )
+    parser.add_argument(
         "--cache-dir", type=Path, help="response cache location (default: artifacts/massive-cache)"
     )
     parser.add_argument("--timeout", type=float, help="per-request HTTP timeout in seconds")
@@ -815,6 +1015,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.budget <= 0:
         parser.error(f"--budget must be > 0, got {args.budget}")
+    if args.bars_strike_band is not None and args.bars_strike_band < 0:
+        parser.error(f"--bars-strike-band must be >= 0, got {args.bars_strike_band}")
 
     # Defaults come from the module globals so the CLI profile and the test
     # monkeypatches share one source of truth.
@@ -841,6 +1043,10 @@ def main(argv: list[str] | None = None) -> int:
             bars_wanted=args.bars,
             dte_min=args.dte_min,
             dte_max=args.dte_max,
+            bars_mode=args.bars_mode,
+            bars_strike_band=args.bars_strike_band,
+            bars_expiries=args.bars_expiries,
+            bars_sides=args.bars_sides,
             dry_run=args.dry_run,
         )
     except MassiveNotEntitledError as exc:

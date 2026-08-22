@@ -1658,6 +1658,197 @@ MUTANTS = [
             " dead sweep (every master errored, zero pages) into exit 0"
         ),
     ),
+    # ---- M4-C hardening (derived greeks/overlay, monthlies, atm-grid, M159-M170)
+    dict(
+        id="M159-bisection-bracket-inverted",
+        owner="test_implied_vol_round_trips_across_moneyness",
+        file="src/tree_options/data/massive_derived.py",
+        anchor=("        if price_mid < premium:\n            lo = mid"),
+        replacement=("        if price_mid < premium:\n            hi = mid"),
+        selectors=[f"{U}/test_massive_derived.py"],
+        invariant=(
+            "M4-C the bisection bracket must TIGHTEN toward the premium: an"
+            " underpricing midpoint moves lo up (bs_price is monotone in iv);"
+            " moving hi down instead collapses the bracket onto the lo edge,"
+            " every later midpoint re-underprices, and the solve can never"
+            " land within tol - it dies in the loud did-not-converge refusal"
+            " instead of round-tripping the planted iv"
+        ),
+    ),
+    dict(
+        id="M160-under-intrinsic-accepted",
+        owner="test_refuses_premium_below_the_lower_bound",
+        file="src/tree_options/data/massive_derived.py",
+        anchor="if premium < price_lo:",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_derived.py"],
+        invariant=(
+            "M4-C a premium below the nearly-zero-vol price is arbitrage or"
+            " degenerate data - the named lower-bound refusal, never a silent"
+            " clamp and never a doomed loop; voiding the guard sends the"
+            " solver into a guaranteed 200-iteration walk that ends in a"
+            " message naming no bound (every in-bracket price exceeds the"
+            " premium, so tol is never met)"
+        ),
+    ),
+    dict(
+        id="M161-over-bracket-accepted",
+        owner="test_refuses_premium_above_the_upper_bound",
+        file="src/tree_options/data/massive_derived.py",
+        anchor="if premium > price_hi:",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_derived.py"],
+        invariant=(
+            "M4-C a premium above bs_price at the hi bracket edge cannot be"
+            " priced by the bracket at all - the named upper-bound refusal"
+            " says so before any iteration; voiding the guard spends the"
+            " whole iteration budget walking to hi and fails with a message"
+            " that names neither the bound nor the numbers"
+        ),
+    ),
+    dict(
+        id="M162-delta-at-wrong-iv",
+        owner="test_implied_vol_round_trips_across_moneyness",
+        file="src/tree_options/data/massive_derived.py",
+        anchor="iv=iv,",
+        replacement="iv=1e-4,",
+        selectors=[f"{U}/test_massive_derived.py"],
+        invariant=(
+            "M4-C derived_abs_delta must evaluate |delta| at the SOLVED iv;"
+            " pricing the greek at the bracket's lo edge instead saturates"
+            " N(d1) to exactly 0.0 or 1.0 at every moneyness, killing the"
+            " owner's strict (0, 1) sanity band - a derived greek that no"
+            " longer co-moves with the premium it was inverted from"
+        ),
+    ),
+    dict(
+        id="M163-stale-bar-carried-forward",
+        owner="test_stale_bar_never_carries_forward",
+        file="src/tree_options/data/massive_overlay.py",
+        anchor="if not fresh:",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_overlay.py"],
+        invariant=(
+            "M4-C a bar more than staleness_sessions behind the capture"
+            " frontier is NOT_EVALUABLE 'stale' - a stale VWAP is never"
+            " carried forward as the session's quote; voiding the freshness"
+            " branch derives six-sessions-old evidence as if it were today's"
+            " (the stale cell flips to DERIVED while its premium stays)"
+        ),
+    ),
+    dict(
+        id="M164-zero-volume-derived",
+        owner="test_zero_volume_bar_refuses",
+        file="src/tree_options/data/massive_overlay.py",
+        anchor="if bar.volume == 0:",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_overlay.py"],
+        invariant=(
+            "M4-C a zero-volume bar carried no trades, so its VWAP token is"
+            " not a trade price - refused by name, never derived; voiding"
+            " the guard launders a placeholder VWAP into an iv/delta pair"
+            " that looks like evidence (the owner's zero-volume cell derives)"
+        ),
+    ),
+    dict(
+        id="M165-refusal-census-hidden",
+        owner="test_derivation_refusal_is_counted_not_fatal",
+        file="src/tree_options/data/massive_overlay.py",
+        anchor="not_evaluable_refused=refused_count,",
+        replacement="not_evaluable_refused=0,",
+        selectors=[f"{U}/test_massive_overlay.py"],
+        invariant=(
+            "M4-C a derivation refusal is NOT fatal but MUST be censused: the"
+            " cell is recorded NOT_EVALUABLE with its reason and counted in"
+            " derived_stats() for the evidence packet; zeroing the feed"
+            " loads the overlay clean while hiding every refusal. (Anchored"
+            " at the count feed, not a bare re-raise in the except branch:"
+            " a re-raise fails the overlay fixture at SETUP, which pytest"
+            " reports as ERROR - not a FAILED line - so it is not a"
+            " behavioral kill; the count is the observable the owner pins)"
+        ),
+    ),
+    dict(
+        id="M166-received-wall-collapsed",
+        owner="test_pit_invariants_on_every_row",
+        file="src/tree_options/data/massive_overlay.py",
+        anchor="received = publication_instant(session)",
+        replacement="received = session_close_instant(session)",
+        selectors=[f"{U}/test_massive_overlay.py"],
+        invariant=(
+            "M4-C PIT receipt is the shared T+1 09:00 ET wall"
+            " (cboe_eod.publication_instant): session t's bar is usable only"
+            " from t+1 morning; stamping receipt at the same session's"
+            " 16:00 close makes session t's own bar decidable at close(t) -"
+            " exactly the lookahead the wall exists to prevent (equal"
+            " stamps still satisfy exchange <= received, so the rows load"
+            " and only the per-row wall assertion dies)"
+        ),
+    ),
+    dict(
+        id="M167-float-boundary-leak",
+        owner="test_derived_quote_matches_the_pinned_derivation_surface",
+        file="src/tree_options/data/massive_overlay.py",
+        anchor="iv=Decimal(repr(iv))",
+        replacement="iv=iv",
+        selectors=[f"{U}/test_massive_overlay.py"],
+        invariant=(
+            "M4-C the sanctioned float island ends at the record boundary:"
+            " the solver's float outputs are pinned once to Decimal(repr(x))"
+            " so no binary approximation reaches an exact field; passing the"
+            " float through leaves iv a float whose value differs from"
+            " Decimal(repr(iv)), and the owner's pinned-surface equality"
+            " catches it. (Decimal(str(x)) would be a no-op mutant: repr and"
+            " str are identical for floats in py3)"
+        ),
+    ),
+    dict(
+        id="M168-monthly-window-floorless",
+        owner="test_a_full_year_has_exactly_one_monthly_expiry_per_month",
+        file="src/tree_options/time/monthlies.py",
+        anchor="return is_friday(d) and 15 <= d.day <= 21",
+        replacement="return is_friday(d) and d.day <= 21",
+        selectors=[f"{U}/test_monthlies.py"],
+        invariant=(
+            "M4-C the monthly rule is THE THIRD Friday - the unique Friday"
+            " in days 15-21; dropping the floor lets the first and second"
+            " Fridays count too (~three 'monthlies' per month), destroying"
+            " the exactly-one-expiry-per-month invariant the atm-grid"
+            " monthly filter and every monthly label rests on"
+        ),
+    ),
+    dict(
+        id="M169-atm-grid-ladder-order",
+        owner="test_atm_grid_takes_atm_plus_minus_band_distinct_strikes_by_rank",
+        file="scripts/capture_massive_structural.py",
+        anchor="ranked = sorted(by_strike, key=lambda s: (abs(s - anchor), s))",
+        replacement="ranked = sorted(by_strike, key=lambda s: s)",
+        selectors=[f"{U}/test_capture_massive_structural.py"],
+        invariant=(
+            "M4-C the band is a RANK in the ladder by |strike - spot| (ties"
+            " by strike), never a plain ladder order: sorting by strike"
+            " alone takes the lowest 2*band+1 strikes regardless of where"
+            " spot sits, so the 'at-the-money' grid describes the bottom of"
+            " the ladder, not the money (spot no longer moves the grid)"
+        ),
+    ),
+    dict(
+        id="M170-atm-grid-dedup-void",
+        owner="test_atm_grid_dedups_a_contract_chosen_at_two_as_ofs",
+        file="scripts/capture_massive_structural.py",
+        anchor=("                    if ticker in seen:\n                        duplicates += 1"),
+        replacement=("                    if False:\n                        duplicates += 1"),
+        selectors=[f"{U}/test_capture_massive_structural.py"],
+        invariant=(
+            "M4-C a contract's bar series is fetched ONCE per run (per"
+            " contract life) - the lane's stated cost model; voiding the"
+            " run-wide dedup pays for the same ticker at every as_of it is"
+            " in-band and drops the dedup note, silently multiplying wire"
+            " spend. (The anchor carries the duplicates counter because the"
+            " bare `if ticker in seen:` line also matches the"
+            " representative chooser's dedup block)"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)
