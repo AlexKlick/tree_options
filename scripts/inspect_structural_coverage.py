@@ -46,12 +46,20 @@ as_of) contract masters plus optional daily bars:
 Fail-loud discipline (house pattern, `scripts/inspect_options_coverage.py`):
 every vendor field is read through `_field`, so a missing or null field
 raises instead of degrading a metric; a `NOT_AUTHORIZED` body raises even
-though it arrives at HTTP 200; a page chain whose last page still carries
-`next_url` is reported as an INCOMPLETE capture rather than silently
+though it arrives at HTTP 200; a body with NO status field refuses the same
+way WS-D1's client refuses it (a vendor response always carries one, so a
+status-less body is not a vendor body); a page chain whose last page still
+carries `next_url` is reported as an INCOMPLETE capture rather than silently
 under-counting the universe; duplicate tickers, duplicate (underlying,
 as_of) masters, non-monotonic bar timestamps, an OCC ticker that disagrees
 with its own `strike_price`/`expiration_date`/`contract_type`, and a daily
-bar whose timestamp is not ET midnight all refuse.
+bar whose timestamp is not ET midnight all refuse. Capture PROVENANCE is
+validated fail-closed: every master envelope must carry the capture
+bridge's `provider`/`capture_version` stamps, and an envelope with wrong
+values — or none at all — refuses as an input of unknown origin. Every
+input file actually loaded is hashed (sha256 over the raw bytes, read once)
+into the report's `sources.input_files`, so an artifact names the exact
+bytes it consumed.
 
 Exactness: payloads are decoded with `json.loads(..., parse_float=Decimal)`,
 so every vendor number keeps its RAW DECIMAL TEXT — `587.5` becomes
@@ -78,6 +86,7 @@ CLI:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -99,6 +108,14 @@ from tree_options.time.sessions import SESSION_TIMEZONE
 REPORT_VERSION = "m4-structural/1"
 TIER = "massive-free/options-basic"
 ADAPTER_MODULE = "tree_options.data.massive_options"
+
+# Provenance the capture bridge (`scripts/capture_massive_structural.py`)
+# stamps on every master envelope it writes. STRING LITERALS by design: this
+# script deliberately never imports `tree_options.data.massive_options`
+# (WS-D2 stays import-free of WS-D1), so a bridge that changes either token
+# surfaces here as a loud refusal rather than as a silent import.
+EXPECTED_PROVIDER = "massive-polygon-free/1"
+KNOWN_CAPTURE_VERSIONS = frozenset({"m4b-capture/1"})
 
 # research_protocol.yaml :: option_candidate_defaults (the only protocol
 # numbers this lane can actually evaluate).
@@ -304,10 +321,16 @@ def _as_date(value: Any, where: str) -> date:
 
 def require_ok_status(payload: Mapping[str, Any], *, where: str) -> None:
     """The not-entitled answer arrives at HTTP 200 with a status FIELD, so the
-    body is the only place the refusal can be detected."""
+    body is the only place the refusal can be detected. A body carrying NO
+    status field refuses too: every vendor response has one, so this is not a
+    vendor body — and WS-D1's client refuses the same body, which makes a
+    silent accept here the softer of the two readers of the same capture."""
     status = payload.get("status")
     if status is None:
-        return
+        raise StructuralCoverageError(
+            f"{where}: body carries no status field — a vendor response always does, "
+            "so this is not a vendor body; refusing rather than assuming OK"
+        )
     if status == "NOT_AUTHORIZED":
         message = payload.get("message") or "(no message)"
         raise StructuralCoverageError(
@@ -494,6 +517,42 @@ def _pages_of(payload: Mapping[str, Any], *, source: str) -> tuple[list[Mapping[
     return pages, not pages[-1].get("next_url")
 
 
+def _require_provenance(payload: Mapping[str, Any], *, source: str) -> None:
+    """Fail-closed capture provenance: the envelope must carry the bridge's
+    `provider`/`capture_version` stamps, with values this inspector knows.
+
+    Wrong values refuse naming found vs expected; a field that is absent
+    entirely refuses too (fail-closed) — an unstamped input has unknown
+    origin, and skipping the check would silently launder it into a report.
+    The expected tokens are STRING LITERALS (see KNOWN_CAPTURE_VERSIONS):
+    importing WS-D1's constants would couple this script to the module it
+    deliberately never imports."""
+    provider = payload.get("provider")
+    if not isinstance(provider, str) or not provider:
+        raise StructuralCoverageError(
+            f"{source}: capture envelope carries no provider — expected "
+            f"{EXPECTED_PROVIDER!r} (fail-closed: an unstamped input has unknown origin)"
+        )
+    if provider != EXPECTED_PROVIDER:
+        raise StructuralCoverageError(
+            f"{source}: capture envelope provider is {provider!r}, expected "
+            f"{EXPECTED_PROVIDER!r} — refusing an input from a different provider"
+        )
+    capture_version = payload.get("capture_version")
+    if not isinstance(capture_version, str) or not capture_version:
+        raise StructuralCoverageError(
+            f"{source}: capture envelope carries no capture_version — expected one of "
+            f"{sorted(KNOWN_CAPTURE_VERSIONS)} (fail-closed: an unstamped input has "
+            "unknown origin)"
+        )
+    if capture_version not in KNOWN_CAPTURE_VERSIONS:
+        raise StructuralCoverageError(
+            f"{source}: capture envelope capture_version is {capture_version!r}, expected "
+            f"one of {sorted(KNOWN_CAPTURE_VERSIONS)} — a capture format this inspector "
+            "cannot interpret"
+        )
+
+
 def parse_contract_master(
     payload: Mapping[str, Any], *, source: str, as_of: date | None = None
 ) -> ContractMaster:
@@ -501,8 +560,11 @@ def parse_contract_master(
 
     The vendor body does NOT carry `as_of` (it is a request parameter), so
     the capture envelope must supply it — either an `as_of` key or an
-    ISO date in the filename. Neither present refuses.
+    ISO date in the filename. Neither present refuses. The envelope must
+    also carry the capture bridge's provenance stamps (provider +
+    capture_version); see `_require_provenance`.
     """
+    _require_provenance(payload, source=source)
     pages, capture_complete = _pages_of(payload, source=source)
     envelope_as_of = payload.get("as_of")
     if envelope_as_of is not None:
@@ -655,6 +717,26 @@ def _optional_dec(row: Mapping[str, Any], key: str, where: str) -> Decimal | Non
 # ---- loaders ------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class InputLineage:
+    """One input file the report actually consumed: its path (recorded the
+    way `sources` records every file — the filename), the sha256 of its raw
+    bytes, and its size in bytes, hashed once at load time."""
+
+    path: str
+    sha256: str
+    size: int
+
+
+def _read_with_lineage(file: Path) -> tuple[str, InputLineage]:
+    """Raw bytes read ONCE: the text handed to `decode_payload` plus the
+    sha256/size lineage recorded for this file (`sources.input_files`)."""
+    data = file.read_bytes()
+    return data.decode("utf-8"), InputLineage(
+        path=file.name, sha256=hashlib.sha256(data).hexdigest(), size=len(data)
+    )
+
+
 def _json_files(path: Path, *, what: str) -> tuple[Path, ...]:
     if path.is_dir():
         files = tuple(sorted(p for p in path.glob("*.json") if p.is_file()))
@@ -677,36 +759,52 @@ def _as_of_from_name(path: Path) -> date | None:
     return date.fromisoformat(matches[0])
 
 
-def load_contract_masters(path: Path) -> tuple[ContractMaster, ...]:
-    """Load one capture file or every *.json in a directory (sorted)."""
-    masters = [
-        parse_contract_master(
-            decode_payload(file.read_text(encoding="utf-8"), source=file.name),
-            source=file.name,
-            as_of=_as_of_from_name(file),
+def load_contract_masters(
+    path: Path, *, lineage: list[InputLineage] | None = None
+) -> tuple[ContractMaster, ...]:
+    """Load one capture file or every *.json in a directory (sorted).
+
+    Each file's sha256/size is recorded into `lineage` when supplied, so the
+    report can name the exact bytes it consumed."""
+    masters = []
+    for file in _json_files(path, what="--contracts-json"):
+        text, record = _read_with_lineage(file)
+        if lineage is not None:
+            lineage.append(record)
+        masters.append(
+            parse_contract_master(
+                decode_payload(text, source=file.name),
+                source=file.name,
+                as_of=_as_of_from_name(file),
+            )
         )
-        for file in _json_files(path, what="--contracts-json")
-    ]
     return tuple(sorted(masters, key=lambda m: (m.underlying, m.as_of, m.source)))
 
 
-def load_bar_series(path: Path) -> tuple[BarSeries, ...]:
-    series = [
-        parse_bar_series(
-            decode_payload(file.read_text(encoding="utf-8"), source=file.name), source=file.name
-        )
-        for file in _json_files(path, what="--bars-json")
-    ]
+def load_bar_series(
+    path: Path, *, lineage: list[InputLineage] | None = None
+) -> tuple[BarSeries, ...]:
+    series = []
+    for file in _json_files(path, what="--bars-json"):
+        text, record = _read_with_lineage(file)
+        if lineage is not None:
+            lineage.append(record)
+        series.append(parse_bar_series(decode_payload(text, source=file.name), source=file.name))
     return tuple(sorted(series, key=lambda s: (s.ticker, s.source)))
 
 
-def load_spot_proxy(path: Path) -> dict[str, dict[date, Decimal]]:
+def load_spot_proxy(
+    path: Path, *, lineage: list[InputLineage] | None = None
+) -> dict[str, dict[date, Decimal]]:
     """`{"SPY": {"2025-03-07": "560.12"}}` or `{"SPY": "560.12"}` (all as_ofs).
 
     A spot proxy is DECLARED INPUT, never derived: this tier has no
     underlying quote, and the report says NOT_EVALUABLE without one.
     """
-    payload = decode_payload(path.read_text(encoding="utf-8"), source=path.name)
+    text, record = _read_with_lineage(path)
+    if lineage is not None:
+        lineage.append(record)
+    payload = decode_payload(text, source=path.name)
     proxy: dict[str, dict[date, Decimal]] = {}
     for underlying, value in payload.items():
         where = f"{path.name}[{underlying!r}]"
@@ -860,6 +958,7 @@ class StructuralReport:
     adapter_status: str
     contract_sources: tuple[str, ...]
     bar_sources: tuple[str, ...]
+    input_files: tuple[InputLineage, ...]
     incomplete_captures: tuple[str, ...]
     unknown_result_keys: tuple[str, ...]
     spot_proxy_supplied: bool
@@ -1217,6 +1316,7 @@ def build_structural_report(
     bars: Sequence[BarSeries] = (),
     spot_proxy: Mapping[str, Mapping[date, Decimal]] | None = None,
     adapter_status: str = "NOT_PROBED",
+    input_files: Sequence[InputLineage] = (),
 ) -> StructuralReport:
     """Structural coverage over a sequence of per-(underlying, as_of) masters."""
     if not masters:
@@ -1277,6 +1377,7 @@ def build_structural_report(
         adapter_status=adapter_status,
         contract_sources=tuple(sorted(m.source for m in masters)),
         bar_sources=tuple(sorted(one.source for one in bars)),
+        input_files=tuple(sorted(input_files, key=lambda f: f.path)),
         incomplete_captures=tuple(sorted(m.source for m in masters if not m.capture_complete)),
         unknown_result_keys=tuple(sorted({k for m in masters for k in m.unknown_result_keys})),
         spot_proxy_supplied=spot_proxy is not None,
@@ -1464,12 +1565,16 @@ def report_to_json(report: StructuralReport) -> dict[str, Any]:
         "report_version": report.report_version,
         "capability": CAPABILITY,
         "sources": {
-            "contract_masters": list(report.contract_sources),
-            "bars": list(report.bar_sources),
-            "incomplete_captures": list(report.incomplete_captures),
-            "unknown_result_keys": list(report.unknown_result_keys),
-            "spot_proxy_supplied": report.spot_proxy_supplied,
             "adapter": {"module": ADAPTER_MODULE, "status": report.adapter_status},
+            "bars": list(report.bar_sources),
+            "contract_masters": list(report.contract_sources),
+            "incomplete_captures": list(report.incomplete_captures),
+            "input_files": [
+                {"path": one.path, "sha256": one.sha256, "bytes": one.size}
+                for one in report.input_files
+            ],
+            "spot_proxy_supplied": report.spot_proxy_supplied,
+            "unknown_result_keys": list(report.unknown_result_keys),
         },
         "aggregate": {
             "tier": report.tier,
@@ -1731,11 +1836,20 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    masters = load_contract_masters(args.contracts_json)
-    bars = load_bar_series(args.bars_json) if args.bars_json is not None else ()
-    spot = load_spot_proxy(args.spot_json) if args.spot_json is not None else None
+    input_files: list[InputLineage] = []
+    masters = load_contract_masters(args.contracts_json, lineage=input_files)
+    bars = (
+        load_bar_series(args.bars_json, lineage=input_files) if args.bars_json is not None else ()
+    )
+    spot = (
+        load_spot_proxy(args.spot_json, lineage=input_files) if args.spot_json is not None else None
+    )
     report = build_structural_report(
-        masters, bars=bars, spot_proxy=spot, adapter_status=adapter_status()
+        masters,
+        bars=bars,
+        spot_proxy=spot,
+        adapter_status=adapter_status(),
+        input_files=input_files,
     )
     args.out_json.parent.mkdir(parents=True, exist_ok=True)
     args.out_json.write_text(json.dumps(report_to_json(report), indent=2) + "\n", encoding="utf-8")

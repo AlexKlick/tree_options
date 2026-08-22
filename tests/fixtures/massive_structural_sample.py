@@ -47,6 +47,11 @@ Two families live here:
    - O:QQQ250404C00480000 on 2025-04-08 — no contract master owns it, so it
      is the UNMATCHED series (counted and named, never silently dropped).
 
+Every master payload carries the capture bridge's provenance stamps
+(provider + capture_version); the builders default to the valid tokens and
+the refusal tests override or drop them (bars/spot carry no stamps, matching
+the bridge's verbatim-body writes).
+
 No API key, no network, no absolute host paths.
 """
 
@@ -58,11 +63,15 @@ from pathlib import Path
 # ---- verbatim live-capture slices ---------------------------------------------
 
 # /v3/reference/options/contracts?underlying_ticker=SPY&as_of=... (3 of 250
-# results, key order as delivered). `next_url` is the real cursor form,
-# truncated: it never carried the API key, and `_selfcheck` refuses the vendor
-# key query parameter anywhere in this module (the needle is assembled from
-# fragments so the guard never plants the very string it forbids).
+# results, vendor keys in delivered order, prefixed by the capture bridge's
+# provenance header exactly as `master_envelope` writes it). `next_url` is the
+# real cursor form, truncated: it never carried the API key, and `_selfcheck`
+# refuses the vendor key query parameter anywhere in this module (the needle
+# is assembled from fragments so the guard never plants the very string it
+# forbids).
 REAL_CONTRACTS_PAYLOAD = """{
+  "capture_version": "m4b-capture/1",
+  "provider": "massive-polygon-free/1",
   "results": [
     {
       "cfi": "OCASPS",
@@ -132,6 +141,12 @@ NOT_AUTHORIZED_PAYLOAD = """{
 
 # ---- hand-built universe -------------------------------------------------------
 
+# The capture bridge stamps provider/capture_version on every master envelope
+# it writes; the sample builders emit the same tokens so the happy paths
+# parse, and refusal tests override or drop them (pass None to omit).
+PROVIDER = "massive-polygon-free/1"
+CAPTURE_VERSION = "m4b-capture/1"
+
 AS1 = "2025-03-05"
 AS2 = "2025-03-06"
 AS3 = "2025-03-07"
@@ -192,9 +207,19 @@ def contracts_payload(
     status: str | None = "OK",
     next_url: str | None = None,
     underlying: str | None = None,
+    provider: str | None = PROVIDER,
+    capture_version: str | None = CAPTURE_VERSION,
 ) -> str:
-    """A single-response capture (optionally carrying the envelope `as_of`)."""
-    parts = ['"results": [' + ", ".join(results) + "]"]
+    """A single-response capture (optionally carrying the envelope `as_of`).
+
+    The provenance stamps ride the envelope header first, the same place the
+    capture bridge writes them; `provider`/`capture_version` None omits them."""
+    parts: list[str] = []
+    if capture_version is not None:
+        parts.append(f'"capture_version": "{capture_version}"')
+    if provider is not None:
+        parts.append(f'"provider": "{provider}"')
+    parts.append('"results": [' + ", ".join(results) + "]")
     if status is not None:
         parts.append(f'"status": "{status}"')
     if next_url is not None:
@@ -206,9 +231,25 @@ def contracts_payload(
     return "{" + ", ".join(parts) + "}"
 
 
-def paged_contracts_payload(*, pages: Sequence[str], as_of: str) -> str:
-    """A multi-page capture envelope: every page but the last carries next_url."""
-    return "{" + f'"as_of": "{as_of}", "pages": [' + ", ".join(pages) + "]}"
+def paged_contracts_payload(
+    *,
+    pages: Sequence[str],
+    as_of: str,
+    provider: str | None = PROVIDER,
+    capture_version: str | None = CAPTURE_VERSION,
+) -> str:
+    """A multi-page capture envelope: every page but the last carries next_url.
+
+    The provenance stamps ride the ENVELOPE (the pages stay verbatim vendor
+    bodies, exactly as the capture bridge writes them)."""
+    parts: list[str] = []
+    if capture_version is not None:
+        parts.append(f'"capture_version": "{capture_version}"')
+    if provider is not None:
+        parts.append(f'"provider": "{provider}"')
+    parts.append(f'"as_of": "{as_of}"')
+    parts.append('"pages": [' + ", ".join(pages) + "]")
+    return "{" + ", ".join(parts) + "}"
 
 
 def bar(
@@ -355,8 +396,15 @@ SPY_AS2_PAYLOAD = paged_contracts_payload(
             results=(C1, P1, C2, C3, C4_STANDARD),
             as_of=None,
             next_url="https://api.polygon.io/v3/reference/options/contracts?cursor=PAGE2",
+            provider=None,
+            capture_version=None,
         ),
-        contracts_payload(results=(A1_NON_STANDARD, L1_LEAPS, P2_BORN), as_of=None),
+        contracts_payload(
+            results=(A1_NON_STANDARD, L1_LEAPS, P2_BORN),
+            as_of=None,
+            provider=None,
+            capture_version=None,
+        ),
     ),
     as_of=AS2,
 )
@@ -481,6 +529,11 @@ def _selfcheck() -> None:
         assert host_path not in value, f"{name} carries an absolute host path"
     for _name, text in MASTER_FILES + BAR_FILES:
         assert isinstance(_json.loads(text), dict)
+    for _name, text in MASTER_FILES:
+        decoded = _json.loads(text)
+        assert decoded.get("provider") == PROVIDER, f"{_name} lost its provenance stamp"
+        assert decoded.get("capture_version") == CAPTURE_VERSION, f"{_name} lost its stamp"
+    assert _json.loads(REAL_CONTRACTS_PAYLOAD)["provider"] == PROVIDER
     for text in (
         REAL_CONTRACTS_PAYLOAD,
         REAL_BARS_PAYLOAD,

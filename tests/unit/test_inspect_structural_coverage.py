@@ -31,6 +31,7 @@ one unmatched QQQ series that no master owns.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sys
 import types
@@ -68,14 +69,27 @@ def captures(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 
 @pytest.fixture(scope="module")
-def masters(captures: Path) -> tuple[structural.ContractMaster, ...]:
-    return structural.load_contract_masters(captures / "masters")
+def lineage() -> list[structural.InputLineage]:
+    return []
 
 
 @pytest.fixture(scope="module")
-def report(captures: Path, masters: tuple[structural.ContractMaster, ...]):  # type: ignore[no-untyped-def]
+def masters(
+    captures: Path, lineage: list[structural.InputLineage]
+) -> tuple[structural.ContractMaster, ...]:
+    return structural.load_contract_masters(captures / "masters", lineage=lineage)
+
+
+@pytest.fixture(scope="module")
+def report(
+    captures: Path,
+    masters: tuple[structural.ContractMaster, ...],
+    lineage: list[structural.InputLineage],
+):  # type: ignore[no-untyped-def]
     return structural.build_structural_report(
-        masters, bars=structural.load_bar_series(captures / "bars")
+        masters,
+        bars=structural.load_bar_series(captures / "bars", lineage=lineage),
+        input_files=lineage,
     )
 
 
@@ -128,6 +142,31 @@ def test_not_authorized_body_refuses_even_at_http_200() -> None:
         structural.require_ok_status(payload, where="snapshot.json")
     with pytest.raises(structural.StructuralCoverageError, match="not entitled"):
         structural.parse_bar_series(payload, source="snapshot.json", ticker=CID_C1)
+
+
+def test_a_page_without_a_status_field_refuses() -> None:
+    """A body with no `status` field is not a vendor body — WS-D1's client
+    refuses it, so the inspector must not be the softer of the two readers."""
+    with pytest.raises(structural.StructuralCoverageError, match="carries no status field"):
+        _parse(fx.contracts_payload(results=(fx.C1,), as_of="2025-03-05", status=None))
+    # A page inside a multi-page envelope is named by its page index.
+    with pytest.raises(
+        structural.StructuralCoverageError, match=r"page 0: body carries no status field"
+    ):
+        _parse(
+            fx.paged_contracts_payload(
+                pages=(fx.contracts_payload(results=(fx.C1,), status=None),),
+                as_of="2025-03-05",
+            )
+        )
+    good = fx.bar(v="1", t=fx.T_2025_04_14)
+    with pytest.raises(structural.StructuralCoverageError, match="carries no status field"):
+        structural.parse_bar_series(
+            structural.decode_payload(
+                fx.bars_payload(ticker=CID_L1, results=(good,), status=None), source="bars.json"
+            ),
+            source="bars.json",
+        )
 
 
 def test_real_bar_slice_sessions_volume_and_exact_vwap() -> None:
@@ -486,6 +525,40 @@ def test_float_input_refuses_rather_than_coercing() -> None:
         structural.parse_contract(floaty, where="row")
 
 
+def test_envelope_provenance_is_validated() -> None:
+    """The capture bridge stamps provider/capture_version on every master
+    envelope; wrong values refuse naming found vs expected, and a field that
+    is absent entirely refuses too (fail-closed, never skipped)."""
+    with pytest.raises(
+        structural.StructuralCoverageError,
+        match=r"provider is 'massive-pro/1', expected 'massive-polygon-free/1'",
+    ):
+        _parse(fx.contracts_payload(results=(fx.C1,), as_of="2025-03-05", provider="massive-pro/1"))
+    with pytest.raises(
+        structural.StructuralCoverageError,
+        match=r"capture_version is 'm9-capture/1', expected one of \['m4b-capture/1'\]",
+    ):
+        _parse(
+            fx.contracts_payload(
+                results=(fx.C1,), as_of="2025-03-05", capture_version="m9-capture/1"
+            )
+        )
+    # Fail-closed: a stamp that is missing entirely is unknown origin, not a pass.
+    with pytest.raises(structural.StructuralCoverageError, match="carries no provider"):
+        _parse(fx.contracts_payload(results=(fx.C1,), as_of="2025-03-05", provider=None))
+    with pytest.raises(structural.StructuralCoverageError, match="carries no capture_version"):
+        _parse(fx.contracts_payload(results=(fx.C1,), as_of="2025-03-05", capture_version=None))
+    # The stamp rides the ENVELOPE of a multi-page capture, not the pages.
+    with pytest.raises(structural.StructuralCoverageError, match="carries no provider"):
+        _parse(
+            fx.paged_contracts_payload(
+                pages=(fx.contracts_payload(results=(fx.C1,)),),
+                as_of="2025-03-05",
+                provider=None,
+            )
+        )
+
+
 def test_bar_integrity_refusals() -> None:
     good = fx.bar(v="1", t=fx.T_2025_04_14)
     later = fx.bar(v="2", t=fx.T_2025_04_15)
@@ -605,7 +678,65 @@ def test_json_shape_and_stable_top_level_keys(report) -> None:  # type: ignore[n
     assert payload["not_evaluable"]["open_interest"]["status"] == "NOT_EVALUABLE"
     assert payload["not_evaluable"]["strike_grid_in_spot_units"]["status"] == "NOT_EVALUABLE"
     assert payload["sources"]["adapter"]["module"] == "tree_options.data.massive_options"
+    # The sources block is sorted, with the input-file lineage in its place.
+    assert list(payload["sources"]) == [
+        "adapter",
+        "bars",
+        "contract_masters",
+        "incomplete_captures",
+        "input_files",
+        "spot_proxy_supplied",
+        "unknown_result_keys",
+    ]
+    # This report was built from the shared capture tree: 4 masters + 3 bar
+    # files, each entry {path, sha256, bytes}, deterministically path-sorted.
+    entries = payload["sources"]["input_files"]
+    assert [e["path"] for e in entries] == [
+        "bars_spxw.json",
+        "bars_spy_leaps.json",
+        "bars_unmatched.json",
+        "spx_2025-03-07.json",
+        "spy_2025-03-05.json",
+        "spy_2025-03-06.json",
+        "spy_2025-03-07.json",
+    ]
+    for entry in entries:
+        assert list(entry) == ["path", "sha256", "bytes"]
+        assert len(entry["sha256"]) == 64 and int(entry["sha256"], 16) >= 0
+        assert isinstance(entry["bytes"], int) and entry["bytes"] > 0
     json.dumps(payload)  # the artifact must be serialisable as-is
+
+
+def test_input_files_are_hashed_into_the_report(captures: Path, tmp_path: Path) -> None:
+    """P1-13 input lineage: every masters/bars/spot-proxy file the CLI loaded
+    is recorded in sources.input_files with an independently recomputable
+    sha256 of its raw bytes."""
+    out_json = tmp_path / "structural.json"
+    rc = structural.main(
+        [
+            "--contracts-json",
+            str(captures / "masters"),
+            "--bars-json",
+            str(captures / "bars"),
+            "--spot-json",
+            str(captures / "spot.json"),
+            "--out-json",
+            str(out_json),
+        ]
+    )
+    assert rc == 0
+    entries = json.loads(out_json.read_text(encoding="utf-8"))["sources"]["input_files"]
+    on_disk = {
+        file.name: file
+        for folder in ("masters", "bars")
+        for file in (captures / folder).glob("*.json")
+    }
+    on_disk[(captures / "spot.json").name] = captures / "spot.json"
+    assert [e["path"] for e in entries] == sorted(on_disk), "sorted by path, nothing dropped"
+    for entry in entries:
+        data = on_disk[entry["path"]].read_bytes()
+        assert entry["sha256"] == hashlib.sha256(data).hexdigest(), entry["path"]
+        assert entry["bytes"] == len(data), entry["path"]
 
 
 def test_markdown_summary_lines(report) -> None:  # type: ignore[no-untyped-def]
