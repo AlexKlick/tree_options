@@ -51,3 +51,12 @@ served free from cache.
 _to be appended when the era completes: manifest verify, aggregate
 numbers, per-underlying roots/lifecycle/adjustment findings, and the
 committed machine copy of the inspector report._
+
+## 3.1 Amendment (owner, 2026-08-22)
+
+The owner clarified the subscription terms: the tier has **no total-request
+cap** — only the 5/min rate limit. `--budget` is the lane's own runaway
+rail, not a vendor quota. The rail was raised 13,000 → 25,000 (projected
+need ~17k; the pass was stopped and relaunched from cache, losing
+nothing), so the era completes in one pass instead of a budget-exhaust
+relaunch cycle.
