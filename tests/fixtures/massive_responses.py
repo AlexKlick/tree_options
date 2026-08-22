@@ -49,6 +49,7 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from typing import NoReturn
 
 # ---- /v3/reference/options/contracts ---------------------------------------
 
@@ -292,6 +293,27 @@ class FakeTransport:
 def transport_of(*bodies: str, status: int = 200) -> FakeTransport:
     """A transport that replays `bodies` in order, all with `status`."""
     return FakeTransport([FakeResponse(status=status, body=body) for body in bodies])
+
+
+@dataclass
+class RaisingTransport:
+    """A transport whose every call raises `error` — the transport-failure
+    lane `FakeTransport` cannot express (it only replays responses). Records
+    the URL and timeout the same way `FakeTransport` does, so retry counts
+    stay assertable."""
+
+    error: Exception
+    urls: list[str] = field(default_factory=list)
+    timeouts: list[float] = field(default_factory=list)
+
+    def __call__(self, url: str, *, timeout: float) -> NoReturn:
+        self.urls.append(url)
+        self.timeouts.append(timeout)
+        raise self.error
+
+    @property
+    def calls(self) -> int:
+        return len(self.urls)
 
 
 def queue(*responses: FakeResponse) -> FakeTransport:

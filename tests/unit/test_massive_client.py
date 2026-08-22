@@ -1,9 +1,9 @@
 """WS-D1: Massive/Polygon client — key custody, spacing, cache, refusals.
 
-Hermetic and offline: every test injects `FakeTransport`/`FakeClock` from
-`tests/fixtures/massive_responses.py`, no test opens a socket, and no test
-reads the real key file (`load_api_key` is only ever called with an
-explicit `env=` and `key_path=`).
+Hermetic and offline: every test injects `FakeTransport` /
+`RaisingTransport` / `FakeClock` from `tests/fixtures/massive_responses.py`,
+no test opens a socket, and no test reads the real key file (`load_api_key`
+is only ever called with an explicit `env=` and `key_path=`).
 
 The key used throughout is a literal test string. Several tests assert it
 does NOT appear somewhere; that is the point of the lane.
@@ -11,24 +11,32 @@ does NOT appear somewhere; that is the point of the lane.
 
 from __future__ import annotations
 
+import json
+import math
 from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from tests.fixtures import massive_responses as fx
+from tree_options.data import massive_client as mc
 from tree_options.data.massive_client import (
     API_KEY_ENV_VAR,
     FREE_TIER_REQUESTS_PER_MINUTE,
+    MASSIVE_CACHE_DIR_ENV_VAR,
     BackoffPolicy,
     MassiveApiError,
     MassiveAuthError,
+    MassiveAuthRejectedError,
     MassiveClient,
     MassiveNotEntitledError,
     MassivePaginationError,
     MassiveRateLimitError,
+    MassiveTransportError,
     RateGovernor,
     cache_key_for,
+    client_from_environment,
+    default_cache_dir,
     load_api_key,
     loads_exact,
     redact,
@@ -38,13 +46,14 @@ KEY = "pk_live_TESTKEY_do_not_use_1234567890"
 
 
 def make_client(
-    transport: fx.FakeTransport,
+    transport: fx.FakeTransport | fx.RaisingTransport,
     *,
     cache_dir: Path | None = None,
     clock: fx.FakeClock | None = None,
     requests_per_minute: int | None = None,
     backoff: BackoffPolicy | None = None,
     max_pages: int = 25,
+    timeout: float = 30.0,
 ) -> MassiveClient:
     """A client wired to fakes. Rate spacing is OFF unless a test asks for
     it, so unrelated tests are not asserting sleep bookkeeping."""
@@ -56,6 +65,7 @@ def make_client(
         governor=RateGovernor(requests_per_minute, clock=clock, sleeper=clock.sleep),
         backoff=BackoffPolicy() if backoff is None else backoff,
         max_pages=max_pages,
+        timeout=timeout,
     )
 
 
@@ -241,7 +251,58 @@ def test_cache_can_be_disabled_entirely() -> None:
     assert client.stats.cache_hits == 0
 
 
-# ---- 429 backoff -------------------------------------------------------------
+def test_corrupt_cache_entry_self_heals_from_the_wire(tmp_path: Path) -> None:
+    """A torn/corrupt entry must not raise forever: it is discarded, the
+    call degrades to a miss, and the wire rewrites it."""
+    client = make_client(fx.transport_of(fx.CONTRACTS_SINGLE_PAGE), cache_dir=tmp_path)
+    client.get_json("/v3/reference/options/contracts", {"underlying_ticker": "SPY"})
+    next(tmp_path.glob("*.json")).write_bytes(b"\x00 not json")  # a torn write
+    replay = make_client(fx.transport_of(fx.CONTRACTS_SINGLE_PAGE), cache_dir=tmp_path)
+    body = replay.get_json("/v3/reference/options/contracts", {"underlying_ticker": "SPY"})
+    assert body["status"] == "OK"  # the good body came back from the wire
+    assert replay.stats.cache_self_heals == 1
+    assert replay.stats.cache_hits == 0  # re-accounted: the call is a miss
+    assert replay.stats.cache_misses == 1
+    assert replay.stats.requests == 1  # exactly one refetch
+    healed = next(tmp_path.glob("*.json")).read_bytes()
+    assert loads_exact(healed)["status"] == "OK"  # rewritten, decodable again
+
+
+def test_cache_put_leaves_no_partial_or_tmp_artifacts(tmp_path: Path) -> None:
+    client = make_client(fx.transport_of(fx.CONTRACTS_EMPTY), cache_dir=tmp_path)
+    client.get_json("/v3/x")
+    assert list(tmp_path.glob("*.json")) != []  # the entry itself landed
+    assert list(tmp_path.glob(".*.tmp")) == []  # ... and no staging file survived
+    planted = tmp_path / f".{cache_key_for('/v3/x', {})}.999999.json.tmp"
+    planted.write_bytes(b"\x00 garbage")  # an orphan left by a crashed write
+    replay = make_client(fx.transport_of(fx.CONTRACTS_EMPTY), cache_dir=tmp_path)
+    assert replay.get_json("/v3/x")["status"] == "OK"  # invisible: a miss, then the wire
+    assert replay.stats.cache_self_heals == 0
+
+
+def test_not_entitled_from_cache_still_refuses_never_self_heals(tmp_path: Path) -> None:
+    """Self-heal is for UNDECODABLE bytes only. A cached refusal decodes
+    fine and must keep refusing — it must not decay into a wire refetch."""
+    entry = tmp_path / f"{cache_key_for('/v3/snapshot/options/SPY', {})}.json"
+    entry.write_bytes(fx.NOT_AUTHORIZED_SNAPSHOT.encode("utf-8"))
+    transport = fx.transport_of(fx.NOT_AUTHORIZED_SNAPSHOT)
+    client = make_client(transport, cache_dir=tmp_path)
+    with pytest.raises(MassiveNotEntitledError):
+        client.get_json("/v3/snapshot/options/SPY")
+    assert client.stats.cache_self_heals == 0
+    assert client.stats.requests == 0  # the refusal came from the cache
+    assert transport.calls == 0
+    assert entry.exists()  # and the entry was not discarded
+
+
+def test_cache_keys_are_canonically_encoded() -> None:
+    """`a=b=c` must split only one way: joining raw `k=v` pairs made
+    `{"a": "b=c"}` and `{"a=b": "c"}` collide on one cache file."""
+    assert cache_key_for("/v3/x", {"a": "b=c"}) != cache_key_for("/v3/x", {"a=b": "c"})
+    assert cache_key_for("/v3/x", {"a": "b=c"}) == cache_key_for("/v3/x", {"a": "b=c"})
+
+
+# ---- retry classification (429 / 5xx / transport / auth) ---------------------
 
 
 def test_429_backs_off_exponentially_then_succeeds() -> None:
@@ -294,6 +355,89 @@ def test_backoff_policy_delays_are_capped_and_summable() -> None:
     assert policy.total_seconds() == 22.0  # attempts 1..4 precede the 5th try
     with pytest.raises(ValueError, match="attempt must be"):
         policy.delay_for(0)
+
+
+def test_503_is_retried_with_backoff_then_succeeds() -> None:
+    clock = fx.FakeClock()
+    transport = fx.queue(
+        fx.FakeResponse(status=503, body="bad gateway"),
+        fx.FakeResponse(status=503, body="bad gateway"),
+        fx.FakeResponse(status=200, body=fx.CONTRACTS_EMPTY),
+    )
+    client = make_client(transport, clock=clock)
+    body = client.get_json("/v3/x")
+    assert body["status"] == "OK"
+    assert client.stats.server_error_retries == 2
+    assert transport.calls == 3
+    assert clock.slept == [2.0, 4.0]  # the same cadence 429 uses
+
+
+@pytest.mark.parametrize("status", [401, 403])
+def test_401_and_403_are_terminal_auth_rejections(status: int, tmp_path: Path) -> None:
+    leaky = f'{{"status":"ERROR","error":"bad key {KEY}"}}'
+    transport = fx.FakeTransport([fx.FakeResponse(status=status, body=leaky)])
+    client = make_client(transport, cache_dir=tmp_path)
+    with pytest.raises(MassiveAuthRejectedError) as exc:
+        client.get_json("/v3/x")
+    assert exc.value.http_status == status
+    assert "rotate the key" in str(exc.value)
+    assert KEY not in str(exc.value)
+    assert "REDACTED" in str(exc.value)
+    assert transport.calls == 1  # terminal: no retry ever
+    assert list(tmp_path.iterdir()) == []  # ... and nothing was cached
+
+
+def test_transport_failure_is_retried_then_raises_with_attempts(tmp_path: Path) -> None:
+    clock = fx.FakeClock()
+    transport = fx.RaisingTransport(RuntimeError(f"boom {KEY}"))
+    client = make_client(transport, clock=clock, cache_dir=tmp_path)
+    with pytest.raises(MassiveTransportError) as exc:
+        client.get_json("/v3/x")
+    assert "after 4 attempts" in str(exc.value)  # the DEFAULT backoff is 4 attempts
+    assert KEY not in str(exc.value)
+    assert "REDACTED" in str(exc.value)
+    assert client.stats.transport_retries == 3
+    assert transport.calls == 4
+    assert clock.slept == [2.0, 4.0, 8.0]
+    assert list(tmp_path.glob("*.json")) == []  # a failure is never cached
+
+
+def test_transport_error_message_is_redacted() -> None:
+    """The transport layer never sees the key; if its message echoed one
+    anyway, the client's wrap point redacts it before anything escapes."""
+    client = make_client(fx.RaisingTransport(MassiveTransportError(f"tls failure near {KEY}")))
+    with pytest.raises(MassiveTransportError) as exc:
+        client.get_json("/v3/x")
+    assert KEY not in str(exc.value)
+    assert "REDACTED" in str(exc.value)
+
+
+def test_timeout_reaches_the_transport() -> None:
+    transport = fx.transport_of(fx.CONTRACTS_EMPTY)
+    client = make_client(transport, timeout=7.5)
+    client.get_json("/v3/x")
+    assert transport.timeouts == [7.5]
+
+
+def test_an_exhausted_test_double_raises_its_own_assertion_error() -> None:
+    """The fakes' honesty mechanism stays loud: an unexpected request is an
+    AssertionError, never swallowed into a transport retry."""
+    client = make_client(fx.FakeTransport())
+    with pytest.raises(AssertionError, match="unexpected request"):
+        client.get_json("/v3/x")
+
+
+def test_retry_after_nan_falls_back_to_the_policy_delay() -> None:
+    clock = fx.FakeClock()
+    transport = fx.queue(
+        fx.FakeResponse(status=429, body="", headers={"retry-after": "nan"}),
+        fx.FakeResponse(status=429, body="", headers={"retry-after": "inf"}),
+        fx.FakeResponse(status=200, body=fx.CONTRACTS_EMPTY),
+    )
+    client = make_client(transport, clock=clock)
+    client.get_json("/v3/x")
+    assert clock.slept == [2.0, 4.0]
+    assert all(math.isfinite(slept) for slept in clock.slept)
 
 
 # ---- entitlement and body-level refusals -------------------------------------
@@ -399,7 +543,58 @@ def test_max_pages_guard_refuses_rather_than_truncates() -> None:
     assert transport.calls == 2
 
 
+def test_paginate_refuses_a_next_url_cycle() -> None:
+    """A -> B -> A: the second visit to B is a vendor cursor bug, not more
+    data — the loop is refused before it can spin to the page cap."""
+    host = "https://api.polygon.io/v3/reference/options/contracts"
+
+    def cyclic(next_url: str) -> str:
+        return json.dumps({"results": [], "status": "OK", "next_url": next_url})
+
+    a = f"{host}?cursor=AAA"
+    b = f"{host}?cursor=BBB"
+    transport = fx.transport_of(cyclic(b), cyclic(a), cyclic(b))
+    client = make_client(transport)
+    with pytest.raises(MassivePaginationError, match="cycle") as exc:
+        client.paginate("/v3/reference/options/contracts")
+    assert b in str(exc.value)
+    assert transport.calls == 3
+
+
 def test_paginate_rejects_a_nonsense_cap() -> None:
     client = make_client(fx.transport_of())
     with pytest.raises(ValueError, match="max_pages must be"):
         client.paginate("/v3/x", max_pages=0)
+
+
+# ---- construction and cache location ----------------------------------------
+
+
+def test_client_from_environment_builds_a_key_free_client(tmp_path: Path) -> None:
+    absent = tmp_path / "absent.key"
+    client = client_from_environment(
+        env={API_KEY_ENV_VAR: KEY},
+        key_path=absent,
+        transport=fx.transport_of(fx.CONTRACTS_EMPTY),
+        cache_dir=None,
+    )
+    assert isinstance(client, MassiveClient)
+    assert KEY not in repr(client)
+    assert client.get_json("/v3/x")["status"] == "OK"
+    with pytest.raises(MassiveAuthError, match=API_KEY_ENV_VAR):
+        client_from_environment(env={}, key_path=absent)
+
+
+def test_default_cache_dir_is_repo_relative_with_env_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    override = tmp_path / "elsewhere"
+    monkeypatch.setenv(MASSIVE_CACHE_DIR_ENV_VAR, str(override))
+    assert default_cache_dir() == override  # an explicit override wins
+    monkeypatch.delenv(MASSIVE_CACHE_DIR_ENV_VAR, raising=False)
+    derived = Path(mc.__file__).resolve().parents[3] / "artifacts" / "massive-cache"
+    assert default_cache_dir() == derived
+    assert default_cache_dir().as_posix().endswith("artifacts/massive-cache")
+    # the default is derived from the module's own location, never pinned
+    # to one user's home directory
+    assert "/home/" not in Path(mc.__file__).read_text(encoding="utf-8")

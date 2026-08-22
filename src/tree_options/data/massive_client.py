@@ -34,9 +34,19 @@ Four properties this module exists to guarantee (each has a test):
 
 Pagination follows `next_url` (cursor-bearing, key-free as delivered) and
 REFUSES a `next_url` pointing at a different host — appending the key to
-a redirected host would exfiltrate it. Exhausting `max_pages` while a
-`next_url` remains raises rather than truncating: a silently short
-contract master would misdescribe coverage (M1 "zero silent drops").
+a redirected host would exfiltrate it. A repeated `next_url` is likewise
+refused as a cycle rather than followed forever. Exhausting `max_pages`
+while a `next_url` remains raises rather than truncating: a silently
+short contract master would misdescribe coverage (M1 "zero silent drops").
+
+Each attempt is classified on its own merits: HTTP 429, HTTP 502/503/504,
+and transport-level failures share ONE bounded backoff cadence (with a
+retry counter each); HTTP 401/403 is a terminal
+`MassiveAuthRejectedError` — never retried, never cached — and every
+other non-200 is terminal. Cache writes are atomic (a dot-prefixed
+staging file plus `os.replace`), and a cached body that no longer
+DECODES self-heals: the entry is discarded and the wire refetches it,
+so one torn write cannot poison every future call.
 
 Timing here is wall-clock spacing in float seconds via `time.monotonic`,
 NOT date arithmetic, so the repo's naive-date-arithmetic ban (no
@@ -47,6 +57,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import stat
 import time
@@ -63,11 +74,34 @@ MASSIVE_BASE_URL = "https://api.polygon.io"
 MASSIVE_PROVIDER = "massive-polygon-free/1"
 API_KEY_ENV_VAR = "POLYGON_API_KEY"
 DEFAULT_KEY_PATH = Path.home() / ".config" / "tree_options" / "polygon.key"
-DEFAULT_CACHE_DIR = Path("/home/alexk/documents/tree_options/artifacts/massive-cache")
+MASSIVE_CACHE_DIR_ENV_VAR = "TREE_OPTIONS_MASSIVE_CACHE"
+
+
+def default_cache_dir() -> Path:
+    """The default cache root: `TREE_OPTIONS_MASSIVE_CACHE` when set, else
+    the checkout's `artifacts/massive-cache`, derived from THIS file's
+    location — never a hardcoded home path, so a second checkout (or
+    another user) gets its own cache instead of sharing one. The env var
+    is read at call time, so a wrapper can retarget it without
+    re-importing; `DEFAULT_CACHE_DIR` is merely the import-time value."""
+    from_env = os.environ.get(MASSIVE_CACHE_DIR_ENV_VAR)
+    if from_env:
+        return Path(from_env)
+    return Path(__file__).resolve().parents[3] / "artifacts" / "massive-cache"
+
+
+DEFAULT_CACHE_DIR = default_cache_dir()
 
 # Probed 2026-08-21: the free tier admits 5 requests/minute; the 6th in a
 # rolling minute answers HTTP 429.
 FREE_TIER_REQUESTS_PER_MINUTE = 5
+
+# One backoff cadence covers these: 429 is quota, 502/503/504 is the
+# vendor's edge. Everything else (400/404/422/500/...) is terminal.
+RETRYABLE_HTTP_STATUSES = frozenset({429, 502, 503, 504})
+
+# The key itself was refused: terminal, never retried, never cached.
+AUTH_REJECTED_HTTP_STATUSES = frozenset({401, 403})
 
 # Vendor body statuses that mean "this is real data".
 OK_STATUSES = frozenset({"OK", "DELAYED"})
@@ -95,6 +129,25 @@ class MassiveAuthError(MassiveError):
     """No usable API key (absent, empty, or unsafely stored).
 
     The message names the env var and the path — NEVER the key bytes."""
+
+
+class MassiveAuthRejectedError(MassiveError):
+    """HTTP 401/403: the vendor refused the API key itself.
+
+    Terminal — never retried and never cached (the raise precedes the
+    cache write by construction). The only cure is a new key, so the
+    message says so and points at the runbook; `http_status` pins which
+    of the two statuses answered, and the message appends the (redacted)
+    vendor body snippet, if any."""
+
+    def __init__(self, endpoint: str, http_status: int, detail: str = "") -> None:
+        self.endpoint = endpoint
+        self.http_status = http_status
+        suffix = f" [{detail}]" if detail else ""
+        super().__init__(
+            f"{endpoint}: HTTP {http_status}: key rejected — rotate the key"
+            f" (see docs/m4-massive-runbook.md){suffix}"
+        )
 
 
 class MassiveNotEntitledError(MassiveError):
@@ -336,12 +389,15 @@ def urllib_transport(url: str, *, timeout: float) -> HttpResponse:
 
 def cache_key_for(path: str, params: Mapping[str, Any]) -> str:
     """sha256 over the endpoint path plus sorted query params, EXCLUDING the
-    API key. Two calls that differ only by key hit the same cache entry, and
-    no cache file name can carry the secret."""
+    API key. The query is canonicalised with `urlencode`, so a `=` or `&`
+    inside a value can never make two DIFFERENT param sets hash the same
+    (`{"a": "b=c"}` vs `{"a=b": "c"}` stay distinct). Two calls that differ
+    only by key hit the same cache entry, and no cache file name can carry
+    the secret."""
     items = sorted(
         (str(k), str(v)) for k, v in params.items() if str(k).lower() != API_KEY_PARAM.lower()
     )
-    canonical = path + "?" + "&".join(f"{k}={v}" for k, v in items)
+    canonical = path + "?" + urllib.parse.urlencode(items)
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
@@ -362,10 +418,29 @@ class ResponseCache:
             return None
 
     def put(self, key: str, body: bytes, *, secret: str = "") -> Path:
+        """Store redacted bytes ATOMICALLY: the write lands in a
+        dot-prefixed staging file in the SAME directory and is then
+        `os.replace`d over the target — a same-filesystem rename the
+        kernel performs atomically. A crash mid-write therefore leaves
+        either no entry at all (a miss; the wire is re-consulted) or an
+        orphan `.tmp` invisible to `get` — never a half-written body under
+        the entry's own name."""
         target = self.path_for(key)
         self.directory.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(redact_bytes(body, secret))
+        # pid-qualified: two processes writing the same key cannot truncate
+        # each other's staging file between the write and the rename.
+        staging = self.directory / f".{key}.{os.getpid()}.json.tmp"
+        staging.write_bytes(redact_bytes(body, secret))
+        os.replace(staging, target)
         return target
+
+    def discard(self, key: str) -> None:
+        """Best-effort unlink of an entry (the self-heal path); an absent
+        file is not an error."""
+        try:
+            self.path_for(key).unlink()
+        except OSError:
+            pass
 
 
 # ---- stats -----------------------------------------------------------------
@@ -376,13 +451,20 @@ class MassiveStats:
     """Live request accounting (mutable, owned by one client instance).
 
     `requests` counts REAL network attempts; a cache hit increments only
-    `cache_hits`, which is how "a cache hit consumes no token" is audited."""
+    `cache_hits`, which is how "a cache hit consumes no token" is audited.
+    The three retry counters bump only when a retry actually follows (a
+    retryable outcome on the FINAL attempt is exhaustion, not a retry), and
+    `cache_self_heals` counts cache entries discarded as undecodable and
+    refetched from the wire."""
 
     requests: int = 0
     cache_hits: int = 0
     cache_misses: int = 0
     pages_fetched: int = 0
     rate_limit_retries: int = 0
+    server_error_retries: int = 0
+    transport_retries: int = 0
+    cache_self_heals: int = 0
     governor_sleeps: int = 0
     governor_slept_seconds: float = 0.0
 
@@ -393,6 +475,9 @@ class MassiveStats:
             "cache_misses": self.cache_misses,
             "pages_fetched": self.pages_fetched,
             "rate_limit_retries": self.rate_limit_retries,
+            "server_error_retries": self.server_error_retries,
+            "transport_retries": self.transport_retries,
+            "cache_self_heals": self.cache_self_heals,
             "governor_sleeps": self.governor_sleeps,
             "governor_slept_seconds": self.governor_slept_seconds,
         }
@@ -489,9 +574,13 @@ class MassiveClient:
     ) -> JsonObject:
         """One GET, decoded exactly, entitlement-checked.
 
-        Cache first (no token), then governor, then transport with bounded
-        429 backoff. Returns the parsed body; raises on any non-usable
-        outcome — this client never answers a partial or fabricated body."""
+        Cache first (no token), then governor, then transport through the
+        bounded retry loop (429/502/503/504/transport share the cadence).
+        A cached body that no longer DECODES self-heals — the entry is
+        discarded and the call degrades to a miss so the wire rewrites it;
+        a body that decodes but refuses (NOT_AUTHORIZED) keeps raising.
+        Returns the parsed body; raises on any non-usable outcome — this
+        client never answers a partial or fabricated body."""
         params = {} if params is None else params
         endpoint = self.display_url(path, params)
         key = cache_key_for(path, params)
@@ -500,10 +589,21 @@ class MassiveClient:
             cached = self.cache.get(key)
             if cached is not None:
                 self.stats.cache_hits += 1
-                body = self._decode(cached, endpoint)
-                self._require_ok_status(body, endpoint)
-                return body
-            self.stats.cache_misses += 1
+                try:
+                    body = self._decode(cached, endpoint)
+                except MassiveApiError:
+                    # SELF-HEAL, and only for an undecodable body: unlinked
+                    # (best-effort), re-accounted as a miss, refetched. A
+                    # cached refusal decodes fine and keeps raising above.
+                    self.cache.discard(key)
+                    self.stats.cache_hits -= 1
+                    self.stats.cache_misses += 1
+                    self.stats.cache_self_heals += 1
+                else:
+                    self._require_ok_status(body, endpoint)
+                    return body
+            else:
+                self.stats.cache_misses += 1
 
         raw = self._request_with_backoff(path, params, endpoint=endpoint)
         body = self._decode(raw, endpoint)
@@ -515,45 +615,89 @@ class MassiveClient:
     def _request_with_backoff(
         self, path: str, params: Mapping[str, Any], *, endpoint: str
     ) -> bytes:
+        """One GET through the bounded attempt loop, classifying each
+        outcome on its own merits.
+
+        Retryable — HTTP 429, HTTP 502/503/504, and transport-level
+        failures (DNS/TLS/timeout/socket, wrapped key-redacted) — share
+        the one backoff cadence and each counts its own retry stat, only
+        when a retry actually follows. Terminal on first sight: HTTP
+        401/403 raises `MassiveAuthRejectedError` (the raise precedes any
+        cache write, so a rejection is never cached either), any other
+        non-200 raises `MassiveApiError`, and an `AssertionError` from a
+        test double re-raises immediately so the fakes stay loud."""
         url = self._authorized_url(path, params)
-        last_status = 429
-        for attempt in range(1, self.backoff.max_attempts + 1):
+        attempts = self.backoff.max_attempts
+        last_status = 429  # the rate-limit raise below needs a status to name
+        transport_failure: MassiveTransportError | None = None
+        for attempt in range(1, attempts + 1):
             slept = self.governor.acquire()
             if slept:
                 self.stats.governor_sleeps += 1
                 self.stats.governor_slept_seconds += slept
             self.stats.requests += 1
+            retry_headers: Mapping[str, str] = {}
+            failed_transport = False
             try:
                 response = self._transport(url, timeout=self.timeout)
+            except AssertionError:
+                raise  # a test double's honesty mechanism: never retried
+            except MassiveTransportError as exc:
+                # the transport layer never sees the key, but redact at
+                # this choke point anyway, then retry like any transport blip
+                transport_failure = MassiveTransportError(
+                    f"{endpoint}: {redact(str(exc), self._api_key)}"
+                )
+                failed_transport = True
             except MassiveError:
                 raise
-            except Exception as exc:  # redact before re-raising: exc may echo the URL
-                raise MassiveTransportError(
+            except Exception as exc:  # redact before wrapping: exc may echo the URL
+                transport_failure = MassiveTransportError(
                     f"{endpoint}: {redact(str(exc), self._api_key)}"
-                ) from None
-            last_status = response.status
-            if response.status == 429:
-                self.stats.rate_limit_retries += 1
-                if attempt >= self.backoff.max_attempts:
-                    break
-                self.governor.sleep(self._retry_delay(response.headers, attempt))
-                continue
-            if response.status != 200:
-                raise MassiveApiError(
-                    endpoint,
-                    redact(self._snippet(response.body), self._api_key),
-                    http_status=response.status,
                 )
-            return response.body
-        raise MassiveRateLimitError(
-            f"{endpoint}: HTTP {last_status} after {self.backoff.max_attempts} attempts"
-            f" (backoff cap {self.backoff.total_seconds():g}s;"
-            f" free tier is {FREE_TIER_REQUESTS_PER_MINUTE} requests/minute)"
-        )
+                failed_transport = True
+            else:
+                status = response.status
+                if status == 200:
+                    return response.body
+                if status in AUTH_REJECTED_HTTP_STATUSES:
+                    raise MassiveAuthRejectedError(
+                        endpoint,
+                        status,
+                        redact(self._snippet(response.body), self._api_key),
+                    )
+                if status not in RETRYABLE_HTTP_STATUSES:
+                    raise MassiveApiError(
+                        endpoint,
+                        redact(self._snippet(response.body), self._api_key),
+                        http_status=status,
+                    )
+                last_status = status
+                retry_headers = response.headers
+            if attempt >= attempts:
+                break
+            if failed_transport:
+                self.stats.transport_retries += 1
+            elif last_status == 429:
+                self.stats.rate_limit_retries += 1
+            else:
+                self.stats.server_error_retries += 1
+            self.governor.sleep(self._retry_delay(retry_headers, attempt))
+        if transport_failure is not None:
+            raise MassiveTransportError(f"{transport_failure} after {attempts} attempts")
+        if last_status == 429:
+            raise MassiveRateLimitError(
+                f"{endpoint}: HTTP {last_status} after {attempts} attempts"
+                f" (backoff cap {self.backoff.total_seconds():g}s;"
+                f" free tier is {FREE_TIER_REQUESTS_PER_MINUTE} requests/minute)"
+            )
+        raise MassiveApiError(endpoint, f"after {attempts} attempts", http_status=last_status)
 
     def _retry_delay(self, headers: Mapping[str, str], attempt: int) -> float:
         """The vendor's `Retry-After` when present and sane, else the policy
-        delay; never longer than the policy cap."""
+        delay; never longer than the policy cap. "Sane" excludes NaN/inf —
+        `float("nan")` compares False against everything, so it would slip
+        the `<= 0.0` guard and poison `sleep` — and anything unparseable."""
         policy = self.backoff.delay_for(attempt)
         raw = headers.get("retry-after") if headers else None
         if raw is None:
@@ -562,7 +706,7 @@ class MassiveClient:
             advised = float(raw)
         except ValueError:
             return policy
-        if advised <= 0.0:
+        if not math.isfinite(advised) or advised <= 0.0:
             return policy
         return min(advised, self.backoff.cap_seconds)
 
@@ -623,7 +767,9 @@ class MassiveClient:
 
         The cap is a guard, not a truncation: a `next_url` still pending at
         the cap raises `MassivePaginationError`, because a short master
-        would silently misdescribe the contract universe."""
+        would silently misdescribe the contract universe. A REPEATED
+        `next_url` is a vendor cursor bug and raises as a cycle rather
+        than looping until the cap."""
         cap = self.max_pages if max_pages is None else max_pages
         if cap < 1:
             raise ValueError(f"max_pages must be >= 1, got {cap}")
@@ -633,12 +779,8 @@ class MassiveClient:
         next_params: Mapping[str, Any] = {} if params is None else dict(params)
         pages = 0
         hits_before = self.stats.cache_hits
+        visited: set[str] = set()
         while next_path is not None:
-            if pages >= cap:
-                raise MassivePaginationError(
-                    f"{self.display_url(path, next_params)}: more pages remain after"
-                    f" max_pages={cap} — refusing a truncated result"
-                )
             body = self.get_json(next_path, next_params, use_cache=use_cache)
             pages += 1
             self.stats.pages_fetched += 1
@@ -655,6 +797,18 @@ class MassiveClient:
             next_url = body.get("next_url")
             if isinstance(next_url, str) and next_url:
                 next_path, next_params = self.split_url(next_url)
+                if pages >= cap:
+                    raise MassivePaginationError(
+                        f"{self.display_url(path, next_params)}: more pages remain after"
+                        f" max_pages={cap} — refusing a truncated result"
+                    )
+                if next_url in visited:
+                    raise MassivePaginationError(
+                        f"{self.display_url(next_path, next_params)}: next_url cycle"
+                        f" after {pages} pages — {next_url} was already followed"
+                        " once; refusing to loop"
+                    )
+                visited.add(next_url)
             else:
                 next_path = None
         return PaginatedResult(
@@ -679,18 +833,22 @@ def client_from_environment(
 __all__ = [
     "API_KEY_ENV_VAR",
     "API_KEY_PARAM",
+    "AUTH_REJECTED_HTTP_STATUSES",
     "DEFAULT_BACKOFF",
     "DEFAULT_CACHE_DIR",
     "DEFAULT_KEY_PATH",
     "FREE_TIER_REQUESTS_PER_MINUTE",
     "MASSIVE_BASE_URL",
+    "MASSIVE_CACHE_DIR_ENV_VAR",
     "MASSIVE_PROVIDER",
     "NOT_AUTHORIZED_STATUS",
     "OK_STATUSES",
+    "RETRYABLE_HTTP_STATUSES",
     "BackoffPolicy",
     "HttpResponse",
     "MassiveApiError",
     "MassiveAuthError",
+    "MassiveAuthRejectedError",
     "MassiveClient",
     "MassiveError",
     "MassiveNotEntitledError",
@@ -704,6 +862,7 @@ __all__ = [
     "Transport",
     "cache_key_for",
     "client_from_environment",
+    "default_cache_dir",
     "load_api_key",
     "loads_exact",
     "redact",
