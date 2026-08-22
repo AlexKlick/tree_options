@@ -816,10 +816,13 @@ def test_percentile_helpers_nearest_rank() -> None:
 
 
 def test_lane_files_carry_no_secret_and_no_host_paths() -> None:
-    """This lane never reads, logs or stores the API key, and the committed
-    fixtures/inspector must not contain the vendor key parameter, the key
-    env-var name, or an absolute host path. The needles are assembled from
-    fragments so this guard does not plant the strings it forbids."""
+    """This lane never reads, logs or stores the API key, and no lane file
+    may pin this machine's filesystem layout. Two scopes: the WS-D2 files
+    (fixture, inspector, this test) must not even NAME the vendor key
+    parameter or the key env-var; every file in the lane — the client
+    included, which legitimately names both as their custodian — must stay
+    free of absolute host paths. The needles are assembled from fragments
+    so this guard does not plant the strings it forbids."""
     key_param = "api" + "Key"
     key_env = "POLYGON" + "_API_KEY"
     host_path = "/" + "home" + "/"
@@ -831,4 +834,22 @@ def test_lane_files_carry_no_secret_and_no_host_paths() -> None:
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")
         assert key_param not in source, relative
         assert key_env not in source, relative
+        assert host_path not in source, relative
+    for relative in (
+        Path("src") / "tree_options" / "data" / ("massive_" + name)
+        for name in ("client.py", "options.py", "manifest.py")
+    ):
+        assert host_path not in (REPO_ROOT / relative).read_text(encoding="utf-8"), relative
+    for relative in (
+        Path("tests") / "fixtures" / "massive_responses.py",
+        Path("tests") / "fixtures" / "massive_structural_sample.py",
+        Path("scripts") / "capture_massive_structural.py",
+        Path("scripts") / "inspect_structural_coverage.py",
+        Path("tests") / "unit" / "test_massive_client.py",
+        Path("tests") / "unit" / "test_massive_options.py",
+        Path("tests") / "unit" / "test_massive_manifest.py",
+        Path("tests") / "unit" / "test_capture_massive_structural.py",
+        Path("tests") / "unit" / "test_inspect_structural_coverage.py",
+    ):
+        source = (REPO_ROOT / relative).read_text(encoding="utf-8")
         assert host_path not in source, relative

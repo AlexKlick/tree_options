@@ -596,5 +596,8 @@ def test_default_cache_dir_is_repo_relative_with_env_override(
     assert default_cache_dir() == derived
     assert default_cache_dir().as_posix().endswith("artifacts/massive-cache")
     # the default is derived from the module's own location, never pinned
-    # to one user's home directory
-    assert "/home/" not in Path(mc.__file__).read_text(encoding="utf-8")
+    # to one user's home directory (needle fragment-assembled so this test
+    # does not plant the string it forbids — same convention as the lane
+    # hygiene guard)
+    host_path = "/" + "home" + "/"
+    assert host_path not in Path(mc.__file__).read_text(encoding="utf-8")

@@ -1421,6 +1421,243 @@ MUTANTS = [
             " real close"
         ),
     ),
+    # ---- M4-B hardening (client/adapter/manifest/inspector, M143-M156) ------
+    dict(
+        id="M143-parse-float-float",
+        owner="test_loads_exact_builds_decimals_from_raw_text",
+        file="src/tree_options/data/massive_client.py",
+        anchor="json.loads(text, parse_float=Decimal)",
+        replacement="json.loads(text, parse_float=float)",
+        selectors=[f"{U}/test_massive_client.py"],
+        invariant=(
+            "M4-B loads_exact hands every fractional JSON token to Decimal as the"
+            " vendor's RAW SOURCE TEXT; parsing through float rebuilds prices from"
+            " a binary approximation and launders it into every price field"
+        ),
+    ),
+    dict(
+        id="M144-not-authorized-gutted",
+        owner="test_not_authorized_arrives_as_http_200_and_still_raises",
+        file="src/tree_options/data/massive_client.py",
+        anchor="if status == NOT_AUTHORIZED_STATUS:",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_client.py"],
+        invariant=(
+            "M4-B NOT_AUTHORIZED arrives as HTTP 200 in the BODY; gutting the"
+            " status check reads a tier refusal as a generic error instead of the"
+            " terminal MassiveNotEntitledError echoing the vendor's message"
+        ),
+    ),
+    dict(
+        id="M145-foreign-host-accepted",
+        owner="test_foreign_next_url_host_is_refused_before_the_key_is_sent",
+        file="src/tree_options/data/massive_client.py",
+        anchor="if parts.netloc and parts.netloc != self._host:",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_client.py"],
+        invariant=(
+            "M4-B a next_url on a foreign host is refused BEFORE the key is"
+            " appended to it; accepting one hands the API key to someone else's"
+            " server"
+        ),
+    ),
+    dict(
+        id="M146-cache-write-skips-redaction",
+        owner="test_cached_bytes_and_filenames_are_key_free",
+        file="src/tree_options/data/massive_client.py",
+        anchor="staging.write_bytes(redact_bytes(body, secret))",
+        replacement="staging.write_bytes(body)",
+        selectors=[f"{U}/test_massive_client.py"],
+        invariant=(
+            "M4-B cached bodies are stored key-redacted; writing the raw bytes"
+            " persists the secret to disk, where the cache outlives the process"
+        ),
+    ),
+    dict(
+        id="M147-cache-self-heal-gutted",
+        owner="test_corrupt_cache_entry_self_heals_from_the_wire",
+        file="src/tree_options/data/massive_client.py",
+        anchor="except MassiveApiError:",
+        replacement="except AssertionError:",
+        selectors=[f"{U}/test_massive_client.py"],
+        invariant=(
+            "M4-B an undecodable cache entry self-heals (discard, re-account as a"
+            " miss, refetch from the wire); letting the decode failure escape"
+            " makes one torn write raise forever instead of repairing the entry"
+            " (the branch has no `if` to void, so the mutant narrows the catch"
+            " until the refusal escapes - the same corruption re-raises)"
+        ),
+    ),
+    dict(
+        id="M148-auth-rejected-swallowed",
+        owner="test_401_and_403_are_terminal_auth_rejections",
+        file="src/tree_options/data/massive_client.py",
+        anchor="if status in AUTH_REJECTED_HTTP_STATUSES:",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_client.py"],
+        invariant=(
+            "M4-B HTTP 401/403 is a TERMINAL MassiveAuthRejectedError - never"
+            " retried, never cached; swallowing the branch degrades a dead key"
+            " into a generic MassiveApiError and loses the rotate-the-key pin"
+        ),
+    ),
+    dict(
+        id="M149-server-5xx-not-retried",
+        owner="test_503_is_retried_with_backoff_then_succeeds",
+        file="src/tree_options/data/massive_client.py",
+        anchor="RETRYABLE_HTTP_STATUSES = frozenset({429, 502, 503, 504})",
+        replacement="RETRYABLE_HTTP_STATUSES = frozenset({429})",
+        selectors=[f"{U}/test_massive_client.py"],
+        invariant=(
+            "M4-B the vendor edge statuses 502/503/504 share the bounded backoff"
+            " cadence with 429; unclassifying them makes every edge blip a"
+            " terminal MassiveApiError instead of one retried request (mutant"
+            " re-pinned from a bare `if False` to the classification set itself:"
+            " the set IS the retry decision, and carving out only 5xx leaves the"
+            " 429 semantics untouched)"
+        ),
+    ),
+    dict(
+        id="M150-transport-not-retried",
+        owner="test_transport_failure_is_retried_then_raises_with_attempts",
+        file="src/tree_options/data/massive_client.py",
+        anchor=(
+            "            except Exception as exc:  # redact before wrapping: exc may echo the URL\n"
+            "                transport_failure = MassiveTransportError(\n"
+            '                    f"{endpoint}: {redact(str(exc), self._api_key)}"\n'
+            "                )\n"
+            "                failed_transport = True"
+        ),
+        replacement=(
+            "            except Exception as exc:  # redact before wrapping: exc may echo the URL\n"
+            "                raise"
+        ),
+        selectors=[f"{U}/test_massive_client.py"],
+        invariant=(
+            "M4-B a transport-level failure is wrapped key-redacted and retried"
+            " on the one bounded cadence, raising with the attempt count when"
+            " exhausted; re-raising on first sight turns a blip into an immediate"
+            " unaccounted failure (anchored at the generic wrap the owner's"
+            " RuntimeError-raising transport exercises; the MassiveTransportError"
+            " passthrough above feeds the same retry loop)"
+        ),
+    ),
+    dict(
+        id="M151-nonstandard-spc-blind",
+        owner="test_nonstandard_deliverable_is_kept_and_flagged",
+        file="src/tree_options/data/massive_options.py",
+        anchor="return self.shares_per_contract == STANDARD_SHARES_PER_CONTRACT",
+        replacement="return True",
+        selectors=[f"{U}/test_massive_options.py"],
+        invariant=(
+            "M4-B a shares_per_contract != 100 contract is KEPT but FLAGGED - the"
+            " adjusted/non-standard deliverable tell this lane exists to surface;"
+            " answering standard for everything pools adjusted contracts with"
+            " textbook ones"
+        ),
+    ),
+    dict(
+        id="M152-float-branch-gutted",
+        owner="test_float_decoded_body_is_refused_not_laundered",
+        file="src/tree_options/data/massive_options.py",
+        anchor="if isinstance(value, float):",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_options.py"],
+        invariant=(
+            "M4-B _as_decimal refuses a float outright - seeing one means the body"
+            " was decoded with plain json.loads and exactness is already gone,"
+            " and the refusal names loads_exact so the cause is discoverable"
+            " (the generic not-a-number fallback the mutant falls through to"
+            " hides it)"
+        ),
+    ),
+    dict(
+        id="M153-manifest-hash-void",
+        owner="test_verify_detects_a_tampered_capture_file",
+        file="src/tree_options/data/massive_manifest.py",
+        anchor="if sha256_hex(raw) != entry.sha256:",
+        replacement="if False:",
+        selectors=[f"{U}/test_massive_manifest.py"],
+        invariant=(
+            "M4-B verify re-hashes every listed capture file from its raw bytes"
+            " and refuses on mismatch - the build-side hash alone cannot detect"
+            " post-build tampering; voiding the comparison lets an edited capture"
+            " file pass as provenance-clean (mutant re-pinned to the VERIFY-side"
+            " hash: build and verify hash independently, so voiding the build"
+            " side alone would not model the leak)"
+        ),
+    ),
+    dict(
+        id="M154-capture-complete-inverted",
+        owner="test_incomplete_capture_and_schema_drift_are_reported",
+        file="scripts/inspect_structural_coverage.py",
+        anchor='return pages, not pages[-1].get("next_url")',
+        replacement="return pages, True",
+        selectors=[f"{U}/test_inspect_structural_coverage.py"],
+        invariant=(
+            "M4-B a page chain whose LAST page still carries next_url is an"
+            " INCOMPLETE capture - reported, never silently under-counted;"
+            " declaring every chain complete hides a short master that"
+            " misdescribes the contract universe"
+        ),
+    ),
+    dict(
+        id="M155-spc-restatement-blind",
+        owner="test_adjustment_timeline_is_first_class",
+        file="scripts/inspect_structural_coverage.py",
+        anchor="if before != after:",
+        replacement="if False:",
+        selectors=[f"{U}/test_inspect_structural_coverage.py"],
+        invariant=(
+            "M4-B a shares_per_contract restatement under a stable ticker is THE"
+            " adjusted-chain event; blinding the before != after check drops it"
+            " from the adjustment timeline, the risk the lane exists to surface"
+        ),
+    ),
+    dict(
+        id="M156-statusless-page-accepted",
+        owner="test_a_page_without_a_status_field_refuses",
+        file="scripts/inspect_structural_coverage.py",
+        anchor="if status is None:",
+        replacement="if False:",
+        selectors=[f"{U}/test_inspect_structural_coverage.py"],
+        invariant=(
+            "M4-B a body with NO status field is not a vendor body; the named"
+            " fail-closed refusal (mirroring WS-D1's client) is what the owner"
+            " pins - the generic status-not-OK fallback the mutant falls through"
+            " to would make this the softer reader of the same capture"
+        ),
+    ),
+    dict(
+        id="M157-budget-precharge-shrunk",
+        owner="test_the_budget_precharges_the_worst_case_and_refunds",
+        file="scripts/capture_massive_structural.py",
+        anchor="budget.charge_block(what, blocks=client.backoff.max_attempts)",
+        replacement="budget.charge_block(what, blocks=1)",
+        selectors=[f"{U}/test_capture_massive_structural.py"],
+        invariant=(
+            "M4-B the budget must reserve each wire call's WORST case"
+            " (max_attempts) before the request leaves; charging one block"
+            " lets an unaffordable call touch the wire (owner asserts"
+            " vendor.calls == 0 under a limit smaller than max_attempts)"
+        ),
+    ),
+    dict(
+        id="M158-nothing-captured-exits-zero",
+        owner="test_a_fully_failed_run_exits_nonzero",
+        file="scripts/capture_massive_structural.py",
+        anchor=(
+            'if not (any(m["pages"] for m in masters) or manifest["bars"]'
+            ' or manifest["spot_proxy"]):'
+        ),
+        replacement="if False:",
+        selectors=[f"{U}/test_capture_massive_structural.py"],
+        invariant=(
+            "M4-B a run that captured nothing must say so with exit 4, not"
+            " report success; voiding the nothing-captured branch turns a"
+            " dead sweep (every master errored, zero pages) into exit 0"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)
