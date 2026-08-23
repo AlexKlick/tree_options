@@ -2243,6 +2243,96 @@ MUTANTS = [
             " rebuilt by an observer (the mtime assertion pins this)"
         ),
     ),
+    dict(
+        id="M194-universe-product-void",
+        owner="test_verify_universe_refuses_a_rehashed_wrong_expected_masters",
+        file="src/tree_options/data/coverage_census.py",
+        anchor="    if universe.expected_masters != expected:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 expected_masters is the product of the declared grid;"
+            " voiding the check lets a tampered-and-re-hashed manifest"
+            " under-declare the census population"
+        ),
+    ),
+    dict(
+        id="M195-missing-pair-as-complete",
+        owner="test_classify_pair_matrix_covers_every_class",
+        file="src/tree_options/data/coverage_census.py",
+        anchor='        return "MISSING"',
+        replacement='        return "COMPLETE"',
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 a pair with no manifest entry (or no file) is MISSING,"
+            " never COMPLETE: coverage totals must not count absence"
+        ),
+    ),
+    dict(
+        id="M196-taxonomy-tag-movable",
+        owner="test_registry_disagreement_refused",
+        file="src/tree_options/data/coverage_census.py",
+        anchor=(
+            "        if placed != declared_class:\n"
+            "            raise CensusTaxonomyError(\n"
+            '                f"fact {fact_id!r} registry says {declared_class!r}'
+            ' but it sits in {placed!r}"\n'
+            "            )"
+        ),
+        replacement=(
+            "        if placed != declared_class:\n            pass  # taxonomy drift accepted"
+        ),
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 a value may never move class implicitly: registry and"
+            " section placement must agree or the census refuses to load"
+        ),
+    ),
+    dict(
+        id="M197-holiday-session-flip",
+        owner="test_holiday_friday_gap_is_not_incomplete",
+        file="src/tree_options/data/coverage_census.py",
+        anchor=(
+            '        return "SPOT_MISSING_HOLIDAY" if not is_session else "SPOT_MISSING_SESSION"'
+        ),
+        replacement=(
+            '        return "SPOT_MISSING_SESSION" if not is_session else "SPOT_MISSING_HOLIDAY"'
+        ),
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 a holiday Friday has no close by definition (not incomplete);"
+            " a session Friday without a close is a vendor availability gap"
+            " (incomplete) -- flipping the two launders real gaps"
+        ),
+    ),
+    dict(
+        id="M198-partial-era-exits-zero",
+        owner="test_exit_5_and_census_emitted_when_a_pair_is_missing",
+        file="scripts/build_coverage_census.py",
+        anchor="    return 5",
+        replacement="    return 0",
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 an incomplete era must exit nonzero even though the census"
+            " artifact is still emitted -- partial evidence is never reported"
+            " as whole"
+        ),
+    ),
+    dict(
+        id="M199-census-manifest-verify-skipped",
+        owner="test_manifest_verification_failure_exits_2",
+        file="scripts/build_coverage_census.py",
+        anchor=(
+            "verify_massive_capture_manifest(manifest, capture_dir, capture_version=CAPTURE_VERSION)"
+        ),
+        replacement="pass  # verify skipped",
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 the census only consumes a SEALED capture: a manifest that"
+            " fails on-disk reconciliation must refuse (exit 2) before any"
+            " fact is derived from it"
+        ),
+    ),
     # ---- A3 protocol 0.2.1 amendment builder (M200-M207) ---------------------
     dict(
         id="M200-stale-census-accepted",

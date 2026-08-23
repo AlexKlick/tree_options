@@ -64,6 +64,7 @@ files = [
     "scripts/runstate_mark.py",
     "scripts/era_status.py",
     "scripts/gen_coverage_universe.py",
+    "scripts/build_coverage_census.py",
     "scripts/build_protocol_amendment.py",
     "scripts/g4_seal.py",
 ]
