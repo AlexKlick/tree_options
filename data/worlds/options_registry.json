@@ -3053,5 +3053,12 @@
         ]
       }
     }
+  ],
+  "real_lanes": [
+    {
+      "lane": "massive-derived-free/1",
+      "depends_on": "massive-polygon-free/1",
+      "status": "PENDING-era"
+    }
   ]
 }

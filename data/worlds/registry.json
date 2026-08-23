@@ -286,5 +286,16 @@
         "security_count": 372
       }
     }
+  ],
+  "real_lanes": [
+    {
+      "lane": "massive-polygon-free/1",
+      "tokens": ["m4-massive/1", "m4b-manifest/1"],
+      "capture_version": "m4b-capture/1",
+      "universe_manifest": "data/coverage/coverage_universe.json",
+      "universe_manifest_sha256": "a13dd4eb3a4dba4e0faff5a03e75f2da6dde25d86b3b5d0e714eac20a8eb7d41",
+      "capture_manifest_sha256": null,
+      "status": "PENDING-era"
+    }
   ]
 }

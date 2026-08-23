@@ -4,8 +4,10 @@ Point-in-time equity-signal research implemented through liquid, defined-risk
 option positions. **M0–M3 complete; M4 (real data) in flight:** a Cboe EOD
 adapter (quotes-bearing, sealed-era capable) plus a Massive (Polygon)
 free-tier lane for structural options coverage. No model training and no
-backtest results exist in this repo yet, by design. The local gate is the
-only CI. M4 plan: `docs/m4-real-data-plan.md`; Massive operator runbook:
+real-data backtest results exist in this repo yet, by design (synthetic-era
+structural artifacts — worlds, overlays, and their mechanism-validating
+backtests — do exist). The local gate is the only CI. M4 plan:
+`docs/m4-real-data-plan.md`; Massive operator runbook:
 `docs/m4-massive-runbook.md`.
 
 The engineering priority is not model sophistication. It is preventing future
@@ -58,8 +60,13 @@ fails for each one. A mutant that survives means the tests are too weak.
 
 ## Status
 
-M0, M1, M2, and M3 are complete and gated; the protocol (0.1.0) is frozen.
+M0, M1, M2, and M3 are complete and gated; the protocol is 0.2.0 (amended
+once, at G3 — vwap quote kind, volume-flow liquidity regime, model-derived
+delta provenance — merged via PR #12, `1f7c388`; no invariant weakened).
 M4 — real data — is in flight: the Cboe EOD adapter shakedown (M4-A) is green
 on main, and the Massive (Polygon) free-tier structural coverage era (M4-B)
-has begun (operator runbook: `docs/m4-massive-runbook.md`). The sealed-window
-quote-bearing purchase decision and the sealed real-data gate remain open.
+has begun (operator runbook: `docs/m4-massive-runbook.md`). The options
+purchase lane is CLOSED (G2, 2026-08-21: the owner ruled "no money spent —
+find a workaround"; the free tier's daily aggregates plus model-implied
+greeks carry the quote-bearing lane), and the sealed real-data gate (G4)
+remains open.

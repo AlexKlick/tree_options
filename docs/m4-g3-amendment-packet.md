@@ -1,5 +1,18 @@
 # M4 G3 — protocol/world amendment packet (DRAFT for owner ratification)
 
+> **SUPERSESSION (2026-08-23).** For planning purposes this packet is
+> superseded by the census→amendment builder flow (PR A, workstreams A2/A3);
+> its ratified content is already in force as protocol 0.2.0 (PR #12, merge
+> `1f7c388`). Two of its figures are superseded with it. (1) The "105 Fridays
+> × 30 names" universe of Ask E: the census counts expected masters from the
+> DECLARED work manifest — 29 underlyings × 105 Fridays = 3,045 — and the
+> docs' 30/3,150 discrepancy is flagged for owner reconciliation at
+> era-results (owner decision 2026-08-23). (2) The Ask D flow threshold
+> "value TBD from era distributions": the coverage era ran `--bars 0`, so no
+> era bar-volume distribution exists to derive from (a recorded
+> contradiction); the derivation rule is now an owner-ratified input bound
+> to the census content hash. The body below is unchanged, as ratified.
+
 - status: **DRAFT** — every ask is grounded in landed, gated code (PRs #7–#10);
   two sections are marked PENDING-era until the structural coverage era
   completes (~2026-08-24). Nothing in this packet is applied until the
