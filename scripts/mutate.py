@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -2724,7 +2725,20 @@ def main() -> int:
     parser.add_argument("--markdown", type=Path, default=None)
     args = parser.parse_args()
 
-    worktree = Path(tempfile.mkdtemp(prefix="tree-options-mutate-"))
+    # The disposable copy must honor the same host rule the seal/bars
+    # authority ledgers enforce mechanically: nothing repo-authoritative
+    # may resolve under /tmp (wiped on reboot). The A4/A5 ledger tests
+    # place their scratch at repo-relative artifacts/ paths precisely to
+    # stay off /tmp; a /tmp-based copy makes those paths resolve under
+    # /tmp, the (correct) LedgerRootRefusedError then fails every owning
+    # test at baseline, and the gate reports HARNESS_ERROR for those
+    # mutants plus a failed restoration suite (first full-gate attempt
+    # 2026-08-23: 10x HARNESS_ERROR, all M208-M212/M214-M218). Scratch
+    # therefore lives BESIDE the repo — never under /tmp, never inside
+    # the tree being copied (copytree into a subdir of its own source
+    # would recurse). TREE_OPTIONS_MUTATE_ROOT overrides for operators.
+    scratch_parent = Path(os.environ.get("TREE_OPTIONS_MUTATE_ROOT") or REPO.parent)
+    worktree = Path(tempfile.mkdtemp(prefix=f"{REPO.name}-mutate-", dir=scratch_parent))
     keep_worktree = False
     try:
         shutil.copytree(
