@@ -1,0 +1,145 @@
+[
+  {
+    "id": "status-era-journaled",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/era_status.py", "--json"
+    ],
+    "expect_exit": 0,
+    "description": "Read-only: status of the most recently written journaled run under artifacts/runstate (runbook 1.1). Exit 3 = UNKNOWN, exit 4 = no journaled run yet.",
+    "mutates": false
+  },
+  {
+    "id": "status-era-legacy",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/era_status.py",
+      "--capture-dir", "artifacts/m4b-coverage-era", "--json"
+    ],
+    "expect_exit": 3,
+    "description": "Read-only: pre-journal legacy era discovery via /proc (runbook 1.2). Exit 3 (UNKNOWN) while the wrapper is live; exit 4 after it exits and before the store is adopted.",
+    "mutates": false
+  },
+  {
+    "id": "copy-era-log",
+    "command": [
+      "cp", "/tmp/m4h-era.log", "artifacts/m4b-coverage-era/era.log"
+    ],
+    "expect_exit": 0,
+    "description": "MUTATES the repo's artifacts tree: /tmp is volatile (one reboot deletes the only copy) — copy the era log the MOMENT the wrapper exits, then append the ERA_EXIT=<code> line by hand (runbook 4.1). Non-zero ERA_EXIT stops the closeout sequence.",
+    "mutates": true
+  },
+  {
+    "id": "manifest-hash",
+    "command": [
+      "sha256sum", "artifacts/m4b-coverage-era/capture_manifest.json"
+    ],
+    "expect_exit": 0,
+    "description": "Read-only: compute the capture-manifest content hash to pin in the adopt-pin step (runbook 4.2).",
+    "mutates": false
+  },
+  {
+    "id": "adopt-create",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/runstate_mark.py",
+      "RUN_ID_PLACEHOLDER",
+      "--create-identity", "artifacts/runstate/m4-coverage-era-identity.json",
+      "--reason", "closeout: adopt the sealed coverage era"
+    ],
+    "expect_exit": 0,
+    "description": "MUTATES artifacts/runstate: create the run store from the operator-authored RunIdentity JSON (runbook 4.2). RUN_ID_PLACEHOLDER = the deterministic run id (tree_options.runstate.store.compute_run_id).",
+    "mutates": true
+  },
+  {
+    "id": "adopt-capturing",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/runstate_mark.py",
+      "RUN_ID_PLACEHOLDER", "CAPTURING",
+      "--reason", "pre-journal legacy era; journaling the observed lane"
+    ],
+    "expect_exit": 0,
+    "description": "MUTATES the journal: record the lane as it actually happened — skips are illegal (runbook 4.2).",
+    "mutates": true
+  },
+  {
+    "id": "adopt-pin",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/runstate_mark.py",
+      "RUN_ID_PLACEHOLDER",
+      "--pin-manifest", "CAPTURE_MANIFEST_SHA256_PLACEHOLDER",
+      "--reason", "bind the run to the sealed capture manifest"
+    ],
+    "expect_exit": 0,
+    "description": "MUTATES the journal: pin the manifest hash from the manifest-hash step; --pin-manifest pins INSTEAD of transitioning (runbook 4.2).",
+    "mutates": true
+  },
+  {
+    "id": "adopt-complete",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/runstate_mark.py",
+      "RUN_ID_PLACEHOLDER", "CAPTURE_COMPLETE",
+      "--reason", "wrapper ERA_EXIT=0; log copied; manifest pinned"
+    ],
+    "expect_exit": 0,
+    "description": "MUTATES the journal: close the capture lane (runbook 4.2).",
+    "mutates": true
+  },
+  {
+    "id": "universe-regen-verify",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/gen_coverage_universe.py",
+      "--from-run-sh", "artifacts/m4b-coverage-era/run.sh",
+      "--out", "artifacts/census/universe-regen-check.json"
+    ],
+    "expect_exit": 0,
+    "description": "MUTATES artifacts/ only: regenerate the declared universe into a throwaway artifacts path and byte-compare against the committed data/coverage/coverage_universe.json (cmp). Divergence means the era wrapper changed under a declared universe — an incident, never a hand-fix (runbook 1.3).",
+    "mutates": true
+  },
+  {
+    "id": "census",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/build_coverage_census.py",
+      "--capture-dir", "artifacts/m4b-coverage-era"
+    ],
+    "expect_exit": 0,
+    "description": "MUTATES artifacts/census: the typed census of the sealed capture. Exit 0 = whole coverage (holiday-Friday spot gaps are EXPECTED and do not count); exit 5 = emitted but incomplete — owner escalation, never a silent re-run; exit 2 against a mid-run dir is BY DESIGN (runbook 4.3).",
+    "mutates": true
+  },
+  {
+    "id": "amendment",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/build_protocol_amendment.py",
+      "--census", "artifacts/census/CENSUS_HASH12_PLACEHOLDER/census.json",
+      "--owner-values", "OWNER_VALUES_PATH_PLACEHOLDER.json",
+      "--rules", "RATIFIED_RULES_PATH_PLACEHOLDER.json",
+      "--capture-manifest", "artifacts/m4b-coverage-era/capture_manifest.json"
+    ],
+    "expect_exit": 0,
+    "description": "MUTATES artifacts/amendment only: owner-gated DRY-RUN proposal — the owner supplies values + ratified rules (the threshold is an owner-ratified input bound to the census hash); every packet lands landed:false (runbook 4.4).",
+    "mutates": true
+  },
+  {
+    "id": "bars-preflight",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/launch_bars_era.py",
+      "--run-id", "RUN_ID_PLACEHOLDER",
+      "--census", "artifacts/census/CENSUS_HASH12_PLACEHOLDER/census.json",
+      "--capture-manifest", "artifacts/m4b-coverage-era/capture_manifest.json",
+      "--work-manifest", "artifacts/bars/work-manifest.json"
+    ],
+    "expect_exit": 2,
+    "description": "Read-only (preflight is the default): on protocol 0.2.0 with no BARS_LAUNCH_APPROVAL record, exit 2 is the DOCUMENTED correct answer, not a failure to fix (runbook 4.5).",
+    "mutates": false
+  },
+  {
+    "id": "g4-preflight",
+    "command": [
+      "uv", "run", "--frozen", "python", "scripts/g4_seal.py", "preflight",
+      "--lane1-manifest", "artifacts/lane1/capture-manifest.json",
+      "--lane2-manifest", "artifacts/m4b-coverage-era/capture_manifest.json",
+      "--criteria-sha256", "CRITERIA_SHA256_PLACEHOLDER",
+      "--ledger-root", "artifacts/g4-authority"
+    ],
+    "expect_exit": 2,
+    "description": "Read-only: availability check of the six sealed-run inputs; exit 2 while inputs are PENDING is expected. g4_seal execute is PROHIBITED in this campaign (runbook 4.6).",
+    "mutates": false
+  }
+]
