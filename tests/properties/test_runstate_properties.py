@@ -1,0 +1,98 @@
+"""Property tests: journal replay == projection; tamper detection; determinism."""
+
+from __future__ import annotations
+
+import json
+import tempfile
+from pathlib import Path
+
+from hypothesis import given
+from hypothesis import strategies as st
+
+from tree_options.runstate import RunIdentity, RunState, RunStore, is_legal
+from tree_options.runstate import journal as J
+from tree_options.runstate.errors import JournalCorruptError
+
+BOOT = "prop-boot"
+T0 = 1_800_000_000
+
+
+@st.composite
+def legal_walks(draw: st.DrawFn) -> list[RunState]:
+    state = RunState.PLANNED
+    walk: list[RunState] = []
+    for _ in range(draw(st.integers(min_value=0, max_value=12))):
+        options = [t for t in RunState if is_legal(state, t)]
+        if not options:
+            break
+        state = draw(st.sampled_from(options))
+        walk.append(state)
+    return walk
+
+
+def _identity() -> RunIdentity:
+    return RunIdentity(
+        run_id="prop-run",
+        campaign="prop",
+        protocol_hash="a" * 64,
+        code_sha="b" * 40,
+        provider="p/1",
+        capture_version="c/1",
+        universe_manifest_sha256="c" * 64,
+        boot_id=BOOT,
+        pid=1,
+        pid_start_ticks=1,
+        started_epoch=T0,
+        args_hash="d" * 64,
+    )
+
+
+def _walk_store(root: Path, walk: list[RunState]) -> RunStore:
+    store = RunStore.create(root, _identity(), now_epoch=T0)
+    for i, state in enumerate(walk, start=1):
+        store.transition(state, reason="walk", now_epoch=T0 + i, actor_pid=1, actor_boot_id=BOOT)
+    return store
+
+
+@given(walk=legal_walks())
+def test_projection_always_equals_journal_replay(walk: list[RunState]) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _walk_store(root, walk)
+        reopened = RunStore.open(root, "prop-run")
+        expected = walk[-1] if walk else RunState.PLANNED
+        assert reopened.state == expected
+        projection = J.load_projection(root / "prop-run")
+        assert projection.state == expected
+
+
+@given(walk=legal_walks(), salt=st.integers(min_value=0, max_value=1 << 30))
+def test_single_record_tamper_always_detected(walk: list[RunState], salt: int) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        _walk_store(root, walk)
+        journal_path = root / "prop-run" / J.JOURNAL_FILENAME
+        lines = journal_path.read_text().splitlines()
+        if len(lines) < 2:
+            return  # nothing non-final to tamper
+        victim_index = salt % (len(lines) - 1)  # never the final line
+        victim = json.loads(lines[victim_index])
+        victim["reason"] = f"tampered {salt}"
+        lines[victim_index] = json.dumps(victim, sort_keys=True, separators=(",", ":"))
+        journal_path.write_text("\n".join(lines) + "\n")
+        try:
+            view = J.replay(root / "prop-run")
+        except JournalCorruptError:
+            return  # detected: the property holds
+        assert not view.tail_damaged, "mid-file tamper must not pass silently"
+
+
+@given(walk=legal_walks())
+def test_journal_bytes_are_pure_function_of_history(walk: list[RunState]) -> None:
+    with tempfile.TemporaryDirectory() as td:
+        base = Path(td)
+        _walk_store(base / "one", walk)
+        _walk_store(base / "two", walk)
+        assert (base / "one/prop-run/journal.jsonl").read_bytes() == (
+            base / "two/prop-run/journal.jsonl"
+        ).read_bytes()
