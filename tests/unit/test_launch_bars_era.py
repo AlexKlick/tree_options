@@ -1,0 +1,525 @@
+"""launch_bars_era: exit-code contract, read-only preflight, gated execute.
+
+The full valid scenario is synthetic end to end (tests/fixtures/bars_sample.py):
+a capture dir + capture manifest + census bound to those exact bytes, a
+0.2.1-shaped protocol built through the repo's own models, a work manifest
+REGENERATED from the captures via the declared profile, a 0600 key file, and
+a run store walked to BARS_READY. Authority ledger + run store live under
+scratch roots in the repo's gitignored artifacts/ (never /tmp — the ledger
+refuses it, and durable run state may not live where a reboot wipes it).
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import shutil
+import sys
+import uuid
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+SCRIPTS = REPO_ROOT / "scripts"
+if str(SCRIPTS) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS))
+
+import launch_bars_era as launch  # noqa: E402
+from tests.fixtures.bars_sample import (  # noqa: E402
+    BOOT,
+    RUN_ID,
+    T0,
+    census_bytes,
+    make_run_identity,
+    write_021_protocol,
+    write_bars_capture,
+    write_capture_manifest,
+)
+from tree_options.data.bars_manifest import (  # noqa: E402
+    KIND_BARS_LAUNCH_CONSUMED,
+    append_bars_launch_approval,
+    append_bars_launch_consumed,
+    build_bars_work_manifest,
+    load_selection_profile,
+    read_bars_ledger,
+)
+from tree_options.protocol.loader import load_protocol, protocol_hash  # noqa: E402
+from tree_options.runstate import RunState, RunStore  # noqa: E402
+from tree_options.runstate import lease as lease_module  # noqa: E402
+
+REAL_PROTOCOL = REPO_ROOT / "research_protocol.yaml"
+COMMITTED_PROFILE = REPO_ROOT / "data" / "bars" / "selection-profile.json"
+PINNED_UNIVERSE = ",".join(
+    json.loads((REPO_ROOT / "data" / "coverage" / "coverage_universe.json").read_text())[
+        "underlyings"
+    ]
+)
+BARS_READY_WALK = (
+    RunState.CAPTURING,
+    RunState.CAPTURE_COMPLETE,
+    RunState.INSPECTION_RUNNING,
+    RunState.INSPECTED,
+    RunState.AMENDMENT_PENDING_OWNER,
+    RunState.AMENDMENT_READY,
+    RunState.BARS_READY,
+)
+
+
+@pytest.fixture()
+def scratch_root() -> Iterator[Path]:
+    root = REPO_ROOT / "artifacts" / "bars-a4-tests" / uuid.uuid4().hex
+    root.mkdir(parents=True, exist_ok=True)
+    try:
+        yield root
+    finally:
+        shutil.rmtree(root, ignore_errors=True)
+
+
+@pytest.fixture()
+def scenario(
+    tmp_path: Path, scratch_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> dict[str, Path]:
+    monkeypatch.delenv("POLYGON_API_KEY", raising=False)
+    capture_dir = write_bars_capture(tmp_path / "capture")
+    manifest_path = write_capture_manifest(capture_dir, tmp_path / "capture_manifest.json")
+    census_path = tmp_path / "census.json"
+    census_path.write_bytes(census_bytes(manifest_path.read_bytes()))
+    protocol_path = write_021_protocol(tmp_path / "protocol-0.2.1.yaml", REAL_PROTOCOL)
+    work_manifest = build_bars_work_manifest(
+        capture_dir,
+        profile=load_selection_profile(COMMITTED_PROFILE),
+        capture_manifest=manifest_path,
+        budget_limit=45,
+    )
+    work_path = tmp_path / "work-manifest.json"
+    work_path.write_text(work_manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    packet_path = tmp_path / "amendment-packet.json"
+    packet_path.write_text(
+        json.dumps({"landed": False, "proposed_version": "0.2.1"}, sort_keys=True),
+        encoding="utf-8",
+    )
+    key_path = tmp_path / "polygon.key"
+    key_path.write_bytes(b"fixture-key-never-read-by-preflight\n")
+    key_path.chmod(0o600)
+
+    authority_root = scratch_root / "bars-authority"
+    store_root = scratch_root / "runstate"
+    store = RunStore.create(store_root, make_run_identity(), now_epoch=T0)
+    for step, state in enumerate(BARS_READY_WALK):
+        store.transition(
+            state,
+            reason=f"fixture walk to BARS_READY ({step})",
+            now_epoch=T0 + step,
+            actor_pid=store.identity.pid,
+            actor_boot_id=BOOT,
+        )
+    return {
+        "capture_dir": capture_dir,
+        "capture_manifest": manifest_path,
+        "census": census_path,
+        "protocol": protocol_path,
+        "work_manifest": work_path,
+        "work_manifest_model": work_manifest,
+        "packet": packet_path,
+        "key": key_path,
+        "authority_root": authority_root,
+        "store_root": store_root,
+    }
+
+
+def _approve(scenario: dict[str, Path], **overrides: str) -> None:
+    fields = dict(
+        protocol_hash=protocol_hash(load_protocol(scenario["protocol"])),
+        amendment_packet_sha256=hashlib.sha256(scenario["packet"].read_bytes()).hexdigest(),
+        census_sha256=str(
+            json.loads(scenario["census"].read_text(encoding="utf-8"))["content_sha256"]
+        ),
+        work_manifest_sha256=hashlib.sha256(scenario["work_manifest"].read_bytes()).hexdigest(),
+    )
+    fields.update(overrides)
+    append_bars_launch_approval(
+        scenario["authority_root"], reason="owner approved the bars grid", at_epoch=T0, **fields
+    )
+
+
+def _argv(
+    scenario: dict[str, Path],
+    *,
+    protocol: Path | None = None,
+    drop_protocol: bool = False,
+    extra: list[str] | None = None,
+) -> list[str]:
+    argv = [
+        "--run-id",
+        RUN_ID,
+        "--census",
+        str(scenario["census"]),
+        "--capture-manifest",
+        str(scenario["capture_manifest"]),
+        "--work-manifest",
+        str(scenario["work_manifest"]),
+        "--vendor-key",
+        str(scenario["key"]),
+        "--store-root",
+        str(scenario["store_root"]),
+        "--authority-root",
+        str(scenario["authority_root"]),
+        "--amendment-packet",
+        str(scenario["packet"]),
+        "--boot-id-override",
+        BOOT,
+    ]
+    if drop_protocol:
+        pass  # the CLI default is the REAL repo protocol (0.2.0 today)
+    else:
+        argv += ["--protocol", str(protocol if protocol else scenario["protocol"])]
+    if extra:
+        argv += extra
+    return argv
+
+
+def _tree_state(*roots: Path) -> dict[Path, tuple[int, int]]:
+    state: dict[Path, tuple[int, int]] = {}
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                stat = path.stat()
+                state[path] = (stat.st_mtime_ns, stat.st_size)
+    return state
+
+
+# ---- preflight: the protocol gate is closed on main ---------------------------------
+
+
+def test_preflight_exit_2_on_real_020_protocol_today(
+    scratch_root: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The documented correct answer on main: the loaded protocol is 0.2.0,
+    so the 0.2.1 gate refuses — read-only, through the REAL loader."""
+    assert load_protocol(REAL_PROTOCOL).meta.protocol_version == "0.2.0"
+    argv = [
+        "--run-id",
+        RUN_ID,
+        "--census",
+        "census-not-even-read.json",
+        "--capture-manifest",
+        "manifest-not-even-read.json",
+        "--work-manifest",
+        "work-not-even-read.json",
+        "--store-root",
+        str(scratch_root / "runstate"),
+        "--authority-root",
+        str(scratch_root / "bars-authority"),
+    ]
+    assert launch.main(argv) == 2
+    err = capsys.readouterr().err
+    assert "protocol version" in err and "0.2.1" in err
+    # read-only: nothing was created anywhere the tool knows about
+    assert not (scratch_root / "bars-authority").exists()
+    assert not (REPO_ROOT / "artifacts" / "bars-authority").exists()
+
+
+def test_preflight_exit_2_wrong_version_even_with_matching_record(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A record binding the 0.2.0 hash does not open the gate: the version
+    requirement is its own refusal."""
+    _approve(scenario, protocol_hash=protocol_hash(load_protocol(REAL_PROTOCOL)))
+    assert launch.main(_argv(scenario, drop_protocol=True)) == 2
+    assert "protocol version" in capsys.readouterr().err
+
+
+def test_preflight_exit_2_without_any_record(scenario: dict[str, Path]) -> None:
+    assert launch.main(_argv(scenario)) == 2
+
+
+# ---- preflight: census currency ------------------------------------------------------
+
+
+def test_preflight_exit_3_on_census_stale_vs_manifest(scenario: dict[str, Path]) -> None:
+    _approve(scenario)
+    scenario["capture_manifest"].write_bytes(b'{"drifted": true}\n')
+    assert launch.main(_argv(scenario)) == 3
+
+
+def test_preflight_exit_3_on_census_tampered(scenario: dict[str, Path]) -> None:
+    _approve(scenario)
+    doc = json.loads(scenario["census"].read_text(encoding="utf-8"))
+    doc["content_sha256"] = "0" * 64
+    scenario["census"].write_text(json.dumps(doc), encoding="utf-8")
+    assert launch.main(_argv(scenario)) == 3
+
+
+# ---- preflight: work manifest / vendor key -------------------------------------------
+
+
+def test_preflight_exit_8_on_foreign_selection_profile(scenario: dict[str, Path]) -> None:
+    _approve(scenario)
+    doc = json.loads(COMMITTED_PROFILE.read_text(encoding="utf-8"))
+    doc["sides"]["value"] = "call"  # a DIFFERENT, self-consistent profile
+    doc["content_sha256"] = ""
+    from tree_options.data.bars_manifest import SelectionProfile, profile_content_sha256
+
+    other = SelectionProfile.model_validate(doc)
+    other = other.model_copy(update={"content_sha256": profile_content_sha256(other)})
+    other_path = scenario["work_manifest"].parent / "other-profile.json"
+    other_path.write_text(other.model_dump_json(indent=2), encoding="utf-8")
+    assert launch.main(_argv(scenario, extra=["--selection-profile", str(other_path)])) == 8
+
+
+def test_preflight_exit_9_on_missing_key(scenario: dict[str, Path]) -> None:
+    _approve(scenario)
+    scenario["key"].unlink()
+    assert launch.main(_argv(scenario)) == 9
+
+
+def test_preflight_exit_9_on_world_readable_key(scenario: dict[str, Path]) -> None:
+    _approve(scenario)
+    scenario["key"].chmod(0o644)
+    assert launch.main(_argv(scenario)) == 9
+
+
+# ---- preflight: run state / duplicate launch -----------------------------------------
+
+
+def test_preflight_exit_5_on_missing_store(scenario: dict[str, Path]) -> None:
+    _approve(scenario)
+    shutil.rmtree(scenario["store_root"])
+    assert launch.main(_argv(scenario)) == 5
+
+
+def test_preflight_exit_5_on_state_not_bars_ready(scenario: dict[str, Path]) -> None:
+    """A store that stopped one transition short of BARS_READY refuses."""
+    _approve(scenario)
+    other_root = scenario["store_root"].parent / "runstate-not-ready"
+    store = RunStore.create(other_root, make_run_identity(), now_epoch=T0)
+    for step, state in enumerate(BARS_READY_WALK[:-1]):  # stops at AMENDMENT_READY
+        store.transition(
+            state,
+            reason="fixture: one short of BARS_READY",
+            now_epoch=T0 + step,
+            actor_pid=store.identity.pid,
+            actor_boot_id=BOOT,
+        )
+    argv = _argv(scenario)
+    argv[argv.index("--store-root") + 1] = str(other_root)
+    assert launch.main(argv) == 5
+
+
+def test_preflight_exit_5_on_held_lease_duplicate_launch(
+    scenario: dict[str, Path],
+) -> None:
+    """A live owner holds the run's lease: a second launcher is a duplicate."""
+    _approve(scenario)
+    store_dir = scenario["store_root"] / RUN_ID
+    owner = lease_module.current_owner(now_epoch=T0).model_copy(update={"boot_id": BOOT})
+    lease_module.acquire(store_dir, owner, boot_id_now=BOOT)
+    assert launch.main(_argv(scenario)) == 5
+
+
+# ---- preflight: refuse-fallback (exit 4) ----------------------------------------------
+
+_REFUSALS: list[tuple[list[str], str]] = [
+    (["--vendor-host", "evil.example.com"], "api.polygon.io"),
+    (["--endpoint-template", "/v9/evil"], "/v2/aggs/ticker/"),
+    (["--calendar-token", "someone-elses-calendar"], "nyse_sessions_2018_01_02_2026_12_31"),
+    (["--universe", "SPY,TSLA"], "AAPL"),
+    (["--selection-rule", "representative"], "atm-grid"),
+]
+
+
+@pytest.mark.parametrize("flag,pinned_fragment", _REFUSALS, ids=[f[0][0][2:] for f in _REFUSALS])
+def test_every_override_flag_refused_exit_4(
+    scenario: dict[str, Path],
+    capsys: pytest.CaptureFixture[str],
+    flag: list[str],
+    pinned_fragment: str,
+) -> None:
+    _approve(scenario)
+    assert launch.main(_argv(scenario, extra=flag)) == 4
+    # the message NAMES the pinned value (these are not secrets)
+    assert pinned_fragment in capsys.readouterr().err
+
+
+def test_override_equal_to_pinned_value_accepted(scenario: dict[str, Path]) -> None:
+    """The pinned constants are the ONLY accepted values — supplying exactly
+    one is an identity no-op, never a fallback."""
+    _approve(scenario)
+    extra = [
+        "--vendor-host",
+        launch.PINNED_VENDOR_HOST,
+        "--endpoint-template",
+        launch.PINNED_ENDPOINT_TEMPLATES["contracts"],
+        "--endpoint-template",
+        launch.PINNED_ENDPOINT_TEMPLATES["aggs"],
+        "--calendar-token",
+        launch.PINNED_CALENDAR_TOKEN,
+        "--universe",
+        PINNED_UNIVERSE,
+        "--selection-rule",
+        launch.PINNED_SELECTION_RULE,
+    ]
+    assert launch.main(_argv(scenario, extra=extra)) == 0
+
+
+def test_pinned_universe_is_the_committed_29() -> None:
+    assert len(PINNED_UNIVERSE.split(",")) == 29
+    assert launch.PINNED_VENDOR_HOST == "api.polygon.io"
+
+
+# ---- preflight: happy path is green AND mutates nothing -------------------------------
+
+
+def test_preflight_green_and_mutates_nothing(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    _approve(scenario)
+    before = _tree_state(
+        scenario["authority_root"],
+        scenario["store_root"],
+        scenario["capture_dir"],
+        scenario["capture_manifest"].parent,
+    )
+    artifacts_before = sorted(p.name for p in (REPO_ROOT / "artifacts").iterdir())
+    assert launch.main(_argv(scenario)) == 0
+    after = _tree_state(
+        scenario["authority_root"],
+        scenario["store_root"],
+        scenario["capture_dir"],
+        scenario["capture_manifest"].parent,
+    )
+    assert before == after, "preflight must not create, modify, or touch anything"
+    assert sorted(p.name for p in (REPO_ROOT / "artifacts").iterdir()) == artifacts_before
+    report = json.loads(capsys.readouterr().out)
+    assert report["mode"] == "preflight"
+    assert all(check["ok"] for check in report["checks"].values())
+
+
+def test_cli_default_mode_is_preflight(scenario: dict[str, Path]) -> None:
+    """Omitting the mode flag runs preflight (here: green, with a record)."""
+    _approve(scenario)
+    assert launch.main(_argv(scenario)) == 0
+
+
+# ---- execute ---------------------------------------------------------------------------
+
+
+def _fake_runner(scenario: dict[str, Path], calls: list[str]):
+    def runner(context) -> str:
+        calls.append("runner")
+        store = RunStore.open(scenario["store_root"], RUN_ID)
+        # ORDERING ASSERT: by the time the runner runs, the transition is
+        # journaled, the lease is acquired, and the consumption is durable.
+        assert store.state is RunState.BARS_CAPTURING
+        assert (store.dir / lease_module.LEASE_DIRNAME / lease_module.OWNER_FILENAME).exists()
+        view = read_bars_ledger(scenario["authority_root"])
+        assert any(r.kind == KIND_BARS_LAUNCH_CONSUMED for r in view.records)
+        assert (
+            context.work_manifest_sha256
+            == hashlib.sha256(scenario["work_manifest"].read_bytes()).hexdigest()
+        )
+        return "fake-runner-ok"
+
+    return runner
+
+
+def _execute(scenario: dict[str, Path], *, runner) -> tuple[int, object]:
+    args = launch._parse_args(_argv(scenario))
+    return launch.run_execute(args, runner=runner, now_epoch=T0 + 100, boot_id_now=BOOT)
+
+
+def test_execute_exit_6_without_authority_record(scenario: dict[str, Path]) -> None:
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 6 and summary is None
+    assert calls == []  # the runner was never invoked
+    assert not (scenario["authority_root"]).exists()  # nothing consumed
+
+
+def test_execute_exit_6_when_record_binds_other_work_manifest(
+    scenario: dict[str, Path],
+) -> None:
+    """The approval exists for this protocol but binds a DIFFERENT work
+    manifest: the launch authority does not transfer."""
+    _approve(scenario, work_manifest_sha256="f" * 64)
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 6 and summary is None
+    assert calls == []
+    assert read_bars_ledger(scenario["authority_root"]).records[0].kind == (
+        "BARS_LAUNCH_APPROVAL"
+    )  # only the approval exists: nothing was consumed
+
+
+def test_execute_exit_6_on_packet_hash_mismatch(scenario: dict[str, Path]) -> None:
+    _approve(scenario, amendment_packet_sha256="e" * 64)
+    calls: list[str] = []
+    code, _ = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 6
+    assert calls == []
+
+
+def test_execute_happy_path_consumes_then_transitions_before_runner(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    _approve(scenario)
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 0
+    assert calls == ["runner"]
+    assert summary is not None
+    assert summary.runner_outcome == "fake-runner-ok"
+    assert summary.state == "BARS_CAPTURING"
+    assert (
+        summary.work_manifest_sha256
+        == hashlib.sha256(scenario["work_manifest"].read_bytes()).hexdigest()
+    )
+    store = RunStore.open(scenario["store_root"], RUN_ID)
+    assert store.state is RunState.BARS_CAPTURING
+    view = read_bars_ledger(scenario["authority_root"])
+    kinds = [r.kind for r in view.records]
+    assert kinds == ["BARS_LAUNCH_APPROVAL", "BARS_LAUNCH_CONSUMED"]
+    record = json.loads(capsys.readouterr().out)
+    assert record["state"] == "BARS_CAPTURING"
+
+
+def test_execute_duplicate_exit_7_after_crash_style_consumption(
+    scenario: dict[str, Path],
+) -> None:
+    """A crash between consumption and the runner leaves a durable CONSUMED
+    with the store still BARS_READY: a re-execute refuses, never retries."""
+    _approve(scenario)
+    append_bars_launch_consumed(
+        scenario["authority_root"],
+        protocol_hash=protocol_hash(load_protocol(scenario["protocol"])),
+        amendment_packet_sha256=hashlib.sha256(scenario["packet"].read_bytes()).hexdigest(),
+        census_sha256=str(
+            json.loads(scenario["census"].read_text(encoding="utf-8"))["content_sha256"]
+        ),
+        work_manifest_sha256=hashlib.sha256(scenario["work_manifest"].read_bytes()).hexdigest(),
+        reason="crash-after-consumption fixture",
+        at_epoch=T0 + 50,
+    )
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 7 and summary is None
+    assert calls == []
+    store = RunStore.open(scenario["store_root"], RUN_ID)
+    assert store.state is RunState.BARS_READY  # never transitioned on the refusal
+
+
+def test_cli_execute_refused_exit_10_touches_nothing(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    _approve(scenario)
+    before = _tree_state(scenario["authority_root"], scenario["store_root"])
+    code = launch.main(["--execute", *_argv(scenario)])
+    assert code == 10
+    assert "no bars-era runner" in capsys.readouterr().err
+    assert _tree_state(scenario["authority_root"], scenario["store_root"]) == before
+    store = RunStore.open(scenario["store_root"], RUN_ID)
+    assert store.state is RunState.BARS_READY

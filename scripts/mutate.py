@@ -2545,6 +2545,77 @@ MUTANTS = [
             " was spent"
         ),
     ),
+    # ---- PR A4 (bars era): appended after M218 in FILE ORDER, not numeric order --
+    dict(
+        id="M208-protocol-gate-void",
+        owner="test_preflight_exit_2_wrong_version_even_with_matching_record",
+        file="scripts/launch_bars_era.py",
+        anchor=(
+            "if protocol.meta.protocol_version != REQUIRED_BARS_PROTOCOL_VERSION"
+            " or approval is None:"
+        ),
+        replacement="if False:",
+        selectors=[f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "A4 preflight gate 1: the loaded protocol must be EXACTLY 0.2.1 and"
+            " a BARS_LAUNCH_APPROVAL record must bind its hash; a record bound"
+            " to the current 0.2.0 hash does not open the gate (exit 2 is the"
+            " documented correct answer on main)"
+        ),
+    ),
+    dict(
+        id="M209-authority-record-void",
+        owner="test_execute_exit_6_when_record_binds_other_work_manifest",
+        file="scripts/launch_bars_era.py",
+        anchor="if approval is None or approval.work_manifest_sha256 != work_manifest_sha:",
+        replacement="if False:",
+        selectors=[f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "A4 execute authority gate: a BARS_LAUNCH_APPROVAL record must bind"
+            " THIS work manifest's sha256 — approval granted for one manifest"
+            " never transfers to another (exit 6, nothing consumed)"
+        ),
+    ),
+    dict(
+        id="M210-manifest-order-nondeterministic",
+        owner="test_order_entries_canonical_from_shuffled",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor="return tuple(sorted(entries, key=_entry_order_key))",
+        replacement="return tuple(entries)",
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "A4 work-manifest entries are ordered deterministically (underlying,"
+            " as_of, expiry, strike-rank, call-before-put, ticker); the model"
+            " validator refuses any other order, so regeneration is byte-identical"
+        ),
+    ),
+    dict(
+        id="M211-override-fallback-accepted",
+        owner="test_every_override_flag_refused_exit_4",
+        file="scripts/launch_bars_era.py",
+        anchor="if provided is not None and provided != pinned:",
+        replacement="if False:",
+        selectors=[f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "A4 refuse-fallback: --vendor-host/--endpoint-template/--calendar-token"
+            "/--universe/--selection-rule overrides are refused outright (exit 4);"
+            " the pinned constants are the only accepted values and no code path"
+            " substitutes a fallback"
+        ),
+    ),
+    dict(
+        id="M212-duplicate-launch-accepted",
+        owner="test_preflight_exit_5_on_held_lease_duplicate_launch",
+        file="scripts/launch_bars_era.py",
+        anchor="if owner_path.exists():",
+        replacement="if False:",
+        selectors=[f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "A4 duplicate launch: a HELD lease for the same run refuses preflight"
+            " (exit 5) — a live owner is presumed working; 'no log output' is"
+            " not evidence of death"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)

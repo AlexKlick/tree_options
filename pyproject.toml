@@ -67,6 +67,7 @@ files = [
     "scripts/build_coverage_census.py",
     "scripts/build_protocol_amendment.py",
     "scripts/g4_seal.py",
+    "scripts/launch_bars_era.py",
 ]
 mypy_path = "src"
 # The point is catching real unit/ordering bugs, not satisfying a strictness
