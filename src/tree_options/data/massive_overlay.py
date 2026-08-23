@@ -109,6 +109,7 @@ from tree_options.data.massive_manifest import (
 )
 from tree_options.data.massive_options import (
     CAP_QUOTES,
+    DERIVED_DELTA_PROVENANCE,
     MASSIVE_FREE_CAPABILITIES,
     MassiveContractMaster,
     MassiveDailyBar,
@@ -117,13 +118,17 @@ from tree_options.data.massive_options import (
     parse_daily_bars,
 )
 from tree_options.data.real_overlay import RealSessionCalendar
+from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError
 from tree_options.schemas.options import DeliverableSpec, OptionContract
 from tree_options.synth_options.generate import CENT, contract_id_of
 from tree_options.time.sessions import session_close_instant
 
 MASSIVE_DERIVED_PROVIDER = "massive-derived-free/1"
 MASSIVE_DERIVED_SCHEMA_VERSION = "m4-massive-derived/1"
-DERIVATION_PROVENANCE = "model-derived-from-vwap"
+# One owner of the token: massive_options owns it, this module re-exports
+# (G3: the protocol's accepted-provenance list and the candidate-inputs
+# builder share the same string by construction, not by copy).
+DERIVATION_PROVENANCE = DERIVED_DELTA_PROVENANCE
 
 # Domain separation for this lane's hashes (same pattern as the Cboe lane's
 # REAL_CONTRACT_MASTER_DOMAIN / REAL_MANIFEST_DOMAIN).
@@ -1047,6 +1052,42 @@ class MassiveDerivedOverlay:
         return Decimal("0")
 
 
+def vwap_quote_event(quote: MassiveDerivedQuote) -> VwapQuoteEvent:
+    """One derived cell's VENDOR FACTS as the G3 vwap quote kind.
+
+    This is the bar, not the model: `vwap` is the cell's exact Decimal VWAP
+    token, `volume`/`trade_count` the observed counts, and the instants are
+    the cell's own pit stamps — `received_timestamp` is the T+1 receipt
+    wall, so a fill against this event can never land inside the bar's own
+    session. Condition is "regular" by construction: this endpoint
+    aggregates regular-session prints only (there is no per-print
+    condition feed on the tier to misread). Refuses cells without a bar
+    or with zero volume — the fill door's own graded refusals, raised
+    here so the conversion never fabricates a tradable-looking event.
+    """
+    if quote.premium is None or quote.volume is None:
+        raise MassiveOverlayError(
+            f"no bar for {quote.contract_id} on {quote.session}:"
+            " a vwap quote event needs the vendor's own aggregate"
+        )
+    if quote.volume < 1:
+        raise ZeroVolumeVwapError(
+            f"zero-volume session {quote.session} for {quote.contract_id}:"
+            " unfillable, never converted"
+        )
+    return VwapQuoteEvent(
+        contract_id=quote.contract_id,
+        session=quote.session,
+        exchange_timestamp=quote.exchange_timestamp,
+        received_timestamp=quote.received_timestamp,
+        vwap=quote.premium,
+        volume=quote.volume,
+        trade_count=quote.transactions or 0,
+        quote_condition="regular",
+        source=MASSIVE_DERIVED_PROVIDER,
+    )
+
+
 def load_derived_surface(
     capture_dir: Path,
     *,
@@ -1119,4 +1160,5 @@ __all__ = [
     "MassiveExpiryMeta",
     "MassiveOverlayError",
     "load_derived_surface",
+    "vwap_quote_event",
 ]

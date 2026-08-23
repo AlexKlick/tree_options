@@ -36,7 +36,14 @@ from fractions import Fraction
 from tree_options.ledger.fees import FeeModel, PerContractFeeModel
 from tree_options.protocol.schema import ResearchProtocol
 from tree_options.schemas.common import PRICE_TICK
-from tree_options.schemas.market import QuoteEvent, as_tradable, select_quote
+from tree_options.schemas.market import (
+    QuoteEvent,
+    VwapQuoteEvent,
+    as_tradable,
+    as_tradable_vwap,
+    conservative_tick,
+    select_quote,
+)
 from tree_options.schemas.options import OptionContract
 from tree_options.schemas.trading import Fill, Order
 from tree_options.time.calendar import SessionCalendar
@@ -167,6 +174,10 @@ class FillEngine:
         self._executed_orders: set[str] = set()
         self._orders: dict[str, Order] = {}  # order_id -> the order BOUND at first mint
         self._filled_qty: dict[str, int] = {}
+        # G3: cumulative contracts filled against one (contract, bar
+        # session) — the participation cap is global to the engine, not
+        # per-order (a session's observed volume cannot be minted twice).
+        self._vwap_consumed: dict[tuple[str, date], int] = {}
 
     @classmethod
     def from_protocol(
@@ -184,7 +195,7 @@ class FillEngine:
     def execute(
         self,
         order: Order,
-        quotes: QuoteEvent | Sequence[QuoteEvent],
+        quotes: QuoteEvent | VwapQuoteEvent | Sequence[QuoteEvent | VwapQuoteEvent],
         contract: OptionContract,
         *,
         execution_session: date,
@@ -198,6 +209,12 @@ class FillEngine:
         `quotes` is the quote STREAM visible at the (latency-shifted)
         effective instant; the engine itself selects the latest eligible
         quote — the caller cannot cherry-pick a favorable older print.
+        The stream may mix quote KINDS (two-sided and vwap bars); the
+        selected quote's kind picks the fill branch (G3, protocol 0.2.0):
+        a two-sided quote fills at the fraction-to-midpoint executable, a
+        vwap bar fills AT the session VWAP rounded conservatively to the
+        tick, participation-capped by the bar's observed volume — a
+        zero-volume bar is unfillable, never priced at a fabrication.
         `partial_sequence=True` is the explicit, per-call opt-in that lets
         one order mint a further fill (a deliberate partial-fill chain);
         re-executing an order without it is DUPLICATE_ORDER_EXECUTION, and a
@@ -210,7 +227,9 @@ class FillEngine:
         """
         stress = stress or ExecutionStress.zero()
         effective_at = shift_instant(execution_at, stress.latency_seconds)
-        quote_stream = [quotes] if isinstance(quotes, QuoteEvent) else list(quotes)
+        quote_stream = (
+            [quotes] if isinstance(quotes, (QuoteEvent, VwapQuoteEvent)) else list(quotes)
+        )
         if order.order_id in self._executed_orders and not partial_sequence:
             raise FillRejection(
                 "DUPLICATE_ORDER_EXECUTION",
@@ -283,12 +302,51 @@ class FillEngine:
             )
 
         selected = select_quote(quote_stream, effective_at)
-        tq = as_tradable(
-            selected,
-            execution_at=effective_at,
-            max_quote_age_seconds=self.max_quote_age_seconds,
-            reject_locked=self.reject_locked_quotes,
-        )
+        if isinstance(selected, VwapQuoteEvent):
+            # G3 vwap branch: publication-gated bar, no age-in-seconds rule
+            # (a daily summary's validity is its session identity).
+            vq = as_tradable_vwap(selected, execution_at=effective_at)
+            # Session-identity coherence: the bar's exchange stamp IS the
+            # close of its own `session` — a label disagreeing with its
+            # stamps is a mislabeled input and refuses by name (review P0:
+            # otherwise a bar stamped at one session's close but LABELED
+            # another session fills as if it were that other session).
+            if not self.calendar.is_session(vq.quote.session):
+                raise FillRejection(
+                    "BAR_SESSION_NOT_IN_CALENDAR",
+                    f"bar session {vq.quote.session} for {vq.quote.contract_id}"
+                    " is not a calendar session",
+                )
+            if self.calendar.session_close(vq.quote.session) != vq.quote.exchange_timestamp:
+                raise FillRejection(
+                    "BAR_SESSION_STAMP_MISMATCH",
+                    f"bar session {vq.quote.session} close"
+                    f" {self.calendar.session_close(vq.quote.session)} !="
+                    f" exchange stamp {vq.quote.exchange_timestamp}"
+                    f" ({vq.quote.contract_id})",
+                )
+            # Recency (review round 2): the bar must be the session
+            # IMMEDIATELY before the execution session. An older coherent
+            # bar is the last observed reality only because intervening
+            # sessions traded nothing — filling at its VWAP would fabricate
+            # liquidity those zero-volume sessions deny. Fail closed.
+            bar_ordinal = self.calendar.ordinal(vq.quote.session)
+            if exec_ord - bar_ordinal != 1:
+                raise FillRejection(
+                    "BAR_NOT_MOST_RECENT",
+                    f"bar session {vq.quote.session} (ordinal {bar_ordinal}) is"
+                    f" not the session immediately before execution"
+                    f" {execution_session} (ordinal {exec_ord}): an older"
+                    " session's VWAP cannot fill — the intervening sessions"
+                    " deny its liquidity",
+                )
+        else:
+            tq = as_tradable(
+                selected,
+                execution_at=effective_at,
+                max_quote_age_seconds=self.max_quote_age_seconds,
+                reject_locked=self.reject_locked_quotes,
+            )
 
         if not contract.standard_contract_flag:
             raise FillRejection(
@@ -303,17 +361,35 @@ class FillEngine:
                 f"{fraction_to_midpoint_f} not in {ALLOWED_FRACTIONS}",
             )
 
-        price = fraction_to_midpoint(tq.bid, tq.ask, order.side, fraction_to_midpoint_f)
-        if order.side == "buy":
-            price = price + Decimal(stress.slippage_ticks_buy) / 100
+        if isinstance(selected, VwapQuoteEvent):
+            if fraction_to_midpoint_f != Decimal("0"):
+                raise FillRejection(
+                    "INVALID_FRACTION_TO_MIDPOINT",
+                    f"{fraction_to_midpoint_f}: the midpoint fraction is a "
+                    "two-sided concept; a vwap fill is AT the benchmark",
+                )
+            # The sub-tick VWAP rounds to the fill tick AGAINST the taker
+            # (buy up, sell down), then stress only worsens — the same
+            # monotone direction as the two-sided path.
+            price = conservative_tick(vq.vwap, order.side)
+            if order.side == "buy":
+                price = price + Decimal(stress.slippage_ticks_buy) / 100
+            else:
+                price = price - Decimal(stress.slippage_ticks_sell) / 100
+            if not (Decimal(0) < price):
+                raise PriceOutsideBounds(f"stressed price {price} non-positive")
         else:
-            price = price - Decimal(stress.slippage_ticks_sell) / 100
-        if not (Decimal(0) < price):
-            raise PriceOutsideBounds(f"stressed price {price} non-positive")
-        if order.side == "buy" and price > tq.ask + Decimal(
-            stress.slippage_ticks_buy
-        ) / 100 + Decimal("0.01"):
-            raise PriceOutsideBounds(f"buy price {price} beyond ask+slippage")
+            price = fraction_to_midpoint(tq.bid, tq.ask, order.side, fraction_to_midpoint_f)
+            if order.side == "buy":
+                price = price + Decimal(stress.slippage_ticks_buy) / 100
+            else:
+                price = price - Decimal(stress.slippage_ticks_sell) / 100
+            if not (Decimal(0) < price):
+                raise PriceOutsideBounds(f"stressed price {price} non-positive")
+            if order.side == "buy" and price > tq.ask + Decimal(
+                stress.slippage_ticks_buy
+            ) / 100 + Decimal("0.01"):
+                raise PriceOutsideBounds(f"buy price {price} beyond ask+slippage")
 
         if order.order_type == "limit" and order.limit_price is not None:
             if order.side == "buy" and order.limit_price < price:
@@ -325,8 +401,21 @@ class FillEngine:
                     "UNMARKETABLE_LIMIT", f"sell limit {order.limit_price} > fill {price}"
                 )
 
-        displayed = tq.ask_size if order.side == "buy" else tq.bid_size
-        capacity = math.floor(self.fill_size_fraction * displayed)
+        if isinstance(selected, VwapQuoteEvent):
+            # Participation, not displayed size: the cap is the contracts
+            # the session actually traded (the bar's own volume), and a
+            # zero-volume bar was already refused at as_tradable_vwap.
+            # The cap is PER (contract, bar session) and CUMULATIVE across
+            # fills (review P0: without the ledger, a partial-sequence — or
+            # a second order — could fill twice the session's entire
+            # observed volume against the same bar).
+            participation_key = (selected.contract_id, selected.session)
+            already_participated = self._vwap_consumed.get(participation_key, 0)
+            displayed = vq.volume
+            capacity = math.floor(self.fill_size_fraction * vq.volume) - already_participated
+        else:
+            displayed = tq.ask_size if order.side == "buy" else tq.bid_size
+            capacity = math.floor(self.fill_size_fraction * displayed)
         remaining = order.quantity - already_filled
         quantity = min(remaining, capacity)
         if quantity < 1:
@@ -363,4 +452,6 @@ class FillEngine:
         self._executed_orders.add(order.order_id)
         self._orders[order.order_id] = order
         self._filled_qty[order.order_id] = already_filled + quantity
+        if isinstance(selected, VwapQuoteEvent):
+            self._vwap_consumed[participation_key] = already_participated + quantity
         return fill

@@ -67,9 +67,11 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import TYPE_CHECKING, Any, Literal, NoReturn, cast
+from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
+from tree_options.candidates.filters import AsOf, CandidateSnapshot
 from tree_options.data.massive_client import MASSIVE_PROVIDER, MassiveError
+from tree_options.schemas.options import OptionContract
 from tree_options.time.sessions import SESSION_TIMEZONE
 
 if TYPE_CHECKING:
@@ -200,17 +202,118 @@ MASSIVE_FREE_CAPABILITIES = SourceCapabilities(
     ),
 )
 
-# The inputs the M3 candidate filter needs and this tier cannot supply.
+# The inputs the M3 candidate filter needed from a TWO-SIDED tier and this
+# tier cannot supply. Retained for the capability record: the G3 amendment
+# (protocol 0.2.0) does NOT conjure bid/ask or open interest — it ratifies a
+# different liquidity REGIME (volume flow) and a model-derived |delta| provenance.
 CANDIDATE_INPUT_CAPABILITIES = (CAP_QUOTES, CAP_GREEKS, CAP_OPEN_INTEREST, CAP_SPREAD)
 
+# The ratified provenance stamp for the derived lane's |delta| (G3 Ask B).
+# Equal by construction to massive_overlay.DERIVATION_PROVENANCE, which
+# re-exports THIS constant (one owner of the token; a test pins the equality
+# against the protocol's accepted classes).
+DERIVED_DELTA_PROVENANCE = "model-derived-from-vwap"
 
-def build_option_candidate_inputs(*_args: object, **_kwargs: object) -> NoReturn:
-    """Always raises. The M3 candidate filter needs `abs_delta`, open
-    interest and a quoted spread; this tier carries none of them, so
-    there is no honest implementation — only a fabricating one."""
-    MASSIVE_FREE_CAPABILITIES.require(*CANDIDATE_INPUT_CAPABILITIES)
-    raise MassiveCapabilityError(  # pragma: no cover — require() always raises first
-        "unreachable: candidate inputs are not derivable from the free tier"
+
+class _DerivedPricingLike(Protocol):
+    abs_delta: Decimal
+    provenance: str
+
+
+class MassiveDerivedQuoteLike(Protocol):
+    """The structural slice of `massive_overlay.MassiveDerivedQuote` this
+    builder reads. A Protocol (not an import) because massive_overlay
+    imports THIS module — the dependency edge is one-way by design."""
+
+    contract_id: str
+    underlying_security_id: str
+    received_timestamp: datetime
+    volume: int | None
+    derived: _DerivedPricingLike | None
+
+
+def build_option_candidate_inputs(
+    contract: OptionContract,
+    quote: MassiveDerivedQuoteLike,
+    *,
+    decision_session: date,
+    decision_at: datetime,
+    underlying_20d_median_dollar_volume: AsOf | None = None,
+    spans_earnings: AsOf | None = None,
+) -> CandidateSnapshot:
+    """Build an M3 `CandidateSnapshot` from one derived-overlay cell (G3,
+    protocol 0.2.0 — the amendment packet lifted this seam's refusal).
+
+    What this builds, honestly:
+
+    - `abs_delta` — the cell's model-derived |delta| under the stamped
+      provenance `model-derived-from-vwap`, available at the cell's
+      RECEIVED instant (the T+1 receipt wall). None on NOT_EVALUABLE
+      cells: the filter then answers NOT_EVALUABLE, never a guess.
+    - `same_day_volume` — the bar's own volume, vendor-observed, available
+      at the same receipt instant. In the volume_flow liquidity regime
+      this is the liquidity term.
+    - `bid`/`ask`/`open_interest` stay None: this tier carries no
+      two-sided market, and the filter's volume_flow regime DROPS those
+      terms WITH disclosure instead of fabricating inputs.
+
+    Fail-closed: the cell must name the same contract, its receipt
+    instant must be at or before the decision instant (a not-yet-received
+    cell is future data and refuses here rather than launder through the
+    filter's timestamps), and the cell's OWN derivation stamp must BE the
+    ratified token — a cell derived under any other provenance refuses at
+    the build instead of being re-stamped into acceptance (review P0).
+    """
+    if quote.contract_id != contract.contract_id:
+        raise MassiveCapabilityError(
+            f"cell names contract {quote.contract_id!r}, snapshot is for {contract.contract_id!r}"
+        )
+    if quote.received_timestamp > decision_at:
+        raise MassiveCapabilityError(
+            f"cell for {quote.contract_id} received {quote.received_timestamp} "
+            f"after decision {decision_at}: future data refuses at the build"
+        )
+    derived = quote.derived
+    if derived is not None and derived.provenance != DERIVED_DELTA_PROVENANCE:
+        raise MassiveCapabilityError(
+            f"cell for {quote.contract_id} carries derivation provenance "
+            f"{derived.provenance!r} != {DERIVED_DELTA_PROVENANCE!r}: the"
+            " builder re-stamps nothing — an unaccepted provenance refuses"
+            " at the build"
+        )
+    volume = quote.volume
+    abs_delta = (
+        AsOf(
+            value=derived.abs_delta,
+            available_at=quote.received_timestamp,
+            provenance=DERIVED_DELTA_PROVENANCE,
+        )
+        if derived is not None
+        else None
+    )
+    same_day_volume = (
+        AsOf(
+            value=volume,
+            available_at=quote.received_timestamp,
+            provenance="vendor",
+        )
+        if volume is not None
+        else None
+    )
+    return CandidateSnapshot(
+        contract=contract,
+        underlying_security_id=quote.underlying_security_id,
+        decision_session=decision_session,
+        decision_at=decision_at,
+        expiration=contract.expiration,
+        abs_delta=abs_delta,
+        open_interest=None,
+        same_day_volume=same_day_volume,
+        same_day_volume_applicable=same_day_volume is not None,
+        bid=None,
+        ask=None,
+        underlying_20d_median_dollar_volume=underlying_20d_median_dollar_volume,
+        spans_earnings=spans_earnings,
     )
 
 

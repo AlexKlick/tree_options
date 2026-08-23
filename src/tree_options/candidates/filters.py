@@ -36,10 +36,17 @@ NOT_APPLICABLE = "NOT_APPLICABLE"
 
 @dataclass(frozen=True)
 class AsOf:
-    """A value plus the instant it became available (provenance + payload)."""
+    """A value plus the instant it became available (provenance + payload).
+
+    `provenance` names WHERE the value came from (G3, protocol 0.2.0):
+    "vendor" = observed by the data provider; "model-derived-from-vwap" =
+    computed by the repo's own pricer from a bar VWAP. The filter checks
+    the stamp against the protocol's accepted classes — an unaccepted
+    provenance is NOT_EVALUABLE, never a silent pass."""
 
     value: object
     available_at: datetime
+    provenance: str = "vendor"
 
     def available_by(self, decision_at: datetime) -> bool:
         return self.available_at <= decision_at
@@ -112,6 +119,9 @@ class CandidateFilter:
         max_spread_fraction_of_midpoint: Decimal,
         min_underlying_20d_median_dollar_volume: Decimal,
         exclude_earnings_spanning_hold: bool,
+        liquidity_regime: str = "two_sided",
+        flow_min_session_volume: int | None = None,
+        accepted_delta_provenance: tuple[str, ...] = ("vendor",),
     ) -> None:
         self.calendar = calendar
         self.dte_min = dte_min
@@ -125,6 +135,30 @@ class CandidateFilter:
         self.max_spread_fraction_of_midpoint = max_spread_fraction_of_midpoint
         self.min_underlying_20d_median_dollar_volume = min_underlying_20d_median_dollar_volume
         self.exclude_earnings_spanning_hold = exclude_earnings_spanning_hold
+        if liquidity_regime not in {"two_sided", "volume_flow"}:
+            raise ValueError(f"unknown liquidity_regime {liquidity_regime!r}")
+        if liquidity_regime == "volume_flow":
+            # The era-pending threshold may never default to 0: an unset
+            # flow threshold would accept every candidate (G3 Ask D), and
+            # neither may a non-positive value sneak in past the None check
+            # (review P0). The type gate is explicit because bool IS an int
+            # (True == 1 passes < 1) and float NaN compares false against
+            # everything — both would activate a fully-accepting filter
+            # (review round 2).
+            if (
+                not isinstance(flow_min_session_volume, int)
+                or isinstance(flow_min_session_volume, bool)
+                or flow_min_session_volume < 1
+            ):
+                raise ValueError(
+                    "volume_flow regime requires flow_min_session_volume to be"
+                    " an int >= 1 — the protocol's threshold is PENDING-era;"
+                    " set it from the coverage-era census before building this"
+                    " filter"
+                )
+        self.liquidity_regime = liquidity_regime
+        self.flow_min_session_volume = flow_min_session_volume
+        self.accepted_delta_provenance = tuple(accepted_delta_provenance)
 
     @classmethod
     def from_protocol(cls, calendar, protocol: ResearchProtocol) -> CandidateFilter:
@@ -142,6 +176,37 @@ class CandidateFilter:
             max_spread_fraction_of_midpoint=d.max_spread_fraction_of_midpoint,
             min_underlying_20d_median_dollar_volume=d.min_underlying_20d_median_dollar_volume,
             exclude_earnings_spanning_hold=d.exclude_earnings_spanning_hold,
+        )
+
+    @classmethod
+    def from_protocol_volume_flow(cls, calendar, protocol: ResearchProtocol) -> CandidateFilter:
+        """Build the G3 volume-flow filter from the protocol's ratified
+        regime block. Fails closed (ValueError) while the protocol's
+        flow_min_session_volume is still PENDING-era (None)."""
+        d = protocol.option_candidate_defaults
+        lf = d.liquidity_volume_flow
+        if lf is None:
+            raise ValueError(
+                "protocol carries no liquidity_volume_flow block: the "
+                "volume-flow regime is not ratified"
+            )
+        base = cls.from_protocol(calendar, protocol)
+        return cls(
+            calendar,
+            dte_min=base.dte_min,
+            dte_max=base.dte_max,
+            abs_delta_min=base.abs_delta_min,
+            abs_delta_max=base.abs_delta_max,
+            standard_deliverable_only=base.standard_deliverable_only,
+            min_open_interest=base.min_open_interest,
+            min_same_day_volume=base.min_same_day_volume,
+            volume_only_if_already_available=base.volume_only_if_already_available,
+            max_spread_fraction_of_midpoint=base.max_spread_fraction_of_midpoint,
+            min_underlying_20d_median_dollar_volume=(base.min_underlying_20d_median_dollar_volume),
+            exclude_earnings_spanning_hold=base.exclude_earnings_spanning_hold,
+            liquidity_regime="volume_flow",
+            flow_min_session_volume=lf.flow_min_session_volume,
+            accepted_delta_provenance=lf.abs_delta_provenance_accepted,
         )
 
     def evaluate(self, snap: CandidateSnapshot) -> CandidateDecision:
@@ -203,7 +268,9 @@ class CandidateFilter:
                 "delta",
                 "deliverable",
                 "open_interest",
-                "same_day_volume",
+                "session_volume_flow"
+                if self.liquidity_regime == "volume_flow"
+                else "same_day_volume",
                 "spread",
                 "underlying_liquidity",
                 "earnings_span",
@@ -225,17 +292,35 @@ class CandidateFilter:
                 RuleResult("dte", FAIL, f"dte {dte} not in [{self.dte_min}, {self.dte_max}]")
             )
 
-        # Delta.
+        # Delta. The provenance stamp is checked FIRST (G3 0.2.0): a value
+        # whose provenance the protocol does not accept is NOT_EVALUABLE —
+        # a model-derived delta may never pass through a vendor-only regime
+        # by omission of the check.
         if snap.abs_delta is None:
             results.append(RuleResult("delta", NOT_EVALUABLE, "abs_delta missing"))
         elif not _tz_aware(snap.abs_delta.available_at):
             results.append(RuleResult("delta", NOT_EVALUABLE, "naive timestamp"))
+        elif snap.abs_delta.provenance not in self.accepted_delta_provenance:
+            results.append(
+                RuleResult(
+                    "delta",
+                    NOT_EVALUABLE,
+                    f"provenance {snap.abs_delta.provenance!r} not accepted "
+                    f"(accepted: {list(self.accepted_delta_provenance)})",
+                )
+            )
         elif not snap.abs_delta.available_by(snap.decision_at):
             results.append(RuleResult("delta", NOT_EVALUABLE, "future-available delta"))
         elif not (self.abs_delta_min <= _v(snap.abs_delta) <= self.abs_delta_max):
             results.append(RuleResult("delta", FAIL, f"{_v(snap.abs_delta)} out of band"))
         else:
-            results.append(RuleResult("delta", PASS, "in band"))
+            results.append(
+                RuleResult(
+                    "delta",
+                    PASS,
+                    f"in band (provenance {snap.abs_delta.provenance})",
+                )
+            )
 
         # Deliverable standardness, derived from the CONTRACT OBJECT (never a
         # caller boolean): standard == flag set AND no corporate-action
@@ -257,8 +342,32 @@ class CandidateFilter:
                 )
             )
 
-        # Open interest.
-        if snap.open_interest is None:
+        # Open interest. In the volume_flow regime the term is DROPPED WITH
+        # DISCLOSURE (G3 Ask D): tiers without two-sided markets carry no
+        # OI, and the audit says so instead of fabricating a threshold pass.
+        # A snapshot that SUPPLIES OI contradicts the regime's premise and
+        # is incoherent — the disclosure may not paper over real inputs
+        # (review P1).
+        if self.liquidity_regime == "volume_flow" and snap.open_interest is not None:
+            results.append(
+                RuleResult(
+                    "open_interest",
+                    NOT_EVALUABLE,
+                    "regime incoherent: volume_flow drops OI as absent, but"
+                    " the snapshot supplies open_interest (value withheld:"
+                    " its availability was never checked, and a future value"
+                    " must not leak into the audit)",
+                )
+            )
+        elif self.liquidity_regime == "volume_flow":
+            results.append(
+                RuleResult(
+                    "open_interest",
+                    NOT_APPLICABLE,
+                    "dropped: no open interest on a no-two-sided-market tier",
+                )
+            )
+        elif snap.open_interest is None:
             results.append(RuleResult("open_interest", NOT_EVALUABLE, "missing"))
         elif not _tz_aware(snap.open_interest.available_at):
             results.append(RuleResult("open_interest", NOT_EVALUABLE, "naive timestamp"))
@@ -273,26 +382,77 @@ class CandidateFilter:
         # recorded NOT_APPLICABLE (never silently skipped, never fabricated).
         # A SUPPLIED volume is always evaluated — the applicability flag only
         # excuses a missing one (F4: the flag must not hide a future input).
+        # In the volume_flow regime this IS the liquidity term (G3 Ask D):
+        # the session's traded contracts against flow_min_session_volume,
+        # under its own rule name so the audit cannot misread it as the
+        # two-sided same-day-volume screen.
+        volume_rule = (
+            "session_volume_flow" if self.liquidity_regime == "volume_flow" else "same_day_volume"
+        )
+        volume_min = (
+            self.flow_min_session_volume
+            if self.liquidity_regime == "volume_flow"
+            else self.min_same_day_volume
+        )
         if snap.same_day_volume is not None:
             if not _tz_aware(snap.same_day_volume.available_at):
-                results.append(RuleResult("same_day_volume", NOT_EVALUABLE, "naive timestamp"))
+                results.append(RuleResult(volume_rule, NOT_EVALUABLE, "naive timestamp"))
             elif not snap.same_day_volume.available_by(snap.decision_at):
+                results.append(RuleResult(volume_rule, NOT_EVALUABLE, "future-available volume"))
+            elif _v(snap.same_day_volume) < volume_min:
                 results.append(
-                    RuleResult("same_day_volume", NOT_EVALUABLE, "future-available volume")
+                    RuleResult(volume_rule, FAIL, f"below flow min {volume_min}")
+                    if self.liquidity_regime == "volume_flow"
+                    else RuleResult(volume_rule, FAIL, "below min")
                 )
-            elif _v(snap.same_day_volume) < self.min_same_day_volume:
-                results.append(RuleResult("same_day_volume", FAIL, "below min"))
             else:
-                results.append(RuleResult("same_day_volume", PASS, "above min"))
-        elif self.volume_only_if_already_available and not snap.same_day_volume_applicable:
+                results.append(
+                    RuleResult(volume_rule, PASS, f"at/above flow min {volume_min}")
+                    if self.liquidity_regime == "volume_flow"
+                    else RuleResult(volume_rule, PASS, "above min")
+                )
+        elif self.liquidity_regime == "volume_flow":
+            # In the flow regime the session volume IS the liquidity term:
+            # missing is NOT_EVALUABLE — the candidate cannot be judged
+            # liquid (review P0: NOT_APPLICABLE here accepted candidates
+            # with no volume evidence at all). The two-sided regime keeps
+            # the historical optional-volume semantics below.
             results.append(
-                RuleResult("same_day_volume", NOT_APPLICABLE, "not yet published at decision")
+                RuleResult(
+                    volume_rule,
+                    NOT_EVALUABLE,
+                    "missing: session volume is the liquidity term in the volume_flow regime",
+                )
             )
+        elif self.volume_only_if_already_available and not snap.same_day_volume_applicable:
+            results.append(RuleResult(volume_rule, NOT_APPLICABLE, "not yet published at decision"))
         else:
-            results.append(RuleResult("same_day_volume", NOT_EVALUABLE, "missing"))
+            results.append(RuleResult(volume_rule, NOT_EVALUABLE, "missing"))
 
-        # Spread fraction of midpoint.
-        if snap.bid is None or snap.ask is None:
+        # Spread fraction of midpoint. DROPPED WITH DISCLOSURE in the
+        # volume_flow regime: with no bid/ask there is no spread to bound,
+        # and no $0 substitute is approximated (G3 Ask D). Supplied quotes
+        # contradict the premise and are incoherent (review P1).
+        if self.liquidity_regime == "volume_flow" and (
+            snap.bid is not None or snap.ask is not None
+        ):
+            results.append(
+                RuleResult(
+                    "spread",
+                    NOT_EVALUABLE,
+                    "regime incoherent: volume_flow drops the spread as"
+                    " absent, but the snapshot supplies a two-sided quote",
+                )
+            )
+        elif self.liquidity_regime == "volume_flow":
+            results.append(
+                RuleResult(
+                    "spread",
+                    NOT_APPLICABLE,
+                    "dropped: no two-sided market on this tier",
+                )
+            )
+        elif snap.bid is None or snap.ask is None:
             results.append(RuleResult("spread", NOT_EVALUABLE, "bid/ask missing"))
         elif not _tz_aware(snap.bid.available_at) or not _tz_aware(snap.ask.available_at):
             results.append(RuleResult("spread", NOT_EVALUABLE, "naive quote timestamp"))

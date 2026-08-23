@@ -31,7 +31,6 @@ from tree_options.data.massive_options import (
     MassiveCapabilityError,
     MassiveSchemaError,
     build_contract_master,
-    build_option_candidate_inputs,
     fetch_contract_master,
     fetch_daily_bars,
     instant_of_epoch_ms,
@@ -356,17 +355,20 @@ def test_requiring_a_withheld_capability_raises_and_names_the_tier() -> None:
     MASSIVE_FREE_CAPABILITIES.require(CAP_STRIKE_LADDER)  # provided: no raise
 
 
-def test_candidate_inputs_from_this_source_always_refuse() -> None:
-    master = build_contract_master(
-        results_of(fx.CONTRACTS_SINGLE_PAGE), underlying="SPY", as_of=AS_OF
-    )
+def test_two_sided_capabilities_still_withheld_after_g3() -> None:
+    """The G3 amendment (protocol 0.2.0) ratified a liquidity REGIME and a
+    derived-delta provenance — it did NOT conjure two-sided inputs. The
+    capability record still withholds quotes/greeks/OI/spread, and asking
+    for them by name still names the upgrade tier. The old unconditional
+    builder refusal this test replaced is superseded: the seam now builds
+    provenance-stamped inputs (pinned in the G3 test module)."""
     with pytest.raises(MassiveCapabilityError) as exc:
-        build_option_candidate_inputs(master)
+        MASSIVE_FREE_CAPABILITIES.require(*massive_options.CANDIDATE_INPUT_CAPABILITIES)
     message = str(exc.value)
-    assert CAP_QUOTES in message
-    assert CAP_GREEKS in message
-    assert CAP_OPEN_INTEREST in message
+    for withheld in (CAP_QUOTES, CAP_GREEKS, CAP_OPEN_INTEREST):
+        assert withheld in message
     assert "required tier" in message
+    assert massive_options.DERIVED_DELTA_PROVENANCE == "model-derived-from-vwap"
 
 
 # ---- adapter identity ---------------------------------------------------------
