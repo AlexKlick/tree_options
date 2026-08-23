@@ -2012,10 +2012,7 @@ MUTANTS = [
         id="M180-lifecycle-whitelist-gutted",
         owner="test_full_matrix_refuses_everything_else",
         file="src/tree_options/runstate/states.py",
-        anchor=(
-            "    if target not in LEGAL_EDGES.get(source, frozenset()):\n"
-            "        return False"
-        ),
+        anchor=("    if target not in LEGAL_EDGES.get(source, frozenset()):\n        return False"),
         replacement="    if False:\n        return False",
         selectors=[f"{U}/test_runstate_lifecycle.py"],
         invariant=(
@@ -2052,29 +2049,31 @@ MUTANTS = [
         ),
     ),
     dict(
-        id="M182-unknown-accepted-as-target",
-        owner="test_unknown_is_never_a_target",
-        file="src/tree_options/runstate/states.py",
-        anchor=(
-            "    if target is RunState.UNKNOWN or source is RunState.UNKNOWN:\n"
-            "        return False"
-        ),
-        replacement="    if False:\n        return False",
-        selectors=[f"{U}/test_runstate_lifecycle.py"],
+        # Replaced 2026-08-23: the original M182 (gutting the explicit
+        # UNKNOWN guard in states.is_legal) SURVIVED the full harness because
+        # the LEGAL_EDGES whitelist at the next line already refuses every
+        # UNKNOWN edge — a redundant guard has no distinct observable
+        # behavior. The UNKNOWN-never-a-target invariant stays enforced by
+        # the whitelist + test_unknown_is_never_a_target. This replacement
+        # targets a decision point that IS load-bearing: the legacy
+        # pre-journal era probe.
+        id="M182-legacy-era-undetected",
+        owner="test_legacy_prejournal_era_detected_exit_3",
+        file="scripts/era_status.py",
+        anchor=("        if CAPTURE_SCRIPT_TOKEN in cmdline and capture_dir_token in cmdline:"),
+        replacement="        if False and capture_dir_token in cmdline:",
+        selectors=[f"{U}/test_era_status.py"],
         invariant=(
-            "A1 UNKNOWN is an observer classification, never a journal"
-            " target: accepting it lets a stale probe freeze the run"
-            " forever"
+            "A1 a live pre-journal capture era is UNKNOWN (exit 3), never"
+            " presumed idle or failed: silencing the /proc probe lets the"
+            " observer invent an outcome the journal never recorded"
         ),
     ),
     dict(
         id="M183-journal-chain-void",
         owner="test_reordering_detected",
         file="src/tree_options/runstate/journal.py",
-        anchor=(
-            "    if record.prev_record_sha256 != prev_hash:\n"
-            "        return False"
-        ),
+        anchor=("    if record.prev_record_sha256 != prev_hash:\n        return False"),
         replacement="    if False:\n        return False",
         selectors=[f"{U}/test_runstate_journal.py"],
         invariant=(
@@ -2110,7 +2109,7 @@ MUTANTS = [
         file="src/tree_options/runstate/journal.py",
         anchor=(
             "            raise JournalCorruptError(\n"
-            '                run_id,\n'
+            "                run_id,\n"
             '                f"journal line {index + 1} failed decode/hash/chain verification",\n'
             "            )"
         ),
@@ -2155,10 +2154,7 @@ MUTANTS = [
             "    if live_ticks is None or live_ticks != owner.pid_start_ticks:\n"
             "        return LeaseClassification.STALE_PID_REUSED"
         ),
-        replacement=(
-            "    if False:\n"
-            "        return LeaseClassification.STALE_PID_REUSED"
-        ),
+        replacement=("    if False:\n        return LeaseClassification.STALE_PID_REUSED"),
         selectors=[f"{U}/test_runstate_lease.py"],
         invariant=(
             "A1 a reused pid number is NOT the recorded owner: without the"
