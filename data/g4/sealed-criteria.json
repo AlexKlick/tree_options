@@ -1,0 +1,41 @@
+{
+  "schema_version": 1,
+  "gate": "M4-G4 sealed real-data gate",
+  "note": "Transcribed for preflight AVAILABILITY checking only (PR A/A5): lists the criteria inputs the sealed run requires and the decision-rule structure exactly as pre-declared in the source plan's section 4. NO verdict logic, NO thresholds the plan does not already state, NO outcome data. The plan doc itself is NOT modified by this transcription.",
+  "source": "docs/m4-g4-sealed-gate-plan.md",
+  "source_sha256": "265ecab6582c6e17b34ac31c3441cb4f7555ae6a10a0f9708b345710252316fc",
+  "decision_rule": {
+    "evaluation_source": "stamped payload files only",
+    "verdict_recording": "verdict PASS or FAIL recorded verbatim",
+    "one_shot": "the gate script runs once; no re-run inside the campaign regardless of outcome; a FAIL triggers a remediation packet + a NEW pre-declared gate (the M3 correction-run pattern), never an in-place re-run",
+    "precondition_not_criterion": "every sealed artifact verified by its typed manifest pair before the run (verify_massive_capture_manifest with capture_version 'm4b-capture/1' for the era; the Cboe manifest for lane 1); any verify failure = the gate does not start",
+    "head": "the sealed run executes at one declared commit on main; the commit hash is written into the evidence log before the run",
+    "criteria_count": 6
+  },
+  "criteria": [
+    {
+      "id": "manifest_integrity",
+      "statement": "lane 2: every master + bar file passes the typed manifest verify (zero silent drops); lane 1: the Cboe manifest verifies. Count of verified series is reported, target = the era's stamped counts."
+    },
+    {
+      "id": "candidate_discipline",
+      "statement": "every accepted candidate carries a delta provenance in the protocol's accepted set for its regime; the volume-flow threshold in the stamped run equals the 0.2.1 census value EXACTLY (any drift = FAIL); every volume-flow decision discloses the dropped inputs (NOT_APPLICABLE rows present, OI values withheld)."
+    },
+    {
+      "id": "fill_discipline",
+      "statement": "(bars leg) every stamped fill executes strictly after its decision session, against a bar received by the execution instant AND belonging to the session immediately before the execution session (ordinal difference exactly 1); cumulative participation per (contract, bar session) never exceeds the bar's observed volume."
+    },
+    {
+      "id": "rejection_paths_live",
+      "statement": "zero-volume/unfillable and provenance-refusal paths fire at least 50 times pooled per lane (a degenerate all-pass run proves nothing; PENDING owner calibration at 0.2.1 ratification if the real refusal rate makes 50 unreachable — must be re-set BEFORE the run)."
+    },
+    {
+      "id": "determinism",
+      "statement": "a clean-clone replay of the sealed run reproduces the stamped payload hashes byte-identically (the M3 cleanclone pattern)."
+    },
+    {
+      "id": "mutation_campaign",
+      "statement": "at the sealed head: full suite green, registry N/N KILLED (including M171–M179), restoration TRUE. The gate script's own verdict logic is covered by at least one mutant."
+    }
+  ]
+}

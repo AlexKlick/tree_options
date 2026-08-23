@@ -2243,6 +2243,111 @@ MUTANTS = [
             " rebuilt by an observer (the mtime assertion pins this)"
         ),
     ),
+    # ---- A5 G4 seal authority (identity/ledger/preflight/execute, M213-M218) --
+    dict(
+        id="M213-content-identity-includes-code",
+        owner="test_content_identity_stable_across_code_sha_change_while_run_id_changes",
+        file="src/tree_options/seal/identity.py",
+        anchor='blanked = identity.model_copy(update={"code_sha": ""})',
+        replacement='blanked = identity.model_copy(update={"code_sha": identity.code_sha})',
+        selectors=[f"{U}/test_seal_identity.py"],
+        invariant=(
+            "A5 the content identity BLANKS code_sha: two checkouts of the"
+            " same research content share it, so a second consumption under"
+            " either id is refused; hashing the full identity makes every"
+            " fresh checkout fresh authority"
+        ),
+    ),
+    dict(
+        id="M214-second-execution-accepted",
+        owner="test_second_execution_same_identity_exit_7",
+        file="scripts/g4_seal.py",
+        anchor="if record.sealed_run_id == run_id or record.content_identity == content_id:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "A5 a CONSUMPTION record matching this run by sealed_run_id OR"
+            " content_identity refuses the execution (exit 7): the seal is"
+            " one-shot per sealed content"
+        ),
+    ),
+    dict(
+        id="M215-approval-reverify-void",
+        owner="test_approval_tampered_payload_exit_6",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "        record.kind == KIND_APPROVAL\n"
+            "        and record.sealed_run_id == run_id\n"
+            "        and sealed_run_id(record.identity) == run_id"
+        ),
+        replacement=("        record.kind == KIND_APPROVAL\n        and True\n        and True"),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "A5 the approval is RECOMPUTED from the record's own payload and"
+            " compared to this run's sealed_run_id; trusting the stored id"
+            " lets a forged (chain-valid, mismatched-payload) approval spend"
+            " authority it never covered"
+        ),
+    ),
+    dict(
+        id="M216-verdict-leak",
+        owner="test_preflight_all_available_verdict_is_null_and_not_computed",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "    report = PreflightReport(\n"
+            "        verdict=None,\n"
+            "        verdict_computed=False,\n"
+            "        criteria_inputs=statuses,\n"
+            "    )"
+        ),
+        replacement=(
+            "    report = PreflightReport(\n"
+            "        verdict=None,\n"
+            "        verdict_computed=any(s.available for s in statuses.values()),\n"
+            "        criteria_inputs=statuses,\n"
+            "    )"
+        ),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "A5 preflight is structurally verdict-free: the output model pins"
+            " verdict to Literal[None] and verdict_computed to Literal[False],"
+            " so any coerced verdict is a validation error and the owner test"
+            " asserts the literal JSON never carries one"
+        ),
+    ),
+    dict(
+        id="M217-tmp-ledger-accepted",
+        owner="test_tmp_root_refused",
+        file="src/tree_options/seal/ledger.py",
+        anchor="if resolved == TMP_AUTHORITY_ROOT or TMP_AUTHORITY_ROOT in resolved.parents:",
+        replacement="if False:",
+        selectors=[f"{U}/test_seal_ledger.py"],
+        invariant=(
+            "A5 authority never lives under /tmp (wiped on reboot): the host"
+            " rule is a mechanical resolved-path prefix check in"
+            " validate_ledger_root"
+        ),
+    ),
+    dict(
+        id="M218-consume-after-work",
+        owner="test_first_execution_consumption_durable_before_runner",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)\n"
+            "    outcome = runner(identity)"
+        ),
+        replacement=(
+            "    outcome = runner(identity)\n"
+            "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)"
+        ),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "A5 the CONSUMPTION record is durable (flock + fsync) BEFORE the"
+            " runner is invoked; consuming after the work re-opens the"
+            " crash-window where the sealed run happened but no authority"
+            " was spent"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)
