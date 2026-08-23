@@ -213,13 +213,23 @@ where they occur — nothing below lands on `main` without approval
 ### 4.1 Era exit → copy the volatile log FIRST
 
 When the era wrapper exits, `/tmp/m4h-era.log` is the only copy of the
-run's stdout/stderr and a single reboot deletes it. Copy it into the
-era directory IMMEDIATELY and record the wrapper's exit code as an
-`ERA_EXIT` line (the wrapper does not write one — the operator does):
+run's stdout/stderr and a single reboot deletes it. The launch command
+appends its own `ERA_EXIT=<code>` line (and touches
+`/tmp/m4h-era.done`) when the wrapper finishes — copy BOTH facts into
+the era directory IMMEDIATELY:
 
 ```
 cp /tmp/m4h-era.log artifacts/m4b-coverage-era/era.log           # mutating
-printf 'ERA_EXIT=%s\n' "$?" >> artifacts/m4b-coverage-era/era.log # mutating
+tail -1 artifacts/m4b-coverage-era/era.log   # read-only: the ERA_EXIT line
+```
+
+If the log has no `ERA_EXIT` line (e.g. the launcher shell itself was
+killed), append one recording what is actually known — and treat the
+absence as part of the incident, never guess a code:
+
+```
+printf 'ERA_EXIT=UNKNOWN (launcher shell died before recording)\n' \
+    >> artifacts/m4b-coverage-era/era.log                         # mutating
 ```
 
 The G4 plan's prerequisite is "coverage era COMPLETE … ERA_EXIT=0";
