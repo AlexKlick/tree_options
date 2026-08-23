@@ -383,14 +383,16 @@ def test_manifest_rows_disagreement_is_a_finding(
 def test_holiday_friday_gap_is_not_incomplete(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Good Friday 2025: no close BY DEFINITION — SPOT_MISSING_HOLIDAY, and the
-    census still reconciles EXACTLY (only INCOMPLETE_CLASSES force PARTIAL)."""
+    """Good Friday 2025: no close BY DEFINITION — SPOT_MISSING_HOLIDAY, the
+    census reconciles EXACTLY (only INCOMPLETE_CLASSES force PARTIAL), and a
+    holiday-only gap is WHOLE coverage: exit 0. Requiring every pair COMPLETE
+    would make exit 0 unreachable for any grid containing a Good Friday."""
     universe = _write_universe(tmp_path, ["SPY"], [HOLIDAY_FRIDAY])
     capture = _build_capture(
         tmp_path, underlyings=["SPY"], fridays=[HOLIDAY_FRIDAY], omit_spot={("SPY", HOLIDAY_FRIDAY)}
     )
     out_root = tmp_path / "out"
-    assert _census(monkeypatch, capture, universe, out_root) == 5
+    assert _census(monkeypatch, capture, universe, out_root) == 0
     census = CoverageCensus.model_validate_json(
         next(out_root.iterdir()).joinpath("census.json").read_text()
     )

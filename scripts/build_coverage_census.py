@@ -28,8 +28,10 @@ is required — untracked paths and anything under artifacts/ or dist/ are
 ignored; there is no --allow-dirty flag).
 
 Exit codes (contract):
-  0  census emitted and coverage is whole: every universe pair COMPLETE and
-     masters observed == universe.expected_masters
+  0  census emitted and coverage is whole: zero pairs in INCOMPLETE_CLASSES
+     (MISSING/TRUNCATED/ERROR/SPOT_MISSING_SESSION — holiday-Friday spot gaps
+     are EXPECTED and do not count) and masters observed ==
+     universe.expected_masters
   2  capture manifest refused: unreadable, wrong shape, or failed
      verification against the capture directory (a MID-RUN era directory
      fails here BY DESIGN — the census consumes a sealed capture only);
@@ -755,14 +757,20 @@ def main(argv: list[str] | None = None) -> int:
         sha256_hex(body.encode("utf-8")) + "\n", encoding="utf-8"
     )
 
-    all_complete = reconciled.coverage.COMPLETE == pairs_total
-    whole = all_complete and masters.masters_observed == universe.expected_masters
+    # Whole coverage = zero INCOMPLETE pairs. Holiday Fridays
+    # (SPOT_MISSING_HOLIDAY) are EXPECTED gaps — the exchange was closed —
+    # and INCOMPLETE_CLASSES excludes them by design; requiring every pair
+    # COMPLETE would make exit 0 unreachable for any grid containing a Good
+    # Friday (the committed one contains 2025-04-18 and 2026-04-03).
+    incomplete_pairs = sum(getattr(reconciled.coverage, cls) for cls in INCOMPLETE_CLASSES)
+    whole = incomplete_pairs == 0 and masters.masters_observed == universe.expected_masters
     print(
         json.dumps(
             {
                 "out": str(out_dir),
                 "content_sha256": census.content_sha256,
                 "pairs_complete": reconciled.coverage.COMPLETE,
+                "pairs_incomplete": incomplete_pairs,
                 "pairs_total": pairs_total,
                 "masters_observed": masters.masters_observed,
                 "expected_masters": universe.expected_masters,
