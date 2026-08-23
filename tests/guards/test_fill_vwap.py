@@ -475,3 +475,47 @@ class TestRoundTwoHardening:
             execution_at=execution_instant(synthetic_calendar.session_open(ex_session), 60),
         )
         assert fill.price == Decimal("1.24")
+
+    def test_first_calendar_session_has_no_fillable_bar(self):
+        """R3 edge: on a calendar whose FIRST session is the decision
+        session, execution can never happen there — ordinal(exec) >
+        ordinal(decision) (rule 6) fires before the bar is examined, so
+        previous-session recency at ordinal 0 is shadowed by an earlier
+        guard. Fail-closed either way; this pins WHICH guard and that the
+        ordinal lookup is never reached with an out-of-range bar."""
+        from tree_options.time.synthetic import SyntheticCalendar
+
+        cal = SyntheticCalendar(start_date=DECISION_SESSION, n_sessions=4)
+        first = cal.sessions()[0]
+        exec_at = execution_instant(cal.session_open(first), 60)
+        bar = _bar(session=first, execution_at=None)  # own-session bar
+        engine = _engine(cal)
+        with pytest.raises(FillRejection) as exc:
+            engine.execute(
+                _order(),
+                bar,
+                standard_call(),
+                execution_session=first,
+                execution_at=exec_at,
+            )
+        assert exc.value.code == "SAME_SESSION_EXECUTION"
+
+    def test_holiday_gap_fills_on_ordinals(self, synthetic_calendar):
+        """R3 edge: recency counts SESSIONS, not calendar days — a
+        Thursday bar is the immediately-previous session of a Monday
+        execution across any weekend/holiday span."""
+        # Adjacent ordinals spanning a weekend: Fri 2024-04-19 -> Mon
+        # 2024-04-22 (DECISION_SESSION 2024-04-15 is a Monday). Ordinals
+        # differ by exactly 1 across the 3-day calendar span.
+        bar_session = synthetic_calendar.nth_after(DECISION_SESSION, 3)
+        exec_session = synthetic_calendar.nth_after(DECISION_SESSION, 4)
+        bar = _bar(session=bar_session, execution_at=None)
+        engine = _engine(synthetic_calendar)
+        fill = engine.execute(
+            _order(),
+            bar,
+            standard_call(),
+            execution_session=exec_session,
+            execution_at=execution_instant(synthetic_calendar.session_open(exec_session), 60),
+        )
+        assert fill.price == Decimal("1.24")
