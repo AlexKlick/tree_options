@@ -2243,6 +2243,113 @@ MUTANTS = [
             " rebuilt by an observer (the mtime assertion pins this)"
         ),
     ),
+    # ---- A3 protocol 0.2.1 amendment builder (M200-M207) ---------------------
+    dict(
+        id="M200-stale-census-accepted",
+        owner="test_census_content_hash_tamper_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="        verify_census(census)",
+        replacement="        pass",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 the census is re-hashed at build time; accepting a census"
+            " whose declared content hash no longer matches its bytes lets a"
+            " tampered census mint an amendment proposal"
+        ),
+    ),
+    dict(
+        id="M201-census-manifest-drift-accepted",
+        owner="test_census_manifest_drift_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="    if manifest_sha256 != census.provenance.input_manifest_sha256:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 the staleness double-check: the census must describe the"
+            " capture manifest ON DISK NOW, else the proposal is grounded in"
+            " evidence that was swapped after the census ran"
+        ),
+    ),
+    dict(
+        id="M202-base-version-unchecked",
+        owner="test_wrong_base_version_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="    if base_version != BASE_PROTOCOL_VERSION:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 the amendment must build on exactly the ratified 0.2.0 base;"
+            " an unchecked base lets a newer/older protocol be amended in"
+            " place (the error-message assertion separates this from the"
+            " non-monotonic-target refusal)"
+        ),
+    ),
+    dict(
+        id="M203-hidden-default-threshold",
+        owner="test_missing_flow_min_session_volume_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="    if flow is None or flow.value <= 0:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 a missing or zero flow_min_session_volume is exactly the"
+            " silent default the builder exists to prevent: the owner must"
+            " supply a real positive threshold or nothing is proposed"
+        ),
+    ),
+    dict(
+        id="M204-bool-as-int",
+        owner="test_owner_value_bool_true_rejected",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="        if isinstance(v, bool):",
+        replacement="        if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 pydantic lax mode coerces YAML/JSON true to 1; only the"
+            " explicit bool guard keeps a boolean from becoming a threshold"
+            " value"
+        ),
+    ),
+    dict(
+        id="M205-value-rule-mismatch-accepted",
+        owner="test_derived_value_not_equal_to_rule_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="            if computed != ov.value:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 an owner value with derivation provenance must equal what its"
+            " ratified rule computes; accepting a mismatch launders a"
+            " hand-picked number as census-derived"
+        ),
+    ),
+    dict(
+        id="M206-future-derived-fact",
+        owner="test_future_derived_fact_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor=('                if census.value_registry.get(fid) != "observed_census_fact":'),
+        replacement="                if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 only facts the census classes observed_census_fact exist"
+            " yet; deriving from a predeclared/not-yet-decided id smuggles a"
+            " future value (the G3 bar-volume contradiction) into the"
+            " proposal"
+        ),
+    ),
+    dict(
+        id="M207-tracked-output-write",
+        owner="test_out_root_outside_artifacts_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="    if not resolved_out_root.is_relative_to(artifacts_root):",
+        replacement="    if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 the builder is dry-run only: confining writes to artifacts/"
+            " is what makes it structurally incapable of touching a tracked"
+            " file such as research_protocol.yaml"
+        ),
+    ),
     # ---- A5 G4 seal authority (identity/ledger/preflight/execute, M213-M218) --
     dict(
         id="M213-content-identity-includes-code",
