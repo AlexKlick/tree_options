@@ -2008,6 +2008,245 @@ MUTANTS = [
             " into a price"
         ),
     ),
+    dict(
+        id="M180-lifecycle-whitelist-gutted",
+        owner="test_full_matrix_refuses_everything_else",
+        file="src/tree_options/runstate/states.py",
+        anchor=(
+            "    if target not in LEGAL_EDGES.get(source, frozenset()):\n"
+            "        return False"
+        ),
+        replacement="    if False:\n        return False",
+        selectors=[f"{U}/test_runstate_lifecycle.py"],
+        invariant=(
+            "A1 lifecycle legality is an explicit whitelist; gutting the"
+            " membership check legalizes every 16x16 pair, and the full-grid"
+            " owner test pins every refused pair"
+        ),
+    ),
+    dict(
+        id="M181-failed-retry-reaches-sealed",
+        owner="test_failed_cannot_reach_sealed_lane",
+        file="src/tree_options/runstate/states.py",
+        anchor=(
+            "    RunState.FAILED: frozenset(\n"
+            "        {RunState.CAPTURING, RunState.INSPECTION_RUNNING, RunState.BARS_CAPTURING}\n"
+            "    ),"
+        ),
+        replacement=(
+            "    RunState.FAILED: frozenset(\n"
+            "        {\n"
+            "            RunState.CAPTURING,\n"
+            "            RunState.INSPECTION_RUNNING,\n"
+            "            RunState.BARS_CAPTURING,\n"
+            "            RunState.SEALED_RUNNING,\n"
+            "        }\n"
+            "    ),"
+        ),
+        selectors=[f"{U}/test_runstate_lifecycle.py"],
+        invariant=(
+            "A1 the sealed lane is one-shot: FAILED may restart its own"
+            " capture/inspection/bars lane from the cache, never re-enter"
+            " SEALED_*; a crash after authority consumption is"
+            " reconciliation, not a retry"
+        ),
+    ),
+    dict(
+        id="M182-unknown-accepted-as-target",
+        owner="test_unknown_is_never_a_target",
+        file="src/tree_options/runstate/states.py",
+        anchor=(
+            "    if target is RunState.UNKNOWN or source is RunState.UNKNOWN:\n"
+            "        return False"
+        ),
+        replacement="    if False:\n        return False",
+        selectors=[f"{U}/test_runstate_lifecycle.py"],
+        invariant=(
+            "A1 UNKNOWN is an observer classification, never a journal"
+            " target: accepting it lets a stale probe freeze the run"
+            " forever"
+        ),
+    ),
+    dict(
+        id="M183-journal-chain-void",
+        owner="test_reordering_detected",
+        file="src/tree_options/runstate/journal.py",
+        anchor=(
+            "    if record.prev_record_sha256 != prev_hash:\n"
+            "        return False"
+        ),
+        replacement="    if False:\n        return False",
+        selectors=[f"{U}/test_runstate_journal.py"],
+        invariant=(
+            "A1 prev-hash chaining is what detects REORDERED records (each"
+            " record still hashes itself correctly); without it history can"
+            " be reordered without detection"
+        ),
+    ),
+    dict(
+        id="M184-torn-tail-trusted",
+        owner="test_truncated_final_line_is_tail_damaged_never_corrupt",
+        file="src/tree_options/runstate/journal.py",
+        anchor=(
+            "            if is_final:\n"
+            "                damaged_tail = True\n"
+            "                continue  # a torn tail was never acknowledged; exclude it"
+        ),
+        replacement=(
+            "            if is_final:\n"
+            "                damaged_tail = False\n"
+            "                continue  # a torn tail was never acknowledged; exclude it"
+        ),
+        selectors=[f"{U}/test_runstate_journal.py"],
+        invariant=(
+            "A1 a crash-truncated final line must be REPORTED as"
+            " tail_damaged; trusting it silently hides that a write was"
+            " lost mid-append"
+        ),
+    ),
+    dict(
+        id="M185-midfile-corruption-tolerated",
+        owner="test_single_record_hash_tamper_detected_midfile",
+        file="src/tree_options/runstate/journal.py",
+        anchor=(
+            "            raise JournalCorruptError(\n"
+            '                run_id,\n'
+            '                f"journal line {index + 1} failed decode/hash/chain verification",\n'
+            "            )"
+        ),
+        replacement="            continue",
+        selectors=[f"{U}/test_runstate_journal.py"],
+        invariant=(
+            "A1 damage in a NON-final record means something rewrote"
+            " history: an incident, never silently skipped"
+        ),
+    ),
+    dict(
+        id="M186-record-hash-not-computed",
+        owner="test_chain_verifies_across_many_records",
+        file="src/tree_options/runstate/journal.py",
+        anchor='    record = record.model_copy(update={"record_sha256": _record_hash(record)})',
+        replacement='    record = record.model_copy(update={"record_sha256": ""})',
+        selectors=[f"{U}/test_runstate_journal.py"],
+        invariant=(
+            "A1 the chain is only as strong as the per-record hash"
+            " computation; writing an empty hash makes every record fail"
+            " verification instead of quietly trusting the stored value"
+        ),
+    ),
+    dict(
+        id="M187-duplicate-launcher-crashes",
+        owner="test_duplicate_launcher_refused_while_owner_alive",
+        file="src/tree_options/runstate/lease.py",
+        anchor="    except FileExistsError:",
+        replacement="    except FileNotFoundError:",
+        selectors=[f"{U}/test_runstate_lease.py"],
+        invariant=(
+            "A1 the O_EXCL existence refusal is the duplicate-launcher"
+            " guard; un-handling it turns a clean LEASE_HELD refusal into"
+            " an unhandled crash (or worse, an overwrite)"
+        ),
+    ),
+    dict(
+        id="M188-pid-reuse-taken-as-owner",
+        owner="test_pid_reuse_detected_by_starttime",
+        file="src/tree_options/runstate/lease.py",
+        anchor=(
+            "    if live_ticks is None or live_ticks != owner.pid_start_ticks:\n"
+            "        return LeaseClassification.STALE_PID_REUSED"
+        ),
+        replacement=(
+            "    if False:\n"
+            "        return LeaseClassification.STALE_PID_REUSED"
+        ),
+        selectors=[f"{U}/test_runstate_lease.py"],
+        invariant=(
+            "A1 a reused pid number is NOT the recorded owner: without the"
+            " starttime comparison an unrelated process that inherited the"
+            " pid number holds the lease"
+        ),
+    ),
+    dict(
+        id="M189-boot-change-taken-as-same-host",
+        owner="test_boot_change_classified_stale_even_with_alive_pid",
+        file="src/tree_options/runstate/lease.py",
+        anchor="    if owner.boot_id != boot_id_now:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_runstate_lease.py"],
+        invariant=(
+            "A1 boot identity dominates pid identity: after a reboot a"
+            " same-numbered pid is meaningless, alive-looking or not"
+            " (the 2026-08-22 reboot already orphaned this era once)"
+        ),
+    ),
+    dict(
+        id="M190-stale-threshold-inverted",
+        owner="test_fresh_beat_process_state_alive",
+        file="src/tree_options/runstate/heartbeat.py",
+        anchor="    fresh = (now_epoch - beat.at_epoch) <= stale_after_s",
+        replacement="    fresh = (now_epoch - beat.at_epoch) > stale_after_s",
+        selectors=[f"{U}/test_runstate_heartbeat.py"],
+        invariant=(
+            "A1 inverting freshness marks every live process silent and"
+            " every dead one fresh, exactly swapping the observability"
+            " this module exists to provide"
+        ),
+    ),
+    dict(
+        id="M191-unknown-silence-as-terminal",
+        owner="test_dead_process_in_resumable_state_is_unknown_resumable",
+        file="src/tree_options/runstate/heartbeat.py",
+        anchor=(
+            "    if state in RESUMABLE_STATES:\n"
+            "        return HeartbeatClass.UNKNOWN_RESUMABLE\n"
+            "    return HeartbeatClass.DEAD_TERMINAL"
+        ),
+        replacement=(
+            "    if False:\n"
+            "        return HeartbeatClass.UNKNOWN_RESUMABLE\n"
+            "    return HeartbeatClass.DEAD_TERMINAL"
+        ),
+        selectors=[f"{U}/test_runstate_heartbeat.py"],
+        invariant=(
+            "A1 constraint 10: a dead process in a resumable state is"
+            " UNKNOWN_RESUMABLE, never terminal — silence is not an"
+            " outcome"
+        ),
+    ),
+    dict(
+        id="M192-resume-manifest-mismatch-void",
+        owner="test_manifest_pin_and_validate_resume",
+        file="src/tree_options/runstate/store.py",
+        anchor="        if pinned != observed_manifest_sha256:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_runstate_store.py"],
+        invariant=(
+            "A1 resume must refuse a manifest the journal never pinned;"
+            " voiding the comparison resumes against evidence that may"
+            " have been swapped (repair is prohibited, not bypassed)"
+        ),
+    ),
+    dict(
+        id="M193-status-repairs-torn-projection",
+        owner="test_torn_projection_reported_not_repaired",
+        file="scripts/era_status.py",
+        anchor=(
+            "    except rs_errors.ProjectionTornError as exc:\n"
+            '        print(f"PROJECTION TORN: {exc}", file=sys.stderr)\n'
+            "        return 2"
+        ),
+        replacement=(
+            "    except rs_errors.ProjectionTornError:\n"
+            "        store.rebuild_projection(now_epoch=now_epoch)\n"
+            "        return 0"
+        ),
+        selectors=[f"{U}/test_era_status.py"],
+        invariant=(
+            "A1 the status command is READ-ONLY: a torn projection is"
+            " reported for a lease-holding writer to repair, never quietly"
+            " rebuilt by an observer (the mtime assertion pins this)"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)
