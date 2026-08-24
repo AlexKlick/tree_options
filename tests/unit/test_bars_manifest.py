@@ -662,3 +662,140 @@ def test_bars_root_symlink_swap_refused_and_authority_stays_out_of_tmp(
             with contextlib.suppress(OSError):
                 planted.unlink()
         shutil.rmtree(target, ignore_errors=True)
+
+
+# ---- round-6 (finding 4): regeneration must READ every file the manifest pins -------
+#
+# Round-6 review fix (2026-08-24): rebuild_master_captures enumerated the
+# PRESENT masters/*.json and re-hashed those — a pinned master DELETED between
+# verify_massive_capture_manifest and the enumeration was silently absent
+# (never read, never pin-checked), and regeneration from the survivors could
+# be byte-identical to the approved manifest (the reviewer's case: a puts-only
+# master B under a sides=call profile). Completeness now refuses: every
+# pinned masters/ file must be read (hashed) at derivation time.
+
+
+def _call_only_profile() -> bm.SelectionProfile:
+    """The committed profile with sides=call, self-consistently rehashed."""
+    doc = json.loads(COMMITTED_PROFILE.read_text(encoding="utf-8"))
+    doc["sides"]["value"] = "call"
+    profile = bm.SelectionProfile.model_validate(doc)
+    return profile.model_copy(update={"content_sha256": bm.profile_content_sha256(profile)})
+
+
+def test_pinned_master_deleted_before_enumeration_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's scenario: master A (SPY, calls+puts) and puts-only
+    master B (QQQ) are both sealed by the capture manifest; the profile is
+    sides=call, so B contributes nothing to the selection. B is deleted
+    AFTER manifest verification and BEFORE the masters enumeration (the
+    wrapper fires at the glob call point). Pre-fix regeneration succeeds
+    byte-identical from the survivors; post-fix it refuses naming B."""
+    from tests.fixtures.massive_structural_sample import contract_result
+    from tree_options.data.massive_manifest import build_massive_capture_manifest
+
+    capture_dir = tmp_path / "capture"
+    masters_dir = capture_dir / "masters"
+    masters_dir.mkdir(parents=True)
+    (masters_dir / "spy_2025-03-05.json").write_text(
+        contracts_payload(results=SPY_ROWS, as_of=AS_OF), encoding="utf-8"
+    )
+    qqq_puts = (
+        contract_result(
+            ticker="O:QQQ250418P00580000",
+            underlying="QQQ",
+            expiration=MONTHLY_EXPIRY,
+            strike="580",
+            contract_type="put",
+        ),
+        contract_result(
+            ticker="O:QQQ250418P00590000",
+            underlying="QQQ",
+            expiration=MONTHLY_EXPIRY,
+            strike="590",
+            contract_type="put",
+        ),
+    )
+    master_b = masters_dir / "qqq_puts_2025-03-05.json"
+    master_b.write_text(contracts_payload(results=qqq_puts, as_of=AS_OF), encoding="utf-8")
+    spot = {"SPY": {AS_OF: "580.00"}, "QQQ": {AS_OF: "480.00"}}
+    (capture_dir / "spot_proxy.json").write_text(
+        json.dumps(spot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    manifest_path = capture_dir / "capture_manifest.json"
+    manifest_path.write_text(
+        build_massive_capture_manifest(
+            capture_dir,
+            capture_version="m4b-capture/1",
+            budget_limit=45,
+            requests_charged=5,
+            client_stats={"requests": 5},
+            masters=[
+                {
+                    "underlying": "SPY",
+                    "as_of": AS_OF,
+                    "pages": 1,
+                    "rows": len(SPY_ROWS),
+                    "complete": True,
+                    "truncated": False,
+                    "error": None,
+                    "file": "spy_2025-03-05.json",
+                },
+                {
+                    "underlying": "QQQ",
+                    "as_of": AS_OF,
+                    "pages": 1,
+                    "rows": len(qqq_puts),
+                    "complete": True,
+                    "truncated": False,
+                    "error": None,
+                    "file": "qqq_puts_2025-03-05.json",
+                },
+            ],
+            bars=[],
+            spot_proxy=spot,
+            notes=["two-master fixture: calls+puts A, puts-only B (round-6 finding 4)"],
+        ).model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
+    profile = _call_only_profile()
+
+    def build() -> bm.BarsWorkManifest:
+        return bm.build_bars_work_manifest(
+            capture_dir, profile=profile, capture_manifest=manifest_path, budget_limit=45
+        )
+
+    # Fixture pin: both masters present, the call-only profile selects SPY
+    # calls alone — B is sealed but contributes nothing to the selection.
+    honest = build()
+    assert honest.entries and all(entry.side == "call" for entry in honest.entries)
+    assert all(entry.underlying == "SPY" for entry in honest.entries)
+
+    real_glob = Path.glob
+    deleted = {"done": False}
+
+    def glob_deleting_master_b(self: Path, pattern: str):
+        # the window between verify_massive_capture_manifest (which hashed B)
+        # and the masters enumeration: B vanishes from disk HERE.
+        if (
+            not deleted["done"]
+            and self == masters_dir
+            and pattern == "*.json"
+            and master_b.exists()
+        ):
+            deleted["done"] = True
+            master_b.unlink()
+        return real_glob(self, pattern)
+
+    monkeypatch.setattr(Path, "glob", glob_deleting_master_b)
+    try:
+        with pytest.raises(bm.BarsManifestError) as exc_info:
+            build()
+        message = str(exc_info.value)
+        assert "masters/qqq_puts_2025-03-05.json" in message, (
+            "the refusal names the pinned file that was never read"
+        )
+    finally:
+        monkeypatch.setattr(Path, "glob", real_glob)

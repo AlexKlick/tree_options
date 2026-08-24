@@ -536,6 +536,31 @@ def rebuild_master_captures(
             )
         )
 
+    # Round-6 review fix (2026-08-24, finding 4): COMPLETENESS. The
+    # enumeration above lists the PRESENT masters and the loop re-hashes
+    # those — a pinned master DELETED between manifest verification and the
+    # enumeration was silently absent (never read, never pin-checked), and
+    # regeneration from the survivors could be byte-identical to the
+    # approved manifest (the reviewer's case: a puts-only master under a
+    # sides=call profile contributes nothing to the selection). Every file
+    # the manifest pins under masters/ must have been READ (hashed) here:
+    # pinned-minus-read must be empty, or the derivation refuses fail-closed
+    # naming the missing files. (Pinned bars/ files are not derivation
+    # inputs for this manifest and stay outside this set; the spot proxy is
+    # held to the same rule just below.)
+    if pinned is not None:
+        pinned_masters = {rel for rel in pinned if rel.startswith(f"{MASTERS_DIR}/")}
+        read_masters = {f"{MASTERS_DIR}/{p.name}" for p in files}
+        missing = sorted(pinned_masters - read_masters)
+        if missing:
+            raise BarsManifestError(
+                f"pinned capture file(s) absent at derivation time: "
+                f"{', '.join(missing)} — the sealed capture manifest pins them "
+                "but they were never read; regeneration must derive from "
+                "every sealed master, and a survivor-only rebuild can "
+                "silently reproduce the approved manifest"
+            )
+
     # The spot proxy feeds the selection too (the ATM ranking keys on it), so
     # under a manifest it is held to the same pinned-bytes rule (round-5
     # review fix, finding 4): read once, re-hash against the pin, parse those
@@ -557,7 +582,18 @@ def rebuild_master_captures(
                 )
             spot_by_date = {}
         else:
-            spot_raw = spot_path.read_bytes()
+            try:
+                spot_raw = spot_path.read_bytes()
+            except OSError as exc:
+                # Round-6 review fix (2026-08-24, finding 4): a PINNED spot
+                # proxy deleted between manifest verification and this read
+                # is the same completeness hole — refuse fail-closed naming
+                # it, never silently derive from "no closes".
+                raise BarsManifestError(
+                    f"{SPOT_PROXY_FILENAME}: pinned by the capture manifest "
+                    f"but unreadable at derivation time ({exc.strerror}) — "
+                    "regeneration derives from sealed bytes only"
+                ) from None
             _require_pinned_bytes(pinned, SPOT_PROXY_FILENAME, spot_raw, source=SPOT_PROXY_FILENAME)
             try:
                 spot_by_date = _load_spot(Path(capture_dir), lineage=[], raw=spot_raw)
