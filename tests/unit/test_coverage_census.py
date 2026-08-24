@@ -26,7 +26,9 @@ import build_coverage_census as bcc  # type: ignore[import-not-found]  # scripts
 import gen_coverage_universe as gen  # type: ignore[import-not-found]  # scripts/  # noqa: E402
 from tests.fixtures import massive_structural_sample as fx  # noqa: E402
 from tree_options.data.coverage_census import (  # noqa: E402
+    CENSUS_SCHEMA_VERSION,
     G3_DERIVATION_CONTRADICTION,
+    UNIVERSE_SCHEMA_VERSION,
     CensusFact,
     CensusTaxonomyError,
     CoverageCensus,
@@ -632,3 +634,70 @@ def test_census_fact_int_accepted() -> None:
 def test_census_fact_text_observation_accepted() -> None:
     fact = CensusFact.model_validate_json('{"v": "text", "support": {}, "confidence": "EXACT"}')
     assert fact.v == "text"
+
+
+# ---- round-3 (finding 5): schema/report versions are pinned, not assumed ----------
+#
+# Round-3 review fix (2026-08-23): the verifiers checked hashes and taxonomy
+# but never the version tokens, so a foreign-era artifact (rehashed,
+# otherwise valid) passed every check. A content hash binds CONTENT, not
+# COMPATIBILITY — the version constants must be required explicitly.
+
+
+def test_verify_census_refuses_a_foreign_schema_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """schema_version 'foreign/999', correctly rehashed: the refusal names
+    both the found and the expected version."""
+    _digest_dir, _out_root, census = _run_tiny(tmp_path, monkeypatch)
+    foreign = census.model_copy(update={"schema_version": "foreign/999"})
+    rehashed = foreign.model_copy(update={"content_sha256": census_content_sha256(foreign)})
+    with pytest.raises(CensusTaxonomyError, match="schema_version") as exc_info:
+        verify_census(rehashed)
+    assert "foreign/999" in str(exc_info.value)
+    assert CENSUS_SCHEMA_VERSION in str(exc_info.value)
+
+
+def test_verify_census_refuses_a_wrong_report_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _digest_dir, _out_root, census = _run_tiny(tmp_path, monkeypatch)
+    provenance = census.provenance.model_copy(update={"report_version": "m4-coverage-census/0"})
+    wrong = census.model_copy(update={"provenance": provenance})
+    rehashed = wrong.model_copy(update={"content_sha256": census_content_sha256(wrong)})
+    with pytest.raises(CensusTaxonomyError, match="report_version") as exc_info:
+        verify_census(rehashed)
+    assert "m4-coverage-census/0" in str(exc_info.value)
+    assert CENSUS_SCHEMA_VERSION in str(exc_info.value)
+
+
+def test_verify_census_accepts_the_current_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _digest_dir, _out_root, census = _run_tiny(tmp_path, monkeypatch)
+    assert census.schema_version == CENSUS_SCHEMA_VERSION
+    assert census.provenance.report_version == CENSUS_SCHEMA_VERSION
+    verify_census(census)  # current tokens pass every check
+
+
+def test_verify_universe_refuses_a_foreign_schema_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A foreign-schema universe manifest refuses both directly and through
+    the CLI (exit 3), even when the tamperer RECOMPUTES the content hash."""
+    universe = gen.build_universe(
+        _wrapper(["SPY"], [SESSION_FRIDAY_A]), source="synthetic-test-wrapper"
+    )
+    assert universe.schema_version == UNIVERSE_SCHEMA_VERSION
+    foreign = universe.model_copy(update={"schema_version": "foreign/999"})
+    rehashed = foreign.model_copy(update={"content_sha256": universe_content_sha256(foreign)})
+    with pytest.raises(CensusTaxonomyError, match="schema_version") as exc_info:
+        verify_universe(rehashed)
+    assert "foreign/999" in str(exc_info.value)
+    assert UNIVERSE_SCHEMA_VERSION in str(exc_info.value)
+
+    # And through the CLI: the same trick still refuses with exit 3.
+    bad = tmp_path / "foreign-universe.json"
+    bad.write_text(gen.render(rehashed), encoding="utf-8")
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    assert _census(monkeypatch, capture, bad, tmp_path / "out") == 3

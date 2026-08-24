@@ -90,6 +90,14 @@ def universe_content_sha256(universe: CoverageUniverse) -> str:
 
 def verify_universe(universe: CoverageUniverse) -> None:
     """Refuse a tampered or self-inconsistent universe manifest."""
+    # Round-3 review fix (2026-08-23, finding 5): a content hash binds
+    # CONTENT, not COMPATIBILITY — a correctly-rehashed artifact from a
+    # foreign schema version passed every hash check. Pin the version.
+    if universe.schema_version != UNIVERSE_SCHEMA_VERSION:
+        raise CensusTaxonomyError(
+            f"universe schema_version {universe.schema_version!r} != "
+            f"{UNIVERSE_SCHEMA_VERSION!r}: this census era consumes exactly that version"
+        )
     actual = universe_content_sha256(universe)
     if universe.content_sha256 != actual:
         raise CensusTaxonomyError(
@@ -215,6 +223,19 @@ def validate_value_taxonomy(census: CoverageCensus) -> None:
 
 def verify_census(census: CoverageCensus) -> None:
     """Fail-closed load-time verification: hash binding + taxonomy."""
+    # Round-3 review fix (2026-08-23, finding 5): same reasoning as
+    # verify_universe — pin the artifact and report version tokens; a
+    # rehashed foreign-era census must refuse on its face, not parse.
+    if census.schema_version != CENSUS_SCHEMA_VERSION:
+        raise CensusTaxonomyError(
+            f"census schema_version {census.schema_version!r} != "
+            f"{CENSUS_SCHEMA_VERSION!r}: refusing a foreign-era census"
+        )
+    if census.provenance.report_version != CENSUS_SCHEMA_VERSION:
+        raise CensusTaxonomyError(
+            f"census report_version {census.provenance.report_version!r} != "
+            f"{CENSUS_SCHEMA_VERSION!r}: refusing a foreign-era report"
+        )
     actual = census_content_sha256(census)
     if census.content_sha256 != actual:
         raise CensusTaxonomyError(
