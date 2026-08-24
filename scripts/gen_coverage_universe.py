@@ -73,6 +73,15 @@ def validate_grid(names: list[str], dates: list[str], *, source: str) -> None:
 
 
 def build_universe(text: str, *, source: str) -> CoverageUniverse:
+    # Round-4 review fix (2026-08-23, finding 5): `source` participates in
+    # content_sha256, so the wrapper spelling is normalized to its ABSOLUTE
+    # REAL PATH before the manifest is built. The closeout checklist's regen
+    # check passes a repo-root-relative --from-run-sh while the committed
+    # artifact records the absolute path; storing the spelling verbatim made
+    # the regen always mismatch the committed bytes (false universe drift).
+    # Any spelling of the same wrapper now yields identical source bytes and
+    # hash, and the canonical checkout reproduces the committed artifact.
+    source = str(Path(source).resolve())
     names, dates = parse_wrapper(text, source=source)
     validate_grid(names, dates, source=source)
     underlyings = sorted(names)

@@ -121,4 +121,38 @@ def test_committed_universe_manifest_is_pinned() -> None:
     assert universe.expected_masters == 3045
     assert universe.content_sha256.startswith("a13dd4eb")
     assert universe.source.endswith("run.sh")
+    # Round-4 review fix (2026-08-23, finding 5): `source` participates in
+    # content_sha256, so it must be a spelling-free ABSOLUTE real path — the
+    # generator now normalizes, and this pin keeps a relative-spelling regen
+    # from ever replacing the committed artifact.
+    assert Path(universe.source).is_absolute()
     assert universe.schema_version == "m4-coverage-universe/1"
+
+
+# ---- round-4 (finding 5): the wrapper spelling is normalized -------------------------
+#
+# Round-4 review fix (2026-08-23): the closeout checklist regen check
+# (docs/m4-closeout-checklist.json, universe-regen-verify) passes
+# --from-run-sh artifacts/m4b-coverage-era/run.sh — RELATIVE, resolved
+# against the repo root — while the committed artifact records the ABSOLUTE
+# wrapper path. The generator stored the spelling verbatim as `source`, and
+# `source` participates in content_sha256, so the regen ALWAYS mismatched
+# the committed bytes and universe-regen-cmp declared false universe drift.
+
+
+def test_relative_and_absolute_wrapper_spellings_produce_identical_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """build_universe over the same wrapper, spelled once relatively and once
+    absolutely, must produce identical manifest bytes and hashes — otherwise
+    the checklist's relative spelling can never reproduce the committed
+    artifact."""
+    wrapper = tmp_path / "era" / "run.sh"
+    wrapper.parent.mkdir()
+    text = _wrapper(["SPY", "QQQ"], [FRIDAY_A, FRIDAY_B])
+    wrapper.write_text(text, encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    relative = gen.build_universe(text, source="era/run.sh")
+    absolute = gen.build_universe(text, source=str(wrapper))
+    assert relative.content_sha256 == absolute.content_sha256
+    assert gen.render(relative) == gen.render(absolute), "identical bytes, not just hashes"
