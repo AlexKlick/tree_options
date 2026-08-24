@@ -238,6 +238,7 @@ class Reconciled(NamedTuple):
     holiday_fridays: list[str]
     session_spot_gaps: list[PairFinding]
     spot_sessions_with_close: int
+    pair_classes: dict[tuple[str, str], str]
 
 
 def reconcile_pairs(
@@ -254,6 +255,7 @@ def reconcile_pairs(
     session_gaps: list[PairFinding] = []
     holiday_fridays: list[str] = []
     spot_with_close = 0
+    pair_classes: dict[tuple[str, str], str] = {}
 
     for friday in universe.as_of_fridays:
         friday_date = date.fromisoformat(friday)
@@ -281,6 +283,7 @@ def reconcile_pairs(
                 is_session=is_session,
             )
             counts[classification] += 1
+            pair_classes[(underlying, friday)] = classification
             if classification != "COMPLETE":
                 finding = PairFinding(
                     underlying=underlying,
@@ -302,6 +305,7 @@ def reconcile_pairs(
         holiday_fridays=holiday_fridays,
         session_spot_gaps=session_gaps,
         spot_sessions_with_close=spot_with_close,
+        pair_classes=pair_classes,
     )
 
 
@@ -341,6 +345,18 @@ class MastersObserved(NamedTuple):
     rows_disagree: int
     unparseable: int
     notes: list[PairFinding]
+    semantic: list[PairFinding]
+
+
+# Round-3 review fix (2026-08-23, finding 2): the INCOMPLETE class each
+# parsed-master disagreement downgrades a COMPLETE pair to. A mismatched
+# envelope means the declared pair's master is not on disk (MISSING); an
+# envelope whose own pages say the capture stopped early is TRUNCATED — the
+# same class classify_pair gives an entry that admits it.
+SEMANTIC_DOWNGRADES: dict[str, str] = {
+    "MASTER_IDENTITY_MISMATCH": "MISSING",
+    "MASTER_CAPTURE_TRUNCATED": "TRUNCATED",
+}
 
 
 def observe_masters(manifest: MassiveCaptureManifest, capture_dir: Path) -> MastersObserved:
@@ -356,6 +372,7 @@ def observe_masters(manifest: MassiveCaptureManifest, capture_dir: Path) -> Mast
     rows_disagree = 0
     unparseable = 0
     notes: list[PairFinding] = []
+    semantic: list[PairFinding] = []
     # Natural unique contract key: the OCC `ticker` — globally unique by
     # construction (root + expiry + C/P + strike encode the symbol) — carried
     # WITH its `underlying_ticker` so a cross-underlying collision would
@@ -396,6 +413,40 @@ def observe_masters(manifest: MassiveCaptureManifest, capture_dir: Path) -> Mast
         rows_parsed += len(master.contracts)
         if not master.capture_complete:
             complete_false += 1
+        # Round-3 review fix (2026-08-23, finding 2): join the PARSED
+        # master's identity and completeness against the manifest entry
+        # that selected it. The manifest's file hashes pin BYTES, not
+        # MEANING — a correctly-hashed entry declaring complete
+        # SPY/<as_of> could point at a valid pinned envelope for a
+        # different pair, or one whose envelope says the capture stopped
+        # early, and reconciliation alone counted the declared pair
+        # COMPLETE. Every disagreement becomes a semantic finding that
+        # apply_master_semantic_join folds into coverage (and exit 0).
+        if (master.underlying, master.as_of.isoformat()) != (entry.underlying, entry.as_of):
+            semantic.append(
+                PairFinding(
+                    underlying=entry.underlying,
+                    as_of=entry.as_of,
+                    classification="MASTER_IDENTITY_MISMATCH",
+                    detail=(
+                        f"{entry.file}: pinned envelope is "
+                        f"{master.underlying}/{master.as_of.isoformat()}, "
+                        f"not the declared {entry.underlying}/{entry.as_of}"
+                    ),
+                )
+            )
+        elif not master.capture_complete:
+            semantic.append(
+                PairFinding(
+                    underlying=entry.underlying,
+                    as_of=entry.as_of,
+                    classification="MASTER_CAPTURE_TRUNCATED",
+                    detail=(
+                        f"{entry.file}: envelope capture_complete=false although "
+                        "the manifest entry declares complete"
+                    ),
+                )
+            )
         if len(master.contracts) != entry.rows:
             rows_disagree += 1
             notes.append(
@@ -418,7 +469,28 @@ def observe_masters(manifest: MassiveCaptureManifest, capture_dir: Path) -> Mast
         rows_disagree=rows_disagree,
         unparseable=unparseable,
         notes=notes,
+        semantic=semantic,
     )
+
+
+def apply_master_semantic_join(reconciled: Reconciled, semantic: list[PairFinding]) -> Reconciled:
+    """Fold the parsed-master/manifest-entry disagreements into coverage.
+
+    A pair reconciliation called COMPLETE is demoted to the INCOMPLETE
+    class its semantic finding names; already-incomplete pairs keep their
+    class (the finding is still recorded). Both paths block exit 0 through
+    the ordinary INCOMPLETE_CLASSES counters — the same exit semantics a
+    reconciliation-side incomplete pair already has."""
+    if not semantic:
+        return reconciled
+    counts = reconciled.coverage.model_dump()
+    findings = list(reconciled.findings)
+    for finding in sorted(semantic, key=lambda f: (f.underlying, f.as_of, f.classification)):
+        findings.append(finding)
+        if reconciled.pair_classes.get((finding.underlying, finding.as_of)) == "COMPLETE":
+            counts["COMPLETE"] -= 1
+            counts[SEMANTIC_DOWNGRADES[finding.classification]] += 1
+    return reconciled._replace(coverage=PairCoverage(**counts), findings=findings)
 
 
 # ---- values -----------------------------------------------------------------------
@@ -707,9 +779,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"SPOT PROXY REFUSED: {exc}", file=sys.stderr)
         return 2
 
-    # 5. Reconciliation over every universe pair + masters re-parse.
+    # 5. Reconciliation over every universe pair + masters re-parse, then
+    # the round-3 semantic join: a master that disagrees with the entry
+    # that selected it downgrades that pair and blocks exit 0 below.
     reconciled = reconcile_pairs(universe, manifest, args.capture_dir, spot_proxy, calendar)
     masters = observe_masters(manifest, args.capture_dir)
+    reconciled = apply_master_semantic_join(reconciled, masters.semantic)
 
     # 6-7. Values, taxonomy, provenance — assembled and self-checked.
     pairs_total = len(universe.underlyings) * len(universe.as_of_fridays)

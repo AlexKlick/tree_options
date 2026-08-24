@@ -95,12 +95,18 @@ def _build_capture(
     overrides: dict[tuple[str, str], dict[str, object]] | None = None,
     drop_pairs: set[tuple[str, str]] = frozenset(),
     omit_spot: set[tuple[str, str]] = frozenset(),
+    content_overrides: dict[tuple[str, str], str] | None = None,
 ) -> Path:
-    """A synthetic sealed capture dir: masters + spot proxy + a valid manifest."""
+    """A synthetic sealed capture dir: masters + spot proxy + a valid manifest.
+
+    `content_overrides` replaces a pair's FILE BODY verbatim (the manifest
+    still hashes whatever is on disk, so the round-3 semantic-join fixtures
+    can pin bytes the manifest's own hashes attest)."""
     capture = root / "capture"
     masters_dir = capture / "masters"
     masters_dir.mkdir(parents=True)
     overrides = overrides or {}
+    content_overrides = content_overrides or {}
     entries: list[dict[str, object]] = []
     spot: dict[str, dict[str, str]] = {}
     for underlying in underlyings:
@@ -124,12 +130,10 @@ def _build_capture(
             file_rows = int(spec.get("file_rows", spec["rows"]))
             file_name = spec["file"]
             if isinstance(file_name, str):
-                (masters_dir / file_name).write_text(
-                    fx.contracts_payload(
-                        results=_contract_rows(underlying, file_rows), as_of=friday
-                    ),
-                    encoding="utf-8",
+                body = content_overrides.get(pair) or fx.contracts_payload(
+                    results=_contract_rows(underlying, file_rows), as_of=friday
                 )
+                (masters_dir / file_name).write_text(body, encoding="utf-8")
             entries.append({k: v for k, v in spec.items() if k != "file_rows"})
             if pair not in omit_spot:
                 spot.setdefault(underlying, {})[friday] = "600.00"
@@ -378,6 +382,86 @@ def test_manifest_rows_disagreement_is_a_finding(
     assert census.values.observed_census_fact["rows_declared_total"].v == 3
     assert census.values.observed_census_fact["rows_parsed_total"].v == 2
     assert census.values.observed_census_fact["masters_observed"].confidence == "PARTIAL"
+
+
+# ---- round-3 (finding 2): the manifest joins its masters SEMANTICALLY -------------
+#
+# Round-3 review fix (2026-08-23): the manifest's file hashes pin BYTES, not
+# MEANING — a correctly-hashed entry declaring complete SPY/<friday> could
+# point at a valid pinned envelope for a different pair (or one whose
+# envelope says capture_complete=false) and reconciliation alone counted the
+# declared pair COMPLETE with exit 0. Parsing now joins each master's
+# underlying/as_of against the entry that selected it; any disagreement
+# downgrades the pair to an INCOMPLETE class and blocks exit 0.
+
+
+def test_qqq_envelope_under_a_spy_entry_downgrades_and_blocks_exit_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The exact review attack: the entry declares complete SPY/FRIDAY_A,
+    the pinned bytes are a valid QQQ/FRIDAY_B capture (manifest hashes
+    attest them), and the spot proxy covers the declared pair."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[SESSION_FRIDAY_A],
+        content_overrides={
+            ("SPY", SESSION_FRIDAY_A): fx.contracts_payload(
+                results=_contract_rows("QQQ", 2), as_of=SESSION_FRIDAY_B, underlying="QQQ"
+            )
+        },
+    )
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 5
+    census = CoverageCensus.model_validate_json(
+        next(out_root.iterdir()).joinpath("census.json").read_text()
+    )
+    cov = census.coverage.observed
+    assert cov.COMPLETE == 0
+    assert cov.MISSING == 1, "the declared pair's master is not on disk"
+    mismatch = [
+        f for f in census.coverage.findings if f.classification == "MASTER_IDENTITY_MISMATCH"
+    ]
+    assert len(mismatch) == 1
+    assert "QQQ" in mismatch[0].detail and SESSION_FRIDAY_B in mismatch[0].detail
+    assert "SPY" in mismatch[0].detail and SESSION_FRIDAY_A in mismatch[0].detail
+    assert census.values.observed_census_fact["pair_complete"].confidence == "PARTIAL"
+
+
+def test_envelope_capture_complete_false_never_exits_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The entry DECLARES complete, but the pinned envelope's own last page
+    carries next_url (capture stopped at the page cap). The parsed ground
+    truth downgrades the pair to TRUNCATED and exit 0 is impossible."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[SESSION_FRIDAY_A],
+        content_overrides={
+            ("SPY", SESSION_FRIDAY_A): fx.contracts_payload(
+                results=_contract_rows("SPY", 2),
+                as_of=SESSION_FRIDAY_A,
+                next_url="https://api.polygon.io/v3/reference/options/contracts?cursor=MORE",
+            )
+        },
+    )
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 5
+    census = CoverageCensus.model_validate_json(
+        next(out_root.iterdir()).joinpath("census.json").read_text()
+    )
+    cov = census.coverage.observed
+    assert cov.COMPLETE == 0
+    assert cov.TRUNCATED == 1
+    truncated = [
+        f for f in census.coverage.findings if f.classification == "MASTER_CAPTURE_TRUNCATED"
+    ]
+    assert len(truncated) == 1 and "capture_complete=false" in truncated[0].detail
+    assert census.values.observed_census_fact["pair_truncated"].v == 1
+    assert census.values.observed_census_fact["pair_truncated"].confidence == "PARTIAL"
 
 
 # ---- holiday vs session spot gaps -------------------------------------------------
