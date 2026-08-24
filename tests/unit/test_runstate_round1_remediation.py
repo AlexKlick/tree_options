@@ -152,6 +152,11 @@ def test_two_concurrent_adopters_do_not_corrupt_owner_file() -> None:
             failures.append(f"{label}: {exc.__class__.__name__}")
 
     threads = [threading.Thread(target=attempt, args=(f"T{i}", 4243 + i)) for i in range(N)]
+    # Round-2 review fix (2026-08-23): the old assertion here was vacuous
+    # (`... or True`). The real invariant: the surviving owner's argv_hash
+    # must be one of the racing threads' argv hashes — the file was written
+    # whole by exactly one racer, never torn and never a blend.
+    racer_hashes = {sha256_hex(f"T{i}".encode()) for i in range(N)}
     for t in threads:
         t.start()
     for t in threads:
@@ -160,11 +165,7 @@ def test_two_concurrent_adopters_do_not_corrupt_owner_file() -> None:
     final = L_module._read_owner(store_dir)
     assert final is not None
     assert final.boot_id == BOOT  # replaced the dead-previous-boot stale
-    # Whichever thread "won" left its argv_hash on disk; ALL threads
-    # that were classified-stale under the lock contributed.
-    assert (
-        final.argv_hash.startswith(sha256_hex(b"T")[:0] + sha256_hex(b"T0")[:0]) or True
-    )  # the asserted invariant is that the file is well-formed
+    assert final.argv_hash in racer_hashes
     assert failures == [], f"unexpected exceptions: {failures}"
 
 
