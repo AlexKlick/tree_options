@@ -9,6 +9,7 @@ on this host and the ledger refuses any root whose resolved path is under
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import shutil
@@ -563,3 +564,37 @@ def test_bars_ledger_separate_domain_from_seal(scratch_root: Path) -> None:
 
     with pytest.raises(LedgerRootRefusedError):
         validate_ledger_root(Path("/tmp/anything"))
+
+
+# ---- round-5 (finding 3): a symlinked ledger NAME is never created or followed ------
+#
+# Round-5 review fix (2026-08-24): Path.exists() is False for a DANGLING
+# symlink at ledger.jsonl, so read_bars_ledger treated the ledger as absent,
+# and append_bars_record's os.open(O_RDWR|O_CREAT) FOLLOWED the link —
+# creating bars authority under /tmp. Both paths now open with O_NOFOLLOW
+# and refuse on ELOOP.
+
+
+def test_dangling_symlink_bars_ledger_name_refused_and_never_created(
+    scratch_root: Path,
+) -> None:
+    target = Path("/tmp") / f"bars-a4-dangling-{uuid.uuid4().hex}"
+    link = scratch_root / bm.BARS_LEDGER_FILENAME
+    link.symlink_to(target)  # dangling: the target does not exist
+    try:
+        with pytest.raises(LedgerCorruptError, match="symlink") as read_exc:
+            bm.read_bars_ledger(scratch_root)
+        assert str(link) in str(read_exc.value), "the read refusal names the link"
+        with pytest.raises(LedgerCorruptError, match="symlink") as append_exc:
+            bm.append_bars_launch_approval(
+                scratch_root, reason="approved the grid", at_epoch=T0, **_approval()
+            )
+        assert str(link) in str(append_exc.value), "the append refusal names the link"
+        assert not target.exists(), "authority was never created through the link"
+    finally:
+        # the RED run follows the link and creates the target; never leave it
+        # behind, and never leave a dangling symlink under artifacts/.
+        with contextlib.suppress(FileNotFoundError):
+            link.unlink()
+        with contextlib.suppress(FileNotFoundError):
+            target.unlink()

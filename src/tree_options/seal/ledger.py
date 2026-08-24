@@ -17,7 +17,11 @@ journal:
   the chain at the next read. Reconcile first.
 * the root is INJECTABLE everywhere and any root whose RESOLVED path is
   under ``/tmp`` is refused (``LedgerRootRefusedError``): /tmp is wiped on
-  reboot, and seal authority may never live where a reboot destroys it.
+  reboot, and seal authority may never live where a reboot destroys it;
+* the ledger FILE name is opened ``O_NOFOLLOW`` on both the read and the
+  append path (round-5 review fix, 2026-08-24): a symlink at
+  ``ledger.jsonl`` — dangling or not — is ``LedgerCorruptError``, so
+  authority can never be created through, or read through, a link.
 
 Record kinds:
 
@@ -32,6 +36,7 @@ trusting its stored ids — see ``scripts/g4_seal.py`` execute step 2.
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -154,12 +159,25 @@ def read_ledger(root: Path) -> LedgerView:
     """
     root = validate_ledger_root(root)
     path = root / LEDGER_FILENAME
-    if not path.exists():
+    try:
+        fd = _open_ledger_nofollow(path, os.O_RDONLY)
+    except FileNotFoundError:
         return LedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
+    try:
+        chunks: list[bytes] = []
+        offset = 0
+        while True:
+            chunk = os.pread(fd, 65536, offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+    finally:
+        os.close(fd)
     # Tolerant decode: a torn final append may have cut mid-UTF-8 byte; the
     # replacement chars fail JSON decode and classify as a torn tail, while a
     # mid-file undecodable line stays LEDGER_CORRUPT.
-    return _replay_text(path.read_bytes().decode("utf-8", errors="replace"))
+    return _replay_text(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 def _fsync_dir(path: Path) -> None:
@@ -168,6 +186,28 @@ def _fsync_dir(path: Path) -> None:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _open_ledger_nofollow(path: Path, flags: int) -> int:
+    """Round-5 review fix (2026-08-24, finding 3): open the ledger NAME
+    without ever following a symlink at it.
+
+    ``Path.exists()`` is False for a DANGLING symlink, so the read path used
+    to treat a symlinked ledger as absent, and the append's
+    ``os.open(path, O_RDWR|O_CREAT)`` FOLLOWED the link — creating seal
+    authority under /tmp (or wherever the link points). ``O_NOFOLLOW`` makes
+    the open fail with ``ELOOP`` for a symlink at the final component
+    regardless of where (or whether) its target exists; that is corruption
+    of the authority surface, refused by name."""
+    try:
+        return os.open(path, flags | os.O_NOFOLLOW, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise LedgerCorruptError(
+                f"{path}: the ledger name is a SYMLINK — a seal authority "
+                "ledger is never created or followed through a symlink"
+            ) from None
+        raise
 
 
 def append_record(root: Path, record: LedgerRecord) -> str:
@@ -182,7 +222,7 @@ def append_record(root: Path, record: LedgerRecord) -> str:
     root = validate_ledger_root(root)
     root.mkdir(parents=True, exist_ok=True)
     path = root / LEDGER_FILENAME
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    fd = _open_ledger_nofollow(path, os.O_RDWR | os.O_CREAT)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:

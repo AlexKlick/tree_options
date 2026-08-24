@@ -35,6 +35,7 @@ closed (protocol is 0.2.0, no authority record exists).
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -818,18 +819,52 @@ def _replay_bars_text(text: str) -> BarsLedgerView:
     return BarsLedgerView(records=tuple(records), tail_hash=prev_hash, tail_damaged=damaged_tail)
 
 
+def _open_bars_ledger_nofollow(path: Path, flags: int) -> int:
+    """Round-5 review fix (2026-08-24, finding 3): open the bars-authority
+    ledger NAME without ever following a symlink at it (same rule as
+    ``seal.ledger._open_ledger_nofollow``). ``Path.exists()`` is False for a
+    DANGLING symlink, so the read used to treat a symlinked ledger as
+    absent and the append's ``os.open(O_RDWR|O_CREAT)`` FOLLOWED the link —
+    creating bars authority under /tmp. ``O_NOFOLLOW`` turns a symlink at
+    the final component into ``ELOOP`` regardless of its target, refused by
+    name."""
+    try:
+        return os.open(path, flags | os.O_NOFOLLOW, 0o644)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise LedgerCorruptError(
+                f"{path}: the bars-authority ledger name is a SYMLINK — bars"
+                " authority is never created or followed through a symlink"
+            ) from None
+        raise
+
+
 def read_bars_ledger(root: Path) -> BarsLedgerView:
     """Replay + verify the bars-authority ledger (read-only; never creates).
 
     An ABSENT ledger is not corruption (nothing approved, nothing consumed);
-    a refused root (resolved under /tmp, via the imported seal rule) or a
-    broken chain is.
+    a refused root (resolved under /tmp, via the imported seal rule), a
+    symlink at the ledger name (round-5 review fix: never created or
+    followed), or a broken chain is.
     """
     root = validate_ledger_root(root)
     path = root / BARS_LEDGER_FILENAME
-    if not path.exists():
+    try:
+        fd = _open_bars_ledger_nofollow(path, os.O_RDONLY)
+    except FileNotFoundError:
         return BarsLedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
-    return _replay_bars_text(path.read_bytes().decode("utf-8", errors="replace"))
+    try:
+        chunks: list[bytes] = []
+        offset = 0
+        while True:
+            chunk = os.pread(fd, 65536, offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+    finally:
+        os.close(fd)
+    return _replay_bars_text(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
 def _fsync_dir(path: Path) -> None:
@@ -859,7 +894,7 @@ def append_bars_record(
     root = validate_ledger_root(root)
     root.mkdir(parents=True, exist_ok=True)
     path = root / BARS_LEDGER_FILENAME
-    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+    fd = _open_bars_ledger_nofollow(path, os.O_RDWR | os.O_CREAT)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX)
         try:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import shutil
 import uuid
@@ -218,3 +219,57 @@ def test_concurrent_shaped_append_extends_verified_tail(ledger_root):
     assert view2.records[-1].record_sha256 == digest
     assert view2.records[-1].prev_record_sha256 == view.tail_hash
     assert not view2.tail_damaged
+
+
+# ---- round-5 (finding 3): a symlinked ledger NAME is never created or followed ------
+#
+# Round-5 review fix (2026-08-24): Path.exists() is False for a DANGLING
+# symlink at ledger.jsonl, so read_ledger treated the ledger as absent, and
+# the append's os.open(O_RDWR|O_CREAT) FOLLOWED the link — creating seal
+# authority under /tmp (or wherever the link points). Both paths now open
+# with O_NOFOLLOW and refuse on ELOOP.
+
+
+def test_dangling_symlink_ledger_name_refused_and_never_created(ledger_root) -> None:
+    """A dangling symlink at <valid durable root>/ledger.jsonl: the read must
+    refuse as corruption (naming the symlink), the append must refuse, and
+    the /tmp target must NEVER be created."""
+    target = Path("/tmp") / f"g4-seal-dangling-{uuid.uuid4().hex}"
+    link = ledger_root / L.LEDGER_FILENAME
+    link.symlink_to(target)  # dangling: target does not exist
+    try:
+        with pytest.raises(LedgerCorruptError, match="symlink") as read_exc:
+            L.read_ledger(ledger_root)
+        assert str(link) in str(read_exc.value), "the read refusal names the link"
+        with pytest.raises(LedgerCorruptError, match="symlink") as append_exc:
+            L.append_approval(ledger_root, _identity(), reason="r", at_epoch=T0)
+        assert str(link) in str(append_exc.value), "the append refusal names the link"
+        assert not target.exists(), "authority was never created through the link"
+    finally:
+        # the RED run of this test follows the link and creates the target;
+        # never leave it behind (and never leave a dangling symlink under
+        # artifacts/ — the harness copytree crashes on those).
+        with contextlib.suppress(FileNotFoundError):
+            link.unlink()
+        with contextlib.suppress(FileNotFoundError):
+            target.unlink()
+
+
+def test_symlinked_ledger_name_to_a_real_file_also_refused(ledger_root, tmp_path) -> None:
+    """The rule is about the NAME, not the target: a symlink to an existing
+    ledger file elsewhere is equally refused on both paths."""
+    real_root = ledger_root / "real"
+    real_root.mkdir()
+    L.append_approval(real_root, _identity(), reason="seed", at_epoch=T0)
+    link = ledger_root / L.LEDGER_FILENAME
+    link.symlink_to(real_root / L.LEDGER_FILENAME)
+    try:
+        with pytest.raises(LedgerCorruptError, match="symlink"):
+            L.read_ledger(ledger_root)
+        with pytest.raises(LedgerCorruptError, match="symlink"):
+            L.append_approval(ledger_root, _identity(), reason="r", at_epoch=T0)
+        # the linked ledger is untouched
+        assert len(L.read_ledger(real_root).records) == 1
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            link.unlink()
