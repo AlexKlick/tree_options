@@ -14,11 +14,16 @@ Exit codes (contract; also in docs/m4-closeout-runbook.md):
   3  lease held by a live owner
   4  unknown run (no store; create one with --create-identity)
   5  store unreadable/corrupt (journal or projection)
+  6  store root/run id refused (volatile root, or a run id that escapes it)
+  7  pin already bound (pinned manifest is immutable evidence)
+  8  journal concurrent write (stale prev hash, or a torn tail)
 
 Usage:
   python scripts/runstate_mark.py <run-id> CAPTURING --reason "era pass 3"
   python scripts/runstate_mark.py <run-id> CAPTURE_COMPLETE \
-      --reason "wrapper exited 0" --pin-manifest <capture_manifest content_sha256>
+      --reason "wrapper exited 0"
+  python scripts/runstate_mark.py <run-id> --pin-manifest \
+      <capture_manifest content_sha256> --reason "wrapper exited 0"
   python scripts/runstate_mark.py <run-id> INSPECTION_RUNNING \
       --adopt-stale-lease --reason "reboot recovery: old owner dead"
 """
@@ -130,6 +135,10 @@ def main(argv: list[str] | None = None) -> int:
         except rs_errors.StoreExistsError as exc:
             print(f"STORE EXISTS: {exc}", file=sys.stderr)
             return 5
+        except (rs_errors.StoreRootRefusedError, rs_errors.RunIdRefusedError) as exc:
+            # Round-2 review fix: deterministic exit, not a traceback.
+            print(f"STORE ROOT/RUN ID REFUSED: {exc}", file=sys.stderr)
+            return 6
         print(json.dumps({"run_id": args.run_id, "created": True}, sort_keys=True))
         return 0
 
@@ -141,6 +150,9 @@ def main(argv: list[str] | None = None) -> int:
     except rs_errors.JournalCorruptError as exc:
         print(f"JOURNAL CORRUPT: {exc}", file=sys.stderr)
         return 5
+    except (rs_errors.StoreRootRefusedError, rs_errors.RunIdRefusedError) as exc:
+        print(f"STORE ROOT/RUN ID REFUSED: {exc}", file=sys.stderr)
+        return 6
 
     owner = lease_module.current_owner(now_epoch=now_epoch)
     if args.boot_id_override:
@@ -179,6 +191,12 @@ def main(argv: list[str] | None = None) -> int:
     except rs_errors.JournalCorruptError as exc:
         print(f"JOURNAL CORRUPT: {exc}", file=sys.stderr)
         return 5
+    except rs_errors.PinAlreadyBoundError as exc:
+        print(f"PIN ALREADY BOUND: {exc}", file=sys.stderr)
+        return 7
+    except rs_errors.JournalConcurrentWriteError as exc:
+        print(f"JOURNAL CONCURRENT WRITE: {exc}", file=sys.stderr)
+        return 8
     finally:
         lease_module.release(store.dir, owner)
 

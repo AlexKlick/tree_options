@@ -34,6 +34,7 @@ SCRIPTS = REPO_ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+import runstate_mark  # noqa: E402
 from tree_options.data.digest import sha256_hex  # noqa: E402
 from tree_options.runstate import RunIdentity, RunState, RunStore  # noqa: E402
 from tree_options.runstate import heartbeat as HB_module  # noqa: E402
@@ -320,3 +321,79 @@ def test_nonprocess_state_with_matching_beat_still_alive() -> None:
         stale_after_s=900,
     )
     assert cls is HB_module.HeartbeatClass.ALIVE
+
+
+# --- R2-4: runstate_mark maps the new library errors to exit codes ----------
+
+RUN_ID = "m4-round2-mark-20260823-abcdef12"
+
+
+def _mark(root: Path, *args: str) -> int:
+    return runstate_mark.main(["--store-root", str(root), "--now-epoch", str(T0 + 10), *args])
+
+
+def _identity_path(root: Path, run_id: str = RUN_ID) -> Path:
+    path = root / "identity.json"
+    path.write_text(json.dumps(json.loads(_identity(run_id).model_dump_json())))
+    return path
+
+
+def test_cli_tmp_store_root_exit_6_on_create() -> None:
+    """StoreRootRefusedError used to traceback out of main(); the contract
+    is a deterministic exit code (create path)."""
+    scratch = _scratch()
+    identity_path = _identity_path(scratch)
+    assert (
+        _mark(
+            Path("/tmp/pr-a-cli-refused"),
+            RUN_ID,
+            "--create-identity",
+            str(identity_path),
+            "--reason",
+            "g",
+        )
+        == 6
+    )
+    assert not (Path("/tmp/pr-a-cli-refused") / RUN_ID).exists()
+
+
+def test_cli_absolute_run_id_exit_6_on_create_and_open() -> None:
+    scratch = _scratch()
+    absolute_id = str(Path("/tmp") / f"pr-a-cli-escape-{uuid4().hex}")
+    identity_path = _identity_path(scratch, run_id=absolute_id)
+    # Create path: the identity's run id is absolute.
+    assert (
+        _mark(scratch, absolute_id, "--create-identity", str(identity_path), "--reason", "g") == 6
+    )
+    assert not Path(absolute_id).exists()
+    # Open path: the run-id argument escapes the root.
+    root = _scratch()
+    assert _mark(root, absolute_id, "CAPTURING", "--reason", "x") == 6
+    assert _mark(root, "../escape", "CAPTURING", "--reason", "x") == 6
+    assert _mark(root, "a/b", "CAPTURING", "--reason", "x") == 6
+
+
+def test_cli_pin_second_different_hash_exit_7() -> None:
+    root = _scratch()
+    assert _mark(root, RUN_ID, "--create-identity", str(_identity_path(root)), "--reason", "g") == 0
+    assert _mark(root, RUN_ID, "--pin-manifest", "e" * 64, "--reason", "pin 1") == 0
+    assert _mark(root, RUN_ID, "--pin-manifest", "f" * 64, "--reason", "pin 2") == 7
+    store = RunStore.open(root, RUN_ID)
+    assert store.pinned_manifest_sha256 == "e" * 64
+
+
+def test_cli_transition_after_torn_journal_tail_exit_8() -> None:
+    """A torn final journal line blocks append (JournalConcurrentWriteError);
+    the CLI maps it to exit 8 instead of a traceback."""
+    root = _scratch()
+    assert _mark(root, RUN_ID, "--create-identity", str(_identity_path(root)), "--reason", "g") == 0
+    assert _mark(root, RUN_ID, "CAPTURING", "--reason", "era pass") == 0
+    # Corrupt the tail like the round-1 probe: append an incomplete fragment.
+    with open(root / RUN_ID / "journal.jsonl", "a", encoding="utf-8") as fh:
+        fh.write('{"seq":3,"kind":"TRANSITION","kind_of_cha')
+        fh.flush()
+        os.fsync(fh.fileno())
+    assert _mark(root, RUN_ID, "CAPTURE_COMPLETE", "--reason", "wrapper exit 0") == 8
+    # The journal must not have grown past the torn line.
+    store = RunStore.open(root, RUN_ID)
+    assert store.state is RunState.CAPTURING
