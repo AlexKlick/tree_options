@@ -57,6 +57,7 @@ from that verification are recorded below.
 | `06f3e9e`/`58c9e17`/`7c15944`/`7211e0a`/`689a53e` | R7: custody-held output writes (temp + os.replace, fstat nlink==1); builder refuses a non-WHOLE census (masters_observed == expected); O_NOFOLLOW on the ledger name in BOTH ledgers (dangling-symlink O_CREAT follow closed); regeneration re-hashes every read against the manifest pin; census.md states the real exit-0 rule incl. holidays |
 | `ee419cb`/`59e9d7f`/`0972d19`/`2c3db7b`/`f19bce0`/`f74a9a6` | R8: unpredictable mkstemp temp + published-inode verification; output paths that are themselves symlinks refused even in-root; ledger ROOT taken into custody O_DIRECTORY\|O_NOFOLLOW in BOTH ledgers (dir_fd-relative, ENOTDIR mapped); regeneration completeness (pinned-minus-read must be empty); census re-hashes every capture file at read time via a read-once shim — plus the protected-file correction restoring `inspect_structural_coverage.py` to its base blob |
 | `4888270` | gate16 M199 SURVIVED kill-restoration: owner test gains an unlisted-file phase only manifest verification refuses (the R8 re-hash had masked the deleted-master scenario; mutant re-killed by hand-applied kill-proof, mutate.py untouched) |
+| `cdf67a8`/`337e34a`/`576f120`/`5f1b4df` | R9: publish verification = final-name + byte custody (lstat-regular, O_NOFOLLOW re-open, byte compare); ledger roots walked COMPONENT-WISE from / with dir_fd + O_NOFOLLOW per component (both ledgers, create branch mkdir(dir_fd=)); capture-manifest bytes-once (raw= on the loader, census provenance + BARS binding consume the verified byte set, drift guard read refuses); census refuses pinned-but-unreferenced masters |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -289,3 +290,29 @@ the exact PR head (see PR body for its verdict line).
   manifest verification can refuse (hand-applied kill-proof
   `/tmp/m199-killproof.log`: phase 1 exit 2 via re-hash, phase 2 exit 0 →
   assertion fails); gate17 is the exact-head record for this head.
+
+- **Round 7** (head `a6eb384`, gate17 GREEN 1,495 / 217 KILLED /
+  restoration TRUE, log `pr-a-codex7.log`): VERDICT NO-GO — 4 findings,
+  all P1; round-6 5/5 RESOLVED; all constraint checks PASS (the reviewer
+  independently re-verified the three protected blobs, accepted gate17,
+  the M199 kill restoration, and the f74a9a6 correction). Every finding
+  orchestrator-verified in source before remediation: the post-publish
+  check used `os.stat` (FOLLOWS a planted symlink) and `emitted` read
+  through it too — rename-to-`.held` + link + in-place rewrite kept the
+  inode while substituting content; root custody was a single open, so
+  `O_NOFOLLOW` bound only the FINAL component and a symlinked
+  intermediate ancestor was followed (both ledgers);
+  `capture_manifest.json` was verified once then RE-READ — census
+  provenance and the BARS work-manifest binding hashed a swapped second
+  read; the manifest pins every on-disk master in `files[]` but the
+  census iterated `manifest.masters` only, silently ignoring a
+  pinned-but-unreferenced master at exit 0. All four the same
+  custody family, one level deeper. Remediated in R9
+  (`cdf67a8`…`5f1b4df`, 4 commits, each red-first; agent logs
+  `/tmp/r9-f{1,2,3,4}-*.log`). F3 carried one interpretive call,
+  disclosed in its commit: bytes are THREADED from the single verified
+  read into the artifact (provenance/binding name exactly those bytes)
+  plus a guard re-read whose only effect is refusal on drift — pure
+  threading could not refuse a swap landing after the verified read;
+  census exit 2 chosen (manifest-tamper family). Full suite 1,502
+  (agent + orchestrator runs identical, 0 failures; +7 tests).
