@@ -260,8 +260,15 @@ def _work_manifest_check(args: argparse.Namespace) -> tuple[CheckStatus, str | N
         manifest = load_bars_work_manifest(path)
         profile = load_selection_profile(Path(args.selection_profile))
         capture_manifest_sha = _sha256_file(Path(args.capture_manifest))
+        # Round-1 review fix: verify_bars_work_manifest requires capture_dir
+        # to regenerate the entries against the sealed capture (self-hash
+        # alone is not a proof of provenance).
+        capture_dir = args.capture_dir or Path(args.capture_manifest).parent
         verify_bars_work_manifest(
-            manifest, profile=profile, capture_manifest_sha256=capture_manifest_sha
+            manifest,
+            profile=profile,
+            capture_manifest_sha256=capture_manifest_sha,
+            capture_dir=capture_dir,
         )
     except (OSError, BarsManifestError) as exc:
         return CheckStatus(ok=False, detail=f"work manifest refused: {exc}"), None
@@ -550,6 +557,58 @@ def run_execute(
             )
             return 6, None
 
+    # Round-1 review fix (2026-08-23, probe FORGED_CONSUMPTION_REPLAYED for
+    # bars-execute analogous): the runstate store's identity MUST agree with
+    # the protocol and the work manifest's capture-manifest pin. Without
+    # this cross-join, a happy-path store with placeholder hashes lets
+    # execute consume authority against an unrelated run. Bindings:
+    #   - store.identity.protocol_hash == current_hash
+    #   - store.pinned_manifest_sha256 == work_manifest.capture_manifest_sha256
+    #     (the capture manifest hash is bound into the work manifest; the
+    #     approval record carries the work-manifest hash, not the capture
+    #     manifest hash directly.)
+    store_identity = store.identity
+    if store_identity.protocol_hash != current_hash:
+        print(
+            "EXECUTE REFUSED (identity): run-state store protocol hash"
+            f" {store_identity.protocol_hash[:12]}… does not match the"
+            f" approved protocol hash {current_hash[:12]}…",
+            file=sys.stderr,
+        )
+        return 6, None
+    # The work manifest (already verified above) carries the capture-manifest
+    # hash; compare to the store's pinned manifest.
+    work_manifest_path = Path(args.work_manifest)
+    pinned = store.pinned_manifest_sha256
+    expected_capture_manifest = _sha256_file(Path(args.capture_manifest))
+    try:
+        from tree_options.data.bars_manifest import load_bars_work_manifest
+
+        work_manifest_model = load_bars_work_manifest(work_manifest_path)
+    except (OSError, BarsManifestError) as exc:
+        print(
+            f"EXECUTE REFUSED (identity): work manifest unreadable: {exc}",
+            file=sys.stderr,
+        )
+        return 6, None
+    if work_manifest_model.capture_manifest_sha256 != expected_capture_manifest:
+        print(
+            "EXECUTE REFUSED (identity): work manifest's capture_manifest_sha256"
+            f" {work_manifest_model.capture_manifest_sha256[:12]}… does not match"
+            f" the --capture-manifest hash {expected_capture_manifest[:12]}…",
+            file=sys.stderr,
+        )
+        return 6, None
+    if pinned != work_manifest_model.capture_manifest_sha256:
+        print(
+            "EXECUTE REFUSED (identity): run-state store pinned capture manifest"
+            f" {pinned[:12] if pinned else None}… does not match the work"
+            " manifest's capture-manifest pin"
+            f" {work_manifest_model.capture_manifest_sha256[:12]}…",
+            file=sys.stderr,
+        )
+        return 6, None
+
     # duplicate: the one-shot rule for this work manifest
     for record in view.records:
         if (
@@ -655,6 +714,13 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--capture-manifest", type=Path, required=True, help="the capture manifest on disk now"
+    )
+    parser.add_argument(
+        "--capture-dir",
+        type=Path,
+        help="the capture directory (round-1 review: required for"
+        " verify_bars_work_manifest regeneration; defaults to"
+        " capture-manifest's parent)",
     )
     parser.add_argument(
         "--work-manifest", type=Path, required=True, help="the bars work manifest to launch"

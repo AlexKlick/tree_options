@@ -598,8 +598,18 @@ def verify_bars_work_manifest(
     *,
     profile: SelectionProfile | None = None,
     capture_manifest_sha256: str | None = None,
+    capture_dir: Path | None = None,
 ) -> None:
-    """Fail-closed verification: binding, ordering, and cost restatement."""
+    """Fail-closed verification: binding, ordering, and cost restatement.
+
+    Round-1 review fix (2026-08-23, probe FORGED_BARS_ENTRY_VERIFIED):
+    self-hash binding alone does not prove the entries came from captured
+    masters + the unmodified selector. With capture_dir supplied, this
+    function RE-REGENERATES the entries by running rebuild_master_captures
+    and the selection function over the sealed capture, then compares
+    the regenerated sequence to the manifest's. Any divergence is refused.
+    capture_dir is REQUIRED for preflight/execute paths.
+    """
     if manifest.schema_version != BARS_WORK_SCHEMA_VERSION:
         raise BarsManifestError(
             f"work manifest schema_version {manifest.schema_version!r} !="
@@ -631,6 +641,40 @@ def verify_bars_work_manifest(
         raise BarsManifestError(
             f"cost estimate does not restate the Budget arithmetic: manifest says"
             f" {manifest.cost}, Budget computes {restated}"
+        )
+    if capture_dir is None:
+        # capture_dir is required by preflight/execute; tests may opt in
+        # by passing it. The launcher passes it always.
+        raise BarsManifestError(
+            "verify_bars_work_manifest requires capture_dir to regenerate"
+            " and re-derive the entries; self-hash alone is not a proof"
+            " (round-1 review fix 2026-08-23)"
+        )
+    # Round-1 fix: regenerate the entries from the sealed capture + the
+    # committed profile + the UNMODIFIED selector, and require equality.
+    if profile is None:
+        raise BarsManifestError("regeneration requires the selection profile; pass profile=")
+    candidate = capture_dir / "capture_manifest.json"
+    if not candidate.exists():
+        raise BarsManifestError(
+            f"regeneration needs capture_manifest.json at {candidate} (the"
+            " standard location inside capture_dir); not found. Pass"
+            " capture_dir that contains the sealed capture manifest."
+        )
+    rebuilt = build_bars_work_manifest(
+        capture_dir,
+        profile=profile,
+        capture_manifest=candidate,
+        budget_limit=manifest.cost.budget_limit,
+        max_attempts_per_request=manifest.cost.max_attempts_per_request,
+    )
+    if rebuilt.entries != manifest.entries:
+        # Differ: refuse. We do NOT expose the divergent entries (could be
+        # misleading in operator logs).
+        raise BarsManifestError(
+            "regenerated bars work manifest entries do not match the "
+            "committed entries: the request list diverges from what the "
+            "selector over the sealed capture would produce"
         )
 
 

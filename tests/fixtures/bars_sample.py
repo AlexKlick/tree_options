@@ -16,6 +16,7 @@ from pathlib import Path
 import yaml
 
 from tests.fixtures.massive_structural_sample import contract_result, contracts_payload
+from tree_options.runstate import RunIdentity
 
 AS_OF = "2025-03-05"
 MONTHLY_EXPIRY = "2025-04-18"  # the third Friday of April 2025
@@ -220,3 +221,33 @@ def make_run_identity():
         started_epoch=T0,
         args_hash="d" * 64,
     )
+
+
+def make_matching_run_identity(
+    *,
+    protocol_hash: str,
+    code_sha: str,
+    universe_manifest_sha256: str,
+    capture_manifest_sha256: str | None = None,
+    campaign: str = "m4-barstest",
+) -> RunIdentity:
+    """Round-1 review fix (2026-08-23): the bars launcher now cross-joins
+    the runstate store's identity against the approval record. This helper
+    builds an identity whose fields can be matched against an approval.
+    """
+    identity = RunIdentity(
+        run_id=RUN_ID,
+        campaign=campaign,
+        protocol_hash=protocol_hash,
+        code_sha=code_sha,
+        provider="massive-polygon-free/1",
+        capture_version="m4b-capture/1",
+        universe_manifest_sha256=universe_manifest_sha256,
+        capture_manifest_sha256=capture_manifest_sha256,
+        boot_id=BOOT,
+        pid=12345,
+        pid_start_ticks=99,
+        started_epoch=T0,
+        args_hash="d" * 64,
+    )
+    return identity

@@ -14,6 +14,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import subprocess
 import sys
 import uuid
 from collections.abc import Iterator
@@ -32,6 +33,7 @@ from tests.fixtures.bars_sample import (  # noqa: E402
     RUN_ID,
     T0,
     census_bytes,
+    make_matching_run_identity,
     make_run_identity,
     write_021_protocol,
     write_bars_capture,
@@ -83,7 +85,11 @@ def scenario(
 ) -> dict[str, Path]:
     monkeypatch.delenv("POLYGON_API_KEY", raising=False)
     capture_dir = write_bars_capture(tmp_path / "capture")
-    manifest_path = write_capture_manifest(capture_dir, tmp_path / "capture_manifest.json")
+    # Round-1 review fix: the manifest must live INSIDE the capture_dir at
+    # the standard path; the regenerate-and-compare check looks for it there.
+    manifest_path = write_capture_manifest(capture_dir, capture_dir / "capture_manifest.json")
+    external_manifest_path = tmp_path / "capture_manifest.json"
+    external_manifest_path.write_bytes(manifest_path.read_bytes())
     census_path = tmp_path / "census.json"
     census_path.write_bytes(census_bytes(manifest_path.read_bytes()))
     protocol_path = write_021_protocol(tmp_path / "protocol-0.2.1.yaml", REAL_PROTOCOL)
@@ -106,7 +112,31 @@ def scenario(
 
     authority_root = scratch_root / "bars-authority"
     store_root = scratch_root / "runstate"
-    store = RunStore.create(store_root, make_run_identity(), now_epoch=T0)
+    capture_manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    store_protocol_hash = protocol_hash(load_protocol(protocol_path))
+    # Round-1 review fix: the runstate store's identity is now cross-joined
+    # against the approval record. Build an identity that matches the
+    # experiment's protocol + capture manifest + commit sha so the
+    # happy-path execute can proceed; tests that exercise the cross-join
+    # REJECTION paths construct a mismatched identity separately.
+    code_sha_now = subprocess.check_output(
+        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], text=True
+    ).strip()
+    identity = make_matching_run_identity(
+        protocol_hash=store_protocol_hash,
+        code_sha=code_sha_now,
+        universe_manifest_sha256="c" * 64,
+        capture_manifest_sha256=capture_manifest_sha,
+    )
+    store = RunStore.create(store_root, identity, now_epoch=T0)
+    # Round-1 review fix: pin the manifest so the execute identity cross-join
+    # passes (store.pinned_manifest_sha256 == approval.capture_manifest_sha256).
+    store.pin_manifest(
+        capture_manifest_sha,
+        now_epoch=T0 + 100,
+        actor_pid=store.identity.pid,
+        actor_boot_id=BOOT,
+    )
     for step, state in enumerate(BARS_READY_WALK):
         store.transition(
             state,
@@ -158,6 +188,8 @@ def _argv(
         str(scenario["census"]),
         "--capture-manifest",
         str(scenario["capture_manifest"]),
+        "--capture-dir",
+        str(scenario["capture_dir"]),
         "--work-manifest",
         str(scenario["work_manifest"]),
         "--vendor-key",

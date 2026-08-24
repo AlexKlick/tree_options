@@ -422,6 +422,27 @@ def build_proposed_amendment(
             f"base protocol does not load as {BASE_PROTOCOL_VERSION}: {exc}"
         ) from exc
     base_version = base.meta.protocol_version
+
+    # 5b. Round-1 review fix (2026-08-23, probe NOT_EVALUABLE_FACT_DERIVED +
+    # INCOMPLETE_CENSUS_VERIFIED): amendment MUST refuse to derive from an
+    # incomplete census (any pair in INCOMPLETE_CLASSES) or from a fact the
+    # census classes NOT_EVALUABLE / PARTIAL. The previous code admitted
+    # every observed_census_fact int and could `max(bar_volume_observations,
+    # 1)` over a zero-marked-NOT_EVALUABLE fact, papering over the exact
+    # bar-volume contradiction the runbook says must become an owner
+    # deviation. Two new gates below:
+    #   a) coverage must be COMPLETE (zero INCOMPLETE_CLASSES pairs)
+    #   b) every observed fact used as an operand must have
+    #      confidence == "EXACT" (PARTIAL or NOT_EVALUABLE is refused)
+    from tree_options.data.coverage_census import INCOMPLETE_CLASSES
+
+    incomplete = sum(getattr(census.coverage.observed, cls) for cls in INCOMPLETE_CLASSES)
+    if incomplete > 0:
+        raise StaleCensusError(
+            f"census is coverage-INCOMPLETE: {incomplete} pair(s) in "
+            f"INCOMPLETE_CLASSES ({sorted(INCOMPLETE_CLASSES)}); an "
+            "amendment may only be built against a whole census"
+        )
     if base_version != BASE_PROTOCOL_VERSION:
         raise VersionError(
             f"base protocol version must be exactly {BASE_PROTOCOL_VERSION!r}, got {base_version!r}"
@@ -438,6 +459,16 @@ def build_proposed_amendment(
     facts: dict[str, int] = {}
     for fact_id, fact in census.values.observed_census_fact.items():
         if type(fact.v) is int:
+            # Round-1 review fix: refuse NOT_EVALUABLE / PARTIAL facts as
+            # derivation operands. Confidence is part of the census content
+            # (the fact's hash binds it); admit only EXACT.
+            if fact.confidence != "EXACT":
+                raise DerivationMismatchError(
+                    f"observed fact {fact_id!r} has confidence "
+                    f"{fact.confidence!r}; only EXACT may be used as a "
+                    "derivation operand (census MUST be repaired or the "
+                    "value MUST be a non-derivation owner_deviation)"
+                )
             # exact int only: bools are not facts, textual observations are not numeric
             facts[fact_id] = fact.v
     for ov in owner_doc.values:

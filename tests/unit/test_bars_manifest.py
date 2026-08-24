@@ -56,10 +56,22 @@ def scratch_root() -> Iterator[Path]:
 
 @pytest.fixture()
 def capture_bundle(tmp_path: Path) -> dict[str, Path]:
-    """Synthetic capture dir + verified capture manifest."""
+    """Synthetic capture dir + verified capture manifest.
+
+    Round-1 review fix: the manifest must live INSIDE the capture_dir at
+    the standard path so verify_bars_work_manifest's regenerate-and-compare
+    step can find it. The external copy is for tests that need a path
+    separate from the capture dir (e.g. drift simulation).
+    """
     capture_dir = write_bars_capture(tmp_path / "capture")
-    manifest_path = write_capture_manifest(capture_dir, tmp_path / "capture_manifest.json")
-    return {"capture_dir": capture_dir, "capture_manifest": manifest_path}
+    manifest_path = write_capture_manifest(capture_dir, capture_dir / "capture_manifest.json")
+    external_manifest_path = tmp_path / "capture_manifest.json"
+    external_manifest_path.write_bytes(manifest_path.read_bytes())
+    return {
+        "capture_dir": capture_dir,
+        "capture_manifest": manifest_path,
+        "external_capture_manifest": external_manifest_path,
+    }
 
 
 def _build(bundle: dict[str, Path], **overrides: object) -> bm.BarsWorkManifest:
@@ -152,6 +164,7 @@ def test_work_manifest_hash_binding(capture_bundle: dict[str, Path]) -> None:
         manifest,
         profile=bm.load_selection_profile(COMMITTED_PROFILE),
         capture_manifest_sha256=manifest.capture_manifest_sha256,
+        capture_dir=capture_bundle["capture_dir"],
     )
     tampered = manifest.model_copy(update={"selection_notes": ("edited after the fact",)})
     with pytest.raises(bm.BarsManifestError, match="does not bind"):
