@@ -48,6 +48,8 @@ from that verification are recorded below.
 | `ac8b2a2` / `850f370` / `deb2ecd` / `bd92e9e` / `21eee40` | R4: round-2 runstate remediation (run-id escape; lock-all-mutators; heartbeat ordering; CLI exit codes 6/7/8; real argv_hash invariant) |
 | `5a763c0` | R4: register M229 (replaces M214) + runbook exit codes 6/7/8 |
 | `b7ebca5` / `d950a0f` / `e51a179` / `3e920f3` | R4: round-2 protocol/bars remediation (F4 derivation-time gate; F5 one-manifest binding; F6 execute-time census + identity cross-join; F7 test half) |
+| `1553d91` | evidence: record both review waves (round-2 finding 8) |
+| `5940b25` | test: unlink the round-2 symlink fixture — dangling scratch links crashed the harness copy (gate9 below) |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -87,6 +89,19 @@ exact-head, read-only; probes re-verified host-side before acceptance):
   for every forged shape (content_identity excludes code_sha, so the
   tampered payload still shares content identity and trips arm 1).
   Kill-proof narrative in commit `5a763c0`; population restored to 217.
+- **Gate9 harness crash** (`1553d91`, `pr-a-gate9.log`, GATE_EXIT=1):
+  failed BEFORE any mutant ran — the harness's disposable repo copy
+  crashed in `shutil.copytree` on dangling symlinks left under
+  `artifacts/runstate-tests/r2-*/` by the R4-1 symlink-escape test
+  (pytest reclaims the `tmp_path` target at session end; copytree
+  dereferences symlinks; 13 links had accumulated across R4 suite
+  runs). Fixed in `5940b25` by unlinking the link in a `finally`
+  (matching the `test_seal_ledger.py` ledger-root fixture idiom); the
+  pre-fix scratch links were removed. Two gate launches were stopped by
+  the orchestrator before any verdict (one at `1553d91` because the
+  finding-8 evidence commit had to join the gated head; one at
+  `5940b25` because this row did) — killed pre-verdict, no tree damage,
+  re-launched at the final head only.
 
 ## Verification evidence (host logs under `~/documents/tree_options-logs/`)
 
