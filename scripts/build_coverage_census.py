@@ -58,7 +58,7 @@ from collections.abc import Callable, Mapping
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Literal, NamedTuple, cast
 
 import yaml
 
@@ -257,6 +257,35 @@ def _read_pinned_bytes(capture_dir: Path, relative: str, pinned: Mapping[str, st
     return raw
 
 
+class _PinnedCaptureFile:
+    """The read-once stand-in for a capture file whose bytes
+    ``_read_pinned_bytes`` already re-hashed against the sealed manifest.
+
+    ``inspect_structural_coverage`` is a protected baseline (blob-identical
+    to base), so its loaders keep their base signatures — the pinned read
+    reaches them through the exact Path protocol they use on a single
+    capture file: ``read_bytes`` (the only content access — these bytes,
+    never a second read of the real path), ``name``/``stem`` (lineage
+    records, error strings, as_of-from-filename), and ``is_file``/
+    ``is_dir`` (``_json_files`` single-file resolution). Parsing the real
+    path again would re-open the verify-then-re-read swap race this fix
+    closes."""
+
+    def __init__(self, name: str, data: bytes) -> None:
+        self.name = name
+        self.stem = Path(name).stem
+        self._data = data
+
+    def read_bytes(self) -> bytes:
+        return self._data
+
+    def is_file(self) -> bool:
+        return True
+
+    def is_dir(self) -> bool:
+        return False
+
+
 def load_spot(
     capture_dir: Path, *, pinned: Mapping[str, str] | None = None
 ) -> dict[str, dict[date, Decimal]]:
@@ -284,7 +313,7 @@ def load_spot(
             )
         return {}
     raw = _read_pinned_bytes(capture_dir, SPOT_PROXY_FILENAME, pinned)
-    return isc.load_spot_proxy(spot_path, raw=raw)
+    return isc.load_spot_proxy(cast(Path, _PinnedCaptureFile(spot_path.name, raw)))
 
 
 # ---- reconciliation --------------------------------------------------------------
@@ -458,7 +487,9 @@ def observe_masters(
         try:
             if pinned is not None:
                 raw = _read_pinned_bytes(capture_dir, f"{MASTERS_DIR}/{entry.file}", pinned)
-                masters = isc.load_contract_masters(master_path, raw=raw)
+                masters = isc.load_contract_masters(
+                    cast(Path, _PinnedCaptureFile(master_path.name, raw))
+                )
             else:
                 masters = isc.load_contract_masters(master_path)
         except isc.StructuralCoverageError as exc:

@@ -728,16 +728,10 @@ class InputLineage:
     size: int
 
 
-def _read_with_lineage(file: Path, raw: bytes | None = None) -> tuple[str, InputLineage]:
+def _read_with_lineage(file: Path) -> tuple[str, InputLineage]:
     """Raw bytes read ONCE: the text handed to `decode_payload` plus the
-    sha256/size lineage recorded for this file (`sources.input_files`).
-
-    When `raw` is supplied (round-6 review fix, 2026-08-24: the pinned-read
-    discipline `scripts/build_coverage_census.py` applies), those exact bytes
-    stand in for the file's — the lineage record hashes THEM — so a caller
-    that has already re-hashed the bytes against a sealed manifest can parse
-    the very same read without the file being read (or swapped) twice."""
-    data = file.read_bytes() if raw is None else raw
+    sha256/size lineage recorded for this file (`sources.input_files`)."""
+    data = file.read_bytes()
     return data.decode("utf-8"), InputLineage(
         path=file.name, sha256=hashlib.sha256(data).hexdigest(), size=len(data)
     )
@@ -766,27 +760,15 @@ def _as_of_from_name(path: Path) -> date | None:
 
 
 def load_contract_masters(
-    path: Path,
-    *,
-    lineage: list[InputLineage] | None = None,
-    raw: bytes | None = None,
+    path: Path, *, lineage: list[InputLineage] | None = None
 ) -> tuple[ContractMaster, ...]:
     """Load one capture file or every *.json in a directory (sorted).
 
     Each file's sha256/size is recorded into `lineage` when supplied, so the
-    report can name the exact bytes it consumed. `raw` (round-6 review fix,
-    2026-08-24) supplies the single file's bytes directly — the pinned-read
-    discipline: parse the bytes that were re-hashed against a sealed
-    manifest, never a second read of the path. Only valid for a single-file
-    `path`."""
-    files = _json_files(path, what="--contracts-json")
-    if raw is not None and len(files) != 1:
-        raise StructuralCoverageError(
-            f"{path}: raw bytes are only valid for one capture file, not {len(files)}"
-        )
+    report can name the exact bytes it consumed."""
     masters = []
-    for file in files:
-        text, record = _read_with_lineage(file, raw)
+    for file in _json_files(path, what="--contracts-json"):
+        text, record = _read_with_lineage(file)
         if lineage is not None:
             lineage.append(record)
         masters.append(
@@ -812,20 +794,14 @@ def load_bar_series(
 
 
 def load_spot_proxy(
-    path: Path,
-    *,
-    lineage: list[InputLineage] | None = None,
-    raw: bytes | None = None,
+    path: Path, *, lineage: list[InputLineage] | None = None
 ) -> dict[str, dict[date, Decimal]]:
     """`{"SPY": {"2025-03-07": "560.12"}}` or `{"SPY": "560.12"}` (all as_ofs).
 
     A spot proxy is DECLARED INPUT, never derived: this tier has no
     underlying quote, and the report says NOT_EVALUABLE without one.
-    `raw` (round-6 review fix, 2026-08-24) supplies the bytes directly — the
-    pinned-read discipline: parse the bytes that were re-hashed against a
-    sealed manifest, never a second read of the path.
     """
-    text, record = _read_with_lineage(path, raw)
+    text, record = _read_with_lineage(path)
     if lineage is not None:
         lineage.append(record)
     payload = decode_payload(text, source=path.name)
