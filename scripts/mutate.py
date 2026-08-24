@@ -2581,8 +2581,8 @@ MUTANTS = [
         id="M209-authority-record-void",
         owner="test_execute_exit_6_when_record_binds_other_work_manifest",
         file="scripts/launch_bars_era.py",
-        anchor="if approval is None or approval.work_manifest_sha256 != work_manifest_sha:",
-        replacement="if False:",
+        anchor="approvals = [r for r in approvals if r.work_manifest_sha256 == work_manifest_sha]",
+        replacement="approvals = list(approvals)",
         selectors=[f"{U}/test_launch_bars_era.py"],
         invariant=(
             "A4 execute authority gate: a BARS_LAUNCH_APPROVAL record must bind"
