@@ -1002,20 +1002,31 @@ def test_stolen_temp_name_publishing_attacker_bytes_refused(
     seen_temp_names: list[str] = []
     real_replace = os.replace
 
-    def replace_stealing_the_temp(src: object, dst: object) -> object:
+    def replace_stealing_the_temp(src: object, dst: object, **kwargs: object) -> object:
         # the interleaving window opens exactly here: the builder's bytes are
         # fsynced and fstat'ed, the publish has not happened yet. The steal
         # targets the FINAL output (amendment-packet.json): the earlier three
         # outputs publish legitimately, `emitted` hashes the legitimate bytes,
         # and the builder returns its legitimate in-memory packet — while the
-        # PACKET NAME on disk carries the attacker's inode.
+        # PACKET NAME on disk carries the attacker's inode. (Round-8 F6: the
+        # publish is dir_fd-relative — the steal/plant ride the same dir fd.)
         if Path(str(dst)).name != "amendment-packet.json":
-            return real_replace(src, dst)
+            return real_replace(src, dst, **kwargs)
         seen_temp_names.append(Path(str(src)).name)
-        stolen = Path(str(src)).parent / (Path(str(src)).name + ".stolen")
-        os.rename(str(src), str(stolen))  # steal the builder's inode AWAY
-        Path(str(src)).write_bytes(attacker)  # plant attacker bytes at the temp name
-        return real_replace(src, dst)
+        parent_fd = int(kwargs["src_dir_fd"])  # type: ignore[arg-type]
+        stolen = str(src) + ".stolen"
+        os.rename(str(src), stolen, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)  # steal AWAY
+        plant_fd = os.open(
+            str(src),
+            os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=parent_fd,
+        )
+        try:
+            os.write(plant_fd, attacker)  # plant attacker bytes at the temp name
+        finally:
+            os.close(plant_fd)
+        return real_replace(src, dst, **kwargs)
 
     monkeypatch.setattr(os, "replace", replace_stealing_the_temp)
     with _out_root() as out:
@@ -1064,21 +1075,31 @@ def test_final_name_swapped_to_symlink_with_inplace_rewrite_refused(
     real_replace = os.replace
     armed = {"done": False}
 
-    def replace_then_swap_final_name(src: object, dst: object) -> object:
-        result = real_replace(src, dst)  # the legitimate publish happens
-        dst_path = Path(str(dst))
-        if armed["done"] or dst_path.name != "protocol-0.2.1-proposed.yaml":
+    def replace_then_swap_final_name(src: object, dst: object, **kwargs: object) -> object:
+        result = real_replace(src, dst, **kwargs)  # the legitimate publish happens
+        if armed["done"] or Path(str(dst)).name != "protocol-0.2.1-proposed.yaml":
             return result
         armed["done"] = True  # the window: published, not yet verified
-        held = dst_path.parent / (dst_path.name + ".held")
-        os.rename(dst_path, held)  # the inode moves to .held unchanged
-        dst_path.symlink_to(held.name)  # path -> .held
+        parent_fd = int(kwargs["dst_dir_fd"])  # type: ignore[arg-type]
+        held_name = str(dst) + ".held"
+        os.rename(str(dst), held_name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)  # inode -> .held
+        os.symlink(held_name, str(dst), dir_fd=parent_fd)  # path -> .held
         # rewrite .held IN PLACE (same inode, new content): schema-valid,
         # version/flow/amendment-count preserved, only the record text changes
-        doc = yaml.safe_load(held.read_text(encoding="utf-8"))
+        read_fd = os.open(held_name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            doc = yaml.safe_load(os.pread(read_fd, 1 << 20, 0).decode("utf-8"))
+        finally:
+            os.close(read_fd)
         doc["meta"]["amendments"][-1]["decision"] = "ATTACKER: rewritten in place"
-        with open(held, "w", encoding="utf-8") as handle:
-            handle.write(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000))
+        write_fd = os.open(held_name, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            os.write(
+                write_fd,
+                yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000).encode(),
+            )
+        finally:
+            os.close(write_fd)
         return result
 
     monkeypatch.setattr(os, "replace", replace_then_swap_final_name)
@@ -1118,17 +1139,28 @@ def test_published_bytes_rewritten_in_place_without_a_symlink_refused(
     real_replace = os.replace
     armed = {"done": False}
 
-    def replace_then_rewrite_in_place(src: object, dst: object) -> object:
-        result = real_replace(src, dst)
-        dst_path = Path(str(dst))
-        if armed["done"] or dst_path.name != "protocol-0.2.1-proposed.yaml":
+    def replace_then_rewrite_in_place(src: object, dst: object, **kwargs: object) -> object:
+        result = real_replace(src, dst, **kwargs)
+        if armed["done"] or Path(str(dst)).name != "protocol-0.2.1-proposed.yaml":
             return result
         armed["done"] = True
-        # same NAME, same INODE, new CONTENT (schema-plausible as above)
-        doc = yaml.safe_load(dst_path.read_text(encoding="utf-8"))
+        # same NAME, same INODE, new CONTENT (schema-plausible as above);
+        # the rewrite rides the publish's dir fd (round-8 F6 form)
+        parent_fd = int(kwargs["dst_dir_fd"])  # type: ignore[arg-type]
+        read_fd = os.open(str(dst), os.O_RDONLY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            doc = yaml.safe_load(os.pread(read_fd, 1 << 20, 0).decode("utf-8"))
+        finally:
+            os.close(read_fd)
         doc["meta"]["amendments"][-1]["changes"] = "ATTACKER: content rewritten in place"
-        with open(dst_path, "w", encoding="utf-8") as handle:
-            handle.write(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000))
+        write_fd = os.open(str(dst), os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            os.write(
+                write_fd,
+                yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000).encode(),
+            )
+        finally:
+            os.close(write_fd)
         return result
 
     monkeypatch.setattr(os, "replace", replace_then_rewrite_in_place)
@@ -1377,3 +1409,68 @@ def test_packet_hashes_attest_the_consumed_bytes(
     # … and the packet attests exactly those bytes, read exactly once.
     assert packet.inputs.owner_values_file_sha256 == _sha256(original)
     assert reads["owner"] == 1, "the owner-values file is read once, by construction"
+
+
+# ---- round-8 (finding 6): confinement does not hold the output PARENT component ---------
+#
+# Round-8 review fix (2026-08-24): _confine_output resolves once, but the
+# write path re-resolved every intermediate component after that — mkstemp
+# (dir=path.parent), lstat, and the O_NOFOLLOW open. An attacker renames the
+# hash dir once the LAST confinement check has passed and plants it as a
+# directory symlink: the builder then created, published, and byte-verified
+# INSIDE the link's target — an out-of-root write with no
+# OutputRefusedError. The output PARENT is now held under custody: a
+# component-wise no-follow walk (mirroring seal.ledger._open_ledger_root)
+# opened once per emit AFTER the containment check, and every
+# _write_exclusive operation — temp create, replace, lstat, readback — is
+# dir_fd-relative against it (the F1 sweep rides the same custody fd).
+
+
+def test_output_parent_dir_symlink_swap_after_confinement_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interleaving attack on the last confinement gap: the wrapper lets the
+    PACKET's real confinement check pass (the last one — the three earlier
+    artifacts are already published inside the real dir), THEN renames the
+    hash dir to .held and plants it as a directory symlink at a tmp target.
+    Pre-fix the packet's temp/publish/verify all re-resolve through the
+    link and land INSIDE the target while the build returns success; post-fix
+    the custody walk refuses naming the swapped component and nothing is
+    written in the target."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    hash12 = _census_hash(census_bytes)[:12]
+    target = tmp_path / "f6-attack-target"
+    target.mkdir()
+    real_confine = amd._confine_output
+    armed = {"done": False}
+
+    def confine_then_swap_parent(path: Path, *, out_root: Path) -> Path:
+        resolved = real_confine(path, out_root=out_root)  # the check PASSED
+        if armed["done"] or path.name != "amendment-packet.json":
+            return resolved
+        armed["done"] = True  # the window: after the last confinement check
+        hash_dir = out_root / hash12
+        held = out_root / (hash12 + ".held")
+        os.rename(hash_dir, held)  # the real dir moves away (3 artifacts in it)
+        hash_dir.symlink_to(target, target_is_directory=True)  # planted link
+        return resolved
+
+    monkeypatch.setattr(amd, "_confine_output", confine_then_swap_parent)
+    with _out_root() as out:
+        hash_dir = out / hash12
+        try:
+            with pytest.raises(OutputRefusedError) as exc_info:
+                _build(paths, out)
+            message = str(exc_info.value)
+            assert hash12 in message, "the refusal names the swapped component"
+            assert str(hash_dir) in message, "the refusal names the output directory"
+            assert list(target.iterdir()) == [], (
+                "nothing was written inside the symlink target — no out-of-root write"
+            )
+        finally:
+            # never leave a symlink under artifacts/ (the harness copytree
+            # crashes on those); the .held dir holds the 3 real artifacts
+            with contextlib.suppress(OSError):
+                hash_dir.unlink()
+            shutil.rmtree(out / (hash12 + ".held"), ignore_errors=True)

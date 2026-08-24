@@ -33,8 +33,10 @@ Pipeline (first failure wins; every failure is a refusal, never a landing):
 9.  the packet is emitted under ``<out-root>/<census-hash[:12]>/`` — with
     the derived directory and every output path re-resolved and confined
     under the resolved out root (a precreated symlink refuses, it is never
-    written through) — and the proposed protocol is re-loaded through
-    TODAY'S loader as proof it round-trips.
+    written through), the output PARENT then held under a component-wise
+    no-follow custody fd for the emit (round-8: no operation re-resolves a
+    path component after confinement), and the proposed protocol re-loaded
+    from the RENDERED text through TODAY'S loader as proof it round-trips.
 
 Output is byte-identical across re-runs over identical inputs: no clock, no
 timestamps, no absolute paths in any emitted byte.
@@ -43,11 +45,12 @@ timestamps, no absolute paths in any emitted byte.
 from __future__ import annotations
 
 import contextlib
+import errno
 import hashlib
 import json
 import os
+import secrets
 import stat
-import tempfile
 from pathlib import Path
 from typing import Any, Literal, NoReturn
 
@@ -345,7 +348,61 @@ def _refuse_shared_inode(path: Path) -> None:
         )
 
 
-def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
+def _open_output_custody(out_dir: Path) -> int:
+    """Round-8 review fix (2026-08-24, finding 6): hold the output PARENT
+    under custody — a component-wise no-follow walk mirroring
+    ``seal.ledger._open_ledger_root``.
+
+    ``_confine_output`` resolves once, but the write path used to RE-RESOLVE
+    every intermediate component after that (``mkstemp(dir=path.parent)``,
+    ``lstat``, the ``O_NOFOLLOW`` open). An attacker renaming the hash dir
+    once the last confinement check passed — and planting it as a directory
+    symlink — made the builder create, publish, and byte-verify INSIDE the
+    link's target: an out-of-root write with no refusal. Here ``/`` is
+    opened once with ``O_DIRECTORY``, then EVERY component of the resolved
+    out dir (already resolved by confinement — never re-resolved here, which
+    would follow a swapped ancestor) is opened
+    ``O_RDONLY|O_DIRECTORY|O_NOFOLLOW`` relative to the previous component's
+    fd (which is then closed). ``ELOOP``/``ENOTDIR`` at ANY component is an
+    ``OutputRefusedError`` naming the offending component; a vanished
+    component (``ENOENT``) equally refuses."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    for component in out_dir.parts[1:]:
+        prev = fd
+        try:
+            fd = os.open(component, flags, dir_fd=prev)
+        except OSError as exc:
+            os.close(prev)
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.ENOENT):
+                if exc.errno == errno.ENOENT:
+                    detail = "vanished under custody"
+                else:
+                    detail = "is not a real directory (a symlinked path component)"
+                raise OutputRefusedError(
+                    f"output directory component {component!r} of {out_dir} "
+                    f"{detail} (opened O_NOFOLLOW|O_DIRECTORY component-wise "
+                    f"from /, errno {exc.errno}) — this builder never creates "
+                    "or writes through a symlinked path component"
+                ) from None
+            raise
+        os.close(prev)
+    return fd
+
+
+def _emit_custody_write(path: Path, text: str) -> tuple[int, int]:
+    """Round-8 review fix (finding 6): ONE emit = confinement check (the
+    caller's, FIRST and unchanged) -> custody walk of the resolved parent
+    -> the dir_fd-relative exclusive write. The custody fd is opened per
+    emit and closed here; returns the published identity."""
+    custody_fd = _open_output_custody(path.parent)
+    try:
+        return _write_exclusive(path, text, custody_fd=custody_fd)
+    finally:
+        os.close(custody_fd)
+
+
+def _write_exclusive(path: Path, text: str, *, custody_fd: int) -> tuple[int, int]:
     """Round-5 review fix (2026-08-24, finding 1): publish one output file
     with custody held through the whole write.
 
@@ -365,10 +422,11 @@ def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
     writing the RENAMED inode; the fstat above still sees one link), plant
     attacker bytes at the original temp name, and ``replace`` then published
     the ATTACKER inode while the builder returned its legitimate in-memory
-    packet. ``tempfile.mkstemp`` supplies an unguessable ``O_EXCL`` name, and
-    the inode this function wrote — ``(st_dev, st_ino)`` captured from fstat
-    before the close — must be the inode ``os.stat`` sees at the output name
-    after the replace; any mismatch is a refusal naming both identities.
+    packet. The temp name is now unguessable (``secrets.token_hex`` —
+    ``mkstemp`` cannot take a ``dir_fd``), and the inode this function wrote
+    — ``(st_dev, st_ino)`` captured from fstat before the close — must be
+    the inode seen at the output name after the replace; any mismatch is a
+    refusal naming both identities.
 
     Round-7 review fix (2026-08-24, finding 1): inode identity is NOT final-
     name or byte custody. After the replace an attacker renames the published
@@ -378,8 +436,8 @@ def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
     ``os.stat(path)`` FOLLOWS the link so the identity check passed, and the
     round-trip load plus ``emitted``'s ``read_bytes`` both read through the
     link — the builder attested attacker YAML. The publish verification is
-    now final-name + byte custody: (a) ``os.lstat(path)`` — the final name
-    must be a REGULAR file, a symlink there never is; (b) identity from the
+    now final-name + byte custody: (a) the final name — un-followed — must
+    be a REGULAR file, a symlink there never is; (b) identity from the
     LSTAT values; (c) the final name opened ``O_RDONLY|O_NOFOLLOW``, fstat
     identity re-checked, and the FULL bytes read back must EQUAL the text
     this function wrote — a mismatch refuses naming both contents.
@@ -389,9 +447,25 @@ def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
     function's return. Custody here ends when the verify fd closes; the
     builder's proof step therefore parses the RENDERED text, ``emitted``
     hashes the RENDERED bytes, and ``_verify_final_effect`` re-checks this
-    identity at the packet attestation — the final effect."""
-    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    tmp = Path(tmp_name)
+    identity at the packet attestation — the final effect.
+
+    Round-8 review fix (2026-08-24, finding 6): EVERY operation below is
+    ``custody_fd``-RELATIVE — the temp create, the replace, the lstat, and
+    the readback all address bare names inside the output parent held under
+    custody (see ``_open_output_custody``), so no operation re-resolves the
+    intermediate components a swapped directory symlink could redirect."""
+    tmp_name = f".{path.name}.{secrets.token_hex(16)}.tmp"
+    try:
+        fd = os.open(
+            tmp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=custody_fd,
+        )
+    except OSError as exc:
+        raise OutputRefusedError(
+            f"temp output for {path} could not be created under custody ({exc.strerror})"
+        ) from None
     try:
         os.fchmod(fd, 0o644)
         # fdopen owns the fd from here: the with-block closes it on every path.
@@ -402,15 +476,16 @@ def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
             written = os.fstat(handle.fileno())
         if written.st_nlink != 1:
             raise OutputRefusedError(
-                f"temp output {tmp} has {written.st_nlink} hard links: the inode is "
-                "shared — refusing to publish it over the output name"
+                f"temp output {path.parent / tmp_name} has {written.st_nlink} hard "
+                "links: the inode is shared — refusing to publish it over the "
+                "output name"
             )
-        os.replace(tmp, path)
+        os.replace(tmp_name, path.name, src_dir_fd=custody_fd, dst_dir_fd=custody_fd)
         # (a) the final name, un-followed: a symlink planted at the output
         # name after the replace is not this builder's artifact, whatever it
         # points at (os.stat would FOLLOW it and see the moved inode).
         try:
-            published = os.lstat(path)
+            published = os.stat(path.name, dir_fd=custody_fd, follow_symlinks=False)
         except OSError as exc:
             raise OutputRefusedError(
                 f"published output {path} vanished after the publish ({exc.strerror})"
@@ -434,7 +509,7 @@ def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
         # it, re-check the identity on that fd, and require the full content
         # to equal what this function wrote.
         try:
-            verify_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            verify_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=custody_fd)
         except OSError as exc:
             raise OutputRefusedError(
                 f"published output {path} could not be opened without following "
@@ -470,9 +545,10 @@ def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
             )
     finally:
         # replace consumed the temp name on success; on any refusal the
-        # half-written temp must not linger under artifacts/.
+        # half-written temp must not linger under artifacts/ (unlinked by
+        # NAME inside the custody fd — never a path re-resolution).
         with contextlib.suppress(FileNotFoundError):
-            tmp.unlink()
+            os.unlink(tmp_name, dir_fd=custody_fd)
     # Round-8 review fix (2026-08-24, finding 1): the caller keeps the
     # rendered text and the PUBLISHED IDENTITY — the proof step parses the
     # rendered text (never a fresh read of the path), `emitted` hashes the
@@ -484,7 +560,7 @@ def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
 
 
 def _verify_final_effect(
-    *, artifact: str, path: Path, identity: tuple[int, int], text: str
+    *, artifact: str, path: Path, identity: tuple[int, int], text: str, custody_fd: int
 ) -> None:
     """Round-8 review fix (2026-08-24, finding 1): re-verify one published
     artifact under custody at the moment the builder ATTESTS it.
@@ -501,9 +577,14 @@ def _verify_final_effect(
     artifact is re-verified — the final name must lstat as a REGULAR file,
     its ``(st_dev, st_ino)`` must equal the identity ``_write_exclusive``
     published, and an ``O_NOFOLLOW`` re-read must equal the rendered text.
-    Any drift is ``OutputRefusedError`` naming the artifact."""
+    Any drift is ``OutputRefusedError`` naming the artifact.
+
+    Round-8 review fix (finding 6): the sweep rides the output parent's
+    CUSTODY fd — the lstat and the readback address the bare NAME inside
+    the custody fd (never a path re-resolution a swapped parent component
+    could redirect)."""
     try:
-        published = os.lstat(path)
+        published = os.stat(path.name, dir_fd=custody_fd, follow_symlinks=False)
     except OSError as exc:
         raise OutputRefusedError(
             f"{artifact} ({path}) vanished before the packet attestation ({exc.strerror})"
@@ -523,7 +604,7 @@ def _verify_final_effect(
             "whatever holds the name now"
         )
     try:
-        verify_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        verify_fd = os.open(path.name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=custody_fd)
     except OSError as exc:
         raise OutputRefusedError(
             f"{artifact} ({path}) could not be re-read without following a "
@@ -914,7 +995,7 @@ def build_proposed_amendment(
     )
     _refuse_shared_inode(proposed_path)
     proposed_text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000)
-    proposed_identity = _write_exclusive(proposed_path, proposed_text)
+    proposed_identity = _emit_custody_write(proposed_path, proposed_text)
 
     # PROOF STEP: the proposal must load through TODAY'S real loader — from
     # the RENDERED text, never a fresh read of the published path (round-8
@@ -942,39 +1023,48 @@ def build_proposed_amendment(
     schema_text = _render_schema_addition_proposal(
         census=census, census_hash=census_hash, flow_value=flow_value
     )
-    schema_identity = _write_exclusive(schema_path, schema_text)
+    schema_identity = _emit_custody_write(schema_path, schema_text)
 
     diff_path = _confine_output(out_dir / "amendment-diff.md", out_root=resolved_out_root)
     _refuse_shared_inode(diff_path)
     diff_text = _render_diff(
         base=base, census_hash=census_hash, flow_value=flow_value, flow_source=flow_source
     )
-    diff_identity = _write_exclusive(diff_path, diff_text)
+    diff_identity = _emit_custody_write(diff_path, diff_text)
 
     # FINAL-EFFECT SWEEP (round-8, finding 1): the packet ATTESTS these
     # artifacts, so each is re-verified under custody immediately before the
     # packet is constructed — regular file at the final name, the published
     # identity, and the on-disk bytes still equal to the rendered text. This
     # is the guard at the final effect: it closes the post-return window
-    # _write_exclusive cannot span.
-    _verify_final_effect(
-        artifact="protocol-0.2.1-proposed.yaml",
-        path=proposed_path,
-        identity=proposed_identity,
-        text=proposed_text,
-    )
-    _verify_final_effect(
-        artifact="schema-addition-proposal.yaml",
-        path=schema_path,
-        identity=schema_identity,
-        text=schema_text,
-    )
-    _verify_final_effect(
-        artifact="amendment-diff.md",
-        path=diff_path,
-        identity=diff_identity,
-        text=diff_text,
-    )
+    # _write_exclusive cannot span. The sweep rides the output parent's
+    # custody fd (round-8, finding 6) — one walk, three name-relative
+    # verifications.
+    sweep_fd = _open_output_custody(out_dir)
+    try:
+        _verify_final_effect(
+            artifact="protocol-0.2.1-proposed.yaml",
+            path=proposed_path,
+            identity=proposed_identity,
+            text=proposed_text,
+            custody_fd=sweep_fd,
+        )
+        _verify_final_effect(
+            artifact="schema-addition-proposal.yaml",
+            path=schema_path,
+            identity=schema_identity,
+            text=schema_text,
+            custody_fd=sweep_fd,
+        )
+        _verify_final_effect(
+            artifact="amendment-diff.md",
+            path=diff_path,
+            identity=diff_identity,
+            text=diff_text,
+            custody_fd=sweep_fd,
+        )
+    finally:
+        os.close(sweep_fd)
 
     packet = AmendmentPacket(
         schema_version=AMENDMENT_PACKET_SCHEMA_VERSION,
@@ -1009,14 +1099,20 @@ def build_proposed_amendment(
     packet_path = _confine_output(out_dir / "amendment-packet.json", out_root=resolved_out_root)
     _refuse_shared_inode(packet_path)
     packet_text = json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n"
-    packet_identity = _write_exclusive(packet_path, packet_text)
+    packet_identity = _emit_custody_write(packet_path, packet_text)
     # The packet is written LAST: the same final-effect sweep runs on it
-    # immediately after its write, so the returned packet attests an artifact
-    # that was under custody at the moment of attestation.
-    _verify_final_effect(
-        artifact="amendment-packet.json",
-        path=packet_path,
-        identity=packet_identity,
-        text=packet_text,
-    )
+    # immediately after its write (on the packet's own custody fd), so the
+    # returned packet attests an artifact that was under custody at the
+    # moment of attestation.
+    packet_sweep_fd = _open_output_custody(packet_path.parent)
+    try:
+        _verify_final_effect(
+            artifact="amendment-packet.json",
+            path=packet_path,
+            identity=packet_identity,
+            text=packet_text,
+            custody_fd=packet_sweep_fd,
+        )
+    finally:
+        os.close(packet_sweep_fd)
     return packet
