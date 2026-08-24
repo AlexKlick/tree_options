@@ -32,6 +32,7 @@ if str(REPO_ROOT / "src") not in sys.path:  # pragma: no cover - import plumbing
 
 from tree_options.runstate import RunStore  # noqa: E402
 from tree_options.runstate import errors as rs_errors  # noqa: E402
+from tree_options.runstate import journal as journal_module  # noqa: E402
 from tree_options.runstate import lease as lease_module  # noqa: E402
 from tree_options.runstate.heartbeat import HeartbeatClass  # noqa: E402
 from tree_options.runstate.store import DEFAULT_STORE_ROOT  # noqa: E402
@@ -65,7 +66,20 @@ def _latest_run_id(root: Path) -> str | None:
     candidates = [p for p in root.iterdir() if (p / "run.json").is_file()]
     if not candidates:
         return None
-    return max(candidates, key=lambda p: (p / "journal.jsonl").stat().st_mtime).name
+
+    def _mtime(store_dir: Path) -> float:
+        # Round-3 review fix (2026-08-23, finding 4): RunStore.create()
+        # writes run.json BEFORE the GENESIS journal record, so a crash
+        # between the two leaves a run.json-only store. Stat-ing the
+        # journal unconditionally raised FileNotFoundError and took the
+        # whole DEFAULT invocation down; fall back to run.json's mtime —
+        # the partially-created store stays discoverable (and is reported
+        # as UNKNOWN by the caller), never a traceback.
+        journal = store_dir / journal_module.JOURNAL_FILENAME
+        probe = journal if journal.exists() else store_dir / "run.json"
+        return probe.stat().st_mtime
+
+    return max(candidates, key=_mtime).name
 
 
 def _parse_args(argv: list[str] | None) -> argparse.Namespace:
@@ -135,6 +149,31 @@ def main(argv: list[str] | None = None) -> int:
         # under an id the store does not carry.
         print(f"STORE ID MISMATCH: {exc}", file=sys.stderr)
         return 2
+
+    if not (store.dir / journal_module.JOURNAL_FILENAME).exists():
+        # Round-3 review fix (2026-08-23, finding 4): create() writes
+        # run.json before GENESIS; a crash between the two leaves a store
+        # with identity but no journal. A run with no journal is UNKNOWN —
+        # never healthy, never FAILED (constraint 10) — and reconciliation
+        # is an owner decision (never auto-recreate over the evidence).
+        # Structured output + the documented UNKNOWN exit; no traceback.
+        print(
+            json.dumps(
+                {
+                    "run_id": run_id,
+                    "state": "UNKNOWN",
+                    "classification": "UNKNOWN_RECONCILIATION_REQUIRED",
+                    "note": (
+                        "store partially created: run.json exists without"
+                        " journal.jsonl (crash between create()'s two"
+                        " writes); owner reconciliation — never recreate"
+                        " over it"
+                    ),
+                },
+                sort_keys=True,
+            )
+        )
+        return 3
 
     try:
         # Read-only command: NEVER repair. A torn projection is reported,

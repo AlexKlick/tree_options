@@ -143,6 +143,69 @@ def test_no_run_found_exit_4(tmp_path):
     )
 
 
+def _partial_store(root: Path) -> Path:
+    """run.json WITHOUT journal.jsonl — the crash window between
+    RunStore.create()'s two writes (run.json first, GENESIS second)."""
+    identity = RunIdentity(
+        run_id=RUN_ID,
+        campaign="m4-statustest",
+        protocol_hash="a" * 64,
+        code_sha="b" * 40,
+        provider="massive-polygon-free/1",
+        capture_version="m4b-capture/1",
+        universe_manifest_sha256="c" * 64,
+        boot_id=BOOT,
+        pid=1,
+        pid_start_ticks=1,
+        started_epoch=T0,
+        args_hash="d" * 64,
+    )
+    store_dir = root / RUN_ID
+    store_dir.mkdir(parents=True)
+    (store_dir / "run.json").write_text(
+        json.dumps(json.loads(identity.model_dump_json()), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return store_dir
+
+
+def test_partially_created_store_default_selection_reports_unknown(root, tmp_path, capsys):
+    """Round-3 review fix (2026-08-23, finding 4): _latest_run_id()
+    unconditionally stat()ed journal.jsonl, so a crash between create()'s
+    run.json write and the GENESIS append made the DEFAULT (--json, no
+    --run-id) invocation raise FileNotFoundError. A partially-created store
+    is UNKNOWN — structured output plus the documented exit, never a
+    traceback."""
+    _partial_store(root)
+    assert (
+        era_status.main(
+            [
+                "--store-root",
+                str(root),
+                "--now-epoch",
+                str(T0 + 60),
+                "--boot-id-override",
+                BOOT,
+                "--json",
+            ]
+        )
+        == 3
+    )
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["state"] == "UNKNOWN"
+    assert "partially created" in payload["note"]
+
+
+def test_partially_created_store_explicit_run_id_reports_unknown(root, tmp_path, capsys):
+    """Same crash-window store addressed by --run-id: structured UNKNOWN
+    (exit 3), not the projection-torn refusal and never a traceback."""
+    _partial_store(root)
+    assert _status(root) == 3
+    payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert payload["state"] == "UNKNOWN"
+    assert payload["run_id"] == RUN_ID
+
+
 def test_misfiled_store_dir_refused_without_traceback(root, tmp_path, capsys):
     """Round-3 review fix (2026-08-23, finding 3): opening a store whose
     directory names ANOTHER run must refuse with the documented
