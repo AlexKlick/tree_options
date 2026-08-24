@@ -1061,3 +1061,61 @@ def test_swapped_capture_manifest_between_verify_and_provenance_refuses_exit_2(
     assert not out_root.exists() or list(out_root.iterdir()) == [], (
         "no census was emitted from the swap window"
     )
+
+
+# ---- round-7 (finding 4): every PINNED master is census evidence — no orphans ---------
+#
+# Round-7 review fix (2026-08-24): the manifest's files[] pins EVERY on-disk
+# masters/*.json (build_massive_capture_manifest's directory scan), but
+# masters[] (the metadata entries) may reference only a subset. A stale
+# master pinned in files[] yet referenced by NO entry was never read by the
+# entry-driven loop, and masters_observed == expected still exited 0 — the
+# census silently ignored a sealed master. (The strengthened M199 test
+# covers UNLISTED files; this is LISTED-but-unreferenced — the completeness
+# mirror of 2c3db7b.) After the masters loop, the pinned master-kind files
+# minus the entry-referenced set must be EMPTY or the census refuses naming
+# every unreferenced file.
+
+
+def test_pinned_but_unreferenced_master_refuses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Fixture: a normal SPY capture, then a stale QQQ master file on disk
+    and the manifest REBUILT via build_massive_capture_manifest with the same
+    SPY-only entries — its directory scan pins both files, so the manifest
+    stays self-consistent and verifies. Pre-fix: exit 0 with a whole census
+    (the sealed QQQ master is silently ignored); post-fix: exit 2 naming the
+    QQQ file, nothing emitted."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    (capture / "masters" / f"QQQ_{SESSION_FRIDAY_A}.json").write_text(
+        fx.contracts_payload(results=_contract_rows("QQQ", 2), as_of=SESSION_FRIDAY_A),
+        encoding="utf-8",
+    )
+    old = json.loads((capture / "capture_manifest.json").read_text())
+    rebuilt = build_massive_capture_manifest(
+        capture,
+        capture_version="m4b-capture/1",
+        budget_limit=old["budget_limit"],
+        requests_charged=old["requests_charged"],
+        client_stats=old["client_stats"],
+        masters=old["masters"],  # SPY-only entries: QQQ is pinned, never referenced
+        bars=old["bars"],
+        spot_proxy=old["spot_proxy"],
+        notes=old["notes"],
+    )
+    (capture / "capture_manifest.json").write_text(
+        rebuilt.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 2, (
+        "a sealed master pinned by files[] but referenced by no masters[] entry "
+        "is silently ignored evidence — the census must refuse naming it"
+    )
+    err = capsys.readouterr().err
+    assert f"masters/QQQ_{SESSION_FRIDAY_A}.json" in err, (
+        "the refusal names the pinned-but-unreferenced master file"
+    )
+    assert not out_root.exists() or list(out_root.iterdir()) == [], "no census emitted"

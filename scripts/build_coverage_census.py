@@ -95,6 +95,7 @@ from tree_options.data.massive_manifest import (  # noqa: E402
     CAPTURE_MANIFEST_FILENAME,
     MASTERS_DIR,
     SPOT_PROXY_FILENAME,
+    CaptureKind,
     MassiveCaptureManifest,
     MassiveManifestError,
     MasterEntry,
@@ -112,6 +113,11 @@ from tree_options.time.calendar import StaticSessionCalendar  # noqa: E402
 # inspect_structural_coverage.KNOWN_CAPTURE_VERSIONS — kept a string literal
 # here for the same decoupling reason that module states).
 CAPTURE_VERSION = "m4b-capture/1"
+
+# The CaptureKind member that marks a masters/ envelope (the Literal's own
+# master token — used for the round-7 pinned-vs-referenced completeness
+# mirror in observe_masters).
+MASTER_KIND: CaptureKind = "master"
 
 CALENDAR_JSON_NAME = "nyse_sessions_2018_01_02_2026_12_31.json"
 CALENDAR_SHA_NAME = "nyse_sessions_2018_01_02_2026_12_31.sha256"
@@ -584,6 +590,30 @@ def observe_masters(
             )
         for contract in master.contracts:
             contracts_seen.add((contract.underlying_ticker, contract.ticker))
+
+    # Round-7 review fix (2026-08-24, finding 4): completeness mirror of
+    # 2c3db7b. files[] pins EVERY on-disk masters/*.json (the manifest
+    # builder's directory scan), but masters[] (the metadata entries) may
+    # reference only a subset: a stale master pinned in files[] yet
+    # referenced by NO entry was never read by the entry-driven loop above,
+    # and masters_observed == expected still exited 0 — a sealed master
+    # silently ignored (the strengthened M199 test covers UNLISTED files;
+    # this is LISTED-but-unreferenced). Every pinned master-kind file must
+    # be referenced by an entry, or the census refuses naming every
+    # unreferenced file. The check runs on BOTH invocation paths (pinned or
+    # not): the defense holds regardless.
+    pinned_master_files = {f.path for f in manifest.files if f.kind == MASTER_KIND}
+    referenced_master_files = {
+        f"{MASTERS_DIR}/{entry.file}" for entry in manifest.masters if entry.file
+    }
+    unreferenced = sorted(pinned_master_files - referenced_master_files)
+    if unreferenced:
+        raise MassiveManifestError(
+            "capture manifest pins master file(s) no masters[] entry references: "
+            f"{', '.join(unreferenced)} — every sealed master is census evidence; "
+            "a pinned-but-unreferenced master is silently ignored evidence, and "
+            "the census refuses to derive around it"
+        )
 
     return MastersObserved(
         masters_observed=parsed,
