@@ -16,11 +16,20 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import era_status  # noqa: E402
-from tree_options.runstate import RunIdentity, RunState, RunStore  # noqa: E402
+from tree_options.runstate import RunIdentity, RunState, RunStore, compute_run_id  # noqa: E402
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000
-RUN_ID = "m4-statustest-20260823-abcdef12"
+RUN_ID = compute_run_id(
+    campaign="m4-statustest",
+    protocol_hash="a" * 64,
+    code_sha="b" * 40,
+    provider="massive-polygon-free/1",
+    capture_version="m4b-capture/1",
+    universe_manifest_sha256="c" * 64,
+    args_hash="d" * 64,
+    started_epoch=T0,
+)
 
 # Round-1 review migration (2026-08-23): pytest's tmp_path lives under
 # /tmp; the runstate root refusal applies. Scratch roots for runstate

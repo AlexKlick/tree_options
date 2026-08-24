@@ -22,7 +22,9 @@ lease and the journal's per-record actor fields, not here.
 
 from __future__ import annotations
 
+from datetime import date
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field
 
@@ -150,6 +152,27 @@ def is_legal(source: RunState, target: RunState) -> bool:
     return STATE_ORDER[target] > STATE_ORDER[source]
 
 
+class RunIdentityCore(StrictModel):
+    """Canonical logical inputs that select exactly one durable run store.
+
+    Process incarnation fields deliberately do not belong here: boot id, pid,
+    and pid-start ticks may change when the same logical run resumes.  A new
+    same-day run is a new logical run only when the owner supplies an explicit
+    ``run_nonce`` (or changes another core input).
+    """
+
+    schema_version: Literal["run-identity-core/1"] = "run-identity-core/1"
+    campaign: IdStr
+    protocol_hash: str
+    code_sha: str
+    provider: IdStr
+    capture_version: IdStr
+    universe_manifest_sha256: str
+    args_hash: str
+    logical_start_date: date
+    run_nonce: IdStr | None = None
+
+
 class RunIdentity(StrictModel):
     """Immutable creation identity of one campaign run."""
 
@@ -168,3 +191,7 @@ class RunIdentity(StrictModel):
     pid_start_ticks: int
     started_epoch: int = Field(ge=0)
     args_hash: str
+    # Explicit owner-issued discriminator for a deliberately new logical run
+    # whose other core inputs and UTC start date are identical.  Process
+    # restarts never mint this value implicitly.
+    run_nonce: IdStr | None = None

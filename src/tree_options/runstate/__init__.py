@@ -16,10 +16,11 @@ from tree_options.runstate.states import (
     RESUMABLE_STATES,
     TERMINAL_STATES,
     RunIdentity,
+    RunIdentityCore,
     RunState,
     is_legal,
 )
-from tree_options.runstate.store import RunStatus, RunStore, compute_run_id
+from tree_options.runstate.store import RunStatus, RunStore, canonical_run_id, compute_run_id
 
 __all__ = [
     "LEGAL_EDGES",
@@ -32,12 +33,14 @@ __all__ = [
     "ManifestMismatchError",
     "ProjectionTornError",
     "RunIdentity",
+    "RunIdentityCore",
     "RunState",
     "RunStateError",
     "RunStatus",
     "RunStore",
     "StoreExistsError",
     "UnknownRunError",
+    "canonical_run_id",
     "compute_run_id",
     "is_legal",
 ]

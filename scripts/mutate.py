@@ -2630,6 +2630,22 @@ MUTANTS = [
             " not evidence of death"
         ),
     ),
+    # ---- external PR #13 audit: canonical durable run identity -----------------
+    dict(
+        id="M230-noncanonical-run-id-accepted",
+        owner="test_create_refuses_noncanonical_run_id_before_filesystem_mutation",
+        file="src/tree_options/runstate/store.py",
+        anchor=(
+            "        _validate_canonical_run_id(root, identity)\n"
+            "        run_path = store_dir / RUN_FILENAME"
+        ),
+        replacement="        run_path = store_dir / RUN_FILENAME",
+        selectors=[f"{U}/test_runstate_store.py"],
+        invariant=(
+            "PR13 one logical RunIdentityCore has exactly one computed store id;"
+            " an operator-supplied alternate id refuses before any directory is created"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)

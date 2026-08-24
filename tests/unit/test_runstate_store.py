@@ -22,6 +22,7 @@ from tree_options.runstate.errors import (
     IllegalTransitionError,
     JournalCorruptError,
     ManifestMismatchError,
+    RunIdRefusedError,
     StoreIdMismatchError,
 )
 
@@ -49,9 +50,26 @@ def store(root: Path) -> RunStore:
     return RunStore.create(root, _identity(root), now_epoch=T0)
 
 
-def _identity(root: Path, *, run_id: str = "m4-test-run-20260823-abcdef12") -> RunIdentity:
+def _identity(
+    root: Path,
+    *,
+    run_id: str | None = None,
+    run_nonce: str | None = None,
+) -> RunIdentity:
+    del root  # retained in the helper signature for existing call sites
+    canonical = compute_run_id(
+        campaign="m4-test-run",
+        protocol_hash="a" * 64,
+        code_sha="b" * 40,
+        provider="massive-polygon-free/1",
+        capture_version="m4b-capture/1",
+        universe_manifest_sha256="c" * 64,
+        args_hash="d" * 64,
+        started_epoch=T0,
+        run_nonce=run_nonce,
+    )
     return RunIdentity(
-        run_id=run_id,
+        run_id=run_id or canonical,
         campaign="m4-test-run",
         protocol_hash="a" * 64,
         code_sha="b" * 40,
@@ -63,6 +81,7 @@ def _identity(root: Path, *, run_id: str = "m4-test-run-20260823-abcdef12") -> R
         pid_start_ticks=99,
         started_epoch=T0,
         args_hash="d" * 64,
+        run_nonce=run_nonce,
     )
 
 
@@ -100,7 +119,7 @@ def test_open_refuses_store_dir_named_like_another_run(root):
     name and identity.run_id are one fact; a mismatch is misfiled evidence."""
     store = RunStore.create(root, _identity(root), now_epoch=T0)
     # an ordinary second store in the same root keeps opening (regression)
-    other = _identity(root, run_id="m4-test-run-20260823-11111111")
+    other = _identity(root, run_nonce="other-logical-run")
     RunStore.create(root, other, now_epoch=T0)
     # the attack: run-A's store directory renamed to run-B
     misfiled = "m4-misfiled-run-20260823-beefcafe"
@@ -180,14 +199,80 @@ def test_run_id_deterministic_in_inputs():
         campaign="m4-coverage-era",
         protocol_hash="a" * 64,
         code_sha="b" * 40,
+        provider="massive-polygon-free/1",
+        capture_version="m4b-capture/1",
         universe_manifest_sha256="c" * 64,
         args_hash="d" * 64,
         started_epoch=T0,
+        run_nonce=None,
     )
     first = compute_run_id(**kwargs)
     assert first == compute_run_id(**kwargs)
     assert first != compute_run_id(**{**kwargs, "code_sha": "z" * 40})
     assert first.startswith("m4-coverage-era-")
+
+
+# ---- external PR #13 audit: canonical logical run identity --------------------------
+
+
+def test_create_refuses_noncanonical_run_id_before_filesystem_mutation(root: Path) -> None:
+    """An operator-supplied id cannot split one logical run across stores."""
+    before = tuple(root.iterdir())
+    identity = _identity(root, run_id="m4-test-run-20260823-deadbeef")
+
+    with pytest.raises(RunIdRefusedError, match="canonical"):
+        RunStore.create(root, identity, now_epoch=T0)
+
+    assert tuple(root.iterdir()) == before
+
+
+def test_run_id_core_names_provider_capture_version_and_owner_nonce() -> None:
+    base = dict(
+        campaign="m4-coverage-era",
+        protocol_hash="a" * 64,
+        code_sha="b" * 40,
+        provider="massive-polygon-free/1",
+        capture_version="m4b-capture/1",
+        universe_manifest_sha256="c" * 64,
+        args_hash="d" * 64,
+        started_epoch=T0,
+        run_nonce=None,
+    )
+    canonical = compute_run_id(**base)
+
+    assert canonical != compute_run_id(**{**base, "provider": "cboe-datashop/1"})
+    assert canonical != compute_run_id(**{**base, "capture_version": "m4b-capture/2"})
+    assert canonical != compute_run_id(**{**base, "run_nonce": "owner-approved-rerun-2"})
+
+
+def test_reboot_and_pid_change_do_not_change_canonical_run_id() -> None:
+    kwargs = dict(
+        campaign="m4-coverage-era",
+        protocol_hash="a" * 64,
+        code_sha="b" * 40,
+        provider="massive-polygon-free/1",
+        capture_version="m4b-capture/1",
+        universe_manifest_sha256="c" * 64,
+        args_hash="d" * 64,
+        started_epoch=T0,
+        run_nonce=None,
+    )
+    first_boot = compute_run_id(**kwargs)
+    # boot id, pid, and pid-start ticks are deliberately not accepted by the
+    # logical-id function: a reboot resumes the same store.
+    second_boot = compute_run_id(**kwargs)
+    assert first_boot == second_boot
+
+
+def test_open_revalidates_canonical_id_against_stored_core(root: Path) -> None:
+    store = RunStore.create(root, _identity(root), now_epoch=T0)
+    run_path = store.dir / "run.json"
+    stored = json.loads(run_path.read_text(encoding="utf-8"))
+    stored["provider"] = "foreign-provider/1"
+    run_path.write_text(json.dumps(stored, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+    with pytest.raises(RunIdRefusedError, match="canonical"):
+        RunStore.open(root, store.identity.run_id)
 
 
 # ---- round-8 (finding 4): the /tmp refusal must cover the JOURNAL NAME too --------------

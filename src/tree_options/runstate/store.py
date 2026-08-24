@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 from tree_options.data.digest import sha256_hex
@@ -28,6 +29,7 @@ from tree_options.runstate import lease as lease_module
 from tree_options.runstate.errors import (
     IllegalTransitionError,
     ManifestMismatchError,
+    NonCanonicalRunIdError,
     PinAlreadyBoundError,
     RunIdRefusedError,
     StoreExistsError,
@@ -39,6 +41,7 @@ from tree_options.runstate.lease import LeaseClassification, LeaseOwner
 from tree_options.runstate.states import (
     LEGAL_EDGES,
     RunIdentity,
+    RunIdentityCore,
     RunState,
     is_legal,
 )
@@ -104,32 +107,60 @@ def compute_run_id(
     campaign: str,
     protocol_hash: str,
     code_sha: str,
+    provider: str,
+    capture_version: str,
     universe_manifest_sha256: str,
     args_hash: str,
     started_epoch: int,
+    run_nonce: str | None = None,
 ) -> str:
-    """Deterministic run id: same inputs -> same store on resume."""
+    """Compute the sole valid id for one canonical logical run core."""
+    core = RunIdentityCore(
+        campaign=campaign,
+        protocol_hash=protocol_hash,
+        code_sha=code_sha,
+        provider=provider,
+        capture_version=capture_version,
+        universe_manifest_sha256=universe_manifest_sha256,
+        args_hash=args_hash,
+        logical_start_date=_utc_date(started_epoch),
+        run_nonce=run_nonce,
+    )
     digest = sha256_hex(
         json.dumps(
-            {
-                "campaign": campaign,
-                "protocol_hash": protocol_hash,
-                "code_sha": code_sha,
-                "universe_manifest_sha256": universe_manifest_sha256,
-                "args_hash": args_hash,
-                "start_date": _utc_date(started_epoch),
-            },
+            core.model_dump(mode="json"),
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     )
-    return f"{campaign}-{_utc_date(started_epoch).replace('-', '')}-{digest[:8]}"
+    return f"{campaign}-{_utc_date(started_epoch).strftime('%Y%m%d')}-{digest[:8]}"
 
 
-def _utc_date(epoch: int) -> str:
+def canonical_run_id(identity: RunIdentity) -> str:
+    """Recompute an identity's run id without process-incarnation fields."""
+    return compute_run_id(
+        campaign=identity.campaign,
+        protocol_hash=identity.protocol_hash,
+        code_sha=identity.code_sha,
+        provider=identity.provider,
+        capture_version=identity.capture_version,
+        universe_manifest_sha256=identity.universe_manifest_sha256,
+        args_hash=identity.args_hash,
+        started_epoch=identity.started_epoch,
+        run_nonce=identity.run_nonce,
+    )
+
+
+def _validate_canonical_run_id(root: Path, identity: RunIdentity) -> None:
+    expected = canonical_run_id(identity)
+    if identity.run_id != expected:
+        raise NonCanonicalRunIdError(str(root), identity.run_id, expected)
+
+
+def _utc_date(epoch: int) -> date:
     from datetime import UTC, datetime
 
-    return datetime.fromtimestamp(epoch, tz=UTC).date().isoformat()
+    return datetime.fromtimestamp(epoch, tz=UTC).date()
 
 
 @dataclass(frozen=True)
@@ -162,6 +193,10 @@ class RunStore:
         # helper — `root / identity.run_id` alone let an absolute or
         # parent-bearing run id REPLACE the validated root.
         store_dir = _validated_store_dir(root, identity.run_id)
+        # External PR #13 audit: reject an operator-chosen id after the
+        # read-only path-shape/root checks but before any filesystem mutation.
+        # One logical core has one durable store, including across reboots.
+        _validate_canonical_run_id(root, identity)
         run_path = store_dir / RUN_FILENAME
         if store_dir.exists():
             raise StoreExistsError(identity.run_id)
@@ -200,6 +235,9 @@ class RunStore:
         # identities). Misfiled evidence is refused, never aliased.
         if identity.run_id != run_id:
             raise StoreIdMismatchError(run_id, identity.run_id)
+        # Historical or hand-edited stores cannot be relabelled: open and
+        # adoption use the same core validator as creation.
+        _validate_canonical_run_id(root, identity)
         return cls(store_dir, identity)
 
     # -- queries ----------------------------------------------------------

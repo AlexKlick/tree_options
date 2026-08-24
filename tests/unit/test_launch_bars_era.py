@@ -159,7 +159,7 @@ def scenario(
     # universe_manifest_sha256 against the VERIFIED census provenance — the
     # helper's defaults match the scenario census exactly; the mismatch
     # tests build mismatched stores through the same helper.
-    _create_bars_ready_store(protocol_path, manifest_path, store_root)
+    store = _create_bars_ready_store(protocol_path, manifest_path, store_root)
     return {
         "capture_dir": capture_dir,
         "capture_manifest": manifest_path,
@@ -171,6 +171,7 @@ def scenario(
         "key": key_path,
         "authority_root": authority_root,
         "store_root": store_root,
+        "run_id": store.identity.run_id,
     }
 
 
@@ -198,7 +199,7 @@ def _argv(
 ) -> list[str]:
     argv = [
         "--run-id",
-        RUN_ID,
+        str(scenario["run_id"]),
         "--census",
         str(scenario["census"]),
         "--capture-manifest",
@@ -237,6 +238,12 @@ def _tree_state(*roots: Path) -> dict[Path, tuple[int, int]]:
                 stat = path.stat()
                 state[path] = (stat.st_mtime_ns, stat.st_size)
     return state
+
+
+def _sole_store_run_id(store_root: Path) -> str:
+    run_ids = sorted(path.name for path in store_root.iterdir() if path.is_dir())
+    assert len(run_ids) == 1, f"expected one run store under {store_root}, got {run_ids}"
+    return run_ids[0]
 
 
 # ---- preflight: the protocol gate is closed on main ---------------------------------
@@ -354,6 +361,7 @@ def test_preflight_exit_5_on_state_not_bars_ready(scenario: dict[str, Path]) -> 
         )
     argv = _argv(scenario)
     argv[argv.index("--store-root") + 1] = str(other_root)
+    argv[argv.index("--run-id") + 1] = store.identity.run_id
     assert launch.main(argv) == 5
 
 
@@ -362,7 +370,7 @@ def test_preflight_exit_5_on_held_lease_duplicate_launch(
 ) -> None:
     """A live owner holds the run's lease: a second launcher is a duplicate."""
     _approve(scenario)
-    store_dir = scenario["store_root"] / RUN_ID
+    store_dir = scenario["store_root"] / str(scenario["run_id"])
     owner = lease_module.current_owner(now_epoch=T0).model_copy(update={"boot_id": BOOT})
     lease_module.acquire(store_dir, owner, boot_id_now=BOOT)
     assert launch.main(_argv(scenario)) == 5
@@ -458,7 +466,7 @@ def test_cli_default_mode_is_preflight(scenario: dict[str, Path]) -> None:
 def _fake_runner(scenario: dict[str, Path], calls: list[str]):
     def runner(context) -> str:
         calls.append("runner")
-        store = RunStore.open(scenario["store_root"], RUN_ID)
+        store = RunStore.open(scenario["store_root"], str(scenario["run_id"]))
         # ORDERING ASSERT: by the time the runner runs, the transition is
         # journaled, the lease is acquired, and the consumption is durable.
         assert store.state is RunState.BARS_CAPTURING
@@ -579,6 +587,7 @@ def _execute_with_store(
 ) -> tuple[int, object]:
     argv = _argv(scenario)
     argv[argv.index("--store-root") + 1] = str(store_root)
+    argv[argv.index("--run-id") + 1] = _sole_store_run_id(store_root)
     args = launch._parse_args(argv)
     return launch.run_execute(args, runner=runner, now_epoch=T0 + 100, boot_id_now=BOOT)
 
@@ -586,7 +595,7 @@ def _execute_with_store(
 def _assert_nothing_consumed(scenario: dict[str, Path], store_root: Path) -> None:
     view = read_bars_ledger(scenario["authority_root"])
     assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL"]
-    store = RunStore.open(store_root, RUN_ID)
+    store = RunStore.open(store_root, _sole_store_run_id(store_root))
     assert store.state is RunState.BARS_READY
 
 
@@ -691,7 +700,7 @@ def test_execute_happy_path_consumes_then_transitions_before_runner(
         summary.work_manifest_sha256
         == hashlib.sha256(scenario["work_manifest"].read_bytes()).hexdigest()
     )
-    store = RunStore.open(scenario["store_root"], RUN_ID)
+    store = RunStore.open(scenario["store_root"], str(scenario["run_id"]))
     assert store.state is RunState.BARS_CAPTURING
     view = read_bars_ledger(scenario["authority_root"])
     kinds = [r.kind for r in view.records]
@@ -721,7 +730,7 @@ def test_execute_duplicate_exit_7_after_crash_style_consumption(
     code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
     assert code == 7 and summary is None
     assert calls == []
-    store = RunStore.open(scenario["store_root"], RUN_ID)
+    store = RunStore.open(scenario["store_root"], str(scenario["run_id"]))
     assert store.state is RunState.BARS_READY  # never transitioned on the refusal
 
 
@@ -778,7 +787,7 @@ def test_execute_two_store_interleaving_refuses_the_second_runner(
     assert "EXECUTE REFUSED (duplicate)" in capsys.readouterr().err
     # B's store is untouched: still BARS_READY, no lease left behind by the
     # refused launcher.
-    store_b = RunStore.open(store_b_root, RUN_ID)
+    store_b = RunStore.open(store_b_root, _sole_store_run_id(store_b_root))
     assert store_b.state is RunState.BARS_READY
     assert not (store_b.dir / lease_module.LEASE_DIRNAME / lease_module.OWNER_FILENAME).exists()
 
@@ -830,7 +839,7 @@ def test_execute_refuses_a_work_manifest_swapped_after_verification(
     # nothing was consumed and the store never left BARS_READY
     view = read_bars_ledger(scenario["authority_root"])
     assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL"]
-    store = RunStore.open(scenario["store_root"], RUN_ID)
+    store = RunStore.open(scenario["store_root"], str(scenario["run_id"]))
     assert store.state is RunState.BARS_READY
 
 
@@ -912,7 +921,7 @@ def test_execute_refuses_a_master_swapped_after_manifest_verification(
     assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL"], (
         "authority was consumed against a capture dir that no longer matches its manifest"
     )
-    store = RunStore.open(scenario["store_root"], RUN_ID)
+    store = RunStore.open(scenario["store_root"], str(scenario["run_id"]))
     assert store.state is RunState.BARS_READY
 
 
@@ -925,5 +934,5 @@ def test_cli_execute_refused_exit_10_touches_nothing(
     assert code == 10
     assert "no bars-era runner" in capsys.readouterr().err
     assert _tree_state(scenario["authority_root"], scenario["store_root"]) == before
-    store = RunStore.open(scenario["store_root"], RUN_ID)
+    store = RunStore.open(scenario["store_root"], str(scenario["run_id"]))
     assert store.state is RunState.BARS_READY

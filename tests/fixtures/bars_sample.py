@@ -16,7 +16,7 @@ from pathlib import Path
 import yaml
 
 from tests.fixtures.massive_structural_sample import contract_result, contracts_payload
-from tree_options.runstate import RunIdentity
+from tree_options.runstate import RunIdentity, canonical_run_id, compute_run_id
 
 AS_OF = "2025-03-05"
 MONTHLY_EXPIRY = "2025-04-18"  # the third Friday of April 2025
@@ -25,7 +25,16 @@ OUT_OF_BAND_EXPIRY = "2025-03-07"  # 2 DTE: excluded by the 30-60 band
 SPOT = {"SPY": {AS_OF: "580.00"}, "I:SPX": {AS_OF: "5750.00"}}
 T0 = 1_800_000_000
 BOOT = "11111111-2222-3333-4444-555555555555"
-RUN_ID = "m4-barstest-20260823-abcdef12"
+RUN_ID = compute_run_id(
+    campaign="m4-barstest",
+    protocol_hash="a" * 64,
+    code_sha="b" * 40,
+    provider="massive-polygon-free/1",
+    capture_version="m4b-capture/1",
+    universe_manifest_sha256="c" * 64,
+    args_hash="d" * 64,
+    started_epoch=T0,
+)
 # The synthetic census's provenance pins. Round-2 review fix (2026-08-23,
 # finding 5): the execute path cross-joins the run-state identity's code_sha
 # and universe_manifest_sha256 against the VERIFIED census provenance, so a
@@ -246,7 +255,7 @@ def make_matching_run_identity(
     identity built without overrides is consistent with the scenario census.
     """
     identity = RunIdentity(
-        run_id=RUN_ID,
+        run_id="pending-canonical-id",
         campaign=campaign,
         protocol_hash=protocol_hash,
         code_sha=code_sha,
@@ -260,4 +269,4 @@ def make_matching_run_identity(
         started_epoch=T0,
         args_hash="d" * 64,
     )
-    return identity
+    return identity.model_copy(update={"run_id": canonical_run_id(identity)})

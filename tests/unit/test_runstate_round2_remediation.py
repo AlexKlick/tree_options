@@ -36,7 +36,12 @@ if str(SCRIPTS) not in sys.path:
 
 import runstate_mark  # noqa: E402
 from tree_options.data.digest import sha256_hex  # noqa: E402
-from tree_options.runstate import RunIdentity, RunState, RunStore  # noqa: E402
+from tree_options.runstate import (  # noqa: E402
+    RunIdentity,
+    RunState,
+    RunStore,
+    canonical_run_id,
+)
 from tree_options.runstate import heartbeat as HB_module  # noqa: E402
 from tree_options.runstate import lease as L_module  # noqa: E402
 from tree_options.runstate.errors import RunIdRefusedError  # noqa: E402
@@ -53,9 +58,9 @@ def _scratch() -> Path:
     return s
 
 
-def _identity(run_id: str = "m4-round2-20260823-abcdef12") -> RunIdentity:
-    return RunIdentity(
-        run_id=run_id,
+def _identity(run_id: str | None = None) -> RunIdentity:
+    candidate = RunIdentity(
+        run_id=run_id or "pending-canonical-id",
         campaign="m4-round2",
         protocol_hash="a" * 64,
         code_sha="b" * 40,
@@ -68,6 +73,9 @@ def _identity(run_id: str = "m4-round2-20260823-abcdef12") -> RunIdentity:
         started_epoch=T0,
         args_hash="d" * 64,
     )
+    if run_id is not None:
+        return candidate
+    return candidate.model_copy(update={"run_id": canonical_run_id(candidate)})
 
 
 # --- R2-1: run_id path escape (P1) -------------------------------------------
@@ -146,8 +154,9 @@ def test_single_component_run_id_still_creates_and_opens() -> None:
     """Regression: the ordinary canonical id (campaign-date-hash, one path
     component) keeps working through both create() and open()."""
     root = _scratch()
-    run_id = "m4-round2-20260823-0123456789abcdef"
-    store = RunStore.create(root, _identity(run_id=run_id), now_epoch=T0)
+    identity = _identity()
+    run_id = identity.run_id
+    store = RunStore.create(root, identity, now_epoch=T0)
     assert store.state is RunState.PLANNED
     reopened = RunStore.open(root, run_id)
     assert reopened.identity.run_id == run_id
@@ -333,7 +342,7 @@ def test_nonprocess_state_with_matching_beat_still_alive() -> None:
 
 # --- R2-4: runstate_mark maps the new library errors to exit codes ----------
 
-RUN_ID = "m4-round2-mark-20260823-abcdef12"
+RUN_ID = _identity().run_id
 
 
 def _mark(root: Path, *args: str) -> int:

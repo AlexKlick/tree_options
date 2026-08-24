@@ -116,6 +116,21 @@ class RunIdRefusedError(RunStateError):
         )
 
 
+class NonCanonicalRunIdError(RunIdRefusedError):
+    """The supplied run id is not the digest of its canonical logical core."""
+
+    def __init__(self, root: str, supplied: str, expected: str) -> None:
+        RunStateError.__init__(
+            self,
+            "NONCANONICAL_RUN_ID",
+            f"store root {root!r} refused supplied run id {supplied!r}: "
+            f"the canonical id for the identity core is {expected!r}; run ids "
+            "are computed from campaign, protocol, code, provider, capture "
+            "version, universe, arguments, UTC logical start date, and the "
+            "optional owner-issued run nonce — never chosen by the operator",
+        )
+
+
 class StoreIdMismatchError(RunStateError):
     """open() was asked for one run id but the store's run.json names another.
 

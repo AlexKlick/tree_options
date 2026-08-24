@@ -32,6 +32,7 @@ from tree_options.runstate import (  # noqa: E402
     RunIdentity,
     RunState,
     RunStore,
+    compute_run_id,
 )
 from tree_options.runstate import heartbeat as HB_module  # noqa: E402
 from tree_options.runstate import journal as J_module  # noqa: E402
@@ -46,7 +47,16 @@ from tree_options.runstate.errors import (  # noqa: E402
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000
-RUN_ID = "m4-round1-20260823-abcdef12"
+RUN_ID = compute_run_id(
+    campaign="m4-round1",
+    protocol_hash="a" * 64,
+    code_sha="b" * 40,
+    provider="massive-polygon-free/1",
+    capture_version="m4b-capture/1",
+    universe_manifest_sha256="c" * 64,
+    args_hash="d" * 64,
+    started_epoch=T0,
+)
 _TESTS_ROOT = REPO_ROOT / "artifacts" / "runstate-tests"
 
 

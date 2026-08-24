@@ -10,7 +10,7 @@ from uuid import uuid4
 from hypothesis import given
 from hypothesis import strategies as st
 
-from tree_options.runstate import RunIdentity, RunState, RunStore, is_legal
+from tree_options.runstate import RunIdentity, RunState, RunStore, canonical_run_id, is_legal
 from tree_options.runstate import journal as J
 from tree_options.runstate.errors import JournalCorruptError
 
@@ -52,8 +52,8 @@ def legal_walks(draw: st.DrawFn) -> list[RunState]:
 
 
 def _identity() -> RunIdentity:
-    return RunIdentity(
-        run_id="prop-run",
+    candidate = RunIdentity(
+        run_id="pending-canonical-id",
         campaign="prop",
         protocol_hash="a" * 64,
         code_sha="b" * 40,
@@ -66,6 +66,7 @@ def _identity() -> RunIdentity:
         started_epoch=T0,
         args_hash="d" * 64,
     )
+    return candidate.model_copy(update={"run_id": canonical_run_id(candidate)})
 
 
 def _walk_store(root: Path, walk: list[RunState]) -> RunStore:
@@ -80,10 +81,11 @@ def test_projection_always_equals_journal_replay(walk: list[RunState]) -> None:
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         _walk_store(root, walk)
-        reopened = RunStore.open(root, "prop-run")
+        run_id = _identity().run_id
+        reopened = RunStore.open(root, run_id)
         expected = walk[-1] if walk else RunState.PLANNED
         assert reopened.state == expected
-        projection = J.load_projection(root / "prop-run")
+        projection = J.load_projection(root / run_id)
         assert projection.state == expected
 
 
@@ -92,7 +94,7 @@ def test_single_record_tamper_always_detected(walk: list[RunState], salt: int) -
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
         _walk_store(root, walk)
-        journal_path = root / "prop-run" / J.JOURNAL_FILENAME
+        journal_path = root / _identity().run_id / J.JOURNAL_FILENAME
         lines = journal_path.read_text().splitlines()
         if len(lines) < 2:
             return  # nothing non-final to tamper
@@ -114,6 +116,7 @@ def test_journal_bytes_are_pure_function_of_history(walk: list[RunState]) -> Non
         base = Path(td)
         _walk_store(base / "one", walk)
         _walk_store(base / "two", walk)
-        assert (base / "one/prop-run/journal.jsonl").read_bytes() == (
-            base / "two/prop-run/journal.jsonl"
+        run_id = _identity().run_id
+        assert (base / "one" / run_id / "journal.jsonl").read_bytes() == (
+            base / "two" / run_id / "journal.jsonl"
         ).read_bytes()
