@@ -56,6 +56,7 @@ from that verification are recorded below.
 | `40da670`/`5ac0e04`/`674bd37`/`13e82f4`/`4fc4802` | R6: semantic demotion covers holiday pairs; output files refuse shared inodes (hard-link aliasing); report_version required, never defaulted; universe generator records the wrapper's absolute real path; execute narrows EVERY approval record, not the first |
 | `06f3e9e`/`58c9e17`/`7c15944`/`7211e0a`/`689a53e` | R7: custody-held output writes (temp + os.replace, fstat nlink==1); builder refuses a non-WHOLE census (masters_observed == expected); O_NOFOLLOW on the ledger name in BOTH ledgers (dangling-symlink O_CREAT follow closed); regeneration re-hashes every read against the manifest pin; census.md states the real exit-0 rule incl. holidays |
 | `ee419cb`/`59e9d7f`/`0972d19`/`2c3db7b`/`f19bce0`/`f74a9a6` | R8: unpredictable mkstemp temp + published-inode verification; output paths that are themselves symlinks refused even in-root; ledger ROOT taken into custody O_DIRECTORY\|O_NOFOLLOW in BOTH ledgers (dir_fd-relative, ENOTDIR mapped); regeneration completeness (pinned-minus-read must be empty); census re-hashes every capture file at read time via a read-once shim — plus the protected-file correction restoring `inspect_structural_coverage.py` to its base blob |
+| `4888270` | gate16 M199 SURVIVED kill-restoration: owner test gains an unlisted-file phase only manifest verification refuses (the R8 re-hash had masked the deleted-master scenario; mutant re-killed by hand-applied kill-proof, mutate.py untouched) |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -280,4 +281,11 @@ the exact PR head (see PR body for its verdict line).
   `_PinnedCaptureFile` shim so the frozen loaders parse pinned bytes under
   their base signatures (`f74a9a6`; all three protected blobs re-verified
   identical to base). Full suite 1,495 (orchestrator run identical to the
-  agent's, 0 failures).
+  agent's, 0 failures). Gate16 at `0427161` then failed on exactly one
+  mutant: M199 SURVIVED — R8's finding-5 re-hash independently refuses the
+  owner test's deleted-master scenario, masking the verify-gutting mutant
+  (invariant enforced twice, but the owner test must still fail under the
+  mutant). Restored in `4888270` with an unlisted-file phase only
+  manifest verification can refuse (hand-applied kill-proof
+  `/tmp/m199-killproof.log`: phase 1 exit 2 via re-hash, phase 2 exit 0 →
+  assertion fails); gate17 is the exact-head record for this head.
