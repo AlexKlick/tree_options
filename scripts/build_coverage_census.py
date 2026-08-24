@@ -35,7 +35,11 @@ Exit codes (contract):
   2  capture manifest refused: unreadable, wrong shape, or failed
      verification against the capture directory (a MID-RUN era directory
      fails here BY DESIGN — the census consumes a sealed capture only);
-     an existing-but-undecodable spot proxy refuses here too
+     an existing-but-undecodable spot proxy refuses here too, and so does
+     any pinned capture file (spot proxy, master) that drifted, vanished,
+     or appeared unpinned between manifest verification and its read
+     (round-6 review fix, 2026-08-24: the census derives from sealed bytes
+     at the point of consumption, never from a re-read of a verified path)
   3  universe manifest refused: unreadable, invalid, or tampered
   4  reproducibility refusal (git unusable, tracked tree dirty, protocol or
      uv.lock unreadable, calendar fixture refused, census self-check) — or
@@ -218,15 +222,69 @@ def load_sealed_manifest(capture_dir: Path) -> MassiveCaptureManifest:
     return manifest
 
 
-def load_spot(capture_dir: Path) -> dict[str, dict[date, Decimal]]:
+def _read_pinned_bytes(capture_dir: Path, relative: str, pinned: Mapping[str, str]) -> bytes:
+    """Round-6 review fix (2026-08-24, finding 5): the bytes the census
+    DERIVES from must be the bytes the sealed manifest pins — read ONCE and
+    re-hashed HERE, at the point of consumption (the discipline 7211e0a
+    applied to BARS regeneration in ``bars_manifest._require_pinned_bytes``,
+    mirrored for the census producer).
+
+    ``load_sealed_manifest`` verifies every pinned file, but the consumers
+    below used to RE-READ the paths afterwards; a swap in that window
+    (byte-different spot JSON that HAS the session close) upgraded the
+    sealed SPOT_MISSING_SESSION/exit-5 state into COMPLETE/exit 0. A pinned
+    file unreadable, unpinned-on-disk, or drifted at read time refuses
+    fail-closed naming the drift."""
+    path = capture_dir / relative
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise MassiveManifestError(
+            f"listed file {relative} pinned by the sealed manifest is unreadable "
+            f"at read time ({exc.strerror})"
+        ) from None
+    declared = pinned.get(relative)
+    if declared is None:
+        raise MassiveManifestError(
+            f"{relative}: on disk but not pinned by the sealed manifest — the "
+            "census derives from sealed bytes only"
+        )
+    if sha256_hex(raw) != declared:
+        raise MassiveManifestError(
+            f"listed file {relative} drifted from the sealed capture manifest at "
+            f"read time (pin {declared[:12]}…, read now {sha256_hex(raw)[:12]}…)"
+        )
+    return raw
+
+
+def load_spot(
+    capture_dir: Path, *, pinned: Mapping[str, str] | None = None
+) -> dict[str, dict[date, Decimal]]:
     """The capture's spot proxy, or `{}` when the era wrote none.
 
     A spot proxy that EXISTS but will not decode is a capture-side refusal
-    (the caller maps it to exit 2), never a silent empty."""
+    (the caller maps it to exit 2), never a silent empty.
+
+    Round-6 review fix (2026-08-24, finding 5): with ``pinned`` (the
+    sealed manifest's path->sha256 map) the proxy bytes are read ONCE,
+    re-hashed against the pin, and PARSED from that same read — never a
+    second read of the path. A proxy the manifest does not pin but that
+    appeared on disk after verification refuses; a pinned proxy that is
+    unreadable or drifted at read time refuses."""
     spot_path = capture_dir / SPOT_PROXY_FILENAME
-    if not spot_path.is_file():
+    if pinned is None:
+        if not spot_path.is_file():
+            return {}
+        return isc.load_spot_proxy(spot_path)
+    if SPOT_PROXY_FILENAME not in pinned:
+        if spot_path.is_file():
+            raise MassiveManifestError(
+                f"{SPOT_PROXY_FILENAME}: on disk but not pinned by the sealed "
+                "manifest — the census derives from sealed bytes only"
+            )
         return {}
-    return isc.load_spot_proxy(spot_path)
+    raw = _read_pinned_bytes(capture_dir, SPOT_PROXY_FILENAME, pinned)
+    return isc.load_spot_proxy(spot_path, raw=raw)
 
 
 # ---- reconciliation --------------------------------------------------------------
@@ -359,12 +417,24 @@ SEMANTIC_DOWNGRADES: dict[str, str] = {
 }
 
 
-def observe_masters(manifest: MassiveCaptureManifest, capture_dir: Path) -> MastersObserved:
+def observe_masters(
+    manifest: MassiveCaptureManifest,
+    capture_dir: Path,
+    *,
+    pinned: Mapping[str, str] | None = None,
+) -> MastersObserved:
     """Re-parse every master the manifest references; count what is there.
 
     A master that will not parse becomes a finding, never a crash: the file
     already passed the manifest's raw-byte re-hash, so an inspector refusal
-    is an observed data defect the census reports."""
+    is an observed data defect the census reports.
+
+    Round-6 review fix (2026-08-24, finding 5): with ``pinned`` (the sealed
+    manifest's path->sha256 map) each master's bytes are read ONCE,
+    re-hashed against the pin, and PARSED from that same read — the masters
+    leg had exactly the verify-then-re-read gap the spot proxy had, and a
+    swapped-but-parseable envelope used to feed the census rows the seal
+    never attested."""
     rows_declared = 0
     rows_parsed = 0
     parsed = 0
@@ -384,8 +454,13 @@ def observe_masters(manifest: MassiveCaptureManifest, capture_dir: Path) -> Mast
         rows_declared += entry.rows
         if not entry.file:
             continue
+        master_path = capture_dir / MASTERS_DIR / entry.file
         try:
-            masters = isc.load_contract_masters(capture_dir / MASTERS_DIR / entry.file)
+            if pinned is not None:
+                raw = _read_pinned_bytes(capture_dir, f"{MASTERS_DIR}/{entry.file}", pinned)
+                masters = isc.load_contract_masters(master_path, raw=raw)
+            else:
+                masters = isc.load_contract_masters(master_path)
         except isc.StructuralCoverageError as exc:
             unparseable += 1
             notes.append(
@@ -768,6 +843,11 @@ def main(argv: list[str] | None = None) -> int:
     except MassiveManifestError as exc:
         print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
         return 2
+    # Round-6 review fix (2026-08-24, finding 5): the pin map the consumers
+    # below re-hash every read against — the census derives from sealed
+    # bytes at the point of consumption, not from bytes verified once and
+    # re-read afterwards.
+    pinned = {entry.path: entry.sha256 for entry in manifest.files}
 
     # 3. Reproducibility: clean tracked tree + pinned provenance inputs.
     try:
@@ -784,18 +864,26 @@ def main(argv: list[str] | None = None) -> int:
         print(f"REPRODUCIBILITY REFUSED: {exc}", file=sys.stderr)
         return 4
 
-    # 4. Spot proxy (absent -> no closes; present but undecodable -> exit 2).
+    # 4. Spot proxy (absent -> no closes; present but undecodable -> exit 2;
+    # pinned bytes drifted or vanished between verification and this read ->
+    # exit 2 too — round-6 finding 5: the census derives from sealed bytes).
     try:
-        spot_proxy = load_spot(args.capture_dir)
-    except isc.StructuralCoverageError as exc:
+        spot_proxy = load_spot(args.capture_dir, pinned=pinned)
+    except (isc.StructuralCoverageError, MassiveManifestError) as exc:
         print(f"SPOT PROXY REFUSED: {exc}", file=sys.stderr)
         return 2
 
     # 5. Reconciliation over every universe pair + masters re-parse, then
     # the round-3 semantic join: a master that disagrees with the entry
-    # that selected it downgrades that pair and blocks exit 0 below.
+    # that selected it downgrades that pair and blocks exit 0 below. The
+    # masters re-parse re-hashes every read against the manifest pin
+    # (round-6 finding 5 — the same rule the spot proxy is held to).
     reconciled = reconcile_pairs(universe, manifest, args.capture_dir, spot_proxy, calendar)
-    masters = observe_masters(manifest, args.capture_dir)
+    try:
+        masters = observe_masters(manifest, args.capture_dir, pinned=pinned)
+    except MassiveManifestError as exc:
+        print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
+        return 2
     reconciled = apply_master_semantic_join(reconciled, masters.semantic)
 
     # 6-7. Values, taxonomy, provenance — assembled and self-checked.

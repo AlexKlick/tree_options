@@ -575,6 +575,97 @@ def test_session_friday_missing_close_is_incomplete(
     assert census.values.observed_census_fact["pair_spot_missing_session"].confidence == "PARTIAL"
 
 
+# ---- round-6 (finding 5): re-hash every capture file the census derives from ---------
+#
+# Round-6 review fix (2026-08-24): the same verify-then-re-read race class
+# 7211e0a fixed for BARS regeneration, on the CENSUS producer. The pinned
+# spot proxy is verified with the manifest (step 2) and then load_spot
+# RE-READS the path (step 4); swapping the proxy in that window with
+# byte-different JSON that HAS the session close turned the sealed
+# SPOT_MISSING_SESSION/exit-5 state into COMPLETE/exit 0. Masters are re-read
+# by observe_masters the same way (step 5) — same fix, same rule: read once,
+# hash against the manifest pin at the point of consumption.
+
+
+def test_swapped_spot_proxy_after_verify_refuses_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reviewer's scenario: the SEALED bytes have no session close (exit 5
+    baseline, asserted first); the proxy is swapped between manifest
+    verification and load_spot with byte-different JSON that HAS the close.
+    Pre-fix the census derives from the swapped bytes and exits 0 COMPLETE;
+    post-fix exit 2 naming both hashes, and NO census is emitted."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[SESSION_FRIDAY_A],
+        omit_spot={("SPY", SESSION_FRIDAY_A)},
+    )
+    # the honest sealed state: no close -> SPOT_MISSING_SESSION -> exit 5
+    assert _census(monkeypatch, capture, universe, tmp_path / "out-honest") == 5
+
+    real_load_spot = bcc.load_spot
+    swapped = {"done": False}
+
+    def load_spot_swapping_proxy(capture_dir: Path, **kwargs: object) -> object:
+        if not swapped["done"]:
+            swapped["done"] = True  # the window: manifest verified, spot unread
+            (capture_dir / "spot_proxy.json").write_text(
+                json.dumps({"SPY": {SESSION_FRIDAY_A: "600.00"}}, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+        return real_load_spot(capture_dir, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(bcc, "load_spot", load_spot_swapping_proxy)
+    out_root = tmp_path / "out-attacked"
+    assert _census(monkeypatch, capture, universe, out_root) == 2, (
+        "a swapped spot proxy must refuse (the sealed bytes said exit 5), "
+        "never upgrade the census to COMPLETE/exit 0"
+    )
+    err = capsys.readouterr().err
+    assert "SPOT PROXY REFUSED" in err
+    assert "drifted" in err, "the refusal names the drift against the manifest pin"
+    assert not out_root.exists() or list(out_root.iterdir()) == [], (
+        "no census was emitted from unsealed bytes"
+    )
+
+
+def test_swapped_master_after_verify_refuses_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same gap on the MASTERS leg: observe_masters re-reads every master
+    the manifest already verified. A master swapped between verification and
+    the re-parse (byte-different envelope, one extra contract row — still
+    parseable, still a finding-free COMPLETE pair) used to feed the census
+    rows the seal never attested. Post-fix: exit 2, no census."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    real_observe = bcc.observe_masters
+    swapped = {"done": False}
+
+    def observe_swapping_master(manifest: object, capture_dir: Path, **kwargs: object) -> object:
+        if not swapped["done"]:
+            swapped["done"] = True  # the window: manifest verified, masters unread
+            (capture_dir / "masters" / f"SPY_{SESSION_FRIDAY_A}.json").write_text(
+                fx.contracts_payload(results=_contract_rows("SPY", 3), as_of=SESSION_FRIDAY_A),
+                encoding="utf-8",
+            )
+        return real_observe(manifest, capture_dir, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(bcc, "observe_masters", observe_swapping_master)
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 2, (
+        "a swapped master must refuse — the census may derive only from the "
+        "bytes the sealed manifest attests"
+    )
+    err = capsys.readouterr().err
+    assert "drifted" in err, "the refusal names the drift against the manifest pin"
+    assert not out_root.exists() or list(out_root.iterdir()) == [], (
+        "no census was emitted from unsealed bytes"
+    )
+
+
 # ---- round-5 (finding 5): the emitted census.md states the REAL exit rule ----------
 
 
