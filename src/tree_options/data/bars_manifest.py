@@ -605,10 +605,19 @@ def verify_bars_work_manifest(
     Round-1 review fix (2026-08-23, probe FORGED_BARS_ENTRY_VERIFIED):
     self-hash binding alone does not prove the entries came from captured
     masters + the unmodified selector. With capture_dir supplied, this
-    function RE-REGENERATES the entries by running rebuild_master_captures
+    function RE-REGENERATES the manifest by running rebuild_master_captures
     and the selection function over the sealed capture, then compares
-    the regenerated sequence to the manifest's. Any divergence is refused.
-    capture_dir is REQUIRED for preflight/execute paths.
+    the regenerated manifest to the committed one. Any divergence is
+    refused. capture_dir is REQUIRED for preflight/execute paths.
+
+    Round-2 review fix (2026-08-23, finding 5, probe
+    /tmp/pr-a-bars-dual-manifest-probe.log): the launcher hashes capture
+    manifest A while regeneration used to silently load whatever sat at
+    capture_dir/capture_manifest.json — two distinct self-consistent
+    manifests both verified. When capture_manifest_sha256 is supplied, the
+    bytes at that path must hash to it BEFORE regeneration (the manifest
+    you hashed is the one regeneration must use), and the FULL regenerated
+    manifest must equal the committed one.
     """
     if manifest.schema_version != BARS_WORK_SCHEMA_VERSION:
         raise BarsManifestError(
@@ -650,7 +659,7 @@ def verify_bars_work_manifest(
             " and re-derive the entries; self-hash alone is not a proof"
             " (round-1 review fix 2026-08-23)"
         )
-    # Round-1 fix: regenerate the entries from the sealed capture + the
+    # Round-1 fix: regenerate the manifest from the sealed capture + the
     # committed profile + the UNMODIFIED selector, and require equality.
     if profile is None:
         raise BarsManifestError("regeneration requires the selection profile; pass profile=")
@@ -661,6 +670,24 @@ def verify_bars_work_manifest(
             " standard location inside capture_dir); not found. Pass"
             " capture_dir that contains the sealed capture manifest."
         )
+    if capture_manifest_sha256 is not None:
+        # Round-2 fix, layer 1: bind the supplied hash to the exact bytes
+        # regeneration is about to use, BEFORE regenerating.
+        try:
+            candidate_bytes = candidate.read_bytes()
+        except OSError as exc:
+            raise BarsManifestError(
+                f"{candidate}: capture manifest unreadable ({exc.strerror})"
+            ) from None
+        candidate_sha = sha256_hex(candidate_bytes)
+        if candidate_sha != capture_manifest_sha256:
+            raise BarsManifestError(
+                "capture_dir/capture_manifest.json is not the manifest the work"
+                " manifest was verified against: supplied hash"
+                f" {capture_manifest_sha256[:12]}…, bytes on disk now hash"
+                f" {candidate_sha[:12]}… — the pinned manifest and the one"
+                " regeneration would use are two different manifests"
+            )
     rebuilt = build_bars_work_manifest(
         capture_dir,
         profile=profile,
@@ -668,13 +695,16 @@ def verify_bars_work_manifest(
         budget_limit=manifest.cost.budget_limit,
         max_attempts_per_request=manifest.cost.max_attempts_per_request,
     )
-    if rebuilt.entries != manifest.entries:
-        # Differ: refuse. We do NOT expose the divergent entries (could be
-        # misleading in operator logs).
+    # Round-2 fix, layer 2: compare the FULL manifest, not just entries —
+    # the capture-manifest binding, profile pin, cost, and notes must all
+    # reproduce. We do NOT expose the divergent fields (could be misleading
+    # in operator logs).
+    if rebuilt != manifest:
         raise BarsManifestError(
-            "regenerated bars work manifest entries do not match the "
-            "committed entries: the request list diverges from what the "
-            "selector over the sealed capture would produce"
+            "regenerated bars work manifest does not reproduce the committed"
+            " manifest (entries, capture-manifest binding, profile, cost, or"
+            " notes diverge from what the selector over the sealed capture"
+            " would produce)"
         )
 
 

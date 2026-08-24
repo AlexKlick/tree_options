@@ -9,6 +9,7 @@ on this host and the ledger refuses any root whose resolved path is under
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import sys
@@ -191,6 +192,82 @@ def test_rebuild_refuses_capture_that_drifted_from_its_manifest(
     )
     with pytest.raises(bm.BarsManifestError, match="does not match its manifest"):
         _build(capture_bundle)
+
+
+def test_verify_refuses_when_capture_dir_holds_a_different_self_consistent_manifest(
+    capture_bundle: dict[str, Path],
+) -> None:
+    """Round-2 probe (finding 4, /tmp/pr-a-bars-dual-manifest-probe.log): the
+    launcher hashes manifest A, but regeneration silently loaded manifest B
+    from capture_dir/capture_manifest.json and compared only entries — two
+    distinct self-consistent manifests over the same masters both verified.
+
+    The fix binds them: when a capture-manifest hash is supplied, the bytes at
+    capture_dir/capture_manifest.json must hash to it BEFORE regeneration, and
+    the FULL regenerated manifest must equal the committed one."""
+    manifest = _build(capture_bundle)  # bound to manifest A's bytes
+    honest_sha = manifest.capture_manifest_sha256
+    # honest path first: A is still the manifest in the capture dir
+    bm.verify_bars_work_manifest(
+        manifest,
+        profile=bm.load_selection_profile(COMMITTED_PROFILE),
+        capture_manifest_sha256=honest_sha,
+        capture_dir=capture_bundle["capture_dir"],
+    )
+    # Now swap in a DIFFERENT self-consistent manifest B over the same
+    # masters (different budget arithmetic + notes -> different bytes, still
+    # verifying against the directory).
+    from tree_options.data.massive_manifest import build_massive_capture_manifest
+
+    manifest_b = build_massive_capture_manifest(
+        capture_bundle["capture_dir"],
+        capture_version="m4b-capture/1",
+        budget_limit=99,
+        requests_charged=6,
+        client_stats={"requests": 6},
+        masters=[
+            {
+                "underlying": "SPY",
+                "as_of": AS_OF,
+                "pages": 1,
+                "rows": len(SPY_ROWS),
+                "complete": True,
+                "truncated": False,
+                "error": None,
+                "file": "spy_2025-03-05.json",
+            },
+            {
+                "underlying": "I:SPX",
+                "as_of": AS_OF,
+                "pages": 1,
+                "rows": len(SPX_ROWS),
+                "complete": True,
+                "truncated": False,
+                "error": None,
+                "file": "spx_2025-03-05.json",
+            },
+        ],
+        bars=[],
+        spot_proxy=SPOT,
+        notes=["variant B: a different self-consistent capture manifest"],
+    )
+    (capture_bundle["capture_dir"] / "capture_manifest.json").write_text(
+        manifest_b.model_dump_json(indent=2) + "\n", encoding="utf-8"
+    )
+    variant_b_sha = hashlib.sha256(
+        (capture_bundle["capture_dir"] / "capture_manifest.json").read_bytes()
+    ).hexdigest()
+    assert variant_b_sha != honest_sha, "the probe needs two distinct manifests"
+    with pytest.raises(bm.BarsManifestError) as exc_info:
+        bm.verify_bars_work_manifest(
+            manifest,
+            profile=bm.load_selection_profile(COMMITTED_PROFILE),
+            capture_manifest_sha256=honest_sha,
+            capture_dir=capture_bundle["capture_dir"],
+        )
+    message = str(exc_info.value)
+    assert honest_sha[:12] in message  # both hashes are named
+    assert variant_b_sha[:12] in message
 
 
 def test_rebuild_refuses_unstamped_envelope(tmp_path: Path) -> None:
