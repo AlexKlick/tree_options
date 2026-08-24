@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 import sys
 import threading
 from pathlib import Path
@@ -35,6 +36,7 @@ if str(SCRIPTS) not in sys.path:
 
 from tree_options.data.digest import sha256_hex  # noqa: E402
 from tree_options.runstate import RunIdentity, RunState, RunStore  # noqa: E402
+from tree_options.runstate import heartbeat as HB_module  # noqa: E402
 from tree_options.runstate import lease as L_module  # noqa: E402
 from tree_options.runstate.errors import RunIdRefusedError  # noqa: E402
 
@@ -272,3 +274,49 @@ def test_mixed_acquire_release_stress_owner_file_stays_parseable() -> None:
     if owner_path.exists():
         final = L_module._read_owner(store_dir)
         assert final is not None, "owner.json exists but does not parse as a LeaseOwner"
+
+
+# --- R2-3: heartbeat mismatch fires in EVERY non-terminal state --------------
+
+
+def test_nonprocess_state_with_mismatched_beat_requires_reconciliation() -> None:
+    """Round-2 probe: journal BARS_READY (non-process) + heartbeat CAPTURING
+    classified ALIVE, because the `state not in PROCESS_STATES -> ALIVE`
+    early return fired BEFORE the journal/beat reconciliation check."""
+    beat = HB_module.Heartbeat(
+        state=RunState.CAPTURING,
+        pid=os.getpid(),
+        pid_start_ticks=0,
+        boot_id=BOOT,
+        at_epoch=T0,
+    )
+    cls = HB_module.classify(
+        beat,
+        RunState.BARS_READY,
+        now_epoch=T0,
+        boot_id_now=BOOT,
+        proc_root=Path("/proc"),
+        stale_after_s=900,
+    )
+    assert cls is HB_module.HeartbeatClass.UNKNOWN_RECONCILIATION_REQUIRED
+
+
+def test_nonprocess_state_with_matching_beat_still_alive() -> None:
+    """Regression: a non-process state with NO disagreement still expects no
+    process — matching beat or not, it is ALIVE."""
+    beat = HB_module.Heartbeat(
+        state=RunState.BARS_READY,
+        pid=os.getpid(),
+        pid_start_ticks=0,
+        boot_id=BOOT,
+        at_epoch=T0,
+    )
+    cls = HB_module.classify(
+        beat,
+        RunState.BARS_READY,
+        now_epoch=T0,
+        boot_id_now=BOOT,
+        proc_root=Path("/proc"),
+        stale_after_s=900,
+    )
+    assert cls is HB_module.HeartbeatClass.ALIVE

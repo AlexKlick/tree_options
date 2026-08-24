@@ -91,6 +91,13 @@ def classify(
     a heartbeat carries its recorded state, and the JOURNAL projection is
     the authority. A disagreement is never ALIVE — the journal says one
     thing, the beat says another, and no operator should act on a lie.
+
+    Round-2 review fix (2026-08-23): that reconciliation now fires in
+    EVERY non-terminal state, process or not. The round-1 check sat below
+    the `state not in PROCESS_STATES -> ALIVE` early return, so a journal
+    at BARS_READY with a heartbeat claiming CAPTURING classified ALIVE —
+    a beat that disagrees with the journal projection is a reconciliation
+    signal even in a state where no process is expected.
     """
     if state is None:
         # No GENESIS yet (or pre-journal legacy run): nothing terminal is
@@ -100,6 +107,13 @@ def classify(
         # Terminal states need no liveness evidence: the run is over and
         # the journal already says how.
         return HeartbeatClass.DEAD_TERMINAL
+    # Round-1 review: the heartbeat's recorded state MUST match the
+    # journal projection's state. A disagreement is a corruption signal
+    # (stale heartbeat file, half-written beat, beat from a previous
+    # incarnation). Never classify such a case as ALIVE — and this fires
+    # for every non-terminal state, process or not (round-2 fix).
+    if beat is not None and beat.state is not state:
+        return HeartbeatClass.UNKNOWN_RECONCILIATION_REQUIRED
     if state not in PROCESS_STATES:
         # Owner-gated / precondition states expect NO process: no heartbeat
         # is not a liveness concern.
@@ -110,12 +124,6 @@ def classify(
         if state is RunState.SEALED_RUNNING:
             return HeartbeatClass.UNKNOWN_RECONCILIATION_REQUIRED
         return HeartbeatClass.UNKNOWN_RESUMABLE
-    # Round-1 review: the heartbeat's recorded state MUST match the
-    # journal projection's state. A disagreement is a corruption signal
-    # (stale heartbeat file, half-written beat, beat from a previous
-    # incarnation). Never classify such a case as ALIVE.
-    if beat.state is not state:
-        return HeartbeatClass.UNKNOWN_RECONCILIATION_REQUIRED
     fresh = (now_epoch - beat.at_epoch) <= stale_after_s
     owner_gone = _owner_gone(beat, boot_id_now=boot_id_now, proc_root=proc_root)
     if fresh and not owner_gone:
