@@ -3128,6 +3128,20 @@ MUTANTS = [
     ),
 ]
 
+# Only tracked source/config/docs belong in the disposable mutation checkout.
+# Generated outputs can contain deliberately adversarial names from custody
+# tests (including dangling symlinks and rename/recreate probes), and authority
+# artifacts must never be propagated into another checkout.
+DISPOSABLE_COPY_IGNORE = (
+    ".venv",
+    "__pycache__",
+    ".git",
+    "*.pyc",
+    ".pytest_cache",
+    "artifacts",
+    "dist",
+)
+
 FAILING = ("FAILED",)
 
 
@@ -3253,7 +3267,7 @@ def main() -> int:
         shutil.copytree(
             REPO,
             worktree / "repo",
-            ignore=shutil.ignore_patterns(".venv", "__pycache__", ".git", "*.pyc", ".pytest_cache"),
+            ignore=shutil.ignore_patterns(*DISPOSABLE_COPY_IGNORE),
         )
         wt = worktree / "repo"
         # The copy excludes .git by design, but WS-F stamping (build_stamp)
