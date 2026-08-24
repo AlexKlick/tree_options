@@ -145,6 +145,17 @@ exact-head, read-only; probes re-verified host-side before acceptance):
   exit 0). One agent-noted deviation: the builder had relied on the
   `report_version` default rather than setting it explicitly; the fix
   adds the explicit value (identical bytes, hashes unchanged).
+- **Gate13 MUTATION_DRIFT** (`pr-a-gate13.log`, GATE_EXIT=1 at
+  `9bc503d`): 1,479 passed / 216 KILLED / restoration TRUE — the sole
+  failure was M209, whose anchor the R6 finding-6 fix had rewritten.
+  Re-anchored in `6ba33d8` to the new all-approvals narrowing line
+  (replacement drops the narrowing); kill-proofed manually — under the
+  mutant the owner test FAILED with the runner invoked and a
+  consumption record bound (`/tmp/m209-killproof.log`), byte-exact
+  restore, owner suite green (`/tmp/m209-restore.log`). A first
+  gate13 launch was killed mid-harness by the harness task reaper
+  (no verdict; log showed the suite green at the point of death) and
+  was relaunched detached-setsid to completion.
 
 ## Verification evidence (host logs under `~/documents/tree_options-logs/`)
 
