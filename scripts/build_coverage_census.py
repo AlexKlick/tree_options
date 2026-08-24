@@ -42,7 +42,10 @@ Exit codes (contract):
      at the point of consumption, never from a re-read of a verified path);
      and the capture manifest itself swapped or vanished between
      verification and provenance (round-7 review fix, 2026-08-24: the
-     provenance names the ONE verified byte set, never a re-read)
+     provenance names the ONE verified byte set, never a re-read), or
+     between that guard and the emission (round-8 review fix, 2026-08-24:
+     a final-effect re-check runs immediately before anything is written
+     under out_dir — a refusal emits nothing)
   3  universe manifest refused: unreadable, invalid, or tampered
   4  reproducibility refusal (git unusable, tracked tree dirty, protocol or
      uv.lock unreadable, calendar fixture refused, census self-check) — or
@@ -55,6 +58,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -309,6 +314,61 @@ class _PinnedCaptureFile:
 
     def is_dir(self) -> bool:
         return False
+
+
+def verify_capture_manifest_at_emission(capture_dir: Path, verified_sha: str) -> None:
+    """Round-8 review fix (2026-08-24, finding 2): the FINAL-EFFECT manifest
+    guard, run immediately before anything is written under out_dir.
+
+    The round-7 provenance guard re-reads the manifest at census time —
+    BEFORE the spot/master derivation and BEFORE the emission — so a
+    manifest swapped in that window exited 0 with a census bound to the
+    verified A bytes while the capture directory held B. This re-check sits
+    at the final effect: the manifest NAME must lstat as a REGULAR file (a
+    symlink there is never the verified manifest, whatever it points at)
+    and an ``O_NOFOLLOW`` read of it must hash to the threaded verified
+    sha. Any drift raises MassiveManifestError (exit 2, the manifest-tamper
+    family) BEFORE ``out_dir.mkdir``, so a refusal emits nothing."""
+    manifest_path = capture_dir / CAPTURE_MANIFEST_FILENAME
+    try:
+        info = os.lstat(manifest_path)
+    except OSError as exc:
+        raise MassiveManifestError(
+            f"{manifest_path}: capture manifest unreadable at emission time "
+            f"({exc.strerror}) — the census names ONE sealed byte set"
+        ) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise MassiveManifestError(
+            f"{manifest_path}: capture manifest is not a regular file at "
+            f"emission time (lstat mode {stat.S_IFMT(info.st_mode):o} — a "
+            "symlink at the name is never the verified manifest)"
+        )
+    try:
+        fd = os.open(manifest_path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise MassiveManifestError(
+            f"{manifest_path}: capture manifest could not be opened without "
+            f"following a symlink at emission time ({exc.strerror})"
+        ) from None
+    try:
+        chunks: list[bytes] = []
+        offset = 0
+        while True:
+            chunk = os.pread(fd, 65536, offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+    finally:
+        os.close(fd)
+    now_sha = sha256_hex(b"".join(chunks))
+    if now_sha != verified_sha:
+        raise MassiveManifestError(
+            f"{manifest_path}: capture manifest drifted between verification "
+            f"and emission (verified {verified_sha[:12]}…, read now "
+            f"{now_sha[:12]}…) — no census may be emitted against a capture "
+            "directory that no longer holds the verified manifest bytes"
+        )
 
 
 def load_spot(
@@ -1032,6 +1092,17 @@ def main(argv: list[str] | None = None) -> int:
     if out_dir.exists():
         print(f"OUTPUT EXISTS: {out_dir} — refusing to overwrite", file=sys.stderr)
         return 4
+    # Round-8 review fix (finding 2): the FINAL-EFFECT manifest guard. The
+    # round-7 provenance guard above runs before the spot/master derivation
+    # and the emission; a swap in that window used to exit 0 bound to the
+    # verified A bytes while the capture dir held B. This re-check runs
+    # immediately before ANY file is written under out_dir — and before
+    # out_dir.mkdir — so a refusal emits NOTHING.
+    try:
+        verify_capture_manifest_at_emission(args.capture_dir, manifest_bytes_sha)
+    except MassiveManifestError as exc:
+        print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
+        return 2
     body = render_json(census)
     out_dir.mkdir(parents=True)
     (out_dir / "census.json").write_text(body, encoding="utf-8")

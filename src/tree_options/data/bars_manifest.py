@@ -43,6 +43,7 @@ import errno
 import fcntl
 import json
 import os
+import stat
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -743,7 +744,69 @@ def build_bars_work_manifest(
         cost=cost,
         content_sha256="",
     )
+    # Round-8 review fix (finding 2): the record above is bound the moment
+    # this function returns it — the final effect. The early bind-time
+    # guard (round-7) runs before the ordering/model construction, so a
+    # swap in that gap used to return a manifest bound to the verified A
+    # bytes while the capture dir held B. This re-check refuses at the
+    # return, naming both hashes.
+    _require_capture_manifest_at_final_effect(capture_manifest, manifest_raw)
     return manifest.model_copy(update={"content_sha256": work_manifest_content_sha256(manifest)})
+
+
+def _require_capture_manifest_at_final_effect(path: Path, verified_raw: bytes) -> None:
+    """Round-8 review fix (2026-08-24, finding 2): the FINAL-EFFECT manifest
+    guard, run immediately before the bound BarsWorkManifest record is
+    returned.
+
+    The round-7 bind-time guard re-reads the manifest BEFORE the
+    ordering/model construction — so a swap in that window returned a work
+    manifest bound to the verified A bytes while the capture directory held
+    B. This re-check sits at the binding's final effect: the manifest NAME
+    must lstat as a REGULAR file (a symlink there is never the verified
+    manifest, whatever it points at) and an ``O_NOFOLLOW`` read of it must
+    hash to the threaded verified sha. Any drift raises
+    ``BarsManifestError`` naming both hashes."""
+    try:
+        info = os.lstat(path)
+    except OSError as exc:
+        raise BarsManifestError(
+            f"{path}: capture manifest unreadable at binding time ({exc.strerror})"
+        ) from None
+    if not stat.S_ISREG(info.st_mode):
+        raise BarsManifestError(
+            f"{path}: capture manifest is not a regular file at binding time "
+            f"(lstat mode {stat.S_IFMT(info.st_mode):o} — a symlink at the "
+            "name is never the verified manifest)"
+        )
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise BarsManifestError(
+            f"{path}: capture manifest could not be opened without following "
+            f"a symlink at binding time ({exc.strerror})"
+        ) from None
+    try:
+        chunks: list[bytes] = []
+        offset = 0
+        while True:
+            chunk = os.pread(fd, 65536, offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+    finally:
+        os.close(fd)
+    now_sha = sha256_hex(b"".join(chunks))
+    verified_sha = sha256_hex(verified_raw)
+    if now_sha != verified_sha:
+        raise BarsManifestError(
+            f"{path}: capture manifest drifted between verification and the "
+            f"work-manifest binding's final effect (verified "
+            f"{verified_sha[:12]}…, read now {now_sha[:12]}…) — refusing to "
+            "return a work manifest bound to bytes the capture directory no "
+            "longer holds"
+        )
 
 
 def parse_bars_work_manifest(

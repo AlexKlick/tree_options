@@ -912,3 +912,46 @@ def test_swapped_capture_manifest_between_verify_and_binding_refuses(
     assert "drifted" in message, "the refusal names the drift"
     assert honest_sha[:12] in message, "the refusal names the verified hash"
     assert swapped_sha[:12] in message, "the refusal names the swapped hash"
+
+
+# ---- round-8 (finding 2): the bind-time guard must sit at the binding's final effect ----
+#
+# Round-8 review fix (2026-08-24): the round-7 bind-time guard re-read the
+# capture manifest at ~723 — BEFORE the ordering/model construction and the
+# binding's final effect. A manifest swapped AFTER that guard left the build
+# returning a work manifest bound to the verified A bytes while the capture
+# directory held B. The load-bearing re-check now sits at the final effect,
+# immediately before the bound BarsWorkManifest record is returned: the
+# manifest NAME must lstat as a regular file and its bytes must still hash
+# to the threaded verified sha, else BarsManifestError naming both hashes.
+
+
+def test_swapped_capture_manifest_after_the_bind_guard_refuses(
+    capture_bundle: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The racing call is the ordering entry (order_entries, evaluated while
+    the BarsWorkManifest record is being constructed): the wrapper swaps the
+    manifest to `{}` bytes there, AFTER the round-7 bind-time guard has
+    passed. Pre-fix the build SUCCEEDS with capture_manifest_sha256 pinning
+    the verified A bytes while the capture dir holds B; post-fix it refuses
+    naming both hashes and no manifest is returned."""
+    manifest_path = capture_bundle["capture_manifest"]
+    honest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    swapped = b"{}\n"
+    swapped_sha = hashlib.sha256(swapped).hexdigest()
+    real_order = bm.order_entries
+    armed = {"done": False}
+
+    def order_swapping_manifest(entries):
+        if not armed["done"]:
+            armed["done"] = True  # the window: bind guard passed, record unread
+            manifest_path.write_bytes(swapped)
+        return real_order(entries)
+
+    monkeypatch.setattr(bm, "order_entries", order_swapping_manifest)
+    with pytest.raises(bm.BarsManifestError) as exc_info:
+        _build(capture_bundle)
+    message = str(exc_info.value)
+    assert "drifted" in message, "the refusal names the drift"
+    assert honest_sha[:12] in message, "the refusal names the verified hash"
+    assert swapped_sha[:12] in message, "the refusal names the swapped hash"

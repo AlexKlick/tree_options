@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -1119,3 +1120,55 @@ def test_pinned_but_unreferenced_master_refuses(
         "the refusal names the pinned-but-unreferenced master file"
     )
     assert not out_root.exists() or list(out_root.iterdir()) == [], "no census emitted"
+
+
+# ---- round-8 (finding 2): the manifest drift guard must sit at the FINAL EFFECT --------
+#
+# Round-8 review fix (2026-08-24): the round-7 provenance guard re-read
+# capture_manifest.json at census time (~953) — BEFORE the spot/master
+# derivation (~975) and BEFORE artifact emission (~1030). A manifest swapped
+# AFTER that guard produced an exit-0 census bound to the verified A bytes
+# while the capture directory held B. The load-bearing re-check now sits at
+# the FINAL EFFECT: immediately before anything is written under out_dir
+# (and before out_dir.mkdir, so a refusal emits nothing) the manifest NAME
+# must lstat as a regular file and its bytes must still hash to the threaded
+# verified sha — else MassiveManifestError, exit 2, no artifact.
+
+
+def test_swapped_capture_manifest_after_the_early_guard_refuses_exit_2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The racing call is the derivation entry (load_spot): the wrapper
+    swaps the manifest to `{}` bytes AFTER the round-7 provenance guard has
+    passed and before the emission. Pre-fix the census exits 0 with an
+    artifact whose provenance names the verified A bytes while the capture
+    dir holds B; post-fix it refuses exit 2 at the emission gate and emits
+    nothing."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    manifest_path = capture / "capture_manifest.json"
+    swapped = b"{}\n"
+    real_load_spot = bcc.load_spot
+
+    def load_spot_swapping_manifest(capture_dir: Path, *, pinned: Mapping[str, str] | None = None):
+        # the window: the early (round-7) guard has passed, the emission has
+        # not run — swap the file the census verified
+        manifest_path.write_bytes(swapped)
+        return real_load_spot(capture_dir, pinned=pinned)
+
+    monkeypatch.setattr(bcc, "load_spot", load_spot_swapping_manifest)
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 2, (
+        "a capture manifest swapped AFTER the provenance guard must refuse at "
+        "the emission — exit 2, the manifest-tamper family — never emit a "
+        "census bound to bytes the capture directory no longer holds"
+    )
+    err = capsys.readouterr().err
+    assert "MANIFEST REFUSED" in err and "drifted" in err, (
+        "the refusal names the drift between the verified sha and the bytes read at emission"
+    )
+    assert not out_root.exists() or list(out_root.iterdir()) == [], (
+        "no census was emitted from the swap window"
+    )
