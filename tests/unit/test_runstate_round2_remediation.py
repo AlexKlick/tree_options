@@ -19,7 +19,10 @@ surfaces here, not in production:
 
 from __future__ import annotations
 
+import fcntl
+import json
 import sys
+import threading
 from pathlib import Path
 from uuid import uuid4
 
@@ -30,7 +33,9 @@ SCRIPTS = REPO_ROOT / "scripts"
 if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
+from tree_options.data.digest import sha256_hex  # noqa: E402
 from tree_options.runstate import RunIdentity, RunState, RunStore  # noqa: E402
+from tree_options.runstate import lease as L_module  # noqa: E402
 from tree_options.runstate.errors import RunIdRefusedError  # noqa: E402
 
 BOOT = "11111111-2222-3333-4444-555555555555"
@@ -136,3 +141,134 @@ def test_single_component_run_id_still_creates_and_opens() -> None:
     reopened = RunStore.open(root, run_id)
     assert reopened.identity.run_id == run_id
     assert reopened.state is RunState.PLANNED
+
+
+# --- R2-2: lease lock protocol covers ALL owner.json mutators (P1) ----------
+
+
+def _lease_dir_with_owner() -> tuple[Path, L_module.LeaseOwner]:
+    store_dir = _scratch() / "run"
+    store_dir.mkdir()
+    lease_dir = store_dir / L_module.LEASE_DIRNAME
+    lease_dir.mkdir(parents=True)
+    owner = L_module.LeaseOwner(
+        pid=4242,
+        pid_start_ticks=99,
+        boot_id=BOOT,
+        started_epoch=T0,
+        argv_hash="0" * 64,
+    )
+    (lease_dir / L_module.OWNER_FILENAME).write_text(
+        json.dumps(json.loads(owner.model_dump_json()), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    return store_dir, owner
+
+
+def test_release_blocks_while_adopt_lock_held() -> None:
+    """Mechanism proof: release() mutates owner.json (unlink), so it must
+    hold LOCK_EX on lease/adopt.lock. Round-2 probe
+    (/tmp/pr-a-f2-lease-interleaving.log): A.release() unlinked WITHOUT the
+    lock while adopter B classified STALE under it; a fresh acquirer C then
+    O_EXCL-created and B's os.replace stomped C's file — two live owners."""
+    store_dir, owner = _lease_dir_with_owner()
+    lease_dir = store_dir / L_module.LEASE_DIRNAME
+    owner_path = lease_dir / L_module.OWNER_FILENAME
+    lock_fh = open(lease_dir / "adopt.lock", "w", encoding="utf-8")
+    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+    done = threading.Event()
+
+    def worker() -> None:
+        assert L_module.release(store_dir, owner)
+        done.set()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    try:
+        t.join(timeout=0.6)
+        assert t.is_alive(), "release() completed while adopt.lock was held"
+        assert not done.is_set()
+        assert owner_path.exists(), "unlink happened under someone else's lock"
+    finally:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        lock_fh.close()
+    assert done.wait(timeout=5), "release() never completed after the lock freed"
+    t.join(timeout=5)
+    assert not owner_path.exists()
+
+
+def test_fresh_acquire_blocks_while_adopt_lock_held() -> None:
+    """Mechanism proof: the FRESH O_EXCL create path is also an owner.json
+    mutation, so it must take the same lock — otherwise it can interleave
+    with a locked adoption (the round-2 two-live-owners interleaving)."""
+    store_dir = _scratch() / "run"
+    store_dir.mkdir()
+    (store_dir / L_module.LEASE_DIRNAME).mkdir(parents=True)
+    lease_dir = store_dir / L_module.LEASE_DIRNAME
+    owner_path = lease_dir / L_module.OWNER_FILENAME
+    owner = L_module.LeaseOwner(
+        pid=5555,
+        pid_start_ticks=7,
+        boot_id=BOOT,
+        started_epoch=T0,
+        argv_hash="1" * 64,
+    )
+    lock_fh = open(lease_dir / "adopt.lock", "w", encoding="utf-8")
+    fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+    done = threading.Event()
+
+    def worker() -> None:
+        assert (
+            L_module.acquire(store_dir, owner, boot_id_now=BOOT)
+            is L_module.LeaseClassification.HELD
+        )
+        done.set()
+
+    t = threading.Thread(target=worker)
+    t.start()
+    try:
+        t.join(timeout=0.6)
+        assert t.is_alive(), "fresh acquire() completed while adopt.lock was held"
+        assert not done.is_set()
+        assert not owner_path.exists(), "O_EXCL create happened under someone else's lock"
+    finally:
+        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+        lock_fh.close()
+    assert done.wait(timeout=5), "acquire() never completed after the lock freed"
+    t.join(timeout=5)
+    assert json.loads(owner_path.read_text(encoding="utf-8"))["pid"] == 5555
+
+
+def test_mixed_acquire_release_stress_owner_file_stays_parseable() -> None:
+    """Mixed stress: N threads race acquire(allow_stale_adopt=True) and
+    release against one lease dir. Whatever the interleaving, the owner
+    file afterwards must round-trip-parse as a LeaseOwner (or be absent
+    after a final release) — never torn, never two live owners."""
+    store_dir = _scratch() / "stress"
+    store_dir.mkdir()
+    (store_dir / L_module.LEASE_DIRNAME).mkdir(parents=True)
+
+    def racer(label: str, iterations: int) -> None:
+        owner = L_module.LeaseOwner(
+            pid=7000 + int(label),
+            pid_start_ticks=1,
+            boot_id=BOOT,
+            started_epoch=T0,
+            argv_hash=sha256_hex(label.encode("utf-8")),
+        )
+        for _ in range(iterations):
+            # No live pid 7000+ exists -> classification is STALE_DEAD_PID
+            # (adoptable) whenever the file exists; fresh O_EXCL otherwise.
+            L_module.acquire(store_dir, owner, boot_id_now=BOOT, allow_stale_adopt=True)
+            L_module.release(store_dir, owner)
+
+    threads = [threading.Thread(target=racer, args=(str(i), 25)) for i in range(6)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=30)
+    assert not any(t.is_alive() for t in threads)
+    owner_path = store_dir / L_module.LEASE_DIRNAME / L_module.OWNER_FILENAME
+    if owner_path.exists():
+        final = L_module._read_owner(store_dir)
+        assert final is not None, "owner.json exists but does not parse as a LeaseOwner"
