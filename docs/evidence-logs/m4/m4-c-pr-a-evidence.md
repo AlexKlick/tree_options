@@ -54,6 +54,7 @@ from that verification are recorded below.
 | `1efb697`/`604f8ea`/`f684147`/`2398669`/`cd7a29b` | R5-1: strict CensusFact.v parse; schema/report version pins; entry↔envelope semantic join; amendment output re-resolution + confinement; packet hashes attest consumed bytes |
 | `5be2d3d`/`666bf0c`/`e363500`/`a272405`/`31c9d40`/`a195ea3` | R5-2: cross-store one-shot atomicity; work-manifest verified/hashed/consumed from ONE read; open() binds run id to identity; run.json-only store reports UNKNOWN (exit 3); checklist defers ERA_EXIT; runbook mismatch row → RECONCILIATION |
 | `40da670`/`5ac0e04`/`674bd37`/`13e82f4`/`4fc4802` | R6: semantic demotion covers holiday pairs; output files refuse shared inodes (hard-link aliasing); report_version required, never defaulted; universe generator records the wrapper's absolute real path; execute narrows EVERY approval record, not the first |
+| `06f3e9e`/`58c9e17`/`7c15944`/`7211e0a`/`689a53e` | R7: custody-held output writes (temp + os.replace, fstat nlink==1); builder refuses a non-WHOLE census (masters_observed == expected); O_NOFOLLOW on the ledger name in BOTH ledgers (dangling-symlink O_CREAT follow closed); regeneration re-hashes every read against the manifest pin; census.md states the real exit-0 rule incl. holidays |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -238,3 +239,20 @@ wave), pr-a-gate3–gate8 (R3-era gates; gate8 = the round-2-reviewed head
 pra-r4-* (R4 red/green agent logs, orchestrator verification runs, and
 the reviewers' probes re-executed post-fix), and the final gate log for
 the exact PR head (see PR body for its verdict line).
+
+- **Round 5** (head `3e20215`, gate14 GREEN 1,479 / 217 KILLED /
+  restoration TRUE, log `pr-a-codex5.log`): VERDICT NO-GO — 5 findings
+  (4×P1, 1×P2); round-4 5/6 RESOLVED (the hard-link fix's TOCTOU the
+  exception); the full-capture clean-clone accepted; all constraint
+  checks PASS. Every finding orchestrator-verified in source before
+  remediation: the inode check and write_text were separate operations
+  (a link planted between them truncated a tracked file); the builder
+  accepted a census its producer had classified non-whole
+  (masters_observed != expected); a DANGLING child-file symlink at the
+  ledger name was followed by O_CREAT in BOTH ledgers (authority under
+  /tmp); BARS regeneration verified masters then re-read bytes; census.md
+  stated the obsolete every-pair-COMPLETE exit rule. Remediated in R7
+  (`06f3e9e`…`689a53e`, 5 commits, each red-first; agent logs
+  `/tmp/r71-f*-red.log`; the finding-1 RED genuinely truncated
+  research_protocol.yaml before the fix — restored, md5 verified). Full
+  suite 1,488 (agent + orchestrator runs identical, 0 failures).
