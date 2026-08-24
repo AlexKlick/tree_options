@@ -1253,6 +1253,82 @@ def test_builder_refuses_a_census_that_cannot_attest_its_masters_count(
 # read ONCE and both the parse and the hash consume those same bytes.
 
 
+# ---- round-8 (finding 1): the packet ATTESTATION is the final effect -----------------
+#
+# Round-8 review fix (2026-08-24): _write_exclusive's custody ends when its
+# verify fd closes. After it RETURNS, the builder re-trusted the published
+# NAME: the round-trip proof re-read the path (load_protocol(proposed_path))
+# and `emitted` hashed path.read_bytes(). An attacker in that post-return
+# window renames the published file to .held, plants `path -> .held` as a
+# symlink, and rewrites .held in place with schema-preserving changes: the
+# round-trip parsed attacker YAML, `emitted` hashed attacker bytes, and the
+# packet emitted successfully. The proof step now parses the RENDERED text
+# and `emitted` hashes the RENDERED bytes; a final-effect sweep re-verifies
+# every artifact (regular file, published identity, O_NOFOLLOW byte
+# equality) immediately before the packet attests — and on the packet itself
+# right after its write.
+
+
+def test_post_publish_name_swap_before_packet_attestation_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interleaving attack on the post-return window: the wrapper lets the
+    real _write_exclusive FINISH for the proposed yaml, THEN renames the
+    published file to .held, plants the output name as a symlink to it, and
+    rewrites .held in place with schema-preserving changes (version, flow
+    value, amendment count preserved). Pre-fix the build SUCCEEDS with the
+    round-trip and `emitted` attesting the attacker's YAML; post-fix the
+    final-effect sweep refuses naming the artifact and no packet is
+    emitted."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    real_write = amd._write_exclusive
+    armed = {"done": False}
+
+    def write_then_swap_after_return(
+        path: Path, text: str, *args: object, **kwargs: object
+    ) -> object:
+        result = real_write(path, text, *args, **kwargs)  # custody ends HERE
+        if armed["done"] or path.name != "protocol-0.2.1-proposed.yaml":
+            return result
+        armed["done"] = True  # the window: published, helper returned
+        held = path.parent / (path.name + ".held")
+        os.rename(path, held)  # the inode moves to .held unchanged
+        path.symlink_to(held.name)  # the published NAME becomes a link
+        # rewrite .held IN PLACE: schema-valid, version/flow/amendment-count
+        # preserved — only the record text changes
+        doc = yaml.safe_load(held.read_text(encoding="utf-8"))
+        doc["meta"]["amendments"][-1]["decision"] = "ATTACKER: swapped after publish"
+        with open(held, "w", encoding="utf-8") as handle:
+            handle.write(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000))
+        return result
+
+    monkeypatch.setattr(amd, "_write_exclusive", write_then_swap_after_return)
+    with _out_root() as out:
+        out_dir = out / _census_hash(census_bytes)[:12]
+        published = out_dir / "protocol-0.2.1-proposed.yaml"
+        try:
+            with pytest.raises(OutputRefusedError) as exc_info:
+                _build(paths, out)
+            message = str(exc_info.value)
+            assert "protocol-0.2.1-proposed.yaml" in message, (
+                "the refusal names the swapped artifact"
+            )
+            assert "not a regular file" in message, (
+                "the refusal says the final name is no longer a regular file"
+            )
+            assert not (out_dir / "amendment-packet.json").exists(), (
+                "no packet was emitted attesting the swapped artifact"
+            )
+        finally:
+            # never leave a symlink under artifacts/ (the harness copytree
+            # crashes on those), and never leave the attacker's .held either.
+            with contextlib.suppress(OSError):
+                published.unlink()
+            with contextlib.suppress(OSError):
+                (out_dir / (published.name + ".held")).unlink()
+
+
 def test_packet_hashes_attest_the_consumed_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

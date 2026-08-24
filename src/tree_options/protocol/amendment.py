@@ -59,7 +59,7 @@ from tree_options.data.coverage_census import (
     census_content_sha256,
     verify_census,
 )
-from tree_options.protocol.loader import load_protocol, load_protocol_bytes, protocol_hash
+from tree_options.protocol.loader import load_protocol_bytes, protocol_hash
 from tree_options.protocol.schema import ResearchProtocol
 from tree_options.schemas.common import StrictModel
 
@@ -345,7 +345,7 @@ def _refuse_shared_inode(path: Path) -> None:
         )
 
 
-def _write_exclusive(path: Path, text: str) -> None:
+def _write_exclusive(path: Path, text: str) -> tuple[int, int]:
     """Round-5 review fix (2026-08-24, finding 1): publish one output file
     with custody held through the whole write.
 
@@ -382,7 +382,14 @@ def _write_exclusive(path: Path, text: str) -> None:
     must be a REGULAR file, a symlink there never is; (b) identity from the
     LSTAT values; (c) the final name opened ``O_RDONLY|O_NOFOLLOW``, fstat
     identity re-checked, and the FULL bytes read back must EQUAL the text
-    this function wrote — a mismatch refuses naming both contents."""
+    this function wrote — a mismatch refuses naming both contents.
+
+    Round-8 review fix (2026-08-24, finding 1): RETURNS the published inode
+    identity ``(st_dev, st_ino)`` so the caller can carry custody past this
+    function's return. Custody here ends when the verify fd closes; the
+    builder's proof step therefore parses the RENDERED text, ``emitted``
+    hashes the RENDERED bytes, and ``_verify_final_effect`` re-checks this
+    identity at the packet attestation — the final effect."""
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     tmp = Path(tmp_name)
     try:
@@ -466,6 +473,92 @@ def _write_exclusive(path: Path, text: str) -> None:
         # half-written temp must not linger under artifacts/.
         with contextlib.suppress(FileNotFoundError):
             tmp.unlink()
+    # Round-8 review fix (2026-08-24, finding 1): the caller keeps the
+    # rendered text and the PUBLISHED IDENTITY — the proof step parses the
+    # rendered text (never a fresh read of the path), `emitted` hashes the
+    # rendered bytes, and the final-effect sweep (_verify_final_effect)
+    # re-verifies this identity at the moment the packet attests. Custody
+    # inside this function ends at the close of the verify fd above; the
+    # sweep is what carries it to the packet.
+    return (written.st_dev, written.st_ino)
+
+
+def _verify_final_effect(
+    *, artifact: str, path: Path, identity: tuple[int, int], text: str
+) -> None:
+    """Round-8 review fix (2026-08-24, finding 1): re-verify one published
+    artifact under custody at the moment the builder ATTESTS it.
+
+    ``_write_exclusive``'s verification ends when its verify fd closes, and
+    the builder then used to re-trust the published NAME — the round-trip
+    proof re-read the path (``load_protocol(proposed_path)``) and
+    ``emitted`` hashed a fresh ``path.read_bytes()`` — so a swap in the
+    post-return window (rename the published file to ``.held``, plant the
+    output name as a symlink to it, rewrite ``.held`` in place) was parsed
+    and hashed as the builder's own artifact while the packet emitted
+    successfully. The packet is the FINAL EFFECT: immediately before it is
+    constructed (and on the packet itself right after its own write), every
+    artifact is re-verified — the final name must lstat as a REGULAR file,
+    its ``(st_dev, st_ino)`` must equal the identity ``_write_exclusive``
+    published, and an ``O_NOFOLLOW`` re-read must equal the rendered text.
+    Any drift is ``OutputRefusedError`` naming the artifact."""
+    try:
+        published = os.lstat(path)
+    except OSError as exc:
+        raise OutputRefusedError(
+            f"{artifact} ({path}) vanished before the packet attestation ({exc.strerror})"
+        ) from None
+    if not stat.S_ISREG(published.st_mode):
+        raise OutputRefusedError(
+            f"{artifact} ({path}) is not a regular file at attestation time "
+            f"(lstat mode {stat.S_IFMT(published.st_mode):o} — a symlink at "
+            "the final name is never this builder's artifact): refusing to "
+            "attest it"
+        )
+    if (published.st_dev, published.st_ino) != identity:
+        raise OutputRefusedError(
+            f"{artifact} ({path}) changed identity after the publish "
+            f"(published dev {identity[0]} ino {identity[1]}, now dev "
+            f"{published.st_dev} ino {published.st_ino}): refusing to attest "
+            "whatever holds the name now"
+        )
+    try:
+        verify_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as exc:
+        raise OutputRefusedError(
+            f"{artifact} ({path}) could not be re-read without following a "
+            f"symlink at attestation time ({exc.strerror}): refusing to "
+            "attest it"
+        ) from None
+    try:
+        opened = os.fstat(verify_fd)
+        if (opened.st_dev, opened.st_ino) != identity:
+            raise OutputRefusedError(
+                f"{artifact} ({path}) changed identity under the attestation "
+                f"readback (published dev {identity[0]} ino {identity[1]}, "
+                f"read back dev {opened.st_dev} ino {opened.st_ino}): "
+                "refusing to attest it"
+            )
+        chunks: list[bytes] = []
+        offset = 0
+        while True:
+            chunk = os.pread(verify_fd, 65536, offset)
+            if not chunk:
+                break
+            chunks.append(chunk)
+            offset += len(chunk)
+    finally:
+        os.close(verify_fd)
+    expected = text.encode("utf-8")
+    readback = b"".join(chunks)
+    if readback != expected:
+        raise OutputRefusedError(
+            f"{artifact} ({path}) does not hold the rendered bytes at "
+            f"attestation time (rendered sha {hashlib.sha256(expected).hexdigest()[:12]}…, "
+            f"read back sha {hashlib.sha256(readback).hexdigest()[:12]}…): the "
+            "final name was swapped or rewritten after the publish — "
+            "refusing to attest either content"
+        )
 
 
 def _reject_constant(name: str) -> NoReturn:
@@ -820,17 +913,18 @@ def build_proposed_amendment(
         out_root=resolved_out_root,
     )
     _refuse_shared_inode(proposed_path)
-    _write_exclusive(
-        proposed_path,
-        yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000),
-    )
+    proposed_text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000)
+    proposed_identity = _write_exclusive(proposed_path, proposed_text)
 
-    # PROOF STEP: the proposal must load through TODAY'S real loader
+    # PROOF STEP: the proposal must load through TODAY'S real loader — from
+    # the RENDERED text, never a fresh read of the published path (round-8
+    # finding 1: a post-return swap of the published name used to feed this
+    # proof attacker YAML through a planted symlink).
     try:
-        parsed = load_protocol(proposed_path)
+        parsed = load_protocol_bytes(proposed_text.encode("utf-8"))
     except ValueError as exc:
         raise AmendmentError(
-            f"proposed protocol does not load through the current schema: {exc}"
+            f"proposed protocol ({proposed_path}) does not load through the current schema: {exc}"
         ) from exc
     parsed_flow = parsed.option_candidate_defaults.liquidity_volume_flow
     if (
@@ -845,20 +939,41 @@ def build_proposed_amendment(
         out_dir / "schema-addition-proposal.yaml", out_root=resolved_out_root
     )
     _refuse_shared_inode(schema_path)
-    _write_exclusive(
-        schema_path,
-        _render_schema_addition_proposal(
-            census=census, census_hash=census_hash, flow_value=flow_value
-        ),
+    schema_text = _render_schema_addition_proposal(
+        census=census, census_hash=census_hash, flow_value=flow_value
     )
+    schema_identity = _write_exclusive(schema_path, schema_text)
 
     diff_path = _confine_output(out_dir / "amendment-diff.md", out_root=resolved_out_root)
     _refuse_shared_inode(diff_path)
-    _write_exclusive(
-        diff_path,
-        _render_diff(
-            base=base, census_hash=census_hash, flow_value=flow_value, flow_source=flow_source
-        ),
+    diff_text = _render_diff(
+        base=base, census_hash=census_hash, flow_value=flow_value, flow_source=flow_source
+    )
+    diff_identity = _write_exclusive(diff_path, diff_text)
+
+    # FINAL-EFFECT SWEEP (round-8, finding 1): the packet ATTESTS these
+    # artifacts, so each is re-verified under custody immediately before the
+    # packet is constructed — regular file at the final name, the published
+    # identity, and the on-disk bytes still equal to the rendered text. This
+    # is the guard at the final effect: it closes the post-return window
+    # _write_exclusive cannot span.
+    _verify_final_effect(
+        artifact="protocol-0.2.1-proposed.yaml",
+        path=proposed_path,
+        identity=proposed_identity,
+        text=proposed_text,
+    )
+    _verify_final_effect(
+        artifact="schema-addition-proposal.yaml",
+        path=schema_path,
+        identity=schema_identity,
+        text=schema_text,
+    )
+    _verify_final_effect(
+        artifact="amendment-diff.md",
+        path=diff_path,
+        identity=diff_identity,
+        text=diff_text,
     )
 
     packet = AmendmentPacket(
@@ -876,15 +991,32 @@ def build_proposed_amendment(
             protocol_file_sha256=hashlib.sha256(protocol_bytes).hexdigest(),
             capture_manifest_file_sha256=manifest_sha256,
         ),
+        # round-8 finding 1: `emitted` hashes the RENDERED bytes — the same
+        # text handed to _write_exclusive and verified by the sweep above —
+        # never a fresh read of the published path.
         emitted=tuple(
-            EmittedArtifact(name=path.name, sha256=hashlib.sha256(path.read_bytes()).hexdigest())
-            for path in sorted((proposed_path, schema_path, diff_path), key=lambda p: p.name)
+            EmittedArtifact(name=name, sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
+            for name, text in sorted(
+                (
+                    (proposed_path.name, proposed_text),
+                    (schema_path.name, schema_text),
+                    (diff_path.name, diff_text),
+                ),
+                key=lambda pair: pair[0],
+            )
         ),
     )
     packet_path = _confine_output(out_dir / "amendment-packet.json", out_root=resolved_out_root)
     _refuse_shared_inode(packet_path)
-    _write_exclusive(
-        packet_path,
-        json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n",
+    packet_text = json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n"
+    packet_identity = _write_exclusive(packet_path, packet_text)
+    # The packet is written LAST: the same final-effect sweep runs on it
+    # immediately after its write, so the returned packet attests an artifact
+    # that was under custody at the moment of attestation.
+    _verify_final_effect(
+        artifact="amendment-packet.json",
+        path=packet_path,
+        identity=packet_identity,
+        text=packet_text,
     )
     return packet
