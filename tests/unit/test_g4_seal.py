@@ -455,9 +455,7 @@ def test_forged_consumption_with_true_payload_refuses_with_exit_7(ledger_root):
         )
     # The duplicate guard caught it via the RECOMPUTE, not the stored ids;
     # the legitimate SECOND consumption was not appended.
-    consumptions = [
-        r for r in L.read_ledger(ledger_root).records if r.kind == L.KIND_CONSUMPTION
-    ]
+    consumptions = [r for r in L.read_ledger(ledger_root).records if r.kind == L.KIND_CONSUMPTION]
     assert len(consumptions) == 2  # the legit + the forged
 
 
