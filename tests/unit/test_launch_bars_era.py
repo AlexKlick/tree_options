@@ -868,6 +868,54 @@ def test_execute_reads_the_work_manifest_bytes_exactly_once(
     assert consumed.work_manifest_sha256 == hashlib.sha256(reads[0]).hexdigest()
 
 
+# ---- round-5 (finding 4): regeneration consumes the bytes verification hashed -------
+#
+# Round-5 review fix (2026-08-24): rebuild_master_captures verified the
+# capture manifest (hashing the masters) and then re-read master bytes from
+# DISK. A swap in that window fed the selection different bytes than the
+# sealed manifest pins — and with semantically-identical swapped bytes the
+# regenerated manifest still verified, so authority was consumed against a
+# capture dir that no longer matched its manifest.
+
+
+def test_execute_refuses_a_master_swapped_after_manifest_verification(
+    scenario: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Attack: every read of the SPY master AFTER the verification read
+    returns semantically-identical, byte-different JSON (one trailing
+    newline). The regeneration read must re-hash against the manifest's
+    pinned sha and refuse — exit 6 before any authority moves."""
+    _approve(scenario)
+    master = scenario["capture_dir"] / "masters" / "spy_2025-03-05.json"
+    original = master.read_bytes()
+    swapped = original + b"\n"
+    assert swapped != original
+    reads = {"master": 0}
+    real_read = Path.read_bytes
+
+    def read_bytes_swapping(self: Path) -> bytes:
+        if self == master:
+            reads["master"] += 1
+            # read #1 is verify_massive_capture_manifest's hash read; every
+            # later read is the attacker's swap landing in the window.
+            return original if reads["master"] == 1 else swapped
+        return real_read(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_swapping)
+
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 6, "the swapped master must refuse the work-manifest gate"
+    assert summary is None and calls == []
+    view = read_bars_ledger(scenario["authority_root"])
+    assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL"], (
+        "authority was consumed against a capture dir that no longer matches its manifest"
+    )
+    store = RunStore.open(scenario["store_root"], RUN_ID)
+    assert store.state is RunState.BARS_READY
+
+
 def test_cli_execute_refused_exit_10_touches_nothing(
     scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

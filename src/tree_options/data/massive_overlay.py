@@ -446,14 +446,27 @@ def _load_bars(
     return series
 
 
-def _load_spot(capture_dir: Path, lineage: list[tuple[str, str]]) -> dict[str, dict[date, Decimal]]:
+def _load_spot(
+    capture_dir: Path,
+    lineage: list[tuple[str, str]],
+    *,
+    raw: bytes | None = None,
+) -> dict[str, dict[date, Decimal]]:
     """`spot_proxy.json` — DECLARED INPUT, never a vendor quote: this tier
     carries no underlying price, and the derived lane says NOT_EVALUABLE
-    (refused) without one rather than guessing a spot."""
+    (refused) without one rather than guessing a spot.
+
+    Round-5 review fix (2026-08-24, finding 4): ``raw`` lets a caller hand
+    in the EXACT bytes the capture-manifest verification hashed (and
+    re-verified against its pin) instead of a fresh disk read — the
+    regeneration path must consume the same bytes the sealed manifest
+    attests. ``None`` keeps the historical read-from-disk behavior (this
+    lane's own flow)."""
     path = capture_dir / SPOT_PROXY_FILENAME
-    if not path.is_file():
-        return {}
-    raw = path.read_bytes()
+    if raw is None:
+        if not path.is_file():
+            return {}
+        raw = path.read_bytes()
     lineage.append((SPOT_PROXY_FILENAME, sha256_hex(raw)))
     payload = loads_exact(raw)
     if not isinstance(payload, dict):

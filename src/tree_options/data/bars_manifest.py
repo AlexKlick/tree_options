@@ -40,7 +40,7 @@ import fcntl
 import json
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -55,6 +55,7 @@ from tree_options.data.massive_client import (
 )
 from tree_options.data.massive_manifest import (
     MASTERS_DIR,
+    SPOT_PROXY_FILENAME,
     MassiveManifestError,
     load_massive_capture_manifest,
     verify_massive_capture_manifest,
@@ -401,6 +402,37 @@ def _exact_number_text(value: object, where: str) -> str:
     raise BarsManifestError(f"{where}: {type(value).__name__} is not an exact number token")
 
 
+def _require_pinned_bytes(
+    pinned: Mapping[str, str], relative: str, raw: bytes, *, source: str
+) -> None:
+    """Round-5 review fix (2026-08-24, finding 4): the bytes regeneration
+    PARSES must be the bytes the capture manifest PINS.
+
+    ``verify_massive_capture_manifest`` hashed every pinned file, but the
+    rebuild then re-read the masters from disk — a swap in that window fed
+    the selection (and therefore the derived request list) bytes that did
+    not match the sealed manifest, and with semantically-identical swapped
+    bytes the regenerated manifest still verified. Re-hashing the one read
+    here closes the window: the parse consumes bytes whose sha256 equals the
+    manifest pin or the regeneration refuses naming both hashes. (Chosen
+    over having verify RETURN the hashed bytes because a drifted capture
+    dir must REFUSE — fail closed — not silently proceed on cached bytes;
+    it also keeps the verify signature and every other caller unchanged.)"""
+    declared = pinned.get(relative)
+    if declared is None:
+        raise BarsManifestError(
+            f"{source}: on disk but not pinned by the capture manifest — "
+            "regeneration derives from sealed bytes only"
+        )
+    if sha256_hex(raw) != declared:
+        raise BarsManifestError(
+            f"{source}: bytes drifted from the sealed capture manifest (pin "
+            f"{declared[:12]}…, read now {sha256_hex(raw)[:12]}…) — refusing "
+            "to derive from a capture directory that no longer matches its "
+            "manifest"
+        )
+
+
 def rebuild_master_captures(
     capture_dir: Path,
     *,
@@ -412,10 +444,14 @@ def rebuild_master_captures(
     the existing loaders' checks (provenance stamps, page shape, as_of). When
     ``capture_manifest`` is given it is loaded and reconciled against the
     directory first (``verify_massive_capture_manifest``), so the rebuild
-    starts from pinned bytes. Also returns the spot proxy (the selection's
-    declared anchor — strings, keyed by ISO date) and the ticker index used
-    to enrich picks into entries. Zero network, zero mutation.
+    starts from pinned bytes — and each envelope/spot byte read afterwards
+    is re-hashed against that pin (round-5 review fix, finding 4), so the
+    parse consumes exactly what the sealed manifest attests. Also returns
+    the spot proxy (the selection's declared anchor — strings, keyed by ISO
+    date) and the ticker index used to enrich picks into entries. Zero
+    network, zero mutation.
     """
+    pinned: dict[str, str] | None = None
     if capture_manifest is not None:
         try:
             manifest = load_massive_capture_manifest(capture_manifest)
@@ -424,6 +460,7 @@ def rebuild_master_captures(
             )
         except MassiveManifestError as exc:
             raise BarsManifestError(f"capture dir does not match its manifest: {exc}") from None
+        pinned = {entry.path: entry.sha256 for entry in manifest.files}
 
     masters_dir = Path(capture_dir) / MASTERS_DIR
     files = sorted(p for p in masters_dir.glob("*.json") if p.is_file())
@@ -435,8 +472,13 @@ def rebuild_master_captures(
     ticker_index: dict[str, _RowMeta] = {}
     for path in files:
         source = path.name
+        # ONE read feeds the pin check, the parse, and the page text below
+        # (the old shape read the path twice: parse and text could diverge).
+        raw = path.read_bytes()
+        if pinned is not None:
+            _require_pinned_bytes(pinned, f"{MASTERS_DIR}/{source}", raw, source=source)
         try:
-            envelope = loads_exact(path.read_bytes())
+            envelope = loads_exact(raw)
             if not isinstance(envelope, dict):
                 raise BarsManifestError(f"{source}: top-level JSON is not an object")
             _require_provenance(envelope, source=source)
@@ -479,7 +521,7 @@ def rebuild_master_captures(
         # The verbatim page text is never used downstream (the selection reads
         # decoded bodies; only the bridge's writer re-serialises text), so the
         # envelope bytes stand in for it here.
-        raw_text = path.read_bytes().decode("utf-8")
+        raw_text = raw.decode("utf-8")
         captures.append(
             bridge.MasterCapture(
                 underlying=underlying,
@@ -490,10 +532,33 @@ def rebuild_master_captures(
             )
         )
 
-    try:
-        spot_by_date = _load_spot(Path(capture_dir), lineage=[])
-    except (MassiveOverlayError, ValueError) as exc:
-        raise BarsManifestError(f"spot proxy refused ({exc})") from None
+    # The spot proxy feeds the selection too (the ATM ranking keys on it), so
+    # under a manifest it is held to the same pinned-bytes rule (round-5
+    # review fix, finding 4): read once, re-hash against the pin, parse those
+    # bytes. An unpinned spot file on disk is unprovenance — the verified
+    # state had none.
+    if pinned is None:
+        try:
+            spot_by_date = _load_spot(Path(capture_dir), lineage=[])
+        except (MassiveOverlayError, ValueError) as exc:
+            raise BarsManifestError(f"spot proxy refused ({exc})") from None
+    else:
+        spot_path = Path(capture_dir) / SPOT_PROXY_FILENAME
+        declared = pinned.get(SPOT_PROXY_FILENAME)
+        if declared is None:
+            if spot_path.exists():
+                raise BarsManifestError(
+                    f"{spot_path}: on disk but not pinned by the capture "
+                    "manifest — regeneration derives from sealed bytes only"
+                )
+            spot_by_date = {}
+        else:
+            spot_raw = spot_path.read_bytes()
+            _require_pinned_bytes(pinned, SPOT_PROXY_FILENAME, spot_raw, source=SPOT_PROXY_FILENAME)
+            try:
+                spot_by_date = _load_spot(Path(capture_dir), lineage=[], raw=spot_raw)
+            except (MassiveOverlayError, ValueError) as exc:
+                raise BarsManifestError(f"spot proxy refused ({exc})") from None
     spot: dict[str, dict[str, str]] = {
         name: {
             day.isoformat(): _exact_number_text(close, f"spot {name} {day}")
