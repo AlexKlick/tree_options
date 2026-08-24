@@ -410,52 +410,49 @@ def test_execute_cli_refuses_without_consuming(ledger_root, capsys):
 # --- Round-1 review probes (2026-08-23, g4_seal half of F7) -----------------
 
 
-def test_forged_consumption_with_true_payload_refuses_with_exit_7(ledger_root):
-    """Round-1 review probe FORGED_CONSUMPTION_REPLAYED: a chain-valid
-    CONSUMPTION record that carries the target's identity payload but
-    forged stored sealed_run_id/content_identity values bypassed the
-    duplicate guard. The fix recomputes ids from each record's own
-    payload; the duplicate is now detected, and execute refuses with
-    exit 7 (no second runner invocation, no second consumption
-    appended)."""
+def test_forged_consumption_true_payload_forged_stored_ids_refused_as_corrupt(ledger_root):
+    """Round-2 review fix (2026-08-23, finding 7): the round-1 version of
+    this test first performed a LEGITIMATE execute, so the duplicate guard
+    refused on the legit consumption before the forged record was ever
+    reached. The forged record is now the ONLY consumption: stored ids
+    ("0"*64) disagreeing with their own identity payload are refused as
+    CORRUPTION — the stored-vs-recomputed-payload arm fires BEFORE the
+    duplicate check (the self-consistent duplicate case is covered by
+    test_second_execution_same_identity_exit_7)."""
     identity = _identity()
     _approve(ledger_root, identity)
-    # First, a legitimate execute — establishes a normal consumption.
-    g4_seal.execute_sealed_run(
-        identity, ledger_root=ledger_root, reason="first", at_epoch=T0, runner=_quiet_runner
-    )
-    # Forge a CONSUMPTION that names the target's identity but with
-    # adversarial stored ids. Use the LEGITIMATE identity payload so the
-    # recompute (the fix) yields the same ids as the legitimate record.
+    # Forge a CONSUMPTION that carries the LEGITIMATE identity payload (so
+    # the recompute yields this run's real ids) but adversarial stored ids.
     forged = L.LedgerRecord(
         kind=L.KIND_CONSUMPTION,
         identity=identity,
-        reason="forged replay with adversarial stored ids",
+        reason="forged consumption with adversarial stored ids",
         at_epoch=T0 + 10,
-        sealed_run_id="0" * 64,  # deliberate mismatch
-        content_identity="0" * 64,  # deliberate mismatch
+        sealed_run_id="0" * 64,  # deliberate mismatch with the payload
+        content_identity="0" * 64,  # deliberate mismatch with the payload
         prev_record_sha256=L.read_ledger(ledger_root).tail_hash,
         record_sha256="",
     )
     forged = forged.model_copy(update={"record_sha256": L._record_hash(forged)})
-    # Append directly via the public append API (chain-valid because the
-    # prev hash matches and the record_hash is correct for the body).
+    # Append directly via the public append API (chain-valid: the prev hash
+    # matches the approval tail and record_sha256 binds the body).
     L.append_record(ledger_root, forged)
-    # Now the legit second-execution path: a real execute with the same
-    # identity must STILL refuse, because a forged consumption that
-    # recomputes to this run's identity is now present.
-    with pytest.raises(SecondExecutionRefusedError):
+    # Execute must refuse: stored ids disagree with their own payload —
+    # corruption, caught before the duplicate arm could trust anything.
+    with pytest.raises(L.LedgerCorruptError, match="stored ids disagree"):
         g4_seal.execute_sealed_run(
             identity,
             ledger_root=ledger_root,
-            reason="real-second-after-forged",
+            reason="execute-after-forged-only",
             at_epoch=T0 + 20,
             runner=_never_runs,
         )
-    # The duplicate guard caught it via the RECOMPUTE, not the stored ids;
-    # the legitimate SECOND consumption was not appended.
-    consumptions = [r for r in L.read_ledger(ledger_root).records if r.kind == L.KIND_CONSUMPTION]
-    assert len(consumptions) == 2  # the legit + the forged
+    # The runner was never invoked and exactly ONE consumption remains
+    # (the forged one): no second consumption was appended.
+    records = L.read_ledger(ledger_root).records
+    consumptions = [r for r in records if r.kind == L.KIND_CONSUMPTION]
+    assert len(consumptions) == 1
+    assert consumptions[0].reason == "forged consumption with adversarial stored ids"
 
 
 def test_consumption_record_with_inconsistent_stored_ids_refused_as_corrupt(
