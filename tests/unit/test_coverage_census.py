@@ -464,6 +464,67 @@ def test_envelope_capture_complete_false_never_exits_zero(
     assert census.values.observed_census_fact["pair_truncated"].confidence == "PARTIAL"
 
 
+# ---- round-4 (finding 1): a holiday pair with a semantic disagreement ---------------
+#
+# Round-4 review fix (2026-08-23): the round-3 demotion fired only when the
+# pair's current class was COMPLETE, but SPOT_MISSING_HOLIDAY is deliberately
+# OUTSIDE INCOMPLETE_CLASSES — so a holiday pair whose entry correctly hashes
+# a foreign envelope recorded the finding while the census still said whole
+# coverage and exited 0. The declared pair's master is NOT on disk; that is
+# missing data, not a holiday.
+
+
+def test_qqq_envelope_under_a_holiday_spy_entry_downgrades_and_blocks_exit_zero(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's exact scenario: SPY on Good Friday 2025 is declared
+    complete with no spot close (the exchange was closed — SPOT_MISSING_HOLIDAY),
+    and the entry's correctly-hashed bytes are a COMPLETE QQQ envelope for the
+    same friday with a matching row count. Pre-fix: exit 0, complete=true.
+    Post-fix: the pair demotes to MISSING and exit 0 is impossible."""
+    universe = _write_universe(tmp_path, ["SPY"], [HOLIDAY_FRIDAY])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[HOLIDAY_FRIDAY],
+        omit_spot={("SPY", HOLIDAY_FRIDAY)},
+        content_overrides={
+            ("SPY", HOLIDAY_FRIDAY): fx.contracts_payload(
+                results=_contract_rows("QQQ", 2), as_of=HOLIDAY_FRIDAY, underlying="QQQ"
+            )
+        },
+    )
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 5
+    census = CoverageCensus.model_validate_json(
+        next(out_root.iterdir()).joinpath("census.json").read_text()
+    )
+    cov = census.coverage.observed
+    assert cov.SPOT_MISSING_HOLIDAY == 0, "the holiday class lost the pair to MISSING"
+    assert cov.MISSING == 1, "the declared pair's master is not on disk"
+    mismatch = [
+        f for f in census.coverage.findings if f.classification == "MASTER_IDENTITY_MISMATCH"
+    ]
+    assert len(mismatch) == 1
+    assert census.values.observed_census_fact["pair_complete"].confidence == "PARTIAL"
+
+
+def test_a_clean_holiday_pair_still_exits_zero_after_the_round4_join(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The demotion must not eat the LEGITIMATE holiday behavior: the same
+    holiday capture with the CORRECT envelope (no semantic finding) still
+    classifies SPOT_MISSING_HOLIDAY and still permits exit 0."""
+    universe = _write_universe(tmp_path, ["SPY"], [HOLIDAY_FRIDAY])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[HOLIDAY_FRIDAY],
+        omit_spot={("SPY", HOLIDAY_FRIDAY)},
+    )
+    assert _census(monkeypatch, capture, universe, tmp_path / "out") == 0
+
+
 # ---- holiday vs session spot gaps -------------------------------------------------
 
 

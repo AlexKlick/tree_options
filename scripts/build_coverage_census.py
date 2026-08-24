@@ -476,19 +476,25 @@ def observe_masters(manifest: MassiveCaptureManifest, capture_dir: Path) -> Mast
 def apply_master_semantic_join(reconciled: Reconciled, semantic: list[PairFinding]) -> Reconciled:
     """Fold the parsed-master/manifest-entry disagreements into coverage.
 
-    A pair reconciliation called COMPLETE is demoted to the INCOMPLETE
-    class its semantic finding names; already-incomplete pairs keep their
-    class (the finding is still recorded). Both paths block exit 0 through
-    the ordinary INCOMPLETE_CLASSES counters — the same exit semantics a
-    reconciliation-side incomplete pair already has."""
+    A pair in ANY class not already in INCOMPLETE_CLASSES — COMPLETE, and
+    SPOT_MISSING_HOLIDAY (round-4 review fix, 2026-08-23: the holiday class
+    is deliberately outside INCOMPLETE_CLASSES, so a holiday pair whose
+    entry correctly hashes a foreign envelope used to record the finding yet
+    keep the holiday class and exit 0 — but the declared pair's master is
+    NOT on disk, which is missing data, not a holiday) — is demoted to the
+    INCOMPLETE class its semantic finding names. Already-incomplete pairs
+    keep their class (the finding is still recorded). Both paths block exit 0
+    through the ordinary INCOMPLETE_CLASSES counters — the same exit
+    semantics a reconciliation-side incomplete pair already has."""
     if not semantic:
         return reconciled
     counts = reconciled.coverage.model_dump()
     findings = list(reconciled.findings)
     for finding in sorted(semantic, key=lambda f: (f.underlying, f.as_of, f.classification)):
         findings.append(finding)
-        if reconciled.pair_classes.get((finding.underlying, finding.as_of)) == "COMPLETE":
-            counts["COMPLETE"] -= 1
+        current = reconciled.pair_classes.get((finding.underlying, finding.as_of))
+        if current is not None and current not in INCOMPLETE_CLASSES:
+            counts[current] -= 1
             counts[SEMANTIC_DOWNGRADES[finding.classification]] += 1
     return reconciled._replace(coverage=PairCoverage(**counts), findings=findings)
 
