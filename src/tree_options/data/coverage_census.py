@@ -21,7 +21,7 @@ Two rules are structural:
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field
 
@@ -111,8 +111,18 @@ def verify_universe(universe: CoverageUniverse) -> None:
 # ---- census artifact ---------------------------------------------------------------
 
 
+# Round-3 review fix (2026-08-23, finding 1): StrictModel is frozen +
+# extra-forbid but NOT strict, so pydantic lax mode coerced `true` -> int 1
+# and `1.0` -> int 1 at parse time — the amendment builder's
+# `type(observed.v) is int` derivation gates then saw an already-coerced
+# int and could not detect the boolean/float origin. The int branch is
+# strict so bools/floats are REFUSED at this parse boundary; textual
+# observations still parse through the str branch.
+StrictObservedValue = Annotated[int, Field(strict=True)]
+
+
 class CensusFact(StrictModel):
-    v: int | str
+    v: StrictObservedValue | str
     support: dict[str, int] = Field(default_factory=dict)
     confidence: Literal["EXACT", "PARTIAL", "NOT_EVALUABLE"]
 

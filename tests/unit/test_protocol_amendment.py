@@ -26,6 +26,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 from tree_options.data.coverage_census import (  # noqa: E402
+    CENSUS_DOMAIN,
     CENSUS_SCHEMA_VERSION,
     CensusFact,
     CensusProvenance,
@@ -778,3 +779,54 @@ def test_rule_referencing_str_observed_fact_refused(tmp_path: Path) -> None:
     with _out_root() as out:
         with pytest.raises(DerivationMismatchError, match="not a strict int"):
             _build(paths, out)
+
+
+# ---- round-3 (finding 1): a boolean observed fact cannot even parse ---------------
+#
+# Round-3 review fix (2026-08-23): CensusFact.v lived under a NON-strict
+# config, so `v: true` was coerced to int 1 at parse time and the
+# derivation-time `type(observed.v) is int` gates saw an already-coerced
+# int. The attack census below carries `v: true` on disk and is
+# self-consistent UNDER THE OLD LAX PARSER (its content hash is the one the
+# coerced model computes), so nothing but the parse boundary can refuse it.
+# The refusing layer is CensusFact validation itself — step 1 of the builder
+# wraps that ValidationError in StaleCensusError; no DerivationMismatchError
+# is ever reached.
+
+
+def _canonical_census_digest(doc: dict) -> str:
+    """census_content_sha256 over a RAW dict (same bytes canonical_bytes emits)."""
+    core = {**doc, "content_sha256": ""}
+    return _sha256(
+        CENSUS_DOMAIN + json.dumps(core, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+
+
+def test_boolean_referenced_fact_refused_at_census_parse(tmp_path: Path) -> None:
+    doc = json.loads(_make_census_bytes())
+    fact = doc["values"]["observed_census_fact"]["era_observed_masters"]
+    fact["v"] = True
+    # Self-consistency under the OLD lax parser: the declared hash is the
+    # one the coerced (v=1) model computes, so only strict parsing refuses.
+    coerced = json.loads(json.dumps(doc))  # true survives the copy
+    coerced["values"]["observed_census_fact"]["era_observed_masters"]["v"] = 1
+    census_bytes = json.dumps({**doc, "content_sha256": _canonical_census_digest(coerced)})
+    census_hash = _census_hash(census_bytes.encode("utf-8"))
+    # max(<fact>, 1): under the old coercion the boolean fact parses as 1,
+    # the rule computes 1, and the owner-supplied 1 matches — a proposal
+    # DERIVED FROM A BOOLEAN is emitted. Strict parsing must refuse earlier.
+    paths = _bundle(
+        tmp_path,
+        census_bytes=census_bytes.encode("utf-8"),
+        owner_values=_owner_values(census_hash, flow_value=1),
+        rules=_rules(
+            census_hash, expression={"op": "max", "args": [{"fact": "era_observed_masters"}, 1]}
+        ),
+    )
+    with _out_root() as out:
+        with pytest.raises(StaleCensusError, match="census invalid or tampered") as exc_info:
+            _build(paths, out)
+    # The refusing layer is the CensusFact parse boundary (a pydantic
+    # ValidationError naming the field), surfaced through the step-1 wrapper.
+    assert "era_observed_masters" in str(exc_info.value)
+    assert "bool" in str(exc_info.value)

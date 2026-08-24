@@ -27,6 +27,7 @@ import gen_coverage_universe as gen  # type: ignore[import-not-found]  # scripts
 from tests.fixtures import massive_structural_sample as fx  # noqa: E402
 from tree_options.data.coverage_census import (  # noqa: E402
     G3_DERIVATION_CONTRADICTION,
+    CensusFact,
     CensusTaxonomyError,
     CoverageCensus,
     census_content_sha256,
@@ -595,3 +596,39 @@ def test_verify_census_refuses_any_owner_ratified_value(
     rehashed = ratified.model_copy(update={"content_sha256": census_content_sha256(ratified)})
     with pytest.raises(CensusTaxonomyError, match="owner_ratified_policy_value must be EMPTY"):
         verify_census(rehashed)
+
+
+# ---- round-3 (finding 1): CensusFact.v is a strict int or a str ------------------
+#
+# Round-3 review fix (2026-08-23): CensusFact sat under a NON-strict config,
+# so pydantic lax mode coerced `true` -> int 1 and `1.0` -> int 1 at parse
+# time — the downstream `type(observed.v) is int` derivation gates in the
+# amendment builder then saw an already-coerced int and could not detect the
+# boolean/float origin. The refusal belongs at the CensusFact parse boundary;
+# textual observations (`v: "text"`) must keep parsing.
+
+
+def test_census_fact_true_refused_at_parse() -> None:
+    with pytest.raises(ValueError, match="v"):
+        CensusFact.model_validate_json('{"v": true, "support": {}, "confidence": "EXACT"}')
+
+
+def test_census_fact_float_refused_at_parse() -> None:
+    with pytest.raises(ValueError, match="v"):
+        CensusFact.model_validate_json('{"v": 1.0, "support": {}, "confidence": "EXACT"}')
+
+
+def test_census_fact_bool_refused_in_python_mode() -> None:
+    with pytest.raises(ValueError, match="v"):
+        CensusFact(v=True, confidence="EXACT")  # type: ignore[arg-type]
+
+
+def test_census_fact_int_accepted() -> None:
+    fact = CensusFact.model_validate_json('{"v": 5, "support": {}, "confidence": "EXACT"}')
+    assert fact.v == 5
+    assert type(fact.v) is int
+
+
+def test_census_fact_text_observation_accepted() -> None:
+    fact = CensusFact.model_validate_json('{"v": "text", "support": {}, "confidence": "EXACT"}')
+    assert fact.v == "text"
