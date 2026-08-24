@@ -24,7 +24,7 @@
       "cp", "/tmp/m4h-era.log", "artifacts/m4b-coverage-era/era.log"
     ],
     "expect_exit": 0,
-    "description": "MUTATES the repo's artifacts tree: /tmp is volatile (one reboot deletes the only copy) — copy the era log the MOMENT the wrapper exits, then append the ERA_EXIT=<code> line by hand (runbook 4.1). Non-zero ERA_EXIT stops the closeout sequence.",
+    "description": "MUTATES the repo's artifacts tree: /tmp is volatile (one reboot deletes the only copy) — copy the era log the MOMENT the wrapper exits; the launcher has already appended its own ERA_EXIT=<code> line, so verify it with tail -1. Only if that line is missing may you append ERA_EXIT=UNKNOWN by hand — never a guessed code (runbook 4.1). Non-zero ERA_EXIT stops the closeout sequence.",
     "mutates": true
   },
   {

@@ -114,6 +114,18 @@ def test_readonly_entries_never_claim_to_mutate() -> None:
             assert "mutat" not in entry["description"].lower(), entry["id"]
 
 
+def test_checklist_never_instructs_appending_a_concrete_era_exit() -> None:
+    """Round-3 review fix (2026-08-23, finding 5): the launcher records
+    ERA_EXIT itself (runbook 4.1); the operator may only append
+    ERA_EXIT=UNKNOWN when the launcher's line is missing — the checklist
+    must not teach hand-writing a concrete code."""
+    for entry in _load_checklist():
+        low = entry["description"].lower()
+        assert "append the era_exit=<code> line by hand" not in low, entry["id"]
+        if "append" in low and "era_exit" in low:
+            assert "unknown" in low, entry["id"]
+
+
 # ---- runbook ----------------------------------------------------------------------
 
 
