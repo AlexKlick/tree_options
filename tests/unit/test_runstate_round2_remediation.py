@@ -129,9 +129,17 @@ def test_open_refuses_symlinked_run_dir_pointing_outside_root(tmp_path: Path) ->
     run_id = "m4-round2-symlinked"
     outside = tmp_path / f"outside-{uuid4().hex}"
     outside.mkdir()
-    (root / run_id).symlink_to(outside, target_is_directory=True)
-    with pytest.raises(RunIdRefusedError):
-        RunStore.open(root, run_id)
+    link = root / run_id
+    link.symlink_to(outside, target_is_directory=True)
+    try:
+        with pytest.raises(RunIdRefusedError):
+            RunStore.open(root, run_id)
+    finally:
+        # pytest reclaims tmp_path (the link's target) at session end; a
+        # dangling symlink left in repo scratch crashes the mutation
+        # harness's disposable copy (copytree dereferences symlinks —
+        # gate9 GATE_EXIT=1, 2026-08-23). Always take the link with us.
+        link.unlink(missing_ok=True)
 
 
 def test_single_component_run_id_still_creates_and_opens() -> None:
