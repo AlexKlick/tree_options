@@ -575,6 +575,40 @@ def test_session_friday_missing_close_is_incomplete(
     assert census.values.observed_census_fact["pair_spot_missing_session"].confidence == "PARTIAL"
 
 
+# ---- round-5 (finding 5): the emitted census.md states the REAL exit rule ----------
+
+
+def test_census_md_exit_contract_names_the_real_holiday_rule(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-5 review fix (2026-08-24, finding 5): census.md used to claim
+    exit 0 requires "every universe pair is COMPLETE" — stale since the
+    holiday rule: a clean SPOT_MISSING_HOLIDAY pair legitimately exits 0, so
+    that claim is wrong for exactly the census this test builds. The emitted
+    evidence must name the REAL rule (zero INCOMPLETE_CLASSES pairs AND
+    masters observed == expected_masters) and never the obsolete one."""
+    universe = _write_universe(tmp_path, ["SPY"], [HOLIDAY_FRIDAY])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[HOLIDAY_FRIDAY],
+        omit_spot={("SPY", HOLIDAY_FRIDAY)},
+    )
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 0
+    markdown = next(out_root.iterdir()).joinpath("census.md").read_text()
+    assert "every universe pair is COMPLETE" not in markdown, (
+        "the obsolete pre-holiday-rule claim is gone"
+    )
+    assert "0 iff zero pairs sit in INCOMPLETE_CLASSES" in markdown, (
+        "the real rule names the INCOMPLETE_CLASSES criterion"
+    )
+    assert "masters observed == expected_masters" in markdown
+    assert "SPOT_MISSING_HOLIDAY) are EXPECTED" in markdown, (
+        "the real rule says holiday Fridays without a close are expected"
+    )
+
+
 # ---- refusal exits ------------------------------------------------------------------
 
 

@@ -718,9 +718,15 @@ def render_markdown(census: CoverageCensus) -> str:
     lines.append(f"- command: `{' '.join(prov.command)}`")
     lines.append("")
     lines.append(
-        "Exit contract: 0 iff every universe pair is COMPLETE and masters"
-        " observed == expected_masters; otherwise this census was emitted"
-        " with exit 5."
+        # Round-5 review fix (2026-08-24, finding 5): the old text ("0 iff
+        # every universe pair is COMPLETE") was stale the moment the holiday
+        # rule landed — SPOT_MISSING_HOLIDAY pairs legitimately exit 0. State
+        # the real rule: the same conjunction main() computes.
+        "Exit contract: 0 iff zero pairs sit in INCOMPLETE_CLASSES"
+        " (MISSING/TRUNCATED/ERROR/SPOT_MISSING_SESSION) and masters"
+        " observed == expected_masters — holiday Fridays without a close"
+        " (SPOT_MISSING_HOLIDAY) are EXPECTED and do not block exit 0;"
+        " otherwise this census was emitted with exit 5."
     )
     lines.append("")
     return "\n".join(lines)
