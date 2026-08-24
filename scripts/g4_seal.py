@@ -5,11 +5,12 @@ The G4 sealed event (docs/m4-g4-sealed-gate-plan.md §3) is executable exactly
 ONCE, ever, per sealed content. This script implements the machinery and
 consumes NO authority in PR A:
 
-* ``preflight`` verifies the AVAILABILITY of the six sealed-run inputs and is
-  structurally incapable of computing or displaying a verdict: the output
-  model pins ``verdict`` to ``Literal[None]`` and ``verdict_computed`` to
-  ``Literal[False]``, so any leak attempt is a validation error, and no code
-  path computes, infers, or prints one. No network, no broker, no run.
+* ``preflight`` builds a self-binding ``VerifiedSealedInputs`` packet from
+  bytes read once under no-follow custody and accepted by the real Cboe and
+  Massive typed verifiers. It is structurally incapable of computing or
+  displaying a verdict: the output model pins ``verdict`` to
+  ``Literal[None]`` and ``verdict_computed`` to ``Literal[False]``. No
+  network, no broker, no run.
 * ``execute`` implements the one-shot consumption but is never invoked
   outside tests in PR A: the CLI wires NO runner (a --runner-inject seam on
   the CLI is forbidden — authority must never be consumable from a flag), so
@@ -23,9 +24,11 @@ Execute semantics (``execute_sealed_run``):
    same research content share a content_identity, so a second consumption
    under EITHER id is refused.
 2. an APPROVAL record must exist whose identity, RECOMPUTED from the record's
-   own payload, yields this run's sealed_run_id (exit 6) — a record's stored
-   ids alone are never trusted.
-3. the CONSUMPTION record is appended durably (flock + fsync file + fsync
+   own payload, yields this run's packet-bound sealed_run_id (exit 6) — a
+   record's stored ids alone are never trusted.
+3. current checkout/protocol/lane payloads/calendar/criteria and runner
+   version are re-verified and cross-joined to the approved packet.
+4. the CONSUMPTION record is appended durably (flock + fsync file + fsync
    dir) BEFORE the runner is invoked. A crash after consumption is a
    documented UNKNOWN / RECONCILIATION_REQUIRED state that is NEVER
    auto-rerun: a later identical execute hits step 1 and refuses.
@@ -44,13 +47,11 @@ Exit codes:
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import subprocess
 import sys
-from collections.abc import Callable
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
 from tree_options.schemas.common import StrictModel
 
@@ -58,16 +59,15 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "src") not in sys.path:  # pragma: no cover - import plumbing
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from tree_options.protocol.loader import load_protocol, protocol_hash  # noqa: E402
 from tree_options.seal import ledger as seal_ledger  # noqa: E402
 from tree_options.seal.errors import (  # noqa: E402
     ApprovalInvalidError,
     LedgerCorruptError,
     SealError,
     SecondExecutionRefusedError,
+    VerifiedInputsError,
 )
 from tree_options.seal.identity import (  # noqa: E402
-    CALENDAR_PENDING,
     SealedIdentity,
     content_identity,
     sealed_run_id,
@@ -79,14 +79,22 @@ from tree_options.seal.ledger import (  # noqa: E402
     LedgerRecord,
     read_ledger,
 )
+from tree_options.seal.verified_inputs import (  # noqa: E402
+    GitRunner,
+    HeldVerifiedSealedInputs,
+    SealedInputPaths,
+    VerifiedSealedInputs,
+    identity_from_packet,
+    verify_sealed_inputs,
+)
 
-CRITERIA_PATH = REPO_ROOT / "data" / "g4" / "sealed-criteria.json"
 
-#: The git-check seam: a callable with subprocess.run's shape. Tests inject a
-#: canned runner; production shells out to git in the invoking checkout.
-GitRunner = Callable[..., subprocess.CompletedProcess[str]]
+class Runner(Protocol):
+    """A sealed runner identifies its exact machinery and consumes held bytes."""
 
-Runner = Callable[[SealedIdentity], str]
+    runner_version: str
+
+    def __call__(self, inputs: HeldVerifiedSealedInputs) -> str: ...
 
 
 # --------------------------------------------------------------------------
@@ -108,46 +116,7 @@ class PreflightReport(StrictModel):
     verdict: Literal[None] = None
     verdict_computed: Literal[False] = False
     criteria_inputs: dict[str, CriterionStatus]
-
-
-def _porcelain_dirty(lines: list[str]) -> list[str]:
-    """Tracked-tree dirtiness, ignoring UNTRACKED artifacts/ and dist/ (the
-    gitignored runtime outputs — untracked output is not dirty research
-    content; a modified TRACKED file is)."""
-    dirty: list[str] = []
-    for line in lines:
-        if not line.strip():
-            continue
-        path = line[3:].split(" -> ")[-1].strip().strip('"') if len(line) > 3 else ""
-        untracked = line.startswith("??")
-        ignored_output = path in ("artifacts", "dist") or path.startswith(("artifacts/", "dist/"))
-        if untracked and ignored_output:
-            continue
-        dirty.append(line)
-    return dirty
-
-
-def git_code_sha(repo: Path, *, runner: GitRunner = subprocess.run) -> tuple[str | None, str, str]:
-    """(code_sha, evidence, reason) for a clean tracked tree.
-
-    Available only when HEAD resolves AND the tracked tree is clean — a
-    sealed run must be re-derivable from its declared commit.
-    """
-
-    def _git(*args: str) -> subprocess.CompletedProcess[str]:
-        return runner(["git", "-C", str(repo), *args], capture_output=True, text=True, check=False)
-
-    head = _git("rev-parse", "HEAD")
-    if head.returncode != 0:
-        return None, "", f"git rev-parse HEAD failed: {head.stderr.strip()[:120]}"
-    sha = head.stdout.strip()
-    status = _git("status", "--porcelain")
-    if status.returncode != 0:
-        return None, sha, f"git status --porcelain failed: {status.stderr.strip()[:120]}"
-    dirty = _porcelain_dirty(status.stdout.splitlines())
-    if dirty:
-        return None, sha, f"tracked tree dirty ({len(dirty)} path(s), first: {dirty[0][:60]})"
-    return sha, sha, ""
+    verified_inputs: VerifiedSealedInputs | None
 
 
 def _available(evidence: str) -> CriterionStatus:
@@ -158,69 +127,63 @@ def _unavailable(reason: str, evidence: str = "") -> CriterionStatus:
     return CriterionStatus(available=False, reason=reason, evidence=evidence)
 
 
-def _file_sha(path: Path | None) -> tuple[str | None, str]:
-    if path is None:
-        return None, "no manifest path supplied"
-    try:
-        return hashlib.sha256(path.read_bytes()).hexdigest(), ""
-    except OSError as exc:
-        return None, f"manifest unreadable: {exc}"
+_INPUT_STATUS_KEYS = (
+    "code_sha",
+    "protocol_hash",
+    "lane1",
+    "lane2",
+    "calendar_decision",
+    "criteria",
+)
 
 
-def _criteria_status(expected_sha: str | None) -> CriterionStatus:
-    if expected_sha is None:
-        return _unavailable("no expected criteria_sha256 supplied")
-    try:
-        raw = CRITERIA_PATH.read_bytes()
-    except OSError as exc:
-        return _unavailable(f"sealed criteria file unreadable: {exc}")
-    actual = hashlib.sha256(raw).hexdigest()
-    if actual != expected_sha:
-        return _unavailable(
-            f"criteria sha mismatch: file hashes {actual[:12]}…, expected {expected_sha[:12]}…"
-        )
-    try:
-        json.loads(raw)
-    except ValueError as exc:
-        return _unavailable(f"sealed criteria file is not valid JSON: {exc}")
-    return _available(actual)
-
-
-def _build_statuses(
-    args: argparse.Namespace, *, git_runner: GitRunner
-) -> dict[str, CriterionStatus]:
-    statuses: dict[str, CriterionStatus] = {}
-
-    sha, evidence, reason = git_code_sha(args.repo, runner=git_runner)
-    if sha is None:
-        statuses["code_sha"] = _unavailable(reason, evidence)
-    else:
-        statuses["code_sha"] = _available(evidence)
-
-    try:
-        statuses["protocol_hash"] = _available(protocol_hash(load_protocol()))
-    except Exception as exc:
-        statuses["protocol_hash"] = _unavailable(f"protocol load failed: {exc}")
-
-    for key, manifest in (
-        ("lane1_manifest_sha256", args.lane1_manifest),
-        ("lane2_manifest_sha256", args.lane2_manifest),
+def _input_paths(args: argparse.Namespace) -> SealedInputPaths:
+    for attribute, component in (
+        ("lane1_manifest", "lane1"),
+        ("lane1_source", "lane1"),
+        ("lane2_manifest", "lane2"),
+        ("calendar_decision_artifact", "calendar_decision"),
     ):
-        digest, why_missing = _file_sha(manifest)
-        if digest is None:
-            statuses[key] = _unavailable(why_missing)
-        else:
-            statuses[key] = _available(digest)
+        if getattr(args, attribute) is None:
+            raise VerifiedInputsError(component, f"--{attribute.replace('_', '-')} is required")
+    return SealedInputPaths(
+        repo=args.repo,
+        lane1_manifest=args.lane1_manifest,
+        lane1_source=args.lane1_source,
+        lane2_manifest=args.lane2_manifest,
+        calendar_decision_artifact=args.calendar_decision_artifact,
+    )
 
-    if args.calendar_decision == CALENDAR_PENDING or not args.calendar_decision:
-        statuses["calendar_decision"] = _unavailable(
-            "calendar decision is PENDING (G4 plan §2.5: must be declared BEFORE the run)",
-            args.calendar_decision,
-        )
-    else:
-        statuses["calendar_decision"] = _available(args.calendar_decision)
 
-    statuses["criteria"] = _criteria_status(args.criteria_sha256)
+def _verified_statuses(packet: VerifiedSealedInputs) -> dict[str, CriterionStatus]:
+    return {
+        "code_sha": _available(packet.code_sha),
+        "protocol_hash": _available(packet.protocol_hash),
+        "lane1": _available(
+            f"raw={packet.lane1_manifest.raw_sha256}; "
+            f"typed={packet.lane1_manifest.typed_manifest_content_hash}; "
+            f"payloads={packet.lane1_manifest.referenced_payload_set_hash}"
+        ),
+        "lane2": _available(
+            f"raw={packet.lane2_manifest.raw_sha256}; "
+            f"typed={packet.lane2_manifest.typed_manifest_content_hash}; "
+            f"payloads={packet.lane2_manifest.referenced_payload_set_hash}"
+        ),
+        "calendar_decision": _available(packet.calendar_decision_artifact_sha256),
+        "criteria": _available(
+            f"artifact={packet.criteria_artifact_sha256}; "
+            f"source={packet.criteria_source_document_sha256}"
+        ),
+    }
+
+
+def _refused_statuses(exc: VerifiedInputsError) -> dict[str, CriterionStatus]:
+    statuses = {
+        key: _unavailable("not verified because the typed input bundle refused")
+        for key in _INPUT_STATUS_KEYS
+    }
+    key = exc.component if exc.component in statuses else "criteria"
+    statuses[key] = _unavailable(exc.detail)
     return statuses
 
 
@@ -231,11 +194,19 @@ def cmd_preflight(argv: list[str], *, git_runner: GitRunner = subprocess.run) ->
     except SealError as exc:  # refused root / corrupt chain: incident outranks
         print(f"LEDGER UNREADABLE: {exc}", file=sys.stderr)  # input availability
         return 3
-    statuses = _build_statuses(args, git_runner=git_runner)
+    packet: VerifiedSealedInputs | None = None
+    try:
+        held = verify_sealed_inputs(_input_paths(args), git_runner=git_runner)
+    except VerifiedInputsError as exc:
+        statuses = _refused_statuses(exc)
+    else:
+        packet = held.packet
+        statuses = _verified_statuses(packet)
     report = PreflightReport(
         verdict=None,
         verdict_computed=False,
         criteria_inputs=statuses,
+        verified_inputs=packet,
     )
     print(json.dumps(json.loads(report.model_dump_json()), indent=2, sort_keys=True))
     if all(status.available for status in statuses.values()):
@@ -260,35 +231,10 @@ class ExecuteSummary(StrictModel):
     runner_outcome: str
 
 
-def execute_sealed_run(
-    identity: SealedIdentity,
-    *,
-    ledger_root: Path,
-    reason: str,
-    at_epoch: int,
-    runner: Runner,
-) -> ExecuteSummary:
-    """Consume the one-shot seal authority for ``identity``.
-
-    Refuses a second execution matching by EITHER id (step 1), requires an
-    approval that RECOMPUTES to this run's sealed_run_id from the record's
-    own payload (step 2), and appends the CONSUMPTION record durably BEFORE
-    invoking ``runner`` (step 3). A crash after the append and before (or
-    during) the runner leaves a durable CONSUMPTION with no run result:
-    UNKNOWN / RECONCILIATION_REQUIRED — never auto-rerun (a later identical
-    execute hits step 1 and refuses).
-    """
+def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> None:
+    """Refuse duplicate content and require an exact recomputed approval."""
     run_id = sealed_run_id(identity)
     content_id = content_identity(identity)
-    view = read_ledger(ledger_root)
-
-    # Round-1 review fix (2026-08-23, probe FORGED_CONSUMPTION_REPLAYED):
-    # the duplicate guard must recompute sealed_run_id and content_identity
-    # from each CONSUMPTION record's own identity payload, NOT trust the
-    # stored id fields. A chain-valid record with forged stored ids but
-    # the target's identity payload bypassed the original guard.
-    # As a bonus, a stored id that disagrees with its own payload's
-    # recompute is itself a corruption signal — refuse (do not skip).
     for record in view.records:
         if record.kind != KIND_CONSUMPTION:
             continue
@@ -296,8 +242,6 @@ def execute_sealed_run(
             record_run_id = sealed_run_id(record.identity)
             record_content_id = content_identity(record.identity)
         except Exception:
-            # The record's identity payload does not validate. The ledger
-            # reader tolerates this for history display; we do NOT — refuse.
             raise LedgerCorruptError(
                 f"CONSUMPTION record {record.record_sha256[:12]}… has an"
                 " unparseable identity payload; the duplicate guard cannot"
@@ -316,14 +260,79 @@ def execute_sealed_run(
     approval_ok = any(
         record.kind == KIND_APPROVAL
         and record.sealed_run_id == run_id
+        and record.content_identity == content_id
         and sealed_run_id(record.identity) == run_id
+        and content_identity(record.identity) == content_id
+        and record.identity.verified_packet_sha256 == identity.verified_packet_sha256
         for record in view.records
     )
     if not approval_ok:
         raise ApprovalInvalidError(
             run_id,
-            "no APPROVAL record recomputes to this sealed run id from its own payload",
+            "no APPROVAL record recomputes to this verified packet and sealed run id",
         )
+
+
+def execute_sealed_run(
+    expected_packet: VerifiedSealedInputs,
+    *,
+    inputs: SealedInputPaths,
+    ledger_root: Path,
+    reason: str,
+    at_epoch: int,
+    runner: Runner,
+    git_runner: GitRunner = subprocess.run,
+) -> ExecuteSummary:
+    """Cross-join and consume one-shot authority for a verified packet.
+
+    Refuses a second execution matching by EITHER id (step 1), requires an
+    approval that RECOMPUTES to this run's sealed_run_id from the record's
+    own payload (step 2), and appends the CONSUMPTION record durably BEFORE
+    invoking ``runner`` (step 3). A crash after the append and before (or
+    during) the runner leaves a durable CONSUMPTION with no run result:
+    UNKNOWN / RECONCILIATION_REQUIRED — never auto-rerun (a later identical
+    execute hits step 1 and refuses).
+    """
+    # Revalidate the self-hash even if a caller used Pydantic's low-level
+    # model_construct escape hatch to manufacture the typed object.
+    try:
+        expected_packet = VerifiedSealedInputs.model_validate_json(
+            expected_packet.model_dump_json()
+        )
+    except Exception as exc:
+        raise VerifiedInputsError("packet", f"expected packet self-validation failed: {exc}") from None
+    identity = identity_from_packet(expected_packet)
+    run_id = sealed_run_id(identity)
+    content_id = content_identity(identity)
+    view = read_ledger(ledger_root)
+    _check_authority(view, identity)
+
+    # Reconstruct from current paths immediately before the authority spend.
+    # Equality covers checkout, protocol, typed manifest content, every
+    # referenced payload, calendar decision, criteria/source, and machinery.
+    current = verify_sealed_inputs(inputs, git_runner=git_runner)
+    if current.packet != expected_packet:
+        raise ApprovalInvalidError(
+            run_id,
+            "current typed inputs do not equal the owner-approved verified packet",
+        )
+    try:
+        presented_runner_version = runner.runner_version
+    except AttributeError:
+        presented_runner_version = "<missing>"
+    if presented_runner_version != expected_packet.runner_version:
+        raise ApprovalInvalidError(
+            run_id,
+            f"runner version {presented_runner_version!r} does not equal "
+            f"approved {expected_packet.runner_version!r}",
+        )
+
+    # Verification may take time. Re-read the ledger at the final effect
+    # boundary, so an interleaved consumption or approval change is joined to
+    # the packet before the append. append_record additionally rejects a stale
+    # tail while holding the ledger lock.
+    view = read_ledger(ledger_root)
+    _check_authority(view, identity)
 
     consumption_record = LedgerRecord(
         kind=KIND_CONSUMPTION,
@@ -335,7 +344,7 @@ def execute_sealed_run(
         prev_record_sha256=view.tail_hash,
     )
     consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)
-    outcome = runner(identity)
+    outcome = runner(current)
     return ExecuteSummary(
         sealed_run_id=run_id,
         content_identity=content_id,
@@ -367,17 +376,14 @@ def cmd_execute(argv: list[str]) -> int:
 def _add_preflight_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--repo", type=Path, default=REPO_ROOT, help="git repo for the code_sha check")
     p.add_argument("--lane1-manifest", type=Path, help="lane 1 (Cboe) capture manifest file")
+    p.add_argument("--lane1-source", type=Path, help="lane 1 Cboe source CSV pinned by the manifest")
     p.add_argument(
         "--lane2-manifest", type=Path, help="lane 2 (massive-derived era) capture manifest file"
     )
     p.add_argument(
-        "--calendar-decision",
-        default=CALENDAR_PENDING,
-        help="holiday-calendar decision token (PENDING means undecided => unavailable)",
-    )
-    p.add_argument(
-        "--criteria-sha256",
-        help="expected sha256 of data/g4/sealed-criteria.json (the SealedIdentity input)",
+        "--calendar-decision-artifact",
+        type=Path,
+        help="typed, owner-issued holiday-calendar decision artifact",
     )
     p.add_argument(
         "--ledger-root",

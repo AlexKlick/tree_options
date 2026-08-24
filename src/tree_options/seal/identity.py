@@ -4,11 +4,12 @@ Two ids over the same identity tuple:
 
 * ``sealed_run_id`` — pins the exact checkout (``code_sha`` included). Two
   checkouts of the same research content are DIFFERENT sealed runs.
-* ``content_identity`` — the same payload with ``code_sha`` BLANKED, under a
-  different domain. Two checkouts of the same research content SHARE it, so a
-  second consumption under EITHER id is refused: the seal is one-shot per
-  sealed CONTENT, not per checkout (a fresh clone of the same head is not
-  fresh authority).
+* ``content_identity`` — the same payload with the checkout-bound
+  ``code_sha`` and ``verified_packet_sha256`` BLANKED, under a different
+  domain. Two checkouts of the same research content SHARE it, so a second
+  consumption under EITHER id is refused: the seal is one-shot per sealed
+  CONTENT, not per checkout (a fresh clone of the same head is not fresh
+  authority).
 
 Domain separation is load-bearing: an id from one domain can never collide
 with (or be substituted for) an id from the other.
@@ -21,11 +22,6 @@ from tree_options.schemas.common import StrictModel
 
 SEALED_RUN_DOMAIN = b"tree-options-g4-seal-run-v1"
 CONTENT_IDENTITY_DOMAIN = b"tree-options-g4-content-v1"
-
-#: The literal calendar token meaning "not yet decided" — which makes the
-#: input UNAVAILABLE for a sealed run (G4 plan §2.5: must be declared BEFORE
-#: the run; never silently defaulted).
-CALENDAR_PENDING = "PENDING"
 
 RUNNER_VERSION = "m4-g4-runner/1"
 
@@ -42,9 +38,10 @@ class SealedIdentity(StrictModel):
     protocol_hash: str
     lane1_manifest_sha256: str
     lane2_manifest_sha256: str
-    calendar_decision: str
+    calendar_decision_artifact_sha256: str
     runner_version: str = RUNNER_VERSION
-    criteria_sha256: str
+    criteria_artifact_sha256: str
+    verified_packet_sha256: str
 
 
 def sealed_run_id(identity: SealedIdentity) -> str:
@@ -53,6 +50,9 @@ def sealed_run_id(identity: SealedIdentity) -> str:
 
 
 def content_identity(identity: SealedIdentity) -> str:
-    """Identity of the sealed CONTENT (code_sha blanked, own domain)."""
-    blanked = identity.model_copy(update={"code_sha": ""})
+    """Identity of sealed CONTENT (checkout-bound fields blanked)."""
+    # The packet hash itself includes code_sha. Blank both checkout-bound
+    # fields so a fresh checkout of the same research content is not fresh
+    # one-shot authority; all content-bearing raw hashes remain pinned.
+    blanked = identity.model_copy(update={"code_sha": "", "verified_packet_sha256": ""})
     return sha256_hex(CONTENT_IDENTITY_DOMAIN + canonical_bytes(blanked))

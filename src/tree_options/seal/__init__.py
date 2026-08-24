@@ -6,9 +6,9 @@ from tree_options.seal.errors import (
     LedgerRootRefusedError,
     SealError,
     SecondExecutionRefusedError,
+    VerifiedInputsError,
 )
 from tree_options.seal.identity import (
-    CALENDAR_PENDING,
     CONTENT_IDENTITY_DOMAIN,
     RUNNER_VERSION,
     SEALED_RUN_DOMAIN,
@@ -36,7 +36,6 @@ from tree_options.seal.ledger import (
 )
 
 __all__ = [
-    "CALENDAR_PENDING",
     "CONTENT_IDENTITY_DOMAIN",
     "DEFAULT_G4_LEDGER_ROOT",
     "GENESIS_PREV",
@@ -56,6 +55,7 @@ __all__ = [
     "SealError",
     "SealedIdentity",
     "SecondExecutionRefusedError",
+    "VerifiedInputsError",
     "append_approval",
     "append_consumption",
     "append_reconciliation_note",

@@ -144,12 +144,13 @@
     "command": [
       "uv", "run", "--frozen", "python", "scripts/g4_seal.py", "preflight",
       "--lane1-manifest", "artifacts/lane1/capture-manifest.json",
+      "--lane1-source", "artifacts/lane1/cboe-source.csv",
       "--lane2-manifest", "artifacts/m4b-coverage-era/capture_manifest.json",
-      "--criteria-sha256", "CRITERIA_SHA256_PLACEHOLDER",
+      "--calendar-decision-artifact", "artifacts/g4/calendar-decision.json",
       "--ledger-root", "artifacts/g4-authority"
     ],
     "expect_exit": 2,
-    "description": "Read-only: availability check of the six sealed-run inputs; exit 2 while inputs are PENDING is expected. g4_seal execute is PROHIBITED in this campaign (runbook 4.6).",
+    "description": "Read-only: typed verification of both lane manifests and every referenced payload, clean checkout/protocol, owner calendar artifact, and sealed criteria/source; exit 2 while any artifact is unavailable is expected. g4_seal execute is PROHIBITED in this campaign (runbook 4.6).",
     "mutates": false
   }
 ]

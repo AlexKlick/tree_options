@@ -291,21 +291,13 @@ def load_massive_capture_manifest(
 # ---- verify --------------------------------------------------------------------
 
 
-def verify_massive_capture_manifest(
-    manifest: MassiveCaptureManifest,
-    capture_dir: Path,
-    *,
-    capture_version: str,
+def verify_massive_capture_manifest_tokens(
+    manifest: MassiveCaptureManifest, *, capture_version: str
 ) -> None:
-    """Fail-closed reconciliation of (manifest, capture directory).
-
-    Tokens are checked first — a foreign manifest is refused before it is
-    used to read anything — then every listed file is re-hashed from raw
-    bytes, then the disk is reconciled against the listing (an unlisted
-    `*.json` is unprovenance), then the content binding is recomputed."""
+    """Verify format/provider/capture tokens before any listed path is used."""
 
     def fail(detail: str) -> NoReturn:
-        raise MassiveManifestError(f"massive capture manifest for {capture_dir}: {detail}")
+        raise MassiveManifestError(f"massive capture manifest: {detail}")
 
     if manifest.schema_version != MASSIVE_MANIFEST_SCHEMA_VERSION:
         fail(f"schema_version {manifest.schema_version!r} != {MASSIVE_MANIFEST_SCHEMA_VERSION!r}")
@@ -313,6 +305,34 @@ def verify_massive_capture_manifest(
         fail(f"provider {manifest.provider!r} != {MASSIVE_PROVIDER!r}")
     if manifest.capture_version != capture_version:
         fail(f"capture_version {manifest.capture_version!r} != {capture_version!r}")
+
+
+def verify_massive_capture_manifest(
+    manifest: MassiveCaptureManifest,
+    capture_dir: Path,
+    *,
+    capture_version: str,
+    captured_files: Mapping[str, bytes] | None = None,
+    observed_json_files: set[str] | None = None,
+) -> None:
+    """Fail-closed reconciliation of (manifest, capture directory).
+
+    Tokens are checked first — a foreign manifest is refused before it is
+    used to read anything — then every listed file is re-hashed from raw
+    bytes, then the disk is reconciled against the listing (an unlisted
+    `*.json` is unprovenance), then the content binding is recomputed.
+
+    ``captured_files`` plus ``observed_json_files`` is the bytes-once seam
+    for G4: both must be supplied together, and the real verifier consumes
+    the exact bytes and directory census already obtained under no-follow
+    custody instead of re-reading paths after verification."""
+
+    def fail(detail: str) -> NoReturn:
+        raise MassiveManifestError(f"massive capture manifest for {capture_dir}: {detail}")
+
+    verify_massive_capture_manifest_tokens(manifest, capture_version=capture_version)
+    if (captured_files is None) != (observed_json_files is None):
+        fail("captured_files and observed_json_files must be supplied together")
 
     listed = {entry.path: entry for entry in manifest.files}
     if len(listed) != len(manifest.files):
@@ -325,18 +345,29 @@ def verify_massive_capture_manifest(
                 " which does not match where it sits in the capture directory"
             )
         target = _resolve_listed(capture_dir, entry.path)
-        if not target.is_file():
-            fail(f"listed file {entry.path} is missing on disk")
-        try:
-            raw = target.read_bytes()
-        except OSError as exc:
-            fail(f"listed file {entry.path} unreadable ({exc.strerror})")
+        if captured_files is None:
+            if not target.is_file():
+                fail(f"listed file {entry.path} is missing on disk")
+            try:
+                raw = target.read_bytes()
+            except OSError as exc:
+                fail(f"listed file {entry.path} unreadable ({exc.strerror})")
+        else:
+            try:
+                raw = captured_files[entry.path]
+            except KeyError:
+                fail(f"listed file {entry.path} is missing from held capture bytes")
         if sha256_hex(raw) != entry.sha256:
             fail(f"listed file {entry.path} re-hash mismatch: tampered capture file")
         if len(raw) != entry.bytes:
             fail(f"listed file {entry.path} is {len(raw)} bytes, manifest pins {entry.bytes}")
 
-    unlisted = sorted(_json_files_on_disk(capture_dir) - set(listed))
+    observed = (
+        _json_files_on_disk(capture_dir)
+        if observed_json_files is None
+        else observed_json_files
+    )
+    unlisted = sorted(observed - set(listed))
     if unlisted:
         fail(f"*.json on disk but not in files[]: {', '.join(unlisted)}")
 
@@ -359,4 +390,5 @@ __all__ = [
     "build_massive_capture_manifest",
     "load_massive_capture_manifest",
     "verify_massive_capture_manifest",
+    "verify_massive_capture_manifest_tokens",
 ]

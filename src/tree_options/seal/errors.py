@@ -20,6 +20,20 @@ class SealError(RuntimeError):
         self.detail = detail
 
 
+class VerifiedInputsError(SealError):
+    """A typed G4 input or its filesystem custody failed verification."""
+
+    exit_code = 2
+
+    def __init__(self, component: str, detail: str) -> None:
+        self.component = component
+        super().__init__(
+            "VERIFIED_INPUTS_REFUSED",
+            f"{component}: {detail}; no verified packet was emitted and no G4 "
+            "authority was consumed",
+        )
+
+
 class LedgerRootRefusedError(SealError):
     """A host rule made mechanical: authority may never live under /tmp.
 

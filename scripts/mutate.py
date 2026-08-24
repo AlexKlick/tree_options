@@ -2449,8 +2449,14 @@ MUTANTS = [
         id="M213-content-identity-includes-code",
         owner="test_content_identity_stable_across_code_sha_change_while_run_id_changes",
         file="src/tree_options/seal/identity.py",
-        anchor='blanked = identity.model_copy(update={"code_sha": ""})',
-        replacement='blanked = identity.model_copy(update={"code_sha": identity.code_sha})',
+        anchor=(
+            'blanked = identity.model_copy(update={"code_sha": "", '
+            '"verified_packet_sha256": ""})'
+        ),
+        replacement=(
+            'blanked = identity.model_copy(update={"code_sha": identity.code_sha, '
+            '"verified_packet_sha256": ""})'
+        ),
         selectors=[f"{U}/test_seal_identity.py"],
         invariant=(
             "A5 the content identity BLANKS code_sha: two checkouts of the"
@@ -2469,7 +2475,7 @@ MUTANTS = [
     # survives in M229.
     dict(
         id="M229-stored-consumption-ids-trusted",
-        owner="test_consumption_record_with_inconsistent_stored_ids_refused_as_corrupt",
+        owner="test_forged_consumption_stored_ids_refused_as_corrupt",
         file="scripts/g4_seal.py",
         anchor=(
             "        if record.sealed_run_id != record_run_id"
@@ -2490,11 +2496,9 @@ MUTANTS = [
         owner="test_approval_tampered_payload_exit_6",
         file="scripts/g4_seal.py",
         anchor=(
-            "        record.kind == KIND_APPROVAL\n"
-            "        and record.sealed_run_id == run_id\n"
             "        and sealed_run_id(record.identity) == run_id"
         ),
-        replacement=("        record.kind == KIND_APPROVAL\n        and True\n        and True"),
+        replacement="        and True",
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
             "A5 the approval is RECOMPUTED from the record's own payload and"
@@ -2505,13 +2509,14 @@ MUTANTS = [
     ),
     dict(
         id="M216-verdict-leak",
-        owner="test_preflight_all_available_verdict_is_null_and_not_computed",
+        owner="test_preflight_all_verified_verdict_is_null_and_not_computed",
         file="scripts/g4_seal.py",
         anchor=(
             "    report = PreflightReport(\n"
             "        verdict=None,\n"
             "        verdict_computed=False,\n"
             "        criteria_inputs=statuses,\n"
+            "        verified_inputs=packet,\n"
             "    )"
         ),
         replacement=(
@@ -2519,6 +2524,7 @@ MUTANTS = [
             "        verdict=None,\n"
             "        verdict_computed=any(s.available for s in statuses.values()),\n"
             "        criteria_inputs=statuses,\n"
+            "        verified_inputs=packet,\n"
             "    )"
         ),
         selectors=[f"{U}/test_g4_seal.py"],
@@ -2544,14 +2550,14 @@ MUTANTS = [
     ),
     dict(
         id="M218-consume-after-work",
-        owner="test_first_execution_consumption_durable_before_runner",
+        owner="test_first_execution_consumption_durable_before_runner_gets_same_held_bytes",
         file="scripts/g4_seal.py",
         anchor=(
             "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)\n"
-            "    outcome = runner(identity)"
+            "    outcome = runner(current)"
         ),
         replacement=(
-            "    outcome = runner(identity)\n"
+            "    outcome = runner(current)\n"
             "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)"
         ),
         selectors=[f"{U}/test_g4_seal.py"],
@@ -2852,6 +2858,278 @@ MUTANTS = [
             "PR13 run.json is immutable in full, including process-incarnation"
             " fields excluded from deterministic run-id computation"
         ),
+    ),
+    # ---- PR13 G4 typed verified-input packet and effect-boundary join -------
+    dict(
+        id="M244-g4-cboe-foreign-schema-accepted",
+        owner="test_correctly_self_hashed_foreign_manifest_version_refuses",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor="if manifest.schema_version != REAL_OPTIONS_SCHEMA_VERSION:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 1 accepts only the pinned Cboe manifest schema version",
+    ),
+    dict(
+        id="M245-g4-cboe-real-verifier-bypassed",
+        owner="test_missing_or_tampered_referenced_payload_refuses",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        verify_real_options_manifest(\n"
+            "            manifest,\n"
+            "            result,\n"
+            "            overlay=overlay,\n"
+            "            source_bytes=source_raw,\n"
+            "        )"
+        ),
+        replacement="        pass  # MUTATED: Cboe semantic verifier bypassed",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 1 calls the real Cboe manifest and payload verifier",
+    ),
+    dict(
+        id="M246-g4-massive-foreign-schema-accepted",
+        owner="test_correctly_self_hashed_foreign_manifest_version_refuses",
+        file="src/tree_options/data/massive_manifest.py",
+        anchor="if manifest.schema_version != MASSIVE_MANIFEST_SCHEMA_VERSION:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 2 accepts only the pinned Massive manifest schema",
+    ),
+    dict(
+        id="M247-g4-massive-foreign-capture-accepted",
+        owner="test_correctly_self_hashed_foreign_massive_capture_version_refuses",
+        file="src/tree_options/data/massive_manifest.py",
+        anchor="if manifest.capture_version != capture_version:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 2 accepts only the predeclared m4b-capture/1 producer",
+    ),
+    dict(
+        id="M248-g4-massive-real-verifier-bypassed",
+        owner="test_massive_unlisted_json_is_reconciled_from_held_directory",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "            verify_massive_capture_manifest(\n"
+            "                manifest,\n"
+            "                paths.lane2_manifest.parent,\n"
+            "                capture_version=EXPECTED_MASSIVE_CAPTURE_VERSION,\n"
+            "                captured_files=held_by_path,\n"
+            "                observed_json_files=observed,\n"
+            "            )"
+        ),
+        replacement="            pass  # MUTATED: Massive reconciliation bypassed",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 2 calls the real Massive bytes and disk-census verifier",
+    ),
+    dict(
+        id="M249-g4-criteria-identifiers-unfrozen",
+        owner="test_criteria_identifiers_are_exact_and_ordered",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="if ids != CRITERION_IDS:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The typed criteria artifact carries the exact six frozen criterion ids",
+    ),
+    dict(
+        id="M250-g4-criteria-source-join-void",
+        owner="test_stale_criteria_source_document_sha_refuses",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="if criteria.source_sha256 != criteria_source_sha:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The held criteria artifact is joined to the held frozen source document",
+    ),
+    dict(
+        id="M251-g4-calendar-enum-opened",
+        owner="test_correctly_self_hashed_foreign_calendar_decision_refuses",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            'CalendarDecision = Literal["repo-generated-calendar", '
+            '"weekend-only-accepted"]'
+        ),
+        replacement="CalendarDecision = str",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The owner calendar decision is one of the two predeclared choices",
+    ),
+    dict(
+        id="M252-g4-calendar-content-unbound",
+        owner="test_calendar_decision_content_hash_rejects_typed_body_tamper",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        if self.content_sha256 != expected:\n"
+            '            raise ValueError("calendar decision content_sha256 does not bind the typed body")'
+        ),
+        replacement="        if False:\n            raise ValueError(\"MUTATED\")",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The typed owner calendar decision self-hash binds its complete body",
+    ),
+    dict(
+        id="M253-g4-packet-content-unbound",
+        owner="test_packet_self_hash_rejects_caller_tamper",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        if self.packet_content_sha256 != expected:\n"
+            '            raise ValueError("packet_content_sha256 does not bind the verified-input body")'
+        ),
+        replacement="        if False:\n            raise ValueError(\"MUTATED\")",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="VerifiedSealedInputs is immutable and self-binding over every field",
+    ),
+    dict(
+        id="M254-g4-input-directory-nofollow-removed",
+        owner="test_intermediate_manifest_directory_symlink_is_never_followed",
+        file="src/tree_options/seal/input_custody.py",
+        anchor="_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW",
+        replacement="_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="Every G4 input path component is opened O_DIRECTORY|O_NOFOLLOW",
+    ),
+    dict(
+        id="M255-g4-input-hard-links-accepted",
+        owner="test_hard_linked_manifest_is_refused",
+        file="src/tree_options/seal/input_custody.py",
+        anchor="if st.st_nlink != 1:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="Every held G4 input file has one unambiguous directory name",
+    ),
+    dict(
+        id="M256-g4-input-inplace-rewrite-unnoticed",
+        owner="test_in_place_rewrite_during_single_read_is_refused",
+        file="src/tree_options/seal/input_custody.py",
+        anchor=(
+            "if _stable_file_fields(before) != _stable_file_fields(after) "
+            "or len(raw) != after.st_size:"
+        ),
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="A G4 input cannot change while its single held-inode read is in progress",
+    ),
+    dict(
+        id="M257-g4-protocol-raw-hash-substituted",
+        owner="test_protocol_hash_comes_from_the_validated_protocol_model",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="protocol_sha = protocol_hash(load_protocol_bytes(protocol_raw))",
+        replacement="protocol_sha = sha256_hex(protocol_raw)",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 binds the canonical hash of the validated protocol model",
+    ),
+    dict(
+        id="M258-g4-checkout-movement-unnoticed",
+        owner="test_checkout_movement_during_verification_refuses",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="if after_sha != before_sha:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The checkout SHA is stable across all held input reads",
+    ),
+    dict(
+        id="M259-g4-current-packet-crossjoin-void",
+        owner="test_current_packet_must_equal_approved_packet",
+        file="scripts/g4_seal.py",
+        anchor="if current.packet != expected_packet:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="Execution re-verifies current bytes and equals them to the approved packet",
+    ),
+    dict(
+        id="M260-g4-runner-version-crossjoin-void",
+        owner="test_runner_version_is_cross_joined_before_consumption",
+        file="scripts/g4_seal.py",
+        anchor="if presented_runner_version != expected_packet.runner_version:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="The invoked runner machinery version equals the approved packet",
+    ),
+    dict(
+        id="M261-g4-ledger-packet-hash-not-bound",
+        owner="test_first_execution_consumption_durable_before_runner_gets_same_held_bytes",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="verified_packet_sha256=packet.packet_content_sha256,",
+        replacement='verified_packet_sha256="0" * 64,',
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="APPROVAL and CONSUMPTION identities explicitly carry the verified packet hash",
+    ),
+    dict(
+        id="M262-g4-runner-rereads-paths",
+        owner="test_runner_uses_preconsumption_held_bundle_when_paths_move_during_append",
+        file="scripts/g4_seal.py",
+        anchor="outcome = runner(current)",
+        replacement="outcome = runner(verify_sealed_inputs(inputs, git_runner=git_runner))",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="The runner receives the same pre-consumption held bytes, never a path re-read",
+    ),
+    dict(
+        id="M263-g4-lane1-payload-set-unbound",
+        owner="test_verified_packet_comes_only_from_real_typed_verifiers",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        manifest_version=manifest.schema_version,\n"
+            "        referenced_payload_set_hash=_payload_set_hash(payloads),"
+        ),
+        replacement=(
+            "        manifest_version=manifest.schema_version,\n"
+            "        referenced_payload_set_hash=sha256_hex(manifest_raw),"
+        ),
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="Lane 1 packet binding separately hashes its referenced payload set",
+    ),
+    dict(
+        id="M264-g4-lane2-payload-set-unbound",
+        owner="test_verified_packet_comes_only_from_real_typed_verifiers",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        manifest_version=MASSIVE_MANIFEST_SCHEMA_VERSION,\n"
+            "        referenced_payload_set_hash=_payload_set_hash(payloads),"
+        ),
+        replacement=(
+            "        manifest_version=MASSIVE_MANIFEST_SCHEMA_VERSION,\n"
+            "        referenced_payload_set_hash=sha256_hex(manifest_raw),"
+        ),
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="Lane 2 packet binding separately hashes every master/bar/spot payload",
+    ),
+    dict(
+        id="M265-g4-dirty-checkout-accepted",
+        owner="test_preflight_dirty_tracked_tree_unavailable",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="if dirty:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="A tracked-dirty checkout cannot produce a verified G4 packet",
+    ),
+    dict(
+        id="M266-g4-effect-boundary-ledger-recheck-void",
+        owner=(
+            "test_interleaved_consumption_after_input_verification_is_refused_at_effect_boundary"
+        ),
+        file="scripts/g4_seal.py",
+        anchor=(
+            "    view = read_ledger(ledger_root)\n"
+            "    _check_authority(view, identity)\n\n"
+            "    consumption_record = LedgerRecord("
+        ),
+        replacement=(
+            "    view = read_ledger(ledger_root)\n\n"
+            "    consumption_record = LedgerRecord("
+        ),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="Approval and duplicate authority are rechecked at the final spend boundary",
+    ),
+    dict(
+        id="M267-g4-execute-packet-selfcheck-void",
+        owner="test_execute_revalidates_packet_self_hash_before_ledger_access",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "    try:\n"
+            "        expected_packet = VerifiedSealedInputs.model_validate_json(\n"
+            "            expected_packet.model_dump_json()\n"
+            "        )\n"
+            "    except Exception as exc:\n"
+            "        raise VerifiedInputsError(\"packet\", f\"expected packet self-validation failed: {exc}\") from None"
+        ),
+        replacement="    expected_packet = expected_packet  # MUTATED: self-check bypassed",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="Execute revalidates packet self-binding even after low-level model construction",
     ),
 ]
 

@@ -372,25 +372,42 @@ ratifying a change invalidates prior manifests.
 ```
 uv run --frozen python scripts/g4_seal.py preflight \
     --lane1-manifest <cboe-manifest.json> \
+    --lane1-source <cboe-source.csv> \
     --lane2-manifest artifacts/m4b-coverage-era/capture_manifest.json \
-    --calendar-decision <declared-decision-not-PENDING> \
-    --criteria-sha256 <sha256-of-data/g4/sealed-criteria.json> \
+    --calendar-decision-artifact <owner-calendar-decision.json> \
     --ledger-root artifacts/g4-authority                        # read-only
 ```
 
-Preflight verifies the AVAILABILITY of the six sealed-run inputs
-(`code_sha` from a clean tracked tree, `protocol_hash`, the lane 1 and
-lane 2 manifest hashes, the holiday-calendar decision — PENDING means
-undecided means unavailable — and the sealed-criteria sha256). The
-output verdict is structurally null: `verdict` is pinned to `null` and
-`verdict_computed` to `false`, so no code path can compute, infer, or
-display one. No network, no broker, no run.
+Preflight constructs a typed immutable `VerifiedSealedInputs` packet or
+emits no packet. It checks `code_sha` from a clean checkout before and
+after the reads; parses the held protocol bytes; runs the real Cboe
+manifest verifier over the held lane-1 source; runs
+`verify_massive_capture_manifest(..., capture_version="m4b-capture/1")`
+over every held lane-2 master/bar/spot payload and its held directory
+census; validates a typed owner calendar-decision artifact; and validates
+`data/g4/sealed-criteria.json`, the exact six criterion identifiers, and
+its source-document SHA. Every path component and final file is read under
+no-follow custody. The packet records raw manifest hashes, typed manifest
+content hashes, referenced-payload-set hashes, the criteria artifact/source
+hashes, runner version, and its own content hash.
+
+The output verdict is structurally null: `verdict` is pinned to `null` and
+`verdict_computed` to `false`, so no code path can compute, infer, or display
+one. No network, no broker, no run. A missing owner calendar artifact is an
+unavailable input (exit 2), never a defaulted decision.
 
 **EXECUTE IS PROHIBITED in this campaign.** `g4_seal execute` is
 implemented but the CLI wires no runner and refuses (exit 2) before
 touching the ledger; the one-shot consumption exists as a library seam
 for the sealed event itself, after the owner declares the head. Do not
 run it, do not wire a runner into it.
+
+The library seam accepts the approved verified packet plus the current
+input paths, not a caller-asserted `SealedIdentity`. Immediately before the
+authority spend it rebuilds the packet, requires byte-for-byte packet
+equality, joins the declared runner version, and rechecks the ledger. The
+runner receives the same immutable held-byte bundle that passed verification;
+it does not re-read input paths.
 
 One-shot semantics: any CONSUMPTION record whose `sealed_run_id` OR
 `content_identity` matches this run refuses (exit 7). That is why a

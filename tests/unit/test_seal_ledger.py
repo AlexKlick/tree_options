@@ -26,8 +26,9 @@ def _identity(**overrides: str) -> SealedIdentity:
         protocol_hash="b" * 64,
         lane1_manifest_sha256="c" * 64,
         lane2_manifest_sha256="d" * 64,
-        calendar_decision="repo-generated-calendar",
-        criteria_sha256="e" * 64,
+        calendar_decision_artifact_sha256="e" * 64,
+        criteria_artifact_sha256="f" * 64,
+        verified_packet_sha256="0" * 64,
     )
     fields.update(overrides)
     return SealedIdentity(**fields)
