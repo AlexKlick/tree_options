@@ -186,17 +186,33 @@ class PreflightReport(StrictModel):
 # ---- gate helpers -----------------------------------------------------------------
 
 
+def _approvals_binding(
+    view: BarsLedgerView, current_protocol_hash: str
+) -> list[BarsAuthorityRecord]:
+    """EVERY approval record binding the CURRENT protocol hash, in ledger order.
+
+    Round-4 review fix (2026-08-23, finding 6): a ledger may legitimately
+    carry APPROVAL(P, M1) and APPROVAL(P, M2) for the same protocol — the
+    authority join in run_execute must narrow these candidates by every
+    field the site compares, never trust one pre-selected record."""
+    return [
+        record
+        for record in view.records
+        if record.kind == KIND_BARS_LAUNCH_APPROVAL
+        and record.protocol_hash == current_protocol_hash
+    ]
+
+
 def _matching_approval(
     view: BarsLedgerView, current_protocol_hash: str
 ) -> BarsAuthorityRecord | None:
-    """The approval record binding the CURRENT protocol hash, if any."""
-    for record in view.records:
-        if (
-            record.kind == KIND_BARS_LAUNCH_APPROVAL
-            and record.protocol_hash == current_protocol_hash
-        ):
-            return record
-    return None
+    """The FIRST approval record binding the CURRENT protocol hash, if any.
+
+    Protocol-gate use only: ANY such record opens the gate. The execute-side
+    authority joins use _approvals_binding and narrow by every compared
+    field (round-4 review fix, finding 6) — see run_execute."""
+    approvals = _approvals_binding(view, current_protocol_hash)
+    return approvals[0] if approvals else None
 
 
 def _protocol_gate_failure(protocol: ResearchProtocol, view: BarsLedgerView) -> str | None:
@@ -578,7 +594,13 @@ def run_execute(
         return 6, None
     current_hash = protocol_hash(protocol)
     reason = _protocol_gate_failure(protocol, view)
-    approval = _matching_approval(view, current_hash)
+    # Round-4 review fix (2026-08-23, finding 6): the protocol gate opens on
+    # ANY approval binding the protocol hash, but the execute-side authority
+    # join narrows EVERY such record by the fields this site compares — the
+    # first protocol-matching record used to shadow a later approval of a
+    # DIFFERENT work manifest (APPROVAL(P, M1) then APPROVAL(P, M2): M2's
+    # exact inputs refused exit 6 although APPROVAL(P, M2) grants them).
+    approvals = _approvals_binding(view, current_hash)
     work_status, work_manifest, work_manifest_sha = _work_manifest_check(args)
     if reason is not None or not work_status.ok:
         detail = reason if reason is not None else work_status.detail
@@ -588,7 +610,8 @@ def run_execute(
     # hash of the verified bytes are bound here (round-3 finding 2).
     assert work_manifest is not None
     assert work_manifest_sha is not None
-    if approval is None or approval.work_manifest_sha256 != work_manifest_sha:
+    approvals = [r for r in approvals if r.work_manifest_sha256 == work_manifest_sha]
+    if not approvals:
         print(
             "EXECUTE REFUSED (authority): no BARS_LAUNCH_APPROVAL record binds"
             f" protocol hash {current_hash[:12]}… AND work manifest"
@@ -604,13 +627,15 @@ def run_execute(
                 f"EXECUTE REFUSED (authority): amendment packet unreadable: {exc}", file=sys.stderr
             )
             return 6, None
-        if packet_sha != approval.amendment_packet_sha256:
+        packet_bound = [r for r in approvals if r.amendment_packet_sha256 == packet_sha]
+        if not packet_bound:
             print(
                 f"EXECUTE REFUSED (authority): amendment packet hash {packet_sha[:12]}… !="
-                f" the approved record's {approval.amendment_packet_sha256[:12]}…",
+                f" the approved record's {approvals[0].amendment_packet_sha256[:12]}…",
                 file=sys.stderr,
             )
             return 6, None
+        approvals = packet_bound
 
     # Round-1 review fix (2026-08-23, probe FORGED_CONSUMPTION_REPLAYED for
     # bars-execute analogous): the runstate store's identity MUST agree with
@@ -669,15 +694,21 @@ def run_execute(
         print(f"EXECUTE REFUSED (census): {census_failure}", file=sys.stderr)
         return 6, None
     assert census is not None  # narrowed for the joins below
-    if census.content_sha256 != approval.census_sha256:
+    # Round-4 review fix (finding 6), continued: the census join narrows the
+    # remaining approval candidates the same way — refuse only when NO record
+    # binding the earlier joins names this census.
+    census_bound = [r for r in approvals if r.census_sha256 == census.content_sha256]
+    if not census_bound:
         print(
             "EXECUTE REFUSED (identity): the approval record names census"
-            f" {approval.census_sha256[:12]}… but the verified census on disk"
+            f" {approvals[0].census_sha256[:12]}… but the verified census on disk"
             f" is {census.content_sha256[:12]}… — the approval must name THIS"
             " census",
             file=sys.stderr,
         )
         return 6, None
+    approvals = census_bound
+    approval = approvals[0]
     if store_identity.code_sha != census.provenance.code_sha:
         print(
             "EXECUTE REFUSED (identity): run-state store code_sha"

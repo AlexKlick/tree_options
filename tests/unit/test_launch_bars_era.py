@@ -510,6 +510,60 @@ def test_execute_exit_6_on_packet_hash_mismatch(scenario: dict[str, Path]) -> No
     assert calls == []
 
 
+# ---- round-4 (finding 6): the authority join searches EVERY approval -----------------
+#
+# Round-4 review fix (2026-08-23): _matching_approval returned the FIRST
+# record binding the protocol hash and execute compared THAT record's
+# work_manifest_sha256 — so a ledger carrying APPROVAL(P, M1) then
+# APPROVAL(P, M2) refused (exit 6, "no approval binds protocol AND
+# manifest") an execute with M2's exact inputs, although APPROVAL(P, M2)
+# grants exactly that. The protocol gate still opens on ANY record binding
+# the protocol hash; the execute-side join narrows ALL such records by every
+# field the site compares (work manifest, then packet, then census).
+
+
+def test_execute_authority_searches_all_approvals_not_just_the_first(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The reviewer's exact ledger: APPROVAL(P, M1) appended first, then
+    APPROVAL(P, M2) for the scenario's own work manifest. Executing with
+    M2's exact inputs must pass the authority gate — the earlier approval
+    of a DIFFERENT work manifest does not shadow M2's grant."""
+    _approve(scenario, work_manifest_sha256="f" * 64)  # M1: an earlier, different grid
+    _approve(scenario)  # M2: binds this scenario's exact inputs
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    err = capsys.readouterr().err
+    assert "no BARS_LAUNCH_APPROVAL record binds" not in err, (
+        "APPROVAL(P, M2) binds the verified protocol hash AND work manifest"
+    )
+    assert code == 0, "the authority refusal is gone; every other gate is green here"
+    assert calls == ["runner"]
+    assert summary is not None and summary.runner_outcome == "fake-runner-ok"
+    view = read_bars_ledger(scenario["authority_root"])
+    assert [r.kind for r in view.records] == [
+        "BARS_LAUNCH_APPROVAL",
+        "BARS_LAUNCH_APPROVAL",
+        "BARS_LAUNCH_CONSUMED",
+    ], "one consumption, after both approvals"
+
+
+def test_execute_still_refuses_when_no_approval_binds_the_manifest(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The narrowing must not weaken the refusal: approvals exist for the
+    protocol but NONE binds the verified work manifest — exit 6 stands, and
+    the message still names the tuple."""
+    _approve(scenario, work_manifest_sha256="1" * 64)
+    _approve(scenario, work_manifest_sha256="2" * 64)
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 6 and summary is None and calls == []
+    assert "no BARS_LAUNCH_APPROVAL record binds" in capsys.readouterr().err
+    view = read_bars_ledger(scenario["authority_root"])
+    assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL"] * 2
+
+
 # ---- round-2 (finding 5): execute-time census + identity cross-join -------------------
 #
 # Probe /tmp/pr-a-bars-execute-binding-probe.log: a BARS_READY store with
