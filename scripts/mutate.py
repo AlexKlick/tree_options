@@ -2460,20 +2460,10 @@ MUTANTS = [
     # removed that comparison (replaced by recompute-from-payload), so
     # the mutant's anchor no longer exists in scripts/g4_seal.py. The
     # fix is load-bearing; the new round-1 equivalent is M229 below
-    # (recompute trust gutted). Retained here as a no-op doc marker so
-    # the ID space stays stable for review.
-    dict(
-        id="M214-second-execution-accepted",
-        owner="test_second_execution_same_identity_exit_7",
-        file="scripts/g4_seal.py",
-        anchor="__ANCHOR_REMOVED_BY_F7_FIX__ if False:",
-        replacement="if False:",
-        selectors=[f"{U}/test_g4_seal.py"],
-        invariant=(
-            "A5 superseded by M229 (F7 recompute trust gutted); the stored-"
-            " ids comparison is gone from scripts/g4_seal.py after the F7 fix"
-        ),
-    ),
+    # (recompute trust gutted). The M214 slot is intentionally NOT
+    # in the MUTANTS list — an anchored entry here would be classified
+    # MUTATION_DRIFT and fail the harness's exit-0 gate. The invariant
+    # survives in M229.
     dict(
         id="M215-approval-reverify-void",
         owner="test_approval_tampered_payload_exit_6",
