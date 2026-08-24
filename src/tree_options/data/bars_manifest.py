@@ -1210,6 +1210,38 @@ def append_bars_record(
                 os.lseek(fd, 0, os.SEEK_END)
                 os.write(fd, (_encode_bars_record(signed) + "\n").encode("utf-8"))
                 os.fsync(fd)
+                # Round-8 review fix (2026-08-24, finding 3): the bars-authority
+                # mirror of seal.ledger's name check. The append must verify the
+                # NAME still maps to the locked inode before returning success:
+                # a rename+clone during the append landed the consumption under
+                # a renamed file while a clone held the authority name, and a
+                # second launcher on the clone spent the one-shot launch
+                # authority again. Checked under the same flock and custody
+                # root fd; a divergence is RECONCILIATION, never success.
+                locked = os.fstat(fd)
+                try:
+                    named = os.stat(BARS_LEDGER_FILENAME, dir_fd=root_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise LedgerCorruptError(
+                        f"{path}: the bars-authority NAME vanished after the "
+                        f"append ({exc.strerror}) — the one-shot lock domain is "
+                        "the locked inode, so authority may have been consumed "
+                        "under a renamed file: this refusal is RECONCILIATION, "
+                        "never success"
+                    ) from None
+                if not stat.S_ISREG(named.st_mode) or (named.st_dev, named.st_ino) != (
+                    locked.st_dev,
+                    locked.st_ino,
+                ):
+                    raise LedgerCorruptError(
+                        f"{path}: the bars-authority NAME no longer maps to the "
+                        f"locked inode (locked fd dev {locked.st_dev} ino "
+                        f"{locked.st_ino}, name holds dev {named.st_dev} ino "
+                        f"{named.st_ino}, mode {stat.S_IFMT(named.st_mode):o}) — "
+                        "authority may have been consumed under a renamed file "
+                        "while a clone holds the name: this refusal is "
+                        "RECONCILIATION, never success"
+                    )
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:

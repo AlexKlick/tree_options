@@ -417,3 +417,70 @@ def test_intermediate_component_symlink_swap_refused_component_wise(
             parent.unlink()
         shutil.rmtree(target, ignore_errors=True)
         shutil.rmtree(parent.parent / (parent.name + ".held"), ignore_errors=True)
+
+
+# ---- round-8 (finding 3): the append must verify the NAME still maps to the locked inode
+#
+# Round-8 review fix (2026-08-24): append_record opens ledger.jsonl
+# O_NOFOLLOW at the final name, flocks, appends, fsyncs — but never verified
+# that the NAME still maps to the locked inode. During the first append an
+# attacker renames ledger.jsonl to .held and installs a byte-copy clone
+# (approval-only) at the name: the first execution appends its consumption
+# to .held, returns SUCCESS, and invokes the runner; a second execution
+# reads the clone, appends its own consumption, and invokes again — the
+# one-shot is broken. After the append + fsync, still holding the flock and
+# the custody root fd, os.stat(LEDGER_FILENAME, dir_fd=root_fd,
+# follow_symlinks=False) must be a regular file whose (st_dev, st_ino)
+# equals the locked fd's fstat identity; any divergence is
+# LedgerCorruptError naming both identities — the refusal is RECONCILIATION,
+# never success.
+
+
+def test_final_name_clone_swap_during_append_refused(ledger_root, monkeypatch: pytest.MonkeyPatch):
+    """The racing point is the append's os.write: the wrapper renames the
+    ledger to .held (the locked fd follows the inode) and installs a
+    byte-copy clone (approval-only) at the name, then performs the real
+    write. Pre-fix the append returns SUCCESS — the consumption lands under
+    .held while the authority name holds the clone, and a second execution
+    on the clone would consume again; post-fix the name check refuses
+    naming both identities, the authority name still holds ONLY the
+    approval, and the consumption is stranded as reconciliation evidence
+    under .held."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
+    ledger_path = ledger_root / L.LEDGER_FILENAME
+    before = ledger_path.read_bytes()  # the APPROVAL line only
+    real_write = os.write
+    armed = {"done": False}
+
+    def write_cloning_the_name(fd: int, data: bytes) -> int:
+        if not armed["done"]:
+            armed["done"] = True  # the window: between the open and the write
+            held = ledger_root / (L.LEDGER_FILENAME + ".held")
+            os.rename(ledger_path, held)  # the locked fd keeps the inode
+            ledger_path.write_bytes(before)  # a byte-copy CLONE at the name
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", write_cloning_the_name)
+    try:
+        with pytest.raises(LedgerCorruptError) as exc_info:
+            L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)
+        message = str(exc_info.value)
+        assert L.LEDGER_FILENAME in message, "the refusal names the ledger"
+        assert "RECONCIL" in message, "the refusal says this is reconciliation, never success"
+        # the authority NAME still holds ONLY the approval: the consumption
+        # never landed at the name the next reader opens, so the one-shot
+        # was not spent at the authority surface
+        assert ledger_path.read_bytes() == before, (
+            "no consumption may land at the cloned authority name"
+        )
+        # the orphaned consumption lives under .held — reconciliation
+        # evidence of the incident, never a second spend at the name
+        held = ledger_root / (L.LEDGER_FILENAME + ".held")
+        assert b'"CONSUMPTION"' in held.read_bytes(), (
+            "the refused append's record is stranded under the renamed file"
+        )
+    finally:
+        # the RED run strands the consumption under .held: never leave it
+        with contextlib.suppress(OSError):
+            (ledger_root / (L.LEDGER_FILENAME + ".held")).unlink()

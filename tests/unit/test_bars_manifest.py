@@ -955,3 +955,67 @@ def test_swapped_capture_manifest_after_the_bind_guard_refuses(
     assert "drifted" in message, "the refusal names the drift"
     assert honest_sha[:12] in message, "the refusal names the verified hash"
     assert swapped_sha[:12] in message, "the refusal names the swapped hash"
+
+
+# ---- round-8 (finding 3): the bars append must verify the NAME maps to the locked inode
+#
+# Round-8 review fix (2026-08-24): the bars-authority mirror of the seal
+# ledger's clone-swap race (test_seal_ledger.py). append_bars_record opens
+# ledger.jsonl O_NOFOLLOW, flocks, appends, fsyncs — but never verified the
+# NAME still maps to the locked inode. A rename+clone during the first
+# consumption append returned SUCCESS (the consumption landing under .held
+# while the name held the approval-only clone), and the one-shot launch
+# authority was spendable a second time against the clone.
+
+
+def test_bars_final_name_clone_swap_during_append_refused(
+    scratch_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The racing point is the append's os.write: the wrapper renames the
+    bars ledger to .held (the locked fd follows the inode) and installs a
+    byte-copy clone (approval-only) at the name, then performs the real
+    write. Pre-fix the consumption append returns SUCCESS and a second
+    launcher reading the clone would consume again; post-fix the name check
+    refuses naming both identities, the authority name still holds ONLY the
+    approval, and the consumption is stranded under .held."""
+    root = scratch_root / "bars-authority"
+    fields = dict(
+        protocol_hash="p" * 64,
+        amendment_packet_sha256="a" * 64,
+        census_sha256="c" * 64,
+        work_manifest_sha256="w" * 64,
+    )
+    bm.append_bars_launch_approval(root, reason="owner approved", at_epoch=T0, **fields)
+    ledger_path = root / bm.BARS_LEDGER_FILENAME
+    before = ledger_path.read_bytes()  # the APPROVAL line only
+    real_write = os.write
+    armed = {"done": False}
+
+    def write_cloning_the_name(fd: int, data: bytes) -> int:
+        if not armed["done"]:
+            armed["done"] = True
+            held = root / (bm.BARS_LEDGER_FILENAME + ".held")
+            os.rename(ledger_path, held)
+            ledger_path.write_bytes(before)  # the approval-only clone
+        return real_write(fd, data)
+
+    monkeypatch.setattr(os, "write", write_cloning_the_name)
+    try:
+        with pytest.raises(LedgerCorruptError) as exc_info:
+            bm.append_bars_launch_consumed(
+                root, reason="bars era launched", at_epoch=T0 + 1, **fields
+            )
+        message = str(exc_info.value)
+        assert bm.BARS_LEDGER_FILENAME in message, "the refusal names the ledger"
+        assert "RECONCIL" in message, "the refusal says this is reconciliation, never success"
+        assert ledger_path.read_bytes() == before, (
+            "no consumption may land at the cloned authority name — the "
+            "one-shot launch authority was not spent at the authority surface"
+        )
+        held = root / (bm.BARS_LEDGER_FILENAME + ".held")
+        assert b"BARS_LAUNCH_CONSUMED" in held.read_bytes(), (
+            "the refused append's record is stranded under the renamed file"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            (root / (bm.BARS_LEDGER_FILENAME + ".held")).unlink()

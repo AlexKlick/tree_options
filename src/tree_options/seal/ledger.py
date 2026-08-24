@@ -50,6 +50,7 @@ import errno
 import fcntl
 import json
 import os
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, NoReturn
@@ -353,6 +354,40 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                 os.lseek(fd, 0, os.SEEK_END)
                 os.write(fd, (_encode(signed) + "\n").encode("utf-8"))
                 os.fsync(fd)
+                # Round-8 review fix (2026-08-24, finding 3): verify the NAME
+                # still maps to the locked inode BEFORE returning success.
+                # During the append an attacker can rename ledger.jsonl to a
+                # sibling .held (the locked fd follows the inode) and install
+                # a byte-copy clone at the name: the consumption lands under
+                # .held, the call used to return SUCCESS, and a second
+                # execution on the clone consumed again — the one-shot was
+                # broken. The one-shot lock domain is the locked INODE, so
+                # the name is checked under the same flock and the same
+                # custody root fd; a divergence is RECONCILIATION, never
+                # success.
+                locked = os.fstat(fd)
+                try:
+                    named = os.stat(LEDGER_FILENAME, dir_fd=root_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise LedgerCorruptError(
+                        f"{path}: the ledger NAME vanished after the append "
+                        f"({exc.strerror}) — the one-shot lock domain is the "
+                        "locked inode, so authority may have been consumed "
+                        "under a renamed file: this refusal is RECONCILIATION, "
+                        "never success"
+                    ) from None
+                if not stat.S_ISREG(named.st_mode) or (named.st_dev, named.st_ino) != (
+                    locked.st_dev,
+                    locked.st_ino,
+                ):
+                    raise LedgerCorruptError(
+                        f"{path}: the ledger NAME no longer maps to the locked "
+                        f"inode (locked fd dev {locked.st_dev} ino {locked.st_ino}, "
+                        f"name holds dev {named.st_dev} ino {named.st_ino}, mode "
+                        f"{stat.S_IFMT(named.st_mode):o}) — authority may have "
+                        "been consumed under a renamed file while a clone holds "
+                        "the name: this refusal is RECONCILIATION, never success"
+                    )
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
