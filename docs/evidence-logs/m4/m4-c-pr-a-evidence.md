@@ -53,6 +53,7 @@ from that verification are recorded below.
 | `b82bfd9` | evidence: gate9 crash record + rows through 5940b25 (gate11 head) |
 | `1efb697`/`604f8ea`/`f684147`/`2398669`/`cd7a29b` | R5-1: strict CensusFact.v parse; schema/report version pins; entry↔envelope semantic join; amendment output re-resolution + confinement; packet hashes attest consumed bytes |
 | `5be2d3d`/`666bf0c`/`e363500`/`a272405`/`31c9d40`/`a195ea3` | R5-2: cross-store one-shot atomicity; work-manifest verified/hashed/consumed from ONE read; open() binds run id to identity; run.json-only store reports UNKNOWN (exit 3); checklist defers ERA_EXIT; runbook mismatch row → RECONCILIATION |
+| `40da670`/`5ac0e04`/`674bd37`/`13e82f4`/`4fc4802` | R6: semantic demotion covers holiday pairs; output files refuse shared inodes (hard-link aliasing); report_version required, never defaulted; universe generator records the wrapper's absolute real path; execute narrows EVERY approval record, not the first |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -124,6 +125,26 @@ exact-head, read-only; probes re-verified host-side before acceptance):
   and a continuation agent finished 4–6). Finding 10's re-evidence
   (clean-clone with an explicit count line) is produced at the R5 head
   after the final gate.
+- **Round 4** (head `d2ce663`, gate12 GREEN 1,472 / 217 KILLED /
+  restoration TRUE, log `pr-a-codex4.log`): VERDICT NO-GO — 6 findings
+  (2×P1, 4×P2); 8/12 round-3 findings RESOLVED; all constraint checks
+  PASS. Every finding orchestrator-verified against the exact code sites
+  before remediation: holiday pairs escaped the COMPLETE-only semantic
+  demotion (`SPOT_MISSING_HOLIDAY` is outside `INCOMPLETE_CLASSES`, so a
+  foreign-envelope holiday pair exited 0); hard-link aliasing bypassed
+  `_confine_output` (`resolve()` is path-containment; a shared inode
+  truncated a tracked file through the "confined" path); an absent
+  `report_version` defaulted to current and re-hashed clean; the R5
+  clean-clone capture was itself truncated through `tail -5`
+  (evidence-rule violation — a full-capture re-run is produced at the
+  R6 head); the checklist universe regen check false-drifted on
+  relative-vs-absolute wrapper spelling; `_matching_approval` honored
+  only the FIRST approval for a protocol hash. Remediated in R6
+  (`40da670`…`4fc4802`, 5 commits, each red-first; agent logs
+  `/tmp/r61-f*-red.log` + orchestrator re-runs — full suite 1,479,
+  exit 0). One agent-noted deviation: the builder had relied on the
+  `report_version` default rather than setting it explicitly; the fix
+  adds the explicit value (identical bytes, hashes unchanged).
 
 ## Verification evidence (host logs under `~/documents/tree_options-logs/`)
 
