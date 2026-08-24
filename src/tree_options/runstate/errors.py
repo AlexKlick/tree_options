@@ -116,6 +116,26 @@ class RunIdRefusedError(RunStateError):
         )
 
 
+class StoreIdMismatchError(RunStateError):
+    """open() was asked for one run id but the store's run.json names another.
+
+    Probe-derived finding (round-3 review, 2026-08-23): a valid run-A store
+    placed under directory run-B opened cleanly, so bars-era joins used the
+    EMBEDDED identity while runner output used the requested id — one
+    execution, two identities. The directory name and identity.run_id are
+    one fact; a mismatch is misfiled evidence, never a silent alias.
+    """
+
+    def __init__(self, requested: str, stored: str) -> None:
+        super().__init__(
+            "STORE_ID_MISMATCH",
+            f"requested run {requested!r} but the store's run.json names "
+            f"{stored!r}: a run store's directory and its identity are one "
+            "fact — a mismatch is misfiled evidence, never a silent alias "
+            "(round-3 review, 2026-08-23)",
+        )
+
+
 class JournalConcurrentWriteError(RunStateError):
     """append_record's caller-supplied prev_record_sha256 no longer matches
     the file's locked tail under flock.

@@ -12,7 +12,9 @@ This command NEVER repairs anything: a torn projection is reported
 
 Exit codes (contract; also in docs/m4-closeout-runbook.md):
   0  determinate state (ALIVE / DEAD_TERMINAL / terminal journal state)
-  2  store unreadable/corrupt (journal mid-file corruption, torn projection)
+  2  store unreadable/corrupt (journal mid-file corruption, torn projection,
+     or a store whose identity names a DIFFERENT run than its directory —
+     misfiled evidence, round-3 review 2026-08-23)
   3  UNKNOWN / RECONCILIATION_REQUIRED
   4  no run found (and no legacy capture process either)
 """
@@ -125,6 +127,13 @@ def main(argv: list[str] | None = None) -> int:
         return 4
     except rs_errors.JournalCorruptError as exc:
         print(f"JOURNAL CORRUPT: {exc}", file=sys.stderr)
+        return 2
+    except rs_errors.StoreIdMismatchError as exc:
+        # Round-3 review fix (2026-08-23, finding 3): a store whose
+        # directory names another run is misfiled evidence — report it as
+        # unreadable (exit 2), never a traceback and never a status report
+        # under an id the store does not carry.
+        print(f"STORE ID MISMATCH: {exc}", file=sys.stderr)
         return 2
 
     try:

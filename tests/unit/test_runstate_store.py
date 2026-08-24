@@ -19,6 +19,7 @@ from tree_options.runstate import (
 from tree_options.runstate.errors import (
     IllegalTransitionError,
     ManifestMismatchError,
+    StoreIdMismatchError,
 )
 
 BOOT = "11111111-2222-3333-4444-555555555555"
@@ -84,6 +85,30 @@ def test_create_refuses_over_existing_store(root):
 def test_open_missing_run_refused(root):
     with pytest.raises(UnknownRunError):
         RunStore.open(root, "no-such-run")
+
+
+def test_open_refuses_store_dir_named_like_another_run(root):
+    """Round-3 review fix (2026-08-23, finding 3): open() binds the REQUESTED
+    run id to the store's embedded identity.
+
+    A valid run-A store placed under directory run-B used to open cleanly —
+    the bars-era joins then used the EMBEDDED identity while runner output
+    used the requested id (one execution, two identities). The directory
+    name and identity.run_id are one fact; a mismatch is misfiled evidence."""
+    store = RunStore.create(root, _identity(root), now_epoch=T0)
+    # an ordinary second store in the same root keeps opening (regression)
+    other = _identity(root, run_id="m4-test-run-20260823-11111111")
+    RunStore.create(root, other, now_epoch=T0)
+    # the attack: run-A's store directory renamed to run-B
+    misfiled = "m4-misfiled-run-20260823-beefcafe"
+    (root / store.identity.run_id).rename(root / misfiled)
+    with pytest.raises(StoreIdMismatchError) as excinfo:
+        RunStore.open(root, misfiled)
+    assert excinfo.value.code == "STORE_ID_MISMATCH"
+    # the store whose directory MATCHES its identity still opens
+    reopened = RunStore.open(root, other.run_id)
+    assert reopened.identity.run_id == other.run_id
+    assert reopened.state is RunState.PLANNED
 
 
 def test_full_happy_path_transitions(root):

@@ -136,3 +136,20 @@ def test_identity_mismatch_exit_5(root, tmp_path):
         )
         == 5
     )
+
+
+def test_cli_store_id_mismatch_exit_6(root, tmp_path, capsys):
+    """Round-3 review fix (2026-08-23, finding 3): a store whose directory
+    names run-B but whose run.json names run-A used to open — the CLI then
+    journaled into run-A's journal while the operator asked for run-B.
+    Refused with a deterministic exit (6, the run-id refusal family), the
+    journal untouched, no lease taken."""
+    assert _mark(root, RUN_ID, "--create-identity", str(_identity_path(root)), "--reason", "g") == 0
+    misfiled = "m4-marktest-20260823-misfiled0"
+    (root / RUN_ID).rename(root / misfiled)
+    assert _mark(root, misfiled, "CAPTURING", "--reason", "era pass") == 6
+    assert "STORE_ID_MISMATCH" in capsys.readouterr().err
+    # nothing was journaled into the misfiled store and no lease was taken
+    journal = root / misfiled / "journal.jsonl"
+    assert journal.read_text().count("\n") == 1  # GENESIS only
+    assert not (root / misfiled / "lease").exists()

@@ -143,6 +143,32 @@ def test_no_run_found_exit_4(tmp_path):
     )
 
 
+def test_misfiled_store_dir_refused_without_traceback(root, tmp_path, capsys):
+    """Round-3 review fix (2026-08-23, finding 3): opening a store whose
+    directory names ANOTHER run must refuse with the documented
+    read-failure exit (2), never a traceback — era_status is the read-only
+    observer of misfiled evidence."""
+    _create_store(root)
+    misfiled = "m4-statustest-20260823-misfiled0"
+    (root / RUN_ID).rename(root / misfiled)
+    assert (
+        era_status.main(
+            [
+                "--store-root",
+                str(root),
+                "--run-id",
+                misfiled,
+                "--boot-id-override",
+                BOOT,
+                "--now-epoch",
+                str(T0 + 60),
+            ]
+        )
+        == 2
+    )
+    assert "STORE ID MISMATCH" in capsys.readouterr().err
+
+
 def test_legacy_prejournal_era_detected_exit_3(tmp_path, capsys):
     fake_proc = tmp_path / "proc"
     pid_dir = fake_proc / str(os.getpid())

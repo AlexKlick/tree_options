@@ -31,6 +31,7 @@ from tree_options.runstate.errors import (
     PinAlreadyBoundError,
     RunIdRefusedError,
     StoreExistsError,
+    StoreIdMismatchError,
     StoreRootRefusedError,
     UnknownRunError,
 )
@@ -192,6 +193,13 @@ class RunStore:
         if not run_path.exists():
             raise UnknownRunError(run_id)
         identity = RunIdentity.model_validate(json.loads(run_path.read_text(encoding="utf-8")))
+        # Round-3 review fix (2026-08-23, finding 3): bind the REQUESTED id
+        # to the embedded identity — a valid run-A store placed under
+        # directory run-B used to open, so joins used the embedded identity
+        # while runner output used the requested id (one execution, two
+        # identities). Misfiled evidence is refused, never aliased.
+        if identity.run_id != run_id:
+            raise StoreIdMismatchError(run_id, identity.run_id)
         return cls(store_dir, identity)
 
     # -- queries ----------------------------------------------------------

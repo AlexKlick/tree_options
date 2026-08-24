@@ -14,7 +14,9 @@ Exit codes (contract; also in docs/m4-closeout-runbook.md):
   3  lease held by a live owner
   4  unknown run (no store; create one with --create-identity)
   5  store unreadable/corrupt (journal or projection)
-  6  store root/run id refused (volatile root, or a run id that escapes it)
+  6  store root/run id refused (volatile root, a run id that escapes it, or
+     a store whose identity names a DIFFERENT run than the directory —
+     round-3 review, 2026-08-23: misfiled evidence is never aliased)
   7  pin already bound (pinned manifest is immutable evidence)
   8  journal concurrent write (stale prev hash, or a torn tail)
 
@@ -150,7 +152,14 @@ def main(argv: list[str] | None = None) -> int:
     except rs_errors.JournalCorruptError as exc:
         print(f"JOURNAL CORRUPT: {exc}", file=sys.stderr)
         return 5
-    except (rs_errors.StoreRootRefusedError, rs_errors.RunIdRefusedError) as exc:
+    except (
+        rs_errors.StoreRootRefusedError,
+        rs_errors.RunIdRefusedError,
+        rs_errors.StoreIdMismatchError,
+    ) as exc:
+        # Round-3 review fix (finding 3): a store whose identity names a
+        # different run than its directory is a run-id-level refusal —
+        # deterministic exit 6, never a silent alias and never a traceback.
         print(f"STORE ROOT/RUN ID REFUSED: {exc}", file=sys.stderr)
         return 6
 

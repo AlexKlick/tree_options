@@ -117,7 +117,9 @@ transition.
 ```
 Exit codes (contract; also in docs/m4-closeout-runbook.md):
   0  determinate state (ALIVE / DEAD_TERMINAL / terminal journal state)
-  2  store unreadable/corrupt (journal mid-file corruption, torn projection)
+  2  store unreadable/corrupt (journal mid-file corruption, torn projection,
+     or a store whose identity names a DIFFERENT run than its directory —
+     misfiled evidence, round-3 review 2026-08-23)
   3  UNKNOWN / RECONCILIATION_REQUIRED
   4  no run found (and no legacy capture process either)
 ```
@@ -435,9 +437,11 @@ Exit codes (contract; also in docs/m4-closeout-runbook.md):
   3  lease held by a live owner
   4  unknown run (no store; create one with --create-identity)
   5  store unreadable/corrupt (journal or projection)
-  6  refused store root or run id (root resolves under /tmp, or the run
+  6  refused store root or run id (root resolves under /tmp, the run
      id is not a single path component under the validated root —
-     absolute/parent-bearing/symlink-escaping ids are refused)
+     absolute/parent-bearing/symlink-escaping ids are refused — or the
+     opened store's identity names a DIFFERENT run than its directory:
+     misfiled evidence is never aliased, round-3 review 2026-08-23)
   7  pin already bound (a DIFFERENT capture-manifest hash after a pin
      exists; the same hash re-pin is idempotent)
   8  journal concurrent write (append whose prev_record_sha256 does not
