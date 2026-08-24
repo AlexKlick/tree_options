@@ -2111,7 +2111,7 @@ MUTANTS = [
         anchor=(
             "            raise JournalCorruptError(\n"
             "                run_id,\n"
-            '                f"journal line {index + 1} failed decode/hash/chain verification",\n'
+            '                f"journal line {_index + 1} failed decode/hash/chain verification",\n'
             "            )"
         ),
         replacement="            continue",
@@ -2456,17 +2456,22 @@ MUTANTS = [
             " fresh checkout fresh authority"
         ),
     ),
+    # M214 was the round-1 duplicate-guard anchor on stored ids; F7
+    # removed that comparison (replaced by recompute-from-payload), so
+    # the mutant's anchor no longer exists in scripts/g4_seal.py. The
+    # fix is load-bearing; the new round-1 equivalent is M229 below
+    # (recompute trust gutted). Retained here as a no-op doc marker so
+    # the ID space stays stable for review.
     dict(
         id="M214-second-execution-accepted",
         owner="test_second_execution_same_identity_exit_7",
         file="scripts/g4_seal.py",
-        anchor="if record.sealed_run_id == run_id or record.content_identity == content_id:",
+        anchor="__ANCHOR_REMOVED_BY_F7_FIX__ if False:",
         replacement="if False:",
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
-            "A5 a CONSUMPTION record matching this run by sealed_run_id OR"
-            " content_identity refuses the execution (exit 7): the seal is"
-            " one-shot per sealed content"
+            "A5 superseded by M229 (F7 recompute trust gutted); the stored-"
+            " ids comparison is gone from scripts/g4_seal.py after the F7 fix"
         ),
     ),
     dict(
