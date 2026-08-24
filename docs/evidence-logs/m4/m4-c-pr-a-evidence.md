@@ -58,6 +58,7 @@ from that verification are recorded below.
 | `ee419cb`/`59e9d7f`/`0972d19`/`2c3db7b`/`f19bce0`/`f74a9a6` | R8: unpredictable mkstemp temp + published-inode verification; output paths that are themselves symlinks refused even in-root; ledger ROOT taken into custody O_DIRECTORY\|O_NOFOLLOW in BOTH ledgers (dir_fd-relative, ENOTDIR mapped); regeneration completeness (pinned-minus-read must be empty); census re-hashes every capture file at read time via a read-once shim — plus the protected-file correction restoring `inspect_structural_coverage.py` to its base blob |
 | `4888270` | gate16 M199 SURVIVED kill-restoration: owner test gains an unlisted-file phase only manifest verification refuses (the R8 re-hash had masked the deleted-master scenario; mutant re-killed by hand-applied kill-proof, mutate.py untouched) |
 | `cdf67a8`/`337e34a`/`576f120`/`5f1b4df` | R9: publish verification = final-name + byte custody (lstat-regular, O_NOFOLLOW re-open, byte compare); ledger roots walked COMPONENT-WISE from / with dir_fd + O_NOFOLLOW per component (both ledgers, create branch mkdir(dir_fd=)); capture-manifest bytes-once (raw= on the loader, census provenance + BARS binding consume the verified byte set, drift guard read refuses); census refuses pinned-but-unreferenced masters |
+| `9e7a39b`/`db8e050`/`d469753`/`265146a`/`9bc08b5`/`493fed9` | R10: amendment bytes-once (proof step parses the rendered text, emitted hashes rendered bytes) + final-effect sweep at packet attestation; manifest drift guard MOVED to the final effect (census before emission, BARS at the binding); both ledgers re-verify the ledger NAME maps to the locked inode post-fsync under flock (RECONCILIATION, never success); runstate journal O_NOFOLLOW name custody on read + append against a dir-fd-held store dir; census emitter custody writes (CensusEmitRefused → exit 4); amendment output PARENT held under a component-wise custody walk, every write dir_fd-relative |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -316,3 +317,27 @@ the exact PR head (see PR body for its verdict line).
   threading could not refuse a swap landing after the verified read;
   census exit 2 chosen (manifest-tamper family). Full suite 1,502
   (agent + orchestrator runs identical, 0 failures; +7 tests).
+
+- **Round 8** (head `f95b99a`, gate18 GREEN 1,502 / 217 KILLED /
+  restoration TRUE, log `pr-a-codex8.log`): VERDICT NO-GO — 6 findings,
+  all P1; round-7 disposition 2/4 RESOLVED (component walk, census
+  completeness), 2 held NOT_RESOLVED as deeper variants (the R9 fixes
+  put custody inside the helper and guards before the work — the
+  reviewer proved the window moves to AFTER the helper returns and
+  AFTER the guard); all constraint checks PASS. All six
+  orchestrator-verified in source: the amendment builder re-read its
+  published outputs by PATHNAME after `_write_exclusive` released
+  custody (proof step + `emitted`); the manifest drift guards preceded
+  derivation/emission (census) and the binding (BARS); the ledgers
+  opened+flocked the inode but never re-verified the NAME post-fsync
+  (rename+clone breaks the one-shot domain across two executions);
+  runstate's /tmp refusal covered the store root but not the
+  `journal.jsonl` child; the census emitter wrote through final names
+  with plain `write_text` (a planted link truncates a protected-path
+  file); amendment's helpers re-resolved intermediate components after
+  confinement. Remediated in R10 (`9e7a39b`…`493fed9`, 6 commits, each
+  red-first; agent logs `/tmp/r10-f{1..6}-red.log`). F4's fix landed
+  wholly in journal.py (the finding located the defect there; store.py
+  untouched). CensusEmitRefused maps to exit 4 (emission/refusal
+  family, pinned in test + docstring). Full suite 1,510 (agent +
+  orchestrator runs identical, 0 failures; +8 tests).
