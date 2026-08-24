@@ -876,6 +876,44 @@ def test_output_filename_symlink_to_tracked_file_refused(tmp_path: Path) -> None
     assert PROTOCOL_PATH.read_bytes() == before, "the tracked file was not written through"
 
 
+# ---- round-4 (finding 2): confinement must see HARD-LINK aliasing ------------------
+#
+# Round-4 review fix (2026-08-23): Path.resolve() detects symlinks but not
+# hard-link aliasing. A precreate of an output FILENAME as a hard link to
+# research_protocol.yaml (same filesystem) keeps its resolved path inside the
+# output root, so confinement passed and write_text() truncated the shared
+# inode — the tracked protocol was overwritten while the builder succeeded.
+
+
+def test_output_filename_hard_link_to_tracked_file_refused(tmp_path: Path) -> None:
+    """Precreate the proposed-protocol FILENAME as a HARD LINK to the tracked
+    research_protocol.yaml: the builder must refuse naming the path and its
+    link count, and the tracked file must stay byte-identical. A NORMAL
+    output file (nlink == 1) still writes."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    before = PROTOCOL_PATH.read_bytes()
+    with _out_root() as out:
+        out_dir = out / _census_hash(census_bytes)[:12]
+        out_dir.mkdir()
+        linked = out_dir / "protocol-0.2.1-proposed.yaml"
+        linked.hardlink_to(PROTOCOL_PATH)
+        assert linked.stat().st_nlink == 2, "fixture: the inode is shared with the tracked file"
+        with pytest.raises(OutputRefusedError, match="hard link") as exc_info:
+            _build(paths, out)
+        assert str(linked) in str(exc_info.value), "the refusal names the output path"
+        assert "2" in str(exc_info.value), "the refusal names the observed link count"
+        assert PROTOCOL_PATH.read_bytes() == before, "the tracked file was not truncated"
+        # A normal output file (nlink == 1) still writes: same out root, the
+        # hard link removed, the build succeeds.
+        linked.unlink()
+        packet = _build(paths, out)
+        assert packet.landed is False
+        assert (out_dir / "protocol-0.2.1-proposed.yaml").stat().st_nlink == 1
+        assert PROTOCOL_PATH.read_bytes() == before
+    assert PROTOCOL_PATH.read_bytes() == before, "still byte-identical at teardown"
+
+
 # ---- round-3 (finding 4): input hashes attest the bytes that were PARSED ---------
 #
 # Round-3 review fix (2026-08-23): the models were parsed at steps 1/3/4/5

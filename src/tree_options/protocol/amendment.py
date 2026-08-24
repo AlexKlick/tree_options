@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any, Literal, NoReturn
 
@@ -296,6 +297,24 @@ def _confine_output(path: Path, *, out_root: Path) -> Path:
             f"output root {out_root}: refusing to write through it"
         )
     return resolved
+
+
+def _refuse_shared_inode(path: Path) -> None:
+    """Round-4 review fix (2026-08-23, finding 2): Path.resolve() detects
+    symlinks but not HARD-LINK aliasing. An output FILE precreated as a hard
+    link to a tracked file keeps its resolved path inside the output root, so
+    confinement passed and write_text truncated the shared inode. A link
+    count > 1 is aliasing regardless of how the link was created; only an
+    absent path or a sole link may be written."""
+    if not path.exists():
+        return
+    nlink = os.stat(path).st_nlink
+    if nlink > 1:
+        raise OutputRefusedError(
+            f"output file {path} has {nlink} hard links: the inode is shared "
+            "(a tracked file?) however the link was created — refusing to "
+            "write through it"
+        )
 
 
 def _reject_constant(name: str) -> NoReturn:
@@ -620,6 +639,7 @@ def build_proposed_amendment(
         out_dir / f"protocol-{PROPOSED_PROTOCOL_VERSION}-proposed.yaml",
         out_root=resolved_out_root,
     )
+    _refuse_shared_inode(proposed_path)
     proposed_path.write_text(
         yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000),
         encoding="utf-8",
@@ -644,6 +664,7 @@ def build_proposed_amendment(
     schema_path = _confine_output(
         out_dir / "schema-addition-proposal.yaml", out_root=resolved_out_root
     )
+    _refuse_shared_inode(schema_path)
     schema_path.write_text(
         _render_schema_addition_proposal(
             census=census, census_hash=census_hash, flow_value=flow_value
@@ -652,6 +673,7 @@ def build_proposed_amendment(
     )
 
     diff_path = _confine_output(out_dir / "amendment-diff.md", out_root=resolved_out_root)
+    _refuse_shared_inode(diff_path)
     diff_path.write_text(
         _render_diff(
             base=base, census_hash=census_hash, flow_value=flow_value, flow_source=flow_source
@@ -680,6 +702,7 @@ def build_proposed_amendment(
         ),
     )
     packet_path = _confine_output(out_dir / "amendment-packet.json", out_root=resolved_out_root)
+    _refuse_shared_inode(packet_path)
     packet_path.write_text(
         json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
