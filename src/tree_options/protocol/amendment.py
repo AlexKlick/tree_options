@@ -291,12 +291,31 @@ def _confine_output(path: Path, *, out_root: Path) -> Path:
     path and require it to stay under the resolved out root. The out-root
     check alone cannot see a precreate: the derived hash directory (or one
     output filename) symlinked outside artifacts/ — or at a tracked file —
-    would otherwise be written straight through."""
+    would otherwise be written straight through.
+
+    Round-6 review fix (2026-08-24, finding 2): an output path that is
+    ITSELF a symlink is refused outright even when its target resolves
+    IN ROOT. ``protocol-0.2.1-proposed.yaml -> amendment-packet.json`` (both
+    inside the permitted hash dir) used to pass confinement; the write then
+    landed under the RESOLVED (packet) name, the later packet write
+    overwrote it, and the builder succeeded with two of its own artifacts
+    aliased to one file and ``emitted`` carrying wrong hashes. Two own
+    artifacts aliasing one file is never legitimate for this builder. This
+    is the layer that guards every output path — the derived hash directory
+    and all four emit sites route through here; ``_write_exclusive`` then
+    publishes via an unpredictable temp + ``os.replace``, which can only
+    swap a directory entry, never write through a late-planted link."""
     resolved = path.resolve()
     if not resolved.is_relative_to(out_root):
         raise OutputRefusedError(
             f"output path {path} resolves to {resolved}, outside the resolved "
             f"output root {out_root}: refusing to write through it"
+        )
+    if path.is_symlink():
+        raise OutputRefusedError(
+            f"output path {path} is itself a symlink (to {resolved}): two "
+            "of this builder's own artifacts must never alias one file — "
+            "refusing to write through it"
         )
     return resolved
 

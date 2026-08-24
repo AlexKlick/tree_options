@@ -1033,6 +1033,50 @@ def test_stolen_temp_name_publishing_attacker_bytes_refused(
         assert seen_temp_names[0] != f".amendment-packet.json.{os.getpid()}.tmp"
 
 
+# ---- round-6 (finding 2): an output path that IS a symlink is refused ---------------
+#
+# Round-6 review fix (2026-08-24): `protocol-0.2.1-proposed.yaml -> amendment-
+# packet.json` (both inside the permitted hash dir) resolves IN ROOT, so
+# confinement accepted it; the proposal was then written under the RESOLVED
+# (packet) name, the packet write overwrote it, and the builder SUCCEEDED with
+# two own artifacts aliased to one file and `emitted` carrying wrong hashes.
+# An output path that is ITSELF a symlink is never legitimate for this
+# builder, whatever its target.
+
+
+def test_in_root_output_symlink_aliasing_two_artifacts_refused(tmp_path: Path) -> None:
+    """The reviewer's precreate: the proposal FILENAME symlinked to the
+    packet FILENAME inside the same permitted hash dir. Pre-fix the build
+    succeeds aliased (the proposal lands on the packet's name and is then
+    overwritten; the yaml name keeps aliasing the packet; `emitted` attests
+    the wrong bytes); post-fix the build refuses naming the symlink and
+    writes NOTHING — not through the link, not under its target."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    with _out_root() as out:
+        out_dir = out / _census_hash(census_bytes)[:12]
+        out_dir.mkdir()
+        link = out_dir / "protocol-0.2.1-proposed.yaml"
+        link.symlink_to(out_dir / "amendment-packet.json")
+        try:
+            with pytest.raises(OutputRefusedError, match="symlink") as exc_info:
+                _build(paths, out)
+            assert "protocol-0.2.1-proposed.yaml" in str(exc_info.value), (
+                "the refusal names the output path"
+            )
+            assert "amendment-packet.json" in str(exc_info.value), (
+                "the refusal names the in-root target it aliases"
+            )
+            assert not (out_dir / "amendment-packet.json").exists(), (
+                "nothing was written through the link onto the packet name"
+            )
+        finally:
+            # never leave a (dangling) symlink under artifacts/ — the harness
+            # copytree crashes on those.
+            with contextlib.suppress(FileNotFoundError):
+                link.unlink()
+
+
 # ---- round-5 (finding 2): zero INCOMPLETE pairs is not wholeness on its own --------
 #
 # Round-5 review fix (2026-08-24): the builder refused only
