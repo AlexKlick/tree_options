@@ -2619,6 +2619,14 @@ MUTANTS = [
     ),
 ]
 
+FAILING = ("FAILED",)
+
+
+def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout
+    )
+
 
 def run_mutant(worktree: Path, mutant: dict) -> dict:
     path = worktree / mutant["file"]

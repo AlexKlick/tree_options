@@ -23,7 +23,6 @@ from tree_options.protocol.loader import load_protocol, protocol_hash  # noqa: E
 from tree_options.seal import ledger as L  # noqa: E402
 from tree_options.seal.errors import (  # noqa: E402
     ApprovalInvalidError,
-    LedgerCorruptError,
     SecondExecutionRefusedError,
 )
 from tree_options.seal.identity import (  # noqa: E402
