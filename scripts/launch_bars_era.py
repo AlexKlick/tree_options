@@ -38,12 +38,16 @@ Preflight checks (first failure wins; every check is read-only):
    values and there is no code path that substitutes a fallback. A differing
    value exits 4 naming the pinned value (these are not secrets).
 
-Execute (library seam ``run_execute(..., runner=...)`` only): the authority
-consumption record is appended durably, the journal transitions
-BARS_READY -> BARS_CAPTURING, and the lease is acquired — all BEFORE the
-runner is invoked. A duplicate execution (the work manifest was already
-consumed) refuses; a crash after consumption is RECONCILIATION_REQUIRED,
-never a retry.
+Execute (library seam ``run_execute(..., runner=...)`` only): the census is
+re-verified AT EXECUTE TIME and cross-joined against the approval record
+and the run-state store's identity — the approval's census_sha256 must
+equal the verified census's content hash, and the store's code_sha /
+universe_manifest_sha256 must equal the census provenance's (CensusProvenance
+carries both; no git subprocess needed) — then the authority consumption
+record is appended durably, the journal transitions BARS_READY ->
+BARS_CAPTURING, and the lease is acquired — all BEFORE the runner is
+invoked. A duplicate execution (the work manifest was already consumed)
+refuses; a crash after consumption is RECONCILIATION_REQUIRED, never a retry.
 
 Exit codes (contract):
   0  preflight: every gate passed (nothing started); execute: consumed + run
@@ -55,7 +59,11 @@ Exit codes (contract):
   5  run-state gate: store missing/unreadable, state != BARS_READY, or an
      existing lease (HELD = duplicate launch)
   6  execute: authority gates absent or mismatched (no approval record binds
-     this protocol hash + work manifest, or the amendment packet hash differs)
+     this protocol hash + work manifest, or the amendment packet hash
+     differs), or the execute-time census verification / identity cross-join
+     fails (census deleted, corrupt, or stale at execute time; approval
+     names a different census; the store's code_sha / universe hash differ
+     from the census provenance)
   7  execute: duplicate — this work manifest was already consumed
   8  work-manifest gate: missing, unbound, profile mismatch, or cost mismatch
   9  vendor-key gate: key file missing or group/world readable
@@ -226,30 +234,48 @@ def _protocol_check(args: argparse.Namespace) -> CheckStatus:
     )
 
 
-def _census_check(args: argparse.Namespace) -> CheckStatus:
+def _load_verified_census(
+    args: argparse.Namespace,
+) -> tuple[CoverageCensus | None, str | None]:
+    """Parse + fail-closed-verify + staleness-check the census against the
+    capture manifest bytes on disk now. Returns (census, None) on success or
+    (None, refusal-reason) otherwise.
+
+    Round-2 review fix (2026-08-23, finding 5, probe
+    /tmp/pr-a-bars-execute-binding-probe.log): shared by preflight AND
+    execute — the census is re-verified AT EXECUTE TIME, so a deleted,
+    corrupt, or stale census refuses the launch before any authority is
+    consumed (previously the only census read happened in preflight)."""
     census_path = Path(args.census)
     try:
         census = CoverageCensus.model_validate_json(census_path.read_text(encoding="utf-8"))
         verify_census(census)
     except (OSError, ValueError) as exc:
-        return CheckStatus(ok=False, detail=f"census invalid or tampered: {exc}")
+        return None, f"census invalid or tampered: {exc}"
     try:
         manifest_sha = _sha256_file(Path(args.capture_manifest))
     except OSError as exc:
-        return CheckStatus(ok=False, detail=f"capture manifest unreadable: {exc}")
+        return None, f"capture manifest unreadable: {exc}"
     if census.provenance.input_manifest_sha256 != manifest_sha:
-        return CheckStatus(
-            ok=False,
-            detail=(
-                "capture manifest drifted since the census: census bound"
-                f" {census.provenance.input_manifest_sha256[:12]}…, on disk now"
-                f" {manifest_sha[:12]}…"
-            ),
+        return None, (
+            "capture manifest drifted since the census: census bound"
+            f" {census.provenance.input_manifest_sha256[:12]}…, on disk now"
+            f" {manifest_sha[:12]}…"
         )
+    return census, None
+
+
+def _census_check(args: argparse.Namespace) -> CheckStatus:
+    census, failure = _load_verified_census(args)
+    if failure is not None or census is None:
+        return CheckStatus(ok=False, detail=failure or "census unusable")
     return CheckStatus(
         ok=True,
         detail="",
-        evidence=(f"census {census.content_sha256[:12]}… vs manifest {manifest_sha[:12]}…"),
+        evidence=(
+            f"census {census.content_sha256[:12]}… vs manifest"
+            f" {census.provenance.input_manifest_sha256[:12]}…"
+        ),
     )
 
 
@@ -605,6 +631,49 @@ def run_execute(
             f" {pinned[:12] if pinned else None}… does not match the work"
             " manifest's capture-manifest pin"
             f" {work_manifest_model.capture_manifest_sha256[:12]}…",
+            file=sys.stderr,
+        )
+        return 6, None
+
+    # Round-2 review fix (2026-08-23, finding 5, probe
+    # /tmp/pr-a-bars-execute-binding-probe.log): the census is re-verified AT
+    # EXECUTE TIME and cross-joined against the approval record and the
+    # run-state store's identity. Previously only the protocol hash and the
+    # capture-manifest pin were joined, so a BARS_READY store with placeholder
+    # code_sha/universe hashes and a DELETED census file still consumed
+    # authority, transitioned, and invoked the runner. Every refusal below
+    # fires BEFORE any lease, consumption, transition, or runner invocation.
+    census, census_failure = _load_verified_census(args)
+    if census is None or census_failure is not None:
+        print(f"EXECUTE REFUSED (census): {census_failure}", file=sys.stderr)
+        return 6, None
+    assert census is not None  # narrowed for the joins below
+    if census.content_sha256 != approval.census_sha256:
+        print(
+            "EXECUTE REFUSED (identity): the approval record names census"
+            f" {approval.census_sha256[:12]}… but the verified census on disk"
+            f" is {census.content_sha256[:12]}… — the approval must name THIS"
+            " census",
+            file=sys.stderr,
+        )
+        return 6, None
+    if store_identity.code_sha != census.provenance.code_sha:
+        print(
+            "EXECUTE REFUSED (identity): run-state store code_sha"
+            f" {store_identity.code_sha[:12]}… does not match the census"
+            f" provenance code_sha {census.provenance.code_sha[:12]}…"
+            " (different code produced the census)",
+            file=sys.stderr,
+        )
+        return 6, None
+    if store_identity.universe_manifest_sha256 != census.provenance.universe_manifest_sha256:
+        print(
+            "EXECUTE REFUSED (identity): run-state store"
+            " universe_manifest_sha256"
+            f" {store_identity.universe_manifest_sha256[:12]}… does not match"
+            " the census provenance universe_manifest_sha256"
+            f" {census.provenance.universe_manifest_sha256[:12]}…"
+            " (a different universe fed the census)",
             file=sys.stderr,
         )
         return 6, None

@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
-import subprocess
 import sys
 import uuid
 from collections.abc import Iterator
@@ -30,6 +29,8 @@ if str(SCRIPTS) not in sys.path:
 import launch_bars_era as launch  # noqa: E402
 from tests.fixtures.bars_sample import (  # noqa: E402
     BOOT,
+    CENSUS_CODE_SHA,
+    CENSUS_UNIVERSE_MANIFEST_SHA256,
     RUN_ID,
     T0,
     census_bytes,
@@ -79,6 +80,46 @@ def scratch_root() -> Iterator[Path]:
         shutil.rmtree(root, ignore_errors=True)
 
 
+def _create_bars_ready_store(
+    protocol_path: Path,
+    capture_manifest: Path,
+    store_root: Path,
+    *,
+    code_sha: str = CENSUS_CODE_SHA,
+    universe_manifest_sha256: str = CENSUS_UNIVERSE_MANIFEST_SHA256,
+) -> RunStore:
+    """A store walked to BARS_READY, identity consistent with the scenario
+    census provenance by default. Round-2 (finding 5): execute cross-joins
+    the store's code_sha / universe_manifest_sha256 against the VERIFIED
+    census, so the mismatch tests override them here (placeholder hashes,
+    exactly like the probe store)."""
+    capture_manifest_sha = hashlib.sha256(capture_manifest.read_bytes()).hexdigest()
+    identity = make_matching_run_identity(
+        protocol_hash=protocol_hash(load_protocol(protocol_path)),
+        code_sha=code_sha,
+        universe_manifest_sha256=universe_manifest_sha256,
+        capture_manifest_sha256=capture_manifest_sha,
+    )
+    store = RunStore.create(store_root, identity, now_epoch=T0)
+    # Round-1 review fix: pin the manifest so the execute identity cross-join
+    # passes (store.pinned_manifest_sha256 == the capture manifest pin).
+    store.pin_manifest(
+        capture_manifest_sha,
+        now_epoch=T0 + 100,
+        actor_pid=identity.pid,
+        actor_boot_id=BOOT,
+    )
+    for step, state in enumerate(BARS_READY_WALK):
+        store.transition(
+            state,
+            reason=f"fixture walk to BARS_READY ({step})",
+            now_epoch=T0 + step,
+            actor_pid=identity.pid,
+            actor_boot_id=BOOT,
+        )
+    return store
+
+
 @pytest.fixture()
 def scenario(
     tmp_path: Path, scratch_root: Path, monkeypatch: pytest.MonkeyPatch
@@ -112,39 +153,13 @@ def scenario(
 
     authority_root = scratch_root / "bars-authority"
     store_root = scratch_root / "runstate"
-    capture_manifest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
-    store_protocol_hash = protocol_hash(load_protocol(protocol_path))
-    # Round-1 review fix: the runstate store's identity is now cross-joined
-    # against the approval record. Build an identity that matches the
-    # experiment's protocol + capture manifest + commit sha so the
-    # happy-path execute can proceed; tests that exercise the cross-join
-    # REJECTION paths construct a mismatched identity separately.
-    code_sha_now = subprocess.check_output(
-        ["git", "-C", str(REPO_ROOT), "rev-parse", "HEAD"], text=True
-    ).strip()
-    identity = make_matching_run_identity(
-        protocol_hash=store_protocol_hash,
-        code_sha=code_sha_now,
-        universe_manifest_sha256="c" * 64,
-        capture_manifest_sha256=capture_manifest_sha,
-    )
-    store = RunStore.create(store_root, identity, now_epoch=T0)
-    # Round-1 review fix: pin the manifest so the execute identity cross-join
-    # passes (store.pinned_manifest_sha256 == approval.capture_manifest_sha256).
-    store.pin_manifest(
-        capture_manifest_sha,
-        now_epoch=T0 + 100,
-        actor_pid=store.identity.pid,
-        actor_boot_id=BOOT,
-    )
-    for step, state in enumerate(BARS_READY_WALK):
-        store.transition(
-            state,
-            reason=f"fixture walk to BARS_READY ({step})",
-            now_epoch=T0 + step,
-            actor_pid=store.identity.pid,
-            actor_boot_id=BOOT,
-        )
+    # Round-1 review fix: the store's identity is cross-joined against the
+    # approval record (protocol hash + capture-manifest pin). Round-2 review
+    # fix (finding 5): execute additionally cross-joins code_sha and
+    # universe_manifest_sha256 against the VERIFIED census provenance — the
+    # helper's defaults match the scenario census exactly; the mismatch
+    # tests build mismatched stores through the same helper.
+    _create_bars_ready_store(protocol_path, manifest_path, store_root)
     return {
         "capture_dir": capture_dir,
         "capture_manifest": manifest_path,
@@ -493,6 +508,118 @@ def test_execute_exit_6_on_packet_hash_mismatch(scenario: dict[str, Path]) -> No
     code, _ = _execute(scenario, runner=_fake_runner(scenario, calls))
     assert code == 6
     assert calls == []
+
+
+# ---- round-2 (finding 5): execute-time census + identity cross-join -------------------
+#
+# Probe /tmp/pr-a-bars-execute-binding-probe.log: a BARS_READY store with
+# placeholder code_sha/universe hashes and a DELETED census file used to
+# consume authority, transition, and invoke the runner with exit 0. The
+# census is now verified AT EXECUTE TIME and cross-joined against the
+# approval record and the store identity — every refusal below happens
+# BEFORE any lease, consumption, transition, or runner invocation.
+
+
+def _execute_with_store(
+    scenario: dict[str, Path], store_root: Path, *, runner
+) -> tuple[int, object]:
+    argv = _argv(scenario)
+    argv[argv.index("--store-root") + 1] = str(store_root)
+    args = launch._parse_args(argv)
+    return launch.run_execute(args, runner=runner, now_epoch=T0 + 100, boot_id_now=BOOT)
+
+
+def _assert_nothing_consumed(scenario: dict[str, Path], store_root: Path) -> None:
+    view = read_bars_ledger(scenario["authority_root"])
+    assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL"]
+    store = RunStore.open(store_root, RUN_ID)
+    assert store.state is RunState.BARS_READY
+
+
+def test_execute_exit_6_on_store_code_sha_mismatch_vs_census(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The store's code_sha is a placeholder (the exact probe shape): it does
+    not match the census provenance's code_sha, so the identity cross-join
+    refuses before anything is consumed."""
+    _approve(scenario)
+    mismatch_root = scenario["store_root"].parent / "runstate-code-mismatch"
+    _create_bars_ready_store(
+        scenario["protocol"],
+        scenario["capture_manifest"],
+        mismatch_root,
+        code_sha="0" * 40,  # placeholder, exactly like the probe store
+    )
+    calls: list[str] = []
+    code, summary = _execute_with_store(
+        scenario, mismatch_root, runner=_fake_runner(scenario, calls)
+    )
+    assert code == 6 and summary is None
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "EXECUTE REFUSED (identity)" in err
+    assert ("0" * 12) in err  # both 12-char prefixes are printed
+    assert CENSUS_CODE_SHA[:12] in err
+    _assert_nothing_consumed(scenario, mismatch_root)
+
+
+def test_execute_exit_6_on_store_universe_mismatch_vs_census(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    _approve(scenario)
+    mismatch_root = scenario["store_root"].parent / "runstate-universe-mismatch"
+    _create_bars_ready_store(
+        scenario["protocol"],
+        scenario["capture_manifest"],
+        mismatch_root,
+        universe_manifest_sha256="9" * 64,  # the probe's placeholder universe
+    )
+    calls: list[str] = []
+    code, summary = _execute_with_store(
+        scenario, mismatch_root, runner=_fake_runner(scenario, calls)
+    )
+    assert code == 6 and summary is None
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "EXECUTE REFUSED (identity)" in err
+    assert ("9" * 12) in err
+    assert CENSUS_UNIVERSE_MANIFEST_SHA256[:12] in err
+    _assert_nothing_consumed(scenario, mismatch_root)
+
+
+def test_execute_exit_6_on_census_deleted_before_execute(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The exact probe: census_exists_at_execute false. The census is
+    re-verified AT EXECUTE TIME — a deleted census refuses before any
+    authority is consumed."""
+    _approve(scenario)
+    scenario["census"].unlink()
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 6 and summary is None
+    assert calls == []
+    assert "EXECUTE REFUSED (census)" in capsys.readouterr().err
+    _assert_nothing_consumed(scenario, scenario["store_root"])
+
+
+def test_execute_exit_6_on_approval_naming_a_different_census(
+    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The approval must name THIS census: a census_sha256 that differs from
+    the verified census's content hash refuses the launch."""
+    _approve(scenario, census_sha256="0" * 64)
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 6 and summary is None
+    assert calls == []
+    err = capsys.readouterr().err
+    assert "EXECUTE REFUSED (identity)" in err
+    assert ("0" * 12) in err
+    # the verified census's content hash prefix is printed too
+    census_hash = str(json.loads(scenario["census"].read_text(encoding="utf-8"))["content_sha256"])
+    assert census_hash[:12] in err
+    _assert_nothing_consumed(scenario, scenario["store_root"])
 
 
 def test_execute_happy_path_consumes_then_transitions_before_runner(

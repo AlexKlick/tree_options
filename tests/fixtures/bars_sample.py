@@ -26,6 +26,12 @@ SPOT = {"SPY": {AS_OF: "580.00"}, "I:SPX": {AS_OF: "5750.00"}}
 T0 = 1_800_000_000
 BOOT = "11111111-2222-3333-4444-555555555555"
 RUN_ID = "m4-barstest-20260823-abcdef12"
+# The synthetic census's provenance pins. Round-2 review fix (2026-08-23,
+# finding 5): the execute path cross-joins the run-state identity's code_sha
+# and universe_manifest_sha256 against the VERIFIED census provenance, so a
+# matching identity defaults to exactly these values.
+CENSUS_CODE_SHA = "f" * 40
+CENSUS_UNIVERSE_MANIFEST_SHA256 = "c" * 64
 
 # The expected ATM grid at 2025-04-18 (spot 580, band 3): distinct strikes
 # ranked |strike - spot| (ties by strike): 580, 587.5, 570, 590.
@@ -148,11 +154,11 @@ def census_bytes(manifest_bytes: bytes) -> bytes:
     census = CoverageCensus(
         schema_version=CENSUS_SCHEMA_VERSION,
         provenance=CensusProvenance(
-            code_sha="f" * 40,
+            code_sha=CENSUS_CODE_SHA,
             protocol_hash="a" * 64,
             protocol_raw_sha256="b" * 64,
             input_manifest_sha256=hashlib.sha256(manifest_bytes).hexdigest(),
-            universe_manifest_sha256="c" * 64,
+            universe_manifest_sha256=CENSUS_UNIVERSE_MANIFEST_SHA256,
             uv_lock_sha256="d" * 64,
             command=("uv", "run", "--frozen", "python", "scripts/inspect_structural_coverage.py"),
         ),
@@ -226,14 +232,17 @@ def make_run_identity():
 def make_matching_run_identity(
     *,
     protocol_hash: str,
-    code_sha: str,
-    universe_manifest_sha256: str,
+    code_sha: str = CENSUS_CODE_SHA,
+    universe_manifest_sha256: str = CENSUS_UNIVERSE_MANIFEST_SHA256,
     capture_manifest_sha256: str | None = None,
     campaign: str = "m4-barstest",
 ) -> RunIdentity:
-    """Round-1 review fix (2026-08-23): the bars launcher now cross-joins
-    the runstate store's identity against the approval record. This helper
-    builds an identity whose fields can be matched against an approval.
+    """Round-1 review fix (2026-08-23): the bars launcher cross-joins the
+    runstate store's identity against the approval record. Round-2 review
+    fix (finding 5): execute additionally cross-joins code_sha and
+    universe_manifest_sha256 against the VERIFIED census provenance — the
+    defaults here match ``census_bytes()``'s provenance exactly, so an
+    identity built without overrides is consistent with the scenario census.
     """
     identity = RunIdentity(
         run_id=RUN_ID,
