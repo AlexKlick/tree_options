@@ -46,6 +46,7 @@ import contextlib
 import hashlib
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any, Literal, NoReturn
@@ -367,7 +368,21 @@ def _write_exclusive(path: Path, text: str) -> None:
     packet. ``tempfile.mkstemp`` supplies an unguessable ``O_EXCL`` name, and
     the inode this function wrote — ``(st_dev, st_ino)`` captured from fstat
     before the close — must be the inode ``os.stat`` sees at the output name
-    after the replace; any mismatch is a refusal naming both identities."""
+    after the replace; any mismatch is a refusal naming both identities.
+
+    Round-7 review fix (2026-08-24, finding 1): inode identity is NOT final-
+    name or byte custody. After the replace an attacker renames the published
+    file to a sibling ``.held`` (inode unchanged), plants ``path -> .held`` as
+    a SYMLINK, and rewrites ``.held`` in place with schema-valid protocol YAML
+    that preserves protocol_version, the flow value, and the amendment count:
+    ``os.stat(path)`` FOLLOWS the link so the identity check passed, and the
+    round-trip load plus ``emitted``'s ``read_bytes`` both read through the
+    link — the builder attested attacker YAML. The publish verification is
+    now final-name + byte custody: (a) ``os.lstat(path)`` — the final name
+    must be a REGULAR file, a symlink there never is; (b) identity from the
+    LSTAT values; (c) the final name opened ``O_RDONLY|O_NOFOLLOW``, fstat
+    identity re-checked, and the FULL bytes read back must EQUAL the text
+    this function wrote — a mismatch refuses naming both contents."""
     fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     tmp = Path(tmp_name)
     try:
@@ -384,7 +399,22 @@ def _write_exclusive(path: Path, text: str) -> None:
                 "shared — refusing to publish it over the output name"
             )
         os.replace(tmp, path)
-        published = os.stat(path)
+        # (a) the final name, un-followed: a symlink planted at the output
+        # name after the replace is not this builder's artifact, whatever it
+        # points at (os.stat would FOLLOW it and see the moved inode).
+        try:
+            published = os.lstat(path)
+        except OSError as exc:
+            raise OutputRefusedError(
+                f"published output {path} vanished after the publish ({exc.strerror})"
+            ) from None
+        if not stat.S_ISREG(published.st_mode):
+            raise OutputRefusedError(
+                f"published output {path} is not a regular file (lstat mode "
+                f"{stat.S_IFMT(published.st_mode):o} — a symlink at the final "
+                "name is never this builder's artifact): refusing to attest it"
+            )
+        # (b) identity from the lstat values.
         if (published.st_dev, published.st_ino) != (written.st_dev, written.st_ino):
             raise OutputRefusedError(
                 f"published output {path} is not the inode this builder wrote "
@@ -392,6 +422,44 @@ def _write_exclusive(path: Path, text: str) -> None:
                 f"dev {published.st_dev} ino {published.st_ino}): the temp name "
                 "was stolen and attacker bytes were published in its place — "
                 "refusing to attest them"
+            )
+        # (c) byte custody: open the FINAL NAME without following a link at
+        # it, re-check the identity on that fd, and require the full content
+        # to equal what this function wrote.
+        try:
+            verify_fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        except OSError as exc:
+            raise OutputRefusedError(
+                f"published output {path} could not be opened without following "
+                f"a symlink ({exc.strerror}): refusing to attest it"
+            ) from None
+        try:
+            opened = os.fstat(verify_fd)
+            if (opened.st_dev, opened.st_ino) != (written.st_dev, written.st_ino):
+                raise OutputRefusedError(
+                    f"published output {path} changed identity under the readback "
+                    f"(wrote dev {written.st_dev} ino {written.st_ino}, read back "
+                    f"dev {opened.st_dev} ino {opened.st_ino}): refusing to attest it"
+                )
+            chunks: list[bytes] = []
+            offset = 0
+            while True:
+                chunk = os.pread(verify_fd, 65536, offset)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                offset += len(chunk)
+        finally:
+            os.close(verify_fd)
+        expected = text.encode("utf-8")
+        readback = b"".join(chunks)
+        if readback != expected:
+            raise OutputRefusedError(
+                f"published output {path} does not hold the bytes this builder "
+                f"wrote (wrote sha {hashlib.sha256(expected).hexdigest()[:12]}…, "
+                f"read back sha {hashlib.sha256(readback).hexdigest()[:12]}…): the "
+                "final name was swapped or rewritten after the publish — "
+                "refusing to attest either content"
             )
     finally:
         # replace consumed the temp name on success; on any refusal the

@@ -1033,6 +1033,113 @@ def test_stolen_temp_name_publishing_attacker_bytes_refused(
         assert seen_temp_names[0] != f".amendment-packet.json.{os.getpid()}.tmp"
 
 
+# ---- round-7 (finding 1): the publish must prove FINAL-NAME and BYTE custody ---------
+#
+# Round-7 review fix (2026-08-24): the round-6 identity check proved the
+# published INODE, never the final NAME or the CONTENT. After os.replace an
+# attacker renames the published file to a sibling `.held` (inode unchanged),
+# plants `path -> .held` as a SYMLINK, and rewrites `.held` IN PLACE with
+# schema-valid protocol YAML that changes content while preserving
+# protocol_version, the flow value, and the amendment count: os.stat(path)
+# FOLLOWS the link, so the (st_dev, st_ino) check passed, and both the
+# round-trip load and `emitted`'s read_bytes went through the link — the
+# builder attested attacker YAML. The publish verification now lstats the
+# final name (a symlink there is not a regular file), takes identity from
+# the LSTAT values, and reads the full bytes back through an O_NOFOLLOW fd
+# that must equal the text this function wrote.
+
+
+def test_final_name_swapped_to_symlink_with_inplace_rewrite_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interleaving attack on the proposal's publish: the wrapper performs the
+    real os.replace, THEN renames the published file to `.held`, plants the
+    output name as a symlink to it, and rewrites `.held` IN PLACE with
+    modified-but-schema-plausible YAML (protocol_version, the flow value, and
+    the amendment count all preserved). Pre-fix the build SUCCEEDS while the
+    on-disk artifact carries the attacker's bytes; post-fix the builder
+    refuses naming the final name, and no packet is emitted."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    real_replace = os.replace
+    armed = {"done": False}
+
+    def replace_then_swap_final_name(src: object, dst: object) -> object:
+        result = real_replace(src, dst)  # the legitimate publish happens
+        dst_path = Path(str(dst))
+        if armed["done"] or dst_path.name != "protocol-0.2.1-proposed.yaml":
+            return result
+        armed["done"] = True  # the window: published, not yet verified
+        held = dst_path.parent / (dst_path.name + ".held")
+        os.rename(dst_path, held)  # the inode moves to .held unchanged
+        dst_path.symlink_to(held.name)  # path -> .held
+        # rewrite .held IN PLACE (same inode, new content): schema-valid,
+        # version/flow/amendment-count preserved, only the record text changes
+        doc = yaml.safe_load(held.read_text(encoding="utf-8"))
+        doc["meta"]["amendments"][-1]["decision"] = "ATTACKER: rewritten in place"
+        with open(held, "w", encoding="utf-8") as handle:
+            handle.write(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000))
+        return result
+
+    monkeypatch.setattr(os, "replace", replace_then_swap_final_name)
+    with _out_root() as out:
+        out_dir = out / _census_hash(census_bytes)[:12]
+        published = out_dir / "protocol-0.2.1-proposed.yaml"
+        try:
+            with pytest.raises(OutputRefusedError, match="not a regular file") as exc_info:
+                _build(paths, out)
+            assert "protocol-0.2.1-proposed.yaml" in str(exc_info.value), (
+                "the refusal names the final name that is not a regular file"
+            )
+            assert not (out_dir / "amendment-packet.json").exists(), (
+                "no packet was emitted attesting the swapped artifact"
+            )
+        finally:
+            # never leave a symlink under artifacts/ (the harness copytree
+            # crashes on those), and never leave the attacker's .held either.
+            with contextlib.suppress(OSError):
+                published.unlink()
+            with contextlib.suppress(OSError):
+                (out_dir / (published.name + ".held")).unlink()
+
+
+def test_published_bytes_rewritten_in_place_without_a_symlink_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The byte-custody half of the same fix, pinned independently: the final
+    name stays a REAL file (no symlink, same inode) and the attacker only
+    rewrites its content in place between the publish and the verification
+    (simulated by wrapping os.replace — the wrapper rewrites the published
+    bytes after the real replace). lstat identity alone cannot see this;
+    the readback must. Pre-fix the build succeeds attesting the rewritten
+    bytes; post-fix it refuses naming both contents."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    real_replace = os.replace
+    armed = {"done": False}
+
+    def replace_then_rewrite_in_place(src: object, dst: object) -> object:
+        result = real_replace(src, dst)
+        dst_path = Path(str(dst))
+        if armed["done"] or dst_path.name != "protocol-0.2.1-proposed.yaml":
+            return result
+        armed["done"] = True
+        # same NAME, same INODE, new CONTENT (schema-plausible as above)
+        doc = yaml.safe_load(dst_path.read_text(encoding="utf-8"))
+        doc["meta"]["amendments"][-1]["changes"] = "ATTACKER: content rewritten in place"
+        with open(dst_path, "w", encoding="utf-8") as handle:
+            handle.write(yaml.safe_dump(doc, sort_keys=False, default_flow_style=False, width=1000))
+        return result
+
+    monkeypatch.setattr(os, "replace", replace_then_rewrite_in_place)
+    with _out_root() as out:
+        with pytest.raises(OutputRefusedError, match="does not hold the bytes") as exc_info:
+            _build(paths, out)
+        message = str(exc_info.value)
+        assert "protocol-0.2.1-proposed.yaml" in message
+        assert "refusing to attest either content" in message
+
+
 # ---- round-6 (finding 2): an output path that IS a symlink is refused ---------------
 #
 # Round-6 review fix (2026-08-24): `protocol-0.2.1-proposed.yaml -> amendment-
