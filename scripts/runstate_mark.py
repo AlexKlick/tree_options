@@ -137,6 +137,9 @@ def main(argv: list[str] | None = None) -> int:
         except rs_errors.StoreExistsError as exc:
             print(f"STORE EXISTS: {exc}", file=sys.stderr)
             return 5
+        except rs_errors.StoreCustodyError as exc:
+            print(f"STORE CUSTODY REFUSED: {exc}", file=sys.stderr)
+            return 5
         except (rs_errors.StoreRootRefusedError, rs_errors.RunIdRefusedError) as exc:
             # Round-2 review fix: deterministic exit, not a traceback.
             print(f"STORE ROOT/RUN ID REFUSED: {exc}", file=sys.stderr)
@@ -149,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
     except rs_errors.UnknownRunError as exc:
         print(f"UNKNOWN RUN: {exc}", file=sys.stderr)
         return 4
+    except rs_errors.StoreCustodyError as exc:
+        print(f"STORE CUSTODY REFUSED: {exc}", file=sys.stderr)
+        return 5
     except rs_errors.JournalCorruptError as exc:
         print(f"JOURNAL CORRUPT: {exc}", file=sys.stderr)
         return 5
@@ -176,7 +182,11 @@ def main(argv: list[str] | None = None) -> int:
     except rs_errors.LeaseHeldError as exc:
         print(f"LEASE HELD: {exc}", file=sys.stderr)
         return 3
+    except rs_errors.StoreCustodyError as exc:
+        print(f"STORE CUSTODY REFUSED: {exc}", file=sys.stderr)
+        return 5
 
+    result_code = 0
     try:
         if args.pin_manifest:
             store.pin_manifest(
@@ -196,25 +206,35 @@ def main(argv: list[str] | None = None) -> int:
             )
     except rs_errors.IllegalTransitionError as exc:
         print(f"ILLEGAL TRANSITION: {exc}", file=sys.stderr)
-        return 2
+        result_code = 2
+    except rs_errors.StoreCustodyError as exc:
+        print(f"STORE CUSTODY REFUSED: {exc}", file=sys.stderr)
+        result_code = 5
     except rs_errors.JournalCorruptError as exc:
         print(f"JOURNAL CORRUPT: {exc}", file=sys.stderr)
-        return 5
+        result_code = 5
     except rs_errors.PinAlreadyBoundError as exc:
         print(f"PIN ALREADY BOUND: {exc}", file=sys.stderr)
-        return 7
+        result_code = 7
     except rs_errors.JournalConcurrentWriteError as exc:
         print(f"JOURNAL CONCURRENT WRITE: {exc}", file=sys.stderr)
-        return 8
+        result_code = 8
     finally:
-        lease_module.release(store.dir, owner)
+        try:
+            lease_module.release(store.dir, owner)
+        except rs_errors.StoreCustodyError as exc:
+            print(f"STORE CUSTODY REFUSED DURING LEASE RELEASE: {exc}", file=sys.stderr)
+            result_code = 5
+
+    if result_code != 0:
+        return result_code
 
     print(
         json.dumps(
             {
                 "run_id": store.identity.run_id,
                 "state": store.state.value if store.state else None,
-                "seq": len((store.dir / "journal.jsonl").read_text().splitlines()),
+                "seq": store.seq,
             },
             sort_keys=True,
         )

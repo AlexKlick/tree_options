@@ -17,6 +17,7 @@ import os
 from enum import StrEnum
 from pathlib import Path
 
+from tree_options.runstate import custody
 from tree_options.runstate.lease import proc_pid_alive, proc_start_ticks
 from tree_options.runstate.states import (
     PROCESS_STATES,
@@ -48,21 +49,62 @@ class HeartbeatClass(StrEnum):
     UNKNOWN_RECONCILIATION_REQUIRED = "UNKNOWN_RECONCILIATION_REQUIRED"  # sealed lane
 
 
-def write(store_dir: Path, beat: Heartbeat) -> None:
-    tmp = store_dir / f".{HEARTBEAT_FILENAME}.{os.getpid()}.tmp"
-    tmp.write_text(
-        json.dumps(json.loads(beat.model_dump_json()), sort_keys=True) + "\n",
-        encoding="utf-8",
+def _store_fd(store_dir: Path, supplied: int | None) -> tuple[int, bool]:
+    if supplied is not None:
+        return supplied, False
+    run_id = store_dir.name
+    fd = custody.open_directory(
+        store_dir,
+        create=False,
+        run_id=run_id,
+        purpose="run-state store",
     )
-    os.replace(tmp, store_dir / HEARTBEAT_FILENAME)
+    if fd is None:
+        raise FileNotFoundError(store_dir)
+    return fd, True
 
 
-def read(store_dir: Path) -> Heartbeat | None:
-    path = store_dir / HEARTBEAT_FILENAME
+def write(store_dir: Path, beat: Heartbeat, *, _dir_fd: int | None = None) -> None:
+    run_id = store_dir.name
+    fd, owned = _store_fd(store_dir, _dir_fd)
     try:
-        return Heartbeat.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    except FileNotFoundError:
+        payload = (json.dumps(json.loads(beat.model_dump_json()), sort_keys=True) + "\n").encode(
+            "utf-8"
+        )
+        custody.atomic_write(
+            store_dir,
+            fd,
+            HEARTBEAT_FILENAME,
+            payload,
+            run_id=run_id,
+            purpose="heartbeat.json liveness record",
+            mode=0o644,
+            exclusive=False,
+        )
+    finally:
+        if owned:
+            os.close(fd)
+
+
+def read(store_dir: Path, *, _dir_fd: int | None = None) -> Heartbeat | None:
+    run_id = store_dir.name
+    fd, owned = _store_fd(store_dir, _dir_fd)
+    try:
+        raw = custody.read_named_bytes(
+            store_dir,
+            fd,
+            HEARTBEAT_FILENAME,
+            run_id=run_id,
+            purpose="heartbeat.json liveness record",
+            allow_missing=True,
+        )
+    finally:
+        if owned:
+            os.close(fd)
+    if raw is None:
         return None
+    try:
+        return Heartbeat.model_validate(json.loads(raw))
     except Exception:
         return None
 

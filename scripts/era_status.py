@@ -139,6 +139,9 @@ def main(argv: list[str] | None = None) -> int:
     except rs_errors.UnknownRunError:
         print(f"UNKNOWN RUN: {run_id}", file=sys.stderr)
         return 4
+    except rs_errors.StoreCustodyError as exc:
+        print(f"STORE CUSTODY REFUSED: {exc}", file=sys.stderr)
+        return 2
     except rs_errors.JournalCorruptError as exc:
         print(f"JOURNAL CORRUPT: {exc}", file=sys.stderr)
         return 2
@@ -150,7 +153,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"STORE ID MISMATCH: {exc}", file=sys.stderr)
         return 2
 
-    if not (store.dir / journal_module.JOURNAL_FILENAME).exists():
+    try:
+        has_journal = store.has_journal()
+    except rs_errors.StoreCustodyError as exc:
+        print(f"STORE CUSTODY REFUSED: {exc}", file=sys.stderr)
+        return 2
+    if not has_journal:
         # Round-3 review fix (2026-08-23, finding 4): create() writes
         # run.json before GENESIS; a crash between the two leaves a store
         # with identity but no journal. A run with no journal is UNKNOWN —
@@ -178,14 +186,19 @@ def main(argv: list[str] | None = None) -> int:
     try:
         # Read-only command: NEVER repair. A torn projection is reported,
         # not rebuilt — rebuilding is a write and belongs to a lease holder.
-        from tree_options.runstate.journal import load_projection
-
-        load_projection(store.dir, run_id=run_id)
+        store.load_projection()
+    except rs_errors.StoreCustodyError as exc:
+        print(f"STORE CUSTODY REFUSED: {exc}", file=sys.stderr)
+        return 2
     except rs_errors.ProjectionTornError as exc:
         print(f"PROJECTION TORN: {exc}", file=sys.stderr)
         return 2
 
-    status = store.status(now_epoch=now_epoch, boot_id_now=boot_id_now, proc_root=PROC_ROOT)
+    try:
+        status = store.status(now_epoch=now_epoch, boot_id_now=boot_id_now, proc_root=PROC_ROOT)
+    except rs_errors.StoreCustodyError as exc:
+        print(f"STORE CUSTODY REFUSED: {exc}", file=sys.stderr)
+        return 2
     payload = {
         "run_id": status.run_id,
         "state": status.state.value if status.state else None,

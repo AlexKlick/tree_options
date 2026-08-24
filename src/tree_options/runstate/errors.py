@@ -38,6 +38,18 @@ class JournalCorruptError(RunStateError):
         )
 
 
+class StoreCustodyError(JournalCorruptError):
+    """A run-state path/name stopped denoting one safe, held object."""
+
+    def __init__(self, run_id: str, detail: str) -> None:
+        RunStateError.__init__(
+            self,
+            "STORE_CUSTODY_REFUSED",
+            f"run {run_id}: {detail}; run-state authority is only read or "
+            "written through component-wise no-follow directory custody",
+        )
+
+
 class ProjectionTornError(RunStateError):
     def __init__(self, run_id: str, detail: str) -> None:
         super().__init__(

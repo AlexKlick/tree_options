@@ -18,11 +18,15 @@ no double stores for one logical run.
 from __future__ import annotations
 
 import json
+import os
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 
 from tree_options.data.digest import sha256_hex
+from tree_options.runstate import custody
 from tree_options.runstate import heartbeat as hb_module
 from tree_options.runstate import journal as journal_module
 from tree_options.runstate import lease as lease_module
@@ -32,6 +36,7 @@ from tree_options.runstate.errors import (
     NonCanonicalRunIdError,
     PinAlreadyBoundError,
     RunIdRefusedError,
+    StoreCustodyError,
     StoreExistsError,
     StoreIdMismatchError,
     StoreRootRefusedError,
@@ -51,22 +56,16 @@ DEFAULT_STORE_ROOT = Path("artifacts/runstate")
 
 
 def _validate_store_root(root: Path) -> None:
-    """Refuse any root that resolves under /tmp (round-1 review, 2026-08-23).
+    """Refuse any lexical root under /tmp before filesystem mutation.
 
     /tmp is wiped on reboot — a run-state store there is a lie. The
     journal, lease, and pinned manifest are authoritative evidence;
     they must live under a durable root (default: artifacts/runstate).
     Component-boundary check matches seal/ledger semantics.
     """
-    try:
-        resolved = root.resolve()
-    except OSError:
-        # Unresolvable paths will fail loudly on first mkdir; don't compound
-        # the error here. The check below still runs against the raw path
-        # to keep the refusal order stable.
-        resolved = root
-    tmp = Path("/tmp").resolve()
-    if resolved == tmp or tmp in resolved.parents:
+    absolute = custody.lexical_absolute(root)
+    tmp = Path("/tmp")
+    if absolute == tmp or tmp in absolute.parents:
         raise StoreRootRefusedError(str(root))
 
 
@@ -91,15 +90,9 @@ def _validated_store_dir(root: Path, run_id: str) -> Path:
         or Path(run_id).name != run_id
     ):
         raise RunIdRefusedError(str(root), run_id)
-    store_dir = root / run_id
-    # Final-resolved-dir descendant check: resolve non-strict so a symlinked
-    # run-id directory that leaves the root is caught here, at derivation
-    # time, instead of silently opening evidence outside the durable root.
-    resolved_root = root.resolve()
-    resolved_store = store_dir.resolve()
-    if resolved_root not in resolved_store.parents:
-        raise RunIdRefusedError(str(root), run_id)
-    return store_dir
+    # Deliberately do not resolve here.  Component-wise custody must see and
+    # refuse every pre-existing symlink rather than erase it first.
+    return root / run_id
 
 
 def compute_run_id(
@@ -180,10 +173,16 @@ class RunStore:
     """One run's durable state. Open is read-safe; writes go through
     `transition`/`pin_manifest` (lease-holding callers only)."""
 
-    def __init__(self, store_dir: Path, identity: RunIdentity) -> None:
+    def __init__(
+        self,
+        store_dir: Path,
+        identity: RunIdentity,
+        *,
+        _view: journal_module.JournalView | None = None,
+    ) -> None:
         self.dir = store_dir
         self.identity = identity
-        self._view = journal_module.replay(store_dir, run_id=identity.run_id)
+        self._view = _view or journal_module.replay(store_dir, run_id=identity.run_id)
 
     # -- construction ---------------------------------------------------
 
@@ -197,48 +196,149 @@ class RunStore:
         # read-only path-shape/root checks but before any filesystem mutation.
         # One logical core has one durable store, including across reboots.
         _validate_canonical_run_id(root, identity)
-        run_path = store_dir / RUN_FILENAME
-        if store_dir.exists():
-            raise StoreExistsError(identity.run_id)
-        store_dir.mkdir(parents=True)
-        run_path.write_text(
-            json.dumps(json.loads(identity.model_dump_json()), indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
+        root_fd = custody.open_directory(
+            root,
+            create=True,
+            run_id=identity.run_id,
+            purpose="run-state root",
         )
-        store = cls(store_dir, identity)
-        genesis = journal_module.JournalRecord(
-            seq=1,
-            kind="GENESIS",
-            to_state=RunState.PLANNED,
-            reason="store created",
-            actor_pid=identity.pid,
-            actor_boot_id=identity.boot_id,
-            at_epoch=now_epoch,
-            prev_record_sha256=journal_module.GENESIS_PREV,
-        )
-        journal_module.append_record(store_dir, genesis)
-        store._rewrite_projection(now_epoch)
-        return store
+        assert root_fd is not None
+        store_fd: int | None = None
+        try:
+            try:
+                os.mkdir(identity.run_id, 0o755, dir_fd=root_fd)
+            except FileExistsError:
+                existing_fd = custody.open_child_directory(
+                    root_fd,
+                    identity.run_id,
+                    create=False,
+                    run_id=identity.run_id,
+                    purpose="run store",
+                )
+                if existing_fd is not None:
+                    os.close(existing_fd)
+                raise StoreExistsError(identity.run_id) from None
+            store_fd = custody.open_child_directory(
+                root_fd,
+                identity.run_id,
+                create=False,
+                run_id=identity.run_id,
+                purpose="run store",
+            )
+            assert store_fd is not None
+            os.fsync(root_fd)
+            identity_bytes = (
+                json.dumps(json.loads(identity.model_dump_json()), indent=2, sort_keys=True) + "\n"
+            ).encode("utf-8")
+            custody.atomic_write(
+                store_dir,
+                store_fd,
+                RUN_FILENAME,
+                identity_bytes,
+                run_id=identity.run_id,
+                purpose="immutable run.json identity",
+                mode=0o644,
+                exclusive=True,
+            )
+            genesis = journal_module.JournalRecord(
+                seq=1,
+                kind="GENESIS",
+                to_state=RunState.PLANNED,
+                reason="store created",
+                actor_pid=identity.pid,
+                actor_boot_id=identity.boot_id,
+                at_epoch=now_epoch,
+                prev_record_sha256=journal_module.GENESIS_PREV,
+            )
+            journal_module.append_record(store_dir, genesis, _dir_fd=store_fd)
+            view = journal_module.replay(
+                store_dir,
+                run_id=identity.run_id,
+                _dir_fd=store_fd,
+            )
+            projection = journal_module.build_projection(
+                identity.run_id,
+                view,
+                written_at_epoch=now_epoch,
+            )
+            journal_module.write_projection(store_dir, projection, _dir_fd=store_fd)
+            custody.verify_directory_identity(store_dir, store_fd, run_id=identity.run_id)
+            return cls(store_dir, identity, _view=view)
+        finally:
+            if store_fd is not None:
+                os.close(store_fd)
+            os.close(root_fd)
 
     @classmethod
     def open(cls, root: Path, run_id: str) -> RunStore:
         # Round-2 review fix: same derivation-time refusal as create().
         store_dir = _validated_store_dir(root, run_id)
-        run_path = store_dir / RUN_FILENAME
-        if not run_path.exists():
+        store_fd = custody.open_directory(
+            store_dir,
+            create=False,
+            run_id=run_id,
+            purpose="run-state store",
+        )
+        if store_fd is None:
             raise UnknownRunError(run_id)
-        identity = RunIdentity.model_validate(json.loads(run_path.read_text(encoding="utf-8")))
-        # Round-3 review fix (2026-08-23, finding 3): bind the REQUESTED id
-        # to the embedded identity — a valid run-A store placed under
-        # directory run-B used to open, so joins used the embedded identity
-        # while runner output used the requested id (one execution, two
-        # identities). Misfiled evidence is refused, never aliased.
-        if identity.run_id != run_id:
-            raise StoreIdMismatchError(run_id, identity.run_id)
-        # Historical or hand-edited stores cannot be relabelled: open and
-        # adoption use the same core validator as creation.
-        _validate_canonical_run_id(root, identity)
-        return cls(store_dir, identity)
+        try:
+            raw = custody.read_named_bytes(
+                store_dir,
+                store_fd,
+                RUN_FILENAME,
+                run_id=run_id,
+                purpose="immutable run.json identity",
+                allow_missing=True,
+            )
+            if raw is None:
+                raise UnknownRunError(run_id)
+            identity = RunIdentity.model_validate(json.loads(raw))
+            # Bind the REQUESTED id to the embedded identity before joining
+            # it to any other file in this held store directory.
+            if identity.run_id != run_id:
+                raise StoreIdMismatchError(run_id, identity.run_id)
+            _validate_canonical_run_id(root, identity)
+            view = journal_module.replay(store_dir, run_id=run_id, _dir_fd=store_fd)
+            custody.verify_directory_identity(store_dir, store_fd, run_id=run_id)
+            return cls(store_dir, identity, _view=view)
+        finally:
+            os.close(store_fd)
+
+    @contextmanager
+    def _bound_store(self) -> Iterator[int]:
+        """Open and re-bind this object to immutable run.json under one FD."""
+        fd = custody.open_directory(
+            self.dir,
+            create=False,
+            run_id=self.identity.run_id,
+            purpose="run-state store",
+        )
+        if fd is None:
+            raise UnknownRunError(self.identity.run_id)
+        try:
+            raw = custody.read_named_bytes(
+                self.dir,
+                fd,
+                RUN_FILENAME,
+                run_id=self.identity.run_id,
+                purpose="immutable run.json identity",
+                allow_missing=True,
+            )
+            if raw is None:
+                raise UnknownRunError(self.identity.run_id)
+            observed = RunIdentity.model_validate(json.loads(raw))
+            if observed.run_id != self.identity.run_id:
+                raise StoreIdMismatchError(self.identity.run_id, observed.run_id)
+            _validate_canonical_run_id(self.dir.parent, observed)
+            if observed != self.identity:
+                raise StoreCustodyError(
+                    self.identity.run_id,
+                    "immutable run.json content changed after this RunStore was opened",
+                )
+            yield fd
+            custody.verify_directory_identity(self.dir, fd, run_id=self.identity.run_id)
+        finally:
+            os.close(fd)
 
     # -- queries ----------------------------------------------------------
 
@@ -256,9 +356,39 @@ class RunStore:
                 return record.manifest_sha256
         return self.identity.capture_manifest_sha256
 
+    @property
+    def seq(self) -> int:
+        """Sequence number of the currently verified in-memory journal view."""
+        return self._view.records[-1].seq if self._view.records else 0
+
+    def has_journal(self) -> bool:
+        """Check the journal name under the same store/identity custody."""
+        with self._bound_store() as fd:
+            return custody.name_exists(
+                self.dir,
+                fd,
+                journal_module.JOURNAL_FILENAME,
+                run_id=self.identity.run_id,
+                purpose="journal.jsonl authority",
+            )
+
+    def load_projection(self) -> journal_module.Projection:
+        """Load current.json while bound to this store's immutable identity."""
+        with self._bound_store() as fd:
+            return journal_module.load_projection(
+                self.dir,
+                run_id=self.identity.run_id,
+                _dir_fd=fd,
+            )
+
     def refresh(self) -> None:
         """Re-read the journal (after another process appended)."""
-        self._view = journal_module.replay(self.dir, run_id=self.identity.run_id)
+        with self._bound_store() as fd:
+            self._view = journal_module.replay(
+                self.dir,
+                run_id=self.identity.run_id,
+                _dir_fd=fd,
+            )
 
     def status(
         self,
@@ -267,8 +397,22 @@ class RunStore:
         boot_id_now: str,
         proc_root: Path | None = None,
     ) -> RunStatus:
-        state = self.state
-        beat = hb_module.read(self.dir)
+        with self._bound_store() as fd:
+            self._view = journal_module.replay(
+                self.dir,
+                run_id=self.identity.run_id,
+                _dir_fd=fd,
+            )
+            state = self.state
+            beat = hb_module.read(self.dir, _dir_fd=fd)
+            lease_class: LeaseClassification | None = None
+            if lease_module.owner_exists(self.dir, _store_fd=fd):
+                lease_class = lease_module.classify_existing(
+                    self.dir,
+                    boot_id_now=boot_id_now,
+                    proc_root=proc_root,
+                    _store_fd=fd,
+                )
         hb_class = hb_module.classify(
             beat,
             state,
@@ -276,11 +420,6 @@ class RunStore:
             boot_id_now=boot_id_now,
             proc_root=proc_root,
         )
-        lease_class: LeaseClassification | None = None
-        if (self.dir / lease_module.LEASE_DIRNAME / lease_module.OWNER_FILENAME).exists():
-            lease_class = lease_module.classify_existing(
-                self.dir, boot_id_now=boot_id_now, proc_root=proc_root
-            )
         failure_reason = None
         if state is RunState.FAILED:
             for record in reversed(self._view.records):
@@ -313,41 +452,54 @@ class RunStore:
     ) -> str:
         """Journal one legal transition + rewrite the projection. Fails
         closed on skips, regressions, and UNKNOWN targets."""
-        source = self.state
-        if source is None:
-            raise IllegalTransitionError(
-                self.identity.run_id, "journal has no state yet (GENESIS missing)"
+        with self._bound_store() as fd:
+            self._view = journal_module.replay(
+                self.dir,
+                run_id=self.identity.run_id,
+                _dir_fd=fd,
             )
-        if owner is not None and owner.boot_id != actor_boot_id:
-            # A lease from a previous boot cannot authorize a transition on
-            # this boot.
-            raise IllegalTransitionError(
+            source = self.state
+            if source is None:
+                raise IllegalTransitionError(
+                    self.identity.run_id, "journal has no state yet (GENESIS missing)"
+                )
+            if owner is not None and owner.boot_id != actor_boot_id:
+                raise IllegalTransitionError(
+                    self.identity.run_id,
+                    f"lease boot {owner.boot_id[:8]}… != actor boot {actor_boot_id[:8]}…",
+                )
+            if not is_legal(source, to_state):
+                if source is RunState.UNKNOWN or to_state is RunState.UNKNOWN:
+                    detail = "UNKNOWN is a classification, never a journal target"
+                elif to_state not in LEGAL_EDGES.get(source, frozenset()):
+                    detail = f"{source.value} -> {to_state.value} is not a legal edge"
+                else:
+                    detail = f"{source.value} -> {to_state.value} skips or regresses"
+                raise IllegalTransitionError(self.identity.run_id, detail)
+            record = journal_module.JournalRecord(
+                seq=self._view.records[-1].seq + 1 if self._view.records else 1,
+                kind="TRANSITION",
+                from_state=source,
+                to_state=to_state,
+                reason=reason,
+                actor_pid=actor_pid,
+                actor_boot_id=actor_boot_id,
+                at_epoch=now_epoch,
+                prev_record_sha256=self._view.tail_hash,
+            )
+            digest = journal_module.append_record(self.dir, record, _dir_fd=fd)
+            self._view = journal_module.replay(
+                self.dir,
+                run_id=self.identity.run_id,
+                _dir_fd=fd,
+            )
+            projection = journal_module.build_projection(
                 self.identity.run_id,
-                f"lease boot {owner.boot_id[:8]}… != actor boot {actor_boot_id[:8]}…",
+                self._view,
+                written_at_epoch=now_epoch,
             )
-        if not is_legal(source, to_state):
-            if source is RunState.UNKNOWN or to_state is RunState.UNKNOWN:
-                detail = "UNKNOWN is a classification, never a journal target"
-            elif to_state not in LEGAL_EDGES.get(source, frozenset()):
-                detail = f"{source.value} -> {to_state.value} is not a legal edge"
-            else:
-                detail = f"{source.value} -> {to_state.value} skips or regresses"
-            raise IllegalTransitionError(self.identity.run_id, detail)
-        record = journal_module.JournalRecord(
-            seq=self._view.records[-1].seq + 1 if self._view.records else 1,
-            kind="TRANSITION",
-            from_state=source,
-            to_state=to_state,
-            reason=reason,
-            actor_pid=actor_pid,
-            actor_boot_id=actor_boot_id,
-            at_epoch=now_epoch,
-            prev_record_sha256=self._view.tail_hash,
-        )
-        digest = journal_module.append_record(self.dir, record)
-        self.refresh()
-        self._rewrite_projection(now_epoch)
-        return digest
+            journal_module.write_projection(self.dir, projection, _dir_fd=fd)
+            return digest
 
     def pin_manifest(
         self, manifest_sha256: str, *, now_epoch: int, actor_pid: int, actor_boot_id: str
@@ -361,29 +513,42 @@ class RunStore:
         manifest/state mismatch on resume; this fixes the in-place swap
         that could otherwise launder a new manifest through the journal.
         """
-        existing = self.pinned_manifest_sha256
-        if existing is not None and existing != manifest_sha256:
-            raise PinAlreadyBoundError(self.identity.run_id, existing, manifest_sha256)
-        if existing == manifest_sha256:
-            # Idempotent: return the existing pin's record hash without
-            # appending a new journal entry.
-            for record in reversed(self._view.records):
-                if record.kind == "MANIFEST_PINNED":
-                    return record.record_sha256
-        record = journal_module.JournalRecord(
-            seq=self._view.records[-1].seq + 1 if self._view.records else 1,
-            kind="MANIFEST_PINNED",
-            reason="capture manifest pinned",
-            actor_pid=actor_pid,
-            actor_boot_id=actor_boot_id,
-            at_epoch=now_epoch,
-            manifest_sha256=manifest_sha256,
-            prev_record_sha256=self._view.tail_hash,
-        )
-        digest = journal_module.append_record(self.dir, record)
-        self.refresh()
-        self._rewrite_projection(now_epoch)
-        return digest
+        with self._bound_store() as fd:
+            self._view = journal_module.replay(
+                self.dir,
+                run_id=self.identity.run_id,
+                _dir_fd=fd,
+            )
+            existing = self.pinned_manifest_sha256
+            if existing is not None and existing != manifest_sha256:
+                raise PinAlreadyBoundError(self.identity.run_id, existing, manifest_sha256)
+            if existing == manifest_sha256:
+                for prior in reversed(self._view.records):
+                    if prior.kind == "MANIFEST_PINNED":
+                        return prior.record_sha256
+            record = journal_module.JournalRecord(
+                seq=self._view.records[-1].seq + 1 if self._view.records else 1,
+                kind="MANIFEST_PINNED",
+                reason="capture manifest pinned",
+                actor_pid=actor_pid,
+                actor_boot_id=actor_boot_id,
+                at_epoch=now_epoch,
+                manifest_sha256=manifest_sha256,
+                prev_record_sha256=self._view.tail_hash,
+            )
+            digest = journal_module.append_record(self.dir, record, _dir_fd=fd)
+            self._view = journal_module.replay(
+                self.dir,
+                run_id=self.identity.run_id,
+                _dir_fd=fd,
+            )
+            projection = journal_module.build_projection(
+                self.identity.run_id,
+                self._view,
+                written_at_epoch=now_epoch,
+            )
+            journal_module.write_projection(self.dir, projection, _dir_fd=fd)
+            return digest
 
     def validate_resume(self, observed_manifest_sha256: str) -> None:
         """Refuse to resume against a manifest the journal never pinned.
@@ -391,6 +556,7 @@ class RunStore:
         A mismatch is an incident, not an input: the manifest is derived
         evidence and hand-repair is prohibited (runbook §manifest-repair).
         """
+        self.refresh()
         pinned = self.pinned_manifest_sha256
         if pinned is None:
             raise ManifestMismatchError(
@@ -400,14 +566,20 @@ class RunStore:
             raise ManifestMismatchError(self.identity.run_id, pinned, observed_manifest_sha256)
 
     def write_heartbeat(self, beat: hb_module.Heartbeat) -> None:
-        hb_module.write(self.dir, beat)
+        with self._bound_store() as fd:
+            hb_module.write(self.dir, beat, _dir_fd=fd)
 
     def _rewrite_projection(self, now_epoch: int) -> None:
-        self.refresh()
-        projection = journal_module.build_projection(
-            self.identity.run_id, self._view, written_at_epoch=now_epoch
-        )
-        journal_module.write_projection(self.dir, projection)
+        with self._bound_store() as fd:
+            self._view = journal_module.replay(
+                self.dir,
+                run_id=self.identity.run_id,
+                _dir_fd=fd,
+            )
+            projection = journal_module.build_projection(
+                self.identity.run_id, self._view, written_at_epoch=now_epoch
+            )
+            journal_module.write_projection(self.dir, projection, _dir_fd=fd)
 
     def rebuild_projection(self, *, now_epoch: int) -> None:
         """Writer-only repair of a torn projection from the journal."""

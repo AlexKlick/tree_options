@@ -399,14 +399,16 @@ def _lease_refusal(store_dir: Path, *, boot_id_now: str, proc_root: Path | None)
     """Any pre-existing lease refuses: HELD by a live owner is a duplicate
     launch; a stale/torn lease is an operator reconciliation, never a
     silent adoption by this launcher."""
-    owner_path = store_dir / lease_module.LEASE_DIRNAME / lease_module.OWNER_FILENAME
-    if owner_path.exists():
-        classification = lease_module.classify_existing(
-            store_dir, boot_id_now=boot_id_now, proc_root=proc_root
-        )
-        if classification is lease_module.LeaseClassification.HELD:
-            return "duplicate launch: the run's lease is HELD by a live owner"
-        return f"lease present ({classification.value}) — reconcile via era_status first"
+    try:
+        if lease_module.owner_exists(store_dir):
+            classification = lease_module.classify_existing(
+                store_dir, boot_id_now=boot_id_now, proc_root=proc_root
+            )
+            if classification is lease_module.LeaseClassification.HELD:
+                return "duplicate launch: the run's lease is HELD by a live owner"
+            return f"lease present ({classification.value}) — reconcile via era_status first"
+    except rs_errors.RunStateError as exc:
+        return f"lease custody refused: {exc}"
     return None
 
 
@@ -761,6 +763,9 @@ def run_execute(
         )
     except rs_errors.LeaseHeldError as exc:
         print(f"EXECUTE REFUSED (run_state): {exc}", file=sys.stderr)
+        return 5, None
+    except rs_errors.StoreCustodyError as exc:
+        print(f"EXECUTE REFUSED (run_state custody): {exc}", file=sys.stderr)
         return 5, None
     census_sha = approval.census_sha256
     try:

@@ -7,6 +7,7 @@ from tree_options.runstate.errors import (
     ManifestMismatchError,
     ProjectionTornError,
     RunStateError,
+    StoreCustodyError,
     StoreExistsError,
     UnknownRunError,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "RunStateError",
     "RunStatus",
     "RunStore",
+    "StoreCustodyError",
     "StoreExistsError",
     "UnknownRunError",
     "canonical_run_id",

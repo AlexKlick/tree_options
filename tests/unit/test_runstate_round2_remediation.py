@@ -44,7 +44,7 @@ from tree_options.runstate import (  # noqa: E402
 )
 from tree_options.runstate import heartbeat as HB_module  # noqa: E402
 from tree_options.runstate import lease as L_module  # noqa: E402
-from tree_options.runstate.errors import RunIdRefusedError  # noqa: E402
+from tree_options.runstate.errors import RunIdRefusedError, StoreCustodyError  # noqa: E402
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000
@@ -130,9 +130,7 @@ def test_open_refuses_absolute_run_id() -> None:
 
 
 def test_open_refuses_symlinked_run_dir_pointing_outside_root(tmp_path: Path) -> None:
-    """Final-resolved-dir descendant check: a symlink at `<root>/<run-id>`
-    pointing at a directory under /tmp must not open, even though the run id
-    itself is a single clean component."""
+    """The no-follow walk refuses a symlink at the run-dir component."""
     root = _scratch()
     run_id = "m4-round2-symlinked"
     outside = tmp_path / f"outside-{uuid4().hex}"
@@ -140,7 +138,7 @@ def test_open_refuses_symlinked_run_dir_pointing_outside_root(tmp_path: Path) ->
     link = root / run_id
     link.symlink_to(outside, target_is_directory=True)
     try:
-        with pytest.raises(RunIdRefusedError):
+        with pytest.raises(StoreCustodyError):
             RunStore.open(root, run_id)
     finally:
         # pytest reclaims tmp_path (the link's target) at session end; a

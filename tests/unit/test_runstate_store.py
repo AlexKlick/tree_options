@@ -283,9 +283,9 @@ def test_open_revalidates_canonical_id_against_stored_core(root: Path) -> None:
 # durable run dir whose journal.jsonl is a symlink to a copied chain under
 # /tmp opened and transitioned cleanly: authority was appended under /tmp
 # and a reboot erased a returned-success transition. Both journal opens are
-# now O_NOFOLLOW against the store dir held as a REAL directory fd; ELOOP
-# is the module's JournalCorruptError (the runstate mirror of the seal/bars
-# ledger-name rule — the same RunStateError family, no new class).
+# now O_NOFOLLOW under shared component-wise store custody. StoreCustodyError
+# remains a JournalCorruptError subtype for compatibility, with a more precise
+# machine-readable code shared by every run-state authority file.
 
 
 def test_journal_name_symlinked_to_a_tmp_chain_refused(root: Path) -> None:
@@ -313,7 +313,7 @@ def test_journal_name_symlinked_to_a_tmp_chain_refused(root: Path) -> None:
                 actor_pid=123,
                 actor_boot_id=BOOT,
             )
-        assert excinfo.value.code == "JOURNAL_CORRUPT"
+        assert excinfo.value.code == "STORE_CUSTODY_REFUSED"
         assert "symlink" in str(excinfo.value), "the refusal says the journal name is a symlink"
         assert tmp_journal.read_bytes() == honest, "no authority record may be appended under /tmp"
         assert journal.is_symlink(), "the fixture link is untouched by the refusal"

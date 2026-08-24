@@ -2135,16 +2135,19 @@ MUTANTS = [
         ),
     ),
     dict(
-        id="M187-duplicate-launcher-crashes",
-        owner="test_duplicate_launcher_refused_while_owner_alive",
+        id="M187-live-owner-adopted",
+        owner="test_live_owner_not_adopted_even_when_stale_adoption_is_allowed",
         file="src/tree_options/runstate/lease.py",
-        anchor="    except FileExistsError:",
-        replacement="    except FileNotFoundError:",
+        anchor=(
+            "                if classification is LeaseClassification.HELD or not "
+            "allow_stale_adopt:"
+        ),
+        replacement="                if not allow_stale_adopt:",
         selectors=[f"{U}/test_runstate_lease.py"],
         invariant=(
-            "A1 the O_EXCL existence refusal is the duplicate-launcher"
-            " guard; un-handling it turns a clean LEASE_HELD refusal into"
-            " an unhandled crash (or worse, an overwrite)"
+            "A1 stale-adoption permission never authorizes replacing a"
+            " verified live owner's lease; HELD remains a duplicate-launch"
+            " refusal even when the stale-only flag is present"
         ),
     ),
     dict(
@@ -2621,7 +2624,7 @@ MUTANTS = [
         id="M212-duplicate-launch-accepted",
         owner="test_preflight_exit_5_on_held_lease_duplicate_launch",
         file="scripts/launch_bars_era.py",
-        anchor="if owner_path.exists():",
+        anchor="if lease_module.owner_exists(store_dir):",
         replacement="if False:",
         selectors=[f"{U}/test_launch_bars_era.py"],
         invariant=(
@@ -2637,9 +2640,9 @@ MUTANTS = [
         file="src/tree_options/runstate/store.py",
         anchor=(
             "        _validate_canonical_run_id(root, identity)\n"
-            "        run_path = store_dir / RUN_FILENAME"
+            "        root_fd = custody.open_directory("
         ),
-        replacement="        run_path = store_dir / RUN_FILENAME",
+        replacement="        root_fd = custody.open_directory(",
         selectors=[f"{U}/test_runstate_store.py"],
         invariant=(
             "PR13 one logical RunIdentityCore has exactly one computed store id;"
@@ -2679,6 +2682,175 @@ MUTANTS = [
         selectors=[f"{U}/test_gen_coverage_universe.py"],
         invariant=(
             "PR13 even a correctly rehashed universe cannot carry a host-absolute source identity"
+        ),
+    ),
+    # ---- external PR #13 audit: complete run-state filesystem custody ---------
+    dict(
+        id="M234-runstate-component-nofollow-removed",
+        owner="test_create_refuses_intermediate_ancestor_symlink_without_writing_target",
+        file="src/tree_options/runstate/custody.py",
+        anchor="_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW",
+        replacement="_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 every lexical ancestor is opened O_DIRECTORY|O_NOFOLLOW;"
+            " a durable-looking root may never traverse an intermediate symlink"
+        ),
+    ),
+    dict(
+        id="M235-runstate-hard-links-accepted",
+        owner="test_open_refuses_run_json_hard_link",
+        file="src/tree_options/runstate/custody.py",
+        anchor=(
+            "    if st.st_nlink != 1:\n"
+            '        _refuse(run_id, f"{purpose} has unexpected link count '
+            '{st.st_nlink}, expected 1")'
+        ),
+        replacement="    if False:\n        pass",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 every run-state authority file has exactly one link; a"
+            " planted hard link must not turn another inode name into authority"
+        ),
+    ),
+    dict(
+        id="M236-runstate-atomic-final-symlink-accepted",
+        owner="test_projection_final_symlink_refuses_without_mutating_repo_target",
+        file="src/tree_options/runstate/custody.py",
+        anchor=(
+            "def _safe_existing_name(\n"
+            "    parent_fd: int,\n"
+            "    name: str,\n"
+            "    *,\n"
+            "    run_id: str,\n"
+            "    purpose: str,\n"
+            ") -> os.stat_result | None:\n"
+            "    try:\n"
+            "        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)"
+        ),
+        replacement=(
+            "def _safe_existing_name(\n"
+            "    parent_fd: int,\n"
+            "    name: str,\n"
+            "    *,\n"
+            "    run_id: str,\n"
+            "    purpose: str,\n"
+            ") -> os.stat_result | None:\n"
+            "    try:\n"
+            "        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=True)"
+        ),
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 atomic writers classify the final name itself without"
+            " following it; replacing a symlink is a refusal even when its target is regular"
+        ),
+    ),
+    dict(
+        id="M237-runstate-exclusive-temp-custody-removed",
+        owner="test_projection_temp_symlink_refuses_without_mutating_target",
+        file="src/tree_options/runstate/custody.py",
+        anchor="                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,",
+        replacement="                os.O_RDWR | os.O_CREAT | os.O_TRUNC,",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 temporary publish objects are O_EXCL|O_NOFOLLOW; a planted"
+            " temp name must refuse before target bytes can be truncated"
+        ),
+    ),
+    dict(
+        id="M238-runstate-published-bytes-unverified",
+        owner="test_projection_in_place_rewrite_after_publish_is_refused",
+        file="src/tree_options/runstate/custody.py",
+        anchor="            if read_all(published_fd) != payload:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 an atomic publish returns only after re-reading the exact"
+            " published bytes; an in-place rewrite of the same inode is reconciliation"
+        ),
+    ),
+    dict(
+        id="M239-runstate-published-inode-unverified",
+        owner="test_projection_deletion_recreation_after_publish_is_refused",
+        file="src/tree_options/runstate/custody.py",
+        anchor=("            if (published_stat.st_dev, published_stat.st_ino) != temp_identity:"),
+        replacement="            if False:",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 byte-identical deletion/recreation is still an inode swap;"
+            " the final name must map to the verified exclusive temp inode"
+        ),
+    ),
+    dict(
+        id="M240-runstate-parent-substitution-unverified",
+        owner="test_projection_parent_rename_and_substitution_is_refused",
+        file="src/tree_options/runstate/custody.py",
+        anchor=(
+            "        finally:\n"
+            "            os.close(published_fd)\n"
+            "        verify_directory_identity(directory_path, directory_fd, run_id=run_id)"
+        ),
+        replacement="        finally:\n            os.close(published_fd)",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 success requires the lexical store path still to name the"
+            " held directory; parent rename/substitution is reconciliation"
+        ),
+    ),
+    dict(
+        id="M241-runstate-lock-inode-unbound",
+        owner="test_lease_lock_deletion_recreation_refuses_before_owner_publish",
+        file="src/tree_options/runstate/lease.py",
+        anchor=(
+            "        try:\n"
+            "            custody.verify_name_identity(\n"
+            "                lease_fd,\n"
+            '                "adopt.lock",\n'
+            "                lock_fd,\n"
+            "                run_id=run_id,\n"
+            '                purpose="lease adopt.lock",\n'
+            "            )\n"
+            "            raw = custody.read_named_bytes("
+        ),
+        replacement="        try:\n            raw = custody.read_named_bytes(",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 lease mutation verifies adopt.lock still names the flocked"
+            " inode before publishing owner authority"
+        ),
+    ),
+    dict(
+        id="M242-runstate-journal-name-inode-unbound",
+        owner="test_journal_name_clone_swap_during_append_is_refused",
+        file="src/tree_options/runstate/journal.py",
+        anchor=(
+            "                os.fsync(fd)\n"
+            "                custody.verify_name_identity(\n"
+            "                    dir_fd,\n"
+            "                    JOURNAL_FILENAME,\n"
+            "                    fd,\n"
+            "                    run_id=run_id,\n"
+            '                    purpose="journal.jsonl authority",\n'
+            "                )\n"
+            "                post = _locked_tail_view(fd)"
+        ),
+        replacement="                os.fsync(fd)\n                post = _locked_tail_view(fd)",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 a journal append returns only while journal.jsonl still"
+            " names the flocked inode; a clone swap cannot create two authority tails"
+        ),
+    ),
+    dict(
+        id="M243-runstate-immutable-identity-rewrite-accepted",
+        owner="test_in_place_run_identity_rewrite_is_refused_on_rebind",
+        file="src/tree_options/runstate/store.py",
+        anchor="            if observed != self.identity:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 run.json is immutable in full, including process-incarnation"
+            " fields excluded from deterministic run-id computation"
         ),
     ),
 ]

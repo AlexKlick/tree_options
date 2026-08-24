@@ -37,6 +37,7 @@ import sys
 from enum import StrEnum
 from pathlib import Path
 
+from tree_options.runstate import custody
 from tree_options.runstate.errors import LeaseHeldError
 from tree_options.schemas.common import StrictModel
 
@@ -103,12 +104,43 @@ def current_owner(*, now_epoch: int, proc_root: Path | None = None) -> LeaseOwne
     )
 
 
-def _read_owner(store_dir: Path) -> LeaseOwner | None:
-    """Read the current lease owner payload (None if the file is torn)."""
-    owner_path = store_dir / LEASE_DIRNAME / OWNER_FILENAME
-    try:
-        raw = owner_path.read_text(encoding="utf-8")
-    except (FileNotFoundError, OSError):
+def _open_store_fd(store_dir: Path, supplied: int | None) -> tuple[int, bool]:
+    if supplied is not None:
+        return supplied, False
+    run_id = store_dir.name
+    fd = custody.open_directory(
+        store_dir,
+        create=False,
+        run_id=run_id,
+        purpose="run-state store",
+    )
+    if fd is None:
+        raise FileNotFoundError(store_dir)
+    return fd, True
+
+
+def _lease_fd(
+    store_dir: Path,
+    store_fd: int,
+    *,
+    create: bool,
+) -> int | None:
+    run_id = store_dir.name
+    fd = custody.open_child_directory(
+        store_fd,
+        LEASE_DIRNAME,
+        create=create,
+        run_id=run_id,
+        purpose="lease directory",
+    )
+    custody.verify_directory_identity(store_dir, store_fd, run_id=run_id)
+    if fd is not None and create:
+        os.fsync(store_fd)
+    return fd
+
+
+def _decode_owner(raw: bytes | None) -> LeaseOwner | None:
+    if raw is None:
         return None
     try:
         return LeaseOwner.model_validate(json.loads(raw))
@@ -116,21 +148,39 @@ def _read_owner(store_dir: Path) -> LeaseOwner | None:
         return None
 
 
-def classify_existing(
-    store_dir: Path,
+def _read_owner(store_dir: Path, *, _store_fd: int | None = None) -> LeaseOwner | None:
+    """Read owner bytes under custody (None only for absent/torn content)."""
+    store_fd, owned = _open_store_fd(store_dir, _store_fd)
+    lease_fd: int | None = None
+    try:
+        lease_fd = _lease_fd(store_dir, store_fd, create=False)
+        if lease_fd is None:
+            return None
+        raw = custody.read_named_bytes(
+            store_dir / LEASE_DIRNAME,
+            lease_fd,
+            OWNER_FILENAME,
+            run_id=store_dir.name,
+            purpose="lease owner.json",
+            allow_missing=True,
+        )
+        return _decode_owner(raw)
+    finally:
+        if lease_fd is not None:
+            os.close(lease_fd)
+        if owned:
+            os.close(store_fd)
+
+
+def _classify_owner(
+    owner: LeaseOwner | None,
     *,
     boot_id_now: str,
-    proc_root: Path | None = None,
+    proc_root: Path | None,
 ) -> LeaseClassification:
-    """Classify an existing lease owner file without mutating anything."""
-    owner_path = store_dir / LEASE_DIRNAME / OWNER_FILENAME
-    try:
-        owner = LeaseOwner.model_validate(json.loads(owner_path.read_text(encoding="utf-8")))
-    except Exception:
+    if owner is None:
         return LeaseClassification.TORN
     if owner.boot_id != boot_id_now:
-        # Boot identity dominates: a pid number from a previous boot is
-        # meaningless on this one, alive-looking or not.
         return LeaseClassification.STALE_BOOT_CHANGED
     if not proc_pid_alive(owner.pid, proc_root):
         return LeaseClassification.STALE_DEAD_PID
@@ -138,6 +188,40 @@ def classify_existing(
     if live_ticks is None or live_ticks != owner.pid_start_ticks:
         return LeaseClassification.STALE_PID_REUSED
     return LeaseClassification.HELD
+
+
+def classify_existing(
+    store_dir: Path,
+    *,
+    boot_id_now: str,
+    proc_root: Path | None = None,
+    _store_fd: int | None = None,
+) -> LeaseClassification:
+    """Classify an existing lease owner file without mutating anything."""
+    owner = _read_owner(store_dir, _store_fd=_store_fd)
+    return _classify_owner(owner, boot_id_now=boot_id_now, proc_root=proc_root)
+
+
+def owner_exists(store_dir: Path, *, _store_fd: int | None = None) -> bool:
+    """Return whether a safe owner name exists; unsafe names refuse."""
+    store_fd, owned = _open_store_fd(store_dir, _store_fd)
+    lease_fd: int | None = None
+    try:
+        lease_fd = _lease_fd(store_dir, store_fd, create=False)
+        if lease_fd is None:
+            return False
+        return custody.name_exists(
+            store_dir / LEASE_DIRNAME,
+            lease_fd,
+            OWNER_FILENAME,
+            run_id=store_dir.name,
+            purpose="lease owner.json",
+        )
+    finally:
+        if lease_fd is not None:
+            os.close(lease_fd)
+        if owned:
+            os.close(store_fd)
 
 
 def acquire(
@@ -167,43 +251,95 @@ def acquire(
     unlocked fresh create let a locked adopter's `os.replace` stomp a
     fresh acquirer's file, leaving two live owners.
     """
-    lease_dir = store_dir / LEASE_DIRNAME
-    lease_dir.mkdir(parents=True, exist_ok=True)
-    owner_path = lease_dir / OWNER_FILENAME
-    adopt_lock_path = lease_dir / "adopt.lock"
-    payload = json.dumps(json.loads(owner.model_dump_json()), sort_keys=True) + "\n"
-    # Round-2 review: open the lock file FIRST and hold LOCK_EX across the
-    # entire mutation — the fresh create and the adoption replace are both
-    # owner.json mutations and serialize against each other and release().
-    with open(adopt_lock_path, "w", encoding="utf-8") as lock_fh:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+    run_id = store_dir.name
+    lease_path = store_dir / LEASE_DIRNAME
+    payload = (json.dumps(json.loads(owner.model_dump_json()), sort_keys=True) + "\n").encode(
+        "utf-8"
+    )
+    store_fd, owned_store = _open_store_fd(store_dir, None)
+    lease_fd: int | None = None
+    lock_fd: int | None = None
+    try:
+        lease_fd = _lease_fd(store_dir, store_fd, create=True)
+        assert lease_fd is not None
+        lock_fd = custody.open_regular(
+            lease_fd,
+            "adopt.lock",
+            os.O_RDWR | os.O_CREAT,
+            run_id=run_id,
+            purpose="lease adopt.lock",
+            mode=0o600,
+        )
+        assert lock_fd is not None
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         try:
-            try:
-                fd = os.open(owner_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    fh.write(payload)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                return LeaseClassification.HELD
-            except FileExistsError:
-                # Round-1 review: ALL classification and adoption work
-                # happens under the lock; two concurrent or sequential
-                # adopters cannot both win.
-                classification = classify_existing(
-                    store_dir, boot_id_now=boot_id_now, proc_root=proc_root
+            custody.verify_name_identity(
+                lease_fd,
+                "adopt.lock",
+                lock_fd,
+                run_id=run_id,
+                purpose="lease adopt.lock",
+            )
+            raw = custody.read_named_bytes(
+                lease_path,
+                lease_fd,
+                OWNER_FILENAME,
+                run_id=run_id,
+                purpose="lease owner.json",
+                allow_missing=True,
+            )
+            if raw is None:
+                custody.atomic_write(
+                    lease_path,
+                    lease_fd,
+                    OWNER_FILENAME,
+                    payload,
+                    run_id=run_id,
+                    purpose="lease owner.json",
+                    mode=0o600,
+                    exclusive=True,
+                )
+                result = LeaseClassification.HELD
+            else:
+                classification = _classify_owner(
+                    _decode_owner(raw),
+                    boot_id_now=boot_id_now,
+                    proc_root=proc_root,
                 )
                 if classification is LeaseClassification.HELD or not allow_stale_adopt:
                     raise LeaseHeldError(
-                        store_dir.name,
+                        run_id,
                         f"lease classification {classification.value}",
                     ) from None
-                # The classification came from THIS file content — adopt.
-                tmp = lease_dir / f".{OWNER_FILENAME}.{os.getpid()}.tmp"
-                tmp.write_text(payload, encoding="utf-8")
-                os.replace(tmp, owner_path)
-                return classification
+                custody.atomic_write(
+                    lease_path,
+                    lease_fd,
+                    OWNER_FILENAME,
+                    payload,
+                    run_id=run_id,
+                    purpose="lease owner.json",
+                    mode=0o600,
+                    exclusive=False,
+                )
+                result = classification
+            custody.verify_name_identity(
+                lease_fd,
+                "adopt.lock",
+                lock_fd,
+                run_id=run_id,
+                purpose="lease adopt.lock",
+            )
+            custody.verify_directory_identity(store_dir, store_fd, run_id=run_id)
+            return result
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        if lease_fd is not None:
+            os.close(lease_fd)
+        if owned_store:
+            os.close(store_fd)
 
 
 def release(store_dir: Path, owner: LeaseOwner) -> bool:
@@ -216,24 +352,79 @@ def release(store_dir: Path, owner: LeaseOwner) -> bool:
     adopter could classify STALE, then have the file vanish and reappear
     under a fresh acquirer before its replace landed).
     """
-    lease_dir = store_dir / LEASE_DIRNAME
-    owner_path = lease_dir / OWNER_FILENAME
-    if not lease_dir.is_dir():
-        # No lease directory means no lease to release; do not materialize
-        # one (or its lock file) as a side effect of a failed release.
-        return False
-    with open(lease_dir / "adopt.lock", "w", encoding="utf-8") as lock_fh:
-        fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+    run_id = store_dir.name
+    lease_path = store_dir / LEASE_DIRNAME
+    store_fd, owned_store = _open_store_fd(store_dir, None)
+    lease_fd: int | None = None
+    lock_fd: int | None = None
+    try:
+        lease_fd = _lease_fd(store_dir, store_fd, create=False)
+        if lease_fd is None:
+            return False
+        lock_fd = custody.open_regular(
+            lease_fd,
+            "adopt.lock",
+            os.O_RDWR | os.O_CREAT,
+            run_id=run_id,
+            purpose="lease adopt.lock",
+            mode=0o600,
+        )
+        assert lock_fd is not None
+        fcntl.flock(lock_fd, fcntl.LOCK_EX)
         try:
+            custody.verify_name_identity(
+                lease_fd,
+                "adopt.lock",
+                lock_fd,
+                run_id=run_id,
+                purpose="lease adopt.lock",
+            )
+            owner_fd = custody.open_regular(
+                lease_fd,
+                OWNER_FILENAME,
+                os.O_RDONLY,
+                run_id=run_id,
+                purpose="lease owner.json",
+                allow_missing=True,
+            )
+            if owner_fd is None:
+                return False
             try:
-                current = LeaseOwner.model_validate(
-                    json.loads(owner_path.read_text(encoding="utf-8"))
+                current = _decode_owner(custody.read_all(owner_fd))
+                custody.verify_name_identity(
+                    lease_fd,
+                    OWNER_FILENAME,
+                    owner_fd,
+                    run_id=run_id,
+                    purpose="lease owner.json",
                 )
-            except Exception:
-                return False
-            if current != owner:
-                return False
-            owner_path.unlink()
+                if current != owner:
+                    return False
+                custody.unlink_held_name(
+                    lease_path,
+                    lease_fd,
+                    OWNER_FILENAME,
+                    owner_fd,
+                    run_id=run_id,
+                    purpose="lease owner.json",
+                )
+            finally:
+                os.close(owner_fd)
+            custody.verify_name_identity(
+                lease_fd,
+                "adopt.lock",
+                lock_fd,
+                run_id=run_id,
+                purpose="lease adopt.lock",
+            )
+            custody.verify_directory_identity(store_dir, store_fd, run_id=run_id)
             return True
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(lock_fd, fcntl.LOCK_UN)
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
+        if lease_fd is not None:
+            os.close(lease_fd)
+        if owned_store:
+            os.close(store_fd)

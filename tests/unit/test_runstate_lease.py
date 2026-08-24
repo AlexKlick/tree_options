@@ -60,6 +60,20 @@ def test_duplicate_launcher_refused_while_owner_alive(store_dir, tmp_path):
         L.acquire(store_dir, _owner(43, 101), boot_id_now=BOOT, proc_root=proc)
 
 
+def test_live_owner_not_adopted_even_when_stale_adoption_is_allowed(store_dir, tmp_path):
+    """The adoption flag never turns a verified live owner into a stale one."""
+    proc = _fake_proc(tmp_path, {42: 100})
+    L.acquire(store_dir, _owner(42, 100), boot_id_now=BOOT, proc_root=proc)
+    with pytest.raises(LeaseHeldError):
+        L.acquire(
+            store_dir,
+            _owner(43, 101),
+            boot_id_now=BOOT,
+            proc_root=proc,
+            allow_stale_adopt=True,
+        )
+
+
 def test_dead_pid_classified_stale_and_adoptable(store_dir, tmp_path):
     proc = _fake_proc(tmp_path, {})  # pid 42 does not exist
     L.acquire(store_dir, _owner(42, 100), boot_id_now=BOOT, proc_root=proc)

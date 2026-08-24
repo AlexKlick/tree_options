@@ -22,7 +22,6 @@ The journal is the authority (handoff constraint 9: never `/tmp`). Design:
 
 from __future__ import annotations
 
-import errno
 import fcntl
 import json
 import os
@@ -30,6 +29,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tree_options.data.digest import sha256_hex
+from tree_options.runstate import custody
 from tree_options.runstate.errors import (
     JournalConcurrentWriteError,
     JournalCorruptError,
@@ -77,80 +77,33 @@ def _record_hash(record: JournalRecord) -> str:
     return sha256_hex(RUNSTATE_JOURNAL_DOMAIN + body)
 
 
-def _fsync_dir(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+def _store_fd(
+    store_dir: Path,
+    *,
+    run_id: str,
+    create: bool,
+    supplied: int | None,
+) -> tuple[int | None, bool]:
+    """Return (fd, owned): supplied FDs stay owned by their caller."""
+    if supplied is not None:
+        return supplied, False
+    return (
+        custody.open_directory(
+            store_dir,
+            create=create,
+            run_id=run_id,
+            purpose="run-state store",
+        ),
+        True,
+    )
 
 
-def _open_store_dir_nofollow(store_dir: Path, *, run_id: str) -> int:
-    """Round-8 review fix (2026-08-24, finding 4): the run directory held as
-    a REAL directory fd, opened once with ``O_NOFOLLOW``.
-
-    store.py validates the run DIRECTORY (root resolution, one-component run
-    id, descendant check), but the journal used to then follow
-    ``journal.jsonl`` BY NAME on both the read and the append path — so a
-    journal NAME symlinked to a copied chain under /tmp was read and
-    appended through. Every journal open below rides this one dir fd, so the
-    journal name can never redirect authority outside the validated store
-    directory. (The intermediate ancestors were already resolved by the
-    store's root validation; this is the sized-down mirror of the seal/bars
-    ledger custody rule.)"""
-    try:
-        return os.open(store_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise JournalCorruptError(
-                run_id,
-                f"the run directory {store_dir} is a SYMLINK — run-state "
-                "authority is never read or written through a symlinked "
-                "store directory",
-            ) from None
-        raise
-
-
-def _open_journal_nofollow(dir_fd: int, flags: int, *, run_id: str, store_dir: Path) -> int:
-    """Round-8 review fix (2026-08-24, finding 4): open the journal NAME
-    without ever following a symlink at it (the runstate mirror of the
-    seal/bars ledger-name rule).
-
-    A symlink at ``journal.jsonl`` — dangling or not — is ``ELOOP`` under
-    ``O_NOFOLLOW`` regardless of its target; that is corruption of the
-    authority surface, refused by name (``O_CREAT|O_NOFOLLOW`` on a dangling
-    link fails the same way, which is exactly the refusal wanted: authority
-    is never CREATED through a link either). The open rides the store-dir
-    custody fd, so the store directory pathname is never re-resolved."""
-    try:
-        return os.open(JOURNAL_FILENAME, flags | os.O_NOFOLLOW, 0o644, dir_fd=dir_fd)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise JournalCorruptError(
-                run_id,
-                f"{store_dir / JOURNAL_FILENAME} is a SYMLINK — run-state "
-                "authority (journal.jsonl) is never created, read, or "
-                "appended through a symlink: a journal name that redirects "
-                "outside the validated store directory (e.g. a copied chain "
-                "under /tmp) is corruption of the authority surface, and a "
-                "reboot must never erase a returned-success transition",
-            ) from None
-        raise
-
-
-def _read_all(fd: int) -> bytes:
-    chunks: list[bytes] = []
-    offset = 0
-    while True:
-        chunk = os.pread(fd, 65536, offset)
-        if not chunk:
-            break
-        chunks.append(chunk)
-        offset += len(chunk)
-    return b"".join(chunks)
-
-
-def append_record(store_dir: Path, record: JournalRecord) -> str:
+def append_record(
+    store_dir: Path,
+    record: JournalRecord,
+    *,
+    _dir_fd: int | None = None,
+) -> str:
     """Append one hash-chained record; returns its `record_sha256`.
 
     Round-1 review fix (2026-08-23, probe /tmp/pr-a-runstate-write-probes.log
@@ -176,17 +129,34 @@ def append_record(store_dir: Path, record: JournalRecord) -> str:
         sort_keys=True,
         separators=(",", ":"),
     )
-    store_dir.mkdir(parents=True, exist_ok=True)
-    dir_fd = _open_store_dir_nofollow(store_dir, run_id=run_id)
+    dir_fd, owned = _store_fd(
+        store_dir,
+        run_id=run_id,
+        create=True,
+        supplied=_dir_fd,
+    )
+    assert dir_fd is not None
     try:
-        fd = _open_journal_nofollow(
-            dir_fd, os.O_WRONLY | os.O_APPEND | os.O_CREAT, run_id=run_id, store_dir=store_dir
+        fd = custody.open_regular(
+            dir_fd,
+            JOURNAL_FILENAME,
+            os.O_RDWR | os.O_APPEND | os.O_CREAT,
+            run_id=run_id,
+            purpose="journal.jsonl authority",
         )
+        assert fd is not None
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
                 # Round-1 review fix: re-read the locked tail and verify.
-                tail_view = _locked_tail_view(dir_fd, run_id=run_id)
+                custody.verify_name_identity(
+                    dir_fd,
+                    JOURNAL_FILENAME,
+                    fd,
+                    run_id=run_id,
+                    purpose="journal.jsonl authority",
+                )
+                tail_view = _locked_tail_view(fd)
                 if tail_view.torn_tail:
                     raise JournalConcurrentWriteError(
                         run_id,
@@ -200,8 +170,30 @@ def append_record(store_dir: Path, record: JournalRecord) -> str:
                         f"caller's prev_record_sha256 {record.prev_record_sha256[:12]}… "
                         f"does not match the locked tail hash {tail_view.tail_hash[:12]}…",
                     )
-                os.write(fd, (line + "\n").encode("utf-8"))
+                os.lseek(fd, 0, os.SEEK_END)
+                payload = (line + "\n").encode("utf-8")
+                written = 0
+                while written < len(payload):
+                    count = os.write(fd, payload[written:])
+                    if count <= 0:
+                        raise OSError("short write while appending run-state journal")
+                    written += count
                 os.fsync(fd)
+                custody.verify_name_identity(
+                    dir_fd,
+                    JOURNAL_FILENAME,
+                    fd,
+                    run_id=run_id,
+                    purpose="journal.jsonl authority",
+                )
+                post = _locked_tail_view(fd)
+                if post.torn_tail or post.tail_hash != record.record_sha256:
+                    raise JournalCorruptError(
+                        run_id,
+                        "journal bytes no longer contain the just-fsynced record "
+                        "at the verified tail",
+                    )
+                custody.verify_directory_identity(store_dir, dir_fd, run_id=run_id)
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
@@ -210,7 +202,8 @@ def append_record(store_dir: Path, record: JournalRecord) -> str:
         # never re-resolved (round-8, finding 4).
         os.fsync(dir_fd)
     finally:
-        os.close(dir_fd)
+        if owned:
+            os.close(dir_fd)
     return record.record_sha256
 
 
@@ -222,7 +215,7 @@ class _LockedTail:
     torn_tail: bool  # True iff the final line on disk failed decode/verify
 
 
-def _locked_tail_view(dir_fd: int, *, run_id: str) -> _LockedTail:
+def _locked_tail_view(fd: int) -> _LockedTail:
     """Read the journal from disk (under the held flock) and classify its tail.
 
     A torn FINAL line (decode or chain-verify fail on the last line only) is
@@ -239,22 +232,7 @@ def _locked_tail_view(dir_fd: int, *, run_id: str) -> _LockedTail:
     the same thread sees the same locked state, and a symlink at the name
     refuses with ``ELOOP`` instead of being read through.
     """
-    try:
-        fd = os.open(JOURNAL_FILENAME, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
-    except FileNotFoundError:
-        return _LockedTail(tail_hash=GENESIS_PREV, torn_tail=False)
-    except OSError as exc:
-        if exc.errno == errno.ELOOP:
-            raise JournalCorruptError(
-                run_id,
-                "journal.jsonl is a SYMLINK under the held lock — run-state "
-                "authority is never read or appended through a symlink",
-            ) from None
-        raise
-    try:
-        raw = _read_all(fd).decode("utf-8", errors="replace")
-    finally:
-        os.close(fd)
+    raw = custody.read_all(fd).decode("utf-8", errors="replace")
     lines = raw.splitlines()
     prev_hash = GENESIS_PREV
     last_good_hash = GENESIS_PREV
@@ -281,7 +259,12 @@ def _verify_chain(record: JournalRecord, prev_hash: str) -> bool:
     return record.record_sha256 == _record_hash(record)
 
 
-def replay(store_dir: Path, *, run_id: str = "?") -> JournalView:
+def replay(
+    store_dir: Path,
+    *,
+    run_id: str = "?",
+    _dir_fd: int | None = None,
+) -> JournalView:
     """Verify + decode the journal. See module docstring for the torn-tail
     rule: the final line may be damaged (crash mid-append); anything earlier
     must verify or the store is corrupt evidence.
@@ -292,23 +275,29 @@ def replay(store_dir: Path, *, run_id: str = "?") -> JournalView:
     False for the dangling case and used to classify it as absent) is
     ``ELOOP`` → ``JournalCorruptError``, so the chain is never READ through
     a link either."""
-    try:
-        dir_fd = _open_store_dir_nofollow(store_dir, run_id=run_id)
-    except FileNotFoundError:
-        # Missing store dir: an absent journal is not corruption (the caller
-        # classifies: pre-journal legacy -> UNKNOWN, never FAILED).
+    dir_fd, owned = _store_fd(
+        store_dir,
+        run_id=run_id,
+        create=False,
+        supplied=_dir_fd,
+    )
+    if dir_fd is None:
         return JournalView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
     try:
-        try:
-            fd = _open_journal_nofollow(dir_fd, os.O_RDONLY, run_id=run_id, store_dir=store_dir)
-        except FileNotFoundError:
+        raw_bytes = custody.read_named_bytes(
+            store_dir,
+            dir_fd,
+            JOURNAL_FILENAME,
+            run_id=run_id,
+            purpose="journal.jsonl authority",
+            allow_missing=True,
+        )
+        if raw_bytes is None:
             return JournalView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
-        try:
-            raw = _read_all(fd).decode("utf-8", errors="replace")
-        finally:
-            os.close(fd)
     finally:
-        os.close(dir_fd)
+        if owned:
+            os.close(dir_fd)
+    raw = raw_bytes.decode("utf-8", errors="replace")
     lines = raw.splitlines()
     records: list[JournalRecord] = []
     prev_hash = GENESIS_PREV
@@ -355,23 +344,71 @@ def build_projection(run_id: str, view: JournalView, *, written_at_epoch: int) -
     )
 
 
-def write_projection(store_dir: Path, projection: Projection) -> None:
+def write_projection(
+    store_dir: Path,
+    projection: Projection,
+    *,
+    _dir_fd: int | None = None,
+) -> None:
     """Atomic projection write: pid-qualified temp + `os.replace`, so a
     reader never observes a half-written `current.json`."""
-    tmp = store_dir / f".{PROJECTION_FILENAME}.{os.getpid()}.tmp"
-    tmp.write_text(
-        json.dumps(json.loads(projection.model_dump_json()), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
+    run_id = projection.run_id
+    dir_fd, owned = _store_fd(
+        store_dir,
+        run_id=run_id,
+        create=False,
+        supplied=_dir_fd,
     )
-    os.replace(tmp, store_dir / PROJECTION_FILENAME)
-    _fsync_dir(store_dir)
-
-
-def load_projection(store_dir: Path, *, run_id: str = "?") -> Projection:
-    path = store_dir / PROJECTION_FILENAME
+    if dir_fd is None:
+        raise FileNotFoundError(store_dir)
     try:
-        return Projection.model_validate(json.loads(path.read_text(encoding="utf-8")))
-    except FileNotFoundError:
-        raise ProjectionTornError(run_id, "current.json absent") from None
+        payload = (
+            json.dumps(json.loads(projection.model_dump_json()), indent=2, sort_keys=True) + "\n"
+        ).encode("utf-8")
+        custody.atomic_write(
+            store_dir,
+            dir_fd,
+            PROJECTION_FILENAME,
+            payload,
+            run_id=run_id,
+            purpose="current.json projection",
+            mode=0o644,
+            exclusive=False,
+        )
+    finally:
+        if owned:
+            os.close(dir_fd)
+
+
+def load_projection(
+    store_dir: Path,
+    *,
+    run_id: str = "?",
+    _dir_fd: int | None = None,
+) -> Projection:
+    dir_fd, owned = _store_fd(
+        store_dir,
+        run_id=run_id,
+        create=False,
+        supplied=_dir_fd,
+    )
+    if dir_fd is None:
+        raise ProjectionTornError(run_id, "current.json absent")
+    try:
+        raw = custody.read_named_bytes(
+            store_dir,
+            dir_fd,
+            PROJECTION_FILENAME,
+            run_id=run_id,
+            purpose="current.json projection",
+            allow_missing=True,
+        )
+    finally:
+        if owned:
+            os.close(dir_fd)
+    if raw is None:
+        raise ProjectionTornError(run_id, "current.json absent")
+    try:
+        return Projection.model_validate(json.loads(raw))
     except Exception as exc:
         raise ProjectionTornError(run_id, f"current.json unreadable ({exc})") from exc
