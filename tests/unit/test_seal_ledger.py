@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 import uuid
 from collections.abc import Iterator
@@ -342,3 +343,77 @@ def test_root_symlink_swap_refused_and_authority_stays_out_of_tmp(
             with contextlib.suppress(OSError):
                 planted.unlink()
         shutil.rmtree(target, ignore_errors=True)
+
+
+# ---- round-7 (finding 2): custody must cover EVERY path component, not the last ------
+#
+# Round-7 review fix (2026-08-24): os.open(root, O_NOFOLLOW|O_DIRECTORY)
+# guards only the FINAL path component. Renaming an INTERMEDIATE ancestor
+# (e.g. the repo's artifacts/) and planting `artifacts -> /tmp/attack` — with
+# a real g4-authority dir inside — leaves the final component a REAL
+# directory: the single custody open FOLLOWS the intermediate symlink, custody
+# lands on /tmp, and the append writes /tmp/attack/g4-authority/ledger.jsonl
+# and returns success. The root is now taken into custody COMPONENT-WISE: /
+# is opened once, then every component of the resolved root path is opened
+# O_RDONLY|O_DIRECTORY|O_NOFOLLOW relative to the previous component's fd —
+# ELOOP or ENOTDIR at ANY component refuses (LedgerCorruptError naming the
+# offending component).
+
+
+def test_intermediate_component_symlink_swap_refused_component_wise(
+    ledger_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's interleaving: the PARENT of the ledger root is renamed
+    away and replaced by a symlink to a /tmp attack dir that already contains
+    a real `g4-authority`, armed at the custody open (validate has already
+    passed there). Pre-fix the single custody open FOLLOWS the intermediate
+    symlink: the append succeeds and the ledger lands under /tmp. Post-fix the
+    component-wise walk refuses naming the swapped component, and no ledger
+    file exists anywhere under the /tmp target."""
+    target = tmp_path / f"g4-seal-f2-{uuid.uuid4().hex}"
+    (target / "g4-authority").mkdir(parents=True)  # a real root dir inside
+    parent = ledger_root
+    root = parent / "g4-authority"
+    real_open = os.open
+    armed = {"done": False}
+
+    def open_swapping_parent(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        # the racing call: the custody open. Pre-fix it is the ONE
+        # os.open(root, O_NOFOLLOW|O_DIRECTORY); post-fix the first component
+        # open with the same flag signature arms the attack — the walk has not
+        # reached the swapped ancestor yet either way.
+        if not armed["done"] and (flags & os.O_DIRECTORY) and (flags & os.O_NOFOLLOW):
+            armed["done"] = True  # validate has passed: the window opens HERE
+            held = parent.parent / (parent.name + ".held")
+            os.rename(parent, held)  # the real ancestor moves away
+            parent.symlink_to(target, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", open_swapping_parent)
+    identity = _identity()
+    record = L.LedgerRecord(
+        kind=L.KIND_APPROVAL,
+        identity=identity,
+        sealed_run_id=sealed_run_id(identity),
+        content_identity=content_identity(identity),
+        reason="owner approved",
+        at_epoch=T0,
+        prev_record_sha256=L.GENESIS_PREV,
+    )
+    try:
+        with pytest.raises(LedgerCorruptError) as append_exc:
+            L.append_record(root, record)
+        message = str(append_exc.value)
+        assert parent.name in message, "the refusal names the swapped component"
+        assert str(root) in message, "the refusal names the ledger root"
+        assert not list(target.rglob("ledger.jsonl")), (
+            "no ledger file may exist anywhere under the /tmp target"
+        )
+    finally:
+        # the RED run creates the ledger under the /tmp target; never leave it
+        # behind, never leave the planted symlink under artifacts/, and never
+        # leave the renamed .held ancestor either.
+        with contextlib.suppress(OSError):
+            parent.unlink()
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(parent.parent / (parent.name + ".held"), ignore_errors=True)

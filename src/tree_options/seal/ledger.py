@@ -28,7 +28,10 @@ journal:
   → ``LedgerCorruptError``, and every later open/fsync rides that one dir
   fd, so the root pathname is never re-resolved — a ``mkdir(exist_ok=True)``
   accepting a directory symlink can no longer land authority under the
-  link's target.
+  link's target. Round-7 review fix (2026-08-24): custody is taken
+  COMPONENT-WISE from ``/`` (each path component opened no-follow relative
+  to the previous component's fd), so a symlink planted at ANY intermediate
+  ancestor — not just the final component — refuses naming that component.
 
 Record kinds:
 
@@ -49,7 +52,7 @@ import json
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NoReturn
 
 from tree_options.data.digest import sha256_hex
 from tree_options.schemas.common import StrictModel
@@ -213,42 +216,73 @@ def _open_ledger_root(root: Path, *, create: bool) -> int | None:
     directory fsync — rides that one dir fd, so the root PATHNAME is never
     re-resolved (and therefore never re-followed) after custody is taken.
 
+    Round-7 review fix (2026-08-24, finding 2): a single open of the root
+    path guards only the FINAL component. Renaming an INTERMEDIATE ancestor
+    (e.g. the repo's ``artifacts/``) and planting it as a symlink to an
+    attack dir — with a real root dir inside — left the final component a
+    REAL directory, the open FOLLOWED the intermediate link, and custody
+    landed on the target. Custody is now taken COMPONENT-WISE: ``/`` is
+    opened once, then every component of the resolved root path is opened
+    ``O_RDONLY|O_DIRECTORY|O_NOFOLLOW`` relative to the previous component's
+    fd (which is then closed). ``ELOOP`` or ``ENOTDIR`` at ANY component is a
+    ``LedgerCorruptError`` naming the offending component. The ``create``
+    branch creates a missing component ONE at a time with
+    ``os.mkdir(name, dir_fd=prev)`` (``EEXIST`` proceeds to the no-follow
+    open, so a lost race that left a symlink refuses there) — and only after
+    the walked prefix is already under custody.
+
     ``create`` is append-only: a read of an absent root stays an empty view.
-    A lost mkdir race is never suppressed on the attacker's terms — the
-    re-open below re-takes custody under the same ``O_NOFOLLOW`` rule, so a
-    symlink the concurrent creator left refuses with ``ELOOP``."""
+    A lost mkdir race is never suppressed on the attacker's terms — every
+    created component is re-opened under the same ``O_NOFOLLOW`` rule."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
-    def _open() -> int:
-        try:
-            return os.open(root, flags)
-        except OSError as exc:
-            # ELOOP: O_NOFOLLOW met a symlink. ENOTDIR: Linux reports a
-            # symlink-to-directory this way under O_DIRECTORY|O_NOFOLLOW (and
-            # any non-directory root equally). Either way the root is not a
-            # REAL directory — refuse by name.
-            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                raise LedgerCorruptError(
-                    f"{root}: the ledger ROOT is not a real directory (opened "
-                    f"O_NOFOLLOW|O_DIRECTORY, errno {exc.errno}) — a seal "
-                    "authority ledger is never created or followed through a "
-                    "symlinked root"
-                ) from None
-            raise
+    def _refuse_component(component: str, exc: OSError) -> NoReturn:
+        # ELOOP: O_NOFOLLOW met a symlink. ENOTDIR: Linux reports a
+        # symlink-to-directory this way under O_DIRECTORY|O_NOFOLLOW (and any
+        # non-directory equally). Either way the walked path left REAL
+        # directories — refuse naming the offending component.
+        raise LedgerCorruptError(
+            f"{root}: ledger-root component {component!r} is not a real "
+            f"directory (opened O_NOFOLLOW|O_DIRECTORY component-wise from /, "
+            f"errno {exc.errno}) — a seal authority ledger is never created or "
+            "followed through a symlinked path component"
+        ) from None
 
-    try:
-        return _open()
-    except FileNotFoundError:
-        if not create:
-            return None
-    # Absent root (append only): create ancestors if missing, then the root
-    # itself as a SINGLE component — a lost race re-opens under O_NOFOLLOW.
-    root.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.mkdir(root, 0o755)
-    except FileExistsError:
-        pass
-    return _open()
+    resolved = Path(os.path.abspath(str(root)))  # callers pass the validated,
+    # RESOLVED root; abspath only normalizes here — re-resolving would FOLLOW
+    # a swapped ancestor and change the components under custody.
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    for component in resolved.parts[1:]:
+        prev = fd
+        try:
+            fd = os.open(component, flags, dir_fd=prev)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                os.close(prev)
+                _refuse_component(component, exc)
+            if exc.errno == errno.ENOENT and create:
+                # Absent component (append only): create it as a SINGLE
+                # component under custody — a lost race re-opens it under the
+                # no-follow rule, so a symlink the concurrent creator left
+                # refuses with ELOOP.
+                try:
+                    os.mkdir(component, 0o755, dir_fd=prev)
+                except FileExistsError:
+                    pass
+                try:
+                    fd = os.open(component, flags, dir_fd=prev)
+                except OSError as retry:
+                    os.close(prev)
+                    if retry.errno in (errno.ELOOP, errno.ENOTDIR):
+                        _refuse_component(component, retry)
+                    raise
+            else:
+                os.close(prev)
+                if exc.errno == errno.ENOENT:
+                    return None  # absent root on the read path: an empty view
+                raise
+        os.close(prev)
+    return fd
 
 
 def _open_ledger_nofollow(path: Path, root_fd: int, flags: int) -> int:

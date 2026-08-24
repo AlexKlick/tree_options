@@ -48,7 +48,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, NoReturn
 
 from pydantic import Field, field_validator, model_validator
 
@@ -941,37 +941,59 @@ def _open_bars_ledger_root(root: Path, *, create: bool) -> int | None:
     never re-resolved (and therefore never re-followed) after custody is
     taken. ``create`` is append-only; a lost mkdir race re-opens under the
     same ``O_NOFOLLOW`` rule, so a FileExistsError is never suppressed on
-    the attacker's terms."""
+    the attacker's terms.
+
+    Round-7 review fix (2026-08-24, finding 2): a single open of the root
+    path guards only the FINAL component — a symlink planted at any
+    INTERMEDIATE ancestor (e.g. a renamed ``artifacts/`` planted as a link
+    to an attack dir holding a real root) was followed silently and custody
+    landed on the target. Custody is now taken COMPONENT-WISE from ``/``
+    (mirroring ``seal.ledger._open_ledger_root``): each component is opened
+    ``O_NOFOLLOW|O_DIRECTORY`` relative to the previous component's fd;
+    ``ELOOP``/``ENOTDIR`` at ANY component refuses naming it, and the
+    ``create`` branch mkdirs a missing component one at a time under the
+    walked prefix, re-opening it under the no-follow rule."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
-    def _open() -> int:
-        try:
-            return os.open(root, flags)
-        except OSError as exc:
-            # ELOOP: O_NOFOLLOW met a symlink. ENOTDIR: Linux reports a
-            # symlink-to-directory this way under O_DIRECTORY|O_NOFOLLOW (and
-            # any non-directory root equally). Either way the root is not a
-            # REAL directory — refuse by name.
-            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                raise LedgerCorruptError(
-                    f"{root}: the bars-authority ROOT is not a real directory "
-                    f"(opened O_NOFOLLOW|O_DIRECTORY, errno {exc.errno}) — "
-                    "bars authority is never created or followed through a "
-                    "symlinked root"
-                ) from None
-            raise
+    def _refuse_component(component: str, exc: OSError) -> NoReturn:
+        raise LedgerCorruptError(
+            f"{root}: bars-authority component {component!r} is not a real "
+            f"directory (opened O_NOFOLLOW|O_DIRECTORY component-wise from /, "
+            f"errno {exc.errno}) — bars authority is never created or followed "
+            "through a symlinked path component"
+        ) from None
 
-    try:
-        return _open()
-    except FileNotFoundError:
-        if not create:
-            return None
-    root.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        os.mkdir(root, 0o755)
-    except FileExistsError:
-        pass
-    return _open()
+    resolved = Path(os.path.abspath(str(root)))  # validated + resolved by the
+    # caller; abspath only normalizes — re-resolving would FOLLOW a swapped
+    # ancestor and change the components under custody.
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    for component in resolved.parts[1:]:
+        prev = fd
+        try:
+            fd = os.open(component, flags, dir_fd=prev)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                os.close(prev)
+                _refuse_component(component, exc)
+            if exc.errno == errno.ENOENT and create:
+                try:
+                    os.mkdir(component, 0o755, dir_fd=prev)
+                except FileExistsError:
+                    pass  # lost race: the no-follow open below refuses a symlink
+                try:
+                    fd = os.open(component, flags, dir_fd=prev)
+                except OSError as retry:
+                    os.close(prev)
+                    if retry.errno in (errno.ELOOP, errno.ENOTDIR):
+                        _refuse_component(component, retry)
+                    raise
+            else:
+                os.close(prev)
+                if exc.errno == errno.ENOENT:
+                    return None  # absent root on the read path: an empty view
+                raise
+        os.close(prev)
+    return fd
 
 
 def _open_bars_ledger_nofollow(path: Path, root_fd: int, flags: int) -> int:

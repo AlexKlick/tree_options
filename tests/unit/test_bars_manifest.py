@@ -12,6 +12,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -799,3 +800,70 @@ def test_pinned_master_deleted_before_enumeration_refused(
         )
     finally:
         monkeypatch.setattr(Path, "glob", real_glob)
+
+
+# ---- round-7 (finding 2): custody must cover EVERY path component, not the last ------
+#
+# Round-7 review fix (2026-08-24): the round-6 custody open guarded only the
+# FINAL path component. Renaming an INTERMEDIATE ancestor and planting it as
+# a symlink to an attack dir — with a real bars-authority root inside — left
+# the final component a REAL directory: the single open followed the
+# intermediate link, custody landed on the target, and the append wrote the
+# bars-authority ledger there and returned success. The root is now taken
+# into custody COMPONENT-WISE from / (every component opened
+# O_NOFOLLOW|O_DIRECTORY relative to the previous component's fd), the same
+# rule seal.ledger._open_ledger_root enforces.
+
+
+def test_bars_intermediate_component_symlink_swap_refused_component_wise(
+    scratch_root: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's interleaving, bars twin: the PARENT of the bars-authority
+    root is renamed away and replaced by a symlink to a /tmp attack dir that
+    already contains a real `bars-authority`, armed at the custody open.
+    Pre-fix the single custody open FOLLOWS the intermediate symlink: the
+    append succeeds and the ledger lands under /tmp. Post-fix the
+    component-wise walk refuses naming the swapped component, and no ledger
+    file exists anywhere under the /tmp target."""
+    target = tmp_path / f"bars-a4-f2-{uuid.uuid4().hex}"
+    (target / "bars-authority").mkdir(parents=True)  # a real root dir inside
+    parent = scratch_root
+    root = parent / "bars-authority"
+    real_open = os.open
+    armed = {"done": False}
+
+    def open_swapping_parent(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        # the racing call: the custody open (see the seal twin for why the
+        # flag signature identifies it pre- and post-fix).
+        if not armed["done"] and (flags & os.O_DIRECTORY) and (flags & os.O_NOFOLLOW):
+            armed["done"] = True  # validate has passed: the window opens HERE
+            held = parent.parent / (parent.name + ".held")
+            os.rename(parent, held)  # the real ancestor moves away
+            parent.symlink_to(target, target_is_directory=True)
+        return real_open(path, flags, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(os, "open", open_swapping_parent)
+    record = bm.BarsAuthorityRecord(
+        kind=bm.KIND_BARS_LAUNCH_APPROVAL,
+        prev_record_sha256=bm.GENESIS_PREV,
+        reason="approved the grid",
+        at_epoch=T0,
+        **_approval(),
+    )
+    try:
+        with pytest.raises(LedgerCorruptError) as append_exc:
+            bm.append_bars_record(root, record)
+        message = str(append_exc.value)
+        assert parent.name in message, "the refusal names the swapped component"
+        assert str(root) in message, "the refusal names the bars-authority root"
+        assert not list(target.rglob("ledger.jsonl")), (
+            "no ledger file may exist anywhere under the /tmp target"
+        )
+    finally:
+        # the RED run creates the ledger under the /tmp target; never leave it
+        # behind, never leave the planted symlink under artifacts/, and never
+        # leave the renamed .held ancestor either.
+        with contextlib.suppress(OSError):
+            parent.unlink()
+        shutil.rmtree(target, ignore_errors=True)
+        shutil.rmtree(parent.parent / (parent.name + ".held"), ignore_errors=True)
