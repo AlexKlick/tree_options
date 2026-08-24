@@ -102,10 +102,11 @@ from tree_options.data.bars_manifest import (  # noqa: E402
     BarsAuthorityRecord,
     BarsLedgerView,
     BarsManifestError,
+    BarsWorkManifest,
     SecondExecutionRefusedError,
     append_bars_launch_consumed,
-    load_bars_work_manifest,
     load_selection_profile,
+    parse_bars_work_manifest,
     read_bars_ledger,
     verify_bars_work_manifest,
 )
@@ -280,11 +281,30 @@ def _census_check(args: argparse.Namespace) -> CheckStatus:
     )
 
 
-def _work_manifest_check(args: argparse.Namespace) -> tuple[CheckStatus, str | None]:
-    """(status, work_manifest_sha256-of-file-bytes or None on failure)."""
+def _work_manifest_check(
+    args: argparse.Namespace,
+) -> tuple[CheckStatus, BarsWorkManifest | None, str | None]:
+    """(status, the VERIFIED work manifest or None, sha256 of the VERIFIED
+    file bytes or None on failure).
+
+    Round-3 review fix (2026-08-23, finding 2): the work-manifest bytes are
+    read ONCE — these bytes are parsed, verified, hashed, and (by the
+    execute path) consumed. The check previously re-read the path for its
+    hash after verifying, so a swap between the two reads verified manifest
+    A while the approval bound manifest B's hash, and execute's later
+    re-parse consumed B without full verification. Same bytes-once
+    discipline the round-3 amendment fix applied to the packet."""
     path = Path(args.work_manifest)
     try:
-        manifest = load_bars_work_manifest(path)
+        raw = path.read_bytes()
+    except OSError as exc:
+        return (
+            CheckStatus(ok=False, detail=f"work manifest refused: {path}: {exc.strerror}"),
+            None,
+            None,
+        )
+    try:
+        manifest = parse_bars_work_manifest(raw, source=str(path))
         profile = load_selection_profile(Path(args.selection_profile))
         capture_manifest_sha = _sha256_file(Path(args.capture_manifest))
         # Round-1 review fix: verify_bars_work_manifest requires capture_dir
@@ -298,7 +318,7 @@ def _work_manifest_check(args: argparse.Namespace) -> tuple[CheckStatus, str | N
             capture_dir=capture_dir,
         )
     except (OSError, BarsManifestError) as exc:
-        return CheckStatus(ok=False, detail=f"work manifest refused: {exc}"), None
+        return CheckStatus(ok=False, detail=f"work manifest refused: {exc}"), None, None
     evidence = (
         f"manifest {manifest.content_sha256[:12]}…,"
         f" profile {manifest.profile_sha256[:12]}…,"
@@ -318,8 +338,13 @@ def _work_manifest_check(args: argparse.Namespace) -> tuple[CheckStatus, str | N
                 evidence=evidence,
             ),
             None,
+            None,
         )
-    return CheckStatus(ok=True, detail="", evidence=evidence), _sha256_file(path)
+    return (
+        CheckStatus(ok=True, detail="", evidence=evidence),
+        manifest,
+        hashlib.sha256(raw).hexdigest(),
+    )
 
 
 def _vendor_key_check(args: argparse.Namespace) -> CheckStatus:
@@ -449,7 +474,7 @@ def run_preflight(
     checks["census_currency"] = _census_check(args)
     if not checks["census_currency"].ok:
         return _report(checks, args, failing="census_currency", exit_code=3)
-    work_status, _ = _work_manifest_check(args)
+    work_status, _, _ = _work_manifest_check(args)
     checks["work_manifest"] = work_status
     if not work_status.ok:
         return _report(checks, args, failing="work_manifest", exit_code=8)
@@ -554,12 +579,15 @@ def run_execute(
     current_hash = protocol_hash(protocol)
     reason = _protocol_gate_failure(protocol, view)
     approval = _matching_approval(view, current_hash)
-    work_status, work_manifest_sha = _work_manifest_check(args)
+    work_status, work_manifest, work_manifest_sha = _work_manifest_check(args)
     if reason is not None or not work_status.ok:
         detail = reason if reason is not None else work_status.detail
         print(f"EXECUTE REFUSED (authority): {detail}", file=sys.stderr)
         return 6, None
-    assert work_manifest_sha is not None  # the work-manifest check succeeded
+    # the work-manifest check succeeded: BOTH the verified model and the
+    # hash of the verified bytes are bound here (round-3 finding 2).
+    assert work_manifest is not None
+    assert work_manifest_sha is not None
     if approval is None or approval.work_manifest_sha256 != work_manifest_sha:
         print(
             "EXECUTE REFUSED (authority): no BARS_LAUNCH_APPROVAL record binds"
@@ -603,35 +631,27 @@ def run_execute(
             file=sys.stderr,
         )
         return 6, None
-    # The work manifest (already verified above) carries the capture-manifest
-    # hash; compare to the store's pinned manifest.
-    work_manifest_path = Path(args.work_manifest)
+    # The work manifest (verified above, from the ONE bytes read — round-3
+    # finding 2) carries the capture-manifest hash; compare it to the store's
+    # pinned manifest. The join consumes the VERIFIED model, never a re-parse
+    # of the path (a swap after verification used to flow unverified bytes
+    # into exactly these identity joins).
     pinned = store.pinned_manifest_sha256
     expected_capture_manifest = _sha256_file(Path(args.capture_manifest))
-    try:
-        from tree_options.data.bars_manifest import load_bars_work_manifest
-
-        work_manifest_model = load_bars_work_manifest(work_manifest_path)
-    except (OSError, BarsManifestError) as exc:
-        print(
-            f"EXECUTE REFUSED (identity): work manifest unreadable: {exc}",
-            file=sys.stderr,
-        )
-        return 6, None
-    if work_manifest_model.capture_manifest_sha256 != expected_capture_manifest:
+    if work_manifest.capture_manifest_sha256 != expected_capture_manifest:
         print(
             "EXECUTE REFUSED (identity): work manifest's capture_manifest_sha256"
-            f" {work_manifest_model.capture_manifest_sha256[:12]}… does not match"
+            f" {work_manifest.capture_manifest_sha256[:12]}… does not match"
             f" the --capture-manifest hash {expected_capture_manifest[:12]}…",
             file=sys.stderr,
         )
         return 6, None
-    if pinned != work_manifest_model.capture_manifest_sha256:
+    if pinned != work_manifest.capture_manifest_sha256:
         print(
             "EXECUTE REFUSED (identity): run-state store pinned capture manifest"
             f" {pinned[:12] if pinned else None}… does not match the work"
             " manifest's capture-manifest pin"
-            f" {work_manifest_model.capture_manifest_sha256[:12]}…",
+            f" {work_manifest.capture_manifest_sha256[:12]}…",
             file=sys.stderr,
         )
         return 6, None

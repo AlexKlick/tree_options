@@ -729,6 +729,91 @@ def test_execute_two_store_interleaving_refuses_the_second_runner(
     assert not (store_b.dir / lease_module.LEASE_DIRNAME / lease_module.OWNER_FILENAME).exists()
 
 
+def _swapped_manifest_bytes(scenario: dict[str, Path]) -> bytes:
+    """A parse-valid but UNVERIFIABLE work manifest (one entry dropped: both
+    the Budget restatement and the regenerate-and-compare refuse it), with a
+    self-consistent content hash — exactly what a swap attack needs."""
+    base = scenario["work_manifest_model"]
+    from tree_options.data.bars_manifest import work_manifest_content_sha256
+
+    swapped = base.model_copy(update={"entries": base.entries[:-1], "content_sha256": ""})
+    swapped = swapped.model_copy(update={"content_sha256": work_manifest_content_sha256(swapped)})
+    return (swapped.model_dump_json(indent=2) + "\n").encode("utf-8")
+
+
+def test_execute_refuses_a_work_manifest_swapped_after_verification(
+    scenario: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round-3 review fix (2026-08-23, P1 finding 2): verification and the
+    authority hash were DIFFERENT reads of the work-manifest path.
+
+    Attack: verify manifest A, atomically swap in unverifiable manifest B
+    before the hash read, approval names B's hash — execute used to consume
+    B (its later re-parse read the path again, without full verification).
+    The bytes are now read ONCE: the verified bytes are hashed and consumed,
+    so the approval-bound hash can only be the hash of the VERIFIED bytes —
+    B's hash no longer matches anything that was verified, and the launch
+    refuses with exit 6 before any authority is spent."""
+    swapped = _swapped_manifest_bytes(scenario)
+    # The approval names the SWAPPED manifest's file hash.
+    _approve(scenario, work_manifest_sha256=hashlib.sha256(swapped).hexdigest())
+    real_sha = launch._sha256_file
+
+    def sha_with_swap(path: Path) -> str:
+        # The attacker's atomic swap lands on the SECOND read of the
+        # work-manifest path (between verify and hash in the old code).
+        if path == scenario["work_manifest"]:
+            path.write_bytes(swapped)
+        return real_sha(path)
+
+    monkeypatch.setattr(launch, "_sha256_file", sha_with_swap)
+
+    calls: list[str] = []
+    code, summary = _execute(scenario, runner=_fake_runner(scenario, calls))
+    assert code == 6 and summary is None
+    assert calls == []
+    # nothing was consumed and the store never left BARS_READY
+    view = read_bars_ledger(scenario["authority_root"])
+    assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL"]
+    store = RunStore.open(scenario["store_root"], RUN_ID)
+    assert store.state is RunState.BARS_READY
+
+
+def test_execute_reads_the_work_manifest_bytes_exactly_once(
+    scenario: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Structural bytes-once (round-3 finding 2): across the whole execute,
+    the work-manifest path is read exactly ONCE — the hash bound into the
+    consumption is the hash of the verified bytes BY CONSTRUCTION, not
+    because a second read happened to agree."""
+    _approve(scenario)
+    reads: list[bytes] = []
+    real_read = Path.read_bytes
+
+    def counting_read(self: Path) -> bytes:
+        data = real_read(self)
+        if self == scenario["work_manifest"]:
+            reads.append(data)
+        return data
+
+    monkeypatch.setattr(Path, "read_bytes", counting_read)
+    calls: list[str] = []
+
+    def runner(context) -> str:
+        calls.append("runner")
+        return "plain-runner-ok"
+
+    code, _ = _execute(scenario, runner=runner)
+    assert code == 0 and calls == ["runner"]
+    assert len(reads) == 1
+    # ... and the single read's bytes are what the consumption binds
+    view = read_bars_ledger(scenario["authority_root"])
+    consumed = next(r for r in view.records if r.kind == KIND_BARS_LAUNCH_CONSUMED)
+    assert consumed.work_manifest_sha256 == hashlib.sha256(reads[0]).hexdigest()
+
+
 def test_cli_execute_refused_exit_10_touches_nothing(
     scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

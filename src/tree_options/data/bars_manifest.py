@@ -603,16 +603,25 @@ def build_bars_work_manifest(
     return manifest.model_copy(update={"content_sha256": work_manifest_content_sha256(manifest)})
 
 
+def parse_bars_work_manifest(
+    raw: bytes, *, source: str = "<work-manifest bytes>"
+) -> BarsWorkManifest:
+    """Parse work-manifest BYTES through the same error mapping the loader
+    uses (round-3 review fix, 2026-08-23, finding 2): callers that must read
+    the file exactly once — verify, hash, and consume the same bytes — parse
+    the one read here instead of re-reading the path."""
+    try:
+        return BarsWorkManifest.model_validate(json.loads(raw))
+    except ValueError as exc:
+        raise BarsManifestError(f"{source}: work manifest invalid ({exc})") from None
+
+
 def load_bars_work_manifest(path: Path) -> BarsWorkManifest:
     try:
         raw = path.read_bytes()
     except OSError as exc:
         raise BarsManifestError(f"{path}: work manifest unreadable ({exc.strerror})") from None
-    try:
-        manifest = BarsWorkManifest.model_validate(json.loads(raw))
-    except ValueError as exc:
-        raise BarsManifestError(f"{path}: work manifest invalid ({exc})") from None
-    return manifest
+    return parse_bars_work_manifest(raw, source=str(path))
 
 
 def verify_bars_work_manifest(
@@ -1022,6 +1031,7 @@ __all__ = [
     "load_bars_work_manifest",
     "load_selection_profile",
     "order_entries",
+    "parse_bars_work_manifest",
     "profile_content_sha256",
     "read_bars_ledger",
     "rebuild_master_captures",
