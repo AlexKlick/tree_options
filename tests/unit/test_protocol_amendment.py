@@ -974,6 +974,65 @@ def test_hard_link_planted_between_check_and_write_cannot_truncate_the_tracked_f
     assert PROTOCOL_PATH.read_bytes() == before, "still byte-identical at teardown"
 
 
+# ---- round-6 (finding 1): the temp NAME is unpredictable and the publish is verified -
+#
+# Round-6 review fix (2026-08-24): _write_exclusive's temp name was PREDICTABLE
+# (".{name}.{pid}.tmp") and the publish was unverified. An attacker renamed the
+# temp file away mid-write (the open fd keeps writing the RENAMED inode; fstat
+# still sees nlink == 1), planted attacker bytes at the original temp name, and
+# os.replace(tmp, path) published the ATTACKER inode while the builder returned
+# its legitimate in-memory packet. The temp name is now mkstemp-random and the
+# PUBLISHED inode must be the inode that was written: (st_dev, st_ino) captured
+# from fstat before close, re-checked with os.stat(path) after os.replace.
+
+
+def test_stolen_temp_name_publishing_attacker_bytes_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interleaving attack: the steal+plant happens between the builder's
+    fsync/fstat and its os.replace (simulated by wrapping os.replace — the
+    wrapper receives the temp path, renames it away, plants attacker bytes at
+    the temp name, then performs the real replace). Pre-fix the builder
+    succeeds while the PUBLISHED artifact carries the attacker's bytes;
+    post-fix the build refuses naming the inode mismatch, and the temp name
+    was never pid-predictable to begin with."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    attacker = b'{"attacker": "published in place of the builder"}\n'
+    seen_temp_names: list[str] = []
+    real_replace = os.replace
+
+    def replace_stealing_the_temp(src: object, dst: object) -> object:
+        # the interleaving window opens exactly here: the builder's bytes are
+        # fsynced and fstat'ed, the publish has not happened yet. The steal
+        # targets the FINAL output (amendment-packet.json): the earlier three
+        # outputs publish legitimately, `emitted` hashes the legitimate bytes,
+        # and the builder returns its legitimate in-memory packet — while the
+        # PACKET NAME on disk carries the attacker's inode.
+        if Path(str(dst)).name != "amendment-packet.json":
+            return real_replace(src, dst)
+        seen_temp_names.append(Path(str(src)).name)
+        stolen = Path(str(src)).parent / (Path(str(src)).name + ".stolen")
+        os.rename(str(src), str(stolen))  # steal the builder's inode AWAY
+        Path(str(src)).write_bytes(attacker)  # plant attacker bytes at the temp name
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace_stealing_the_temp)
+    with _out_root() as out:
+        with pytest.raises(OutputRefusedError, match="not the inode") as exc_info:
+            _build(paths, out)
+        assert "attacker" in str(exc_info.value), (
+            "the refusal explains that attacker bytes were published in place"
+        )
+        # defense in depth, pinned: the temp name was never pid-predictable,
+        # so the steal could not have located the temp file by guessing.
+        assert seen_temp_names, "the wrapper observed the packet's publish"
+        assert str(os.getpid()) not in seen_temp_names[0], (
+            "temp names must not embed the pid (the pre-fix name was guessable)"
+        )
+        assert seen_temp_names[0] != f".amendment-packet.json.{os.getpid()}.tmp"
+
+
 # ---- round-5 (finding 2): zero INCOMPLETE pairs is not wholeness on its own --------
 #
 # Round-5 review fix (2026-08-24): the builder refused only

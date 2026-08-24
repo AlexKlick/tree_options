@@ -46,6 +46,7 @@ import contextlib
 import hashlib
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Any, Literal, NoReturn
 
@@ -332,30 +333,47 @@ def _write_exclusive(path: Path, text: str) -> None:
     that name between the shared-inode check and the write is written
     straight through — truncating whatever tracked file shares the inode.
     Instead the bytes go to a sibling TEMP file inside the same confined
-    directory (created ``O_CREAT|O_EXCL|O_NOFOLLOW``, so a precreate at the
-    temp name — regular file or symlink — refuses too), are fsynced, are
-    fstat-checked (``st_nlink`` must be exactly 1), and only then are moved
-    into place with ``os.replace``. ``replace`` swaps the DIRECTORY ENTRY:
-    a link planted at the output name is unlinked by the swap and the shared
-    inode behind it is never written through."""
-    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    directory, are fsynced, are fstat-checked (``st_nlink`` must be exactly
+    1), and only then are moved into place with ``os.replace``. ``replace``
+    swaps the DIRECTORY ENTRY: a link planted at the output name is unlinked
+    by the swap and the shared inode behind it is never written through.
+
+    Round-6 review fix (2026-08-24, finding 1): the temp NAME is now
+    UNPREDICTABLE and the publish is VERIFIED. The pre-fix temp name was
+    ``.{name}.{pid}.tmp`` — guessable — and ``replace`` was trusted blindly:
+    an attacker could rename the temp file away mid-write (the open fd keeps
+    writing the RENAMED inode; the fstat above still sees one link), plant
+    attacker bytes at the original temp name, and ``replace`` then published
+    the ATTACKER inode while the builder returned its legitimate in-memory
+    packet. ``tempfile.mkstemp`` supplies an unguessable ``O_EXCL`` name, and
+    the inode this function wrote — ``(st_dev, st_ino)`` captured from fstat
+    before the close — must be the inode ``os.stat`` sees at the output name
+    after the replace; any mismatch is a refusal naming both identities."""
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
     try:
+        os.fchmod(fd, 0o644)
         # fdopen owns the fd from here: the with-block closes it on every path.
-        with os.fdopen(
-            os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644),
-            "w",
-            encoding="utf-8",
-        ) as handle:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
-            links = os.fstat(handle.fileno()).st_nlink
-        if links != 1:
+            written = os.fstat(handle.fileno())
+        if written.st_nlink != 1:
             raise OutputRefusedError(
-                f"temp output {tmp} has {links} hard links: the inode is "
+                f"temp output {tmp} has {written.st_nlink} hard links: the inode is "
                 "shared — refusing to publish it over the output name"
             )
         os.replace(tmp, path)
+        published = os.stat(path)
+        if (published.st_dev, published.st_ino) != (written.st_dev, written.st_ino):
+            raise OutputRefusedError(
+                f"published output {path} is not the inode this builder wrote "
+                f"(wrote dev {written.st_dev} ino {written.st_ino}, published "
+                f"dev {published.st_dev} ino {published.st_ino}): the temp name "
+                "was stolen and attacker bytes were published in its place — "
+                "refusing to attest them"
+            )
     finally:
         # replace consumed the temp name on success; on any refusal the
         # half-written temp must not linger under artifacts/.
