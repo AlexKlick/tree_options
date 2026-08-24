@@ -42,6 +42,7 @@ timestamps, no absolute paths in any emitted byte.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -305,7 +306,13 @@ def _refuse_shared_inode(path: Path) -> None:
     link to a tracked file keeps its resolved path inside the output root, so
     confinement passed and write_text truncated the shared inode. A link
     count > 1 is aliasing regardless of how the link was created; only an
-    absent path or a sole link may be written."""
+    absent path or a sole link may be written.
+
+    Round-5 review fix (2026-08-24, finding 1): this check is now only the
+    FAST refusal. It and the write were separate operations, so an
+    interleaving process could plant a hard link at the output name AFTER the
+    check and BEFORE the write — and write_text truncated the shared tracked
+    inode anyway. The write itself now holds custody: see _write_exclusive."""
     if not path.exists():
         return
     nlink = os.stat(path).st_nlink
@@ -315,6 +322,45 @@ def _refuse_shared_inode(path: Path) -> None:
             "(a tracked file?) however the link was created — refusing to "
             "write through it"
         )
+
+
+def _write_exclusive(path: Path, text: str) -> None:
+    """Round-5 review fix (2026-08-24, finding 1): publish one output file
+    with custody held through the whole write.
+
+    A plain ``write_text`` opens the FINAL NAME, so a hard link planted at
+    that name between the shared-inode check and the write is written
+    straight through — truncating whatever tracked file shares the inode.
+    Instead the bytes go to a sibling TEMP file inside the same confined
+    directory (created ``O_CREAT|O_EXCL|O_NOFOLLOW``, so a precreate at the
+    temp name — regular file or symlink — refuses too), are fsynced, are
+    fstat-checked (``st_nlink`` must be exactly 1), and only then are moved
+    into place with ``os.replace``. ``replace`` swaps the DIRECTORY ENTRY:
+    a link planted at the output name is unlinked by the swap and the shared
+    inode behind it is never written through."""
+    tmp = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    try:
+        # fdopen owns the fd from here: the with-block closes it on every path.
+        with os.fdopen(
+            os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644),
+            "w",
+            encoding="utf-8",
+        ) as handle:
+            handle.write(text)
+            handle.flush()
+            os.fsync(handle.fileno())
+            links = os.fstat(handle.fileno()).st_nlink
+        if links != 1:
+            raise OutputRefusedError(
+                f"temp output {tmp} has {links} hard links: the inode is "
+                "shared — refusing to publish it over the output name"
+            )
+        os.replace(tmp, path)
+    finally:
+        # replace consumed the temp name on success; on any refusal the
+        # half-written temp must not linger under artifacts/.
+        with contextlib.suppress(FileNotFoundError):
+            tmp.unlink()
 
 
 def _reject_constant(name: str) -> NoReturn:
@@ -640,9 +686,9 @@ def build_proposed_amendment(
         out_root=resolved_out_root,
     )
     _refuse_shared_inode(proposed_path)
-    proposed_path.write_text(
+    _write_exclusive(
+        proposed_path,
         yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000),
-        encoding="utf-8",
     )
 
     # PROOF STEP: the proposal must load through TODAY'S real loader
@@ -665,20 +711,20 @@ def build_proposed_amendment(
         out_dir / "schema-addition-proposal.yaml", out_root=resolved_out_root
     )
     _refuse_shared_inode(schema_path)
-    schema_path.write_text(
+    _write_exclusive(
+        schema_path,
         _render_schema_addition_proposal(
             census=census, census_hash=census_hash, flow_value=flow_value
         ),
-        encoding="utf-8",
     )
 
     diff_path = _confine_output(out_dir / "amendment-diff.md", out_root=resolved_out_root)
     _refuse_shared_inode(diff_path)
-    diff_path.write_text(
+    _write_exclusive(
+        diff_path,
         _render_diff(
             base=base, census_hash=census_hash, flow_value=flow_value, flow_source=flow_source
         ),
-        encoding="utf-8",
     )
 
     packet = AmendmentPacket(
@@ -703,8 +749,8 @@ def build_proposed_amendment(
     )
     packet_path = _confine_output(out_dir / "amendment-packet.json", out_root=resolved_out_root)
     _refuse_shared_inode(packet_path)
-    packet_path.write_text(
+    _write_exclusive(
+        packet_path,
         json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
     )
     return packet

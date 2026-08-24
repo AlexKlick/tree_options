@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
+import os
 import shutil
 import sys
 import uuid
@@ -912,6 +913,57 @@ def test_output_filename_hard_link_to_tracked_file_refused(tmp_path: Path) -> No
         assert packet.landed is False
         assert (out_dir / "protocol-0.2.1-proposed.yaml").stat().st_nlink == 1
         assert PROTOCOL_PATH.read_bytes() == before
+    assert PROTOCOL_PATH.read_bytes() == before, "still byte-identical at teardown"
+
+
+# ---- round-5 (finding 1): custody must span the WRITE, not just the check ---------
+#
+# Round-5 review fix (2026-08-24): _refuse_shared_inode and write_text were
+# SEPARATE operations — an interleaving process could hard-link the tracked
+# research_protocol.yaml at the proposed-path name AFTER the check passed and
+# BEFORE the write, and write_text truncated the shared tracked inode. The
+# write now holds custody end to end: a sibling temp file inside the confined
+# dir, fstat-checked (nlink == 1), then os.replace — which swaps the DIRECTORY
+# ENTRY, so the planted link is unlinked and the tracked inode is never
+# written through.
+
+
+def test_hard_link_planted_between_check_and_write_cannot_truncate_the_tracked_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interleaving attack: the hard link lands AFTER the shared-inode check
+    and BEFORE the write (simulated by wrapping the real check — the wrapper
+    plants the link once the check has passed). Pre-fix the tracked
+    research_protocol.yaml is truncated through the shared inode while the
+    builder succeeds; post-fix the build completes via the directory-entry
+    swap and the tracked file stays byte-identical."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    before = PROTOCOL_PATH.read_bytes()
+    real_check = amd._refuse_shared_inode
+    planted: list[Path] = []
+
+    def check_then_plant_link(path: Path) -> None:
+        real_check(path)  # the check passed: the interleaving window opens HERE
+        if not planted:  # one plant, at the first output name (the proposal)
+            os.link(PROTOCOL_PATH, path)
+            planted.append(path)
+
+    monkeypatch.setattr(amd, "_refuse_shared_inode", check_then_plant_link)
+    with _out_root() as out:
+        packet = _build(paths, out)
+        assert packet.landed is False
+        assert PROTOCOL_PATH.read_bytes() == before, (
+            "the tracked protocol was truncated through the hard link planted"
+            " between the inode check and the write"
+        )
+        swapped_in = planted[0]
+        assert swapped_in.exists(), "the proposal was published at its own name"
+        assert swapped_in.stat().st_nlink == 1, (
+            "os.replace swapped the directory entry: the planted link is gone,"
+            " the published file is a sole link"
+        )
+        assert swapped_in.read_bytes() != before, "the published file is the proposal"
     assert PROTOCOL_PATH.read_bytes() == before, "still byte-identical at teardown"
 
 
