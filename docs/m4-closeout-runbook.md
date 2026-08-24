@@ -106,7 +106,7 @@ journal projection state; a mismatch is `UNKNOWN_RECONCILIATION_REQUIRED`
 | `ALIVE` | fresh beat AND its state matches the journal | none |
 | `ALIVE_SILENT` | pid alive, beat stale (60 s/900 s thresholds) | **watch, do not act.** Do NOT kill on silence alone — a lane may write nothing for hours by design |
 | `DEAD_TERMINAL` | process gone and the journal already says how it ended | none (read the journal) |
-| `UNKNOWN_RESUMABLE` | missing beat in a process state (pre-journal legacy, or the lane just hasn't called write_heartbeat yet); OR a beat whose STATE doesn't match the journal but only by misconfiguration | resume allowed for **capture/inspection lanes only** — re-run the wrapper (`docs/m4-massive-runbook.md` §5); adopt the stale lease first (§2.1) |
+| `UNKNOWN_RESUMABLE` | missing beat in a process state (pre-journal legacy, or the lane just hasn't called write_heartbeat yet) | resume allowed for **capture/inspection lanes only** — re-run the wrapper (`docs/m4-massive-runbook.md` §5); adopt the stale lease first (§2.1) |
 | `UNKNOWN_RECONCILIATION_REQUIRED` | dead in the sealed lane — authority was already consumed; OR a heartbeat/state mismatch with the journal | **owner decision, nothing automatic.** A retry could double-spend the one-shot seal; write a RECONCILIATION_NOTE after the owner rules |
 
 `FAILED` never appears from silence — only from an explicit journal

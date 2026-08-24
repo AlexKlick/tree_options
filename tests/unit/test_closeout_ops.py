@@ -129,6 +129,20 @@ def test_checklist_never_instructs_appending_a_concrete_era_exit() -> None:
 # ---- runbook ----------------------------------------------------------------------
 
 
+def test_runbook_mismatch_row_names_reconciliation() -> None:
+    """Round-3 review fix (2026-08-23, finding 6): the classifier sends
+    EVERY nonterminal heartbeat/journal state mismatch to
+    UNKNOWN_RECONCILIATION_REQUIRED; the runbook table must not park any
+    mismatch under UNKNOWN_RESUMABLE."""
+    for line in RUNBOOK.read_text(encoding="utf-8").splitlines():
+        if not line.startswith("| `UNKNOWN_"):
+            continue  # only the era_status classification table rows
+        if "UNKNOWN_RESUMABLE" in line:
+            assert "mismatch" not in line.lower(), line
+        if "mismatch" in line.lower():
+            assert "UNKNOWN_RECONCILIATION_REQUIRED" in line, line
+
+
 def test_runbook_names_every_cli() -> None:
     text = RUNBOOK.read_text(encoding="utf-8")
     for script in SEVEN_SCRIPTS:
