@@ -21,7 +21,14 @@ journal:
 * the ledger FILE name is opened ``O_NOFOLLOW`` on both the read and the
   append path (round-5 review fix, 2026-08-24): a symlink at
   ``ledger.jsonl`` — dangling or not — is ``LedgerCorruptError``, so
-  authority can never be created through, or read through, a link.
+  authority can never be created through, or read through, a link;
+* the ledger ROOT is taken into custody as a REAL directory
+  (``O_RDONLY|O_DIRECTORY|O_NOFOLLOW``, round-6 review fix, 2026-08-24):
+  a root swapped to a symlink between validation and the open is ``ELOOP``
+  → ``LedgerCorruptError``, and every later open/fsync rides that one dir
+  fd, so the root pathname is never re-resolved — a ``mkdir(exist_ok=True)``
+  accepting a directory symlink can no longer land authority under the
+  link's target.
 
 Record kinds:
 
@@ -156,39 +163,95 @@ def read_ledger(root: Path) -> LedgerView:
     An ABSENT ledger is not corruption (nothing approved, nothing consumed —
     execute classifies it as "no approval" and refuses); a refused root or a
     broken chain is.
+
+    Round-6 review fix (2026-08-24, finding 3): the root is taken into
+    custody as a REAL directory (``O_NOFOLLOW``; a root swapped to a symlink
+    between validation and the open is ``ELOOP`` → ``LedgerCorruptError``)
+    and the ledger is opened BY NAME inside that custody fd — the read can
+    never be redirected through a symlinked root.
     """
     root = validate_ledger_root(root)
-    path = root / LEDGER_FILENAME
-    try:
-        fd = _open_ledger_nofollow(path, os.O_RDONLY)
-    except FileNotFoundError:
+    root_fd = _open_ledger_root(root, create=False)
+    if root_fd is None:
         return LedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
     try:
-        chunks: list[bytes] = []
-        offset = 0
-        while True:
-            chunk = os.pread(fd, 65536, offset)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            offset += len(chunk)
+        try:
+            fd = _open_ledger_nofollow(root / LEDGER_FILENAME, root_fd, os.O_RDONLY)
+        except FileNotFoundError:
+            return LedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
+        try:
+            chunks: list[bytes] = []
+            offset = 0
+            while True:
+                chunk = os.pread(fd, 65536, offset)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                offset += len(chunk)
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(root_fd)
     # Tolerant decode: a torn final append may have cut mid-UTF-8 byte; the
     # replacement chars fail JSON decode and classify as a torn tail, while a
     # mid-file undecodable line stays LEDGER_CORRUPT.
     return _replay_text(b"".join(chunks).decode("utf-8", errors="replace"))
 
 
-def _fsync_dir(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
+def _open_ledger_root(root: Path, *, create: bool) -> int | None:
+    """Round-6 review fix (2026-08-24, finding 3): take custody of the ledger
+    ROOT as a REAL directory, once, with ``O_NOFOLLOW``.
+
+    The final-name ``O_NOFOLLOW`` (round-5) guards only ``ledger.jsonl``.
+    Between ``validate_ledger_root()`` and the mkdir/open, an attacker could
+    create the (previously nonexistent) allowed root as a directory SYMLINK:
+    ``mkdir(exist_ok=True)`` accepts a directory symlink, the ledger name
+    inside it is a regular file, and the final-name ``O_NOFOLLOW`` never
+    fired — authority landed under the link's target. The root is now opened
+    ``O_RDONLY|O_DIRECTORY|O_NOFOLLOW`` (a symlink at the root is ``ELOOP``,
+    refused by name) and every later operation — the ledger open, the
+    directory fsync — rides that one dir fd, so the root PATHNAME is never
+    re-resolved (and therefore never re-followed) after custody is taken.
+
+    ``create`` is append-only: a read of an absent root stays an empty view.
+    A lost mkdir race is never suppressed on the attacker's terms — the
+    re-open below re-takes custody under the same ``O_NOFOLLOW`` rule, so a
+    symlink the concurrent creator left refuses with ``ELOOP``."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    def _open() -> int:
+        try:
+            return os.open(root, flags)
+        except OSError as exc:
+            # ELOOP: O_NOFOLLOW met a symlink. ENOTDIR: Linux reports a
+            # symlink-to-directory this way under O_DIRECTORY|O_NOFOLLOW (and
+            # any non-directory root equally). Either way the root is not a
+            # REAL directory — refuse by name.
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise LedgerCorruptError(
+                    f"{root}: the ledger ROOT is not a real directory (opened "
+                    f"O_NOFOLLOW|O_DIRECTORY, errno {exc.errno}) — a seal "
+                    "authority ledger is never created or followed through a "
+                    "symlinked root"
+                ) from None
+            raise
+
     try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
+        return _open()
+    except FileNotFoundError:
+        if not create:
+            return None
+    # Absent root (append only): create ancestors if missing, then the root
+    # itself as a SINGLE component — a lost race re-opens under O_NOFOLLOW.
+    root.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(root, 0o755)
+    except FileExistsError:
+        pass
+    return _open()
 
 
-def _open_ledger_nofollow(path: Path, flags: int) -> int:
+def _open_ledger_nofollow(path: Path, root_fd: int, flags: int) -> int:
     """Round-5 review fix (2026-08-24, finding 3): open the ledger NAME
     without ever following a symlink at it.
 
@@ -198,9 +261,13 @@ def _open_ledger_nofollow(path: Path, flags: int) -> int:
     authority under /tmp (or wherever the link points). ``O_NOFOLLOW`` makes
     the open fail with ``ELOOP`` for a symlink at the final component
     regardless of where (or whether) its target exists; that is corruption
-    of the authority surface, refused by name."""
+    of the authority surface, refused by name.
+
+    Round-6 review fix (2026-08-24, finding 3): the open rides the custody
+    root fd (``dir_fd=root_fd``, opening the bare NAME), so even a symlink
+    swap of the root PATHNAME after custody was taken cannot redirect it."""
     try:
-        return os.open(path, flags | os.O_NOFOLLOW, 0o644)
+        return os.open(path.name, flags | os.O_NOFOLLOW, 0o644, dir_fd=root_fd)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise LedgerCorruptError(
@@ -220,41 +287,48 @@ def append_record(root: Path, record: LedgerRecord) -> str:
     match the verified tail.
     """
     root = validate_ledger_root(root)
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / LEDGER_FILENAME
-    fd = _open_ledger_nofollow(path, os.O_RDWR | os.O_CREAT)
+    root_fd = _open_ledger_root(root, create=True)
+    assert root_fd is not None  # create=True always returns an open fd or raises
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        path = root / LEDGER_FILENAME
+        fd = _open_ledger_nofollow(path, root_fd, os.O_RDWR | os.O_CREAT)
         try:
-            chunks: list[bytes] = []
-            offset = 0
-            while True:
-                chunk = os.pread(fd, 65536, offset)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                offset += len(chunk)
-            view = _replay_text(b"".join(chunks).decode("utf-8", errors="replace"))
-            if view.tail_damaged:
-                raise LedgerCorruptError(
-                    "the ledger's final line is torn; reconcile it (append a "
-                    "RECONCILIATION_NOTE from a durable root) before any further "
-                    "append — appending past it would hide an unacknowledged write"
-                )
-            if record.prev_record_sha256 != view.tail_hash:
-                raise LedgerCorruptError(
-                    "supplied prev_record_sha256 does not match the verified "
-                    "ledger tail — rebuild the record from read_ledger()"
-                )
-            signed = record.model_copy(update={"record_sha256": _record_hash(record)})
-            os.lseek(fd, 0, os.SEEK_END)
-            os.write(fd, (_encode(signed) + "\n").encode("utf-8"))
-            os.fsync(fd)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                chunks: list[bytes] = []
+                offset = 0
+                while True:
+                    chunk = os.pread(fd, 65536, offset)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    offset += len(chunk)
+                view = _replay_text(b"".join(chunks).decode("utf-8", errors="replace"))
+                if view.tail_damaged:
+                    raise LedgerCorruptError(
+                        "the ledger's final line is torn; reconcile it (append a "
+                        "RECONCILIATION_NOTE from a durable root) before any further "
+                        "append — appending past it would hide an unacknowledged write"
+                    )
+                if record.prev_record_sha256 != view.tail_hash:
+                    raise LedgerCorruptError(
+                        "supplied prev_record_sha256 does not match the verified "
+                        "ledger tail — rebuild the record from read_ledger()"
+                    )
+                signed = record.model_copy(update={"record_sha256": _record_hash(record)})
+                os.lseek(fd, 0, os.SEEK_END)
+                os.write(fd, (_encode(signed) + "\n").encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        # directory durability on the CUSTODY fd: the root pathname is never
+        # re-resolved (round-6 finding 3), so a swapped root cannot redirect
+        # this fsync either.
+        os.fsync(root_fd)
     finally:
-        os.close(fd)
-    _fsync_dir(root)
+        os.close(root_fd)
     return signed.record_sha256
 
 

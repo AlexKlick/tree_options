@@ -26,7 +26,11 @@ domain (``tree-options-bars-authority-v1``) with its OWN record model, so a
 bars record can never be spliced into — or confused with — the G4 seal
 ledger. The /tmp root refusal is not re-implemented: ``validate_ledger_root``
 is imported from ``seal.ledger`` and reused, so both ledgers refuse a root
-whose resolved path lives where a reboot wipes it.
+whose resolved path lives where a reboot wipes it. The root itself is taken
+into custody as a REAL directory (round-6 review fix, 2026-08-24: opened
+``O_NOFOLLOW``, every later open/fsync rides that one dir fd), so a root
+swapped to a symlink between validation and the open refuses with ``ELOOP``
+instead of landing authority under the link's target.
 
 This module starts NOTHING: it computes and records. The launcher
 (``scripts/launch_bars_era.py``) owns the gates; today both execute gates are
@@ -884,7 +888,57 @@ def _replay_bars_text(text: str) -> BarsLedgerView:
     return BarsLedgerView(records=tuple(records), tail_hash=prev_hash, tail_damaged=damaged_tail)
 
 
-def _open_bars_ledger_nofollow(path: Path, flags: int) -> int:
+def _open_bars_ledger_root(root: Path, *, create: bool) -> int | None:
+    """Round-6 review fix (2026-08-24, finding 3): take custody of the
+    bars-authority ROOT as a REAL directory, once, with ``O_NOFOLLOW`` (the
+    same rule ``seal.ledger._open_ledger_root`` enforces for seal authority).
+
+    The final-name ``O_NOFOLLOW`` (round-5) guards only ``ledger.jsonl``.
+    Between ``validate_ledger_root()`` and the mkdir/open, an attacker could
+    create the (previously nonexistent) allowed root as a directory SYMLINK:
+    ``mkdir(exist_ok=True)`` accepts a directory symlink, the ledger name
+    inside it is a regular file, and the final-name ``O_NOFOLLOW`` never
+    fired — bars authority landed under the link's target. The root is now
+    opened ``O_RDONLY|O_DIRECTORY|O_NOFOLLOW`` (a symlink at the root is
+    ``ELOOP``, refused by name) and every later operation — the ledger open,
+    the directory fsync — rides that one dir fd, so the root PATHNAME is
+    never re-resolved (and therefore never re-followed) after custody is
+    taken. ``create`` is append-only; a lost mkdir race re-opens under the
+    same ``O_NOFOLLOW`` rule, so a FileExistsError is never suppressed on
+    the attacker's terms."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+
+    def _open() -> int:
+        try:
+            return os.open(root, flags)
+        except OSError as exc:
+            # ELOOP: O_NOFOLLOW met a symlink. ENOTDIR: Linux reports a
+            # symlink-to-directory this way under O_DIRECTORY|O_NOFOLLOW (and
+            # any non-directory root equally). Either way the root is not a
+            # REAL directory — refuse by name.
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise LedgerCorruptError(
+                    f"{root}: the bars-authority ROOT is not a real directory "
+                    f"(opened O_NOFOLLOW|O_DIRECTORY, errno {exc.errno}) — "
+                    "bars authority is never created or followed through a "
+                    "symlinked root"
+                ) from None
+            raise
+
+    try:
+        return _open()
+    except FileNotFoundError:
+        if not create:
+            return None
+    root.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        os.mkdir(root, 0o755)
+    except FileExistsError:
+        pass
+    return _open()
+
+
+def _open_bars_ledger_nofollow(path: Path, root_fd: int, flags: int) -> int:
     """Round-5 review fix (2026-08-24, finding 3): open the bars-authority
     ledger NAME without ever following a symlink at it (same rule as
     ``seal.ledger._open_ledger_nofollow``). ``Path.exists()`` is False for a
@@ -892,9 +946,13 @@ def _open_bars_ledger_nofollow(path: Path, flags: int) -> int:
     absent and the append's ``os.open(O_RDWR|O_CREAT)`` FOLLOWED the link —
     creating bars authority under /tmp. ``O_NOFOLLOW`` turns a symlink at
     the final component into ``ELOOP`` regardless of its target, refused by
-    name."""
+    name.
+
+    Round-6 review fix (2026-08-24, finding 3): the open rides the custody
+    root fd (``dir_fd=root_fd``, opening the bare NAME), so even a symlink
+    swap of the root PATHNAME after custody was taken cannot redirect it."""
     try:
-        return os.open(path, flags | os.O_NOFOLLOW, 0o644)
+        return os.open(path.name, flags | os.O_NOFOLLOW, 0o644, dir_fd=root_fd)
     except OSError as exc:
         if exc.errno == errno.ELOOP:
             raise LedgerCorruptError(
@@ -911,33 +969,36 @@ def read_bars_ledger(root: Path) -> BarsLedgerView:
     a refused root (resolved under /tmp, via the imported seal rule), a
     symlink at the ledger name (round-5 review fix: never created or
     followed), or a broken chain is.
+
+    Round-6 review fix (2026-08-24, finding 3): the root is taken into
+    custody as a REAL directory (``O_NOFOLLOW``; a root swapped to a symlink
+    between validation and the open is ``ELOOP`` → ``LedgerCorruptError``)
+    and the ledger is opened BY NAME inside that custody fd — the read can
+    never be redirected through a symlinked root.
     """
     root = validate_ledger_root(root)
-    path = root / BARS_LEDGER_FILENAME
-    try:
-        fd = _open_bars_ledger_nofollow(path, os.O_RDONLY)
-    except FileNotFoundError:
+    root_fd = _open_bars_ledger_root(root, create=False)
+    if root_fd is None:
         return BarsLedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
     try:
-        chunks: list[bytes] = []
-        offset = 0
-        while True:
-            chunk = os.pread(fd, 65536, offset)
-            if not chunk:
-                break
-            chunks.append(chunk)
-            offset += len(chunk)
+        try:
+            fd = _open_bars_ledger_nofollow(root / BARS_LEDGER_FILENAME, root_fd, os.O_RDONLY)
+        except FileNotFoundError:
+            return BarsLedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
+        try:
+            chunks: list[bytes] = []
+            offset = 0
+            while True:
+                chunk = os.pread(fd, 65536, offset)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                offset += len(chunk)
+        finally:
+            os.close(fd)
     finally:
-        os.close(fd)
+        os.close(root_fd)
     return _replay_bars_text(b"".join(chunks).decode("utf-8", errors="replace"))
-
-
-def _fsync_dir(path: Path) -> None:
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 def append_bars_record(
@@ -957,43 +1018,50 @@ def append_bars_record(
     the flock, not in the caller's earlier (racy) scan.
     """
     root = validate_ledger_root(root)
-    root.mkdir(parents=True, exist_ok=True)
-    path = root / BARS_LEDGER_FILENAME
-    fd = _open_bars_ledger_nofollow(path, os.O_RDWR | os.O_CREAT)
+    root_fd = _open_bars_ledger_root(root, create=True)
+    assert root_fd is not None  # create=True always returns an open fd or raises
     try:
-        fcntl.flock(fd, fcntl.LOCK_EX)
+        path = root / BARS_LEDGER_FILENAME
+        fd = _open_bars_ledger_nofollow(path, root_fd, os.O_RDWR | os.O_CREAT)
         try:
-            chunks: list[bytes] = []
-            offset = 0
-            while True:
-                chunk = os.pread(fd, 65536, offset)
-                if not chunk:
-                    break
-                chunks.append(chunk)
-                offset += len(chunk)
-            view = _replay_bars_text(b"".join(chunks).decode("utf-8", errors="replace"))
-            if view.tail_damaged:
-                raise LedgerCorruptError(
-                    "the bars-authority ledger's final line is torn; reconcile it"
-                    " before any further append — appending past it would hide an"
-                    " unacknowledged write"
-                )
-            if guard is not None:
-                guard(view)
-            if record.prev_record_sha256 != view.tail_hash:
-                raise LedgerCorruptError(
-                    "supplied prev_record_sha256 does not match the verified"
-                    " bars-authority tail — rebuild the record from read_bars_ledger()"
-                )
-            signed = record.model_copy(update={"record_sha256": _bars_record_hash(record)})
-            os.lseek(fd, 0, os.SEEK_END)
-            os.write(fd, (_encode_bars_record(signed) + "\n").encode("utf-8"))
-            os.fsync(fd)
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                chunks: list[bytes] = []
+                offset = 0
+                while True:
+                    chunk = os.pread(fd, 65536, offset)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    offset += len(chunk)
+                view = _replay_bars_text(b"".join(chunks).decode("utf-8", errors="replace"))
+                if view.tail_damaged:
+                    raise LedgerCorruptError(
+                        "the bars-authority ledger's final line is torn; reconcile it"
+                        " before any further append — appending past it would hide an"
+                        " unacknowledged write"
+                    )
+                if guard is not None:
+                    guard(view)
+                if record.prev_record_sha256 != view.tail_hash:
+                    raise LedgerCorruptError(
+                        "supplied prev_record_sha256 does not match the verified"
+                        " bars-authority tail — rebuild the record from read_bars_ledger()"
+                    )
+                signed = record.model_copy(update={"record_sha256": _bars_record_hash(record)})
+                os.lseek(fd, 0, os.SEEK_END)
+                os.write(fd, (_encode_bars_record(signed) + "\n").encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+        # directory durability on the CUSTODY fd: the root pathname is never
+        # re-resolved (round-6 finding 3), so a swapped root cannot redirect
+        # this fsync either.
+        os.fsync(root_fd)
     finally:
-        os.close(fd)
-    _fsync_dir(root)
+        os.close(root_fd)
     return signed.record_sha256
 
 

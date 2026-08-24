@@ -273,3 +273,72 @@ def test_symlinked_ledger_name_to_a_real_file_also_refused(ledger_root, tmp_path
     finally:
         with contextlib.suppress(FileNotFoundError):
             link.unlink()
+
+
+# ---- round-6 (finding 3): the ledger ROOT itself must be a REAL directory -----------
+#
+# Round-6 review fix (2026-08-24): the final-name O_NOFOLLOW (round-5) guards
+# only `ledger.jsonl`. Between validate_ledger_root() and the mkdir/open, an
+# attacker could create the (previously nonexistent) ALLOWED root as a
+# directory symlink into /tmp: mkdir(exist_ok=True) accepts a directory
+# symlink, the ledger name inside it is a regular file, so O_NOFOLLOW on that
+# name never fired — authority landed under the link's target.
+
+
+def test_root_symlink_swap_refused_and_authority_stays_out_of_tmp(
+    ledger_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's interleaving: the (absent, allowed) root is created as a
+    dir symlink to /tmp BETWEEN validation and the open (simulated by wrapping
+    validate_ledger_root — the wrapper plants the link once the check has
+    passed). Pre-fix the append succeeds and creates the ledger under /tmp;
+    post-fix BOTH the append and the read refuse (LedgerCorruptError naming
+    the root) and nothing is ever created under the /tmp target."""
+    target = Path("/tmp") / f"g4-seal-rootswap-{uuid.uuid4().hex}"
+    target.mkdir()
+    root = ledger_root / "fresh"  # allowed (under repo artifacts/), ABSENT
+    assert not root.exists()
+    real_validate = L.validate_ledger_root
+    armed = {"next": root}
+
+    def validate_then_swap_root(path):
+        resolved = real_validate(path)  # the check passed: the window opens HERE
+        if Path(path) == armed["next"]:
+            armed["next"].symlink_to(target)
+            armed["next"] = None  # one plant per phase
+        return resolved
+
+    identity = _identity()
+    # a genesis-valid record: the direct append primitive (one validate, one
+    # open) is the exact race surface; append_approval/append_consumption
+    # ride it through _append_kind.
+    record = L.LedgerRecord(
+        kind=L.KIND_APPROVAL,
+        identity=identity,
+        sealed_run_id=sealed_run_id(identity),
+        content_identity=content_identity(identity),
+        reason="owner approved",
+        at_epoch=T0,
+        prev_record_sha256=L.GENESIS_PREV,
+    )
+    monkeypatch.setattr(L, "validate_ledger_root", validate_then_swap_root)
+    try:
+        with pytest.raises(LedgerCorruptError, match="symlink") as append_exc:
+            L.append_record(root, record)
+        assert str(root) in str(append_exc.value), "the append refusal names the root"
+        # The same race on the READ path, its own plant: pre-fix the read
+        # follows the swapped root silently (an attacker ledger there would
+        # be returned as authority); post-fix the custody open refuses.
+        read_root = ledger_root / "fresh-read"  # allowed, ABSENT
+        armed["next"] = read_root
+        with pytest.raises(LedgerCorruptError, match="symlink") as read_exc:
+            L.read_ledger(read_root)
+        assert str(read_root) in str(read_exc.value), "the read refusal names the root"
+        assert list(target.iterdir()) == [], "authority never landed under /tmp"
+    finally:
+        # the RED run of this test creates the ledger under the /tmp target;
+        # never leave it behind, and never leave a symlink under artifacts/.
+        for planted in (root, ledger_root / "fresh-read"):
+            with contextlib.suppress(OSError):
+                planted.unlink()
+        shutil.rmtree(target, ignore_errors=True)

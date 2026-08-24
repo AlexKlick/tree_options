@@ -598,3 +598,67 @@ def test_dangling_symlink_bars_ledger_name_refused_and_never_created(
             link.unlink()
         with contextlib.suppress(FileNotFoundError):
             target.unlink()
+
+
+# ---- round-6 (finding 3): the bars-authority ROOT must be a REAL directory ----------
+#
+# Round-6 review fix (2026-08-24): the same root-swap race fixed in
+# seal.ledger — between validate_ledger_root() and the mkdir/open, the
+# (previously nonexistent) allowed root is created as a directory symlink
+# into /tmp; mkdir(exist_ok=True) accepts a dir symlink and the final-name
+# O_NOFOLLOW never fires, so bars authority landed under the link's target.
+
+
+def test_bars_root_symlink_swap_refused_and_authority_stays_out_of_tmp(
+    scratch_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reviewer's interleaving, bars twin: the absent allowed root becomes
+    a dir symlink to /tmp BETWEEN validation and the open (the wrapper plants
+    the link once the check has passed). Pre-fix the append creates the
+    bars-authority ledger under /tmp; post-fix both paths refuse naming the
+    root and nothing is created under the /tmp target."""
+    target = Path("/tmp") / f"bars-a4-rootswap-{uuid.uuid4().hex}"
+    target.mkdir()
+    root = scratch_root / "fresh"  # allowed (under repo artifacts/), ABSENT
+    assert not root.exists()
+    from tree_options.seal.ledger import validate_ledger_root as real_validate
+
+    armed = {"next": root}
+
+    def validate_then_swap_root(path):
+        resolved = real_validate(path)  # the check passed: the window opens HERE
+        if Path(path) == armed["next"]:
+            armed["next"].symlink_to(target)
+            armed["next"] = None  # one plant per phase
+        return resolved
+
+    monkeypatch.setattr(bm, "validate_ledger_root", validate_then_swap_root)
+    # a genesis-valid record: the direct append primitive (one validate, one
+    # open) is the exact race surface; append_bars_launch_approval/
+    # append_bars_launch_consumed ride it.
+    record = bm.BarsAuthorityRecord(
+        kind=bm.KIND_BARS_LAUNCH_APPROVAL,
+        prev_record_sha256=bm.GENESIS_PREV,
+        reason="approved the grid",
+        at_epoch=T0,
+        **_approval(),
+    )
+    try:
+        with pytest.raises(LedgerCorruptError, match="symlink") as append_exc:
+            bm.append_bars_record(root, record)
+        assert str(root) in str(append_exc.value), "the append refusal names the root"
+        # The same race on the READ path, its own plant: pre-fix the read
+        # follows the swapped root silently; post-fix the custody open refuses.
+        read_root = scratch_root / "fresh-read"  # allowed, ABSENT
+        armed["next"] = read_root
+        with pytest.raises(LedgerCorruptError, match="symlink") as read_exc:
+            bm.read_bars_ledger(read_root)
+        assert str(read_root) in str(read_exc.value), "the read refusal names the root"
+        assert list(target.iterdir()) == [], "authority never landed under /tmp"
+    finally:
+        # the RED run creates the ledger under the /tmp target; never leave it
+        # behind, and never leave a symlink under artifacts/.
+        for planted in (root, scratch_root / "fresh-read"):
+            with contextlib.suppress(OSError):
+                planted.unlink()
+        shutil.rmtree(target, ignore_errors=True)
