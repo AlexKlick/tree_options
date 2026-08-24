@@ -22,6 +22,7 @@ coverage era writes nothing to its log for hours by design).
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import sys
@@ -94,6 +95,19 @@ def current_owner(*, now_epoch: int, proc_root: Path | None = None) -> LeaseOwne
     )
 
 
+def _read_owner(store_dir: Path) -> LeaseOwner | None:
+    """Read the current lease owner payload (None if the file is torn)."""
+    owner_path = store_dir / LEASE_DIRNAME / OWNER_FILENAME
+    try:
+        raw = owner_path.read_text(encoding="utf-8")
+    except (FileNotFoundError, OSError):
+        return None
+    try:
+        return LeaseOwner.model_validate(json.loads(raw))
+    except Exception:
+        return None
+
+
 def classify_existing(
     store_dir: Path,
     *,
@@ -131,10 +145,18 @@ def acquire(
     With `allow_stale_adopt`, a stale/torn lease is atomically replaced.
     Without it, ANY pre-existing lease raises — the caller decides adoption
     only after looking at the classification.
+
+    Round-1 review fix (2026-08-23, probe /tmp/pr-a-runstate-race-probe.log
+    TWO_STALE_ADOPTERS_SUCCEEDED): the adoption path now takes an `flock`
+    on `lease/adopt.lock`, RE-CLASSIFIES under the lock, and refuses if the
+    classification became HELD (another adopter won the race). The earlier
+    classify-then-replace pattern was vulnerable to two concurrent
+    adopters both seeing STALE_BOOT_CHANGED and both replacing the file.
     """
     lease_dir = store_dir / LEASE_DIRNAME
     lease_dir.mkdir(parents=True, exist_ok=True)
     owner_path = lease_dir / OWNER_FILENAME
+    adopt_lock_path = lease_dir / "adopt.lock"
     payload = json.dumps(json.loads(owner.model_dump_json()), sort_keys=True) + "\n"
     try:
         fd = os.open(owner_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
@@ -144,18 +166,29 @@ def acquire(
             os.fsync(fh.fileno())
         return LeaseClassification.HELD
     except FileExistsError:
-        classification = classify_existing(store_dir, boot_id_now=boot_id_now, proc_root=proc_root)
-        if classification is LeaseClassification.HELD or not allow_stale_adopt:
-            raise LeaseHeldError(
-                store_dir.name,
-                f"lease classification {classification.value}",
-            ) from None
-        # Adopt: the old owner is provably gone (dead pid, new boot, pid
-        # reuse, or a torn file). Atomic replace, never delete-then-create.
-        tmp = lease_dir / f".{OWNER_FILENAME}.{os.getpid()}.tmp"
-        tmp.write_text(payload, encoding="utf-8")
-        os.replace(tmp, owner_path)
-        return classification
+        # Round-1 review (2026-08-23, probe TWO_STALE_ADOPTERS_SUCCEEDED):
+        # ALL classification and adoption work happens under the lock. The
+        # pre-lock classify was racy (a second adopter could replace the
+        # file between the classify and the replace). Move everything into
+        # the lock so two concurrent or sequential adopters cannot both win.
+        with open(adopt_lock_path, "w", encoding="utf-8") as lock_fh:
+            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_EX)
+            try:
+                classification = classify_existing(
+                    store_dir, boot_id_now=boot_id_now, proc_root=proc_root
+                )
+                if classification is LeaseClassification.HELD or not allow_stale_adopt:
+                    raise LeaseHeldError(
+                        store_dir.name,
+                        f"lease classification {classification.value}",
+                    ) from None
+                # The classification came from THIS file content — adopt.
+                tmp = lease_dir / f".{OWNER_FILENAME}.{os.getpid()}.tmp"
+                tmp.write_text(payload, encoding="utf-8")
+                os.replace(tmp, owner_path)
+                return classification
+            finally:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
 
 
 def release(store_dir: Path, owner: LeaseOwner) -> bool:

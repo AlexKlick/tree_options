@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 from hypothesis import given
 from hypothesis import strategies as st
@@ -12,6 +13,26 @@ from hypothesis import strategies as st
 from tree_options.runstate import RunIdentity, RunState, RunStore, is_legal
 from tree_options.runstate import journal as J
 from tree_options.runstate.errors import JournalCorruptError
+
+# Round-1 review migration (2026-08-23): pytest's tmp_path AND
+# tempfile.TemporaryDirectory both resolve under /tmp on this host; the
+# runstate root refusal (RunStore.create/open) rejects /tmp paths.
+# Property tests used `with tempfile.TemporaryDirectory()` directly —
+# patch the module's `tempfile.TemporaryDirectory` to default to a durable
+# scratch under the repo's gitignored artifacts/runstate-tests/.
+_PROP_TESTS_ROOT = Path(__file__).resolve().parents[2] / "artifacts" / "runstate-tests"
+_PROP_TESTS_ROOT.mkdir(parents=True, exist_ok=True)
+_OrigTemporaryDirectory = tempfile.TemporaryDirectory
+
+
+def TemporaryDirectory(*args, **kwargs):  # type: ignore[no-untyped-def]
+    parent = _PROP_TESTS_ROOT / f"prop-{uuid4().hex}"
+    parent.mkdir(parents=True, exist_ok=True)
+    kwargs.setdefault("dir", str(parent))
+    return _OrigTemporaryDirectory(*args, **kwargs)
+
+
+tempfile.TemporaryDirectory = TemporaryDirectory  # type: ignore[assignment]
 
 BOOT = "prop-boot"
 T0 = 1_800_000_000

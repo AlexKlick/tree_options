@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -23,8 +24,28 @@ from tree_options.runstate.errors import (
 BOOT = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000
 
+# Round-1 review migration (2026-08-23): pytest's tmp_path lives under
+# /tmp on this host; the runstate root refusal (RunStore.create/open)
+# makes that path unusable for run-state stores. The scratch root
+# therefore lives under the repo's gitignored artifacts/runstate-tests/,
+# cleaned up at session end. Each per-test root is a unique subdir.
+RUNSTATE_TESTS_ROOT = Path(__file__).resolve().parents[2] / "artifacts" / "runstate-tests"
 
-def _identity(tmp_path: Path, *, run_id: str = "m4-test-run-20260823-abcdef12") -> RunIdentity:
+
+@pytest.fixture()
+def root() -> Path:
+    RUNSTATE_TESTS_ROOT.mkdir(parents=True, exist_ok=True)
+    scratch = RUNSTATE_TESTS_ROOT / f"test-{uuid4().hex}"
+    scratch.mkdir(parents=True)
+    return scratch
+
+
+@pytest.fixture()
+def store(root: Path) -> RunStore:
+    return RunStore.create(root, _identity(root), now_epoch=T0)
+
+
+def _identity(root: Path, *, run_id: str = "m4-test-run-20260823-abcdef12") -> RunIdentity:
     return RunIdentity(
         run_id=run_id,
         campaign="m4-test-run",
@@ -39,16 +60,6 @@ def _identity(tmp_path: Path, *, run_id: str = "m4-test-run-20260823-abcdef12") 
         started_epoch=T0,
         args_hash="d" * 64,
     )
-
-
-@pytest.fixture()
-def root(tmp_path: Path) -> Path:
-    return tmp_path / "runstate"
-
-
-@pytest.fixture()
-def store(root: Path) -> RunStore:
-    return RunStore.create(root, _identity(root), now_epoch=T0)
 
 
 def _mark(store: RunStore, to: RunState, *, epoch: int, reason: str = "step") -> None:

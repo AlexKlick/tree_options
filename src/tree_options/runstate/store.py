@@ -28,7 +28,9 @@ from tree_options.runstate import lease as lease_module
 from tree_options.runstate.errors import (
     IllegalTransitionError,
     ManifestMismatchError,
+    PinAlreadyBoundError,
     StoreExistsError,
+    StoreRootRefusedError,
     UnknownRunError,
 )
 from tree_options.runstate.lease import LeaseClassification, LeaseOwner
@@ -41,6 +43,26 @@ from tree_options.runstate.states import (
 
 RUN_FILENAME = "run.json"
 DEFAULT_STORE_ROOT = Path("artifacts/runstate")
+
+
+def _validate_store_root(root: Path) -> None:
+    """Refuse any root that resolves under /tmp (round-1 review, 2026-08-23).
+
+    /tmp is wiped on reboot — a run-state store there is a lie. The
+    journal, lease, and pinned manifest are authoritative evidence;
+    they must live under a durable root (default: artifacts/runstate).
+    Component-boundary check matches seal/ledger semantics.
+    """
+    try:
+        resolved = root.resolve()
+    except OSError:
+        # Unresolvable paths will fail loudly on first mkdir; don't compound
+        # the error here. The check below still runs against the raw path
+        # to keep the refusal order stable.
+        resolved = root
+    tmp = Path("/tmp").resolve()
+    if resolved == tmp or tmp in resolved.parents:
+        raise StoreRootRefusedError(str(root))
 
 
 def compute_run_id(
@@ -102,6 +124,7 @@ class RunStore:
 
     @classmethod
     def create(cls, root: Path, identity: RunIdentity, *, now_epoch: int) -> RunStore:
+        _validate_store_root(root)
         store_dir = root / identity.run_id
         run_path = store_dir / RUN_FILENAME
         if store_dir.exists():
@@ -128,6 +151,7 @@ class RunStore:
 
     @classmethod
     def open(cls, root: Path, run_id: str) -> RunStore:
+        _validate_store_root(root)
         store_dir = root / run_id
         run_path = store_dir / RUN_FILENAME
         if not run_path.exists():
@@ -247,7 +271,24 @@ class RunStore:
     def pin_manifest(
         self, manifest_sha256: str, *, now_epoch: int, actor_pid: int, actor_boot_id: str
     ) -> str:
-        """Record the capture manifest hash the run's evidence is bound to."""
+        """Record the capture manifest hash the run's evidence is bound to.
+
+        Round-1 review fix (2026-08-23): pinned evidence is bound. Re-pinning
+        with the SAME hash is idempotent (returns the existing record hash,
+        appends nothing); re-pinning with a DIFFERENT hash is refused with
+        PinAlreadyBoundError. Validate_resume already rejected
+        manifest/state mismatch on resume; this fixes the in-place swap
+        that could otherwise launder a new manifest through the journal.
+        """
+        existing = self.pinned_manifest_sha256
+        if existing is not None and existing != manifest_sha256:
+            raise PinAlreadyBoundError(self.identity.run_id, existing, manifest_sha256)
+        if existing == manifest_sha256:
+            # Idempotent: return the existing pin's record hash without
+            # appending a new journal entry.
+            for record in reversed(self._view.records):
+                if record.kind == "MANIFEST_PINNED":
+                    return record.record_sha256
         record = journal_module.JournalRecord(
             seq=self._view.records[-1].seq + 1 if self._view.records else 1,
             kind="MANIFEST_PINNED",

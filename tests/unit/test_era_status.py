@@ -6,6 +6,9 @@ import json
 import os
 import sys
 from pathlib import Path
+from uuid import uuid4
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 SCRIPTS = REPO_ROOT / "scripts"
@@ -18,6 +21,19 @@ from tree_options.runstate import RunIdentity, RunState, RunStore  # noqa: E402
 BOOT = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000
 RUN_ID = "m4-statustest-20260823-abcdef12"
+
+# Round-1 review migration (2026-08-23): pytest's tmp_path lives under
+# /tmp; the runstate root refusal applies. Scratch roots for runstate
+# live under the repo's gitignored artifacts/runstate-tests/.
+_ERA_TESTS_ROOT = REPO_ROOT / "artifacts" / "runstate-tests"
+
+
+@pytest.fixture()
+def root() -> Path:
+    _ERA_TESTS_ROOT.mkdir(parents=True, exist_ok=True)
+    scratch = _ERA_TESTS_ROOT / f"test-{uuid4().hex}"
+    scratch.mkdir(parents=True)
+    return scratch
 
 
 def _create_store(root: Path, *, to: RunState = RunState.PLANNED) -> RunStore:
@@ -68,8 +84,7 @@ def _status(root: Path, *args: str) -> int:
     )
 
 
-def test_status_is_read_only_no_mtime_changes(tmp_path, capsys):
-    root = tmp_path / "runstate"
+def test_status_is_read_only_no_mtime_changes(root, tmp_path, capsys):
     _create_store(root)
     store_dir = root / RUN_ID
     before = {
@@ -87,8 +102,7 @@ def test_status_is_read_only_no_mtime_changes(tmp_path, capsys):
     assert before == after
 
 
-def test_status_reports_state_and_exits_zero(tmp_path, capsys):
-    root = tmp_path / "runstate"
+def test_status_reports_state_and_exits_zero(root, tmp_path, capsys):
     _create_store(root, to=RunState.CAPTURE_COMPLETE)
     assert _status(root) == 0
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -97,16 +111,14 @@ def test_status_reports_state_and_exits_zero(tmp_path, capsys):
     assert payload["seq"] == 3  # GENESIS + CAPTURING + CAPTURE_COMPLETE
 
 
-def test_unknown_process_state_exits_3(tmp_path, capsys):
-    root = tmp_path / "runstate"
+def test_unknown_process_state_exits_3(root, tmp_path, capsys):
     _create_store(root, to=RunState.CAPTURING)  # process state, no heartbeat
     assert _status(root) == 3
     payload = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
     assert payload["classification"] == "UNKNOWN_RESUMABLE"
 
 
-def test_torn_projection_reported_not_repaired(tmp_path, capsys):
-    root = tmp_path / "runstate"
+def test_torn_projection_reported_not_repaired(root, tmp_path, capsys):
     _create_store(root)
     (root / RUN_ID / "current.json").write_text("{ torn")
     before = (root / RUN_ID / "current.json").read_text()
@@ -143,7 +155,7 @@ def test_legacy_prejournal_era_detected_exit_3(tmp_path, capsys):
         era_status.main(
             [
                 "--store-root",
-                str(tmp_path / "runstate"),
+                str(root),
                 "--now-epoch",
                 str(T0),
                 "--boot-id-override",

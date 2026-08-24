@@ -29,7 +29,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tree_options.data.digest import sha256_hex
-from tree_options.runstate.errors import JournalCorruptError, ProjectionTornError
+from tree_options.runstate.errors import (
+    JournalConcurrentWriteError,
+    JournalCorruptError,
+    ProjectionTornError,
+)
 from tree_options.runstate.states import RunState
 from tree_options.schemas.common import StrictModel
 
@@ -83,8 +87,14 @@ def _fsync_dir(path: Path) -> None:
 def append_record(store_dir: Path, record: JournalRecord) -> str:
     """Append one hash-chained record; returns its `record_sha256`.
 
-    The advisory `flock` serializes concurrent appenders (the lease normally
-    makes them impossible; this is the belt to that braces).
+    Round-1 review fix (2026-08-23, probe /tmp/pr-a-runstate-write-probes.log
+    STALE_APPEND_RETURNED_WITH_DAMAGED_TAIL): the advisory flock is taken,
+    the journal tail is re-read FROM DISK under the lock, and the caller's
+    `prev_record_sha256` is verified against it before the new record is
+    written. A mismatch raises `JournalConcurrentWriteError` — the caller
+    must re-replay and rebuild the prev hash. A torn final line is also
+    refused outright: appending past a torn tail converts a damaged record
+    into mid-file corruption, which the store can never safely repair.
     """
     record = record.model_copy(update={"record_sha256": _record_hash(record)})
     journal_path = store_dir / JOURNAL_FILENAME
@@ -97,6 +107,21 @@ def append_record(store_dir: Path, record: JournalRecord) -> str:
     with open(journal_path, "a", encoding="utf-8") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
         try:
+            # Round-1 review fix: re-read the locked tail and verify.
+            tail_view = _locked_tail_view(fh)
+            if tail_view.torn_tail:
+                raise JournalConcurrentWriteError(
+                    store_dir.name,
+                    "journal has a torn final line; refusing to append "
+                    "past it (append-after-torn converts damage into "
+                    "mid-file corruption). Repair is an explicit owner act",
+                )
+            if tail_view.tail_hash != record.prev_record_sha256:
+                raise JournalConcurrentWriteError(
+                    store_dir.name,
+                    f"caller's prev_record_sha256 {record.prev_record_sha256[:12]}… "
+                    f"does not match the locked tail hash {tail_view.tail_hash[:12]}…",
+                )
             fh.write(line + "\n")
             fh.flush()
             os.fsync(fh.fileno())
@@ -104,6 +129,52 @@ def append_record(store_dir: Path, record: JournalRecord) -> str:
             fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
     _fsync_dir(store_dir)
     return record.record_sha256
+
+
+@dataclass(frozen=True)
+class _LockedTail:
+    """What the journal tail looks like right now, under the flock."""
+
+    tail_hash: str  # hash of the LAST valid record; GENESIS_PREV if empty
+    torn_tail: bool  # True iff the final line on disk failed decode/verify
+
+
+def _locked_tail_view(fh: object) -> _LockedTail:
+    """Read the journal from disk (under the held flock) and classify its tail.
+
+    A torn FINAL line (decode or chain-verify fail on the last line only) is
+    reported as `torn_tail=True` — it was never acknowledged and must NOT
+    be followed by an append (probe COMPLETE_BAD_TAIL_TOLERATED).
+    Mid-file damage is NOT possible here because the replay rule would
+    have raised JournalCorruptError before reaching this function — but if
+    we see it on the locked read, surface it as torn to keep the caller
+    safe (never silently skip non-tail damage).
+
+    NB: `fh` is opened in append mode and seek+read returns nothing
+    meaningful past EOF; we re-open the path in read mode under the
+    OUTER caller's flock — the advisory lock is on the file inode, not
+    the file handle, so a second open from the same thread sees the
+    same locked state.
+    """
+    path = Path(getattr(fh, "name", "")) if not isinstance(getattr(fh, "name", ""), int) else None
+    if path is None or not str(path):
+        # Defensive fallback: no path known — refuse rather than guess.
+        raise JournalConcurrentWriteError(
+            "<unknown>",
+            "append_record's locked-tail view could not determine the "
+            "journal path from the file handle; refusing to append",
+        )
+    raw = path.read_text(encoding="utf-8", errors="replace")
+    lines = raw.splitlines()
+    prev_hash = GENESIS_PREV
+    last_good_hash = GENESIS_PREV
+    for _index, line in enumerate(lines):
+        record = _decode_record(line)
+        if record is None or not _verify_chain(record, prev_hash):
+            return _LockedTail(tail_hash=last_good_hash, torn_tail=True)
+        last_good_hash = record.record_sha256
+        prev_hash = record.record_sha256
+    return _LockedTail(tail_hash=last_good_hash, torn_tail=False)
 
 
 def _decode_record(line: str) -> JournalRecord | None:
@@ -133,16 +204,16 @@ def replay(store_dir: Path, *, run_id: str = "?") -> JournalView:
     records: list[JournalRecord] = []
     prev_hash = GENESIS_PREV
     damaged_tail = False
-    for index, line in enumerate(lines):
+    for _index, line in enumerate(lines):
         record = _decode_record(line)
-        is_final = index == len(lines) - 1
+        is_final = _index == len(lines) - 1
         if record is None or not _verify_chain(record, prev_hash):
             if is_final:
                 damaged_tail = True
                 continue  # a torn tail was never acknowledged; exclude it
             raise JournalCorruptError(
                 run_id,
-                f"journal line {index + 1} failed decode/hash/chain verification",
+                f"journal line {_index + 1} failed decode/hash/chain verification",
             )
         records.append(record)
         prev_hash = record.record_sha256

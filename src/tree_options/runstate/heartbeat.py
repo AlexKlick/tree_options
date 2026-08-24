@@ -85,7 +85,13 @@ def classify(
     proc_root: Path | None = None,
     stale_after_s: int = STALE_AFTER_S,
 ) -> HeartbeatClass:
-    """Classify liveness. Never returns FAILED-equivalent for silence."""
+    """Classify liveness. Never returns FAILED-equivalent for silence.
+
+    Round-1 review fix (2026-08-23, probe MISMATCHED_HEARTBEAT_CLASS):
+    a heartbeat carries its recorded state, and the JOURNAL projection is
+    the authority. A disagreement is never ALIVE — the journal says one
+    thing, the beat says another, and no operator should act on a lie.
+    """
     if state is None:
         # No GENESIS yet (or pre-journal legacy run): nothing terminal is
         # known, so the only honest answer is UNKNOWN.
@@ -104,6 +110,12 @@ def classify(
         if state is RunState.SEALED_RUNNING:
             return HeartbeatClass.UNKNOWN_RECONCILIATION_REQUIRED
         return HeartbeatClass.UNKNOWN_RESUMABLE
+    # Round-1 review: the heartbeat's recorded state MUST match the
+    # journal projection's state. A disagreement is a corruption signal
+    # (stale heartbeat file, half-written beat, beat from a previous
+    # incarnation). Never classify such a case as ALIVE.
+    if beat.state is not state:
+        return HeartbeatClass.UNKNOWN_RECONCILIATION_REQUIRED
     fresh = (now_epoch - beat.at_epoch) <= stale_after_s
     owner_gone = _owner_gone(beat, boot_id_now=boot_id_now, proc_root=proc_root)
     if fresh and not owner_gone:

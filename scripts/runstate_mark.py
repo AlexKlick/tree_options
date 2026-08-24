@@ -98,6 +98,17 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
+    # Round-1 review fix: one journaled fact per invocation — refuse the
+    # silent-drop combination (to_state + --pin-manifest). The earlier
+    # code took the pin branch and ignored the requested transition.
+    if args.to_state is not None and args.pin_manifest:
+        print(
+            "ERROR: pass either a to_state OR --pin-manifest, never both — "
+            "the earlier silent-drop behavior laundered a transition; "
+            "use two invocations (runbook §4.2)",
+            file=sys.stderr,
+        )
+        return 2
     from datetime import UTC, datetime
 
     now_epoch = args.now_epoch or int(datetime.now(UTC).timestamp())

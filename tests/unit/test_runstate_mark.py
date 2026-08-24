@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -19,6 +20,13 @@ from tree_options.runstate import RunIdentity, RunState, RunStore  # noqa: E402
 BOOT = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000
 RUN_ID = "m4-marktest-20260823-abcdef12"
+
+# Round-1 review migration (2026-08-23): pytest's tmp_path lives under
+# /tmp on this host; the runstate root refusal (RunStore.create/open)
+# makes that path unusable for run-state stores. The scratch root
+# therefore lives under the repo's gitignored artifacts/runstate-tests/,
+# unique per-test.
+_MIGRATION_TESTS_ROOT = REPO_ROOT / "artifacts" / "runstate-tests"
 
 
 def _identity_path(root: Path) -> Path:
@@ -42,8 +50,11 @@ def _identity_path(root: Path) -> Path:
 
 
 @pytest.fixture()
-def root(tmp_path: Path) -> Path:
-    return tmp_path / "runstate"
+def root() -> Path:
+    _MIGRATION_TESTS_ROOT.mkdir(parents=True, exist_ok=True)
+    scratch = _MIGRATION_TESTS_ROOT / f"test-{uuid4().hex}"
+    scratch.mkdir(parents=True)
+    return scratch
 
 
 def _mark(root: Path, *args: str) -> int:
@@ -59,7 +70,7 @@ def _mark(root: Path, *args: str) -> int:
 
 
 def test_create_and_transition_flow(root, tmp_path, capsys):
-    identity_path = _identity_path(tmp_path)
+    identity_path = _identity_path(root)
     assert (
         _mark(
             root,
@@ -83,13 +94,13 @@ def test_unknown_run_exit_4(root):
 
 
 def test_illegal_transition_exit_2(root, tmp_path):
-    _mark(root, RUN_ID, "--create-identity", str(_identity_path(tmp_path)), "--reason", "g")
+    _mark(root, RUN_ID, "--create-identity", str(_identity_path(root)), "--reason", "g")
     assert _mark(root, RUN_ID, "CAPTURING", "--reason", "go") == 0
     assert _mark(root, RUN_ID, "BARS_CAPTURING", "--reason", "skip") == 2
 
 
 def test_pin_manifest_without_state(root, tmp_path, capsys):
-    _mark(root, RUN_ID, "--create-identity", str(_identity_path(tmp_path)), "--reason", "g")
+    _mark(root, RUN_ID, "--create-identity", str(_identity_path(root)), "--reason", "g")
     assert (
         _mark(
             root,
@@ -107,13 +118,13 @@ def test_pin_manifest_without_state(root, tmp_path, capsys):
 
 
 def test_missing_state_and_pin_refused(root, tmp_path, capsys):
-    _mark(root, RUN_ID, "--create-identity", str(_identity_path(tmp_path)), "--reason", "g")
+    _mark(root, RUN_ID, "--create-identity", str(_identity_path(root)), "--reason", "g")
     capsys.readouterr()
     assert _mark(root, RUN_ID, "--reason", "nothing") == 2
 
 
 def test_identity_mismatch_exit_5(root, tmp_path):
-    path = _identity_path(tmp_path)
+    path = _identity_path(root)
     assert (
         _mark(
             root,

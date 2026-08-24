@@ -71,3 +71,62 @@ class ManifestMismatchError(RunStateError):
             "manifest is DERIVED evidence — re-derive it by re-running the "
             "capture (the cache makes that free), never hand-edit it",
         )
+
+
+class StoreRootRefusedError(RunStateError):
+    """A run-state store root resolves under /tmp or is otherwise untrusted.
+
+    /tmp is wiped on reboot — durability there is a lie. Runstate is
+    authoritative evidence (the journal, lease, and pinned manifest); it
+    MUST live under the repo's durable artifacts/ tree or wherever the
+    operator's durable root points. Probe-derived finding (round-1 review,
+    2026-08-23): create() and open() accepted /tmp paths and let a launcher
+    advance the journal to CAPTURE_COMPLETE there.
+    """
+
+    def __init__(self, root: str) -> None:
+        super().__init__(
+            "STORE_ROOT_REFUSED",
+            f"run-state store root {root!r} resolves under /tmp or another "
+            "volatile path; /tmp is wiped on reboot and is never the home "
+            "of authoritative run-state evidence — point at the repo's "
+            "artifacts/runstate (or another durable root)",
+        )
+
+
+class JournalConcurrentWriteError(RunStateError):
+    """append_record's caller-supplied prev_record_sha256 no longer matches
+    the file's locked tail under flock.
+
+    Indicates either a stale append (the caller built its record against an
+    older replay view) or an interleaved writer (the advisory flock did
+    not serialize enough). Append is refused; repair is an explicit owner
+    act. Probe-derived finding (round-1 review, 2026-08-23).
+    """
+
+    def __init__(self, run_id: str, detail: str) -> None:
+        super().__init__(
+            "JOURNAL_CONCURRENT_WRITE",
+            f"run {run_id}: {detail}; refusing to append a record whose "
+            "prev_record_sha256 does not match the locked journal tail. "
+            "Re-replay and rebuild the prev hash before appending",
+        )
+
+
+class PinAlreadyBoundError(RunStateError):
+    """pin_manifest was called with a DIFFERENT hash after a pin already exists.
+
+    A pinned manifest is bound evidence — the runbook prohibits changing
+    it. Re-pinning with the SAME hash is idempotent and returns the existing
+    record; a different hash is refused outright. Probe-derived finding
+    (round-1 review, 2026-08-23).
+    """
+
+    def __init__(self, run_id: str, existing: str, attempted: str) -> None:
+        super().__init__(
+            "PIN_ALREADY_BOUND",
+            f"run {run_id}: capture manifest already pinned to "
+            f"{existing[:12]}…; refusing a second pin to {attempted[:12]}… "
+            "— pinned evidence is bound (runbook §3); re-derive by re-running "
+            "the capture, never swap a pin",
+        )
