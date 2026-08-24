@@ -62,6 +62,7 @@ from tree_options.protocol.loader import load_protocol, protocol_hash  # noqa: E
 from tree_options.seal import ledger as seal_ledger  # noqa: E402
 from tree_options.seal.errors import (  # noqa: E402
     ApprovalInvalidError,
+    LedgerCorruptError,
     SealError,
     SecondExecutionRefusedError,
 )
@@ -281,10 +282,33 @@ def execute_sealed_run(
     content_id = content_identity(identity)
     view = read_ledger(ledger_root)
 
+    # Round-1 review fix (2026-08-23, probe FORGED_CONSUMPTION_REPLAYED):
+    # the duplicate guard must recompute sealed_run_id and content_identity
+    # from each CONSUMPTION record's own identity payload, NOT trust the
+    # stored id fields. A chain-valid record with forged stored ids but
+    # the target's identity payload bypassed the original guard.
+    # As a bonus, a stored id that disagrees with its own payload's
+    # recompute is itself a corruption signal — refuse (do not skip).
     for record in view.records:
         if record.kind != KIND_CONSUMPTION:
             continue
-        if record.sealed_run_id == run_id or record.content_identity == content_id:
+        try:
+            record_run_id = sealed_run_id(record.identity)
+            record_content_id = content_identity(record.identity)
+        except Exception:
+            # The record's identity payload does not validate. The ledger
+            # reader tolerates this for history display; we do NOT — refuse.
+            raise LedgerCorruptError(
+                f"CONSUMPTION record {record.record_sha256[:12]}… has an"
+                " unparseable identity payload; the duplicate guard cannot"
+                " be evaluated safely — refusing to append"
+            ) from None
+        if record.sealed_run_id != record_run_id or record.content_identity != record_content_id:
+            raise LedgerCorruptError(
+                f"CONSUMPTION record {record.record_sha256[:12]}… stored"
+                " ids disagree with its own identity payload (corruption)"
+            )
+        if record_run_id == run_id or record_content_id == content_id:
             raise SecondExecutionRefusedError(
                 run_id, "a CONSUMPTION record already matches this sealed content"
             )

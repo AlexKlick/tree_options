@@ -90,17 +90,24 @@ hand.
 
 ### 1.4 Heartbeat classifications and what you may do
 
-Heartbeats are written by the running lane's library code every 60 s
-(`HEARTBEAT_INTERVAL_S`); a beat older than 900 s
-(`STALE_AFTER_S`) is stale. `era_status` classifies:
+Heartbeats are written by a lane's library code via
+`tree_options.runstate.store.RunStore.write_heartbeat`. The constants
+`HEARTBEAT_INTERVAL_S` (60 s) and `STALE_AFTER_S` (900 s) are the
+contract for FUTURE lane wiring — no shipped lane in this PR A writes
+heartbeats yet. The pre-journal legacy coverage era (live at the time
+of writing) wrote none; era_status classifies the ABSENCE of a beat
+in a process state as `UNKNOWN_RESUMABLE` (the safe default — silence
+is never `ALIVE`). The heartbeat's recorded state must also match the
+journal projection state; a mismatch is `UNKNOWN_RECONCILIATION_REQUIRED`
+(round-1 review fix). `era_status` classifies:
 
 | classification | meaning | operator action |
 |---|---|---|
-| `ALIVE` | fresh beat, or no process is expected in this state | none |
-| `ALIVE_SILENT` | pid alive, beat stale (60 s/900 s thresholds) | **watch, do not act.** Do NOT kill on silence alone — the live coverage era writes nothing to its log for hours by design |
+| `ALIVE` | fresh beat AND its state matches the journal | none |
+| `ALIVE_SILENT` | pid alive, beat stale (60 s/900 s thresholds) | **watch, do not act.** Do NOT kill on silence alone — a lane may write nothing for hours by design |
 | `DEAD_TERMINAL` | process gone and the journal already says how it ended | none (read the journal) |
-| `UNKNOWN_RESUMABLE` | dead mid-capture/inspection: the content-addressed cache makes the lane safely resumable | resume allowed for **capture/inspection lanes only** — re-run the wrapper (`docs/m4-massive-runbook.md` §5); adopt the stale lease first (§2.1) |
-| `UNKNOWN_RECONCILIATION_REQUIRED` | dead in the sealed lane — authority was already consumed | **owner decision, nothing automatic.** A retry could double-spend the one-shot seal; write a RECONCILIATION_NOTE after the owner rules |
+| `UNKNOWN_RESUMABLE` | missing beat in a process state (pre-journal legacy, or the lane just hasn't called write_heartbeat yet); OR a beat whose STATE doesn't match the journal but only by misconfiguration | resume allowed for **capture/inspection lanes only** — re-run the wrapper (`docs/m4-massive-runbook.md` §5); adopt the stale lease first (§2.1) |
+| `UNKNOWN_RECONCILIATION_REQUIRED` | dead in the sealed lane — authority was already consumed; OR a heartbeat/state mismatch with the journal | **owner decision, nothing automatic.** A retry could double-spend the one-shot seal; write a RECONCILIATION_NOTE after the owner rules |
 
 `FAILED` never appears from silence — only from an explicit journal
 transition.
@@ -434,15 +441,23 @@ Usage:
 
 ```
 python scripts/runstate_mark.py <run-id> CAPTURING --reason "era pass 3"
+# Two-invocation form for the pin + transition (CLI refuses the
+# combined form with exit 2 — see F8a round-1 review fix):
+python scripts/runstate_mark.py <run-id> --pin-manifest <capture_manifest content_sha256> \
+    --reason "wrapper exit 0"
 python scripts/runstate_mark.py <run-id> CAPTURE_COMPLETE \
-    --reason "wrapper exited 0" --pin-manifest <capture_manifest content_sha256>
+    --reason "wrapper exit 0"
 python scripts/runstate_mark.py <run-id> INSPECTION_RUNNING \
     --adopt-stale-lease --reason "reboot recovery: old owner dead"
 ```
 
-(One journaled fact per invocation — see §4.2 for the pin-vs-transition
-note. Heartbeats are written by the running lane's library code
-(`tree_options.runstate.heartbeat`), not by this CLI.)
+(One journaled fact per invocation: the CLI REFUSES to_state +
+--pin-manifest in the same call with exit 2 — a combined call exits
+without writing either, which is why the pin and the transition are
+two separate invocations here. See `scripts/runstate_mark.py` for the
+exit table. Heartbeats are written by a lane's library code
+(`tree_options.runstate.store.RunStore.write_heartbeat`), not by this
+CLI.)
 
 ### scripts/era_status.py — read-only status
 

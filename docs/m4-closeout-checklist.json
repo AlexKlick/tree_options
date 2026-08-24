@@ -90,8 +90,18 @@
       "--out", "artifacts/census/universe-regen-check.json"
     ],
     "expect_exit": 0,
-    "description": "MUTATES artifacts/ only: regenerate the declared universe into a throwaway artifacts path and byte-compare against the committed data/coverage/coverage_universe.json (cmp). Divergence means the era wrapper changed under a declared universe — an incident, never a hand-fix (runbook 1.3).",
+    "description": "MUTATES artifacts/ only: regenerate the declared universe into a throwaway artifacts path (the byte-compare against the committed file is the NEXT step). Divergence means the era wrapper changed under a declared universe — an incident, never a hand-fix (runbook 1.3).",
     "mutates": true
+  },
+  {
+    "id": "universe-regen-cmp",
+    "command": [
+      "cmp", "data/coverage/coverage_universe.json",
+      "artifacts/census/universe-regen-check.json"
+    ],
+    "expect_exit": 0,
+    "description": "Read-only: byte-identical regeneration proof — divergence means the era wrapper changed under a declared universe (an incident, never a hand-fix). Burst (cmp non-zero) is the same failure mode the previous step's regenerate catches with its OWN exit code; this step is the explicit comparison. Round-1 review fix.",
+    "mutates": false
   },
   {
     "id": "census",

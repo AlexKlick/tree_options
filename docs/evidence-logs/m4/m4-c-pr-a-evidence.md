@@ -97,8 +97,10 @@ from that verification are recorded below.
 3. Minor: the riders agent reported 7 new tests; the file collects 6
    (count off by one; content independently verified). The A6 agent
    died at a provider usage cap after finishing the runbook; the
-   orchestrator verified every CLI claim in it against the argparse
-   definitions and completed the remaining deliverables.
+   orchestrator re-checked CLI claims it reviewed but the round-1
+   independent review (Codex gpt-5.6-sol, exact head d61a0b0, log
+   `~/documents/tree_options-logs/pr-a-codex-review.log`) still found
+   three claim/code mismatches (F8a/b/c) — fixed in this wave.
 
 ## Constraints honored
 

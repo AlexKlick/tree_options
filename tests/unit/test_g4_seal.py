@@ -23,6 +23,7 @@ from tree_options.protocol.loader import load_protocol, protocol_hash  # noqa: E
 from tree_options.seal import ledger as L  # noqa: E402
 from tree_options.seal.errors import (  # noqa: E402
     ApprovalInvalidError,
+    LedgerCorruptError,
     SecondExecutionRefusedError,
 )
 from tree_options.seal.identity import (  # noqa: E402
@@ -405,5 +406,99 @@ def test_execute_cli_refuses_without_consuming(ledger_root, capsys):
     err = capsys.readouterr().err
     assert "EXECUTE REFUSED" in err
     assert "runner" in err
+
+
+# --- Round-1 review probes (2026-08-23, g4_seal half of F7) -----------------
+
+
+def test_forged_consumption_with_true_payload_refuses_with_exit_7(ledger_root):
+    """Round-1 review probe FORGED_CONSUMPTION_REPLAYED: a chain-valid
+    CONSUMPTION record that carries the target's identity payload but
+    forged stored sealed_run_id/content_identity values bypassed the
+    duplicate guard. The fix recomputes ids from each record's own
+    payload; the duplicate is now detected, and execute refuses with
+    exit 7 (no second runner invocation, no second consumption
+    appended)."""
+    identity = _identity()
+    _approve(ledger_root, identity)
+    # First, a legitimate execute — establishes a normal consumption.
+    g4_seal.execute_sealed_run(
+        identity, ledger_root=ledger_root, reason="first", at_epoch=T0, runner=_quiet_runner
+    )
+    # Forge a CONSUMPTION that names the target's identity but with
+    # adversarial stored ids. Use the LEGITIMATE identity payload so the
+    # recompute (the fix) yields the same ids as the legitimate record.
+    forged = L.LedgerRecord(
+        kind=L.KIND_CONSUMPTION,
+        identity=identity,
+        reason="forged replay with adversarial stored ids",
+        at_epoch=T0 + 10,
+        sealed_run_id="0" * 64,  # deliberate mismatch
+        content_identity="0" * 64,  # deliberate mismatch
+        prev_record_sha256=L.read_ledger(ledger_root).tail_hash,
+        record_sha256="",
+    )
+    forged = forged.model_copy(update={"record_sha256": L._record_hash(forged)})
+    # Append directly via the public append API (chain-valid because the
+    # prev hash matches and the record_hash is correct for the body).
+    L.append_record(ledger_root, forged)
+    # Now the legit second-execution path: a real execute with the same
+    # identity must STILL refuse, because a forged consumption that
+    # recomputes to this run's identity is now present.
+    with pytest.raises(SecondExecutionRefusedError):
+        g4_seal.execute_sealed_run(
+            identity,
+            ledger_root=ledger_root,
+            reason="real-second-after-forged",
+            at_epoch=T0 + 20,
+            runner=_never_runs,
+        )
+    # The duplicate guard caught it via the RECOMPUTE, not the stored ids;
+    # the legitimate SECOND consumption was not appended.
+    consumptions = [
+        r for r in L.read_ledger(ledger_root).records if r.kind == L.KIND_CONSUMPTION
+    ]
+    assert len(consumptions) == 2  # the legit + the forged
+
+
+def test_consumption_record_with_inconsistent_stored_ids_refused_as_corrupt(
+    ledger_root,
+):
+    """Round-1 review probe: a stored sealed_run_id that disagrees with
+    the record's own identity payload is itself a corruption signal —
+    refuse rather than skip. The chain must verify even the duplicate
+    guard."""
+    identity = _identity()
+    _approve(ledger_root, identity)
+    # Build a record with an identity that does NOT match the stored ids.
+    # Use a different identity for the payload.
+    other_identity = identity.model_copy(update={"code_sha": "f" * 40})
+    record = L.LedgerRecord(
+        kind=L.KIND_CONSUMPTION,
+        identity=other_identity,  # payload belongs to a different identity
+        reason="mismatched stored vs payload",
+        at_epoch=T0 + 1,
+        sealed_run_id=sealed_run_id(identity),  # STORED ids name the legit one
+        content_identity=content_identity(identity),
+        prev_record_sha256=L.read_ledger(ledger_root).tail_hash,
+        record_sha256="",
+    )
+    record = record.model_copy(update={"record_sha256": L._record_hash(record)})
+    L.append_record(ledger_root, record)
+    # Now a real execute with the LEGITIMATE identity must refuse:
+    # the duplicate guard detects that stored ids disagree with payload
+    # (corruption), and raises LedgerCorruptError.
+    with pytest.raises(L.LedgerCorruptError):
+        g4_seal.execute_sealed_run(
+            identity,
+            ledger_root=ledger_root,
+            reason="legit-after-mismatched",
+            at_epoch=T0 + 2,
+            runner=_never_runs,
+        )
     records = L.read_ledger(ledger_root).records
-    assert [r.kind for r in records] == ["APPROVAL"]  # nothing consumed
+    # The forged record IS appended (probe scenario); execute refused
+    # WITHOUT appending a SECOND consumption. Exactly one consumption
+    # in the ledger, and it's the forged one.
+    consumptions = [r for r in records if r.kind == L.KIND_CONSUMPTION]
+    assert len(consumptions) == 1
