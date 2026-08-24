@@ -42,6 +42,51 @@ from that verification are recorded below.
 | `c4505c4` | riders (docs truth-up + real_lanes registry entries) |
 | `8274327` | mutation-harness scratch fix (see below) |
 | `762ab9d` | runbook §4.1 correction (launcher records ERA_EXIT itself) |
+| `d61a0b0` | evidence: PR A verification record (round-1 gate 1,406 / 217 KILLED at this head) |
+| `c17df86` / `f28c714` / `d1fc2b8` | R3: round-1 remediation (F1–F3+F8a/d runstate; F4–F6 amendment/bars; F7+F8a–d seal/docs) |
+| `117c422` / `6c63e50` / `9202979` / `b92ff709` | R3 fixups: ruff drift; restore mutate `_run`; reanchor M185, supersede M214; drop M214 |
+| `ac8b2a2` / `850f370` / `deb2ecd` / `bd92e9e` / `21eee40` | R4: round-2 runstate remediation (run-id escape; lock-all-mutators; heartbeat ordering; CLI exit codes 6/7/8; real argv_hash invariant) |
+| `5a763c0` | R4: register M229 (replaces M214) + runbook exit codes 6/7/8 |
+| `b7ebca5` / `d950a0f` / `e51a179` / `3e920f3` | R4: round-2 protocol/bars remediation (F4 derivation-time gate; F5 one-manifest binding; F6 execute-time census + identity cross-join; F7 test half) |
+
+## Review waves and remediation (2026-08-23)
+
+Two independent adversarial reviews (Codex `gpt-5.6-sol`, detached,
+exact-head, read-only; probes re-verified host-side before acceptance):
+
+- **Round 1** (head `d61a0b0`, log `pr-a-codex-review.log`): VERDICT
+  NO-GO — 8 findings (5×P1, 3×P2): runstate authority under `/tmp`;
+  non-transactional stale-lease adoption + journal append; pin
+  replacement; NOT_EVALUABLE facts as derivation operands; bars
+  regeneration not proven; bars cross-run join absent; G4 duplicate
+  guard trusting stored ids; unverified operator-artifact claims.
+  Remediated in R3 (`c17df86`–`b92ff709`); gate at `b92ff709`:
+  1,420 passed / **216** KILLED (M214 dropped — see round 2) /
+  restoration TRUE (`pr-a-gate8.log`).
+- **Round 2** (head `b92ff709`, log `pr-a-codex2.log`): VERDICT NO-GO —
+  9 findings (4×P1, 4×P2, 1×P3): absolute `run_id` escapes the F1 root
+  guard; fresh-acquire/release bypass the adoption lock (two live
+  owners) + a vacuous `or True` test assertion; F4's emission-time
+  confidence gate made the canonical census unusable by the amendment
+  builder; F5 verified provenance against two different capture
+  manifests; F6 still consumed authority with placeholder identity and
+  a deleted census; F8d heartbeat mismatch ordered after the non-process
+  ALIVE return; M214 removed without the promised M229 replacement and
+  the forged-consumption test inserted a legitimate consumption first;
+  PR #13 + this evidence doc stale at the pre-remediation head; F8a CLI
+  usage/mapping inconsistencies. Remediated in R4 (`ac8b2a2`–`3e920f3`
+  + this evidence commit), each fix red-first (agent logs
+  `pra-r4-r4{1,2}-fix*-red.log`) and re-verified by the orchestrator
+  (my independent runs + the reviewers' exact probes re-executed
+  post-fix: `pra-r4-pr-a-*.log`; focused suites `pra-r4-r42-verify.log`
+  109 dots / `pra-r4-r41-orchestrator-verify.log`).
+- **M229 registration note** (round-2 finding 7): the mutant targets the
+  stored-vs-recomputed arm (`if False:` on the disagreement check) — an
+  arm-2-only mutant (trusting stored ids in the duplicate match) is a
+  redundant guard that SURVIVES, because the corruption arm fires first
+  for every forged shape (content_identity excludes code_sha, so the
+  tampered payload still shares content identity and trips arm 1).
+  Kill-proof narrative in commit `5a763c0`; population restored to 217.
 
 ## Verification evidence (host logs under `~/documents/tree_options-logs/`)
 
@@ -118,5 +163,9 @@ All raw logs are retained host-side under `~/documents/tree_options-logs/`
 (referenced by name above): phase0-gate, pra-mutate-1,
 pra-m182-killproof, pra-int-*-suite, pra-final-content-suite,
 pra-{a2b,a3,a4,a5,a6,riders}-*, pr-a-cleanclone-*, pr-a-gate (first
-attempt, FAILED with the harness-scratch finding), and the final gate
-log for the exact PR head (see PR body for its verdict line).
+attempt, FAILED with the harness-scratch finding), r2-* / r3-sync (R3
+wave), pr-a-gate3–gate8 (R3-era gates; gate8 = the round-2-reviewed head
+`b92ff709`), pr-a-codex-review / pr-a-codex2 (both review transcripts),
+pra-r4-* (R4 red/green agent logs, orchestrator verification runs, and
+the reviewers' probes re-executed post-fix), and the final gate log for
+the exact PR head (see PR body for its verdict line).
