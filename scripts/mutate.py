@@ -2450,8 +2450,7 @@ MUTANTS = [
         owner="test_content_identity_stable_across_code_sha_change_while_run_id_changes",
         file="src/tree_options/seal/identity.py",
         anchor=(
-            'blanked = identity.model_copy(update={"code_sha": "", '
-            '"verified_packet_sha256": ""})'
+            'blanked = identity.model_copy(update={"code_sha": "", "verified_packet_sha256": ""})'
         ),
         replacement=(
             'blanked = identity.model_copy(update={"code_sha": identity.code_sha, '
@@ -2495,9 +2494,7 @@ MUTANTS = [
         id="M215-approval-reverify-void",
         owner="test_approval_tampered_payload_exit_6",
         file="scripts/g4_seal.py",
-        anchor=(
-            "        and sealed_run_id(record.identity) == run_id"
-        ),
+        anchor=("        and sealed_run_id(record.identity) == run_id"),
         replacement="        and True",
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
@@ -2942,10 +2939,7 @@ MUTANTS = [
         id="M251-g4-calendar-enum-opened",
         owner="test_correctly_self_hashed_foreign_calendar_decision_refuses",
         file="src/tree_options/seal/verified_inputs.py",
-        anchor=(
-            'CalendarDecision = Literal["repo-generated-calendar", '
-            '"weekend-only-accepted"]'
-        ),
+        anchor=('CalendarDecision = Literal["repo-generated-calendar", "weekend-only-accepted"]'),
         replacement="CalendarDecision = str",
         selectors=[f"{U}/test_g4_verified_inputs.py"],
         invariant="The owner calendar decision is one of the two predeclared choices",
@@ -2958,7 +2952,7 @@ MUTANTS = [
             "        if self.content_sha256 != expected:\n"
             '            raise ValueError("calendar decision content_sha256 does not bind the typed body")'
         ),
-        replacement="        if False:\n            raise ValueError(\"MUTATED\")",
+        replacement='        if False:\n            raise ValueError("MUTATED")',
         selectors=[f"{U}/test_g4_verified_inputs.py"],
         invariant="The typed owner calendar decision self-hash binds its complete body",
     ),
@@ -2970,7 +2964,7 @@ MUTANTS = [
             "        if self.packet_content_sha256 != expected:\n"
             '            raise ValueError("packet_content_sha256 does not bind the verified-input body")'
         ),
-        replacement="        if False:\n            raise ValueError(\"MUTATED\")",
+        replacement='        if False:\n            raise ValueError("MUTATED")',
         selectors=[f"{U}/test_g4_verified_inputs.py"],
         invariant="VerifiedSealedInputs is immutable and self-binding over every field",
     ),
@@ -3109,8 +3103,7 @@ MUTANTS = [
             "    consumption_record = LedgerRecord("
         ),
         replacement=(
-            "    view = read_ledger(ledger_root)\n\n"
-            "    consumption_record = LedgerRecord("
+            "    view = read_ledger(ledger_root)\n\n    consumption_record = LedgerRecord("
         ),
         selectors=[f"{U}/test_g4_seal.py"],
         invariant="Approval and duplicate authority are rechecked at the final spend boundary",
@@ -3125,7 +3118,9 @@ MUTANTS = [
             "            expected_packet.model_dump_json()\n"
             "        )\n"
             "    except Exception as exc:\n"
-            "        raise VerifiedInputsError(\"packet\", f\"expected packet self-validation failed: {exc}\") from None"
+            "        raise VerifiedInputsError(\n"
+            '            "packet", f"expected packet self-validation failed: {exc}"\n'
+            "        ) from None"
         ),
         replacement="    expected_packet = expected_packet  # MUTATED: self-check bypassed",
         selectors=[f"{U}/test_g4_seal.py"],

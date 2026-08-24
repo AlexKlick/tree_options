@@ -300,7 +300,9 @@ def execute_sealed_run(
             expected_packet.model_dump_json()
         )
     except Exception as exc:
-        raise VerifiedInputsError("packet", f"expected packet self-validation failed: {exc}") from None
+        raise VerifiedInputsError(
+            "packet", f"expected packet self-validation failed: {exc}"
+        ) from None
     identity = identity_from_packet(expected_packet)
     run_id = sealed_run_id(identity)
     content_id = content_identity(identity)
@@ -376,7 +378,9 @@ def cmd_execute(argv: list[str]) -> int:
 def _add_preflight_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--repo", type=Path, default=REPO_ROOT, help="git repo for the code_sha check")
     p.add_argument("--lane1-manifest", type=Path, help="lane 1 (Cboe) capture manifest file")
-    p.add_argument("--lane1-source", type=Path, help="lane 1 Cboe source CSV pinned by the manifest")
+    p.add_argument(
+        "--lane1-source", type=Path, help="lane 1 Cboe source CSV pinned by the manifest"
+    )
     p.add_argument(
         "--lane2-manifest", type=Path, help="lane 2 (massive-derived era) capture manifest file"
     )

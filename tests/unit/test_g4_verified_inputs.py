@@ -103,9 +103,7 @@ def write_valid_inputs(tmp_path: Path) -> InputFixture:
     )
     bar = bars / "O_SPY250417C00560000.json"
     bar.write_text('{"resultsCount":1,"results":[{"c":40.08}]}\n', encoding="utf-8")
-    (lane2 / "spot_proxy.json").write_text(
-        '{"SPY":{"2025-03-14":"587.5"}}\n', encoding="utf-8"
-    )
+    (lane2 / "spot_proxy.json").write_text('{"SPY":{"2025-03-14":"587.5"}}\n', encoding="utf-8")
     manifest2 = build_massive_capture_manifest(
         lane2,
         capture_version=EXPECTED_MASSIVE_CAPTURE_VERSION,
@@ -168,12 +166,14 @@ def test_verified_packet_comes_only_from_real_typed_verifiers(tmp_path: Path) ->
     assert packet.lane2_manifest.raw_sha256 == sha256(held.lane2_manifest_bytes).hexdigest()
     assert packet.lane1_manifest.referenced_payload_set_hash != packet.lane1_manifest.raw_sha256
     assert packet.lane2_manifest.referenced_payload_set_hash != packet.lane2_manifest.raw_sha256
-    assert packet.calendar_decision_artifact_sha256 == sha256(
-        held.calendar_decision_artifact_bytes
-    ).hexdigest()
-    assert packet.criteria_source_document_sha256 == sha256(
-        held.criteria_source_document_bytes
-    ).hexdigest()
+    assert (
+        packet.calendar_decision_artifact_sha256
+        == sha256(held.calendar_decision_artifact_bytes).hexdigest()
+    )
+    assert (
+        packet.criteria_source_document_sha256
+        == sha256(held.criteria_source_document_bytes).hexdigest()
+    )
     assert held.calendar_decision.schema_version == CALENDAR_DECISION_SCHEMA_VERSION
 
 
@@ -187,9 +187,7 @@ def test_checkout_movement_during_verification_refuses(tmp_path: Path) -> None:
     fixture = write_valid_inputs(tmp_path)
     heads = iter((CODE_SHA, "f" * 40))
 
-    def moving_git_runner(
-        argv: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def moving_git_runner(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         if "rev-parse" in argv:
             return _completed(next(heads) + "\n")
         if "status" in argv:
@@ -220,9 +218,7 @@ def test_readable_arbitrary_json_is_not_a_lane_manifest(tmp_path: Path, lane: st
 
 
 @pytest.mark.parametrize("lane", ["lane1", "lane2"])
-def test_correctly_self_hashed_foreign_manifest_version_refuses(
-    tmp_path: Path, lane: str
-) -> None:
+def test_correctly_self_hashed_foreign_manifest_version_refuses(tmp_path: Path, lane: str) -> None:
     fixture = write_valid_inputs(tmp_path)
     target = fixture.lane1_manifest if lane == "lane1" else fixture.lane2_manifest
     payload = json.loads(target.read_text())

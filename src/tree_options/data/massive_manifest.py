@@ -363,9 +363,7 @@ def verify_massive_capture_manifest(
             fail(f"listed file {entry.path} is {len(raw)} bytes, manifest pins {entry.bytes}")
 
     observed = (
-        _json_files_on_disk(capture_dir)
-        if observed_json_files is None
-        else observed_json_files
+        _json_files_on_disk(capture_dir) if observed_json_files is None else observed_json_files
     )
     unlisted = sorted(observed - set(listed))
     if unlisted:

@@ -269,18 +269,14 @@ def _porcelain_dirty(lines: list[str]) -> list[str]:
             continue
         path = line[3:].split(" -> ")[-1].strip().strip('"') if len(line) > 3 else ""
         untracked = line.startswith("??")
-        ignored_output = path in ("artifacts", "dist") or path.startswith(
-            ("artifacts/", "dist/")
-        )
+        ignored_output = path in ("artifacts", "dist") or path.startswith(("artifacts/", "dist/"))
         if untracked and ignored_output:
             continue
         dirty.append(line)
     return dirty
 
 
-def git_code_sha(
-    repo: Path, *, runner: GitRunner = subprocess.run
-) -> tuple[str | None, str, str]:
+def git_code_sha(repo: Path, *, runner: GitRunner = subprocess.run) -> tuple[str | None, str, str]:
     """Return a clean SHA-1 checkout identity plus evidence/refusal reason."""
 
     def git(*args: str) -> subprocess.CompletedProcess[str]:
@@ -327,10 +323,14 @@ def _payload_set_hash(payloads: tuple[HeldPayload, ...]) -> str:
         )
         for payload in sorted(payloads, key=lambda item: (item.logical_id, item.kind))
     )
-    return sha256_hex(PAYLOAD_SET_DOMAIN + canonical_bytes(ReferencedPayloadSet(payloads=descriptors)))
+    return sha256_hex(
+        PAYLOAD_SET_DOMAIN + canonical_bytes(ReferencedPayloadSet(payloads=descriptors))
+    )
 
 
-def _verify_lane1(paths: SealedInputPaths) -> tuple[bytes, tuple[HeldPayload, ...], LaneManifestBinding]:
+def _verify_lane1(
+    paths: SealedInputPaths,
+) -> tuple[bytes, tuple[HeldPayload, ...], LaneManifestBinding]:
     component = "lane1"
     manifest_raw = read_file_once(
         paths.lane1_manifest,
@@ -376,7 +376,9 @@ def _verify_lane1(paths: SealedInputPaths) -> tuple[bytes, tuple[HeldPayload, ..
     return manifest_raw, payloads, binding
 
 
-def _verify_lane2(paths: SealedInputPaths) -> tuple[bytes, tuple[HeldPayload, ...], LaneManifestBinding]:
+def _verify_lane2(
+    paths: SealedInputPaths,
+) -> tuple[bytes, tuple[HeldPayload, ...], LaneManifestBinding]:
     component = "lane2"
     if paths.lane2_manifest.name != CAPTURE_MANIFEST_FILENAME:
         _raise(

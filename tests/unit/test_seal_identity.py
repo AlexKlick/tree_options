@@ -52,9 +52,7 @@ def test_content_identity_changes_when_content_fields_change():
     assert content_identity(base) != content_identity(
         _identity(calendar_decision_artifact_sha256="1" * 64)
     )
-    assert content_identity(base) != content_identity(
-        _identity(criteria_artifact_sha256="2" * 64)
-    )
+    assert content_identity(base) != content_identity(_identity(criteria_artifact_sha256="2" * 64))
     assert sealed_run_id(base) != sealed_run_id(_identity(lane2_manifest_sha256="0" * 64))
 
 

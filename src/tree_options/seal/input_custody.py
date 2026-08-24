@@ -70,9 +70,7 @@ def _open_directory(path: Path, *, component: str, purpose: str) -> int:
     return fd
 
 
-def _verify_directory_path(
-    path: Path, held_fd: int, *, component: str, purpose: str
-) -> None:
+def _verify_directory_path(path: Path, held_fd: int, *, component: str, purpose: str) -> None:
     try:
         fresh_fd = _open_directory(path, component=component, purpose=purpose)
     except VerifiedInputsError as exc:
@@ -290,9 +288,7 @@ class HeldDirectory:
 
 
 @contextmanager
-def hold_directory(
-    path: Path, *, component: str, purpose: str
-) -> Iterator[HeldDirectory]:
+def hold_directory(path: Path, *, component: str, purpose: str) -> Iterator[HeldDirectory]:
     absolute = _absolute_lexical(path)
     fd = _open_directory(absolute, component=component, purpose=purpose)
     held = HeldDirectory(path=absolute, fd=fd, component=component, purpose=purpose)

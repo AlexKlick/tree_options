@@ -188,9 +188,7 @@ def test_preflight_dirty_tracked_tree_unavailable(
     tmp_path: Path, ledger_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     fixture = write_valid_inputs(tmp_path)
-    code, _, payload = _preflight(
-        fixture, ledger_root, capsys, git_runner=_dirty_git_runner
-    )
+    code, _, payload = _preflight(fixture, ledger_root, capsys, git_runner=_dirty_git_runner)
     assert code == 2
     assert payload["verified_inputs"] is None
     assert payload["criteria_inputs"]["code_sha"]["available"] is False
@@ -200,9 +198,7 @@ def test_preflight_dirty_tracked_tree_unavailable(
 def test_preflight_untracked_output_is_ignored(
     tmp_path: Path, ledger_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    def untracked_runner(
-        argv: list[str], **_kwargs: object
-    ) -> subprocess.CompletedProcess[str]:
+    def untracked_runner(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
         if "rev-parse" in argv:
             return _completed(CODE_SHA + "\n")
         if "status" in argv:
@@ -343,9 +339,16 @@ def test_second_execution_same_packet_exit_7(tmp_path: Path, ledger_root: Path) 
         _execute(packet, fixture, ledger_root, refused_runner, at_epoch=T0 + 1)
     assert exc_info.value.exit_code == 7
     assert refused_runner.calls == 0
-    assert len(
-        [record for record in L.read_ledger(ledger_root).records if record.kind == L.KIND_CONSUMPTION]
-    ) == 1
+    assert (
+        len(
+            [
+                record
+                for record in L.read_ledger(ledger_root).records
+                if record.kind == L.KIND_CONSUMPTION
+            ]
+        )
+        == 1
+    )
 
 
 def test_changed_checkout_same_content_still_exit_7(tmp_path: Path, ledger_root: Path) -> None:
@@ -524,9 +527,16 @@ def test_interleaved_consumption_after_input_verification_is_refused_at_effect_b
     with pytest.raises(SecondExecutionRefusedError):
         _execute(packet, fixture, ledger_root, runner)
     assert runner.calls == 0
-    assert len(
-        [record for record in L.read_ledger(ledger_root).records if record.kind == L.KIND_CONSUMPTION]
-    ) == 1
+    assert (
+        len(
+            [
+                record
+                for record in L.read_ledger(ledger_root).records
+                if record.kind == L.KIND_CONSUMPTION
+            ]
+        )
+        == 1
+    )
 
 
 def test_crash_after_consumption_is_durable_unknown_never_rerun(
@@ -541,9 +551,16 @@ def test_crash_after_consumption_is_durable_unknown_never_rerun(
 
     with pytest.raises(RuntimeError):
         _execute(packet, fixture, ledger_root, StubRunner(crash))
-    assert len(
-        [record for record in L.read_ledger(ledger_root).records if record.kind == L.KIND_CONSUMPTION]
-    ) == 1
+    assert (
+        len(
+            [
+                record
+                for record in L.read_ledger(ledger_root).records
+                if record.kind == L.KIND_CONSUMPTION
+            ]
+        )
+        == 1
+    )
     with pytest.raises(SecondExecutionRefusedError):
         _execute(packet, fixture, ledger_root, StubRunner(), at_epoch=T0 + 1)
 
