@@ -94,6 +94,28 @@ class StoreRootRefusedError(RunStateError):
         )
 
 
+class RunIdRefusedError(RunStateError):
+    """A run id is not exactly one path component under the validated root.
+
+    Probe-derived finding (round-2 review, 2026-08-23): `root / run_id`
+    with an ABSOLUTE run id REPLACES the base (pathlib join semantics), so
+    `RunStore.create(root, identity_with_run_id="/tmp/x")` landed the store
+    at /tmp/x despite the root passing `_validate_store_root`. Parent-
+    bearing ids ("../x") and multi-component ids ("a/b") escape the same
+    way. A symlinked run-id directory resolving outside the root is also
+    refused (final-resolved-dir descendant check).
+    """
+
+    def __init__(self, root: str, run_id: str) -> None:
+        super().__init__(
+            "RUN_ID_REFUSED",
+            f"store root {root!r} refused run id {run_id!r}: a run id must "
+            "be exactly one path component under the validated root "
+            "(round-2 review, 2026-08-23) — no absolute ids, no parent-"
+            "bearing ids, no ids whose resolved directory leaves the root",
+        )
+
+
 class JournalConcurrentWriteError(RunStateError):
     """append_record's caller-supplied prev_record_sha256 no longer matches
     the file's locked tail under flock.

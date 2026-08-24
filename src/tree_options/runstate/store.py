@@ -29,6 +29,7 @@ from tree_options.runstate.errors import (
     IllegalTransitionError,
     ManifestMismatchError,
     PinAlreadyBoundError,
+    RunIdRefusedError,
     StoreExistsError,
     StoreRootRefusedError,
     UnknownRunError,
@@ -63,6 +64,38 @@ def _validate_store_root(root: Path) -> None:
     tmp = Path("/tmp").resolve()
     if resolved == tmp or tmp in resolved.parents:
         raise StoreRootRefusedError(str(root))
+
+
+def _validated_store_dir(root: Path, run_id: str) -> Path:
+    """The run's store directory, refusing any run id that escapes the root.
+
+    Round-2 review fix (2026-08-23, probe: `root / "/tmp/pr-a-escaped"`
+    landed the store OUTSIDE the validated root): pathlib joining an
+    ABSOLUTE run id replaces the base, and parent-bearing ids escape
+    upward, so `root / identity.run_id` validated only the root. The store
+    dir is now derived through this helper, which enforces that the run id
+    is exactly one path component AND that the FINAL resolved directory is
+    a descendant of the resolved root (a symlinked run-id directory
+    pointing outside the root is refused too).
+    """
+    _validate_store_root(root)
+    if (
+        run_id == ""
+        or run_id == "."
+        or run_id == ".."
+        or Path(run_id).is_absolute()
+        or Path(run_id).name != run_id
+    ):
+        raise RunIdRefusedError(str(root), run_id)
+    store_dir = root / run_id
+    # Final-resolved-dir descendant check: resolve non-strict so a symlinked
+    # run-id directory that leaves the root is caught here, at derivation
+    # time, instead of silently opening evidence outside the durable root.
+    resolved_root = root.resolve()
+    resolved_store = store_dir.resolve()
+    if resolved_root not in resolved_store.parents:
+        raise RunIdRefusedError(str(root), run_id)
+    return store_dir
 
 
 def compute_run_id(
@@ -124,8 +157,10 @@ class RunStore:
 
     @classmethod
     def create(cls, root: Path, identity: RunIdentity, *, now_epoch: int) -> RunStore:
-        _validate_store_root(root)
-        store_dir = root / identity.run_id
+        # Round-2 review fix: derive the store dir through the validated
+        # helper — `root / identity.run_id` alone let an absolute or
+        # parent-bearing run id REPLACE the validated root.
+        store_dir = _validated_store_dir(root, identity.run_id)
         run_path = store_dir / RUN_FILENAME
         if store_dir.exists():
             raise StoreExistsError(identity.run_id)
@@ -151,8 +186,8 @@ class RunStore:
 
     @classmethod
     def open(cls, root: Path, run_id: str) -> RunStore:
-        _validate_store_root(root)
-        store_dir = root / run_id
+        # Round-2 review fix: same derivation-time refusal as create().
+        store_dir = _validated_store_dir(root, run_id)
         run_path = store_dir / RUN_FILENAME
         if not run_path.exists():
             raise UnknownRunError(run_id)
