@@ -50,6 +50,9 @@ from that verification are recorded below.
 | `b7ebca5` / `d950a0f` / `e51a179` / `3e920f3` | R4: round-2 protocol/bars remediation (F4 derivation-time gate; F5 one-manifest binding; F6 execute-time census + identity cross-join; F7 test half) |
 | `1553d91` | evidence: record both review waves (round-2 finding 8) |
 | `5940b25` | test: unlink the round-2 symlink fixture — dangling scratch links crashed the harness copy (gate9 below) |
+| `b82bfd9` | evidence: gate9 crash record + rows through 5940b25 (gate11 head) |
+| `1efb697`/`604f8ea`/`f684147`/`2398669`/`cd7a29b` | R5-1: strict CensusFact.v parse; schema/report version pins; entry↔envelope semantic join; amendment output re-resolution + confinement; packet hashes attest consumed bytes |
+| `5be2d3d`/`666bf0c`/`e363500`/`a272405`/`31c9d40`/`a195ea3` | R5-2: cross-store one-shot atomicity; work-manifest verified/hashed/consumed from ONE read; open() binds run id to identity; run.json-only store reports UNKNOWN (exit 3); checklist defers ERA_EXIT; runbook mismatch row → RECONCILIATION |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -102,6 +105,25 @@ exact-head, read-only; probes re-verified host-side before acceptance):
   finding-8 evidence commit had to join the gated head; one at
   `5940b25` because this row did) — killed pre-verdict, no tree damage,
   re-launched at the final head only.
+- **Round 3** (head `b82bfd9`, gate11 GREEN 1,445 / 217 KILLED /
+  restoration TRUE / clean-clone identical tree, log
+  `pr-a-codex3.log`): VERDICT NO-GO — 12 findings (5×P1, 6×P2, 1×P3);
+  8/9 round-2 findings RESOLVED (finding 3 NOT_RESOLVED: lax
+  `CensusFact.v: int | str` coerces `True`→1 / `1.0`→1 at parse,
+  defeating the strict-int gate downstream — orchestrator-verified by
+  direct model probe before remediation). New findings: census
+  entry↔envelope semantic join absent; cross-store BARS one-shot race;
+  work-manifest verify/hash TOCTOU; amendment output-root symlink
+  escape; packet hashes from fresh reads; open() identity unbound;
+  era_status crash on run.json-only store; schema versions unpinned;
+  clean-clone count BLOCKED (the retained log's `-q` output has no
+  count line); checklist ERA_EXIT fabrication; runbook mismatch-row
+  contradiction. Remediated in R5 (`1efb697`…`a195ea3`, 11 commits,
+  each red-first; agent logs `/tmp/r51-*`, `/tmp/r52*` + orchestrator
+  re-runs; the R5-2 agent died at context overflow after findings 1–3
+  and a continuation agent finished 4–6). Finding 10's re-evidence
+  (clean-clone with an explicit count line) is produced at the R5 head
+  after the final gate.
 
 ## Verification evidence (host logs under `~/documents/tree_options-logs/`)
 
