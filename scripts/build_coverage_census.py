@@ -50,6 +50,9 @@ Exit codes (contract):
   4  reproducibility refusal (git unusable, tracked tree dirty, protocol or
      uv.lock unreadable, calendar fixture refused, census self-check) — or
      the content-addressed output directory already exists (never overwrite)
+     — or the EMISSION path refused (round-8 review fix, 2026-08-24: an
+     output name that is not a regular file, or a publish whose identity or
+     readback does not match the rendered content — CensusEmitRefused)
   5  census emitted but coverage incomplete (the artifact is STILL written;
      partial evidence is never swallowed)
 """
@@ -57,8 +60,10 @@ Exit codes (contract):
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
+import secrets
 import stat
 import subprocess
 import sys
@@ -145,6 +150,15 @@ Confidence = Literal["EXACT", "PARTIAL"]
 
 class ReproducibilityError(RuntimeError):
     """The census cannot be tied to a clean, identifiable code state."""
+
+
+class CensusEmitRefused(RuntimeError):
+    """Round-8 review fix (2026-08-24, finding 5): an EMISSION-path refusal —
+    an output name that is not a regular file (a symlink planted at it), a
+    shared-inode temp, or a publish whose identity or readback does not
+    match the rendered content. Mapped to exit 4: the reproducibility /
+    emission refusal family (the same family as the output-dir-exists
+    refusal — a refusal to emit, never a write through a swapped name)."""
 
 
 GitRunner = Callable[..., str]
@@ -851,6 +865,115 @@ def build_registry(values: CensusValues) -> dict[str, ValueClass]:
 # ---- artifact ----------------------------------------------------------------------
 
 
+def _emit_custody(out_fd: int, name: str, content: str) -> None:
+    """Round-8 review fix (2026-08-24, finding 5): publish one census output
+    through the final name WITH custody — the local mirror of the amendment
+    builder's custody write (kept local: that helper is private to
+    protocol/amendment.py, and this script imports only the package models).
+
+    The pre-fix emitter made three plain ``write_text`` calls THROUGH the
+    final names after ``out_dir.mkdir``: a ``census.json ->
+    research_protocol.yaml`` link planted between the mkdir and the write
+    truncated the PROTECTED protocol file with census JSON while the command
+    still exited 0. Now, for each output: refuse a final name that does not
+    lstat as a regular file; write the rendered content to an UNPREDICTABLE
+    temp name under the out-dir custody fd (``secrets.token_hex`` — mkstemp
+    cannot take a dir_fd — opened ``O_CREAT|O_EXCL|O_NOFOLLOW``); fsync;
+    require ``st_nlink == 1``; ``os.replace`` onto the final name (both
+    dir fds); then lstat-regular + inode identity + a full ``O_NOFOLLOW``
+    readback must equal the rendered content. Any drift is
+    ``CensusEmitRefused`` naming the output."""
+    # (a) the final name, un-followed: a symlink at an output name is never
+    # this command's artifact, whatever it points at.
+    try:
+        existing = os.stat(name, dir_fd=out_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        pass  # absent: the replace below will publish it
+    else:
+        if not stat.S_ISREG(existing.st_mode):
+            raise CensusEmitRefused(
+                f"{name}: the census output name is not a regular file "
+                f"(lstat mode {stat.S_IFMT(existing.st_mode):o} — a symlink at "
+                "an output name is never written through)"
+            )
+    tmp_name = f".{name}.{secrets.token_hex(16)}.tmp"
+    try:
+        fd = os.open(
+            tmp_name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o644,
+            dir_fd=out_fd,
+        )
+    except OSError as exc:
+        raise CensusEmitRefused(
+            f"{name}: the census temp output could not be created ({exc.strerror})"
+        ) from None
+    try:
+        os.fchmod(fd, 0o644)
+        # fdopen owns the fd from here: the with-block closes it on every path.
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+            written = os.fstat(handle.fileno())
+        if written.st_nlink != 1:
+            raise CensusEmitRefused(
+                f"{tmp_name}: the temp output has {written.st_nlink} hard "
+                "links — refusing to publish a shared inode over the "
+                "output name"
+            )
+        # replace swaps the DIRECTORY ENTRY: a link planted at the output
+        # name is unlinked by the swap and never written through.
+        os.replace(tmp_name, name, src_dir_fd=out_fd, dst_dir_fd=out_fd)
+        try:
+            published = os.stat(name, dir_fd=out_fd, follow_symlinks=False)
+        except OSError as exc:
+            raise CensusEmitRefused(
+                f"{name}: the published census output vanished after the publish ({exc.strerror})"
+            ) from None
+        if not stat.S_ISREG(published.st_mode) or (published.st_dev, published.st_ino) != (
+            written.st_dev,
+            written.st_ino,
+        ):
+            raise CensusEmitRefused(
+                f"{name}: the published census output is not the inode this "
+                f"command wrote (wrote dev {written.st_dev} ino "
+                f"{written.st_ino}, published dev {published.st_dev} ino "
+                f"{published.st_ino}, mode {stat.S_IFMT(published.st_mode):o})"
+                " — refusing to attest it"
+            )
+        # byte custody: read the final name back without following a link
+        # at it and require the full content to equal what was rendered.
+        try:
+            verify_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=out_fd)
+        except OSError as exc:
+            raise CensusEmitRefused(
+                f"{name}: the published census output could not be re-read "
+                f"without following a symlink ({exc.strerror})"
+            ) from None
+        try:
+            chunks: list[bytes] = []
+            offset = 0
+            while True:
+                chunk = os.pread(verify_fd, 65536, offset)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                offset += len(chunk)
+        finally:
+            os.close(verify_fd)
+        if b"".join(chunks) != content.encode("utf-8"):
+            raise CensusEmitRefused(
+                f"{name}: the published census output does not hold the "
+                "rendered bytes — refusing to attest it"
+            )
+    finally:
+        # replace consumed the temp name on success; on any refusal the
+        # half-written temp must not linger in the output dir.
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(tmp_name, dir_fd=out_fd)
+
+
 def render_json(census: CoverageCensus) -> str:
     return (
         json.dumps(
@@ -1105,11 +1228,29 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     body = render_json(census)
     out_dir.mkdir(parents=True)
-    (out_dir / "census.json").write_text(body, encoding="utf-8")
-    (out_dir / "census.md").write_text(render_markdown(census), encoding="utf-8")
-    (out_dir / "census.json.sha256").write_text(
-        sha256_hex(body.encode("utf-8")) + "\n", encoding="utf-8"
-    )
+    # Round-8 review fix (finding 5): the three outputs are emitted through
+    # CUSTODY writes against the out dir held as a REAL directory fd — the
+    # pre-fix write_text calls went through whatever the final names pointed
+    # at, so a planted symlink could truncate a protected file and exit 0.
+    # A refusal here is CensusEmitRefused -> exit 4, nothing left behind
+    # except (at most) the empty digest dir.
+    try:
+        out_fd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        print(
+            f"EMISSION REFUSED: {out_dir} could not be taken into custody ({exc.strerror})",
+            file=sys.stderr,
+        )
+        return 4
+    try:
+        _emit_custody(out_fd, "census.json", body)
+        _emit_custody(out_fd, "census.md", render_markdown(census))
+        _emit_custody(out_fd, "census.json.sha256", sha256_hex(body.encode("utf-8")) + "\n")
+    except CensusEmitRefused as exc:
+        print(f"EMISSION REFUSED: {exc}", file=sys.stderr)
+        return 4
+    finally:
+        os.close(out_fd)
 
     # Whole coverage = zero INCOMPLETE pairs. Holiday Fridays
     # (SPOT_MISSING_HOLIDAY) are EXPECTED gaps — the exchange was closed —

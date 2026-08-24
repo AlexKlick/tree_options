@@ -1172,3 +1172,62 @@ def test_swapped_capture_manifest_after_the_early_guard_refuses_exit_2(
     assert not out_root.exists() or list(out_root.iterdir()) == [], (
         "no census was emitted from the swap window"
     )
+
+
+# ---- round-8 (finding 5): the emitter writes through CUSTODY, never the bare name -------
+#
+# Round-8 review fix (2026-08-24): after out_dir.mkdir (~1036), three plain
+# write_text calls wrote census.json / census.md / census.json.sha256
+# THROUGH whatever the names pointed at. A `census.json ->
+# research_protocol.yaml` link planted between the mkdir and the write
+# truncated the PROTECTED protocol file with census JSON and the command
+# still exited 0. Each output is now emitted through a custody write
+# (refuse a non-regular final name; unpredictable O_EXCL|O_NOFOLLOW temp
+# under the out-dir fd; fsync; nlink==1; os.replace; identity + full
+# readback), and a refusal is CensusEmitRefused -> exit 4 — the
+# reproducibility/EMISSION refusal family, the same family the
+# output-dir-exists refusal already uses (pinned below).
+
+
+def test_output_name_symlinked_at_a_protected_file_refuses_exit_4(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Fixture: a DECOY file named like the protected protocol inside the
+    scratch tmp tree (the repo's real research_protocol.yaml is never
+    touched), and `census.json -> <decoy>` planted right after the digest
+    dir's mkdir. Pre-fix the write_text follows the link, REPLACES the
+    decoy's content with census JSON, and the command exits 0; post-fix the
+    custody emitter refuses (CensusEmitRefused, exit 4) and the decoy is
+    byte-identical."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    out_root = tmp_path / "out"
+    decoy = tmp_path / "research_protocol.yaml"
+    decoy.write_text("# PROTECTED decoy — must never be truncated\n", encoding="utf-8")
+    before = decoy.read_bytes()
+    real_mkdir = Path.mkdir
+    planted: list[bool] = []
+
+    def mkdir_then_plant(self: Path, *args: object, **kwargs: object) -> None:
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+        # one plant only: pathlib's parents=True recursion re-enters mkdir
+        # for the same digest dir (the internal no-parents retry)
+        if self.parent == out_root and not planted:  # the digest dir: emission next
+            planted.append(True)
+            (self / "census.json").symlink_to(decoy)  # the planted link
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_then_plant)
+    assert _census(monkeypatch, capture, universe, out_root) == 4, (
+        "an output name that is a symlink at a protected file is an EMISSION "
+        "refusal — exit 4, the reproducibility/emission family (pinned: the "
+        "same exit the output-dir-exists refusal uses) — never a write "
+        "through the link and never exit 0"
+    )
+    err = capsys.readouterr().err
+    assert "EMISSION REFUSED" in err, "the refusal family is named on stderr"
+    assert "census.json" in err, "the refusal names the output"
+    assert decoy.read_bytes() == before, (
+        "the protected-file stand-in was never written through the link"
+    )
