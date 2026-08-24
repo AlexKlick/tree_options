@@ -39,7 +39,10 @@ Exit codes (contract):
      any pinned capture file (spot proxy, master) that drifted, vanished,
      or appeared unpinned between manifest verification and its read
      (round-6 review fix, 2026-08-24: the census derives from sealed bytes
-     at the point of consumption, never from a re-read of a verified path)
+     at the point of consumption, never from a re-read of a verified path);
+     and the capture manifest itself swapped or vanished between
+     verification and provenance (round-7 review fix, 2026-08-24: the
+     provenance names the ONE verified byte set, never a re-read)
   3  universe manifest refused: unreadable, invalid, or tampered
   4  reproducibility refusal (git unusable, tracked tree dirty, protocol or
      uv.lock unreadable, calendar fixture refused, census self-check) — or
@@ -210,16 +213,32 @@ def _pair_entries(manifest: MassiveCaptureManifest) -> dict[tuple[str, str], Mas
     return entries
 
 
-def load_sealed_manifest(capture_dir: Path) -> MassiveCaptureManifest:
-    """Load + verify the capture manifest against the capture directory.
+def load_sealed_manifest(capture_dir: Path) -> tuple[MassiveCaptureManifest, str]:
+    """Load + verify the capture manifest against the capture directory,
+    reading the manifest file ONCE.
 
     Verification includes the on-disk reconciliation (every listed file
     re-hashed, no unlisted *.json), so a MID-RUN era directory refuses here
-    by design: this census only ever consumes a sealed capture."""
-    manifest = load_massive_capture_manifest(capture_dir / CAPTURE_MANIFEST_FILENAME)
+    by design: this census only ever consumes a sealed capture.
+
+    Round-7 review fix (2026-08-24, finding 3): the manifest bytes are read
+    a single time here and threaded into the loader (``raw=``), so the parse
+    and everything derived downstream consume exactly the bytes that were
+    verified; the sha256 of THOSE bytes is returned so the census provenance
+    can name them without a second read (the pre-fix shape re-read the path
+    at provenance time, so a manifest swapped in that window left the
+    derivation consuming A-pinned bytes while the provenance named B)."""
+    manifest_path = capture_dir / CAPTURE_MANIFEST_FILENAME
+    try:
+        raw = manifest_path.read_bytes()
+    except OSError as exc:
+        raise MassiveManifestError(
+            f"{manifest_path}: manifest unreadable ({exc.strerror})"
+        ) from None
+    manifest = load_massive_capture_manifest(manifest_path, raw=raw)
     verify_massive_capture_manifest(manifest, capture_dir, capture_version=CAPTURE_VERSION)
     _pair_entries(manifest)
-    return manifest
+    return manifest, sha256_hex(raw)
 
 
 def _read_pinned_bytes(capture_dir: Path, relative: str, pinned: Mapping[str, str]) -> bytes:
@@ -870,7 +889,7 @@ def main(argv: list[str] | None = None) -> int:
 
     # 2. The sealed capture manifest (a mid-run era dir fails here BY DESIGN).
     try:
-        manifest = load_sealed_manifest(args.capture_dir)
+        manifest, manifest_sha = load_sealed_manifest(args.capture_dir)
     except MassiveManifestError as exc:
         print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
         return 2
@@ -890,10 +909,34 @@ def main(argv: list[str] | None = None) -> int:
         calendar = StaticSessionCalendar(
             args.calendar_dir / CALENDAR_JSON_NAME, args.calendar_dir / CALENDAR_SHA_NAME
         )
-        manifest_bytes_sha = sha256_hex((args.capture_dir / CAPTURE_MANIFEST_FILENAME).read_bytes())
     except (ReproducibilityError, OSError, ValueError, RuntimeError, yaml.YAMLError) as exc:
         print(f"REPRODUCIBILITY REFUSED: {exc}", file=sys.stderr)
         return 4
+
+    # Round-7 review fix (2026-08-24, finding 3): the provenance consumes the
+    # VERIFIED manifest bytes (manifest_sha above) — never a second read. A
+    # guard read HERE refuses when the file no longer holds them: a manifest
+    # swapped between verification and provenance would otherwise leave the
+    # census attesting bytes the derivation never consumed. The refusal is
+    # exit 2 — the manifest-tamper family, the same exit the round-6
+    # spot/master drift refusals use.
+    try:
+        guard_sha = sha256_hex((args.capture_dir / CAPTURE_MANIFEST_FILENAME).read_bytes())
+    except OSError as exc:
+        print(
+            f"MANIFEST REFUSED: capture manifest unreadable at provenance time ({exc.strerror})",
+            file=sys.stderr,
+        )
+        return 2
+    if guard_sha != manifest_sha:
+        print(
+            "MANIFEST REFUSED: capture manifest drifted between verification and "
+            f"provenance (verified {manifest_sha[:12]}…, read now {guard_sha[:12]}…) — "
+            "the census derives from and names ONE sealed byte set",
+            file=sys.stderr,
+        )
+        return 2
+    manifest_bytes_sha = manifest_sha
 
     # 4. Spot proxy (absent -> no closes; present but undecodable -> exit 2;
     # pinned bytes drifted or vanished between verification and this read ->

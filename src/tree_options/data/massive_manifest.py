@@ -254,7 +254,9 @@ def build_massive_capture_manifest(
 # ---- load ----------------------------------------------------------------------
 
 
-def load_massive_capture_manifest(path: Path) -> MassiveCaptureManifest:
+def load_massive_capture_manifest(
+    path: Path, *, raw: bytes | None = None
+) -> MassiveCaptureManifest:
     """A manifest JSON file -> `MassiveCaptureManifest`, or a refusal naming
     the path.
 
@@ -262,11 +264,18 @@ def load_massive_capture_manifest(path: Path) -> MassiveCaptureManifest:
     are counters), so plain `json` loses nothing here. A file that is
     missing, not JSON, or not the pinned shape — including extra keys — is
     a `MassiveManifestError`; the verify path must never answer "verified"
-    for a manifest it could not load."""
-    try:
-        raw = path.read_bytes()
-    except OSError as exc:
-        raise MassiveManifestError(f"{path}: manifest unreadable ({exc.strerror})") from None
+    for a manifest it could not load.
+
+    Round-7 review fix (2026-08-24, finding 3): ``raw`` lets a caller that
+    must read the file exactly ONCE (verify, hash, and consume the same
+    bytes — the same discipline ``massive_overlay._load_spot`` grew in the
+    R7 wave) parse its one read instead of the loader re-reading the path.
+    The default (``None``) keeps the current read-from-path behavior."""
+    if raw is None:
+        try:
+            raw = path.read_bytes()
+        except OSError as exc:
+            raise MassiveManifestError(f"{path}: manifest unreadable ({exc.strerror})") from None
     try:
         payload = json.loads(raw)
     except ValueError as exc:

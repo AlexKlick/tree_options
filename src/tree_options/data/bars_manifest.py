@@ -441,6 +441,7 @@ def rebuild_master_captures(
     capture_dir: Path,
     *,
     capture_manifest: Path | None = None,
+    capture_manifest_raw: bytes | None = None,
 ) -> tuple[list[Any], dict[str, dict[str, str]], dict[str, _RowMeta]]:
     """Re-parse a capture directory into bridge ``MasterCapture`` objects.
 
@@ -454,11 +455,17 @@ def rebuild_master_captures(
     the spot proxy (the selection's declared anchor — strings, keyed by ISO
     date) and the ticker index used to enrich picks into entries. Zero
     network, zero mutation.
-    """
+
+    Round-7 review fix (2026-08-24, finding 3): ``capture_manifest_raw`` is
+    the bytes-once seam — a caller that already read the manifest file once
+    (to verify AND to bind the work manifest's
+    ``capture_manifest_sha256``) passes those bytes here so the loader
+    parses the SAME read instead of re-reading the path. Default ``None``
+    keeps the read-from-path behavior."""
     pinned: dict[str, str] | None = None
     if capture_manifest is not None:
         try:
-            manifest = load_massive_capture_manifest(capture_manifest)
+            manifest = load_massive_capture_manifest(capture_manifest, raw=capture_manifest_raw)
             verify_massive_capture_manifest(
                 manifest, capture_dir, capture_version=manifest.capture_version
             )
@@ -661,15 +668,34 @@ def build_bars_work_manifest(
     Deterministic over identical inputs: the same capture bytes, the same
     profile, and the same cost inputs yield byte-identical output (no clock,
     no host paths). Re-runs the bridge's UNMODIFIED ``select_atm_grid_bars``.
-    """
+
+    Round-7 review fix (2026-08-24, finding 3): the capture manifest bytes
+    are read ONCE at the top and threaded into ``rebuild_master_captures``
+    (``capture_manifest_raw=``), so verification, derivation, AND the work
+    manifest's ``capture_manifest_sha256`` binding consume one byte set —
+    the pre-fix shape re-read the path at bind time, so a manifest swapped
+    in that window left the derivation consuming the verified A bytes while
+    the emitted binding named B. A guard read at bind time refuses naming
+    both hashes when the file no longer holds the verified bytes: emitting
+    a manifest bound to bytes the capture dir no longer holds would produce
+    a manifest that can never re-verify, so the drift refuses HERE, fail
+    closed."""
     verify_selection_profile(profile)
     max_attempts = (
         DEFAULT_MAX_ATTEMPTS_PER_REQUEST
         if max_attempts_per_request is None
         else max_attempts_per_request
     )
+    try:
+        manifest_raw = Path(capture_manifest).read_bytes()
+    except OSError as exc:
+        raise BarsManifestError(
+            f"{capture_manifest}: capture manifest unreadable ({exc.strerror})"
+        ) from None
     captures, spot, ticker_index = rebuild_master_captures(
-        capture_dir, capture_manifest=capture_manifest
+        capture_dir,
+        capture_manifest=capture_manifest,
+        capture_manifest_raw=manifest_raw,
     )
     bridge = _capture_bridge()
     picks, notes = bridge.select_atm_grid_bars(
@@ -691,16 +717,27 @@ def build_bars_work_manifest(
     cost = estimate_bars_cost(
         len(entries), max_attempts_per_request=max_attempts, budget_limit=budget_limit
     )
+    # Bind-time guard (round-7, finding 3): the binding below pins the
+    # VERIFIED bytes (manifest_raw); the file must still hold them NOW.
     try:
-        manifest_bytes = Path(capture_manifest).read_bytes()
+        guard_raw = Path(capture_manifest).read_bytes()
     except OSError as exc:
         raise BarsManifestError(
-            f"{capture_manifest}: capture manifest unreadable ({exc.strerror})"
+            f"{capture_manifest}: capture manifest unreadable at bind time "
+            f"({exc.strerror}) — regeneration binds the verified bytes only"
         ) from None
+    if guard_raw != manifest_raw:
+        raise BarsManifestError(
+            f"{capture_manifest}: capture manifest drifted between verification "
+            f"and the work-manifest binding (verified "
+            f"{sha256_hex(manifest_raw)[:12]}…, read now {sha256_hex(guard_raw)[:12]}…)"
+            " — refusing to bind a work manifest to bytes the capture directory "
+            "no longer holds"
+        )
     manifest = BarsWorkManifest(
         schema_version=BARS_WORK_SCHEMA_VERSION,
         profile_sha256=profile.content_sha256,
-        capture_manifest_sha256=sha256_hex(manifest_bytes),
+        capture_manifest_sha256=sha256_hex(manifest_raw),
         entries=order_entries(entries),
         selection_notes=tuple(notes),
         cost=cost,

@@ -1007,3 +1007,57 @@ def test_verify_universe_refuses_a_foreign_schema_version(
     bad.write_text(gen.render(rehashed), encoding="utf-8")
     capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
     assert _census(monkeypatch, capture, bad, tmp_path / "out") == 3
+
+
+# ---- round-7 (finding 3): the capture manifest is consumed bytes-once -----------------
+#
+# Round-7 review fix (2026-08-24): capture_manifest.json was loaded+verified
+# once (load_sealed_manifest) and then RE-READ for the provenance hash
+# (step 3's manifest_bytes_sha). Swapping the manifest file in that window
+# (B = `{}` bytes) left the derivation consuming A-pinned bytes while the
+# emitted provenance named B. The manifest is now read ONCE (threaded into
+# the loader as raw bytes), the provenance uses the sha of those VERIFIED
+# bytes, and a guard read at provenance time refuses — exit 2, the
+# manifest-tamper family — when the file no longer holds them.
+
+
+def test_swapped_capture_manifest_between_verify_and_provenance_refuses_exit_2(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The racing call is the manifest's SECOND read (the provenance read
+    pre-fix, the guard read post-fix): the wrapper swaps the file to `{}`
+    bytes there and returns the real read. Pre-fix the census derives from
+    the verified A bytes, stamps provenance with B's hash, and exits 0 with
+    a whole census; post-fix it refuses exit 2 and emits nothing."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    manifest_path = capture / "capture_manifest.json"
+    swapped = b"{}\n"
+    real_read_bytes = Path.read_bytes
+    reads = {"n": 0}
+
+    def read_bytes_swapping_manifest(self: Path) -> bytes:
+        if self == manifest_path:
+            reads["n"] += 1
+            if reads["n"] == 2:  # the window: verified once, provenance unread
+                self.write_bytes(swapped)
+            return real_read_bytes(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_swapping_manifest)
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 2, (
+        "a capture manifest swapped between verification and provenance must "
+        "refuse — exit 2, the manifest-tamper family (pinned: the same exit "
+        "the round-6 spot/master drift refusals use) — never emit a census "
+        "whose provenance names bytes the derivation never consumed"
+    )
+    err = capsys.readouterr().err
+    assert "MANIFEST REFUSED" in err and "drifted" in err, (
+        "the refusal names the drift between the verified and the read bytes"
+    )
+    assert not out_root.exists() or list(out_root.iterdir()) == [], (
+        "no census was emitted from the swap window"
+    )

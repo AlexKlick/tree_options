@@ -867,3 +867,48 @@ def test_bars_intermediate_component_symlink_swap_refused_component_wise(
             parent.unlink()
         shutil.rmtree(target, ignore_errors=True)
         shutil.rmtree(parent.parent / (parent.name + ".held"), ignore_errors=True)
+
+
+# ---- round-7 (finding 3): the work-manifest binding consumes the VERIFIED bytes -------
+#
+# Round-7 review fix (2026-08-24): the capture manifest was verified inside
+# rebuild_master_captures and then RE-READ at the BarsWorkManifest binding
+# (build_bars_work_manifest's manifest_bytes). Swapping the file in that
+# window left the derivation consuming the verified A bytes while the
+# emitted binding named B. The manifest is now read ONCE at the top of the
+# build and threaded into the rebuild (so verification, derivation, AND the
+# binding consume one byte set), with a bind-time guard that refuses naming
+# both hashes when the file no longer holds the verified bytes.
+
+
+def test_swapped_capture_manifest_between_verify_and_binding_refuses(
+    capture_bundle: dict[str, Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The racing call is the manifest's SECOND read (the binding read
+    pre-fix, the bind-time guard post-fix): the wrapper swaps the file to
+    `{}` bytes there and returns the real read. Pre-fix the build succeeds
+    with capture_manifest_sha256 pinning the swapped bytes while the
+    selection derived from the verified ones; post-fix it refuses naming
+    both hashes and nothing is bound."""
+    manifest_path = capture_bundle["capture_manifest"]
+    honest_sha = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+    swapped = b"{}\n"
+    swapped_sha = hashlib.sha256(swapped).hexdigest()
+    real_read_bytes = Path.read_bytes
+    reads = {"n": 0}
+
+    def read_bytes_swapping_manifest(self: Path) -> bytes:
+        if self == manifest_path:
+            reads["n"] += 1
+            if reads["n"] == 2:  # the window: verified once, binding unread
+                self.write_bytes(swapped)
+            return real_read_bytes(self)
+        return real_read_bytes(self)
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_swapping_manifest)
+    with pytest.raises(bm.BarsManifestError) as exc_info:
+        _build(capture_bundle)
+    message = str(exc_info.value)
+    assert "drifted" in message, "the refusal names the drift"
+    assert honest_sha[:12] in message, "the refusal names the verified hash"
+    assert swapped_sha[:12] in message, "the refusal names the swapped hash"
