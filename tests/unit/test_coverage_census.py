@@ -706,11 +706,28 @@ def test_census_md_exit_contract_names_the_real_holiday_rule(
 def test_manifest_verification_failure_exits_2(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A manifest that fails verify (a referenced file deleted) refuses with 2."""
+    """A manifest that fails verify refuses with 2 before any fact is derived.
+
+    Both reconciliation directions, one phase each: a listed file DELETED
+    from disk, and an UNLISTED *.json appearing on disk (unprovenance).
+    The deletion is also caught, independently, by the round-8 pinned-read
+    re-hash (_read_pinned_bytes refuses the unreadable pinned master) — a
+    layered defense worth pinning in its own right. But the unlisted file
+    is never a derivation input: the census walks manifest entries and
+    reads only the pinned spot proxy, so NOTHING but the manifest
+    verification's disk-vs-listing reconciliation refuses it. That second
+    phase is what keeps M199 (census-manifest-verify-skipped) killed: with
+    verify gutted, the deleted-master phase still refuses (exit 2 via the
+    re-hash) while the unlisted-file phase derives a whole census and
+    exits 0."""
     universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
-    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
-    (capture / "masters" / f"SPY_{SESSION_FRIDAY_A}.json").unlink()
-    assert _census(monkeypatch, capture, universe, tmp_path / "out") == 2
+    deleted = _build_capture(tmp_path / "a", underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    (deleted / "masters" / f"SPY_{SESSION_FRIDAY_A}.json").unlink()
+    assert _census(monkeypatch, deleted, universe, tmp_path / "out-a") == 2
+
+    capture = _build_capture(tmp_path / "b", underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    (capture / "masters" / "UNLISTED_extra.json").write_text("{}")
+    assert _census(monkeypatch, capture, universe, tmp_path / "out-b") == 2
 
 
 def test_absent_manifest_exits_2(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
