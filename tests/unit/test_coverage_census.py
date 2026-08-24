@@ -68,7 +68,9 @@ def _wrapper(underlyings: list[str], fridays: list[str]) -> str:
 
 
 def _write_universe(root: Path, underlyings: list[str], fridays: list[str]) -> Path:
-    universe = gen.build_universe(_wrapper(underlyings, fridays), source="synthetic-test-wrapper")
+    universe = gen.build_universe(
+        _wrapper(underlyings, fridays), source_id="synthetic-test-wrapper"
+    )
     path = root / "universe.json"
     path.write_text(gen.render(universe), encoding="utf-8")
     return path
@@ -832,7 +834,7 @@ def test_verify_universe_refuses_a_rehashed_wrong_expected_masters(
 ) -> None:
     """The product check must fire even when the tamperer RECOMPUTES the hash."""
     universe = gen.build_universe(
-        _wrapper(["SPY"], [SESSION_FRIDAY_A]), source="synthetic-test-wrapper"
+        _wrapper(["SPY"], [SESSION_FRIDAY_A]), source_id="synthetic-test-wrapper"
     )
     tampered = universe.model_copy(update={"expected_masters": universe.expected_masters + 1})
     rehashed = tampered.model_copy(update={"content_sha256": universe_content_sha256(tampered)})
@@ -993,7 +995,7 @@ def test_verify_universe_refuses_a_foreign_schema_version(
     """A foreign-schema universe manifest refuses both directly and through
     the CLI (exit 3), even when the tamperer RECOMPUTES the content hash."""
     universe = gen.build_universe(
-        _wrapper(["SPY"], [SESSION_FRIDAY_A]), source="synthetic-test-wrapper"
+        _wrapper(["SPY"], [SESSION_FRIDAY_A]), source_id="synthetic-test-wrapper"
     )
     assert universe.schema_version == UNIVERSE_SCHEMA_VERSION
     foreign = universe.model_copy(update={"schema_version": "foreign/999"})

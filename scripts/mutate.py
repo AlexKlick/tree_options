@@ -2646,6 +2646,41 @@ MUTANTS = [
             " an operator-supplied alternate id refuses before any directory is created"
         ),
     ),
+    dict(
+        id="M231-universe-source-id-host-contaminated",
+        owner="test_two_physical_checkout_roots_render_byte_identical_universe",
+        file="scripts/gen_coverage_universe.py",
+        anchor="    return validate_source_id(relative.as_posix())",
+        replacement="    return physical.as_posix().lstrip('/')",
+        selectors=[f"{U}/test_gen_coverage_universe.py"],
+        invariant=(
+            "PR13 the universe records the wrapper's repo-relative logical id;"
+            " two physical clone roots render byte-identical artifacts"
+        ),
+    ),
+    dict(
+        id="M232-universe-wrapper-bytes-unbound",
+        owner="test_wrapper_byte_change_changes_universe_identity",
+        file="scripts/gen_coverage_universe.py",
+        anchor='        source_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),',
+        replacement='        source_sha256="0" * 64,',
+        selectors=[f"{U}/test_gen_coverage_universe.py"],
+        invariant=(
+            "PR13 checkout location is excluded, but the exact wrapper bytes remain"
+            " bound through source_sha256 and the universe content hash"
+        ),
+    ),
+    dict(
+        id="M233-absolute-universe-source-id-accepted",
+        owner="test_rehashed_absolute_source_id_is_refused",
+        file="src/tree_options/data/coverage_census.py",
+        anchor="        logical_source.is_absolute()",
+        replacement="        False",
+        selectors=[f"{U}/test_gen_coverage_universe.py"],
+        invariant=(
+            "PR13 even a correctly rehashed universe cannot carry a host-absolute source identity"
+        ),
+    ),
 ]
 
 FAILING = ("FAILED",)

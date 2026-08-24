@@ -21,6 +21,7 @@ Two rules are structural:
 
 from __future__ import annotations
 
+from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 from pydantic import Field
@@ -28,8 +29,8 @@ from pydantic import Field
 from tree_options.data.digest import canonical_bytes, sha256_hex
 from tree_options.schemas.common import StrictModel
 
-UNIVERSE_SCHEMA_VERSION = "m4-coverage-universe/1"
-UNIVERSE_DOMAIN = b"tree-options-m4-coverage-universe-v1"
+UNIVERSE_SCHEMA_VERSION = "m4-coverage-universe/2"
+UNIVERSE_DOMAIN = b"tree-options-m4-coverage-universe-v2"
 
 CENSUS_SCHEMA_VERSION = "m4-coverage-census/1"
 CENSUS_DOMAIN = b"tree-options-m4-coverage-census-v1"
@@ -74,7 +75,9 @@ class CoverageUniverse(StrictModel):
     """
 
     schema_version: str
-    source: str
+    # Checkout-independent logical location. Host paths are diagnostics, not
+    # committed identity, and therefore never appear in this artifact.
+    source_id: str
     source_sha256: str
     underlyings: tuple[str, ...]
     as_of_fridays: tuple[str, ...]
@@ -97,6 +100,15 @@ def verify_universe(universe: CoverageUniverse) -> None:
         raise CensusTaxonomyError(
             f"universe schema_version {universe.schema_version!r} != "
             f"{UNIVERSE_SCHEMA_VERSION!r}: this census era consumes exactly that version"
+        )
+    logical_source = PurePosixPath(universe.source_id)
+    if (
+        logical_source.is_absolute()
+        or logical_source.as_posix() != universe.source_id
+        or any(part in {"", ".", ".."} for part in logical_source.parts)
+    ):
+        raise CensusTaxonomyError(
+            f"universe source_id {universe.source_id!r} is not a canonical repo-relative id"
         )
     actual = universe_content_sha256(universe)
     if universe.content_sha256 != actual:

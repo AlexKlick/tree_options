@@ -24,7 +24,7 @@ import json
 import re
 import sys
 from datetime import date
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "src") not in sys.path:  # pragma: no cover - import plumbing
@@ -72,23 +72,37 @@ def validate_grid(names: list[str], dates: list[str], *, source: str) -> None:
         raise ValueError(f"{source}: non-Friday grid dates: {non_fridays}")
 
 
-def build_universe(text: str, *, source: str) -> CoverageUniverse:
-    # Round-4 review fix (2026-08-23, finding 5): `source` participates in
-    # content_sha256, so the wrapper spelling is normalized to its ABSOLUTE
-    # REAL PATH before the manifest is built. The closeout checklist's regen
-    # check passes a repo-root-relative --from-run-sh while the committed
-    # artifact records the absolute path; storing the spelling verbatim made
-    # the regen always mismatch the committed bytes (false universe drift).
-    # Any spelling of the same wrapper now yields identical source bytes and
-    # hash, and the canonical checkout reproduces the committed artifact.
-    source = str(Path(source).resolve())
-    names, dates = parse_wrapper(text, source=source)
-    validate_grid(names, dates, source=source)
+def validate_source_id(source_id: str) -> str:
+    logical = PurePosixPath(source_id)
+    if (
+        logical.is_absolute()
+        or logical.as_posix() != source_id
+        or any(part in {"", ".", ".."} for part in logical.parts)
+    ):
+        raise ValueError(f"source id must be canonical and repo-relative: {source_id!r}")
+    return source_id
+
+
+def logical_source_id(source: Path, *, repo_root: Path) -> str:
+    """Map a physical checkout path to its checkout-independent logical id."""
+    root = repo_root.resolve()
+    physical = (root / source).resolve() if not source.is_absolute() else source.resolve()
+    try:
+        relative = physical.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"wrapper {physical} is outside checkout root {root}") from exc
+    return validate_source_id(relative.as_posix())
+
+
+def build_universe(text: str, *, source_id: str) -> CoverageUniverse:
+    source_id = validate_source_id(source_id)
+    names, dates = parse_wrapper(text, source=source_id)
+    validate_grid(names, dates, source=source_id)
     underlyings = sorted(names)
     fridays = sorted(dates)
     universe = CoverageUniverse(
         schema_version=UNIVERSE_SCHEMA_VERSION,
-        source=source,
+        source_id=source_id,
         source_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         underlyings=tuple(underlyings),
         as_of_fridays=tuple(fridays),
@@ -120,6 +134,13 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--from-run-sh", type=Path, required=True, help="era wrapper script path")
+    parser.add_argument(
+        "--source-id",
+        help=(
+            "canonical repo-relative wrapper id; required only when --from-run-sh "
+            "is physically outside this checkout"
+        ),
+    )
     parser.add_argument("--out", type=Path, default=DEFAULT_OUT)
     args = parser.parse_args(argv)
     try:
@@ -128,7 +149,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"WRAPPER UNREADABLE: {exc}", file=sys.stderr)
         return 2
     try:
-        universe = build_universe(text, source=str(args.from_run_sh))
+        source_id = args.source_id or logical_source_id(args.from_run_sh, repo_root=REPO_ROOT)
+        universe = build_universe(text, source_id=source_id)
     except ValueError as exc:
         print(f"WRAPPER INVALID: {exc}", file=sys.stderr)
         return 3

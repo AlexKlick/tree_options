@@ -1,7 +1,7 @@
 """gen_coverage_universe: wrapper parsing, grid validation, CLI exits, pins.
 
 The committed universe manifest is loaded read-only and pinned (29 x 105 =
-3,045, content hash a13dd4eb…); every generated manifest is synthetic.
+3,045, content hash 4553fc7a…); every generated manifest is synthetic.
 """
 
 from __future__ import annotations
@@ -18,7 +18,9 @@ if str(SCRIPTS) not in sys.path:
 
 import gen_coverage_universe as gen  # type: ignore[import-not-found]  # scripts/  # noqa: E402
 from tree_options.data.coverage_census import (  # noqa: E402
+    CensusTaxonomyError,
     CoverageUniverse,
+    universe_content_sha256,
     verify_universe,
 )
 
@@ -44,7 +46,7 @@ def _wrapper(underlyings: list[str], fridays: list[str]) -> str:
 
 def test_build_universe_parses_a_small_wrapper() -> None:
     universe = gen.build_universe(
-        _wrapper(["SPY", "QQQ"], [FRIDAY_A, FRIDAY_B]), source="wrapper.sh"
+        _wrapper(["SPY", "QQQ"], [FRIDAY_A, FRIDAY_B]), source_id="wrapper.sh"
     )
     assert universe.underlyings == ("QQQ", "SPY"), "names are sorted"
     assert universe.as_of_fridays == (FRIDAY_A, FRIDAY_B)
@@ -54,7 +56,7 @@ def test_build_universe_parses_a_small_wrapper() -> None:
 
 
 def test_render_round_trips_through_the_model() -> None:
-    universe = gen.build_universe(_wrapper(["SPY"], [FRIDAY_A, FRIDAY_B]), source="wrapper.sh")
+    universe = gen.build_universe(_wrapper(["SPY"], [FRIDAY_A, FRIDAY_B]), source_id="wrapper.sh")
     again = CoverageUniverse.model_validate_json(gen.render(universe))
     assert again == universe
     verify_universe(again)
@@ -75,14 +77,14 @@ def test_render_round_trips_through_the_model() -> None:
 )
 def test_invalid_grids_refused(underlyings: list[str], fridays: list[str], needle: str) -> None:
     with pytest.raises(ValueError, match=needle):
-        gen.build_universe(_wrapper(underlyings, fridays), source="wrapper.sh")
+        gen.build_universe(_wrapper(underlyings, fridays), source_id="wrapper.sh")
 
 
 def test_a_wrapper_without_the_marker_lines_refused() -> None:
     with pytest.raises(ValueError, match="no 'for d in"):
-        gen.build_universe("#!/bin/bash\nexit 0\n", source="wrapper.sh")
+        gen.build_universe("#!/bin/bash\nexit 0\n", source_id="wrapper.sh")
     with pytest.raises(ValueError, match="no --underlyings list"):
-        gen.build_universe("for d in 2025-03-07; do echo $d; done\n", source="wrapper.sh")
+        gen.build_universe("for d in 2025-03-07; do echo $d; done\n", source_id="wrapper.sh")
 
 
 # ---- CLI exit codes ---------------------------------------------------------------------
@@ -92,7 +94,19 @@ def test_main_exits_3_on_an_invalid_grid(tmp_path: Path) -> None:
     wrapper = tmp_path / "run.sh"
     wrapper.write_text(_wrapper(["SPY"], [SATURDAY]), encoding="utf-8")
     out = tmp_path / "universe.json"
-    assert gen.main(["--from-run-sh", str(wrapper), "--out", str(out)]) == 3
+    assert (
+        gen.main(
+            [
+                "--from-run-sh",
+                str(wrapper),
+                "--source-id",
+                "synthetic/run.sh",
+                "--out",
+                str(out),
+            ]
+        )
+        == 3
+    )
     assert not out.exists(), "an invalid grid writes nothing"
 
 
@@ -104,7 +118,19 @@ def test_main_writes_a_verifiable_manifest(tmp_path: Path) -> None:
     wrapper = tmp_path / "run.sh"
     wrapper.write_text(_wrapper(["SPY", "QQQ"], [FRIDAY_A, FRIDAY_B]), encoding="utf-8")
     out = tmp_path / "universe.json"
-    assert gen.main(["--from-run-sh", str(wrapper), "--out", str(out)]) == 0
+    assert (
+        gen.main(
+            [
+                "--from-run-sh",
+                str(wrapper),
+                "--source-id",
+                "synthetic/run.sh",
+                "--out",
+                str(out),
+            ]
+        )
+        == 0
+    )
     universe = CoverageUniverse.model_validate_json(out.read_text())
     verify_universe(universe)
     assert universe.expected_masters == 4
@@ -119,25 +145,19 @@ def test_committed_universe_manifest_is_pinned() -> None:
     assert len(universe.underlyings) == 29
     assert len(universe.as_of_fridays) == 105
     assert universe.expected_masters == 3045
-    assert universe.content_sha256.startswith("a13dd4eb")
-    assert universe.source.endswith("run.sh")
-    # Round-4 review fix (2026-08-23, finding 5): `source` participates in
-    # content_sha256, so it must be a spelling-free ABSOLUTE real path — the
-    # generator now normalizes, and this pin keeps a relative-spelling regen
-    # from ever replacing the committed artifact.
-    assert Path(universe.source).is_absolute()
-    assert universe.schema_version == "m4-coverage-universe/1"
+    assert universe.content_sha256.startswith("4553fc7a")
+    assert universe.source_id == "artifacts/m4b-coverage-era/run.sh"
+    assert not Path(universe.source_id).is_absolute()
+    assert universe.schema_version == "m4-coverage-universe/2"
 
 
-# ---- round-4 (finding 5): the wrapper spelling is normalized -------------------------
+# ---- source identity is spelling- and checkout-root-independent ----------------------
 #
-# Round-4 review fix (2026-08-23): the closeout checklist regen check
-# (docs/m4-closeout-checklist.json, universe-regen-verify) passes
-# --from-run-sh artifacts/m4b-coverage-era/run.sh — RELATIVE, resolved
-# against the repo root — while the committed artifact records the ABSOLUTE
-# wrapper path. The generator stored the spelling verbatim as `source`, and
-# `source` participates in content_sha256, so the regen ALWAYS mismatched
-# the committed bytes and universe-regen-cmp declared false universe drift.
+# Round 4 normalized relative/absolute spellings to one absolute path. The
+# external PR #13 audit caught the remaining cross-clone defect: that absolute
+# host path still contaminated the committed bytes and content hash. Version 2
+# stores only a canonical repo-relative source_id; the wrapper bytes remain
+# independently pinned by source_sha256.
 
 
 def test_relative_and_absolute_wrapper_spellings_produce_identical_bytes(
@@ -152,7 +172,52 @@ def test_relative_and_absolute_wrapper_spellings_produce_identical_bytes(
     text = _wrapper(["SPY", "QQQ"], [FRIDAY_A, FRIDAY_B])
     wrapper.write_text(text, encoding="utf-8")
     monkeypatch.chdir(tmp_path)
-    relative = gen.build_universe(text, source="era/run.sh")
-    absolute = gen.build_universe(text, source=str(wrapper))
+    relative_id = gen.logical_source_id(Path("era/run.sh"), repo_root=tmp_path)
+    absolute_id = gen.logical_source_id(wrapper, repo_root=tmp_path)
+    relative = gen.build_universe(text, source_id=relative_id)
+    absolute = gen.build_universe(text, source_id=absolute_id)
     assert relative.content_sha256 == absolute.content_sha256
     assert gen.render(relative) == gen.render(absolute), "identical bytes, not just hashes"
+
+
+def test_two_physical_checkout_roots_render_byte_identical_universe(tmp_path: Path) -> None:
+    """The committed identity is logical; a clone's host path is not content."""
+    text = _wrapper(["SPY", "QQQ"], [FRIDAY_A, FRIDAY_B])
+    wrappers: list[tuple[Path, Path]] = []
+    for checkout in (tmp_path / "clone-a", tmp_path / "nested" / "clone-b"):
+        wrapper = checkout / "artifacts" / "m4b-coverage-era" / "run.sh"
+        wrapper.parent.mkdir(parents=True)
+        wrapper.write_text(text, encoding="utf-8")
+        wrappers.append((checkout, wrapper))
+
+    first = gen.build_universe(
+        text, source_id=gen.logical_source_id(wrappers[0][1], repo_root=wrappers[0][0])
+    )
+    second = gen.build_universe(
+        text, source_id=gen.logical_source_id(wrappers[1][1], repo_root=wrappers[1][0])
+    )
+
+    assert first.content_sha256 == second.content_sha256
+    assert gen.render(first) == gen.render(second)
+
+
+def test_wrapper_byte_change_changes_universe_identity() -> None:
+    text = _wrapper(["SPY"], [FRIDAY_A])
+    baseline = gen.build_universe(text, source_id="artifacts/era/run.sh")
+    changed = gen.build_universe(
+        text + "# owner-visible wrapper edit\n", source_id="artifacts/era/run.sh"
+    )
+
+    assert baseline.source_sha256 != changed.source_sha256
+    assert baseline.content_sha256 != changed.content_sha256
+
+
+def test_rehashed_absolute_source_id_is_refused() -> None:
+    universe = gen.build_universe(_wrapper(["SPY"], [FRIDAY_A]), source_id="artifacts/era/run.sh")
+    contaminated = universe.model_copy(update={"source_id": "/host/checkout/artifacts/era/run.sh"})
+    contaminated = contaminated.model_copy(
+        update={"content_sha256": universe_content_sha256(contaminated)}
+    )
+
+    with pytest.raises(CensusTaxonomyError, match="repo-relative"):
+        verify_universe(contaminated)

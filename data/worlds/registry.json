@@ -293,7 +293,7 @@
       "tokens": ["m4-massive/1", "m4b-manifest/1"],
       "capture_version": "m4b-capture/1",
       "universe_manifest": "data/coverage/coverage_universe.json",
-      "universe_manifest_sha256": "a13dd4eb3a4dba4e0faff5a03e75f2da6dde25d86b3b5d0e714eac20a8eb7d41",
+      "universe_manifest_sha256": "4553fc7adf35209bd4d43dc7695887fb3cc0345e3d14548c5bc91578833d85a1",
       "capture_manifest_sha256": null,
       "status": "PENDING-era"
     }
