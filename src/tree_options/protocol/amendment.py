@@ -30,9 +30,11 @@ Pipeline (first failure wins; every failure is a refusal, never a landing):
     zero threshold is exactly the silent default this builder exists to
     prevent;
 8.  the output root resolves under the repo's ``artifacts/`` directory;
-9.  the packet is emitted under ``<out-root>/<census-hash[:12]>/``, and the
-    proposed protocol is re-loaded through TODAY'S loader as proof it
-    round-trips.
+9.  the packet is emitted under ``<out-root>/<census-hash[:12]>/`` — with
+    the derived directory and every output path re-resolved and confined
+    under the resolved out root (a precreated symlink refuses, it is never
+    written through) — and the proposed protocol is re-loaded through
+    TODAY'S loader as proof it round-trips.
 
 Output is byte-identical across re-runs over identical inputs: no clock, no
 timestamps, no absolute paths in any emitted byte.
@@ -279,6 +281,21 @@ class AmendmentPacket(StrictModel):
 def _repo_root() -> Path:
     # src/tree_options/protocol/amendment.py -> repo root is parents[3].
     return Path(__file__).resolve().parents[3]
+
+
+def _confine_output(path: Path, *, out_root: Path) -> Path:
+    """Round-3 review fix (2026-08-23, finding 3): re-resolve one output
+    path and require it to stay under the resolved out root. The out-root
+    check alone cannot see a precreate: the derived hash directory (or one
+    output filename) symlinked outside artifacts/ — or at a tracked file —
+    would otherwise be written straight through."""
+    resolved = path.resolve()
+    if not resolved.is_relative_to(out_root):
+        raise OutputRefusedError(
+            f"output path {path} resolves to {resolved}, outside the resolved "
+            f"output root {out_root}: refusing to write through it"
+        )
+    return resolved
 
 
 def _reject_constant(name: str) -> NoReturn:
@@ -555,9 +572,12 @@ def build_proposed_amendment(
             "builder writes proposals under artifacts/ only"
         )
 
-    # 9. emit under <out-root>/<census-hash[:12]>/
+    # 9. emit under <out-root>/<census-hash[:12]>/ — re-resolved: a symlink
+    # precreated at the hash dir (or at any output filename) must refuse,
+    # never write through (round-3 finding 3).
     out_dir = resolved_out_root / census_hash[:12]
     out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _confine_output(out_dir, out_root=resolved_out_root)
 
     data: dict[str, Any] = base.model_dump(mode="json")
     data["meta"]["protocol_version"] = PROPOSED_PROTOCOL_VERSION
@@ -583,7 +603,10 @@ def build_proposed_amendment(
         flow_value
     )
 
-    proposed_path = out_dir / f"protocol-{PROPOSED_PROTOCOL_VERSION}-proposed.yaml"
+    proposed_path = _confine_output(
+        out_dir / f"protocol-{PROPOSED_PROTOCOL_VERSION}-proposed.yaml",
+        out_root=resolved_out_root,
+    )
     proposed_path.write_text(
         yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000),
         encoding="utf-8",
@@ -605,7 +628,9 @@ def build_proposed_amendment(
     ):
         raise AmendmentError("proposed protocol round-trip lost the amendment content")
 
-    schema_path = out_dir / "schema-addition-proposal.yaml"
+    schema_path = _confine_output(
+        out_dir / "schema-addition-proposal.yaml", out_root=resolved_out_root
+    )
     schema_path.write_text(
         _render_schema_addition_proposal(
             census=census, census_hash=census_hash, flow_value=flow_value
@@ -613,7 +638,7 @@ def build_proposed_amendment(
         encoding="utf-8",
     )
 
-    diff_path = out_dir / "amendment-diff.md"
+    diff_path = _confine_output(out_dir / "amendment-diff.md", out_root=resolved_out_root)
     diff_path.write_text(
         _render_diff(
             base=base, census_hash=census_hash, flow_value=flow_value, flow_source=flow_source
@@ -641,7 +666,7 @@ def build_proposed_amendment(
             for path in sorted((proposed_path, schema_path, diff_path), key=lambda p: p.name)
         ),
     )
-    packet_path = out_dir / "amendment-packet.json"
+    packet_path = _confine_output(out_dir / "amendment-packet.json", out_root=resolved_out_root)
     packet_path.write_text(
         json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

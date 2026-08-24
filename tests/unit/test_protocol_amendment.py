@@ -830,3 +830,47 @@ def test_boolean_referenced_fact_refused_at_census_parse(tmp_path: Path) -> None
     # ValidationError naming the field), surfaced through the step-1 wrapper.
     assert "era_observed_masters" in str(exc_info.value)
     assert "bool" in str(exc_info.value)
+
+
+# ---- round-3 (finding 3): every output is re-resolved under the out root ---------
+#
+# Round-3 review fix (2026-08-23): the builder resolved + checked only the
+# OUT ROOT; the derived hash directory and the output filenames were used
+# as-is, so a precreate of <out-root>/<census-hash12> as a directory symlink
+# outside artifacts/ (worse: one output filename symlinked to a tracked
+# file) was written straight through.
+
+
+def test_hash_dir_symlink_escape_refused(tmp_path: Path) -> None:
+    """Precreate <out-root>/<census-hash12> as a directory symlink OUTSIDE
+    artifacts/: the builder refuses naming both paths and writes nothing
+    through the link."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    escape = tmp_path / "escape"
+    escape.mkdir()
+    with _out_root() as out:
+        (out / _census_hash(census_bytes)[:12]).symlink_to(escape)
+        with pytest.raises(OutputRefusedError, match="outside") as exc_info:
+            _build(paths, out)
+    message = str(exc_info.value)
+    assert str(escape.resolve()) in message, "the refusal names where the link resolves"
+    assert _census_hash(census_bytes)[:12] in message, "the refusal names the requested path"
+    assert list(escape.iterdir()) == [], "nothing was written through the symlink"
+
+
+def test_output_filename_symlink_to_tracked_file_refused(tmp_path: Path) -> None:
+    """Precreate the proposed-protocol FILENAME as a symlink to the tracked
+    research_protocol.yaml: the builder refuses and the tracked file is
+    byte-identical afterwards."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    before = PROTOCOL_PATH.read_bytes()
+    with _out_root() as out:
+        out_dir = out / _census_hash(census_bytes)[:12]
+        out_dir.mkdir()
+        (out_dir / "protocol-0.2.1-proposed.yaml").symlink_to(PROTOCOL_PATH)
+        with pytest.raises(OutputRefusedError, match="outside") as exc_info:
+            _build(paths, out)
+    assert str(PROTOCOL_PATH) in str(exc_info.value)
+    assert PROTOCOL_PATH.read_bytes() == before, "the tracked file was not written through"
