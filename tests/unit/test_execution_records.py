@@ -132,6 +132,7 @@ def test_records_are_frozen_and_forbid_unknown_fields() -> None:
             intent_id="intent-001",
             status=BrokerReadbackStatus.OPEN,
             broker_order_id="paper-order-001",
+            total_quantity=3,
             cumulative_quantity=0,
             broker_snapshot_at=T1,
             locally_received_at=naive,
@@ -221,6 +222,7 @@ def test_market_and_limit_shapes_are_fail_closed() -> None:
             intent_id="intent-001",
             status=BrokerReadbackStatus.OPEN,
             broker_order_id="paper-order-001",
+            total_quantity=3,
             cumulative_quantity=0.0,
             broker_snapshot_at=T1,
             locally_received_at=T2,
@@ -267,6 +269,7 @@ def test_internal_external_timestamp_order_is_validated() -> None:
             intent_id="intent-001",
             status=BrokerReadbackStatus.OPEN,
             broker_order_id="paper-order-001",
+            total_quantity=3,
             cumulative_quantity=0,
             broker_snapshot_at=T2,
             locally_received_at=T1,
@@ -305,6 +308,7 @@ def test_readback_shape_is_explicit_for_absent_and_open_orders() -> None:
         intent_id="intent-001",
         status=BrokerReadbackStatus.ABSENT,
         broker_order_id=None,
+        total_quantity=None,
         cumulative_quantity=0,
         broker_snapshot_at=T1,
         locally_received_at=T2,
@@ -323,10 +327,71 @@ def test_readback_shape_is_explicit_for_absent_and_open_orders() -> None:
             intent_id="intent-001",
             status=BrokerReadbackStatus.REJECTED,
             broker_order_id=None,
+            total_quantity=None,
             cumulative_quantity=1,
             broker_snapshot_at=T1,
             locally_received_at=T2,
             source="synthetic-paper-adapter",
             source_sequence_id="readback-seq-rejected",
             broker_sequence_id="broker-readback-rejected",
+        )
+
+
+def test_readback_total_quantity_is_strict_broker_authority() -> None:
+    valid = BrokerReadback(
+        record_id="readback-open",
+        intent_id="intent-001",
+        status=BrokerReadbackStatus.OPEN,
+        broker_order_id="paper-order-001",
+        total_quantity=3,
+        cumulative_quantity=0,
+        broker_snapshot_at=T1,
+        locally_received_at=T2,
+        source="synthetic-paper-adapter",
+        source_sequence_id="readback-seq-open",
+        broker_sequence_id="broker-readback-open",
+    )
+    assert valid.total_quantity == 3
+
+    missing_total = valid.model_dump(exclude={"total_quantity"})
+    with pytest.raises(pydantic.ValidationError, match="total_quantity"):
+        BrokerReadback.model_validate(missing_total)
+    with pytest.raises(pydantic.ValidationError):
+        BrokerReadback.model_validate({**valid.model_dump(), "total_quantity": "3"})
+
+
+@pytest.mark.parametrize(
+    ("status", "total_quantity", "cumulative_quantity", "message"),
+    [
+        (BrokerReadbackStatus.PARTIALLY_FILLED, 3, 3, "less than total_quantity"),
+        (BrokerReadbackStatus.FILLED, 3, 2, "equal total_quantity"),
+        (BrokerReadbackStatus.CANCELED, 3, 4, "exceed total_quantity"),
+        (BrokerReadbackStatus.ABSENT, 3, 0, "must not claim total_quantity"),
+        (BrokerReadbackStatus.REJECTED, 3, 0, "must not claim total_quantity"),
+    ],
+)
+def test_readback_status_and_confirmed_total_are_consistent(
+    status: BrokerReadbackStatus,
+    total_quantity: int,
+    cumulative_quantity: int,
+    message: str,
+) -> None:
+    broker_order_id = (
+        None
+        if status in {BrokerReadbackStatus.ABSENT, BrokerReadbackStatus.REJECTED}
+        else "paper-order-001"
+    )
+    with pytest.raises(pydantic.ValidationError, match=message):
+        BrokerReadback(
+            record_id="readback-invalid-total",
+            intent_id="intent-001",
+            status=status,
+            broker_order_id=broker_order_id,
+            total_quantity=total_quantity,
+            cumulative_quantity=cumulative_quantity,
+            broker_snapshot_at=T1,
+            locally_received_at=T2,
+            source="synthetic-paper-adapter",
+            source_sequence_id="readback-seq-invalid-total",
+            broker_sequence_id="broker-readback-invalid-total",
         )

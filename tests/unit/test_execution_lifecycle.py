@@ -151,6 +151,7 @@ def _readback(number: int = 1, **over: object) -> BrokerReadback:
         "intent_id": "intent-001",
         "status": BrokerReadbackStatus.OPEN,
         "broker_order_id": "paper-order-001",
+        "total_quantity": 3,
         "cumulative_quantity": 0,
         "broker_snapshot_at": _at(10 + number),
         "locally_received_at": _at(11 + number),
@@ -276,15 +277,16 @@ def test_same_source_or_broker_sequence_with_different_bytes_refuses() -> None:
 
 def test_ack_reordered_after_partial_fill_does_not_regress_state() -> None:
     partial = _submitting().apply(_partial())
-    assert partial.state is ExecutionState.PARTIALLY_FILLED
+    assert partial.state is ExecutionState.RECONCILIATION_REQUIRED
     late_ack = partial.apply(_ack())
     assert late_ack.state is ExecutionState.PARTIALLY_FILLED
     assert late_ack.filled_quantity == 1
 
 
-def test_older_partial_fill_reordered_after_complete_is_idempotent_for_projection() -> None:
-    filled = _submitting().apply(_complete())
-    reordered = filled.apply(
+def test_older_missing_partial_fill_after_complete_closes_economic_gap() -> None:
+    incomplete = _submitting().apply(_ack()).apply(_complete())
+    assert incomplete.state is ExecutionState.RECONCILIATION_REQUIRED
+    reordered = incomplete.apply(
         _partial(
             exchange_event_at=_at(7),
             locally_received_at=_at(10),
@@ -295,7 +297,11 @@ def test_older_partial_fill_reordered_after_complete_is_idempotent_for_projectio
 
 
 def test_newer_regressive_fill_requires_reconciliation() -> None:
-    partial_two = _submitting().apply(_partial(number=2, cumulative_quantity=2))
+    partial_two = (
+        _submitting()
+        .apply(_ack())
+        .apply(_partial(number=2, fill_quantity=2, cumulative_quantity=2))
+    )
     regressive = partial_two.apply(
         _partial(
             number=3,
@@ -331,7 +337,7 @@ def test_blind_or_stale_readback_replacement_is_refused() -> None:
 
 
 def test_temporally_stale_readback_does_not_regress_or_authorize_replace() -> None:
-    partial = _submitting().apply(_partial())
+    partial = _submitting().apply(_ack()).apply(_partial())
     stale = _readback(
         status=BrokerReadbackStatus.OPEN,
         cumulative_quantity=0,
@@ -360,7 +366,8 @@ def test_broker_fact_cannot_predate_first_submit_attempt() -> None:
 def test_replace_basis_must_match_order_quantity_and_time() -> None:
     current = (
         _submitting()
-        .apply(_partial(number=2, cumulative_quantity=2))
+        .apply(_ack())
+        .apply(_partial(number=2, fill_quantity=2, cumulative_quantity=2))
         .apply(
             _readback(
                 status=BrokerReadbackStatus.PARTIALLY_FILLED,
@@ -393,9 +400,9 @@ def test_conflicting_broker_order_identity_requires_reconciliation() -> None:
 
 def test_complete_fill_requires_exact_total_and_partial_cannot_claim_total() -> None:
     with pytest.raises(TransitionRefusedError, match="complete fill"):
-        _submitting().apply(_complete(cumulative_quantity=2))
+        _submitting().apply(_ack()).apply(_complete(cumulative_quantity=2))
     with pytest.raises(TransitionRefusedError, match="partial fill"):
-        _submitting().apply(_partial(cumulative_quantity=3))
+        _submitting().apply(_ack()).apply(_partial(cumulative_quantity=3))
 
 
 def test_reject_is_terminal_but_fill_after_reject_requires_reconciliation() -> None:
@@ -437,7 +444,7 @@ def test_reject_without_echoed_order_id_preserves_known_broker_identity() -> Non
 
 
 def test_readback_cannot_erase_an_observed_fill_quantity() -> None:
-    partial = _submitting().apply(_partial())
+    partial = _submitting().apply(_ack()).apply(_partial())
     contradictory = partial.apply(
         _readback(
             status=BrokerReadbackStatus.CANCELED,
@@ -449,7 +456,13 @@ def test_readback_cannot_erase_an_observed_fill_quantity() -> None:
 
 
 def test_timeout_after_filled_is_refused_not_a_regression() -> None:
-    filled = _submitting().apply(_complete())
+    filled = _submitting().apply(_ack()).apply(_complete(fill_quantity=3))
     with pytest.raises(TransitionRefusedError):
-        filled.apply(_timeout(record_id="timeout-late", source_sequence_id="timeout-late"))
+        filled.apply(
+            _timeout(
+                record_id="timeout-late",
+                locally_received_at=_at(20),
+                source_sequence_id="timeout-late",
+            )
+        )
     assert filled.state is ExecutionState.FILLED
