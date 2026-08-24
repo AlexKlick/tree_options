@@ -55,7 +55,7 @@ from tree_options.data.coverage_census import (
     census_content_sha256,
     verify_census,
 )
-from tree_options.protocol.loader import load_protocol, protocol_hash
+from tree_options.protocol.loader import load_protocol, load_protocol_bytes, protocol_hash
 from tree_options.protocol.schema import ResearchProtocol
 from tree_options.schemas.common import StrictModel
 
@@ -302,8 +302,8 @@ def _reject_constant(name: str) -> NoReturn:
     raise ValueError(f"non-finite JSON constant {name!r} refused")
 
 
-def _load_json_strict(path: Path) -> Any:
-    return json.loads(path.read_text(encoding="utf-8"), parse_constant=_reject_constant)
+def _load_json_strict(data: bytes) -> Any:
+    return json.loads(data, parse_constant=_reject_constant)
 
 
 def _patch_plus_one(version: str) -> str:
@@ -395,15 +395,26 @@ def build_proposed_amendment(
     out_root: Path,
 ) -> AmendmentPacket:
     """Build the 0.2.1 proposal packet. Returns the packet (landed: false)."""
+    # Round-3 review fix (2026-08-23, finding 4): every input file's bytes
+    # are read ONCE here, and both the parse and the packet's input hashes
+    # consume those same bytes. The previous shape re-read each file at
+    # packet time, so the hashes attested bytes the builder may not have
+    # parsed (a swap between parse and packet-build attested the wrong
+    # content).
+    census_bytes = census_path.read_bytes()
+    owner_bytes = owner_values_path.read_bytes()
+    rules_bytes = rules_path.read_bytes()
+    protocol_bytes = protocol_path.read_bytes()
+    manifest_bytes = capture_manifest_path.read_bytes()
+
     # 1. census: parse + fail-closed verification (recomputed content hash)
     try:
-        census = CoverageCensus.model_validate_json(census_path.read_text(encoding="utf-8"))
+        census = CoverageCensus.model_validate_json(census_bytes)
         verify_census(census)
     except ValueError as exc:
         raise StaleCensusError(f"census invalid or tampered: {exc}") from exc
 
     # 2. staleness double-check: the census must describe the manifest on disk NOW
-    manifest_bytes = capture_manifest_path.read_bytes()
     manifest_sha256 = hashlib.sha256(manifest_bytes).hexdigest()
     if manifest_sha256 != census.provenance.input_manifest_sha256:
         raise StaleCensusError(
@@ -416,7 +427,7 @@ def build_proposed_amendment(
 
     # 3. owner values: strict JSON, model validation, census binding
     try:
-        owner_doc = OwnerValuesDoc.model_validate(_load_json_strict(owner_values_path))
+        owner_doc = OwnerValuesDoc.model_validate(_load_json_strict(owner_bytes))
     except ValueError as exc:
         raise OwnerValuesError(f"owner values doc invalid: {exc}") from exc
     if owner_doc.census_content_sha256 != census_hash:
@@ -427,7 +438,7 @@ def build_proposed_amendment(
 
     # 4. ratified rules: strict JSON, every rule bound to this census
     try:
-        rules_doc = RatifiedRulesDoc.model_validate(_load_json_strict(rules_path))
+        rules_doc = RatifiedRulesDoc.model_validate(_load_json_strict(rules_bytes))
     except ValueError as exc:
         raise OwnerValuesError(f"ratified rules doc invalid: {exc}") from exc
     for rule in rules_doc.rules:
@@ -437,9 +448,11 @@ def build_proposed_amendment(
                 f"{rule.census_binding[:12]}…, census {census_hash[:12]}…"
             )
 
-    # 5. base protocol through the real loader; target = its patch+1
+    # 5. base protocol through the real loader's validation, from the bytes
+    # read ONCE above (the packet's protocol hash attests what was parsed);
+    # target = its patch+1
     try:
-        base = load_protocol(protocol_path)
+        base = load_protocol_bytes(protocol_bytes)
     except ValueError as exc:
         raise VersionError(
             f"base protocol does not load as {BASE_PROTOCOL_VERSION}: {exc}"
@@ -655,10 +668,10 @@ def build_proposed_amendment(
         flow_min_session_volume=flow_value,
         owner_values_schema_version=OWNER_VALUES_SCHEMA_VERSION,
         inputs=AmendmentInputs(
-            census_file_sha256=hashlib.sha256(census_path.read_bytes()).hexdigest(),
-            owner_values_file_sha256=hashlib.sha256(owner_values_path.read_bytes()).hexdigest(),
-            rules_file_sha256=hashlib.sha256(rules_path.read_bytes()).hexdigest(),
-            protocol_file_sha256=hashlib.sha256(protocol_path.read_bytes()).hexdigest(),
+            census_file_sha256=hashlib.sha256(census_bytes).hexdigest(),
+            owner_values_file_sha256=hashlib.sha256(owner_bytes).hexdigest(),
+            rules_file_sha256=hashlib.sha256(rules_bytes).hexdigest(),
+            protocol_file_sha256=hashlib.sha256(protocol_bytes).hexdigest(),
             capture_manifest_file_sha256=manifest_sha256,
         ),
         emitted=tuple(

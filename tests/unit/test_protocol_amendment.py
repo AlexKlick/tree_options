@@ -874,3 +874,61 @@ def test_output_filename_symlink_to_tracked_file_refused(tmp_path: Path) -> None
             _build(paths, out)
     assert str(PROTOCOL_PATH) in str(exc_info.value)
     assert PROTOCOL_PATH.read_bytes() == before, "the tracked file was not written through"
+
+
+# ---- round-3 (finding 4): input hashes attest the bytes that were PARSED ---------
+#
+# Round-3 review fix (2026-08-23): the models were parsed at steps 1/3/4/5
+# but the packet re-read each input fresh at packet time, so the hashes
+# described bytes the builder may not have consumed. Every input is now
+# read ONCE and both the parse and the hash consume those same bytes.
+
+
+def test_packet_hashes_attest_the_consumed_bytes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attack a re-read: after the first read of the owner-values file,
+    every further read (any method) returns a different, valid doc. The
+    packet must still attest the bytes that produced the parsed model."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    owner_path = paths["owner_values"]
+    original = owner_path.read_bytes()
+    original_doc = json.loads(original)
+    swapped = json.dumps(
+        {
+            **original_doc,
+            "values": [
+                {**original_doc["values"][0], "value": FLOW_DERIVED + 239},
+                *original_doc["values"][1:],
+            ],
+        }
+    ).encode("utf-8")
+    assert swapped != original
+
+    reads = {"owner": 0}
+    real_read_bytes = Path.read_bytes
+    real_read_text = Path.read_text
+
+    def read_bytes_attacking(self: Path) -> bytes:
+        if self == owner_path:
+            reads["owner"] += 1
+            return original if reads["owner"] == 1 else swapped
+        return real_read_bytes(self)
+
+    def read_text_attacking(self: Path, *args: object, **kwargs: object) -> str:
+        if self == owner_path:
+            reads["owner"] += 1
+            body = original if reads["owner"] == 1 else swapped
+            return body.decode("utf-8")
+        return real_read_text(self, *args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(Path, "read_bytes", read_bytes_attacking)
+    monkeypatch.setattr(Path, "read_text", read_text_attacking)
+    with _out_root() as out:
+        packet = _build(paths, out)
+    # the parse consumed the ORIGINAL bytes (761, not 761+239) …
+    assert packet.flow_min_session_volume == FLOW_DERIVED
+    # … and the packet attests exactly those bytes, read exactly once.
+    assert packet.inputs.owner_values_file_sha256 == _sha256(original)
+    assert reads["owner"] == 1, "the owner-values file is read once, by construction"
