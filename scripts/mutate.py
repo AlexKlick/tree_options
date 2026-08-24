@@ -2460,10 +2460,28 @@ MUTANTS = [
     # removed that comparison (replaced by recompute-from-payload), so
     # the mutant's anchor no longer exists in scripts/g4_seal.py. The
     # fix is load-bearing; the new round-1 equivalent is M229 below
-    # (recompute trust gutted). The M214 slot is intentionally NOT
-    # in the MUTANTS list — an anchored entry here would be classified
+    # (stored-ids agreement check voided). The M214 slot is intentionally
+    # NOT in the MUTANTS list — an anchored entry here would be classified
     # MUTATION_DRIFT and fail the harness's exit-0 gate. The invariant
     # survives in M229.
+    dict(
+        id="M229-stored-consumption-ids-trusted",
+        owner="test_consumption_record_with_inconsistent_stored_ids_refused_as_corrupt",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "        if record.sealed_run_id != record_run_id"
+            " or record.content_identity != record_content_id:"
+        ),
+        replacement="        if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "F7 the duplicate guard RECOMPUTES sealed_run_id/content_identity"
+            " from each CONSUMPTION record's own identity payload and refuses"
+            " when the stored ids disagree (corruption, never a skip); trusting"
+            " stored ids reopens the forged-replay bypass where a chain-valid"
+            " record carries the target payload under adversarial stored ids"
+        ),
+    ),
     dict(
         id="M215-approval-reverify-void",
         owner="test_approval_tampered_payload_exit_6",

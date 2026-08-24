@@ -435,6 +435,13 @@ Exit codes (contract; also in docs/m4-closeout-runbook.md):
   3  lease held by a live owner
   4  unknown run (no store; create one with --create-identity)
   5  store unreadable/corrupt (journal or projection)
+  6  refused store root or run id (root resolves under /tmp, or the run
+     id is not a single path component under the validated root —
+     absolute/parent-bearing/symlink-escaping ids are refused)
+  7  pin already bound (a DIFFERENT capture-manifest hash after a pin
+     exists; the same hash re-pin is idempotent)
+  8  journal concurrent write (append whose prev_record_sha256 does not
+     match the locked tail, or a torn tail — repair is an owner act)
 ```
 
 Usage:
