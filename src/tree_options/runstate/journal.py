@@ -22,6 +22,7 @@ The journal is the authority (handoff constraint 9: never `/tmp`). Design:
 
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -84,6 +85,71 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
+def _open_store_dir_nofollow(store_dir: Path, *, run_id: str) -> int:
+    """Round-8 review fix (2026-08-24, finding 4): the run directory held as
+    a REAL directory fd, opened once with ``O_NOFOLLOW``.
+
+    store.py validates the run DIRECTORY (root resolution, one-component run
+    id, descendant check), but the journal used to then follow
+    ``journal.jsonl`` BY NAME on both the read and the append path — so a
+    journal NAME symlinked to a copied chain under /tmp was read and
+    appended through. Every journal open below rides this one dir fd, so the
+    journal name can never redirect authority outside the validated store
+    directory. (The intermediate ancestors were already resolved by the
+    store's root validation; this is the sized-down mirror of the seal/bars
+    ledger custody rule.)"""
+    try:
+        return os.open(store_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise JournalCorruptError(
+                run_id,
+                f"the run directory {store_dir} is a SYMLINK — run-state "
+                "authority is never read or written through a symlinked "
+                "store directory",
+            ) from None
+        raise
+
+
+def _open_journal_nofollow(dir_fd: int, flags: int, *, run_id: str, store_dir: Path) -> int:
+    """Round-8 review fix (2026-08-24, finding 4): open the journal NAME
+    without ever following a symlink at it (the runstate mirror of the
+    seal/bars ledger-name rule).
+
+    A symlink at ``journal.jsonl`` — dangling or not — is ``ELOOP`` under
+    ``O_NOFOLLOW`` regardless of its target; that is corruption of the
+    authority surface, refused by name (``O_CREAT|O_NOFOLLOW`` on a dangling
+    link fails the same way, which is exactly the refusal wanted: authority
+    is never CREATED through a link either). The open rides the store-dir
+    custody fd, so the store directory pathname is never re-resolved."""
+    try:
+        return os.open(JOURNAL_FILENAME, flags | os.O_NOFOLLOW, 0o644, dir_fd=dir_fd)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise JournalCorruptError(
+                run_id,
+                f"{store_dir / JOURNAL_FILENAME} is a SYMLINK — run-state "
+                "authority (journal.jsonl) is never created, read, or "
+                "appended through a symlink: a journal name that redirects "
+                "outside the validated store directory (e.g. a copied chain "
+                "under /tmp) is corruption of the authority surface, and a "
+                "reboot must never erase a returned-success transition",
+            ) from None
+        raise
+
+
+def _read_all(fd: int) -> bytes:
+    chunks: list[bytes] = []
+    offset = 0
+    while True:
+        chunk = os.pread(fd, 65536, offset)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        offset += len(chunk)
+    return b"".join(chunks)
+
+
 def append_record(store_dir: Path, record: JournalRecord) -> str:
     """Append one hash-chained record; returns its `record_sha256`.
 
@@ -95,39 +161,56 @@ def append_record(store_dir: Path, record: JournalRecord) -> str:
     must re-replay and rebuild the prev hash. A torn final line is also
     refused outright: appending past a torn tail converts a damaged record
     into mid-file corruption, which the store can never safely repair.
+
+    Round-8 review fix (2026-08-24, finding 4): the append opens the journal
+    NAME ``O_WRONLY|O_APPEND|O_CREAT|O_NOFOLLOW`` against the store dir held
+    as a REAL directory fd — a symlink at journal.jsonl (dangling or not) is
+    ``ELOOP`` → ``JournalCorruptError``, so authority is never appended
+    through a link (the pre-fix plain ``open(..., "a")`` followed it and a
+    copied chain under /tmp gained the record).
     """
     record = record.model_copy(update={"record_sha256": _record_hash(record)})
-    journal_path = store_dir / JOURNAL_FILENAME
+    run_id = store_dir.name
     line = json.dumps(
         json.loads(record.model_dump_json()),  # enum -> plain str, sorted not needed
         sort_keys=True,
         separators=(",", ":"),
     )
     store_dir.mkdir(parents=True, exist_ok=True)
-    with open(journal_path, "a", encoding="utf-8") as fh:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+    dir_fd = _open_store_dir_nofollow(store_dir, run_id=run_id)
+    try:
+        fd = _open_journal_nofollow(
+            dir_fd, os.O_WRONLY | os.O_APPEND | os.O_CREAT, run_id=run_id, store_dir=store_dir
+        )
         try:
-            # Round-1 review fix: re-read the locked tail and verify.
-            tail_view = _locked_tail_view(fh)
-            if tail_view.torn_tail:
-                raise JournalConcurrentWriteError(
-                    store_dir.name,
-                    "journal has a torn final line; refusing to append "
-                    "past it (append-after-torn converts damage into "
-                    "mid-file corruption). Repair is an explicit owner act",
-                )
-            if tail_view.tail_hash != record.prev_record_sha256:
-                raise JournalConcurrentWriteError(
-                    store_dir.name,
-                    f"caller's prev_record_sha256 {record.prev_record_sha256[:12]}… "
-                    f"does not match the locked tail hash {tail_view.tail_hash[:12]}…",
-                )
-            fh.write(line + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            try:
+                # Round-1 review fix: re-read the locked tail and verify.
+                tail_view = _locked_tail_view(dir_fd, run_id=run_id)
+                if tail_view.torn_tail:
+                    raise JournalConcurrentWriteError(
+                        run_id,
+                        "journal has a torn final line; refusing to append "
+                        "past it (append-after-torn converts damage into "
+                        "mid-file corruption). Repair is an explicit owner act",
+                    )
+                if tail_view.tail_hash != record.prev_record_sha256:
+                    raise JournalConcurrentWriteError(
+                        run_id,
+                        f"caller's prev_record_sha256 {record.prev_record_sha256[:12]}… "
+                        f"does not match the locked tail hash {tail_view.tail_hash[:12]}…",
+                    )
+                os.write(fd, (line + "\n").encode("utf-8"))
+                os.fsync(fd)
+            finally:
+                fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-    _fsync_dir(store_dir)
+            os.close(fd)
+        # directory durability on the CUSTODY fd: the store dir pathname is
+        # never re-resolved (round-8, finding 4).
+        os.fsync(dir_fd)
+    finally:
+        os.close(dir_fd)
     return record.record_sha256
 
 
@@ -139,7 +222,7 @@ class _LockedTail:
     torn_tail: bool  # True iff the final line on disk failed decode/verify
 
 
-def _locked_tail_view(fh: object) -> _LockedTail:
+def _locked_tail_view(dir_fd: int, *, run_id: str) -> _LockedTail:
     """Read the journal from disk (under the held flock) and classify its tail.
 
     A torn FINAL line (decode or chain-verify fail on the last line only) is
@@ -150,21 +233,28 @@ def _locked_tail_view(fh: object) -> _LockedTail:
     we see it on the locked read, surface it as torn to keep the caller
     safe (never silently skip non-tail damage).
 
-    NB: `fh` is opened in append mode and seek+read returns nothing
-    meaningful past EOF; we re-open the path in read mode under the
-    OUTER caller's flock — the advisory lock is on the file inode, not
-    the file handle, so a second open from the same thread sees the
-    same locked state.
+    Round-8 review fix (finding 4): the read re-opens the journal NAME
+    ``O_RDONLY|O_NOFOLLOW`` against the store-dir custody fd — the advisory
+    lock is on the file inode, not the file handle, so the second open from
+    the same thread sees the same locked state, and a symlink at the name
+    refuses with ``ELOOP`` instead of being read through.
     """
-    path = Path(getattr(fh, "name", "")) if not isinstance(getattr(fh, "name", ""), int) else None
-    if path is None or not str(path):
-        # Defensive fallback: no path known — refuse rather than guess.
-        raise JournalConcurrentWriteError(
-            "<unknown>",
-            "append_record's locked-tail view could not determine the "
-            "journal path from the file handle; refusing to append",
-        )
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    try:
+        fd = os.open(JOURNAL_FILENAME, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+    except FileNotFoundError:
+        return _LockedTail(tail_hash=GENESIS_PREV, torn_tail=False)
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise JournalCorruptError(
+                run_id,
+                "journal.jsonl is a SYMLINK under the held lock — run-state "
+                "authority is never read or appended through a symlink",
+            ) from None
+        raise
+    try:
+        raw = _read_all(fd).decode("utf-8", errors="replace")
+    finally:
+        os.close(fd)
     lines = raw.splitlines()
     prev_hash = GENESIS_PREV
     last_good_hash = GENESIS_PREV
@@ -194,13 +284,32 @@ def _verify_chain(record: JournalRecord, prev_hash: str) -> bool:
 def replay(store_dir: Path, *, run_id: str = "?") -> JournalView:
     """Verify + decode the journal. See module docstring for the torn-tail
     rule: the final line may be damaged (crash mid-append); anything earlier
-    must verify or the store is corrupt evidence."""
-    journal_path = store_dir / JOURNAL_FILENAME
-    if not journal_path.exists():
-        # Missing log: the caller classifies (pre-journal legacy -> UNKNOWN,
-        # never FAILED — constraint 10). An absent journal is not corruption.
+    must verify or the store is corrupt evidence.
+
+    Round-8 review fix (2026-08-24, finding 4): the journal NAME is opened
+    ``O_RDONLY|O_NOFOLLOW`` against the store dir held as a REAL directory
+    fd — a symlink at journal.jsonl (dangling or not; ``Path.exists()`` is
+    False for the dangling case and used to classify it as absent) is
+    ``ELOOP`` → ``JournalCorruptError``, so the chain is never READ through
+    a link either."""
+    try:
+        dir_fd = _open_store_dir_nofollow(store_dir, run_id=run_id)
+    except FileNotFoundError:
+        # Missing store dir: an absent journal is not corruption (the caller
+        # classifies: pre-journal legacy -> UNKNOWN, never FAILED).
         return JournalView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
-    lines = journal_path.read_text(encoding="utf-8").splitlines()
+    try:
+        try:
+            fd = _open_journal_nofollow(dir_fd, os.O_RDONLY, run_id=run_id, store_dir=store_dir)
+        except FileNotFoundError:
+            return JournalView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
+        try:
+            raw = _read_all(fd).decode("utf-8", errors="replace")
+        finally:
+            os.close(fd)
+    finally:
+        os.close(dir_fd)
+    lines = raw.splitlines()
     records: list[JournalRecord] = []
     prev_hash = GENESIS_PREV
     damaged_tail = False

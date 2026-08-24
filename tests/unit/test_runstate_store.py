@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import shutil
 from pathlib import Path
 from uuid import uuid4
 
@@ -18,6 +20,7 @@ from tree_options.runstate import (
 )
 from tree_options.runstate.errors import (
     IllegalTransitionError,
+    JournalCorruptError,
     ManifestMismatchError,
     StoreIdMismatchError,
 )
@@ -185,3 +188,52 @@ def test_run_id_deterministic_in_inputs():
     assert first == compute_run_id(**kwargs)
     assert first != compute_run_id(**{**kwargs, "code_sha": "z" * 40})
     assert first.startswith("m4-coverage-era-")
+
+
+# ---- round-8 (finding 4): the /tmp refusal must cover the JOURNAL NAME too --------------
+#
+# Round-8 review fix (2026-08-24): store.py validates the run DIRECTORY
+# (root resolution), but journal.py then followed journal.jsonl BY NAME on
+# both the read (replay) and the append's plain open(..., "a"). An honest
+# durable run dir whose journal.jsonl is a symlink to a copied chain under
+# /tmp opened and transitioned cleanly: authority was appended under /tmp
+# and a reboot erased a returned-success transition. Both journal opens are
+# now O_NOFOLLOW against the store dir held as a REAL directory fd; ELOOP
+# is the module's JournalCorruptError (the runstate mirror of the seal/bars
+# ledger-name rule — the same RunStateError family, no new class).
+
+
+def test_journal_name_symlinked_to_a_tmp_chain_refused(root: Path) -> None:
+    """Fixture: an honest store under the durable root, its journal.jsonl
+    replaced by a symlink to a VALID copied chain under /tmp. Pre-fix open()
+    reads the chain through the link and transition() appends the record to
+    the /tmp file; post-fix the open itself refuses (JournalCorruptError
+    naming the symlink) and nothing is appended under /tmp."""
+    store = RunStore.create(root, _identity(root), now_epoch=T0)
+    journal = store.dir / "journal.jsonl"
+    honest = journal.read_bytes()  # the GENESIS chain, valid
+    tmp_dir = Path("/tmp") / f"pr-a-journal-f4-{uuid4().hex}"
+    tmp_dir.mkdir()
+    tmp_journal = tmp_dir / "journal.jsonl"
+    tmp_journal.write_bytes(honest)  # a valid copied chain under /tmp
+    journal.unlink()
+    journal.symlink_to(tmp_journal)
+    try:
+        with pytest.raises(JournalCorruptError, match=r"journal\.jsonl") as excinfo:
+            reopened = RunStore.open(root, store.identity.run_id)  # pre-fix: reads through the link
+            reopened.transition(  # pre-fix: appends authority under /tmp
+                RunState.CAPTURING,
+                reason="would-be /tmp authority",
+                now_epoch=T0 + 1,
+                actor_pid=123,
+                actor_boot_id=BOOT,
+            )
+        assert excinfo.value.code == "JOURNAL_CORRUPT"
+        assert "symlink" in str(excinfo.value), "the refusal says the journal name is a symlink"
+        assert tmp_journal.read_bytes() == honest, "no authority record may be appended under /tmp"
+        assert journal.is_symlink(), "the fixture link is untouched by the refusal"
+    finally:
+        # never leave a symlink under the durable root, never leave /tmp state
+        with contextlib.suppress(OSError):
+            journal.unlink()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
