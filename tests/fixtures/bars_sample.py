@@ -161,6 +161,7 @@ def census_bytes(manifest_bytes: bytes) -> bytes:
             universe_manifest_sha256=CENSUS_UNIVERSE_MANIFEST_SHA256,
             uv_lock_sha256="d" * 64,
             command=("uv", "run", "--frozen", "python", "scripts/inspect_structural_coverage.py"),
+            report_version=CENSUS_SCHEMA_VERSION,
         ),
         coverage=CoverageBlock(expected_masters=2, observed=PairCoverage(COMPLETE=2)),
         values=CensusValues(

@@ -143,7 +143,14 @@ class CensusProvenance(StrictModel):
     universe_manifest_sha256: str
     uv_lock_sha256: str
     command: tuple[str, ...]
-    report_version: str = "m4-coverage-census/1"
+    # Round-4 review fix (2026-08-23, finding 3): report_version is REQUIRED.
+    # A default equal to the current token let a census whose provenance
+    # LACKED the field parse with the token re-inserted, so canonical hashing
+    # reproduced the original content_sha256 and verify_census accepted an
+    # artifact that never declared its report version. Audited the other
+    # fields: none carries a default, so none can smuggle an undeclared
+    # value into the hash; this was the only latent one.
+    report_version: str
 
 
 class PairCoverage(StrictModel):

@@ -110,6 +110,7 @@ def _make_census_bytes(
             universe_manifest_sha256="c" * 64,
             uv_lock_sha256="d" * 64,
             command=("uv", "run", "--frozen", "python", "scripts/inspect_structural_coverage.py"),
+            report_version=CENSUS_SCHEMA_VERSION,
         ),
         coverage=CoverageBlock(expected_masters=3045, observed=PairCoverage(COMPLETE=3045)),
         values=CensusValues(

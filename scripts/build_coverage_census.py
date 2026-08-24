@@ -805,6 +805,10 @@ def main(argv: list[str] | None = None) -> int:
             universe_manifest_sha256=universe.content_sha256,
             uv_lock_sha256=uv_lock_sha,
             command=tuple(sys.argv),
+            # Round-4 review fix (finding 3): the token is REQUIRED on the
+            # model, and the builder states it explicitly — same value the
+            # old default supplied, so emitted bytes are unchanged.
+            report_version=CENSUS_SCHEMA_VERSION,
         ),
         coverage=CoverageBlock(
             expected_masters=universe.expected_masters,

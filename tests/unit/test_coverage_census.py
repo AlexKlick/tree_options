@@ -825,6 +825,25 @@ def test_verify_census_accepts_the_current_versions(
     verify_census(census)  # current tokens pass every check
 
 
+def test_census_without_report_version_refused_at_parse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-4 review fix (2026-08-23, finding 3): the reviewer's exact probe
+    — delete provenance.report_version from a valid current census, leave
+    content_sha256 unchanged. The field carried a DEFAULT equal to the
+    current token, so the parse re-inserted it, canonical hashing reproduced
+    the original content hash, and verify_census accepted an artifact that
+    never declared its report version. The token is now REQUIRED: an absent
+    one is a parse refusal. A fully-explicit current census still verifies."""
+    _digest_dir, _out_root, census = _run_tiny(tmp_path, monkeypatch)
+    verify_census(census)  # a fully-explicit current census still verifies
+    doc = json.loads(census.model_dump_json())
+    del doc["provenance"]["report_version"]
+    stripped = json.dumps(doc).encode("utf-8")
+    with pytest.raises(ValueError, match="report_version"):
+        CoverageCensus.model_validate_json(stripped)
+
+
 def test_verify_universe_refuses_a_foreign_schema_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
