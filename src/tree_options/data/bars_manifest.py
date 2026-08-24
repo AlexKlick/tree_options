@@ -39,6 +39,7 @@ import fcntl
 import json
 import os
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -97,6 +98,27 @@ BARS_SIDE_FILTERS = ("call", "both")
 
 class BarsManifestError(ValueError):
     """A bars work manifest / authority refusal (fail closed, never repaired)."""
+
+
+class SecondExecutionRefusedError(BarsManifestError):
+    """This work manifest was already consumed once (launcher exit 7).
+
+    Round-3 review fix (2026-08-23, finding 1): the launcher's duplicate
+    scan ran before the store-specific lease, and the append path reread the
+    latest ledger tail without rechecking uniqueness — so two valid
+    BARS_READY stores for the same approved work manifest could BOTH pass
+    the scan and both append a consumption. The uniqueness recheck now runs
+    INSIDE ``append_bars_record`` under the exclusive flock, against the
+    freshly replayed view, so the second appender sees the first's
+    CONSUMPTION and refuses instead of chaining a second one.
+    """
+
+    def __init__(self, work_manifest_sha256: str, detail: str) -> None:
+        super().__init__(
+            f"work manifest {work_manifest_sha256[:12]}…: {detail}; the launch"
+            " authority is one-shot per work manifest — a crash after"
+            " consumption is RECONCILIATION_REQUIRED, never a re-run"
+        )
 
 
 # ---- selection profile -----------------------------------------------------------
@@ -809,10 +831,22 @@ def _fsync_dir(path: Path) -> None:
         os.close(fd)
 
 
-def append_bars_record(root: Path, record: BarsAuthorityRecord) -> str:
+def append_bars_record(
+    root: Path,
+    record: BarsAuthorityRecord,
+    *,
+    guard: Callable[[BarsLedgerView], None] | None = None,
+) -> str:
     """Append one hash-chained record under the exclusive flock; fsync file +
     parent dir before returning. Refuses a torn tail and a stale prev hash
-    (mirrors ``seal.ledger.append_record`` under this ledger's own domain)."""
+    (mirrors ``seal.ledger.append_record`` under this ledger's own domain).
+
+    Round-3 review fix (2026-08-23, finding 1): an optional ``guard`` is
+    evaluated against the LOCKED, freshly replayed view, before the write —
+    the only point where check-then-append is atomic. The one-shot
+    consumption rule rides on this: the duplicate recheck lives here, under
+    the flock, not in the caller's earlier (racy) scan.
+    """
     root = validate_ledger_root(root)
     root.mkdir(parents=True, exist_ok=True)
     path = root / BARS_LEDGER_FILENAME
@@ -835,6 +869,8 @@ def append_bars_record(root: Path, record: BarsAuthorityRecord) -> str:
                     " before any further append — appending past it would hide an"
                     " unacknowledged write"
                 )
+            if guard is not None:
+                guard(view)
             if record.prev_record_sha256 != view.tail_hash:
                 raise LedgerCorruptError(
                     "supplied prev_record_sha256 does not match the verified"
@@ -852,6 +888,27 @@ def append_bars_record(root: Path, record: BarsAuthorityRecord) -> str:
     return signed.record_sha256
 
 
+def _refuse_duplicate_consumption(
+    work_manifest_sha256: str,
+) -> Callable[[BarsLedgerView], None]:
+    """The one-shot guard: no second CONSUMPTION may bind the same work
+    manifest — evaluated under the ledger flock (round-3 review fix)."""
+
+    def guard(view: BarsLedgerView) -> None:
+        for record in view.records:
+            if (
+                record.kind == KIND_BARS_LAUNCH_CONSUMED
+                and record.work_manifest_sha256 == work_manifest_sha256
+            ):
+                raise SecondExecutionRefusedError(
+                    work_manifest_sha256,
+                    f"a BARS_LAUNCH_CONSUMED record ({record.record_sha256[:12]}…)"
+                    " already binds this work manifest under the ledger lock",
+                )
+
+    return guard
+
+
 def _append_bars_kind(
     root: Path,
     kind: BarsAuthorityKind,
@@ -862,6 +919,7 @@ def _append_bars_kind(
     work_manifest_sha256: str,
     reason: str,
     at_epoch: int,
+    guard: Callable[[BarsLedgerView], None] | None = None,
 ) -> BarsAuthorityRecord:
     view = read_bars_ledger(root)
     record = BarsAuthorityRecord(
@@ -874,7 +932,7 @@ def _append_bars_kind(
         at_epoch=at_epoch,
         prev_record_sha256=view.tail_hash,
     )
-    digest = append_bars_record(root, record)
+    digest = append_bars_record(root, record, guard=guard)
     return record.model_copy(update={"record_sha256": digest})
 
 
@@ -912,7 +970,13 @@ def append_bars_launch_consumed(
     reason: str,
     at_epoch: int,
 ) -> BarsAuthorityRecord:
-    """Spend the launch authority for this work manifest (execute path only)."""
+    """Spend the launch authority for this work manifest (execute path only).
+
+    Round-3 review fix (2026-08-23, finding 1): the one-shot rule is
+    enforced HERE — inside the locked append, against the freshly replayed
+    view — so a second launcher whose earlier scan predated the first's
+    append still refuses (``SecondExecutionRefusedError``, launcher exit 7)
+    instead of chaining a second consumption."""
     return _append_bars_kind(
         root,
         KIND_BARS_LAUNCH_CONSUMED,
@@ -922,6 +986,7 @@ def append_bars_launch_consumed(
         work_manifest_sha256=work_manifest_sha256,
         reason=reason,
         at_epoch=at_epoch,
+        guard=_refuse_duplicate_consumption(work_manifest_sha256),
     )
 
 
@@ -947,6 +1012,7 @@ __all__ = [
     "BarsWorkEntry",
     "BarsWorkManifest",
     "DraftParameter",
+    "SecondExecutionRefusedError",
     "SelectionProfile",
     "append_bars_launch_approval",
     "append_bars_launch_consumed",

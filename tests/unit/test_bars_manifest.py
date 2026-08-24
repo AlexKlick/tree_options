@@ -465,6 +465,60 @@ def test_approval_and_consumption_chain_verifies(scratch_root: Path) -> None:
     assert approval.record_sha256 != consumed.record_sha256
 
 
+def test_second_consumption_same_work_manifest_refused_under_lock(
+    scratch_root: Path,
+) -> None:
+    """Round-3 review fix (2026-08-23, P1 finding 1): the one-shot rule is
+    enforced INSIDE the ledger append, under the exclusive flock.
+
+    The launcher's duplicate scan ran before the store-specific lease and the
+    append path reread the latest tail without rechecking uniqueness, so two
+    valid BARS_READY stores for the same approved work manifest could BOTH
+    pass the scan; the second appender then chained a SECOND consumption
+    after the first's new tail. The append must refuse instead."""
+    bm.append_bars_launch_approval(
+        scratch_root, reason="owner approved the grid", at_epoch=T0, **_approval()
+    )
+    first = bm.append_bars_launch_consumed(
+        scratch_root, reason="era launched", at_epoch=T0 + 1, **_approval()
+    )
+    with pytest.raises(bm.SecondExecutionRefusedError) as excinfo:
+        bm.append_bars_launch_consumed(
+            scratch_root, reason="raced second launcher", at_epoch=T0 + 2, **_approval()
+        )
+    assert "one-shot" in str(excinfo.value)
+    view = bm.read_bars_ledger(scratch_root)
+    assert [r.kind for r in view.records] == [
+        "BARS_LAUNCH_APPROVAL",
+        "BARS_LAUNCH_CONSUMED",
+    ]
+    assert view.tail_hash == first.record_sha256  # nothing was appended past it
+
+
+def test_consumption_for_a_different_work_manifest_still_appends(
+    scratch_root: Path,
+) -> None:
+    """One-shot is per work manifest: a second era over DIFFERENT pinned work
+    still consumes (the guard keys on the manifest hash, not on the kind)."""
+    bm.append_bars_launch_approval(
+        scratch_root, reason="owner approved", at_epoch=T0, **_approval()
+    )
+    bm.append_bars_launch_consumed(scratch_root, reason="first era", at_epoch=T0 + 1, **_approval())
+    second = bm.append_bars_launch_consumed(
+        scratch_root,
+        reason="second era over other pinned work",
+        at_epoch=T0 + 2,
+        **_approval(work_manifest_sha256="e" * 64),
+    )
+    view = bm.read_bars_ledger(scratch_root)
+    assert [r.kind for r in view.records] == [
+        "BARS_LAUNCH_APPROVAL",
+        "BARS_LAUNCH_CONSUMED",
+        "BARS_LAUNCH_CONSUMED",
+    ]
+    assert view.tail_hash == second.record_sha256
+
+
 def test_bars_ledger_tamper_detected(scratch_root: Path) -> None:
     bm.append_bars_launch_approval(scratch_root, reason="one", at_epoch=T0, **_approval())
     bm.append_bars_launch_consumed(scratch_root, reason="two", at_epoch=T0 + 1, **_approval())

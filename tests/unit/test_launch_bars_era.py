@@ -671,6 +671,64 @@ def test_execute_duplicate_exit_7_after_crash_style_consumption(
     assert store.state is RunState.BARS_READY  # never transitioned on the refusal
 
 
+def test_execute_two_store_interleaving_refuses_the_second_runner(
+    scenario: dict[str, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Round-3 review fix (2026-08-23, P1 finding 1): the duplicate scan is
+    not atomic ACROSS run stores.
+
+    Two valid BARS_READY stores for the same approved work manifest: store A
+    consumes; store B's scan saw only the PRE-A ledger view (the exact race
+    window — the scan runs before the store-specific lease, so A's append
+    lands between B's scan and B's append). The append path used to reread
+    A's new tail and chain a SECOND consumption, invoking BOTH runners. The
+    uniqueness recheck now happens INSIDE the ledger append under the flock:
+    B refuses with exit 7, exactly one consumption exists, one runner ran."""
+    _approve(scenario)
+    # The ledger view as B saw it at scan time: approval only, before A's
+    # append (captured now, before A executes).
+    stale_view = read_bars_ledger(scenario["authority_root"])
+    assert [r.kind for r in stale_view.records] == ["BARS_LAUNCH_APPROVAL"]
+
+    # A executes for real: consumes once, runner runs once.
+    a_calls: list[str] = []
+    code_a, _ = _execute(scenario, runner=_fake_runner(scenario, a_calls))
+    assert code_a == 0 and a_calls == ["runner"]
+
+    # Store B: an equally valid BARS_READY store for the SAME work manifest
+    # under a different root. B's ledger read returns the stale (pre-A)
+    # view — the interleaving — while the append path reads the real file.
+    store_b_root = scenario["store_root"].parent / "runstate-b"
+    _create_bars_ready_store(scenario["protocol"], scenario["capture_manifest"], store_b_root)
+    monkeypatch.setattr(launch, "read_bars_ledger", lambda root: stale_view)
+
+    b_calls: list[str] = []
+
+    def b_runner(context) -> str:
+        b_calls.append("runner")
+        return "should-never-run"
+
+    code_b, summary_b = _execute_with_store(scenario, store_b_root, runner=b_runner)
+    assert code_b == 7 and summary_b is None
+    assert b_calls == []  # exactly ONE runner invocation (A's), never B's
+    # exactly one consumption in the authority ledger
+    view = read_bars_ledger(scenario["authority_root"])
+    consumptions = [r for r in view.records if r.kind == KIND_BARS_LAUNCH_CONSUMED]
+    assert len(consumptions) == 1
+    assert (
+        consumptions[0].work_manifest_sha256
+        == hashlib.sha256(scenario["work_manifest"].read_bytes()).hexdigest()
+    )
+    assert "EXECUTE REFUSED (duplicate)" in capsys.readouterr().err
+    # B's store is untouched: still BARS_READY, no lease left behind by the
+    # refused launcher.
+    store_b = RunStore.open(store_b_root, RUN_ID)
+    assert store_b.state is RunState.BARS_READY
+    assert not (store_b.dir / lease_module.LEASE_DIRNAME / lease_module.OWNER_FILENAME).exists()
+
+
 def test_cli_execute_refused_exit_10_touches_nothing(
     scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
 ) -> None:

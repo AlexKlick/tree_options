@@ -102,6 +102,7 @@ from tree_options.data.bars_manifest import (  # noqa: E402
     BarsAuthorityRecord,
     BarsLedgerView,
     BarsManifestError,
+    SecondExecutionRefusedError,
     append_bars_launch_consumed,
     load_bars_work_manifest,
     load_selection_profile,
@@ -678,7 +679,11 @@ def run_execute(
         )
         return 6, None
 
-    # duplicate: the one-shot rule for this work manifest
+    # duplicate: the one-shot rule for this work manifest. This scan is the
+    # fast path (a crash-after-consumption re-execute refuses here, before
+    # the lease); the AUTHORITATIVE check is inside the locked append below
+    # (round-3 review fix, finding 1) — the scan alone is not atomic across
+    # run stores, because it runs before the store-specific lease.
     for record in view.records:
         if (
             record.kind == KIND_BARS_LAUNCH_CONSUMED
@@ -707,15 +712,25 @@ def run_execute(
         print(f"EXECUTE REFUSED (run_state): {exc}", file=sys.stderr)
         return 5, None
     census_sha = approval.census_sha256
-    consumed = append_bars_launch_consumed(
-        Path(args.authority_root),
-        protocol_hash=current_hash,
-        amendment_packet_sha256=approval.amendment_packet_sha256,
-        census_sha256=census_sha,
-        work_manifest_sha256=work_manifest_sha,
-        reason=args.reason or "ATM-grid bars era launch (A4 execute seam)",
-        at_epoch=now_epoch,
-    )
+    try:
+        consumed = append_bars_launch_consumed(
+            Path(args.authority_root),
+            protocol_hash=current_hash,
+            amendment_packet_sha256=approval.amendment_packet_sha256,
+            census_sha256=census_sha,
+            work_manifest_sha256=work_manifest_sha,
+            reason=args.reason or "ATM-grid bars era launch (A4 execute seam)",
+            at_epoch=now_epoch,
+        )
+    except SecondExecutionRefusedError as exc:
+        # Round-3 review fix (2026-08-23, finding 1): a second store's
+        # launcher lost the cross-store race — its scan predated the first
+        # appender's CONSUMPTION, which the locked append now sees. Refuse
+        # with the duplicate exit code, release the lease this launcher
+        # took, and never invoke the runner.
+        lease_module.release(store.dir, owner)
+        print(f"EXECUTE REFUSED (duplicate): {exc}", file=sys.stderr)
+        return 7, None
     store.transition(
         RunState.BARS_CAPTURING,
         reason=args.reason or "ATM-grid bars era launch (A4 execute seam)",
