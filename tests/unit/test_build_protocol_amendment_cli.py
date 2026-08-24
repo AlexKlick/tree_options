@@ -59,7 +59,11 @@ def _census_bytes(manifest_body: bytes = MANIFEST_BODY) -> bytes:
             observed_census_fact={
                 "era_observed_masters": CensusFact(
                     v=3045, support={"census": 1}, confidence="EXACT"
-                )
+                ),
+                # Round-5 review fix (finding 2): the wholeness attestation
+                # fact the canonical producer always emits; equal to
+                # coverage.expected_masters in this whole fixture.
+                "masters_observed": CensusFact(v=3045, support={"census": 1}, confidence="EXACT"),
             },
             predeclared_derivation_input={
                 "era_bar_volume_p05": "NOT_EVALUABLE: coverage era ran --bars 0"
@@ -71,6 +75,7 @@ def _census_bytes(manifest_body: bytes = MANIFEST_BODY) -> bytes:
         ),
         value_registry={
             "era_observed_masters": "observed_census_fact",
+            "masters_observed": "observed_census_fact",
             "era_bar_volume_p05": "predeclared_derivation_input",
             "flow_min_session_volume": "not_yet_decided",
         },

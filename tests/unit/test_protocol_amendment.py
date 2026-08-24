@@ -86,7 +86,14 @@ def _make_census_bytes(
         for fid, v in (
             observed
             if observed is not None
-            else {"era_observed_masters": 3045, "era_as_of_fridays": 105}
+            else {
+                "era_observed_masters": 3045,
+                "era_as_of_fridays": 105,
+                # The canonical producer's wholeness attestation fact
+                # (scripts/build_coverage_census.py): masters observed ==
+                # coverage.expected_masters in the default whole fixture.
+                "masters_observed": 3045,
+            }
         ).items()
     }
     for fid, (v, confidence) in (observed_extra or {}).items():
@@ -965,6 +972,67 @@ def test_hard_link_planted_between_check_and_write_cannot_truncate_the_tracked_f
         )
         assert swapped_in.read_bytes() != before, "the published file is the proposal"
     assert PROTOCOL_PATH.read_bytes() == before, "still byte-identical at teardown"
+
+
+# ---- round-5 (finding 2): zero INCOMPLETE pairs is not wholeness on its own --------
+#
+# Round-5 review fix (2026-08-24): the builder refused only
+# `incomplete > 0`, but the census CLI's exit-0 rule is BOTH zero
+# INCOMPLETE_CLASSES pairs AND masters observed == expected_masters. A
+# census whose sealed manifest holds one valid master OUTSIDE the universe
+# (masters_observed 3046 vs expected 3045, zero incomplete pairs) exits 5 —
+# yet the builder used to emit a proposal from it.
+
+
+def test_builder_refuses_masters_observed_above_expected(tmp_path: Path) -> None:
+    """The reviewer's scenario at census scale: every universe pair COMPLETE
+    but one extra valid master captured outside the universe. The census CLI
+    exits 5 for exactly this; the builder must refuse naming both counts and
+    emit nothing."""
+    census_bytes = _make_census_bytes(
+        observed={
+            "era_observed_masters": 3045,
+            "era_as_of_fridays": 105,
+            "masters_observed": 3046,  # one valid master outside the universe
+        }
+    )
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    with _out_root() as out:
+        with pytest.raises(StaleCensusError, match="masters observed 3046 != expected 3045"):
+            _build(paths, out)
+        assert list(out.iterdir()) == [], "no packet was emitted for an un-whole census"
+
+
+def test_builder_refuses_masters_observed_below_expected(tmp_path: Path) -> None:
+    """Fewer observed masters than the universe declares is equally un-whole
+    (a pair can sit outside INCOMPLETE_CLASSES only via holiday classes while
+    its master never parsed)."""
+    census_bytes = _make_census_bytes(
+        observed={
+            "era_observed_masters": 3045,
+            "era_as_of_fridays": 105,
+            "masters_observed": 3044,
+        }
+    )
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    with _out_root() as out:
+        with pytest.raises(StaleCensusError, match="masters observed 3044 != expected 3045"):
+            _build(paths, out)
+
+
+def test_builder_refuses_a_census_that_cannot_attest_its_masters_count(
+    tmp_path: Path,
+) -> None:
+    """No strict-int `masters_observed` observation (the canonical producer
+    always emits one): wholeness cannot be attested, so the builder refuses
+    rather than assume the count matches."""
+    census_bytes = _make_census_bytes(
+        observed={"era_observed_masters": 3045, "era_as_of_fridays": 105}
+    )
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    with _out_root() as out:
+        with pytest.raises(StaleCensusError, match="masters_observed"):
+            _build(paths, out)
 
 
 # ---- round-3 (finding 4): input hashes attest the bytes that were PARSED ---------

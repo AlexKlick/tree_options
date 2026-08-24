@@ -550,6 +550,35 @@ def build_proposed_amendment(
             f"INCOMPLETE_CLASSES ({sorted(INCOMPLETE_CLASSES)}); an "
             "amendment may only be built against a whole census"
         )
+    # Round-5 review fix (2026-08-24, finding 2): zero INCOMPLETE pairs is
+    # not wholeness on its own. The census CLI's exit-0 rule is BOTH zero
+    # INCOMPLETE_CLASSES pairs AND masters observed == expected_masters —
+    # e.g. a one-pair universe whose sealed manifest contains that complete
+    # pair PLUS one valid master outside the universe still exits 5 (masters
+    # observed 2 != expected 1), yet this gate used to pass it: the out-of-
+    # universe master is exactly the un-whole capture an amendment must
+    # never be derived from. The observed count is the canonical producer's
+    # ``masters_observed`` observation (scripts/build_coverage_census.py);
+    # a census that does not carry it as a strict-int observation cannot
+    # attest wholeness and refuses here too.
+    masters_observed = census.values.observed_census_fact.get("masters_observed")
+    if masters_observed is None or type(masters_observed.v) is not int:
+        raise StaleCensusError(
+            "census does not report a strict-int observed 'masters_observed' "
+            "fact (the canonical census producer always emits one): "
+            "whole-census coverage cannot be attested — an amendment may "
+            "only be built against a whole census"
+        )
+    expected_masters = census.coverage.expected_masters
+    if masters_observed.v != expected_masters:
+        raise StaleCensusError(
+            f"census is coverage-INCOMPLETE: masters observed "
+            f"{masters_observed.v} != expected {expected_masters} (masters "
+            "outside the declared universe, or fewer masters than the "
+            "universe declares); an amendment may only be built against a "
+            "whole census: zero INCOMPLETE_CLASSES pairs AND masters "
+            "observed == expected_masters (the census CLI's exit-0 rule)"
+        )
     if base_version != BASE_PROTOCOL_VERSION:
         raise VersionError(
             f"base protocol version must be exactly {BASE_PROTOCOL_VERSION!r}, got {base_version!r}"
