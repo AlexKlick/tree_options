@@ -18,8 +18,14 @@ Pipeline (first failure wins; every failure is a refusal, never a landing):
 5.  the base protocol loads through the real loader and is exactly 0.2.0,
     and the target is exactly its patch+1 (0.2.1);
 6.  every derived value recomputes exactly from facts the census classes
-    ``observed_census_fact`` (anything else is future-derived and refused),
-    and every owner deviation carries a recorded decision reference;
+    ``observed_census_fact`` (anything else is future-derived and refused);
+    each fact a rule REFERENCES must additionally be a strict int observed
+    with confidence ``EXACT`` — a DERIVATION-TIME check per referenced
+    fact, so an unreferenced non-EXACT observation (e.g. the numeric
+    ``bar_volume_observations`` the canonical producer always emits as
+    NOT_EVALUABLE) blocks nothing and the value must become an
+    owner_deviation instead; every owner deviation carries a recorded
+    decision reference;
 7.  ``flow_min_session_volume`` is present as a real int > 0 — a missing or
     zero threshold is exactly the silent default this builder exists to
     prevent;
@@ -430,10 +436,16 @@ def build_proposed_amendment(
     # every observed_census_fact int and could `max(bar_volume_observations,
     # 1)` over a zero-marked-NOT_EVALUABLE fact, papering over the exact
     # bar-volume contradiction the runbook says must become an owner
-    # deviation. Two new gates below:
+    # deviation. Two gates below:
     #   a) coverage must be COMPLETE (zero INCOMPLETE_CLASSES pairs)
-    #   b) every observed fact used as an operand must have
-    #      confidence == "EXACT" (PARTIAL or NOT_EVALUABLE is refused)
+    #   b) every observed fact a rule REFERENCES must be a strict int with
+    #      confidence == "EXACT" — checked at DERIVATION TIME, per
+    #      referenced fact (round-2 fix, 2026-08-23, finding 3: the round-1
+    #      emission-time check refused ANY non-EXACT numeric observation
+    #      before any rule was consulted, so the canonical census — whose
+    #      producer always emits numeric bar_volume_observations as
+    #      NOT_EVALUABLE — could never feed even an owner-deviation
+    #      amendment; PARTIAL or NOT_EVALUABLE operands are still refused)
     from tree_options.data.coverage_census import INCOMPLETE_CLASSES
 
     incomplete = sum(getattr(census.coverage.observed, cls) for cls in INCOMPLETE_CLASSES)
@@ -454,22 +466,22 @@ def build_proposed_amendment(
             f"expected {PROPOSED_PROTOCOL_VERSION!r}"
         )
 
-    # 6. derivation: observed facts only; computed must equal supplied
+    # 6. derivation: observed facts only; computed must equal supplied.
+    # Round-2 review fix (2026-08-23, finding 3, probe
+    # /tmp/pr-a-amendment-producer-consumer-probe.log): the operand
+    # confidence/type gate is DERIVATION-TIME, applied per fact a rule
+    # actually references — the facts dict below collects every observed
+    # strict int regardless of confidence, and the per-reference gate (after
+    # the value_registry class check) refuses anything that is not an EXACT
+    # strict-int observation. An UNREFERENCED non-EXACT observation (e.g.
+    # the numeric bar_volume_observations the canonical producer always
+    # emits as NOT_EVALUABLE) therefore blocks nothing — not even an
+    # owner-deviation-only amendment.
     rules_by_id = {r.rule_id: r for r in rules_doc.rules}
     facts: dict[str, int] = {}
     for fact_id, fact in census.values.observed_census_fact.items():
+        # exact int only: bools are not facts, textual observations are not numeric
         if type(fact.v) is int:
-            # Round-1 review fix: refuse NOT_EVALUABLE / PARTIAL facts as
-            # derivation operands. Confidence is part of the census content
-            # (the fact's hash binds it); admit only EXACT.
-            if fact.confidence != "EXACT":
-                raise DerivationMismatchError(
-                    f"observed fact {fact_id!r} has confidence "
-                    f"{fact.confidence!r}; only EXACT may be used as a "
-                    "derivation operand (census MUST be repaired or the "
-                    "value MUST be a non-derivation owner_deviation)"
-                )
-            # exact int only: bools are not facts, textual observations are not numeric
             facts[fact_id] = fact.v
     for ov in owner_doc.values:
         if ov.provenance == "derivation":
@@ -485,6 +497,34 @@ def build_proposed_amendment(
                         f"value {ov.id!r} rule {ov_rule.rule_id!r} references fact "
                         f"{fid!r} classed {declared!r}: only observed_census_fact "
                         "facts exist yet (future-derived)"
+                    )
+                observed = census.values.observed_census_fact.get(fid)
+                if observed is None:
+                    # Defensive: verify_census's taxonomy check makes a
+                    # registry/section disagreement unreachable, but a
+                    # referenced fact missing here must still refuse HERE —
+                    # never as a generic evaluate-time KeyError.
+                    raise DerivationMismatchError(
+                        f"value {ov.id!r} rule {ov_rule.rule_id!r} references fact "
+                        f"{fid!r} that is absent from observed_census_fact; only "
+                        "EXACT strict-int observations are derivation operands — "
+                        "make the value an owner_deviation instead"
+                    )
+                if type(observed.v) is not int:
+                    raise DerivationMismatchError(
+                        f"value {ov.id!r} rule {ov_rule.rule_id!r} references observed "
+                        f"fact {fid!r} whose value is not a strict int "
+                        f"({type(observed.v).__name__}); only EXACT strict-int "
+                        "observations are derivation operands — make the value an "
+                        "owner_deviation instead"
+                    )
+                if observed.confidence != "EXACT":
+                    raise DerivationMismatchError(
+                        f"value {ov.id!r} rule {ov_rule.rule_id!r} references observed "
+                        f"fact {fid!r} with confidence {observed.confidence!r}; only "
+                        "EXACT observations are derivation operands — make the value "
+                        "an owner_deviation instead (the census must NOT be repaired "
+                        "to hide the gap)"
                     )
             computed = evaluate(ov_rule, facts)
             if computed != ov.value:

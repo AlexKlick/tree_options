@@ -69,16 +69,26 @@ def _make_census_bytes(
     manifest_body: bytes = MANIFEST_BODY,
     observed: dict[str, int] | None = None,
     predeclared: dict[str, str] | None = None,
+    observed_confidence: str = "EXACT",
+    observed_extra: dict[str, tuple[int | str, str]] | None = None,
 ) -> bytes:
-    """A self-consistent census built directly from the coverage models."""
+    """A self-consistent census built directly from the coverage models.
+
+    ``observed_extra`` adds observed facts with an explicit (v, confidence)
+    pair — the shape the round-2 producer/consumer probe needs (the canonical
+    producer always emits a numeric ``bar_volume_observations`` as
+    NOT_EVALUABLE, and textual observations exist too).
+    """
     observed_facts = {
-        fid: CensusFact(v=v, support={"census": 1}, confidence="EXACT")
+        fid: CensusFact(v=v, support={"census": 1}, confidence=observed_confidence)
         for fid, v in (
             observed
             if observed is not None
             else {"era_observed_masters": 3045, "era_as_of_fridays": 105}
         ).items()
     }
+    for fid, (v, confidence) in (observed_extra or {}).items():
+        observed_facts[fid] = CensusFact(v=v, support={"census": 1}, confidence=confidence)
     predeclared = (
         predeclared
         if predeclared is not None
@@ -681,3 +691,90 @@ def test_out_root_outside_artifacts_refused(tmp_path: Path) -> None:
             _build(paths, rogue)
     finally:
         shutil.rmtree(rogue, ignore_errors=True)
+
+
+# ---- round-2 (finding 3): the confidence gate is derivation-time ---------------------
+#
+# The canonical census producer (scripts/build_coverage_census.py) ALWAYS
+# emits the numeric fact bar_volume_observations with confidence
+# NOT_EVALUABLE. The round-1 gate refused ANY non-EXACT numeric observation
+# at emission time — before any rule was consulted — so the canonical census
+# could never feed even an owner-deviation amendment. The gate now applies
+# per fact a rule actually REFERENCES, at derivation time.
+
+
+def test_unreferenced_not_evaluable_int_fact_does_not_block_owner_deviation(
+    tmp_path: Path,
+) -> None:
+    """The exact producer/consumer probe shape: a census carrying a numeric
+    NOT_EVALUABLE bar_volume_observations that NO rule references, with the
+    flow threshold supplied as an owner deviation, must BUILD."""
+    census_bytes = _make_census_bytes(
+        observed_extra={"bar_volume_observations": (0, "NOT_EVALUABLE")}
+    )
+    census_hash = _census_hash(census_bytes)
+    paths = _bundle(
+        tmp_path,
+        census_bytes=census_bytes,
+        owner_values={
+            "census_content_sha256": census_hash,
+            "values": [
+                {
+                    "id": "flow_min_session_volume",
+                    "value": 761,
+                    "provenance": "owner_deviation",
+                    "rule_id": None,
+                    "deviation_record": "owner-decision-2026-08-23-004",
+                }
+            ],
+        },
+    )
+    with _out_root() as out:
+        packet = _build(paths, out)
+    assert packet.flow_min_session_volume == 761
+    assert packet.landed is False
+
+
+@pytest.mark.parametrize("confidence", ["NOT_EVALUABLE", "PARTIAL"])
+def test_rule_referencing_non_exact_int_fact_refused(tmp_path: Path, confidence: str) -> None:
+    """A rule that DERIVES from a non-EXACT numeric observation is refused
+    at derivation time, naming the value, rule, fact, and confidence."""
+    census_bytes = _make_census_bytes(observed_extra={"bar_volume_observations": (0, confidence)})
+    census_hash = _census_hash(census_bytes)
+    paths = _bundle(
+        tmp_path,
+        census_bytes=census_bytes,
+        rules=_rules(
+            census_hash,
+            expression={"op": "max", "args": [{"fact": "bar_volume_observations"}, 1]},
+        ),
+    )
+    with _out_root() as out:
+        with pytest.raises(DerivationMismatchError) as exc_info:
+            _build(paths, out)
+    message = str(exc_info.value)
+    assert "flow_min_session_volume" in message
+    assert FLOW_RULE_ID in message
+    assert "bar_volume_observations" in message
+    assert confidence in message
+    assert "owner_deviation" in message  # the guidance, not a census repair
+
+
+def test_rule_referencing_str_observed_fact_refused(tmp_path: Path) -> None:
+    """A rule referencing a textual (non-int) observed fact is refused at the
+    derivation-time gate, not by a evaluate-time KeyError."""
+    census_bytes = _make_census_bytes(
+        observed_extra={"era_vendor_ticker_text": ("twenty-nine", "EXACT")}
+    )
+    census_hash = _census_hash(census_bytes)
+    paths = _bundle(
+        tmp_path,
+        census_bytes=census_bytes,
+        rules=_rules(
+            census_hash,
+            expression={"op": "max", "args": [{"fact": "era_vendor_ticker_text"}, 1]},
+        ),
+    )
+    with _out_root() as out:
+        with pytest.raises(DerivationMismatchError, match="not a strict int"):
+            _build(paths, out)
