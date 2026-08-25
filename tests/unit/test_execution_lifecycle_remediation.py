@@ -420,6 +420,29 @@ def test_replace_at_explicit_basis_receipt_time_is_allowed() -> None:
     assert not projected.reconciliation_reasons
 
 
+def test_confirmed_replace_can_chain_at_explicit_new_basis_receipt_time() -> None:
+    initial_basis = _readback(1, total_quantity=3, snapshot_at=11, received=12)
+    first = _replace(1, total=5, basis=1, created_at=13)
+    confirmed_basis = _readback(2, total_quantity=5, snapshot_at=16, received=17)
+    second = _replace(2, total=6, basis=2, created_at=17)
+    final_confirmation = _readback(3, total_quantity=6, snapshot_at=18, received=19)
+
+    projected = (
+        _acknowledged()
+        .apply(initial_basis)
+        .apply(first)
+        .apply(confirmed_basis)
+        .apply(second)
+        .apply(final_confirmation)
+    )
+
+    assert projected.state is ExecutionState.ACKNOWLEDGED
+    assert projected.broker_confirmed_total_quantity == 6
+    assert projected.pending_replace_total_quantity is None
+    assert projected.replace_basis_id == "readback-003"
+    assert not projected.reconciliation_reasons
+
+
 def test_unrequested_broker_total_change_is_sticky_before_and_after_replace() -> None:
     changed_without_replace = _acknowledged().apply(
         _readback(1, total_quantity=4, snapshot_at=11, received=12)
