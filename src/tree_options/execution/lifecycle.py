@@ -2,8 +2,10 @@
 
 The reducer has no I/O and performs no broker action. It accepts immutable
 records, checks identity/sequence collisions before projection, and derives
-authority from the full retained fact set. UNKNOWN never grants permission to
-resubmit or replace, and local replace intent never impersonates broker state.
+authority from the full retained fact set. Retaining a contradictory local
+action is not authorization to execute it: reconciliation remains fail closed,
+UNKNOWN never grants replacement authority, and local replace intent never
+impersonates broker state.
 """
 
 from __future__ import annotations
@@ -54,6 +56,8 @@ class ReconciliationReason(StrEnum):
     FILL_ECONOMIC_GAP = "FILL_ECONOMIC_GAP"
     FILL_ECONOMIC_OVERLAP = "FILL_ECONOMIC_OVERLAP"
     FILL_CUMULATIVE_REGRESSION = "FILL_CUMULATIVE_REGRESSION"
+    RETRY_AFTER_LOCAL_KNOWLEDGE = "RETRY_AFTER_LOCAL_KNOWLEDGE"
+    OVERLAPPING_REPLACE_INTENTS = "OVERLAPPING_REPLACE_INTENTS"
     REJECT_WITH_OBSERVED_FILL = "REJECT_WITH_OBSERVED_FILL"
     READBACK_FILL_CONTRADICTION = "READBACK_FILL_CONTRADICTION"
     READBACK_CUMULATIVE_REGRESSION = "READBACK_CUMULATIVE_REGRESSION"
@@ -192,12 +196,37 @@ def _has_fill_cumulative_regression(
     records: tuple[StoredExecutionRecord, ...],
 ) -> bool:
     fills = _fill_records(records)
+    quantity_facts = tuple(
+        record
+        for record in records
+        if isinstance(record, (PartialFill, CompleteFill, BrokerReadback))
+    )
     return any(
         later.broker_order_id == earlier.broker_order_id
-        and later.exchange_event_at > earlier.exchange_event_at
+        and later.exchange_event_at > _primary_time(earlier)
         and later.cumulative_quantity < earlier.cumulative_quantity
-        for earlier in fills
+        for earlier in quantity_facts
         for later in fills
+    )
+
+
+def _has_retry_after_local_knowledge(
+    records: tuple[StoredExecutionRecord, ...],
+) -> bool:
+    attempts = sorted(
+        (record for record in records if isinstance(record, SubmitAttempt)),
+        key=_event_sort_key,
+    )
+    knowledge_boundaries = [fact.locally_received_at for fact in _broker_facts(records)]
+    knowledge_boundaries.extend(
+        record.locally_received_at
+        for record in records
+        if isinstance(record, (TimeoutObserved, DisconnectObserved))
+    )
+    return any(
+        boundary <= retry.send_attempt_at
+        for retry in attempts[1:]
+        for boundary in knowledge_boundaries
     )
 
 
@@ -256,6 +285,8 @@ def _derive_quantity_authority(
                 confirmed_at = record.broker_acknowledged_at
             continue
         if isinstance(record, ReplaceIntent):
+            if pending is not None:
+                reasons.add(ReconciliationReason.OVERLAPPING_REPLACE_INTENTS)
             pending = record.new_total_quantity
             pending_basis_id = record.based_on_readback_id
             pending_created_at = record.replace_created_at
@@ -312,6 +343,7 @@ def _derive_fact_reasons(
     observed_cumulative = 0
     terminal_state: ExecutionState | None = None
     terminal_cumulative = 0
+    terminal_at: datetime | None = None
 
     for record in sorted(_broker_facts(records), key=_event_sort_key):
         if isinstance(record, BrokerAcknowledgement):
@@ -325,14 +357,19 @@ def _derive_fact_reasons(
                 reasons.add(ReconciliationReason.TERMINAL_FACT_CONTRADICTION)
             terminal_state = ExecutionState.REJECTED
             terminal_cumulative = observed_cumulative
+            terminal_at = record.broker_acknowledged_at
             continue
         if isinstance(record, (PartialFill, CompleteFill)):
-            if terminal_state is not None and record.cumulative_quantity > terminal_cumulative:
+            if terminal_state is not None and (
+                record.cumulative_quantity > terminal_cumulative
+                or (terminal_at is not None and record.exchange_event_at > terminal_at)
+            ):
                 reasons.add(ReconciliationReason.TERMINAL_FACT_CONTRADICTION)
             observed_cumulative = max(observed_cumulative, record.cumulative_quantity)
             if isinstance(record, CompleteFill):
                 terminal_state = ExecutionState.FILLED
                 terminal_cumulative = observed_cumulative
+                terminal_at = record.exchange_event_at
             continue
 
         if record.status in {BrokerReadbackStatus.ABSENT, BrokerReadbackStatus.AMBIGUOUS}:
@@ -355,6 +392,7 @@ def _derive_fact_reasons(
         if mapped_terminal is not None:
             terminal_state = mapped_terminal
             terminal_cumulative = max(observed_cumulative, record.cumulative_quantity)
+            terminal_at = record.broker_snapshot_at
         observed_cumulative = max(observed_cumulative, record.cumulative_quantity)
 
     return frozenset(reasons)
@@ -484,6 +522,8 @@ def _derive_reconciliation_reasons(
         reasons.add(ReconciliationReason.FILL_ECONOMIC_OVERLAP)
     if _has_fill_cumulative_regression(records):
         reasons.add(ReconciliationReason.FILL_CUMULATIVE_REGRESSION)
+    if _has_retry_after_local_knowledge(records):
+        reasons.add(ReconciliationReason.RETRY_AFTER_LOCAL_KNOWLEDGE)
     if filled_quantity > 0 and not _covers_through(fill_intervals, filled_quantity):
         reasons.add(ReconciliationReason.FILL_ECONOMIC_GAP)
     if filled_quantity > 0 and confirmed_total is None:
@@ -599,7 +639,7 @@ class ExecutionLifecycle:
         return sum(end - start for start, end in self.fill_economic_intervals)
 
     def apply(self, record: ExecutionRecord) -> ExecutionLifecycle:
-        """Validate and project one record without mutating this instance."""
+        """Validate identity and retain/project one record without broker action."""
         if record.intent_id != self.intent.intent_id:
             raise IntentMismatchError(
                 f"record intent {record.intent_id!r} does not match {self.intent.intent_id!r}"
@@ -757,21 +797,6 @@ class ExecutionLifecycle:
         first_attempt = attempts[0]
         if any(_primary_time(fact) < first_attempt.send_attempt_at for fact in facts):
             raise TemporalOrderError("retrospective submit postdates a retained broker fact")
-
-        knowledge_boundaries = [fact.locally_received_at for fact in facts]
-        knowledge_boundaries.extend(
-            item.locally_received_at
-            for item in records
-            if isinstance(item, (TimeoutObserved, DisconnectObserved))
-        )
-        if any(
-            boundary <= retry.send_attempt_at
-            for retry in attempts[1:]
-            for boundary in knowledge_boundaries
-        ):
-            raise TransitionRefusedError(
-                "submit retry requires a fresh readback after broker or uncertainty knowledge"
-            )
         return self._project_records(records)
 
     def _apply_uncertainty(
@@ -832,7 +857,11 @@ class ExecutionLifecycle:
         )
         historical = self._project_records(known_records)
         if historical.pending_replace_total_quantity is not None:
-            raise ReplacementRefusedError("replace refused while prior replace is pending")
+            if retained_basis.broker_order_id != record.broker_order_id:
+                raise ReplacementRefusedError("replace broker order does not match readback")
+            if record.new_total_quantity <= retained_basis.cumulative_quantity:
+                raise ReplacementRefusedError("replace total must exceed filled quantity")
+            return self._with_record(record)
         basis = historical.replace_basis
         if basis is None or basis.record_id != record.based_on_readback_id:
             raise ReplacementRefusedError("replace requires a current matching readback")
