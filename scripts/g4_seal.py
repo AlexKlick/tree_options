@@ -403,6 +403,25 @@ def execute_sealed_run(
             " approved",
         )
     runner = registered.implementation
+    # R13 (round-11 finding 2): the configuration digest is RE-DERIVED from
+    # the LIVE implementation at the effect boundary. RegisteredRunner is
+    # frozen, but the implementation OBJECT it references is not: a mutable
+    # configured runner registered with the truthful digest could be flipped
+    # after approval without re-registering, and both the packet rebuild and
+    # the stored-digest comparison above still saw the registration-time
+    # string. The registering layer's config_digest_fn reads the live
+    # instance NOW; a mutated configuration changes the recomputed digest
+    # and is refused BEFORE any authority is spent.
+    recomputed_config_digest = registered.config_digest_fn(runner)
+    if recomputed_config_digest != expected_packet.runner_config_digest:
+        raise ApprovalInvalidError(
+            run_id,
+            "the runner configuration digest recomputed from the LIVE implementation "
+            f"{recomputed_config_digest[:12]}… does not equal the approved packet's "
+            f"machinery binding {expected_packet.runner_config_digest[:12]}… — the "
+            "registered machinery's configuration changed after approval, and a "
+            "mutated instance is not the configuration the owner approved",
+        )
 
     # Verification may take time. Re-read the ledger at the final effect
     # boundary, so an interleaved consumption or approval change is joined to

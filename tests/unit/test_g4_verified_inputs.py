@@ -52,6 +52,12 @@ CODE_SHA = "9" * 40
 TEST_RUNNER_CONFIG_DIGEST = "a" * 64
 
 
+def _fixed_digest(_impl: object) -> str:
+    """R13 (round-11 finding 2): the simple-case digest fn — a fixed digest
+    that recomputes to the same stored string for any implementation."""
+    return TEST_RUNNER_CONFIG_DIGEST
+
+
 class _FakeSealedRunner:
     """The registry-seeded fake machinery these packet-building tests bind.
 
@@ -68,7 +74,11 @@ class _FakeSealedRunner:
 @pytest.fixture(autouse=True)
 def _registered_fake_runner() -> Iterator[None]:
     verified_inputs.RUNNER_REGISTRY.clear()
-    verified_inputs.register_runner(_FakeSealedRunner(), config_digest=TEST_RUNNER_CONFIG_DIGEST)
+    verified_inputs.register_runner(
+        _FakeSealedRunner(),
+        config_digest=TEST_RUNNER_CONFIG_DIGEST,
+        config_digest_fn=lambda _impl: TEST_RUNNER_CONFIG_DIGEST,
+    )
     try:
         yield
     finally:
@@ -528,12 +538,21 @@ def test_runner_identity_binds_qualname_and_config_digest_beyond_the_file() -> N
     )
 
     entry = verified_inputs.register_runner(
-        safe, config_digest=sha256(b"runner-config-safe").hexdigest()
+        safe,
+        config_digest=sha256(b"runner-config-safe").hexdigest(),
+        config_digest_fn=lambda impl: sha256(f"runner-config:{impl.mode}".encode()).hexdigest(),
     )
     assert entry.config_digest == sha256(b"runner-config-safe").hexdigest()
     assert entry.implementation_qualname == (verified_inputs.runner_implementation_qualname(safe))
+    # R13 (round-11 finding 2): the registry entry carries the registering
+    # layer's digest FUNCTION, and it reads the LIVE instance configuration.
+    assert entry.config_digest_fn(safe) == sha256(b"runner-config:safe-mode").hexdigest()
+    safe.mode = "dangerous-mode"
+    assert entry.config_digest_fn(safe) == sha256(b"runner-config:dangerous-mode").hexdigest()
     with pytest.raises(VerifiedInputsError, match="configuration digest"):
-        verified_inputs.register_runner(safe, config_digest="not-a-sha256-digest")
+        verified_inputs.register_runner(
+            safe, config_digest="not-a-sha256-digest", config_digest_fn=_fixed_digest
+        )
 
 
 def test_packet_binds_qualname_and_config_digest_of_the_registered_machinery(

@@ -158,7 +158,11 @@ class StubRunner:
 def registered_runner() -> Iterator[StubRunner]:
     runner = StubRunner()
     vi.RUNNER_REGISTRY.clear()
-    vi.register_runner(runner, config_digest=TEST_RUNNER_CONFIG_DIGEST)
+    vi.register_runner(
+        runner,
+        config_digest=TEST_RUNNER_CONFIG_DIGEST,
+        config_digest_fn=lambda _impl: TEST_RUNNER_CONFIG_DIGEST,
+    )
     try:
         yield runner
     finally:
@@ -167,11 +171,23 @@ def registered_runner() -> Iterator[StubRunner]:
 
 @contextlib.contextmanager
 def _seeded_registry(
-    runner: object, *, config_digest: str = TEST_RUNNER_CONFIG_DIGEST
+    runner: object,
+    *,
+    config_digest: str = TEST_RUNNER_CONFIG_DIGEST,
+    config_digest_fn: Callable[[object], str] | None = None,
 ) -> Iterator[None]:
     saved = dict(vi.RUNNER_REGISTRY)
     vi.RUNNER_REGISTRY.clear()
-    vi.register_runner(runner, config_digest=config_digest)  # type: ignore[arg-type]
+    vi.register_runner(
+        runner,  # type: ignore[arg-type]
+        config_digest=config_digest,
+        # R13 (round-11 finding 2): a fixed digest fn recomputes to the same
+        # stored string; the mutating-configuration test passes one that
+        # reads the live instance.
+        config_digest_fn=config_digest_fn  # type: ignore[arg-type]
+        if config_digest_fn is not None
+        else (lambda _impl: config_digest),
+    )
     try:
         yield
     finally:
@@ -945,4 +961,64 @@ def test_execution_rederives_the_config_digest_from_the_registry_entry(
     with pytest.raises(ApprovalInvalidError, match="configuration digest"):
         _execute(packet, fixture, ledger_root)
     assert runner.calls == 0
+    assert _no_consumption(ledger_root)
+
+
+# ---- round-11 (finding 2, R13): the config digest is RECOMPUTED from the live
+# implementation at the effect boundary ------------------------------------------
+#
+# Round-11 review fix (2026-08-25, R13 wave): RegisteredRunner is frozen, but
+# the implementation OBJECT it references is not. Registering a mutable
+# configured runner with the truthful digest, approving the packet, then
+# flipping the instance to dangerous-mode WITHOUT re-registering used to
+# execute the mutated runner: packet reconstruction and execution both
+# compared the STORED digest string, so the mutation was invisible.
+# register_runner now requires config_digest_fn — the registering layer's
+# function that computes the digest of a given implementation instance — and
+# execution calls it on the LIVE implementation at the effect boundary,
+# requiring the recomputed digest to equal the packet's
+# runner_config_digest (the stored-digest comparison still holds too).
+
+
+class _MutableConfigRunner:
+    """The approved machinery shape whose CONFIGURATION is live instance
+    state: the digest function reads it, so a post-approval mutation changes
+    the recomputed digest."""
+
+    runner_version = RUNNER_VERSION
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.calls = 0
+
+    def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
+        self.calls += 1
+        return f"configured-machinery-ran:{self.mode}"
+
+
+def _mode_digest(impl: object) -> str:
+    runner: _MutableConfigRunner = impl  # type: ignore[assignment]
+    return hashlib.sha256(f"runner-config:{runner.mode}".encode()).hexdigest()
+
+
+def test_mutated_runner_configuration_refused_at_the_effect_boundary(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """The round-11 attack: the registering layer supplies a digest function
+    that reads the instance's LIVE configuration. Approve while the instance
+    is in safe-mode, flip it to dangerous-mode without re-registering, then
+    execute — the stored digest still matches (nothing re-registered), so
+    only the RECOMPUTATION at the effect boundary can refuse, before any
+    authority is spent."""
+    fixture = write_valid_inputs(tmp_path)
+    safe = _MutableConfigRunner("safe-mode")
+    with _seeded_registry(safe, config_digest=_mode_digest(safe), config_digest_fn=_mode_digest):
+        packet = _packet(fixture)
+        _approve(ledger_root, packet)
+        # the attack: flip the live configuration, never re-register — the
+        # SAME registry entry (with its unchanged stored digest) is live
+        safe.mode = "dangerous-mode"
+        with pytest.raises(ApprovalInvalidError, match="configuration digest"):
+            _execute(packet, fixture, ledger_root)
+    assert safe.calls == 0, "the mutated configuration never runs"
     assert _no_consumption(ledger_root)

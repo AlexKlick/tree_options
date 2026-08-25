@@ -268,6 +268,18 @@ def _build_packet(
 # module as the approved one (identical file hash) is distinguished by its
 # qualified name, while one configured instance of the approved class is
 # distinguished by its registration-time configuration digest.
+#
+# Round-11 review fix (finding 2, R13, 2026-08-25): RegisteredRunner is
+# frozen, but the implementation OBJECT it references is not — a mutable
+# configured runner registered with the truthful digest could be flipped
+# after approval without re-registering, and every comparison saw only the
+# STORED digest string. Registration therefore also carries the registering
+# layer's ``config_digest_fn`` — the function that computes the digest of a
+# GIVEN implementation instance (for simple cases ``lambda impl: <digest>``;
+# for configured runners it reads the instance's current configuration) —
+# and execution calls it on the live implementation at the effect boundary,
+# requiring the RECOMPUTED digest to equal the packet's
+# ``runner_config_digest`` (the stored comparison still holds too).
 
 
 def _implementation_probe(implementation: object) -> Any:
@@ -332,6 +344,11 @@ class RegisteredRunner:
     implementation_qualname: str
     implementation_sha256: str
     config_digest: str
+    # Round-11 review fix (finding 2, R13): re-derives the configuration
+    # digest from a GIVEN implementation instance at the effect boundary —
+    # the frozen ``config_digest`` alone cannot see a mutated implementation
+    # object that was never re-registered.
+    config_digest_fn: Callable[[Callable[[HeldVerifiedSealedInputs], str]], str]
 
 
 RUNNER_REGISTRY: dict[str, RegisteredRunner] = {}
@@ -342,6 +359,7 @@ def register_runner(
     *,
     runner_version: str = RUNNER_VERSION,
     config_digest: str,
+    config_digest_fn: Callable[[Callable[[HeldVerifiedSealedInputs], str]], str],
 ) -> RegisteredRunner:
     """Seed the registry with one runner machinery implementation.
 
@@ -349,6 +367,15 @@ def register_runner(
     layer computes it over whatever configuration the runner carries, so a
     configured instance of the approved class binds differently from another
     configuration of the same class.
+
+    ``config_digest_fn`` (round-11, finding 2, R13) is REQUIRED: the
+    registering layer's function that computes the configuration digest of a
+    GIVEN implementation instance — for simple cases
+    ``lambda impl: <fixed digest>``; for configured runners it reads the
+    instance's CURRENT configuration. Execution calls it on the live
+    implementation at the effect boundary and requires the recomputed digest
+    to equal the packet's ``runner_config_digest``, so a mutated
+    configuration that was never re-registered is refused before consumption.
 
     The owning layer (or a test) calls this explicitly; the registry is the
     authority surface for WHICH machinery a verified packet binds. Production
@@ -360,6 +387,7 @@ def register_runner(
         implementation_qualname=runner_implementation_qualname(implementation),
         implementation_sha256=runner_implementation_sha256(implementation),
         config_digest=_validate_config_digest(config_digest),
+        config_digest_fn=config_digest_fn,
     )
     RUNNER_REGISTRY[runner_version] = entry
     return entry
