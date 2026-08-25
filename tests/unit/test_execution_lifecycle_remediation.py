@@ -188,6 +188,7 @@ def test_replace_request_stays_pending_until_broker_confirms_total() -> None:
     assert overlapping.state is ExecutionState.RECONCILIATION_REQUIRED
     assert overlapping.pending_replace_total_quantity == 6
     assert "OVERLAPPING_REPLACE_INTENTS" in overlapping.reconciliation_reasons
+    assert overlapping.replace_basis_id is None
 
     confirmed = replaced.apply(_readback(2, total_quantity=5, snapshot_at=16, received=17))
     assert confirmed.state is ExecutionState.ACKNOWLEDGED
@@ -346,6 +347,7 @@ def test_same_basis_replace_and_confirmation_permutations_reconcile_deterministi
         assert projected.broker_confirmed_total_quantity == 6
         assert projected.pending_replace_total_quantity is None
         assert "OVERLAPPING_REPLACE_INTENTS" in projected.reconciliation_reasons
+        assert projected.replace_basis_id is None
         assert first in projected.records
         assert second in projected.records
         assert confirmation in projected.records
