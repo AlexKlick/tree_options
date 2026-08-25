@@ -165,20 +165,14 @@ def _semantic(lifecycle: ExecutionLifecycle) -> tuple[object, ...]:
 
 
 def test_replace_request_stays_pending_until_broker_confirms_total() -> None:
-    replaced = (
-        _acknowledged()
-        .apply(_readback(1, total_quantity=3))
-        .apply(_replace(total=5))
-    )
+    replaced = _acknowledged().apply(_readback(1, total_quantity=3)).apply(_replace(total=5))
     assert replaced.broker_confirmed_total_quantity == 3
     assert replaced.pending_replace_total_quantity == 5
 
     with pytest.raises(ReplacementRefusedError, match="pending"):
         replaced.apply(_replace(2, total=6, basis=1))
 
-    confirmed = replaced.apply(
-        _readback(2, total_quantity=5, snapshot_at=16, received=17)
-    )
+    confirmed = replaced.apply(_readback(2, total_quantity=5, snapshot_at=16, received=17))
     assert confirmed.state is ExecutionState.ACKNOWLEDGED
     assert confirmed.broker_confirmed_total_quantity == 5
     assert confirmed.pending_replace_total_quantity is None
@@ -191,11 +185,7 @@ def test_replace_request_stays_pending_until_broker_confirms_total() -> None:
 
 
 def test_fill_above_confirmed_total_does_not_infer_pending_replace_acceptance() -> None:
-    replaced = (
-        _acknowledged()
-        .apply(_readback(1, total_quantity=3))
-        .apply(_replace(total=5))
-    )
+    replaced = _acknowledged().apply(_readback(1, total_quantity=3)).apply(_replace(total=5))
     premature_fill = replaced.apply(
         _fill(4, fill_quantity=4, cumulative_quantity=4, exchange_at=16, received=17)
     )
@@ -221,14 +211,8 @@ def test_fill_above_confirmed_total_does_not_infer_pending_replace_acceptance() 
 
 
 def test_replace_confirmation_mismatch_is_sticky_after_pending_clears() -> None:
-    replaced = (
-        _acknowledged()
-        .apply(_readback(1, total_quantity=3))
-        .apply(_replace(total=5))
-    )
-    mismatched = replaced.apply(
-        _readback(2, total_quantity=4, snapshot_at=16, received=17)
-    )
+    replaced = _acknowledged().apply(_readback(1, total_quantity=3)).apply(_replace(total=5))
+    mismatched = replaced.apply(_readback(2, total_quantity=4, snapshot_at=16, received=17))
     assert mismatched.state is ExecutionState.RECONCILIATION_REQUIRED
     assert mismatched.broker_confirmed_total_quantity == 4
     assert mismatched.pending_replace_total_quantity is None
@@ -249,10 +233,7 @@ def test_unrequested_broker_total_change_is_sticky_before_and_after_replace() ->
     )
     assert changed_without_replace.broker_confirmed_total_quantity == 4
     assert changed_without_replace.state is ExecutionState.RECONCILIATION_REQUIRED
-    assert (
-        "UNEXPECTED_CONFIRMED_TOTAL_CHANGE"
-        in changed_without_replace.reconciliation_reasons
-    )
+    assert "UNEXPECTED_CONFIRMED_TOTAL_CHANGE" in changed_without_replace.reconciliation_reasons
 
     confirmed_replace = (
         _acknowledged()
@@ -265,9 +246,7 @@ def test_unrequested_broker_total_change_is_sticky_before_and_after_replace() ->
     )
     assert changed_after_replace.broker_confirmed_total_quantity == 6
     assert changed_after_replace.state is ExecutionState.RECONCILIATION_REQUIRED
-    assert (
-        "UNEXPECTED_CONFIRMED_TOTAL_CHANGE" in changed_after_replace.reconciliation_reasons
-    )
+    assert "UNEXPECTED_CONFIRMED_TOTAL_CHANGE" in changed_after_replace.reconciliation_reasons
 
 
 @pytest.mark.parametrize("uncertainty", ["timeout", "disconnect"])
@@ -432,12 +411,8 @@ def test_unknown_with_matching_partial_readback_recovers_consistently() -> None:
 
 def test_missing_fill_interval_closes_gap_and_application_orders_converge() -> None:
     acknowledged = _acknowledged()
-    missing_first = _fill(
-        1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=9
-    )
-    later_interval = _fill(
-        2, fill_quantity=1, cumulative_quantity=2, exchange_at=6, received=8
-    )
+    missing_first = _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=9)
+    later_interval = _fill(2, fill_quantity=1, cumulative_quantity=2, exchange_at=6, received=8)
 
     gap = acknowledged.apply(later_interval)
     assert gap.state is ExecutionState.RECONCILIATION_REQUIRED

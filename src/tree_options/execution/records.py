@@ -218,6 +218,7 @@ class BrokerReadback(StrictModel):
     intent_id: IdStr
     status: BrokerReadbackStatus
     broker_order_id: IdStr | None
+    total_quantity: int | None = Field(default=None, strict=True, ge=1)
     cumulative_quantity: int = Field(strict=True, ge=0)
     broker_snapshot_at: ExecutionUTCDatetime
     locally_received_at: ExecutionUTCDatetime
@@ -237,6 +238,15 @@ class BrokerReadback(StrictModel):
         }
         if self.status in order_required and self.broker_order_id is None:
             raise ValueError(f"{self.status} readback requires broker_order_id")
+        if self.status in order_required and self.total_quantity is None:
+            raise ValueError(f"{self.status} readback requires total_quantity")
+        no_accepted_total = {
+            BrokerReadbackStatus.REJECTED,
+            BrokerReadbackStatus.ABSENT,
+            BrokerReadbackStatus.AMBIGUOUS,
+        }
+        if self.status in no_accepted_total and self.total_quantity is not None:
+            raise ValueError(f"{self.status} readback must not claim total_quantity")
         if self.status in {BrokerReadbackStatus.ABSENT, BrokerReadbackStatus.AMBIGUOUS}:
             if self.broker_order_id is not None:
                 raise ValueError(f"{self.status} readback must not claim one broker_order_id")
@@ -244,10 +254,24 @@ class BrokerReadback(StrictModel):
                 raise ValueError(f"{self.status} readback must have zero cumulative_quantity")
         if self.status is BrokerReadbackStatus.OPEN and self.cumulative_quantity != 0:
             raise ValueError("OPEN readback must have zero cumulative_quantity")
-        if self.status is BrokerReadbackStatus.PARTIALLY_FILLED and self.cumulative_quantity == 0:
-            raise ValueError("PARTIALLY_FILLED readback requires positive cumulative_quantity")
-        if self.status is BrokerReadbackStatus.FILLED and self.cumulative_quantity == 0:
-            raise ValueError("FILLED readback requires positive cumulative_quantity")
+        if self.status is BrokerReadbackStatus.PARTIALLY_FILLED:
+            if self.cumulative_quantity == 0:
+                raise ValueError("PARTIALLY_FILLED readback requires positive cumulative_quantity")
+            if self.total_quantity is not None and self.cumulative_quantity >= self.total_quantity:
+                raise ValueError(
+                    "PARTIALLY_FILLED cumulative_quantity must be less than total_quantity"
+                )
+        if (
+            self.status is BrokerReadbackStatus.FILLED
+            and self.cumulative_quantity != self.total_quantity
+        ):
+            raise ValueError("FILLED cumulative_quantity must equal total_quantity")
+        if (
+            self.status is BrokerReadbackStatus.CANCELED
+            and self.total_quantity is not None
+            and self.cumulative_quantity > self.total_quantity
+        ):
+            raise ValueError("CANCELED cumulative_quantity must not exceed total_quantity")
         if self.status is BrokerReadbackStatus.REJECTED and self.cumulative_quantity != 0:
             raise ValueError("REJECTED readback must have zero cumulative_quantity")
         return self
