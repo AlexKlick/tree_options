@@ -647,10 +647,18 @@ def test_runstate_anchor_is_written_at_creation_and_names_the_real_ledger(ledger
     # separately forge.
     default_anchor = L.runstate_anchor_path(L.DEFAULT_G4_LEDGER_ROOT)
     assert default_anchor.parent.parent == (REPO_ROOT / "artifacts" / "runstate").resolve()
-    # a second append does NOT rewrite the anchor (it is exclusive-by-name):
-    before = anchor.read_bytes()
+    # Round-12 (finding 1, R14): the anchor's IDENTITY fields are immutable —
+    # the creation publish is exclusive-by-name and never re-points — while
+    # the COMMITTED EXTENT advances at every successful append.
+    before = json.loads(anchor.read_text(encoding="utf-8"))
     L.append_consumption(ledger_root, _identity(), reason="seal", at_epoch=T0 + 1)
-    assert anchor.read_bytes() == before
+    after = json.loads(anchor.read_text(encoding="utf-8"))
+    assert (after["st_dev"], after["st_ino"]) == (before["st_dev"], before["st_ino"])
+    assert after["companion_sha256"] == before["companion_sha256"]
+    assert after["ledger_root"] == before["ledger_root"] == str(ledger_root.resolve())
+    assert after["ledger_size"] == (ledger_root / L.LEDGER_FILENAME).stat().st_size
+    assert after["ledger_size"] > before["ledger_size"]
+    assert after["committed_tail_sha256"] == L.read_ledger(ledger_root).tail_hash
 
 
 def test_nonempty_ledger_without_a_runstate_anchor_is_reconciliation(ledger_root) -> None:
@@ -733,3 +741,159 @@ def test_persistently_short_append_write_refuses_never_succeeds(
     monkeypatch.setattr(os, "write", write_then_give_up)
     with pytest.raises(OSError, match="short write"):
         L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)
+
+
+# ---- round-12 (finding 1, R14): the anchored COMMITTED EXTENT — a same-inode
+# prefix rollback removed a consumption ------------------------------------------------
+#
+# The runstate anchor bound the ledger's (st_dev, st_ino) and the companion
+# digest but NOT the ledger's committed extent, and ``_replay_text`` accepts
+# any valid hash-chain PREFIX. So after an approval+consumption, with no
+# process running, an attacker opened ledger.jsonl with truncation and
+# rewrote only the original approval line: the inode never changed, the
+# companion and the runstate anchor still verified, the read returned an
+# approval-only view with tail_damaged=False — and the approval was
+# consumed a second time. The anchor record now also pins the committed
+# extent (``ledger_size`` bytes at the last committed append plus
+# ``committed_tail_sha256``, the view's tail hash), advanced at every
+# successful append: at open, a ledger SMALLER than the anchored extent, or
+# one that holds exactly the anchored bytes but a different committed tail,
+# is a corruption-class refusal — prefix rollback and in-place truncation
+# both refuse. A ledger LARGER than the anchored extent with a valid chain
+# is the benign next-append-after-crash window (an append acknowledged by
+# the ledger fsync whose anchor update was interrupted): it is re-derived,
+# accepted, and re-anchored at the next append.
+
+
+def test_same_inode_prefix_rollback_removing_a_consumption_is_refused(
+    ledger_root,
+) -> None:
+    """The exact round-12 attack: approval+consumption committed, then the
+    file is truncated IN PLACE and only the approval line is rewritten — the
+    name still maps to the SAME inode, so every identity check the round-11
+    anchor performs still passes. The next open must refuse on the anchored
+    committed extent (read AND append), and the approval must never be
+    re-spent."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
+    L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)
+    ledger_path = ledger_root / L.LEDGER_FILENAME
+    approval_only = ledger_path.read_text().splitlines(keepends=True)[0].encode("utf-8")
+    before = os.stat(ledger_path)
+    # the attack: truncate in place, rewrite only the original approval line
+    fd = os.open(ledger_path, os.O_WRONLY)
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, approval_only)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    after = os.stat(ledger_path)
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino), (
+        "the attack keeps the inode, so every round-11 identity check passes"
+    )
+    with pytest.raises(LedgerCorruptError, match="committed extent"):
+        L.read_ledger(ledger_root)
+    with pytest.raises(LedgerCorruptError, match="committed extent"):
+        L.append_consumption(
+            ledger_root, identity, reason="second execution on the prefix", at_epoch=T0 + 2
+        )
+    assert ledger_path.read_bytes() == approval_only, (
+        "a rolled-back prefix must never gain a second consumption — "
+        "an acknowledged consumption is never silently forgotten"
+    )
+
+
+def test_in_place_rewrite_of_the_anchored_extent_refused(ledger_root) -> None:
+    """The size rule's partner: a ledger holding EXACTLY the anchored byte
+    count but a different committed tail is the same-inode in-place rewrite
+    of the committed extent — refused, never accepted as authority, even
+    though the replacement is a fully VALID chain (one re-chained approval
+    padded to the anchored length)."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="one", at_epoch=T0)
+    L.append_consumption(ledger_root, identity, reason="two", at_epoch=T0 + 1)
+    ledger_path = ledger_root / L.LEDGER_FILENAME
+    anchored_size = ledger_path.stat().st_size
+    # a re-chained single APPROVAL whose encoded line is padded (via the
+    # reason) to exactly the anchored byte count: the chain verifies, the
+    # size matches, and the committed tail is NOT the anchored one
+    base = L.LedgerRecord(
+        kind=L.KIND_APPROVAL,
+        identity=identity,
+        sealed_run_id=sealed_run_id(identity),
+        content_identity=content_identity(identity),
+        reason="one",
+        at_epoch=T0,
+        prev_record_sha256=L.GENESIS_PREV,
+    )
+    plain = len(
+        (L._encode(base.model_copy(update={"record_sha256": L._record_hash(base)})) + "\n").encode(
+            "utf-8"
+        )
+    )
+    padded = base.model_copy(update={"reason": "one" + " " * (anchored_size - plain)})
+    signed = padded.model_copy(update={"record_sha256": L._record_hash(padded)})
+    line = (L._encode(signed) + "\n").encode("utf-8")
+    assert len(line) == anchored_size, "the rewrite must hold exactly the anchored bytes"
+    fd = os.open(ledger_path, os.O_WRONLY)
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    assert ledger_path.stat().st_size == anchored_size
+    with pytest.raises(LedgerCorruptError, match="committed extent"):
+        L.read_ledger(ledger_root)
+
+
+def test_next_append_after_crash_window_opens_and_reanchors(ledger_root) -> None:
+    """The benign window the extent anchor must NOT refuse: an append
+    acknowledged by the ledger fsync whose ANCHOR update was interrupted
+    leaves the ledger LARGER than the anchored extent with a valid chain —
+    the open re-derives and accepts it, and the NEXT append re-anchors at
+    the new committed extent."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
+    L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)
+    ledger_path = ledger_root / L.LEDGER_FILENAME
+    anchored = json.loads(L.runstate_anchor_path(ledger_root).read_text(encoding="utf-8"))
+    # simulate the crash window: the NEXT chained record lands and is fsynced
+    # on the ledger, but its anchor update never runs (the direct write below
+    # is the fsync-landed half of the interrupted append)
+    view = L.read_ledger(ledger_root)
+    note = L.LedgerRecord(
+        kind=L.KIND_RECONCILIATION_NOTE,
+        identity=identity,
+        sealed_run_id=sealed_run_id(identity),
+        content_identity=content_identity(identity),
+        reason="operator reviewed the interrupted append",
+        at_epoch=T0 + 2,
+        prev_record_sha256=view.tail_hash,
+    )
+    signed = note.model_copy(update={"record_sha256": L._record_hash(note)})
+    line = (L._encode(signed) + "\n").encode("utf-8")
+    fd = os.open(ledger_path, os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(fd, line)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    assert ledger_path.stat().st_size > anchored["ledger_size"], (
+        "the ledger is larger than the anchored extent, chain valid"
+    )
+    recovered = L.read_ledger(ledger_root)
+    assert [record.kind for record in recovered.records] == [
+        "APPROVAL",
+        "CONSUMPTION",
+        "RECONCILIATION_NOTE",
+    ]
+    assert not recovered.tail_damaged
+    # the next append re-anchors at the new committed extent
+    L.append_consumption(ledger_root, _identity(code_sha="9" * 40), reason="seal", at_epoch=T0 + 3)
+    reanchored = json.loads(L.runstate_anchor_path(ledger_root).read_text(encoding="utf-8"))
+    assert reanchored["ledger_size"] == ledger_path.stat().st_size
+    assert reanchored["committed_tail_sha256"] == L.read_ledger(ledger_root).tail_hash

@@ -51,6 +51,21 @@ journal:
   open verifies BOTH trees, and divergence or a MISSING anchor for a
   non-empty ledger is a corruption-class refusal (see
   ``runstate_anchor_path`` for the store-identity mapping).
+* the anchor also pins the ledger's COMMITTED EXTENT (round-12 review fix,
+  2026-08-25, finding 1, R14): the identity fields above bind WHICH inode
+  the ledger name maps to, but not HOW MUCH of it was committed, and
+  ``_replay_text`` accepts any valid hash-chain prefix — so a same-inode
+  truncation that rewrote only the original approval line verified against
+  every identity check and silently un-spent an acknowledged consumption.
+  The anchor record therefore carries ``ledger_size`` (the byte count at
+  the last committed append) and ``committed_tail_sha256`` (the view's
+  tail hash), advanced at every successful append: at open, a ledger
+  SMALLER than the anchored extent — or one holding exactly the anchored
+  bytes with a different committed tail — is a corruption-class refusal.
+  A ledger LARGER than the anchored extent with a valid chain is the
+  benign next-append-after-crash window (the ledger fsync landed, the
+  anchor update did not): re-derived, accepted, re-anchored at the next
+  append.
 
 Record kinds:
 
@@ -70,7 +85,7 @@ import fcntl
 import json
 import os
 import stat
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal, NoReturn
 
@@ -200,6 +215,12 @@ def read_ledger(root: Path) -> LedgerView:
     (see ``_verify_bound_ledger_name`` and the dual-tree anchor section) —
     so an offline co-replacement of the ledger and its companion is refused
     against the second tree's record of the REAL ledger.
+
+    Round-12 review fix (2026-08-25, finding 1, R14): the replayed view is
+    additionally checked against the anchor's COMMITTED EXTENT — a ledger
+    smaller than the anchored extent (or one holding exactly the anchored
+    bytes with a different committed tail) is a prefix-rollback refusal,
+    never an approval-only view over an un-spent consumption.
     """
     root = validate_ledger_root(root)
     root_fd = _open_ledger_root(root, create=False)
@@ -265,7 +286,11 @@ def read_ledger(root: Path) -> LedgerView:
     # Tolerant decode: a torn final append may have cut mid-UTF-8 byte; the
     # replacement chars fail JSON decode and classify as a torn tail, while a
     # mid-file undecodable line stays LEDGER_CORRUPT.
-    return _replay_text(b"".join(chunks).decode("utf-8", errors="replace"))
+    view = _replay_text(b"".join(chunks).decode("utf-8", errors="replace"))
+    # Round-12 (finding 1, R14): a valid prefix is not committed authority —
+    # the anchored extent must still be there in full.
+    _refuse_anchor_extent_rollback(root, ledger_bytes=offset, view=view)
+    return view
 
 
 def _open_ledger_root(root: Path, *, create: bool) -> int | None:
@@ -404,6 +429,13 @@ def _binding_refusal(detail: str) -> NoReturn:
 # anchor naming the REAL ledger and the clone can never be opened as
 # authority.
 #
+# Round-12 (finding 1, R14, 2026-08-25): the anchor additionally pins the
+# ledger's COMMITTED EXTENT — ``ledger_size`` bytes and the committed tail
+# hash at the last acknowledged append — advanced by an identity-conditional
+# replacement at every successful append (see ``_commit_anchor_extent``),
+# so a same-inode prefix rollback that un-spends an acknowledged consumption
+# is refused at the next open even though every identity field verifies.
+#
 # Store-identity mapping (the seal ledger has no natural run_id/run store):
 # the anchor tree is the runstate store root ADJACENT to the ledger root —
 # ``<resolved-ledger-root>.parent / "runstate"`` — so the default ledger
@@ -414,7 +446,7 @@ def _binding_refusal(detail: str) -> NoReturn:
 # tree holds every ledger's anchor without collision, and a MOVED ledger
 # root is a different key — an owner reconcile act, never a silent re-bind.
 
-ANCHOR_FORMAT = 1
+ANCHOR_FORMAT = 2
 ANCHOR_PURPOSE = "g4-seal-ledger-anchor"
 RUNSTATE_STORE_DIRNAME = "runstate"
 ANCHOR_DIRNAME = "seal-ledger-anchor"
@@ -423,7 +455,14 @@ _ANCHOR_RUN_ID = "g4-seal-ledger"  # cosmetic: the custody error-detail context
 
 @dataclass(frozen=True)
 class RunstateAnchorRecord:
-    """The ledger identity pinned in the SECOND tree (the runstate store)."""
+    """The ledger identity pinned in the SECOND tree (the runstate store).
+
+    Round-12 (finding 1, R14) added the COMMITTED EXTENT: ``ledger_size``
+    is the ledger's byte count at the last committed append and
+    ``committed_tail_sha256`` is that view's tail hash (``GENESIS_PREV``
+    for the empty ledger anchored at creation), so a same-inode prefix
+    rollback or an in-place truncation of committed authority is refused
+    at the next open even though every identity field still verifies."""
 
     anchor_key: str
     ledger_root: str
@@ -431,6 +470,8 @@ class RunstateAnchorRecord:
     st_dev: int
     st_ino: int
     companion_sha256: str
+    ledger_size: int
+    committed_tail_sha256: str
 
 
 def anchor_store_root(ledger_root: Path) -> Path:
@@ -460,6 +501,8 @@ def _anchor_bytes(record: RunstateAnchorRecord) -> bytes:
         "st_dev": record.st_dev,
         "st_ino": record.st_ino,
         "companion_sha256": record.companion_sha256,
+        "ledger_size": record.ledger_size,
+        "committed_tail_sha256": record.committed_tail_sha256,
     }
     return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
 
@@ -470,6 +513,37 @@ def _anchor_unreachable(resolved_root: Path, action: str, detail: str) -> NoRetu
         f"directories ({detail}) — the seal ledger's second-tree anchor is corruption, "
         "never a silent absence; reconcile with the owner"
     ) from None
+
+
+def _parse_anchor_bytes(path: Path, resolved_root: Path, raw: bytes) -> RunstateAnchorRecord:
+    """Decode + vet one anchor record's bytes (shared by load and update)."""
+    try:
+        parsed = json.loads(raw)
+        record = RunstateAnchorRecord(
+            anchor_key=str(parsed["anchor_key"]),
+            ledger_root=str(parsed["ledger_root"]),
+            ledger_name=str(parsed["ledger_name"]),
+            st_dev=int(parsed["st_dev"]),
+            st_ino=int(parsed["st_ino"]),
+            companion_sha256=str(parsed["companion_sha256"]),
+            ledger_size=int(parsed["ledger_size"]),
+            committed_tail_sha256=str(parsed["committed_tail_sha256"]),
+        )
+        if int(parsed["format"]) != ANCHOR_FORMAT:
+            raise ValueError(f"unknown format {parsed['format']!r}")
+        if str(parsed["purpose"]) != ANCHOR_PURPOSE:
+            raise ValueError(f"foreign purpose {parsed['purpose']!r}")
+        if record.anchor_key != _anchor_key(resolved_root):
+            raise ValueError(f"keyed to a different ledger root ({record.anchor_key!r})")
+        if record.ledger_size < 0:
+            raise ValueError(f"negative committed extent {record.ledger_size}")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LedgerCorruptError(
+            f"{path}: the runstate anchor record is malformed ({exc}) — an anchor is "
+            "never guessed around; reconcile with the owner (this refusal is "
+            "RECONCILIATION, never success)"
+        ) from None
+    return record
 
 
 def _load_runstate_anchor(resolved_root: Path) -> RunstateAnchorRecord | None:
@@ -506,37 +580,26 @@ def _load_runstate_anchor(resolved_root: Path) -> RunstateAnchorRecord | None:
         os.close(anchor_fd)
     if raw is None:
         return None
-    try:
-        parsed = json.loads(raw)
-        record = RunstateAnchorRecord(
-            anchor_key=str(parsed["anchor_key"]),
-            ledger_root=str(parsed["ledger_root"]),
-            ledger_name=str(parsed["ledger_name"]),
-            st_dev=int(parsed["st_dev"]),
-            st_ino=int(parsed["st_ino"]),
-            companion_sha256=str(parsed["companion_sha256"]),
-        )
-        if int(parsed["format"]) != ANCHOR_FORMAT:
-            raise ValueError(f"unknown format {parsed['format']!r}")
-        if str(parsed["purpose"]) != ANCHOR_PURPOSE:
-            raise ValueError(f"foreign purpose {parsed['purpose']!r}")
-        if record.anchor_key != _anchor_key(resolved_root):
-            raise ValueError(f"keyed to a different ledger root ({record.anchor_key!r})")
-    except (KeyError, TypeError, ValueError) as exc:
-        raise LedgerCorruptError(
-            f"{path}: the runstate anchor record is malformed ({exc}) — an anchor is "
-            "never guessed around; reconcile with the owner (this refusal is "
-            "RECONCILIATION, never success)"
-        ) from None
-    return record
+    return _parse_anchor_bytes(path, resolved_root, raw)
 
 
 def _write_runstate_anchor(resolved_root: Path, root_fd: int, ledger_fd: int) -> None:
     """Custody-write the anchor record exactly ONCE, at ledger creation (under
     the caller's flock, before the first append lands): the publish is
     EXCLUSIVE, so a second binder refuses instead of silently re-pointing the
-    second tree at a new inode."""
+    second tree at a new inode.
+
+    The creation anchor pins the EMPTY extent (``ledger_size`` 0, the
+    genesis tail): the caller holds an empty ledger, and every successful
+    append afterwards advances the extent through
+    ``_commit_anchor_extent``."""
     held = os.fstat(ledger_fd)
+    if held.st_size != 0:
+        raise LedgerCorruptError(
+            f"{resolved_root / LEDGER_FILENAME}: the creation runstate anchor may only "
+            f"be written over an EMPTY ledger (holds {held.st_size} bytes) — an anchor "
+            "is never minted over existing authority; reconcile with the owner"
+        ) from None
     companion_name = custody.name_binding_filename(LEDGER_FILENAME)
     try:
         companion = custody.read_named_bytes(
@@ -559,6 +622,8 @@ def _write_runstate_anchor(resolved_root: Path, root_fd: int, ledger_fd: int) ->
         st_dev=held.st_dev,
         st_ino=held.st_ino,
         companion_sha256=sha256_hex(companion),
+        ledger_size=0,
+        committed_tail_sha256=GENESIS_PREV,
     )
     path = runstate_anchor_path(resolved_root)
     try:
@@ -635,6 +700,152 @@ def _check_runstate_anchor(
             "holds the bytes the runstate anchor pins — the beside-the-file tree "
             "diverges from the second tree; this refusal is RECONCILIATION, never success"
         ) from None
+
+
+def _check_anchor_extent(
+    resolved_root: Path,
+    record: RunstateAnchorRecord,
+    *,
+    ledger_bytes: int,
+    view: LedgerView,
+) -> None:
+    """Round-12 review fix (2026-08-25, finding 1, R14): the anchored
+    COMMITTED EXTENT — the same-inode prefix-rollback closer.
+
+    The identity fields bind which inode the ledger name maps to, but not
+    how much of it was committed, and ``_replay_text`` accepts any valid
+    hash-chain prefix: truncating the ledger in place and rewriting only the
+    original approval line kept the inode, the companion, and the anchor
+    verifications green while silently un-spending an acknowledged
+    consumption. A ledger SMALLER than the anchored extent is therefore a
+    corruption-class refusal (prefix rollback and in-place truncation both
+    refuse), and a ledger holding EXACTLY the anchored bytes must carry the
+    anchored committed tail. A ledger LARGER than the anchored extent is the
+    benign next-append-after-crash window (the append's fsync landed, the
+    anchor update was interrupted): accepted here, re-anchored at the next
+    append."""
+    if ledger_bytes < record.ledger_size:
+        raise LedgerCorruptError(
+            f"{resolved_root / LEDGER_FILENAME}: the ledger holds {ledger_bytes} bytes "
+            f"but the runstate anchor pins a committed extent of {record.ledger_size} "
+            "bytes (tail "
+            f"{record.committed_tail_sha256[:12]}…) — a same-inode PREFIX ROLLBACK or "
+            "in-place truncation removed committed authority; this refusal is "
+            "RECONCILIATION, never success"
+        ) from None
+    if ledger_bytes == record.ledger_size and view.tail_hash != record.committed_tail_sha256:
+        raise LedgerCorruptError(
+            f"{resolved_root / LEDGER_FILENAME}: the ledger holds exactly the anchored "
+            f"committed extent of {record.ledger_size} bytes but its committed tail is "
+            f"{view.tail_hash[:12]}… while the anchor pins "
+            f"{record.committed_tail_sha256[:12]}… — the bytes at the committed extent "
+            "were rewritten in place; this refusal is RECONCILIATION, never success"
+        ) from None
+
+
+def _refuse_anchor_extent_rollback(
+    resolved_root: Path, *, ledger_bytes: int, view: LedgerView
+) -> None:
+    """The open-side extent rule: verify the replayed view against the
+    anchor's committed extent. An ABSENT anchor is already policed by the
+    identity checks (a non-empty unanchored ledger refuses there), so it is
+    not re-refused here."""
+    record = _load_runstate_anchor(resolved_root)
+    if record is None:
+        return
+    _check_anchor_extent(resolved_root, record, ledger_bytes=ledger_bytes, view=view)
+
+
+def _commit_anchor_extent(
+    resolved_root: Path, *, ledger_bytes: int, committed_tail_sha256: str
+) -> None:
+    """Advance the anchor's committed extent after a successful append (under
+    the caller's flock, after the ledger fsync and the name check).
+
+    The replacement is IDENTITY-CONDITIONAL through custody (``expected``
+    binds the exact classified anchor bytes), so an anchor swapped between
+    the verified read and this write is never overwritten. A refusal here
+    leaves the append DURABLE on the ledger — the next open sees the ledger
+    larger than the anchored extent with a valid chain, accepts it, and
+    re-anchors at the next append — so a failed extent commit can never
+    un-spend an acknowledged record."""
+    path = runstate_anchor_path(resolved_root)
+    try:
+        anchor_fd = custody.open_directory(
+            path.parent,
+            create=False,
+            run_id=_ANCHOR_RUN_ID,
+            purpose="g4 seal runstate anchor",
+        )
+    except StoreCustodyError as exc:
+        _anchor_unreachable(resolved_root, "opened for the extent commit", exc.detail)
+    assert anchor_fd is not None  # the anchor was verified moments ago
+    try:
+        try:
+            current = custody.read_named_bytes(
+                path.parent,
+                anchor_fd,
+                path.name,
+                run_id=_ANCHOR_RUN_ID,
+                purpose="g4 seal runstate anchor",
+                allow_missing=True,
+            )
+        except StoreCustodyError as exc:
+            _anchor_unreachable(resolved_root, "read for the extent commit", exc.detail)
+        if current is None:
+            raise LedgerCorruptError(
+                f"{path}: the runstate anchor vanished under the append — the second "
+                "tree's memory of created authority may not silently disappear; this "
+                "refusal is RECONCILIATION, never success"
+            ) from None
+        record = _parse_anchor_bytes(path, resolved_root, current)
+        if (
+            record.ledger_size == ledger_bytes
+            and record.committed_tail_sha256 == committed_tail_sha256
+        ):
+            return  # already anchored at exactly this extent (idempotent)
+        if ledger_bytes < record.ledger_size:
+            # Never move the anchored extent BACKWARDS: the append wrote past
+            # a committed extent this anchor no longer describes.
+            raise LedgerCorruptError(
+                f"{path}: the append committed {ledger_bytes} bytes but the anchor "
+                f"already pins {record.ledger_size} — the extent may only advance; "
+                "reconcile with the owner (this refusal is RECONCILIATION, never "
+                "success)"
+            ) from None
+        try:
+            expected = custody.capture_replacement_expectation(
+                anchor_fd,
+                path.name,
+                current,
+                run_id=_ANCHOR_RUN_ID,
+                purpose="g4 seal runstate anchor",
+            )
+            custody.atomic_write(
+                path.parent,
+                anchor_fd,
+                path.name,
+                _anchor_bytes(
+                    replace(
+                        record,
+                        ledger_size=ledger_bytes,
+                        committed_tail_sha256=committed_tail_sha256,
+                    )
+                ),
+                run_id=_ANCHOR_RUN_ID,
+                purpose="g4 seal runstate anchor",
+                mode=0o644,
+                exclusive=False,
+                expected=expected,
+            )
+        except StoreCustodyError as exc:
+            raise LedgerCorruptError(
+                f"{path}: the committed extent could not be re-anchored ({exc.detail}) — "
+                "the append itself is durable, so this refusal is RECONCILIATION, "
+                "never success"
+            ) from None
+    finally:
+        os.close(anchor_fd)
 
 
 def _verify_or_bind_runstate_anchor(resolved_root: Path, root_fd: int, ledger_fd: int) -> None:
@@ -803,6 +1014,10 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                         "RECONCILIATION_NOTE from a durable root) before any further "
                         "append — appending past it would hide an unacknowledged write"
                     )
+                # Round-12 (finding 1, R14): never append onto a ledger that
+                # no longer holds its anchored committed extent in full — a
+                # rolled-back prefix must not be re-spent by this append.
+                _refuse_anchor_extent_rollback(root, ledger_bytes=offset, view=view)
                 if record.prev_record_sha256 != view.tail_hash:
                     raise LedgerCorruptError(
                         "supplied prev_record_sha256 does not match the verified "
@@ -812,7 +1027,8 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                 os.lseek(fd, 0, os.SEEK_END)
                 # Round-11 (finding 5): the looped authority write — a short
                 # write is completed (or raises), never acknowledged torn.
-                custody.write_all(fd, (_encode(signed) + "\n").encode("utf-8"))
+                line = (_encode(signed) + "\n").encode("utf-8")
+                custody.write_all(fd, line)
                 os.fsync(fd)
                 # Round-8 review fix (2026-08-24, finding 3): verify the NAME
                 # still maps to the locked inode BEFORE returning success.
@@ -848,6 +1064,17 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                         "been consumed under a renamed file while a clone holds "
                         "the name: this refusal is RECONCILIATION, never success"
                     )
+                # Round-12 review fix (2026-08-25, finding 1, R14): the append
+                # is durable and the name still maps to the locked inode, so
+                # the anchor's COMMITTED EXTENT advances to it now — the last
+                # act under the flock. A refusal here leaves the record
+                # durable and the next open accepting it as the crash-window
+                # case (larger than the anchored extent, valid chain).
+                _commit_anchor_extent(
+                    root,
+                    ledger_bytes=offset + len(line),
+                    committed_tail_sha256=signed.record_sha256,
+                )
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
