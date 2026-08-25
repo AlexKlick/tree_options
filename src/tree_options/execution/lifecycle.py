@@ -58,6 +58,7 @@ class ReconciliationReason(StrEnum):
     FILL_CUMULATIVE_REGRESSION = "FILL_CUMULATIVE_REGRESSION"
     RETRY_AFTER_LOCAL_KNOWLEDGE = "RETRY_AFTER_LOCAL_KNOWLEDGE"
     OVERLAPPING_REPLACE_INTENTS = "OVERLAPPING_REPLACE_INTENTS"
+    INVALID_REPLACE_BASIS = "INVALID_REPLACE_BASIS"
     REJECT_WITH_OBSERVED_FILL = "REJECT_WITH_OBSERVED_FILL"
     READBACK_FILL_CONTRADICTION = "READBACK_FILL_CONTRADICTION"
     READBACK_CUMULATIVE_REGRESSION = "READBACK_CUMULATIVE_REGRESSION"
@@ -538,6 +539,7 @@ def _derive_reconciliation_reasons(
     fill_intervals: tuple[tuple[int, int], ...],
     fill_overlap: bool,
     broker_id_conflict: bool,
+    validate_replace_bases: bool = True,
 ) -> frozenset[ReconciliationReason]:
     reasons = set(quantity_reasons)
     facts = _broker_facts(records)
@@ -553,6 +555,8 @@ def _derive_reconciliation_reasons(
         reasons.add(ReconciliationReason.RETRY_AFTER_LOCAL_KNOWLEDGE)
     if _has_overlapping_replace_intents(records):
         reasons.add(ReconciliationReason.OVERLAPPING_REPLACE_INTENTS)
+    if validate_replace_bases and _has_invalid_replace_basis(records):
+        reasons.add(ReconciliationReason.INVALID_REPLACE_BASIS)
     if filled_quantity > 0 and not _covers_through(fill_intervals, filled_quantity):
         reasons.add(ReconciliationReason.FILL_ECONOMIC_GAP)
     if filled_quantity > 0 and confirmed_total is None:
@@ -626,6 +630,80 @@ def _derive_replace_basis(
             _canonical_bytes(record),
         ),
     )
+
+
+def _derive_local_replace_basis(
+    records: tuple[StoredExecutionRecord, ...],
+) -> tuple[BrokerReadback | None, int | None]:
+    """Project replace authority for one retained local-knowledge cut.
+
+    Invalid-basis validation is disabled in this nested projection to avoid
+    recursion. Every other reconciliation and uncertainty rule still closes
+    replace authority for the cut.
+    """
+    intent = next(record for record in records if isinstance(record, OrderIntent))
+    confirmed_total, pending_total, _, quantity_reasons = _derive_quantity_authority(
+        intent, records
+    )
+    fill_intervals, fill_overlap = _derive_fill_intervals(records)
+    filled_quantity = _derive_observed_cumulative(records)
+    broker_order_id, broker_id_conflict = _derive_broker_order_id(records)
+    reasons = _derive_reconciliation_reasons(
+        records,
+        confirmed_total=confirmed_total,
+        quantity_reasons=quantity_reasons,
+        filled_quantity=filled_quantity,
+        fill_intervals=fill_intervals,
+        fill_overlap=fill_overlap,
+        broker_id_conflict=broker_id_conflict,
+        validate_replace_bases=False,
+    )
+    broker_state = _derive_broker_state(records)
+    uncertain_since = (
+        None
+        if broker_state in {ExecutionState.FILLED, ExecutionState.CANCELED, ExecutionState.REJECTED}
+        else _derive_uncertain_since(records)
+    )
+    if reasons:
+        state = ExecutionState.RECONCILIATION_REQUIRED
+    elif uncertain_since is not None:
+        state = ExecutionState.UNKNOWN
+    else:
+        state = broker_state
+    return (
+        _derive_replace_basis(
+            records,
+            state=state,
+            broker_order_id=broker_order_id,
+            confirmed_total=confirmed_total,
+            pending_total=pending_total,
+            filled_quantity=filled_quantity,
+            fill_intervals=fill_intervals,
+        ),
+        pending_total,
+    )
+
+
+def _has_invalid_replace_basis(
+    records: tuple[StoredExecutionRecord, ...],
+) -> bool:
+    """Validate each named basis against facts known when replacement was created."""
+    replacements = tuple(record for record in records if isinstance(record, ReplaceIntent))
+    for replacement in replacements:
+        known_records = tuple(
+            record
+            for record in records
+            if record is not replacement
+            and _known_no_later_than(record, replacement.replace_created_at)
+        )
+        current_basis, pending_total = _derive_local_replace_basis(known_records)
+        if pending_total is not None:
+            # A prior unresolved replacement is already represented by the
+            # more precise OVERLAPPING_REPLACE_INTENTS reason.
+            continue
+        if current_basis is None or current_basis.record_id != replacement.based_on_readback_id:
+            return True
+    return False
 
 
 @dataclass(frozen=True, slots=True)
@@ -885,20 +963,15 @@ class ExecutionLifecycle:
             item for item in self.records if _known_no_later_than(item, record.replace_created_at)
         )
         historical = self._project_records(known_records)
-        if historical.pending_replace_total_quantity is not None:
+        basis, pending_total = _derive_local_replace_basis(known_records)
+        if pending_total is not None:
             if retained_basis.broker_order_id != record.broker_order_id:
                 raise ReplacementRefusedError("replace broker order does not match readback")
             if record.new_total_quantity <= retained_basis.cumulative_quantity:
                 raise ReplacementRefusedError("replace total must exceed filled quantity")
             return self._with_record(record)
-        basis = historical.replace_basis
         if basis is None or basis.record_id != record.based_on_readback_id:
             raise ReplacementRefusedError("replace requires a current matching readback")
-        if historical.state not in {
-            ExecutionState.ACKNOWLEDGED,
-            ExecutionState.PARTIALLY_FILLED,
-        }:
-            raise ReplacementRefusedError(f"replace refused from {historical.state}")
         if (
             basis.broker_order_id != record.broker_order_id
             or historical.broker_order_id != record.broker_order_id

@@ -409,9 +409,7 @@ def test_delayed_first_confirmation_cannot_erase_overlap_across_all_permutations
 
 
 def test_stale_explicit_replace_basis_reconciles_across_all_permutations() -> None:
-    prefix = _acknowledged().apply(
-        _readback(1, total_quantity=3, snapshot_at=11, received=12)
-    )
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3, snapshot_at=11, received=12))
     first = _replace(1, total=5, basis=1, created_at=13)
     first_confirmation = _readback(
         2,
@@ -431,9 +429,7 @@ def test_stale_explicit_replace_basis_reconciles_across_all_permutations() -> No
     refusals: list[tuple[str, ...]] = []
     clean_authority_resurrections: list[tuple[str, ...]] = []
 
-    for ordered in permutations(
-        (first, first_confirmation, stale_second, final_confirmation)
-    ):
+    for ordered in permutations((first, first_confirmation, stale_second, final_confirmation)):
         projected = prefix
         try:
             for record in ordered:
@@ -459,9 +455,7 @@ def test_stale_explicit_replace_basis_reconciles_across_all_permutations() -> No
             and stale_second in projected.records
             and final_confirmation in projected.records
         ):
-            clean_authority_resurrections.append(
-                tuple(record.record_id for record in ordered)
-            )
+            clean_authority_resurrections.append(tuple(record.record_id for record in ordered))
 
     assert len(outcomes) + len(refusals) == 24
     assert outcomes
@@ -473,9 +467,7 @@ def test_stale_explicit_replace_basis_reconciles_across_all_permutations() -> No
 
 
 def test_equal_receipt_competing_fact_invalidates_explicit_basis_in_all_permutations() -> None:
-    prefix = _acknowledged().apply(
-        _readback(1, total_quantity=3, snapshot_at=11, received=12)
-    )
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3, snapshot_at=11, received=12))
     first = _replace(1, total=5, basis=1, created_at=13)
     named_basis = _readback(
         2,
@@ -536,9 +528,7 @@ def test_equal_receipt_competing_fact_invalidates_explicit_basis_in_all_permutat
             and ambiguous_second in projected.records
             and final_confirmation in projected.records
         ):
-            clean_authority_resurrections.append(
-                tuple(record.record_id for record in ordered)
-            )
+            clean_authority_resurrections.append(tuple(record.record_id for record in ordered))
 
     assert len(outcomes) + len(refusals) == 120
     assert outcomes
@@ -550,9 +540,7 @@ def test_equal_receipt_competing_fact_invalidates_explicit_basis_in_all_permutat
 
 
 def test_invalid_replace_basis_stays_sticky_through_a_third_replace() -> None:
-    prefix = _acknowledged().apply(
-        _readback(1, total_quantity=3, snapshot_at=11, received=12)
-    )
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3, snapshot_at=11, received=12))
     first = _replace(1, total=5, basis=1, created_at=13)
     stale_second = _replace(2, total=6, basis=1, created_at=16)
     first_confirmation = _readback(
