@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+from tree_options.runstate import custody
 from tree_options.runstate import lease as L
-from tree_options.runstate.errors import LeaseHeldError
+from tree_options.runstate.errors import LeaseHeldError, StoreCustodyError
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 
@@ -170,4 +172,55 @@ def test_release_only_your_own_lease(store_dir, tmp_path):
 def test_proc_start_ticks_parses_field22(tmp_path):
     proc = _fake_proc(tmp_path, {7: 4242})
     assert L.proc_start_ticks(7, proc) == 4242
+
+
+# ---- round-11 (finding 6): stale adoption may never overwrite a replacement owner -----
+#
+# Round-11 review fix (2026-08-25): acquire() read + classified the prior
+# owner, then atomic_write replaced whatever CURRENTLY held the name — and
+# atomic_write only required "a safe regular file", not the inode that was
+# classified. A LIVE owner B published between the read and the replace was
+# overwritten by the adoption of stale owner A: two live launchers, each
+# believing it holds the lease. The adoption replace is now
+# IDENTITY-CONDITIONAL through custody: acquire captures the classified
+# owner's exact (st_dev, st_ino) and bytes digest and atomic_write refuses
+# (reconciliation, never success) unless the name still maps to exactly
+# that identity and those bytes at the write moment.
+
+
+def test_stale_adoption_refuses_to_overwrite_a_replacement_live_owner(
+    store_dir, tmp_path, monkeypatch: pytest.MonkeyPatch
+):
+    """The racing point is the owner read inside acquire: the wrapper lets
+    the real read return stale owner A's bytes, then swaps the name to a
+    LIVE owner B on a fresh inode. A still classifies STALE, but the
+    adoption may only replace A's inode — B is never overwritten."""
+    proc = _fake_proc(tmp_path, {77: 700})  # pid 42 (owner A) is dead
+    L.acquire(store_dir, _owner(42, 100), boot_id_now=BOOT, proc_root=proc)
+    live_b = _owner(77, 700)  # alive under the current boot: HELD
+    b_bytes = (json.dumps(json.loads(live_b.model_dump_json()), sort_keys=True) + "\n").encode()
+    real_read = custody.read_named_bytes
+    armed = {"done": False}
+
+    def read_then_publish_live_owner(directory_path, directory_fd, name, **kwargs):
+        raw = real_read(directory_path, directory_fd, name, **kwargs)
+        if raw is not None and not armed["done"]:
+            armed["done"] = True  # the window: between the read and the replace
+            owner_path = store_dir / "lease" / L.OWNER_FILENAME
+            staged = store_dir / "lease" / ".owner.json.live-b"
+            staged.write_bytes(b_bytes)
+            os.replace(staged, owner_path)  # a fresh inode now holds the name
+        return raw
+
+    monkeypatch.setattr(custody, "read_named_bytes", read_then_publish_live_owner)
+    with pytest.raises(StoreCustodyError, match="classified"):
+        L.acquire(
+            store_dir,
+            _owner(99, 900),
+            boot_id_now=BOOT,
+            proc_root=proc,
+            allow_stale_adopt=True,
+        )
+    owner_path = store_dir / "lease" / L.OWNER_FILENAME
+    assert owner_path.read_bytes() == b_bytes, "the live owner B was never overwritten"
     assert L.proc_start_ticks(8, proc) is None

@@ -311,6 +311,20 @@ def acquire(
                         run_id,
                         f"lease classification {classification.value}",
                     ) from None
+                # Round-11 review fix (finding 6): the adoption replace is
+                # IDENTITY-CONDITIONAL. atomic_write used to require only "a
+                # safe regular file" at the name, so a LIVE owner B published
+                # between the read and the replace was overwritten by the
+                # adoption of stale owner A — two live launchers. The replace
+                # may now swap out only the exact inode (and bytes) that were
+                # classified; anything else is a custody refusal.
+                expected = custody.capture_replacement_expectation(
+                    lease_fd,
+                    OWNER_FILENAME,
+                    raw,
+                    run_id=run_id,
+                    purpose="lease owner.json",
+                )
                 custody.atomic_write(
                     lease_path,
                     lease_fd,
@@ -320,6 +334,7 @@ def acquire(
                     purpose="lease owner.json",
                     mode=0o600,
                     exclusive=False,
+                    expected=expected,
                 )
                 result = classification
             custody.verify_name_identity(

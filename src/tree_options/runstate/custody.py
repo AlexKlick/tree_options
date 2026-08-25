@@ -27,6 +27,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
+from tree_options.data.digest import sha256_hex
 from tree_options.runstate.errors import StoreCustodyError
 
 _DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
@@ -343,6 +344,115 @@ def write_all(fd: int, payload: bytes) -> None:
         written += count
 
 
+# ---- identity-conditional replacement (round-11 consolidation, 2026-08-25) ---------
+#
+# A classify-then-replace sequence may never replace "whatever currently
+# holds the name": the classification's subject must still BE the name's
+# inode at the write moment, or the write refuses.
+
+
+@dataclass(frozen=True)
+class ReplaceExpectation:
+    """The single inode (and exact bytes digest) a replacement may swap out."""
+
+    identity: tuple[int, int]
+    sha256: str
+
+
+def capture_replacement_expectation(
+    directory_fd: int,
+    name: str,
+    classified_bytes: bytes,
+    *,
+    run_id: str,
+    purpose: str,
+) -> ReplaceExpectation:
+    """Bind the bytes that were classified to the inode now holding the name.
+
+    The caller classified ``classified_bytes`` (read earlier); this re-opens
+    the name under custody and REFUSES unless it still holds exactly those
+    bytes, returning the held inode's identity + the classified bytes'
+    digest for :func:`atomic_write`'s identity-conditional replace. A
+    replacement that landed between the read and here is a refusal — it is
+    never silently classified, and never overwritten.
+    """
+    fd = open_regular(
+        directory_fd,
+        name,
+        os.O_RDONLY,
+        run_id=run_id,
+        purpose=purpose,
+    )
+    if fd is None:
+        _refuse(
+            run_id,
+            f"{purpose} {name!r} vanished after its bytes were classified — "
+            "the identity-conditional replace has nothing authorized to "
+            "replace; reconciliation, never a silent recreate",
+        )
+    try:
+        verify_name_identity(directory_fd, name, fd, run_id=run_id, purpose=purpose)
+        if read_all(fd) != classified_bytes:
+            _refuse(
+                run_id,
+                f"{purpose} {name!r} now holds different bytes than the ones "
+                "classified — a replacement landed in the classification "
+                "window and is never overwritten; reconciliation, never success",
+            )
+        held = os.fstat(fd)
+        return ReplaceExpectation(
+            identity=(held.st_dev, held.st_ino),
+            sha256=sha256_hex(classified_bytes),
+        )
+    finally:
+        os.close(fd)
+
+
+def _verify_replacement_expectation(
+    directory_fd: int,
+    name: str,
+    existing: os.stat_result | None,
+    expected: ReplaceExpectation,
+    *,
+    run_id: str,
+    purpose: str,
+) -> None:
+    """Refuse unless the name still maps to exactly the expected inode+bytes."""
+    if existing is None:
+        _refuse(
+            run_id,
+            f"{purpose} {name!r} vanished before the identity-conditional "
+            "replace — the classified inode is gone; reconciliation, never a "
+            "silent recreate",
+        )
+    if (existing.st_dev, existing.st_ino) != expected.identity:
+        _refuse(
+            run_id,
+            f"{purpose} {name!r} was replaced before the identity-conditional "
+            f"publish: expected dev/inode {expected.identity[0]}/{expected.identity[1]}, "
+            f"the name now holds dev/inode {existing.st_dev}/{existing.st_ino} — "
+            "a replacement owner is never overwritten; reconciliation, never success",
+        )
+    current_fd = open_regular(
+        directory_fd,
+        name,
+        os.O_RDONLY,
+        run_id=run_id,
+        purpose=purpose,
+    )
+    assert current_fd is not None
+    try:
+        verify_name_identity(directory_fd, name, current_fd, run_id=run_id, purpose=purpose)
+        if sha256_hex(read_all(current_fd)) != expected.sha256:
+            _refuse(
+                run_id,
+                f"{purpose} {name!r} bytes changed since classification — the "
+                "identity-conditional replace refuses; reconciliation, never success",
+            )
+    finally:
+        os.close(current_fd)
+
+
 def _unlink_temp_if_ours(
     parent_fd: int,
     temp_name: str,
@@ -368,13 +478,26 @@ def atomic_write(
     purpose: str,
     mode: int,
     exclusive: bool,
+    expected: ReplaceExpectation | None = None,
 ) -> None:
     """Publish verified bytes from an exclusive temp inode in the held dir.
 
     ``exclusive=True`` publishes by an atomic no-replace hard-link operation,
     then drops the temp name.  Replacement writes refuse unsafe pre-existing
     final names before replacing them.
+
+    ``expected`` (round-11 review fix, finding 6) makes the replacement
+    IDENTITY-CONDITIONAL: the write may swap out only the exact inode (and
+    bytes digest) that the caller classified — a name that vanished, was
+    replaced, or was rewritten in the classification window is a refusal
+    (reconciliation, never success), never an overwrite of whatever
+    currently holds the name.
     """
+    if expected is not None and exclusive:
+        raise ValueError(
+            f"{purpose} {name!r}: an exclusive publish never replaces, so an "
+            "expected replacement identity is contradictory"
+        )
     _component_name(name, run_id=run_id, purpose=purpose)
     existing = _safe_existing_name(
         directory_fd,
@@ -436,12 +559,23 @@ def atomic_write(
                 _refuse(run_id, f"{purpose} {name!r} appeared before exclusive publish")
             os.unlink(temp_name, dir_fd=directory_fd)
         else:
-            _safe_existing_name(
+            existing = _safe_existing_name(
                 directory_fd,
                 name,
                 run_id=run_id,
                 purpose=purpose,
             )
+            if expected is not None:
+                # Round-11 (finding 6): the replace is identity-conditional —
+                # checked at the write moment, against a held fd.
+                _verify_replacement_expectation(
+                    directory_fd,
+                    name,
+                    existing,
+                    expected,
+                    run_id=run_id,
+                    purpose=purpose,
+                )
             os.replace(
                 temp_name,
                 name,
