@@ -808,6 +808,16 @@ def unlink_held_name(
     verify-before-rename, and one landing between the verify and the rename
     moves the successor's bytes aside (never deletes them) and refuses;
     a swap after the rename lands at the now-free name, harmless.
+
+    Round-10 review fix (2026-08-25, finding 3): the mismatch refusal used
+    to raise only AFTER the rename had emptied the canonical name — an
+    ordinary ``acquire`` then saw no owner and exclusively created a fresh
+    launcher while the successor was still live: two live launchers
+    manufactured by the refusal path itself. When the renamed entry does
+    NOT map to the held identity it is renamed BACK to the canonical name
+    (restore) BEFORE the refusal raises, so the successor stays reachable
+    at the authority name and no fresh exclusive create is possible. Only
+    a verified match ever unlinks the temp.
     """
     verify_name_identity(
         directory_fd,
@@ -840,14 +850,73 @@ def unlink_held_name(
         purpose=f"{purpose} renamed",
     )
     if (renamed.st_dev, renamed.st_ino) != (held.st_dev, held.st_ino):
-        _refuse(
-            run_id,
-            f"{purpose} {name!r} was swapped between verification and the "
-            "release rename: the renamed entry maps to dev/inode "
-            f"{renamed.st_dev}/{renamed.st_ino}, not the held "
-            f"{held.st_dev}/{held.st_ino} — the successor's entry was moved "
-            "aside by the rename, never deleted; reconciliation, never success",
+        _refuse_swapped_and_restore(
+            directory_fd,
+            name,
+            temp_name,
+            renamed=renamed,
+            held=held,
+            run_id=run_id,
+            purpose=purpose,
         )
     os.unlink(temp_name, dir_fd=directory_fd)
     os.fsync(directory_fd)
     verify_directory_identity(directory_path, directory_fd, run_id=run_id)
+
+
+def _refuse_swapped_and_restore(
+    directory_fd: int,
+    name: str,
+    temp_name: str,
+    *,
+    renamed: os.stat_result,
+    held: os.stat_result,
+    run_id: str,
+    purpose: str,
+) -> NoReturn:
+    """Round-10 P1 (finding 3): refuse a swapped release entry WITHOUT ever
+    leaving the canonical name empty.
+
+    ``renamed`` is the entry the release rename moved to ``temp_name`` — a
+    successor published at the canonical name in the verify→rename window.
+    The rename above emptied the canonical name; raising here alone handed
+    the next ordinary ``acquire`` an exclusive create while the successor
+    was still live. The moved-aside entry is renamed BACK first, and only
+    then does the refusal raise — the successor's entry is never deleted by
+    this path in any outcome.
+    """
+    prefix = (
+        f"{purpose} {name!r} was swapped between verification and the "
+        "release rename: the renamed entry maps to dev/inode "
+        f"{renamed.st_dev}/{renamed.st_ino}, not the held "
+        f"{held.st_dev}/{held.st_ino}"
+    )
+    try:
+        os.rename(temp_name, name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    except OSError as exc:
+        _refuse(
+            run_id,
+            f"{prefix} — and the moved-aside entry could not be restored to "
+            f"the canonical name ({exc.strerror}); it remains at "
+            f"{temp_name!r}, never deleted; reconciliation, never success",
+        )
+    restored = _named_stat(
+        directory_fd,
+        name,
+        run_id=run_id,
+        purpose=f"{purpose} restored",
+    )
+    if (restored.st_dev, restored.st_ino) != (renamed.st_dev, renamed.st_ino):
+        _refuse(
+            run_id,
+            f"{prefix} — and the canonical name could not be confirmed to "
+            "hold the restored successor (named dev/inode "
+            f"{restored.st_dev}/{restored.st_ino}); the successor's entry "
+            "was never deleted; reconciliation, never success",
+        )
+    _refuse(
+        run_id,
+        f"{prefix} — the successor's entry was moved aside by the rename and "
+        "has been RESTORED at the canonical name, never deleted; "
+        "reconciliation, never success",
+    )

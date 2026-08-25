@@ -19,7 +19,7 @@ from tree_options.runstate import RunIdentity, RunState, RunStore, compute_run_i
 from tree_options.runstate import heartbeat as H
 from tree_options.runstate import journal as J
 from tree_options.runstate import lease as L
-from tree_options.runstate.errors import JournalCorruptError, StoreCustodyError
+from tree_options.runstate.errors import JournalCorruptError, LeaseHeldError, StoreCustodyError
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000
@@ -649,4 +649,71 @@ def test_release_never_unlinks_a_successor_published_at_the_name(
     assert successor_bytes in survivors.values(), (
         "the successor's publish was moved aside by the rename, never deleted"
     )
-    assert not owner_path.exists(), "the release rename freed the canonical name"
+    assert owner_path.read_bytes() == successor_bytes, (
+        "round-10 finding 3: the refusal RESTORED the successor at the canonical "
+        "name — a refusal must never leave the canonical owner name empty"
+    )
+
+
+# ---- round-10 P1 (finding 3): a refused release must never EMPTY the canonical name ----
+#
+# Round-10 review fix (2026-08-25): unlink_held_name verified the held name,
+# then UNCONDITIONALLY renamed whatever occupied the name to an unpredictable
+# temp, and only then compared the renamed inode to the held fd. A successor B
+# published in that window raised its mismatch refusal only AFTER the rename
+# had emptied the canonical owner.json name — and an ordinary acquire that
+# sees no owner exclusively creates a fresh launcher C while B is still live:
+# two live launchers manufactured by the refusal path itself. The moved-aside
+# entry is now renamed BACK to the canonical name before the refusal raises,
+# so the successor stays reachable at the authority name and no fresh
+# exclusive create is possible.
+
+
+def test_release_refusal_restores_the_successor_so_acquire_cannot_fresh_create(
+    scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The racing point is unlink_held_name's internal verify: the wrapper
+    lets the real check pass, then swaps the name to a live successor owner B
+    on a fresh inode. Pre-fix the release raises its mismatch refusal with the
+    canonical name EMPTY — the reviewer's escalation: an ordinary acquire then
+    sees no owner and exclusively creates C while B is still live. Post-fix the
+    release still refuses, but B is RESTORED at the canonical name, so the
+    subsequent acquire still sees a live owner record and never creates."""
+    store = _store(scratch)
+    owner = _owner()
+    L.acquire(store.dir, owner, boot_id_now=BOOT)
+    lease_dir = store.dir / L.LEASE_DIRNAME
+    owner_path = lease_dir / L.OWNER_FILENAME
+    successor_bytes = (
+        json.dumps(json.loads(_owner(pid=77).model_dump_json()), sort_keys=True) + "\n"
+    ).encode()
+    real_verify = custody.verify_name_identity
+    armed = {"done": False}
+
+    def verify_then_publish_successor(parent_fd: int, name: str, held_fd: int, **kwargs):
+        real_verify(parent_fd, name, held_fd, **kwargs)
+        if (
+            not armed["done"]
+            and name == L.OWNER_FILENAME
+            and sys._getframe(1).f_code.co_name == "unlink_held_name"
+        ):
+            armed["done"] = True  # the window: verify passed, rename not yet run
+            staged = lease_dir / ".owner.json.successor"
+            staged.write_bytes(successor_bytes)
+            os.replace(staged, owner_path)  # a fresh inode now holds the name
+
+    monkeypatch.setattr(custody, "verify_name_identity", verify_then_publish_successor)
+    with pytest.raises(StoreCustodyError, match="swapped between"):
+        L.release(store.dir, owner)
+    assert owner_path.read_bytes() == successor_bytes, (
+        "the mismatch refusal must RESTORE the moved-aside successor at the "
+        "canonical name — never leave it empty"
+    )
+    # the reviewer's exact escalation: an ordinary acquire AFTER the refusal
+    # must still SEE a live owner record (B, restored) — no fresh exclusive
+    # create, so no second live launcher.
+    with pytest.raises(LeaseHeldError):
+        L.acquire(store.dir, _owner(pid=1234), boot_id_now=BOOT)
+    assert owner_path.read_bytes() == successor_bytes, (
+        "the refused acquire created nothing at the canonical name"
+    )
