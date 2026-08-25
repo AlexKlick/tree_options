@@ -1206,6 +1206,29 @@ def _unlink_published_if_ours(dir_fd: int, name: str, identity: tuple[int, int])
             os.unlink(name, dir_fd=dir_fd)
 
 
+def _open_directory_nofollow(path: Path) -> int:
+    """Round-12 review fix (2026-08-25, finding 5, R14): open ``path`` as a
+    REAL directory, component-wise from ``/`` with ``O_NOFOLLOW``.
+
+    Used to durably commit the digest-directory ENTRY: ``out_dir.mkdir``
+    created `<out_root>/<content-digest>` and round-11 fsynced the digest
+    directory's own entries, but never the PARENT holding the new entry —
+    so a reboot could drop an acknowledged exit-0 publication. Kept local
+    (a mirror of the runstate custody walk) because this script imports
+    only the package models."""
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    for component in absolute.parts[1:]:
+        previous = fd
+        try:
+            fd = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=previous)
+        except OSError:
+            os.close(previous)
+            raise
+        os.close(previous)
+    return fd
+
+
 def _read_all_nofollow(dir_fd: int, name: str) -> bytes:
     """One full O_NOFOLLOW read of ``name`` inside the custody dir fd."""
     try:
@@ -1619,6 +1642,37 @@ def main(argv: list[str] | None = None) -> int:
         shutil.rmtree(out_dir, ignore_errors=True)
         assert refusal_exit is not None
         return refusal_exit
+
+    # Round-12 review fix (2026-08-25, finding 5, R14): a FRESH publication
+    # commits the digest-directory ENTRY in out_root before success is
+    # declared. Round-11 fsynced the digest directory after the member
+    # renames, but out_dir.mkdir(parents=True) had also created the
+    # `<content-digest>` entry INSIDE out_root, and no fsync ever covered
+    # out_root itself — a reboot right after an acknowledged exit 0 could
+    # lose the whole publication. A roll-forward does not need this: its
+    # digest entry was created by the interrupted run and the residue is
+    # classified against it, never re-created here.
+    if fresh_publication:
+        try:
+            out_root_fd = _open_directory_nofollow(args.out_root)
+        except OSError as exc:
+            print(
+                f"EMISSION REFUSED: {args.out_root} could not be taken into custody "
+                f"to commit the digest entry ({exc.strerror})",
+                file=sys.stderr,
+            )
+            return 4
+        try:
+            os.fsync(out_root_fd)
+        except OSError as exc:
+            print(
+                f"EMISSION REFUSED: the digest entry could not be durably committed "
+                f"in {args.out_root} ({exc.strerror})",
+                file=sys.stderr,
+            )
+            return 4
+        finally:
+            os.close(out_root_fd)
 
     # Whole coverage = zero INCOMPLETE pairs. Holiday Fridays
     # (SPOT_MISSING_HOLIDAY) are EXPECTED gaps — the exchange was closed —

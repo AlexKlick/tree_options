@@ -1609,3 +1609,70 @@ def test_raw_oserror_mid_publish_rolls_the_set_back_and_leaves_a_clean_retry(
     assert _census(monkeypatch, capture, universe, out_root) == 0, (
         "after the raw-OSError rollback the retry must not hit OUTPUT EXISTS"
     )
+
+
+# ---- round-12 (finding 5, R14): the digest-directory ENTRY is durably committed
+# in out_root -----------------------------------------------------------------------
+#
+# Round-11 (finding 3, R13) fsynced the digest directory after the member
+# renames but never fsynced out_root — the directory that holds the newly
+# created `<content-digest>` entry. A fresh exit-0 publication could be
+# lost to a reboot with the acknowledgement already given. The owning test
+# pins the order (out_root is fsynced AFTER the digest entry was created
+# inside it, observed on out_root's real directory identity) and the
+# recovery invariant (a structural walk of a fresh publication: the digest
+# dir is present under out_root and the complete set validates).
+
+
+def test_fresh_publication_commits_the_digest_entry_in_out_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A, SESSION_FRIDAY_B])
+    capture = _build_capture(
+        tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A, SESSION_FRIDAY_B]
+    )
+    out_root = tmp_path / "census-out"
+    # trace by DIRECTORY identity (dev, ino) so fd reuse can never forge a
+    # match: every fsync of out_root must postdate the digest entry's mkdir
+    digest_creations = 0
+    fsynced: list[tuple[tuple[int, int], int]] = []  # (dir identity, creations so far)
+    real_mkdir, real_fsync = os.mkdir, os.fsync
+
+    def traced_mkdir(path, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        real_mkdir(path, mode, dir_fd=dir_fd)
+        nonlocal digest_creations
+        if Path(os.fsdecode(path)).parent == out_root:
+            digest_creations += 1
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        fsynced.append(((held.st_dev, held.st_ino), digest_creations))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "mkdir", traced_mkdir)
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    assert _census(monkeypatch, capture, universe, out_root) == 0
+    monkeypatch.undo()
+
+    assert digest_creations == 1, "a fresh publication creates the digest dir once"
+    root = os.stat(out_root)
+    out_root_identity = (root.st_dev, root.st_ino)
+    assert any(identity == out_root_identity and count >= 1 for identity, count in fsynced), (
+        "out_root — the directory holding the newly created digest entry — is "
+        "never fsynced after the digest dir was created in it: a reboot can "
+        "lose an acknowledged exit-0 publication"
+    )
+
+    # the recovery invariant: the digest dir entry is present under out_root
+    # and the complete published set validates
+    entries = [entry for entry in out_root.iterdir()]
+    assert len(entries) == 1
+    digest_dir = entries[0]
+    assert stat.S_ISDIR(digest_dir.stat().st_mode)
+    census = CoverageCensus.model_validate_json((digest_dir / "census.json").read_text())
+    verify_census(census)
+    validate_value_taxonomy(census)
+    assert digest_dir.name == census.content_sha256[:12]
+    body = (digest_dir / "census.json").read_bytes()
+    assert hashlib.sha256(body).hexdigest() in (digest_dir / "census.json.sha256").read_text()
+    assert (digest_dir / "census.md").stat().st_size > 0
