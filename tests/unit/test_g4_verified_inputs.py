@@ -29,7 +29,7 @@ from tree_options.data.massive_manifest import (
 )
 from tree_options.data.real_overlay import build_real_overlay
 from tree_options.protocol.loader import load_protocol_bytes, protocol_hash
-from tree_options.seal import input_custody
+from tree_options.seal import input_custody, verified_inputs
 from tree_options.seal.verified_inputs import (
     CALENDAR_DECISION_DOMAIN,
     CALENDAR_DECISION_SCHEMA_VERSION,
@@ -380,3 +380,34 @@ def test_in_place_rewrite_during_single_read_is_refused(
     monkeypatch.setattr(input_custody, "_read_all", read_then_rewrite)
     with pytest.raises(VerifiedInputsError, match="changed while"):
         input_custody.read_file_once(target, component="probe", purpose="probe file")
+
+
+# ---- round-11 (finding 10): the entry-set snapshot must still be TRUE at exit -------
+#
+# Round-11 review fix: _verify_lane2 captured json_file_set() once and handed
+# the frozen set to the Massive verifier; the custody context exit verified
+# only directory-inode reachability. A file planted AFTER the snapshot
+# (bars/unlisted.json) was invisible to the verifier, so the packet attested a
+# directory state that was already false at return. The exit boundary now
+# re-scans the held directory and requires EXACT equality with the snapshot
+# the verifier consumed; divergence is a corruption-class refusal.
+
+
+def test_capture_entry_set_changed_after_the_verifier_snapshot_refuses(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fixture = write_valid_inputs(tmp_path)
+    real_verify = verified_inputs.verify_massive_capture_manifest
+
+    def verify_then_plant_unlisted(*args: object, **kwargs: object) -> None:
+        real_verify(*args, **kwargs)  # the verifier consumed the frozen snapshot
+        # the window: snapshot consumed, packet not yet returned
+        (fixture.lane2_manifest.parent / "bars" / "unlisted.json").write_text(
+            "{}\n", encoding="utf-8"
+        )
+
+    monkeypatch.setattr(
+        verified_inputs, "verify_massive_capture_manifest", verify_then_plant_unlisted
+    )
+    with pytest.raises(VerifiedInputsError, match="entry set"):
+        verify_sealed_inputs(fixture.paths, git_runner=clean_git_runner)

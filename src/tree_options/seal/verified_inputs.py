@@ -424,6 +424,27 @@ def _verify_lane2(
         except Exception as exc:
             _raise(component, f"real Massive manifest/payload verification failed: {exc}")
 
+        # Round-11 review fix (finding 10): the snapshot must still be TRUE at
+        # the custody exit. json_file_set() froze the entry set the verifier
+        # consumed, and the context exit itself checks only directory-inode
+        # reachability — a file planted after the snapshot (e.g.
+        # bars/unlisted.json) was invisible to the verifier, so the packet
+        # attested a directory state that was already false at return. The
+        # held directory is re-scanned here, at the exit boundary, and must
+        # hold EXACTLY the entry set the verifier consumed; any divergence is
+        # a corruption-class refusal, never a verified packet.
+        rescanned = capture.json_file_set(manifest_name=CAPTURE_MANIFEST_FILENAME)
+        if rescanned != observed:
+            _raise(
+                component,
+                "the Massive capture directory entry set changed while the manifest"
+                f" verifier consumed its snapshot (snapshot held {len(observed)} json"
+                f" name(s), exit rescan found {len(rescanned)}; appeared:"
+                f" {sorted(rescanned - observed)}; vanished:"
+                f" {sorted(observed - rescanned)}) — the verified set was false"
+                " at return",
+            )
+
     binding = LaneManifestBinding(
         raw_sha256=sha256_hex(manifest_raw),
         typed_manifest_content_hash=manifest.content_sha256,
