@@ -1538,3 +1538,89 @@ def test_output_parent_dir_symlink_swap_after_confinement_refused(
             with contextlib.suppress(OSError):
                 hash_dir.unlink()
             shutil.rmtree(out / (hash12 + ".held"), ignore_errors=True)
+
+
+# ---- round-11 (finding 4): the held directory must still BE at the confined path --------
+#
+# Round-11 review fix: the custody fd proved the artifacts' directory, but
+# nothing proved the PATH still led to it. After the packet's final parent
+# component opens, an attacker renames the digest dir OUTSIDE artifacts/,
+# recreates an empty dir at the path, lets the packet be written through the
+# held fd into the MOVED dir, and stages the artifacts at the decoy path for
+# the sweep — the sweep then passes (dir-fd-relative through the decoy or the
+# held fd) while the builder's outputs live outside artifacts/. At packet
+# return the builder now re-walks out_dir from / (component-wise, no-follow,
+# the existing _open_output_custody walk) and requires (a) the re-walked
+# dir fd's fstat identity EQUALS the held fd's identity, and (b) all four
+# artifact names map to their published identities THROUGH THE RE-WALKED fd.
+# An out-of-root relocation fails the identity comparison -> OutputRefusedError.
+
+
+def test_relocated_digest_dir_out_of_artifacts_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interleaving attack: the wrapper relocates the digest dir outside
+    artifacts/ at the packet write (the packet still publishes through the
+    HELD fd into the moved dir), recreates an empty decoy at the confined
+    path, stages all four artifacts at the decoy for the final sweep, and
+    reclaims them into the moved dir right after the sweep's last verify.
+    Pre-fix the build SUCCEEDS with every artifact outside artifacts/;
+    post-fix the re-walk identity comparison refuses naming both
+    directories."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    hash12 = _census_hash(census_bytes)[:12]
+    moved = REPO_ROOT / "data" / "amendment-f4-relocation-probe"
+    moved.mkdir(parents=True, exist_ok=True)
+    real_write = amd._write_exclusive
+    real_verify = amd._verify_final_effect
+    armed = {"relocated": False, "staged": False, "reclaimed": False}
+    names = (
+        "protocol-0.2.1-proposed.yaml",
+        "schema-addition-proposal.yaml",
+        "amendment-diff.md",
+        "amendment-packet.json",
+    )
+
+    def write_packet_relocating_the_digest_dir(
+        path: Path, text: str, *args: object, **kwargs: object
+    ) -> object:
+        if not armed["relocated"] and path.name == "amendment-packet.json":
+            armed["relocated"] = True  # the window: parent held, path intact
+            digest = path.parent
+            os.rename(digest, moved)  # the real dir (3 artifacts) moves OUT
+            digest.mkdir()  # empty decoy at the confined path
+        return real_write(path, text, *args, **kwargs)
+
+    def verify_staging_then_reclaiming(*, artifact: str, path: Path, **kwargs: object) -> None:
+        if armed["relocated"] and not armed["staged"]:
+            armed["staged"] = True  # stage the four artifacts at the decoy
+            # (renames preserve the published inodes, so the sweep verifies)
+            for name in names:
+                os.rename(moved / name, path.parent / name)
+        result = real_verify(artifact=artifact, path=path, **kwargs)
+        if artifact == "amendment-packet.json" and armed["staged"] and not armed["reclaimed"]:
+            armed["reclaimed"] = True  # the sweep passed: reclaim them OUT
+            for name in names:
+                os.rename(path.parent / name, moved / name)
+        return result
+
+    monkeypatch.setattr(amd, "_write_exclusive", write_packet_relocating_the_digest_dir)
+    monkeypatch.setattr(amd, "_verify_final_effect", verify_staging_then_reclaiming)
+    try:
+        with _out_root() as out:
+            with pytest.raises(OutputRefusedError) as exc_info:
+                _build(paths, out)
+            message = str(exc_info.value)
+            assert "relocated" in message, (
+                "the refusal says the digest directory was relocated out of the output root"
+            )
+            assert str(out / hash12) in message, "the refusal names the output directory"
+            # the artifacts never legitimately live outside artifacts/: the
+            # refused build leaves the decoy empty
+            decoy = out / hash12
+            assert not decoy.exists() or list(decoy.iterdir()) == [], (
+                "nothing is attested at the decoy path"
+            )
+    finally:
+        shutil.rmtree(moved, ignore_errors=True)

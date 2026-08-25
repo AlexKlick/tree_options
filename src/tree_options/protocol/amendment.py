@@ -1116,6 +1116,27 @@ def build_proposed_amendment(
         # own write.
         final_sweep_fd = _open_output_custody(out_dir)
         try:
+            # Round-11 review fix (finding 4): output-root CONFINEMENT at the
+            # final effect. The held fd proves the artifacts' directory, but
+            # nothing proved the PATH still led to it: an attacker relocating
+            # the digest dir outside artifacts/ (recreating a decoy at the
+            # path) could stage the artifacts for the sweep and reclaim them
+            # after it — the sweep rode dir fds while the outputs lived
+            # outside the root. The re-walked fd's fstat identity must EQUAL
+            # the held fd's identity: the directory this builder published
+            # into must still BE the directory the confined path resolves to.
+            held_dir = os.fstat(custody_fd)
+            walked_dir = os.fstat(final_sweep_fd)
+            if (walked_dir.st_dev, walked_dir.st_ino) != (held_dir.st_dev, held_dir.st_ino):
+                raise OutputRefusedError(
+                    f"the output directory {out_dir} no longer holds the"
+                    f" artifacts this builder published (held dev"
+                    f" {held_dir.st_dev} ino {held_dir.st_ino}, at the path"
+                    f" now dev {walked_dir.st_dev} ino {walked_dir.st_ino}):"
+                    " the digest directory was relocated out of the output"
+                    " root — refusing to attest artifacts published outside"
+                    " artifacts/"
+                )
             _verify_final_effect(
                 artifact="protocol-0.2.1-proposed.yaml",
                 path=proposed_path,
