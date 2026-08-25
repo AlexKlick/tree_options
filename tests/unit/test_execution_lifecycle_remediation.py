@@ -356,6 +356,58 @@ def test_same_basis_replace_and_confirmation_permutations_reconcile_deterministi
     assert all(retained == retained_sets[0] for retained in retained_sets)
 
 
+def test_delayed_first_confirmation_cannot_erase_overlap_across_all_permutations() -> None:
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3))
+    first = _replace(1, total=5, basis=1, created_at=13)
+    second = _replace(2, total=6, basis=1, created_at=15)
+    delayed_first_confirmation = _readback(
+        2,
+        total_quantity=5,
+        snapshot_at=14,
+        received=17,
+    )
+    fresh_second_confirmation = _readback(
+        3,
+        total_quantity=6,
+        snapshot_at=18,
+        received=19,
+    )
+    outcomes: list[tuple[object, ...]] = []
+    retained_sets: list[frozenset[str]] = []
+    violations: list[tuple[str, ...]] = []
+
+    for ordered in permutations(
+        (first, second, delayed_first_confirmation, fresh_second_confirmation)
+    ):
+        projected = prefix
+        for record in ordered:
+            projected = projected.apply(record)
+        outcomes.append(_semantic(projected))
+        retained_sets.append(
+            frozenset(
+                item.intent_id if isinstance(item, OrderIntent) else item.record_id
+                for item in projected.records
+            )
+        )
+        if not (
+            projected.state is ExecutionState.RECONCILIATION_REQUIRED
+            and projected.broker_confirmed_total_quantity == 6
+            and projected.pending_replace_total_quantity is None
+            and projected.reconciliation_reasons == {"OVERLAPPING_REPLACE_INTENTS"}
+            and projected.replace_basis_id is None
+            and first in projected.records
+            and second in projected.records
+            and delayed_first_confirmation in projected.records
+            and fresh_second_confirmation in projected.records
+        ):
+            violations.append(tuple(record.record_id for record in ordered))
+
+    assert len(outcomes) == 24
+    assert not violations, f"{len(violations)}/24 delayed-confirmation permutations violated"
+    assert all(outcome == outcomes[0] for outcome in outcomes)
+    assert all(retained == retained_sets[0] for retained in retained_sets)
+
+
 def test_replace_at_explicit_basis_receipt_time_is_allowed() -> None:
     basis = _readback(1, total_quantity=3, snapshot_at=11, received=12)
     replacement = _replace(total=5, basis=1, created_at=12)
