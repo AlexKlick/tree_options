@@ -408,6 +408,193 @@ def test_delayed_first_confirmation_cannot_erase_overlap_across_all_permutations
     assert all(retained == retained_sets[0] for retained in retained_sets)
 
 
+def test_stale_explicit_replace_basis_reconciles_across_all_permutations() -> None:
+    prefix = _acknowledged().apply(
+        _readback(1, total_quantity=3, snapshot_at=11, received=12)
+    )
+    first = _replace(1, total=5, basis=1, created_at=13)
+    first_confirmation = _readback(
+        2,
+        total_quantity=5,
+        snapshot_at=14,
+        received=15,
+    )
+    stale_second = _replace(2, total=6, basis=1, created_at=16)
+    final_confirmation = _readback(
+        3,
+        total_quantity=6,
+        snapshot_at=18,
+        received=19,
+    )
+    outcomes: list[tuple[object, ...]] = []
+    retained_sets: list[frozenset[str]] = []
+    refusals: list[tuple[str, ...]] = []
+    clean_authority_resurrections: list[tuple[str, ...]] = []
+
+    for ordered in permutations(
+        (first, first_confirmation, stale_second, final_confirmation)
+    ):
+        projected = prefix
+        try:
+            for record in ordered:
+                projected = projected.apply(record)
+        except ReplacementRefusedError:
+            refusals.append(tuple(record.record_id for record in ordered))
+            continue
+        outcomes.append(_semantic(projected))
+        retained_sets.append(
+            frozenset(
+                item.intent_id if isinstance(item, OrderIntent) else item.record_id
+                for item in projected.records
+            )
+        )
+        if not (
+            projected.state is ExecutionState.RECONCILIATION_REQUIRED
+            and projected.broker_confirmed_total_quantity == 6
+            and projected.pending_replace_total_quantity is None
+            and "INVALID_REPLACE_BASIS" in projected.reconciliation_reasons
+            and projected.replace_basis_id is None
+            and first in projected.records
+            and first_confirmation in projected.records
+            and stale_second in projected.records
+            and final_confirmation in projected.records
+        ):
+            clean_authority_resurrections.append(
+                tuple(record.record_id for record in ordered)
+            )
+
+    assert len(outcomes) + len(refusals) == 24
+    assert not refusals, f"{len(refusals)}/24 stale-basis permutations refused"
+    assert not clean_authority_resurrections, (
+        f"{len(clean_authority_resurrections)}/24 stale-basis permutations restored authority"
+    )
+    assert all(outcome == outcomes[0] for outcome in outcomes)
+    assert all(retained == retained_sets[0] for retained in retained_sets)
+
+
+def test_equal_receipt_competing_fact_invalidates_explicit_basis_in_all_permutations() -> None:
+    prefix = _acknowledged().apply(
+        _readback(1, total_quantity=3, snapshot_at=11, received=12)
+    )
+    first = _replace(1, total=5, basis=1, created_at=13)
+    named_basis = _readback(
+        2,
+        total_quantity=5,
+        snapshot_at=16,
+        received=17,
+    )
+    equal_receipt_competitor = _readback(
+        3,
+        total_quantity=5,
+        snapshot_at=16,
+        received=17,
+    )
+    ambiguous_second = _replace(2, total=6, basis=2, created_at=17)
+    final_confirmation = _readback(
+        4,
+        total_quantity=6,
+        snapshot_at=19,
+        received=20,
+    )
+    outcomes: list[tuple[object, ...]] = []
+    retained_sets: list[frozenset[str]] = []
+    refusals: list[tuple[str, ...]] = []
+    clean_authority_resurrections: list[tuple[str, ...]] = []
+
+    for ordered in permutations(
+        (
+            first,
+            named_basis,
+            equal_receipt_competitor,
+            ambiguous_second,
+            final_confirmation,
+        )
+    ):
+        projected = prefix
+        try:
+            for record in ordered:
+                projected = projected.apply(record)
+        except ReplacementRefusedError:
+            refusals.append(tuple(record.record_id for record in ordered))
+            continue
+        outcomes.append(_semantic(projected))
+        retained_sets.append(
+            frozenset(
+                item.intent_id if isinstance(item, OrderIntent) else item.record_id
+                for item in projected.records
+            )
+        )
+        if not (
+            projected.state is ExecutionState.RECONCILIATION_REQUIRED
+            and projected.broker_confirmed_total_quantity == 6
+            and projected.pending_replace_total_quantity is None
+            and "INVALID_REPLACE_BASIS" in projected.reconciliation_reasons
+            and projected.replace_basis_id is None
+            and first in projected.records
+            and named_basis in projected.records
+            and equal_receipt_competitor in projected.records
+            and ambiguous_second in projected.records
+            and final_confirmation in projected.records
+        ):
+            clean_authority_resurrections.append(
+                tuple(record.record_id for record in ordered)
+            )
+
+    assert len(outcomes) + len(refusals) == 120
+    assert not refusals, f"{len(refusals)}/120 equal-receipt permutations refused"
+    assert not clean_authority_resurrections, (
+        f"{len(clean_authority_resurrections)}/120 equal-receipt permutations restored authority"
+    )
+    assert all(outcome == outcomes[0] for outcome in outcomes)
+    assert all(retained == retained_sets[0] for retained in retained_sets)
+
+
+def test_invalid_replace_basis_stays_sticky_through_a_third_replace() -> None:
+    prefix = _acknowledged().apply(
+        _readback(1, total_quantity=3, snapshot_at=11, received=12)
+    )
+    first = _replace(1, total=5, basis=1, created_at=13)
+    stale_second = _replace(2, total=6, basis=1, created_at=16)
+    first_confirmation = _readback(
+        2,
+        total_quantity=5,
+        snapshot_at=14,
+        received=15,
+    )
+    second_confirmation = _readback(
+        3,
+        total_quantity=6,
+        snapshot_at=18,
+        received=19,
+    )
+    third = _replace(3, total=7, basis=3, created_at=19)
+    final_confirmation = _readback(
+        4,
+        total_quantity=7,
+        snapshot_at=21,
+        received=22,
+    )
+
+    projected = prefix
+    for record in (
+        first,
+        stale_second,
+        first_confirmation,
+        second_confirmation,
+        third,
+        final_confirmation,
+    ):
+        projected = projected.apply(record)
+
+    assert projected.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert projected.broker_confirmed_total_quantity == 7
+    assert projected.pending_replace_total_quantity is None
+    assert "INVALID_REPLACE_BASIS" in projected.reconciliation_reasons
+    assert projected.replace_basis_id is None
+    assert stale_second in projected.records
+    assert third in projected.records
+
+
 def test_replace_at_explicit_basis_receipt_time_is_allowed() -> None:
     basis = _readback(1, total_quantity=3, snapshot_at=11, received=12)
     replacement = _replace(total=5, basis=1, created_at=12)
