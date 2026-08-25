@@ -53,9 +53,12 @@ Exit codes (contract):
      — or the EMISSION path refused (round-8 review fix, 2026-08-24: an
      output name that is not a regular file, or a publish whose identity or
      readback does not match the rendered content — CensusEmitRefused; or
-     round-10 review fix, 2026-08-25: a refused emission's cleanup finds the
-     output directory substituted or vanished after custody ended — the
-     digest directory is removed only if it still maps to the held identity)
+     round-10 review fix, 2026-08-25: a bare OSError raised while publishing
+     the set — the members already renamed into place are rolled back, so
+     the set stays all-or-nothing and the retry is clean; or a refused
+     emission's cleanup finds the output directory substituted or vanished
+     after custody ended — the digest directory is removed only if it still
+     maps to the held identity)
   5  census emitted but coverage incomplete (the artifact is STILL written;
      partial evidence is never swallowed)
 """
@@ -912,7 +915,14 @@ def _emit_census_set(
     published by rename in a FIXED order, and the complete set is verified at
     return (final name regular, published inode identity, full ``O_NOFOLLOW``
     readback). Any refusal unlinks every temp so NOTHING is published — the
-    caller removes the then-empty digest dir and a retry is clean."""
+    caller removes the then-empty digest dir and a retry is clean.
+
+    Round-10 (finding 9): a failure AFTER the first final rename succeeded —
+    including a BARE OSError (a directory planted at an output name makes
+    ``os.replace`` raise outside both typed families) — rolls back the
+    members THIS run published (identity-checked unlinks of exactly the
+    inodes this run renamed into place) before anything re-raises, so the
+    set is all-or-nothing including the raw-OSError path."""
     # F2 (round-11): the emission itself carries the manifest verification —
     # the LAST filesystem act before the census bytes are published. The
     # recorded input manifest sha must equal the sha re-read at this
@@ -979,43 +989,71 @@ def _emit_census_set(
         # (b) all outputs verified: publish the SET by rename, fixed order —
         # a rename swaps the DIRECTORY ENTRY, so a link planted at an output
         # name is unlinked by the swap and never written through.
-        for name, tmp_name, _identity in temps:
-            os.replace(tmp_name, name, src_dir_fd=out_fd, dst_dir_fd=out_fd)
-        # (c) verify the complete set at return: the final name must lstat as
-        # a regular file holding the inode this command wrote, and a full
-        # O_NOFOLLOW readback must equal the rendered content.
-        for (name, _tmp_name, identity), (_output_name, content) in zip(
-            temps, outputs, strict=True
-        ):
-            try:
-                published = os.stat(name, dir_fd=out_fd, follow_symlinks=False)
-            except OSError as exc:
-                raise CensusEmitRefused(
-                    f"{name}: the published census output vanished after the publish"
-                    f" ({exc.strerror})"
-                ) from None
-            if not stat.S_ISREG(published.st_mode) or (published.st_dev, published.st_ino) != (
-                identity[0],
-                identity[1],
+        published: list[tuple[str, tuple[int, int]]] = []
+        try:
+            for name, tmp_name, identity in temps:
+                os.replace(tmp_name, name, src_dir_fd=out_fd, dst_dir_fd=out_fd)
+                published.append((name, identity))
+            # (c) verify the complete set at return: the final name must
+            # lstat as a regular file holding the inode this command wrote,
+            # and a full O_NOFOLLOW readback must equal the rendered content.
+            for (name, _tmp_name, identity), (_output_name, content) in zip(
+                temps, outputs, strict=True
             ):
-                raise CensusEmitRefused(
-                    f"{name}: the published census output is not the inode this "
-                    f"command wrote (wrote dev {identity[0]} ino {identity[1]},"
-                    f" published dev {published.st_dev} ino {published.st_ino},"
-                    f" mode {stat.S_IFMT(published.st_mode):o})"
-                    " — refusing to attest it"
-                )
-            if _read_all_nofollow(out_fd, name) != content.encode("utf-8"):
-                raise CensusEmitRefused(
-                    f"{name}: the published census output does not hold the "
-                    "rendered bytes — refusing to attest it"
-                )
+                try:
+                    published_stat = os.stat(name, dir_fd=out_fd, follow_symlinks=False)
+                except OSError as exc:
+                    raise CensusEmitRefused(
+                        f"{name}: the published census output vanished after the publish"
+                        f" ({exc.strerror})"
+                    ) from None
+                if not stat.S_ISREG(published_stat.st_mode) or (
+                    published_stat.st_dev,
+                    published_stat.st_ino,
+                ) != (identity[0], identity[1]):
+                    raise CensusEmitRefused(
+                        f"{name}: the published census output is not the inode this "
+                        f"command wrote (wrote dev {identity[0]} ino {identity[1]},"
+                        f" published dev {published_stat.st_dev} ino {published_stat.st_ino},"
+                        f" mode {stat.S_IFMT(published_stat.st_mode):o})"
+                        " — refusing to attest it"
+                    )
+                if _read_all_nofollow(out_fd, name) != content.encode("utf-8"):
+                    raise CensusEmitRefused(
+                        f"{name}: the published census output does not hold the "
+                        "rendered bytes — refusing to attest it"
+                    )
+        except BaseException:
+            # Round-10 P1 (finding 9): a failure after the first final rename
+            # succeeded — including a BARE OSError from os.replace — rolls
+            # back the members THIS run already published. They are provably
+            # ours (vetted temps, renamed under the held fd); each is
+            # unlinked only while the name still maps to the inode this run
+            # renamed into it, so the set is all-or-nothing even on the
+            # raw-OSError path.
+            for name, identity in published:
+                _unlink_published_if_ours(out_fd, name, identity)
+            raise
     finally:
         # any refusal unlinks every temp: NOTHING of the set is published
         # under a temp name either.
         for _name, tmp_name, _identity in temps:
             with contextlib.suppress(FileNotFoundError):
                 os.unlink(tmp_name, dir_fd=out_fd)
+
+
+def _unlink_published_if_ours(dir_fd: int, name: str, identity: tuple[int, int]) -> None:
+    """Round-10 P1 (finding 9): unlink ``name`` only while it still maps to
+    ``identity`` — the rollback of a partially published census set removes
+    exactly the inodes this command renamed into place, never whatever a
+    concurrent substitution planted at the name."""
+    try:
+        named = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except OSError:
+        return
+    if (named.st_dev, named.st_ino) == identity:
+        with contextlib.suppress(OSError):
+            os.unlink(name, dir_fd=dir_fd)
 
 
 def _read_all_nofollow(dir_fd: int, name: str) -> bytes:
@@ -1344,6 +1382,18 @@ def main(argv: list[str] | None = None) -> int:
         # manifest-tamper family, never a publish.
         print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
         refusal_exit = 2
+    except OSError as exc:
+        # round-10 finding 9: a BARE OSError from the publish (e.g. a
+        # directory planted at an output name makes os.replace raise
+        # IsADirectoryError) is an EMISSION-path refusal like the typed
+        # ones — never an untyped traceback over a half-published set. The
+        # members this run already published were rolled back inside
+        # _emit_census_set before this handler sees the exception.
+        print(
+            f"EMISSION REFUSED: the census set could not be published ({exc})",
+            file=sys.stderr,
+        )
+        refusal_exit = 4
     finally:
         os.close(out_fd)
     if not emitted:

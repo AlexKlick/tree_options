@@ -1423,3 +1423,60 @@ def test_refusal_cleanup_leaves_a_substituted_output_directory_intact(
     assert (stranger / "nested" / "deep.txt").read_text() == "deep inside\n"
     assert "substituted" in err, "the substitution itself is refused loudly, never silent"
     assert decoy.read_bytes() == before, "the decoy was never written through"
+
+
+# ---- round-10 P1 (finding 9): a bare OSError mid-publish must not leave a
+# half-published set --
+#
+# Round-10 review fix (2026-08-25): the three final names are renamed
+# sequentially, and a file-over-directory os.replace raises BARE OSError —
+# which escaped both emit catches (CensusEmitRefused, MassiveManifestError):
+# the error propagated untyped, census.json stayed published, and every
+# retry hit OUTPUT EXISTS forever. OSError is now caught in the emission
+# family (exit 4), and ANY failure after the first final rename succeeded
+# rolls back the members this run already published (identity-checked
+# unlinks of exactly the inodes this run renamed into place), so the set is
+# all-or-nothing including the raw-OSError path and the retry is clean.
+
+
+def test_raw_oserror_mid_publish_rolls_the_set_back_and_leaves_a_clean_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """census.json renames into place, then a DIRECTORY planted at census.md
+    makes the SECOND os.replace raise bare OSError (IsADirectoryError). The
+    pre-fix escapes both emit catches untyped with census.json left
+    published; post-fix exit 4, NOTHING published, immediate re-run 0."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    out_root = tmp_path / "out"
+    real_replace = os.replace
+    planted: list[bool] = []
+
+    def replace_planting_directory_at_md(
+        src: str | bytes,
+        dst: str | bytes,
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+    ) -> None:
+        if not planted and dst_dir_fd is not None and Path(os.fsdecode(dst)).name == "census.md":
+            planted.append(True)
+            os.mkdir(dst, dir_fd=dst_dir_fd)  # a DIRECTORY at the final name
+        real_replace(src, dst, src_dir_fd=src_dir_fd, dst_dir_fd=dst_dir_fd)
+
+    monkeypatch.setattr(os, "replace", replace_planting_directory_at_md)
+    assert _census(monkeypatch, capture, universe, out_root) == 4, (
+        "a bare OSError mid-publish is an EMISSION refusal (exit 4), never an untyped traceback"
+    )
+    err = capsys.readouterr().err
+    assert "EMISSION REFUSED" in err, "the refusal family is named on stderr"
+    assert not out_root.exists() or list(out_root.iterdir()) == [], (
+        "NOTHING remains published — the census.json this run already "
+        "renamed into place is rolled back with the set"
+    )
+    # the plant wrapper is one-shot: an immediate re-run is clean
+    assert _census(monkeypatch, capture, universe, out_root) == 0, (
+        "after the raw-OSError rollback the retry must not hit OUTPUT EXISTS"
+    )
