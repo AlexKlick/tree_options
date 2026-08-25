@@ -161,6 +161,7 @@ def _semantic(lifecycle: ExecutionLifecycle) -> tuple[object, ...]:
         lifecycle.fill_economic_intervals,
         lifecycle.reconciliation_reasons,
         lifecycle.uncertain_since_at,
+        lifecycle.replace_basis_id,
     )
 
 
@@ -247,6 +248,88 @@ def test_unrequested_broker_total_change_is_sticky_before_and_after_replace() ->
     assert changed_after_replace.broker_confirmed_total_quantity == 6
     assert changed_after_replace.state is ExecutionState.RECONCILIATION_REQUIRED
     assert "UNEXPECTED_CONFIRMED_TOTAL_CHANGE" in changed_after_replace.reconciliation_reasons
+
+
+def test_first_readback_total_must_match_submitted_intent_without_ack() -> None:
+    submitting = ExecutionLifecycle.start(_intent()).apply(_attempt())
+    unknown = submitting.apply(
+        TimeoutObserved(
+            record_id="timeout-001",
+            intent_id="intent-001",
+            attempt_id="attempt-001",
+            locally_received_at=_at(5),
+            source="executor",
+            source_sequence_id="timeout-seq-001",
+        )
+    )
+    observed = unknown.apply(_readback(1, total_quantity=4, snapshot_at=6, received=7))
+    assert observed.broker_confirmed_total_quantity == 4
+    assert observed.pending_replace_total_quantity is None
+    assert observed.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert "UNEXPECTED_CONFIRMED_TOTAL_CHANGE" in observed.reconciliation_reasons
+
+
+def test_fact_before_submit_accepts_temporally_earlier_submit_and_converges() -> None:
+    created = ExecutionLifecycle.start(_intent())
+    acknowledgement = _ack(received=3)
+
+    missing_submit = created.apply(acknowledgement)
+    assert missing_submit.reconciliation_reasons == {"MISSING_SUBMIT"}
+    repaired = missing_submit.apply(_attempt())
+    chronological = created.apply(_attempt()).apply(acknowledgement)
+
+    assert _semantic(repaired) == _semantic(chronological)
+    assert repaired.state is ExecutionState.ACKNOWLEDGED
+    assert not repaired.reconciliation_reasons
+
+
+def test_fill_before_submit_closes_only_missing_submit_and_converges() -> None:
+    created = ExecutionLifecycle.start(_intent())
+    fill = _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=6)
+
+    missing_submit = created.apply(fill)
+    assert "MISSING_SUBMIT" in missing_submit.reconciliation_reasons
+    repaired = missing_submit.apply(_attempt())
+    chronological = created.apply(_attempt()).apply(fill)
+
+    assert _semantic(repaired) == _semantic(chronological)
+    assert "MISSING_SUBMIT" not in repaired.reconciliation_reasons
+    assert repaired.reconciliation_reasons == chronological.reconciliation_reasons
+    assert repaired.reconciliation_reasons == {"TOTAL_UNCONFIRMED"}
+
+
+def test_fill_above_confirmed_total_without_pending_replace_is_retained() -> None:
+    contradictory = _acknowledged().apply(
+        _fill(4, fill_quantity=4, cumulative_quantity=4, exchange_at=5, received=6)
+    )
+    assert contradictory.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert contradictory.filled_quantity == 4
+    assert contradictory.fill_economic_intervals == ((0, 4),)
+    assert "FILL_EXCEEDS_CONFIRMED_TOTAL" in contradictory.reconciliation_reasons
+    assert "FILL_KIND_TOTAL_MISMATCH" in contradictory.reconciliation_reasons
+    assert contradictory.records[-1].record_id == "fill-004"
+
+
+def test_delayed_fill_kind_mismatch_after_replace_confirmation_is_retained() -> None:
+    confirmed_replace = (
+        _acknowledged()
+        .apply(_readback(1, total_quantity=3))
+        .apply(_replace(total=5))
+        .apply(_readback(2, total_quantity=5, snapshot_at=15, received=16))
+    )
+    delayed_fill = _fill(
+        3,
+        fill_quantity=3,
+        cumulative_quantity=3,
+        exchange_at=17,
+        received=20,
+        complete=True,
+    )
+    projected = confirmed_replace.apply(delayed_fill)
+    assert projected.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert projected.filled_quantity == 3
+    assert "FILL_KIND_TOTAL_MISMATCH" in projected.reconciliation_reasons
+    assert projected.records[-1] == delayed_fill
 
 
 @pytest.mark.parametrize("uncertainty", ["timeout", "disconnect"])
@@ -475,6 +558,63 @@ def test_readback_cumulative_without_economics_cannot_authorize_replace() -> Non
     assert authorized.pending_replace_total_quantity == 4
 
 
+def test_later_delivered_fill_invalidates_readback_basis_in_either_order() -> None:
+    acknowledged = _acknowledged()
+    fill = _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=9, received=13)
+    readback = _readback(
+        1,
+        status=BrokerReadbackStatus.PARTIALLY_FILLED,
+        total_quantity=3,
+        cumulative_quantity=1,
+        snapshot_at=10,
+        received=12,
+    )
+
+    readback_first = acknowledged.apply(readback).apply(fill)
+    fill_first = acknowledged.apply(fill).apply(readback)
+    assert _semantic(readback_first) == _semantic(fill_first)
+    assert readback_first.replace_basis_id is None
+    assert fill_first.replace_basis_id is None
+    with pytest.raises(ReplacementRefusedError, match="readback"):
+        readback_first.apply(_replace(total=4))
+    with pytest.raises(ReplacementRefusedError, match="readback"):
+        fill_first.apply(_replace(total=4))
+
+    fresh = _readback(
+        2,
+        status=BrokerReadbackStatus.PARTIALLY_FILLED,
+        total_quantity=3,
+        cumulative_quantity=1,
+        snapshot_at=14,
+        received=15,
+    )
+    refreshed_a = readback_first.apply(fresh)
+    refreshed_b = fill_first.apply(fresh)
+    assert refreshed_a.replace_basis_id == "readback-002"
+    assert refreshed_b.replace_basis_id == "readback-002"
+    assert refreshed_a.apply(_replace(2, total=4, basis=2)).pending_replace_total_quantity == 4
+    assert refreshed_b.apply(_replace(2, total=4, basis=2)).pending_replace_total_quantity == 4
+
+
+def test_equal_receipt_fill_and_readback_fail_closed_for_replace_basis() -> None:
+    acknowledged = _acknowledged()
+    fill = _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=9, received=12)
+    readback = _readback(
+        1,
+        status=BrokerReadbackStatus.PARTIALLY_FILLED,
+        total_quantity=3,
+        cumulative_quantity=1,
+        snapshot_at=10,
+        received=12,
+    )
+
+    readback_first = acknowledged.apply(readback).apply(fill)
+    fill_first = acknowledged.apply(fill).apply(readback)
+    assert _semantic(readback_first) == _semantic(fill_first)
+    assert readback_first.replace_basis_id is None
+    assert fill_first.replace_basis_id is None
+
+
 def test_canceled_full_cumulative_requires_complete_fill_economics() -> None:
     canceled = _acknowledged().apply(
         _readback(
@@ -525,3 +665,75 @@ def test_canceled_full_and_complete_fill_converge_in_either_order() -> None:
     assert _semantic(readback_first) == _semantic(fill_first)
     assert fill_first.state is ExecutionState.FILLED
     assert not fill_first.reconciliation_reasons
+
+
+@pytest.mark.parametrize("terminal_kind", ["filled", "canceled", "rejected"])
+@pytest.mark.parametrize("uncertainty_kind", ["timeout", "disconnect"])
+def test_terminal_fact_and_later_uncertainty_converge_in_either_order(
+    terminal_kind: str,
+    uncertainty_kind: str,
+) -> None:
+    if terminal_kind == "filled":
+        prefix = _acknowledged()
+        terminal = _fill(
+            3,
+            fill_quantity=3,
+            cumulative_quantity=3,
+            exchange_at=8,
+            received=9,
+            complete=True,
+        )
+        expected = ExecutionState.FILLED
+    elif terminal_kind == "canceled":
+        prefix = _acknowledged().apply(
+            _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=6)
+        )
+        terminal = _readback(
+            1,
+            status=BrokerReadbackStatus.CANCELED,
+            total_quantity=3,
+            cumulative_quantity=1,
+            snapshot_at=8,
+            received=9,
+        )
+        expected = ExecutionState.CANCELED
+    else:
+        prefix = ExecutionLifecycle.start(_intent()).apply(_attempt())
+        terminal = OrderReject(
+            record_id="reject-001",
+            intent_id="intent-001",
+            broker_order_id="paper-order-001",
+            reason_code="synthetic-reject",
+            broker_acknowledged_at=_at(8),
+            locally_received_at=_at(9),
+            source="synthetic-paper-adapter",
+            source_sequence_id="source-reject-001",
+            broker_sequence_id="broker-reject-001",
+        )
+        expected = ExecutionState.REJECTED
+
+    uncertainty = (
+        TimeoutObserved(
+            record_id="timeout-terminal",
+            intent_id="intent-001",
+            attempt_id="attempt-001",
+            locally_received_at=_at(20),
+            source="executor",
+            source_sequence_id="timeout-terminal-seq",
+        )
+        if uncertainty_kind == "timeout"
+        else DisconnectObserved(
+            record_id="disconnect-terminal",
+            intent_id="intent-001",
+            locally_received_at=_at(20),
+            source="executor",
+            source_sequence_id="disconnect-terminal-seq",
+        )
+    )
+
+    uncertainty_first = prefix.apply(uncertainty).apply(terminal)
+    terminal_first = prefix.apply(terminal).apply(uncertainty)
+    assert _semantic(uncertainty_first) == _semantic(terminal_first)
+    assert terminal_first.state is expected
+    assert terminal_first.uncertain_since_at is None
+    assert uncertainty in terminal_first.records

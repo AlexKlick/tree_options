@@ -398,11 +398,20 @@ def test_conflicting_broker_order_identity_requires_reconciliation() -> None:
     assert conflicting.broker_order_id == "paper-order-001"
 
 
-def test_complete_fill_requires_exact_total_and_partial_cannot_claim_total() -> None:
-    with pytest.raises(TransitionRefusedError, match="complete fill"):
-        _submitting().apply(_ack()).apply(_complete(cumulative_quantity=2))
-    with pytest.raises(TransitionRefusedError, match="partial fill"):
-        _submitting().apply(_ack()).apply(_partial(cumulative_quantity=3))
+@pytest.mark.parametrize(
+    "contradictory_fill",
+    [
+        _complete(fill_quantity=2, cumulative_quantity=2),
+        _partial(fill_quantity=3, cumulative_quantity=3),
+    ],
+)
+def test_fill_total_kind_contradictions_are_retained_for_reconciliation(
+    contradictory_fill: PartialFill | CompleteFill,
+) -> None:
+    projected = _submitting().apply(_ack()).apply(contradictory_fill)
+    assert projected.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert "FILL_KIND_TOTAL_MISMATCH" in projected.reconciliation_reasons
+    assert projected.records[-1] == contradictory_fill
 
 
 def test_reject_is_terminal_but_fill_after_reject_requires_reconciliation() -> None:
@@ -455,14 +464,13 @@ def test_readback_cannot_erase_an_observed_fill_quantity() -> None:
     assert contradictory.filled_quantity == 1
 
 
-def test_timeout_after_filled_is_refused_not_a_regression() -> None:
+def test_timeout_after_filled_is_retained_without_regression() -> None:
     filled = _submitting().apply(_ack()).apply(_complete(fill_quantity=3))
-    with pytest.raises(TransitionRefusedError):
-        filled.apply(
-            _timeout(
-                record_id="timeout-late",
-                locally_received_at=_at(20),
-                source_sequence_id="timeout-late",
-            )
-        )
-    assert filled.state is ExecutionState.FILLED
+    timeout = _timeout(
+        record_id="timeout-late",
+        locally_received_at=_at(20),
+        source_sequence_id="timeout-late",
+    )
+    projected = filled.apply(timeout)
+    assert projected.state is ExecutionState.FILLED
+    assert projected.records[-1] == timeout
