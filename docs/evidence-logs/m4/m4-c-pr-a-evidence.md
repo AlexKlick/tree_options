@@ -62,6 +62,7 @@ from that verification are recorded below.
 | `004ae49`/`38be17b`/`f30329d`/`7ed168a`/`3fb0bd1`/`314a5f4`/`91e6148` | EXTERNAL audit lane (owner-ruled into PR A 2026-08-25): canonical run identity (RunIdentityCore + NonCanonicalRunIdError at create/open, M230); checkout-independent universe identity (logical repo-relative source ids, M231–M233); FULL runstate store under a shared no-follow custody module (`runstate/custody.py`, M234+); typed held-input G4 authority (VerifiedSealedInputs, effect-boundary joins, M244–M267); disclosed gate-copy exclusion (`artifacts/`+`dist/` from the disposable mutation copy, owning regression test, 314a5f4); evidence doc `pr13-audit-remediation.md` |
 | `908afa6`/`5ca9adb`/`2c86396`/`00c1593` | R11-A (owner-ruled consolidation wave): durable name→inode binding — companion identity record custody-written at ledger/journal creation, every open verifies name↔bound inode (a byte-clone at the canonical name can never be consumed; unbound non-empty and vanished-bound both refuse); `custody.write_all` looped write is the ONLY authority-record write path (both ledgers + journal); `atomic_write(expected=…)` identity-conditional replace — stale adoption refuses a replacement live owner; `unlink_held_name` = rename-to-unpredictable-temp → verify renamed identity → unlink the TEMP only (a successor at the old name is never deleted) |
 | `744e1f3`/`881bdcd`/`71cf8ee`/`87b175a`/`cfac494`/`4431f14` | R11-B (same wave): amendment holds ONE custody fd across all four emits with the final sweep AT packet return over all four names through a fresh component-wise re-walk whose dir-fstat identity must equal the held fd (out-of-root relocation refused); census emission carries the manifest gate at the write moment against the sha RECORDED in the census body (MassiveManifestError → exit 2, nothing published) and publishes the three outputs as one all-or-nothing set (temps → vet → rename-set → verify at return; refusal unlinks temps and drops the digest dir, retry is clean); g4-seal runner identity = registry-resolved (`RUNNER_REGISTRY` + `runner_implementation_sha256` bound into the self-hashed packet at approval, current code hash cross-joined before consumption — execute takes NO runner parameter, a foreign callable with the approved literal is not authority); verified-inputs exit re-scans the held directory and requires exact entry-set equality with the snapshot the verifier consumed |
+| `5887acf`/`fc615e8`/`6ec70ec`/`81296a4` | R12 (owner ruling: fix the real bugs + declare the threat model): release restores a swapped entry at the canonical name (with a restoration re-verify) BEFORE the mismatch refusal — the refusal path never empties `owner.json`, so no fresh exclusive acquire while a successor is live; runner identity binds the CALLABLE — (version, qualified name, source-file sha256, config digest) in the packet, all four re-derived from the registry entry at execution, `register_runner` requires a validated 64-hex `config_digest` (same-file foreign runner and differently-configured instances refused); census refusal cleanup verify-then-deletes the digest dir (held-identity match or loud refusal — a substituted directory is left intact); the emit-set catch gains raw `OSError` and any failure after the first rename rolls back identity-checked this-run-published names (all-or-nothing incl. the untyped path, retry clean) |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -409,3 +410,48 @@ the exact PR head (see PR body for its verdict line).
   kill-proof that M260's rewritten owner test still kills its mutant
   (FAILED under the applied mutant, byte-exact restore — the M199
   masking lesson applied proactively).
+
+- **Round 10** (head `cc0eb12`, gate22 GREEN 1,603 / 255 KILLED /
+  restoration TRUE, clean-clone full gate GREEN incl. seven CLI
+  checks, log `pr-a-codex10.log`): VERDICT NO-GO — 10 findings
+  (8×P1, 2×P2); round-9 disposition 1/10 RESOLVED (the looped
+  write), 9 NOT_RESOLVED; all constraint checks PASS. All ten
+  orchestrator-verified in source. Qualitatively different from
+  prior rounds: the findings are not missed sites but the NEW R11
+  mechanisms themselves carrying the same verify→act shape one
+  level up — the companion identity record is replaceable together
+  with the ledger (a self-consistent clone+binding bundle
+  verifies); the identity-conditional replace still returns before
+  an unconditional os.replace; release's rename-aside empties the
+  canonical name before the mismatch refusal; runner identity is
+  the whole source-file hash (same-file foreign callable or a
+  configured instance passes); the amendment sweep is four
+  sequential per-member checks then return; the confinement
+  equality check precedes the artifact checks; both manifest guards
+  still precede writes/hash; census closes the custody fd then
+  rmtree's by blind pathname; sequential set renames let a raw
+  OSError escape the typed catches leaving a partial set; the exit
+  rescan is itself a snapshot. **Owner ruling 2026-08-25
+  (AskUserQuestion): fix the REAL bugs + declare the threat
+  model.** Four findings are defects independent of racing (F3
+  release destroys the canonical name; F4 runner identity
+  granularity; F8 delete-by-blind-pathname; F9 untyped exception +
+  no rollback) — remediated in R12 (`5887acf`/`fc615e8`/`6ec70ec`/
+  `81296a4`, each red-first; agent logs
+  `/tmp/r12-f{3,4,8,9}-red.log`). Six findings are
+  userspace-irreducible TOCTOU windows against a hypothetical
+  concurrent local writer. **Threat model (owner ruling
+  2026-08-25): PR A's authority model assumes a cooperative
+  single-operator host. In scope for review: sequential
+  correctness, durability, crash-window safety, identity binding,
+  and any defect reachable WITHOUT a concurrent writer. Out of
+  scope: interleavings that require an adversarial process
+  concurrently writing the repo tree or artifacts/ between any two
+  syscalls — userspace cannot close those windows in the limit,
+  and this machine's operator context does not include such an
+  attacker. Findings in the out-of-scope class will be recorded as
+  boundary notes, not defects.** Orchestrator verification of R12:
+  8 files exactly as briefed; protected blobs + mutate.py +
+  pyproject byte-identical; AST 0/255 drift (M260's anchor line
+  preserved verbatim inside the new four-way check); independent
+  full suite 1,612 passed exit 0 (+9 tests).
