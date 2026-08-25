@@ -24,7 +24,6 @@ from tree_options.execution import (
     SubmitAttempt,
     TemporalOrderError,
     TimeoutObserved,
-    TransitionRefusedError,
 )
 
 T0 = datetime(2026, 8, 24, 14, 0, tzinfo=UTC)
@@ -185,8 +184,10 @@ def test_replace_request_stays_pending_until_broker_confirms_total() -> None:
     assert replaced.broker_confirmed_total_quantity == 3
     assert replaced.pending_replace_total_quantity == 5
 
-    with pytest.raises(ReplacementRefusedError, match="pending"):
-        replaced.apply(_replace(2, total=6, basis=1))
+    overlapping = replaced.apply(_replace(2, total=6, basis=1))
+    assert overlapping.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert overlapping.pending_replace_total_quantity == 6
+    assert "OVERLAPPING_REPLACE_INTENTS" in overlapping.reconciliation_reasons
 
     confirmed = replaced.apply(_readback(2, total_quantity=5, snapshot_at=16, received=17))
     assert confirmed.state is ExecutionState.ACKNOWLEDGED
@@ -322,6 +323,49 @@ def test_local_action_and_broker_fact_permutations_converge() -> None:
     assert all(outcome == outcomes[0] for outcome in outcomes)
 
 
+def test_same_basis_replace_and_confirmation_permutations_reconcile_deterministically() -> None:
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3))
+    first = _replace(1, total=5, basis=1, created_at=14)
+    second = _replace(2, total=6, basis=1, created_at=15)
+    confirmation = _readback(2, total_quantity=6, snapshot_at=16, received=17)
+    outcomes: list[tuple[object, ...]] = []
+    retained_sets: list[frozenset[str]] = []
+
+    for ordered in permutations((first, second, confirmation)):
+        projected = prefix
+        for record in ordered:
+            projected = projected.apply(record)
+        outcomes.append(_semantic(projected))
+        retained_sets.append(
+            frozenset(
+                item.intent_id if isinstance(item, OrderIntent) else item.record_id
+                for item in projected.records
+            )
+        )
+        assert projected.state is ExecutionState.RECONCILIATION_REQUIRED
+        assert projected.broker_confirmed_total_quantity == 6
+        assert projected.pending_replace_total_quantity is None
+        assert "OVERLAPPING_REPLACE_INTENTS" in projected.reconciliation_reasons
+        assert first in projected.records
+        assert second in projected.records
+        assert confirmation in projected.records
+
+    assert all(outcome == outcomes[0] for outcome in outcomes)
+    assert all(retained == retained_sets[0] for retained in retained_sets)
+
+
+def test_replace_at_explicit_basis_receipt_time_is_allowed() -> None:
+    basis = _readback(1, total_quantity=3, snapshot_at=11, received=12)
+    replacement = _replace(total=5, basis=1, created_at=12)
+
+    projected = _acknowledged().apply(basis).apply(replacement)
+
+    assert projected.state is ExecutionState.ACKNOWLEDGED
+    assert projected.pending_replace_total_quantity == 5
+    assert replacement in projected.records
+    assert not projected.reconciliation_reasons
+
+
 def test_unrequested_broker_total_change_is_sticky_before_and_after_replace() -> None:
     changed_without_replace = _acknowledged().apply(
         _readback(1, total_quantity=4, snapshot_at=11, received=12)
@@ -408,6 +452,34 @@ def test_retry_sent_before_ack_receipt_replays_after_ack_and_converges() -> None
     assert retry in replayed.records
 
 
+def test_retry_after_ack_knowledge_is_retained_and_reconciles_in_both_orders() -> None:
+    prefix = ExecutionLifecycle.start(_intent()).apply(_attempt())
+    acknowledgement = _ack(acknowledged_at=5, received=8)
+    invalid_retry = _attempt(2, send_at=10)
+    outcomes: list[tuple[object, ...]] = []
+    retained_sets: list[frozenset[str]] = []
+
+    for ordered in permutations((acknowledgement, invalid_retry)):
+        projected = prefix
+        for record in ordered:
+            projected = projected.apply(record)
+        outcomes.append(_semantic(projected))
+        retained_sets.append(
+            frozenset(
+                item.intent_id if isinstance(item, OrderIntent) else item.record_id
+                for item in projected.records
+            )
+        )
+        assert projected.state is ExecutionState.RECONCILIATION_REQUIRED
+        assert "RETRY_AFTER_LOCAL_KNOWLEDGE" in projected.reconciliation_reasons
+        assert projected.submit_attempt_ids == ("attempt-001", "attempt-002")
+        assert acknowledgement in projected.records
+        assert invalid_retry in projected.records
+
+    assert all(outcome == outcomes[0] for outcome in outcomes)
+    assert all(retained == retained_sets[0] for retained in retained_sets)
+
+
 def test_reordered_submit_attempts_project_deterministic_ids() -> None:
     created = ExecutionLifecycle.start(_intent())
     first = _attempt()
@@ -441,13 +513,14 @@ def test_equal_time_submit_attempt_and_ack_permutations_converge() -> None:
     assert all(outcome == outcomes[0] for outcome in outcomes)
 
 
-def test_retry_at_known_broker_receipt_time_fails_closed() -> None:
+def test_retry_at_known_broker_receipt_time_is_retained_for_reconciliation() -> None:
     acknowledged = ExecutionLifecycle.start(_intent()).apply(_attempt()).apply(_ack(received=3))
     ambiguous_retry = _attempt(2, send_at=3)
 
-    with pytest.raises(TransitionRefusedError, match="readback"):
-        acknowledged.apply(ambiguous_retry)
-    assert ambiguous_retry not in acknowledged.records
+    retained = acknowledged.apply(ambiguous_retry)
+    assert retained.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert "RETRY_AFTER_LOCAL_KNOWLEDGE" in retained.reconciliation_reasons
+    assert ambiguous_retry in retained.records
 
 
 def test_fill_before_submit_closes_only_missing_submit_and_converges() -> None:
@@ -833,6 +906,85 @@ def test_equal_exchange_time_adjacent_fill_intervals_do_not_infer_regression() -
     assert lower_first.state is ExecutionState.PARTIALLY_FILLED
     assert lower_first.fill_economic_intervals == ((0, 2),)
     assert not lower_first.reconciliation_reasons
+
+
+def test_post_terminal_equal_cumulative_fill_reconciles_in_either_order() -> None:
+    acknowledged = _acknowledged()
+    terminal_readback = _readback(
+        1,
+        status=BrokerReadbackStatus.FILLED,
+        total_quantity=3,
+        cumulative_quantity=3,
+        snapshot_at=10,
+        received=12,
+    )
+    later_complete = _fill(
+        3,
+        fill_quantity=3,
+        cumulative_quantity=3,
+        exchange_at=11,
+        received=13,
+        complete=True,
+    )
+
+    readback_first = acknowledged.apply(terminal_readback).apply(later_complete)
+    fill_first = acknowledged.apply(later_complete).apply(terminal_readback)
+
+    assert _semantic(readback_first) == _semantic(fill_first)
+    assert readback_first.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert readback_first.filled_quantity == 3
+    assert readback_first.fill_economic_intervals == ((0, 3),)
+    assert "TERMINAL_FACT_CONTRADICTION" in readback_first.reconciliation_reasons
+    assert "FILL_ECONOMIC_GAP" not in readback_first.reconciliation_reasons
+
+
+def test_readback_to_fill_cumulative_regression_reconciles_all_permutations() -> None:
+    acknowledged = _acknowledged()
+    readback = _readback(
+        1,
+        status=BrokerReadbackStatus.PARTIALLY_FILLED,
+        total_quantity=3,
+        cumulative_quantity=2,
+        snapshot_at=5,
+        received=8,
+    )
+    lower_fill = _fill(
+        1,
+        fill_quantity=1,
+        cumulative_quantity=1,
+        exchange_at=6,
+        received=9,
+    )
+    restored_fill = _fill(
+        2,
+        fill_quantity=1,
+        cumulative_quantity=2,
+        exchange_at=7,
+        received=10,
+    )
+    outcomes: list[tuple[object, ...]] = []
+    retained_sets: list[frozenset[str]] = []
+
+    for ordered in permutations((readback, lower_fill, restored_fill)):
+        projected = acknowledged
+        for record in ordered:
+            projected = projected.apply(record)
+        outcomes.append(_semantic(projected))
+        retained_sets.append(
+            frozenset(
+                item.intent_id if isinstance(item, OrderIntent) else item.record_id
+                for item in projected.records
+            )
+        )
+        assert projected.state is ExecutionState.RECONCILIATION_REQUIRED
+        assert projected.filled_quantity == 2
+        assert projected.fill_economic_intervals == ((0, 2),)
+        assert "FILL_CUMULATIVE_REGRESSION" in projected.reconciliation_reasons
+        assert "FILL_ECONOMIC_GAP" not in projected.reconciliation_reasons
+        assert "FILL_ECONOMIC_OVERLAP" not in projected.reconciliation_reasons
+
+    assert all(outcome == outcomes[0] for outcome in outcomes)
+    assert all(retained == retained_sets[0] for retained in retained_sets)
 
 
 def test_readback_cumulative_without_economics_cannot_authorize_replace() -> None:

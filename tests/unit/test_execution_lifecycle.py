@@ -26,7 +26,6 @@ from tree_options.execution import (
     SubmitAttempt,
     TemporalOrderError,
     TimeoutObserved,
-    TransitionRefusedError,
 )
 
 T0 = datetime(2026, 8, 24, 14, 0, tzinfo=UTC)
@@ -205,8 +204,11 @@ def test_timeout_or_disconnect_is_unknown_and_cannot_authorize_resubmit_or_repla
 ) -> None:
     unknown = _submitting().apply(uncertain)
     assert unknown.state is ExecutionState.UNKNOWN
-    with pytest.raises(TransitionRefusedError, match="readback"):
-        unknown.apply(_attempt(2, send_attempt_at=_at(6)))
+    invalid_retry = _attempt(2, send_attempt_at=_at(6))
+    retained = unknown.apply(invalid_retry)
+    assert retained.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert "RETRY_AFTER_LOCAL_KNOWLEDGE" in retained.reconciliation_reasons
+    assert invalid_retry in retained.records
     with pytest.raises(IntentMismatchError):
         unknown.apply(_attempt(2, intent_id="new-intent", send_attempt_at=_at(6)))
     with pytest.raises(ReplacementRefusedError, match="readback"):
