@@ -52,7 +52,10 @@ Exit codes (contract):
      the content-addressed output directory already exists (never overwrite)
      — or the EMISSION path refused (round-8 review fix, 2026-08-24: an
      output name that is not a regular file, or a publish whose identity or
-     readback does not match the rendered content — CensusEmitRefused)
+     readback does not match the rendered content — CensusEmitRefused; or
+     round-10 review fix, 2026-08-25: a refused emission's cleanup finds the
+     output directory substituted or vanished after custody ended — the
+     digest directory is removed only if it still maps to the held identity)
   5  census emitted but coverage incomplete (the artifact is STILL written;
      partial evidence is never swallowed)
 """
@@ -1314,6 +1317,12 @@ def main(argv: list[str] | None = None) -> int:
         return 4
     emitted = False
     refusal_exit: int | None = None
+    # Round-10 P1 (finding 8): capture the held digest directory's identity
+    # BEFORE the fd closes — once custody ends, the PATHNAME alone proves
+    # nothing, and the nothing-was-published cleanup below may delete only
+    # the directory this run created.
+    held_dir_stat = os.fstat(out_fd)
+    held_dir_identity = (held_dir_stat.st_dev, held_dir_stat.st_ino)
     try:
         _emit_census_set(
             out_fd,
@@ -1338,11 +1347,37 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         os.close(out_fd)
     if not emitted:
-        # nothing was published: drop the digest dir this run created (the
-        # exists() check above guarantees it is ours; anything inside is our
-        # unlinked temps or a planted foreign entry) so a retry is clean —
-        # out_dir.exists() would otherwise refuse it forever. rmtree never
-        # follows a symlinked entry; the decoy target is untouched.
+        # nothing was published: drop the digest dir this run created so a
+        # retry is clean — out_dir.exists() would otherwise refuse it
+        # forever. Round-10 P1 (finding 8): the exists() check above
+        # predates custody and proves nothing AFTER it ends, so the deletion
+        # is verify-then-delete — the path is re-statted without following
+        # symlinks and removed ONLY if it still maps to exactly the held
+        # identity; a substituted (or vanished) directory is a stranger's
+        # tree, left untouched and refused loudly, never silently recursed
+        # into. rmtree never follows a symlinked entry; a decoy target is
+        # untouched either way.
+        try:
+            named = os.stat(out_dir, follow_symlinks=False)
+        except OSError as exc:
+            print(
+                f"EMISSION REFUSED: {out_dir} vanished after custody ended "
+                f"({exc.strerror}) — nothing to clean; an output directory "
+                "that no longer names the held inode is never deleted by "
+                "pathname",
+                file=sys.stderr,
+            )
+            return 4
+        if (named.st_dev, named.st_ino) != held_dir_identity:
+            print(
+                f"EMISSION REFUSED: {out_dir} was substituted after custody "
+                f"ended (held dev/inode {held_dir_identity[0]}/"
+                f"{held_dir_identity[1]}, the name now holds dev/inode "
+                f"{named.st_dev}/{named.st_ino}) — refusing to delete a "
+                "directory this run did not create",
+                file=sys.stderr,
+            )
+            return 4
         shutil.rmtree(out_dir, ignore_errors=True)
         assert refusal_exit is not None
         return refusal_exit

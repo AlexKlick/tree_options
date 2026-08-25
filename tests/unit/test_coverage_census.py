@@ -12,6 +12,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import stat
 import sys
 from collections.abc import Mapping
 from pathlib import Path
@@ -1338,3 +1340,86 @@ def test_mid_emission_refusal_publishes_nothing_and_leaves_a_clean_retry(
     assert _census(monkeypatch, capture, universe, out_root) == 0, (
         "after a mid-emission refusal the retry must not hit OUTPUT EXISTS"
     )
+
+
+# ---- round-10 P1 (finding 8): the refusal cleanup never deletes by blind pathname ----
+#
+# Round-10 review fix (2026-08-25): after a refused emission, the cleanup
+# rmtree'd out_dir by PATHNAME — but os.close(out_fd) had already ended
+# custody, and an exists() check predating custody proves nothing about what
+# the path names NOW. A directory substituted at the path was recursively
+# deleted. The cleanup is now verify-then-delete: the held digest
+# directory's identity is captured BEFORE the fd closes, the path is
+# re-statted without following symlinks, and the removal happens only if
+# the path still maps to exactly that identity — otherwise the stranger's
+# tree is left untouched and the substitution is refused loudly.
+
+
+def test_refusal_cleanup_leaves_a_substituted_output_directory_intact(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The refusal is induced the usual way (a planted symlink at census.md
+    inside held digest dir A). At the exact moment A's custody fd closes,
+    A is renamed aside and an unrelated populated directory B is placed at
+    out_dir — the pre-fix cleanup rmtree'd B by pathname. Post-fix B's files
+    survive untouched and the substitution is refused loudly."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    out_root = tmp_path / "out"
+    decoy = tmp_path / "decoy.md"
+    decoy.write_text("# decoy — never written through\n", encoding="utf-8")
+    before = decoy.read_bytes()
+    real_mkdir = Path.mkdir
+    planted: list[bool] = []
+
+    def mkdir_then_plant_second(self: Path, *args: object, **kwargs: object) -> None:
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+        if self.parent == out_root and not planted:
+            planted.append(True)
+            (self / "census.md").symlink_to(decoy)  # the emission refuses here
+
+    real_close = os.close
+    substituted: list[Path] = []
+
+    def close_substituting_held_dir(fd: int) -> None:
+        try:
+            info = os.fstat(fd)
+        except OSError:
+            info = None
+        real_close(fd)
+        # the window: custody has just ENDED for a digest directory of
+        # out_root — rename it aside and put a stranger's tree at the path
+        if info is None or not stat.S_ISDIR(info.st_mode) or substituted:
+            return
+        held_identity = (info.st_dev, info.st_ino)
+        for child in out_root.iterdir():
+            try:
+                named = child.stat()
+            except OSError:
+                continue
+            if (named.st_dev, named.st_ino) == held_identity:
+                child.rename(child.with_name(child.name + ".aside"))
+                stranger = out_root / child.name
+                stranger.mkdir()
+                (stranger / "stranger.txt").write_text("a stranger's tree\n", encoding="utf-8")
+                (stranger / "nested").mkdir()
+                (stranger / "nested" / "deep.txt").write_text("deep inside\n", encoding="utf-8")
+                substituted.append(stranger)
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_then_plant_second)
+    monkeypatch.setattr(os, "close", close_substituting_held_dir)
+    assert _census(monkeypatch, capture, universe, out_root) == 4, (
+        "the planted symlink at census.md is an EMISSION refusal (exit 4)"
+    )
+    err = capsys.readouterr().err
+    assert "EMISSION REFUSED" in err
+    assert substituted, "the substitution ran at the custody close"
+    stranger = substituted[0]
+    assert (stranger / "stranger.txt").read_text() == "a stranger's tree\n", (
+        "the substituted directory's files are NEVER deleted by pathname"
+    )
+    assert (stranger / "nested" / "deep.txt").read_text() == "deep inside\n"
+    assert "substituted" in err, "the substitution itself is refused loudly, never silent"
+    assert decoy.read_bytes() == before, "the decoy was never written through"
