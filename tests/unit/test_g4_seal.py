@@ -69,6 +69,14 @@ def ledger_root() -> Iterator[Path]:
         yield root
     finally:
         shutil.rmtree(root, ignore_errors=True)
+        # The dual-tree anchor (round-11 finding 1, R13) lives in the runstate
+        # store ADJACENT to the ledger root — a sibling this fixture cleans so
+        # anchors do not accumulate under artifacts/g4-seal-tests/runstate/.
+        anchor = L.runstate_anchor_path(root)
+        with contextlib.suppress(OSError):
+            anchor.unlink()
+            anchor.parent.rmdir()  # seal-ledger-anchor/
+            anchor.parent.parent.rmdir()  # runstate/ (only when now empty)
 
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:

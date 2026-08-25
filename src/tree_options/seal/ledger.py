@@ -40,6 +40,17 @@ journal:
   that lands after it; the binding makes the clone such a swap installs
   unusable by every successor process — refused at open as reconciliation,
   never success.
+* the ledger identity is ALSO anchored in a SECOND tree (round-11 review
+  fix, 2026-08-25, finding 1, R13): the companion record lives BESIDE the
+  file it guards, so an OFFLINE attacker could co-replace both files with
+  a self-consistent pair (an approval-only clone plus a companion naming
+  the clone). A dedicated anchor record in the RUNSTATE STORE tree —
+  ``<ledger-root-parent>/runstate/seal-ledger-anchor/<key>.identity.json``,
+  custody-written once at ledger creation — records the ledger root path,
+  the ledger file's ``(st_dev, st_ino)``, and the companion digest; every
+  open verifies BOTH trees, and divergence or a MISSING anchor for a
+  non-empty ledger is a corruption-class refusal (see
+  ``runstate_anchor_path`` for the store-identity mapping).
 
 Record kinds:
 
@@ -65,6 +76,7 @@ from typing import Literal, NoReturn
 
 from tree_options.data.digest import sha256_hex
 from tree_options.runstate import custody
+from tree_options.runstate.errors import StoreCustodyError
 from tree_options.schemas.common import StrictModel
 from tree_options.seal.errors import LedgerCorruptError, LedgerRootRefusedError
 from tree_options.seal.identity import SealedIdentity, content_identity, sealed_run_id
@@ -182,10 +194,25 @@ def read_ledger(root: Path) -> LedgerView:
     between validation and the open is ``ELOOP`` → ``LedgerCorruptError``)
     and the ledger is opened BY NAME inside that custody fd — the read can
     never be redirected through a symlinked root.
+
+    Round-11 review fix (2026-08-25, finding 1, R13): the read verifies BOTH
+    identity trees — the beside-the-file companion AND the runstate anchor
+    (see ``_verify_bound_ledger_name`` and the dual-tree anchor section) —
+    so an offline co-replacement of the ledger and its companion is refused
+    against the second tree's record of the REAL ledger.
     """
     root = validate_ledger_root(root)
     root_fd = _open_ledger_root(root, create=False)
     if root_fd is None:
+        # Round-11 (finding 1, R13): an absent ROOT with a surviving runstate
+        # anchor is the total disappearance of created authority — the anchor
+        # is the second tree's memory that a ledger WAS created here.
+        if _load_runstate_anchor(root) is not None:
+            raise LedgerCorruptError(
+                f"{root}: the ledger root is absent while a runstate anchor records "
+                "created authority — bound authority may not silently vanish; this "
+                "refusal is RECONCILIATION, never an empty view"
+            ) from None
         return LedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
     try:
         try:
@@ -209,6 +236,16 @@ def read_ledger(root: Path) -> LedgerView:
                     "its durable name binding exists — bound authority may not "
                     "silently vanish; this refusal is RECONCILIATION, never an "
                     "empty view"
+                ) from None
+            # Round-11 (finding 1, R13): ditto for the SECOND tree — deleting
+            # both the ledger and its companion is never a silent reset when
+            # the runstate anchor still names created authority.
+            if _load_runstate_anchor(root) is not None:
+                raise LedgerCorruptError(
+                    f"{root / LEDGER_FILENAME}: the ledger NAME is absent while a "
+                    "runstate anchor records created authority — bound authority "
+                    "may not silently vanish; this refusal is RECONCILIATION, "
+                    "never an empty view"
                 ) from None
             return LedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
         try:
@@ -346,6 +383,301 @@ def _binding_refusal(detail: str) -> NoReturn:
     raise LedgerCorruptError(detail) from None
 
 
+# ---- the dual-tree runstate anchor (round-11 finding 1, R13, 2026-08-25) ---------
+#
+# The companion identity record pins the ledger name to ONE inode — but it
+# lives BESIDE the file it guards, so an OFFLINE attacker (between
+# invocations, no concurrency needed) could replace BOTH files with a
+# self-consistent pair: a regular clone carrying the approval-only prefix
+# bytes plus a replacement companion naming the clone's dev/inode. The next
+# open verified the clone against its FORGED companion and re-spent the
+# approval — the companion alone added no security over the ledger itself.
+# The ledger identity is therefore ALSO anchored in a SECOND tree the
+# artifacts/ attacker must separately forge: the runstate store. At the
+# first ledger open/creation (an empty ledger, under the flock, BEFORE the
+# first append lands) a dedicated anchor record is custody-written there
+# recording the ledger root path, the ledger file's (st_dev, st_ino), and
+# the sha256 of the companion bytes; every subsequent open verifies BOTH
+# the beside-the-file companion AND this anchor. Divergence — or a MISSING
+# anchor for a non-empty ledger — is a corruption-class refusal
+# (RECONCILIATION, never success), so a co-replaced pair still leaves the
+# anchor naming the REAL ledger and the clone can never be opened as
+# authority.
+#
+# Store-identity mapping (the seal ledger has no natural run_id/run store):
+# the anchor tree is the runstate store root ADJACENT to the ledger root —
+# ``<resolved-ledger-root>.parent / "runstate"`` — so the default ledger
+# root ``artifacts/g4-authority`` anchors in ``artifacts/runstate`` (the
+# store's own root; the anchor lives in a dedicated ``seal-ledger-anchor/``
+# namespace beside the per-run directories). The record name keys the
+# anchor to the RESOLVED ledger root path (sha256 prefix), so one store
+# tree holds every ledger's anchor without collision, and a MOVED ledger
+# root is a different key — an owner reconcile act, never a silent re-bind.
+
+ANCHOR_FORMAT = 1
+ANCHOR_PURPOSE = "g4-seal-ledger-anchor"
+RUNSTATE_STORE_DIRNAME = "runstate"
+ANCHOR_DIRNAME = "seal-ledger-anchor"
+_ANCHOR_RUN_ID = "g4-seal-ledger"  # cosmetic: the custody error-detail context
+
+
+@dataclass(frozen=True)
+class RunstateAnchorRecord:
+    """The ledger identity pinned in the SECOND tree (the runstate store)."""
+
+    anchor_key: str
+    ledger_root: str
+    ledger_name: str
+    st_dev: int
+    st_ino: int
+    companion_sha256: str
+
+
+def anchor_store_root(ledger_root: Path) -> Path:
+    """The runstate store root anchoring this ledger (the second tree)."""
+    return Path(ledger_root).resolve().parent / RUNSTATE_STORE_DIRNAME
+
+
+def _anchor_key(resolved_root: Path) -> str:
+    return sha256_hex(str(resolved_root).encode("utf-8"))[:16]
+
+
+def runstate_anchor_path(ledger_root: Path) -> Path:
+    """The anchor record's path in the runstate store tree (public so callers
+    and tests can name — and clean — exactly the record their ledger root
+    owns; see the section comment above for the mapping)."""
+    resolved = Path(ledger_root).resolve()
+    return anchor_store_root(resolved) / ANCHOR_DIRNAME / f"{_anchor_key(resolved)}.identity.json"
+
+
+def _anchor_bytes(record: RunstateAnchorRecord) -> bytes:
+    payload = {
+        "format": ANCHOR_FORMAT,
+        "purpose": ANCHOR_PURPOSE,
+        "anchor_key": record.anchor_key,
+        "ledger_root": record.ledger_root,
+        "ledger_name": record.ledger_name,
+        "st_dev": record.st_dev,
+        "st_ino": record.st_ino,
+        "companion_sha256": record.companion_sha256,
+    }
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def _anchor_unreachable(resolved_root: Path, action: str, detail: str) -> NoReturn:
+    raise LedgerCorruptError(
+        f"{resolved_root}: the runstate anchor tree could not be {action} through real "
+        f"directories ({detail}) — the seal ledger's second-tree anchor is corruption, "
+        "never a silent absence; reconcile with the owner"
+    ) from None
+
+
+def _load_runstate_anchor(resolved_root: Path) -> RunstateAnchorRecord | None:
+    """Load this ledger root's anchor record (``None`` when absent).
+
+    Unreachable anchor storage (a symlinked component — the custody walk
+    refuses it) or a present-but-malformed record is ``LedgerCorruptError``,
+    never a silent ``None``: an anchor is never guessed around."""
+    path = runstate_anchor_path(resolved_root)
+    try:
+        anchor_fd = custody.open_directory(
+            path.parent,
+            create=False,
+            run_id=_ANCHOR_RUN_ID,
+            purpose="g4 seal runstate anchor",
+        )
+    except StoreCustodyError as exc:
+        _anchor_unreachable(resolved_root, "opened", exc.detail)
+    if anchor_fd is None:
+        return None
+    try:
+        try:
+            raw = custody.read_named_bytes(
+                path.parent,
+                anchor_fd,
+                path.name,
+                run_id=_ANCHOR_RUN_ID,
+                purpose="g4 seal runstate anchor",
+                allow_missing=True,
+            )
+        except StoreCustodyError as exc:
+            _anchor_unreachable(resolved_root, "read", exc.detail)
+    finally:
+        os.close(anchor_fd)
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+        record = RunstateAnchorRecord(
+            anchor_key=str(parsed["anchor_key"]),
+            ledger_root=str(parsed["ledger_root"]),
+            ledger_name=str(parsed["ledger_name"]),
+            st_dev=int(parsed["st_dev"]),
+            st_ino=int(parsed["st_ino"]),
+            companion_sha256=str(parsed["companion_sha256"]),
+        )
+        if int(parsed["format"]) != ANCHOR_FORMAT:
+            raise ValueError(f"unknown format {parsed['format']!r}")
+        if str(parsed["purpose"]) != ANCHOR_PURPOSE:
+            raise ValueError(f"foreign purpose {parsed['purpose']!r}")
+        if record.anchor_key != _anchor_key(resolved_root):
+            raise ValueError(f"keyed to a different ledger root ({record.anchor_key!r})")
+    except (KeyError, TypeError, ValueError) as exc:
+        raise LedgerCorruptError(
+            f"{path}: the runstate anchor record is malformed ({exc}) — an anchor is "
+            "never guessed around; reconcile with the owner (this refusal is "
+            "RECONCILIATION, never success)"
+        ) from None
+    return record
+
+
+def _write_runstate_anchor(resolved_root: Path, root_fd: int, ledger_fd: int) -> None:
+    """Custody-write the anchor record exactly ONCE, at ledger creation (under
+    the caller's flock, before the first append lands): the publish is
+    EXCLUSIVE, so a second binder refuses instead of silently re-pointing the
+    second tree at a new inode."""
+    held = os.fstat(ledger_fd)
+    companion_name = custody.name_binding_filename(LEDGER_FILENAME)
+    try:
+        companion = custody.read_named_bytes(
+            resolved_root,
+            root_fd,
+            companion_name,
+            run_id=_ANCHOR_RUN_ID,
+            purpose="ledger.jsonl authority name binding",
+        )
+    except StoreCustodyError as exc:
+        raise LedgerCorruptError(
+            f"{resolved_root / companion_name}: the companion identity record could not "
+            f"be read while anchoring ({exc.detail})"
+        ) from None
+    assert companion is not None  # bind_name_identity ran immediately before
+    record = RunstateAnchorRecord(
+        anchor_key=_anchor_key(resolved_root),
+        ledger_root=str(resolved_root),
+        ledger_name=LEDGER_FILENAME,
+        st_dev=held.st_dev,
+        st_ino=held.st_ino,
+        companion_sha256=sha256_hex(companion),
+    )
+    path = runstate_anchor_path(resolved_root)
+    try:
+        anchor_fd = custody.open_directory(
+            path.parent,
+            create=True,
+            run_id=_ANCHOR_RUN_ID,
+            purpose="g4 seal runstate anchor",
+        )
+    except StoreCustodyError as exc:
+        _anchor_unreachable(resolved_root, "created", exc.detail)
+    assert anchor_fd is not None  # create=True always returns an open fd or raises
+    try:
+        custody.atomic_write(
+            path.parent,
+            anchor_fd,
+            path.name,
+            _anchor_bytes(record),
+            run_id=_ANCHOR_RUN_ID,
+            purpose="g4 seal runstate anchor",
+            mode=0o644,
+            exclusive=True,
+        )
+    except StoreCustodyError as exc:
+        raise LedgerCorruptError(
+            f"{path}: the runstate anchor could not be published ({exc.detail}) — a "
+            "ledger is never created without its second-tree anchor; this refusal is "
+            "RECONCILIATION, never success"
+        ) from None
+    finally:
+        os.close(anchor_fd)
+
+
+def _check_runstate_anchor(
+    resolved_root: Path, root_fd: int, ledger_fd: int, record: RunstateAnchorRecord
+) -> None:
+    """Both trees must agree on ONE ledger identity: the anchor's recorded
+    root/name must be exactly this root, its ``(st_dev, st_ino)`` must be the
+    held inode's, and the companion bytes must still hash to the anchored
+    digest. Any divergence is the co-replacement refusal."""
+    held = os.fstat(ledger_fd)
+    if record.ledger_root != str(resolved_root) or record.ledger_name != LEDGER_FILENAME:
+        raise LedgerCorruptError(
+            f"{resolved_root / LEDGER_FILENAME}: the runstate anchor names a different "
+            f"ledger ({record.ledger_root}/{record.ledger_name}) — an anchor never "
+            "transfers between roots; this refusal is RECONCILIATION, never success"
+        ) from None
+    if (record.st_dev, record.st_ino) != (held.st_dev, held.st_ino):
+        raise LedgerCorruptError(
+            f"{resolved_root / LEDGER_FILENAME}: the runstate anchor records dev/inode "
+            f"{record.st_dev}/{record.st_ino} but the ledger name now maps to "
+            f"{held.st_dev}/{held.st_ino} — the beside-the-file companion may have been "
+            "co-replaced offline, but the second-tree anchor still names the real "
+            "ledger, so a clone is never opened as authority: this refusal is "
+            "RECONCILIATION, never success"
+        ) from None
+    companion_name = custody.name_binding_filename(LEDGER_FILENAME)
+    try:
+        companion = custody.read_named_bytes(
+            resolved_root,
+            root_fd,
+            companion_name,
+            run_id=_ANCHOR_RUN_ID,
+            purpose="ledger.jsonl authority name binding",
+        )
+    except StoreCustodyError as exc:
+        raise LedgerCorruptError(
+            f"{resolved_root / companion_name}: the companion identity record could not "
+            f"be read against the runstate anchor ({exc.detail})"
+        ) from None
+    if companion is None or sha256_hex(companion) != record.companion_sha256:
+        raise LedgerCorruptError(
+            f"{resolved_root / companion_name}: the companion identity record no longer "
+            "holds the bytes the runstate anchor pins — the beside-the-file tree "
+            "diverges from the second tree; this refusal is RECONCILIATION, never success"
+        ) from None
+
+
+def _verify_or_bind_runstate_anchor(resolved_root: Path, root_fd: int, ledger_fd: int) -> None:
+    """The append-side anchor rule (under the flock): verify the anchor
+    against the held inode; bind it when the ledger is still empty and the
+    anchor is absent (creation, or the crash window between the companion
+    write and the anchor write); a NON-EMPTY ledger with no anchor is
+    reconciliation, never an append and never a silent re-bind."""
+    record = _load_runstate_anchor(resolved_root)
+    if record is None:
+        held_size = os.fstat(ledger_fd).st_size
+        if held_size != 0:
+            raise LedgerCorruptError(
+                f"{resolved_root / LEDGER_FILENAME}: the ledger holds {held_size} bytes "
+                "with no runstate anchor — an unanchored non-empty ledger is never "
+                "appended and never silently re-anchored in place; reconcile with the "
+                "owner (this refusal is RECONCILIATION, never success)"
+            ) from None
+        _write_runstate_anchor(resolved_root, root_fd, ledger_fd)
+        return
+    _check_runstate_anchor(resolved_root, root_fd, ledger_fd, record)
+
+
+def _verify_runstate_anchor_read_side(resolved_root: Path, root_fd: int, ledger_fd: int) -> None:
+    """The read-side anchor rule: a PRESENT anchor must match the held inode
+    and the companion digest; a MISSING anchor is tolerated only while the
+    ledger carries no authority yet (an empty file — the creation crash
+    window, closed at the next append); a NON-EMPTY ledger with no anchor is
+    reconciliation, never authority."""
+    record = _load_runstate_anchor(resolved_root)
+    if record is None:
+        held_size = os.fstat(ledger_fd).st_size
+        if held_size != 0:
+            raise LedgerCorruptError(
+                f"{resolved_root / LEDGER_FILENAME}: the ledger holds {held_size} bytes "
+                "with no runstate anchor — an unanchored non-empty ledger is never read "
+                "as authority; reconcile with the owner (this refusal is RECONCILIATION, "
+                "never success)"
+            ) from None
+        return
+    _check_runstate_anchor(resolved_root, root_fd, ledger_fd, record)
+
+
 def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
     """Round-11 review fix (2026-08-25, finding 3): the durable name→inode
     binding — the successor-window closer.
@@ -361,6 +693,12 @@ def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> Non
     is refused at the next open — it can never be consumed. Unbound NON-EMPTY
     ledgers (pre-binding era, or a deleted record) are reconciliation, never
     an append and never a silent re-bind.
+
+    Round-11 review fix (2026-08-25, finding 1, R13): the companion alone is
+    co-replaceable OFFLINE (a clone plus a replacement companion naming the
+    clone), so the ledger identity is ALSO anchored in a second tree — the
+    runstate store. Creation writes that anchor immediately after the
+    companion; every later append verifies BOTH trees.
     """
     purpose = "ledger.jsonl authority"
     binding = custody.load_name_binding(
@@ -378,6 +716,7 @@ def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> Non
         custody.bind_name_identity(
             root, root_fd, LEDGER_FILENAME, ledger_fd, purpose=purpose, refuse=_binding_refusal
         )
+        _write_runstate_anchor(root, root_fd, ledger_fd)
     else:
         custody.verify_name_binding(
             root_fd,
@@ -387,13 +726,20 @@ def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> Non
             purpose=purpose,
             refuse=_binding_refusal,
         )
+        _verify_or_bind_runstate_anchor(root, root_fd, ledger_fd)
 
 
 def _verify_bound_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
     """The read-side rule: a bound name that stopped mapping to its bound
     inode is refused; an EMPTY unbound ledger carries no authority yet
     (creation crash window — it is bound at the next append); a NON-EMPTY
-    unbound ledger is reconciliation."""
+    unbound ledger is reconciliation.
+
+    Round-11 review fix (2026-08-25, finding 1, R13): BOTH trees are
+    verified — the beside-the-file companion AND the runstate anchor. A
+    present anchor that names a different inode is the co-replacement
+    refusal; a missing anchor is tolerated only while the ledger carries no
+    authority yet (an empty file — the creation crash window)."""
     purpose = "ledger.jsonl authority"
     binding = custody.load_name_binding(
         root, root_fd, LEDGER_FILENAME, purpose=purpose, refuse=_binding_refusal
@@ -407,6 +753,7 @@ def _verify_bound_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
                 "reconcile with the owner (this refusal is RECONCILIATION, "
                 "never success)"
             ) from None
+        _verify_runstate_anchor_read_side(root, root_fd, ledger_fd)
         return
     custody.verify_name_binding(
         root_fd,
@@ -416,6 +763,7 @@ def _verify_bound_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
         purpose=purpose,
         refuse=_binding_refusal,
     )
+    _verify_runstate_anchor_read_side(root, root_fd, ledger_fd)
 
 
 def append_record(root: Path, record: LedgerRecord) -> str:

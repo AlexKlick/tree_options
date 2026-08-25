@@ -48,6 +48,15 @@ def ledger_root() -> Iterator[Path]:
         yield root
     finally:
         shutil.rmtree(root, ignore_errors=True)
+        # The dual-tree anchor (round-11 finding 1, R13) lives in the
+        # runstate store ADJACENT to the ledger root — a SIBLING this
+        # fixture must also clean, or anchors accumulate forever under
+        # artifacts/g4-seal-tests/runstate/.
+        anchor = L.runstate_anchor_path(root)
+        with contextlib.suppress(OSError):
+            anchor.unlink()
+            anchor.parent.rmdir()  # seal-ledger-anchor/
+            anchor.parent.parent.rmdir()  # runstate/ (only when now empty)
 
 
 def test_genesis_chains_to_zeros_and_domain_separates(ledger_root):
@@ -547,6 +556,124 @@ def test_clone_swap_after_the_name_check_is_refused_at_the_next_open(
     finally:
         with contextlib.suppress(OSError):
             (ledger_root / (L.LEDGER_FILENAME + ".held")).unlink()
+
+
+# ---- round-11 (finding 1, R13): the DUAL-TREE anchor — the companion alone
+# is co-replaceable OFFLINE --------------------------------------------------------
+#
+# Round-11 review fix (2026-08-25, R13 wave): the durable name->inode binding
+# verifies the ledger name against whatever companion record CURRENTLY
+# occupies the adjacent path — so an OFFLINE attacker (no concurrency at all:
+# the swap lands between invocations) replaces BOTH files with a
+# self-consistent pair: a regular clone carrying the approval-only prefix
+# bytes plus a replacement ledger.jsonl.identity.json naming the clone's
+# dev/inode. The next open verified the clone against its FORGED companion
+# and re-spent the approval — the companion added no security over the file
+# it guards, because it lives beside it. The ledger identity is now ALSO
+# anchored in a SECOND tree the artifacts/ attacker must separately forge —
+# the runstate store: at the first ledger open/creation an anchor record is
+# custody-written under <ledger-root-parent>/runstate/seal-ledger-anchor/
+# recording the ledger root path, the ledger file's (st_dev, st_ino), and
+# the companion digest; every subsequent open verifies BOTH the
+# beside-the-file companion AND the runstate anchor. Divergence — or a
+# MISSING anchor for a non-empty ledger — is a corruption-class refusal.
+
+
+def test_offline_co_replacement_of_ledger_and_companion_refused_at_next_open(
+    ledger_root,
+) -> None:
+    """The round-11 attack: replace ledger.jsonl AND its companion with a
+    self-consistent approval-only pair (a regular clone at a NEW inode plus a
+    companion naming that inode). The forged pair satisfies the beside-the-
+    file companion check exactly; the runstate anchor still names the REAL
+    ledger's identity, so the next open — read AND append — refuses and the
+    approval is never re-spent."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
+    L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)
+    ledger_path = ledger_root / L.LEDGER_FILENAME
+    approval_only = (ledger_path.read_text().splitlines(keepends=True)[0]).encode("utf-8")
+    real = ledger_path.with_name(L.LEDGER_FILENAME + ".real")
+    os.rename(ledger_path, real)  # keep the real ledger aside for teardown
+    ledger_path.write_bytes(approval_only)  # the CLONE: a new regular inode
+    clone_stat = os.stat(ledger_path)
+    # the replacement companion names the CLONE — the pair is self-consistent
+    (ledger_root / "ledger.jsonl.identity.json").write_text(
+        json.dumps(
+            {
+                "format": 1,
+                "name": L.LEDGER_FILENAME,
+                "st_dev": clone_stat.st_dev,
+                "st_ino": clone_stat.st_ino,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    try:
+        with pytest.raises(LedgerCorruptError, match="runstate anchor"):
+            L.read_ledger(ledger_root)
+        with pytest.raises(LedgerCorruptError, match="runstate anchor"):
+            L.append_consumption(
+                ledger_root, identity, reason="second execution on the clone", at_epoch=T0 + 2
+            )
+        assert ledger_path.read_bytes() == approval_only, (
+            "the co-replaced pair must never gain a consumption — the approval is never re-spent"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            real.unlink()
+
+
+def test_runstate_anchor_is_written_at_creation_and_names_the_real_ledger(ledger_root) -> None:
+    """The anchor lands in the SECOND tree (the runstate store), is keyed by
+    the resolved ledger root, and pins the real ledger file's (st_dev,
+    st_ino) plus the companion digest."""
+    L.append_approval(ledger_root, _identity(), reason="owner approved", at_epoch=T0)
+    anchor = L.runstate_anchor_path(ledger_root)
+    assert anchor.is_file(), "the creation append custody-writes the anchor"
+    record = json.loads(anchor.read_text(encoding="utf-8"))
+    ledger_stat = os.stat(ledger_root / L.LEDGER_FILENAME)
+    companion = ledger_root / "ledger.jsonl.identity.json"
+    assert (record["st_dev"], record["st_ino"]) == (ledger_stat.st_dev, ledger_stat.st_ino)
+    assert record["ledger_root"] == str(ledger_root.resolve())
+    assert record["ledger_name"] == L.LEDGER_FILENAME
+    assert record["companion_sha256"] == L.sha256_hex(companion.read_bytes())
+    # the documented mapping: the default production ledger root
+    # (artifacts/g4-authority) anchors in the runstate STORE tree
+    # (artifacts/runstate), a sibling the g4-authority attacker must
+    # separately forge.
+    default_anchor = L.runstate_anchor_path(L.DEFAULT_G4_LEDGER_ROOT)
+    assert default_anchor.parent.parent == (REPO_ROOT / "artifacts" / "runstate").resolve()
+    # a second append does NOT rewrite the anchor (it is exclusive-by-name):
+    before = anchor.read_bytes()
+    L.append_consumption(ledger_root, _identity(), reason="seal", at_epoch=T0 + 1)
+    assert anchor.read_bytes() == before
+
+
+def test_nonempty_ledger_without_a_runstate_anchor_is_reconciliation(ledger_root) -> None:
+    """A non-empty ledger with NO runstate anchor (a pre-anchor-era ledger, or
+    an attacker who deleted the second tree's record) is never read as
+    authority and never appended — corruption class, never a silent re-bind."""
+    L.append_approval(ledger_root, _identity(), reason="owner approved", at_epoch=T0)
+    L.runstate_anchor_path(ledger_root).unlink()
+    with pytest.raises(LedgerCorruptError, match="runstate anchor"):
+        L.read_ledger(ledger_root)
+    with pytest.raises(LedgerCorruptError, match="runstate anchor"):
+        L.append_consumption(ledger_root, _identity(), reason="seal", at_epoch=T0 + 1)
+
+
+def test_absent_ledger_name_with_a_surviving_anchor_is_reconciliation(ledger_root) -> None:
+    """Deleting BOTH the ledger and its companion between invocations leaves
+    the runstate anchor naming created authority: the total disappearance of
+    a bound ledger is reconciliation, never a silent empty view."""
+    L.append_approval(ledger_root, _identity(), reason="owner approved", at_epoch=T0)
+    os.unlink(ledger_root / L.LEDGER_FILENAME)
+    os.unlink(ledger_root / "ledger.jsonl.identity.json")
+    with pytest.raises(LedgerCorruptError, match="runstate anchor"):
+        L.read_ledger(ledger_root)
 
 
 # ---- round-11 (finding 5): a short append write is never acknowledged ------------------
