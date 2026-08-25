@@ -633,6 +633,71 @@ def test_equal_receipt_fill_and_readback_fail_closed_for_replace_basis() -> None
     assert fill_first.replace_basis_id is None
 
 
+@pytest.mark.parametrize(
+    "status", [BrokerReadbackStatus.OPEN, BrokerReadbackStatus.PARTIALLY_FILLED]
+)
+@pytest.mark.parametrize("uncertainty_kind", ["timeout", "disconnect"])
+def test_equal_receipt_nonterminal_readback_and_uncertainty_fail_closed(
+    status: BrokerReadbackStatus,
+    uncertainty_kind: str,
+) -> None:
+    if status is BrokerReadbackStatus.OPEN:
+        prefix = ExecutionLifecycle.start(_intent()).apply(_attempt())
+        readback = _readback(
+            1,
+            status=status,
+            total_quantity=3,
+            cumulative_quantity=0,
+            snapshot_at=11,
+            received=12,
+        )
+    else:
+        prefix = _acknowledged().apply(
+            _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=6)
+        )
+        readback = _readback(
+            1,
+            status=status,
+            total_quantity=3,
+            cumulative_quantity=1,
+            snapshot_at=11,
+            received=12,
+        )
+
+    uncertainty = (
+        TimeoutObserved(
+            record_id="timeout-equal-readback",
+            intent_id="intent-001",
+            attempt_id="attempt-001",
+            locally_received_at=_at(12),
+            source="executor",
+            source_sequence_id="timeout-equal-readback-seq",
+        )
+        if uncertainty_kind == "timeout"
+        else DisconnectObserved(
+            record_id="disconnect-equal-readback",
+            intent_id="intent-001",
+            locally_received_at=_at(12),
+            source="executor",
+            source_sequence_id="disconnect-equal-readback-seq",
+        )
+    )
+
+    readback_first = prefix.apply(readback).apply(uncertainty)
+    uncertainty_first = prefix.apply(uncertainty).apply(readback)
+    assert _semantic(readback_first) == _semantic(uncertainty_first)
+    assert readback_first.state is ExecutionState.UNKNOWN
+    assert readback_first.uncertain_since_at == _at(12)
+    assert readback_first.replace_basis_id is None
+    assert uncertainty_first.replace_basis_id is None
+    assert uncertainty in readback_first.records
+    assert uncertainty in uncertainty_first.records
+    with pytest.raises(ReplacementRefusedError, match="readback"):
+        readback_first.apply(_replace(total=4))
+    with pytest.raises(ReplacementRefusedError, match="readback"):
+        uncertainty_first.apply(_replace(total=4))
+
+
 def test_canceled_full_cumulative_requires_complete_fill_economics() -> None:
     canceled = _acknowledged().apply(
         _readback(
@@ -754,6 +819,79 @@ def test_terminal_fact_and_later_uncertainty_converge_in_either_order(
     assert _semantic(uncertainty_first) == _semantic(terminal_first)
     assert terminal_first.state is expected
     assert terminal_first.uncertain_since_at is None
+    assert uncertainty in terminal_first.records
+
+
+@pytest.mark.parametrize("terminal_kind", ["filled", "canceled", "rejected"])
+@pytest.mark.parametrize("uncertainty_kind", ["timeout", "disconnect"])
+def test_equal_receipt_terminal_fact_outranks_transport_uncertainty(
+    terminal_kind: str,
+    uncertainty_kind: str,
+) -> None:
+    if terminal_kind == "filled":
+        prefix = _acknowledged()
+        terminal = _fill(
+            3,
+            fill_quantity=3,
+            cumulative_quantity=3,
+            exchange_at=8,
+            received=9,
+            complete=True,
+        )
+        expected = ExecutionState.FILLED
+    elif terminal_kind == "canceled":
+        prefix = _acknowledged().apply(
+            _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=6)
+        )
+        terminal = _readback(
+            1,
+            status=BrokerReadbackStatus.CANCELED,
+            total_quantity=3,
+            cumulative_quantity=1,
+            snapshot_at=8,
+            received=9,
+        )
+        expected = ExecutionState.CANCELED
+    else:
+        prefix = ExecutionLifecycle.start(_intent()).apply(_attempt())
+        terminal = OrderReject(
+            record_id="reject-equal-uncertainty",
+            intent_id="intent-001",
+            broker_order_id="paper-order-001",
+            reason_code="synthetic-reject",
+            broker_acknowledged_at=_at(8),
+            locally_received_at=_at(9),
+            source="synthetic-paper-adapter",
+            source_sequence_id="source-reject-equal-uncertainty",
+            broker_sequence_id="broker-reject-equal-uncertainty",
+        )
+        expected = ExecutionState.REJECTED
+
+    uncertainty = (
+        TimeoutObserved(
+            record_id="timeout-equal-terminal",
+            intent_id="intent-001",
+            attempt_id="attempt-001",
+            locally_received_at=_at(9),
+            source="executor",
+            source_sequence_id="timeout-equal-terminal-seq",
+        )
+        if uncertainty_kind == "timeout"
+        else DisconnectObserved(
+            record_id="disconnect-equal-terminal",
+            intent_id="intent-001",
+            locally_received_at=_at(9),
+            source="executor",
+            source_sequence_id="disconnect-equal-terminal-seq",
+        )
+    )
+
+    uncertainty_first = prefix.apply(uncertainty).apply(terminal)
+    terminal_first = prefix.apply(terminal).apply(uncertainty)
+    assert _semantic(uncertainty_first) == _semantic(terminal_first)
+    assert terminal_first.state is expected
+    assert terminal_first.uncertain_since_at is None
+    assert terminal_first.replace_basis_id is None
     assert uncertainty in terminal_first.records
 
 
