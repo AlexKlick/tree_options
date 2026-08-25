@@ -206,21 +206,21 @@ def test_timeout_or_disconnect_is_unknown_and_cannot_authorize_resubmit_or_repla
     unknown = _submitting().apply(uncertain)
     assert unknown.state is ExecutionState.UNKNOWN
     with pytest.raises(TransitionRefusedError, match="readback"):
-        unknown.apply(_attempt(2))
+        unknown.apply(_attempt(2, send_attempt_at=_at(6)))
     with pytest.raises(IntentMismatchError):
-        unknown.apply(_attempt(2, intent_id="new-intent"))
+        unknown.apply(_attempt(2, intent_id="new-intent", send_attempt_at=_at(6)))
     with pytest.raises(ReplacementRefusedError, match="readback"):
         unknown.apply(_replace())
     assert unknown.state is ExecutionState.UNKNOWN
 
 
-def test_authoritative_ack_or_readback_can_recover_unknown() -> None:
+def test_only_fresh_readback_can_recover_unknown() -> None:
     unknown = _submitting().apply(_timeout())
     acknowledged = unknown.apply(_ack(locally_received_at=_at(6)))
-    assert acknowledged.state is ExecutionState.ACKNOWLEDGED
+    assert acknowledged.state is ExecutionState.UNKNOWN
     assert acknowledged.broker_order_id == "paper-order-001"
 
-    recovered_by_readback = unknown.apply(_readback())
+    recovered_by_readback = acknowledged.apply(_readback())
     assert recovered_by_readback.state is ExecutionState.ACKNOWLEDGED
     assert recovered_by_readback.replace_basis_id == "readback-001"
 
@@ -332,8 +332,11 @@ def test_blind_or_stale_readback_replacement_is_refused() -> None:
             locally_received_at=_at(15),
         )
     )
+    replayed = changed_after_readback.apply(_replace())
+    assert replayed.pending_replace_total_quantity == 3
+
     with pytest.raises(ReplacementRefusedError, match="current matching readback"):
-        changed_after_readback.apply(_replace())
+        changed_after_readback.apply(_replace(replace_created_at=_at(16)))
 
 
 def test_temporally_stale_readback_does_not_regress_or_authorize_replace() -> None:

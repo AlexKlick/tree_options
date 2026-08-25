@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from itertools import permutations
 
 import pytest
 
@@ -23,6 +24,7 @@ from tree_options.execution import (
     SubmitAttempt,
     TemporalOrderError,
     TimeoutObserved,
+    TransitionRefusedError,
 )
 
 T0 = datetime(2026, 8, 24, 14, 0, tzinfo=UTC)
@@ -49,22 +51,27 @@ def _intent(quantity: int = 3) -> OrderIntent:
     )
 
 
-def _attempt() -> SubmitAttempt:
+def _attempt(number: int = 1, *, send_at: int = 1) -> SubmitAttempt:
     return SubmitAttempt(
-        record_id="attempt-001",
+        record_id=f"attempt-{number:03d}",
         intent_id="intent-001",
-        send_attempt_at=_at(1),
+        send_attempt_at=_at(send_at),
         source="executor",
-        source_sequence_id="attempt-seq-001",
+        source_sequence_id=f"attempt-seq-{number:03d}",
     )
 
 
-def _ack(number: int = 1, *, received: int = 3) -> BrokerAcknowledgement:
+def _ack(
+    number: int = 1,
+    *,
+    acknowledged_at: int | None = None,
+    received: int = 3,
+) -> BrokerAcknowledgement:
     return BrokerAcknowledgement(
         record_id=f"ack-{number:03d}",
         intent_id="intent-001",
         broker_order_id="paper-order-001",
-        broker_acknowledged_at=_at(received - 1),
+        broker_acknowledged_at=_at(received - 1 if acknowledged_at is None else acknowledged_at),
         locally_received_at=_at(received),
         source="synthetic-paper-adapter",
         source_sequence_id=f"source-ack-{number:03d}",
@@ -134,7 +141,13 @@ def _readback(
     )
 
 
-def _replace(number: int = 1, *, total: int = 5, basis: int = 1) -> ReplaceIntent:
+def _replace(
+    number: int = 1,
+    *,
+    total: int = 5,
+    basis: int = 1,
+    created_at: int | None = None,
+) -> ReplaceIntent:
     return ReplaceIntent(
         record_id=f"replace-{number:03d}",
         intent_id="intent-001",
@@ -142,7 +155,7 @@ def _replace(number: int = 1, *, total: int = 5, basis: int = 1) -> ReplaceInten
         broker_order_id="paper-order-001",
         new_total_quantity=total,
         new_limit_price=Decimal("1.10"),
-        replace_created_at=_at(13 + number),
+        replace_created_at=_at(13 + number if created_at is None else created_at),
         source="executor",
         source_sequence_id=f"replace-seq-{number:03d}",
     )
@@ -163,6 +176,7 @@ def _semantic(lifecycle: ExecutionLifecycle) -> tuple[object, ...]:
         lifecycle.reconciliation_reasons,
         lifecycle.uncertain_since_at,
         lifecycle.replace_basis_id,
+        lifecycle.submit_attempt_ids,
     )
 
 
@@ -227,6 +241,85 @@ def test_replace_confirmation_mismatch_is_sticky_after_pending_clears() -> None:
     assert later_matching_snapshot.state is ExecutionState.RECONCILIATION_REQUIRED
     assert "REPLACE_CONFIRMATION_MISMATCH" in later_matching_snapshot.reconciliation_reasons
     assert later_matching_snapshot.replace_basis_id is None
+
+
+def test_replace_replayed_after_later_confirmation_converges() -> None:
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3))
+    replacement = _replace(total=5, created_at=14)
+    confirmation = _readback(2, total_quantity=5, snapshot_at=16, received=17)
+
+    chronological = prefix.apply(replacement).apply(confirmation)
+    replayed = prefix.apply(confirmation).apply(replacement)
+
+    assert _semantic(replayed) == _semantic(chronological)
+    assert replayed.state is ExecutionState.ACKNOWLEDGED
+    assert replayed.broker_confirmed_total_quantity == 5
+    assert replayed.pending_replace_total_quantity is None
+    assert replacement in replayed.records
+    assert not replayed.reconciliation_reasons
+
+
+def test_replace_replayed_after_later_fill_converges() -> None:
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3))
+    replacement = _replace(total=5, created_at=14)
+    later_fill = _fill(
+        1,
+        fill_quantity=1,
+        cumulative_quantity=1,
+        exchange_at=15,
+        received=16,
+    )
+
+    chronological = prefix.apply(replacement).apply(later_fill)
+    replayed = prefix.apply(later_fill).apply(replacement)
+
+    assert _semantic(replayed) == _semantic(chronological)
+    assert replayed.state is ExecutionState.PARTIALLY_FILLED
+    assert replayed.filled_quantity == 1
+    assert replayed.pending_replace_total_quantity == 5
+    assert replacement in replayed.records
+    assert not replayed.reconciliation_reasons
+
+
+def test_equal_time_replace_confirmation_fails_closed_in_either_order() -> None:
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3))
+    replacement = _replace(total=5, created_at=14)
+    equal_time_confirmation = _readback(
+        2,
+        total_quantity=5,
+        snapshot_at=14,
+        received=15,
+    )
+
+    chronological = prefix.apply(replacement).apply(equal_time_confirmation)
+    replayed = prefix.apply(equal_time_confirmation).apply(replacement)
+
+    assert _semantic(replayed) == _semantic(chronological)
+    assert replayed.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert replayed.broker_confirmed_total_quantity == 5
+    assert replayed.pending_replace_total_quantity == 5
+    assert "AMBIGUOUS_REPLACE_CONFIRMATION" in replayed.reconciliation_reasons
+    assert replacement in replayed.records
+
+
+def test_local_action_and_broker_fact_permutations_converge() -> None:
+    prefix = _acknowledged().apply(_readback(1, total_quantity=3))
+    retry = _attempt(2, send_at=2)
+    replacement = _replace(total=5, created_at=14)
+    confirmation = _readback(2, total_quantity=5, snapshot_at=16, received=17)
+    outcomes: list[tuple[object, ...]] = []
+
+    for ordered in permutations((retry, replacement, confirmation)):
+        projected = prefix
+        for record in ordered:
+            projected = projected.apply(record)
+        outcomes.append(_semantic(projected))
+        assert projected.submit_attempt_ids == ("attempt-001", "attempt-002")
+        assert projected.broker_confirmed_total_quantity == 5
+        assert projected.pending_replace_total_quantity is None
+        assert not projected.reconciliation_reasons
+
+    assert all(outcome == outcomes[0] for outcome in outcomes)
 
 
 def test_unrequested_broker_total_change_is_sticky_before_and_after_replace() -> None:
@@ -301,6 +394,62 @@ def test_fact_before_submit_refuses_a_submit_that_postdates_the_fact() -> None:
     assert too_late not in missing_submit.records
 
 
+def test_retry_sent_before_ack_receipt_replays_after_ack_and_converges() -> None:
+    prefix = ExecutionLifecycle.start(_intent()).apply(_attempt())
+    retry = _attempt(2, send_at=10)
+    acknowledgement = _ack(acknowledged_at=5, received=11)
+
+    chronological = prefix.apply(retry).apply(acknowledgement)
+    replayed = prefix.apply(acknowledgement).apply(retry)
+
+    assert _semantic(replayed) == _semantic(chronological)
+    assert replayed.state is ExecutionState.ACKNOWLEDGED
+    assert replayed.submit_attempt_ids == ("attempt-001", "attempt-002")
+    assert retry in replayed.records
+
+
+def test_reordered_submit_attempts_project_deterministic_ids() -> None:
+    created = ExecutionLifecycle.start(_intent())
+    first = _attempt()
+    middle = _attempt(2, send_at=5)
+    last = _attempt(3, send_at=10)
+
+    chronological = created.apply(first).apply(middle).apply(last)
+    replayed = created.apply(first).apply(last).apply(middle)
+
+    assert _semantic(replayed) == _semantic(chronological)
+    assert replayed.submit_attempt_ids == (
+        "attempt-001",
+        "attempt-002",
+        "attempt-003",
+    )
+
+
+def test_equal_time_submit_attempt_and_ack_permutations_converge() -> None:
+    first = _attempt(1, send_at=1)
+    same_time_retry = _attempt(2, send_at=1)
+    acknowledgement = _ack(acknowledged_at=2, received=3)
+    outcomes: list[tuple[object, ...]] = []
+
+    for ordered in permutations((first, same_time_retry, acknowledgement)):
+        projected = ExecutionLifecycle.start(_intent())
+        for record in ordered:
+            projected = projected.apply(record)
+        outcomes.append(_semantic(projected))
+        assert projected.submit_attempt_ids == ("attempt-001", "attempt-002")
+
+    assert all(outcome == outcomes[0] for outcome in outcomes)
+
+
+def test_retry_at_known_broker_receipt_time_fails_closed() -> None:
+    acknowledged = ExecutionLifecycle.start(_intent()).apply(_attempt()).apply(_ack(received=3))
+    ambiguous_retry = _attempt(2, send_at=3)
+
+    with pytest.raises(TransitionRefusedError, match="readback"):
+        acknowledged.apply(ambiguous_retry)
+    assert ambiguous_retry not in acknowledged.records
+
+
 def test_fill_before_submit_closes_only_missing_submit_and_converges() -> None:
     created = ExecutionLifecycle.start(_intent())
     fill = _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=6)
@@ -351,7 +500,7 @@ def test_delayed_fill_kind_mismatch_after_replace_confirmation_is_retained() -> 
 
 
 @pytest.mark.parametrize("uncertainty", ["timeout", "disconnect"])
-def test_stale_uncertainty_and_later_ack_converge_in_either_application_order(
+def test_nonterminal_ack_after_uncertainty_converges_without_recovery(
     uncertainty: str,
 ) -> None:
     submitting = ExecutionLifecycle.start(_intent()).apply(_attempt())
@@ -378,10 +527,10 @@ def test_stale_uncertainty_and_later_ack_converge_in_either_application_order(
     uncertainty_first = submitting.apply(observed).apply(acknowledgement)
     acknowledgement_first = submitting.apply(acknowledgement).apply(observed)
     assert _semantic(uncertainty_first) == _semantic(acknowledgement_first)
-    assert acknowledgement_first.state is ExecutionState.ACKNOWLEDGED
+    assert acknowledgement_first.state is ExecutionState.UNKNOWN
 
 
-def test_stale_disconnect_and_later_fill_converge_without_unknown_regression() -> None:
+def test_nonterminal_fill_after_disconnect_converges_without_recovery() -> None:
     acknowledged = _acknowledged()
     disconnected = DisconnectObserved(
         record_id="disconnect-001",
@@ -395,10 +544,10 @@ def test_stale_disconnect_and_later_fill_converge_without_unknown_regression() -
     disconnect_first = acknowledged.apply(disconnected).apply(fill)
     fill_first = acknowledged.apply(fill).apply(disconnected)
     assert _semantic(disconnect_first) == _semantic(fill_first)
-    assert fill_first.state is ExecutionState.PARTIALLY_FILLED
+    assert fill_first.state is ExecutionState.UNKNOWN
 
 
-def test_unknown_with_observed_fill_recovers_to_partial_never_acknowledged() -> None:
+def test_unknown_with_observed_fill_and_later_ack_stays_unknown() -> None:
     partial = _acknowledged().apply(
         _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=6)
     )
@@ -412,7 +561,7 @@ def test_unknown_with_observed_fill_recovers_to_partial_never_acknowledged() -> 
         )
     )
     recovered = unknown.apply(_ack(2, received=9))
-    assert recovered.state is ExecutionState.PARTIALLY_FILLED
+    assert recovered.state is ExecutionState.UNKNOWN
     assert recovered.filled_quantity == 1
 
 
@@ -510,6 +659,100 @@ def test_unknown_with_matching_partial_readback_recovers_consistently() -> None:
     assert not recovered.reconciliation_reasons
 
 
+@pytest.mark.parametrize("uncertainty_kind", ["timeout", "disconnect"])
+@pytest.mark.parametrize("snapshot_at", [8, 10])
+def test_readback_snapshot_not_after_uncertainty_cannot_recover_or_authorize_replace(
+    uncertainty_kind: str,
+    snapshot_at: int,
+) -> None:
+    prefix = _acknowledged().apply(
+        _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=6)
+    )
+    uncertainty = (
+        TimeoutObserved(
+            record_id="timeout-snapshot-boundary",
+            intent_id="intent-001",
+            attempt_id="attempt-001",
+            locally_received_at=_at(10),
+            source="executor",
+            source_sequence_id="timeout-snapshot-boundary-seq",
+        )
+        if uncertainty_kind == "timeout"
+        else DisconnectObserved(
+            record_id="disconnect-snapshot-boundary",
+            intent_id="intent-001",
+            locally_received_at=_at(10),
+            source="executor",
+            source_sequence_id="disconnect-snapshot-boundary-seq",
+        )
+    )
+    readback = _readback(
+        1,
+        status=BrokerReadbackStatus.PARTIALLY_FILLED,
+        total_quantity=3,
+        cumulative_quantity=1,
+        snapshot_at=snapshot_at,
+        received=11,
+    )
+
+    uncertainty_first = prefix.apply(uncertainty).apply(readback)
+    readback_first = prefix.apply(readback).apply(uncertainty)
+
+    assert _semantic(uncertainty_first) == _semantic(readback_first)
+    assert uncertainty_first.state is ExecutionState.UNKNOWN
+    assert uncertainty_first.uncertain_since_at == _at(10)
+    assert uncertainty_first.replace_basis_id is None
+    assert readback_first.replace_basis_id is None
+    with pytest.raises(ReplacementRefusedError, match="readback"):
+        uncertainty_first.apply(_replace(total=4))
+    with pytest.raises(ReplacementRefusedError, match="readback"):
+        readback_first.apply(_replace(total=4))
+
+
+@pytest.mark.parametrize("uncertainty_kind", ["timeout", "disconnect"])
+@pytest.mark.parametrize("fact_kind", ["ack", "fill"])
+def test_nonterminal_broker_fact_does_not_recover_transport_uncertainty(
+    uncertainty_kind: str,
+    fact_kind: str,
+) -> None:
+    prefix = (
+        _acknowledged()
+        if fact_kind == "fill"
+        else ExecutionLifecycle.start(_intent()).apply(_attempt())
+    )
+    uncertainty = (
+        TimeoutObserved(
+            record_id=f"timeout-later-{fact_kind}",
+            intent_id="intent-001",
+            attempt_id="attempt-001",
+            locally_received_at=_at(5),
+            source="executor",
+            source_sequence_id=f"timeout-later-{fact_kind}-seq",
+        )
+        if uncertainty_kind == "timeout"
+        else DisconnectObserved(
+            record_id=f"disconnect-later-{fact_kind}",
+            intent_id="intent-001",
+            locally_received_at=_at(5),
+            source="executor",
+            source_sequence_id=f"disconnect-later-{fact_kind}-seq",
+        )
+    )
+    fact = (
+        _ack(2, acknowledged_at=6, received=7)
+        if fact_kind == "ack"
+        else _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=6, received=7)
+    )
+
+    uncertainty_first = prefix.apply(uncertainty).apply(fact)
+    fact_first = prefix.apply(fact).apply(uncertainty)
+
+    assert _semantic(uncertainty_first) == _semantic(fact_first)
+    assert uncertainty_first.state is ExecutionState.UNKNOWN
+    assert uncertainty_first.uncertain_since_at == _at(5)
+    assert uncertainty_first.replace_basis_id is None
+
+
 def test_missing_fill_interval_closes_gap_and_application_orders_converge() -> None:
     acknowledged = _acknowledged()
     missing_first = _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=9)
@@ -540,6 +783,56 @@ def test_overlapping_fill_economics_reconcile_in_either_application_order() -> N
     assert whole_first.fill_economic_intervals == ((0, 2),)
     assert "FILL_ECONOMIC_OVERLAP" in whole_first.reconciliation_reasons
     assert "FILL_ECONOMIC_GAP" not in whole_first.reconciliation_reasons
+
+
+@pytest.mark.parametrize("terminal_first", [False, True])
+def test_later_lower_fill_cumulative_reconciles_despite_complete_economic_coverage(
+    terminal_first: bool,
+) -> None:
+    quantity = 3 if terminal_first else 4
+    acknowledged = (
+        ExecutionLifecycle.start(_intent(quantity=quantity)).apply(_attempt()).apply(_ack())
+    )
+    higher = _fill(
+        1,
+        fill_quantity=1,
+        cumulative_quantity=3,
+        exchange_at=5,
+        received=6,
+        complete=terminal_first,
+    )
+    later_lower = _fill(
+        2,
+        fill_quantity=2,
+        cumulative_quantity=2,
+        exchange_at=7,
+        received=8,
+    )
+
+    chronological = acknowledged.apply(higher).apply(later_lower)
+    replayed = acknowledged.apply(later_lower).apply(higher)
+
+    assert _semantic(replayed) == _semantic(chronological)
+    assert chronological.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert chronological.filled_quantity == 3
+    assert chronological.fill_economic_intervals == ((0, 3),)
+    assert "FILL_CUMULATIVE_REGRESSION" in chronological.reconciliation_reasons
+    assert "FILL_ECONOMIC_GAP" not in chronological.reconciliation_reasons
+    assert "FILL_ECONOMIC_OVERLAP" not in chronological.reconciliation_reasons
+
+
+def test_equal_exchange_time_adjacent_fill_intervals_do_not_infer_regression() -> None:
+    acknowledged = _acknowledged()
+    lower = _fill(1, fill_quantity=1, cumulative_quantity=1, exchange_at=5, received=6)
+    higher = _fill(2, fill_quantity=1, cumulative_quantity=2, exchange_at=5, received=7)
+
+    lower_first = acknowledged.apply(lower).apply(higher)
+    higher_first = acknowledged.apply(higher).apply(lower)
+
+    assert _semantic(lower_first) == _semantic(higher_first)
+    assert lower_first.state is ExecutionState.PARTIALLY_FILLED
+    assert lower_first.fill_economic_intervals == ((0, 2),)
+    assert not lower_first.reconciliation_reasons
 
 
 def test_readback_cumulative_without_economics_cannot_authorize_replace() -> None:
