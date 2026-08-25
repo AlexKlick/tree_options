@@ -59,6 +59,7 @@ from that verification are recorded below.
 | `4888270` | gate16 M199 SURVIVED kill-restoration: owner test gains an unlisted-file phase only manifest verification refuses (the R8 re-hash had masked the deleted-master scenario; mutant re-killed by hand-applied kill-proof, mutate.py untouched) |
 | `cdf67a8`/`337e34a`/`576f120`/`5f1b4df` | R9: publish verification = final-name + byte custody (lstat-regular, O_NOFOLLOW re-open, byte compare); ledger roots walked COMPONENT-WISE from / with dir_fd + O_NOFOLLOW per component (both ledgers, create branch mkdir(dir_fd=)); capture-manifest bytes-once (raw= on the loader, census provenance + BARS binding consume the verified byte set, drift guard read refuses); census refuses pinned-but-unreferenced masters |
 | `9e7a39b`/`db8e050`/`d469753`/`265146a`/`9bc08b5`/`493fed9` | R10: amendment bytes-once (proof step parses the rendered text, emitted hashes rendered bytes) + final-effect sweep at packet attestation; manifest drift guard MOVED to the final effect (census before emission, BARS at the binding); both ledgers re-verify the ledger NAME maps to the locked inode post-fsync under flock (RECONCILIATION, never success); runstate journal O_NOFOLLOW name custody on read + append against a dir-fd-held store dir; census emitter custody writes (CensusEmitRefused → exit 4); amendment output PARENT held under a component-wise custody walk, every write dir_fd-relative |
+| `004ae49`/`38be17b`/`f30329d`/`7ed168a`/`3fb0bd1`/`314a5f4`/`91e6148` | EXTERNAL audit lane (owner-ruled into PR A 2026-08-25): canonical run identity (RunIdentityCore + NonCanonicalRunIdError at create/open, M230); checkout-independent universe identity (logical repo-relative source ids, M231–M233); FULL runstate store under a shared no-follow custody module (`runstate/custody.py`, M234+); typed held-input G4 authority (VerifiedSealedInputs, effect-boundary joins, M244–M267); disclosed gate-copy exclusion (`artifacts/`+`dist/` from the disposable mutation copy, owning regression test, 314a5f4); evidence doc `pr13-audit-remediation.md` |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -341,3 +342,30 @@ the exact PR head (see PR body for its verdict line).
   untouched). CensusEmitRefused maps to exit 4 (emission/refusal
   family, pinned in test + docstring). Full suite 1,510 (agent +
   orchestrator runs identical, 0 failures; +8 tests).
+
+- **External audit lane integrated (2026-08-25, owner ruling: keep in
+  PR A).** An independent external audit of PR #13 at `f95b99a`
+  (`tree_options_pr13_audit_and_next_issues-1d5a47.md`) found four
+  merge blockers — G4 preflight accepting untyped files, runstate
+  following filesystem links, deterministic run identity documented but
+  not enforced, and host-checkout-dependent universe identity — the
+  same custody/identity family the review rounds converge on. A
+  parallel Codex lane remediated all four on this branch
+  (`004ae49`…`91e6148`, 7 commits, +~5k lines incl. the shared
+  `runstate/custody.py` module and 38 new mutants M230–M267; registry
+  now 255). Its own record is `pr13-audit-remediation.md`; its
+  exact-head gate at `314a5f4` (255/255 KILLED, restoration TRUE,
+  exit 0, full-capture log sha256 `e90e9d5c…` — orchestrator-verified
+  byte-identical, preserved as `pr-a-gate20-external.log`) and its
+  clean-worktree reproduction (1,585 passed) were accepted after
+  independent verification: protected blobs identical to base, 0
+  anchor drift across all 255 cb2b2eb→91e6148, full suite 1,585
+  green. The lane's two non-passing gate attempts were honestly
+  recorded and NOT promoted; the gate-copy exclusion (314a5f4) is a
+  disclosed, narrowly-scoped harness change with an owning regression
+  test (same class as the 8274327 precedent). **Gate19 REFUSED, not
+  failed:** every stage was green against the frozen `cb2b2eb` copy
+  (1,510 / 217 KILLED / restoration TRUE) but the exit trap correctly
+  refused certification because the external lane's commits moved the
+  head mid-gate (cb2b2eb→004ae49 at 15:02). gate21 is this
+  integration's exact-head record.
