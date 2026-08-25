@@ -6,6 +6,7 @@ import json
 import os
 import shutil
 import subprocess
+from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -30,10 +31,12 @@ from tree_options.data.massive_manifest import (
 from tree_options.data.real_overlay import build_real_overlay
 from tree_options.protocol.loader import load_protocol_bytes, protocol_hash
 from tree_options.seal import input_custody, verified_inputs
+from tree_options.seal.identity import RUNNER_VERSION
 from tree_options.seal.verified_inputs import (
     CALENDAR_DECISION_DOMAIN,
     CALENDAR_DECISION_SCHEMA_VERSION,
     EXPECTED_MASSIVE_CAPTURE_VERSION,
+    HeldVerifiedSealedInputs,
     SealedInputPaths,
     VerifiedInputsError,
     VerifiedSealedInputs,
@@ -43,6 +46,29 @@ from tree_options.seal.verified_inputs import (
 
 SOURCE_REPO = Path(__file__).resolve().parents[2]
 CODE_SHA = "9" * 40
+
+
+class _FakeSealedRunner:
+    """The registry-seeded fake machinery these packet-building tests bind.
+
+    Round-11 finding 8: a verified packet carries the sha256 of the
+    REGISTERED runner implementation's code file, so the registry must hold
+    an entry before any packet can be built."""
+
+    runner_version = RUNNER_VERSION
+
+    def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
+        return "fake-sealed-run-complete"
+
+
+@pytest.fixture(autouse=True)
+def _registered_fake_runner() -> Iterator[None]:
+    verified_inputs.RUNNER_REGISTRY.clear()
+    verified_inputs.register_runner(_FakeSealedRunner())
+    try:
+        yield
+    finally:
+        verified_inputs.RUNNER_REGISTRY.clear()
 
 
 def _completed(stdout: str, returncode: int = 0) -> subprocess.CompletedProcess[str]:
@@ -160,6 +186,10 @@ def test_verified_packet_comes_only_from_real_typed_verifiers(tmp_path: Path) ->
 
     packet = held.packet
     assert packet.code_sha == CODE_SHA
+    assert packet.runner_version == RUNNER_VERSION
+    assert packet.runner_implementation_sha256 == (
+        verified_inputs.RUNNER_REGISTRY[RUNNER_VERSION].implementation_sha256
+    ), "round-11 F8: the packet binds the registered machinery implementation"
     assert packet.lane1_manifest.manifest_version == "m4/1"
     assert packet.lane2_manifest.manifest_version == "m4b-manifest/1"
     assert packet.lane1_manifest.raw_sha256 == sha256(held.lane1_manifest_bytes).hexdigest()
@@ -205,6 +235,28 @@ def test_packet_self_hash_rejects_caller_tamper(tmp_path: Path) -> None:
     payload["code_sha"] = "f" * 40
     with pytest.raises(Exception, match="packet_content_sha256"):
         VerifiedSealedInputs.model_validate(payload)
+
+
+def test_packet_binds_the_registered_runner_implementation_sha(tmp_path: Path) -> None:
+    """Round-11 F8: the machinery binding is the REGISTERED implementation's
+    code-file hash — recomputing it from the registered implementation
+    reproduces the packet field exactly."""
+    fixture = write_valid_inputs(tmp_path)
+    packet = verify_sealed_inputs(fixture.paths, git_runner=clean_git_runner).packet
+    entry = verified_inputs.RUNNER_REGISTRY[RUNNER_VERSION]
+    assert packet.runner_implementation_sha256 == entry.implementation_sha256
+    assert packet.runner_implementation_sha256 == verified_inputs.runner_implementation_sha256(
+        entry.implementation
+    )
+
+
+def test_no_registered_runner_machinery_refuses_the_packet(tmp_path: Path) -> None:
+    """Round-11 F8: nothing registered means no packet — the builder refuses
+    to attest a packet that cannot name the machinery that will consume it."""
+    fixture = write_valid_inputs(tmp_path)
+    verified_inputs.RUNNER_REGISTRY.clear()
+    with pytest.raises(VerifiedInputsError, match="no runner machinery is registered"):
+        verify_sealed_inputs(fixture.paths, git_runner=clean_git_runner)
 
 
 @pytest.mark.parametrize("lane", ["lane1", "lane2"])

@@ -14,8 +14,12 @@ consumes NO authority in PR A:
 * ``execute`` implements the one-shot consumption but is never invoked
   outside tests in PR A: the CLI wires NO runner (a --runner-inject seam on
   the CLI is forbidden — authority must never be consumable from a flag), so
-  the CLI execute path refuses before touching the ledger. Tests call
-  ``execute_sealed_run`` directly with an injected runner callable.
+  the CLI execute path refuses before touching the ledger. The runner
+  machinery is resolved from the module-level REGISTRY
+  (``tree_options.seal.verified_inputs.RUNNER_REGISTRY``, seeded explicitly
+  by the owning layer or a test via ``register_runner``) — never from a
+  caller-presented callable — and the approved packet binds the registered
+  implementation's code-file hash (round-11 finding 8).
 
 Execute semantics (``execute_sealed_run``):
 
@@ -80,11 +84,13 @@ from tree_options.seal.ledger import (  # noqa: E402
     read_ledger,
 )
 from tree_options.seal.verified_inputs import (  # noqa: E402
+    RUNNER_REGISTRY,
     GitRunner,
     HeldVerifiedSealedInputs,
     SealedInputPaths,
     VerifiedSealedInputs,
     identity_from_packet,
+    runner_implementation_sha256,
     verify_sealed_inputs,
 )
 
@@ -134,6 +140,7 @@ _INPUT_STATUS_KEYS = (
     "lane2",
     "calendar_decision",
     "criteria",
+    "runner",
 )
 
 
@@ -173,6 +180,11 @@ def _verified_statuses(packet: VerifiedSealedInputs) -> dict[str, CriterionStatu
         "criteria": _available(
             f"artifact={packet.criteria_artifact_sha256}; "
             f"source={packet.criteria_source_document_sha256}"
+        ),
+        # round-11 finding 8: the runner machinery is itself an availability
+        # input — the packet binds the registered implementation's code hash.
+        "runner": _available(
+            f"version={packet.runner_version}; implementation={packet.runner_implementation_sha256}"
         ),
     }
 
@@ -280,7 +292,6 @@ def execute_sealed_run(
     ledger_root: Path,
     reason: str,
     at_epoch: int,
-    runner: Runner,
     git_runner: GitRunner = subprocess.run,
 ) -> ExecuteSummary:
     """Cross-join and consume one-shot authority for a verified packet.
@@ -288,10 +299,19 @@ def execute_sealed_run(
     Refuses a second execution matching by EITHER id (step 1), requires an
     approval that RECOMPUTES to this run's sealed_run_id from the record's
     own payload (step 2), and appends the CONSUMPTION record durably BEFORE
-    invoking ``runner`` (step 3). A crash after the append and before (or
+    invoking the runner (step 3). A crash after the append and before (or
     during) the runner leaves a durable CONSUMPTION with no run result:
     UNKNOWN / RECONCILIATION_REQUIRED — never auto-rerun (a later identical
     execute hits step 1 and refuses).
+
+    Round-11 review fix (finding 8): the runner MACHINERY is resolved from
+    the module-level REGISTRY keyed by the approved runner_version — this
+    function no longer accepts a caller-presented callable as authority. The
+    approved packet carries the registered implementation's code-file sha256
+    (recorded at approval time); execution re-hashes the registered
+    implementation's code file NOW and refuses on any divergence before a
+    single byte of authority is spent. A foreign callable carrying the
+    approved version literal is never registered, so it is never authority.
     """
     # Revalidate the self-hash even if a caller used Pydantic's low-level
     # model_construct escape hatch to manufacture the typed object.
@@ -318,16 +338,36 @@ def execute_sealed_run(
             run_id,
             "current typed inputs do not equal the owner-approved verified packet",
         )
-    try:
-        presented_runner_version = runner.runner_version
-    except AttributeError:
-        presented_runner_version = "<missing>"
+    # Round-11 finding 8: bind runner IDENTITY, not a caller-asserted string.
+    # The machinery comes from the REGISTRY under the approved version; the
+    # registry entry's CURRENT code-file hash must equal the binding the
+    # owner approved inside the packet.
+    registered = RUNNER_REGISTRY.get(expected_packet.runner_version)
+    if registered is None:
+        raise ApprovalInvalidError(
+            run_id,
+            f"no runner machinery is registered for {expected_packet.runner_version!r}"
+            " — a foreign callable carrying the approved literal is never"
+            " registered and is never authority",
+        )
+    presented_runner_version = registered.runner_version
     if presented_runner_version != expected_packet.runner_version:
         raise ApprovalInvalidError(
             run_id,
             f"runner version {presented_runner_version!r} does not equal "
             f"approved {expected_packet.runner_version!r}",
         )
+    current_code_sha = runner_implementation_sha256(registered.implementation)
+    if current_code_sha != expected_packet.runner_implementation_sha256:
+        raise ApprovalInvalidError(
+            run_id,
+            "the registered runner implementation's current code hash "
+            f"{current_code_sha[:12]}… does not equal the approved packet's"
+            f" machinery binding {expected_packet.runner_implementation_sha256[:12]}…"
+            " — the machinery changed since approval and is not the"
+            " implementation the owner approved",
+        )
+    runner = registered.implementation
 
     # Verification may take time. Re-read the ledger at the final effect
     # boundary, so an interleaved consumption or approval change is joined to
@@ -363,8 +403,9 @@ def cmd_execute(argv: list[str]) -> int:
     # Refuse BEFORE touching the ledger: nothing is read, nothing consumed.
     print(
         f"EXECUTE REFUSED: this build wires no sealed-run runner (ledger root "
-        f"{args.ledger_root} untouched); execute is library-only in PR A — call "
-        "execute_sealed_run with an explicit runner callable",
+        f"{args.ledger_root} untouched); execute is library-only in PR A — the "
+        "runner machinery must be registered (verified_inputs.register_runner) "
+        "before execute_sealed_run can bind it",
         file=sys.stderr,
     )
     return 2
