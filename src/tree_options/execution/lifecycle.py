@@ -53,11 +53,13 @@ class ReconciliationReason(StrEnum):
     FILL_KIND_TOTAL_MISMATCH = "FILL_KIND_TOTAL_MISMATCH"
     FILL_ECONOMIC_GAP = "FILL_ECONOMIC_GAP"
     FILL_ECONOMIC_OVERLAP = "FILL_ECONOMIC_OVERLAP"
+    FILL_CUMULATIVE_REGRESSION = "FILL_CUMULATIVE_REGRESSION"
     REJECT_WITH_OBSERVED_FILL = "REJECT_WITH_OBSERVED_FILL"
     READBACK_FILL_CONTRADICTION = "READBACK_FILL_CONTRADICTION"
     READBACK_CUMULATIVE_REGRESSION = "READBACK_CUMULATIVE_REGRESSION"
     TERMINAL_FACT_CONTRADICTION = "TERMINAL_FACT_CONTRADICTION"
     AMBIGUOUS_READBACK = "AMBIGUOUS_READBACK"
+    AMBIGUOUS_REPLACE_CONFIRMATION = "AMBIGUOUS_REPLACE_CONFIRMATION"
     REPLACE_CONFIRMATION_MISMATCH = "REPLACE_CONFIRMATION_MISMATCH"
     UNEXPECTED_CONFIRMED_TOTAL_CHANGE = "UNEXPECTED_CONFIRMED_TOTAL_CHANGE"
 
@@ -132,6 +134,16 @@ def _event_sort_key(record: ExecutionRecord) -> tuple[datetime, int, bytes]:
     return (_primary_time(record), priority, _canonical_bytes(record))
 
 
+def _known_no_later_than(record: StoredExecutionRecord, observed_at: datetime) -> bool:
+    if isinstance(record, OrderIntent):
+        return True
+    if isinstance(record, SubmitAttempt):
+        return record.send_attempt_at <= observed_at
+    if isinstance(record, ReplaceIntent):
+        return record.replace_created_at <= observed_at
+    return record.locally_received_at <= observed_at
+
+
 def _execution_records(
     records: tuple[StoredExecutionRecord, ...],
 ) -> tuple[ExecutionRecord, ...]:
@@ -176,6 +188,19 @@ def _derive_fill_intervals(
     return tuple(merged), overlap
 
 
+def _has_fill_cumulative_regression(
+    records: tuple[StoredExecutionRecord, ...],
+) -> bool:
+    fills = _fill_records(records)
+    return any(
+        later.broker_order_id == earlier.broker_order_id
+        and later.exchange_event_at > earlier.exchange_event_at
+        and later.cumulative_quantity < earlier.cumulative_quantity
+        for earlier in fills
+        for later in fills
+    )
+
+
 def _covers_through(intervals: tuple[tuple[int, int], ...], quantity: int) -> bool:
     if quantity == 0:
         return True
@@ -209,6 +234,7 @@ def _derive_quantity_authority(
     confirmed: int | None = None
     pending: int | None = None
     pending_basis_id: str | None = None
+    pending_created_at: datetime | None = None
     confirmed_at: datetime | None = None
     submitted = False
     reasons: set[ReconciliationReason] = set()
@@ -232,17 +258,25 @@ def _derive_quantity_authority(
         if isinstance(record, ReplaceIntent):
             pending = record.new_total_quantity
             pending_basis_id = record.based_on_readback_id
+            pending_created_at = record.replace_created_at
             continue
         if record.total_quantity is None:
             continue
         observed = record.total_quantity
         if pending is not None and record.record_id != pending_basis_id:
+            if pending_created_at is not None and record.broker_snapshot_at <= pending_created_at:
+                if observed != confirmed:
+                    reasons.add(ReconciliationReason.AMBIGUOUS_REPLACE_CONFIRMATION)
+                    confirmed = observed
+                    confirmed_at = record.broker_snapshot_at
+                continue
             if observed != pending:
                 reasons.add(ReconciliationReason.REPLACE_CONFIRMATION_MISMATCH)
             confirmed = observed
             confirmed_at = record.broker_snapshot_at
             pending = None
             pending_basis_id = None
+            pending_created_at = None
         elif confirmed is None:
             if observed != intent.quantity:
                 reasons.add(ReconciliationReason.UNEXPECTED_CONFIRMED_TOTAL_CHANGE)
@@ -409,7 +443,6 @@ def _derive_latest_authoritative_receipt(
 
 def _derive_uncertain_since(
     records: tuple[StoredExecutionRecord, ...],
-    latest_authoritative_receipt: datetime | None,
 ) -> datetime | None:
     observed = [
         record.locally_received_at
@@ -419,12 +452,14 @@ def _derive_uncertain_since(
     latest_uncertainty = max(observed, default=None)
     if latest_uncertainty is None:
         return None
-    # Equal local receipt times cannot establish which observation is newer.
-    # Only a strictly later authoritative broker fact resolves transport uncertainty.
-    if (
-        latest_authoritative_receipt is not None
-        and latest_authoritative_receipt > latest_uncertainty
-    ):
+    recovered = any(
+        isinstance(record, BrokerReadback)
+        and record.status not in {BrokerReadbackStatus.ABSENT, BrokerReadbackStatus.AMBIGUOUS}
+        and record.locally_received_at > latest_uncertainty
+        and record.broker_snapshot_at > latest_uncertainty
+        for record in records
+    )
+    if recovered:
         return None
     return latest_uncertainty
 
@@ -447,6 +482,8 @@ def _derive_reconciliation_reasons(
         reasons.add(ReconciliationReason.BROKER_ORDER_ID_CONFLICT)
     if fill_overlap:
         reasons.add(ReconciliationReason.FILL_ECONOMIC_OVERLAP)
+    if _has_fill_cumulative_regression(records):
+        reasons.add(ReconciliationReason.FILL_CUMULATIVE_REGRESSION)
     if filled_quantity > 0 and not _covers_through(fill_intervals, filled_quantity):
         reasons.add(ReconciliationReason.FILL_ECONOMIC_GAP)
     if filled_quantity > 0 and confirmed_total is None:
@@ -623,8 +660,10 @@ class ExecutionLifecycle:
                 )
         return False
 
-    def _with_record(self, record: ExecutionRecord) -> ExecutionLifecycle:
-        records = (*self.records, record)
+    def _project_records(
+        self,
+        records: tuple[StoredExecutionRecord, ...],
+    ) -> ExecutionLifecycle:
         confirmed_total, pending_total, total_at, quantity_reasons = _derive_quantity_authority(
             self.intent, records
         )
@@ -646,7 +685,7 @@ class ExecutionLifecycle:
             None
             if broker_state
             in {ExecutionState.FILLED, ExecutionState.CANCELED, ExecutionState.REJECTED}
-            else _derive_uncertain_since(records, authoritative_receipt)
+            else _derive_uncertain_since(records)
         )
         if reasons:
             state = ExecutionState.RECONCILIATION_REQUIRED
@@ -667,11 +706,16 @@ class ExecutionLifecycle:
 
         fill_times = [item.exchange_event_at for item in _fill_records(records)]
         facts = _broker_facts(records)
+        attempts = sorted(
+            (record for record in records if isinstance(record, SubmitAttempt)),
+            key=_event_sort_key,
+        )
         return replace(
             self,
             state=state,
             broker_state=broker_state,
             records=records,
+            submit_attempt_ids=tuple(record.record_id for record in attempts),
             broker_order_id=broker_order_id,
             broker_confirmed_total_quantity=confirmed_total,
             pending_replace_total_quantity=pending_total,
@@ -689,6 +733,9 @@ class ExecutionLifecycle:
             replace_basis=basis,
         )
 
+    def _with_record(self, record: ExecutionRecord) -> ExecutionLifecycle:
+        return self._project_records((*self.records, record))
+
     def _first_submit_at(self) -> datetime | None:
         attempts = [
             record.send_attempt_at for record in self.records if isinstance(record, SubmitAttempt)
@@ -701,33 +748,31 @@ class ExecutionLifecycle:
             raise TemporalOrderError("broker fact predates first submit attempt")
 
     def _apply_submit(self, record: SubmitAttempt) -> ExecutionLifecycle:
-        if self.submit_attempt_ids:
-            latest = max(
-                existing.send_attempt_at
-                for existing in self.records
-                if isinstance(existing, SubmitAttempt)
-            )
-            if record.send_attempt_at < latest:
-                raise TemporalOrderError("submit retry predates an existing attempt")
-        elif ReconciliationReason.MISSING_SUBMIT in self.reconciliation_reasons:
-            if any(
-                record.send_attempt_at > _primary_time(fact) for fact in _broker_facts(self.records)
-            ):
-                raise TemporalOrderError("retrospective submit postdates a retained broker fact")
-            projected = self._with_record(record)
-            return replace(
-                projected,
-                submit_attempt_ids=(*self.submit_attempt_ids, record.record_id),
-            )
-        if self.state is ExecutionState.UNKNOWN:
-            raise TransitionRefusedError("UNKNOWN requires broker readback before any action")
-        if self.state not in {ExecutionState.CREATED, ExecutionState.SUBMITTING}:
-            raise TransitionRefusedError(f"submit attempt refused from {self.state}")
-        projected = self._with_record(record)
-        return replace(
-            projected,
-            submit_attempt_ids=(*self.submit_attempt_ids, record.record_id),
+        records = (*self.records, record)
+        attempts = sorted(
+            (item for item in records if isinstance(item, SubmitAttempt)),
+            key=_event_sort_key,
         )
+        facts = _broker_facts(records)
+        first_attempt = attempts[0]
+        if any(_primary_time(fact) < first_attempt.send_attempt_at for fact in facts):
+            raise TemporalOrderError("retrospective submit postdates a retained broker fact")
+
+        knowledge_boundaries = [fact.locally_received_at for fact in facts]
+        knowledge_boundaries.extend(
+            item.locally_received_at
+            for item in records
+            if isinstance(item, (TimeoutObserved, DisconnectObserved))
+        )
+        if any(
+            boundary <= retry.send_attempt_at
+            for retry in attempts[1:]
+            for boundary in knowledge_boundaries
+        ):
+            raise TransitionRefusedError(
+                "submit retry requires a fresh readback after broker or uncertainty knowledge"
+            )
+        return self._project_records(records)
 
     def _apply_uncertainty(
         self, record: TimeoutObserved | DisconnectObserved
@@ -768,26 +813,48 @@ class ExecutionLifecycle:
         return self._with_record(record)
 
     def _apply_replace(self, record: ReplaceIntent) -> ExecutionLifecycle:
-        if self.pending_replace_total_quantity is not None:
+        retained_basis = next(
+            (
+                item
+                for item in self.records
+                if isinstance(item, BrokerReadback)
+                and item.record_id == record.based_on_readback_id
+            ),
+            None,
+        )
+        if retained_basis is None:
+            raise ReplacementRefusedError("replace requires a current matching readback")
+        if record.replace_created_at < retained_basis.locally_received_at:
+            raise TemporalOrderError("replace predates its broker readback")
+
+        known_records = tuple(
+            item for item in self.records if _known_no_later_than(item, record.replace_created_at)
+        )
+        historical = self._project_records(known_records)
+        if historical.pending_replace_total_quantity is not None:
             raise ReplacementRefusedError("replace refused while prior replace is pending")
-        basis = self.replace_basis
+        basis = historical.replace_basis
         if basis is None or basis.record_id != record.based_on_readback_id:
             raise ReplacementRefusedError("replace requires a current matching readback")
-        if self.state not in {ExecutionState.ACKNOWLEDGED, ExecutionState.PARTIALLY_FILLED}:
-            raise ReplacementRefusedError(f"replace refused from {self.state}")
+        if historical.state not in {
+            ExecutionState.ACKNOWLEDGED,
+            ExecutionState.PARTIALLY_FILLED,
+        }:
+            raise ReplacementRefusedError(f"replace refused from {historical.state}")
         if (
             basis.broker_order_id != record.broker_order_id
-            or self.broker_order_id != record.broker_order_id
+            or historical.broker_order_id != record.broker_order_id
         ):
             raise ReplacementRefusedError("replace broker order does not match readback")
-        if basis.total_quantity != self.broker_confirmed_total_quantity:
+        if basis.total_quantity != historical.broker_confirmed_total_quantity:
             raise ReplacementRefusedError("replace readback total quantity is stale")
-        if basis.cumulative_quantity != self.filled_quantity:
+        if basis.cumulative_quantity != historical.filled_quantity:
             raise ReplacementRefusedError("replace readback filled quantity is stale")
-        if not _covers_through(self.fill_economic_intervals, self.filled_quantity):
+        if not _covers_through(
+            historical.fill_economic_intervals,
+            historical.filled_quantity,
+        ):
             raise ReplacementRefusedError("replace requires complete fill economics")
-        if record.new_total_quantity <= self.filled_quantity:
+        if record.new_total_quantity <= historical.filled_quantity:
             raise ReplacementRefusedError("replace total must exceed filled quantity")
-        if record.replace_created_at < basis.locally_received_at:
-            raise TemporalOrderError("replace predates its broker readback")
         return self._with_record(record)
