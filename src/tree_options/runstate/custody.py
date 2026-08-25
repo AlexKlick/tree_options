@@ -77,6 +77,15 @@ def open_directory(
                 except Exception:
                     os.close(previous)
                     raise
+                else:
+                    # Round-12 review fix (2026-08-25, finding 3, R14): a
+                    # first-use namespace creation is committed in its PARENT
+                    # before the walk proceeds — the pre-fix fsyncs covered
+                    # only deeper directories, so a reboot could drop the
+                    # newly created entry (and, for the seal anchor tree, the
+                    # anchor beside a durable ledger) and silently forget
+                    # acknowledged authority.
+                    os.fsync(previous)
                 try:
                     fd = os.open(component, _DIR_FLAGS, dir_fd=previous)
                 except OSError as retry:

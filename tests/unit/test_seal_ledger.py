@@ -6,6 +6,7 @@ import contextlib
 import json
 import os
 import shutil
+import stat
 import uuid
 from collections.abc import Iterator
 from pathlib import Path
@@ -897,3 +898,94 @@ def test_next_append_after_crash_window_opens_and_reanchors(ledger_root) -> None
     reanchored = json.loads(L.runstate_anchor_path(ledger_root).read_text(encoding="utf-8"))
     assert reanchored["ledger_size"] == ledger_path.stat().st_size
     assert reanchored["committed_tail_sha256"] == L.read_ledger(ledger_root).tail_hash
+
+
+# ---- round-12 (finding 3, R14): first-use namespace creations are
+# PARENT-fsynced -----------------------------------------------------------------------
+#
+# The ledger root is created by mkdir under artifacts/ (the ledger-root
+# custody walk) and the anchor-tree components by mkdir (the runstate
+# custody walk), but the existing fsyncs covered only the DEEPER
+# directories (the anchor dir, the ledger root) — never the PARENT that
+# holds the newly created entry. After a successful approval+consumption on
+# a fresh root, a reboot could lose the g4-authority entry AND the
+# anchor-tree entries together; both absent, the next read returns an EMPTY
+# view and an acknowledged consumption is silently forgotten. Ordering is
+# not observable state, so the owning test pins it two ways: the RECOVERY
+# INVARIANT (a structural walk of the whole namespace after a fresh-root
+# first append, everything present and self-consistent) and the ORDER
+# ITSELF (every directory component the append CREATED is committed by an
+# fsync of its PARENT, observed on the parent's real directory identity).
+
+
+def test_fresh_root_first_append_parent_fsyncs_every_created_namespace_component(
+    ledger_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-12 (finding 3): on a fresh root, the first append creates the
+    ledger-root components AND the anchor-tree components. Each created
+    entry must be durably committed in its PARENT before the append can
+    acknowledge — otherwise a reboot loses the g4-authority entry and the
+    anchor-tree entries together, both reads then see nothing, and an
+    acknowledged consumption is silently forgotten."""
+    fresh_parent = ledger_root / "fresh"
+    fresh_root = fresh_parent / "g4-authority"
+    anchor_dir = fresh_parent / "runstate" / "seal-ledger-anchor"
+    # (b) the ORDER: trace mkdir/fsync by DIRECTORY IDENTITY (dev, ino), so
+    # fd reuse can never forge a match.
+    created_parents: list[tuple[int, int]] = []
+    fsyncs: list[tuple[tuple[int, int], int]] = []  # (identity, mkdirs-so-far)
+    real_mkdir, real_fsync = os.mkdir, os.fsync
+
+    def traced_mkdir(path, mode=0o777, *, dir_fd=None):
+        real_mkdir(path, mode, dir_fd=dir_fd)  # FileExistsError is not a creation
+        if dir_fd is not None:
+            held = os.fstat(dir_fd)
+            created_parents.append((held.st_dev, held.st_ino))
+
+    def traced_fsync(fd):
+        held = os.fstat(fd)
+        fsyncs.append(((held.st_dev, held.st_ino), len(created_parents)))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "mkdir", traced_mkdir)
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    L.append_approval(fresh_root, _identity(), reason="owner approved", at_epoch=T0)
+    monkeypatch.undo()
+
+    assert len(created_parents) >= 4, "the fresh-root append creates at least 4 components"
+    for index, parent in enumerate(created_parents):
+        assert any(identity == parent and seq > index for identity, seq in fsyncs), (
+            f"the parent directory of created namespace component #{index + 1} "
+            f"(dev/ino {parent[0]}/{parent[1]}) is never fsynced after the mkdir — "
+            "a reboot can lose the entry and silently forget an acknowledged "
+            "consumption"
+        )
+
+    # (a) the RECOVERY INVARIANT: every namespace component from artifacts/
+    # down exists as a REAL directory (never a symlink), and the whole
+    # authority surface is present and self-consistent.
+    for component in (
+        REPO_ROOT / "artifacts",
+        REPO_ROOT / "artifacts" / "g4-seal-tests",
+        ledger_root,
+        fresh_parent,
+        fresh_root,
+        fresh_parent / "runstate",
+        anchor_dir,
+    ):
+        named = component.lstat()
+        assert stat.S_ISDIR(named.st_mode), f"{component} must be a real directory"
+        assert not stat.S_ISLNK(named.st_mode), f"{component} must not be a symlink"
+    ledger_path = fresh_root / L.LEDGER_FILENAME
+    assert stat.S_ISREG(ledger_path.lstat().st_mode)
+    view = L.read_ledger(fresh_root)
+    assert [record.kind for record in view.records] == ["APPROVAL"]
+    assert not view.tail_damaged
+    companion = fresh_root / "ledger.jsonl.identity.json"
+    anchor = json.loads(L.runstate_anchor_path(fresh_root).read_text(encoding="utf-8"))
+    ledger_stat = os.stat(ledger_path)
+    assert (anchor["st_dev"], anchor["st_ino"]) == (ledger_stat.st_dev, ledger_stat.st_ino)
+    assert anchor["ledger_root"] == str(fresh_root.resolve())
+    assert anchor["companion_sha256"] == L.sha256_hex(companion.read_bytes())
+    assert anchor["ledger_size"] == ledger_stat.st_size
+    assert anchor["committed_tail_sha256"] == view.tail_hash

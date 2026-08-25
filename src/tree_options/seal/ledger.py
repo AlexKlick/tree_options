@@ -361,6 +361,16 @@ def _open_ledger_root(root: Path, *, create: bool) -> int | None:
                     os.mkdir(component, 0o755, dir_fd=prev)
                 except FileExistsError:
                     pass
+                else:
+                    # Round-12 review fix (2026-08-25, finding 3, R14): a
+                    # first-use ledger-root component is committed in its
+                    # PARENT before the walk proceeds — the pre-fix fsyncs
+                    # covered only deeper directories (the ledger root at
+                    # append time), so a reboot could drop the g4-authority
+                    # entry together with the anchor-tree entries and leave
+                    # the next read an EMPTY view over an acknowledged
+                    # consumption.
+                    os.fsync(prev)
                 try:
                     fd = os.open(component, flags, dir_fd=prev)
                 except OSError as retry:
