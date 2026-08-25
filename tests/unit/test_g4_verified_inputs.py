@@ -46,6 +46,10 @@ from tree_options.seal.verified_inputs import (
 
 SOURCE_REPO = Path(__file__).resolve().parents[2]
 CODE_SHA = "9" * 40
+# Round-10 F4: every machinery registration carries a configuration digest
+# computed by the registering layer over whatever configuration the runner
+# carries. Tests that do not exercise configuration binding use this one.
+TEST_RUNNER_CONFIG_DIGEST = "a" * 64
 
 
 class _FakeSealedRunner:
@@ -64,7 +68,7 @@ class _FakeSealedRunner:
 @pytest.fixture(autouse=True)
 def _registered_fake_runner() -> Iterator[None]:
     verified_inputs.RUNNER_REGISTRY.clear()
-    verified_inputs.register_runner(_FakeSealedRunner())
+    verified_inputs.register_runner(_FakeSealedRunner(), config_digest=TEST_RUNNER_CONFIG_DIGEST)
     try:
         yield
     finally:
@@ -463,3 +467,87 @@ def test_capture_entry_set_changed_after_the_verifier_snapshot_refuses(
     )
     with pytest.raises(VerifiedInputsError, match="entry set"):
         verify_sealed_inputs(fixture.paths, git_runner=clean_git_runner)
+
+
+# ---- round-10 P1 (finding 4): the machinery binding is the CALLABLE, not the file --
+#
+# Round-10 review fix (2026-08-25): the packet's machinery binding was the
+# sha256 of the implementation's whole CODE FILE. Two attacks share that
+# hash exactly: (a) one module defining BOTH the approved and a foreign
+# runner — registering the foreign callable under the approved version bound
+# the same file bytes; (b) a configured instance of the approved class whose
+# configuration changes authority behavior — same class, same file. The
+# binding now carries the callable's QUALIFIED NAME and a registration-time
+# CONFIGURATION DIGEST alongside the file hash.
+
+
+class _TwinForeignRunner:
+    """A foreign callable in the SAME module as the approved fake above."""
+
+    runner_version = RUNNER_VERSION
+
+    def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
+        return "foreign-machinery-ran"
+
+
+class _ConfiguredRunner:
+    """The approved class shape, configured at construction."""
+
+    runner_version = RUNNER_VERSION
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+
+    def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
+        return f"configured-machinery-ran:{self.mode}"
+
+
+def test_runner_identity_binds_qualname_and_config_digest_beyond_the_file() -> None:
+    """Round-10 F4: one code file cannot be the machinery identity. The
+    approved fake, the foreign twin, and the configured instances all live
+    in THIS test module — one file, one sha — so only the qualified name and
+    the registration-time configuration digest can tell them apart."""
+    approved = _FakeSealedRunner()
+    foreign = _TwinForeignRunner()
+    safe = _ConfiguredRunner("safe-mode")
+    dangerous = _ConfiguredRunner("dangerous-mode")
+
+    hashes = {
+        verified_inputs.runner_implementation_sha256(r)
+        for r in (approved, foreign, safe, dangerous)
+    }
+    assert len(hashes) == 1, "the attack's premise: one module, one code-file hash"
+
+    names = {verified_inputs.runner_implementation_qualname(r) for r in (approved, foreign, safe)}
+    assert len(names) == 3, "the qualified name distinguishes same-file callables"
+    assert verified_inputs.runner_implementation_qualname(
+        safe
+    ) == verified_inputs.runner_implementation_qualname(dangerous), (
+        "same class differently configured: the qualname alone cannot see it — "
+        "that is what the configuration digest is for"
+    )
+
+    entry = verified_inputs.register_runner(
+        safe, config_digest=sha256(b"runner-config-safe").hexdigest()
+    )
+    assert entry.config_digest == sha256(b"runner-config-safe").hexdigest()
+    assert entry.implementation_qualname == (verified_inputs.runner_implementation_qualname(safe))
+    with pytest.raises(VerifiedInputsError, match="configuration digest"):
+        verified_inputs.register_runner(safe, config_digest="not-a-sha256-digest")
+
+
+def test_packet_binds_qualname_and_config_digest_of_the_registered_machinery(
+    tmp_path: Path,
+) -> None:
+    """Round-10 F4: the verified packet records the registered machinery's
+    qualified name and configuration digest next to the code-file hash — an
+    approval therefore names the exact CALLABLE and its configuration, not
+    merely the file it was imported from."""
+    fixture = write_valid_inputs(tmp_path)
+    packet = verify_sealed_inputs(fixture.paths, git_runner=clean_git_runner).packet
+    entry = verified_inputs.RUNNER_REGISTRY[RUNNER_VERSION]
+    assert packet.runner_implementation_qualname == entry.implementation_qualname
+    assert packet.runner_config_digest == entry.config_digest
+    assert packet.runner_implementation_qualname == (
+        verified_inputs.runner_implementation_qualname(entry.implementation)
+    )

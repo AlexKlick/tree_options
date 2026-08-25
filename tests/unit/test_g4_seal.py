@@ -19,6 +19,7 @@ import pytest
 
 from tests.unit.test_g4_verified_inputs import (
     CODE_SHA,
+    TEST_RUNNER_CONFIG_DIGEST,
     InputFixture,
     clean_git_runner,
     write_valid_inputs,
@@ -149,7 +150,7 @@ class StubRunner:
 def registered_runner() -> Iterator[StubRunner]:
     runner = StubRunner()
     vi.RUNNER_REGISTRY.clear()
-    vi.register_runner(runner)
+    vi.register_runner(runner, config_digest=TEST_RUNNER_CONFIG_DIGEST)
     try:
         yield runner
     finally:
@@ -157,10 +158,12 @@ def registered_runner() -> Iterator[StubRunner]:
 
 
 @contextlib.contextmanager
-def _seeded_registry(runner: object) -> Iterator[None]:
+def _seeded_registry(
+    runner: object, *, config_digest: str = TEST_RUNNER_CONFIG_DIGEST
+) -> Iterator[None]:
     saved = dict(vi.RUNNER_REGISTRY)
     vi.RUNNER_REGISTRY.clear()
-    vi.register_runner(runner)  # type: ignore[arg-type]
+    vi.register_runner(runner, config_digest=config_digest)  # type: ignore[arg-type]
     try:
         yield
     finally:
@@ -780,3 +783,158 @@ def test_execute_cli_refuses_before_reading_or_consuming(
     assert sentinel.read_text() == "unchanged\n"
     assert not (ledger_root / L.LEDGER_FILENAME).exists()
     assert "EXECUTE REFUSED" in capsys.readouterr().err
+
+
+# ---- round-10 P1 (finding 4): the machinery binding is the CALLABLE, not the file --
+#
+# Round-10 review fix (2026-08-25): the packet's machinery binding was the
+# sha256 of the implementation's whole CODE FILE, so (a) a ForeignRunner
+# defined in the SAME module as the approved one shared the hash exactly and
+# executed under a durable consumption once registered under the approved
+# version, and (b) a configured instance of the approved class whose
+# configuration changes authority behavior was indistinguishable from the
+# approved configuration. The binding is now the four-tuple
+# (version, qualname, file_sha256, config_digest), re-derived from the
+# registry entry at execution and compared for exact equality on all four.
+
+
+class _SameFileForeignRunner:
+    """A foreign callable in the SAME module as the approved StubRunner."""
+
+    runner_version = RUNNER_VERSION
+
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
+        self.calls += 1
+        return "same-file-foreign-machinery-ran"
+
+
+class _ConfiguredRunner:
+    """The approved class shape, configured at construction: the mode is the
+    authority behavior a configuration change would alter."""
+
+    runner_version = RUNNER_VERSION
+
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+        self.calls = 0
+
+    def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
+        self.calls += 1
+        return f"configured-machinery-ran:{self.mode}"
+
+
+def _no_consumption(ledger_root: Path) -> bool:
+    return not any(
+        record.kind == L.KIND_CONSUMPTION for record in L.read_ledger(ledger_root).records
+    )
+
+
+def test_same_file_foreign_runner_under_the_approved_version_is_refused(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """Round-10 F4 attack (a): StubRunner (approved) and
+    _SameFileForeignRunner live in ONE module — this test file — so the
+    file-hash-only binding saw an exact match and the foreign machinery
+    executed under a durable consumption. The qualified name now changes the
+    packet's machinery binding, so the re-registered foreign callable no
+    longer matches the owner-approved packet."""
+    fixture = write_valid_inputs(tmp_path)
+    approved = StubRunner()
+    foreign = _SameFileForeignRunner()
+    assert vi.runner_implementation_sha256(approved) == vi.runner_implementation_sha256(foreign), (
+        "the attack's premise: one module, one code-file hash"
+    )
+
+    with _seeded_registry(approved):
+        packet = _packet(fixture)
+        _approve(ledger_root, packet)
+    with _seeded_registry(foreign):  # same file, same version, FOREIGN callable
+        with pytest.raises(ApprovalInvalidError, match=r"qualified name|current typed inputs"):
+            _execute(packet, fixture, ledger_root)
+    assert foreign.calls == 0, "the foreign callable never runs"
+    assert approved.calls == 0
+    assert _no_consumption(ledger_root)
+
+
+def test_differently_configured_machinery_reregistration_is_refused(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """Round-10 F4 attack (b): the approved CLASS registered a second time
+    with a DIFFERENT configuration digest under the same version — same
+    class file, same qualified name, different authority behavior. The
+    packet's machinery binding now includes the registration-time
+    configuration digest, so the re-registered configuration no longer
+    matches the approved packet."""
+    fixture = write_valid_inputs(tmp_path)
+    safe = _ConfiguredRunner("safe-mode")
+    dangerous = _ConfiguredRunner("dangerous-mode")
+    assert vi.runner_implementation_qualname(safe) == vi.runner_implementation_qualname(
+        dangerous
+    ), "the attack's premise: one class, one qualified name, one code file"
+
+    with _seeded_registry(safe, config_digest=hashlib.sha256(b"runner-config-safe").hexdigest()):
+        packet = _packet(fixture)
+        _approve(ledger_root, packet)
+    with _seeded_registry(
+        dangerous, config_digest=hashlib.sha256(b"runner-config-dangerous").hexdigest()
+    ):
+        with pytest.raises(ApprovalInvalidError):
+            _execute(packet, fixture, ledger_root)
+    assert dangerous.calls == 0, "the differently-configured machinery never runs"
+    assert safe.calls == 0
+    assert _no_consumption(ledger_root)
+
+
+def test_execution_rederives_the_qualname_from_the_registry_entry(
+    tmp_path: Path,
+    ledger_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round-10 F4 defense layer: with the current-inputs rebuild bypassed
+    (it already binds the registry), execution must STILL re-derive the
+    qualified name from the registry entry and refuse a same-file foreign
+    callable whose code-file hash matches the approved binding exactly."""
+    fixture = write_valid_inputs(tmp_path)
+    approved = StubRunner()
+    foreign = _SameFileForeignRunner()
+    with _seeded_registry(approved):
+        packet = _packet(fixture)
+        held = verify_sealed_inputs(fixture.paths, git_runner=clean_git_runner)
+        _approve(ledger_root, packet)
+    with _seeded_registry(foreign):
+        monkeypatch.setattr(g4_seal, "verify_sealed_inputs", lambda *a, **k: held)
+        with pytest.raises(ApprovalInvalidError, match="qualified name"):
+            _execute(packet, fixture, ledger_root)
+    assert foreign.calls == 0
+    assert _no_consumption(ledger_root)
+
+
+def test_execution_rederives_the_config_digest_from_the_registry_entry(
+    tmp_path: Path,
+    ledger_root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Round-10 F4 defense layer: a forged registry entry whose
+    configuration digest differs from the approved binding is refused at
+    execution even when version, qualified name, and code-file hash all
+    match — the configuration the owner approved is part of the machinery."""
+    fixture = write_valid_inputs(tmp_path)
+    runner = StubRunner()
+    with _seeded_registry(
+        runner, config_digest=hashlib.sha256(b"runner-config-approved").hexdigest()
+    ):
+        packet = _packet(fixture)
+        held = verify_sealed_inputs(fixture.paths, git_runner=clean_git_runner)
+        _approve(ledger_root, packet)
+    entry = vi.RUNNER_REGISTRY[RUNNER_VERSION]
+    vi.RUNNER_REGISTRY[RUNNER_VERSION] = dataclass_replace(
+        entry, config_digest=hashlib.sha256(b"runner-config-forged").hexdigest()
+    )
+    monkeypatch.setattr(g4_seal, "verify_sealed_inputs", lambda *a, **k: held)
+    with pytest.raises(ApprovalInvalidError, match="configuration digest"):
+        _execute(packet, fixture, ledger_root)
+    assert runner.calls == 0
+    assert _no_consumption(ledger_root)

@@ -17,7 +17,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Annotated, Literal, NoReturn
+from typing import Annotated, Any, Literal, NoReturn
 
 from pydantic import Field, StringConstraints, ValidationError, field_validator, model_validator
 
@@ -188,6 +188,15 @@ class VerifiedSealedInputs(StrictModel):
     # therefore records the exact machinery implementation, not a
     # caller-asserted version string.
     runner_implementation_sha256: Sha256
+    # Round-10 review fix (finding 4): the file hash alone cannot identify a
+    # callable — every callable in the implementation's module shares it, and
+    # every configuration of the implementation's class shares the class
+    # file. The binding is the full tuple (version, qualname, file_sha256,
+    # config_digest): the callable's QUALIFIED NAME and the registration-time
+    # CONFIGURATION DIGEST sit next to the file hash, and execution requires
+    # exact equality on all four.
+    runner_implementation_qualname: IdStr
+    runner_config_digest: Sha256
     packet_content_sha256: Sha256
 
     @model_validator(mode="after")
@@ -209,7 +218,7 @@ def _build_packet(
     criteria_sha: str,
     criteria_source_sha: str,
 ) -> VerifiedSealedInputs:
-    runner_sha = _registered_runner_binding()
+    registered = _registered_runner_binding()
     fields = {
         "schema_version": VERIFIED_INPUTS_SCHEMA_VERSION,
         "code_sha": code_sha,
@@ -220,7 +229,9 @@ def _build_packet(
         "criteria_artifact_sha256": criteria_sha,
         "criteria_source_document_sha256": criteria_source_sha,
         "runner_version": RUNNER_VERSION,
-        "runner_implementation_sha256": runner_sha,
+        "runner_implementation_sha256": registered.implementation_sha256,
+        "runner_implementation_qualname": registered.implementation_qualname,
+        "runner_config_digest": registered.config_digest,
     }
     core = VerifiedSealedInputs.model_construct(
         schema_version=VERIFIED_INPUTS_SCHEMA_VERSION,
@@ -232,33 +243,60 @@ def _build_packet(
         criteria_artifact_sha256=criteria_sha,
         criteria_source_document_sha256=criteria_source_sha,
         runner_version=RUNNER_VERSION,
-        runner_implementation_sha256=runner_sha,
+        runner_implementation_sha256=registered.implementation_sha256,
+        runner_implementation_qualname=registered.implementation_qualname,
+        runner_config_digest=registered.config_digest,
         packet_content_sha256="",
     )
     digest = sha256_hex(VERIFIED_INPUTS_DOMAIN + canonical_bytes(core))
     return VerifiedSealedInputs.model_validate({**fields, "packet_content_sha256": digest})
 
 
-# ---- the runner machinery registry (round-11, finding 8) ---------------------------
+# ---- the runner machinery registry (round-11 finding 8 + round-10 finding 4) ---------
 #
 # The approved runner machinery is bound by IDENTITY, never by a caller's
 # asserted attribute. The registry maps runner_version -> the implementation
-# callable plus the sha256 of that implementation's CODE FILE bytes captured
-# at registration. `verify_sealed_inputs` stamps the registered hash into the
-# packet, so approving the packet records the exact implementation; execution
-# re-hashes the registered implementation's code file NOW and refuses on any
-# divergence from the packet's binding. A foreign callable carrying the
-# approved version literal is never IN the registry, so it is never authority.
+# callable plus the identity tuple captured at registration: the callable's
+# QUALIFIED NAME, the sha256 of its CODE FILE bytes, and a CONFIGURATION
+# DIGEST computed by the registering layer over whatever configuration the
+# runner carries. `verify_sealed_inputs` stamps all three into the packet,
+# so approving the packet records the exact callable and its configuration;
+# execution re-derives all of them from the registry entry and refuses on
+# any divergence from the packet's binding. A foreign callable carrying the
+# approved version literal is never IN the registry, so it is never
+# authority — and since round-10 (finding 4) a foreign callable in the SAME
+# module as the approved one (identical file hash) is distinguished by its
+# qualified name, while one configured instance of the approved class is
+# distinguished by its registration-time configuration digest.
+
+
+def _implementation_probe(implementation: object) -> Any:
+    if inspect.isclass(implementation) or inspect.isroutine(implementation):
+        return implementation
+    return type(implementation)
+
+
+def runner_implementation_qualname(implementation: object) -> str:
+    """The qualified name of the implementation's callable identity (its
+    class for an instance). Two callables in ONE module share a code file —
+    and therefore its hash; the qualified name is what distinguishes them."""
+    probe = _implementation_probe(implementation)
+    qualname = getattr(probe, "__qualname__", None)
+    module = getattr(probe, "__module__", None)
+    if not qualname or not module:
+        raise VerifiedInputsError(
+            "runner",
+            "the runner implementation has no qualified name — its callable"
+            " identity cannot be bound",
+        )
+    return f"{module}.{qualname}"
 
 
 def runner_implementation_sha256(implementation: object) -> str:
     """The sha256 of the implementation's code file bytes (its class's file
-    for an instance). This is the machinery identity the packet binds."""
-    probe = (
-        implementation
-        if (inspect.isclass(implementation) or inspect.isroutine(implementation))
-        else type(implementation)
-    )
+    for an instance). One component of the machinery identity the packet
+    binds — never sufficient on its own (round-10, finding 4)."""
+    probe = _implementation_probe(implementation)
     source = inspect.getsourcefile(probe) if probe is not None else None
     if source is None:
         raise VerifiedInputsError(
@@ -276,11 +314,24 @@ def runner_implementation_sha256(implementation: object) -> str:
         ) from None
 
 
+def _validate_config_digest(config_digest: str) -> str:
+    if re.fullmatch(r"[0-9a-f]{64}", config_digest) is None:
+        raise VerifiedInputsError(
+            "runner",
+            "the runner configuration digest must be a lowercase 64-hex"
+            " sha256 — the registering layer computes it over whatever"
+            " configuration the runner carries (round-10, finding 4)",
+        )
+    return config_digest
+
+
 @dataclass(frozen=True)
 class RegisteredRunner:
     runner_version: str
     implementation: Callable[[HeldVerifiedSealedInputs], str]
+    implementation_qualname: str
     implementation_sha256: str
+    config_digest: str
 
 
 RUNNER_REGISTRY: dict[str, RegisteredRunner] = {}
@@ -290,8 +341,14 @@ def register_runner(
     implementation: Callable[[HeldVerifiedSealedInputs], str],
     *,
     runner_version: str = RUNNER_VERSION,
+    config_digest: str,
 ) -> RegisteredRunner:
     """Seed the registry with one runner machinery implementation.
+
+    ``config_digest`` (round-10, finding 4) is REQUIRED: the registering
+    layer computes it over whatever configuration the runner carries, so a
+    configured instance of the approved class binds differently from another
+    configuration of the same class.
 
     The owning layer (or a test) calls this explicitly; the registry is the
     authority surface for WHICH machinery a verified packet binds. Production
@@ -300,13 +357,15 @@ def register_runner(
     entry = RegisteredRunner(
         runner_version=runner_version,
         implementation=implementation,
+        implementation_qualname=runner_implementation_qualname(implementation),
         implementation_sha256=runner_implementation_sha256(implementation),
+        config_digest=_validate_config_digest(config_digest),
     )
     RUNNER_REGISTRY[runner_version] = entry
     return entry
 
 
-def _registered_runner_binding() -> str:
+def _registered_runner_binding() -> RegisteredRunner:
     entry = RUNNER_REGISTRY.get(RUNNER_VERSION)
     if entry is None:
         raise VerifiedInputsError(
@@ -316,7 +375,7 @@ def _registered_runner_binding() -> str:
             " and none is wired (register_runner seeds the registry"
             " explicitly); refusing to attest an unbound packet",
         )
-    return entry.implementation_sha256
+    return entry
 
 
 @dataclass(frozen=True)
@@ -664,6 +723,7 @@ __all__ = [
     "git_code_sha",
     "identity_from_packet",
     "register_runner",
+    "runner_implementation_qualname",
     "runner_implementation_sha256",
     "verify_sealed_inputs",
 ]

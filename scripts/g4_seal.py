@@ -90,6 +90,7 @@ from tree_options.seal.verified_inputs import (  # noqa: E402
     SealedInputPaths,
     VerifiedSealedInputs,
     identity_from_packet,
+    runner_implementation_qualname,
     runner_implementation_sha256,
     verify_sealed_inputs,
 )
@@ -181,10 +182,15 @@ def _verified_statuses(packet: VerifiedSealedInputs) -> dict[str, CriterionStatu
             f"artifact={packet.criteria_artifact_sha256}; "
             f"source={packet.criteria_source_document_sha256}"
         ),
-        # round-11 finding 8: the runner machinery is itself an availability
-        # input — the packet binds the registered implementation's code hash.
+        # round-11 finding 8 + round-10 finding 4: the runner machinery is
+        # itself an availability input — the packet binds the registered
+        # implementation's qualified name, code-file hash, and configuration
+        # digest.
         "runner": _available(
-            f"version={packet.runner_version}; implementation={packet.runner_implementation_sha256}"
+            f"version={packet.runner_version};"
+            f" qualname={packet.runner_implementation_qualname};"
+            f" implementation={packet.runner_implementation_sha256};"
+            f" config={packet.runner_config_digest}"
         ),
     }
 
@@ -312,6 +318,15 @@ def execute_sealed_run(
     implementation's code file NOW and refuses on any divergence before a
     single byte of authority is spent. A foreign callable carrying the
     approved version literal is never registered, so it is never authority.
+
+    Round-10 review fix (finding 4): the code-file hash alone is not a
+    callable identity — every callable in the implementation's module shares
+    it, and every configuration of the implementation's class shares the
+    class file. The packet now binds (version, qualname, file_sha256,
+    config_digest), and execution re-derives ALL FOUR from the registry
+    entry and requires exact equality on all of them: a same-file foreign
+    callable and a differently-configured instance of the approved class are
+    both refused before any consumption.
     """
     # Revalidate the self-hash even if a caller used Pydantic's low-level
     # model_construct escape hatch to manufacture the typed object.
@@ -338,10 +353,11 @@ def execute_sealed_run(
             run_id,
             "current typed inputs do not equal the owner-approved verified packet",
         )
-    # Round-11 finding 8: bind runner IDENTITY, not a caller-asserted string.
-    # The machinery comes from the REGISTRY under the approved version; the
-    # registry entry's CURRENT code-file hash must equal the binding the
-    # owner approved inside the packet.
+    # Round-11 finding 8 + round-10 finding 4: bind runner IDENTITY, not a
+    # caller-asserted string. The machinery comes from the REGISTRY under the
+    # approved version; the registry entry's CURRENT binding — version,
+    # qualified name, code-file hash, and configuration digest — must equal
+    # all four members of the binding the owner approved inside the packet.
     registered = RUNNER_REGISTRY.get(expected_packet.runner_version)
     if registered is None:
         raise ApprovalInvalidError(
@@ -357,6 +373,16 @@ def execute_sealed_run(
             f"runner version {presented_runner_version!r} does not equal "
             f"approved {expected_packet.runner_version!r}",
         )
+    current_qualname = runner_implementation_qualname(registered.implementation)
+    if current_qualname != expected_packet.runner_implementation_qualname:
+        raise ApprovalInvalidError(
+            run_id,
+            f"the registered runner implementation's qualified name {current_qualname!r}"
+            " does not equal the approved packet's machinery binding "
+            f"{expected_packet.runner_implementation_qualname!r} — a callable"
+            " sharing the approved implementation's CODE FILE is a different"
+            " callable, never the machinery the owner approved",
+        )
     current_code_sha = runner_implementation_sha256(registered.implementation)
     if current_code_sha != expected_packet.runner_implementation_sha256:
         raise ApprovalInvalidError(
@@ -366,6 +392,15 @@ def execute_sealed_run(
             f" machinery binding {expected_packet.runner_implementation_sha256[:12]}…"
             " — the machinery changed since approval and is not the"
             " implementation the owner approved",
+        )
+    if registered.config_digest != expected_packet.runner_config_digest:
+        raise ApprovalInvalidError(
+            run_id,
+            f"the registered runner configuration digest {registered.config_digest[:12]}…"
+            " does not equal the approved packet's machinery binding "
+            f"{expected_packet.runner_config_digest[:12]}… — the same machinery"
+            " class configured differently is not the configuration the owner"
+            " approved",
         )
     runner = registered.implementation
 
