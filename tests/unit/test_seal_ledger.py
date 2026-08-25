@@ -485,3 +485,65 @@ def test_final_name_clone_swap_during_append_refused(ledger_root, monkeypatch: p
         # the RED run strands the consumption under .held: never leave it
         with contextlib.suppress(OSError):
             (ledger_root / (L.LEDGER_FILENAME + ".held")).unlink()
+
+
+# ---- round-11 (finding 3): the durable name→inode binding closes the SUCCESSOR window --
+#
+# Round-11 review fix (2026-08-25): the round-8 name check closes only the
+# in-process window — it runs while the append still holds the flock. A swap
+# landing AFTER that check but BEFORE the call returns (the LOCK_UN, the fd
+# close, the custody-root dir fsync) was never seen by anyone: the append
+# returned SUCCESS, and the byte-copy clone installed at the authority name
+# was a fully valid approval-only ledger that a SECOND process happily
+# consumed — split authority (the consumption under the renamed .held plus a
+# second consumption on the clone). Each ledger now carries a DURABLE
+# name→inode binding: at ledger creation the file's (st_dev, st_ino) is
+# recorded in a companion identity record custody-written beside the ledger,
+# and EVERY open verifies the name still maps to that bound inode, refusing
+# as corruption/reconciliation (never success) on divergence. A clone at the
+# canonical name has the wrong inode, so it is refused at the next open —
+# the clone can never be consumed.
+
+
+def test_clone_swap_after_the_name_check_is_refused_at_the_next_open(
+    ledger_root, monkeypatch: pytest.MonkeyPatch
+):
+    """The racing point is the append's FINAL custody-root fsync, which runs
+    AFTER the round-8 name check has already passed: the wrapper renames the
+    ledger to .held and installs an approval-only byte clone at the name
+    there. The racing append may still acknowledge (the check already
+    passed); the CONTRACT is the successor — a second execution against the
+    clone must REFUSE on the durable binding, and the clone must never gain
+    a consumption."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
+    ledger_path = ledger_root / L.LEDGER_FILENAME
+    before = ledger_path.read_bytes()  # the APPROVAL line only
+    real_fsync = os.fsync
+    calls = {"n": 0}
+
+    def fsync_swapping_after_the_name_check(fd: int) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:  # fsync #1 is the ledger fd; #2 is the root dir
+            held = ledger_root / (L.LEDGER_FILENAME + ".held")
+            os.rename(ledger_path, held)  # the locked fd keeps the inode
+            ledger_path.write_bytes(before)  # a byte-copy CLONE at the name
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync_swapping_after_the_name_check)
+    try:
+        # The racing append already passed the name check, so it may still
+        # return success — the consumption lands under .held (reconciliation
+        # evidence, exactly like round 8). What must never happen again is a
+        # SECOND process consuming the clone at the authority name.
+        L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)
+        with pytest.raises(LedgerCorruptError, match="durable binding"):
+            L.append_consumption(
+                ledger_root, identity, reason="second execution on the clone", at_epoch=T0 + 2
+            )
+        assert ledger_path.read_bytes() == before, (
+            "the clone at the authority name must never gain a consumption"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            (ledger_root / (L.LEDGER_FILENAME + ".held")).unlink()

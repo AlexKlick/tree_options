@@ -32,6 +32,14 @@ journal:
   COMPONENT-WISE from ``/`` (each path component opened no-follow relative
   to the previous component's fd), so a symlink planted at ANY intermediate
   ancestor — not just the final component — refuses naming that component.
+* the ledger name carries a DURABLE name→inode binding (round-11 review
+  fix, 2026-08-25, finding 3): at creation the file's ``(st_dev, st_ino)``
+  is pinned in a companion identity record (``ledger.jsonl.identity.json``,
+  custody-written beside the ledger), and EVERY open verifies the name
+  still maps to that inode. An in-append name check can never see a swap
+  that lands after it; the binding makes the clone such a swap installs
+  unusable by every successor process — refused at open as reconciliation,
+  never success.
 
 Record kinds:
 
@@ -56,6 +64,7 @@ from pathlib import Path
 from typing import Literal, NoReturn
 
 from tree_options.data.digest import sha256_hex
+from tree_options.runstate import custody
 from tree_options.schemas.common import StrictModel
 from tree_options.seal.errors import LedgerCorruptError, LedgerRootRefusedError
 from tree_options.seal.identity import SealedIdentity, content_identity, sealed_run_id
@@ -182,8 +191,28 @@ def read_ledger(root: Path) -> LedgerView:
         try:
             fd = _open_ledger_nofollow(root / LEDGER_FILENAME, root_fd, os.O_RDONLY)
         except FileNotFoundError:
+            # Round-11 (finding 3): a bound name may not silently vanish —
+            # the absent-name case stays an empty view only when NOTHING was
+            # ever bound.
+            if (
+                custody.load_name_binding(
+                    root,
+                    root_fd,
+                    LEDGER_FILENAME,
+                    purpose="ledger.jsonl authority",
+                    refuse=_binding_refusal,
+                )
+                is not None
+            ):
+                raise LedgerCorruptError(
+                    f"{root / LEDGER_FILENAME}: the ledger NAME is absent while "
+                    "its durable name binding exists — bound authority may not "
+                    "silently vanish; this refusal is RECONCILIATION, never an "
+                    "empty view"
+                ) from None
             return LedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
         try:
+            _verify_bound_ledger_name(root, root_fd, fd)
             chunks: list[bytes] = []
             offset = 0
             while True:
@@ -312,6 +341,83 @@ def _open_ledger_nofollow(path: Path, root_fd: int, flags: int) -> int:
         raise
 
 
+def _binding_refusal(detail: str) -> NoReturn:
+    """The durable name→inode binding refuses in the ledger's error family."""
+    raise LedgerCorruptError(detail) from None
+
+
+def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
+    """Round-11 review fix (2026-08-25, finding 3): the durable name→inode
+    binding — the successor-window closer.
+
+    The round-8 in-append name check can only see swaps that land BEFORE it;
+    a swap landing after it but before the return left a byte-copy clone at
+    the authority name that a SECOND process then consumed (split authority:
+    one consumption under the renamed file, another on the clone). At ledger
+    creation (an empty ledger, under the flock, BEFORE the first append
+    lands) the file's ``(st_dev, st_ino)`` is recorded in a companion
+    identity record written through custody; every open after that verifies
+    the name still maps to the bound inode. A clone has the wrong inode and
+    is refused at the next open — it can never be consumed. Unbound NON-EMPTY
+    ledgers (pre-binding era, or a deleted record) are reconciliation, never
+    an append and never a silent re-bind.
+    """
+    purpose = "ledger.jsonl authority"
+    binding = custody.load_name_binding(
+        root, root_fd, LEDGER_FILENAME, purpose=purpose, refuse=_binding_refusal
+    )
+    if binding is None:
+        held = os.fstat(ledger_fd)
+        if held.st_size != 0:
+            raise LedgerCorruptError(
+                f"{root / LEDGER_FILENAME}: the ledger holds {held.st_size} bytes "
+                "with no durable name binding — an unbound ledger is never "
+                "appended or re-bound in place; reconcile with the owner "
+                "(this refusal is RECONCILIATION, never success)"
+            ) from None
+        custody.bind_name_identity(
+            root, root_fd, LEDGER_FILENAME, ledger_fd, purpose=purpose, refuse=_binding_refusal
+        )
+    else:
+        custody.verify_name_binding(
+            root_fd,
+            LEDGER_FILENAME,
+            ledger_fd,
+            binding,
+            purpose=purpose,
+            refuse=_binding_refusal,
+        )
+
+
+def _verify_bound_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
+    """The read-side rule: a bound name that stopped mapping to its bound
+    inode is refused; an EMPTY unbound ledger carries no authority yet
+    (creation crash window — it is bound at the next append); a NON-EMPTY
+    unbound ledger is reconciliation."""
+    purpose = "ledger.jsonl authority"
+    binding = custody.load_name_binding(
+        root, root_fd, LEDGER_FILENAME, purpose=purpose, refuse=_binding_refusal
+    )
+    if binding is None:
+        if os.fstat(ledger_fd).st_size != 0:
+            raise LedgerCorruptError(
+                f"{root / LEDGER_FILENAME}: the ledger holds "
+                f"{os.fstat(ledger_fd).st_size} bytes with no durable name "
+                "binding — an unbound ledger is never read as authority; "
+                "reconcile with the owner (this refusal is RECONCILIATION, "
+                "never success)"
+            ) from None
+        return
+    custody.verify_name_binding(
+        root_fd,
+        LEDGER_FILENAME,
+        ledger_fd,
+        binding,
+        purpose=purpose,
+        refuse=_binding_refusal,
+    )
+
+
 def append_record(root: Path, record: LedgerRecord) -> str:
     """Append one hash-chained record; returns its ``record_sha256``.
 
@@ -330,6 +436,10 @@ def append_record(root: Path, record: LedgerRecord) -> str:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
+                # Round-11 (finding 3): bind at creation (empty ledger,
+                # before the first append lands) or verify the name still
+                # maps to the bound inode — under the flock either way.
+                _verify_or_bind_ledger_name(root, root_fd, fd)
                 chunks: list[bytes] = []
                 offset = 0
                 while True:

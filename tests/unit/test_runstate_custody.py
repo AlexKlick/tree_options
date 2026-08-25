@@ -6,6 +6,7 @@ directory custody.  A refusal must leave any link/hard-link target byte-identica
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,7 @@ from tree_options.runstate import RunIdentity, RunState, RunStore, compute_run_i
 from tree_options.runstate import heartbeat as H
 from tree_options.runstate import journal as J
 from tree_options.runstate import lease as L
-from tree_options.runstate.errors import StoreCustodyError
+from tree_options.runstate.errors import JournalCorruptError, StoreCustodyError
 
 BOOT = "11111111-2222-3333-4444-555555555555"
 T0 = 1_800_000_000
@@ -527,3 +528,67 @@ def test_lease_lock_deletion_recreation_refuses_before_owner_publish(
         L.acquire(store.dir, _owner(), boot_id_now=BOOT)
 
     assert not (store.dir / L.LEASE_DIRNAME / L.OWNER_FILENAME).exists()
+
+
+# ---- round-11 (finding 3): the journal's durable name→inode binding closes the
+# SUCCESSOR window --
+#
+# Round-11 review fix (2026-08-25): journal.append_record's post-fsync
+# name check (round-8, finding 4) covers only the in-process window. A swap
+# landing AFTER that check but BEFORE the call returns (the LOCK_UN, the fd
+# close, the store-dir fsync) was invisible: the append acknowledged, the
+# byte-copy clone installed at journal.jsonl was a fully valid shorter
+# chain, and a successor process replayed and APPENDED to the clone — two
+# authority tails for one run. journal.jsonl now carries a durable
+# name→inode binding (a companion identity record custody-written beside it
+# at creation; every open verifies the name still maps to the bound inode
+# and refuses as corruption/reconciliation, never success), so the clone is
+# refused at the next open and can never gain authority.
+
+
+def test_journal_clone_swap_after_the_name_check_is_refused_at_the_next_open(
+    scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The racing point is the append's FINAL store-dir fsync, which runs
+    AFTER the round-8 name check has already passed. The racing transition
+    may acknowledge or refuse at its own re-replay (both name the incident);
+    the CONTRACT is the successor — a fresh replay of the clone must REFUSE
+    on the durable binding, and the clone must never gain a record."""
+    store = _store(scratch)
+    journal = store.dir / J.JOURNAL_FILENAME
+    before = journal.read_bytes()  # the GENESIS line only
+    held = store.dir / f"{J.JOURNAL_FILENAME}.held"
+    real_fsync = os.fsync
+    calls = {"n": 0}
+
+    def fsync_swapping_after_the_name_check(fd: int) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:  # fsync #1 is the journal fd; #2 is the store dir
+            journal.rename(held)  # the locked fd keeps the inode
+            journal.write_bytes(before)  # a byte-copy CLONE at the name
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync_swapping_after_the_name_check)
+    try:
+        # The racing append already passed the name check, so the transition
+        # may still acknowledge; post-fix its own closing re-replay usually
+        # names the incident first. Either way it must not crash differently.
+        try:
+            store.transition(
+                RunState.CAPTURING,
+                reason="clone race successor must reconcile",
+                now_epoch=T0 + 1,
+                actor_pid=123,
+                actor_boot_id=BOOT,
+            )
+        except JournalCorruptError:
+            pass  # post-fix: the transition's re-replay refused the clone
+        # the SUCCESSOR process must refuse the clone at its open
+        with pytest.raises(JournalCorruptError, match="durable binding"):
+            J.replay(store.dir, run_id=store.identity.run_id)
+        assert journal.read_bytes() == before, (
+            "the clone at the authority name must never gain a record"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            held.unlink()

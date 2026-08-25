@@ -1019,3 +1019,65 @@ def test_bars_final_name_clone_swap_during_append_refused(
     finally:
         with contextlib.suppress(OSError):
             (root / (bm.BARS_LEDGER_FILENAME + ".held")).unlink()
+
+
+# ---- round-11 (finding 3): the durable name→inode binding closes the SUCCESSOR window --
+#
+# Round-11 review fix (2026-08-25, mirror of the seal ledger's finding 3):
+# the round-8 name check covers only the in-process window. A swap landing
+# AFTER the check but BEFORE the append returns (the LOCK_UN, the fd close,
+# the custody-root dir fsync) was invisible: the append acknowledged, and
+# the approval-only clone installed at the authority name was a fully valid
+# bars ledger that a SECOND launcher consumed — split launch authority. The
+# bars ledger now carries the same durable name→inode binding (a companion
+# identity record custody-written beside the ledger at creation; every open
+# verifies the name still maps to the bound inode and refuses as
+# corruption/reconciliation, never success), so the clone has the wrong
+# inode and is refused at the next open — it can never be consumed.
+
+
+def test_bars_clone_swap_after_the_name_check_is_refused_at_the_next_open(
+    scratch_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The racing point is the append's FINAL custody-root fsync, which runs
+    AFTER the round-8 name check has already passed. The racing consumption
+    may still acknowledge (the check already passed); the CONTRACT is the
+    successor — a second launcher against the clone must REFUSE on the
+    durable binding, and the clone must never gain a consumption."""
+    root = scratch_root / "bars-authority"
+    fields = dict(
+        protocol_hash="p" * 64,
+        amendment_packet_sha256="a" * 64,
+        census_sha256="c" * 64,
+        work_manifest_sha256="w" * 64,
+    )
+    bm.append_bars_launch_approval(root, reason="owner approved", at_epoch=T0, **fields)
+    ledger_path = root / bm.BARS_LEDGER_FILENAME
+    before = ledger_path.read_bytes()  # the APPROVAL line only
+    real_fsync = os.fsync
+    calls = {"n": 0}
+
+    def fsync_swapping_after_the_name_check(fd: int) -> None:
+        calls["n"] += 1
+        if calls["n"] == 2:  # fsync #1 is the ledger fd; #2 is the root dir
+            held = root / (bm.BARS_LEDGER_FILENAME + ".held")
+            os.rename(ledger_path, held)  # the locked fd keeps the inode
+            ledger_path.write_bytes(before)  # a byte-copy CLONE at the name
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", fsync_swapping_after_the_name_check)
+    try:
+        # The racing append already passed the name check, so it may still
+        # return success — the consumption lands under .held. What must
+        # never happen again is a second launcher consuming the clone.
+        bm.append_bars_launch_consumed(root, reason="bars era launched", at_epoch=T0 + 1, **fields)
+        with pytest.raises(LedgerCorruptError, match="durable binding"):
+            bm.append_bars_launch_consumed(
+                root, reason="second launcher on the clone", at_epoch=T0 + 2, **fields
+            )
+        assert ledger_path.read_bytes() == before, (
+            "the clone at the authority name must never gain a consumption"
+        )
+    finally:
+        with contextlib.suppress(OSError):
+            (root / (bm.BARS_LEDGER_FILENAME + ".held")).unlink()

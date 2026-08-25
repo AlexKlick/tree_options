@@ -72,6 +72,7 @@ from tree_options.data.massive_overlay import (
     _pages_of,
     _require_provenance,
 )
+from tree_options.runstate import custody
 from tree_options.schemas.common import StrictModel
 from tree_options.seal.errors import LedgerCorruptError
 from tree_options.seal.ledger import GENESIS_PREV, validate_ledger_root
@@ -1120,6 +1121,87 @@ def _open_bars_ledger_nofollow(path: Path, root_fd: int, flags: int) -> int:
         raise
 
 
+def _binding_refusal(detail: str) -> NoReturn:
+    """The durable name→inode binding refuses in the ledger error family."""
+    raise LedgerCorruptError(detail) from None
+
+
+def _verify_or_bind_bars_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
+    """Round-11 review fix (2026-08-25, finding 3 — mirror of the seal
+    ledger's): the durable name→inode binding, the successor-window closer.
+
+    The round-8 in-append name check can only see swaps that land BEFORE it;
+    a swap landing after it but before the return left an approval-only byte
+    clone at the authority name that a SECOND launcher then consumed — split
+    launch authority. At ledger creation (an empty ledger, under the flock,
+    BEFORE the first append lands) the file's ``(st_dev, st_ino)`` is pinned
+    in a companion identity record written through custody; every open after
+    that verifies the name still maps to the bound inode. A clone has the
+    wrong inode and is refused at the next open — it can never be consumed.
+    An unbound NON-EMPTY ledger is reconciliation, never an append and never
+    a silent re-bind.
+    """
+    purpose = "bars-authority ledger.jsonl"
+    binding = custody.load_name_binding(
+        root, root_fd, BARS_LEDGER_FILENAME, purpose=purpose, refuse=_binding_refusal
+    )
+    if binding is None:
+        held = os.fstat(ledger_fd)
+        if held.st_size != 0:
+            raise LedgerCorruptError(
+                f"{root / BARS_LEDGER_FILENAME}: the bars-authority ledger holds "
+                f"{held.st_size} bytes with no durable name binding — an unbound "
+                "ledger is never appended or re-bound in place; reconcile with "
+                "the owner (this refusal is RECONCILIATION, never success)"
+            ) from None
+        custody.bind_name_identity(
+            root,
+            root_fd,
+            BARS_LEDGER_FILENAME,
+            ledger_fd,
+            purpose=purpose,
+            refuse=_binding_refusal,
+        )
+    else:
+        custody.verify_name_binding(
+            root_fd,
+            BARS_LEDGER_FILENAME,
+            ledger_fd,
+            binding,
+            purpose=purpose,
+            refuse=_binding_refusal,
+        )
+
+
+def _verify_bound_bars_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
+    """The read-side rule: a bound name that stopped mapping to its bound
+    inode is refused; an EMPTY unbound ledger carries no authority yet (the
+    creation crash window — bound at the next append); a NON-EMPTY unbound
+    ledger is reconciliation."""
+    purpose = "bars-authority ledger.jsonl"
+    binding = custody.load_name_binding(
+        root, root_fd, BARS_LEDGER_FILENAME, purpose=purpose, refuse=_binding_refusal
+    )
+    if binding is None:
+        if os.fstat(ledger_fd).st_size != 0:
+            raise LedgerCorruptError(
+                f"{root / BARS_LEDGER_FILENAME}: the bars-authority ledger holds "
+                f"{os.fstat(ledger_fd).st_size} bytes with no durable name "
+                "binding — an unbound ledger is never read as authority; "
+                "reconcile with the owner (this refusal is RECONCILIATION, "
+                "never success)"
+            ) from None
+        return
+    custody.verify_name_binding(
+        root_fd,
+        BARS_LEDGER_FILENAME,
+        ledger_fd,
+        binding,
+        purpose=purpose,
+        refuse=_binding_refusal,
+    )
+
+
 def read_bars_ledger(root: Path) -> BarsLedgerView:
     """Replay + verify the bars-authority ledger (read-only; never creates).
 
@@ -1142,8 +1224,28 @@ def read_bars_ledger(root: Path) -> BarsLedgerView:
         try:
             fd = _open_bars_ledger_nofollow(root / BARS_LEDGER_FILENAME, root_fd, os.O_RDONLY)
         except FileNotFoundError:
+            # Round-11 (finding 3): a bound name may not silently vanish —
+            # the absent-name case stays an empty view only when NOTHING was
+            # ever bound.
+            if (
+                custody.load_name_binding(
+                    root,
+                    root_fd,
+                    BARS_LEDGER_FILENAME,
+                    purpose="bars-authority ledger.jsonl",
+                    refuse=_binding_refusal,
+                )
+                is not None
+            ):
+                raise LedgerCorruptError(
+                    f"{root / BARS_LEDGER_FILENAME}: the bars-authority NAME is "
+                    "absent while its durable name binding exists — bound "
+                    "authority may not silently vanish; this refusal is "
+                    "RECONCILIATION, never an empty view"
+                ) from None
             return BarsLedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
         try:
+            _verify_bound_bars_ledger_name(root, root_fd, fd)
             chunks: list[bytes] = []
             offset = 0
             while True:
@@ -1184,6 +1286,10 @@ def append_bars_record(
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
+                # Round-11 (finding 3): bind at creation (empty ledger,
+                # before the first append lands) or verify the name still
+                # maps to the bound inode — under the flock either way.
+                _verify_or_bind_bars_ledger_name(root, root_fd, fd)
                 chunks: list[bytes] = []
                 offset = 0
                 while True:

@@ -98,6 +98,93 @@ def _store_fd(
     )
 
 
+def _load_or_bind_journal_name(
+    store_dir: Path, dir_fd: int, journal_fd: int, *, run_id: str
+) -> None:
+    """Round-11 review fix (2026-08-25, finding 3): the journal's durable
+    name→inode binding — the successor-window closer.
+
+    The round-8 post-fsync name check can only see swaps that land BEFORE
+    it; a swap landing after it but before the return left a byte-copy clone
+    at ``journal.jsonl`` that a successor process replayed and APPENDED to —
+    two authority tails for one run. At journal creation (an empty journal,
+    under the flock, BEFORE the first append lands) the file's
+    ``(st_dev, st_ino)`` is pinned in a companion identity record
+    (``journal.jsonl.identity.json``, custody-written beside the journal);
+    every open after that verifies the name still maps to the bound inode
+    and refuses — corruption/reconciliation, never success. A clone has the
+    wrong inode, so it is refused at the next open and can never gain
+    authority. An unbound NON-EMPTY journal is reconciliation, never an
+    append and never a silent re-bind.
+    """
+    purpose = "journal.jsonl authority"
+    binding = custody.load_name_binding(
+        store_dir, dir_fd, JOURNAL_FILENAME, run_id=run_id, purpose=purpose
+    )
+    if binding is None:
+        held = os.fstat(journal_fd)
+        if held.st_size != 0:
+            raise JournalCorruptError(
+                run_id,
+                f"journal.jsonl holds {held.st_size} bytes with no durable name "
+                "binding — an unbound journal is never appended or re-bound in "
+                "place; reconcile with the owner",
+            )
+        custody.bind_name_identity(
+            store_dir, dir_fd, JOURNAL_FILENAME, journal_fd, run_id=run_id, purpose=purpose
+        )
+    else:
+        custody.verify_name_binding(
+            dir_fd,
+            JOURNAL_FILENAME,
+            journal_fd,
+            binding,
+            run_id=run_id,
+            purpose=purpose,
+        )
+
+
+def _read_bound_journal_bytes(
+    store_dir: Path, dir_fd: int, journal_fd: int, *, run_id: str
+) -> bytes:
+    """The replay-side read: the journal name must still map to its BOUND
+    inode while its bytes are read. An EMPTY unbound journal carries no
+    authority yet (the creation crash window — bound at the next append); a
+    NON-EMPTY unbound journal is reconciliation, never authority."""
+    purpose = "journal.jsonl authority"
+    binding = custody.load_name_binding(
+        store_dir, dir_fd, JOURNAL_FILENAME, run_id=run_id, purpose=purpose
+    )
+    if binding is None:
+        if os.fstat(journal_fd).st_size != 0:
+            raise JournalCorruptError(
+                run_id,
+                f"journal.jsonl holds {os.fstat(journal_fd).st_size} bytes with "
+                "no durable name binding — an unbound journal is never read as "
+                "authority; reconcile with the owner",
+            )
+        custody.verify_directory_identity(store_dir, dir_fd, run_id=run_id)
+        return b""
+    custody.verify_name_binding(
+        dir_fd,
+        JOURNAL_FILENAME,
+        journal_fd,
+        binding,
+        run_id=run_id,
+        purpose=purpose,
+    )
+    payload = custody.read_all(journal_fd)
+    custody.verify_name_identity(
+        dir_fd,
+        JOURNAL_FILENAME,
+        journal_fd,
+        run_id=run_id,
+        purpose=purpose,
+    )
+    custody.verify_directory_identity(store_dir, dir_fd, run_id=run_id)
+    return payload
+
+
 def append_record(
     store_dir: Path,
     record: JournalRecord,
@@ -148,6 +235,10 @@ def append_record(
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             try:
+                # Round-11 (finding 3): bind at creation (empty journal,
+                # before the first append lands) or verify the name still
+                # maps to the bound inode — under the flock either way.
+                _load_or_bind_journal_name(store_dir, dir_fd, fd, run_id=run_id)
                 # Round-1 review fix: re-read the locked tail and verify.
                 custody.verify_name_identity(
                     dir_fd,
@@ -274,7 +365,14 @@ def replay(
     fd — a symlink at journal.jsonl (dangling or not; ``Path.exists()`` is
     False for the dangling case and used to classify it as absent) is
     ``ELOOP`` → ``JournalCorruptError``, so the chain is never READ through
-    a link either."""
+    a link either.
+
+    Round-11 review fix (2026-08-25, finding 3): the read verifies the
+    journal name's durable name→inode binding (see
+    ``_load_or_bind_journal_name``) — a clone installed at the name during a
+    prior append's success window has the wrong inode and is refused here,
+    so it can never be replayed as authority. A bound name that vanished is
+    refused too; only a never-bound absent name is an empty view."""
     dir_fd, owned = _store_fd(
         store_dir,
         run_id=run_id,
@@ -284,16 +382,36 @@ def replay(
     if dir_fd is None:
         return JournalView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
     try:
-        raw_bytes = custody.read_named_bytes(
-            store_dir,
+        journal_fd = custody.open_regular(
             dir_fd,
             JOURNAL_FILENAME,
+            os.O_RDONLY,
             run_id=run_id,
             purpose="journal.jsonl authority",
             allow_missing=True,
         )
-        if raw_bytes is None:
+        if journal_fd is None:
+            if (
+                custody.load_name_binding(
+                    store_dir,
+                    dir_fd,
+                    JOURNAL_FILENAME,
+                    run_id=run_id,
+                    purpose="journal.jsonl authority",
+                )
+                is not None
+            ):
+                raise JournalCorruptError(
+                    run_id,
+                    "journal.jsonl is absent while its durable name binding "
+                    "exists — bound authority may not silently vanish",
+                )
+            custody.verify_directory_identity(store_dir, dir_fd, run_id=run_id)
             return JournalView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
+        try:
+            raw_bytes = _read_bound_journal_bytes(store_dir, dir_fd, journal_fd, run_id=run_id)
+        finally:
+            os.close(journal_fd)
     finally:
         if owned:
             os.close(dir_fd)

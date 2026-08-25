@@ -4,14 +4,26 @@ Paths are walked lexically from ``/``.  Every directory component and final
 authority name is opened relative to a held directory FD with ``O_NOFOLLOW``;
 regular-file type, link count, inode identity, bytes, and final path reachability
 are checked at the operation's success boundary.
+
+Round-11 consolidation (2026-08-25): this module also owns the DURABLE
+name→inode binding — the successor-window closer for every append-only
+authority file (journal.jsonl, the seal ledger, the bars ledger).  A name
+check that runs *inside* one append can never see a swap that lands after
+it, so each authority name carries a companion identity record (written
+once, at creation, through :func:`atomic_write`) pinning the one inode the
+name may map to; every later open verifies the name against that record and
+refuses — corruption/reconciliation class, never success — on divergence.
 """
 
 from __future__ import annotations
 
 import errno
+import json
 import os
 import secrets
 import stat
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import NoReturn
 
@@ -466,6 +478,173 @@ def atomic_write(
             _unlink_temp_if_ours(directory_fd, temp_name, temp_identity)
 
 
+# ---- durable name→inode bindings (round-11 consolidation, 2026-08-25) -------------
+#
+# An in-append name check can never observe a swap that lands after it, so a
+# clone installed at an authority name during the append's success window
+# used to be a fully valid file that the NEXT process consumed. The binding
+# makes that impossible: the one inode a name may map to is pinned in a
+# companion record at creation, and every open refuses a name that no longer
+# maps to it.
+
+NAME_BINDING_FORMAT = 1
+
+
+@dataclass(frozen=True)
+class NameBinding:
+    """The one inode an authority name may map to (dev, ino)."""
+
+    name: str
+    st_dev: int
+    st_ino: int
+
+
+def name_binding_filename(name: str) -> str:
+    """The companion identity-record name for an authority file name."""
+    return f"{name}.identity.json"
+
+
+def _binding_bytes(binding: NameBinding) -> bytes:
+    payload = {
+        "format": NAME_BINDING_FORMAT,
+        "name": binding.name,
+        "st_dev": binding.st_dev,
+        "st_ino": binding.st_ino,
+    }
+    return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def load_name_binding(
+    directory_path: Path,
+    directory_fd: int,
+    name: str,
+    *,
+    run_id: str = "?",
+    purpose: str,
+    refuse: Callable[[str], NoReturn] | None = None,
+) -> NameBinding | None:
+    """Load the durable name→inode binding for ``name`` (None when absent).
+
+    A present-but-malformed binding record is corruption, never a silent
+    None. ``refuse`` lets a non-runstate caller (the seal and bars ledgers)
+    keep its own error family; every refusal detail is passed through it.
+    """
+
+    def say(detail: str) -> NoReturn:
+        if refuse is not None:
+            refuse(f"{purpose} name binding for {name!r}: {detail}")
+        _refuse(run_id, f"{purpose} name binding for {name!r}: {detail}")
+
+    try:
+        raw = read_named_bytes(
+            directory_path,
+            directory_fd,
+            name_binding_filename(name),
+            run_id=run_id,
+            purpose=f"{purpose} name binding",
+            allow_missing=True,
+        )
+    except StoreCustodyError as exc:
+        say(exc.detail)
+    if raw is None:
+        return None
+    try:
+        parsed = json.loads(raw)
+        binding = NameBinding(
+            name=str(parsed["name"]),
+            st_dev=int(parsed["st_dev"]),
+            st_ino=int(parsed["st_ino"]),
+        )
+        if int(parsed["format"]) != NAME_BINDING_FORMAT:
+            raise ValueError(f"unknown format {parsed['format']!r}")
+        if binding.name != name:
+            raise ValueError(f"binds a different name {binding.name!r}")
+    except (KeyError, TypeError, ValueError) as exc:
+        say(f"the record is malformed ({exc}); a binding is never guessed around")
+    return binding
+
+
+def bind_name_identity(
+    directory_path: Path,
+    directory_fd: int,
+    name: str,
+    held_fd: int,
+    *,
+    run_id: str = "?",
+    purpose: str,
+    refuse: Callable[[str], NoReturn] | None = None,
+) -> NameBinding:
+    """Durably record the (st_dev, st_ino) of the inode ``held_fd`` names.
+
+    Called exactly once per authority file — at creation, BEFORE the first
+    append lands, under the caller's flock — so a crash between the file's
+    creation and this record still leaves an EMPTY (rebindable) file, never
+    bound authority without a record. Exclusive by construction: a second
+    binder refuses instead of silently re-pointing the name.
+    """
+    held = os.fstat(held_fd)
+    _validate_regular(held, run_id=run_id, purpose=f"held {purpose} {name!r}")
+    binding = NameBinding(name=name, st_dev=held.st_dev, st_ino=held.st_ino)
+    try:
+        atomic_write(
+            directory_path,
+            directory_fd,
+            name_binding_filename(name),
+            _binding_bytes(binding),
+            run_id=run_id,
+            purpose=f"{purpose} name binding",
+            mode=0o644,
+            exclusive=True,
+        )
+    except StoreCustodyError as exc:
+        if refuse is not None:
+            refuse(f"{purpose} name binding for {name!r}: {exc.detail}")
+        raise
+    return binding
+
+
+def verify_name_binding(
+    directory_fd: int,
+    name: str,
+    held_fd: int,
+    binding: NameBinding,
+    *,
+    run_id: str = "?",
+    purpose: str,
+    refuse: Callable[[str], NoReturn] | None = None,
+) -> None:
+    """Refuse unless ``name`` still maps to the BOUND identity == ``held_fd``'s.
+
+    This is the successor-window closer: a byte-copy clone or any replacement
+    installed at the canonical name has the wrong inode and is refused at the
+    next open — corruption/reconciliation class, never silent success.
+    """
+
+    def say(detail: str) -> NoReturn:
+        if refuse is not None:
+            refuse(f"{purpose} {name!r} no longer maps to its durable binding: {detail}")
+        _refuse(run_id, f"{purpose} {name!r} no longer maps to its durable binding: {detail}")
+
+    held = os.fstat(held_fd)
+    try:
+        _validate_regular(held, run_id=run_id, purpose=f"held {purpose} {name!r}")
+        named = _named_stat(directory_fd, name, run_id=run_id, purpose=purpose)
+    except StoreCustodyError as exc:
+        say(exc.detail)
+    if (held.st_dev, held.st_ino) != (binding.st_dev, binding.st_ino):
+        say(
+            f"the held inode is dev/inode {held.st_dev}/{held.st_ino}, "
+            f"the binding records dev/inode {binding.st_dev}/{binding.st_ino}"
+        )
+    if (named.st_dev, named.st_ino) != (binding.st_dev, binding.st_ino):
+        say(
+            f"the name holds dev/inode {named.st_dev}/{named.st_ino}, "
+            f"the binding records dev/inode {binding.st_dev}/{binding.st_ino} "
+            "— a clone or replacement at the authority name is refused at "
+            "open; this is reconciliation, never success"
+        )
+
+
 def unlink_held_name(
     directory_path: Path,
     directory_fd: int,
@@ -475,7 +654,6 @@ def unlink_held_name(
     run_id: str,
     purpose: str,
 ) -> None:
-    """Unlink only while the final name still maps to the caller's held inode."""
     verify_name_identity(
         directory_fd,
         name,
