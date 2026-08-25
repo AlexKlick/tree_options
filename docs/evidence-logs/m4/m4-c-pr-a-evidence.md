@@ -63,6 +63,7 @@ from that verification are recorded below.
 | `908afa6`/`5ca9adb`/`2c86396`/`00c1593` | R11-A (owner-ruled consolidation wave): durable name→inode binding — companion identity record custody-written at ledger/journal creation, every open verifies name↔bound inode (a byte-clone at the canonical name can never be consumed; unbound non-empty and vanished-bound both refuse); `custody.write_all` looped write is the ONLY authority-record write path (both ledgers + journal); `atomic_write(expected=…)` identity-conditional replace — stale adoption refuses a replacement live owner; `unlink_held_name` = rename-to-unpredictable-temp → verify renamed identity → unlink the TEMP only (a successor at the old name is never deleted) |
 | `744e1f3`/`881bdcd`/`71cf8ee`/`87b175a`/`cfac494`/`4431f14` | R11-B (same wave): amendment holds ONE custody fd across all four emits with the final sweep AT packet return over all four names through a fresh component-wise re-walk whose dir-fstat identity must equal the held fd (out-of-root relocation refused); census emission carries the manifest gate at the write moment against the sha RECORDED in the census body (MassiveManifestError → exit 2, nothing published) and publishes the three outputs as one all-or-nothing set (temps → vet → rename-set → verify at return; refusal unlinks temps and drops the digest dir, retry is clean); g4-seal runner identity = registry-resolved (`RUNNER_REGISTRY` + `runner_implementation_sha256` bound into the self-hashed packet at approval, current code hash cross-joined before consumption — execute takes NO runner parameter, a foreign callable with the approved literal is not authority); verified-inputs exit re-scans the held directory and requires exact entry-set equality with the snapshot the verifier consumed |
 | `5887acf`/`fc615e8`/`6ec70ec`/`81296a4` | R12 (owner ruling: fix the real bugs + declare the threat model): release restores a swapped entry at the canonical name (with a restoration re-verify) BEFORE the mismatch refusal — the refusal path never empties `owner.json`, so no fresh exclusive acquire while a successor is live; runner identity binds the CALLABLE — (version, qualified name, source-file sha256, config digest) in the packet, all four re-derived from the registry entry at execution, `register_runner` requires a validated 64-hex `config_digest` (same-file foreign runner and differently-configured instances refused); census refusal cleanup verify-then-deletes the digest dir (held-identity match or loud refusal — a substituted directory is left intact); the emit-set catch gains raw `OSError` and any failure after the first rename rolls back identity-checked this-run-published names (all-or-nothing incl. the untyped path, retry clean) |
+| `2722b32`/`79fe077`/`fd151af` | R13: DUAL-TREE ledger anchor — the ledger identity is recorded in a SECOND tree (a dedicated custody-written identity record under the runstate store namespace, `runstate/seal-ledger-anchor/<sha256(root)[:16]>.identity.json`, mapping documented in ledger.py; journal.py/store.py unmodified), every open verifies BOTH the beside-the-file companion AND the runstate anchor, so an OFFLINE co-replacement of ledger.jsonl + its companion with a self-consistent approval-only pair refuses at the next open; in-scope extensions: a surviving anchor with a vanished ledger/root refuses (the second tree's memory that authority existed), the anchor binds at first append (creation crash window closed), and the anchor pins the companion's byte digest; runner config digest is RECOMPUTED from the live implementation at the effect boundary via a registration-time `config_digest_fn` (mutated-after-approval configuration → ApprovalInvalidError before consumption; the stored digest comparison also retained; placed after `runner = registered.implementation` to preserve M266's anchor — after every identity check, before any authority is spent); census OUTPUT-EXISTS recovery semantics — byte-identical complete set → idempotent exit 0, strict-subset residue incl. this emit path's own-pattern stale temps → custody roll-forward (exit 0 whole / exit 5 incomplete — the documented never-report-partial-as-whole contract preserved), foreign content → refusal — plus `fsync(out_fd)` after the rename set |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -455,3 +456,47 @@ the exact PR head (see PR body for its verdict line).
   pyproject byte-identical; AST 0/255 drift (M260's anchor line
   preserved verbatim inside the new four-way check); independent
   full suite 1,612 passed exit 0 (+9 tests).
+
+- **Round 11** (head `e5fed92`, gate23 GREEN 1,612 / 255 KILLED /
+  restoration TRUE, clean-clone full gate GREEN incl. seven CLI
+  checks, log `pr-a-codex11.log`): VERDICT NO-GO — **3 findings
+  (2×P1, 1×P2); the owner's threat-model boundary WORKED**: round-10
+  disposition 4 RESOLVED (all four R12 fixes, restoration and
+  escalation tests accepted), 5 OUT-OF-SCOPE boundary notes (the
+  reviewer's own consistency pass confirmed each genuinely requires
+  an interleaving concurrent writer), 1 NOT_RESOLVED — promoted to
+  in-scope, correctly, because the companion co-replacement attack
+  is OFFLINE (sequential between invocations). All constraint
+  checks PASS (protected blobs; protocol 0.2.0/flow null with all
+  0.2.1 references confirmed dry-run/test material; no holdout —
+  still AWAITING_OWNER_DECLARATION; no broker; no G4 execution;
+  /tmp mechanically refused). Findings, all orchestrator-verified:
+  (1) the companion identity record is co-replaceable offline with
+  the authority file — it lives beside what it guards and adds no
+  security over it; (2) the runner config digest is STORED not
+  recomputed — a mutable configured runner mutated after approval
+  executes (the orchestrator's own "re-derives all four" claim was
+  false for configuration — caught by the reviewer, accepted); (3)
+  census publication is neither crash-atomic (SIGKILL residue →
+  forever OUTPUT-EXISTS refusal) nor durably acknowledged (no
+  directory fsync after the rename set). **Owner ruling 2026-08-25:
+  dispatch R13 (all three).** Remediated in R13 (`2722b32` dual-tree
+  anchor / `79fe077` live digest recompute / `fd151af` crash
+  recovery + dir fsync), each red-first (agent logs
+  `/tmp/r13-f{1,2,3}-red.log`; the F1 RED reproduced the exact
+  offline co-replacement returning the approval-only clone view;
+  the F2 RED executed the dangerous-mode mutated runner; the F3
+  REDs hit the forever-refusal `assert 4 == 0`). Disclosed
+  deviations: the anchor is a dedicated identity record under the
+  runstate store namespace (NOT a journal record — the journal
+  schema wants per-run incarnation fields; journal.py/store.py
+  unmodified); the anchor also covers vanished-ledger refusal,
+  first-append binding, and companion-digest pinning; the digest
+  recompute sits after implementation resolution to preserve
+  M266's anchor; recovery exits 5 (not 0) when the re-run census is
+  itself incomplete — the documented never-report-partial-as-whole
+  contract; this emit path's own-pattern stale temps are classified
+  as crash residue and rolled forward. Orchestrator verification:
+  8 files exactly as briefed; protected blobs + mutate.py +
+  pyproject byte-identical; AST 0/255 drift; independent full
+  suite 1,620 passed exit 0 (+8 tests).
