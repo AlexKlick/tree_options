@@ -230,6 +230,35 @@ def _has_retry_after_local_knowledge(
     )
 
 
+def _has_overlapping_replace_intents(
+    records: tuple[StoredExecutionRecord, ...],
+) -> bool:
+    replacements = sorted(
+        (record for record in records if isinstance(record, ReplaceIntent)),
+        key=_event_sort_key,
+    )
+    readbacks = tuple(record for record in records if isinstance(record, BrokerReadback))
+    for index, current in enumerate(replacements):
+        for prior in replacements[:index]:
+            resolved_before_current = any(
+                readback.total_quantity is not None
+                and readback.broker_order_id == prior.broker_order_id
+                and readback.record_id != prior.based_on_readback_id
+                and readback.broker_snapshot_at > prior.replace_created_at
+                and (
+                    readback.locally_received_at < current.replace_created_at
+                    or (
+                        readback.record_id == current.based_on_readback_id
+                        and readback.locally_received_at <= current.replace_created_at
+                    )
+                )
+                for readback in readbacks
+            )
+            if not resolved_before_current:
+                return True
+    return False
+
+
 def _covers_through(intervals: tuple[tuple[int, int], ...], quantity: int) -> bool:
     if quantity == 0:
         return True
@@ -285,8 +314,6 @@ def _derive_quantity_authority(
                 confirmed_at = record.broker_acknowledged_at
             continue
         if isinstance(record, ReplaceIntent):
-            if pending is not None:
-                reasons.add(ReconciliationReason.OVERLAPPING_REPLACE_INTENTS)
             pending = record.new_total_quantity
             pending_basis_id = record.based_on_readback_id
             pending_created_at = record.replace_created_at
@@ -524,6 +551,8 @@ def _derive_reconciliation_reasons(
         reasons.add(ReconciliationReason.FILL_CUMULATIVE_REGRESSION)
     if _has_retry_after_local_knowledge(records):
         reasons.add(ReconciliationReason.RETRY_AFTER_LOCAL_KNOWLEDGE)
+    if _has_overlapping_replace_intents(records):
+        reasons.add(ReconciliationReason.OVERLAPPING_REPLACE_INTENTS)
     if filled_quantity > 0 and not _covers_through(fill_intervals, filled_quantity):
         reasons.add(ReconciliationReason.FILL_ECONOMIC_GAP)
     if filled_quantity > 0 and confirmed_total is None:
