@@ -244,6 +244,8 @@ def _derive_quantity_authority(
             pending = None
             pending_basis_id = None
         elif confirmed is None:
+            if observed != intent.quantity:
+                reasons.add(ReconciliationReason.UNEXPECTED_CONFIRMED_TOTAL_CHANGE)
             confirmed = observed
             confirmed_at = record.broker_snapshot_at
         elif observed != confirmed:
@@ -300,6 +302,8 @@ def _derive_fact_reasons(
             continue
 
         if record.status in {BrokerReadbackStatus.ABSENT, BrokerReadbackStatus.AMBIGUOUS}:
+            # This bounded foundation has no explicit reconciliation-resolution
+            # record, so historical absence/ambiguity remains intentionally sticky.
             reasons.add(ReconciliationReason.AMBIGUOUS_READBACK)
             continue
         if record.cumulative_quantity < observed_cumulative:
@@ -457,6 +461,65 @@ def _derive_reconciliation_reasons(
     return frozenset(reasons)
 
 
+def _derive_replace_basis(
+    records: tuple[StoredExecutionRecord, ...],
+    *,
+    state: ExecutionState,
+    broker_order_id: str | None,
+    confirmed_total: int | None,
+    pending_total: int | None,
+    filled_quantity: int,
+    fill_intervals: tuple[tuple[int, int], ...],
+) -> BrokerReadback | None:
+    """Derive current replace authority from retained broker knowledge.
+
+    A snapshot is current only when no other broker fact was learned later. A
+    distinct fact learned at the exact same instant fails closed because the
+    records do not establish which fact the snapshot incorporated.
+    """
+    if (
+        state not in {ExecutionState.ACKNOWLEDGED, ExecutionState.PARTIALLY_FILLED}
+        or pending_total is not None
+        or not _covers_through(fill_intervals, filled_quantity)
+    ):
+        return None
+
+    facts = _broker_facts(records)
+    candidates = [
+        record
+        for record in records
+        if isinstance(record, BrokerReadback)
+        and record.status in {BrokerReadbackStatus.OPEN, BrokerReadbackStatus.PARTIALLY_FILLED}
+        and record.broker_order_id == broker_order_id
+        and record.total_quantity == confirmed_total
+        and record.cumulative_quantity == filled_quantity
+    ]
+    eligible: list[BrokerReadback] = []
+    for candidate in candidates:
+        invalidated = False
+        for fact in facts:
+            if fact is candidate:
+                continue
+            if fact.locally_received_at >= candidate.locally_received_at:
+                invalidated = True
+                break
+            if _primary_time(fact) > candidate.broker_snapshot_at:
+                invalidated = True
+                break
+        if not invalidated:
+            eligible.append(candidate)
+    if not eligible:
+        return None
+    return max(
+        eligible,
+        key=lambda record: (
+            record.locally_received_at,
+            record.broker_snapshot_at,
+            _canonical_bytes(record),
+        ),
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class ExecutionLifecycle:
     """Immutable projection for one and only one OrderIntent."""
@@ -558,13 +621,7 @@ class ExecutionLifecycle:
                 )
         return False
 
-    def _with_record(
-        self,
-        record: ExecutionRecord,
-        *,
-        candidate_replace_basis: BrokerReadback | None = None,
-        preserve_replace_basis: bool = False,
-    ) -> ExecutionLifecycle:
+    def _with_record(self, record: ExecutionRecord) -> ExecutionLifecycle:
         records = (*self.records, record)
         confirmed_total, pending_total, total_at, quantity_reasons = _derive_quantity_authority(
             self.intent, records
@@ -583,7 +640,12 @@ class ExecutionLifecycle:
         )
         broker_state = _derive_broker_state(records)
         authoritative_receipt = _derive_latest_authoritative_receipt(records)
-        uncertain_since = _derive_uncertain_since(records, authoritative_receipt)
+        uncertain_since = (
+            None
+            if broker_state
+            in {ExecutionState.FILLED, ExecutionState.CANCELED, ExecutionState.REJECTED}
+            else _derive_uncertain_since(records, authoritative_receipt)
+        )
         if reasons:
             state = ExecutionState.RECONCILIATION_REQUIRED
         elif uncertain_since is not None:
@@ -591,17 +653,15 @@ class ExecutionLifecycle:
         else:
             state = broker_state
 
-        basis = self.replace_basis if preserve_replace_basis else candidate_replace_basis
-        if (
-            basis is None
-            or state not in {ExecutionState.ACKNOWLEDGED, ExecutionState.PARTIALLY_FILLED}
-            or pending_total is not None
-            or basis.broker_order_id != broker_order_id
-            or basis.total_quantity != confirmed_total
-            or basis.cumulative_quantity != filled_quantity
-            or not _covers_through(fill_intervals, filled_quantity)
-        ):
-            basis = None
+        basis = _derive_replace_basis(
+            records,
+            state=state,
+            broker_order_id=broker_order_id,
+            confirmed_total=confirmed_total,
+            pending_total=pending_total,
+            filled_quantity=filled_quantity,
+            fill_intervals=fill_intervals,
+        )
 
         fill_times = [item.exchange_event_at for item in _fill_records(records)]
         facts = _broker_facts(records)
@@ -647,6 +707,16 @@ class ExecutionLifecycle:
             )
             if record.send_attempt_at < latest:
                 raise TemporalOrderError("submit retry predates an existing attempt")
+        elif ReconciliationReason.MISSING_SUBMIT in self.reconciliation_reasons:
+            if any(
+                record.send_attempt_at > _primary_time(fact) for fact in _broker_facts(self.records)
+            ):
+                raise TemporalOrderError("retrospective submit postdates a retained broker fact")
+            projected = self._with_record(record)
+            return replace(
+                projected,
+                submit_attempt_ids=(*self.submit_attempt_ids, record.record_id),
+            )
         if self.state is ExecutionState.UNKNOWN:
             raise TransitionRefusedError("UNKNOWN requires broker readback before any action")
         if self.state not in {ExecutionState.CREATED, ExecutionState.SUBMITTING}:
@@ -675,21 +745,8 @@ class ExecutionLifecycle:
         else:
             self._require_after_first_submit(record.locally_received_at)
 
-        is_stale = (
-            self.latest_broker_fact_received_at is not None
-            and record.locally_received_at <= self.latest_broker_fact_received_at
-        )
-        if is_stale:
-            return self._with_record(record, preserve_replace_basis=True)
-        uncertain_sources = {
-            ExecutionState.SUBMITTING,
-            ExecutionState.ACKNOWLEDGED,
-            ExecutionState.PARTIALLY_FILLED,
-            ExecutionState.CANCEL_PENDING,
-            ExecutionState.UNKNOWN,
-        }
-        if self.state not in uncertain_sources:
-            raise TransitionRefusedError(f"uncertainty observation refused from {self.state}")
+        if not self.submit_attempt_ids:
+            raise TransitionRefusedError("uncertainty observation requires a submit attempt")
         return self._with_record(record)
 
     def _apply_ack(self, record: BrokerAcknowledgement) -> ExecutionLifecycle:
@@ -701,36 +758,12 @@ class ExecutionLifecycle:
         return self._with_record(record)
 
     def _apply_fill(self, record: PartialFill | CompleteFill) -> ExecutionLifecycle:
-        total = self.broker_confirmed_total_quantity
-        if total is not None and self.pending_replace_total_quantity is None:
-            if isinstance(record, CompleteFill) and record.cumulative_quantity != total:
-                raise TransitionRefusedError(
-                    f"complete fill cumulative quantity must equal confirmed quantity {total}"
-                )
-            if isinstance(record, PartialFill) and record.cumulative_quantity >= total:
-                raise TransitionRefusedError(
-                    f"partial fill cumulative quantity must be less than confirmed quantity {total}"
-                )
         self._require_after_first_submit(record.exchange_event_at)
         return self._with_record(record)
 
     def _apply_readback(self, record: BrokerReadback) -> ExecutionLifecycle:
         self._require_after_first_submit(record.broker_snapshot_at)
-        is_projection_stale = (
-            self.latest_broker_fact_at is not None
-            and record.broker_snapshot_at < self.latest_broker_fact_at
-        )
-        candidate_basis = (
-            record
-            if not is_projection_stale
-            and record.status in {BrokerReadbackStatus.OPEN, BrokerReadbackStatus.PARTIALLY_FILLED}
-            else None
-        )
-        return self._with_record(
-            record,
-            candidate_replace_basis=candidate_basis,
-            preserve_replace_basis=is_projection_stale,
-        )
+        return self._with_record(record)
 
     def _apply_replace(self, record: ReplaceIntent) -> ExecutionLifecycle:
         if self.pending_replace_total_quantity is not None:

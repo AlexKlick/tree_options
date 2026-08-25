@@ -21,6 +21,7 @@ from tree_options.execution import (
     ReplaceIntent,
     ReplacementRefusedError,
     SubmitAttempt,
+    TemporalOrderError,
     TimeoutObserved,
 )
 
@@ -281,6 +282,23 @@ def test_fact_before_submit_accepts_temporally_earlier_submit_and_converges() ->
     assert _semantic(repaired) == _semantic(chronological)
     assert repaired.state is ExecutionState.ACKNOWLEDGED
     assert not repaired.reconciliation_reasons
+
+
+def test_fact_before_submit_refuses_a_submit_that_postdates_the_fact() -> None:
+    created = ExecutionLifecycle.start(_intent())
+    missing_submit = created.apply(_ack(received=3))
+    too_late = SubmitAttempt(
+        record_id="attempt-too-late",
+        intent_id="intent-001",
+        send_attempt_at=_at(3),
+        source="executor",
+        source_sequence_id="attempt-too-late-seq",
+    )
+
+    with pytest.raises(TemporalOrderError, match="retrospective submit"):
+        missing_submit.apply(too_late)
+    assert missing_submit.reconciliation_reasons == {"MISSING_SUBMIT"}
+    assert too_late not in missing_submit.records
 
 
 def test_fill_before_submit_closes_only_missing_submit_and_converges() -> None:
@@ -737,3 +755,29 @@ def test_terminal_fact_and_later_uncertainty_converge_in_either_order(
     assert terminal_first.state is expected
     assert terminal_first.uncertain_since_at is None
     assert uncertainty in terminal_first.records
+
+
+def test_terminal_fact_reconciliation_overrides_later_uncertainty() -> None:
+    acknowledged = _acknowledged()
+    contradictory_terminal = _fill(
+        2,
+        fill_quantity=2,
+        cumulative_quantity=2,
+        exchange_at=8,
+        received=9,
+        complete=True,
+    )
+    disconnected = DisconnectObserved(
+        record_id="disconnect-terminal-reconciliation",
+        intent_id="intent-001",
+        locally_received_at=_at(20),
+        source="executor",
+        source_sequence_id="disconnect-terminal-reconciliation-seq",
+    )
+
+    uncertainty_first = acknowledged.apply(disconnected).apply(contradictory_terminal)
+    terminal_first = acknowledged.apply(contradictory_terminal).apply(disconnected)
+    assert _semantic(uncertainty_first) == _semantic(terminal_first)
+    assert terminal_first.state is ExecutionState.RECONCILIATION_REQUIRED
+    assert "FILL_KIND_TOTAL_MISMATCH" in terminal_first.reconciliation_reasons
+    assert disconnected in terminal_first.records
