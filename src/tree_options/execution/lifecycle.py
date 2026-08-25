@@ -419,9 +419,11 @@ def _derive_uncertain_since(
     latest_uncertainty = max(observed, default=None)
     if latest_uncertainty is None:
         return None
+    # Equal local receipt times cannot establish which observation is newer.
+    # Only a strictly later authoritative broker fact resolves transport uncertainty.
     if (
         latest_authoritative_receipt is not None
-        and latest_authoritative_receipt >= latest_uncertainty
+        and latest_authoritative_receipt > latest_uncertainty
     ):
         return None
     return latest_uncertainty
