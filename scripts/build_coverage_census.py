@@ -49,7 +49,12 @@ Exit codes (contract):
   3  universe manifest refused: unreadable, invalid, or tampered
   4  reproducibility refusal (git unusable, tracked tree dirty, protocol or
      uv.lock unreadable, calendar fixture refused, census self-check) — or
-     the content-addressed output directory already exists (never overwrite)
+     the content-addressed output directory already exists and is NOT
+     recoverable residue (round-11 review fix, 2026-08-25: an existing
+     digest dir is CLASSIFIED — a byte-identical prior publication is an
+     idempotent exit 0, crash residue of an interrupted identical run rolls
+     forward the missing members and exits 0, and only foreign content or
+     divergent bytes keep this refusal; never a blind overwrite)
      — or the EMISSION path refused (round-8 review fix, 2026-08-24: an
      output name that is not a regular file, or a publish whose identity or
      readback does not match the rendered content — CensusEmitRefused; or
@@ -69,6 +74,7 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import secrets
 import shutil
 import stat
@@ -875,12 +881,134 @@ def build_registry(values: CensusValues) -> dict[str, ValueClass]:
 # ---- artifact ----------------------------------------------------------------------
 
 
+# ---- round-11 (finding 3, R13): crash-residue classification + roll-forward ------
+#
+# A SIGKILL after out_dir.mkdir or after the first final rename left an
+# empty/partial digest directory (no handler runs on SIGKILL — not even the
+# finally-unlink of the temps), and every retry refused at out_dir.exists()
+# FOREVER. On OUTPUT EXISTS the existing directory is now CLASSIFIED through
+# the custody primitives (a held no-follow directory fd, lstat-regular
+# members, full no-follow readbacks): an identical prior publication is
+# IDEMPOTENT, a strict SUBSET of this run's publication with at most this
+# emit path's own temp-naming residue is crash residue of an interrupted
+# identical run (ROLL FORWARD), and anything else keeps the refusal.
+
+CENSUS_OUTPUT_NAMES: tuple[str, ...] = ("census.json", "census.md", "census.json.sha256")
+
+# This emit path's own temp naming (see _emit_census_set):
+# `.<member>.<32 hex>.tmp`. A stale entry matching it can only be residue of
+# a census emit into this content-addressed digest directory.
+_STALE_TEMP_PATTERN = re.compile(
+    r"\.(?:" + "|".join(re.escape(name) for name in CENSUS_OUTPUT_NAMES) + r")\.[0-9a-f]{32}\.tmp"
+)
+
+
+class PublicationResidue(NamedTuple):
+    kind: Literal["IDEMPOTENT", "ROLL_FORWARD", "REFUSE"]
+    missing: tuple[str, ...]  # ROLL_FORWARD only: the members this run must publish
+    detail: str
+
+
+def classify_existing_publication(
+    out_dir: Path, outputs: tuple[tuple[str, str], ...]
+) -> PublicationResidue:
+    """Classify an existing digest directory against what THIS run would
+    publish (``outputs`` = the complete rendered member set).
+
+    * IDEMPOTENT — every member present, lstat-regular, byte-identical to
+      this run's rendering: a prior identical publication; the caller exits
+      0 without rewriting anything.
+    * ROLL_FORWARD — an incomplete set that is a strict SUBSET of this run's
+      publication (missing members only, no foreign files): crash residue of
+      an interrupted identical run; the caller publishes the missing members
+      through the custody emit path and verifies the complete set at return.
+    * REFUSE — anything else: foreign content, divergent bytes, or a path
+      that is not a real directory. The existing refusal semantics.
+
+    This emit path's own stale temps (unpredictable names, SIGKILL-skipped
+    unlink) are tolerated as residue and removed — any OTHER foreign entry
+    refuses."""
+    try:
+        fd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    except OSError as exc:
+        return PublicationResidue(
+            "REFUSE", (), f"{out_dir} is not a real directory ({exc.strerror})"
+        )
+    try:
+        try:
+            entries = os.listdir(fd)
+        except OSError as exc:
+            return PublicationResidue(
+                "REFUSE", (), f"{out_dir} could not be listed ({exc.strerror})"
+            )
+        rendered = dict(outputs)
+        missing: list[str] = []
+        stale_temps: list[str] = []
+        for name in entries:
+            if name in rendered:
+                continue
+            if _STALE_TEMP_PATTERN.fullmatch(name):
+                stale_temps.append(name)
+                continue
+            return PublicationResidue(
+                "REFUSE", (), f"foreign entry {name!r} is not a member of this run's publication"
+            )
+        for name, content in outputs:
+            try:
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except FileNotFoundError:
+                missing.append(name)
+                continue
+            if not stat.S_ISREG(info.st_mode):
+                return PublicationResidue(
+                    "REFUSE",
+                    (),
+                    f"{name}: the existing member is not a regular file (lstat mode"
+                    f" {stat.S_IFMT(info.st_mode):o})",
+                )
+            try:
+                present = _read_all_nofollow(fd, name)
+            except CensusEmitRefused as exc:
+                return PublicationResidue("REFUSE", (), str(exc))
+            if present != content.encode("utf-8"):
+                return PublicationResidue(
+                    "REFUSE",
+                    (),
+                    f"{name}: the existing member's bytes diverge from this run's rendering",
+                )
+        for name in stale_temps:
+            try:
+                info = os.stat(name, dir_fd=fd, follow_symlinks=False)
+            except OSError as exc:
+                return PublicationResidue(
+                    "REFUSE", (), f"{name}: the stale temp vanished ({exc.strerror})"
+                )
+            if not stat.S_ISREG(info.st_mode):
+                return PublicationResidue(
+                    "REFUSE",
+                    (),
+                    f"{name}: the stale temp residue is not a regular file"
+                    f" (lstat mode {stat.S_IFMT(info.st_mode):o})",
+                )
+            os.unlink(name, dir_fd=fd)
+        if stale_temps:
+            os.fsync(fd)
+        if not missing:
+            return PublicationResidue("IDEMPOTENT", (), "complete byte-identical set")
+        return PublicationResidue(
+            "ROLL_FORWARD", tuple(missing), f"missing member(s): {', '.join(missing)}"
+        )
+    finally:
+        os.close(fd)
+
+
 def _emit_census_set(
     out_fd: int,
     outputs: tuple[tuple[str, str], ...],
     *,
     capture_dir: Path,
     census: CoverageCensus,
+    verify_set: tuple[tuple[str, str], ...] | None = None,
 ) -> None:
     """Round-8 review fix (2026-08-24, finding 5) + round-11 review fixes
     (findings 2 and 9): publish the census outputs as ONE all-or-nothing
@@ -922,7 +1050,17 @@ def _emit_census_set(
     ``os.replace`` raise outside both typed families) — rolls back the
     members THIS run published (identity-checked unlinks of exactly the
     inodes this run renamed into place) before anything re-raises, so the
-    set is all-or-nothing including the raw-OSError path."""
+    set is all-or-nothing including the raw-OSError path.
+
+    Round-11 (finding 3, R13): ``verify_set`` names the COMPLETE publication
+    to verify at return — a crash-recovery ROLL FORWARD publishes only the
+    missing members (``outputs``) but must still attest the whole set. For a
+    member this run did not publish there is no written inode to compare, so
+    the check is lstat-regular plus a full no-follow readback against that
+    member's rendered bytes; the written-inode identity check stays for the
+    members this run renamed into place. The directory entries are fsynced
+    after the final rename set, so an immediate reboot after apparent
+    success cannot lose the published set."""
     # F2 (round-11): the emission itself carries the manifest verification —
     # the LAST filesystem act before the census bytes are published. The
     # recorded input manifest sha must equal the sha re-read at this
@@ -994,12 +1132,17 @@ def _emit_census_set(
             for name, tmp_name, identity in temps:
                 os.replace(tmp_name, name, src_dir_fd=out_fd, dst_dir_fd=out_fd)
                 published.append((name, identity))
-            # (c) verify the complete set at return: the final name must
-            # lstat as a regular file holding the inode this command wrote,
-            # and a full O_NOFOLLOW readback must equal the rendered content.
-            for (name, _tmp_name, identity), (_output_name, content) in zip(
-                temps, outputs, strict=True
-            ):
+            # Round-11 (finding 3, R13): fsync the DIRECTORY entries after
+            # the final rename set — before, only the temps were fsynced, so
+            # an immediate reboot after apparent success could lose the set.
+            os.fsync(out_fd)
+            # (c) verify the COMPLETE set at return: every final name must
+            # lstat as a regular file and a full O_NOFOLLOW readback must
+            # equal the rendered content; a member THIS run renamed into
+            # place must additionally still map to the inode it wrote.
+            written_identities = {name: identity for name, _tmp_name, identity in temps}
+            full_set = outputs if verify_set is None else verify_set
+            for name, content in full_set:
                 try:
                     published_stat = os.stat(name, dir_fd=out_fd, follow_symlinks=False)
                 except OSError as exc:
@@ -1007,15 +1150,22 @@ def _emit_census_set(
                         f"{name}: the published census output vanished after the publish"
                         f" ({exc.strerror})"
                     ) from None
-                if not stat.S_ISREG(published_stat.st_mode) or (
+                if not stat.S_ISREG(published_stat.st_mode):
+                    raise CensusEmitRefused(
+                        f"{name}: the published census output is not a regular file"
+                        f" (lstat mode {stat.S_IFMT(published_stat.st_mode):o})"
+                        " — refusing to attest it"
+                    )
+                written_identity = written_identities.get(name)
+                if written_identity is not None and (
                     published_stat.st_dev,
                     published_stat.st_ino,
-                ) != (identity[0], identity[1]):
+                ) != (written_identity[0], written_identity[1]):
                     raise CensusEmitRefused(
                         f"{name}: the published census output is not the inode this "
-                        f"command wrote (wrote dev {identity[0]} ino {identity[1]},"
-                        f" published dev {published_stat.st_dev} ino {published_stat.st_ino},"
-                        f" mode {stat.S_IFMT(published_stat.st_mode):o})"
+                        f"command wrote (wrote dev {written_identity[0]}"
+                        f" ino {written_identity[1]},"
+                        f" published dev {published_stat.st_dev} ino {published_stat.st_ino})"
                         " — refusing to attest it"
                     )
                 if _read_all_nofollow(out_fd, name) != content.encode("utf-8"):
@@ -1315,11 +1465,43 @@ def main(argv: list[str] | None = None) -> int:
         print(f"CENSUS SELF-CHECK REFUSED: {exc}", file=sys.stderr)
         return 4
 
-    # 8. Emit content-addressed; never overwrite.
+    # 8. Emit content-addressed; never overwrite — but CLASSIFY an existing
+    # digest directory first (round-11 finding 3, R13): crash residue of an
+    # interrupted identical run is RECOVERED (idempotent success or
+    # roll-forward), never a permanent OUTPUT EXISTS refusal.
+    body = render_json(census)
+    outputs: tuple[tuple[str, str], ...] = (
+        ("census.json", body),
+        ("census.md", render_markdown(census)),
+        ("census.json.sha256", sha256_hex(body.encode("utf-8")) + "\n"),
+    )
     out_dir = args.out_root / census.content_sha256[:12]
-    if out_dir.exists():
-        print(f"OUTPUT EXISTS: {out_dir} — refusing to overwrite", file=sys.stderr)
-        return 4
+    publish: tuple[tuple[str, str], ...] | None  # what THIS run renames into place
+    fresh_publication = not out_dir.exists()
+    if fresh_publication:
+        publish = outputs
+    else:
+        residue = classify_existing_publication(out_dir, outputs)
+        if residue.kind == "REFUSE":
+            print(
+                f"OUTPUT EXISTS: {out_dir} — refusing to overwrite ({residue.detail})",
+                file=sys.stderr,
+            )
+            return 4
+        if residue.kind == "IDEMPOTENT":
+            print(
+                f"OUTPUT EXISTS: {out_dir} — a prior byte-identical publication of"
+                " this content; idempotent success, nothing rewritten",
+                file=sys.stderr,
+            )
+            publish = None
+        else:
+            print(
+                f"OUTPUT EXISTS: {out_dir} — crash residue of an interrupted"
+                f" identical publication; rolling forward: {', '.join(residue.missing)}",
+                file=sys.stderr,
+            )
+            publish = tuple(item for item in outputs if item[0] in residue.missing)
     # Round-8 review fix (finding 2): the FINAL-EFFECT manifest guard. The
     # round-7 provenance guard above runs before the spot/master derivation
     # and the emission; a swap in that window used to exit 0 bound to the
@@ -1334,8 +1516,8 @@ def main(argv: list[str] | None = None) -> int:
     except MassiveManifestError as exc:
         print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
         return 2
-    body = render_json(census)
-    out_dir.mkdir(parents=True)
+    if fresh_publication:
+        out_dir.mkdir(parents=True)
     # Round-8 review fix (finding 5) + round-11 review fix (finding 9): the
     # three outputs are emitted through CUSTODY writes against the out dir
     # held as a REAL directory fd — the pre-fix write_text calls went through
@@ -1345,58 +1527,63 @@ def main(argv: list[str] | None = None) -> int:
     # published, the empty digest dir is removed, and a retry is clean — the
     # pre-fix sequential emission left census.json published when a later
     # output refused, and the retry then hit OUTPUT EXISTS forever.
-    try:
-        out_fd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
-    except OSError as exc:
-        print(
-            f"EMISSION REFUSED: {out_dir} could not be taken into custody ({exc.strerror})",
-            file=sys.stderr,
-        )
-        return 4
-    emitted = False
+    emitted = publish is None  # an idempotent recovery attests the prior publication
     refusal_exit: int | None = None
-    # Round-10 P1 (finding 8): capture the held digest directory's identity
-    # BEFORE the fd closes — once custody ends, the PATHNAME alone proves
-    # nothing, and the nothing-was-published cleanup below may delete only
-    # the directory this run created.
-    held_dir_stat = os.fstat(out_fd)
-    held_dir_identity = (held_dir_stat.st_dev, held_dir_stat.st_ino)
-    try:
-        _emit_census_set(
-            out_fd,
-            (
-                ("census.json", body),
-                ("census.md", render_markdown(census)),
-                ("census.json.sha256", sha256_hex(body.encode("utf-8")) + "\n"),
-            ),
-            capture_dir=args.capture_dir,
-            census=census,
-        )
-        emitted = True
-    except CensusEmitRefused as exc:
-        print(f"EMISSION REFUSED: {exc}", file=sys.stderr)
-        refusal_exit = 4
-    except MassiveManifestError as exc:
-        # round-11 finding 2: the manifest identity re-read at the emit
-        # boundary no longer equals the recorded input manifest sha — the
-        # manifest-tamper family, never a publish.
-        print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
-        refusal_exit = 2
-    except OSError as exc:
-        # round-10 finding 9: a BARE OSError from the publish (e.g. a
-        # directory planted at an output name makes os.replace raise
-        # IsADirectoryError) is an EMISSION-path refusal like the typed
-        # ones — never an untyped traceback over a half-published set. The
-        # members this run already published were rolled back inside
-        # _emit_census_set before this handler sees the exception.
-        print(
-            f"EMISSION REFUSED: the census set could not be published ({exc})",
-            file=sys.stderr,
-        )
-        refusal_exit = 4
-    finally:
-        os.close(out_fd)
+    held_dir_identity: tuple[int, int] | None = None
+    if publish is not None:
+        try:
+            out_fd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            print(
+                f"EMISSION REFUSED: {out_dir} could not be taken into custody ({exc.strerror})",
+                file=sys.stderr,
+            )
+            return 4
+        # Round-10 P1 (finding 8): capture the held digest directory's
+        # identity BEFORE the fd closes — once custody ends, the PATHNAME
+        # alone proves nothing, and the nothing-was-published cleanup below
+        # may delete only the directory this run created.
+        held_dir_stat = os.fstat(out_fd)
+        held_dir_identity = (held_dir_stat.st_dev, held_dir_stat.st_ino)
+        try:
+            _emit_census_set(
+                out_fd,
+                publish,
+                capture_dir=args.capture_dir,
+                census=census,
+                verify_set=outputs,
+            )
+            emitted = True
+        except CensusEmitRefused as exc:
+            print(f"EMISSION REFUSED: {exc}", file=sys.stderr)
+            refusal_exit = 4
+        except MassiveManifestError as exc:
+            # round-11 finding 2: the manifest identity re-read at the emit
+            # boundary no longer equals the recorded input manifest sha — the
+            # manifest-tamper family, never a publish.
+            print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
+            refusal_exit = 2
+        except OSError as exc:
+            # round-10 finding 9: a BARE OSError from the publish (e.g. a
+            # directory planted at an output name makes os.replace raise
+            # IsADirectoryError) is an EMISSION-path refusal like the typed
+            # ones — never an untyped traceback over a half-published set. The
+            # members this run already published were rolled back inside
+            # _emit_census_set before this handler sees the exception.
+            print(
+                f"EMISSION REFUSED: the census set could not be published ({exc})",
+                file=sys.stderr,
+            )
+            refusal_exit = 4
+        finally:
+            os.close(out_fd)
     if not emitted:
+        if not fresh_publication:
+            # A refused ROLL-FORWARD never deletes by pathname a residue this
+            # run did not create: the prior partial set stays classifiable
+            # for the next retry (round-11 finding 3, R13).
+            assert refusal_exit is not None
+            return refusal_exit
         # nothing was published: drop the digest dir this run created so a
         # retry is clean — out_dir.exists() would otherwise refuse it
         # forever. Round-10 P1 (finding 8): the exists() check above
@@ -1407,6 +1594,7 @@ def main(argv: list[str] | None = None) -> int:
         # tree, left untouched and refused loudly, never silently recursed
         # into. rmtree never follows a symlinked entry; a decoy target is
         # untouched either way.
+        assert held_dir_identity is not None
         try:
             named = os.stat(out_dir, follow_symlinks=False)
         except OSError as exc:

@@ -756,12 +756,141 @@ def test_missing_universe_file_exits_3(tmp_path: Path, monkeypatch: pytest.Monke
     assert _census(monkeypatch, capture, tmp_path / "absent.json", tmp_path / "out") == 3
 
 
-def test_existing_output_dir_exits_4(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+# ---- round-11 (finding 3, R13): crash-atomic, durably-acknowledged publication ----
+#
+# Round-11 review fix (2026-08-25, R13 wave): a SIGKILL after out_dir.mkdir
+# or after the first final rename left an empty/partial digest directory, no
+# handler ran, and every retry refused at out_dir.exists() FOREVER. On
+# OUTPUT EXISTS the existing directory is now CLASSIFIED (held fd,
+# lstat-regular, no-follow): (a) a fully published, byte-identical set is an
+# IDEMPOTENT prior publication; (b) an incomplete set that is a strict
+# SUBSET of this run's publication — missing members, no foreign files, at
+# most this emit path's own temp-naming residue — is crash residue of an
+# interrupted identical run and the run ROLLS FORWARD the missing members
+# through the custody emit path, verifying the complete set at return; (c)
+# anything else (foreign content, divergent bytes) keeps the refusal. The
+# directory entries are fsynced after the final rename set, so an immediate
+# reboot after apparent success cannot lose the set.
+
+
+def _probe_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, underlyings: list[str]
+) -> tuple[Path, Path, Path, Path, Path]:
+    """Publish once into a probe root; return (capture, universe, the probe's
+    digest dir, the out root to recover into, and the residue digest dir
+    pre-created at the SAME content sha — an identical sys.argv keeps the
+    census bytes identical between the two runs)."""
+    universe = _write_universe(tmp_path, underlyings, [SESSION_FRIDAY_A, SESSION_FRIDAY_B])
+    capture = _build_capture(
+        tmp_path, underlyings=underlyings, fridays=[SESSION_FRIDAY_A, SESSION_FRIDAY_B]
+    )
+    probe_root, out_root = tmp_path / "probe", tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, probe_root) == 0
+    published = next(iter(probe_root.iterdir()))
+    residue = out_root / published.name
+    residue.mkdir(parents=True)
+    return capture, universe, published, out_root, residue
+
+
+CENSUS_MEMBER_NAMES = ("census.json", "census.md", "census.json.sha256")
+
+
+def test_pre_created_empty_digest_dir_rolls_forward_exit_0(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Owning test (1): a SIGKILL right after out_dir.mkdir leaves an EMPTY
+    digest directory at this run's content sha. The retry classifies it as
+    crash residue of an interrupted identical run, rolls the full set
+    forward through the custody emit path, and completes — exit 0, never the
+    forever-refusal."""
+    capture, universe, published, out_root, residue = _probe_publication(
+        tmp_path, monkeypatch, ["SPY"]
+    )
+    capsys.readouterr()  # drop the probe run's stdout
+    assert _census(monkeypatch, capture, universe, out_root) == 0, (
+        "an empty digest dir at this run's content sha is crash residue — the "
+        "run must roll forward and complete"
+    )
+    err = capsys.readouterr().err
+    assert "rolling forward" in err, "the recovery is named on stderr"
+    for name in CENSUS_MEMBER_NAMES:
+        assert (residue / name).read_bytes() == (published / name).read_bytes(), (
+            f"the rolled-forward {name} is byte-identical to the publication"
+        )
+
+
+def test_fully_published_byte_identical_set_is_idempotent_exit_0(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Owning test (2): a prior IDENTICAL publication is not an overwrite
+    target — the re-run verifies the complete set byte-for-byte and exits 0
+    idempotently (the pre-fix behavior refused forever with exit 4)."""
     universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
     capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
     out_root = tmp_path / "out"
     assert _census(monkeypatch, capture, universe, out_root) == 0
-    assert _census(monkeypatch, capture, universe, out_root) == 4, "never overwrite"
+    digest_dir = next(iter(out_root.iterdir()))
+    before = {name: (digest_dir / name).read_bytes() for name in CENSUS_MEMBER_NAMES}
+    capsys.readouterr()
+    assert _census(monkeypatch, capture, universe, out_root) == 0, (
+        "a byte-identical prior publication is idempotent success, never a refusal"
+    )
+    err = capsys.readouterr().err
+    assert "identical" in err and "idempotent" in err
+    assert {name: (digest_dir / name).read_bytes() for name in CENSUS_MEMBER_NAMES} == before, (
+        "an idempotent re-run rewrites nothing"
+    )
+
+
+def test_output_dir_with_a_foreign_file_refuses_exit_4(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Owning test (3): the refusal is PRESERVED for foreign content — a
+    digest directory holding a file this run would never publish is never
+    classified as residue and never overwritten."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 0
+    digest_dir = next(iter(out_root.iterdir()))
+    (digest_dir / "foreign.txt").write_text("not this run's publication\n", encoding="utf-8")
+    capsys.readouterr()
+    assert _census(monkeypatch, capture, universe, out_root) == 4, (
+        "foreign content in the digest dir keeps the OUTPUT EXISTS refusal"
+    )
+    assert "OUTPUT EXISTS" in capsys.readouterr().err
+    assert (digest_dir / "foreign.txt").read_text() == "not this run's publication\n"
+
+
+def test_partial_publication_with_a_stale_temp_rolls_forward_exit_0(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Crash residue AFTER the first final rename: census.json published
+    byte-identically, the two remaining members absent, and a stale TEMP from
+    the interrupted emit still lingering (SIGKILL skips the unlink handler).
+    The retry rolls the missing members forward, clears the stale temp, and
+    verifies the complete set at return."""
+    capture, universe, published, out_root, residue = _probe_publication(
+        tmp_path, monkeypatch, ["SPY"]
+    )
+    (residue / "census.json").write_bytes((published / "census.json").read_bytes())
+    stale_temp = residue / ".census.md.0123456789abcdef0123456789abcdef.tmp"
+    stale_temp.write_text("half-written temp from the interrupted emit\n", encoding="utf-8")
+    capsys.readouterr()
+    assert _census(monkeypatch, capture, universe, out_root) == 0
+    err = capsys.readouterr().err
+    assert "rolling forward" in err
+    for name in CENSUS_MEMBER_NAMES:
+        assert (residue / name).read_bytes() == (published / name).read_bytes()
+    assert not stale_temp.exists(), "the interrupted emit's stale temp is cleared"
 
 
 # ---- the factored dirty-tree function -----------------------------------------------
