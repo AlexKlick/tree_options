@@ -1191,6 +1191,55 @@ def test_swapped_capture_manifest_after_the_early_guard_refuses_exit_2(
 # output-dir-exists refusal already uses (pinned below).
 
 
+# ---- round-11 (finding 2, census half): the emission itself carries the manifest guard --
+#
+# Round-11 review fix: the round-8 final-effect guard ran BEFORE the render
+# and the emit — a manifest swapped AFTER that guard emitted an exit-0 census
+# bound to the verified A bytes while the capture directory held B. The
+# manifest identity is now re-checked INSIDE the emit path at the write
+# moment: the input manifest sha recorded in the census body being written
+# must equal the manifest sha re-read at the emit boundary; divergence is a
+# MassiveManifestError (exit 2, the manifest-tamper family) with NOTHING
+# published.
+
+
+def test_manifest_swapped_after_the_emission_gate_refuses_at_the_write_moment(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The racing call is render_json — AFTER the round-8 early gate, BEFORE
+    the census.json write. Pre-fix the census publishes (exit 0) with its
+    provenance bound to the verified A bytes while the capture dir holds B;
+    post-fix the emit boundary refuses exit 2 and nothing is published."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    manifest_path = capture / "capture_manifest.json"
+    real_render = bcc.render_json
+
+    def render_json_swapping_manifest(census: object) -> str:
+        # the window: the early (round-8) gate has passed, the census.json
+        # write has not happened — swap the file the census verified
+        manifest_path.write_bytes(b"{}\n")
+        return real_render(census)
+
+    monkeypatch.setattr(bcc, "render_json", render_json_swapping_manifest)
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 2, (
+        "a capture manifest swapped after the early gate must refuse AT THE "
+        "EMIT BOUNDARY — exit 2, the manifest-tamper family — never publish a "
+        "census bound to bytes the capture directory no longer holds"
+    )
+    err = capsys.readouterr().err
+    assert "MANIFEST REFUSED" in err and "drifted" in err, (
+        "the refusal names the drift between the verified sha and the bytes"
+        " re-read at the emit boundary"
+    )
+    assert not out_root.exists() or list(out_root.iterdir()) == [], (
+        "no census was published from the swap window"
+    )
+
+
 def test_output_name_symlinked_at_a_protected_file_refuses_exit_4(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

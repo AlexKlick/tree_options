@@ -333,7 +333,10 @@ class _PinnedCaptureFile:
 
 def verify_capture_manifest_at_emission(capture_dir: Path, verified_sha: str) -> None:
     """Round-8 review fix (2026-08-24, finding 2): the FINAL-EFFECT manifest
-    guard, run immediately before anything is written under out_dir.
+    guard, run immediately before anything is written under out_dir — and,
+    since round-11 (finding 2), AGAIN inside ``_emit_census_set`` at the
+    write moment, against the input manifest sha RECORDED in the census body
+    being emitted.
 
     The round-7 provenance guard re-reads the manifest at census time —
     BEFORE the spot/master derivation and BEFORE the emission — so a
@@ -866,10 +869,16 @@ def build_registry(values: CensusValues) -> dict[str, ValueClass]:
 # ---- artifact ----------------------------------------------------------------------
 
 
-def _emit_census_set(out_fd: int, outputs: tuple[tuple[str, str], ...]) -> None:
-    """Round-8 review fix (2026-08-24, finding 5) + round-11 review fix
-    (finding 9): publish the census outputs as ONE all-or-nothing set,
-    each through custody — the local mirror of the amendment builder's
+def _emit_census_set(
+    out_fd: int,
+    outputs: tuple[tuple[str, str], ...],
+    *,
+    capture_dir: Path,
+    census: CoverageCensus,
+) -> None:
+    """Round-8 review fix (2026-08-24, finding 5) + round-11 review fixes
+    (findings 2 and 9): publish the census outputs as ONE all-or-nothing
+    set, each through custody — the local mirror of the amendment builder's
     custody write (kept local: that helper is private to
     protocol/amendment.py, and this script imports only the package models).
 
@@ -878,6 +887,15 @@ def _emit_census_set(out_fd: int, outputs: tuple[tuple[str, str], ...]) -> None:
     research_protocol.yaml`` link planted between the mkdir and the write
     truncated the PROTECTED protocol file with census JSON while the command
     still exited 0.
+
+    Round-11 (finding 2, census half): the manifest identity is re-checked
+    INSIDE the emit path at the WRITE MOMENT — the round-8 gate ran before
+    the render and the emit, so a manifest swapped after it emitted an
+    exit-0 census bound to the verified A bytes while the capture directory
+    held B. The input manifest sha RECORDED in the census body being written
+    must equal the manifest sha re-read here, at the boundary; divergence is
+    a MassiveManifestError (exit 2, the manifest-tamper family) raised before
+    anything is written.
 
     Round-11 (finding 9): publishing the three outputs sequentially meant a
     refusal at the SECOND output (a census.md planted symlink) left
@@ -892,6 +910,11 @@ def _emit_census_set(out_fd: int, outputs: tuple[tuple[str, str], ...]) -> None:
     return (final name regular, published inode identity, full ``O_NOFOLLOW``
     readback). Any refusal unlinks every temp so NOTHING is published — the
     caller removes the then-empty digest dir and a retry is clean."""
+    # F2 (round-11): the emission itself carries the manifest verification —
+    # the LAST filesystem act before the census bytes are published. The
+    # recorded input manifest sha must equal the sha re-read at this
+    # boundary; any drift refuses with NOTHING written.
+    verify_capture_manifest_at_emission(capture_dir, census.provenance.input_manifest_sha256)
     temps: list[tuple[str, str, tuple[int, int]]] = []  # (final, tmp, identity)
     try:
         for name, content in outputs:
@@ -1261,7 +1284,10 @@ def main(argv: list[str] | None = None) -> int:
     # and the emission; a swap in that window used to exit 0 bound to the
     # verified A bytes while the capture dir held B. This re-check runs
     # immediately before ANY file is written under out_dir — and before
-    # out_dir.mkdir — so a refusal emits NOTHING.
+    # out_dir.mkdir — so a refusal emits NOTHING. Round-11 (finding 2) adds
+    # the same re-check INSIDE the emit path at the write moment, against the
+    # input manifest sha recorded in the census body: a swap after THIS gate
+    # refuses there (exit 2) with nothing published.
     try:
         verify_capture_manifest_at_emission(args.capture_dir, manifest_bytes_sha)
     except MassiveManifestError as exc:
@@ -1287,6 +1313,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 4
     emitted = False
+    refusal_exit: int | None = None
     try:
         _emit_census_set(
             out_fd,
@@ -1295,10 +1322,19 @@ def main(argv: list[str] | None = None) -> int:
                 ("census.md", render_markdown(census)),
                 ("census.json.sha256", sha256_hex(body.encode("utf-8")) + "\n"),
             ),
+            capture_dir=args.capture_dir,
+            census=census,
         )
         emitted = True
     except CensusEmitRefused as exc:
         print(f"EMISSION REFUSED: {exc}", file=sys.stderr)
+        refusal_exit = 4
+    except MassiveManifestError as exc:
+        # round-11 finding 2: the manifest identity re-read at the emit
+        # boundary no longer equals the recorded input manifest sha — the
+        # manifest-tamper family, never a publish.
+        print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
+        refusal_exit = 2
     finally:
         os.close(out_fd)
     if not emitted:
@@ -1308,7 +1344,8 @@ def main(argv: list[str] | None = None) -> int:
         # out_dir.exists() would otherwise refuse it forever. rmtree never
         # follows a symlinked entry; the decoy target is untouched.
         shutil.rmtree(out_dir, ignore_errors=True)
-        return 4
+        assert refusal_exit is not None
+        return refusal_exit
 
     # Whole coverage = zero INCOMPLETE pairs. Holiday Fridays
     # (SPOT_MISSING_HOLIDAY) are EXPECTED gaps — the exchange was closed —
