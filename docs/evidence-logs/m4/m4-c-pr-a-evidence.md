@@ -60,6 +60,8 @@ from that verification are recorded below.
 | `cdf67a8`/`337e34a`/`576f120`/`5f1b4df` | R9: publish verification = final-name + byte custody (lstat-regular, O_NOFOLLOW re-open, byte compare); ledger roots walked COMPONENT-WISE from / with dir_fd + O_NOFOLLOW per component (both ledgers, create branch mkdir(dir_fd=)); capture-manifest bytes-once (raw= on the loader, census provenance + BARS binding consume the verified byte set, drift guard read refuses); census refuses pinned-but-unreferenced masters |
 | `9e7a39b`/`db8e050`/`d469753`/`265146a`/`9bc08b5`/`493fed9` | R10: amendment bytes-once (proof step parses the rendered text, emitted hashes rendered bytes) + final-effect sweep at packet attestation; manifest drift guard MOVED to the final effect (census before emission, BARS at the binding); both ledgers re-verify the ledger NAME maps to the locked inode post-fsync under flock (RECONCILIATION, never success); runstate journal O_NOFOLLOW name custody on read + append against a dir-fd-held store dir; census emitter custody writes (CensusEmitRefused → exit 4); amendment output PARENT held under a component-wise custody walk, every write dir_fd-relative |
 | `004ae49`/`38be17b`/`f30329d`/`7ed168a`/`3fb0bd1`/`314a5f4`/`91e6148` | EXTERNAL audit lane (owner-ruled into PR A 2026-08-25): canonical run identity (RunIdentityCore + NonCanonicalRunIdError at create/open, M230); checkout-independent universe identity (logical repo-relative source ids, M231–M233); FULL runstate store under a shared no-follow custody module (`runstate/custody.py`, M234+); typed held-input G4 authority (VerifiedSealedInputs, effect-boundary joins, M244–M267); disclosed gate-copy exclusion (`artifacts/`+`dist/` from the disposable mutation copy, owning regression test, 314a5f4); evidence doc `pr13-audit-remediation.md` |
+| `908afa6`/`5ca9adb`/`2c86396`/`00c1593` | R11-A (owner-ruled consolidation wave): durable name→inode binding — companion identity record custody-written at ledger/journal creation, every open verifies name↔bound inode (a byte-clone at the canonical name can never be consumed; unbound non-empty and vanished-bound both refuse); `custody.write_all` looped write is the ONLY authority-record write path (both ledgers + journal); `atomic_write(expected=…)` identity-conditional replace — stale adoption refuses a replacement live owner; `unlink_held_name` = rename-to-unpredictable-temp → verify renamed identity → unlink the TEMP only (a successor at the old name is never deleted) |
+| `744e1f3`/`881bdcd`/`71cf8ee`/`87b175a`/`cfac494`/`4431f14` | R11-B (same wave): amendment holds ONE custody fd across all four emits with the final sweep AT packet return over all four names through a fresh component-wise re-walk whose dir-fstat identity must equal the held fd (out-of-root relocation refused); census emission carries the manifest gate at the write moment against the sha RECORDED in the census body (MassiveManifestError → exit 2, nothing published) and publishes the three outputs as one all-or-nothing set (temps → vet → rename-set → verify at return; refusal unlinks temps and drops the digest dir, retry is clean); g4-seal runner identity = registry-resolved (`RUNNER_REGISTRY` + `runner_implementation_sha256` bound into the self-hashed packet at approval, current code hash cross-joined before consumption — execute takes NO runner parameter, a foreign callable with the approved literal is not authority); verified-inputs exit re-scans the held directory and requires exact entry-set equality with the snapshot the verifier consumed |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -369,3 +371,41 @@ the exact PR head (see PR body for its verdict line).
   refused certification because the external lane's commits moved the
   head mid-gate (cb2b2eb→004ae49 at 15:02). gate21 is this
   integration's exact-head record.
+
+- **Round 9** (head `88e6630`, gate21 GREEN 1,585 / 255 KILLED /
+  restoration TRUE, log `pr-a-codex9.log`): VERDICT NO-GO — 10 findings
+  (8×P1, 2×P2); round-8 disposition 3/6 RESOLVED (journal child-name
+  /tmp vector, census emit symlink truncation, plus the R7-F4 census
+  completeness carry-over), 3 NOT_RESOLVED as deeper variants (the
+  sweep/guard/name-check all still land BEFORE the true final effect:
+  packet publication, render/emit, unlock/close/return); all constraint
+  checks PASS (reviewer re-verified the protected blobs and accepted
+  gate21, gate20-external at its own head, and the gate19 REFUSED
+  handling). All ten orchestrator-verified in source at the cited
+  lines. Six in the orchestrator lanes: amendment custody fd closed
+  before packet publication; census/BARS guards before render/hash;
+  ledger/journal name→inode check then an unguarded success window;
+  amendment parent fd never re-bound to the confined root at packet
+  return; a NEW class — both ledgers did one unchecked `os.write`
+  (positive short count = torn prefix acknowledged as success);
+  census partial emission unretryable. Four in the external lane's
+  code (disclosed to the reviewer as never-reviewed parallel
+  remediation, reviewed with full rigor): stale adoption overwrites a
+  replacement live owner; release's verify→unlink window unlinks a
+  successor; the approved runner was a caller-asserted version string;
+  the Massive directory snapshot could go stale between scan and
+  verification. **Owner ruling 2026-08-25 (AskUserQuestion):
+  CONSOLIDATION R11** — the per-site pattern converges per round but
+  the reviewer sweeps every remaining window each round (4→6→10
+  findings); the structural alternative is one custody boundary where
+  the final effect carries its own verification. R11 executed as two
+  parallel agents on disjoint files (A: custody.py + ledgers + journal
+  + lease; B: amendment + census + verified_inputs + g4_seal), each
+  red-first (agent logs `/tmp/r11a-f{3,5,6,7}-red.log`,
+  `/tmp/r11b-f{1,2census,4,8,9,10}-red.log`). Orchestrator
+  verification: changed files exactly the 17 briefed; protected blobs
+  + mutate.py + pyproject byte-identical; AST-extracted all 255
+  anchors, 0 drift; independent full suite 1,603 passed exit 0; hand
+  kill-proof that M260's rewritten owner test still kills its mutant
+  (FAILED under the applied mutant, byte-exact restore — the M199
+  masking lesson applied proactively).
