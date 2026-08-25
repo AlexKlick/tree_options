@@ -263,12 +263,11 @@ def append_record(
                     )
                 os.lseek(fd, 0, os.SEEK_END)
                 payload = (line + "\n").encode("utf-8")
-                written = 0
-                while written < len(payload):
-                    count = os.write(fd, payload[written:])
-                    if count <= 0:
-                        raise OSError("short write while appending run-state journal")
-                    written += count
+                # Round-11 (finding 5): the journal's looped write is now the
+                # shared custody.write_all — the only write path for authority
+                # records (a short write is completed or raises, never
+                # acknowledged torn).
+                custody.write_all(fd, payload)
                 os.fsync(fd)
                 custody.verify_name_identity(
                     dir_fd,

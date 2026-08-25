@@ -547,3 +547,62 @@ def test_clone_swap_after_the_name_check_is_refused_at_the_next_open(
     finally:
         with contextlib.suppress(OSError):
             (ledger_root / (L.LEDGER_FILENAME + ".held")).unlink()
+
+
+# ---- round-11 (finding 5): a short append write is never acknowledged ------------------
+#
+# Round-11 review fix (2026-08-25): the append did ONE os.write and ignored
+# its return count. A short positive count left a torn prefix on disk while
+# fsync + the name check still passed and the call returned SUCCESS — an
+# acknowledged consumption that is not durable at the tail. The append now
+# routes through custody.write_all (the looped write the journal already
+# used), the only write path for authority records: every byte lands, or
+# the write raises — there is no third outcome.
+
+
+def test_short_append_write_is_completed_never_acknowledged_torn(
+    ledger_root, monkeypatch: pytest.MonkeyPatch
+):
+    """A writer whose os.write accepts at most 5 bytes per call: pre-fix the
+    single unchecked write left a 5-byte torn prefix and STILL returned
+    success; post-fix the looped write completes the full line before the
+    append can acknowledge, so the replayed ledger holds the consumption
+    with no damaged tail."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
+    real_write = os.write
+
+    def chunked_write(fd: int, data) -> int:
+        view = memoryview(data)
+        return real_write(fd, view[:5])  # a truthful, always-short writer
+
+    monkeypatch.setattr(os, "write", chunked_write)
+    L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)
+    view = L.read_ledger(ledger_root)
+    assert [record.kind for record in view.records] == ["APPROVAL", "CONSUMPTION"], (
+        "an acknowledged append must be durable at the tail, never a torn prefix"
+    )
+    assert not view.tail_damaged
+
+
+def test_persistently_short_append_write_refuses_never_succeeds(
+    ledger_root, monkeypatch: pytest.MonkeyPatch
+):
+    """A writer that gives up (returns 0) after a few bytes: the looped
+    write raises instead of letting fsync + the name check bless the torn
+    prefix — refusal, never a successful return over damage."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
+    real_write = os.write
+    calls = {"n": 0}
+
+    def write_then_give_up(fd: int, data) -> int:
+        calls["n"] += 1
+        if calls["n"] > 3:
+            return 0  # the transport stalls: no byte is accepted anymore
+        view = memoryview(data)
+        return real_write(fd, view[:4])
+
+    monkeypatch.setattr(os, "write", write_then_give_up)
+    with pytest.raises(OSError, match="short write"):
+        L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)

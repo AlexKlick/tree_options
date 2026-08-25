@@ -462,7 +462,9 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                     )
                 signed = record.model_copy(update={"record_sha256": _record_hash(record)})
                 os.lseek(fd, 0, os.SEEK_END)
-                os.write(fd, (_encode(signed) + "\n").encode("utf-8"))
+                # Round-11 (finding 5): the looped authority write — a short
+                # write is completed (or raises), never acknowledged torn.
+                custody.write_all(fd, (_encode(signed) + "\n").encode("utf-8"))
                 os.fsync(fd)
                 # Round-8 review fix (2026-08-24, finding 3): verify the NAME
                 # still maps to the locked inode BEFORE returning success.

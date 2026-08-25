@@ -1081,3 +1081,45 @@ def test_bars_clone_swap_after_the_name_check_is_refused_at_the_next_open(
     finally:
         with contextlib.suppress(OSError):
             (root / (bm.BARS_LEDGER_FILENAME + ".held")).unlink()
+
+
+# ---- round-11 (finding 5): a short append write is never acknowledged ------------------
+#
+# Round-11 review fix (2026-08-25, mirror of the seal ledger's): the bars
+# append did ONE os.write and ignored its return count — a short positive
+# count left a torn prefix while fsync + the name check still passed and
+# the call returned SUCCESS. The append now routes through custody.write_all
+# (the looped write the journal already used), the only write path for
+# authority records.
+
+
+def test_bars_short_append_write_is_completed_never_acknowledged_torn(
+    scratch_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A writer whose os.write accepts at most 5 bytes per call: pre-fix the
+    single unchecked write left a 5-byte torn prefix and STILL returned
+    success; post-fix the looped write completes the full line before the
+    append can acknowledge, so the replayed ledger holds the consumption
+    with no damaged tail."""
+    root = scratch_root / "bars-authority"
+    fields = dict(
+        protocol_hash="p" * 64,
+        amendment_packet_sha256="a" * 64,
+        census_sha256="c" * 64,
+        work_manifest_sha256="w" * 64,
+    )
+    bm.append_bars_launch_approval(root, reason="owner approved", at_epoch=T0, **fields)
+    real_write = os.write
+
+    def chunked_write(fd: int, data) -> int:
+        view = memoryview(data)
+        return real_write(fd, view[:5])  # a truthful, always-short writer
+
+    monkeypatch.setattr(os, "write", chunked_write)
+    bm.append_bars_launch_consumed(root, reason="bars era launched", at_epoch=T0 + 1, **fields)
+    view = bm.read_bars_ledger(root)
+    assert [record.kind for record in view.records] == [
+        "BARS_LAUNCH_APPROVAL",
+        "BARS_LAUNCH_CONSUMED",
+    ], "an acknowledged append must be durable at the tail, never a torn prefix"
+    assert not view.tail_damaged

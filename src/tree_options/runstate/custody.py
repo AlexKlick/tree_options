@@ -325,7 +325,15 @@ def _new_temp_name(name: str) -> str:
     return f".{name}.{os.getpid()}.{secrets.token_hex(16)}.tmp"
 
 
-def _write_all(fd: int, payload: bytes) -> None:
+def write_all(fd: int, payload: bytes) -> None:
+    """The ONLY write path for authority records (round-11, finding 5).
+
+    A single ``os.write`` whose return count is ignored accepts a short
+    append: a torn prefix lands, fsync and the name check still pass, and
+    the caller returns success over damage. This loop returns only after
+    every byte is written; a writer that accepts nothing raises. There is
+    no third outcome.
+    """
     view = memoryview(payload)
     written = 0
     while written < len(view):
@@ -403,7 +411,7 @@ def atomic_write(
         temp_stat = os.fstat(temp_fd)
         _validate_regular(temp_stat, run_id=run_id, purpose=f"{purpose} temporary inode")
         temp_identity = (temp_stat.st_dev, temp_stat.st_ino)
-        _write_all(temp_fd, payload)
+        write_all(temp_fd, payload)
         os.fsync(temp_fd)
         verify_name_identity(
             directory_fd,
