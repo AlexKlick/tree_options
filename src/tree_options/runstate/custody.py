@@ -796,6 +796,19 @@ def unlink_held_name(
     run_id: str,
     purpose: str,
 ) -> None:
+    """Unlink the held inode only — identity-safe BY CONSTRUCTION.
+
+    Round-11 review fix (2026-08-25, finding 7): the old sequence verified
+    the name then ``os.unlink``-ed the NAME — a swap landing between those
+    two syscalls unlinked a successor published at the name. The held name
+    is now RENAMED (dir_fd-relative) to an unpredictable temp first, the
+    RENAMED entry is verified to map to the held fd's identity, and only
+    then is the TEMP unlinked. A successor published at the old name is
+    never touched by the unlink; a swap before the rename is caught by the
+    verify-before-rename, and one landing between the verify and the rename
+    moves the successor's bytes aside (never deletes them) and refuses;
+    a swap after the rename lands at the now-free name, harmless.
+    """
     verify_name_identity(
         directory_fd,
         name,
@@ -803,6 +816,38 @@ def unlink_held_name(
         run_id=run_id,
         purpose=purpose,
     )
-    os.unlink(name, dir_fd=directory_fd)
+    held = os.fstat(held_fd)
+    temp_name = _new_temp_name(name)
+    _component_name(temp_name, run_id=run_id, purpose=f"{purpose} release temporary")
+    try:
+        os.rename(name, temp_name, src_dir_fd=directory_fd, dst_dir_fd=directory_fd)
+    except FileNotFoundError as exc:
+        _refuse(
+            run_id,
+            f"{purpose} name {name!r} vanished between verification and the "
+            f"release rename ({exc.strerror}); reconciliation, never success",
+        )
+    except OSError as exc:
+        _refuse(
+            run_id,
+            f"{purpose} name {name!r} could not be renamed aside for release "
+            f"({exc.strerror}); reconciliation, never success",
+        )
+    renamed = _named_stat(
+        directory_fd,
+        temp_name,
+        run_id=run_id,
+        purpose=f"{purpose} renamed",
+    )
+    if (renamed.st_dev, renamed.st_ino) != (held.st_dev, held.st_ino):
+        _refuse(
+            run_id,
+            f"{purpose} {name!r} was swapped between verification and the "
+            "release rename: the renamed entry maps to dev/inode "
+            f"{renamed.st_dev}/{renamed.st_ino}, not the held "
+            f"{held.st_dev}/{held.st_ino} — the successor's entry was moved "
+            "aside by the rename, never deleted; reconciliation, never success",
+        )
+    os.unlink(temp_name, dir_fd=directory_fd)
     os.fsync(directory_fd)
     verify_directory_identity(directory_path, directory_fd, run_id=run_id)

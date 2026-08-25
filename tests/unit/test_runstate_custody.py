@@ -9,12 +9,13 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import sys
 from pathlib import Path
 from uuid import uuid4
 
 import pytest
 
-from tree_options.runstate import RunIdentity, RunState, RunStore, compute_run_id
+from tree_options.runstate import RunIdentity, RunState, RunStore, compute_run_id, custody
 from tree_options.runstate import heartbeat as H
 from tree_options.runstate import journal as J
 from tree_options.runstate import lease as L
@@ -592,3 +593,60 @@ def test_journal_clone_swap_after_the_name_check_is_refused_at_the_next_open(
     finally:
         with contextlib.suppress(OSError):
             held.unlink()
+
+
+# ---- round-11 (finding 7): release never unlinks a successor published at the name ---
+#
+# Round-11 review fix (2026-08-25): release verified the held owner, then
+# custody.unlink_held_name did its own name verify followed by os.unlink on
+# the NAME — a swap landing between those two syscalls unlinked successor
+# B's file. The unlink is now identity-safe BY CONSTRUCTION: the held name
+# is renamed (dir_fd-relative) to an unpredictable temp, the RENAMED entry
+# is verified to map to the held fd's identity, and only then is the TEMP
+# unlinked. A successor published at the old name is never touched by the
+# unlink; a swap before the rename is caught by the verify-before-rename
+# (and, if it lands anyway, by the renamed-entry verification — the
+# successor's bytes are MOVED aside, never deleted); a swap after the rename
+# lands at the now-free name, harmless.
+
+
+def test_release_never_unlinks_a_successor_published_at_the_name(
+    scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The racing point is unlink_held_name's internal verify: the wrapper
+    lets the real check pass, then swaps the name to a live successor owner
+    B on a fresh inode. Pre-fix the very next syscall — os.unlink(name) —
+    DELETED B; post-fix the rename moves B aside and the renamed-entry
+    verification refuses, so B's publish survives somewhere under lease/
+    and the release raises reconciliation instead of succeeding."""
+    store = _store(scratch)
+    owner = _owner()
+    L.acquire(store.dir, owner, boot_id_now=BOOT)
+    lease_dir = store.dir / L.LEASE_DIRNAME
+    owner_path = lease_dir / L.OWNER_FILENAME
+    successor_bytes = (
+        json.dumps(json.loads(_owner(pid=77).model_dump_json()), sort_keys=True) + "\n"
+    ).encode()
+    real_verify = custody.verify_name_identity
+    armed = {"done": False}
+
+    def verify_then_publish_successor(parent_fd: int, name: str, held_fd: int, **kwargs):
+        real_verify(parent_fd, name, held_fd, **kwargs)
+        if (
+            not armed["done"]
+            and name == L.OWNER_FILENAME
+            and sys._getframe(1).f_code.co_name == "unlink_held_name"
+        ):
+            armed["done"] = True  # the window: verify passed, unlink not yet run
+            staged = lease_dir / ".owner.json.successor"
+            staged.write_bytes(successor_bytes)
+            os.replace(staged, owner_path)  # a fresh inode now holds the name
+
+    monkeypatch.setattr(custody, "verify_name_identity", verify_then_publish_successor)
+    with pytest.raises(StoreCustodyError, match="swapped between"):
+        L.release(store.dir, owner)
+    survivors = {path.name: path.read_bytes() for path in lease_dir.iterdir() if path.is_file()}
+    assert successor_bytes in survivors.values(), (
+        "the successor's publish was moved aside by the rename, never deleted"
+    )
+    assert not owner_path.exists(), "the release rename freed the canonical name"
