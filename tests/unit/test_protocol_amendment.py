@@ -1361,6 +1361,70 @@ def test_post_publish_name_swap_before_packet_attestation_refused(
                 (out_dir / (published.name + ".held")).unlink()
 
 
+# ---- round-11 (finding 1): custody spans ALL FOUR emits — the packet is the final effect --
+#
+# Round-11 review fix: the three-artifact sweep ended at os.close(sweep_fd)
+# BEFORE the packet was built and published; the packet then attested
+# `emitted` hashes of the RENDERED bytes while nothing re-verified the three
+# artifact names at the moment the packet was returned. An attacker renaming
+# protocol-0.2.1-proposed.yaml to .held and installing different bytes at the
+# name after that sweep closed got a successful packet whose published hashes
+# described bytes the name no longer held. ONE custody fd is now held across
+# all four emits and the final sweep runs AT packet return, verifying all
+# four names against their published (st_dev, st_ino) identities and
+# rendered bytes.
+
+
+def test_artifact_swapped_after_the_mid_sweep_before_packet_return_refused(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Interleaving attack on the post-sweep window: the wrapper lets the
+    three artifacts AND the packet publish, THEN — after the mid-sweep has
+    closed and before the builder returns — renames the published proposal
+    to .held and installs different bytes at the name. Pre-fix the build
+    SUCCEEDS: the packet sweep verifies only the packet, so the returned
+    packet attests hashes of bytes the name no longer holds; post-fix the
+    final sweep at packet return re-verifies ALL FOUR names and refuses."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    real_write = amd._write_exclusive
+    armed = {"done": False}
+
+    def write_packet_then_swap_proposed(
+        path: Path, text: str, *args: object, **kwargs: object
+    ) -> object:
+        result = real_write(path, text, *args, **kwargs)
+        if armed["done"] or path.name != "amendment-packet.json":
+            return result
+        armed["done"] = True  # the window: mid-sweep closed, packet published
+        published = path.parent / "protocol-0.2.1-proposed.yaml"
+        held = path.parent / (published.name + ".held")
+        os.rename(published, held)  # the published inode moves away unchanged
+        published.write_text("# attacker bytes at the published name\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(amd, "_write_exclusive", write_packet_then_swap_proposed)
+    with _out_root() as out:
+        out_dir = out / _census_hash(census_bytes)[:12]
+        published = out_dir / "protocol-0.2.1-proposed.yaml"
+        try:
+            with pytest.raises(OutputRefusedError) as exc_info:
+                _build(paths, out)
+            message = str(exc_info.value)
+            assert "protocol-0.2.1-proposed.yaml" in message, (
+                "the refusal names the swapped artifact"
+            )
+            assert "changed identity" in message, (
+                "the refusal says the published identity no longer holds the name"
+            )
+        finally:
+            # never leave the attacker's .held under artifacts/
+            with contextlib.suppress(OSError):
+                published.unlink()
+            with contextlib.suppress(OSError):
+                (out_dir / (published.name + ".held")).unlink()
+
+
 def test_packet_hashes_attest_the_consumed_bytes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

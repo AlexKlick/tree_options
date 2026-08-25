@@ -390,16 +390,16 @@ def _open_output_custody(out_dir: Path) -> int:
     return fd
 
 
-def _emit_custody_write(path: Path, text: str) -> tuple[int, int]:
-    """Round-8 review fix (finding 6): ONE emit = confinement check (the
-    caller's, FIRST and unchanged) -> custody walk of the resolved parent
-    -> the dir_fd-relative exclusive write. The custody fd is opened per
-    emit and closed here; returns the published identity."""
-    custody_fd = _open_output_custody(path.parent)
-    try:
-        return _write_exclusive(path, text, custody_fd=custody_fd)
-    finally:
-        os.close(custody_fd)
+def _emit_custody_write(path: Path, text: str, *, custody_fd: int) -> tuple[int, int]:
+    """Round-8 review fix (finding 6) + round-11 review fix (finding 1):
+    ONE emit = confinement check (the caller's, FIRST and unchanged) -> the
+    dir_fd-relative exclusive write THROUGH THE SINGLE HELD CUSTODY FD. The
+    pre-fix shape opened (and closed) a fresh custody walk per emit, so no
+    fd was held from the first artifact to the packet's return; the caller
+    now opens the output parent ONCE and holds it across ALL FOUR emits
+    (three artifacts + packet), and the final sweep at packet return rides a
+    fresh re-walk of the resolved out dir. Returns the published identity."""
+    return _write_exclusive(path, text, custody_fd=custody_fd)
 
 
 def _write_exclusive(path: Path, text: str, *, custody_fd: int) -> tuple[int, int]:
@@ -989,130 +989,163 @@ def build_proposed_amendment(
         flow_value
     )
 
-    proposed_path = _confine_output(
-        out_dir / f"protocol-{PROPOSED_PROTOCOL_VERSION}-proposed.yaml",
-        out_root=resolved_out_root,
-    )
-    _refuse_shared_inode(proposed_path)
-    proposed_text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000)
-    proposed_identity = _emit_custody_write(proposed_path, proposed_text)
-
-    # PROOF STEP: the proposal must load through TODAY'S real loader — from
-    # the RENDERED text, never a fresh read of the published path (round-8
-    # finding 1: a post-return swap of the published name used to feed this
-    # proof attacker YAML through a planted symlink).
+    # Round-11 review fix (finding 1): ONE custody fd held across ALL FOUR
+    # emits (three artifacts + packet). The pre-fix shape opened and closed a
+    # fresh custody walk per emit and closed the three-artifact sweep fd
+    # BEFORE the packet was built — so nothing re-verified the artifact names
+    # at the moment the packet was returned. Nothing closes before the final
+    # sweep at packet return.
+    custody_fd = _open_output_custody(out_dir)
     try:
-        parsed = load_protocol_bytes(proposed_text.encode("utf-8"))
-    except ValueError as exc:
-        raise AmendmentError(
-            f"proposed protocol ({proposed_path}) does not load through the current schema: {exc}"
-        ) from exc
-    parsed_flow = parsed.option_candidate_defaults.liquidity_volume_flow
-    if (
-        parsed.meta.protocol_version != PROPOSED_PROTOCOL_VERSION
-        or parsed_flow is None
-        or parsed_flow.flow_min_session_volume != flow_value
-        or len(parsed.meta.amendments) != len(base.meta.amendments) + 1
-    ):
-        raise AmendmentError("proposed protocol round-trip lost the amendment content")
+        proposed_path = _confine_output(
+            out_dir / f"protocol-{PROPOSED_PROTOCOL_VERSION}-proposed.yaml",
+            out_root=resolved_out_root,
+        )
+        _refuse_shared_inode(proposed_path)
+        proposed_text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000)
+        proposed_identity = _emit_custody_write(proposed_path, proposed_text, custody_fd=custody_fd)
 
-    schema_path = _confine_output(
-        out_dir / "schema-addition-proposal.yaml", out_root=resolved_out_root
-    )
-    _refuse_shared_inode(schema_path)
-    schema_text = _render_schema_addition_proposal(
-        census=census, census_hash=census_hash, flow_value=flow_value
-    )
-    schema_identity = _emit_custody_write(schema_path, schema_text)
+        # PROOF STEP: the proposal must load through TODAY'S real loader —
+        # from the RENDERED text, never a fresh read of the published path
+        # (round-8 finding 1: a post-return swap of the published name used
+        # to feed this proof attacker YAML through a planted symlink).
+        try:
+            parsed = load_protocol_bytes(proposed_text.encode("utf-8"))
+        except ValueError as exc:
+            raise AmendmentError(
+                f"proposed protocol ({proposed_path}) does not load through the"
+                f" current schema: {exc}"
+            ) from exc
+        parsed_flow = parsed.option_candidate_defaults.liquidity_volume_flow
+        if (
+            parsed.meta.protocol_version != PROPOSED_PROTOCOL_VERSION
+            or parsed_flow is None
+            or parsed_flow.flow_min_session_volume != flow_value
+            or len(parsed.meta.amendments) != len(base.meta.amendments) + 1
+        ):
+            raise AmendmentError("proposed protocol round-trip lost the amendment content")
 
-    diff_path = _confine_output(out_dir / "amendment-diff.md", out_root=resolved_out_root)
-    _refuse_shared_inode(diff_path)
-    diff_text = _render_diff(
-        base=base, census_hash=census_hash, flow_value=flow_value, flow_source=flow_source
-    )
-    diff_identity = _emit_custody_write(diff_path, diff_text)
+        schema_path = _confine_output(
+            out_dir / "schema-addition-proposal.yaml", out_root=resolved_out_root
+        )
+        _refuse_shared_inode(schema_path)
+        schema_text = _render_schema_addition_proposal(
+            census=census, census_hash=census_hash, flow_value=flow_value
+        )
+        schema_identity = _emit_custody_write(schema_path, schema_text, custody_fd=custody_fd)
 
-    # FINAL-EFFECT SWEEP (round-8, finding 1): the packet ATTESTS these
-    # artifacts, so each is re-verified under custody immediately before the
-    # packet is constructed — regular file at the final name, the published
-    # identity, and the on-disk bytes still equal to the rendered text. This
-    # is the guard at the final effect: it closes the post-return window
-    # _write_exclusive cannot span. The sweep rides the output parent's
-    # custody fd (round-8, finding 6) — one walk, three name-relative
-    # verifications.
-    sweep_fd = _open_output_custody(out_dir)
-    try:
+        diff_path = _confine_output(out_dir / "amendment-diff.md", out_root=resolved_out_root)
+        _refuse_shared_inode(diff_path)
+        diff_text = _render_diff(
+            base=base, census_hash=census_hash, flow_value=flow_value, flow_source=flow_source
+        )
+        diff_identity = _emit_custody_write(diff_path, diff_text, custody_fd=custody_fd)
+
+        # PRE-PACKET SWEEP (round-8, finding 1): the packet ATTESTS these
+        # artifacts, so each is re-verified under the HELD custody fd
+        # immediately before the packet is written — a swapped artifact
+        # refuses while NO packet file exists on disk. Regular file at the
+        # final name, the published identity, and the on-disk bytes still
+        # equal to the rendered text.
         _verify_final_effect(
             artifact="protocol-0.2.1-proposed.yaml",
             path=proposed_path,
             identity=proposed_identity,
             text=proposed_text,
-            custody_fd=sweep_fd,
+            custody_fd=custody_fd,
         )
         _verify_final_effect(
             artifact="schema-addition-proposal.yaml",
             path=schema_path,
             identity=schema_identity,
             text=schema_text,
-            custody_fd=sweep_fd,
+            custody_fd=custody_fd,
         )
         _verify_final_effect(
             artifact="amendment-diff.md",
             path=diff_path,
             identity=diff_identity,
             text=diff_text,
-            custody_fd=sweep_fd,
+            custody_fd=custody_fd,
         )
-    finally:
-        os.close(sweep_fd)
 
-    packet = AmendmentPacket(
-        schema_version=AMENDMENT_PACKET_SCHEMA_VERSION,
-        base_version=base_version,
-        proposed_version=PROPOSED_PROTOCOL_VERSION,
-        census_content_sha256=census_hash,
-        protocol_hash_base=protocol_hash(base),
-        flow_min_session_volume=flow_value,
-        owner_values_schema_version=OWNER_VALUES_SCHEMA_VERSION,
-        inputs=AmendmentInputs(
-            census_file_sha256=hashlib.sha256(census_bytes).hexdigest(),
-            owner_values_file_sha256=hashlib.sha256(owner_bytes).hexdigest(),
-            rules_file_sha256=hashlib.sha256(rules_bytes).hexdigest(),
-            protocol_file_sha256=hashlib.sha256(protocol_bytes).hexdigest(),
-            capture_manifest_file_sha256=manifest_sha256,
-        ),
-        # round-8 finding 1: `emitted` hashes the RENDERED bytes — the same
-        # text handed to _write_exclusive and verified by the sweep above —
-        # never a fresh read of the published path.
-        emitted=tuple(
-            EmittedArtifact(name=name, sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
-            for name, text in sorted(
-                (
-                    (proposed_path.name, proposed_text),
-                    (schema_path.name, schema_text),
-                    (diff_path.name, diff_text),
-                ),
-                key=lambda pair: pair[0],
-            )
-        ),
-    )
-    packet_path = _confine_output(out_dir / "amendment-packet.json", out_root=resolved_out_root)
-    _refuse_shared_inode(packet_path)
-    packet_text = json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n"
-    packet_identity = _emit_custody_write(packet_path, packet_text)
-    # The packet is written LAST: the same final-effect sweep runs on it
-    # immediately after its write (on the packet's own custody fd), so the
-    # returned packet attests an artifact that was under custody at the
-    # moment of attestation.
-    packet_sweep_fd = _open_output_custody(packet_path.parent)
-    try:
-        _verify_final_effect(
-            artifact="amendment-packet.json",
-            path=packet_path,
-            identity=packet_identity,
-            text=packet_text,
-            custody_fd=packet_sweep_fd,
+        packet = AmendmentPacket(
+            schema_version=AMENDMENT_PACKET_SCHEMA_VERSION,
+            base_version=base_version,
+            proposed_version=PROPOSED_PROTOCOL_VERSION,
+            census_content_sha256=census_hash,
+            protocol_hash_base=protocol_hash(base),
+            flow_min_session_volume=flow_value,
+            owner_values_schema_version=OWNER_VALUES_SCHEMA_VERSION,
+            inputs=AmendmentInputs(
+                census_file_sha256=hashlib.sha256(census_bytes).hexdigest(),
+                owner_values_file_sha256=hashlib.sha256(owner_bytes).hexdigest(),
+                rules_file_sha256=hashlib.sha256(rules_bytes).hexdigest(),
+                protocol_file_sha256=hashlib.sha256(protocol_bytes).hexdigest(),
+                capture_manifest_file_sha256=manifest_sha256,
+            ),
+            # round-8 finding 1: `emitted` hashes the RENDERED bytes — the same
+            # text handed to _write_exclusive and verified by the sweeps —
+            # never a fresh read of the published path.
+            emitted=tuple(
+                EmittedArtifact(name=name, sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
+                for name, text in sorted(
+                    (
+                        (proposed_path.name, proposed_text),
+                        (schema_path.name, schema_text),
+                        (diff_path.name, diff_text),
+                    ),
+                    key=lambda pair: pair[0],
+                )
+            ),
         )
+        packet_path = _confine_output(out_dir / "amendment-packet.json", out_root=resolved_out_root)
+        _refuse_shared_inode(packet_path)
+        packet_text = (
+            json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n"
+        )
+        packet_identity = _emit_custody_write(packet_path, packet_text, custody_fd=custody_fd)
+
+        # FINAL-EFFECT SWEEP (round-11, finding 1): the packet is written
+        # LAST, and the sweep AT PACKET RETURN re-verifies ALL FOUR names —
+        # the three artifacts plus the packet itself — through a FRESH
+        # component-wise no-follow walk of the resolved out dir, so a swap in
+        # any post-publish window (including between the pre-packet sweep and
+        # this one) refuses before the builder attests. Nothing closes before
+        # this sweep: the held fd spans every emit and outlives the packet's
+        # own write.
+        final_sweep_fd = _open_output_custody(out_dir)
+        try:
+            _verify_final_effect(
+                artifact="protocol-0.2.1-proposed.yaml",
+                path=proposed_path,
+                identity=proposed_identity,
+                text=proposed_text,
+                custody_fd=final_sweep_fd,
+            )
+            _verify_final_effect(
+                artifact="schema-addition-proposal.yaml",
+                path=schema_path,
+                identity=schema_identity,
+                text=schema_text,
+                custody_fd=final_sweep_fd,
+            )
+            _verify_final_effect(
+                artifact="amendment-diff.md",
+                path=diff_path,
+                identity=diff_identity,
+                text=diff_text,
+                custody_fd=final_sweep_fd,
+            )
+            _verify_final_effect(
+                artifact="amendment-packet.json",
+                path=packet_path,
+                identity=packet_identity,
+                text=packet_text,
+                custody_fd=final_sweep_fd,
+            )
+        finally:
+            os.close(final_sweep_fd)
+        return packet
     finally:
-        os.close(packet_sweep_fd)
-    return packet
+        os.close(custody_fd)
