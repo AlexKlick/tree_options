@@ -64,6 +64,7 @@ from that verification are recorded below.
 | `744e1f3`/`881bdcd`/`71cf8ee`/`87b175a`/`cfac494`/`4431f14` | R11-B (same wave): amendment holds ONE custody fd across all four emits with the final sweep AT packet return over all four names through a fresh component-wise re-walk whose dir-fstat identity must equal the held fd (out-of-root relocation refused); census emission carries the manifest gate at the write moment against the sha RECORDED in the census body (MassiveManifestError → exit 2, nothing published) and publishes the three outputs as one all-or-nothing set (temps → vet → rename-set → verify at return; refusal unlinks temps and drops the digest dir, retry is clean); g4-seal runner identity = registry-resolved (`RUNNER_REGISTRY` + `runner_implementation_sha256` bound into the self-hashed packet at approval, current code hash cross-joined before consumption — execute takes NO runner parameter, a foreign callable with the approved literal is not authority); verified-inputs exit re-scans the held directory and requires exact entry-set equality with the snapshot the verifier consumed |
 | `5887acf`/`fc615e8`/`6ec70ec`/`81296a4` | R12 (owner ruling: fix the real bugs + declare the threat model): release restores a swapped entry at the canonical name (with a restoration re-verify) BEFORE the mismatch refusal — the refusal path never empties `owner.json`, so no fresh exclusive acquire while a successor is live; runner identity binds the CALLABLE — (version, qualified name, source-file sha256, config digest) in the packet, all four re-derived from the registry entry at execution, `register_runner` requires a validated 64-hex `config_digest` (same-file foreign runner and differently-configured instances refused); census refusal cleanup verify-then-deletes the digest dir (held-identity match or loud refusal — a substituted directory is left intact); the emit-set catch gains raw `OSError` and any failure after the first rename rolls back identity-checked this-run-published names (all-or-nothing incl. the untyped path, retry clean) |
 | `2722b32`/`79fe077`/`fd151af` | R13: DUAL-TREE ledger anchor — the ledger identity is recorded in a SECOND tree (a dedicated custody-written identity record under the runstate store namespace, `runstate/seal-ledger-anchor/<sha256(root)[:16]>.identity.json`, mapping documented in ledger.py; journal.py/store.py unmodified), every open verifies BOTH the beside-the-file companion AND the runstate anchor, so an OFFLINE co-replacement of ledger.jsonl + its companion with a self-consistent approval-only pair refuses at the next open; in-scope extensions: a surviving anchor with a vanished ledger/root refuses (the second tree's memory that authority existed), the anchor binds at first append (creation crash window closed), and the anchor pins the companion's byte digest; runner config digest is RECOMPUTED from the live implementation at the effect boundary via a registration-time `config_digest_fn` (mutated-after-approval configuration → ApprovalInvalidError before consumption; the stored digest comparison also retained; placed after `runner = registered.implementation` to preserve M266's anchor — after every identity check, before any authority is spent); census OUTPUT-EXISTS recovery semantics — byte-identical complete set → idempotent exit 0, strict-subset residue incl. this emit path's own-pattern stale temps → custody roll-forward (exit 0 whole / exit 5 incomplete — the documented never-report-partial-as-whole contract preserved), foreign content → refusal — plus `fsync(out_fd)` after the rename set |
+| `b587bd5`/`36a73e3`/`ef84991` | R14 (owner ruling: fix the 3 concrete + declare the trust roots): the anchor record (format 2) gains the ledger's COMMITTED EXTENT — `ledger_size` + `committed_tail_sha256`, written at creation over the empty extent and advanced after each append's fsync + name check by an identity-conditional custody replacement, checked at every read and append — same-inode prefix rollback and a valid re-chained in-place rewrite padded to the anchored size both refuse as corruption, while the benign crash case (append durable, anchor update interrupted → valid chain extension) opens and re-anchors; the PARENT of every first-use namespace directory is fsynced (custody `open_directory` create branch + the ledger-root walk — an interrupted first append can no longer lose the namespace entries on reboot); a fresh census publication fsyncs `args.out_root` through a component-wise no-follow walk so the digest entry is durably committed (refusal = exit 4). Disclosed: ANCHOR_FORMAT 1→2 (a pre-R14 anchor is now a malformed-anchor reconciliation refusal — every ledger in the suite is created fresh; no durable pre-R14 ledger exists); one pre-existing anchor test's contract updated (extents now advance per append by design); the F3/F5 owning tests trace mkdir/fsync ordering by real directory identity alongside the structural walk |
 
 ## Review waves and remediation (2026-08-23)
 
@@ -500,3 +501,49 @@ the exact PR head (see PR body for its verdict line).
   8 files exactly as briefed; protected blobs + mutate.py +
   pyproject byte-identical; AST 0/255 drift; independent full
   suite 1,620 passed exit 0 (+8 tests).
+
+- **Round 12** (head `5e729bf`, gate24 GREEN 1,620 / 255 KILLED /
+  restoration TRUE, clean-clone full gate GREEN incl. seven CLI
+  checks, log `pr-a-codex12.log`): VERDICT NO-GO — 5 findings
+  (4×P1, 1×P2); round-11 disposition 0/3 RESOLVED; all constraint
+  checks PASS. All five orchestrator-verified in source. THREE
+  CONCRETE: (F1) same-inode prefix rollback — truncate the ledger
+  to its approval prefix keeping the inode; the anchor bound
+  inode + companion digest but not the committed extent, and
+  replay accepted any valid chain prefix, so the consumption
+  silently vanished and the approval re-spent; (F3) first-use
+  namespace creations (ledger root, anchor-tree components) were
+  never parent-fsynced — a reboot could lose both entries and the
+  empty view would silently forget an acknowledged consumption;
+  (F5) the census digest-directory entry in out_root was never
+  parent-fsynced. TWO BOUNDARY-CLASS: (F2) forging ALL THREE
+  records (ledger + companion + anchor) offline as a
+  self-consistent set passes both-tree verification — the anchor
+  is public derivations under the same operator-writable parent
+  and is indistinguishable from a fresh install without an
+  owner-held external anchor; (F4) a caller-supplied
+  `config_digest_fn` can attest falsely (constant or
+  side-effecting callback) — a defect of first-party registration
+  code, not an attack. The reviewer's evidence gaps explicitly
+  invited the declarations. **Owner ruling 2026-08-25 (fix the 3
+  concrete + declare the trust roots). TRUST ROOTS (extending the
+  threat model): (1) Authority namespace — the trust root is the
+  owner's exclusive write access to the tree as a whole; an
+  offline replacement of the ENTIRE authority namespace (ledger +
+  companion + anchor together) is fresh-install-equivalent and OUT
+  OF SCOPE; distinguishing it from a legitimate fresh install
+  requires an owner-held external anchor, which is a NAMED FUTURE
+  LANE, not PR A scope. (2) Registration layer — the
+  runner-registration surface is first-party trusted code; a
+  `config_digest_fn` that does not faithfully digest its
+  implementation is a defect of that trusted code, not an attack
+  surface (same trust class as the compiler).** Remediated in R14
+  (`b587bd5` committed-extent anchoring / `36a73e3` parent fsyncs
+  / `ef84991` census out_root fsync), each red-first (agent logs
+  `/tmp/r14-f{1,3,5}-red.log`; the F1 RED accepted the
+  rolled-back approval-only prefix, the padded in-place rewrite,
+  and lacked the extent fields; the F3/F5 REDs traced that no
+  parent fsync followed the creations). Orchestrator
+  verification: 5 files exactly as briefed; protected blobs +
+  mutate.py + pyproject byte-identical; AST 0/255 drift;
+  independent full suite 1,625 passed exit 0 (+5 tests).
