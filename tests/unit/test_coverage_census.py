@@ -1233,3 +1233,59 @@ def test_output_name_symlinked_at_a_protected_file_refuses_exit_4(
     assert decoy.read_bytes() == before, (
         "the protected-file stand-in was never written through the link"
     )
+
+
+# ---- round-11 (finding 9): a mid-emission refusal must publish NOTHING ----------------
+#
+# Round-11 review fix: the three outputs were emitted sequentially through
+# their final names, so a refusal at the SECOND (a census.md planted symlink)
+# left census.json PUBLISHED with exit 4 — and the retry refused on
+# out_dir.exists() ("never overwrite"), making a refused emission permanently
+# unretryable. The set is now published all-or-nothing: all three outputs go
+# to unpredictable temp names under the custody fd, are verified, are renamed
+# into place in a fixed order, and the complete set is verified at return;
+# any refusal unlinks the temps and removes the empty digest dir so NOTHING
+# is published and a retry is clean.
+
+
+def test_mid_emission_refusal_publishes_nothing_and_leaves_a_clean_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The refusal lands at the SECOND output (census.md is a planted
+    symlink at a decoy). Pre-fix census.json — already published — stays on
+    disk and every later run refuses with OUTPUT EXISTS; post-fix NOTHING is
+    published, the digest dir is gone, and the retry (plant removed by the
+    one-shot wrapper) exits 0."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    out_root = tmp_path / "out"
+    decoy = tmp_path / "decoy.md"
+    decoy.write_text("# decoy — never written through\n", encoding="utf-8")
+    before = decoy.read_bytes()
+    real_mkdir = Path.mkdir
+    planted: list[bool] = []
+
+    def mkdir_then_plant_second(self: Path, *args: object, **kwargs: object) -> None:
+        real_mkdir(self, *args, **kwargs)  # type: ignore[arg-type]
+        # one plant only (pathlib's parents=True recursion re-enters mkdir)
+        if self.parent == out_root and not planted:
+            planted.append(True)
+            (self / "census.md").symlink_to(decoy)  # the SECOND output refuses
+
+    monkeypatch.setattr(Path, "mkdir", mkdir_then_plant_second)
+    assert _census(monkeypatch, capture, universe, out_root) == 4, (
+        "the planted symlink at census.md is an EMISSION refusal (exit 4)"
+    )
+    err = capsys.readouterr().err
+    assert "EMISSION REFUSED" in err and "census.md" in err
+    assert decoy.read_bytes() == before, "the decoy was never written through"
+    assert not out_root.exists() or list(out_root.iterdir()) == [], (
+        "a refusal at the second output must leave NOTHING published — no "
+        "census.json under the out root, no empty digest dir blocking a retry"
+    )
+    # the plant wrapper is one-shot: a retry is clean and succeeds
+    assert _census(monkeypatch, capture, universe, out_root) == 0, (
+        "after a mid-emission refusal the retry must not hit OUTPUT EXISTS"
+    )
