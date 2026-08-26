@@ -53,14 +53,20 @@ Candidate snapshots are built by
 `massive_options.build_option_candidate_inputs` over the visible session's
 derived cell (G3, protocol 0.2.0): |delta| under
 `model-derived-from-vwap`, session volume from the bar, bid/ask/OI None —
-the volume-flow filter's NOT_APPLICABLE rows. The two stamps lane 1
-supplies unconditionally are mirrored with the overlay's own values: the
-declared `Decimal("0")` dollar-volume sentinel (this tier never calls the
+the volume-flow filter's NOT_APPLICABLE rows. The dollar-volume stamp is
+the overlay's declared `Decimal("0")` sentinel (this tier never calls the
 equity-aggregates endpoint; the protocol's 50M minimum therefore FAILS the
 rule until an owner ruling says otherwise — an honest audit row, pinned by
-test) and `spans_earnings=False` (this lane carries no earnings calendar;
-False is the declared no-earnings-feed value, the same stamp
-`OptionPitSurface.candidate_snapshot` writes).
+test). `spans_earnings` is None — the honest "no evidence" encoding (w2,
+theory-panel P0-2 ruling (ii), owner ruled 2026-08-26): this lane carries
+no earnings calendar, and `AsOf(value=False)` would launder a
+vendor-stamped PASS "no spanning earnings" no source supports (the lane-1
+`False` stamp is true only of synthetic worlds, which contain no earnings
+events by construction). Under the still-current 0.2.1 protocol the
+earnings rule answers NOT_EVALUABLE "missing" on this None and lane 2
+trades zero; the ruled 0.2.2 packet turns the rule off, and the filter
+then answers NOT_APPLICABLE "filter disabled" before ever reading the
+value.
 """
 
 from __future__ import annotations
@@ -301,7 +307,16 @@ class VwapPitSurface:
             value=self._overlay.median_dollar_volume(underlying, session),
             available_at=received,
         )
-        spans_earnings = AsOf(value=False, available_at=received)
+        # (w2, theory-panel P0-2 ruling (ii), owner ruled 2026-08-26): the
+        # honest "no evidence" encoding. This lane carries no earnings
+        # calendar, so `AsOf(value=False)` would LAUNDER a vendor-stamped
+        # PASS "no spanning earnings" no source supports. Under the
+        # still-current 0.2.1 protocol the rule answers NOT_EVALUABLE
+        # "missing" on this None and the candidate is refused (lane 2
+        # trades zero — pinned by test); under 0.2.2
+        # (`exclude_earnings_spanning_hold: false`) the filter answers
+        # NOT_APPLICABLE "filter disabled" BEFORE reading the value.
+        spans_earnings: AsOf | None = None
         cell = self._visible_cell(contract.contract_id, session)
         if cell is None:
             # not an overlay-master contract: the lane-1 None-inputs path

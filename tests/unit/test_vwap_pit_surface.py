@@ -423,8 +423,13 @@ def _protocol_volume_flow(surface, protocol) -> CandidateFilter:
 
 def _zeroed_liquidity_volume_flow(surface, protocol) -> CandidateFilter:
     """The strategy-suite convention (test_options_strategy): zeroing the
-    underlying-liquidity minimum keeps the small fixture world usable —
-    every other knob stays at the protocol's ratified values."""
+    underlying-liquidity minimum keeps the small fixture world usable, and
+    (w2) turning the earnings rule OFF adopts the ruled 0.2.2 shape — the
+    adapter's honest `spans_earnings=None` makes the still-current 0.2.1
+    rule NOT_EVALUABLE, so a fixture that kept the rule on would trade
+    zero and exercise none of the adapter's mechanics. Every other knob
+    stays at the protocol's ratified values; both deviations are pinned
+    against the protocol-built filter in the rows test above."""
     d = protocol.option_candidate_defaults
     lf = d.liquidity_volume_flow
     assert lf is not None
@@ -440,7 +445,7 @@ def _zeroed_liquidity_volume_flow(surface, protocol) -> CandidateFilter:
         volume_only_if_already_available=d.volume_only_if_already_available,
         max_spread_fraction_of_midpoint=d.max_spread_fraction_of_midpoint,
         min_underlying_20d_median_dollar_volume=Decimal("0"),
-        exclude_earnings_spanning_hold=d.exclude_earnings_spanning_hold,
+        exclude_earnings_spanning_hold=False,
         liquidity_regime="volume_flow",
         flow_min_session_volume=lf.flow_min_session_volume,
         accepted_delta_provenance=lf.abs_delta_provenance_accepted,
@@ -477,8 +482,64 @@ def test_candidate_snapshot_accepted_under_zeroed_liquidity_min(surface, protoco
     assert snap.open_interest is None and snap.bid is None and snap.ask is None
 
 
-def test_candidate_snapshot_none_inputs_on_underrived_cells(surface) -> None:
-    # zero-volume visible session: the bar's volume 0 is a SUPPLIED fact
+def test_candidate_snapshot_earnings_is_the_honest_no_evidence_encoding(surface, protocol) -> None:
+    """(w2, theory-panel P0-2 ruling (ii), owner ruled 2026-08-26):
+    `AsOf(value=False)` LAUNDERS — the rule would read a vendor-stamped
+    PASS "no spanning earnings" that no source supports, indistinguishable
+    from a funded events feed (the lane-1 precedent is honest ONLY for
+    synthetic worlds, which contain no earnings events by construction).
+    The honest encoding on this lane is `spans_earnings=None`: under the
+    still-current 0.2.1 protocol (`exclude_earnings_spanning_hold: true`)
+    the rule answers NOT_EVALUABLE "missing" and the candidate is REFUSED —
+    lane 2 trades zero until the 0.2.2 packet turns the rule off."""
+    snap = surface.candidate_snapshot(surface.contract(C600_ID), S6)
+    assert snap.spans_earnings is None
+    decision = _protocol_volume_flow(surface, protocol).evaluate(snap)
+    by_rule = {r.rule: r for r in decision.results}
+    assert by_rule["earnings_span"].status == "NOT_EVALUABLE"
+    assert by_rule["earnings_span"].detail == "missing"
+    # NOT_EVALUABLE blocks acceptance: zero trades under 0.2.1, pinned
+    assert not decision.accepted
+
+
+def test_earnings_rule_off_answers_not_applicable_without_reading_the_value(
+    surface, protocol
+) -> None:
+    """(w2) The 0.2.2 destination (`exclude_earnings_spanning_hold: false`,
+    verdict §2 P0-2(ii)): the filter answers NOT_APPLICABLE "filter
+    disabled" BEFORE reading the snapshot value, so the None encoding
+    stops mattering the moment the rule is off — the artifact self-
+    discloses instead of laundering a PASS."""
+    d = protocol.option_candidate_defaults
+    lf = d.liquidity_volume_flow
+    assert lf is not None
+    rule_off = CandidateFilter(
+        surface.overlay.calendar,
+        dte_min=d.dte_min,
+        dte_max=d.dte_max,
+        abs_delta_min=d.abs_delta_min,
+        abs_delta_max=d.abs_delta_max,
+        standard_deliverable_only=d.standard_deliverable_only,
+        min_open_interest=d.min_open_interest,
+        min_same_day_volume=d.min_same_day_volume,
+        volume_only_if_already_available=d.volume_only_if_already_available,
+        max_spread_fraction_of_midpoint=d.max_spread_fraction_of_midpoint,
+        min_underlying_20d_median_dollar_volume=Decimal("0"),
+        exclude_earnings_spanning_hold=False,  # the 0.2.2 shape
+        liquidity_regime="volume_flow",
+        flow_min_session_volume=lf.flow_min_session_volume,
+        accepted_delta_provenance=lf.abs_delta_provenance_accepted,
+    )
+    snap = surface.candidate_snapshot(surface.contract(C600_ID), S6)
+    assert snap.spans_earnings is None  # the value the rule never reads
+    by_rule = {r.rule: r for r in rule_off.evaluate(snap).results}
+    assert by_rule["earnings_span"].status == "NOT_APPLICABLE"
+    assert by_rule["earnings_span"].detail == "filter disabled"
+
+
+def test_candidate_snapshot_none_inputs_on_underrived_cells(
+    surface,
+) -> None:  # zero-volume visible session: the bar's volume 0 is a SUPPLIED fact
     # (the session genuinely traded nothing) but the derivation is withheld
     zero = surface.candidate_snapshot(surface.contract(C610_ID), S5)  # sees S4
     assert zero.abs_delta is None
