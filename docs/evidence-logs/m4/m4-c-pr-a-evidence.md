@@ -547,3 +547,55 @@ the exact PR head (see PR body for its verdict line).
   verification: 5 files exactly as briefed; protected blobs +
   mutate.py + pyproject byte-identical; AST 0/255 drift;
   independent full suite 1,625 passed exit 0 (+5 tests).
+
+- **2026-08-25 R15 (round-13 remediation, owner ruling: CLASS fix —
+  both families).** Round 13 at `07e6812` (pr-a-codex13.log): NO-GO —
+  7 findings (4×P1, 2×P2, 1×P3), ALL orchestrator-verified in source;
+  round-12 disposition F2/F4 → trust-root BOUNDARY NOTES (the ruling
+  held), F1/F3/F5 → NOT_RESOLVED via deeper variants. Pattern: two
+  families, both instance-fix-not-class-fix. **Family A — the
+  committed extent exists ONLY on the seal ledger AND its larger
+  branch skips the prefix proof:** (F1) `_check_anchor_extent`
+  accepted any larger valid re-chain — approval + padded
+  RECONCILIATION_NOTE beyond anchored size N hides a removed
+  consumption, re-spend; (F4) BARS has NO extent binding — same-inode
+  truncation to the approval line re-spends the one-shot launch
+  authority; (F5) the runstate journal likewise. **Family B —
+  parent-fsync covered only 2 create branches, not restart-closed:**
+  (F2) a crash-residue component takes the existing-open branch
+  unrepaired; (F3) the BARS walk never parent-fsynced; (F6) census
+  out_root fsync gated `if fresh_publication` (recovery skips the
+  repair) and a freshly created out_root's entry in ITS parent is
+  never committed; (F7) amendment publication has zero directory
+  fsyncs before the packet attests. **Remediated in R15 as ONE class
+  mechanism each:** `custody.check_committed_extent` (three branches;
+  the LARGER branch PROVES the pinned extent as the prefix —
+  record-boundary check at the extent edge + replay of ONLY the
+  pinned bytes + tail equality, fail-closed) adopted by the seal
+  (anchor AND companion, cross-checked: `5418466`/`6b205da`) and the
+  journal (`00fcafa`); `NameBinding` format 2 carries
+  extent_size/committed_tail_sha256 with identity-conditional
+  advance after each append's fsync + name check; durable traversals
+  (parent fsync on BOTH branches, restart-closed repair-on-open) on
+  the seal/bars/runstate walks (`bfcf54f`/`56864a0`/`00fcafa`) and
+  every attesting publication path commits the created hierarchy +
+  out_root unconditionally (census `80246cd`, amendment `44d736d`).
+  Each red-first (agent logs `/tmp/r15a-f{1,2,3,4}-red.log`,
+  `/tmp/r15b-f{6,7}-red.log`, `/tmp/r15c-f5-red.log`). Disclosed
+  deviations: NAME_BINDING_FORMAT 1→2 (no durable pre-R15 companion
+  exists); tail-damage tolerance rescoped — a damaged line INSIDE
+  the committed extent is an in-place-rewrite refusal, tolerance
+  remains only for damage beyond the extent (seal + journal tests
+  reworked to the landed semantics, within-extent refusal pinned as
+  new tests); two owning tests updated to the format-2 record shape;
+  the seal/bars/journal clone-swap tests re-armed by directory
+  identity (durable walks add earlier fsyncs, count-based arming no
+  longer identified the window); the BARS durable walk kept inline
+  in its local loop (its own error family + absent-root read
+  semantics); lease/heartbeat walks not converted (operate inside
+  the already-durable store; reviewer had already classified their
+  creation fsyncs as covered). Orchestrator verification: exact file
+  scope per agent (A custody/ledger/bars, B census/amendment, C
+  journal/store); protected blobs + mutate.py byte-identical; AST
+  0/255 drift across ALL 255 anchors in 63 files; independent full
+  suite 1,642 passed exit 0 (+17 tests: 7 A + 5 B + 5 C).
