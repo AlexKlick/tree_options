@@ -1676,3 +1676,188 @@ def test_fresh_publication_commits_the_digest_entry_in_out_root(
     body = (digest_dir / "census.json").read_bytes()
     assert hashlib.sha256(body).hexdigest() in (digest_dir / "census.json.sha256").read_text()
     assert (digest_dir / "census.md").stat().st_size > 0
+
+
+# ---- R15 (finding 6, R14): EVERY attesting path commits the digest entry in
+# out_root — and a hierarchy that CREATES out_root commits every created
+# directory's entry in ITS parent ---------------------------------------------------
+#
+# Round-12 gated the out_root fsync on `fresh_publication`, a flag fixed
+# BEFORE the residue classification: a first invocation killed after the
+# members were published but before that fsync left the digest entry
+# uncommitted, and the retry classified the residue (idempotent complete or
+# roll-forward), succeeded, and SKIPPED the repairing fsync — a reboot could
+# still lose the acknowledged publication. And out_dir.mkdir(parents=True)
+# can create out_root ITSELF: the round-12 fsync covered out_root's CONTENTS,
+# never out_root's own entry in ITS parent.
+
+
+def _dir_identity(path: Path) -> tuple[int, int]:
+    """A directory's real identity — the R14 F3/F5 tracing technique: fsyncs
+    are matched by (st_dev, st_ino) so fd reuse can never forge a match."""
+    info = os.stat(path)
+    return (info.st_dev, info.st_ino)
+
+
+def _trace_fsyncs_and_attestations(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, object]]:
+    """Record ('fsync', (st_dev, st_ino)) for every fsync and ('print', text)
+    for every line the CLI prints, in one ordered event list — so a test can
+    prove the durable commit PRECEDES the exit-0 attestation."""
+    events: list[tuple[str, object]] = []
+    real_fsync, real_print = os.fsync, print
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        events.append(("fsync", (held.st_dev, held.st_ino)))
+        real_fsync(fd)
+
+    def traced_print(*args: object, **kwargs: object) -> None:
+        events.append(("print", " ".join(str(arg) for arg in args)))
+        real_print(*args, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    monkeypatch.setattr(bcc, "print", traced_print, raising=False)
+    return events
+
+
+def _fsync_positions(events: list[tuple[str, object]], identity: tuple[int, int]) -> list[int]:
+    return [
+        index
+        for index, (kind, payload) in enumerate(events)
+        if kind == "fsync" and payload == identity
+    ]
+
+
+def _attestation_positions(events: list[tuple[str, object]]) -> list[int]:
+    """The exit-code attestation: the JSON summary main() prints on stdout
+    immediately before returning."""
+    return [
+        index
+        for index, (kind, payload) in enumerate(events)
+        if kind == "print" and isinstance(payload, str) and payload.lstrip().startswith("{")
+    ]
+
+
+def test_a_kill_before_the_out_root_fsync_is_repaired_by_the_idempotent_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F6 scenario (a), idempotent half: a first invocation is killed after
+    the members were published but BEFORE the digest entry was committed in
+    out_root. The retry classifies the residue as a byte-identical prior
+    publication and exits 0 — and that attestation must be preceded by an
+    fsync of out_root (matched by real directory identity). Pre-fix the
+    retry skipped the repairing fsync entirely, so a reboot could still lose
+    the acknowledged exit-0 publication."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 0
+    capsys.readouterr()  # drop the interrupted first invocation's output
+
+    events = _trace_fsyncs_and_attestations(monkeypatch)
+    assert _census(monkeypatch, capture, universe, out_root) == 0, (
+        "the byte-identical prior publication is idempotent success"
+    )
+    commits = _fsync_positions(events, _dir_identity(out_root))
+    assert commits, (
+        "the idempotent retry attests the prior publication without ever "
+        "fsyncing out_root: the digest entry an interrupted first invocation "
+        "never committed stays uncommitted — a reboot can lose an "
+        "acknowledged exit-0 publication"
+    )
+    attestations = _attestation_positions(events)
+    assert attestations, "the retry printed its exit-0 summary"
+    assert commits[-1] < attestations[0], (
+        "the durable commit of the digest entry must be the last filesystem "
+        "act before the exit-0 attestation, never something the attestation "
+        "outruns"
+    )
+
+
+def test_a_roll_forward_retry_also_commits_the_digest_entry_before_attesting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F6 scenario (a), roll-forward half: crash residue of an interrupted
+    identical run (one member published, the rest missing). The retry rolls
+    the missing members forward and exits 0 — and that attestation too must
+    be preceded by an fsync of out_root, repairing whatever the interrupted
+    invocation left uncommitted."""
+    capture, universe, published, out_root, residue = _probe_publication(
+        tmp_path, monkeypatch, ["SPY"]
+    )
+    (residue / "census.json").write_bytes((published / "census.json").read_bytes())
+    capsys.readouterr()
+
+    events = _trace_fsyncs_and_attestations(monkeypatch)
+    assert _census(monkeypatch, capture, universe, out_root) == 0, (
+        "the partial residue rolls forward and completes"
+    )
+    commits = _fsync_positions(events, _dir_identity(out_root))
+    assert commits, (
+        "a roll-forward retry attests success without ever fsyncing out_root: "
+        "the digest entry the interrupted run never committed stays "
+        "uncommitted behind an acknowledged exit 0"
+    )
+    attestations = _attestation_positions(events)
+    assert attestations, "the roll-forward printed its exit-0 summary"
+    assert commits[-1] < attestations[0], "the durable commit must precede the exit-0 attestation"
+
+
+def test_a_fresh_hierarchy_that_creates_out_root_commits_its_entry_in_the_parent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F6 scenario (b): --out-root names a hierarchy that does not exist
+    yet, so out_dir.mkdir(parents=True) creates an ancestor AND out_root
+    ITSELF. Every directory the hierarchy creates is committed in ITS parent
+    (traced by real directory identity against the creation count), and the
+    digest entry is committed in out_root before the exit-0 attestation."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A])
+    ancestor = tmp_path / "fresh"
+    out_root = ancestor / "census-out"  # neither exists yet
+    created = {"count": 0}  # successful os.mkdir calls only (failures raise)
+    fsynced: list[tuple[tuple[int, int], int]] = []  # (dir identity, creations so far)
+    real_mkdir, real_fsync = os.mkdir, os.fsync
+
+    def traced_mkdir(path, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        real_mkdir(path, mode, dir_fd=dir_fd)
+        created["count"] += 1
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        fsynced.append(((held.st_dev, held.st_ino), created["count"]))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "mkdir", traced_mkdir)
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    assert _census(monkeypatch, capture, universe, out_root) == 0
+    monkeypatch.undo()
+
+    assert created["count"] == 3, (
+        "the fresh hierarchy creates exactly the ancestor, out_root, and the digest directory"
+    )
+    # committing a created directory's ENTRY means fsyncing the PARENT that
+    # holds it — traced by the parent's real directory identity
+    assert any(identity == _dir_identity(tmp_path) and count >= 1 for identity, count in fsynced), (
+        "the created ancestor's entry is never committed in ITS parent "
+        f"({tmp_path}): a reboot can drop it together with everything below"
+    )
+    # THE F6 (b) core: out_root's OWN entry, committed in ITS parent
+    assert any(identity == _dir_identity(ancestor) and count >= 1 for identity, count in fsynced), (
+        "out_root's own entry in its parent is never committed: the round-12 "
+        "fsync covered out_root's CONTENTS, not the entry that names out_root "
+        "itself — a reboot can lose the whole output root behind an "
+        "acknowledged exit 0"
+    )
+    assert any(
+        identity == _dir_identity(out_root) and count >= created["count"]
+        for identity, count in fsynced
+    ), (
+        "the digest entry is never committed in out_root after the hierarchy "
+        "created it — an acknowledged exit-0 publication can be lost to a "
+        "reboot"
+    )

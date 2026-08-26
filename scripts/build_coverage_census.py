@@ -1229,6 +1229,48 @@ def _open_directory_nofollow(path: Path) -> int:
     return fd
 
 
+def _absent_output_ancestors(out_dir: Path) -> tuple[Path, ...]:
+    """R15 review fix (2026-08-25, finding 6, R14): the ancestors of the
+    digest directory that do NOT exist yet — the components
+    ``out_dir.mkdir(parents=True)`` is about to create, OUTERMOST FIRST.
+
+    Snapshotted BEFORE the mkdir: the commit walk below must fsync the parent
+    of every component THIS run creates (out_root itself, and deeper
+    ancestors when ``--out-root`` names a hierarchy that does not exist
+    yet). The pre-fix fsyncs covered the digest directory's own entries and
+    out_root's contents — never the entry of out_root (or of any ancestor)
+    in the directory that holds it."""
+    absent: list[Path] = []
+    for ancestor in out_dir.parents:
+        if ancestor.exists():
+            break
+        absent.append(ancestor)
+    absent.reverse()
+    return tuple(absent)
+
+
+def _commit_created_output_entries(created: tuple[Path, ...]) -> None:
+    """R15 review fix (2026-08-25, finding 6, R14): commit every directory
+    entry the output hierarchy just created IN THE PARENT THAT HOLDS IT — a
+    component-wise no-follow walk (``_open_directory_nofollow``) to each
+    created directory's parent, then ``fsync`` of that parent.
+
+    ``mkdir(parents=True)`` can create ``out_root`` ITSELF (and deeper
+    ancestors), and the round-12 out_root fsync covered only out_root's
+    CONTENTS, never out_root's own entry in ITS parent — so a reboot could
+    drop the acknowledged publication together with the whole output root.
+    Outermost first: a parent entry is committed before the children named
+    inside it. An ``OSError`` from the walk or the fsync propagates to the
+    caller's exit-4 custody-refusal family: nothing attests over an
+    uncommitted hierarchy."""
+    for directory in created:
+        parent_fd = _open_directory_nofollow(directory.parent)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+
 def _read_all_nofollow(dir_fd: int, name: str) -> bytes:
     """One full O_NOFOLLOW read of ``name`` inside the custody dir fd."""
     try:
@@ -1540,7 +1582,25 @@ def main(argv: list[str] | None = None) -> int:
         print(f"MANIFEST REFUSED: {exc}", file=sys.stderr)
         return 2
     if fresh_publication:
+        # R15 review fix (2026-08-25, finding 6, R14): mkdir(parents=True)
+        # can create out_root ITSELF (and deeper ancestors). Every component
+        # this run creates is committed in ITS parent right here — before
+        # anything is published beneath it — through a component-wise
+        # no-follow walk. A refusal is the exit-4 custody-refusal family:
+        # nothing attests, and the residue a retry then classifies is
+        # nothing but empty directories.
+        absent_ancestors = _absent_output_ancestors(out_dir)
         out_dir.mkdir(parents=True)
+        try:
+            _commit_created_output_entries(absent_ancestors)
+        except OSError as exc:
+            print(
+                f"EMISSION REFUSED: the output hierarchy under {args.out_root} "
+                f"could not be durably created ({exc}) — never attest a "
+                "census over an uncommitted directory chain",
+                file=sys.stderr,
+            )
+            return 4
     # Round-8 review fix (finding 5) + round-11 review fix (finding 9): the
     # three outputs are emitted through CUSTODY writes against the out dir
     # held as a REAL directory fd — the pre-fix write_text calls went through
@@ -1643,16 +1703,21 @@ def main(argv: list[str] | None = None) -> int:
         assert refusal_exit is not None
         return refusal_exit
 
-    # Round-12 review fix (2026-08-25, finding 5, R14): a FRESH publication
-    # commits the digest-directory ENTRY in out_root before success is
-    # declared. Round-11 fsynced the digest directory after the member
-    # renames, but out_dir.mkdir(parents=True) had also created the
-    # `<content-digest>` entry INSIDE out_root, and no fsync ever covered
-    # out_root itself — a reboot right after an acknowledged exit 0 could
-    # lose the whole publication. A roll-forward does not need this: its
-    # digest entry was created by the interrupted run and the residue is
-    # classified against it, never re-created here.
-    if fresh_publication:
+    # R15 review fix (2026-08-25, finding 6, R14): the digest entry is
+    # committed in out_root on EVERY path that attests — fresh publication,
+    # idempotent recovery, and roll-forward alike. Round-12 (finding 5) added
+    # this fsync but gated it on `fresh_publication`, a flag fixed BEFORE the
+    # residue classification: a first invocation killed after the members
+    # were published but before this fsync left the digest entry uncommitted,
+    # the retry classified that residue (idempotent complete or roll-forward),
+    # succeeded, and SKIPPED the repairing fsync — a reboot could still lose
+    # the acknowledged publication. The durable commit is now the last
+    # filesystem act before the attestation below, never gated on how THIS
+    # invocation classified the residue; the ancestors the hierarchy created
+    # were already committed in their parents at creation time above. An
+    # out_root fsync that fails refuses (exit 4): nothing attests, and the
+    # residue a retry then classifies repairs it.
+    if emitted:
         try:
             out_root_fd = _open_directory_nofollow(args.out_root)
         except OSError as exc:
