@@ -58,7 +58,7 @@ class _Cell:
         self.derived = d if abs_delta is not None else None
 
 
-def _snapshot(abs_delta, volume, *, applicable=True) -> CandidateSnapshot:
+def _snapshot(abs_delta, volume, *, applicable=True, dollar_volume="sentinel") -> CandidateSnapshot:
     contract = standard_call(expiration=date(2024, 5, 15))
     return CandidateSnapshot(
         contract=contract,
@@ -72,7 +72,9 @@ def _snapshot(abs_delta, volume, *, applicable=True) -> CandidateSnapshot:
         same_day_volume_applicable=applicable,
         bid=None,
         ask=None,
-        underlying_20d_median_dollar_volume=AsOf(Decimal("0"), DECISION_AT),
+        underlying_20d_median_dollar_volume=(
+            AsOf(Decimal("0"), DECISION_AT) if dollar_volume == "sentinel" else dollar_volume
+        ),
         spans_earnings=AsOf(False, DECISION_AT),
     )
 
@@ -465,3 +467,114 @@ class TestRoundTwoHardening:
         assert by_rule["open_interest"].status == "NOT_EVALUABLE"
         assert "987654321" not in by_rule["open_interest"].detail
         assert "value withheld" in by_rule["open_interest"].detail
+
+
+class TestUnderlyingLiquidityTerm:
+    """(w7, theory-panel §2 P0-1(a) — 0.2.2 PRE-DRAFT MACHINERY; the yaml
+    itself stays 0.2.1 this wave) The declared disposition of the
+    underlying-liquidity term: the ruled drop-with-disclosure fallback, its
+    incoherence guard, and the byte-identical standing default."""
+
+    def _dropped_protocol(self):
+        """The 0.2.2 SHAPE as machinery proof: the standing 0.2.1 protocol
+        with exactly one added key (research_protocol.yaml is untouched)."""
+        p = load_protocol()
+        lf = p.option_candidate_defaults.liquidity_volume_flow
+        assert lf is not None
+        return p.model_copy(
+            update={
+                "option_candidate_defaults": p.option_candidate_defaults.model_copy(
+                    update={
+                        "liquidity_volume_flow": lf.model_copy(
+                            update={"underlying_liquidity_term": "dropped_no_equity_aggregates"}
+                        )
+                    }
+                )
+            }
+        )
+
+    def test_standing_protocol_defaults_to_evaluated(self):
+        """0.2.1 carries no key, so the default must be 'evaluated' and the
+        built filter must behave exactly as before this seam existed."""
+        from pydantic import ValidationError
+
+        from tree_options.protocol.schema import LiquidityFlowConfig
+
+        lf = load_protocol().option_candidate_defaults.liquidity_volume_flow
+        assert lf is not None
+        assert lf.underlying_liquidity_term == "evaluated"
+        # model_copy skips validation (the round-2 convention): round-trip
+        # through model_validate to make the Literal refusal real
+        with pytest.raises(ValidationError, match="underlying_liquidity_term"):
+            LiquidityFlowConfig.model_validate(
+                {**lf.model_dump(), "underlying_liquidity_term": "sometimes"}
+            )
+
+    def test_dropped_term_answers_not_applicable_with_disclosure(self, synthetic_calendar):
+        d = CandidateFilter.from_protocol_volume_flow(
+            synthetic_calendar, self._dropped_protocol()
+        ).evaluate(
+            _snapshot(
+                AsOf(Decimal("0.45"), RECEIPT, provenance=DERIVED_DELTA_PROVENANCE),
+                AsOf(400, RECEIPT),
+                dollar_volume=None,
+            )
+        )
+        by_rule = {r.rule: r for r in d.results}
+        assert by_rule["underlying_liquidity"].status == "NOT_APPLICABLE"
+        assert "no equity-aggregates dollar volume" in by_rule["underlying_liquidity"].detail
+        # the audit now SAYS the rule is off instead of failing on the sentinel
+        assert d.accepted
+
+    def test_dropped_term_with_a_supplied_value_is_regime_incoherent(self, synthetic_calendar):
+        """A snapshot that still supplies a dollar-volume value (the lane's
+        declared Decimal("0") sentinel, say) contradicts the dropped premise:
+        NOT_EVALUABLE with the value withheld — the disclosure may not paper
+        over real inputs, exactly like the OI/spread incoherence branches."""
+        snap = _snapshot(
+            AsOf(Decimal("0.45"), RECEIPT, provenance=DERIVED_DELTA_PROVENANCE),
+            AsOf(400, RECEIPT),
+        )
+        assert snap.underlying_20d_median_dollar_volume is not None  # the sentinel
+        d = CandidateFilter.from_protocol_volume_flow(
+            synthetic_calendar, self._dropped_protocol()
+        ).evaluate(snap)
+        by_rule = {r.rule: r for r in d.results}
+        assert by_rule["underlying_liquidity"].status == "NOT_EVALUABLE"
+        assert "value withheld" in by_rule["underlying_liquidity"].detail
+        assert not d.accepted
+
+    def test_evaluated_term_keeps_the_sentinel_fail_byte_identically(self, synthetic_calendar):
+        """The standing disposition is untouched: the declared sentinel still
+        FAILs the rule (the honest audit row the lane carries today)."""
+        snap = _snapshot(
+            AsOf(Decimal("0.45"), RECEIPT, provenance=DERIVED_DELTA_PROVENANCE),
+            AsOf(400, RECEIPT),
+        )
+        d = CandidateFilter.from_protocol_volume_flow(synthetic_calendar, load_protocol()).evaluate(
+            snap
+        )
+        by_rule = {r.rule: r for r in d.results}
+        assert by_rule["underlying_liquidity"].status == "FAIL"
+        assert by_rule["underlying_liquidity"].detail == "below min"
+        assert not d.accepted
+
+    def test_unknown_term_token_refuses_at_the_constructor(self, synthetic_calendar):
+        with pytest.raises(ValueError, match="unknown underlying_liquidity_term"):
+            CandidateFilter(
+                synthetic_calendar,
+                dte_min=30,
+                dte_max=60,
+                abs_delta_min=Decimal("0.30"),
+                abs_delta_max=Decimal("0.60"),
+                standard_deliverable_only=True,
+                min_open_interest=500,
+                min_same_day_volume=100,
+                volume_only_if_already_available=True,
+                max_spread_fraction_of_midpoint=Decimal("0.10"),
+                min_underlying_20d_median_dollar_volume=Decimal("0"),
+                exclude_earnings_spanning_hold=True,
+                liquidity_regime="volume_flow",
+                flow_min_session_volume=100,
+                underlying_liquidity_term="dropped_no_bid_ask",
+            )

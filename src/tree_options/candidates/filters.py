@@ -121,6 +121,7 @@ class CandidateFilter:
         exclude_earnings_spanning_hold: bool,
         liquidity_regime: str = "two_sided",
         flow_min_session_volume: int | None = None,
+        underlying_liquidity_term: str = "evaluated",
         accepted_delta_provenance: tuple[str, ...] = ("vendor",),
     ) -> None:
         self.calendar = calendar
@@ -158,6 +159,15 @@ class CandidateFilter:
                 )
         self.liquidity_regime = liquidity_regime
         self.flow_min_session_volume = flow_min_session_volume
+        # 0.2.2 pre-draft machinery (theory-panel §2 P0-1(a)): the declared
+        # disposition of the underlying-liquidity term. "evaluated" is the
+        # standing default both regimes carry today; the
+        # "dropped_no_equity_aggregates" Literal is the ruled fallback and
+        # belongs to the volume_flow regime only — an unknown token refuses
+        # here exactly as the regime name does.
+        if underlying_liquidity_term not in {"evaluated", "dropped_no_equity_aggregates"}:
+            raise ValueError(f"unknown underlying_liquidity_term {underlying_liquidity_term!r}")
+        self.underlying_liquidity_term = underlying_liquidity_term
         self.accepted_delta_provenance = tuple(accepted_delta_provenance)
 
     @classmethod
@@ -225,6 +235,7 @@ class CandidateFilter:
             exclude_earnings_spanning_hold=base.exclude_earnings_spanning_hold,
             liquidity_regime="volume_flow",
             flow_min_session_volume=threshold,
+            underlying_liquidity_term=lf.underlying_liquidity_term,
             accepted_delta_provenance=lf.abs_delta_provenance_accepted,
         )
 
@@ -494,8 +505,44 @@ class CandidateFilter:
                     else:
                         results.append(RuleResult("spread", PASS, f"{fraction:.4f}"))
 
-        # Underlying liquidity.
-        if snap.underlying_20d_median_dollar_volume is None:
+        # Underlying liquidity. In the volume_flow regime the term may be
+        # DROPPED WITH DISCLOSURE (0.2.2 pre-draft machinery, theory-panel
+        # §2 P0-1(a)): a lane with no equity-aggregates dollar-volume source
+        # cannot evaluate the 20d median, and the audit says the term is off
+        # instead of failing forever on the declared sentinel — the same
+        # disclosure the OI/spread drops carry. The branch fires ONLY when
+        # the protocol declares the term dropped; a snapshot that SUPPLIES a
+        # dollar-volume value contradicts the regime's premise and is
+        # incoherent — the disclosure may not paper over real inputs
+        # (mirroring the OI/spread incoherence branches, review P1).
+        if (
+            self.liquidity_regime == "volume_flow"
+            and self.underlying_liquidity_term == "dropped_no_equity_aggregates"
+            and snap.underlying_20d_median_dollar_volume is not None
+        ):
+            results.append(
+                RuleResult(
+                    "underlying_liquidity",
+                    NOT_EVALUABLE,
+                    "regime incoherent: the protocol drops the underlying-liquidity"
+                    " term as having no equity-aggregates source, but the snapshot"
+                    " supplies a dollar-volume value (value withheld: its"
+                    " availability was never checked, and a future value must not"
+                    " leak into the audit)",
+                )
+            )
+        elif (
+            self.liquidity_regime == "volume_flow"
+            and self.underlying_liquidity_term == "dropped_no_equity_aggregates"
+        ):
+            results.append(
+                RuleResult(
+                    "underlying_liquidity",
+                    NOT_APPLICABLE,
+                    "dropped: no equity-aggregates dollar volume on this tier",
+                )
+            )
+        elif snap.underlying_20d_median_dollar_volume is None:
             results.append(RuleResult("underlying_liquidity", NOT_EVALUABLE, "missing"))
         elif not _tz_aware(snap.underlying_20d_median_dollar_volume.available_at):
             results.append(RuleResult("underlying_liquidity", NOT_EVALUABLE, "naive timestamp"))
