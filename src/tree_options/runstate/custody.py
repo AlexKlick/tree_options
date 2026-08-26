@@ -25,7 +25,7 @@ import stat
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import NoReturn
+from typing import Any, NoReturn
 
 from tree_options.data.digest import sha256_hex
 from tree_options.runstate.errors import StoreCustodyError
@@ -793,6 +793,99 @@ def verify_name_binding(
             f"the binding records dev/inode {binding.st_dev}/{binding.st_ino} "
             "— a clone or replacement at the authority name is refused at "
             "open; this is reconciliation, never success"
+        )
+
+
+def check_committed_extent(
+    *,
+    extent_size: int,
+    committed_tail_sha256: str,
+    ledger_bytes: int,
+    view_tail_sha256: str,
+    raw_ledger_bytes: bytes,
+    replay_prefix: Callable[[str], Any],
+    subject: str,
+    origin: str,
+    refuse: Callable[[str], NoReturn],
+) -> None:
+    """R15 (finding 1, CLASS MECHANISM): the three-branch COMMITTED-EXTENT
+    rule every append-only authority ledger applies at open.
+
+    ``extent_size``/``committed_tail_sha256`` are a durable record's memory of
+    the acknowledged ledger state; ``ledger_bytes``/``view_tail_sha256`` are
+    the ledger bytes actually found behind the bound name. The branches:
+
+    * SMALLER — a same-inode prefix rollback or in-place truncation removed
+      committed authority: corruption, never success.
+    * EQUAL — the committed tail at the pinned size must be the pinned one:
+      an in-place rewrite of the anchored bytes is corruption.
+    * LARGER — the benign next-append-after-crash window ONLY when the pinned
+      extent is PROVEN as a prefix: the byte at offset ``extent_size`` must
+      fall exactly on a record boundary, and replaying ONLY the first
+      ``extent_size`` bytes must chain to the pinned ``committed_tail_sha256``.
+      Anything else at a larger size is corruption — a larger file is not
+      evidence that the anchored history is still its prefix (the R15 attack:
+      a re-chained approval plus a padded later record, chain-valid, identity-
+      green, hiding that a consumption was removed).
+
+    ``replay_prefix`` is the caller's OWN verifier (the seal and bars ledgers
+    carry separate domains and record models), returns any object with
+    ``tail_hash``/``tail_damaged`` attributes, and may raise the caller's
+    corruption error for mid-prefix damage. ``origin`` names the durable
+    record the extent is pinned in; ``refuse`` raises in the caller's error
+    family. Defined once here and adopted by every extent check (the seal
+    runstate anchor, the companion identity record) — never re-implemented
+    per ledger.
+    """
+    if ledger_bytes < extent_size:
+        refuse(
+            f"{subject}: the ledger holds {ledger_bytes} bytes but {origin} pins a "
+            f"committed extent of {extent_size} bytes (tail "
+            f"{committed_tail_sha256[:12]}…) — a same-inode PREFIX ROLLBACK or "
+            "in-place truncation removed committed authority; this refusal is "
+            "RECONCILIATION, never success"
+        )
+    if ledger_bytes == extent_size:
+        if view_tail_sha256 != committed_tail_sha256:
+            refuse(
+                f"{subject}: the ledger holds exactly the committed extent of "
+                f"{extent_size} bytes but its committed tail is "
+                f"{view_tail_sha256[:12]}… while {origin} pins "
+                f"{committed_tail_sha256[:12]}… — the bytes at the committed "
+                "extent were rewritten in place; this refusal is RECONCILIATION, "
+                "never success"
+            )
+        return
+    # LARGER: the pinned extent must be PROVEN as the ledger's prefix.
+    prefix = bytes(raw_ledger_bytes[:extent_size])
+    if extent_size > 0 and not prefix.endswith(b"\n"):
+        refuse(
+            f"{subject}: the ledger holds {ledger_bytes} bytes, larger than the "
+            f"committed extent of {extent_size} bytes pinned by {origin}, but the "
+            "byte at the extent's edge does not fall on a record boundary — the "
+            "anchored prefix is not proven; this refusal is RECONCILIATION, "
+            "never success"
+        )
+    try:
+        prefix_view = replay_prefix(prefix.decode("utf-8", errors="replace"))
+    except Exception as exc:
+        refuse(
+            f"{subject}: the ledger holds {ledger_bytes} bytes, larger than the "
+            f"committed extent of {extent_size} bytes pinned by {origin}, and the "
+            f"anchored prefix does not replay ({exc}) — a larger ledger is not "
+            "proof the anchored history survives; this refusal is RECONCILIATION, "
+            "never success"
+        )
+    if getattr(prefix_view, "tail_damaged", True) or prefix_view.tail_hash != committed_tail_sha256:
+        refuse(
+            f"{subject}: the ledger holds {ledger_bytes} bytes, larger than the "
+            f"committed extent of {extent_size} bytes (tail "
+            f"{committed_tail_sha256[:12]}…) pinned by {origin}, but replaying "
+            f"only the pinned extent chains to tail {prefix_view.tail_hash[:12]}… "
+            f"(damaged tail: {prefix_view.tail_damaged}) — the first "
+            f"{extent_size} bytes are not the anchored history, so the larger "
+            "size hides a rewrite of committed authority; this refusal is "
+            "RECONCILIATION, never success"
         )
 
 

@@ -62,10 +62,14 @@ journal:
   tail hash), advanced at every successful append: at open, a ledger
   SMALLER than the anchored extent — or one holding exactly the anchored
   bytes with a different committed tail — is a corruption-class refusal.
-  A ledger LARGER than the anchored extent with a valid chain is the
-  benign next-append-after-crash window (the ledger fsync landed, the
-  anchor update did not): re-derived, accepted, re-anchored at the next
-  append.
+  A ledger LARGER than the anchored extent is the benign
+  next-append-after-crash window (the ledger fsync landed, the anchor
+  update did not) ONLY when the anchored extent is PROVEN as its prefix
+  (R15, finding 1, via ``custody.check_committed_extent``): the pinned
+  size must fall on a record boundary and replaying ONLY the pinned bytes
+  must chain to the pinned committed tail. Anything else at a larger size
+  — e.g. a re-chained approval padded past the extent by a later record —
+  refused; it is then re-anchored at the next append.
 
 Record kinds:
 
@@ -286,10 +290,14 @@ def read_ledger(root: Path) -> LedgerView:
     # Tolerant decode: a torn final append may have cut mid-UTF-8 byte; the
     # replacement chars fail JSON decode and classify as a torn tail, while a
     # mid-file undecodable line stays LEDGER_CORRUPT.
-    view = _replay_text(b"".join(chunks).decode("utf-8", errors="replace"))
-    # Round-12 (finding 1, R14): a valid prefix is not committed authority —
-    # the anchored extent must still be there in full.
-    _refuse_anchor_extent_rollback(root, ledger_bytes=offset, view=view)
+    raw = b"".join(chunks)
+    view = _replay_text(raw.decode("utf-8", errors="replace"))
+    # Round-12 (finding 1, R14) + R15 (finding 1): a valid prefix is not
+    # committed authority — the anchored extent must still be there in full,
+    # and a ledger LARGER than it must PROVE the anchored prefix.
+    _refuse_anchor_extent_rollback(
+        root, ledger_bytes=offset, view=view, raw_ledger_bytes=raw
+    )
     return view
 
 
@@ -718,43 +726,47 @@ def _check_anchor_extent(
     *,
     ledger_bytes: int,
     view: LedgerView,
+    raw_ledger_bytes: bytes,
 ) -> None:
-    """Round-12 review fix (2026-08-25, finding 1, R14): the anchored
-    COMMITTED EXTENT — the same-inode prefix-rollback closer.
+    """Round-12 review fix (2026-08-25, finding 1, R14) + R15 (2026-08-25,
+    finding 1): the anchored COMMITTED EXTENT — the same-inode prefix-rollback
+    closer, all three branches.
 
     The identity fields bind which inode the ledger name maps to, but not
     how much of it was committed, and ``_replay_text`` accepts any valid
     hash-chain prefix: truncating the ledger in place and rewriting only the
     original approval line kept the inode, the companion, and the anchor
     verifications green while silently un-spending an acknowledged
-    consumption. A ledger SMALLER than the anchored extent is therefore a
-    corruption-class refusal (prefix rollback and in-place truncation both
-    refuse), and a ledger holding EXACTLY the anchored bytes must carry the
-    anchored committed tail. A ledger LARGER than the anchored extent is the
-    benign next-append-after-crash window (the append's fsync landed, the
-    anchor update was interrupted): accepted here, re-anchored at the next
-    append."""
-    if ledger_bytes < record.ledger_size:
-        raise LedgerCorruptError(
-            f"{resolved_root / LEDGER_FILENAME}: the ledger holds {ledger_bytes} bytes "
-            f"but the runstate anchor pins a committed extent of {record.ledger_size} "
-            "bytes (tail "
-            f"{record.committed_tail_sha256[:12]}…) — a same-inode PREFIX ROLLBACK or "
-            "in-place truncation removed committed authority; this refusal is "
-            "RECONCILIATION, never success"
-        ) from None
-    if ledger_bytes == record.ledger_size and view.tail_hash != record.committed_tail_sha256:
-        raise LedgerCorruptError(
-            f"{resolved_root / LEDGER_FILENAME}: the ledger holds exactly the anchored "
-            f"committed extent of {record.ledger_size} bytes but its committed tail is "
-            f"{view.tail_hash[:12]}… while the anchor pins "
-            f"{record.committed_tail_sha256[:12]}… — the bytes at the committed extent "
-            "were rewritten in place; this refusal is RECONCILIATION, never success"
-        ) from None
+    consumption (round-12). R15 closed the LARGER-branch hole: a ledger
+    bigger than the anchored extent used to be accepted as the benign
+    next-append-after-crash window with NO proof that its first
+    ``ledger_size`` bytes were the anchored history — a re-chained approval
+    padded past the anchored size by a later record removed a consumption
+    while every identity check stayed green. All three branches now run
+    through the ONE class mechanism (``custody.check_committed_extent``):
+    SMALLER refuses (rollback), EQUAL refuses a different committed tail
+    (in-place rewrite), LARGER accepts ONLY a PROVEN prefix (the pinned
+    extent falls on a record boundary and replays, alone, to the pinned
+    committed tail)."""
+    custody.check_committed_extent(
+        extent_size=record.ledger_size,
+        committed_tail_sha256=record.committed_tail_sha256,
+        ledger_bytes=ledger_bytes,
+        view_tail_sha256=view.tail_hash,
+        raw_ledger_bytes=raw_ledger_bytes,
+        replay_prefix=_replay_text,
+        subject=str(resolved_root / LEDGER_FILENAME),
+        origin="the runstate anchor",
+        refuse=_binding_refusal,
+    )
 
 
 def _refuse_anchor_extent_rollback(
-    resolved_root: Path, *, ledger_bytes: int, view: LedgerView
+    resolved_root: Path,
+    *,
+    ledger_bytes: int,
+    view: LedgerView,
+    raw_ledger_bytes: bytes,
 ) -> None:
     """The open-side extent rule: verify the replayed view against the
     anchor's committed extent. An ABSENT anchor is already policed by the
@@ -763,7 +775,13 @@ def _refuse_anchor_extent_rollback(
     record = _load_runstate_anchor(resolved_root)
     if record is None:
         return
-    _check_anchor_extent(resolved_root, record, ledger_bytes=ledger_bytes, view=view)
+    _check_anchor_extent(
+        resolved_root,
+        record,
+        ledger_bytes=ledger_bytes,
+        view=view,
+        raw_ledger_bytes=raw_ledger_bytes,
+    )
 
 
 def _commit_anchor_extent(
@@ -1017,17 +1035,21 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                         break
                     chunks.append(chunk)
                     offset += len(chunk)
-                view = _replay_text(b"".join(chunks).decode("utf-8", errors="replace"))
+                raw = b"".join(chunks)
+                view = _replay_text(raw.decode("utf-8", errors="replace"))
                 if view.tail_damaged:
                     raise LedgerCorruptError(
                         "the ledger's final line is torn; reconcile it (append a "
                         "RECONCILIATION_NOTE from a durable root) before any further "
                         "append — appending past it would hide an unacknowledged write"
                     )
-                # Round-12 (finding 1, R14): never append onto a ledger that
-                # no longer holds its anchored committed extent in full — a
-                # rolled-back prefix must not be re-spent by this append.
-                _refuse_anchor_extent_rollback(root, ledger_bytes=offset, view=view)
+                # Round-12 (finding 1, R14) + R15 (finding 1): never append
+                # onto a ledger that no longer holds its anchored committed
+                # extent in full as a PROVEN prefix — a rolled-back or padded
+                # rewrite must not be re-spent by this append.
+                _refuse_anchor_extent_rollback(
+                    root, ledger_bytes=offset, view=view, raw_ledger_bytes=raw
+                )
                 if record.prev_record_sha256 != view.tail_hash:
                     raise LedgerCorruptError(
                         "supplied prev_record_sha256 does not match the verified "

@@ -134,18 +134,51 @@ def test_truncated_final_line_tolerated_and_flagged(ledger_root):
     assert len(view.records) == 2
 
 
-def test_tampered_final_line_is_tail_damaged_not_corrupt(ledger_root):
-    L.append_approval(ledger_root, _identity(), reason="one", at_epoch=T0)
-    L.append_consumption(ledger_root, _identity(), reason="two", at_epoch=T0 + 1)
+def test_tampered_final_line_is_tail_damaged_not_corrupt(ledger_root) -> None:
+    """A tampered FINAL line is tail damage, never mid-file corruption —
+    R15 (finding 1) scopes the tolerance: the damaged line must lie BEYOND
+    the anchored committed extent, because only then was it never
+    acknowledged. The fixture lands a third record the way the interrupted
+    append does (direct write + fsync, no anchor advance), then rewrites
+    that line's reason: the anchored prefix still proves, the tampered line
+    fails chain verification as the FINAL line, and the view reports tail
+    damage with the two committed records intact. A tampered line INSIDE
+    the committed extent is the in-place-rewrite refusal instead (the R15
+    extent tests)."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="one", at_epoch=T0)
+    L.append_consumption(ledger_root, identity, reason="two", at_epoch=T0 + 1)
     path = ledger_root / L.LEDGER_FILENAME
+    anchored_size = path.stat().st_size
+    # the crash window: a chained third record lands and is fsynced on the
+    # ledger, but its anchor update never runs
+    view = L.read_ledger(ledger_root)
+    note = L.LedgerRecord(
+        kind=L.KIND_RECONCILIATION_NOTE,
+        identity=identity,
+        sealed_run_id=sealed_run_id(identity),
+        content_identity=content_identity(identity),
+        reason="operator note",
+        at_epoch=T0 + 2,
+        prev_record_sha256=view.tail_hash,
+    )
+    signed = note.model_copy(update={"record_sha256": L._record_hash(note)})
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(fd, (L._encode(signed) + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    assert path.stat().st_size > anchored_size
+    # tamper the final (never-anchored) line
     lines = path.read_text().splitlines()
     last = json.loads(lines[-1])
     last["reason"] = "never happened"
     lines[-1] = json.dumps(last, sort_keys=True, separators=(",", ":"))
     path.write_text("\n".join(lines) + "\n")
-    view = L.read_ledger(ledger_root)
-    assert view.tail_damaged
-    assert len(view.records) == 1
+    tampered = L.read_ledger(ledger_root)
+    assert tampered.tail_damaged
+    assert len(tampered.records) == 2
 
 
 def test_append_past_torn_tail_refused(ledger_root):
@@ -898,6 +931,96 @@ def test_next_append_after_crash_window_opens_and_reanchors(ledger_root) -> None
     reanchored = json.loads(L.runstate_anchor_path(ledger_root).read_text(encoding="utf-8"))
     assert reanchored["ledger_size"] == ledger_path.stat().st_size
     assert reanchored["committed_tail_sha256"] == L.read_ledger(ledger_root).tail_hash
+
+
+# ---- R15 (finding 1, class mechanism): a ledger LARGER than the anchored extent
+# must PROVE the anchored prefix ---------------------------------------------------------
+#
+# Round-12 pinned the committed extent but accepted ANY larger ledger as the
+# benign next-append-after-crash window — no proof was demanded that the
+# first ``ledger_size`` bytes were still the anchored history. Attack (no
+# concurrency, same inode): after approval+consumption are anchored at size
+# N, truncate the ledger in place and rewrite a VALID chain — one re-chained
+# APPROVAL plus a re-chained RECONCILIATION_NOTE whose reason pads the file
+# beyond N. The chain verifies, the inode/companion/anchor identities all
+# verify, and G4's authority scan skips non-consumption records
+# (scripts/g4_seal.py ``_check_authority``) — the consumption silently
+# vanished and the one-shot authority is spendable again. The larger branch
+# now demands the PREFIX PROOF: the byte at the pinned extent must fall
+# exactly on a record boundary, and replaying ONLY the pinned extent must
+# chain to the pinned committed tail. Anything else at a larger size is
+# corruption-class refusal.
+
+
+def test_larger_rewrite_beyond_the_anchored_extent_refused_without_prefix_proof(
+    ledger_root,
+) -> None:
+    """The R15 finding-1 attack: a same-inode rewrite that is a fully VALID
+    chain LARGER than the anchored extent, whose first N bytes are NOT the
+    anchored history (the approval line was re-chained, the consumption is
+    gone, a padded note pushes the size past N). Pre-R15 the open accepted it
+    as the benign crash window; post-R15 read AND append refuse on the
+    committed extent and the approval is never re-spent."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="one", at_epoch=T0)
+    L.append_consumption(ledger_root, identity, reason="two", at_epoch=T0 + 1)
+    ledger_path = ledger_root / L.LEDGER_FILENAME
+    anchored_size = ledger_path.stat().st_size
+    before = os.stat(ledger_path)
+
+    def _line(record: L.LedgerRecord) -> tuple[bytes, str]:
+        signed = record.model_copy(update={"record_sha256": L._record_hash(record)})
+        return (L._encode(signed) + "\n").encode("utf-8"), signed.record_sha256
+
+    approval = L.LedgerRecord(
+        kind=L.KIND_APPROVAL,
+        identity=identity,
+        sealed_run_id=sealed_run_id(identity),
+        content_identity=content_identity(identity),
+        reason="one",
+        at_epoch=T0,
+        prev_record_sha256=L.GENESIS_PREV,
+    )
+    approval_line, approval_digest = _line(approval)
+    note_plain = L.LedgerRecord(
+        kind=L.KIND_RECONCILIATION_NOTE,
+        identity=identity,
+        sealed_run_id=sealed_run_id(identity),
+        content_identity=content_identity(identity),
+        reason="",
+        at_epoch=T0 + 2,
+        prev_record_sha256=approval_digest,
+    )
+    plain_len = len(_line(note_plain)[0])
+    pad = anchored_size - len(approval_line) - plain_len + 16
+    assert pad > 0, "fixture: the padded note must be constructible"
+    note = note_plain.model_copy(update={"reason": "pad" + " " * pad})
+    note_line, _ = _line(note)
+    rewritten = approval_line + note_line
+    assert len(rewritten) > anchored_size, "the rewrite must be LARGER than the anchored extent"
+
+    # the attack: truncate in place, rewrite the padded valid chain beyond N
+    fd = os.open(ledger_path, os.O_WRONLY)
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, rewritten)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    after = os.stat(ledger_path)
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino), (
+        "the attack keeps the inode, so every identity check still passes"
+    )
+    with pytest.raises(LedgerCorruptError, match="committed extent"):
+        L.read_ledger(ledger_root)
+    with pytest.raises(LedgerCorruptError, match="committed extent"):
+        L.append_consumption(ledger_root, identity, reason="re-spend", at_epoch=T0 + 3)
+    assert ledger_path.read_bytes() == rewritten, (
+        "a larger rewrite that destroyed the anchored prefix must never gain a "
+        "second consumption — an acknowledged consumption is never silently "
+        "forgotten"
+    )
 
 
 # ---- round-12 (finding 3, R14): first-use namespace creations are
