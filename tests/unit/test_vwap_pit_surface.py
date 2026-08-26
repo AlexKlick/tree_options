@@ -16,6 +16,7 @@ ones.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -32,11 +33,12 @@ from tree_options.data.bars import BarRecord
 from tree_options.data.cboe_eod import publication_instant
 from tree_options.data.massive_overlay import (
     MassiveDerivedOverlay,
+    MassiveOverlayError,
     load_derived_surface,
     vwap_quote_event,
 )
 from tree_options.data.options_pit import NoOptionFileError
-from tree_options.data.vwap_pit_surface import VwapPitSurface
+from tree_options.data.vwap_pit_surface import VwapPitSurface, load_spot_proxy_v2
 from tree_options.options import OptionSignal, OptionsStrategyConfig
 from tree_options.protocol.loader import load_protocol
 from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError, conservative_tick
@@ -598,6 +600,203 @@ def test_participation_cap_is_cumulative_per_contract_session(surface) -> None:
             execution_at=_execution_at(S6),
         )
     assert exc.value.code == "NO_LIQUIDITY"
+
+
+# ---- the optional dollar-volume source (spot_proxy_v2, P0-1(b) seam) ----------------
+#
+# The ruled fallback chain (theory-panel §2 P0-1, "both, staged"): the preferred
+# leg funds real underlying volume via a ~29-call equity-aggregates recapture that
+# lands POST-CLOSEOUT as a `spot_proxy_v2` file beside the spot proxy; until it
+# lands, the declared Decimal("0") sentinel stands and the $50M term honestly FAILs.
+# The fixture needs >= 20 contiguous calendar sessions before the visible one, which
+# the 11-session module fixture cannot carry — hence a dedicated capture here.
+
+
+V2_FIRST = date(2025, 4, 14)  # a Monday
+V2_SESSIONS = tuple(
+    V2_FIRST + timedelta(days=offset)
+    for offset in range(32)  # 4 weeks + the Mon/Tue that complete 22 weekday sessions
+    if (V2_FIRST + timedelta(days=offset)).weekday() < 5
+)[:22]
+assert len(V2_SESSIONS) == 22 and V2_SESSIONS[-1] == date(2025, 5, 13)
+V2_DECISION = V2_SESSIONS[-1]  # close(t) sees t-1's cell: the 21st session
+V2_VISIBLE = V2_SESSIONS[-2]
+V2_CLOSE = "600.00"
+V2_VOLUME = 80_000_000  # a realistic mega-cap session: ~$48B of notional
+V2_WINDOW = V2_SESSIONS[-21:-1]  # the 20 contiguous sessions ending at the visible one
+
+
+def _write_v2_capture(root: Path) -> Path:
+    masters = root / "masters"
+    masters.mkdir(parents=True)
+    (masters / f"spy_{V2_SESSIONS[0]:%Y-%m-%d}.json").write_text(
+        fx.contracts_payload(
+            results=(
+                fx.contract_result(
+                    ticker=_ticker("C", 600),
+                    underlying=SPY,
+                    expiration=f"{EXP:%Y-%m-%d}",
+                    strike="600",
+                    contract_type="call",
+                ),
+            ),
+            as_of=f"{V2_SESSIONS[0]:%Y-%m-%d}",
+        ),
+        encoding="utf-8",
+    )
+    bars = root / "bars"
+    bars.mkdir()
+    rows = tuple(
+        fx.bar(
+            v=FLOW_VOLUME,
+            t=_t(session),
+            vw=_premium("C", 600, session),
+            o=_premium("C", 600, session),
+            c=_premium("C", 600, session),
+            h=str(Decimal(_premium("C", 600, session)) + Decimal("0.10")),
+            low=str(Decimal(_premium("C", 600, session)) - Decimal("0.10")),
+            n="24",
+        )
+        for session in V2_SESSIONS
+    )
+    (bars / "bars_c600.json").write_text(
+        fx.bars_payload(ticker=_ticker("C", 600), results_count=str(len(rows)), results=rows),
+        encoding="utf-8",
+    )
+    (root / "spot_proxy.json").write_text(
+        '{"SPY": {' + ", ".join(f'"{s:%Y-%m-%d}": "{SPOT_LEVEL}"' for s in V2_SESSIONS) + "}}",
+        encoding="utf-8",
+    )
+    return root
+
+
+@pytest.fixture(scope="module")
+def v2_capture(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    return _write_v2_capture(tmp_path_factory.mktemp("vwappitv2") / "capture")
+
+
+def _v2_map(
+    sessions: tuple[date, ...] = V2_SESSIONS,
+    *,
+    close: str = V2_CLOSE,
+    volume: int = V2_VOLUME,
+) -> dict[str, dict[date, tuple[Decimal, int]]]:
+    return {SPY: {session: (Decimal(close), volume) for session in sessions}}
+
+
+def _v2_json(map_: dict[str, dict[date, tuple[Decimal, int]]]) -> str:
+    return json.dumps(
+        {
+            ticker: {
+                f"{session:%Y-%m-%d}": {"close": f"{close}", "volume": volume}
+                for session, (close, volume) in sessions.items()
+            }
+            for ticker, sessions in map_.items()
+        }
+    )
+
+
+def test_load_spot_proxy_v2_parses_the_declared_shape(tmp_path: Path) -> None:
+    path = tmp_path / "spot_proxy_v2.json"
+    path.write_text(_v2_json(_v2_map(V2_SESSIONS[:3])), encoding="utf-8")
+    parsed = load_spot_proxy_v2(path)
+    assert set(parsed) == {SPY}
+    assert parsed[SPY] == {session: (Decimal(V2_CLOSE), V2_VOLUME) for session in V2_SESSIONS[:3]}
+    # a zero-volume session is a real observation, not a gap: it parses
+    quiet = tmp_path / "quiet.json"
+    quiet.write_text('{"SPY": {"2025-04-14": {"close": "600.00", "volume": 0}}}', encoding="utf-8")
+    assert load_spot_proxy_v2(quiet)[SPY][V2_SESSIONS[0]] == (Decimal("600.00"), 0)
+
+
+@pytest.mark.parametrize(
+    ("body", "complaint"),
+    [
+        ('{"SPY": {"2025-04-14": {"close": "600.00"}}}', "close"),
+        ('{"SPY": {"2025-04-14": {"close": "600.00", "volume": -1}}}', "volume"),
+        ('{"SPY": {"2025-04-14": {"close": "600.00", "volume": true}}}', "volume"),
+        ('{"SPY": {"2025-04-14": {"close": "600.00", "volume": "80000000"}}}', "volume"),
+        ('{"SPY": {"2025-04-14": {"close": 600.0, "volume": 1}}}', "close"),
+        ('{"SPY": {"2025-04-14": {"close": "-600.00", "volume": 1}}}', "positive"),
+        ('{"SPY": {"2025-04-14": {"close": "600.00", "volume": 1, "extra": 1}}}', "key"),
+        ('{"SPY": {"not-a-date": {"close": "600.00", "volume": 1}}}', "ISO date"),
+        ("[]", "object"),
+    ],
+)
+def test_load_spot_proxy_v2_refuses_everything_else(
+    tmp_path: Path, body: str, complaint: str
+) -> None:
+    path = tmp_path / "spot_proxy_v2.json"
+    path.write_text(body, encoding="utf-8")
+    with pytest.raises(MassiveOverlayError, match=complaint):
+        load_spot_proxy_v2(path)
+
+
+def test_dollar_volume_source_passes_the_50m_rule(v2_capture, protocol) -> None:
+    """(w3, P0-1(b) preferred leg) With a declared spot_proxy_v2 the
+    underlying-liquidity term is honestly EVALUABLE: the 20-session median of
+    close*volume at realistic mega-cap magnitude clears the protocol's $50M
+    minimum by three orders, under vendor provenance at the T+1 wall of the
+    window's last session."""
+    overlay = load_derived_surface(v2_capture, staleness_sessions=10)
+    adapter = VwapPitSurface(
+        overlay, spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}}, spot_v2=_v2_map()
+    )
+    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
+    stamp = snap.underlying_20d_median_dollar_volume
+    assert stamp is not None
+    assert stamp.value == Decimal("48000000000")  # 20 x an identical 48e9 day
+    assert stamp.provenance == "vendor"
+    assert stamp.available_at == publication_instant(V2_VISIBLE)
+    by_rule = {
+        r.rule: r
+        for r in CandidateFilter.from_protocol_volume_flow(overlay.calendar, protocol)
+        .evaluate(snap)
+        .results
+    }
+    assert by_rule["underlying_liquidity"].status == "PASS"
+
+
+def test_without_the_source_the_sentinel_fail_stands(v2_capture, protocol) -> None:
+    """(w3, P0-1 declared fallback) Same capture, NO spot_proxy_v2: the
+    overlay's Decimal("0") sentinel answers and the rule FAILs "below min" —
+    the term honestly fails until the post-closeout recapture lands."""
+    overlay = load_derived_surface(v2_capture, staleness_sessions=10)
+    adapter = VwapPitSurface(overlay, spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}})
+    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
+    stamp = snap.underlying_20d_median_dollar_volume
+    assert stamp is not None and stamp.value == Decimal("0")
+    by_rule = {
+        r.rule: r
+        for r in CandidateFilter.from_protocol_volume_flow(overlay.calendar, protocol)
+        .evaluate(snap)
+        .results
+    }
+    assert by_rule["underlying_liquidity"].status == "FAIL"
+    assert by_rule["underlying_liquidity"].detail == "below min"
+
+
+def test_dollar_volume_requires_a_contiguous_20_session_window(v2_capture, protocol) -> None:
+    """Fail-closed on availability: a v2 map with a HOLE inside the trailing
+    20 sessions, or one that does not reach 20 sessions back, is not a 20d
+    median — the adapter falls back to the declared sentinel rather than
+    averaging over whatever happened to be captured."""
+    overlay = load_derived_surface(v2_capture, staleness_sessions=10)
+    spot = {SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}}
+    # a hole: drop the 10th session of the required window
+    holed = {SPY: {s: v for s, v in _v2_map()[SPY].items() if s != V2_WINDOW[9]}}
+    short = _v2_map(V2_SESSIONS[:5])  # only 5 sessions of history
+    for source in (holed, short):
+        adapter = VwapPitSurface(overlay, spot=spot, spot_v2=source)
+        snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
+        stamp = snap.underlying_20d_median_dollar_volume
+        assert stamp is not None and stamp.value == Decimal("0"), source.keys()
+        by_rule = {
+            r.rule: r
+            for r in CandidateFilter.from_protocol_volume_flow(overlay.calendar, protocol)
+            .evaluate(snap)
+            .results
+        }
+        assert by_rule["underlying_liquidity"].status == "FAIL"
 
 
 # ---- end to end: the UNMODIFIED backtest over the adapter --------------------------

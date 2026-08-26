@@ -54,10 +54,15 @@ Candidate snapshots are built by
 derived cell (G3, protocol 0.2.0): |delta| under
 `model-derived-from-vwap`, session volume from the bar, bid/ask/OI None —
 the volume-flow filter's NOT_APPLICABLE rows. The dollar-volume stamp is
-the overlay's declared `Decimal("0")` sentinel (this tier never calls the
-equity-aggregates endpoint; the protocol's 50M minimum therefore FAILS the
-rule until an owner ruling says otherwise — an honest audit row, pinned by
-test). `spans_earnings` is None — the honest "no evidence" encoding (w2,
+the DECLARED `spot_proxy_v2` source's 20-session median of close*volume
+(`load_spot_proxy_v2` — the ruled P0-1(b) preferred leg; the capture script
+and the file land post-closeout) whenever that source can answer a true
+contiguous 20-session median, and otherwise the overlay's declared
+`Decimal("0")` sentinel — this tier never calls the equity-aggregates
+endpoint today, so the protocol's 50M minimum FAILs the rule until the
+recapture lands (an honest audit row, pinned by test; the ruled 0.2.2
+fallback drops the term with disclosure instead). `spans_earnings` is None —
+the honest "no evidence" encoding (w2,
 theory-panel P0-2 ruling (ii), owner ruled 2026-08-26): this lane carries
 no earnings calendar, and `AsOf(value=False)` would launder a
 vendor-stamped PASS "no spanning earnings" no source supports (the lane-1
@@ -71,13 +76,16 @@ value.
 
 from __future__ import annotations
 
+import statistics
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import cast
 
 from tree_options.candidates.filters import AsOf, CandidateSnapshot
+from tree_options.data.massive_client import loads_exact
 from tree_options.data.massive_options import (
     MassiveDerivedQuoteLike,
     build_option_candidate_inputs,
@@ -92,8 +100,84 @@ from tree_options.data.massive_overlay import (
 from tree_options.data.options_pit import NoOptionFileError
 from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError
 from tree_options.schemas.options import OptionContract
+from tree_options.time.calendar import NotASessionError
 
 SPOT_SENTINEL_SESSION = date.min  # the flat form's every-session key
+DOLLAR_VOLUME_WINDOW_SESSIONS = 20  # the protocol's 20d median term
+
+
+def load_spot_proxy_v2(path: Path) -> dict[str, dict[date, tuple[Decimal, int]]]:
+    """Parse one `spot_proxy_v2.json` — the OPTIONAL dollar-volume source
+    (theory-panel §2 P0-1, option (b): the ~29-call equity-aggregates
+    recapture that funds the $50M liquidity term AND the real `dol_vol_20`
+    feature in one stroke).
+
+    THE EXACT SHAPE (a declared input, never a vendor quote):
+
+        {"<underlying>": {"<ISO date>": {"close": "<decimal token>",
+                                         "volume": <int>}}}
+
+    - `close` is a STRING carrying the exact decimal token (the house
+      discipline: a JSON number is refused — `loads_exact` never lets a
+      float exist, and this loader additionally requires the token form) —
+      and must be positive;
+    - `volume` is a STRICT int (bools, floats/Decimals, and strings all
+      refuse) and must be >= 0 — a zero-volume session is a real
+      observation, not a gap;
+    - every session object carries EXACTLY the two keys.
+
+    THE FILE AND THE CAPTURE SCRIPT THAT WRITES IT LAND POST-CLOSEOUT
+    (owner ruling 2026-08-26: the running bars-era capture is untouched
+    until it closes). Until a v2 file is declared, the adapter's declared
+    `Decimal("0")` sentinel stands and the $50M term honestly FAILs.
+    """
+    path = Path(path)
+    payload = loads_exact(path.read_bytes())
+    if not isinstance(payload, dict):
+        raise MassiveOverlayError(f"{path.name}: top-level JSON is not an object")
+    parsed: dict[str, dict[date, tuple[Decimal, int]]] = {}
+    for underlying, sessions in payload.items():
+        if not isinstance(underlying, str) or not underlying:
+            raise MassiveOverlayError(f"{path.name}: key {underlying!r} is not a symbol")
+        where = f"{path.name}[{underlying!r}]"
+        if not isinstance(sessions, dict):
+            raise MassiveOverlayError(f"{where}: session map is not an object")
+        rows: dict[date, tuple[Decimal, int]] = {}
+        for raw_session, cell in sessions.items():
+            try:
+                session = date.fromisoformat(str(raw_session).strip())
+            except ValueError as exc:
+                raise MassiveOverlayError(
+                    f"{where}: key {raw_session!r} is not an ISO date"
+                ) from exc
+            if not isinstance(cell, dict) or set(cell) != {"close", "volume"}:
+                raise MassiveOverlayError(
+                    f"{where}[{raw_session!r}]: each session must carry exactly the"
+                    f" keys close+volume, got {sorted(cell) if isinstance(cell, dict) else cell!r}"
+                )
+            close, volume = cell["close"], cell["volume"]
+            if not isinstance(close, str):
+                raise MassiveOverlayError(
+                    f"{where}[{raw_session!r}]: close must be an exact decimal STRING"
+                    f" token, got {type(close).__name__}"
+                )
+            try:
+                close_value = Decimal(close.strip())
+            except ArithmeticError:
+                raise MassiveOverlayError(
+                    f"{where}[{raw_session!r}]: close {close!r} is not a decimal"
+                ) from None
+            if close_value <= 0:
+                raise MassiveOverlayError(
+                    f"{where}[{raw_session!r}]: close {close_value} is not positive"
+                )
+            if type(volume) is not int or volume < 0:
+                raise MassiveOverlayError(
+                    f"{where}[{raw_session!r}]: volume must be a strict int >= 0, got {volume!r}"
+                )
+            rows[session] = (close_value, volume)
+        parsed[underlying] = rows
+    return parsed
 
 
 @dataclass(frozen=True)
@@ -130,10 +214,16 @@ class VwapPitSurface:
         overlay: MassiveDerivedOverlay,
         *,
         spot: Mapping[str, Mapping[date, Decimal]] | None = None,
+        spot_v2: Mapping[str, Mapping[date, tuple[Decimal, int]]] | None = None,
     ) -> None:
         self._overlay = overlay
         self._spot: dict[str, dict[date, Decimal]] = {
             underlying: dict(sessions) for underlying, sessions in (spot or {}).items()
+        }
+        # (w3) the OPTIONAL dollar-volume source (see `load_spot_proxy_v2`):
+        # None keeps the declared Decimal("0") sentinel — the ruled fallback.
+        self._spot_v2: dict[str, dict[date, tuple[Decimal, int]]] = {
+            underlying: dict(sessions) for underlying, sessions in (spot_v2 or {}).items()
         }
 
     # ---- identity / delegation ------------------------------------------------
@@ -288,6 +378,37 @@ class VwapPitSurface:
 
     # ---- candidate snapshots ------------------------------------------------------
 
+    def _dollar_volume_as_of(
+        self, underlying_id: str, visible_session: date, received: datetime
+    ) -> AsOf | None:
+        """The ruled P0-1(b) dollar-volume stamp: the 20-session median of
+        close*volume over the CONTIGUOUS calendar window ending at the
+        visible session, vendor-observed, available at the window's last
+        session's T+1 wall (`received`).
+
+        Fail-closed on availability (never a median over whatever happened
+        to be captured): None when no v2 source is declared for the
+        underlying, when the visible session is not a calendar session, or
+        when the trailing 20 calendar sessions are not ALL present in the
+        declared map — the caller then answers the overlay's declared
+        sentinel and the rule fails honestly."""
+        rows = self._spot_v2.get(underlying_id)
+        if not rows:
+            return None
+        calendar = self._overlay.calendar
+        try:
+            end_ordinal = calendar.ordinal(visible_session)
+        except NotASessionError:
+            return None
+        start_ordinal = end_ordinal - DOLLAR_VOLUME_WINDOW_SESSIONS + 1
+        if start_ordinal < 0:
+            return None
+        window = calendar.sessions()[start_ordinal : end_ordinal + 1]
+        if any(session not in rows for session in window):
+            return None
+        median = statistics.median([rows[session][0] * rows[session][1] for session in window])
+        return AsOf(value=median, available_at=received, provenance="vendor")
+
     def candidate_snapshot(
         self, contract: OptionContract, decision_session: date
     ) -> CandidateSnapshot:
@@ -303,9 +424,18 @@ class VwapPitSurface:
                 f"no captured session for {underlying} visible at {decision_at}"
             )
         received = self._overlay.publication_of(session)
-        dollar_volume = AsOf(
-            value=self._overlay.median_dollar_volume(underlying, session),
-            available_at=received,
+        # (w3) the ruled P0-1 chain: the declared v2 dollar-volume source
+        # when it can answer a true 20-session median, else the overlay's
+        # declared Decimal("0") sentinel — the term fails honestly until the
+        # post-closeout equity-aggregates recapture lands.
+        sourced = self._dollar_volume_as_of(underlying, session, received)
+        dollar_volume = (
+            sourced
+            if sourced is not None
+            else AsOf(
+                value=self._overlay.median_dollar_volume(underlying, session),
+                available_at=received,
+            )
         )
         # (w2, theory-panel P0-2 ruling (ii), owner ruled 2026-08-26): the
         # honest "no evidence" encoding. This lane carries no earnings
@@ -351,8 +481,10 @@ class VwapPitSurface:
 
 
 __all__ = [
+    "DOLLAR_VOLUME_WINDOW_SESSIONS",
     "SPOT_SENTINEL_SESSION",
     "VwapChainEntry",
     "VwapMarkQuote",
     "VwapPitSurface",
+    "load_spot_proxy_v2",
 ]
