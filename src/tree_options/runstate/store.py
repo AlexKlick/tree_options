@@ -201,6 +201,7 @@ class RunStore:
             create=True,
             run_id=identity.run_id,
             purpose="run-state root",
+            durable=True,
         )
         assert root_fd is not None
         store_fd: int | None = None
@@ -278,6 +279,7 @@ class RunStore:
             create=False,
             run_id=run_id,
             purpose="run-state store",
+            durable=True,
         )
         if store_fd is None:
             raise UnknownRunError(run_id)
@@ -306,12 +308,19 @@ class RunStore:
 
     @contextmanager
     def _bound_store(self) -> Iterator[int]:
-        """Open and re-bind this object to immutable run.json under one FD."""
+        """Open and re-bind this object to immutable run.json under one FD.
+
+        R15 (finding 2): the store-dir walk is a DURABLE TRAVERSAL — every
+        traversed component's entry is committed in its parent on both the
+        created and existing-open branches, so a component a prior
+        invocation left between its mkdir and its parent fsync is repaired
+        here (restart closure for the run-state authority namespace)."""
         fd = custody.open_directory(
             self.dir,
             create=False,
             run_id=self.identity.run_id,
             purpose="run-state store",
+            durable=True,
         )
         if fd is None:
             raise UnknownRunError(self.identity.run_id)

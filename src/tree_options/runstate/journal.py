@@ -8,6 +8,15 @@ The journal is the authority (handoff constraint 9: never `/tmp`). Design:
   record without its hash)` and `prev_record_sha256` chaining to its
   predecessor (genesis chains to 64 zeros). Replay verifies BOTH, so a
   single tampered or reordered record anywhere is detected.
+* R15 (finding 5, 2026-08-25): the companion identity record beside the
+  journal carries its COMMITTED EXTENT (`extent_size` +
+  `committed_tail_sha256`, the seal convention) — written at creation over
+  the empty extent, advanced after each append's data fsync + final-name
+  check, and verified at every replay/append by the three-branch class
+  extent check (`custody.check_committed_extent`): a same-inode prefix
+  rollback, an in-place rewrite of the pinned bytes, or an unproven larger
+  rewrite refuses, while the benign next-append-after-crash window (a torn
+  tail beyond the pinned extent) is accepted only through the prefix proof.
 * A torn FINAL line (crash mid-append: undecodable JSON, bad hash, or a
   broken chain) is *tolerated and reported* (`tail_damaged=True`) — it was
   never acknowledged. The same damage in a non-final record is
@@ -25,8 +34,10 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 from tree_options.data.digest import sha256_hex
 from tree_options.runstate import custody
@@ -84,7 +95,13 @@ def _store_fd(
     create: bool,
     supplied: int | None,
 ) -> tuple[int | None, bool]:
-    """Return (fd, owned): supplied FDs stay owned by their caller."""
+    """Return (fd, owned): supplied FDs stay owned by their caller.
+
+    R15 (finding 2, 2026-08-25): the journal's store-dir walk is a DURABLE
+    TRAVERSAL — every traversed component's entry is committed in its parent
+    on BOTH branches (created and existing-open), so a reboot can no longer
+    drop a store component a prior invocation left between its mkdir and
+    its parent fsync (restart closure for the journal's authority tree)."""
     if supplied is not None:
         return supplied, False
     return (
@@ -93,6 +110,7 @@ def _store_fd(
             create=create,
             run_id=run_id,
             purpose="run-state store",
+            durable=True,
         ),
         True,
     )
@@ -100,7 +118,7 @@ def _store_fd(
 
 def _load_or_bind_journal_name(
     store_dir: Path, dir_fd: int, journal_fd: int, *, run_id: str
-) -> None:
+) -> custody.NameBinding:
     """Round-11 review fix (2026-08-25, finding 3): the journal's durable
     name→inode binding — the successor-window closer.
 
@@ -116,6 +134,10 @@ def _load_or_bind_journal_name(
     wrong inode, so it is refused at the next open and can never gain
     authority. An unbound NON-EMPTY journal is reconciliation, never an
     append and never a silent re-bind.
+
+    R15 (finding 5): returns the binding so the caller runs the
+    committed-extent check against it and advances it after each append —
+    the companion is this journal's ONLY durable extent record.
     """
     purpose = "journal.jsonl authority"
     binding = custody.load_name_binding(
@@ -130,27 +152,29 @@ def _load_or_bind_journal_name(
                 "binding — an unbound journal is never appended or re-bound in "
                 "place; reconcile with the owner",
             )
-        custody.bind_name_identity(
+        return custody.bind_name_identity(
             store_dir, dir_fd, JOURNAL_FILENAME, journal_fd, run_id=run_id, purpose=purpose
         )
-    else:
-        custody.verify_name_binding(
-            dir_fd,
-            JOURNAL_FILENAME,
-            journal_fd,
-            binding,
-            run_id=run_id,
-            purpose=purpose,
-        )
+    custody.verify_name_binding(
+        dir_fd,
+        JOURNAL_FILENAME,
+        journal_fd,
+        binding,
+        run_id=run_id,
+        purpose=purpose,
+    )
+    return binding
 
 
 def _read_bound_journal_bytes(
     store_dir: Path, dir_fd: int, journal_fd: int, *, run_id: str
-) -> bytes:
+) -> tuple[bytes, custody.NameBinding | None]:
     """The replay-side read: the journal name must still map to its BOUND
     inode while its bytes are read. An EMPTY unbound journal carries no
     authority yet (the creation crash window — bound at the next append); a
-    NON-EMPTY unbound journal is reconciliation, never authority."""
+    NON-EMPTY unbound journal is reconciliation, never authority. Returns
+    the payload with the binding (None when nothing was ever bound) for the
+    caller's committed-extent check (R15, finding 5)."""
     purpose = "journal.jsonl authority"
     binding = custody.load_name_binding(
         store_dir, dir_fd, JOURNAL_FILENAME, run_id=run_id, purpose=purpose
@@ -164,7 +188,7 @@ def _read_bound_journal_bytes(
                 "authority; reconcile with the owner",
             )
         custody.verify_directory_identity(store_dir, dir_fd, run_id=run_id)
-        return b""
+        return b"", None
     custody.verify_name_binding(
         dir_fd,
         JOURNAL_FILENAME,
@@ -182,7 +206,46 @@ def _read_bound_journal_bytes(
         purpose=purpose,
     )
     custody.verify_directory_identity(store_dir, dir_fd, run_id=run_id)
-    return payload
+    return payload, binding
+
+
+def _binding_refusal(run_id: str) -> Callable[[str], NoReturn]:
+    """The committed-extent refusal raises in the journal's corruption family."""
+
+    def refuse(detail: str) -> NoReturn:
+        raise JournalCorruptError(run_id, detail) from None
+
+    return refuse
+
+
+def _check_journal_committed_extent(
+    store_dir: Path,
+    binding: custody.NameBinding,
+    *,
+    ledger_bytes: int,
+    view: JournalView,
+    raw_ledger_bytes: bytes,
+    run_id: str,
+) -> None:
+    """R15 (finding 5): the journal's committed-extent rule — the ONE class
+    mechanism (``custody.check_committed_extent``, R15 finding 1) applied to
+    the journal's companion identity record, its only durable extent record.
+    A valid chain prefix is not committed authority: a same-inode
+    truncation/prefix rollback refuses, an in-place rewrite of the pinned
+    bytes refuses, and a journal LARGER than the pinned extent is accepted
+    only through the prefix proof (the benign next-append-after-crash window
+    — a torn tail beyond the extent)."""
+    custody.check_committed_extent(
+        extent_size=binding.extent_size,
+        committed_tail_sha256=binding.committed_tail_sha256,
+        ledger_bytes=ledger_bytes,
+        view_tail_sha256=view.tail_hash,
+        raw_ledger_bytes=raw_ledger_bytes,
+        replay_prefix=lambda text: _replay_journal_text(text, run_id=run_id),
+        subject=str(store_dir / JOURNAL_FILENAME),
+        origin="the companion identity record",
+        refuse=_binding_refusal(run_id),
+    )
 
 
 def append_record(
@@ -238,7 +301,10 @@ def append_record(
                 # Round-11 (finding 3): bind at creation (empty journal,
                 # before the first append lands) or verify the name still
                 # maps to the bound inode — under the flock either way.
-                _load_or_bind_journal_name(store_dir, dir_fd, fd, run_id=run_id)
+                # R15 (finding 5): the binding is also the journal's durable
+                # COMMITTED-EXTENT record, checked below and advanced after
+                # the append.
+                binding = _load_or_bind_journal_name(store_dir, dir_fd, fd, run_id=run_id)
                 # Round-1 review fix: re-read the locked tail and verify.
                 custody.verify_name_identity(
                     dir_fd,
@@ -261,6 +327,21 @@ def append_record(
                         f"caller's prev_record_sha256 {record.prev_record_sha256[:12]}… "
                         f"does not match the locked tail hash {tail_view.tail_hash[:12]}…",
                     )
+                # R15 (finding 5): never append onto a journal that no longer
+                # holds its committed extent in full as a PROVEN prefix — a
+                # truncated or unproven-larger rewrite must not be re-spent
+                # by this append.
+                locked_raw = custody.read_all(fd)
+                _check_journal_committed_extent(
+                    store_dir,
+                    binding,
+                    ledger_bytes=len(locked_raw),
+                    view=_replay_journal_text(
+                        locked_raw.decode("utf-8", errors="replace"), run_id=run_id
+                    ),
+                    raw_ledger_bytes=locked_raw,
+                    run_id=run_id,
+                )
                 os.lseek(fd, 0, os.SEEK_END)
                 payload = (line + "\n").encode("utf-8")
                 # Round-11 (finding 5): the journal's looped write is now the
@@ -284,6 +365,22 @@ def append_record(
                         "at the verified tail",
                     )
                 custody.verify_directory_identity(store_dir, dir_fd, run_id=run_id)
+                # R15 (finding 5): the append is durable and the name still
+                # maps to the locked inode, so the companion's COMMITTED
+                # EXTENT advances to it now — the last act under the flock.
+                # A refusal here leaves the record durable and the next open
+                # accepting it only through the prefix proof (the crash
+                # window), re-anchoring at the next append.
+                custody.advance_name_binding_extent(
+                    store_dir,
+                    dir_fd,
+                    JOURNAL_FILENAME,
+                    fd,
+                    new_extent_size=len(locked_raw) + len(payload),
+                    new_committed_tail_sha256=record.record_sha256,
+                    run_id=run_id,
+                    purpose="journal.jsonl authority",
+                )
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:
@@ -349,6 +446,32 @@ def _verify_chain(record: JournalRecord, prev_hash: str) -> bool:
     return record.record_sha256 == _record_hash(record)
 
 
+def _replay_journal_text(text: str, *, run_id: str = "?") -> JournalView:
+    """The journal's own replay verifier over decoded text (the local replay
+    function every committed-extent prefix proof reuses — the exact shape
+    ``_replay_bars_text`` gave the bars ledger). The torn-tail rule is
+    unchanged: a damaged FINAL line is reported, never followed; the same
+    damage in a non-final record is corruption."""
+    lines = text.splitlines()
+    records: list[JournalRecord] = []
+    prev_hash = GENESIS_PREV
+    damaged_tail = False
+    for _index, line in enumerate(lines):
+        record = _decode_record(line)
+        is_final = _index == len(lines) - 1
+        if record is None or not _verify_chain(record, prev_hash):
+            if is_final:
+                damaged_tail = True
+                continue  # a torn tail was never acknowledged; exclude it
+            raise JournalCorruptError(
+                run_id,
+                f"journal line {_index + 1} failed decode/hash/chain verification",
+            )
+        records.append(record)
+        prev_hash = record.record_sha256
+    return JournalView(records=tuple(records), tail_hash=prev_hash, tail_damaged=damaged_tail)
+
+
 def replay(
     store_dir: Path,
     *,
@@ -371,7 +494,15 @@ def replay(
     ``_load_or_bind_journal_name``) — a clone installed at the name during a
     prior append's success window has the wrong inode and is refused here,
     so it can never be replayed as authority. A bound name that vanished is
-    refused too; only a never-bound absent name is an empty view."""
+    refused too; only a never-bound absent name is an empty view.
+
+    R15 review fix (2026-08-25, finding 5): the replayed view is verified
+    against the companion's COMMITTED EXTENT (the three-branch class extent
+    check) — a valid complete prefix is not committed authority, so a
+    same-inode truncation/rollback, an in-place rewrite of the pinned bytes,
+    or an unproven larger rewrite refuses here and the store never consumes
+    it. A torn tail BEYOND the pinned extent keeps its damaged_tail
+    semantics (the extent check proves the committed prefix)."""
     dir_fd, owned = _store_fd(
         store_dir,
         run_id=run_id,
@@ -408,31 +539,29 @@ def replay(
             custody.verify_directory_identity(store_dir, dir_fd, run_id=run_id)
             return JournalView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
         try:
-            raw_bytes = _read_bound_journal_bytes(store_dir, dir_fd, journal_fd, run_id=run_id)
+            raw_bytes, binding = _read_bound_journal_bytes(
+                store_dir, dir_fd, journal_fd, run_id=run_id
+            )
         finally:
             os.close(journal_fd)
     finally:
         if owned:
             os.close(dir_fd)
-    raw = raw_bytes.decode("utf-8", errors="replace")
-    lines = raw.splitlines()
-    records: list[JournalRecord] = []
-    prev_hash = GENESIS_PREV
-    damaged_tail = False
-    for _index, line in enumerate(lines):
-        record = _decode_record(line)
-        is_final = _index == len(lines) - 1
-        if record is None or not _verify_chain(record, prev_hash):
-            if is_final:
-                damaged_tail = True
-                continue  # a torn tail was never acknowledged; exclude it
-            raise JournalCorruptError(
-                run_id,
-                f"journal line {_index + 1} failed decode/hash/chain verification",
-            )
-        records.append(record)
-        prev_hash = record.record_sha256
-    return JournalView(records=tuple(records), tail_hash=prev_hash, tail_damaged=damaged_tail)
+    view = _replay_journal_text(raw_bytes.decode("utf-8", errors="replace"), run_id=run_id)
+    # R15 (finding 5): the companion's COMMITTED EXTENT — a valid prefix is
+    # not committed authority, and a journal larger than the pinned extent
+    # must PROVE the pinned prefix (the class extent check, all three
+    # branches). RunStore.open/transition consume only this verified view.
+    if binding is not None:
+        _check_journal_committed_extent(
+            store_dir,
+            binding,
+            ledger_bytes=len(raw_bytes),
+            view=view,
+            raw_ledger_bytes=raw_bytes,
+            run_id=run_id,
+        )
+    return view
 
 
 class Projection(StrictModel):

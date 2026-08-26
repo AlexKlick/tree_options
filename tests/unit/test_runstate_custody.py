@@ -9,6 +9,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import stat
 import sys
 from pathlib import Path
 from uuid import uuid4
@@ -560,11 +561,24 @@ def test_journal_clone_swap_after_the_name_check_is_refused_at_the_next_open(
     before = journal.read_bytes()  # the GENESIS line only
     held = store.dir / f"{J.JOURNAL_FILENAME}.held"
     real_fsync = os.fsync
-    calls = {"n": 0}
+    journal_identity = (os.stat(journal).st_dev, os.stat(journal).st_ino)
+    swapped = {"done": False}
 
     def fsync_swapping_after_the_name_check(fd: int) -> None:
-        calls["n"] += 1
-        if calls["n"] == 2:  # fsync #1 is the journal fd; #2 is the store dir
+        observed = os.fstat(fd)
+        # R15 (findings 2 + 5) changed the fsync sequence: the durable
+        # store-dir walk fsyncs DIRECTORIES on the way in, and the journal
+        # fd's own data fsync precedes the round-8 name check. The first
+        # fsync of a REGULAR file that is NOT the journal inode is the
+        # companion extent advance's temp record — strictly AFTER the name
+        # check has already passed — so the swap lands in the same racing
+        # window by identity, never by call count.
+        if (
+            not swapped["done"]
+            and not stat.S_ISDIR(observed.st_mode)
+            and (observed.st_dev, observed.st_ino) != journal_identity
+        ):
+            swapped["done"] = True
             journal.rename(held)  # the locked fd keeps the inode
             journal.write_bytes(before)  # a byte-copy CLONE at the name
         real_fsync(fd)

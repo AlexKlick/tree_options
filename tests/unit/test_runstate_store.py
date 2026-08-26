@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import os
 import shutil
 from pathlib import Path
 from uuid import uuid4
@@ -322,3 +323,50 @@ def test_journal_name_symlinked_to_a_tmp_chain_refused(root: Path) -> None:
         with contextlib.suppress(OSError):
             journal.unlink()
         shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+# ---- R15 (finding 5): the journal companion carries the COMMITTED EXTENT --------------
+#
+# The runstate journal companion bound name/st_dev/st_ino only, and the
+# store trusted replay's any-valid-prefix acceptance: a same-inode in-place
+# truncation of journal.jsonl to an earlier complete transition opened
+# cleanly, transitioned from the rolled-back tail, and rewrote current.json
+# — accepted history that omits acknowledged lifecycle records. The
+# companion now carries the committed extent (R15 findings 1 + 4, the seal
+# convention) and every replay runs the three-branch class extent check, so
+# RunStore.open consumes only the extent-verified view.
+
+
+def test_open_refuses_a_same_inode_journal_rollback(root: Path) -> None:
+    """The R15 finding-5 attack at the store level: after PLANNED→CAPTURING
+    is acknowledged, journal.jsonl is truncated IN PLACE to the GENESIS line
+    (same inode, so every identity check passes). RunStore.open must refuse
+    on the committed extent — a successor may never re-derive state from a
+    rolled-back tail and overwrite the projection with history that omits
+    the acknowledged transition."""
+    store = RunStore.create(root, _identity(root), now_epoch=T0)
+    store.transition(
+        RunState.CAPTURING,
+        reason="acknowledged",
+        now_epoch=T0 + 1,
+        actor_pid=123,
+        actor_boot_id=BOOT,
+    )
+    journal = root / store.identity.run_id / "journal.jsonl"
+    genesis = journal.read_text().splitlines(keepends=True)[0].encode("utf-8")
+    fd = os.open(journal, os.O_WRONLY)
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, genesis)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+    with pytest.raises(JournalCorruptError, match="committed extent"):
+        RunStore.open(root, store.identity.run_id)
+
+    assert journal.read_bytes() == genesis, (
+        "the rolled-back journal must never gain a successor record — "
+        "acknowledged lifecycle records are never silently forgotten"
+    )
