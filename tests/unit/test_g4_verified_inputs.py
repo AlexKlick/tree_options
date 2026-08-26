@@ -608,3 +608,29 @@ def test_committed_criteria_artifact_matches_its_source_document() -> None:
             f"criterion {criterion.id!r} statement is not a verbatim "
             "(whitespace-unwrapped) transcription of the plan's §4 text"
         )
+
+
+def test_criterion4_carries_the_ratified_strict_per_lane_class_map() -> None:
+    """0.2.1 ratification (owner decision 2026-08-26, dated pre-run): the
+    rejection_paths_live statement must carry EXACTLY the ratified map —
+    50 kept for both lanes, lane 1 = firing parse refusals only with
+    zero-bid as a reported-not-counted audit statistic, lane 2 =
+    zero-volume-bar + MassiveDerivationError + master-row refusals +
+    session_volume_flow below-min FAIL, with no_bar NOT_EVALUABLE
+    disclosed-not-counted."""
+    criteria = verified_inputs.SealedCriteriaArtifact.model_validate_json(
+        (SOURCE_REPO / "data/g4/sealed-criteria.json").read_text(encoding="utf-8")
+    )
+    statement = next(c.statement for c in criteria.criteria if c.id == "rejection_paths_live")
+    for token in (
+        "Pre-run amendment (owner decision 2026-08-26",
+        "stays 50 for BOTH lanes",
+        "STRICT per-lane class map",
+        "Lane 1 map: FIRING parse refusals only are counted",
+        "zero-bid rows are an audit statistic",
+        "one retained session forbids an execution session",
+        "Lane 2 map: zero-volume-bar refusals, MassiveDerivationError, "
+        "master-row refusals, and session_volume_flow below-min FAIL are counted",
+        "no_bar NOT_EVALUABLE rows are disclosed, NOT counted (~32% of rows by construction",
+    ):
+        assert token in statement, f"the ratified criterion-4 class map must carry {token!r}"

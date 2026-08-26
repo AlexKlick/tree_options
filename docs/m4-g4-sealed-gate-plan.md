@@ -76,8 +76,17 @@ outcome, mutation campaign + clean-clone determinism at the sealed head.
    (contract, bar session) never exceeds the bar's observed volume.
 4. `rejection_paths_live` — zero-volume/unfillable and provenance-refusal
    paths fire ≥ 50 times pooled per lane (a degenerate all-pass run proves
-   nothing; PENDING owner calibration at 0.2.1 ratification if the real
-   refusal rate makes 50 unreachable — must be re-set BEFORE the run).
+   nothing). Pre-run amendment (owner decision 2026-08-26, dated BEFORE
+   any sealed run — this is the PENDING owner calibration the draft
+   named, re-set before first look): the pooled floor stays 50 for BOTH
+   lanes under a STRICT per-lane class map. Lane 1 map: FIRING parse
+   refusals only are counted; zero-bid rows are an audit statistic —
+   reported, NOT counted (the purchase lane is closed: one retained
+   session forbids an execution session). Lane 2 map: zero-volume-bar
+   refusals, MassiveDerivationError, master-row refusals, and
+   session_volume_flow below-min FAIL are counted; no_bar NOT_EVALUABLE
+   rows are disclosed, NOT counted (~32% of rows by construction — an
+   availability disclosure, never pooled into the floor).
 5. `determinism` — a clean-clone replay of the sealed run reproduces the
    stamped payload hashes byte-identically (the M3 cleanclone pattern).
 6. `mutation_campaign` — at the sealed head: full suite green, registry

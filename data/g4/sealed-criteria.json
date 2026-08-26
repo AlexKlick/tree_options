@@ -3,7 +3,7 @@
   "gate": "M4-G4 sealed real-data gate",
   "note": "Transcribed for preflight AVAILABILITY checking only (PR A/A5): lists the criteria inputs the sealed run requires and the decision-rule structure exactly as pre-declared in the source plan's section 4. NO verdict logic, NO thresholds the plan does not already state, NO outcome data. The plan doc itself is NOT modified by this transcription.",
   "source": "docs/m4-g4-sealed-gate-plan.md",
-  "source_sha256": "8fff037e878e9161efd01282bab07be3747a3e5bd1c2e1d3e24d8f6ba6a7086d",
+  "source_sha256": "74c71f1ff135f070afb5a607ca88cce68bb272425881dbd4f8ea745ca2860614",
   "decision_rule": {
     "evaluation_source": "stamped payload files only",
     "verdict_recording": "verdict PASS or FAIL recorded verbatim",
@@ -27,7 +27,7 @@
     },
     {
       "id": "rejection_paths_live",
-      "statement": "zero-volume/unfillable and provenance-refusal paths fire at least 50 times pooled per lane (a degenerate all-pass run proves nothing; PENDING owner calibration at 0.2.1 ratification if the real refusal rate makes 50 unreachable — must be re-set BEFORE the run)."
+      "statement": "zero-volume/unfillable and provenance-refusal paths fire at least 50 times pooled per lane (a degenerate all-pass run proves nothing). Pre-run amendment (owner decision 2026-08-26, dated BEFORE any sealed run — this is the PENDING owner calibration the draft named, re-set before first look): the pooled floor stays 50 for BOTH lanes under a STRICT per-lane class map. Lane 1 map: FIRING parse refusals only are counted; zero-bid rows are an audit statistic — reported, NOT counted (the purchase lane is closed: one retained session forbids an execution session). Lane 2 map: zero-volume-bar refusals, MassiveDerivationError, master-row refusals, and session_volume_flow below-min FAIL are counted; no_bar NOT_EVALUABLE rows are disclosed, NOT counted (~32% of rows by construction — an availability disclosure, never pooled into the floor)."
     },
     {
       "id": "determinism",
