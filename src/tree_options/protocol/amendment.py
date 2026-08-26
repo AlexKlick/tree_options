@@ -431,6 +431,50 @@ def _commit_created_output_entries(created: tuple[Path, ...]) -> None:
             os.close(parent_fd)
 
 
+def _commit_output_chain(out_root: Path) -> None:
+    """R16 review fix (2026-08-25, finding 2 of the round-14 review): commit
+    the parent of EVERY traversed component of the output chain — the
+    outermost ancestor of ``out_root`` down through ``out_root`` itself,
+    created by THIS run or left behind by a prior crashed one — then
+    out_root's own entries, in ONE component-wise no-follow custody walk.
+
+    A durable traversal mirroring ``runstate.custody.open_directory(
+    durable=True)`` (the round-15 authority-walk contract): the walk fsyncs
+    the PARENT fd for every component it passes through, existing-open
+    components just as much as created ones. Restart closure for this
+    publication walk: the R15 absent-only snapshot committed only components
+    that did not exist yet, so an output root a crashed invocation created
+    without committing stayed uncommitted through every retry — the builder
+    returned the packet (CLI exit 0) over an outer hierarchy a reboot could
+    drop whole. The final ``fsync`` of out_root itself commits the content
+    directory's entry in it. Refusal is the ``OutputRefusedError`` family:
+    the builder never attests a packet over an uncommitted chain."""
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in out_root.parts[1:]:
+            previous = fd
+            try:
+                fd = os.open(component, flags, dir_fd=previous)
+            except OSError as exc:
+                os.close(previous)
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR, errno.ENOENT):
+                    raise OutputRefusedError(
+                        f"output chain component {component!r} of {out_root} "
+                        "could not be opened for the durable commit "
+                        f"(errno {exc.errno}) — never attest a packet over an "
+                        "uncommitted directory chain"
+                    ) from None
+                raise
+            try:
+                os.fsync(previous)
+            finally:
+                os.close(previous)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _emit_custody_write(path: Path, text: str, *, custody_fd: int) -> tuple[int, int]:
     """Round-8 review fix (finding 6) + round-11 review fix (finding 1):
     ONE emit = confinement check (the caller's, FIRST and unchanged) -> the
@@ -1156,29 +1200,30 @@ def build_proposed_amendment(
         )
         packet_identity = _emit_custody_write(packet_path, packet_text, custody_fd=custody_fd)
 
-        # R15 review fix (2026-08-25, finding 7, R14): the four publishes are
-        # RENAMES — directory-entry swaps — and the only fsync in this module
-        # covered the FILE temps: nothing ever committed the directory that
-        # received the renames, nor the entry of that directory in the output
-        # root, before the packet was returned and the CLI exited 0. Before
-        # the builder attests (the final-effect sweep below, then the packet
-        # return) the output hierarchy is committed durably:
+        # R15 review fix (2026-08-25, finding 7, R14) + R16 review fix
+        # (finding 2, R14): the four publishes are RENAMES — directory-entry
+        # swaps — and the only fsync in this module used to cover the FILE
+        # temps. Round-15 added the content directory and the output root;
+        # round-16 completes the class: before the builder attests (the
+        # final-effect sweep below, then the packet return) the FULL output
+        # chain is committed durably, regardless of whether THIS run or a
+        # prior crashed run created each component:
         #   * the content directory — the held custody fd — committing the
         #     rename set;
-        #   * the output root — committing the content directory's entry in
-        #     it, whether this run created that entry or an interrupted
-        #     earlier run left it uncommitted: the retry repairs the chain;
-        #   * every ancestor the hierarchy created this run was already
-        #     committed in its parent at creation time (step 9 above).
+        #   * every component of the output root's own chain — outermost
+        #     ancestor down through the output root itself — committed in
+        #     ITS parent by the durable no-follow walk
+        #     ``_commit_output_chain`` (the same contract as
+        #     ``runstate.custody.open_directory(durable=True)``: an output
+        #     root an interrupted earlier run created without committing is
+        #     repaired by the retry, never attested over uncommitted);
+        #   * the output root's own entries — the walk's final fsync —
+        #     committing the content directory's entry in it.
         # A refusal is the OutputRefusedError family: the builder never
         # returns a packet over an uncommitted directory chain.
         try:
             os.fsync(custody_fd)
-            out_root_fd = _open_output_custody(resolved_out_root)
-            try:
-                os.fsync(out_root_fd)
-            finally:
-                os.close(out_root_fd)
+            _commit_output_chain(resolved_out_root)
         except OSError as exc:
             raise OutputRefusedError(
                 f"the output hierarchy under {resolved_out_root} could not be "

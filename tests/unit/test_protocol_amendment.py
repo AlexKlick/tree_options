@@ -1743,3 +1743,78 @@ def test_a_seeded_uncommitted_residue_retried_repairs_the_chain_before_success(
             "the rename set inside the content directory is committed before "
             "success is returned — pre-fix only the FILE temps were fsynced"
         )
+
+
+def test_a_retry_over_a_seeded_uncommitted_out_root_commits_the_whole_chain_before_the_packet(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """F2 (R16, finding 2 of the round-14 review): the interrupted run died
+    after creating the OUTPUT ROOT itself but before ANY parent commit — not
+    merely the content directory. The retry publishes through the pre-existing
+    out_root and, before the packet-return boundary, commits the FULL chain:
+    every traversed ancestor's entry in ITS parent (the artifacts root
+    included), out_root's own entry in its parent, the content directory's
+    entry in out_root, and the rename set — no attestation until the chain is
+    committed. Pre-fix the absent-ancestor snapshot was EMPTY (everything
+    already existed) and the pre-attestation fsyncs stopped at out_root, so
+    the packet returned over an uncommitted outer hierarchy."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    hash12 = _census_hash(census_bytes)[:12]
+    events: list[tuple[str, object]] = []
+    real_fsync, real_verify = os.fsync, amd._verify_final_effect
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        events.append(("fsync", (held.st_dev, held.st_ino)))
+        real_fsync(fd)
+
+    def verify_recording(*, artifact: str, path: Path, **kwargs: object) -> None:
+        events.append(("verify", artifact))
+        return real_verify(artifact=artifact, path=path, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    monkeypatch.setattr(amd, "_verify_final_effect", verify_recording)
+    with _out_root() as base:
+        out_root = base / "nested"
+        out_root.mkdir()  # the uncommitted residue: out_root exists, its entry in base NEVER committed
+        packet = _build(paths, out_root)
+        assert packet.landed is False
+        content_dir = out_root / hash12
+        required = {
+            "the parent output root's entry in the artifacts root": _dir_identity(
+                REPO_ROOT / "artifacts"
+            ),
+            "the pre-existing output root's entry in ITS parent": _dir_identity(base),
+            "the content directory's entry in the output root": _dir_identity(out_root),
+            "the rename set inside the content directory": _dir_identity(content_dir),
+        }
+        attestation = [
+            index
+            for index, (kind, payload) in enumerate(events)
+            if kind == "verify" and payload == "amendment-packet.json"
+        ]
+        assert attestation, "the packet's final-effect verification was observed"
+        for label, identity in required.items():
+            positions = [
+                index
+                for index, (kind, payload) in enumerate(events)
+                if kind == "fsync" and payload == identity
+            ]
+            assert positions, (
+                f"{label} is never committed before the packet attests: the "
+                "builder returns a packet over an outer hierarchy a prior "
+                "crashed invocation left uncommitted — a reboot can drop the "
+                "acknowledged publication behind an acknowledged exit 0"
+            )
+            assert max(positions) < attestation[0], (
+                f"{label}: no attestation until the chain is committed — the "
+                "durability fsync must precede the packet's final-effect "
+                "verification"
+            )
+        assert sorted(entry.name for entry in content_dir.iterdir()) == [
+            "amendment-diff.md",
+            "amendment-packet.json",
+            "protocol-0.2.1-proposed.yaml",
+            "schema-addition-proposal.yaml",
+        ]
