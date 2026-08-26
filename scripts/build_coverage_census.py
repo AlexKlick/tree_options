@@ -1310,6 +1310,30 @@ def _commit_output_chain(out_root: Path) -> None:
         os.close(fd)
 
 
+def _commit_digest_directory_entries(out_dir: Path) -> None:
+    """R17 review fix (2026-08-25, round-15 finding, P2): commit the digest
+    directory's OWN entries — the three final member names inside it.
+
+    The only digest-directory fsync lived INSIDE the emitter
+    (``_emit_census_set``, after the final rename set). An invocation killed
+    after the LAST rename but before that fsync leaves all three members
+    byte-identical and file-fsynced with their DIRECTORY ENTRIES uncommitted;
+    the retry classifies that set as IDEMPOTENT (``publish is None``), never
+    runs the emitter, and the R16 chain walk commits the digest directory's
+    ENTRY in out_root but not the member entries INSIDE it. This fsync — the
+    digest directory held open as a REAL directory, no-follow, and fsynced by
+    fd — closes that corner on EVERY attesting path (fresh publication,
+    roll-forward, and idempotent recovery alike; on the fresh and roll-forward
+    paths it repeats the emitter's own fsync, which stays). An ``OSError``
+    from the open or the fsync propagates to the caller's exit-4
+    custody-refusal family: nothing attests member names a reboot can drop."""
+    fd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _read_all_nofollow(dir_fd: int, name: str) -> bytes:
     """One full O_NOFOLLOW read of ``name`` inside the custody dir fd."""
     try:
@@ -1767,6 +1791,24 @@ def main(argv: list[str] | None = None) -> int:
                 f"EMISSION REFUSED: the output chain under {args.out_root} "
                 f"could not be durably committed ({exc.strerror}) — never "
                 "attest a census over an uncommitted directory chain",
+                file=sys.stderr,
+            )
+            return 4
+        # R17 review fix (2026-08-25, round-15 finding, P2): the chain walk
+        # above commits the digest directory's ENTRY in out_root — this commit
+        # finishes the walk's job by committing the member entries INSIDE the
+        # digest directory (outermost first, matching the chain: the parent
+        # names the directory, then the directory's own contents), so the
+        # acknowledged member names are durable on every attesting path —
+        # including the idempotent recovery where the emitter (and its own
+        # post-rename fsync) never runs.
+        try:
+            _commit_digest_directory_entries(out_dir)
+        except OSError as exc:
+            print(
+                f"EMISSION REFUSED: the digest directory {out_dir} could not "
+                f"be durably committed ({exc.strerror}) — never attest member "
+                "names the attestation acknowledges but a reboot can drop",
                 file=sys.stderr,
             )
             return 4

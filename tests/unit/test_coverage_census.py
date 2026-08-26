@@ -1974,3 +1974,123 @@ def test_an_exit_5_retry_over_pre_existing_residue_also_commits_the_whole_chain_
         "the incomplete census still emits, attests its summary, and exits 5"
     )
     _assert_full_chain_committed_before_attesting(events, out_root)
+
+
+# ---- R17 (round-15 finding, P2): EVERY attesting path also commits the digest
+# directory's OWN entries — the three member names inside it ------------------------
+#
+# The digest-directory fsync lived ONLY inside the emitter `_emit_census_set`
+# (after the final rename set). A first invocation killed after the LAST
+# rename but BEFORE that fsync leaves all three final names byte-identical
+# and file-fsynced with their DIRECTORY ENTRIES uncommitted (and no stale
+# temps). The retry classifies the complete byte-identical set as IDEMPOTENT
+# and — `publish is None` — never runs the emitter, so the emitter's
+# digest-dir fsync never runs either; the R16 chain walk commits the digest
+# directory's ENTRY in out_root but not the member entries INSIDE it. The
+# attestation (exit 0 or 5) then outruns durability for the acknowledged
+# member names.
+
+
+def _seed_uncommitted_member_entries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, incomplete: bool
+) -> tuple[Path, Path, Path]:
+    """Seed the crash residue of an invocation killed after the LAST rename
+    but before the emitter's post-rename directory fsync: run the census once
+    into a probe root (same process, so the census bytes — and the digest
+    name derived from them — are identical), then create the digest directory
+    by PLAIN mkdir(parents=True) and write all three members byte-identical,
+    each file's OWN fd fsynced, the digest directory itself deliberately NOT
+    fsynced. Returns (capture, universe, the seeded out_root)."""
+    fridays = [SESSION_FRIDAY_A, SESSION_FRIDAY_B]
+    universe = _write_universe(tmp_path, ["SPY"], fridays)
+    if incomplete:
+        capture = _build_capture(
+            tmp_path,
+            underlyings=["SPY"],
+            fridays=fridays,
+            drop_pairs={("SPY", SESSION_FRIDAY_B)},
+        )
+    else:
+        capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=fridays)
+    probe_root = tmp_path / "probe"
+    assert _census(monkeypatch, capture, universe, probe_root) == (5 if incomplete else 0)
+    published = next(iter(probe_root.iterdir()))
+
+    out_root = tmp_path / "out"
+    residue = out_root / published.name
+    residue.mkdir(parents=True)  # plain: no directory commit anywhere
+    for name in CENSUS_MEMBER_NAMES:
+        with open(residue / name, "wb") as handle:
+            handle.write((published / name).read_bytes())
+            handle.flush()
+            os.fsync(handle.fileno())  # each member is file-fsynced
+    # the digest directory's OWN entries stay uncommitted: it is never fsynced
+    return capture, universe, out_root
+
+
+def _assert_digest_dir_committed_before_attesting(
+    events: list[tuple[str, object]], digest_dir: Path
+) -> None:
+    """The digest directory's REAL identity (st_dev, st_ino — fd reuse can
+    never forge a match) is fsynced BEFORE the summary attestation."""
+    commits = _fsync_positions(events, _dir_identity(digest_dir))
+    assert commits, (
+        "the retry attests the byte-identical prior publication without ever "
+        "fsyncing the digest directory itself: the three member entries an "
+        "interrupted first invocation renamed into place but never committed "
+        "stay uncommitted — a reboot can lose the acknowledged member names "
+        "behind an acknowledged exit code"
+    )
+    attestations = _attestation_positions(events)
+    assert attestations, "the retry printed its summary"
+    assert max(commits) < attestations[0], (
+        "the durable commit of the digest directory's member entries must "
+        "precede the attestation, never something the attestation outruns"
+    )
+
+
+def test_an_idempotent_retry_commits_the_digest_dir_entries_before_attesting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Round-15 finding, exit-0 half: the retry over the seeded residue
+    classifies the complete byte-identical set as IDEMPOTENT (`publish is
+    None`, so the emitter — and its digest-dir fsync — never runs) and exits
+    0; that attestation must be preceded by an fsync of the digest directory
+    itself, repairing the member entries the killed invocation left
+    uncommitted."""
+    capture, universe, out_root = _seed_uncommitted_member_entries(
+        tmp_path, monkeypatch, incomplete=False
+    )
+    digest_dir = next(iter(out_root.iterdir()))
+    capsys.readouterr()  # drop the probe invocation's output
+
+    events = _trace_fsyncs_and_attestations(monkeypatch)
+    assert _census(monkeypatch, capture, universe, out_root) == 0, (
+        "the complete byte-identical set is idempotent success"
+    )
+    _assert_digest_dir_committed_before_attesting(events, digest_dir)
+
+
+def test_an_exit_5_idempotent_retry_also_commits_the_digest_dir_entries_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Round-15 finding, exit-5 half: the same seeded residue, but the census
+    itself is INCOMPLETE — the run still emits and ATTESTS (the JSON summary,
+    then exit 5) over the byte-identical prior publication, and that
+    attestation is held to the same contract: no summary until the digest
+    directory's member entries are committed."""
+    capture, universe, out_root = _seed_uncommitted_member_entries(
+        tmp_path, monkeypatch, incomplete=True
+    )
+    digest_dir = next(iter(out_root.iterdir()))
+    capsys.readouterr()  # drop the probe invocation's output
+
+    events = _trace_fsyncs_and_attestations(monkeypatch)
+    assert _census(monkeypatch, capture, universe, out_root) == 5, (
+        "the incomplete census still attests its summary over the prior publication and exits 5"
+    )
+    _assert_digest_dir_committed_before_attesting(events, digest_dir)
