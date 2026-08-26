@@ -61,12 +61,47 @@ def test_chain_verifies_across_many_records(store_dir):
 
 
 def test_single_record_hash_tamper_detected_midfile(store_dir):
-    _append_chain(store_dir, 4)
-    lines = (store_dir / J.JOURNAL_FILENAME).read_text().splitlines()
-    tampered = json.loads(lines[1])
+    """R15 (gate28 M185 kill-isolation): the tampered NON-FINAL record must
+    lie BEYOND the committed extent. Inside it, the R15 extent check
+    refuses first (an acknowledged in-place rewrite) and masks this
+    invariant — the mutant's skip is never reached (gate28: M185 SURVIVED
+    on the old four-appended-records fixture). Beyond the extent the damage
+    was never acknowledged: the prefix proof passes over the two committed
+    records, and only the mid-file chain verification can catch the
+    rewrite, so a hash-tampered record followed by its correctly-chained
+    successor must refuse."""
+    _append_chain(store_dir, 2)
+    path = store_dir / J.JOURNAL_FILENAME
+    # the crash window: records three and four land on the journal
+    # (fsynced), the companion extent advance never runs
+    view = J.replay(store_dir)
+    third = _record(3, view.tail_hash)
+    third_digest = J._record_hash(third)
+    signed3 = third.model_copy(update={"record_sha256": third_digest})
+    fourth = _record(4, third_digest)
+    signed4 = fourth.model_copy(update={"record_sha256": J._record_hash(fourth)})
+    payload = "".join(
+        json.dumps(
+            json.loads(signed.model_dump_json()),
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n"
+        for signed in (signed3, signed4)
+    )
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND)
+    try:
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    # tamper the NON-FINAL record three in place: decode still succeeds,
+    # the stored record_sha256 no longer matches the rewritten content
+    lines = path.read_text().splitlines()
+    tampered = json.loads(lines[2])
     tampered["reason"] = "rewritten history"
-    lines[1] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
-    (store_dir / J.JOURNAL_FILENAME).write_text("\n".join(lines) + "\n")
+    lines[2] = json.dumps(tampered, sort_keys=True, separators=(",", ":"))
+    path.write_text("\n".join(lines) + "\n")
     with pytest.raises(JournalCorruptError):
         J.replay(store_dir)
 
