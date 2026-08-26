@@ -26,6 +26,17 @@
   universe/tenor/lifecycle claims.** The `.json` is the inspector's report
   with bulk per-ticker maps elided to counts (§6) — derived numbers only.
   Raw vendor payloads stay gitignored under `artifacts/`.
+- `m4-b-coverage-census.md` / `.json` — coverage-era closeout census
+  (2026-08-26, code `0c13e8f`): 29×105 = 3,045 expected == observed
+  masters, rows 10,049,160 declared == parsed, pairs COMPLETE 2,871 /
+  SPOT_MISSING_HOLIDAY 145 (expected; 5 holiday Fridays × 29) /
+  **SPOT_MISSING_SESSION 29 = the exit-5 driver** (2026-08-21, all
+  underlyings — vendor spot-close gap; owner escalation, census never
+  re-run) / TRUNCATED, ERROR, MISSING all 0. The `.json` is the census
+  with the 145 uniform holiday findings elided to per-date counts; the
+  29 session findings are retained verbatim. Values taxonomy leaves
+  `flow_min_session_volume` (G3 contradiction quoted verbatim) and
+  `final_holdout_window` to the owner — nothing is ratified here.
 
 See docs/m4-real-data-plan.md (G1/G2 gates; nonclaims §4 carry forward:
 one-session demo subset — schema/coverage evidence only).

@@ -1,0 +1,543 @@
+{
+  "content_sha256": "43b0b040ea3c7936fc08e6b1028ce446e46c99f44ca1d87da9fec02099e12e14",
+  "coverage": {
+    "expected_masters": 3045,
+    "holiday_fridays": [
+      "2025-04-18",
+      "2025-07-04",
+      "2026-04-03",
+      "2026-06-19",
+      "2026-07-03"
+    ],
+    "observed": {
+      "COMPLETE": 2871,
+      "ERROR": 0,
+      "MISSING": 0,
+      "SPOT_MISSING_HOLIDAY": 145,
+      "SPOT_MISSING_SESSION": 29,
+      "TRUNCATED": 0
+    },
+    "session_spot_gaps": [
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "AAPL"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "ADBE"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "AMD"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "AMZN"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "AVGO"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "COST"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "CRM"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "DIS"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "GOOGL"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "HD"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "INTC"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "IWM"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "JPM"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "KO"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "LLY"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "MA"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "META"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "MSFT"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "NFLX"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "NVDA"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "PEP"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "PG"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "QCOM"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "QQQ"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "SPY"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "TSLA"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "UNH"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "V"
+      },
+      {
+        "as_of": "2026-08-21",
+        "classification": "SPOT_MISSING_SESSION",
+        "detail": "session friday with no spot close (vendor availability gap)",
+        "underlying": "XOM"
+      }
+    ],
+    "findings_elided": {
+      "count": 174,
+      "reason": "elided from the durable artifact: the 145 uniform SPOT_MISSING_HOLIDAY entries (5 holiday fridays x 29 underlyings) collapse to their per-date counts; every aggregate computed from them (pair_spot_missing_holiday = 145) is retained verbatim in values. The 29 SPOT_MISSING_SESSION entries - the exit-5 driver - are retained in full below. Reproduce with the command in the .md.",
+      "holiday_fridays": {
+        "2025-04-18": 29,
+        "2025-07-04": 29,
+        "2026-04-03": 29,
+        "2026-06-19": 29,
+        "2026-07-03": 29
+      },
+      "retained_session_findings": [
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "AAPL"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "ADBE"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "AMD"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "AMZN"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "AVGO"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "COST"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "CRM"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "DIS"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "GOOGL"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "HD"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "INTC"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "IWM"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "JPM"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "KO"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "LLY"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "MA"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "META"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "MSFT"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "NFLX"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "NVDA"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "PEP"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "PG"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "QCOM"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "QQQ"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "SPY"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "TSLA"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "UNH"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "V"
+        },
+        {
+          "as_of": "2026-08-21",
+          "classification": "SPOT_MISSING_SESSION",
+          "detail": "session friday with no spot close (vendor availability gap)",
+          "underlying": "XOM"
+        }
+      ]
+    }
+  },
+  "provenance": {
+    "code_sha": "0c13e8f3f3f19e28871eaf2eeeb786f75f092968",
+    "command": [
+      "scripts/build_coverage_census.py",
+      "--capture-dir",
+      "artifacts/m4b-coverage-era"
+    ],
+    "input_manifest_sha256": "1732e1d053d9da3c2d76afe2ac61a78ce8c350026dfc81d3c2a9d586a5c41029",
+    "protocol_hash": "77903fc77dc012cf7353c1dd8c127dfafa6bfe3716efb03e99d48f7aaf0e2ca9",
+    "protocol_raw_sha256": "04743de114aa39f717a528b1aa650ffd4163fce97dadfda7ebc82e093476660f",
+    "report_version": "m4-coverage-census/1",
+    "universe_manifest_sha256": "4553fc7adf35209bd4d43dc7695887fb3cc0345e3d14548c5bc91578833d85a1",
+    "uv_lock_sha256": "e97782ffed746acd068e9662d7a484268e10bfc0ec7cb0f32ef928131cb8270b"
+  },
+  "schema_version": "m4-coverage-census/1",
+  "value_registry": {
+    "bar_volume_observations": "observed_census_fact",
+    "distinct_contracts": "observed_census_fact",
+    "expected_masters": "predeclared_derivation_input",
+    "final_holdout_window": "not_yet_decided",
+    "flow_min_session_volume": "not_yet_decided",
+    "masters_observed": "observed_census_fact",
+    "pair_complete": "observed_census_fact",
+    "pair_error": "observed_census_fact",
+    "pair_missing": "observed_census_fact",
+    "pair_spot_missing_holiday": "observed_census_fact",
+    "pair_spot_missing_session": "observed_census_fact",
+    "pair_truncated": "observed_census_fact",
+    "rows_declared_total": "observed_census_fact",
+    "rows_parsed_total": "observed_census_fact",
+    "spot_holiday_fridays": "observed_census_fact",
+    "spot_sessions_with_close": "observed_census_fact",
+    "universe_fridays": "predeclared_derivation_input",
+    "universe_underlyings": "predeclared_derivation_input"
+  },
+  "values": {
+    "not_yet_decided": {
+      "final_holdout_window": "AWAITING_OWNER_DECLARATION at era-results",
+      "flow_min_session_volume": "AWAITING_OWNER_RULE \u2014 G3 packet Ask D derives flow_min_session_volume from 'era bar-volume distributions', but the coverage era captured --bars 0: no option bar exists until the ATM-grid bars era, which the declared sequence orders AFTER protocol 0.2.1. No derivation rule is repo-declared; the rule is an owner-ratified input bound to this census's content hash (owner decision 2026-08-23, to be resolved at era-results)."
+    },
+    "observed_census_fact": {
+      "bar_volume_observations": {
+        "confidence": "NOT_EVALUABLE",
+        "support": {
+          "bar_files_listed": 0
+        },
+        "v": 0
+      },
+      "distinct_contracts": {
+        "confidence": "PARTIAL",
+        "support": {
+          "rows_parsed_total": 10049160
+        },
+        "v": 1046940
+      },
+      "masters_observed": {
+        "confidence": "PARTIAL",
+        "support": {
+          "capture_complete_false": 0,
+          "expected_masters": 3045,
+          "manifest_entries": 3045,
+          "rows_disagree": 0,
+          "unparseable": 0
+        },
+        "v": 3045
+      },
+      "pair_complete": {
+        "confidence": "PARTIAL",
+        "support": {
+          "expected_pairs": 3045
+        },
+        "v": 2871
+      },
+      "pair_error": {
+        "confidence": "PARTIAL",
+        "support": {
+          "expected_pairs": 3045
+        },
+        "v": 0
+      },
+      "pair_missing": {
+        "confidence": "PARTIAL",
+        "support": {
+          "expected_pairs": 3045
+        },
+        "v": 0
+      },
+      "pair_spot_missing_holiday": {
+        "confidence": "PARTIAL",
+        "support": {
+          "expected_pairs": 3045
+        },
+        "v": 145
+      },
+      "pair_spot_missing_session": {
+        "confidence": "PARTIAL",
+        "support": {
+          "expected_pairs": 3045
+        },
+        "v": 29
+      },
+      "pair_truncated": {
+        "confidence": "PARTIAL",
+        "support": {
+          "expected_pairs": 3045
+        },
+        "v": 0
+      },
+      "rows_declared_total": {
+        "confidence": "PARTIAL",
+        "support": {
+          "manifest_entries": 3045
+        },
+        "v": 10049160
+      },
+      "rows_parsed_total": {
+        "confidence": "PARTIAL",
+        "support": {
+          "masters_parsed": 3045
+        },
+        "v": 10049160
+      },
+      "spot_holiday_fridays": {
+        "confidence": "PARTIAL",
+        "support": {
+          "universe_fridays": 105
+        },
+        "v": 5
+      },
+      "spot_sessions_with_close": {
+        "confidence": "PARTIAL",
+        "support": {
+          "session_pairs": 2900
+        },
+        "v": 2871
+      }
+    },
+    "owner_ratified_policy_value": {},
+    "predeclared_derivation_input": {
+      "expected_masters": {
+        "confidence": "EXACT",
+        "support": {
+          "fridays": 105,
+          "underlyings": 29
+        },
+        "v": 3045
+      },
+      "universe_fridays": {
+        "confidence": "EXACT",
+        "support": {},
+        "v": 105
+      },
+      "universe_underlyings": {
+        "confidence": "EXACT",
+        "support": {},
+        "v": 29
+      }
+    }
+  }
+}
