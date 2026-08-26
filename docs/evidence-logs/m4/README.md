@@ -1,5 +1,14 @@
 # M4 retained evidence logs
 
+- `m4-protocol-021-ratification.md` — protocol 0.2.1 ratification package
+  (2026-08-26, branch `m4/protocol-021-20260826`): the four fixed owner
+  decisions (flow=100 owner_deviation bound to census `43b0b040…`;
+  holdout window A, 13 dates scoped to lane-2 folds; repo-generated
+  calendar; criterion-4 strict per-lane class map), the scoped builder
+  admission (owner_deviation-only against the exit-5 census — derivation
+  and the EXACT-fact gate stay refused), the amendment packet at
+  `artifacts/amendment/43b0b040ea3c/` with hashes, and every full command
+  capture path.
 - `pr13-audit-remediation.md` — exact-head source verification for the four
   merge blockers reported against PR #13 head `f95b99a`: canonical run
   identity, checkout-independent universe identity, component-wise run-state
