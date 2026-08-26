@@ -305,6 +305,30 @@ def _fold_backtest(
     )
 
 
+def _volume_flow_threshold(protocol: ResearchProtocol, override: int | None) -> int:
+    """The lane-2 flow threshold: the explicit hashed override when given,
+    else the protocol's ratified value. Validated by the filter's own rule
+    (int >= 1, never a bool) BEFORE registration, so an illegal deviation
+    refuses loudly instead of failing a registered trial."""
+    lf = protocol.option_candidate_defaults.liquidity_volume_flow
+    if override is not None:
+        if not isinstance(override, int) or isinstance(override, bool) or override < 1:
+            raise ValueError(f"flow_min_session_volume must be an int >= 1, got {override!r}")
+        return override
+    if lf is None:
+        raise ValueError(
+            "protocol carries no liquidity_volume_flow block: the volume-flow"
+            " regime is not ratified"
+        )
+    value = lf.flow_min_session_volume
+    if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+        raise ValueError(
+            "the protocol's flow_min_session_volume is PENDING-era — supply the"
+            " explicit flow_min_session_volume config key to run lane 2"
+        )
+    return value
+
+
 def run_options_trial(
     *,
     dataset: PointInTimeDataset,
@@ -326,9 +350,18 @@ def run_options_trial(
     clock: Callable[[], datetime],
     run_index: int = 1,
     split_override: OptionsSplitOverride | None = None,
+    liquidity_lane: int = 1,
+    flow_min_session_volume: int | None = None,
     allow_dirty: bool = False,
 ) -> OptionsTrialResult:
-    """Register, execute, stamp, and complete one options trial."""
+    """Register, execute, stamp, and complete one options trial.
+
+    `liquidity_lane` selects the candidate-filter regime (G2): 1 keeps the
+    two-sided `CandidateFilter.from_protocol` (byte-identical behavior);
+    2 selects `from_protocol_volume_flow` for the Massive derived (vwap)
+    lane. `flow_min_session_volume` is that regime's EXPLICIT hashed config
+    key — default the protocol's ratified value (100), every deviation
+    stamped into the config hash. Neither key perturbs a lane-1 trial."""
     if world_id != dataset.snapshot_id or world_id != surface.snapshot_id:
         raise ValueError(
             f"world_id {world_id!r} must match dataset {dataset.snapshot_id!r} "
@@ -336,6 +369,16 @@ def run_options_trial(
         )
     if arm not in ("A", "B"):
         raise ValueError(f"arm must be A or B, got {arm!r}")
+    if liquidity_lane not in (1, 2):
+        raise ValueError(f"liquidity_lane must be 1 or 2, got {liquidity_lane!r}")
+    if liquidity_lane == 1 and flow_min_session_volume is not None:
+        raise ValueError(
+            "flow_min_session_volume is a lane-2 config key; lane 1 keeps the"
+            " two-sided regime untouched"
+        )
+    flow_threshold = (
+        _volume_flow_threshold(protocol, flow_min_session_volume) if liquidity_lane == 2 else None
+    )
     if not scored:
         raise ValueError("scored rows are required")
     normalized_sessions = tuple(decision_sessions)
@@ -365,6 +408,17 @@ def run_options_trial(
             "premium_budget_fraction": str(strategy_config.premium_budget_fraction),
         },
         "max_quote_age_seconds": DECLARED_MAX_QUOTE_AGE_SECONDS,  # owner ruling 4
+        **(
+            {
+                # G2: the lane-2 regime and its effective flow threshold are
+                # config keys — a deviation from the two-sided default (or
+                # from the protocol's ratified threshold) rides the hash
+                "liquidity_lane": liquidity_lane,
+                "flow_min_session_volume": flow_threshold,
+            }
+            if liquidity_lane != 1
+            else {}
+        ),
         "model_family": model_family,
         "model_sha256": model_sha256,
         "split": split,
@@ -430,6 +484,11 @@ def run_options_trial(
             "arm": arm,
             "strategy": config["strategy"],
             "max_quote_age_seconds": DECLARED_MAX_QUOTE_AGE_SECONDS,
+            **(
+                {"liquidity_lane": liquidity_lane, "flow_min_session_volume": flow_threshold}
+                if liquidity_lane != 1
+                else {}
+            ),
             "model_family": model_family,
             "model_sha256": model_sha256,
             "split": split,
@@ -461,6 +520,8 @@ def run_options_trial(
             trial_id=trial_id,
             model_family=model_family,
             world_id=world_id,
+            liquidity_lane=liquidity_lane,
+            flow_min_session_volume=flow_threshold,
         )
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifacts_dir / f"{trial_id}.json"
@@ -496,8 +557,18 @@ def _execute(
     trial_id: str,
     model_family: str,
     world_id: str,
+    liquidity_lane: int = 1,
+    flow_min_session_volume: int | None = None,
 ) -> tuple[dict[str, object], _ODStats]:
-    candidate_filter = CandidateFilter.from_protocol(calendar, protocol)
+    if liquidity_lane == 2:
+        # G2: the Massive derived (vwap) lane's ratified regime — OI and the
+        # spread dropped with disclosure, the session's traded contracts as
+        # the liquidity term, model-derived |delta| accepted
+        candidate_filter = CandidateFilter.from_protocol_volume_flow(
+            calendar, protocol, flow_min_session_volume=flow_min_session_volume
+        )
+    else:
+        candidate_filter = CandidateFilter.from_protocol(calendar, protocol)
     world_last_session = max(bar.session for bar in dataset.bars)
     scored_by_session: dict[date, list[ScoredLabel]] = {}
     for row in scored:
@@ -657,4 +728,9 @@ def _execute(
             "hit_rate": aggregate.hit_rate,
         },
     }
+    if liquidity_lane != 1:
+        # G2: the regime deviation is stamped in the payload too, so the
+        # artifact alone discloses which filter produced its audit rows
+        payload["liquidity_lane"] = liquidity_lane
+        payload["flow_min_session_volume"] = flow_min_session_volume
     return payload, stats

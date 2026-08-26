@@ -179,10 +179,24 @@ class CandidateFilter:
         )
 
     @classmethod
-    def from_protocol_volume_flow(cls, calendar, protocol: ResearchProtocol) -> CandidateFilter:
+    def from_protocol_volume_flow(
+        cls,
+        calendar,
+        protocol: ResearchProtocol,
+        *,
+        flow_min_session_volume: int | None = None,
+    ) -> CandidateFilter:
         """Build the G3 volume-flow filter from the protocol's ratified
         regime block. Fails closed (ValueError) while the protocol's
-        flow_min_session_volume is still PENDING-era (None)."""
+        flow_min_session_volume is still PENDING-era (None).
+
+        `flow_min_session_volume` is the trial runner's EXPLICIT hashed
+        config key (G2, mirroring max_quote_age_seconds): when supplied it
+        replaces the protocol value — every deviation rides the caller's
+        config hash, and an illegal override (non-int, bool, < 1) refuses
+        here exactly as `__init__`'s threshold gate does. A supplied
+        override is also the PENDING-era escape hatch: it is the caller
+        owning the threshold, not the protocol defaulting one."""
         d = protocol.option_candidate_defaults
         lf = d.liquidity_volume_flow
         if lf is None:
@@ -190,6 +204,11 @@ class CandidateFilter:
                 "protocol carries no liquidity_volume_flow block: the "
                 "volume-flow regime is not ratified"
             )
+        threshold = (
+            lf.flow_min_session_volume
+            if flow_min_session_volume is None
+            else flow_min_session_volume
+        )
         base = cls.from_protocol(calendar, protocol)
         return cls(
             calendar,
@@ -205,7 +224,7 @@ class CandidateFilter:
             min_underlying_20d_median_dollar_volume=(base.min_underlying_20d_median_dollar_volume),
             exclude_earnings_spanning_hold=base.exclude_earnings_spanning_hold,
             liquidity_regime="volume_flow",
-            flow_min_session_volume=lf.flow_min_session_volume,
+            flow_min_session_volume=threshold,
             accepted_delta_provenance=lf.abs_delta_provenance_accepted,
         )
 
