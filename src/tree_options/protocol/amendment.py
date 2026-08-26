@@ -390,6 +390,47 @@ def _open_output_custody(out_dir: Path) -> int:
     return fd
 
 
+def _absent_output_ancestors(out_dir: Path) -> tuple[Path, ...]:
+    """R15 review fix (2026-08-25, finding 7, R14): the ancestors of the
+    content directory that do NOT exist yet — the components
+    ``out_dir.mkdir(parents=True, exist_ok=True)`` is about to create,
+    OUTERMOST FIRST.
+
+    Snapshotted BEFORE the mkdir so the commit below can fsync the parent of
+    every component THIS run creates: the output root, and deeper ancestors
+    (up to and including ``artifacts/``) when the output root names a
+    hierarchy that does not exist yet."""
+    absent: list[Path] = []
+    for ancestor in out_dir.parents:
+        if ancestor.exists():
+            break
+        absent.append(ancestor)
+    absent.reverse()
+    return tuple(absent)
+
+
+def _commit_created_output_entries(created: tuple[Path, ...]) -> None:
+    """R15 review fix (2026-08-25, finding 7, R14): commit every directory
+    entry the output hierarchy just created IN THE PARENT THAT HOLDS IT — a
+    component-wise no-follow custody walk (``_open_output_custody``) to each
+    created directory's parent, then ``fsync`` of that parent.
+
+    ``mkdir(parents=True)`` can create the output root ITSELF (and deeper
+    ancestors, up to ``artifacts/``), and no fsync anywhere in this module
+    covered those entries — the only one covered the FILE temps. A crash
+    after the acknowledged packet return could lose the rename entries, the
+    content directory, or an ancestor of the output root. Outermost first: a
+    parent entry is committed before the children named inside it. Refusal
+    is the ``OutputRefusedError`` family — the builder never publishes over
+    an uncommitted hierarchy."""
+    for directory in created:
+        parent_fd = _open_output_custody(directory.parent)
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+
+
 def _emit_custody_write(path: Path, text: str, *, custody_fd: int) -> tuple[int, int]:
     """Round-8 review fix (finding 6) + round-11 review fix (finding 1):
     ONE emit = confinement check (the caller's, FIRST and unchanged) -> the
@@ -962,8 +1003,17 @@ def build_proposed_amendment(
     # precreated at the hash dir (or at any output filename) must refuse,
     # never write through (round-3 finding 3).
     out_dir = resolved_out_root / census_hash[:12]
+    # R15 review fix (2026-08-25, finding 7, R14): mkdir(parents=True) can
+    # create the output root ITSELF (and deeper ancestors). Every component
+    # this run creates is committed in ITS parent right here — before
+    # anything is published beneath it — through the same component-wise
+    # no-follow custody walk the emits ride; a refusal is the
+    # OutputRefusedError family, so nothing is ever published over an
+    # uncommitted hierarchy.
+    absent_ancestors = _absent_output_ancestors(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     out_dir = _confine_output(out_dir, out_root=resolved_out_root)
+    _commit_created_output_entries(absent_ancestors)
 
     data: dict[str, Any] = base.model_dump(mode="json")
     data["meta"]["protocol_version"] = PROPOSED_PROTOCOL_VERSION
@@ -1105,6 +1155,36 @@ def build_proposed_amendment(
             json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n"
         )
         packet_identity = _emit_custody_write(packet_path, packet_text, custody_fd=custody_fd)
+
+        # R15 review fix (2026-08-25, finding 7, R14): the four publishes are
+        # RENAMES — directory-entry swaps — and the only fsync in this module
+        # covered the FILE temps: nothing ever committed the directory that
+        # received the renames, nor the entry of that directory in the output
+        # root, before the packet was returned and the CLI exited 0. Before
+        # the builder attests (the final-effect sweep below, then the packet
+        # return) the output hierarchy is committed durably:
+        #   * the content directory — the held custody fd — committing the
+        #     rename set;
+        #   * the output root — committing the content directory's entry in
+        #     it, whether this run created that entry or an interrupted
+        #     earlier run left it uncommitted: the retry repairs the chain;
+        #   * every ancestor the hierarchy created this run was already
+        #     committed in its parent at creation time (step 9 above).
+        # A refusal is the OutputRefusedError family: the builder never
+        # returns a packet over an uncommitted directory chain.
+        try:
+            os.fsync(custody_fd)
+            out_root_fd = _open_output_custody(resolved_out_root)
+            try:
+                os.fsync(out_root_fd)
+            finally:
+                os.close(out_root_fd)
+        except OSError as exc:
+            raise OutputRefusedError(
+                f"the output hierarchy under {resolved_out_root} could not be "
+                f"durably committed ({exc}) — never attest a packet over an "
+                "uncommitted directory chain"
+            ) from None
 
         # FINAL-EFFECT SWEEP (round-11, finding 1): the packet is written
         # LAST, and the sweep AT PACKET RETURN re-verifies ALL FOUR names —

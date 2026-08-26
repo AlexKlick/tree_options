@@ -1624,3 +1624,122 @@ def test_relocated_digest_dir_out_of_artifacts_refused(
             )
     finally:
         shutil.rmtree(moved, ignore_errors=True)
+
+
+# ---- R15 (finding 7, R14): the packet return never attests an uncommitted
+# output hierarchy -----------------------------------------------------------------
+#
+# The four publishes are RENAMES — directory-entry swaps — and the only
+# fsync in the file covered the FILE temps: nothing ever fsynced the content
+# directory that received the renames, nor the entry of that directory in
+# the output root, nor the output root's own entry when the hierarchy
+# created it. A crash after the acknowledged packet return (the CLI then
+# exits 0) could lose the rename entries or the content directory itself.
+
+
+def _dir_identity(path: Path) -> tuple[int, int]:
+    """A directory's real identity — fsyncs are matched by (st_dev, st_ino)
+    so fd reuse can never forge a match (the R14 F3/F5 tracing technique)."""
+    info = os.stat(path)
+    return (info.st_dev, info.st_ino)
+
+
+def test_fresh_publication_commits_the_output_hierarchy_before_the_packet_attests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A fresh publication into an output root that does NOT exist yet (the
+    builder creates the root and the content directory itself): the content
+    directory is fsynced (committing the rename set), every created
+    ancestor's entry is committed in ITS parent, and ALL of it happens
+    before the packet attests — no attestation until the chain is
+    committed."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    hash12 = _census_hash(census_bytes)[:12]
+    events: list[tuple[str, object]] = []
+    real_fsync, real_verify = os.fsync, amd._verify_final_effect
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        events.append(("fsync", (held.st_dev, held.st_ino)))
+        real_fsync(fd)
+
+    def verify_recording(*, artifact: str, path: Path, **kwargs: object) -> None:
+        events.append(("verify", artifact))
+        return real_verify(artifact=artifact, path=path, **kwargs)
+
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    monkeypatch.setattr(amd, "_verify_final_effect", verify_recording)
+    with _out_root() as base:
+        out_root = base / "nested"  # absent: the builder creates it
+        packet = _build(paths, out_root)
+        assert packet.landed is False
+        content_dir = out_root / hash12
+        required = {
+            # committing a created directory's ENTRY = fsyncing its PARENT
+            "the created output root's entry in ITS parent": _dir_identity(base),
+            "the created content directory's entry in the output root": _dir_identity(out_root),
+            "the rename set inside the content directory": _dir_identity(content_dir),
+        }
+        positions = {
+            label: [
+                index
+                for index, (kind, payload) in enumerate(events)
+                if kind == "fsync" and payload == identity
+            ]
+            for label, identity in required.items()
+        }
+        for label, seen in positions.items():
+            assert seen, f"{label} is never fsynced before the packet attests"
+        attestation = [
+            index
+            for index, (kind, payload) in enumerate(events)
+            if kind == "verify" and payload == "amendment-packet.json"
+        ]
+        assert attestation, "the packet's final-effect verification was observed"
+        assert max(index for seen in positions.values() for index in seen) < attestation[0], (
+            "no attestation until the chain is committed: every durability "
+            "fsync must precede the packet's final-effect verification"
+        )
+        assert sorted(entry.name for entry in content_dir.iterdir()) == [
+            "amendment-diff.md",
+            "amendment-packet.json",
+            "protocol-0.2.1-proposed.yaml",
+            "schema-addition-proposal.yaml",
+        ]
+
+
+def test_a_seeded_uncommitted_residue_retried_repairs_the_chain_before_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted earlier run left the content directory in place with
+    its entry in the output root never committed (the kill preceded the
+    output-root fsync). The retry publishes through the existing directory
+    and, before it returns the packet, repairs the chain: the content
+    directory's entry in the output root and the rename set inside it."""
+    census_bytes = _make_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    hash12 = _census_hash(census_bytes)[:12]
+    fsynced: list[tuple[int, int]] = []
+    real_fsync = os.fsync
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        fsynced.append((held.st_dev, held.st_ino))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    with _out_root() as out_root:
+        content_dir = out_root / hash12
+        content_dir.mkdir()  # the uncommitted residue of the interrupted run
+        packet = _build(paths, out_root)
+        assert packet.landed is False
+        assert _dir_identity(out_root) in fsynced, (
+            "the retry repairs the chain: the content directory's entry in "
+            "the output root is committed before success is returned — "
+            "pre-fix no fsync ever covered it"
+        )
+        assert _dir_identity(content_dir) in fsynced, (
+            "the rename set inside the content directory is committed before "
+            "success is returned — pre-fix only the FILE temps were fsynced"
+        )
