@@ -1039,11 +1039,15 @@ def test_bars_final_name_clone_swap_during_append_refused(
 def test_bars_clone_swap_after_the_name_check_is_refused_at_the_next_open(
     scratch_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The racing point is the append's FINAL custody-root fsync, which runs
-    AFTER the round-8 name check has already passed. The racing consumption
-    may still acknowledge (the check already passed); the CONTRACT is the
-    successor — a second launcher against the clone must REFUSE on the
-    durable binding, and the clone must never gain a consumption."""
+    """The racing point is the append's first custody-ROOT-directory fsync
+    AFTER the round-8 name check has already passed (R15: the companion
+    extent advance fsyncs the root after the name check; the final root
+    fsync follows). It is identified by the root's REAL directory identity
+    (st_dev/st_ino), never by call count — the durable-traversal walk (R15,
+    finding 3) adds many earlier fsyncs. The racing consumption may still
+    acknowledge (the check already passed); the CONTRACT is the successor —
+    a second launcher against the clone must REFUSE on the durable binding,
+    and the clone must never gain a consumption."""
     root = scratch_root / "bars-authority"
     fields = dict(
         protocol_hash="p" * 64,
@@ -1055,13 +1059,15 @@ def test_bars_clone_swap_after_the_name_check_is_refused_at_the_next_open(
     ledger_path = root / bm.BARS_LEDGER_FILENAME
     before = ledger_path.read_bytes()  # the APPROVAL line only
     real_fsync = os.fsync
-    calls = {"n": 0}
+    root_identity = (os.stat(root).st_dev, os.stat(root).st_ino)
+    armed = {"done": False}
 
     def fsync_swapping_after_the_name_check(fd: int) -> None:
-        calls["n"] += 1
-        if calls["n"] == 2:  # fsync #1 is the ledger fd; #2 is the root dir
-            held = root / (bm.BARS_LEDGER_FILENAME + ".held")
-            os.rename(ledger_path, held)  # the locked fd keeps the inode
+        held = os.fstat(fd)
+        if not armed["done"] and (held.st_dev, held.st_ino) == root_identity:
+            armed["done"] = True  # after the name check: the companion advance
+            held_name = root / (bm.BARS_LEDGER_FILENAME + ".held")
+            os.rename(ledger_path, held_name)  # the locked fd keeps the inode
             ledger_path.write_bytes(before)  # a byte-copy CLONE at the name
         real_fsync(fd)
 
@@ -1147,6 +1153,65 @@ def test_bars_same_inode_truncation_to_the_approval_line_refused(
         "a truncated ledger must never gain a second consumption — an "
         "acknowledged one-shot launch authority is never silently forgotten"
     )
+
+
+# ---- R15 (finding 3): the bars-authority walk is a DURABLE TRAVERSAL -------------------
+#
+# _open_bars_ledger_root created missing components with os.mkdir and NO
+# parent fsync anywhere; the append fsynced only the bars root itself, and
+# an absent root read as an empty ledger. Attack: fresh artifacts/bars-
+# authority, append approval+consumption, reboot before the root entry is
+# durable in artifacts/ -> the whole root vanishes, the next read is an
+# empty view, and the one-shot launch authority is re-spendable. The walk
+# now applies the same durable-traversal semantics as the seal authority
+# walks (create-branch AND existing-open parent fsyncs) — inline in this
+# walk's local loop, which it must keep for its own error family and
+# absent-root read semantics.
+
+
+def test_fresh_bars_root_first_append_parent_fsyncs_every_created_component(
+    scratch_root: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R15 (finding 3): on a fresh root, the first append creates the
+    bars-authority components. Each created entry must be durably committed
+    in its PARENT before the append can acknowledge — INCLUDING the root's
+    entry in its parent — and merely-OPENED components' entries are
+    committed too (restart closure), observed by REAL directory identity
+    (st_dev/st_ino), never by fd number."""
+    fresh_parent = scratch_root / "fresh"
+    fresh_root = fresh_parent / "bars-authority"
+    created_parents: list[tuple[int, int]] = []
+    fsyncs: list[tuple[tuple[int, int], int]] = []  # (identity, mkdirs-so-far)
+    real_mkdir, real_fsync = os.mkdir, os.fsync
+
+    def traced_mkdir(path, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        real_mkdir(path, mode, dir_fd=dir_fd)  # FileExistsError is not a creation
+        if dir_fd is not None:
+            held = os.fstat(dir_fd)
+            created_parents.append((held.st_dev, held.st_ino))
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        fsyncs.append(((held.st_dev, held.st_ino), len(created_parents)))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "mkdir", traced_mkdir)
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    bm.append_bars_launch_approval(fresh_root, reason="owner approved", at_epoch=T0, **_approval())
+    monkeypatch.undo()
+
+    assert len(created_parents) >= 2, "the fresh-root append creates the root components"
+    for index, parent in enumerate(created_parents):
+        assert any(identity == parent and seq > index for identity, seq in fsyncs), (
+            f"the parent of created bars-authority component #{index + 1} "
+            f"(dev/ino {parent[0]}/{parent[1]}) is never fsynced after the mkdir — "
+            "a reboot can lose the root entry and silently forget an "
+            "acknowledged consumption"
+        )
+    # the recovery invariant: the append succeeded and reads back
+    view = bm.read_bars_ledger(fresh_root)
+    assert [record.kind for record in view.records] == ["BARS_LAUNCH_APPROVAL"]
+    assert not view.tail_damaged
 
 
 def test_bars_short_append_write_is_completed_never_acknowledged_torn(

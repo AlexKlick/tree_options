@@ -1053,7 +1053,21 @@ def _open_bars_ledger_root(root: Path, *, create: bool) -> int | None:
     ``O_NOFOLLOW|O_DIRECTORY`` relative to the previous component's fd;
     ``ELOOP``/``ENOTDIR`` at ANY component refuses naming it, and the
     ``create`` branch mkdirs a missing component one at a time under the
-    walked prefix, re-opening it under the no-follow rule."""
+    walked prefix, re-opening it under the no-follow rule.
+
+    R15 (finding 3, 2026-08-25): the walk is a DURABLE TRAVERSAL — the same
+    semantics ``custody.open_directory(durable=True)`` and the seal
+    ledger-root walk apply. The PARENT fd is fsynced for EVERY successfully
+    traversed component, on BOTH branches (created and existing-open), so a
+    freshly created bars root is committed in ITS parent before the append
+    can acknowledge (pre-R15 a reboot could drop the whole root entry and
+    the next read returned an empty view over an acknowledged consumption),
+    and a residue component a prior invocation left uncommitted is repaired
+    by the next walk that merely opens it. Implemented INLINE in this
+    walk's local loop — it must keep the local component-wise custody walk
+    for its own error family (``LedgerCorruptError``) and its absent-root
+    read semantics; the pattern is the shared mechanism's, not a
+    re-derivation."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
     def _refuse_component(component: str, exc: OSError) -> NoReturn:
@@ -1070,6 +1084,7 @@ def _open_bars_ledger_root(root: Path, *, create: bool) -> int | None:
     fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
     for component in resolved.parts[1:]:
         prev = fd
+        parent_committed = False
         try:
             fd = os.open(component, flags, dir_fd=prev)
         except OSError as exc:
@@ -1081,6 +1096,14 @@ def _open_bars_ledger_root(root: Path, *, create: bool) -> int | None:
                     os.mkdir(component, 0o755, dir_fd=prev)
                 except FileExistsError:
                     pass  # lost race: the no-follow open below refuses a symlink
+                else:
+                    # R15 (finding 3): a freshly created component is
+                    # committed in its PARENT before the walk proceeds —
+                    # otherwise a reboot could drop the root entry together
+                    # with the ledger beside it and the next read would be an
+                    # EMPTY view over an acknowledged consumption.
+                    os.fsync(prev)
+                    parent_committed = True
                 try:
                     fd = os.open(component, flags, dir_fd=prev)
                 except OSError as retry:
@@ -1093,6 +1116,12 @@ def _open_bars_ledger_root(root: Path, *, create: bool) -> int | None:
                 if exc.errno == errno.ENOENT:
                     return None  # absent root on the read path: an empty view
                 raise
+        if not parent_committed:
+            # R15 (finding 3): the component already existed — commit its
+            # entry in the parent before relying on anything beneath it (a
+            # prior invocation may have crashed between its mkdir and this
+            # fsync; restart closure).
+            os.fsync(prev)
         os.close(prev)
     return fd
 
