@@ -48,6 +48,11 @@ from tree_options.data.authority import PointInTimeDataset
 from tree_options.data.options_pit import OptionPitSurface
 from tree_options.evaluation.stats import ScoredLabel, backtest_summary
 from tree_options.options import OptionSignal, OptionsStrategyConfig
+from tree_options.protocol.holdout import (
+    FINAL_HOLDOUT_DATES,
+    FINAL_HOLDOUT_SCOPE,
+    FINAL_HOLDOUT_WINDOW_ID,
+)
 from tree_options.protocol.loader import protocol_hash
 from tree_options.protocol.schema import ResearchProtocol
 from tree_options.protocol.stamping import build_stamp, write_artifact
@@ -62,6 +67,10 @@ OPTIONS_BACKTEST_INITIAL_CASH = Decimal("1000000.00")
 DECLARED_MAX_QUOTE_AGE_SECONDS = 7200  # owner ruling 4 — a config key, hashed
 COHORT_STRIDE = 4  # plan §7: disjoint entry cohorts every 4th session
 END_BUFFER_SESSIONS = 6  # let arm-A exits land inside the evaluated window
+# (w5, verdict D7) the ratified window A enumeration (protocol.holdout is the
+# single source) as ISO session keys — the seal this runner ENFORCES at
+# registration time and DISCLOSES against in every payload
+_SEALED_HOLDOUT_SESSIONS = frozenset(FINAL_HOLDOUT_DATES)
 
 
 @dataclass(frozen=True)
@@ -214,6 +223,15 @@ def _label_window(
     }
 
 
+def _window_touches_seal(window: dict[str, str]) -> bool:
+    """Does a contiguous session window [start, end] contain any sealed
+    date? Read from the module's sealed set at call time so the disclosure
+    follows the ratified enumeration (protocol.holdout), the single source."""
+    start = date.fromisoformat(window["start"])
+    end = date.fromisoformat(window["end"])
+    return any(start <= date.fromisoformat(session) <= end for session in _SEALED_HOLDOUT_SESSIONS)
+
+
 def _position_payloads(
     result: OptionsBacktestResult,
     *,
@@ -334,6 +352,7 @@ def _split_params(
 
 def _fold_backtest(
     *,
+    fold: Fold,
     fold_scored: Sequence[ScoredLabel],
     calendar: SessionCalendar,
     surface: OptionPitSurface,
@@ -342,7 +361,14 @@ def _fold_backtest(
     config: OptionsStrategyConfig,
     arm: Arm,
     world_last_session: date,
-) -> OptionsBacktestResult:
+) -> tuple[OptionsBacktestResult, tuple[date, ...]]:
+    """One fold's backtest plus its EXECUTION TAIL: the evaluated sessions
+    strictly after the fold's last test session (the END_BUFFER window where
+    the exits, settlements and marks of test-session decisions land). The
+    tail is what the holdout-seal disclosure (w5, verdict D7.2) tags —
+    decision sessions stay out of the seal, tail consumption is disclosed,
+    never banned."""
+    last_test_session = max(fold.test_sessions)
     last_execution = calendar.nth_after(max(row.session for row in fold_scored), 1)
     buffered = calendar.nth_after(last_execution, END_BUFFER_SESSIONS)
     end_session = (
@@ -350,7 +376,7 @@ def _fold_backtest(
         if calendar.ordinal(buffered) <= calendar.ordinal(world_last_session)
         else world_last_session
     )
-    return run_options_backtest(
+    result = run_options_backtest(
         calendar=calendar,
         surface=surface,
         dataset=dataset,
@@ -369,6 +395,8 @@ def _fold_backtest(
         arm=arm,
         end_session=end_session,
     )
+    execution_tail = tuple(session for session in result.sessions if session > last_test_session)
+    return result, execution_tail
 
 
 def _volume_flow_threshold(protocol: ResearchProtocol, override: int | None) -> int:
@@ -532,6 +560,31 @@ def run_options_trial(
             f"cannot carry the requested geometry {split}"
         )
 
+    # (w5, verdict D7.1) The holdout seal, ENFORCED at registration time:
+    # window A was previously declared (protocol.holdout) but consumed by
+    # nothing at runtime — a mis-declared grid could put a sealed date inside
+    # a REGISTERED fold's test window and leak the seal. Decision sessions
+    # may never consume the seal: hard refusal BEFORE the stamp and the
+    # registry write, so a leaking trial burns no config budget and never
+    # exists as a record. (The EXECUTION tail after the last test session is
+    # a different, disclosed matter — see the payload's holdout_seal block.)
+    sealed_test_intersections = sorted(
+        {
+            session.isoformat()
+            for fold in folds
+            for session in fold.test_sessions
+            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS
+        }
+    )
+    if sealed_test_intersections:
+        raise ValueError(
+            f"holdout seal violated for {world_id}: fold TEST sessions "
+            f"{sealed_test_intersections} intersect the sealed window "
+            f"{FINAL_HOLDOUT_WINDOW_ID!r} ({FINAL_HOLDOUT_SCOPE}); sealed "
+            "decision sessions are never evaluable — refusing before "
+            "registration"
+        )
+
     stamp = build_stamp(
         protocol,
         trial_id=trial_id,
@@ -660,6 +713,7 @@ def _execute(
     aggregated_counters: dict[str, int] = {}
     aggregated_rejections: dict[str, dict[str, int]] = {}
     rule_histogram: dict[str, dict[str, int]] = {}
+    sealed_tail_union: set[str] = set()
 
     for fold in folds:
         fold_scored = [
@@ -667,7 +721,8 @@ def _execute(
             for session in sorted(fold.test_sessions)
             for row in scored_by_session.get(session, ())
         ]
-        result = _fold_backtest(
+        result, execution_tail = _fold_backtest(
+            fold=fold,
             fold_scored=fold_scored,
             calendar=calendar,
             surface=surface,
@@ -677,10 +732,27 @@ def _execute(
             arm=arm,
             world_last_session=world_last_session,
         )
+        test_window = sorted(fold.test_sessions)
+        sealed_tail_sessions = sorted(
+            session.isoformat()
+            for session in execution_tail
+            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS
+        )
+        sealed_tail_union.update(sealed_tail_sessions)
         per_fold.append(
             {
                 "fold_id": fold.fold_id,
                 "n_test_sessions": len(fold.test_sessions),
+                # (w5) the fold's decision boundary + its disclosed
+                # execution-tail consumption of the sealed window
+                "test_window": {
+                    "start": test_window[0].isoformat(),
+                    "end": test_window[-1].isoformat(),
+                },
+                "execution_tail_start": (execution_tail[0].isoformat() if execution_tail else None),
+                "execution_tail_session_count": len(execution_tail),
+                "holdout_seal_consumed": bool(sealed_tail_sessions),
+                "holdout_seal_consumed_sessions": sealed_tail_sessions,
                 "n_positions": len(result.positions),
                 "n_fills": len(result.fills),
                 "fills_buy": sum(1 for f in result.fills if f.side == "buy"),
@@ -703,13 +775,24 @@ def _execute(
                 "equity_end": (str(result.equities[-1]) if result.equities else None),
             }
         )
-        all_positions.extend(
-            _position_payloads(
-                result,
-                calendar=calendar,
-                label_horizon_sessions=split_label_horizon,
-            )
+        fold_positions = _position_payloads(
+            result,
+            calendar=calendar,
+            label_horizon_sessions=split_label_horizon,
         )
+        for position_row in fold_positions:
+            # (w5, verdict D7.2) per-position disclosure: an exit/settlement
+            # executed inside the sealed window, and a label window that
+            # overlaps it — the holdout-overlapping sensitivity subset every
+            # verdict must be able to name
+            position_row["exit_in_holdout_seal"] = bool(position_row["exit_session"]) and (
+                position_row["exit_session"] in _SEALED_HOLDOUT_SESSIONS
+            )
+            window = position_row["label_window"]
+            position_row["label_window_touches_holdout_seal"] = (
+                _window_touches_seal(window) if window else False  # type: ignore[arg-type]
+            )
+        all_positions.extend(fold_positions)
         all_fills.extend(_fill_log(result))
         backtest_returns.extend(result.summary.session_returns)
         backtest_turnovers.extend(result.turnovers)
@@ -770,6 +853,25 @@ def _execute(
         stride4_cohort_ic_sd=stride4_sd,
         stride4_cohort_t=stride4_t,
     )
+    # (w5, verdict D7.2) The seal-consumption disclosure every artifact
+    # carries: window A's decision sessions are never evaluated (the D7.1
+    # refusal above guarantees the zero), and the execution-tail consumption
+    # — exits, settlements and marks after the last test session — is
+    # DISCLOSED here, never banned.
+    seal_disclosure: dict[str, object] = {
+        "window_id": FINAL_HOLDOUT_WINDOW_ID,
+        "scope": FINAL_HOLDOUT_SCOPE,
+        "sealed_dates": sorted(_SEALED_HOLDOUT_SESSIONS),
+        "fold_test_window_intersections": 0,
+        "folds_with_sealed_execution_tail": sum(
+            1 for fold in per_fold if fold["holdout_seal_consumed"]
+        ),
+        "sealed_execution_tail_sessions": sorted(sealed_tail_union),
+        "positions_exiting_in_seal": sum(1 for row in all_positions if row["exit_in_holdout_seal"]),
+        "positions_with_seal_overlapping_label_window": sum(
+            1 for row in all_positions if row["label_window_touches_holdout_seal"]
+        ),
+    }
     payload: dict[str, object] = {
         "runner": RUNNER_REVISION,
         "world_id": world_id,
@@ -811,6 +913,8 @@ def _execute(
             "rejections": aggregated_rejections,
             "rule_histogram": rule_histogram,
         },
+        # (w5, verdict D7.2) the holdout seal's disclosure block
+        "holdout_seal": seal_disclosure,
         "backtest": {
             # G3 extension (w4): derived from the dataset's identity, never
             # hardcoded — synthetic-sourced worlds keep the historical token

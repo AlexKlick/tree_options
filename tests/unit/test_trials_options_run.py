@@ -488,6 +488,127 @@ def test_empty_score_seed_refuses(world, protocol, tmp_path) -> None:
     registry.close()
 
 
+# ---- (w5) the holdout seal guard: runtime refusal + execution-tail disclosure ------
+
+
+def test_sealed_test_sessions_are_refused_before_registration(world, protocol, tmp_path) -> None:
+    """(w5, verdict D7.1) Runtime enforcement, previously absent: window A
+    (protocol.holdout, 13 sealed Fridays 2026-05-08..2026-08-14) was consumed
+    only by the amendment builder — nothing stopped a mis-declared grid from
+    putting a sealed date inside a REGISTERED fold's test window. The runner
+    now refuses (hard error) before registration, so the seal is never spent
+    and the config budget is never burned on a leaking trial."""
+    from tree_options.protocol.holdout import FINAL_HOLDOUT_DATES
+
+    _overlay, calendar, snapshot, dataset = world
+    surface = OptionPitSurface(world[0])
+    scored = _scored(world, surface)
+    sessions = calendar.sessions()
+    start = next(i for i, s in enumerate(sessions) if s >= date(2025, 6, 1))
+    end = next(i for i, s in enumerate(sessions) if s >= date(2026, 8, 21))
+    grid = sessions[start : end + 1]
+    assert any(s.isoformat() in set(FINAL_HOLDOUT_DATES) for s in grid)
+    registry = TrialRegistry(tmp_path / "seal_refuse.db")
+    try:
+        with pytest.raises(ValueError, match="holdout seal"):
+            run_options_trial(
+                dataset=dataset,
+                surface=surface,
+                calendar=calendar,
+                protocol=protocol,
+                world_id=snapshot.snapshot_id,
+                arm="A",
+                strategy_config=OptionsStrategyConfig(),
+                scored=scored,
+                model_family="fixture:v1",
+                model_sha256=None,
+                hypothesis="must be refused before registration",
+                decision_sessions=grid,
+                options_manifest_hash="0" * 64,
+                registry=registry,
+                artifacts_dir=tmp_path / "seal_refuse",
+                repo=REPO_ROOT,
+                clock=FIXED_CLOCK,
+                split_override=SPLIT,
+                allow_dirty=True,
+            )
+    finally:
+        registry.close()
+    assert trial_count(tmp_path / "seal_refuse.db") == 0
+
+
+def test_execution_tail_seal_consumption_is_tagged_not_refused(
+    world, protocol, tmp_path, monkeypatch
+) -> None:
+    """(w5, verdict D7.2) The boundary rule: decision sessions stay OUT of the
+    sealed window (refused above), but the EXECUTION tail — exits, settlements
+    and marks after the last test session, END_BUFFER deep — is DISCLOSED,
+    never banned. Every artifact carries the seal block, per-fold tail tags,
+    and per-position tags, so a verdict can name the holdout-overlapping
+    sensitivity subset instead of silently containing window-A executions."""
+    import tree_options.trials.options_run as runner
+
+    plain = _run_trial(world, protocol, tmp_path, tag="seal_plain")
+    seal = plain["payload"]["holdout_seal"]
+    assert seal["window_id"] == "final-holdout-window-a"
+    assert len(seal["sealed_dates"]) == 13
+    # the fixture world (2018) consumes nothing: all counters zero, honestly
+    assert seal["fold_test_window_intersections"] == 0
+    assert seal["folds_with_sealed_execution_tail"] == 0
+    assert seal["positions_exiting_in_seal"] == 0
+    assert seal["positions_with_seal_overlapping_label_window"] == 0
+    # every fold stamps its own test window (the seal's decision boundary)
+    for fold in plain["payload"]["per_fold"]:
+        assert fold["test_window"]["start"] <= fold["test_window"]["end"]
+        assert fold["holdout_seal_consumed"] is False
+        assert fold["holdout_seal_consumed_sessions"] == []
+    # every position row carries the two disclosure tags
+    for position in plain["payload"]["pooled"]["positions"]:
+        assert position["exit_in_holdout_seal"] is False
+        assert position["label_window_touches_holdout_seal"] is False
+
+    # Now RED-PROVE the disclosure fires: seal the sessions of the LAST fold's
+    # execution tail (strictly after its last test session, so the D7.1
+    # refusal cannot fire) and require the tags + counts to appear.
+    last_test_end = max(
+        date.fromisoformat(fold["test_window"]["end"]) for fold in plain["payload"]["per_fold"]
+    )
+    world_last = date.fromisoformat(plain["payload"]["world_last_session"])
+    assert last_test_end < world_last  # the fixture leaves an execution tail
+    calendar = world[1]
+    sealed = frozenset(
+        session.isoformat()
+        for session in calendar.sessions()
+        if last_test_end < session <= world_last
+    )
+    assert sealed
+    # strictly after every test window, so the D7.1 refusal cannot fire here
+    assert all(
+        fold["test_window"]["end"] <= last_test_end.isoformat()
+        for fold in plain["payload"]["per_fold"]
+    )
+    monkeypatch.setattr(runner, "_SEALED_HOLDOUT_SESSIONS", sealed)
+    tagged = _run_trial(world, protocol, tmp_path, tag="seal_tagged")
+    block = tagged["payload"]["holdout_seal"]
+    assert block["folds_with_sealed_execution_tail"] >= 1
+    assert block["sealed_execution_tail_sessions"]
+    assert set(block["sealed_execution_tail_sessions"]) <= sealed
+    consuming = [f for f in tagged["payload"]["per_fold"] if f["holdout_seal_consumed"]]
+    assert consuming
+    for fold in consuming:
+        assert fold["holdout_seal_consumed_sessions"]
+        assert set(fold["holdout_seal_consumed_sessions"]) <= sealed
+    tagged_positions = [
+        p
+        for p in tagged["payload"]["pooled"]["positions"]
+        if p["exit_in_holdout_seal"] or p["label_window_touches_holdout_seal"]
+    ]
+    assert tagged_positions
+    assert block["positions_exiting_in_seal"] == sum(
+        1 for p in tagged["payload"]["pooled"]["positions"] if p["exit_in_holdout_seal"]
+    )
+
+
 # ---- G3 extension (w4): verdict-computable per-position + per-fold stamps ---------
 
 
