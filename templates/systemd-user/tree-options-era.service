@@ -1,0 +1,42 @@
+# DO NOT INSTALL — template only (owner authorization required).
+#
+# This unit is a TEMPLATE for a future, explicitly owner-authorized era
+# supervisor. Committing it is documentation; installing or enabling it is
+# an owner decision, never a closeout step. As of 2026-08-23 no tree-options
+# systemd unit is installed on any host, and that is the intended state.
+#
+# WHY Restart=no IS LOAD-BEARING: a killed, OOM'd, or timed-out process is
+# UNKNOWN — never success, never FAILED, never blind-retried (closeout
+# runbook rule 0.1). A supervisor that auto-restarts converts every UNKNOWN
+# into a silent second attempt; for one-shot authority (the G4 seal) a
+# restart-after-unknown could double-spend the only consumption. Restart=no
+# keeps the incident visible: the operator classifies via era_status, then
+# resumes or reconciles BY LANE (runbook §2).
+
+[Unit]
+Description=Tree Options era wrapper (TEMPLATE - DO NOT ENABLE without owner authorization)
+# After=network-online.target is NOT asserted on purpose: the capture lane
+# is cache-resumable and must never be restarted on network flaps.
+
+[Service]
+Type=exec
+WorkingDirectory=/home/alexk/documents/tree_options
+# The wrapper rewrites the durable capture manifest on every exit path;
+# the repo checkout it runs from pins the code (never edit the capture
+# script mid-era — runbook rule 0.4).
+ExecStart=/usr/bin/env bash artifacts/m4b-coverage-era/run.sh
+# Logs go to a DURABLE path under the repo's artifacts/ tree — NEVER /tmp
+# (/tmp is wiped on reboot and already orphaned this era's pass-1 log once).
+StandardOutput=append:/home/alexk/documents/tree_options/artifacts/m4b-coverage-era/era.log
+StandardError=append:/home/alexk/documents/tree_options/artifacts/m4b-coverage-era/era.log
+Restart=no
+# The manual procedure this template would replace (and which stays
+# authoritative until the owner authorizes installation):
+#   1. era_status (read-only) -> classification
+#   2. UNKNOWN_RESUMABLE -> resume the wrapper by hand (cache makes it free)
+#   3. UNKNOWN_RECONCILIATION_REQUIRED -> owner decision; nothing automatic
+# See docs/m4-closeout-runbook.md §2.
+
+[Install]
+# Enabling is owner-authorized only (see templates/systemd-user/README.md).
+WantedBy=default.target

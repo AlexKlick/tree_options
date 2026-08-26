@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -2008,7 +2009,1138 @@ MUTANTS = [
             " into a price"
         ),
     ),
+    dict(
+        id="M180-lifecycle-whitelist-gutted",
+        owner="test_full_matrix_refuses_everything_else",
+        file="src/tree_options/runstate/states.py",
+        anchor=("    if target not in LEGAL_EDGES.get(source, frozenset()):\n        return False"),
+        replacement="    if False:\n        return False",
+        selectors=[f"{U}/test_runstate_lifecycle.py"],
+        invariant=(
+            "A1 lifecycle legality is an explicit whitelist; gutting the"
+            " membership check legalizes every 16x16 pair, and the full-grid"
+            " owner test pins every refused pair"
+        ),
+    ),
+    dict(
+        id="M181-failed-retry-reaches-sealed",
+        owner="test_failed_cannot_reach_sealed_lane",
+        file="src/tree_options/runstate/states.py",
+        anchor=(
+            "    RunState.FAILED: frozenset(\n"
+            "        {RunState.CAPTURING, RunState.INSPECTION_RUNNING, RunState.BARS_CAPTURING}\n"
+            "    ),"
+        ),
+        replacement=(
+            "    RunState.FAILED: frozenset(\n"
+            "        {\n"
+            "            RunState.CAPTURING,\n"
+            "            RunState.INSPECTION_RUNNING,\n"
+            "            RunState.BARS_CAPTURING,\n"
+            "            RunState.SEALED_RUNNING,\n"
+            "        }\n"
+            "    ),"
+        ),
+        selectors=[f"{U}/test_runstate_lifecycle.py"],
+        invariant=(
+            "A1 the sealed lane is one-shot: FAILED may restart its own"
+            " capture/inspection/bars lane from the cache, never re-enter"
+            " SEALED_*; a crash after authority consumption is"
+            " reconciliation, not a retry"
+        ),
+    ),
+    dict(
+        # Replaced 2026-08-23: the original M182 (gutting the explicit
+        # UNKNOWN guard in states.is_legal) SURVIVED the full harness because
+        # the LEGAL_EDGES whitelist at the next line already refuses every
+        # UNKNOWN edge — a redundant guard has no distinct observable
+        # behavior. The UNKNOWN-never-a-target invariant stays enforced by
+        # the whitelist + test_unknown_is_never_a_target. This replacement
+        # targets a decision point that IS load-bearing: the legacy
+        # pre-journal era probe.
+        id="M182-legacy-era-undetected",
+        owner="test_legacy_prejournal_era_detected_exit_3",
+        file="scripts/era_status.py",
+        anchor=("        if CAPTURE_SCRIPT_TOKEN in cmdline and capture_dir_token in cmdline:"),
+        replacement="        if False and capture_dir_token in cmdline:",
+        selectors=[f"{U}/test_era_status.py"],
+        invariant=(
+            "A1 a live pre-journal capture era is UNKNOWN (exit 3), never"
+            " presumed idle or failed: silencing the /proc probe lets the"
+            " observer invent an outcome the journal never recorded"
+        ),
+    ),
+    dict(
+        id="M183-journal-chain-void",
+        owner="test_reordering_detected",
+        file="src/tree_options/runstate/journal.py",
+        anchor=("    if record.prev_record_sha256 != prev_hash:\n        return False"),
+        replacement="    if False:\n        return False",
+        selectors=[f"{U}/test_runstate_journal.py"],
+        invariant=(
+            "A1 prev-hash chaining is what detects REORDERED records (each"
+            " record still hashes itself correctly); without it history can"
+            " be reordered without detection"
+        ),
+    ),
+    dict(
+        id="M184-torn-tail-trusted",
+        owner="test_truncated_final_line_is_tail_damaged_never_corrupt",
+        file="src/tree_options/runstate/journal.py",
+        anchor=(
+            "            if is_final:\n"
+            "                damaged_tail = True\n"
+            "                continue  # a torn tail was never acknowledged; exclude it"
+        ),
+        replacement=(
+            "            if is_final:\n"
+            "                damaged_tail = False\n"
+            "                continue  # a torn tail was never acknowledged; exclude it"
+        ),
+        selectors=[f"{U}/test_runstate_journal.py"],
+        invariant=(
+            "A1 a crash-truncated final line must be REPORTED as"
+            " tail_damaged; trusting it silently hides that a write was"
+            " lost mid-append"
+        ),
+    ),
+    dict(
+        id="M185-midfile-corruption-tolerated",
+        owner="test_single_record_hash_tamper_detected_midfile",
+        file="src/tree_options/runstate/journal.py",
+        anchor=(
+            "            raise JournalCorruptError(\n"
+            "                run_id,\n"
+            '                f"journal line {_index + 1} failed decode/hash/chain verification",\n'
+            "            )"
+        ),
+        replacement="            continue",
+        selectors=[f"{U}/test_runstate_journal.py"],
+        invariant=(
+            "A1 damage in a NON-final record means something rewrote"
+            " history: an incident, never silently skipped"
+        ),
+    ),
+    dict(
+        id="M186-record-hash-not-computed",
+        owner="test_chain_verifies_across_many_records",
+        file="src/tree_options/runstate/journal.py",
+        anchor='    record = record.model_copy(update={"record_sha256": _record_hash(record)})',
+        replacement='    record = record.model_copy(update={"record_sha256": ""})',
+        selectors=[f"{U}/test_runstate_journal.py"],
+        invariant=(
+            "A1 the chain is only as strong as the per-record hash"
+            " computation; writing an empty hash makes every record fail"
+            " verification instead of quietly trusting the stored value"
+        ),
+    ),
+    dict(
+        id="M187-live-owner-adopted",
+        owner="test_live_owner_not_adopted_even_when_stale_adoption_is_allowed",
+        file="src/tree_options/runstate/lease.py",
+        anchor=(
+            "                if classification is LeaseClassification.HELD or not "
+            "allow_stale_adopt:"
+        ),
+        replacement="                if not allow_stale_adopt:",
+        selectors=[f"{U}/test_runstate_lease.py"],
+        invariant=(
+            "A1 stale-adoption permission never authorizes replacing a"
+            " verified live owner's lease; HELD remains a duplicate-launch"
+            " refusal even when the stale-only flag is present"
+        ),
+    ),
+    dict(
+        id="M188-pid-reuse-taken-as-owner",
+        owner="test_pid_reuse_detected_by_starttime",
+        file="src/tree_options/runstate/lease.py",
+        anchor=(
+            "    if live_ticks is None or live_ticks != owner.pid_start_ticks:\n"
+            "        return LeaseClassification.STALE_PID_REUSED"
+        ),
+        replacement=("    if False:\n        return LeaseClassification.STALE_PID_REUSED"),
+        selectors=[f"{U}/test_runstate_lease.py"],
+        invariant=(
+            "A1 a reused pid number is NOT the recorded owner: without the"
+            " starttime comparison an unrelated process that inherited the"
+            " pid number holds the lease"
+        ),
+    ),
+    dict(
+        id="M189-boot-change-taken-as-same-host",
+        owner="test_boot_change_classified_stale_even_with_alive_pid",
+        file="src/tree_options/runstate/lease.py",
+        anchor="    if owner.boot_id != boot_id_now:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_runstate_lease.py"],
+        invariant=(
+            "A1 boot identity dominates pid identity: after a reboot a"
+            " same-numbered pid is meaningless, alive-looking or not"
+            " (the 2026-08-22 reboot already orphaned this era once)"
+        ),
+    ),
+    dict(
+        id="M190-stale-threshold-inverted",
+        owner="test_fresh_beat_process_state_alive",
+        file="src/tree_options/runstate/heartbeat.py",
+        anchor="    fresh = (now_epoch - beat.at_epoch) <= stale_after_s",
+        replacement="    fresh = (now_epoch - beat.at_epoch) > stale_after_s",
+        selectors=[f"{U}/test_runstate_heartbeat.py"],
+        invariant=(
+            "A1 inverting freshness marks every live process silent and"
+            " every dead one fresh, exactly swapping the observability"
+            " this module exists to provide"
+        ),
+    ),
+    dict(
+        id="M191-unknown-silence-as-terminal",
+        owner="test_dead_process_in_resumable_state_is_unknown_resumable",
+        file="src/tree_options/runstate/heartbeat.py",
+        anchor=(
+            "    if state in RESUMABLE_STATES:\n"
+            "        return HeartbeatClass.UNKNOWN_RESUMABLE\n"
+            "    return HeartbeatClass.DEAD_TERMINAL"
+        ),
+        replacement=(
+            "    if False:\n"
+            "        return HeartbeatClass.UNKNOWN_RESUMABLE\n"
+            "    return HeartbeatClass.DEAD_TERMINAL"
+        ),
+        selectors=[f"{U}/test_runstate_heartbeat.py"],
+        invariant=(
+            "A1 constraint 10: a dead process in a resumable state is"
+            " UNKNOWN_RESUMABLE, never terminal — silence is not an"
+            " outcome"
+        ),
+    ),
+    dict(
+        id="M192-resume-manifest-mismatch-void",
+        owner="test_manifest_pin_and_validate_resume",
+        file="src/tree_options/runstate/store.py",
+        anchor="        if pinned != observed_manifest_sha256:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_runstate_store.py"],
+        invariant=(
+            "A1 resume must refuse a manifest the journal never pinned;"
+            " voiding the comparison resumes against evidence that may"
+            " have been swapped (repair is prohibited, not bypassed)"
+        ),
+    ),
+    dict(
+        id="M193-status-repairs-torn-projection",
+        owner="test_torn_projection_reported_not_repaired",
+        file="scripts/era_status.py",
+        anchor=(
+            "    except rs_errors.ProjectionTornError as exc:\n"
+            '        print(f"PROJECTION TORN: {exc}", file=sys.stderr)\n'
+            "        return 2"
+        ),
+        replacement=(
+            "    except rs_errors.ProjectionTornError:\n"
+            "        store.rebuild_projection(now_epoch=now_epoch)\n"
+            "        return 0"
+        ),
+        selectors=[f"{U}/test_era_status.py"],
+        invariant=(
+            "A1 the status command is READ-ONLY: a torn projection is"
+            " reported for a lease-holding writer to repair, never quietly"
+            " rebuilt by an observer (the mtime assertion pins this)"
+        ),
+    ),
+    dict(
+        id="M194-universe-product-void",
+        owner="test_verify_universe_refuses_a_rehashed_wrong_expected_masters",
+        file="src/tree_options/data/coverage_census.py",
+        anchor="    if universe.expected_masters != expected:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 expected_masters is the product of the declared grid;"
+            " voiding the check lets a tampered-and-re-hashed manifest"
+            " under-declare the census population"
+        ),
+    ),
+    dict(
+        id="M195-missing-pair-as-complete",
+        owner="test_classify_pair_matrix_covers_every_class",
+        file="src/tree_options/data/coverage_census.py",
+        anchor='        return "MISSING"',
+        replacement='        return "COMPLETE"',
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 a pair with no manifest entry (or no file) is MISSING,"
+            " never COMPLETE: coverage totals must not count absence"
+        ),
+    ),
+    dict(
+        id="M196-taxonomy-tag-movable",
+        owner="test_registry_disagreement_refused",
+        file="src/tree_options/data/coverage_census.py",
+        anchor=(
+            "        if placed != declared_class:\n"
+            "            raise CensusTaxonomyError(\n"
+            '                f"fact {fact_id!r} registry says {declared_class!r}'
+            ' but it sits in {placed!r}"\n'
+            "            )"
+        ),
+        replacement=(
+            "        if placed != declared_class:\n            pass  # taxonomy drift accepted"
+        ),
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 a value may never move class implicitly: registry and"
+            " section placement must agree or the census refuses to load"
+        ),
+    ),
+    dict(
+        id="M197-holiday-session-flip",
+        owner="test_holiday_friday_gap_is_not_incomplete",
+        file="src/tree_options/data/coverage_census.py",
+        anchor=(
+            '        return "SPOT_MISSING_HOLIDAY" if not is_session else "SPOT_MISSING_SESSION"'
+        ),
+        replacement=(
+            '        return "SPOT_MISSING_SESSION" if not is_session else "SPOT_MISSING_HOLIDAY"'
+        ),
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 a holiday Friday has no close by definition (not incomplete);"
+            " a session Friday without a close is a vendor availability gap"
+            " (incomplete) -- flipping the two launders real gaps"
+        ),
+    ),
+    dict(
+        id="M198-partial-era-exits-zero",
+        owner="test_exit_5_and_census_emitted_when_a_pair_is_missing",
+        file="scripts/build_coverage_census.py",
+        anchor="    return 5",
+        replacement="    return 0",
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 an incomplete era must exit nonzero even though the census"
+            " artifact is still emitted -- partial evidence is never reported"
+            " as whole"
+        ),
+    ),
+    dict(
+        id="M199-census-manifest-verify-skipped",
+        owner="test_manifest_verification_failure_exits_2",
+        file="scripts/build_coverage_census.py",
+        anchor=(
+            "verify_massive_capture_manifest(manifest, capture_dir, capture_version=CAPTURE_VERSION)"
+        ),
+        replacement="pass  # verify skipped",
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "A2 the census only consumes a SEALED capture: a manifest that"
+            " fails on-disk reconciliation must refuse (exit 2) before any"
+            " fact is derived from it"
+        ),
+    ),
+    # ---- A3 protocol 0.2.1 amendment builder (M200-M207) ---------------------
+    dict(
+        id="M200-stale-census-accepted",
+        owner="test_census_content_hash_tamper_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="        verify_census(census)",
+        replacement="        pass",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 the census is re-hashed at build time; accepting a census"
+            " whose declared content hash no longer matches its bytes lets a"
+            " tampered census mint an amendment proposal"
+        ),
+    ),
+    dict(
+        id="M201-census-manifest-drift-accepted",
+        owner="test_census_manifest_drift_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="    if manifest_sha256 != census.provenance.input_manifest_sha256:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 the staleness double-check: the census must describe the"
+            " capture manifest ON DISK NOW, else the proposal is grounded in"
+            " evidence that was swapped after the census ran"
+        ),
+    ),
+    dict(
+        id="M202-base-version-unchecked",
+        owner="test_wrong_base_version_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="    if base_version != BASE_PROTOCOL_VERSION:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 the amendment must build on exactly the ratified 0.2.0 base;"
+            " an unchecked base lets a newer/older protocol be amended in"
+            " place (the error-message assertion separates this from the"
+            " non-monotonic-target refusal)"
+        ),
+    ),
+    dict(
+        id="M203-hidden-default-threshold",
+        owner="test_missing_flow_min_session_volume_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="    if flow is None or flow.value <= 0:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 a missing or zero flow_min_session_volume is exactly the"
+            " silent default the builder exists to prevent: the owner must"
+            " supply a real positive threshold or nothing is proposed"
+        ),
+    ),
+    dict(
+        id="M204-bool-as-int",
+        owner="test_owner_value_bool_true_rejected",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="        if isinstance(v, bool):",
+        replacement="        if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 pydantic lax mode coerces YAML/JSON true to 1; only the"
+            " explicit bool guard keeps a boolean from becoming a threshold"
+            " value"
+        ),
+    ),
+    dict(
+        id="M205-value-rule-mismatch-accepted",
+        owner="test_derived_value_not_equal_to_rule_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="            if computed != ov.value:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 an owner value with derivation provenance must equal what its"
+            " ratified rule computes; accepting a mismatch launders a"
+            " hand-picked number as census-derived"
+        ),
+    ),
+    dict(
+        id="M206-future-derived-fact",
+        owner="test_future_derived_fact_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor=('                if census.value_registry.get(fid) != "observed_census_fact":'),
+        replacement="                if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 only facts the census classes observed_census_fact exist"
+            " yet; deriving from a predeclared/not-yet-decided id smuggles a"
+            " future value (the G3 bar-volume contradiction) into the"
+            " proposal"
+        ),
+    ),
+    dict(
+        id="M207-tracked-output-write",
+        owner="test_out_root_outside_artifacts_refused",
+        file="src/tree_options/protocol/amendment.py",
+        anchor="    if not resolved_out_root.is_relative_to(artifacts_root):",
+        replacement="    if False:",
+        selectors=[f"{U}/test_protocol_amendment.py"],
+        invariant=(
+            "A3 the builder is dry-run only: confining writes to artifacts/"
+            " is what makes it structurally incapable of touching a tracked"
+            " file such as research_protocol.yaml"
+        ),
+    ),
+    # ---- A5 G4 seal authority (identity/ledger/preflight/execute, M213-M218) --
+    dict(
+        id="M213-content-identity-includes-code",
+        owner="test_content_identity_stable_across_code_sha_change_while_run_id_changes",
+        file="src/tree_options/seal/identity.py",
+        anchor=(
+            'blanked = identity.model_copy(update={"code_sha": "", "verified_packet_sha256": ""})'
+        ),
+        replacement=(
+            'blanked = identity.model_copy(update={"code_sha": identity.code_sha, '
+            '"verified_packet_sha256": ""})'
+        ),
+        selectors=[f"{U}/test_seal_identity.py"],
+        invariant=(
+            "A5 the content identity BLANKS code_sha: two checkouts of the"
+            " same research content share it, so a second consumption under"
+            " either id is refused; hashing the full identity makes every"
+            " fresh checkout fresh authority"
+        ),
+    ),
+    # M214 was the round-1 duplicate-guard anchor on stored ids; F7
+    # removed that comparison (replaced by recompute-from-payload), so
+    # the mutant's anchor no longer exists in scripts/g4_seal.py. The
+    # fix is load-bearing; the new round-1 equivalent is M229 below
+    # (stored-ids agreement check voided). The M214 slot is intentionally
+    # NOT in the MUTANTS list — an anchored entry here would be classified
+    # MUTATION_DRIFT and fail the harness's exit-0 gate. The invariant
+    # survives in M229.
+    dict(
+        id="M229-stored-consumption-ids-trusted",
+        owner="test_forged_consumption_stored_ids_refused_as_corrupt",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "        if record.sealed_run_id != record_run_id"
+            " or record.content_identity != record_content_id:"
+        ),
+        replacement="        if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "F7 the duplicate guard RECOMPUTES sealed_run_id/content_identity"
+            " from each CONSUMPTION record's own identity payload and refuses"
+            " when the stored ids disagree (corruption, never a skip); trusting"
+            " stored ids reopens the forged-replay bypass where a chain-valid"
+            " record carries the target payload under adversarial stored ids"
+        ),
+    ),
+    dict(
+        id="M215-approval-reverify-void",
+        owner="test_approval_tampered_payload_exit_6",
+        file="scripts/g4_seal.py",
+        anchor=("        and sealed_run_id(record.identity) == run_id"),
+        replacement="        and True",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "A5 the approval is RECOMPUTED from the record's own payload and"
+            " compared to this run's sealed_run_id; trusting the stored id"
+            " lets a forged (chain-valid, mismatched-payload) approval spend"
+            " authority it never covered"
+        ),
+    ),
+    dict(
+        id="M216-verdict-leak",
+        owner="test_preflight_all_verified_verdict_is_null_and_not_computed",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "    report = PreflightReport(\n"
+            "        verdict=None,\n"
+            "        verdict_computed=False,\n"
+            "        criteria_inputs=statuses,\n"
+            "        verified_inputs=packet,\n"
+            "    )"
+        ),
+        replacement=(
+            "    report = PreflightReport(\n"
+            "        verdict=None,\n"
+            "        verdict_computed=any(s.available for s in statuses.values()),\n"
+            "        criteria_inputs=statuses,\n"
+            "        verified_inputs=packet,\n"
+            "    )"
+        ),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "A5 preflight is structurally verdict-free: the output model pins"
+            " verdict to Literal[None] and verdict_computed to Literal[False],"
+            " so any coerced verdict is a validation error and the owner test"
+            " asserts the literal JSON never carries one"
+        ),
+    ),
+    dict(
+        id="M217-tmp-ledger-accepted",
+        owner="test_tmp_root_refused",
+        file="src/tree_options/seal/ledger.py",
+        anchor="if resolved == TMP_AUTHORITY_ROOT or TMP_AUTHORITY_ROOT in resolved.parents:",
+        replacement="if False:",
+        selectors=[f"{U}/test_seal_ledger.py"],
+        invariant=(
+            "A5 authority never lives under /tmp (wiped on reboot): the host"
+            " rule is a mechanical resolved-path prefix check in"
+            " validate_ledger_root"
+        ),
+    ),
+    dict(
+        id="M218-consume-after-work",
+        owner="test_first_execution_consumption_durable_before_runner_gets_same_held_bytes",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)\n"
+            "    outcome = runner(current)"
+        ),
+        replacement=(
+            "    outcome = runner(current)\n"
+            "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)"
+        ),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "A5 the CONSUMPTION record is durable (flock + fsync) BEFORE the"
+            " runner is invoked; consuming after the work re-opens the"
+            " crash-window where the sealed run happened but no authority"
+            " was spent"
+        ),
+    ),
+    # ---- PR A4 (bars era): appended after M218 in FILE ORDER, not numeric order --
+    dict(
+        id="M208-protocol-gate-void",
+        owner="test_preflight_exit_2_wrong_version_even_with_matching_record",
+        file="scripts/launch_bars_era.py",
+        anchor=(
+            "if protocol.meta.protocol_version != REQUIRED_BARS_PROTOCOL_VERSION"
+            " or approval is None:"
+        ),
+        replacement="if False:",
+        selectors=[f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "A4 preflight gate 1: the loaded protocol must be EXACTLY 0.2.1 and"
+            " a BARS_LAUNCH_APPROVAL record must bind its hash; a record bound"
+            " to the current 0.2.0 hash does not open the gate (exit 2 is the"
+            " documented correct answer on main)"
+        ),
+    ),
+    dict(
+        id="M209-authority-record-void",
+        owner="test_execute_exit_6_when_record_binds_other_work_manifest",
+        file="scripts/launch_bars_era.py",
+        anchor="approvals = [r for r in approvals if r.work_manifest_sha256 == work_manifest_sha]",
+        replacement="approvals = list(approvals)",
+        selectors=[f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "A4 execute authority gate: a BARS_LAUNCH_APPROVAL record must bind"
+            " THIS work manifest's sha256 — approval granted for one manifest"
+            " never transfers to another (exit 6, nothing consumed)"
+        ),
+    ),
+    dict(
+        id="M210-manifest-order-nondeterministic",
+        owner="test_order_entries_canonical_from_shuffled",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor="return tuple(sorted(entries, key=_entry_order_key))",
+        replacement="return tuple(entries)",
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "A4 work-manifest entries are ordered deterministically (underlying,"
+            " as_of, expiry, strike-rank, call-before-put, ticker); the model"
+            " validator refuses any other order, so regeneration is byte-identical"
+        ),
+    ),
+    dict(
+        id="M211-override-fallback-accepted",
+        owner="test_every_override_flag_refused_exit_4",
+        file="scripts/launch_bars_era.py",
+        anchor="if provided is not None and provided != pinned:",
+        replacement="if False:",
+        selectors=[f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "A4 refuse-fallback: --vendor-host/--endpoint-template/--calendar-token"
+            "/--universe/--selection-rule overrides are refused outright (exit 4);"
+            " the pinned constants are the only accepted values and no code path"
+            " substitutes a fallback"
+        ),
+    ),
+    dict(
+        id="M212-duplicate-launch-accepted",
+        owner="test_preflight_exit_5_on_held_lease_duplicate_launch",
+        file="scripts/launch_bars_era.py",
+        anchor="if lease_module.owner_exists(store_dir):",
+        replacement="if False:",
+        selectors=[f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "A4 duplicate launch: a HELD lease for the same run refuses preflight"
+            " (exit 5) — a live owner is presumed working; 'no log output' is"
+            " not evidence of death"
+        ),
+    ),
+    # ---- external PR #13 audit: canonical durable run identity -----------------
+    dict(
+        id="M230-noncanonical-run-id-accepted",
+        owner="test_create_refuses_noncanonical_run_id_before_filesystem_mutation",
+        file="src/tree_options/runstate/store.py",
+        anchor=(
+            "        _validate_canonical_run_id(root, identity)\n"
+            "        root_fd = custody.open_directory("
+        ),
+        replacement="        root_fd = custody.open_directory(",
+        selectors=[f"{U}/test_runstate_store.py"],
+        invariant=(
+            "PR13 one logical RunIdentityCore has exactly one computed store id;"
+            " an operator-supplied alternate id refuses before any directory is created"
+        ),
+    ),
+    dict(
+        id="M231-universe-source-id-host-contaminated",
+        owner="test_two_physical_checkout_roots_render_byte_identical_universe",
+        file="scripts/gen_coverage_universe.py",
+        anchor="    return validate_source_id(relative.as_posix())",
+        replacement="    return physical.as_posix().lstrip('/')",
+        selectors=[f"{U}/test_gen_coverage_universe.py"],
+        invariant=(
+            "PR13 the universe records the wrapper's repo-relative logical id;"
+            " two physical clone roots render byte-identical artifacts"
+        ),
+    ),
+    dict(
+        id="M232-universe-wrapper-bytes-unbound",
+        owner="test_wrapper_byte_change_changes_universe_identity",
+        file="scripts/gen_coverage_universe.py",
+        anchor='        source_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),',
+        replacement='        source_sha256="0" * 64,',
+        selectors=[f"{U}/test_gen_coverage_universe.py"],
+        invariant=(
+            "PR13 checkout location is excluded, but the exact wrapper bytes remain"
+            " bound through source_sha256 and the universe content hash"
+        ),
+    ),
+    dict(
+        id="M233-absolute-universe-source-id-accepted",
+        owner="test_rehashed_absolute_source_id_is_refused",
+        file="src/tree_options/data/coverage_census.py",
+        anchor="        logical_source.is_absolute()",
+        replacement="        False",
+        selectors=[f"{U}/test_gen_coverage_universe.py"],
+        invariant=(
+            "PR13 even a correctly rehashed universe cannot carry a host-absolute source identity"
+        ),
+    ),
+    # ---- external PR #13 audit: complete run-state filesystem custody ---------
+    dict(
+        id="M234-runstate-component-nofollow-removed",
+        owner="test_create_refuses_intermediate_ancestor_symlink_without_writing_target",
+        file="src/tree_options/runstate/custody.py",
+        anchor="_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW",
+        replacement="_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 every lexical ancestor is opened O_DIRECTORY|O_NOFOLLOW;"
+            " a durable-looking root may never traverse an intermediate symlink"
+        ),
+    ),
+    dict(
+        id="M235-runstate-hard-links-accepted",
+        owner="test_open_refuses_run_json_hard_link",
+        file="src/tree_options/runstate/custody.py",
+        anchor=(
+            "    if st.st_nlink != 1:\n"
+            '        _refuse(run_id, f"{purpose} has unexpected link count '
+            '{st.st_nlink}, expected 1")'
+        ),
+        replacement="    if False:\n        pass",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 every run-state authority file has exactly one link; a"
+            " planted hard link must not turn another inode name into authority"
+        ),
+    ),
+    dict(
+        id="M236-runstate-atomic-final-symlink-accepted",
+        owner="test_projection_final_symlink_refuses_without_mutating_repo_target",
+        file="src/tree_options/runstate/custody.py",
+        anchor=(
+            "def _safe_existing_name(\n"
+            "    parent_fd: int,\n"
+            "    name: str,\n"
+            "    *,\n"
+            "    run_id: str,\n"
+            "    purpose: str,\n"
+            ") -> os.stat_result | None:\n"
+            "    try:\n"
+            "        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)"
+        ),
+        replacement=(
+            "def _safe_existing_name(\n"
+            "    parent_fd: int,\n"
+            "    name: str,\n"
+            "    *,\n"
+            "    run_id: str,\n"
+            "    purpose: str,\n"
+            ") -> os.stat_result | None:\n"
+            "    try:\n"
+            "        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=True)"
+        ),
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 atomic writers classify the final name itself without"
+            " following it; replacing a symlink is a refusal even when its target is regular"
+        ),
+    ),
+    dict(
+        id="M237-runstate-exclusive-temp-custody-removed",
+        owner="test_projection_temp_symlink_refuses_without_mutating_target",
+        file="src/tree_options/runstate/custody.py",
+        anchor="                os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,",
+        replacement="                os.O_RDWR | os.O_CREAT | os.O_TRUNC,",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 temporary publish objects are O_EXCL|O_NOFOLLOW; a planted"
+            " temp name must refuse before target bytes can be truncated"
+        ),
+    ),
+    dict(
+        id="M238-runstate-published-bytes-unverified",
+        owner="test_projection_in_place_rewrite_after_publish_is_refused",
+        file="src/tree_options/runstate/custody.py",
+        anchor="            if read_all(published_fd) != payload:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 an atomic publish returns only after re-reading the exact"
+            " published bytes; an in-place rewrite of the same inode is reconciliation"
+        ),
+    ),
+    dict(
+        id="M239-runstate-published-inode-unverified",
+        owner="test_projection_deletion_recreation_after_publish_is_refused",
+        file="src/tree_options/runstate/custody.py",
+        anchor=("            if (published_stat.st_dev, published_stat.st_ino) != temp_identity:"),
+        replacement="            if False:",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 byte-identical deletion/recreation is still an inode swap;"
+            " the final name must map to the verified exclusive temp inode"
+        ),
+    ),
+    dict(
+        id="M240-runstate-parent-substitution-unverified",
+        owner="test_projection_parent_rename_and_substitution_is_refused",
+        file="src/tree_options/runstate/custody.py",
+        anchor=(
+            "        finally:\n"
+            "            os.close(published_fd)\n"
+            "        verify_directory_identity(directory_path, directory_fd, run_id=run_id)"
+        ),
+        replacement="        finally:\n            os.close(published_fd)",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 success requires the lexical store path still to name the"
+            " held directory; parent rename/substitution is reconciliation"
+        ),
+    ),
+    dict(
+        id="M241-runstate-lock-inode-unbound",
+        owner="test_lease_lock_deletion_recreation_refuses_before_owner_publish",
+        file="src/tree_options/runstate/lease.py",
+        anchor=(
+            "        try:\n"
+            "            custody.verify_name_identity(\n"
+            "                lease_fd,\n"
+            '                "adopt.lock",\n'
+            "                lock_fd,\n"
+            "                run_id=run_id,\n"
+            '                purpose="lease adopt.lock",\n'
+            "            )\n"
+            "            raw = custody.read_named_bytes("
+        ),
+        replacement="        try:\n            raw = custody.read_named_bytes(",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 lease mutation verifies adopt.lock still names the flocked"
+            " inode before publishing owner authority"
+        ),
+    ),
+    dict(
+        id="M242-runstate-journal-name-inode-unbound",
+        owner="test_journal_name_clone_swap_during_append_is_refused",
+        file="src/tree_options/runstate/journal.py",
+        anchor=(
+            "                os.fsync(fd)\n"
+            "                custody.verify_name_identity(\n"
+            "                    dir_fd,\n"
+            "                    JOURNAL_FILENAME,\n"
+            "                    fd,\n"
+            "                    run_id=run_id,\n"
+            '                    purpose="journal.jsonl authority",\n'
+            "                )\n"
+            "                post = _locked_tail_view(fd)"
+        ),
+        replacement="                os.fsync(fd)\n                post = _locked_tail_view(fd)",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 a journal append returns only while journal.jsonl still"
+            " names the flocked inode; a clone swap cannot create two authority tails"
+        ),
+    ),
+    dict(
+        id="M243-runstate-immutable-identity-rewrite-accepted",
+        owner="test_in_place_run_identity_rewrite_is_refused_on_rebind",
+        file="src/tree_options/runstate/store.py",
+        anchor="            if observed != self.identity:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_runstate_custody.py"],
+        invariant=(
+            "PR13 run.json is immutable in full, including process-incarnation"
+            " fields excluded from deterministic run-id computation"
+        ),
+    ),
+    # ---- PR13 G4 typed verified-input packet and effect-boundary join -------
+    dict(
+        id="M244-g4-cboe-foreign-schema-accepted",
+        owner="test_correctly_self_hashed_foreign_manifest_version_refuses",
+        file="src/tree_options/data/cboe_eod.py",
+        anchor="if manifest.schema_version != REAL_OPTIONS_SCHEMA_VERSION:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 1 accepts only the pinned Cboe manifest schema version",
+    ),
+    dict(
+        id="M245-g4-cboe-real-verifier-bypassed",
+        owner="test_missing_or_tampered_referenced_payload_refuses",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        verify_real_options_manifest(\n"
+            "            manifest,\n"
+            "            result,\n"
+            "            overlay=overlay,\n"
+            "            source_bytes=source_raw,\n"
+            "        )"
+        ),
+        replacement="        pass  # MUTATED: Cboe semantic verifier bypassed",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 1 calls the real Cboe manifest and payload verifier",
+    ),
+    dict(
+        id="M246-g4-massive-foreign-schema-accepted",
+        owner="test_correctly_self_hashed_foreign_manifest_version_refuses",
+        file="src/tree_options/data/massive_manifest.py",
+        anchor="if manifest.schema_version != MASSIVE_MANIFEST_SCHEMA_VERSION:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 2 accepts only the pinned Massive manifest schema",
+    ),
+    dict(
+        id="M247-g4-massive-foreign-capture-accepted",
+        owner="test_correctly_self_hashed_foreign_massive_capture_version_refuses",
+        file="src/tree_options/data/massive_manifest.py",
+        anchor="if manifest.capture_version != capture_version:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 2 accepts only the predeclared m4b-capture/1 producer",
+    ),
+    dict(
+        id="M248-g4-massive-real-verifier-bypassed",
+        owner="test_massive_unlisted_json_is_reconciled_from_held_directory",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "            verify_massive_capture_manifest(\n"
+            "                manifest,\n"
+            "                paths.lane2_manifest.parent,\n"
+            "                capture_version=EXPECTED_MASSIVE_CAPTURE_VERSION,\n"
+            "                captured_files=held_by_path,\n"
+            "                observed_json_files=observed,\n"
+            "            )"
+        ),
+        replacement="            pass  # MUTATED: Massive reconciliation bypassed",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 lane 2 calls the real Massive bytes and disk-census verifier",
+    ),
+    dict(
+        id="M249-g4-criteria-identifiers-unfrozen",
+        owner="test_criteria_identifiers_are_exact_and_ordered",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="if ids != CRITERION_IDS:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The typed criteria artifact carries the exact six frozen criterion ids",
+    ),
+    dict(
+        id="M250-g4-criteria-source-join-void",
+        owner="test_stale_criteria_source_document_sha_refuses",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="if criteria.source_sha256 != criteria_source_sha:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The held criteria artifact is joined to the held frozen source document",
+    ),
+    dict(
+        id="M251-g4-calendar-enum-opened",
+        owner="test_correctly_self_hashed_foreign_calendar_decision_refuses",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=('CalendarDecision = Literal["repo-generated-calendar", "weekend-only-accepted"]'),
+        replacement="CalendarDecision = str",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The owner calendar decision is one of the two predeclared choices",
+    ),
+    dict(
+        id="M252-g4-calendar-content-unbound",
+        owner="test_calendar_decision_content_hash_rejects_typed_body_tamper",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        if self.content_sha256 != expected:\n"
+            '            raise ValueError("calendar decision content_sha256 does not bind the typed body")'
+        ),
+        replacement='        if False:\n            raise ValueError("MUTATED")',
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The typed owner calendar decision self-hash binds its complete body",
+    ),
+    dict(
+        id="M253-g4-packet-content-unbound",
+        owner="test_packet_self_hash_rejects_caller_tamper",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        if self.packet_content_sha256 != expected:\n"
+            '            raise ValueError("packet_content_sha256 does not bind the verified-input body")'
+        ),
+        replacement='        if False:\n            raise ValueError("MUTATED")',
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="VerifiedSealedInputs is immutable and self-binding over every field",
+    ),
+    dict(
+        id="M254-g4-input-directory-nofollow-removed",
+        owner="test_intermediate_manifest_directory_symlink_is_never_followed",
+        file="src/tree_options/seal/input_custody.py",
+        anchor="_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW",
+        replacement="_DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="Every G4 input path component is opened O_DIRECTORY|O_NOFOLLOW",
+    ),
+    dict(
+        id="M255-g4-input-hard-links-accepted",
+        owner="test_hard_linked_manifest_is_refused",
+        file="src/tree_options/seal/input_custody.py",
+        anchor="if st.st_nlink != 1:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="Every held G4 input file has one unambiguous directory name",
+    ),
+    dict(
+        id="M256-g4-input-inplace-rewrite-unnoticed",
+        owner="test_in_place_rewrite_during_single_read_is_refused",
+        file="src/tree_options/seal/input_custody.py",
+        anchor=(
+            "if _stable_file_fields(before) != _stable_file_fields(after) "
+            "or len(raw) != after.st_size:"
+        ),
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="A G4 input cannot change while its single held-inode read is in progress",
+    ),
+    dict(
+        id="M257-g4-protocol-raw-hash-substituted",
+        owner="test_protocol_hash_comes_from_the_validated_protocol_model",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="protocol_sha = protocol_hash(load_protocol_bytes(protocol_raw))",
+        replacement="protocol_sha = sha256_hex(protocol_raw)",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="G4 binds the canonical hash of the validated protocol model",
+    ),
+    dict(
+        id="M258-g4-checkout-movement-unnoticed",
+        owner="test_checkout_movement_during_verification_refuses",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="if after_sha != before_sha:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="The checkout SHA is stable across all held input reads",
+    ),
+    dict(
+        id="M259-g4-current-packet-crossjoin-void",
+        owner="test_current_packet_must_equal_approved_packet",
+        file="scripts/g4_seal.py",
+        anchor="if current.packet != expected_packet:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="Execution re-verifies current bytes and equals them to the approved packet",
+    ),
+    dict(
+        id="M260-g4-runner-version-crossjoin-void",
+        owner="test_runner_version_is_cross_joined_before_consumption",
+        file="scripts/g4_seal.py",
+        anchor="if presented_runner_version != expected_packet.runner_version:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="The invoked runner machinery version equals the approved packet",
+    ),
+    dict(
+        id="M261-g4-ledger-packet-hash-not-bound",
+        owner="test_first_execution_consumption_durable_before_runner_gets_same_held_bytes",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="verified_packet_sha256=packet.packet_content_sha256,",
+        replacement='verified_packet_sha256="0" * 64,',
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="APPROVAL and CONSUMPTION identities explicitly carry the verified packet hash",
+    ),
+    dict(
+        id="M262-g4-runner-rereads-paths",
+        owner="test_runner_uses_preconsumption_held_bundle_when_paths_move_during_append",
+        file="scripts/g4_seal.py",
+        anchor="outcome = runner(current)",
+        replacement="outcome = runner(verify_sealed_inputs(inputs, git_runner=git_runner))",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="The runner receives the same pre-consumption held bytes, never a path re-read",
+    ),
+    dict(
+        id="M263-g4-lane1-payload-set-unbound",
+        owner="test_verified_packet_comes_only_from_real_typed_verifiers",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        manifest_version=manifest.schema_version,\n"
+            "        referenced_payload_set_hash=_payload_set_hash(payloads),"
+        ),
+        replacement=(
+            "        manifest_version=manifest.schema_version,\n"
+            "        referenced_payload_set_hash=sha256_hex(manifest_raw),"
+        ),
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="Lane 1 packet binding separately hashes its referenced payload set",
+    ),
+    dict(
+        id="M264-g4-lane2-payload-set-unbound",
+        owner="test_verified_packet_comes_only_from_real_typed_verifiers",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor=(
+            "        manifest_version=MASSIVE_MANIFEST_SCHEMA_VERSION,\n"
+            "        referenced_payload_set_hash=_payload_set_hash(payloads),"
+        ),
+        replacement=(
+            "        manifest_version=MASSIVE_MANIFEST_SCHEMA_VERSION,\n"
+            "        referenced_payload_set_hash=sha256_hex(manifest_raw),"
+        ),
+        selectors=[f"{U}/test_g4_verified_inputs.py"],
+        invariant="Lane 2 packet binding separately hashes every master/bar/spot payload",
+    ),
+    dict(
+        id="M265-g4-dirty-checkout-accepted",
+        owner="test_preflight_dirty_tracked_tree_unavailable",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor="if dirty:",
+        replacement="if False:",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="A tracked-dirty checkout cannot produce a verified G4 packet",
+    ),
+    dict(
+        id="M266-g4-effect-boundary-ledger-recheck-void",
+        owner=(
+            "test_interleaved_consumption_after_input_verification_is_refused_at_effect_boundary"
+        ),
+        file="scripts/g4_seal.py",
+        anchor=(
+            "    view = read_ledger(ledger_root)\n"
+            "    _check_authority(view, identity)\n\n"
+            "    consumption_record = LedgerRecord("
+        ),
+        replacement=(
+            "    view = read_ledger(ledger_root)\n\n    consumption_record = LedgerRecord("
+        ),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="Approval and duplicate authority are rechecked at the final spend boundary",
+    ),
+    dict(
+        id="M267-g4-execute-packet-selfcheck-void",
+        owner="test_execute_revalidates_packet_self_hash_before_ledger_access",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "    try:\n"
+            "        expected_packet = VerifiedSealedInputs.model_validate_json(\n"
+            "            expected_packet.model_dump_json()\n"
+            "        )\n"
+            "    except Exception as exc:\n"
+            "        raise VerifiedInputsError(\n"
+            '            "packet", f"expected packet self-validation failed: {exc}"\n'
+            "        ) from None"
+        ),
+        replacement="    expected_packet = expected_packet  # MUTATED: self-check bypassed",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant="Execute revalidates packet self-binding even after low-level model construction",
+    ),
 ]
+
+# Only tracked source/config/docs belong in the disposable mutation checkout.
+# Generated outputs can contain deliberately adversarial names from custody
+# tests (including dangling symlinks and rename/recreate probes), and authority
+# artifacts must never be propagated into another checkout.
+DISPOSABLE_COPY_IGNORE = (
+    ".venv",
+    "__pycache__",
+    ".git",
+    "*.pyc",
+    ".pytest_cache",
+    "artifacts",
+    "dist",
+)
 
 FAILING = ("FAILED",)
 
@@ -2116,13 +3248,26 @@ def main() -> int:
     parser.add_argument("--markdown", type=Path, default=None)
     args = parser.parse_args()
 
-    worktree = Path(tempfile.mkdtemp(prefix="tree-options-mutate-"))
+    # The disposable copy must honor the same host rule the seal/bars
+    # authority ledgers enforce mechanically: nothing repo-authoritative
+    # may resolve under /tmp (wiped on reboot). The A4/A5 ledger tests
+    # place their scratch at repo-relative artifacts/ paths precisely to
+    # stay off /tmp; a /tmp-based copy makes those paths resolve under
+    # /tmp, the (correct) LedgerRootRefusedError then fails every owning
+    # test at baseline, and the gate reports HARNESS_ERROR for those
+    # mutants plus a failed restoration suite (first full-gate attempt
+    # 2026-08-23: 10x HARNESS_ERROR, all M208-M212/M214-M218). Scratch
+    # therefore lives BESIDE the repo — never under /tmp, never inside
+    # the tree being copied (copytree into a subdir of its own source
+    # would recurse). TREE_OPTIONS_MUTATE_ROOT overrides for operators.
+    scratch_parent = Path(os.environ.get("TREE_OPTIONS_MUTATE_ROOT") or REPO.parent)
+    worktree = Path(tempfile.mkdtemp(prefix=f"{REPO.name}-mutate-", dir=scratch_parent))
     keep_worktree = False
     try:
         shutil.copytree(
             REPO,
             worktree / "repo",
-            ignore=shutil.ignore_patterns(".venv", "__pycache__", ".git", "*.pyc", ".pytest_cache"),
+            ignore=shutil.ignore_patterns(*DISPOSABLE_COPY_IGNORE),
         )
         wt = worktree / "repo"
         # The copy excludes .git by design, but WS-F stamping (build_stamp)

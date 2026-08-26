@@ -1,5 +1,10 @@
 # M4 retained evidence logs
 
+- `pr13-audit-remediation.md` — exact-head source verification for the four
+  merge blockers reported against PR #13 head `f95b99a`: canonical run
+  identity, checkout-independent universe identity, component-wise run-state
+  custody, and typed held-input G4 authority. The tested source head is
+  `314a5f4`; the record keeps live/vendor/approval execution out of scope.
 - `m4-a-shakedown.md` / `.json` — M4-A integration shakedown (2026-08-21):
   adapter parse of the retained Cboe demo per underlying, UNMODIFIED
   `OptionPitSurface` smoke queries, real-data manifest round-trip, coverage

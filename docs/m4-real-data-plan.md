@@ -44,13 +44,16 @@ decided only after real coverage numbers are in hand.
   same day; see `docs/m4-zero-dollar-workaround.md` for the
   blocked→workaround matrix, provenance classes, probe, honest limits,
   and the M4-C build order.
-- **G3 — real ingest + amendment window (owner-gated, post-purchase;
-  NOT started)**: real-data adapter run on purchased data, coverage
-  re-inspected, then the protocol/world amendment window (new real-world
-  registry entries, provider/schema tokens, holdout declaration) as its
-  own packet. Its manifest prerequisite — a manifest/verify pair with
-  input-hash lineage — is now satisfied by the `massive_manifest`
-  module.
+- **G3 — DONE (2026-08-22, PRs #11 + #12)**: the amendment packet was
+  drafted (PR #11, merged `41dfd2a`), owner-ratified, and applied as
+  protocol 0.2.0 (PR #12, merged `1f7c388`): vwap quote kind + fill
+  semantics, the volume-flow liquidity regime, model-derived-from-vwap
+  delta provenance, and the lifted candidate-inputs seam. Two values
+  remain PENDING-era: `flow_min_session_volume` (unratified — per owner
+  decision 2026-08-23 the derivation rule is an owner-ratified input
+  bound to the coverage-census content hash, not derived from era
+  bar-volume distributions) and the final holdout window (undeclared
+  until era-results, per the standing M1 correction).
 - **G4 — sealed real-data gate (NOT started)**: two-lane sealed
   validation on real worlds per the M3 discipline (one-shot, verdict
   verbatim, mutation campaign, clean-clone determinism). Separate plan

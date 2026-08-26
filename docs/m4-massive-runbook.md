@@ -173,9 +173,19 @@ saying so in the same note.
   schedules captures (and §7 is the reason a "just re-pull it later" habit is
   forbidden).
 - **DTE band constants are restated in the bridge** (`--dte-min`/`--dte-max`
-  defaults) while `research_protocol.yaml` (0.1.0) stays frozen; revisit at
-  the G3 amendment window, not before.
+  defaults); `research_protocol.yaml` is no longer frozen at 0.1.0 — it is
+  0.2.0 since the G3 amendment (PR #12, `1f7c388`) — but that amendment did
+  not move the bridge's capture-time band, which stays bridge-side unless a
+  future owner-ratified amendment moves it.
 - **Structural coverage only** — no quotes, greeks, or OI on this tier (see
-  the header and evidence §4); `build_option_candidate_inputs()` in
-  `massive_options` raises unconditionally so the lane cannot be wired into
-  candidates by accident.
+  the header and evidence §4). Since protocol 0.2.0 the seam BUILDS:
+  `build_option_candidate_inputs()` in `massive_options` now constructs a
+  `CandidateSnapshot` (the amendment lifted its earlier unconditional
+  refusal). The runtime refusal now lives in
+  `src/tree_options/candidates/filters.py`: constructing a
+  `volume_flow`-regime `CandidateFilter` raises `ValueError` — "volume_flow
+  regime requires flow_min_session_volume to be an int >= 1 — the
+  protocol's threshold is PENDING-era; set it from the coverage-era census
+  before building this filter" — unless `flow_min_session_volume` is an
+  int >= 1, and the protocol currently pins it `null`, so
+  `CandidateFilter.from_protocol_volume_flow` fails closed today.

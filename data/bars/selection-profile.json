@@ -1,0 +1,41 @@
+{
+  "schema_version": "m4-bars-selection-profile/1",
+  "status": "PENDING owner ratification",
+  "selector": "capture_massive_structural.select_atm_grid_bars",
+  "wanted": {
+    "value": 60000,
+    "tag": "draft",
+    "rationale": "total-series cap sized above the committed universe's worst grid (29 underlyings x 105 as_of Fridays x ~1 monthly in-band expiry x 7 strikes x 2 sides ~ 42,630): a guard against a runaway walk, not a trim \u2014 the work manifest records the actual selection size"
+  },
+  "dte_min": {
+    "value": 30,
+    "tag": "draft",
+    "rationale": "the protocol candidate band's lower DTE edge (capture bridge DTE_MIN)"
+  },
+  "dte_max": {
+    "value": 60,
+    "tag": "draft",
+    "rationale": "the protocol candidate band's upper DTE edge (capture bridge DTE_MAX)"
+  },
+  "strike_band": {
+    "value": 3,
+    "tag": "draft",
+    "rationale": "ATM +/- 3 distinct strikes per expiry \u2014 a RANK in the ladder, never an absolute strike distance"
+  },
+  "expiries": {
+    "value": "monthly",
+    "tag": "draft",
+    "rationale": "third-Friday monthlies only (tree_options.time.monthlies)"
+  },
+  "sides": {
+    "value": "both",
+    "tag": "draft",
+    "rationale": "calls and puts at every selected strike"
+  },
+  "notes": [
+    "PENDING owner ratification: every value above is DRAFT until the owner",
+    "ratifies this profile; the profile's content hash is bound into every",
+    "work manifest, so ratifying a change invalidates prior manifests."
+  ],
+  "content_sha256": "bf3e921b9bca6b235d3a8c3dc872ea26acdc0af141cad75906ba6238693e2fa3"
+}

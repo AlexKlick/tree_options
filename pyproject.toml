@@ -61,6 +61,13 @@ files = [
     "src/tree_options",
     "scripts/capture_massive_structural.py",
     "scripts/inspect_structural_coverage.py",
+    "scripts/runstate_mark.py",
+    "scripts/era_status.py",
+    "scripts/gen_coverage_universe.py",
+    "scripts/build_coverage_census.py",
+    "scripts/build_protocol_amendment.py",
+    "scripts/g4_seal.py",
+    "scripts/launch_bars_era.py",
 ]
 mypy_path = "src"
 # The point is catching real unit/ordering bugs, not satisfying a strictness

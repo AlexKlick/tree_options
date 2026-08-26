@@ -43,12 +43,17 @@ def resolve_protocol_path(path: Path | str | None = None) -> Path:
     return p
 
 
+def load_protocol_bytes(data: bytes) -> ResearchProtocol:
+    """Validate the frozen protocol from bytes ALREADY READ (round-3
+    amendment fix, 2026-08-23): callers that hash the same bytes they parse
+    must not re-read the file through a path."""
+    return ResearchProtocol.model_validate(yaml.safe_load(data.decode("utf-8")))
+
+
 def load_protocol(path: Path | str | None = None) -> ResearchProtocol:
     """Load and validate the frozen protocol. Raises on any defect."""
     p = resolve_protocol_path(path)
-    raw = p.read_text(encoding="utf-8")
-    data = yaml.safe_load(raw)
-    return ResearchProtocol.model_validate(data)
+    return load_protocol_bytes(p.read_bytes())
 
 
 @lru_cache(maxsize=8)

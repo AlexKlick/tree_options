@@ -227,7 +227,7 @@ class CboeEodParseResult:
     source_path: Path
     source_sha256: str
     underlying_security_id: str
-    variant: str
+    variant: EodVariant
     day_files: dict[date, OptionDayFile]
     stats: CboeEodStats
     issues: list[str]
@@ -394,6 +394,7 @@ def parse_cboe_eod_csv(
     *,
     variant: EodVariant = "cgi_or_historical",
     underlying: str | None = None,
+    raw: bytes | None = None,
 ) -> CboeEodParseResult:
     """Parse one Cboe Option EOD Summary CSV.
 
@@ -403,7 +404,11 @@ def parse_cboe_eod_csv(
     and accounted by a per-symbol summary issue — never silently dropped.
     Without a selection, a multi-underlying file refuses, naming them all.
     """
-    raw = path.read_bytes()
+    # The optional bytes seam lets authority-sensitive callers parse exactly
+    # the inode/bytes already read under no-follow custody. Ordinary callers
+    # retain the convenient path-reading behavior.
+    if raw is None:
+        raw = path.read_bytes()
     source_sha256 = sha256_hex(raw)
     reader = csv.reader(io.StringIO(raw.decode("utf-8")))
     try:
@@ -757,7 +762,7 @@ class RealOptionsManifest(StrictModel):
     provider: str = REAL_OPTIONS_PROVIDER
     schema_version: str = REAL_OPTIONS_SCHEMA_VERSION
     underlying_security_id: IdStr
-    variant: str
+    variant: EodVariant
     source_path: str
     source_sha256: str
     rows_total: NonNegativeInt
@@ -802,6 +807,19 @@ def build_real_options_manifest(
     return core.model_copy(update={"content_sha256": digest.hexdigest()})
 
 
+def verify_real_options_manifest_tokens(manifest: RealOptionsManifest) -> None:
+    """Verify the manifest's declared format/provider before payload use."""
+    if manifest.schema_version != REAL_OPTIONS_SCHEMA_VERSION:
+        raise RealOptionsManifestError(
+            f"real options manifest: schema {manifest.schema_version} "
+            f"!= {REAL_OPTIONS_SCHEMA_VERSION}"
+        )
+    if manifest.provider != REAL_OPTIONS_PROVIDER:
+        raise RealOptionsManifestError(
+            f"real options manifest: provider {manifest.provider} != {REAL_OPTIONS_PROVIDER}"
+        )
+
+
 def verify_real_options_manifest(
     manifest: RealOptionsManifest,
     result: CboeEodParseResult,
@@ -816,10 +834,7 @@ def verify_real_options_manifest(
             f"real options manifest for {manifest.underlying_security_id}: {detail}"
         )
 
-    if manifest.schema_version != REAL_OPTIONS_SCHEMA_VERSION:
-        fail(f"schema {manifest.schema_version} != {REAL_OPTIONS_SCHEMA_VERSION}")
-    if manifest.provider != REAL_OPTIONS_PROVIDER:
-        fail(f"provider {manifest.provider} != {REAL_OPTIONS_PROVIDER}")
+    verify_real_options_manifest_tokens(manifest)
     if manifest.underlying_security_id != result.underlying_security_id:
         fail(f"underlying {manifest.underlying_security_id} != result")
     if manifest.variant != result.variant:
