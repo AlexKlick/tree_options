@@ -771,7 +771,10 @@ def test_durable_walk_still_commits_a_component_it_creates(
         assert fd is not None
     finally:
         os.close(fd)
-    created_parent = (os.stat(scratch / "fresh-walk").st_dev, os.stat(scratch / "fresh-walk").st_ino)
+    created_parent = (
+        os.stat(scratch / "fresh-walk").st_dev,
+        os.stat(scratch / "fresh-walk").st_ino,
+    )
     scratch_identity = (os.stat(scratch).st_dev, os.stat(scratch).st_ino)
     assert scratch_identity in fsynced, "the created component's parent is committed"
     assert created_parent in fsynced, "the deeper created component's parent is committed"

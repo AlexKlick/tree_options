@@ -298,9 +298,7 @@ def test_append_reanchors_after_a_crash_between_fsync_and_extent_advance(store_d
     view = J.replay(store_dir)
     third = _record(3, view.tail_hash)
     signed = third.model_copy(update={"record_sha256": J._record_hash(third)})
-    line = json.dumps(
-        json.loads(signed.model_dump_json()), sort_keys=True, separators=(",", ":")
-    )
+    line = json.dumps(json.loads(signed.model_dump_json()), sort_keys=True, separators=(",", ":"))
     fd = os.open(path, os.O_WRONLY | os.O_APPEND)
     try:
         os.write(fd, (line + "\n").encode("utf-8"))
