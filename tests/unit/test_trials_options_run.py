@@ -441,6 +441,53 @@ def test_unknown_lane_and_lane_1_threshold_refuse(world, protocol, tmp_path) -> 
     assert trial_count(tmp_path / "refuse.db") == 0
 
 
+# ---- G5: the null-score seed rides the config hash -------------------------------
+
+
+def test_score_seed_rides_the_config_hash(world, protocol, tmp_path) -> None:
+    plain = _run_trial(world, protocol, tmp_path, tag="seed_none")
+    seeded = _run_trial(world, protocol, tmp_path, tag="seed_a", score_seed="t-null/a")
+    other = _run_trial(world, protocol, tmp_path, tag="seed_b", score_seed="t-null/b")
+    assert plain["stamp"]["config_hash"] != seeded["stamp"]["config_hash"]
+    assert seeded["stamp"]["config_hash"] != other["stamp"]["config_hash"]
+    # the seed is stamped in the payload too: the artifact discloses the
+    # declared score model input on its own
+    assert seeded["payload"]["score_seed"] == "t-null/a"
+    # no seed, no key: the lane-1 default payload is unchanged
+    assert "score_seed" not in plain["payload"]
+
+
+def test_empty_score_seed_refuses(world, protocol, tmp_path) -> None:
+    overlay, _cal, _snap, _ds = world
+    surface = OptionPitSurface(overlay)
+    scored = _scored(world, surface)
+    registry = TrialRegistry(tmp_path / "seed_empty.db")
+    with pytest.raises(ValueError, match="score_seed must be a non-empty string"):
+        run_options_trial(
+            dataset=_ds,
+            surface=surface,
+            calendar=world[1],
+            protocol=protocol,
+            world_id=world[2].snapshot_id,
+            arm="A",
+            strategy_config=OptionsStrategyConfig(),
+            scored=scored,
+            model_family="fixture:v1",
+            model_sha256=None,
+            hypothesis="refused",
+            decision_sessions=tuple(sorted({row.session for row in scored})),
+            options_manifest_hash="0" * 64,
+            registry=registry,
+            artifacts_dir=tmp_path / "seed_empty",
+            repo=REPO_ROOT,
+            clock=FIXED_CLOCK,
+            split_override=SPLIT,
+            allow_dirty=True,
+            score_seed="",
+        )
+    registry.close()
+
+
 # ---- G3: per-fold session-return series + fold equity endpoints ------------------
 
 

@@ -352,6 +352,7 @@ def run_options_trial(
     split_override: OptionsSplitOverride | None = None,
     liquidity_lane: int = 1,
     flow_min_session_volume: int | None = None,
+    score_seed: str | None = None,
     allow_dirty: bool = False,
 ) -> OptionsTrialResult:
     """Register, execute, stamp, and complete one options trial.
@@ -379,6 +380,8 @@ def run_options_trial(
     flow_threshold = (
         _volume_flow_threshold(protocol, flow_min_session_volume) if liquidity_lane == 2 else None
     )
+    if score_seed is not None and not score_seed:
+        raise ValueError("score_seed must be a non-empty string when supplied")
     if not scored:
         raise ValueError("scored rows are required")
     normalized_sessions = tuple(decision_sessions)
@@ -419,6 +422,9 @@ def run_options_trial(
             if liquidity_lane != 1
             else {}
         ),
+        # G5: the null-score generator's REQUIRED seed is a first-class
+        # config key — the declared score model's input rides the hash
+        **({"score_seed": score_seed} if score_seed is not None else {}),
         "model_family": model_family,
         "model_sha256": model_sha256,
         "split": split,
@@ -489,6 +495,7 @@ def run_options_trial(
                 if liquidity_lane != 1
                 else {}
             ),
+            **({"score_seed": score_seed} if score_seed is not None else {}),
             "model_family": model_family,
             "model_sha256": model_sha256,
             "split": split,
@@ -522,6 +529,7 @@ def run_options_trial(
             world_id=world_id,
             liquidity_lane=liquidity_lane,
             flow_min_session_volume=flow_threshold,
+            score_seed=score_seed,
         )
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifacts_dir / f"{trial_id}.json"
@@ -559,6 +567,7 @@ def _execute(
     world_id: str,
     liquidity_lane: int = 1,
     flow_min_session_volume: int | None = None,
+    score_seed: str | None = None,
 ) -> tuple[dict[str, object], _ODStats]:
     if liquidity_lane == 2:
         # G2: the Massive derived (vwap) lane's ratified regime — OI and the
@@ -743,4 +752,8 @@ def _execute(
         # artifact alone discloses which filter produced its audit rows
         payload["liquidity_lane"] = liquidity_lane
         payload["flow_min_session_volume"] = flow_min_session_volume
+    if score_seed is not None:
+        # G5: the declared score model's seed is stamped in the payload so
+        # the artifact discloses it without re-hashing the config
+        payload["score_seed"] = score_seed
     return payload, stats
