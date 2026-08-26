@@ -48,11 +48,13 @@ surface's own mechanisms, never fabrication:
 - derived reads live on this overlay's own surface: `derived_quote`,
   `derived_quotes_for`, `derived_stats`.
 
-CANDIDATE WIRING IS GATED. This module deliberately provides surface reads
-only — there is NO `build_derived_candidate_inputs` here, and
-`tree_options.data.massive_options.build_option_candidate_inputs` keeps
-raising unconditionally: wiring derived quotes into the M3 candidate filter
-awaits a future owner-ratified G3 amendment packet.
+CANDIDATE WIRING IS RATIFIED (protocol 0.2.0) and lives outside this
+module: `tree_options.data.massive_options.build_option_candidate_inputs`
+builds an M3 `CandidateSnapshot` from one derived cell (|delta| under the
+accepted `model-derived-from-vwap` provenance, the bar's volume, no
+fabricated bid/ask/OI), and `tree_options.data.vwap_pit_surface.VwapPitSurface`
+is the lane-2 read surface that feeds it — this module still deliberately
+provides overlay reads only.
 
 PIT semantics (identical to the Cboe lane, by reuse): an EOD bar for session
 t is usable at t+1 09:00 America/New_York — `publication_of` IS

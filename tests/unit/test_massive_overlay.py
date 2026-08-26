@@ -196,6 +196,18 @@ def surface(overlay: MassiveDerivedOverlay) -> OptionPitSurface:
 # ---- tokens, defaults, lineage -------------------------------------------------
 
 
+def test_module_docstring_states_the_landed_candidate_seam() -> None:
+    """(e) documentation truth: the pre-0.2.0 claim that
+    `build_option_candidate_inputs` "keeps raising unconditionally" is rot —
+    the G3 amendment (protocol 0.2.0) landed the builder, and the lane-2
+    adapter feeds it. The module docstring must describe the seam that
+    exists, never the gated one that was replaced."""
+    doc = mo.__doc__ or ""
+    assert "keeps raising unconditionally" not in doc
+    assert "awaits a future owner-ratified G3 amendment packet" not in doc
+    assert "build_option_candidate_inputs" in doc
+
+
 def test_provider_and_schema_tokens(overlay: MassiveDerivedOverlay) -> None:
     assert MASSIVE_DERIVED_PROVIDER == "massive-derived-free/1"
     assert MASSIVE_DERIVED_SCHEMA_VERSION == "m4-massive-derived/1"
