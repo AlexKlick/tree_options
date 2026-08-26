@@ -495,6 +495,19 @@ def _load_spot(
     return proxy
 
 
+def load_spot_proxy(path: Path) -> dict[str, dict[date, Decimal]]:
+    """Parse one `spot_proxy.json` (DECLARED INPUT) under exactly the
+    discipline `_load_spot` applies — exact Decimal tokens, ISO session
+    keys (or the flat one-spot-for-every-session form, keyed `date.min`),
+    positive values, fail-closed on anything else.
+
+    The lane-2 PIT adapter (`data.vwap_pit_surface.VwapPitSurface`) reads
+    the coverage-era spot proxy through this loader; the bytes it parses
+    are the caller's declared input, never a vendor quote."""
+    path = Path(path)
+    return _load_spot(path.parent, [], raw=path.read_bytes())
+
+
 # ---- contract master construction --------------------------------------------
 
 
@@ -1173,5 +1186,6 @@ __all__ = [
     "MassiveExpiryMeta",
     "MassiveOverlayError",
     "load_derived_surface",
+    "load_spot_proxy",
     "vwap_quote_event",
 ]
