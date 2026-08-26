@@ -42,6 +42,7 @@ from tests.fixtures.bars_sample import (  # noqa: E402
 )
 from tests.unit.test_protocol_amendment import _base_020_protocol_bytes  # noqa: E402
 from tree_options.data.bars_manifest import (  # noqa: E402
+    BARS_LEDGER_FILENAME,
     KIND_BARS_LAUNCH_CONSUMED,
     append_bars_launch_approval,
     append_bars_launch_consumed,
@@ -241,6 +242,39 @@ def _tree_state(*roots: Path) -> dict[Path, tuple[int, int]]:
     return state
 
 
+def _authority_tree_state(root: Path) -> tuple[bool, bytes | None]:
+    """The read-only isolation oracle for a REAL authority tree: its
+    existence plus the ledger's exact bytes.
+
+    Host absence is NOT part of the contract — the live bars era minted a
+    real ledger under ``artifacts/bars-authority/``, so ``not
+    root.exists()`` is an assertion about this HOST, not about the tool.
+    The checkable claim is that a preflight refusal never WRITES there:
+    the same (exists, ledger-bytes) pair before and after."""
+    ledger = root / BARS_LEDGER_FILENAME
+    return (root.exists(), ledger.read_bytes() if ledger.is_file() else None)
+
+
+def _real_preflight_argv(scratch_root: Path) -> list[str]:
+    """The read-only preflight argv against the REAL repo protocol (the CLI
+    default): the documented exit-2 refusal when no BARS_LAUNCH_APPROVAL
+    record binds the loaded protocol hash."""
+    return [
+        "--run-id",
+        RUN_ID,
+        "--census",
+        "census-not-even-read.json",
+        "--capture-manifest",
+        "manifest-not-even-read.json",
+        "--work-manifest",
+        "work-not-even-read.json",
+        "--store-root",
+        str(scratch_root / "runstate"),
+        "--authority-root",
+        str(scratch_root / "bars-authority"),
+    ]
+
+
 def _sole_store_run_id(store_root: Path) -> str:
     run_ids = sorted(path.name for path in store_root.iterdir() if path.is_dir())
     assert len(run_ids) == 1, f"expected one run store under {store_root}, got {run_ids}"
@@ -259,29 +293,55 @@ def test_preflight_exit_2_on_real_021_protocol_today_without_an_approval_record(
     protocol IS 0.2.1, so the version clause passes and the refusal is the
     missing BARS_LAUNCH_APPROVAL record — read-only, through the REAL loader."""
     assert load_protocol(REAL_PROTOCOL).meta.protocol_version == "0.2.1"
-    argv = [
-        "--run-id",
-        RUN_ID,
-        "--census",
-        "census-not-even-read.json",
-        "--capture-manifest",
-        "manifest-not-even-read.json",
-        "--work-manifest",
-        "work-not-even-read.json",
-        "--store-root",
-        str(scratch_root / "runstate"),
-        "--authority-root",
-        str(scratch_root / "bars-authority"),
-    ]
-    assert launch.main(argv) == 2
+    real_authority = REPO_ROOT / "artifacts" / "bars-authority"
+    before = _authority_tree_state(real_authority)
+    assert launch.main(_real_preflight_argv(scratch_root)) == 2
     err = capsys.readouterr().err
     assert "no BARS_LAUNCH_APPROVAL record binds the loaded protocol hash" in err
     # the version clause PASSED (the protocol is 0.2.1 now): the record is
     # the refusal, not the version
     assert "protocol version" not in err
-    # read-only: nothing was created anywhere the tool knows about
+    # read-only: nothing was created anywhere the tool knows about. The real
+    # authority tree EXISTS on this host (the live bars era minted a ledger
+    # there), so the oracle is UNCHANGED-ness — never host absence
     assert not (scratch_root / "bars-authority").exists()
-    assert not (REPO_ROOT / "artifacts" / "bars-authority").exists()
+    assert _authority_tree_state(real_authority) == before
+
+
+def test_preflight_refusal_never_writes_a_pre_existing_real_authority_ledger(
+    scratch_root: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The read-only claim, proven on a PRE-EXISTING authority tree.
+
+    The live bars era minted a real ledger under the real
+    ``artifacts/bars-authority/``, so a tmp fixture under the real path is
+    impossible (and unwanted). Here REPO_ROOT points at a scratch repo that
+    ALREADY carries an authority ledger with known bytes — exactly the host
+    condition today — and the refusal must leave it untouched: the same
+    (exists, ledger-bytes) pair before and after, and never an append, a
+    rewrite, or a truncation. The old assertion form
+    (``not (REPO_ROOT / "artifacts" / "bars-authority").exists()``) fails
+    this fixture by construction: the tree exists going in."""
+    fake_repo = tmp_path / "repo"
+    authority = fake_repo / "artifacts" / "bars-authority"
+    authority.mkdir(parents=True)
+    ledger_bytes = b'{"kind": "BARS_LAUNCH_APPROVAL", "note": "pre-existing live-era ledger"}\n'
+    (authority / BARS_LEDGER_FILENAME).write_bytes(ledger_bytes)
+    monkeypatch.setattr(f"{__name__}.REPO_ROOT", fake_repo)
+    before = _authority_tree_state(authority)
+
+    assert launch.main(_real_preflight_argv(scratch_root)) == 2
+    err = capsys.readouterr().err
+    assert "no BARS_LAUNCH_APPROVAL record binds the loaded protocol hash" in err
+    assert "protocol version" not in err
+    # the isolation oracle: the pre-existing REAL-tree ledger is unchanged
+    assert _authority_tree_state(authority) == before
+    assert (authority / BARS_LEDGER_FILENAME).read_bytes() == ledger_bytes
+    # and the refusal created nothing anywhere else it knows about
+    assert not (scratch_root / "bars-authority").exists()
 
 
 def test_preflight_exit_2_wrong_version_even_with_matching_record(
