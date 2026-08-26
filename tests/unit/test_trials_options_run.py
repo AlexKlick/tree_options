@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 import pytest
@@ -486,6 +486,137 @@ def test_empty_score_seed_refuses(world, protocol, tmp_path) -> None:
             score_seed="",
         )
     registry.close()
+
+
+# ---- G3 extension (w4): verdict-computable per-position + per-fold stamps ---------
+
+
+def test_g3_extension_per_position_stamps(world, protocol, tmp_path) -> None:
+    """(w4, verdict D6) Without per-position `strike` / `abs_delta` at entry /
+    `dte_at_entry` / `label_window`, T-BAND and T-DTE falsifiers are not
+    artifact-computable; without the hold window a funded events source
+    cannot retro-tag earnings overlap without re-running."""
+    body = _run_trial(world, protocol, tmp_path, tag="g3_ext_pos")
+    positions = body["payload"]["pooled"]["positions"]
+    assert positions
+    _overlay, calendar, _snap, _ds = world
+    sessions = calendar.sessions()
+    ordinal = {s: i for i, s in enumerate(sessions)}
+    for position in positions:
+        # the decision-visible selection facts the band rules classified on
+        assert position["strike"] and Decimal(position["strike"]) > 0
+        assert position["abs_delta"] and Decimal(position["abs_delta"]) > 0
+        assert 30 <= position["dte_at_entry"] <= 60  # the protocol band
+        assert position["decision_session"]
+        decision = date.fromisoformat(position["decision_session"])
+        assert (date.fromisoformat(position["contract_expiration"]) - decision).days == (
+            position["dte_at_entry"]
+        )
+        # the label window is the DECISION's H5 window (labels/build semantics:
+        # base = the session before the decision, end = base + 5 sessions)
+        window = position["label_window"]
+        assert window and window["start"] and window["end"]
+        start, end = date.fromisoformat(window["start"]), date.fromisoformat(window["end"])
+        assert ordinal[start] == ordinal[decision] - 1
+        assert ordinal[end] == ordinal[start] + SPLIT.label_horizon_sessions
+        assert start < decision < end
+        # the hold window is the executed round trip (end null while open)
+        hold = position["hold_window"]
+        assert hold["start"] == position["entry_session"]
+        assert hold["end"] == position["exit_session"]
+
+
+def test_g3_extension_per_fold_fee_totals(world, protocol, tmp_path) -> None:
+    """(w4, verdict D6) Per-fold `fees_total` so a cost-floor decomposition is
+    computable from the artifact alone; the totals are the fold's OWN fills'
+    fee sum, real money rather than a zero placeholder."""
+    body = _run_trial(world, protocol, tmp_path, tag="g3_ext_fees")
+    per_fold = body["payload"]["per_fold"]
+    assert per_fold
+    assert len({fold["fold_id"] for fold in per_fold}) == len(per_fold)
+    for fold in per_fold:
+        assert Decimal(fold["fees_total"]) >= 0
+    assert any(Decimal(fold["fees_total"]) > 0 for fold in per_fold)
+
+
+def test_g3_extension_existing_keys_are_byte_identical(world, protocol, tmp_path) -> None:
+    """(w4) Additive ONLY: every key the payload carried before this change is
+    still present with its previous shape, and dataset_provenance keeps the
+    exact synthetic token for a synthetic-sourced dataset."""
+    body = _run_trial(world, protocol, tmp_path, tag="g3_ext_shape")
+    payload = body["payload"]
+    # the pre-w4 top-level payload keys (the artifact never loses a key)
+    assert {
+        "runner",
+        "world_id",
+        "arm",
+        "model_family",
+        "max_quote_age_seconds",
+        "cohort_stride",
+        "n_folds",
+        "world_last_session",
+        "per_fold",
+        "pooled",
+        "fills_log",
+        "counters",
+        "backtest",
+    } <= set(payload)
+    # the pre-w4 per-position keys, unchanged in name and form
+    for position in payload["pooled"]["positions"]:
+        assert {
+            "underlying_security_id",
+            "call_put",
+            "score",
+            "label",
+            "entry_session",
+            "entry_price",
+            "contract_expiration",
+            "exit_kind",
+            "exit_session",
+            "exit_price",
+            "premium_return",
+            "signed_premium_return",
+        } <= set(position)
+    # the pre-w4 per-fold keys, unchanged
+    for fold in payload["per_fold"]:
+        assert {
+            "fold_id",
+            "n_test_sessions",
+            "n_positions",
+            "n_fills",
+            "fills_buy",
+            "fills_sell",
+            "n_sessions_evaluated",
+            "conservation_checks",
+            "force_closes",
+            "early_exercises",
+            "expiries",
+            "terminals",
+            "total_return",
+            "session_returns",
+            "equity_start",
+            "equity_end",
+        } <= set(fold)
+    # byte-identical provenance for the synthetic fixture world
+    assert payload["backtest"]["dataset_provenance"] == "synthetic/v1"
+
+
+def test_dataset_provenance_is_derived_from_the_dataset_identity() -> None:
+    """(w4) The hardcoded `synthetic/v1` is gone: a synthetic-SOURCED dataset
+    keeps the historical token byte-identically (every registered synthetic
+    trial), and any other snapshot identity is stamped as ITSELF — a lane-2
+    artifact can never claim synthetic provenance."""
+    from tree_options.synth.generate import PROVIDER
+    from tree_options.trials.options_run import _dataset_provenance
+
+    assert PROVIDER == "synthetic/v1"  # the pinned source token
+    assert _dataset_provenance("m3-unit-strategy-906", frozenset({PROVIDER})) == "synthetic/v1"
+    assert _dataset_provenance("synth-v1-dev-null-101", frozenset({PROVIDER})) == "synthetic/v1"
+    assert _dataset_provenance("massive-derived-free/1", frozenset({"spot-proxy/declared"})) == (
+        "massive-derived-free/1"
+    )
+    # a mixed-source dataset never collapses into the synthetic token either
+    assert _dataset_provenance("mixed/1", frozenset({PROVIDER, "spot-proxy/declared"})) == "mixed/1"
 
 
 # ---- G3: per-fold session-return series + fold equity endpoints ------------------

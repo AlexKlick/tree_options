@@ -175,7 +175,53 @@ def _cohort_series(
     return stride4, cohort_ics, cohort_counts
 
 
-def _position_payloads(result: OptionsBacktestResult) -> list[dict[str, object]]:
+def _dataset_provenance(snapshot_id: str, bar_sources: frozenset[str]) -> str:
+    """(G3 extension, w4) The dataset's provenance, DERIVED — never the
+    hardcoded ``"synthetic/v1"`` the payload used to claim for every world.
+
+    A dataset whose every bar carries the synthetic generator's own source
+    token (``synth.generate.PROVIDER`` == "synthetic/v1") keeps the
+    historical token BYTE-IDENTICALLY, so every existing synthetic trial's
+    artifact is unchanged. Any other dataset — a mixed-source one, or the
+    lane-2 ``massive-derived-free/1`` world — is stamped with its SNAPSHOT
+    IDENTITY, so a lane-2 artifact can never claim synthetic provenance.
+    (This module deliberately does not import ``tree_options.synth``: the
+    token is pinned by test against the generator's constant.)"""
+    if bar_sources == {"synthetic/v1"}:
+        return "synthetic/v1"
+    return snapshot_id
+
+
+def _label_window(
+    sessions: tuple[date, ...],
+    ordinal: dict[date, int],
+    decision_session: date | None,
+    horizon_sessions: int,
+) -> dict[str, str] | None:
+    """The DECISION's label window, in `labels.build` semantics: base = the
+    session before the decision (the last bar visible at close(d)), end =
+    base + `horizon_sessions`. None when the decision has no prior session
+    or the window runs past the calendar (the label builder's own skips)."""
+    if decision_session is None or decision_session not in ordinal:
+        return None
+    base_ordinal = ordinal[decision_session] - 1
+    end_ordinal = base_ordinal + horizon_sessions
+    if base_ordinal < 0 or end_ordinal >= len(sessions):
+        return None
+    return {
+        "start": sessions[base_ordinal].isoformat(),
+        "end": sessions[end_ordinal].isoformat(),
+    }
+
+
+def _position_payloads(
+    result: OptionsBacktestResult,
+    *,
+    calendar: SessionCalendar,
+    label_horizon_sessions: int,
+) -> list[dict[str, object]]:
+    sessions = calendar.sessions()
+    ordinal = {session: index for index, session in enumerate(sessions)}
     rows: list[dict[str, object]] = []
     for p in result.positions:
         rows.append(
@@ -201,6 +247,26 @@ def _position_payloads(result: OptionsBacktestResult) -> list[dict[str, object]]
                     if (p.call_put == "C" or p.premium_return is None)
                     else -p.premium_return
                 ),
+                # ---- G3 extension (verdict D6, additive): the per-position
+                # facts that make T-BAND/T-DTE and the earnings retro-tag
+                # artifact-computable. strike/abs_delta are the DECISION-
+                # VISIBLE file(t-1) pair the band rules classified on; dte
+                # is the filter's calendar-day convention.
+                "strike": str(p.strike) if p.strike is not None else None,
+                "abs_delta": str(p.abs_delta) if p.abs_delta is not None else None,
+                "dte_at_entry": p.dte_at_entry,
+                "decision_session": (
+                    p.decision_session.isoformat() if p.decision_session else None
+                ),
+                "label_window": _label_window(
+                    sessions, ordinal, p.decision_session, label_horizon_sessions
+                ),
+                # the executed round trip: entry fill to exit (end None while
+                # the position is still open at the fold's last session)
+                "hold_window": {
+                    "start": p.entry_session.isoformat(),
+                    "end": p.exit_session.isoformat() if p.exit_session else None,
+                },
             }
         )
     return rows
@@ -530,6 +596,7 @@ def run_options_trial(
             liquidity_lane=liquidity_lane,
             flow_min_session_volume=flow_threshold,
             score_seed=score_seed,
+            split_label_horizon=split["label_horizon_sessions"],
         )
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifacts_dir / f"{trial_id}.json"
@@ -568,6 +635,7 @@ def _execute(
     liquidity_lane: int = 1,
     flow_min_session_volume: int | None = None,
     score_seed: str | None = None,
+    split_label_horizon: int = 5,
 ) -> tuple[dict[str, object], _ODStats]:
     if liquidity_lane == 2:
         # G2: the Massive derived (vwap) lane's ratified regime — OI and the
@@ -624,6 +692,9 @@ def _execute(
                 "expiries": result.counters.expiries,
                 "terminals": result.counters.terminals,
                 "total_return": result.summary.total_return,
+                # G3 extension (verdict D6): the fold's OWN fill fees, so a
+                # cost-floor decomposition is computable from the artifact
+                "fees_total": str(sum((fill.fees for fill in result.fills), Decimal("0"))),
                 # G3: the fold's own session-return series and equity
                 # endpoints — computed today but discarded; stamped so the
                 # artifact alone re-derives every fold statistic
@@ -632,7 +703,13 @@ def _execute(
                 "equity_end": (str(result.equities[-1]) if result.equities else None),
             }
         )
-        all_positions.extend(_position_payloads(result))
+        all_positions.extend(
+            _position_payloads(
+                result,
+                calendar=calendar,
+                label_horizon_sessions=split_label_horizon,
+            )
+        )
         all_fills.extend(_fill_log(result))
         backtest_returns.extend(result.summary.session_returns)
         backtest_turnovers.extend(result.turnovers)
@@ -735,7 +812,13 @@ def _execute(
             "rule_histogram": rule_histogram,
         },
         "backtest": {
-            "dataset_provenance": "synthetic/v1",
+            # G3 extension (w4): derived from the dataset's identity, never
+            # hardcoded — synthetic-sourced worlds keep the historical token
+            # byte-identically; every other world (the lane-2 one included)
+            # is stamped with its own snapshot identity
+            "dataset_provenance": _dataset_provenance(
+                world_id, frozenset({bar.source for bar in dataset.bars})
+            ),
             "initial_cash_per_fold": str(OPTIONS_BACKTEST_INITIAL_CASH),
             "n_session_returns": len(aggregate.session_returns),
             "total_return": aggregate.total_return,
