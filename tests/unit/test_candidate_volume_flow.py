@@ -1,11 +1,12 @@
-"""G3 (protocol 0.2.0): the volume-flow liquidity regime + provenance gates.
+"""G3 (protocol 0.2.0 -> 0.2.1): the volume-flow liquidity regime + provenance gates.
 
 Pins the ratified semantics: open interest and spread are DROPPED WITH
 DISCLOSURE (NOT_APPLICABLE naming the absence, never a fabricated pass);
 the session's traded contracts are the liquidity term under their own rule
 name; a model-derived |delta| passes only in a regime that accepts its
-provenance; and the era-pending threshold refuses to build a filter — an
-unset flow threshold may never default to 0.
+provenance; and an unset flow threshold may never default to 0 (the 0.2.1
+amendment landed flow_min_session_volume=100, and the PENDING-era refusal
+survives as the fail-closed branch for any protocol still carrying null).
 """
 
 from __future__ import annotations
@@ -177,14 +178,33 @@ class TestProvenanceGate:
         assert by_rule["delta"].status == "NOT_EVALUABLE"
 
 
-class TestEraPendingThreshold:
-    def test_protocol_threshold_is_pending_and_builder_refuses(self, synthetic_calendar):
+class TestLandedThreshold:
+    def test_protocol_threshold_is_landed_and_builder_binds_it(self, synthetic_calendar):
+        """The 0.2.1 landed state: the threshold is 100 (owner_deviation
+        bound to the exit-5 census 43b0b040ea3c…, per the landed amendment
+        record), and from_protocol_volume_flow BUILDS from the real protocol
+        and binds it — no refusal for the landed shape. The PENDING-era
+        refusal survives as the fail-closed branch: a protocol copy whose
+        threshold is still null may never build a filter."""
+        from tree_options.protocol.holdout import RATIFIED_HOLDOUT_CENSUS_SHA256
+
         p = load_protocol()
         lf = p.option_candidate_defaults.liquidity_volume_flow
         assert lf is not None
-        assert lf.flow_min_session_volume is None  # PENDING-era
+        assert lf.flow_min_session_volume == 100  # landed by 0.2.1, not pending
+        (landed_record,) = [a for a in p.meta.amendments if a.version == "0.2.1"]
+        assert "flow_min_session_volume = 100" in landed_record.changes
+        assert RATIFIED_HOLDOUT_CENSUS_SHA256 in landed_record.changes
+        f = CandidateFilter.from_protocol_volume_flow(synthetic_calendar, p)
+        assert f.flow_min_session_volume == 100
+        assert f.liquidity_regime == "volume_flow"
+        assert f.accepted_delta_provenance == lf.abs_delta_provenance_accepted
+        # fail-closed unchanged: the PENDING-era shape still refuses
+        patched = lf.model_copy(update={"flow_min_session_volume": None})
+        d2 = p.option_candidate_defaults.model_copy(update={"liquidity_volume_flow": patched})
+        p_pending = p.model_copy(update={"option_candidate_defaults": d2})
         with pytest.raises(ValueError, match="PENDING-era"):
-            CandidateFilter.from_protocol_volume_flow(synthetic_calendar, p)
+            CandidateFilter.from_protocol_volume_flow(synthetic_calendar, p_pending)
 
     def test_volume_flow_requires_threshold(self, synthetic_calendar):
         with pytest.raises(ValueError, match="flow_min_session_volume"):
@@ -202,10 +222,15 @@ class TestEraPendingThreshold:
 
     def test_protocol_amendment_record_present(self):
         p = load_protocol()
-        assert p.meta.protocol_version == "0.2.0"
-        (amendment,) = p.meta.amendments
-        assert amendment.version == "0.2.0"
-        assert "PR #11" in amendment.decision
+        assert p.meta.protocol_version == "0.2.1"
+        first, landed = p.meta.amendments
+        assert first.version == "0.2.0"
+        assert "PR #11" in first.decision
+        assert landed.version == "0.2.1"
+        assert landed.date == "2026-08-26"
+        assert "43b0b040ea3c7936fc08e6b1028ce446e46c99f44ca1d87da9fec02099e12e14" in (
+            landed.changes
+        )
         assert p.fills.vwap.zero_volume_session == "unfillable"
 
 

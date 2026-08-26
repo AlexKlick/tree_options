@@ -4,6 +4,13 @@ Synthetic censuses are built DIRECTLY through the coverage_census models —
 the census script is never invoked. Output roots must live under the real
 repo artifacts/ (the builder refuses anywhere else), so each test creates a
 unique subtree and removes it afterwards.
+
+The BASE protocol is the repo protocol reverted to its pre-0.2.1 shape
+(``_base_020_protocol_bytes``): the repo file LANDED 0.2.1 (cdf38c8,
+owner-ratified 2026-08-26) and the builder refuses a 0.2.1 base outright —
+refusing to re-derive an already-landed amendment — so the 0.2.0 world this
+suite exercises is a fixture rebuilt through the real loader's own models,
+never a hand-typed stand-in.
 """
 
 from __future__ import annotations
@@ -149,6 +156,29 @@ def _make_census_bytes(
     return census.model_dump_json().encode("utf-8")
 
 
+def _base_020_protocol_bytes() -> bytes:
+    """The repo protocol REVERTED to its pre-0.2.1 shape: version 0.2.0, no
+    0.2.1 amendment record, ``flow_min_session_volume`` PENDING-era null.
+
+    The builder only ever builds the 0.2.1 PROPOSAL from a 0.2.0 base
+    (``BASE_PROTOCOL_VERSION``), and the repo protocol landed 0.2.1 in
+    cdf38c8 — the landed file is refused as a base (that refusal is pinned
+    by ``test_wrong_base_version_refused``), so the base this suite feeds
+    the builder is the pre-amendment protocol rebuilt through the loader's
+    own models: load -> revert exactly the three fields the amendment
+    landed -> dump. Every landed semantic (invariants, fills, bands, the
+    G3 regime block) is carried unchanged from the real protocol."""
+    data = load_protocol(PROTOCOL_PATH).model_dump(mode="json")
+    data["meta"]["protocol_version"] = "0.2.0"
+    data["meta"]["amendments"] = [
+        record for record in data["meta"]["amendments"] if record["version"] != "0.2.1"
+    ]
+    data["option_candidate_defaults"]["liquidity_volume_flow"]["flow_min_session_volume"] = None
+    return yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000).encode(
+        "utf-8"
+    )
+
+
 def _census_hash(census_bytes: bytes) -> str:
     return str(json.loads(census_bytes)["content_sha256"])
 
@@ -217,12 +247,14 @@ def _bundle(
         json.dumps(rules if rules is not None else _rules(census_hash), indent=2),
         encoding="utf-8",
     )
+    protocol_path = tmp_path / "protocol-base-0.2.0.yaml"
+    protocol_path.write_bytes(_base_020_protocol_bytes())
     return {
         "census": census_path,
         "owner_values": owner_path,
         "rules": rules_path,
         "manifest": manifest_path,
-        "protocol": PROTOCOL_PATH,
+        "protocol": protocol_path,
     }
 
 

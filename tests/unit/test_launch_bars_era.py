@@ -40,6 +40,7 @@ from tests.fixtures.bars_sample import (  # noqa: E402
     write_bars_capture,
     write_capture_manifest,
 )
+from tests.unit.test_protocol_amendment import _base_020_protocol_bytes  # noqa: E402
 from tree_options.data.bars_manifest import (  # noqa: E402
     KIND_BARS_LAUNCH_CONSUMED,
     append_bars_launch_approval,
@@ -220,7 +221,7 @@ def _argv(
         BOOT,
     ]
     if drop_protocol:
-        pass  # the CLI default is the REAL repo protocol (0.2.0 today)
+        pass  # the CLI default is the REAL repo protocol (0.2.1 today)
     else:
         argv += ["--protocol", str(protocol if protocol else scenario["protocol"])]
     if extra:
@@ -246,15 +247,18 @@ def _sole_store_run_id(store_root: Path) -> str:
     return run_ids[0]
 
 
-# ---- preflight: the protocol gate is closed on main ---------------------------------
+# ---- preflight: the record half of the protocol gate is closed on main ---------------
+# (0.2.1 landed in cdf38c8, so the version clause passes on the REAL repo
+# protocol today; the refusal is the missing BARS_LAUNCH_APPROVAL record.)
 
 
-def test_preflight_exit_2_on_real_020_protocol_today(
+def test_preflight_exit_2_on_real_021_protocol_today_without_an_approval_record(
     scratch_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The documented correct answer on main: the loaded protocol is 0.2.0,
-    so the 0.2.1 gate refuses — read-only, through the REAL loader."""
-    assert load_protocol(REAL_PROTOCOL).meta.protocol_version == "0.2.0"
+    """The documented correct answer on main after 0.2.1 landed: the loaded
+    protocol IS 0.2.1, so the version clause passes and the refusal is the
+    missing BARS_LAUNCH_APPROVAL record — read-only, through the REAL loader."""
+    assert load_protocol(REAL_PROTOCOL).meta.protocol_version == "0.2.1"
     argv = [
         "--run-id",
         RUN_ID,
@@ -271,19 +275,27 @@ def test_preflight_exit_2_on_real_020_protocol_today(
     ]
     assert launch.main(argv) == 2
     err = capsys.readouterr().err
-    assert "protocol version" in err and "0.2.1" in err
+    assert "no BARS_LAUNCH_APPROVAL record binds the loaded protocol hash" in err
+    # the version clause PASSED (the protocol is 0.2.1 now): the record is
+    # the refusal, not the version
+    assert "protocol version" not in err
     # read-only: nothing was created anywhere the tool knows about
     assert not (scratch_root / "bars-authority").exists()
     assert not (REPO_ROOT / "artifacts" / "bars-authority").exists()
 
 
 def test_preflight_exit_2_wrong_version_even_with_matching_record(
-    scenario: dict[str, Path], capsys: pytest.CaptureFixture[str]
+    scenario: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """A record binding the 0.2.0 hash does not open the gate: the version
-    requirement is its own refusal."""
-    _approve(scenario, protocol_hash=protocol_hash(load_protocol(REAL_PROTOCOL)))
-    assert launch.main(_argv(scenario, drop_protocol=True)) == 2
+    """A record binding the loaded protocol's hash does not open the gate
+    when the version is wrong: the 0.2.1 requirement is its own refusal.
+    The repo protocol is 0.2.1 now (0.2.1 landed in cdf38c8), so the
+    wrong-version leg is the pre-amendment 0.2.0 shape, rebuilt through the
+    loader's own models, with a record binding exactly its hash."""
+    pre_amendment = tmp_path / "protocol-0.2.0.yaml"
+    pre_amendment.write_bytes(_base_020_protocol_bytes())
+    _approve(scenario, protocol_hash=protocol_hash(load_protocol(pre_amendment)))
+    assert launch.main(_argv(scenario, protocol=pre_amendment)) == 2
     assert "protocol version" in capsys.readouterr().err
 
 
