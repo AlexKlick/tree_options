@@ -19,6 +19,7 @@ if str(SCRIPTS) not in sys.path:
     sys.path.insert(0, str(SCRIPTS))
 
 import build_protocol_amendment as cli  # noqa: E402
+from tests.unit.test_protocol_amendment import _base_020_protocol_bytes  # noqa: E402
 
 PROTOCOL_PATH = REPO_ROOT / "research_protocol.yaml"
 MANIFEST_BODY = b'{"schema_version": "m4b-manifest/1", "entries": []}\n'
@@ -142,12 +143,17 @@ def _write_bundle(
         ),
         encoding="utf-8",
     )
+    # The base is the repo protocol reverted to 0.2.0: the repo file LANDED
+    # 0.2.1 (cdf38c8) and the builder refuses a 0.2.1 base outright, so the
+    # pre-amendment shape is a fixture (see the unit builder tests).
+    protocol_path = tmp_path / "protocol-base-0.2.0.yaml"
+    protocol_path.write_bytes(_base_020_protocol_bytes())
     return {
         "census": census_path,
         "owner_values": owner_path,
         "rules": rules_path,
         "manifest": manifest_path,
-        "protocol": PROTOCOL_PATH,
+        "protocol": protocol_path,
     }
 
 
@@ -175,6 +181,13 @@ def test_cli_happy_path_builds_not_landed_packet(
 ) -> None:
     paths = _write_bundle(tmp_path)
     with _out_root() as out:
+        # Landed-state gate first: the repo protocol IS 0.2.1 now (cdf38c8),
+        # and the builder refuses it as a base — exit 4, never a packet, the
+        # refusal to re-derive an already-landed amendment.
+        landed = {**paths, "protocol": PROTOCOL_PATH}
+        assert _run_cli(landed, out) == 4
+        assert list(out.rglob("amendment-packet.json")) == [], "no packet for a landed base"
+        # the happy path: the pre-0.2.1 base fixture builds the not-landed packet
         assert _run_cli(paths, out) == 0
         record = json.loads(capsys.readouterr().out)
         assert record["landed"] is False

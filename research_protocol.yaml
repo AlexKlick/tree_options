@@ -7,7 +7,7 @@
 # raw bytes: comment edits do not fork the protocol.
 
 meta:
-  protocol_version: "0.2.0"
+  protocol_version: "0.2.1"
   created: "2026-08-17"
   owner: "architecture/leakage"
   change_policy: >-
@@ -25,6 +25,27 @@ meta:
         spread term dropped WITH disclosure; threshold pending the
         coverage-era census); accepted model-derived-from-vwap as an
         abs_delta provenance class. No existing invariant was weakened.
+    - version: "0.2.1"
+      date: "2026-08-26"
+      decision: >-
+        0.2.1 ratification package, owner-ratified 2026-08-26 (consensus
+        panel + owner ruling; builder packet f0e6d27abf067d23ed160e47c5778b
+        305e2186b7194412c4713297f3a9fb486c built from census
+        43b0b040ea3c).
+      changes: >-
+        set liquidity_volume_flow.flow_min_session_volume = 100 (owner
+        deviation owner decision 2026-08-26 (0.2.1 ratification):
+        flow_min_session_volume=100 bound to census
+        43b0b040ea3c7936fc08e6b1028ce446e46c99f44ca1d87da9fec02099e12e14
+        (exit 5: 29 SPOT_MISSING_SESSION pairs on 2026-08-21; masters
+        observed == expected 3045; admission is owner_deviation-only by
+        the 0.2.1 scoped builder change). Evidence base (214 bars):
+        in-band n=61; below-10: 1/61; below-100: 17/61; pooled below-min:
+        44/214. Continuity: the ratified
+        option_candidate_defaults.min_same_day_volume=100 is the same
+        integer threshold on session volume.); final_holdout_window
+        schema addition proposed separately (NOT_LANDED) because protocol
+        models are extra="forbid"
 
 invariants:
   - id: INV-01
@@ -176,13 +197,13 @@ option_candidate_defaults:
   min_underlying_20d_median_dollar_volume: "50000000"
   exclude_earnings_spanning_hold: true
   # G3 Ask D (0.2.0): the volume-flow liquidity regime, for tiers with no
-  # two-sided market. flow_min_session_volume is PENDING-era: null until
-  # the coverage-era census (era §4) sets it; a volume-flow filter REFUSES
-  # to build while it is null. Open interest and the spread term are
+  # two-sided market. flow_min_session_volume set to 100 by the 0.2.1
+  # amendment (owner_deviation bound to census 43b0b040ea3c; see the
+  # meta.amendments record). Open interest and the spread term are
   # dropped WITH disclosure (NOT_APPLICABLE naming the absence).
   liquidity_volume_flow:
     regime: volume_flow
-    flow_min_session_volume: null
+    flow_min_session_volume: 100
     spread_term: dropped_no_two_sided_market
     open_interest_term: dropped_no_open_interest
     abs_delta_provenance_accepted: [vendor, model-derived-from-vwap]
