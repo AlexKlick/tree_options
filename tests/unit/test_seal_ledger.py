@@ -1067,9 +1067,7 @@ def test_crash_between_companion_advance_and_anchor_commit_opens_and_reanchors(
     assert companion["extent_size"] == ledger_path.stat().st_size, (
         "the companion advance landed before the crash"
     )
-    assert anchor["ledger_size"] < ledger_path.stat().st_size, (
-        "the anchor commit never ran"
-    )
+    assert anchor["ledger_size"] < ledger_path.stat().st_size, "the anchor commit never ran"
     assert anchor["companion_sha256"] != L.sha256_hex(companion_path.read_bytes()), (
         "the anchor still pins the PRE-advance companion digest"
     )
