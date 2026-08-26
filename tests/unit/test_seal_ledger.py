@@ -551,25 +551,29 @@ def test_final_name_clone_swap_during_append_refused(ledger_root, monkeypatch: p
 def test_clone_swap_after_the_name_check_is_refused_at_the_next_open(
     ledger_root, monkeypatch: pytest.MonkeyPatch
 ):
-    """The racing point is the append's FINAL custody-root fsync, which runs
-    AFTER the round-8 name check has already passed: the wrapper renames the
-    ledger to .held and installs an approval-only byte clone at the name
-    there. The racing append may still acknowledge (the check already
-    passed); the CONTRACT is the successor — a second execution against the
-    clone must REFUSE on the durable binding, and the clone must never gain
-    a consumption."""
+    """The racing point is the append's first custody-ROOT-directory fsync
+    AFTER the round-8 name check has already passed (R15: the companion
+    extent advance fsyncs the root after the name check; the final root
+    fsync follows). It is identified by the root's REAL directory identity
+    (st_dev/st_ino), never by call count — the durable-traversal walks
+    (R15, finding 2) add many earlier fsyncs. The racing append may still
+    acknowledge (the check already passed); the CONTRACT is the successor —
+    a second execution against the clone must REFUSE on the durable
+    binding, and the clone must never gain a consumption."""
     identity = _identity()
     L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
     ledger_path = ledger_root / L.LEDGER_FILENAME
     before = ledger_path.read_bytes()  # the APPROVAL line only
     real_fsync = os.fsync
-    calls = {"n": 0}
+    root_identity = (os.stat(ledger_root).st_dev, os.stat(ledger_root).st_ino)
+    armed = {"done": False}
 
     def fsync_swapping_after_the_name_check(fd: int) -> None:
-        calls["n"] += 1
-        if calls["n"] == 2:  # fsync #1 is the ledger fd; #2 is the root dir
-            held = ledger_root / (L.LEDGER_FILENAME + ".held")
-            os.rename(ledger_path, held)  # the locked fd keeps the inode
+        held = os.fstat(fd)
+        if not armed["done"] and (held.st_dev, held.st_ino) == root_identity:
+            armed["done"] = True  # after the name check: the companion advance
+            held_name = ledger_root / (L.LEDGER_FILENAME + ".held")
+            os.rename(ledger_path, held_name)  # the locked fd keeps the inode
             ledger_path.write_bytes(before)  # a byte-copy CLONE at the name
         real_fsync(fd)
 
@@ -1086,6 +1090,41 @@ def test_crash_between_companion_advance_and_anchor_commit_opens_and_reanchors(
     assert companion["committed_tail_sha256"] == reanchored["committed_tail_sha256"]
     assert reanchored["companion_sha256"] == L.sha256_hex(companion_path.read_bytes())
     assert reanchored["committed_tail_sha256"] == L.read_ledger(ledger_root).tail_hash
+
+
+def test_seal_root_walk_repairs_a_preexisting_residue_component(
+    ledger_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R15 (finding 2), seal adoption: the ledger-root custody walk
+    (_open_ledger_root) is a durable traversal — a MID component a PRIOR
+    invocation created without its parent fsync (the residue) is repaired
+    when this invocation merely OPENS it. The residue's parent is never
+    fsynced by anything else in this flow (the append creates only DEEPER
+    components), so observing its fsync by directory identity proves the
+    existing-open repair."""
+    residue = ledger_root / "residue-mid"  # a prior invocation's uncommitted mkdir
+    residue.mkdir()
+    root = residue / "g4-authority"
+    fsynced: list[tuple[int, int]] = []
+    real_fsync = os.fsync
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        fsynced.append((held.st_dev, held.st_ino))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    L.append_approval(root, _identity(), reason="owner approved", at_epoch=T0)
+    monkeypatch.undo()
+    residue_parent_identity = (os.stat(ledger_root).st_dev, os.stat(ledger_root).st_ino)
+    assert residue_parent_identity in fsynced, (
+        "the ledger-root walk opened the residue component without committing "
+        "its entry in the residue's parent — a reboot can drop that ancestor "
+        "together with the ledger root and the runstate anchor tree, silently "
+        "forgetting an acknowledged consumption"
+    )
+    # the recovery invariant: the append succeeded and reads back
+    assert [record.kind for record in L.read_ledger(root).records] == ["APPROVAL"]
 
 
 # ---- round-12 (finding 3, R14): first-use namespace creations are

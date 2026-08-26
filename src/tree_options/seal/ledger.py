@@ -339,7 +339,19 @@ def _open_ledger_root(root: Path, *, create: bool) -> int | None:
 
     ``create`` is append-only: a read of an absent root stays an empty view.
     A lost mkdir race is never suppressed on the attacker's terms — every
-    created component is re-opened under the same ``O_NOFOLLOW`` rule."""
+    created component is re-opened under the same ``O_NOFOLLOW`` rule.
+
+    R15 (finding 2, 2026-08-25): the walk is a DURABLE TRAVERSAL — the
+    PARENT fd is fsynced for EVERY successfully traversed component, on
+    BOTH branches (created — already committed since round-12 — and
+    existing-open). This is the restart-closure repair: a component a
+    PRIOR invocation left between its mkdir and its parent fsync is
+    committed by the next walk that merely opens it, so a reboot can no
+    longer drop that ancestor entry together with the ledger root and the
+    anchor tree beneath it. The ledger-root walk is authority-bearing BY
+    CONSTRUCTION, so durability is unconditional here (the opt-in
+    ``durable=`` flag exists on ``custody.open_directory`` for walks with
+    non-authority callers; this local walk has none)."""
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 
     def _refuse_component(component: str, exc: OSError) -> NoReturn:
@@ -360,6 +372,7 @@ def _open_ledger_root(root: Path, *, create: bool) -> int | None:
     fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
     for component in resolved.parts[1:]:
         prev = fd
+        parent_committed = False
         try:
             fd = os.open(component, flags, dir_fd=prev)
         except OSError as exc:
@@ -385,6 +398,7 @@ def _open_ledger_root(root: Path, *, create: bool) -> int | None:
                     # the next read an EMPTY view over an acknowledged
                     # consumption.
                     os.fsync(prev)
+                    parent_committed = True
                 try:
                     fd = os.open(component, flags, dir_fd=prev)
                 except OSError as retry:
@@ -397,6 +411,12 @@ def _open_ledger_root(root: Path, *, create: bool) -> int | None:
                 if exc.errno == errno.ENOENT:
                     return None  # absent root on the read path: an empty view
                 raise
+        if not parent_committed:
+            # R15 (finding 2): the component already existed — commit its
+            # entry in the parent before relying on anything beneath it (a
+            # prior invocation may have crashed between its mkdir and this
+            # fsync).
+            os.fsync(prev)
         os.close(prev)
     return fd
 
@@ -581,6 +601,7 @@ def _load_runstate_anchor(resolved_root: Path) -> RunstateAnchorRecord | None:
         anchor_fd = custody.open_directory(
             path.parent,
             create=False,
+            durable=True,  # R15 (finding 2): authority walk — repair residues
             run_id=_ANCHOR_RUN_ID,
             purpose="g4 seal runstate anchor",
         )
@@ -654,6 +675,7 @@ def _write_runstate_anchor(resolved_root: Path, root_fd: int, ledger_fd: int) ->
         anchor_fd = custody.open_directory(
             path.parent,
             create=True,
+            durable=True,  # R15 (finding 2): authority walk — repair residues
             run_id=_ANCHOR_RUN_ID,
             purpose="g4 seal runstate anchor",
         )
@@ -863,6 +885,7 @@ def _commit_anchor_extent(
         anchor_fd = custody.open_directory(
             path.parent,
             create=False,
+            durable=True,  # R15 (finding 2): authority walk — repair residues
             run_id=_ANCHOR_RUN_ID,
             purpose="g4 seal runstate anchor",
         )

@@ -53,12 +53,25 @@ def open_directory(
     create: bool,
     run_id: str,
     purpose: str = "run-state directory",
+    durable: bool = False,
 ) -> int | None:
-    """Open a lexical path component-wise from ``/`` under no-follow custody."""
+    """Open a lexical path component-wise from ``/`` under no-follow custody.
+
+    ``durable=True`` (R15, finding 2, 2026-08-25) makes the walk a DURABLE
+    TRAVERSAL: the PARENT fd is fsynced for EVERY successfully traversed
+    component, on BOTH branches — created (already committed by the round-14
+    fix) and existing-open. The existing-open repair is what makes the
+    mechanism RESTART-CLOSED: a component a PRIOR invocation left behind
+    between its mkdir and its parent fsync is committed by the next
+    authority walk that merely passes through it, so a reboot can no longer
+    drop that ancestor entry and every authority tree beneath it. Opt-in so
+    non-authority callers are unchanged; these walks run once per CLI
+    invocation at depth <= ~8, so the extra fsyncs are acceptable."""
     absolute = lexical_absolute(path)
     fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
     for component in absolute.parts[1:]:
         previous = fd
+        parent_committed = False
         try:
             fd = os.open(component, _DIR_FLAGS, dir_fd=previous)
         except OSError as exc:
@@ -86,6 +99,7 @@ def open_directory(
                     # anchor beside a durable ledger) and silently forget
                     # acknowledged authority.
                     os.fsync(previous)
+                    parent_committed = True
                 try:
                     fd = os.open(component, _DIR_FLAGS, dir_fd=previous)
                 except OSError as retry:
@@ -102,6 +116,12 @@ def open_directory(
                 if exc.errno == errno.ENOENT:
                     return None
                 raise
+        if durable and not parent_committed:
+            # R15 (finding 2): restart closure — the component already
+            # existed (a prior invocation's creation whose parent fsync may
+            # never have run), so THIS walk commits its entry in the parent
+            # before relying on anything beneath it.
+            os.fsync(previous)
         os.close(previous)
     return fd
 

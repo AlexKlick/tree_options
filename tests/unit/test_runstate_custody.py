@@ -669,6 +669,113 @@ def test_release_never_unlinks_a_successor_published_at_the_name(
 # exclusive create is possible.
 
 
+# ---- R15 (finding 2): durable traversals are RESTART-CLOSED ---------------------------
+#
+# The R14 fsync in open_directory fired only when THIS invocation's os.mkdir
+# succeeded. A component left by a PRIOR invocation that crashed between its
+# mkdir and its fsync took the existing-open branch with NO repair: the
+# deeper fsyncs never committed that ancestor's entry, and a later reboot
+# could drop it together with both authority trees beneath it. Authority-
+# bearing directory walks are now DURABLE TRAVERSALS (opt-in durable=True):
+# the PARENT fd is fsynced for EVERY successfully traversed component, on
+# BOTH branches (created — already committed by round-14 — and
+# existing-open), so a residue component is repaired by the next authority
+# walk that merely passes through it. Observed by REAL directory identity
+# (st_dev/st_ino), the same technique the R14 F3/F5 tests use — never by fd
+# number.
+
+
+def test_durable_walk_repairs_a_residue_component_it_only_opens(
+    scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A residue component (a prior invocation's mkdir whose parent fsync
+    never ran) is OPENED, not created, by this invocation — the durable walk
+    must still fsync the residue's parent, so a reboot cannot drop the entry
+    and the authority tree beneath it."""
+    # the residue: a prior invocation created these components with plain
+    # mkdir — no parent fsync ever ran for any of them
+    residue_parent = scratch / "authority-root"
+    residue = residue_parent / "seal"
+    deeper = residue / "anchor"
+    residue_parent.mkdir()
+    residue.mkdir()
+    deeper.mkdir()
+    parents = [scratch, residue_parent, residue]
+    fsynced: list[tuple[int, int]] = []
+    real_fsync = os.fsync
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        fsynced.append((held.st_dev, held.st_ino))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    fd = custody.open_directory(
+        deeper,
+        create=True,
+        durable=True,
+        run_id="r15-f2",
+        purpose="test authority walk",
+    )
+    try:
+        assert fd is not None
+    finally:
+        os.close(fd)
+    monkeypatch.undo()
+
+    for parent in parents:
+        identity = (os.stat(parent).st_dev, os.stat(parent).st_ino)
+        assert identity in fsynced, (
+            f"the durable walk never fsynced the parent directory dev/ino "
+            f"{identity[0]}/{identity[1]} ({parent.name}) — a preexisting "
+            "component's entry is still uncommitted, so a reboot can drop it "
+            "and the authority tree beneath it"
+        )
+
+
+def test_durable_walk_still_commits_a_component_it_creates(
+    scratch: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The created branch keeps its round-14 parent fsync under durable=True
+    (the two branches converge on the same guarantee), and non-durable walks
+    are unchanged: an existing-component open performs NO parent fsync when
+    durability was not requested."""
+    fresh = scratch / "fresh-walk" / "component"
+    fsynced: list[tuple[int, int]] = []
+    real_fsync = os.fsync
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        fsynced.append((held.st_dev, held.st_ino))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    fd = custody.open_directory(
+        fresh, create=True, durable=True, run_id="r15-f2", purpose="test authority walk"
+    )
+    try:
+        assert fd is not None
+    finally:
+        os.close(fd)
+    created_parent = (os.stat(scratch / "fresh-walk").st_dev, os.stat(scratch / "fresh-walk").st_ino)
+    scratch_identity = (os.stat(scratch).st_dev, os.stat(scratch).st_ino)
+    assert scratch_identity in fsynced, "the created component's parent is committed"
+    assert created_parent in fsynced, "the deeper created component's parent is committed"
+    fsynced.clear()
+    fd = custody.open_directory(
+        fresh, create=True, run_id="r15-f2", purpose="test non-authority walk"
+    )
+    try:
+        assert fd is not None
+    finally:
+        os.close(fd)
+    monkeypatch.undo()
+    assert fsynced == [], (
+        "a non-durable walk over existing components performs no parent fsync — "
+        "non-authority callers are unchanged"
+    )
+
+
 def test_release_refusal_restores_the_successor_so_acquire_cannot_fresh_create(
     scratch: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
