@@ -638,16 +638,33 @@ def atomic_write(
 # companion record at creation, and every open refuses a name that no longer
 # maps to it.
 
-NAME_BINDING_FORMAT = 1
+NAME_BINDING_FORMAT = 2
+
+#: R15 (finding 4, 2026-08-25): the companion's COMMITTED-EXTENT convention
+#: mirrors the seal runstate anchor (b587bd5, format 2) verbatim — an empty
+#: ledger's committed extent is 0 bytes with the genesis tail hash. custody
+#: cannot import the seal domain (the seal imports custody), so the value is
+#: mirrored here; every companion in the suite is created fresh (there is no
+#: durable pre-R15 companion), so the format bump 1→2 needs no migration.
+EMPTY_EXTENT_TAIL_SHA256 = "0" * 64
 
 
 @dataclass(frozen=True)
 class NameBinding:
-    """The one inode an authority name may map to (dev, ino)."""
+    """The one inode an authority name may map to (dev, ino) — plus, since
+    R15 (finding 4), the ledger's COMMITTED EXTENT: ``extent_size`` bytes
+    were acknowledged at the last committed append, chaining to
+    ``committed_tail_sha256`` (the view's tail hash). The same convention the
+    seal runstate anchor established: written at creation over the EMPTY
+    extent and advanced after every append, so a same-inode truncation,
+    prefix rollback, or unproven larger rewrite of the bound ledger is
+    refused at the next open even though every identity field verifies."""
 
     name: str
     st_dev: int
     st_ino: int
+    extent_size: int
+    committed_tail_sha256: str
 
 
 def name_binding_filename(name: str) -> str:
@@ -661,8 +678,32 @@ def _binding_bytes(binding: NameBinding) -> bytes:
         "name": binding.name,
         "st_dev": binding.st_dev,
         "st_ino": binding.st_ino,
+        "extent_size": binding.extent_size,
+        "committed_tail_sha256": binding.committed_tail_sha256,
     }
     return (json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n").encode("utf-8")
+
+
+def parse_name_binding_bytes(raw: bytes, name: str) -> NameBinding:
+    """Decode + vet companion-record bytes (shared by load, the extent
+    advance, and the seal anchor's digest-tolerance check). Raises
+    ``ValueError``/``KeyError``/``TypeError`` on any malformed shape — a
+    binding is never guessed around."""
+    parsed = json.loads(raw)
+    binding = NameBinding(
+        name=str(parsed["name"]),
+        st_dev=int(parsed["st_dev"]),
+        st_ino=int(parsed["st_ino"]),
+        extent_size=int(parsed["extent_size"]),
+        committed_tail_sha256=str(parsed["committed_tail_sha256"]),
+    )
+    if int(parsed["format"]) != NAME_BINDING_FORMAT:
+        raise ValueError(f"unknown format {parsed['format']!r}")
+    if binding.name != name:
+        raise ValueError(f"binds a different name {binding.name!r}")
+    if binding.extent_size < 0:
+        raise ValueError(f"negative committed extent {binding.extent_size}")
+    return binding
 
 
 def load_name_binding(
@@ -700,19 +741,9 @@ def load_name_binding(
     if raw is None:
         return None
     try:
-        parsed = json.loads(raw)
-        binding = NameBinding(
-            name=str(parsed["name"]),
-            st_dev=int(parsed["st_dev"]),
-            st_ino=int(parsed["st_ino"]),
-        )
-        if int(parsed["format"]) != NAME_BINDING_FORMAT:
-            raise ValueError(f"unknown format {parsed['format']!r}")
-        if binding.name != name:
-            raise ValueError(f"binds a different name {binding.name!r}")
+        return parse_name_binding_bytes(raw, name)
     except (KeyError, TypeError, ValueError) as exc:
         say(f"the record is malformed ({exc}); a binding is never guessed around")
-    return binding
 
 
 def bind_name_identity(
@@ -725,7 +756,9 @@ def bind_name_identity(
     purpose: str,
     refuse: Callable[[str], NoReturn] | None = None,
 ) -> NameBinding:
-    """Durably record the (st_dev, st_ino) of the inode ``held_fd`` names.
+    """Durably record the (st_dev, st_ino) of the inode ``held_fd`` names —
+    over the EMPTY committed extent (R15, finding 4: 0 bytes, the genesis
+    tail), the exact creation convention the seal runstate anchor uses.
 
     Called exactly once per authority file — at creation, BEFORE the first
     append lands, under the caller's flock — so a crash between the file's
@@ -735,7 +768,13 @@ def bind_name_identity(
     """
     held = os.fstat(held_fd)
     _validate_regular(held, run_id=run_id, purpose=f"held {purpose} {name!r}")
-    binding = NameBinding(name=name, st_dev=held.st_dev, st_ino=held.st_ino)
+    binding = NameBinding(
+        name=name,
+        st_dev=held.st_dev,
+        st_ino=held.st_ino,
+        extent_size=0,
+        committed_tail_sha256=EMPTY_EXTENT_TAIL_SHA256,
+    )
     try:
         atomic_write(
             directory_path,
@@ -794,6 +833,111 @@ def verify_name_binding(
             "— a clone or replacement at the authority name is refused at "
             "open; this is reconciliation, never success"
         )
+
+
+def advance_name_binding_extent(
+    directory_path: Path,
+    directory_fd: int,
+    name: str,
+    held_fd: int,
+    *,
+    new_extent_size: int,
+    new_committed_tail_sha256: str,
+    run_id: str = "?",
+    purpose: str,
+    refuse: Callable[[str], NoReturn] | None = None,
+) -> None:
+    """R15 (finding 4): advance the companion's COMMITTED EXTENT after a
+    successful append — under the caller's flock, after the ledger data
+    fsync and the final-name check, via the IDENTITY-CONDITIONAL custody
+    replacement (the exact convention the seal runstate anchor established
+    in b587bd5). The identity fields never change; only the extent moves,
+    and only FORWARD.
+
+    A refusal here leaves the append DURABLE on the ledger: the next open
+    sees the ledger larger than the pinned extent and accepts it ONLY
+    through the prefix proof of ``check_committed_extent``, re-anchoring at
+    the next append — so a failed extent commit can never un-spend an
+    acknowledged record."""
+
+    def say(detail: str) -> NoReturn:
+        if refuse is not None:
+            refuse(f"{purpose} name binding for {name!r}: {detail}")
+        _refuse(run_id, f"{purpose} name binding for {name!r}: {detail}")
+
+    companion_name = name_binding_filename(name)
+    try:
+        current = read_named_bytes(
+            directory_path,
+            directory_fd,
+            companion_name,
+            run_id=run_id,
+            purpose=f"{purpose} name binding",
+            allow_missing=True,
+        )
+    except StoreCustodyError as exc:
+        say(exc.detail)
+    if current is None:
+        say(
+            "the companion identity record vanished under the append — the "
+            "durable memory of the committed extent may not silently disappear; "
+            "this refusal is RECONCILIATION, never success"
+        )
+    try:
+        binding = parse_name_binding_bytes(current, name)
+    except (KeyError, TypeError, ValueError) as exc:
+        say(f"the record is malformed ({exc}); a binding is never guessed around")
+    verify_name_binding(
+        directory_fd,
+        name,
+        held_fd,
+        binding,
+        run_id=run_id,
+        purpose=purpose,
+        refuse=refuse,
+    )
+    if (
+        binding.extent_size == new_extent_size
+        and binding.committed_tail_sha256 == new_committed_tail_sha256
+    ):
+        return  # already pinned at exactly this extent (idempotent)
+    if new_extent_size < binding.extent_size:
+        say(
+            f"the append committed {new_extent_size} bytes but the companion "
+            f"already pins {binding.extent_size} — the committed extent may only "
+            "advance; reconcile with the owner (this refusal is RECONCILIATION, "
+            "never success)"
+        )
+    replacement = NameBinding(
+        name=name,
+        st_dev=binding.st_dev,
+        st_ino=binding.st_ino,
+        extent_size=new_extent_size,
+        committed_tail_sha256=new_committed_tail_sha256,
+    )
+    try:
+        expected = capture_replacement_expectation(
+            directory_fd,
+            companion_name,
+            current,
+            run_id=run_id,
+            purpose=f"{purpose} name binding",
+        )
+        atomic_write(
+            directory_path,
+            directory_fd,
+            companion_name,
+            _binding_bytes(replacement),
+            run_id=run_id,
+            purpose=f"{purpose} name binding",
+            mode=0o644,
+            exclusive=False,
+            expected=expected,
+        )
+    except StoreCustodyError as exc:
+        if refuse is not None:
+            refuse(f"{purpose} name binding for {name!r}: {exc.detail}")
+        raise
 
 
 def check_committed_extent(

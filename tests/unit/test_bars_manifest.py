@@ -1093,6 +1093,62 @@ def test_bars_clone_swap_after_the_name_check_is_refused_at_the_next_open(
 # authority records.
 
 
+# ---- R15 (finding 4): the bars-authority ledger had ZERO extent binding ---------------
+#
+# The committed-extent mechanism existed ONLY in seal/ledger.py (the
+# runstate anchor); the bars companion bound name/st_dev/st_ino only,
+# _replay_bars_text accepts any valid chain prefix, and the duplicate guard
+# sees only replayed consumption records. Attack (no concurrency, same
+# inode): after approval+consumption, truncate ledger.jsonl in place to the
+# original approval line — the inode and companion still verify, the replay
+# returns an approval-only view, and a second append_bars_launch_consumed
+# appends another consumption: the one-shot launch authority re-spent. The
+# companion identity record now carries the COMMITTED EXTENT (format 2, the
+# exact convention the seal runstate anchor established in b587bd5:
+# extent_size + committed_tail_sha256, the empty extent 0/GENESIS at
+# creation, advanced after every append's data fsync + final-name check via
+# the identity-conditional custody replacement), and every bars open runs
+# the three-branch class extent check (custody.check_committed_extent).
+
+
+def test_bars_same_inode_truncation_to_the_approval_line_refused(
+    scratch_root: Path,
+) -> None:
+    """The R15 finding-4 attack: approval+consumption committed, then the
+    ledger is truncated IN PLACE to the original approval line — the same
+    inode, so the durable name binding verifies exactly. The read must
+    refuse on the committed extent and a second consumption append must be
+    refused: the one-shot launch authority is never re-spendable."""
+    root = scratch_root / "bars-authority"
+    fields = _approval()
+    bm.append_bars_launch_approval(root, reason="owner approved", at_epoch=T0, **fields)
+    bm.append_bars_launch_consumed(root, reason="era launched", at_epoch=T0 + 1, **fields)
+    ledger_path = root / bm.BARS_LEDGER_FILENAME
+    approval_only = ledger_path.read_text().splitlines(keepends=True)[0].encode("utf-8")
+    before = os.stat(ledger_path)
+    # the attack: truncate in place, rewrite only the original approval line
+    fd = os.open(ledger_path, os.O_WRONLY)
+    try:
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        os.write(fd, approval_only)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    after = os.stat(ledger_path)
+    assert (after.st_dev, after.st_ino) == (before.st_dev, before.st_ino), (
+        "the attack keeps the inode, so every round-11 identity check passes"
+    )
+    with pytest.raises(LedgerCorruptError, match="committed extent"):
+        bm.read_bars_ledger(root)
+    with pytest.raises(LedgerCorruptError, match="committed extent"):
+        bm.append_bars_launch_consumed(root, reason="re-spend", at_epoch=T0 + 2, **fields)
+    assert ledger_path.read_bytes() == approval_only, (
+        "a truncated ledger must never gain a second consumption — an "
+        "acknowledged one-shot launch authority is never silently forgotten"
+    )
+
+
 def test_bars_short_append_write_is_completed_never_acknowledged_torn(
     scratch_root: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

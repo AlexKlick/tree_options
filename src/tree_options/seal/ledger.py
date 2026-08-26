@@ -274,7 +274,7 @@ def read_ledger(root: Path) -> LedgerView:
                 ) from None
             return LedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
         try:
-            _verify_bound_ledger_name(root, root_fd, fd)
+            binding = _verify_bound_ledger_name(root, root_fd, fd)
             chunks: list[bytes] = []
             offset = 0
             while True:
@@ -292,11 +292,17 @@ def read_ledger(root: Path) -> LedgerView:
     # mid-file undecodable line stays LEDGER_CORRUPT.
     raw = b"".join(chunks)
     view = _replay_text(raw.decode("utf-8", errors="replace"))
-    # Round-12 (finding 1, R14) + R15 (finding 1): a valid prefix is not
-    # committed authority — the anchored extent must still be there in full,
-    # and a ledger LARGER than it must PROVE the anchored prefix.
+    # Round-12 (finding 1, R14) + R15 (findings 1 and 4): a valid prefix is
+    # not committed authority — the anchored extent must still be there in
+    # full, a ledger LARGER than it must PROVE the anchored prefix, and BOTH
+    # durable extent records (the runstate anchor AND the companion) must
+    # agree with the ledger bytes.
     _refuse_anchor_extent_rollback(
-        root, ledger_bytes=offset, view=view, raw_ledger_bytes=raw
+        root,
+        binding=binding,
+        ledger_bytes=offset,
+        view=view,
+        raw_ledger_bytes=raw,
     )
     return view
 
@@ -712,12 +718,38 @@ def _check_runstate_anchor(
             f"{resolved_root / companion_name}: the companion identity record could not "
             f"be read against the runstate anchor ({exc.detail})"
         ) from None
-    if companion is None or sha256_hex(companion) != record.companion_sha256:
+    if companion is None:
         raise LedgerCorruptError(
             f"{resolved_root / companion_name}: the companion identity record no longer "
             "holds the bytes the runstate anchor pins — the beside-the-file tree "
             "diverges from the second tree; this refusal is RECONCILIATION, never success"
         ) from None
+    if sha256_hex(companion) != record.companion_sha256:
+        # R15 (finding 4): the companion's committed-extent advance changes
+        # its bytes AFTER the anchor pinned them (the crash window between
+        # the companion replacement and the anchor re-commit at the same
+        # append). Tolerate ONLY the advance shape: the replacement must
+        # still parse as the binding format and bind the SAME ledger inode
+        # the anchor names — its extent fields are verified separately by
+        # the class extent check, and the anchor's own pinned extent still
+        # bounds the authority. Anything else diverges from the second tree.
+        try:
+            advanced = custody.parse_name_binding_bytes(companion, LEDGER_FILENAME)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise LedgerCorruptError(
+                f"{resolved_root / companion_name}: the companion identity record no "
+                "longer holds the bytes the runstate anchor pins and no longer parses "
+                f"as a binding ({exc}) — the beside-the-file tree diverges from the "
+                "second tree; this refusal is RECONCILIATION, never success"
+            ) from None
+        if (advanced.st_dev, advanced.st_ino) != (record.st_dev, record.st_ino):
+            raise LedgerCorruptError(
+                f"{resolved_root / companion_name}: the companion identity record no "
+                "longer holds the bytes the runstate anchor pins — it names dev/inode "
+                f"{advanced.st_dev}/{advanced.st_ino} while the runstate anchor pins "
+                f"{record.st_dev}/{record.st_ino}: the beside-the-file tree diverges "
+                "from the second tree; this refusal is RECONCILIATION, never success"
+            ) from None
 
 
 def _check_anchor_extent(
@@ -764,14 +796,24 @@ def _check_anchor_extent(
 def _refuse_anchor_extent_rollback(
     resolved_root: Path,
     *,
+    binding: custody.NameBinding | None,
     ledger_bytes: int,
     view: LedgerView,
     raw_ledger_bytes: bytes,
 ) -> None:
-    """The open-side extent rule: verify the replayed view against the
-    anchor's committed extent. An ABSENT anchor is already policed by the
-    identity checks (a non-empty unanchored ledger refuses there), so it is
-    not re-refused here."""
+    """The open-side extent rule (R15, finding 4): the replayed view is
+    verified against BOTH durable extent records — the runstate anchor AND
+    the companion identity record. The two records must AGREE with the
+    ledger bytes: each one's pinned extent must hold as a full/proven prefix
+    of the actual ledger (the class three-branch check), and the anchor —
+    the record in the tree the artifacts/ attacker cannot co-forge — remains
+    the bounding authority. An ABSENT anchor is already policed by the
+    identity checks (a non-empty unanchored ledger refuses there), and a
+    None binding means an empty never-bound ledger, so neither is
+    re-refused here. The one benign divergence is the interrupted-append
+    crash window (one record's advance landed, the other's did not): both
+    extents still prove as prefixes of the same ledger, the open accepts,
+    and the next append re-advances both."""
     record = _load_runstate_anchor(resolved_root)
     if record is None:
         return
@@ -782,13 +824,32 @@ def _refuse_anchor_extent_rollback(
         view=view,
         raw_ledger_bytes=raw_ledger_bytes,
     )
+    if binding is None:
+        return
+    custody.check_committed_extent(
+        extent_size=binding.extent_size,
+        committed_tail_sha256=binding.committed_tail_sha256,
+        ledger_bytes=ledger_bytes,
+        view_tail_sha256=view.tail_hash,
+        raw_ledger_bytes=raw_ledger_bytes,
+        replay_prefix=_replay_text,
+        subject=str(resolved_root / LEDGER_FILENAME),
+        origin="the companion identity record",
+        refuse=_binding_refusal,
+    )
 
 
 def _commit_anchor_extent(
-    resolved_root: Path, *, ledger_bytes: int, committed_tail_sha256: str
+    resolved_root: Path,
+    *,
+    ledger_bytes: int,
+    committed_tail_sha256: str,
+    companion_sha256: str,
 ) -> None:
     """Advance the anchor's committed extent after a successful append (under
-    the caller's flock, after the ledger fsync and the name check).
+    the caller's flock, after the ledger fsync, the name check, and the
+    companion extent advance — ``companion_sha256`` re-pins the ADVANCED
+    companion, R15 finding 4).
 
     The replacement is IDENTITY-CONDITIONAL through custody (``expected``
     binds the exact classified anchor bytes), so an anchor swapped between
@@ -830,6 +891,7 @@ def _commit_anchor_extent(
         if (
             record.ledger_size == ledger_bytes
             and record.committed_tail_sha256 == committed_tail_sha256
+            and record.companion_sha256 == companion_sha256
         ):
             return  # already anchored at exactly this extent (idempotent)
         if ledger_bytes < record.ledger_size:
@@ -858,6 +920,7 @@ def _commit_anchor_extent(
                         record,
                         ledger_size=ledger_bytes,
                         committed_tail_sha256=committed_tail_sha256,
+                        companion_sha256=companion_sha256,
                     )
                 ),
                 run_id=_ANCHOR_RUN_ID,
@@ -917,7 +980,7 @@ def _verify_runstate_anchor_read_side(resolved_root: Path, root_fd: int, ledger_
     _check_runstate_anchor(resolved_root, root_fd, ledger_fd, record)
 
 
-def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
+def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> custody.NameBinding:
     """Round-11 review fix (2026-08-25, finding 3): the durable name→inode
     binding — the successor-window closer.
 
@@ -938,6 +1001,10 @@ def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> Non
     clone), so the ledger identity is ALSO anchored in a second tree — the
     runstate store. Creation writes that anchor immediately after the
     companion; every later append verifies BOTH trees.
+
+    R15 (finding 4): returns the binding (which now carries the companion's
+    COMMITTED EXTENT) so the caller runs the class extent check against BOTH
+    durable records.
     """
     purpose = "ledger.jsonl authority"
     binding = custody.load_name_binding(
@@ -952,23 +1019,26 @@ def _verify_or_bind_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> Non
                 "appended or re-bound in place; reconcile with the owner "
                 "(this refusal is RECONCILIATION, never success)"
             ) from None
-        custody.bind_name_identity(
+        binding = custody.bind_name_identity(
             root, root_fd, LEDGER_FILENAME, ledger_fd, purpose=purpose, refuse=_binding_refusal
         )
         _write_runstate_anchor(root, root_fd, ledger_fd)
-    else:
-        custody.verify_name_binding(
-            root_fd,
-            LEDGER_FILENAME,
-            ledger_fd,
-            binding,
-            purpose=purpose,
-            refuse=_binding_refusal,
-        )
-        _verify_or_bind_runstate_anchor(root, root_fd, ledger_fd)
+        return binding
+    custody.verify_name_binding(
+        root_fd,
+        LEDGER_FILENAME,
+        ledger_fd,
+        binding,
+        purpose=purpose,
+        refuse=_binding_refusal,
+    )
+    _verify_or_bind_runstate_anchor(root, root_fd, ledger_fd)
+    return binding
 
 
-def _verify_bound_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
+def _verify_bound_ledger_name(
+    root: Path, root_fd: int, ledger_fd: int
+) -> custody.NameBinding | None:
     """The read-side rule: a bound name that stopped mapping to its bound
     inode is refused; an EMPTY unbound ledger carries no authority yet
     (creation crash window — it is bound at the next append); a NON-EMPTY
@@ -978,7 +1048,10 @@ def _verify_bound_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
     verified — the beside-the-file companion AND the runstate anchor. A
     present anchor that names a different inode is the co-replacement
     refusal; a missing anchor is tolerated only while the ledger carries no
-    authority yet (an empty file — the creation crash window)."""
+    authority yet (an empty file — the creation crash window).
+
+    R15 (finding 4): returns the binding (None when nothing was ever bound)
+    for the caller's committed-extent check."""
     purpose = "ledger.jsonl authority"
     binding = custody.load_name_binding(
         root, root_fd, LEDGER_FILENAME, purpose=purpose, refuse=_binding_refusal
@@ -993,7 +1066,7 @@ def _verify_bound_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
                 "never success)"
             ) from None
         _verify_runstate_anchor_read_side(root, root_fd, ledger_fd)
-        return
+        return None
     custody.verify_name_binding(
         root_fd,
         LEDGER_FILENAME,
@@ -1003,6 +1076,7 @@ def _verify_bound_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
         refuse=_binding_refusal,
     )
     _verify_runstate_anchor_read_side(root, root_fd, ledger_fd)
+    return binding
 
 
 def append_record(root: Path, record: LedgerRecord) -> str:
@@ -1026,7 +1100,9 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                 # Round-11 (finding 3): bind at creation (empty ledger,
                 # before the first append lands) or verify the name still
                 # maps to the bound inode — under the flock either way.
-                _verify_or_bind_ledger_name(root, root_fd, fd)
+                # R15 (finding 4): the binding carries the companion's
+                # committed extent for the class extent check below.
+                binding = _verify_or_bind_ledger_name(root, root_fd, fd)
                 chunks: list[bytes] = []
                 offset = 0
                 while True:
@@ -1043,12 +1119,17 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                         "RECONCILIATION_NOTE from a durable root) before any further "
                         "append — appending past it would hide an unacknowledged write"
                     )
-                # Round-12 (finding 1, R14) + R15 (finding 1): never append
-                # onto a ledger that no longer holds its anchored committed
+                # Round-12 (finding 1, R14) + R15 (findings 1 and 4): never
+                # append onto a ledger that no longer holds its committed
                 # extent in full as a PROVEN prefix — a rolled-back or padded
-                # rewrite must not be re-spent by this append.
+                # rewrite must not be re-spent by this append. BOTH durable
+                # extent records (anchor and companion) are checked.
                 _refuse_anchor_extent_rollback(
-                    root, ledger_bytes=offset, view=view, raw_ledger_bytes=raw
+                    root,
+                    binding=binding,
+                    ledger_bytes=offset,
+                    view=view,
+                    raw_ledger_bytes=raw,
                 )
                 if record.prev_record_sha256 != view.tail_hash:
                     raise LedgerCorruptError(
@@ -1096,16 +1177,44 @@ def append_record(root: Path, record: LedgerRecord) -> str:
                         "been consumed under a renamed file while a clone holds "
                         "the name: this refusal is RECONCILIATION, never success"
                     )
-                # Round-12 review fix (2026-08-25, finding 1, R14): the append
-                # is durable and the name still maps to the locked inode, so
-                # the anchor's COMMITTED EXTENT advances to it now — the last
-                # act under the flock. A refusal here leaves the record
-                # durable and the next open accepting it as the crash-window
-                # case (larger than the anchored extent, valid chain).
+                # R15 (finding 4): the append is durable and the name still
+                # maps to the locked inode, so the companion's COMMITTED
+                # EXTENT advances FIRST (an identity-conditional custody
+                # replacement), and the anchor's extent commit then re-pins
+                # the ADVANCED companion's digest — the anchor's companion
+                # pin tracks the bytes that now guard the ledger. A crash
+                # between the two writes leaves the companion ahead of the
+                # anchor: the open-side digest tolerance accepts exactly that
+                # advance shape, both extents prove as prefixes, and the next
+                # append re-advances both. A refusal on either path leaves
+                # the record durable and the next open accepting it only
+                # through the prefix proof (the crash-window case).
+                custody.advance_name_binding_extent(
+                    root,
+                    root_fd,
+                    LEDGER_FILENAME,
+                    fd,
+                    new_extent_size=offset + len(line),
+                    new_committed_tail_sha256=signed.record_sha256,
+                    purpose="ledger.jsonl authority",
+                    refuse=_binding_refusal,
+                )
+                advanced_companion = custody.read_named_bytes(
+                    root,
+                    root_fd,
+                    custody.name_binding_filename(LEDGER_FILENAME),
+                    run_id=_ANCHOR_RUN_ID,
+                    purpose="ledger.jsonl authority name binding",
+                )
+                assert advanced_companion is not None  # the advance just wrote it
+                # Round-12 review fix (2026-08-25, finding 1, R14): the
+                # anchor's COMMITTED EXTENT advances as the last act under
+                # the flock.
                 _commit_anchor_extent(
                     root,
                     ledger_bytes=offset + len(line),
                     committed_tail_sha256=signed.record_sha256,
+                    companion_sha256=sha256_hex(advanced_companion),
                 )
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)

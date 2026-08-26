@@ -1126,7 +1126,9 @@ def _binding_refusal(detail: str) -> NoReturn:
     raise LedgerCorruptError(detail) from None
 
 
-def _verify_or_bind_bars_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
+def _verify_or_bind_bars_ledger_name(
+    root: Path, root_fd: int, ledger_fd: int
+) -> custody.NameBinding:
     """Round-11 review fix (2026-08-25, finding 3 — mirror of the seal
     ledger's): the durable name→inode binding, the successor-window closer.
 
@@ -1140,6 +1142,10 @@ def _verify_or_bind_bars_ledger_name(root: Path, root_fd: int, ledger_fd: int) -
     wrong inode and is refused at the next open — it can never be consumed.
     An unbound NON-EMPTY ledger is reconciliation, never an append and never
     a silent re-bind.
+
+    R15 (finding 4): returns the binding so the caller runs the
+    committed-extent check against it — the companion is this ledger's ONLY
+    durable extent record (there is no second tree here).
     """
     purpose = "bars-authority ledger.jsonl"
     binding = custody.load_name_binding(
@@ -1154,7 +1160,7 @@ def _verify_or_bind_bars_ledger_name(root: Path, root_fd: int, ledger_fd: int) -
                 "ledger is never appended or re-bound in place; reconcile with "
                 "the owner (this refusal is RECONCILIATION, never success)"
             ) from None
-        custody.bind_name_identity(
+        return custody.bind_name_identity(
             root,
             root_fd,
             BARS_LEDGER_FILENAME,
@@ -1162,22 +1168,25 @@ def _verify_or_bind_bars_ledger_name(root: Path, root_fd: int, ledger_fd: int) -
             purpose=purpose,
             refuse=_binding_refusal,
         )
-    else:
-        custody.verify_name_binding(
-            root_fd,
-            BARS_LEDGER_FILENAME,
-            ledger_fd,
-            binding,
-            purpose=purpose,
-            refuse=_binding_refusal,
-        )
+    custody.verify_name_binding(
+        root_fd,
+        BARS_LEDGER_FILENAME,
+        ledger_fd,
+        binding,
+        purpose=purpose,
+        refuse=_binding_refusal,
+    )
+    return binding
 
 
-def _verify_bound_bars_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> None:
+def _verify_bound_bars_ledger_name(
+    root: Path, root_fd: int, ledger_fd: int
+) -> custody.NameBinding | None:
     """The read-side rule: a bound name that stopped mapping to its bound
     inode is refused; an EMPTY unbound ledger carries no authority yet (the
     creation crash window — bound at the next append); a NON-EMPTY unbound
-    ledger is reconciliation."""
+    ledger is reconciliation. Returns the binding (None when nothing was
+    ever bound) for the caller's committed-extent check."""
     purpose = "bars-authority ledger.jsonl"
     binding = custody.load_name_binding(
         root, root_fd, BARS_LEDGER_FILENAME, purpose=purpose, refuse=_binding_refusal
@@ -1191,13 +1200,42 @@ def _verify_bound_bars_ledger_name(root: Path, root_fd: int, ledger_fd: int) -> 
                 "reconcile with the owner (this refusal is RECONCILIATION, "
                 "never success)"
             ) from None
-        return
+        return None
     custody.verify_name_binding(
         root_fd,
         BARS_LEDGER_FILENAME,
         ledger_fd,
         binding,
         purpose=purpose,
+        refuse=_binding_refusal,
+    )
+    return binding
+
+
+def _check_bars_committed_extent(
+    root: Path,
+    binding: custody.NameBinding,
+    *,
+    ledger_bytes: int,
+    view: BarsLedgerView,
+    raw_ledger_bytes: bytes,
+) -> None:
+    """R15 (finding 4): this ledger's committed-extent rule — the ONE class
+    mechanism (``custody.check_committed_extent``, R15 finding 1) applied to
+    the companion identity record, the bars ledger's only durable extent
+    record. A valid chain prefix is not committed authority: a same-inode
+    truncation/prefix rollback refuses, an in-place rewrite of the pinned
+    bytes refuses, and a ledger LARGER than the pinned extent is accepted
+    only through the prefix proof."""
+    custody.check_committed_extent(
+        extent_size=binding.extent_size,
+        committed_tail_sha256=binding.committed_tail_sha256,
+        ledger_bytes=ledger_bytes,
+        view_tail_sha256=view.tail_hash,
+        raw_ledger_bytes=raw_ledger_bytes,
+        replay_prefix=_replay_bars_text,
+        subject=str(root / BARS_LEDGER_FILENAME),
+        origin="the companion identity record",
         refuse=_binding_refusal,
     )
 
@@ -1245,7 +1283,7 @@ def read_bars_ledger(root: Path) -> BarsLedgerView:
                 ) from None
             return BarsLedgerView(records=(), tail_hash=GENESIS_PREV, tail_damaged=False)
         try:
-            _verify_bound_bars_ledger_name(root, root_fd, fd)
+            binding = _verify_bound_bars_ledger_name(root, root_fd, fd)
             chunks: list[bytes] = []
             offset = 0
             while True:
@@ -1258,7 +1296,20 @@ def read_bars_ledger(root: Path) -> BarsLedgerView:
             os.close(fd)
     finally:
         os.close(root_fd)
-    return _replay_bars_text(b"".join(chunks).decode("utf-8", errors="replace"))
+    raw = b"".join(chunks)
+    view = _replay_bars_text(raw.decode("utf-8", errors="replace"))
+    # R15 (finding 4): the companion's COMMITTED EXTENT — a valid prefix is
+    # not committed authority, and a larger-than-pinned ledger must PROVE
+    # the pinned prefix (the class extent check, all three branches).
+    if binding is not None:
+        _check_bars_committed_extent(
+            root,
+            binding,
+            ledger_bytes=len(raw),
+            view=view,
+            raw_ledger_bytes=raw,
+        )
+    return view
 
 
 def append_bars_record(
@@ -1289,7 +1340,7 @@ def append_bars_record(
                 # Round-11 (finding 3): bind at creation (empty ledger,
                 # before the first append lands) or verify the name still
                 # maps to the bound inode — under the flock either way.
-                _verify_or_bind_bars_ledger_name(root, root_fd, fd)
+                binding = _verify_or_bind_bars_ledger_name(root, root_fd, fd)
                 chunks: list[bytes] = []
                 offset = 0
                 while True:
@@ -1298,7 +1349,8 @@ def append_bars_record(
                         break
                     chunks.append(chunk)
                     offset += len(chunk)
-                view = _replay_bars_text(b"".join(chunks).decode("utf-8", errors="replace"))
+                raw = b"".join(chunks)
+                view = _replay_bars_text(raw.decode("utf-8", errors="replace"))
                 if view.tail_damaged:
                     raise LedgerCorruptError(
                         "the bars-authority ledger's final line is torn; reconcile it"
@@ -1307,6 +1359,17 @@ def append_bars_record(
                     )
                 if guard is not None:
                     guard(view)
+                # R15 (finding 4): never append onto a ledger that no longer
+                # holds its committed extent in full as a PROVEN prefix — a
+                # truncated or unproven-larger rewrite must not be re-spent
+                # by this append.
+                _check_bars_committed_extent(
+                    root,
+                    binding,
+                    ledger_bytes=len(raw),
+                    view=view,
+                    raw_ledger_bytes=raw,
+                )
                 if record.prev_record_sha256 != view.tail_hash:
                     raise LedgerCorruptError(
                         "supplied prev_record_sha256 does not match the verified"
@@ -1316,7 +1379,8 @@ def append_bars_record(
                 os.lseek(fd, 0, os.SEEK_END)
                 # Round-11 (finding 5): the looped authority write — a short
                 # write is completed (or raises), never acknowledged torn.
-                custody.write_all(fd, (_encode_bars_record(signed) + "\n").encode("utf-8"))
+                line = (_encode_bars_record(signed) + "\n").encode("utf-8")
+                custody.write_all(fd, line)
                 os.fsync(fd)
                 # Round-8 review fix (2026-08-24, finding 3): the bars-authority
                 # mirror of seal.ledger's name check. The append must verify the
@@ -1350,6 +1414,22 @@ def append_bars_record(
                         "while a clone holds the name: this refusal is "
                         "RECONCILIATION, never success"
                     )
+                # R15 (finding 4): the append is durable and the name still
+                # maps to the locked inode, so the companion's COMMITTED
+                # EXTENT advances to it now — the last act under the flock.
+                # A refusal here leaves the record durable and the next open
+                # accepting it only through the prefix proof (the crash
+                # window), re-anchoring at the next append.
+                custody.advance_name_binding_extent(
+                    root,
+                    root_fd,
+                    BARS_LEDGER_FILENAME,
+                    fd,
+                    new_extent_size=offset + len(line),
+                    new_committed_tail_sha256=signed.record_sha256,
+                    purpose="bars-authority ledger.jsonl",
+                    refuse=_binding_refusal,
+                )
             finally:
                 fcntl.flock(fd, fcntl.LOCK_UN)
         finally:

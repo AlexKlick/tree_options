@@ -632,13 +632,17 @@ def test_offline_co_replacement_of_ledger_and_companion_refused_at_next_open(
     ledger_path.write_bytes(approval_only)  # the CLONE: a new regular inode
     clone_stat = os.stat(ledger_path)
     # the replacement companion names the CLONE — the pair is self-consistent
+    # (format 2 with extent fields, R15 finding 4: the forged companion must
+    # parse as a well-formed record; the anchor still refuses the pair)
     (ledger_root / "ledger.jsonl.identity.json").write_text(
         json.dumps(
             {
-                "format": 1,
+                "format": 2,
                 "name": L.LEDGER_FILENAME,
                 "st_dev": clone_stat.st_dev,
                 "st_ino": clone_stat.st_ino,
+                "extent_size": len(approval_only),
+                "committed_tail_sha256": "0" * 64,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -688,11 +692,19 @@ def test_runstate_anchor_is_written_at_creation_and_names_the_real_ledger(ledger
     L.append_consumption(ledger_root, _identity(), reason="seal", at_epoch=T0 + 1)
     after = json.loads(anchor.read_text(encoding="utf-8"))
     assert (after["st_dev"], after["st_ino"]) == (before["st_dev"], before["st_ino"])
-    assert after["companion_sha256"] == before["companion_sha256"]
     assert after["ledger_root"] == before["ledger_root"] == str(ledger_root.resolve())
     assert after["ledger_size"] == (ledger_root / L.LEDGER_FILENAME).stat().st_size
     assert after["ledger_size"] > before["ledger_size"]
     assert after["committed_tail_sha256"] == L.read_ledger(ledger_root).tail_hash
+    # R15 (finding 4): the companion's extent advance changes its bytes, so
+    # the anchor's companion digest re-pins the ADVANCED companion after
+    # every append — it always names the bytes that now guard the ledger,
+    # and the identity fields it protects stay immutable.
+    assert after["companion_sha256"] == L.sha256_hex(companion.read_bytes())
+    companion_record = json.loads(companion.read_text(encoding="utf-8"))
+    assert companion_record["format"] == 2
+    assert companion_record["extent_size"] == after["ledger_size"]
+    assert companion_record["committed_tail_sha256"] == after["committed_tail_sha256"]
 
 
 def test_nonempty_ledger_without_a_runstate_anchor_is_reconciliation(ledger_root) -> None:
@@ -1021,6 +1033,59 @@ def test_larger_rewrite_beyond_the_anchored_extent_refused_without_prefix_proof(
         "second consumption — an acknowledged consumption is never silently "
         "forgotten"
     )
+
+
+def test_crash_between_companion_advance_and_anchor_commit_opens_and_reanchors(
+    ledger_root, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """R15 (finding 4) crash path: an append's ledger fsync and companion
+    extent advance landed, but the anchor extent commit — which re-pins the
+    ADVANCED companion's digest — never ran. The companion is now AHEAD of
+    the anchor and no longer hashes to the anchor's pinned digest. The open
+    must accept this benign window (the digest tolerance accepts exactly the
+    advance shape; both extents prove as prefixes of the same ledger), and
+    the next append must re-anchor BOTH durable records."""
+    identity = _identity()
+    L.append_approval(ledger_root, identity, reason="owner approved", at_epoch=T0)
+    L.append_consumption(ledger_root, identity, reason="G4 sealed event", at_epoch=T0 + 1)
+    companion_path = ledger_root / "ledger.jsonl.identity.json"
+    # the crash: everything up to and including the companion advance is
+    # durable, the anchor commit never runs
+    monkeypatch.setattr(L, "_commit_anchor_extent", lambda *args, **kwargs: None)
+    L.append_reconciliation_note(
+        ledger_root, identity, reason="interrupted append", at_epoch=T0 + 2
+    )
+    monkeypatch.undo()
+
+    ledger_path = ledger_root / L.LEDGER_FILENAME
+    companion = json.loads(companion_path.read_text(encoding="utf-8"))
+    anchor = json.loads(L.runstate_anchor_path(ledger_root).read_text(encoding="utf-8"))
+    assert companion["extent_size"] == ledger_path.stat().st_size, (
+        "the companion advance landed before the crash"
+    )
+    assert anchor["ledger_size"] < ledger_path.stat().st_size, (
+        "the anchor commit never ran"
+    )
+    assert anchor["companion_sha256"] != L.sha256_hex(companion_path.read_bytes()), (
+        "the anchor still pins the PRE-advance companion digest"
+    )
+    # the open accepts the crash window: digest tolerance + both prefix proofs
+    view = L.read_ledger(ledger_root)
+    assert [record.kind for record in view.records] == [
+        "APPROVAL",
+        "CONSUMPTION",
+        "RECONCILIATION_NOTE",
+    ]
+    assert not view.tail_damaged
+    # the next append re-anchors BOTH records at the new committed extent
+    L.append_consumption(ledger_root, _identity(code_sha="7" * 40), reason="seal", at_epoch=T0 + 3)
+    reanchored = json.loads(L.runstate_anchor_path(ledger_root).read_text(encoding="utf-8"))
+    companion = json.loads(companion_path.read_text(encoding="utf-8"))
+    assert reanchored["ledger_size"] == ledger_path.stat().st_size
+    assert companion["extent_size"] == ledger_path.stat().st_size
+    assert companion["committed_tail_sha256"] == reanchored["committed_tail_sha256"]
+    assert reanchored["companion_sha256"] == L.sha256_hex(companion_path.read_bytes())
+    assert reanchored["committed_tail_sha256"] == L.read_ledger(ledger_root).tail_hash
 
 
 # ---- round-12 (finding 3, R14): first-use namespace creations are
