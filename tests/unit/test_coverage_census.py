@@ -1861,3 +1861,116 @@ def test_a_fresh_hierarchy_that_creates_out_root_commits_its_entry_in_the_parent
         "created it — an acknowledged exit-0 publication can be lost to a "
         "reboot"
     )
+
+
+# ---- R16 (finding 1, R14): the publication walk is RESTART-CLOSED for
+# PRE-EXISTING crash residue — the durable commit on every attesting path
+# covers the parent of EVERY traversed output component -----------------------------
+#
+# The R15 fix committed only the components THIS run created (the
+# absent-ancestor snapshot) plus out_root's contents. A crashed invocation
+# that created a previously absent outer ancestor + out_root + the digest
+# directory via mkdir(parents=True) and died before its ancestor commits
+# leaves that hierarchy in place UNCOMMITTED; the retry sees the digest dir,
+# takes a recovery path (never the fresh branch), and used to attest over the
+# same uncommitted chain — the identical principle already landed on the
+# authority walks (custody.open_directory(durable=True) fsyncs the parent of
+# EVERY traversed component, created and existing-open branches alike).
+
+
+def _seed_pre_existing_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, incomplete: bool
+) -> tuple[Path, Path, Path]:
+    """Seed the residue a crashed invocation leaves behind: run the census
+    once into a probe root (same process, so the census bytes — and the digest
+    name derived from them — are identical), then create a previously absent
+    outer ancestor + out_root + the digest dir by PLAIN mkdir(parents=True)
+    with NO parent commits, exactly where the crash interrupted the creation.
+    Returns (capture, universe, the seeded out_root)."""
+    fridays = [SESSION_FRIDAY_A, SESSION_FRIDAY_B]
+    universe = _write_universe(tmp_path, ["SPY"], fridays)
+    if incomplete:
+        capture = _build_capture(
+            tmp_path,
+            underlyings=["SPY"],
+            fridays=fridays,
+            drop_pairs={("SPY", SESSION_FRIDAY_B)},
+        )
+    else:
+        capture = _build_capture(tmp_path, underlyings=["SPY"], fridays=fridays)
+    probe_root = tmp_path / "probe"
+    assert _census(monkeypatch, capture, universe, probe_root) == (5 if incomplete else 0)
+    digest_name = next(iter(probe_root.iterdir())).name
+
+    out_root = tmp_path / "residue-tree" / "out"
+    (out_root / digest_name).mkdir(parents=True)
+    return capture, universe, out_root
+
+
+def _assert_full_chain_committed_before_attesting(
+    events: list[tuple[str, object]], out_root: Path
+) -> None:
+    """Every component of the seeded residue chain is committed in ITS parent
+    (matched by real directory identity) BEFORE the summary attestation."""
+    ancestor = out_root.parent
+    tmp_parent = ancestor.parent
+    required = {
+        "the pre-existing outer ancestor's entry in ITS parent": _dir_identity(tmp_parent),
+        "the pre-existing out_root's entry in the outer ancestor": _dir_identity(ancestor),
+        "the digest entry in out_root": _dir_identity(out_root),
+    }
+    attestations = _attestation_positions(events)
+    assert attestations, "the retry printed its summary"
+    for label, identity in required.items():
+        commits = _fsync_positions(events, identity)
+        assert commits, (
+            f"{label} is never committed: the retry attests over a directory "
+            "chain a prior crashed invocation left uncommitted — a reboot can "
+            "drop the acknowledged census hierarchy behind an acknowledged "
+            "exit code"
+        )
+        assert max(commits) < attestations[0], (
+            f"{label}: the durable commit must precede the attestation, never "
+            "something the attestation outruns"
+        )
+
+
+def test_a_roll_forward_retry_over_pre_existing_residue_commits_the_whole_chain_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F1 scenario (a): the retry over the seeded residue takes the
+    roll-forward recovery path (an empty digest dir at this run's content
+    sha), exits 0 — and every pre-existing residue component's entry is
+    committed in ITS parent before that exit-0 attestation."""
+    capture, universe, out_root = _seed_pre_existing_residue(
+        tmp_path, monkeypatch, incomplete=False
+    )
+    capsys.readouterr()  # drop the probe invocation's output
+
+    events = _trace_fsyncs_and_attestations(monkeypatch)
+    assert _census(monkeypatch, capture, universe, out_root) == 0, (
+        "the empty digest dir classifies as crash residue of an interrupted "
+        "identical publication and rolls forward to exit 0"
+    )
+    _assert_full_chain_committed_before_attesting(events, out_root)
+
+
+def test_an_exit_5_retry_over_pre_existing_residue_also_commits_the_whole_chain_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """F1 scenario (b): the same seeded residue, but the census itself is
+    INCOMPLETE — the run still emits and ATTESTS (the JSON summary, then exit
+    5), and that attestation is held to the same contract: no summary until
+    every pre-existing residue component is committed in its parent."""
+    capture, universe, out_root = _seed_pre_existing_residue(tmp_path, monkeypatch, incomplete=True)
+    capsys.readouterr()  # drop the probe invocation's output
+
+    events = _trace_fsyncs_and_attestations(monkeypatch)
+    assert _census(monkeypatch, capture, universe, out_root) == 5, (
+        "the incomplete census still emits, attests its summary, and exits 5"
+    )
+    _assert_full_chain_committed_before_attesting(events, out_root)

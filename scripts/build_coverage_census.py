@@ -1271,6 +1271,45 @@ def _commit_created_output_entries(created: tuple[Path, ...]) -> None:
             os.close(parent_fd)
 
 
+def _commit_output_chain(out_root: Path) -> None:
+    """R16 review fix (2026-08-25, finding 1, R14): commit the parent of EVERY
+    traversed component of the output chain — the outermost ancestor of
+    ``out_root`` down through ``out_root`` itself, created by THIS run or left
+    behind by a prior crashed one — then out_root's own entries, in ONE
+    component-wise no-follow walk of the absolute path.
+
+    A durable traversal mirroring ``runstate.custody.open_directory(
+    durable=True)`` (the round-15 authority-walk contract): the walk fsyncs
+    the PARENT fd for every component it passes through, on the existing-open
+    branch just as on the created branch. Restart closure for the publication
+    walk: the R15 fresh-branch commits only ever covered components that were
+    ABSENT at snapshot time, so a hierarchy a crashed invocation created but
+    never committed stayed uncommitted through every recovery path — the
+    retry attested exit 0/5 over a chain a reboot could drop whole. The final
+    ``fsync`` of out_root itself commits the digest entry. An ``OSError``
+    propagates to the caller's exit-4 custody-refusal family: nothing attests
+    over an uncommitted chain."""
+    absolute = Path(os.path.abspath(os.fspath(out_root)))
+    fd = os.open(os.sep, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for component in absolute.parts[1:]:
+            previous = fd
+            try:
+                fd = os.open(
+                    component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=previous
+                )
+            except OSError:
+                os.close(previous)
+                raise
+            try:
+                os.fsync(previous)
+            finally:
+                os.close(previous)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _read_all_nofollow(dir_fd: int, name: str) -> bytes:
     """One full O_NOFOLLOW read of ``name`` inside the custody dir fd."""
     try:
@@ -1703,41 +1742,34 @@ def main(argv: list[str] | None = None) -> int:
         assert refusal_exit is not None
         return refusal_exit
 
-    # R15 review fix (2026-08-25, finding 6, R14): the digest entry is
-    # committed in out_root on EVERY path that attests — fresh publication,
-    # idempotent recovery, and roll-forward alike. Round-12 (finding 5) added
-    # this fsync but gated it on `fresh_publication`, a flag fixed BEFORE the
-    # residue classification: a first invocation killed after the members
-    # were published but before this fsync left the digest entry uncommitted,
-    # the retry classified that residue (idempotent complete or roll-forward),
-    # succeeded, and SKIPPED the repairing fsync — a reboot could still lose
-    # the acknowledged publication. The durable commit is now the last
-    # filesystem act before the attestation below, never gated on how THIS
-    # invocation classified the residue; the ancestors the hierarchy created
-    # were already committed in their parents at creation time above. An
-    # out_root fsync that fails refuses (exit 4): nothing attests, and the
-    # residue a retry then classifies repairs it.
+    # R15 review fix (2026-08-25, finding 6, R14) + R16 review fix (finding 1,
+    # R14): the output chain is committed durably on EVERY path that attests —
+    # fresh publication, idempotent recovery, and roll-forward alike. Round-12
+    # (finding 5) added an out_root fsync but gated it on `fresh_publication`;
+    # round-15 un-gated it but still covered only out_root's CONTENTS plus the
+    # ancestors THIS run created (the absent-only snapshot of the fresh
+    # branch). A crashed invocation that created a previously absent outer
+    # ancestor + out_root + the digest directory and died before its ancestor
+    # commits left that hierarchy UNCOMMITTED — the retry saw the digest dir,
+    # took a recovery path (never the fresh branch), and attested exit 0/5
+    # over the same uncommitted chain. The commit is now a durable no-follow
+    # walk of the FULL output chain (``_commit_output_chain``): the parent of
+    # every traversed component — out_root's ancestors down through out_root
+    # itself, pre-existing or not — then out_root's own entries, outermost
+    # first, as the last filesystem act before the attestation below. An
+    # OSError refuses (exit 4): nothing attests, and the residue a retry then
+    # classifies repairs it.
     if emitted:
         try:
-            out_root_fd = _open_directory_nofollow(args.out_root)
+            _commit_output_chain(args.out_root)
         except OSError as exc:
             print(
-                f"EMISSION REFUSED: {args.out_root} could not be taken into custody "
-                f"to commit the digest entry ({exc.strerror})",
+                f"EMISSION REFUSED: the output chain under {args.out_root} "
+                f"could not be durably committed ({exc.strerror}) — never "
+                "attest a census over an uncommitted directory chain",
                 file=sys.stderr,
             )
             return 4
-        try:
-            os.fsync(out_root_fd)
-        except OSError as exc:
-            print(
-                f"EMISSION REFUSED: the digest entry could not be durably committed "
-                f"in {args.out_root} ({exc.strerror})",
-                file=sys.stderr,
-            )
-            return 4
-        finally:
-            os.close(out_root_fd)
 
     # Whole coverage = zero INCOMPLETE pairs. Holiday Fridays
     # (SPOT_MISSING_HOLIDAY) are EXPECTED gaps — the exchange was closed —
