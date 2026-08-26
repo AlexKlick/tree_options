@@ -599,3 +599,37 @@ the exact PR head (see PR body for its verdict line).
   journal/store); protected blobs + mutate.py byte-identical; AST
   0/255 drift across ALL 255 anchors in 63 files; independent full
   suite 1,642 passed exit 0 (+17 tests: 7 A + 5 B + 5 C).
+
+- **2026-08-25 R16 (round-14 remediation, owner ruling: apply the
+  landed repair-on-open principle to the two PUBLICATION walks).**
+  Round 14 at `1cebde0` (pr-a-codex14.log): NO-GO — 2 findings
+  (1×P2, 1×P3), both verified in source; round-13 disposition 5/7
+  RESOLVED (the whole extent family + authority-walk durability —
+  the class ruling WORKED; trajectory 5→4→6→10→10→3→5→7→2); all
+  R15 deviations ACCEPTED incl. the M185 re-seam; all constraints
+  PASS. The 2: census publication attests over uncommitted outer
+  crash-residue ancestors (freshness decided by digest-dir
+  existence; ancestor commits only in the fresh branch; recovery
+  fsyncs out_root alone) and amendment returns packets over the
+  same (absent-only ancestor snapshot → empty on pre-existing
+  residue). **Remediated in R16 as one contract** (mirroring
+  custody.open_directory(durable=True)): `_commit_output_chain` —
+  a durable no-follow walk of the out_root chain that fsyncs the
+  PARENT of every traversed component, created-now or
+  pre-existing, outermost-first, as the last filesystem act
+  before any attestation — census `08b516b` (the `if emitted:`
+  commit; exit-4 refusal, nothing attests), amendment `dc2e838`
+  (pre-packet-return, OutputRefusedError family). Red-first
+  (/tmp/r16-f{1,2}-red.log): roll-forward + exit-5 retries over
+  pre-existing residue, and the amendment retry seeding out_root
+  ITSELF uncommitted — each tracing every residue parent's fsync
+  (st_dev/st_ino) against the attestation event; red assertions
+  "the pre-existing outer ancestor's entry in ITS parent is never
+  committed" / "the parent output root's entry in the artifacts
+  root is never committed before the packet attests". Disclosed:
+  the R15 creation-time commits stay (subsumed by the full-chain
+  pass); the F1 red log was recaptured after a harness-fixture
+  TypeError (final log shows the intended failures). Orchestrator
+  verification: exact file scope; protected blobs + mutate.py
+  byte-identical; AST 0/255 drift; independent full suite 1,645
+  passed exit 0 (+3 tests).
