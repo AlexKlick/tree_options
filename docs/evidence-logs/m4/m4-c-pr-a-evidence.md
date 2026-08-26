@@ -633,3 +633,42 @@ the exact PR head (see PR body for its verdict line).
   verification: exact file scope; protected blobs + mutate.py
   byte-identical; AST 0/255 drift; independent full suite 1,645
   passed exit 0 (+3 tests).
+
+- **2026-08-26 R17 (round-15 remediation, owner ruling: R17 micro-fix).**
+  Round 15 at `3127fb0` (pr-a-codex15.log, 265k tokens): NO-GO —
+  EXACTLY ONE finding (1×P2), verified in source by the orchestrator
+  1/1; findings trajectory 5→4→6→10→10→3→5→7→2→1; round-14
+  disposition BOTH RESOLVED; all constraints PASS; both R16 deviations
+  accepted (the subsumed creation-time commits + the red-log
+  recapture); boundary-consistency all CLOSED except one row. The
+  finding: census IDEMPOTENT recovery can attest uncommitted
+  member-name entries — the digest-dir fsync lives ONLY in the emitter
+  (`_emit_census_set`: renames then `os.fsync(out_fd)`); a crash
+  after the last rename but before that fsync leaves a complete
+  byte-identical set with no stale temps; the retry classifies
+  IDEMPOTENT (:997; the :994 fsync is stale-temps-only) and
+  `emitted = publish is None` (:1652) SKIPS the emitter; the R16
+  `_commit_output_chain` commits the digest dir's ENTRY in out_root
+  but not the three entries INSIDE it → attest exit 0/5 → a later
+  reboot may lose the acknowledged member names. **Remediated in
+  `5f501b2`**: `_commit_digest_directory_entries(out_dir)` — opens
+  the digest directory `O_RDONLY|O_DIRECTORY|O_NOFOLLOW` and fsyncs
+  its fd — called in the `if emitted:` block AFTER
+  `_commit_output_chain` (outermost-first per the file's own
+  parent-before-children convention; the new fsync is the final
+  filesystem act before the summary), own `except OSError → EMISSION
+  REFUSED / exit 4`, nothing attests; the emitter's own post-rename
+  fsync untouched (fresh/roll-forward keep their earlier durability).
+  Red-first (/tmp/r17-f1-red.log): the reviewer's exact probe — all
+  three members seeded byte-identical + file-fsynced, the digest dir
+  deliberately never fsynced; both tests failed on the unfixed tree
+  on the intended assertion ("the retry attests the byte-identical
+  prior publication without ever fsyncing the digest directory
+  itself"). 2 new tests (exit-0 + exit-5 idempotent retries), fsync
+  matched by real (st_dev, st_ino) against the first summary print
+  via the R15/R16 ordered-event harness. Deviations disclosed:
+  `held_dir_identity` is None on the idempotent path so the helper
+  re-opens by path (as the fix spec directs). Orchestrator
+  verification: exact file scope; protected blobs + mutate.py +
+  amendment.py (RESOLVED surface) byte-identical; AST 0/255 drift;
+  independent full suite 1,647 passed exit 0 (+2 tests).
