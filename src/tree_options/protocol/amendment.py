@@ -68,6 +68,10 @@ from tree_options.data.coverage_census import (
     census_content_sha256,
     verify_census,
 )
+from tree_options.protocol.holdout import (
+    FINAL_HOLDOUT_PLACEHOLDER,
+    final_holdout_window_record,
+)
 from tree_options.protocol.loader import load_protocol_bytes, protocol_hash
 from tree_options.protocol.schema import ResearchProtocol
 from tree_options.schemas.common import StrictModel
@@ -766,6 +770,14 @@ def _render_schema_addition_proposal(
             "# loadable protocol content.",
         ]
     )
+    # 0.2.1 ratification (owner decision 2026-08-26): the owner ratified
+    # window A — the exact 13-date enumeration, lane-2-evaluation-folds
+    # scope, bound to the exit-5 census 43b0b040…. The enumeration renders
+    # from tree_options.protocol.holdout (the single source) whenever the
+    # build's census IS the ratified census, so the proposal and the later
+    # owner-ratified schema landing cannot drift; any other census gets the
+    # AWAITING_OWNER_DECLARATION placeholder, never a misbound window.
+    holdout = final_holdout_window_record(census_hash)
     doc = {
         "NOT_LANDED": True,
         "proposed_schema_addition": {
@@ -782,6 +794,7 @@ def _render_schema_addition_proposal(
             "proposed_version": PROPOSED_PROTOCOL_VERSION,
             "flow_min_session_volume": flow_value,
             "emitted_by": "scripts/build_protocol_amendment.py (dry-run)",
+            "final_holdout_window": holdout if holdout is not None else FINAL_HOLDOUT_PLACEHOLDER,
         },
     }
     return header + "\n" + yaml.safe_dump(doc, sort_keys=True, default_flow_style=False)
