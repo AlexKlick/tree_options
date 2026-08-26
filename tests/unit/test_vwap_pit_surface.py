@@ -602,6 +602,52 @@ def test_participation_cap_is_cumulative_per_contract_session(surface) -> None:
     assert exc.value.code == "NO_LIQUIDITY"
 
 
+def test_each_bar_session_carries_its_own_participation_capacity(surface) -> None:
+    """(G1) The participation ledger is keyed per (contract, BAR SESSION):
+    the next execution session consumes the NEXT session's bar, whose own
+    observed volume is its own capacity — an earlier bar's consumption never
+    depletes a later bar. The test above pins the cumulative bound WITHIN
+    one bar session; this pins the key's second dimension (a per-contract
+    key would starve every session after the first)."""
+    from tree_options.guards.fills import FillEngine
+    from tree_options.schemas.trading import Order
+
+    engine = FillEngine(surface.overlay.calendar, max_quote_age_seconds=7200)
+    contract = surface.contract(C600_ID)
+
+    def _order(seq: int, quantity: int, decision: date) -> Order:
+        return Order(
+            order_id=f"VX-{seq}",
+            contract_id=C600_ID,
+            side="buy",
+            intent="open_long",
+            quantity=quantity,
+            decision_at=_close(decision),
+            decision_session=decision,
+        )
+
+    # execution S6 fills against S5's bar (volume 120): capacity 120
+    first = engine.execute(
+        _order(1, 200, S5),
+        surface.visible_quotes_as_of(C600_ID, _execution_at(S6)),
+        contract,
+        execution_session=S6,
+        execution_at=_execution_at(S6),
+    )
+    assert first.quantity == 120
+    # execution S7 fills against S6's bar — a DIFFERENT bar session with its
+    # own 120 contracts of observed volume: the capacity resets, and the
+    # 120 already consumed against bar(S5) does not count against bar(S6)
+    second = engine.execute(
+        _order(2, 200, S6),
+        surface.visible_quotes_as_of(C600_ID, _execution_at(S7)),
+        contract,
+        execution_session=S7,
+        execution_at=_execution_at(S7),
+    )
+    assert second.quantity == 120
+
+
 # ---- the optional dollar-volume source (spot_proxy_v2, P0-1(b) seam) ----------------
 #
 # The ruled fallback chain (theory-panel §2 P0-1, "both, staged"): the preferred
@@ -797,6 +843,70 @@ def test_dollar_volume_requires_a_contiguous_20_session_window(v2_capture, proto
             .results
         }
         assert by_rule["underlying_liquidity"].status == "FAIL"
+
+
+def test_dollar_volume_median_is_exact_over_distinct_values(v2_capture) -> None:
+    """(w3) The PASS path's statistic is the exact MEDIAN of the trailing 20
+    sessions' close*volume — never the mean, and never a median over more
+    history than the declared window. The 50M fixture repeats one identical
+    daily value (median == mean == any-window median there), so this seam
+    needs DISTINCT values with a spike, chosen so the three statistics
+    separate:
+
+        trailing 20 sorted = [10e9 x10, 30e9 x9, 1000e9] -> median 20e9
+        trailing 20 mean                                      -> 68.5e9
+        all captured history (21 sessions) sorted             -> 11th = 30e9
+    """
+    overlay = load_derived_surface(v2_capture, staleness_sessions=10)
+    ordinal_of = {session: i for i, session in enumerate(V2_SESSIONS)}
+    volume_by_ordinal = {
+        0: 300_000_000,  # outside the trailing window but inside the capture
+        **{i: 100_000_000 for i in range(1, 11)},  # ten 10e9 days (close 100)
+        **{i: 300_000_000 for i in range(11, 20)},  # nine 30e9 days
+        20: 10_000_000_000,  # the visible session's 1000e9 spike
+        21: 100_000_000,  # the decision session: never inside any window
+    }
+    source = {SPY: {s: (Decimal("100.00"), volume_by_ordinal[ordinal_of[s]]) for s in V2_SESSIONS}}
+    adapter = VwapPitSurface(
+        overlay, spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}}, spot_v2=source
+    )
+    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
+    stamp = snap.underlying_20d_median_dollar_volume
+    assert stamp is not None
+    # the exact median of the 20 trailing sessions: the average of the 10th
+    # and 11th sorted values, (10e9 + 30e9) / 2 — an independent oracle, not
+    # a re-derivation through the adapter's own statistics call
+    assert stamp.value == Decimal("20000000000")
+
+
+def test_dollar_volume_needs_twenty_sessions_of_calendar_history(overlay, spot) -> None:
+    """(w3) Fail-closed on history: the module fixture's calendar carries 11
+    sessions — fewer than the declared 20-session window — so even a v2
+    source covering EVERY session cannot answer a 20d median: the adapter
+    must fall back to the declared Decimal("0") sentinel, never a median
+    over the 11 sessions it happens to have."""
+    every_session = {SPY: {s: (Decimal("600.00"), 80_000_000) for s in SESSIONS}}
+    adapter = VwapPitSurface(overlay, spot=spot, spot_v2=every_session)
+    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), S6)
+    stamp = snap.underlying_20d_median_dollar_volume
+    assert stamp is not None
+    assert stamp.value == Decimal("0")
+
+
+def test_dollar_volume_refuses_a_non_calendar_visible_session(v2_capture) -> None:
+    """(w3) Fail-closed on calendar identity: a visible session that is not
+    a calendar session has no ordinal, so no window can be anchored to it —
+    the source is refused (None, i.e. the declared sentinel fallback), never
+    silently re-anchored to some other session's window."""
+    overlay = load_derived_surface(v2_capture, staleness_sessions=10)
+    adapter = VwapPitSurface(
+        overlay,
+        spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}},
+        spot_v2=_v2_map(),  # every session of the 22-session calendar
+    )
+    saturday = V2_FIRST + timedelta(days=5)  # 2025-04-19: inside the span, never a session
+    assert saturday not in V2_SESSIONS
+    assert adapter._dollar_volume_as_of(SPY, saturday, publication_instant(V2_VISIBLE)) is None
 
 
 # ---- end to end: the UNMODIFIED backtest over the adapter --------------------------

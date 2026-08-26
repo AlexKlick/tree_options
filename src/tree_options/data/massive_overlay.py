@@ -1056,7 +1056,11 @@ class MassiveDerivedOverlay:
         signal, so the unmodified `OptionPitSurface.candidate_snapshot` answers
         its documented None-inputs / NOT_EVALUABLE path (see the bid/ask
         finding in the module docstring). Derived reads live at
-        `derived_quote`; candidate wiring awaits the G3 amendment packet."""
+        `derived_quote`; candidate wiring is RATIFIED (protocol 0.2.0) and
+        lives outside this module — `build_option_candidate_inputs` builds
+        the snapshot from a derived cell and
+        `data.vwap_pit_surface.VwapPitSurface` is the lane-2 read surface
+        that supplies it — so no chain entry is ever fabricated here."""
         raise ValueError(
             f"no M3 chain entry for {contract_id} on {session}:"
             f" {MASSIVE_DERIVED_PROVIDER} carries no bid/ask and no open interest —"

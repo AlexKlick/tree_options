@@ -3126,6 +3126,370 @@ MUTANTS = [
         selectors=[f"{U}/test_g4_seal.py"],
         invariant="Execute revalidates packet self-binding even after low-level model construction",
     ),
+    # ---- real-lane wave 3 (w5 holdout + w3 liquidity + w2 earnings + w7a
+    # drop + G5 null + G1 adapter, M268-M289) --------------------------------
+    dict(
+        id="M268-w5-refusal-dropped",
+        owner="test_sealed_test_sessions_are_refused_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if sealed_test_intersections:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "w5 (verdict D7.1) a fold TEST session inside the sealed window"
+            " refuses BEFORE registration: dropping the refusal lets a"
+            " mis-declared grid spend the seal, register the leaking trial,"
+            " and burn its config budget"
+        ),
+    ),
+    dict(
+        id="M269-w5-intersection-inverted",
+        owner="test_execution_tail_seal_consumption_is_tagged_not_refused",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "            for session in fold.test_sessions\n"
+            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS"
+        ),
+        replacement=(
+            "            for session in fold.test_sessions\n"
+            "            if session.isoformat() not in _SEALED_HOLDOUT_SESSIONS"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "w5 inverting the intersection refuses EVERY trial (the offender"
+            " set becomes the UNSEALED sessions): a seal the grid never"
+            " touches must never block a legitimate run"
+        ),
+    ),
+    dict(
+        id="M270-w5-full-window-overlap-only",
+        owner="test_sealed_test_sessions_are_refused_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "            for session in fold.test_sessions\n"
+            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS"
+        ),
+        replacement=(
+            "            for session in fold.test_sessions\n"
+            "            if all(s.isoformat() in _SEALED_HOLDOUT_SESSIONS for s in fold.test_sessions)"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "w5 the refusal fires on ANY sealed test session, never only when"
+            " a fold's ENTIRE test window is sealed — a partial overlap (the"
+            " realistic mis-declaration: 13 sealed Fridays inside longer"
+            " windows) must refuse exactly the same"
+        ),
+    ),
+    dict(
+        id="M271-w5-tail-disclosure-voided",
+        owner="test_execution_tail_seal_consumption_is_tagged_not_refused",
+        file="src/tree_options/trials/options_run.py",
+        anchor='                "holdout_seal_consumed_sessions": sealed_tail_sessions,',
+        replacement='                "holdout_seal_consumed_sessions": [],',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "w5 (verdict D7.2) the execution-tail consumption of the sealed"
+            " window is DISCLOSED per fold: an artifact that stops naming the"
+            " consumed sessions silently contains window-A executions"
+        ),
+    ),
+    dict(
+        id="M272-w3-dollar-volume-mean",
+        owner="test_dollar_volume_median_is_exact_over_distinct_values",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "        median = statistics.median("
+            "[rows[session][0] * rows[session][1] for session in window])"
+        ),
+        replacement=(
+            "        median = sum(rows[session][0] * rows[session][1] for session in window)"
+            " / len(window)"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 the dollar-volume stamp is the exact 20-session MEDIAN of"
+            " close*volume: a mean lets one spike day launder the liquidity"
+            " term (the 50M fixture repeats one value, where mean == median —"
+            " the owner seams the statistic with distinct values and a spike)"
+        ),
+    ),
+    dict(
+        id="M273-w3-dollar-volume-window-unbounded",
+        owner="test_dollar_volume_median_is_exact_over_distinct_values",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        start_ordinal = end_ordinal - DOLLAR_VOLUME_WINDOW_SESSIONS + 1",
+        replacement="        start_ordinal = 0",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 the median is over EXACTLY the trailing 20 calendar sessions:"
+            " anchoring at the calendar start turns it into an all-history"
+            " median that drifts with capture length and dilutes staleness"
+        ),
+    ),
+    dict(
+        id="M274-w3-dollar-volume-holes-tolerated",
+        owner="test_dollar_volume_requires_a_contiguous_20_session_window",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        window = calendar.sessions()[start_ordinal : end_ordinal + 1]",
+        replacement=(
+            "        window = tuple(\n"
+            "            s for s in calendar.sessions()[start_ordinal : end_ordinal + 1] if s in rows\n"
+            "        )"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 fail-closed on availability: a hole inside the trailing 20 (or"
+            " a history shorter than 20) must fall back to the declared"
+            " sentinel — median-ing over whatever happened to be captured"
+            " launders a partial window as a 20d median"
+        ),
+    ),
+    dict(
+        id="M275-w3-short-history-floor-gutted",
+        owner="test_dollar_volume_needs_twenty_sessions_of_calendar_history",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        if start_ordinal < 0:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 a calendar with fewer than 20 sessions of history cannot"
+            " answer a 20d median: gutting the floor lets a negative slice"
+            " index quietly window from the calendar's start"
+        ),
+    ),
+    dict(
+        id="M276-w3-non-session-fallback",
+        owner="test_dollar_volume_refuses_a_non_calendar_visible_session",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "        try:\n"
+            "            end_ordinal = calendar.ordinal(visible_session)\n"
+            "        except NotASessionError:\n"
+            "            return None"
+        ),
+        replacement=(
+            "        try:\n"
+            "            end_ordinal = calendar.ordinal(visible_session)\n"
+            "        except NotASessionError:\n"
+            "            end_ordinal = len(calendar.sessions()) - 1"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 a visible session that is not a calendar session has no"
+            " ordinal and no window: re-anchoring it to the LAST session"
+            " stamps a median over a window the caller never named"
+        ),
+    ),
+    dict(
+        id="M277-w3-loader-number-close-laundered",
+        owner="test_load_spot_proxy_v2_refuses_everything_else",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor='            close, volume = cell["close"], cell["volume"]',
+        replacement=(
+            "            close, volume = (\n"
+            '                cell["close"] if isinstance(cell["close"], str) else str(cell["close"]),\n'
+            '                cell["volume"],\n'
+            "            )"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 a JSON NUMBER close is refused outright (loads_exact hands the"
+            " loader a Decimal, and the token-form gate exists precisely"
+            " because a number means the exactness discipline was bypassed"
+            " upstream): re-stringifying the number at the cell read launders"
+            " it past the gate and into the dollar-volume term"
+        ),
+    ),
+    dict(
+        id="M278-w3-loader-volume-gate-gutted",
+        owner="test_load_spot_proxy_v2_refuses_everything_else",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="            if type(volume) is not int or volume < 0:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 volume is a STRICT int >= 0 (bools, strings, and negatives"
+            " all refuse): gutting the gate lets true coerce to 1 and a"
+            " negative count corrupt the dollar-volume product"
+        ),
+    ),
+    dict(
+        id="M279-w3-loader-extra-key-tolerated",
+        owner="test_load_spot_proxy_v2_refuses_everything_else",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor='            if not isinstance(cell, dict) or set(cell) != {"close", "volume"}:',
+        replacement=(
+            '            if not isinstance(cell, dict) or not {"close", "volume"} <= set(cell):'
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 each session object carries EXACTLY close+volume: tolerating"
+            " extra keys lets an undeclared field ride the declared input"
+            " un-parsed and un-refused"
+        ),
+    ),
+    dict(
+        id="M280-w3-loader-non-iso-skipped",
+        owner="test_load_spot_proxy_v2_refuses_everything_else",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "            except ValueError as exc:\n"
+            "                raise MassiveOverlayError(\n"
+            '                    f"{where}: key {raw_session!r} is not an ISO date"\n'
+            "                ) from exc"
+        ),
+        replacement=("            except ValueError:\n                continue"),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 a non-ISO session key is REFUSED by name, never silently"
+            " skipped: dropping rows hides capture corruption and under-counts"
+            " the window the median claims to cover"
+        ),
+    ),
+    dict(
+        id="M281-w2-earnings-false-laundered",
+        owner="test_candidate_snapshot_earnings_is_the_honest_no_evidence_encoding",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        spans_earnings: AsOf | None = None",
+        replacement="        spans_earnings: AsOf | None = AsOf(value=False, available_at=received)",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w2 (theory-panel P0-2 ruling (ii)) this lane carries no earnings"
+            " calendar, so AsOf(False) LAUNDERS a vendor-stamped PASS"
+            " 'no spanning earnings' no source supports; the honest encoding"
+            " is None and the 0.2.1 rule answers NOT_EVALUABLE 'missing'"
+        ),
+    ),
+    dict(
+        id="M282-w2-earnings-true-stamped",
+        owner="test_candidate_snapshot_earnings_is_the_honest_no_evidence_encoding",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        spans_earnings: AsOf | None = None",
+        replacement="        spans_earnings: AsOf | None = AsOf(value=True, available_at=received)",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w2 the symmetric fabrication: stamping AsOf(True) invents an"
+            " earnings-span fact with no evidence either — the snapshot must"
+            " carry no earnings claim at all on this lane"
+        ),
+    ),
+    dict(
+        id="M283-w7a-drop-incoherence-laundered",
+        owner="test_dropped_term_with_a_supplied_value_is_regime_incoherent",
+        file="src/tree_options/candidates/filters.py",
+        anchor="            and snap.underlying_20d_median_dollar_volume is not None",
+        replacement="            and snap.underlying_20d_median_dollar_volume is None",
+        selectors=[f"{U}/test_candidate_volume_flow.py"],
+        invariant=(
+            "w7a the disclosure may not paper over real inputs: a protocol"
+            " that drops the underlying-liquidity term while the snapshot"
+            " SUPPLIES a value is incoherent and answers NOT_EVALUABLE with"
+            " the value withheld — inverting the supplied-check launders the"
+            " contradiction into NOT_APPLICABLE-with-value"
+        ),
+    ),
+    dict(
+        id="M284-w7a-unknown-term-accepted",
+        owner="test_unknown_term_token_refuses_at_the_constructor",
+        file="src/tree_options/candidates/filters.py",
+        anchor=(
+            '        if underlying_liquidity_term not in {"evaluated",'
+            ' "dropped_no_equity_aggregates"}:'
+        ),
+        replacement="        if False:",
+        selectors=[f"{U}/test_candidate_volume_flow.py"],
+        invariant=(
+            "w7a the declared disposition is a two-token Literal: an unknown"
+            " underlying_liquidity_term refuses at the constructor exactly as"
+            " the regime name does — accepting it lets an unratified"
+            " disposition silently behave as 'evaluated'"
+        ),
+    ),
+    dict(
+        id="M285-g5-preimage-fields-swapped",
+        owner="test_the_preimage_contract_is_pinned",
+        file="src/tree_options/trials/null_score.py",
+        anchor=(
+            '    preimage = _UNIT.join((seed, session.isoformat(), security_id)).encode("utf-8")'
+        ),
+        replacement=(
+            '    preimage = _UNIT.join((seed, security_id, session.isoformat())).encode("utf-8")'
+        ),
+        selectors=[f"{U}/test_null_score.py"],
+        invariant=(
+            "G5 the score's preimage is sha256 over seed UNIT session ISO"
+            " UNIT security_id in THAT field order: swapping two fields"
+            " silently re-scores every cross-section while still looking"
+            " deterministic (the owner pins the digest from first principles)"
+        ),
+    ),
+    dict(
+        id="M286-g5-interval-bound-broken",
+        owner="test_scores_live_in_the_unit_interval",
+        file="src/tree_options/trials/null_score.py",
+        anchor='    return int.from_bytes(digest[:8], "big") / _DENOMINATOR',
+        replacement='    return int.from_bytes(digest[:9], "big") / _DENOMINATOR',
+        selectors=[f"{U}/test_null_score.py"],
+        invariant=(
+            "G5 the leading 64 bits over 2**64 map onto [0, 1) exactly: taking"
+            " a ninth byte keeps the same denominator and every score lands"
+            " at or above 1.0 — the bound the quintile cut and every"
+            " comparison against score thresholds rests on"
+        ),
+    ),
+    dict(
+        id="M287-g5-seed-not-hashed",
+        owner="test_score_seed_rides_the_config_hash",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "        # G5: the null-score generator's REQUIRED seed is a first-class\n"
+            "        # config key — the declared score model's input rides the hash\n"
+            '        **({"score_seed": score_seed} if score_seed is not None else {}),'
+        ),
+        replacement=(
+            "        # G5: the null-score generator's REQUIRED seed is a first-class\n"
+            "        # config key — the declared score model's input rides the hash\n"
+            "        **{},"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "G5 the score seed is a first-class config key: dropping it from"
+            " the hashed config lets one null trial masquerade as another"
+            " configuration (the payload stamp alone discloses nothing the"
+            " registry compares)"
+        ),
+    ),
+    dict(
+        id="M288-g1-publication-wall-gutted",
+        owner="test_publication_wall_governs_visibility",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="            if self._overlay.publication_of(session) <= as_of:",
+        replacement="            if True:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "G1 the adapter's own publication gate: only sessions whose T+1"
+            " 09:00 ET wall has passed are visible — gutting it hands every"
+            " read (mark, delta, fill stream, spot) the newest session's bar"
+            " at a close(t) decision, the exact t-1 recency leak the wall"
+            " exists to prevent"
+        ),
+    ),
+    dict(
+        id="M289-g1-participation-key-collapsed",
+        owner="test_each_bar_session_carries_its_own_participation_capacity",
+        file="src/tree_options/guards/fills.py",
+        anchor="            participation_key = (selected.contract_id, selected.session)",
+        replacement="            participation_key = selected.contract_id",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "G1 (via the lane-2 adapter) participation is cumulative per"
+            " (contract, BAR SESSION): collapsing the key to the contract"
+            " alone starves every session after the first of the volume the"
+            " later bars actually traded (M176 pins the cumulative READ"
+            " within one bar; this pins the key's second dimension)"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.

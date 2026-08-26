@@ -208,6 +208,22 @@ def test_module_docstring_states_the_landed_candidate_seam() -> None:
     assert "build_option_candidate_inputs" in doc
 
 
+def test_entry_for_docstring_states_the_landed_candidate_seam() -> None:
+    """(w6 tail) The third stale pre-0.2.0 claim: `entry_for`'s docstring
+    said candidate wiring "awaits the G3 amendment packet" — false since
+    protocol 0.2.0 landed the builder and doubly since the lane-2 adapter
+    (`data.vwap_pit_surface.VwapPitSurface`) shipped. The REFUSAL itself is
+    unchanged (still the not-in-file ValueError); only the prose rot goes.
+    Whitespace-normalized: the replacement prose wraps across source lines,
+    and a raw substring assert passes vacuously over a line break."""
+    import re
+
+    doc = re.sub(r"\s+", " ", mo.MassiveDerivedOverlay.entry_for.__doc__ or "")
+    assert "awaits the G3 amendment packet" not in doc
+    assert "build_option_candidate_inputs" in doc
+    assert "VwapPitSurface" in doc
+
+
 def test_provider_and_schema_tokens(overlay: MassiveDerivedOverlay) -> None:
     assert MASSIVE_DERIVED_PROVIDER == "massive-derived-free/1"
     assert MASSIVE_DERIVED_SCHEMA_VERSION == "m4-massive-derived/1"
