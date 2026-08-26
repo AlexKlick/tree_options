@@ -615,6 +615,12 @@ def _execute(
                 "expiries": result.counters.expiries,
                 "terminals": result.counters.terminals,
                 "total_return": result.summary.total_return,
+                # G3: the fold's own session-return series and equity
+                # endpoints — computed today but discarded; stamped so the
+                # artifact alone re-derives every fold statistic
+                "session_returns": list(result.summary.session_returns),
+                "equity_start": (str(result.equities[0]) if result.equities else None),
+                "equity_end": (str(result.equities[-1]) if result.equities else None),
             }
         )
         all_positions.extend(_position_payloads(result))
@@ -726,6 +732,10 @@ def _execute(
             "total_return": aggregate.total_return,
             "mean_turnover": aggregate.mean_turnover,
             "hit_rate": aggregate.hit_rate,
+            # G3: the pooled series itself (the folds concatenate — each
+            # restarts from fresh cash), so the artifact alone re-derives
+            # the product identity behind n_session_returns/total_return
+            "session_returns": list(aggregate.session_returns),
         },
     }
     if liquidity_lane != 1:

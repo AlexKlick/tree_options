@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 
@@ -438,3 +439,42 @@ def test_unknown_lane_and_lane_1_threshold_refuse(world, protocol, tmp_path) -> 
             )
         registry.close()
     assert trial_count(tmp_path / "refuse.db") == 0
+
+
+# ---- G3: per-fold session-return series + fold equity endpoints ------------------
+
+
+def test_per_fold_session_returns_and_equity_endpoints_stamped(world, protocol, tmp_path) -> None:
+    import math
+
+    body = _run_trial(world, protocol, tmp_path, tag="g3_stamp")
+    per_fold = body["payload"]["per_fold"]
+    assert per_fold
+    for fold in per_fold:
+        series = fold["session_returns"]
+        assert len(series) == fold["n_sessions_evaluated"]
+        # the stamped series is exactly the summary's input: its product IS
+        # the fold's total_return
+        assert math.prod(1.0 + r for r in series) - 1.0 == pytest.approx(
+            fold["total_return"], abs=1e-12
+        )
+        # the endpoints are the fold's OWN first/last stamped equity (the
+        # first evaluated session's close, not the pre-session cash float)
+        assert Decimal(fold["equity_start"]) > 0
+        assert Decimal(fold["equity_end"]) >= 0
+
+
+def test_pooled_session_returns_stamped_and_consistent(world, protocol, tmp_path) -> None:
+    import math
+
+    body = _run_trial(world, protocol, tmp_path, tag="g3_pooled")
+    backtest = body["payload"]["backtest"]
+    series = backtest["session_returns"]
+    assert len(series) == backtest["n_session_returns"]
+    assert math.prod(1.0 + r for r in series) - 1.0 == pytest.approx(
+        backtest["total_return"], abs=1e-12
+    )
+    # the pooled series is the concatenation of the per-fold series (each
+    # fold restarts from fresh cash, so nothing is double-counted)
+    per_fold_total = sum(len(fold["session_returns"]) for fold in body["payload"]["per_fold"])
+    assert per_fold_total == len(series)
