@@ -73,6 +73,7 @@ def _make_census_bytes(
     predeclared: dict[str, str] | None = None,
     observed_confidence: str = "EXACT",
     observed_extra: dict[str, tuple[int | str, str]] | None = None,
+    coverage_observed: dict[str, int] | None = None,
 ) -> bytes:
     """A self-consistent census built directly from the coverage models.
 
@@ -80,6 +81,11 @@ def _make_census_bytes(
     pair — the shape the round-2 producer/consumer probe needs (the canonical
     producer always emits a numeric ``bar_volume_observations`` as
     NOT_EVALUABLE, and textual observations exist too).
+
+    ``coverage_observed`` overrides the PairCoverage class counts (the
+    0.2.1-ratification tests need the exit-5 shape: 29 pairs in
+    SPOT_MISSING_SESSION, an INCOMPLETE class, with masters observed ==
+    expected).
     """
     observed_facts = {
         fid: CensusFact(v=v, support={"census": 1}, confidence=observed_confidence)
@@ -120,7 +126,10 @@ def _make_census_bytes(
             command=("uv", "run", "--frozen", "python", "scripts/inspect_structural_coverage.py"),
             report_version=CENSUS_SCHEMA_VERSION,
         ),
-        coverage=CoverageBlock(expected_masters=3045, observed=PairCoverage(COMPLETE=3045)),
+        coverage=CoverageBlock(
+            expected_masters=3045,
+            observed=PairCoverage(**(coverage_observed or {"COMPLETE": 3045})),
+        ),
         values=CensusValues(
             observed_census_fact=observed_facts,
             predeclared_derivation_input=dict(predeclared),
@@ -1818,3 +1827,206 @@ def test_a_retry_over_a_seeded_uncommitted_out_root_commits_the_whole_chain_befo
             "protocol-0.2.1-proposed.yaml",
             "schema-addition-proposal.yaml",
         ]
+
+
+# ---- 0.2.1 ratification (owner decision 2026-08-26): scoped admission -------
+#
+# The exit-5 census 43b0b040ea3c… (29 SPOT_MISSING_SESSION pairs on
+# 2026-08-21, masters observed == expected 3045) is the amendment's BINDING
+# target, and the owner ratified flow_min_session_volume=100 as an
+# owner_deviation against it. The builder's wholeness gate therefore admits
+# an INCOMPLETE-containing census for OWNER-DEVIATION provenance ONLY:
+#   * a derivation value still refuses on the un-whole census itself, and
+#   * the EXACT-fact gate still refuses every derivation such a census could
+#     express (every observed fact the real census carries is PARTIAL).
+# The synthetic fixtures below reproduce the real census's shape on any
+# clean clone; the *_real tests exercise the actual artifact where the
+# coverage-era artifacts are present (they are gitignored evidence).
+
+RATIFICATION_CENSUS_SHA256 = "43b0b040ea3c7936fc08e6b1028ce446e46c99f44ca1d87da9fec02099e12e14"
+REAL_CENSUS = REPO_ROOT / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
+REAL_CAPTURE_MANIFEST = REPO_ROOT / "artifacts" / "m4b-coverage-era" / "capture_manifest.json"
+_real_census_available = REAL_CENSUS.is_file() and REAL_CAPTURE_MANIFEST.is_file()
+
+NOOP_RULE_ID = "R-UNIVERSE-GRID-ACKNOWLEDGMENT"
+RATIFIED_FLOW_VALUE = 100
+DEVIATION_RECORD = (
+    "owner decision 2026-08-26 (0.2.1 ratification): flow_min_session_volume=100 "
+    "bound to census 43b0b040ea3c…; evidence base 214 bars — in-band n=61, "
+    "below-10 1/61, below-100 17/61, pooled 44/214; continuity with "
+    "option_candidate_defaults.min_same_day_volume=100"
+)
+
+
+def _exit5_census_bytes() -> bytes:
+    """The exit-5 shape: masters observed == expected (the wholeness
+    attestation holds there), but 29 pairs sit in SPOT_MISSING_SESSION (an
+    INCOMPLETE class) and EVERY observed fact is PARTIAL."""
+    return _make_census_bytes(
+        observed={
+            "era_observed_masters": 3045,
+            "era_as_of_fridays": 105,
+            "masters_observed": 3045,
+            "pair_complete": 2871,
+            "pair_spot_missing_holiday": 145,
+            "pair_spot_missing_session": 29,
+        },
+        observed_confidence="PARTIAL",
+        coverage_observed={
+            "COMPLETE": 2871,
+            "SPOT_MISSING_HOLIDAY": 145,
+            "SPOT_MISSING_SESSION": 29,
+        },
+    )
+
+
+def _owner_deviation_values(census_hash: str) -> dict:
+    return {
+        "census_content_sha256": census_hash,
+        "values": [
+            {
+                "id": "flow_min_session_volume",
+                "value": RATIFIED_FLOW_VALUE,
+                "provenance": "owner_deviation",
+                "rule_id": None,
+                "deviation_record": DEVIATION_RECORD,
+            }
+        ],
+    }
+
+
+def _noop_rules(census_hash: str) -> dict:
+    """The ratified rules doc shape: ONE universe-grid-acknowledgment noop
+    whose expression is a bare int (references no fact, derives nothing)."""
+    return {
+        "rules": [
+            {
+                "rule_id": NOOP_RULE_ID,
+                "census_binding": census_hash,
+                "expression": 3045,
+            }
+        ]
+    }
+
+
+def test_exit5_census_owner_deviation_value_admitted(tmp_path: Path) -> None:
+    """RED-FIRST for the 0.2.1 scoped admission: an INCOMPLETE-containing
+    census (29 SPOT_MISSING_SESSION pairs, masters observed == expected)
+    with the flow threshold as an owner_deviation BUILDS a not-landed
+    packet — the exit-5 census 43b0b040ea3c… is the amendment's binding
+    target and the owner deviation is the provenance the ratification
+    carries for exactly this shape."""
+    census_bytes = _exit5_census_bytes()
+    census_hash = _census_hash(census_bytes)
+    paths = _bundle(
+        tmp_path,
+        census_bytes=census_bytes,
+        owner_values=_owner_deviation_values(census_hash),
+        rules=_noop_rules(census_hash),
+    )
+    with _out_root() as out:
+        packet = _build(paths, out)
+        assert packet.landed is False
+        assert packet.census_content_sha256 == census_hash
+        assert packet.flow_min_session_volume == RATIFIED_FLOW_VALUE
+        out_dir = out / census_hash[:12]
+        diff = (out_dir / "amendment-diff.md").read_text(encoding="utf-8")
+        assert f"null -> {RATIFIED_FLOW_VALUE}" in diff
+        assert "owner deviation" in diff
+        proposed = load_protocol(out_dir / "protocol-0.2.1-proposed.yaml")
+        flow = proposed.option_candidate_defaults.liquidity_volume_flow
+        assert flow is not None and flow.flow_min_session_volume == RATIFIED_FLOW_VALUE
+
+
+def test_exit5_census_derivation_value_still_refused(tmp_path: Path) -> None:
+    """The admission is provenance-scoped: the SAME exit-5 census with a
+    derivation-provenance value refuses on the un-whole census itself, and
+    nothing is emitted."""
+    census_bytes = _exit5_census_bytes()
+    paths = _bundle(tmp_path, census_bytes=census_bytes)
+    with _out_root() as out:
+        with pytest.raises(StaleCensusError, match="owner_deviation provenance only"):
+            _build(paths, out)
+        assert list(out.iterdir()) == [], (
+            "no packet was emitted for a derivation on an un-whole census"
+        )
+
+
+def test_whole_census_partial_facts_admit_deviations_but_exact_gate_still_refuses(
+    tmp_path: Path,
+) -> None:
+    """The EXACT-fact gate is INDEPENDENT of the wholeness admission and
+    stays refused: over a WHOLE census whose every observed fact is PARTIAL
+    (the real census's confidence shape), an owner_deviation builds while a
+    derivation referencing any fact refuses at the EXACT gate."""
+    census_bytes = _make_census_bytes(observed_confidence="PARTIAL")
+    census_hash = _census_hash(census_bytes)
+    (tmp_path / "deviation").mkdir()
+    deviation_paths = _bundle(
+        tmp_path / "deviation",
+        census_bytes=census_bytes,
+        owner_values=_owner_deviation_values(census_hash),
+        rules=_noop_rules(census_hash),
+    )
+    with _out_root() as out:
+        assert _build(deviation_paths, out).flow_min_session_volume == RATIFIED_FLOW_VALUE
+
+    (tmp_path / "derivation").mkdir()
+    derivation_paths = _bundle(
+        tmp_path / "derivation",
+        census_bytes=census_bytes,
+        owner_values=_owner_values(census_hash, flow_value=761),
+        rules=_rules(
+            census_hash,
+            expression={"op": "floor_div", "args": [{"fact": "era_observed_masters"}, 4]},
+        ),
+    )
+    with _out_root() as out:
+        with pytest.raises(DerivationMismatchError, match="EXACT"):
+            _build(derivation_paths, out)
+
+
+@pytest.mark.skipif(not _real_census_available, reason="coverage-era artifacts not present")
+def test_real_exit5_census_owner_deviation_admitted(tmp_path: Path) -> None:
+    """The binding target itself: the retained exit-5 census artifact
+    43b0b040ea3c… (content hash recomputed by the builder) plus the real
+    capture manifest it still describes, with the ratified owner_deviation
+    flow value 100 and the universe-grid noop rule, BUILDS the 0.2.1
+    proposal packet (landed: false)."""
+    census_bytes = REAL_CENSUS.read_bytes()
+    assert _census_hash(census_bytes) == RATIFICATION_CENSUS_SHA256
+    paths = _bundle(
+        tmp_path,
+        census_bytes=census_bytes,
+        owner_values=_owner_deviation_values(RATIFICATION_CENSUS_SHA256),
+        rules=_noop_rules(RATIFICATION_CENSUS_SHA256),
+        manifest_body=REAL_CAPTURE_MANIFEST.read_bytes(),
+    )
+    with _out_root() as out:
+        packet = _build(paths, out)
+        assert packet.landed is False
+        assert packet.census_content_sha256 == RATIFICATION_CENSUS_SHA256
+        assert packet.flow_min_session_volume == RATIFIED_FLOW_VALUE
+
+
+@pytest.mark.skipif(not _real_census_available, reason="coverage-era artifacts not present")
+def test_real_exit5_census_derivation_still_refused(tmp_path: Path) -> None:
+    """Derivation provenance against the real exit-5 census refuses on the
+    un-whole census — the admission the ratification opened is
+    owner_deviation-only."""
+    census_bytes = REAL_CENSUS.read_bytes()
+    owner_doc = _owner_values(RATIFICATION_CENSUS_SHA256, flow_value=761)
+    paths = _bundle(
+        tmp_path,
+        census_bytes=census_bytes,
+        owner_values=owner_doc,
+        rules=_rules(
+            RATIFICATION_CENSUS_SHA256,
+            expression={"op": "floor_div", "args": [{"fact": "masters_observed"}, 4]},
+        ),
+        manifest_body=REAL_CAPTURE_MANIFEST.read_bytes(),
+    )
+    with _out_root() as out:
+        with pytest.raises(StaleCensusError, match="owner_deviation provenance only"):
+            _build(paths, out)
+        assert list(out.iterdir()) == []

@@ -570,3 +570,41 @@ def test_packet_binds_qualname_and_config_digest_of_the_registered_machinery(
     assert packet.runner_implementation_qualname == (
         verified_inputs.runner_implementation_qualname(entry.implementation)
     )
+
+
+# ---- the committed criteria transcription can never drift from its source ----
+#
+# data/g4/sealed-criteria.json transcribes docs/m4-g4-sealed-gate-plan.md §4
+# and binds the document's sha256. Editing the plan without re-transcribing
+# leaves every fixture-copied pair stale (the verifier refuses at run time);
+# this pins the pair at TEST time so a plan edit that forgets the
+# regeneration is a red test, not a sealed-run-day refusal.
+
+
+def test_committed_criteria_artifact_matches_its_source_document() -> None:
+    criteria = verified_inputs.SealedCriteriaArtifact.model_validate_json(
+        (SOURCE_REPO / "data/g4/sealed-criteria.json").read_text(encoding="utf-8")
+    )
+    source_bytes = (SOURCE_REPO / "docs/m4-g4-sealed-gate-plan.md").read_bytes()
+    assert criteria.source == "docs/m4-g4-sealed-gate-plan.md"
+    assert criteria.source_sha256 == sha256(source_bytes).hexdigest(), (
+        "sealed-criteria.json is stale against docs/m4-g4-sealed-gate-plan.md: "
+        "the plan was edited without re-transcribing §4 and its new source hash"
+    )
+    normalized_source = " ".join(source_bytes.decode("utf-8").split())
+
+    # The transcription's established conventions: statements drop the
+    # leading "<id> —" separator (the id is its own field) and spell "≥" as
+    # "at least" (the source hash still pins the exact document bytes).
+    # The same em-dash/≥ normalization is applied to BOTH sides, so an
+    # em-dash inside a statement ("…unreachable — must be re-set…") is not
+    # a false drift signal.
+    def _normalize(text: str) -> str:
+        return " ".join(text.split()).replace(" — ", " ").replace("≥", "at least")
+
+    normalized_source = _normalize(normalized_source)
+    for criterion in criteria.criteria:
+        assert _normalize(criterion.statement) in normalized_source, (
+            f"criterion {criterion.id!r} statement is not a verbatim "
+            "(whitespace-unwrapped) transcription of the plan's §4 text"
+        )

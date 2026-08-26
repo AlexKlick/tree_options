@@ -65,9 +65,10 @@ outcome, mutation campaign + clean-clone determinism at the sealed head.
    Count of verified series is reported, target = the era's stamped counts.
 2. `candidate_discipline` — every accepted candidate carries a delta
    provenance in the protocol's accepted set for its regime; the
-   volume-flow threshold in the stamped run equals the 0.2.1 census value
-   EXACTLY (any drift = FAIL); every volume-flow decision discloses the
-   dropped inputs (NOT_APPLICABLE rows present, OI values withheld).
+   volume-flow threshold in the stamped run equals the 0.2.1 AMENDMENT
+   value EXACTLY (the census's owner_ratified_policy_value slot is empty by
+   construction; any drift = FAIL); every volume-flow decision discloses
+   the dropped inputs (NOT_APPLICABLE rows present, OI values withheld).
 3. `fill_discipline` (bars leg) — every stamped fill executes strictly
    after its decision session, against a bar received by the execution
    instant AND belonging to the session immediately before the execution

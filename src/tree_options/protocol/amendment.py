@@ -40,6 +40,12 @@ Pipeline (first failure wins; every failure is a refusal, never a landing):
 
 Output is byte-identical across re-runs over identical inputs: no clock, no
 timestamps, no absolute paths in any emitted byte.
+
+0.2.1 ratification scope (owner decision 2026-08-26): the wholeness gate
+admits an INCOMPLETE-containing census for owner_deviation provenance ONLY
+(the exit-5 census 43b0b040… is this amendment's binding target); every
+derivation value still requires a whole census, and the EXACT-fact gate is
+untouched.
 """
 
 from __future__ import annotations
@@ -905,14 +911,30 @@ def build_proposed_amendment(
     #      producer always emits numeric bar_volume_observations as
     #      NOT_EVALUABLE — could never feed even an owner-deviation
     #      amendment; PARTIAL or NOT_EVALUABLE operands are still refused)
+    #
+    # 0.2.1 ratification (owner decision 2026-08-26): gate (a) is
+    # provenance-scoped, never dropped. The exit-5 census 43b0b040… (29
+    # SPOT_MISSING_SESSION pairs on 2026-08-21, masters observed ==
+    # expected) is the amendment's BINDING target, and the owner ratified
+    # flow_min_session_volume=100 as an owner_deviation against it: an
+    # INCOMPLETE-containing census is therefore ADMITTED when every owner
+    # value carries owner_deviation provenance. A derivation value still
+    # refuses on the un-whole census right here, and gate (b) still refuses
+    # every derivation such a census could express (every observed fact it
+    # carries is PARTIAL) — the scoped admission opens owner_deviation
+    # provenance ONLY.
     from tree_options.data.coverage_census import INCOMPLETE_CLASSES
 
     incomplete = sum(getattr(census.coverage.observed, cls) for cls in INCOMPLETE_CLASSES)
-    if incomplete > 0:
+    derivation_value_ids = sorted(ov.id for ov in owner_doc.values if ov.provenance == "derivation")
+    if incomplete > 0 and derivation_value_ids:
         raise StaleCensusError(
             f"census is coverage-INCOMPLETE: {incomplete} pair(s) in "
-            f"INCOMPLETE_CLASSES ({sorted(INCOMPLETE_CLASSES)}); an "
-            "amendment may only be built against a whole census"
+            f"INCOMPLETE_CLASSES ({sorted(INCOMPLETE_CLASSES)}); derivation "
+            f"value(s) {derivation_value_ids} require a whole census — an "
+            "INCOMPLETE-containing census is admitted for owner_deviation "
+            "provenance only (0.2.1 ratification, owner decision 2026-08-26; "
+            "the census must NOT be repaired to hide the gap)"
         )
     # Round-5 review fix (2026-08-24, finding 2): zero INCOMPLETE pairs is
     # not wholeness on its own. The census CLI's exit-0 rule is BOTH zero

@@ -3,7 +3,7 @@
   "gate": "M4-G4 sealed real-data gate",
   "note": "Transcribed for preflight AVAILABILITY checking only (PR A/A5): lists the criteria inputs the sealed run requires and the decision-rule structure exactly as pre-declared in the source plan's section 4. NO verdict logic, NO thresholds the plan does not already state, NO outcome data. The plan doc itself is NOT modified by this transcription.",
   "source": "docs/m4-g4-sealed-gate-plan.md",
-  "source_sha256": "265ecab6582c6e17b34ac31c3441cb4f7555ae6a10a0f9708b345710252316fc",
+  "source_sha256": "8fff037e878e9161efd01282bab07be3747a3e5bd1c2e1d3e24d8f6ba6a7086d",
   "decision_rule": {
     "evaluation_source": "stamped payload files only",
     "verdict_recording": "verdict PASS or FAIL recorded verbatim",
@@ -19,7 +19,7 @@
     },
     {
       "id": "candidate_discipline",
-      "statement": "every accepted candidate carries a delta provenance in the protocol's accepted set for its regime; the volume-flow threshold in the stamped run equals the 0.2.1 census value EXACTLY (any drift = FAIL); every volume-flow decision discloses the dropped inputs (NOT_APPLICABLE rows present, OI values withheld)."
+      "statement": "every accepted candidate carries a delta provenance in the protocol's accepted set for its regime; the volume-flow threshold in the stamped run equals the 0.2.1 AMENDMENT value EXACTLY (the census's owner_ratified_policy_value slot is empty by construction; any drift = FAIL); every volume-flow decision discloses the dropped inputs (NOT_APPLICABLE rows present, OI values withheld)."
     },
     {
       "id": "fill_discipline",
