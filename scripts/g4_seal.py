@@ -20,6 +20,13 @@ consumes NO authority in PR A:
   by the owning layer or a test via ``register_runner``) — never from a
   caller-presented callable — and the approved packet binds the registered
   implementation's code-file hash (round-11 finding 8).
+* 0.2.1 ratification (owner decision 2026-08-26): ``preflight`` wires the
+  PRODUCTION machinery when the registry is empty —
+  ``tree_options.seal.runner.wire_production_runner``, whose configuration
+  digest binds the protocol-declared repo calendar (the ratified
+  ``repo-generated-calendar`` decision). It never REPLACES an existing
+  registration, and the execute path stays unwired (runbook §4.6: EXECUTE
+  IS PROHIBITED).
 
 Execute semantics (``execute_sealed_run``):
 
@@ -64,6 +71,7 @@ if str(REPO_ROOT / "src") not in sys.path:  # pragma: no cover - import plumbing
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
 from tree_options.seal import ledger as seal_ledger  # noqa: E402
+from tree_options.seal import runner as runner_wiring  # noqa: E402
 from tree_options.seal.errors import (  # noqa: E402
     ApprovalInvalidError,
     LedgerCorruptError,
@@ -72,6 +80,7 @@ from tree_options.seal.errors import (  # noqa: E402
     VerifiedInputsError,
 )
 from tree_options.seal.identity import (  # noqa: E402
+    RUNNER_VERSION,
     SealedIdentity,
     content_identity,
     sealed_run_id,
@@ -94,6 +103,7 @@ from tree_options.seal.verified_inputs import (  # noqa: E402
     runner_implementation_sha256,
     verify_sealed_inputs,
 )
+from tree_options.time.calendar import CalendarError  # noqa: E402
 
 
 class Runner(Protocol):
@@ -205,6 +215,25 @@ def _refused_statuses(exc: VerifiedInputsError) -> dict[str, CriterionStatus]:
     return statuses
 
 
+def _ensure_production_runner_wired() -> None:
+    """0.2.1 ratification (owner decision 2026-08-26): preflight is the
+    owning layer that wires the calendar-bound machinery WHEN THE REGISTRY
+    IS EMPTY — it never replaces an existing registration (a test's stub,
+    or the sealed event's own machinery authored later at the owner-declared
+    head, stays authoritative). The CLI execute path stays unwired exactly
+    as the closeout runbook §4.6 requires."""
+    if RUNNER_REGISTRY.get(RUNNER_VERSION) is not None:
+        return
+    try:
+        runner_wiring.wire_production_runner(REPO_ROOT)
+    except (CalendarError, OSError, ValueError) as exc:
+        raise VerifiedInputsError(
+            "runner",
+            f"production runner wiring failed: {exc}; no verified packet was"
+            " emitted and no G4 authority was consumed",
+        ) from None
+
+
 def cmd_preflight(argv: list[str], *, git_runner: GitRunner = subprocess.run) -> int:
     args = _parse(["preflight", *argv])
     try:
@@ -212,6 +241,7 @@ def cmd_preflight(argv: list[str], *, git_runner: GitRunner = subprocess.run) ->
     except SealError as exc:  # refused root / corrupt chain: incident outranks
         print(f"LEDGER UNREADABLE: {exc}", file=sys.stderr)  # input availability
         return 3
+    _ensure_production_runner_wired()
     packet: VerifiedSealedInputs | None = None
     try:
         held = verify_sealed_inputs(_input_paths(args), git_runner=git_runner)

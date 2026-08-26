@@ -1,0 +1,8 @@
+{
+  "schema_version": "m4-g4-calendar-decision/1",
+  "decision": "repo-generated-calendar",
+  "owner_decision_id": "m4-protocol-021-ratification-2026-08-26",
+  "decided_at": "2026-08-26T00:00:00Z",
+  "rationale": "0.2.1 ratification package (owner decision 2026-08-26): the G4 sealed run consumes the PROTOCOL-DECLARED repo calendar — the committed, checksummed NYSE fixture research_protocol.yaml declares (calendar: static_json, data/calendar/nyse_sessions_2018_01_02_2026_12_31.json) — not a weekend-only wall. CONSISTENT with the binding census 43b0b040ea3c: its 145 SPOT_MISSING_HOLIDAY findings are EXPECTED exactly because the calendar holds the 5 holiday Fridays (2025-04-18, 2025-07-04, 2026-04-03, 2026-06-19, 2026-07-03) as NON-sessions — 5 holiday Fridays x 29 underlyings = 145. Tuesday-rollover path: around every Monday holiday the calendar's ordinal/nth_after session arithmetic rolls the prior Friday to the TUESDAY opening the next week (a weekend-only wall would miscount Monday holidays as sessions). DISCLOSED fail-closed: early-close sessions stamp a 13:00 America/New_York close, so a vendor bar stamped 16:00 on an early-close session fails BAR_SESSION_STAMP_MISMATCH (guards/fills.py) BY DESIGN — the early-close set in the entitled window is 2024-11-29 and 2025-11-28 (post-Thanksgiving Fridays) plus the weekday early closes 2024-12-24, 2025-07-03, 2025-12-24. VERIFIED: the ratified holdout window A (2026-05-08 .. 2026-08-14, 13 Friday sessions) intersects the early-close set EMPTY.",
+  "content_sha256": "28775e95513822d9d15aba002c945d3e7057ae0d89a54c6c01014f4fb260f654"
+}
