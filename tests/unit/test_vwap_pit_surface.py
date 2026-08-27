@@ -763,6 +763,8 @@ def test_load_spot_proxy_v2_parses_the_declared_shape(tmp_path: Path) -> None:
         ('{"SPY": {"2025-04-14": {"close": "600.00", "volume": "80000000"}}}', "volume"),
         ('{"SPY": {"2025-04-14": {"close": 600.0, "volume": 1}}}', "close"),
         ('{"SPY": {"2025-04-14": {"close": "-600.00", "volume": 1}}}', "positive"),
+        ('{"SPY": {"2025-04-14": {"close": "Infinity", "volume": 1}}}', "finite"),
+        ('{"SPY": {"2025-04-14": {"close": "NaN", "volume": 1}}}', "finite"),
         ('{"SPY": {"2025-04-14": {"close": "600.00", "volume": 1, "extra": 1}}}', "key"),
         ('{"SPY": {"not-a-date": {"close": "600.00", "volume": 1}}}', "ISO date"),
         ("[]", "object"),
@@ -774,6 +776,23 @@ def test_load_spot_proxy_v2_refuses_everything_else(
     path = tmp_path / "spot_proxy_v2.json"
     path.write_text(body, encoding="utf-8")
     with pytest.raises(MassiveOverlayError, match=complaint):
+        load_spot_proxy_v2(path)
+
+
+@pytest.mark.parametrize("token", ["Infinity", "NaN"])
+def test_non_finite_closes_refuse_cleanly(tmp_path: Path, token: str) -> None:
+    """(P2-5, Codex round 1) `Decimal(close.strip())` accepted "Infinity" and
+    the only gate was `<= 0` — an infinity close is POSITIVE-looking, so it
+    loaded, and an infinity median flipped the liquidity rule to PASS
+    (fail-open). "NaN" parsed too, but its `<= 0` comparison raised
+    InvalidOperation — an uncontrolled exception, not the loader's refusal.
+    Both must refuse with the loader's own error shape (RED before P2-5:
+    Infinity LOADED, NaN raised decimal.InvalidOperation)."""
+    path = tmp_path / "spot_proxy_v2.json"
+    path.write_text(
+        f'{{"SPY": {{"2025-04-14": {{"close": "{token}", "volume": 1}}}}}}', encoding="utf-8"
+    )
+    with pytest.raises(MassiveOverlayError, match="finite"):
         load_spot_proxy_v2(path)
 
 

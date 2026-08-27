@@ -167,10 +167,23 @@ def load_spot_proxy_v2(path: Path) -> dict[str, dict[date, tuple[Decimal, int]]]
                 raise MassiveOverlayError(
                     f"{where}[{raw_session!r}]: close {close!r} is not a decimal"
                 ) from None
-            if close_value <= 0:
+            # (P2-5, Codex round 1) non-finite tokens are a CLEAN refusal:
+            # Decimal("Infinity") is POSITIVE-looking (it would load and an
+            # infinity median flips the liquidity rule to PASS — fail-open),
+            # and Decimal("NaN") raises InvalidOperation on comparison. The
+            # finiteness gate comes FIRST (short-circuit), and the whole
+            # validation sits inside the ArithmeticError net so neither
+            # token can escape as anything but the loader's own error shape.
+            try:
+                if not close_value.is_finite() or close_value <= 0:
+                    raise MassiveOverlayError(
+                        f"{where}[{raw_session!r}]: close {close_value} is not"
+                        " a positive finite decimal"
+                    )
+            except ArithmeticError:
                 raise MassiveOverlayError(
-                    f"{where}[{raw_session!r}]: close {close_value} is not positive"
-                )
+                    f"{where}[{raw_session!r}]: close {close!r} is not a positive finite decimal"
+                ) from None
             if type(volume) is not int or volume < 0:
                 raise MassiveOverlayError(
                     f"{where}[{raw_session!r}]: volume must be a strict int >= 0, got {volume!r}"
