@@ -3708,13 +3708,7 @@ MUTANTS = [
         id="M304-r2c-decision-seam-falls-back-to-overlay",
         owner="test_decision_at_on_an_early_close_grid_session_is_the_true_close",
         file="src/tree_options/data/vwap_pit_surface.py",
-        anchor=(
-            "        decision_at = (\n"
-            "            self._decision_calendar.session_close(decision_session)\n"
-            "            if self._decision_calendar is not None\n"
-            "            else self._overlay.calendar.session_close(decision_session)\n"
-            "        )"
-        ),
+        anchor="        decision_at = self.decision_close(decision_session)",
         replacement=(
             "        decision_at = self._overlay.calendar.session_close(decision_session)"
         ),
@@ -3723,7 +3717,10 @@ MUTANTS = [
             "R2-P1-c the decision instant comes from the DECISION grid"
             " (early-close aware), never silently from the overlay's"
             " nominal 16:00: falling back re-opens the 13:00/16:00"
-            " incoherence that made no consistent configuration exist"
+            " incoherence that made no consistent configuration exist."
+            " (R3-P1-2 re-pin: the inline R2 seam became the surface-wide"
+            " decision_close() helper, so the anchor moved to its"
+            " candidate_snapshot call site — same invariant, same owner)"
         ),
     ),
     dict(
@@ -3759,6 +3756,72 @@ MUTANTS = [
             " 13th session): stamping start-as-end is exactly the wrong"
             " quarter-3 end-date claim the old no-op assertion let slip"
             " through review"
+        ),
+    ),
+    # ---- remediation wave 3 (R3-P1-1 + R3-P1-2, M307-M309) ----------------------
+    dict(
+        id="M307-r3a-calendar-class-identity-laundered",
+        owner="test_a_subclassed_exchange_calendar_with_identical_data_refuses",
+        file="src/tree_options/time/calendar.py",
+        anchor=(
+            '            "calendar_class": f"{type(calendar).__module__}'
+            '.{type(calendar).__qualname__}",'
+        ),
+        replacement=(
+            '            "calendar_class": "tree_options.time.calendar.StaticSessionCalendar",'
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py", f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R3-P1-1 the digest names WHO computed the calendar, not just"
+            " WHAT it reports: laundering the class identity to a constant"
+            " lets a StaticSessionCalendar SUBCLASS over the canonical data"
+            " — free to override ordinal()/session_close() (the Codex probe"
+            " moved a liquidity median across the $50M threshold) — retain"
+            " the pinned digest and pass the constructor gate, and lets the"
+            " same subclass ride the trial descriptors as the base class's"
+            " identity"
+        ),
+    ),
+    dict(
+        id="M308-r3b-strategy-decision-instant-falls-back-to-overlay",
+        owner="test_an_action_published_after_the_true_close_is_not_yet_known",
+        file="src/tree_options/options/strategy.py",
+        anchor=(
+            "    decision_at = surface.decision_close(decision_session)\n"
+            "    eligible = frozenset(surface.eligible_as_of(decision_session))"
+        ),
+        replacement=(
+            "    decision_at = surface.overlay.calendar.session_close(decision_session)\n"
+            "    eligible = frozenset(surface.eligible_as_of(decision_session))"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R3-P1-2 build_candidates derives THE decision instant from the"
+            " surface's decision_close seam: reverting to the overlay"
+            " (execution) calendar's nominal 16:00 makes a pending action"
+            " published 13:00-16:00 on an early-close session count as"
+            " KNOWN at decision, so the name is excluded on future"
+            " information (INV-02) and the audit stamp reads"
+            " excluded_pending_action instead of the honest refusal"
+        ),
+    ),
+    dict(
+        id="M309-r3c-decision-close-seam-ignores-the-decision-calendar",
+        owner="test_an_action_published_after_the_true_close_is_not_yet_known",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "        if self._decision_calendar is not None:\n"
+            "            return self._decision_calendar.session_close(decision_session)\n"
+            "        return self._overlay.calendar.session_close(decision_session)"
+        ),
+        replacement="        return self._overlay.calendar.session_close(decision_session)",
+        selectors=[f"{U}/test_vwap_pit_surface.py", f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R3-P1-2 the seam must HONOR a supplied decision calendar:"
+            " ignoring it answers the overlay's nominal 16:00 on the"
+            " early-close sessions, which both breaks the snapshot"
+            " coherence the R2 seam existed for and re-opens the"
+            " future-information exclusion in candidate construction"
         ),
     ),
 ]
