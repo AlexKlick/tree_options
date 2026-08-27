@@ -123,16 +123,20 @@ DOLLAR_VOLUME_WINDOW_SESSIONS = 20  # the protocol's 20d median term
 # ruling, data/g4/calendar-decision.json "repo-generated-calendar"): the
 # committed, checksummed files under data/calendar/. The PIN below is that
 # fixture's COMPLETE content identity (full session tuple + early-close
-# map, `calendar_content_sha256`) — an identity the `.sha256` sidecar alone
-# cannot give (it pins file bytes, not semantics, and a regenerated fixture
-# with the same bytes-checksum discipline could carry different sessions).
+# map + the concrete class, `calendar_content_sha256`) — an identity the
+# `.sha256` sidecar alone cannot give (it pins file bytes, not semantics,
+# and a regenerated fixture with the same bytes-checksum discipline could
+# carry different sessions).
 # A fixture edit that keeps its sidecar in sync STILL refuses here until
 # the pin is re-derived deliberately: the exchange calendar is trial
 # identity, and identity changes are conscious acts.
+# (R3-P1-1, Codex round 3) the pin below is the re-derived digest AFTER the
+# concrete class entered the payload — the pre-R3 value 7aa83aa7… hashed
+# the data alone and therefore also certified any SUBCLASS reporting it.
 REPO_EXCHANGE_CALENDAR_JSON = Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.json")
 REPO_EXCHANGE_CALENDAR_CHECKSUM = Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.sha256")
 REPO_EXCHANGE_CALENDAR_CONTENT_SHA256 = (
-    "7aa83aa79295eaf4ebf303f46cc86660bce205bfdb5b93557dc3e0f308ee3928"
+    "38714f6ea879466a789251bf646957a9aa6a3c63ad6b4abde6b5e01c4f83a766"
 )
 
 
@@ -353,6 +357,14 @@ class VwapPitSurface:
         # and a market session missing from every capture would vanish from
         # the very calendar meant to catch it. The refusal is loud and at
         # construction, never a silent fall-back to unbounded behavior.
+        # (R3-P1-1, Codex round 3) the digest now names the concrete class,
+        # so this SAME gate also refuses a `StaticSessionCalendar` subclass
+        # reporting the canonical data — its methods are free to disagree
+        # with its data, and data identity alone cannot certify behavior.
+        # No separate `type() is` check is added: the digest is the one
+        # identity authority (it is what `_calendar_descriptor` and the
+        # config hash ride too), and a second, structural gate could only
+        # drift from it.
         if exchange_calendar is not None:
             try:
                 supplied_identity = calendar_content_sha256(exchange_calendar)

@@ -316,12 +316,20 @@ def _run_trial(
     tmp_path,
     *,
     tag: str,
+    decision_calendar=None,
     **kwargs,
 ):
-    """One fixture-scale trial; returns the stamped artifact body."""
+    """One fixture-scale trial; returns the stamped artifact body.
+
+    `decision_calendar` (R3-P1-1) swaps ONLY the runner's decision grid for
+    another calendar over the same sessions — the world, surface, dataset and
+    scored rows are untouched, so any config-hash difference below is exactly
+    the calendars' identity difference."""
     import json
 
     overlay, calendar, snapshot, dataset = world
+    if decision_calendar is not None:
+        calendar = decision_calendar
     surface = OptionPitSurface(overlay)
     scored = _scored(world, surface)
     registry = TrialRegistry(tmp_path / f"{tag}.db")
@@ -1496,4 +1504,95 @@ def test_a_calendar_differing_by_its_early_close_set_is_a_different_trial_identi
         for key in base["payload"]["execution_calendar"]
         if base["payload"]["execution_calendar"][key] != other["payload"]["execution_calendar"][key]
     }
+    assert differing == {"content_sha256"}
+
+
+# ---- (R3-P1-1, Codex round 3) class identity is trial identity ----------------------
+
+
+def test_a_subclassed_decision_calendar_is_a_different_trial_identity(
+    world, protocol, tmp_path
+) -> None:
+    """(R3-P1-1) The same defect at the DESCRIPTOR: `_calendar_descriptor`
+    rides `calendar_content_sha256`, which hashed only the calendar's DATA —
+    so a `StaticSessionCalendar` SUBCLASS with identical sessions and early
+    closes was the SAME trial identity as the base class (same config hash,
+    same descriptor) even though its methods were free to disagree with its
+    data. The digest now names the concrete class, so the twin grid is a
+    different identity with every lossy field and every data field agreeing
+    (RED before R3-P1-1: identical hash AND descriptor)."""
+    from tree_options.data.real_overlay import RealSessionCalendar
+    from tree_options.time.calendar import StaticSessionCalendar, calendar_content_sha256
+
+    class _TwinDecisionCalendar(StaticSessionCalendar):
+        """IDENTICAL committed data, ZERO overrides — a different WHO."""
+
+    _overlay, calendar, _snap, _ds = world
+    twin = _TwinDecisionCalendar(
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json",
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.sha256",
+    )
+    assert twin.sessions() == calendar.sessions()
+    assert twin.early_close_sessions() == calendar.early_close_sessions()
+    assert _lossy_fields(twin) == _lossy_fields(calendar)
+    assert calendar_content_sha256(twin) != calendar_content_sha256(calendar)
+
+    # a distinct execution calendar is what puts BOTH descriptors in the
+    # hashed config (the P1-1 rule); it is held FIXED so the only difference
+    # between the two trials is the decision grid's concrete class
+    fixed_execution = RealSessionCalendar(calendar.sessions(), frozenset())
+    base = _run_trial(
+        world,
+        protocol,
+        tmp_path,
+        tag="cal_cls_base",
+        execution_calendar=fixed_execution,
+        decision_calendar=calendar,
+    )
+    other = _run_trial(
+        world,
+        protocol,
+        tmp_path,
+        tag="cal_cls_twin",
+        execution_calendar=fixed_execution,
+        decision_calendar=twin,
+    )
+    assert base["stamp"]["config_hash"] != other["stamp"]["config_hash"]
+    differing = {
+        key
+        for key in base["payload"]["decision_calendar"]
+        if base["payload"]["decision_calendar"][key] != other["payload"]["decision_calendar"][key]
+    }
+    assert differing == {"content_sha256"}, (
+        "a subclassed decision grid is a trial-identity change only the"
+        " content hash carries — every disclosed field else agrees"
+    )
+
+
+def test_an_overriding_decision_calendar_is_a_different_identity(world) -> None:
+    """(R3-P1-1) The Codex probe shape at the descriptor: an `ordinal()+1`
+    subclass reports identical data and identical lossy fields, so before the
+    class identity entered the payload its descriptor was INDISTINGUISHABLE
+    from the base grid's — the shifted liquidity window it would enumerate
+    was invisible to trial identity. Not run as a trial (a shifted ordinal
+    moves fold enumeration itself); the descriptor is the identity surface."""
+    from tree_options.time.calendar import StaticSessionCalendar, calendar_content_sha256
+    from tree_options.trials.options_run import _calendar_descriptor
+
+    class _OrdinalShiftedGrid(StaticSessionCalendar):
+        def ordinal(self, d):
+            return super().ordinal(d) + 1
+
+    _overlay, calendar, _snap, _ds = world
+    shifted = _OrdinalShiftedGrid(
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json",
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.sha256",
+    )
+    assert shifted.sessions() == calendar.sessions()
+    assert shifted.early_close_sessions() == calendar.early_close_sessions()
+    assert _lossy_fields(shifted) == _lossy_fields(calendar)
+    assert calendar_content_sha256(shifted) != calendar_content_sha256(calendar)
+    base_descriptor = _calendar_descriptor(calendar)
+    shifted_descriptor = _calendar_descriptor(shifted)
+    differing = {key for key in base_descriptor if base_descriptor[key] != shifted_descriptor[key]}
     assert differing == {"content_sha256"}

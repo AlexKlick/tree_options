@@ -415,12 +415,16 @@ def _calendar_descriptor(calendar: SessionCalendar) -> dict[str, object]:
     whole session list.
 
     (R2-P1-b) `content_sha256` is a domain-separated sha256 over the FULL
-    session tuple plus the early-close map (`calendar_content_sha256`).
-    The lossy fields alone let two calendars differing by ONE interior
-    session — or by their early-close sets — share a config_hash, so INV-14
-    stamped an incomplete identity; the content hash closes that. A
-    calendar that does not disclose its early-close set refuses here
-    (fail-closed), never hashes half its semantics."""
+    session tuple, the early-close map, and the concrete class
+    (`calendar_content_sha256`). The lossy fields alone let two calendars
+    differing by ONE interior session — or by their early-close sets —
+    share a config_hash, so INV-14 stamped an incomplete identity; the
+    content hash closes that. (R3-P1-1, Codex round 3) the concrete class
+    is in the digest for the same reason: a SUBCLASS reporting identical
+    data may still override `ordinal`/`session_close`, so data identity
+    alone is not behavioral identity. A calendar that does not disclose its
+    early-close set refuses here (fail-closed), never hashes half its
+    semantics."""
     sessions = calendar.sessions()
     return {
         "name": getattr(calendar, "name", type(calendar).__name__),

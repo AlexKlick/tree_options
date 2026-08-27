@@ -46,8 +46,22 @@ CALENDAR_CONTENT_DOMAIN = b"tree-options-calendar-content-v1"
 
 def calendar_content_sha256(calendar: SessionCalendar) -> str:
     """The COMPLETE content identity of a calendar (R2-P1-a/R2-P1-b, Codex
-    round 2): a domain-separated sha256 over the FULL session tuple AND the
-    early-close map.
+    round 2; R3-P1-1, Codex round 3): a domain-separated sha256 over the
+    FULL session tuple, the early-close map, AND the concrete class.
+
+    The digest names WHAT and WHO. WHAT — the data — is the session tuple
+    plus the early-close map. WHO is the concrete class: for the canonical
+    classes behavior is DERIVED deterministically from that data
+    (`StaticSessionCalendar` computes `ordinal` by lookup over `sessions()`
+    and `session_close` from the early-close set; `RealSessionCalendar` and
+    its `MassiveDerivedSessionCalendar` subclass do the same), so class
+    identity + data identity is COMPLETE behavioral identity. A SUBCLASS
+    reporting the canonical data is under no such discipline: it may
+    override `ordinal()` or `session_close()` (Codex's live probe,
+    `super().ordinal(d) + 1`, moved a liquidity median across the $50M
+    protocol threshold) while the self-reported hashed payload stays
+    byte-identical — no SHA collision required. Naming the class closes
+    that: a different qualname is a different digest, whatever it reports.
 
     The concrete API for early closes is `early_close_sessions()` — every
     production calendar implements it (`StaticSessionCalendar`,
@@ -74,6 +88,7 @@ def calendar_content_sha256(calendar: SessionCalendar) -> str:
         )
     payload = json.dumps(
         {
+            "calendar_class": f"{type(calendar).__module__}.{type(calendar).__qualname__}",
             "n_sessions": len(sessions),
             "sessions": [session.isoformat() for session in sessions],
             "early_close_sessions": [session.isoformat() for session in sorted(discloses())],

@@ -1260,6 +1260,78 @@ def test_the_bound_factory_refuses_a_checksum_consistent_doctored_fixture(
         repo_exchange_calendar(tmp_path / "repo")
 
 
+# ---- (R3-P1-1, Codex round 3) class identity binds BEHAVIOR, not just data ---------
+
+
+def _committed_fixture_paths() -> tuple[Path, Path]:
+    """The committed NYSE fixture's (json, sidecar) paths — the same files
+    `repo_exchange_calendar()` loads, so a subclass built over them carries
+    IDENTICAL data by construction (never a hand-copied session tuple)."""
+    return (
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json",
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.sha256",
+    )
+
+
+def test_a_subclassed_exchange_calendar_with_identical_data_refuses(overlay, spot) -> None:
+    """(R3-P1-1, Codex round 3) `calendar_content_sha256` hashed only the
+    DATA (`{n_sessions, sessions, early_close_sessions}`), so a
+    `StaticSessionCalendar` SUBCLASS reporting the canonical data — with or
+    without overriding behavior — retained the pinned digest and was ACCEPTED
+    by the constructor gate. No SHA collision is needed: the self-reported
+    hashed payload is literally identical. For the concrete canonical classes
+    behavior is DERIVED deterministically from that data, so class identity +
+    data identity is complete behavioral identity; the digest therefore now
+    names WHO computed it too, and the same gate refuses the twin (RED before
+    R3-P1-1: the twin was accepted — identical digest)."""
+    from tree_options.time.calendar import StaticSessionCalendar, calendar_content_sha256
+
+    class _TwinExchangeCalendar(StaticSessionCalendar):
+        """IDENTICAL committed data, ZERO overrides — a different concrete
+        class carrying the canonical authority's exact semantics."""
+
+    json_path, checksum_path = _committed_fixture_paths()
+    twin = _TwinExchangeCalendar(json_path, checksum_path)
+    exchange = _exchange_calendar()
+    assert twin.sessions() == exchange.sessions()
+    assert twin.early_close_sessions() == exchange.early_close_sessions()
+    assert twin.session_close(exchange.sessions()[100]) == exchange.session_close(
+        exchange.sessions()[100]
+    )
+    # the identity split is the DIGEST's, not the gate's alone
+    assert calendar_content_sha256(twin) != calendar_content_sha256(exchange)
+    with pytest.raises(MassiveOverlayError, match="repo-adopted NYSE fixture"):
+        VwapPitSurface(overlay, spot=spot, exchange_calendar=twin)
+
+
+def test_an_overriding_subclass_is_refused_and_a_different_identity(overlay, spot) -> None:
+    """(R3-P1-1) The Codex live probe: a subclass overriding `ordinal()` —
+    `super().ordinal(d) + 1` — reports the canonical data and shifted a
+    liquidity median across the $50M protocol threshold while retaining the
+    pinned digest. Data identity alone cannot certify a class whose methods
+    are free to disagree with its data; the class identity in the payload
+    makes the probe a REFUSED calendar and a DIFFERENT digest (RED before
+    R3-P1-1: identical digest, accepted at the gate)."""
+    from tree_options.time.calendar import StaticSessionCalendar, calendar_content_sha256
+
+    class _OrdinalShiftedCalendar(StaticSessionCalendar):
+        """The Codex probe shape: canonical data, shifted ordinal."""
+
+        def ordinal(self, d: date) -> int:
+            return super().ordinal(d) + 1
+
+    json_path, checksum_path = _committed_fixture_paths()
+    shifted = _OrdinalShiftedCalendar(json_path, checksum_path)
+    exchange = _exchange_calendar()
+    probe = exchange.sessions()[100]
+    assert shifted.sessions() == exchange.sessions()
+    assert shifted.early_close_sessions() == exchange.early_close_sessions()
+    assert shifted.ordinal(probe) == exchange.ordinal(probe) + 1  # behavior differs
+    assert calendar_content_sha256(shifted) != calendar_content_sha256(exchange)
+    with pytest.raises(MassiveOverlayError, match="repo-adopted NYSE fixture"):
+        VwapPitSurface(overlay, spot=spot, exchange_calendar=shifted)
+
+
 # ---- end to end: the UNMODIFIED backtest over the adapter --------------------------
 
 
