@@ -798,6 +798,48 @@ def test_non_finite_closes_refuse_cleanly(tmp_path: Path, token: str) -> None:
         load_spot_proxy_v2(path)
 
 
+# ---- (R4-P2, Codex round 4) constructor validation parity for spot_v2 ---------------
+
+
+@pytest.mark.parametrize(
+    ("row", "complaint"),
+    [
+        ((Decimal("Infinity"), 1), "finite"),
+        ((Decimal("-1"), 1), "positive"),
+        ((Decimal("600.00"), True), "volume"),
+        ((Decimal("600.00"), -1), "volume"),
+        ((600.00, 1), "exact decimal"),
+        ((True, 1), "exact decimal"),
+        (Decimal("600.00"), "exactly the keys"),
+    ],
+)
+def test_the_spot_v2_constructor_refuses_invalid_rows(overlay, row, complaint) -> None:
+    """(R4-P2) The file loader rejected non-finite closes but the constructor
+    copied the injected mapping WITHOUT validation (a bare dict(sessions)):
+    the median path stamped an infinite vendor value and the liquidity
+    comparison fell through to PASS — fail-open. The constructor now refuses
+    any row failing the loader's own discipline, with the loader's error
+    shape naming the underlying and the session (RED before R4-P2: every
+    case below was accepted silently — the Codex round-4 probe is the
+    Infinity one)."""
+    session = V2_SESSIONS[0]
+    with pytest.raises(MassiveOverlayError, match=complaint):
+        VwapPitSurface(overlay, spot_v2={SPY: {session: row}})
+
+
+def test_the_spot_v2_constructor_loads_a_valid_mapping_exactly(overlay, tmp_path) -> None:
+    """(R4-P2, the parity direction that must not move) A valid mapping
+    stores EXACTLY as today — same keys, same (Decimal, int) pairs — and
+    the loader's own output feeds the constructor identically (byte
+    identity: the shared helper validates, it never transforms)."""
+    path = tmp_path / "spot_proxy_v2.json"
+    mapping = _v2_map(V2_SESSIONS[:4])
+    path.write_text(_v2_json(mapping), encoding="utf-8")
+    parsed = load_spot_proxy_v2(path)
+    assert VwapPitSurface(overlay, spot_v2=parsed)._spot_v2 == parsed
+    assert VwapPitSurface(overlay, spot_v2=mapping)._spot_v2 == parsed
+
+
 def test_dollar_volume_source_passes_the_50m_rule(v2_capture, protocol) -> None:
     """(w3, P0-1(b) preferred leg) With a declared spot_proxy_v2 the
     underlying-liquidity term is honestly EVALUABLE: the 20-session median of

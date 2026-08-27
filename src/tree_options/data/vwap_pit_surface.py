@@ -172,6 +172,57 @@ def repo_exchange_calendar(repo_root: Path | str | None = None) -> StaticSession
     return calendar
 
 
+def _validated_spot_v2_row(
+    where: str, session: date, close: object, volume: object
+) -> tuple[Decimal, int]:
+    """(R4-P2, Codex round 4) ONE row discipline for the spot_proxy_v2
+    dollar-volume source, shared by the FILE loader and the constructor's
+    copy loop — the loader's own validation, extracted, never a second one.
+
+    The close must be an EXACT decimal — the loader's string token, parsed,
+    or an already-exact Decimal from an in-code mapping — and must be
+    positive and finite; the volume a STRICT int >= 0 (bools, floats and
+    strings all refuse). Nothing else passes: a float close is a binary
+    approximation of a price, and Decimal("Infinity") is POSITIVE-looking —
+    it would load, and an infinity median flips the liquidity rule to PASS
+    (fail-open) — while "NaN" raises InvalidOperation on comparison. The
+    finiteness gate comes FIRST (short-circuit) and the whole validation
+    sits inside the ArithmeticError net so neither token can escape as
+    anything but this module's own error shape, naming the underlying
+    (`where`) and the session."""
+    if isinstance(close, str):
+        try:
+            close_value = Decimal(close.strip())
+        except ArithmeticError:
+            raise MassiveOverlayError(
+                f"{where}[{session.isoformat()}]: close {close!r} is not a decimal"
+            ) from None
+    elif type(close) is Decimal:
+        close_value = close
+    else:
+        raise MassiveOverlayError(
+            f"{where}[{session.isoformat()}]: close must be an exact decimal —"
+            f" a string token or a Decimal — got {type(close).__name__}"
+        )
+    # (P2-5, Codex round 1) non-finite tokens are a CLEAN refusal, gated
+    # BEFORE the positivity comparison can raise on them
+    try:
+        if not close_value.is_finite() or close_value <= 0:
+            raise MassiveOverlayError(
+                f"{where}[{session.isoformat()}]: close {close_value} is not"
+                " a positive finite decimal"
+            )
+    except ArithmeticError:
+        raise MassiveOverlayError(
+            f"{where}[{session.isoformat()}]: close {close!r} is not a positive finite decimal"
+        ) from None
+    if type(volume) is not int or volume < 0:
+        raise MassiveOverlayError(
+            f"{where}[{session.isoformat()}]: volume must be a strict int >= 0, got {volume!r}"
+        )
+    return close_value, volume
+
+
 def load_spot_proxy_v2(path: Path) -> dict[str, dict[date, tuple[Decimal, int]]]:
     """Parse one `spot_proxy_v2.json` — the OPTIONAL dollar-volume source
     (theory-panel §2 P0-1, option (b): the ~29-call equity-aggregates
@@ -191,6 +242,10 @@ def load_spot_proxy_v2(path: Path) -> dict[str, dict[date, tuple[Decimal, int]]]
       refuse) and must be >= 0 — a zero-volume session is a real
       observation, not a gap;
     - every session object carries EXACTLY the two keys.
+
+    Per-row VALUE validation is `_validated_spot_v2_row` (R4-P2) — the ONE
+    helper the constructor's copy loop shares, so a mapping can never carry
+    what a file cannot.
 
     THE FILE AND THE CAPTURE SCRIPT THAT WRITES IT LAND POST-CLOSEOUT
     (owner ruling 2026-08-26: the running bars-era capture is untouched
@@ -222,39 +277,16 @@ def load_spot_proxy_v2(path: Path) -> dict[str, dict[date, tuple[Decimal, int]]]
                     f" keys close+volume, got {sorted(cell) if isinstance(cell, dict) else cell!r}"
                 )
             close, volume = cell["close"], cell["volume"]
+            # the FILE form of the exact decimal is the STRING token: a JSON
+            # number arrives here as a Decimal (loads_exact parse_float) and
+            # is refused — the file's own bytes are the provenance, and a
+            # number token is not the vendor's decimal text
             if not isinstance(close, str):
                 raise MassiveOverlayError(
                     f"{where}[{raw_session!r}]: close must be an exact decimal STRING"
                     f" token, got {type(close).__name__}"
                 )
-            try:
-                close_value = Decimal(close.strip())
-            except ArithmeticError:
-                raise MassiveOverlayError(
-                    f"{where}[{raw_session!r}]: close {close!r} is not a decimal"
-                ) from None
-            # (P2-5, Codex round 1) non-finite tokens are a CLEAN refusal:
-            # Decimal("Infinity") is POSITIVE-looking (it would load and an
-            # infinity median flips the liquidity rule to PASS — fail-open),
-            # and Decimal("NaN") raises InvalidOperation on comparison. The
-            # finiteness gate comes FIRST (short-circuit), and the whole
-            # validation sits inside the ArithmeticError net so neither
-            # token can escape as anything but the loader's own error shape.
-            try:
-                if not close_value.is_finite() or close_value <= 0:
-                    raise MassiveOverlayError(
-                        f"{where}[{raw_session!r}]: close {close_value} is not"
-                        " a positive finite decimal"
-                    )
-            except ArithmeticError:
-                raise MassiveOverlayError(
-                    f"{where}[{raw_session!r}]: close {close!r} is not a positive finite decimal"
-                ) from None
-            if type(volume) is not int or volume < 0:
-                raise MassiveOverlayError(
-                    f"{where}[{raw_session!r}]: volume must be a strict int >= 0, got {volume!r}"
-                )
-            rows[session] = (close_value, volume)
+            rows[session] = _validated_spot_v2_row(where, session, close, volume)
         parsed[underlying] = rows
     return parsed
 
@@ -339,9 +371,27 @@ class VwapPitSurface:
         }
         # (w3) the OPTIONAL dollar-volume source (see `load_spot_proxy_v2`):
         # None keeps the declared Decimal("0") sentinel — the ruled fallback.
-        self._spot_v2: dict[str, dict[date, tuple[Decimal, int]]] = {
-            underlying: dict(sessions) for underlying, sessions in (spot_v2 or {}).items()
-        }
+        # (R4-P2, Codex round 4) the copy loop VALIDATES every row through
+        # the loader's own discipline — ONE shared helper — so an injected
+        # mapping cannot carry what a file cannot: the loader rejected
+        # non-finite closes while the constructor copied them unchecked, the
+        # median path stamped an infinite vendor value, and the liquidity
+        # comparison fell through to PASS (fail-open). Refusal happens here,
+        # at construction, with the loader's own error shape.
+        self._spot_v2: dict[str, dict[date, tuple[Decimal, int]]] = {}
+        for underlying, sessions in (spot_v2 or {}).items():
+            where = f"spot_v2[{underlying!r}]"
+            rows: dict[date, tuple[Decimal, int]] = {}
+            for session, row in sessions.items():
+                try:
+                    close, volume = row
+                except (TypeError, ValueError):
+                    raise MassiveOverlayError(
+                        f"{where}[{session.isoformat()}]: each session must carry"
+                        f" exactly the keys close+volume, got {row!r}"
+                    ) from None
+                rows[session] = _validated_spot_v2_row(where, session, close, volume)
+            self._spot_v2[underlying] = rows
         # (P1-2, Codex round 1) the EXCHANGE calendar is an explicit
         # constructor dependency — never a global, never auto-loaded. The
         # repo-adopted one is the committed, checksummed NYSE fixture
