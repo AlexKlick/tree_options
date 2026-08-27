@@ -1020,9 +1020,17 @@ def _friday_grid():
     enumerated test session 2025-08-01, running through 2026-06-26 — the
     execution-tail headroom past the last test quarter (the era profile's
     deepest execution mark). Holiday Fridays (Good Friday) are absent
-    because the FIXTURE omits them."""
+    because the FIXTURE omits them.
+
+    (R2-P1-c, Codex round 2) The grid carries the fixture's EARLY CLOSES —
+    the fixture AS COMMITTED. The old helper passed `frozenset()`, which
+    stripped them: every session_close answered 16:00 ET, so 2025-11-28
+    (inside fold 2's test window, a 13:00 close in the fixture) could never
+    reach the lane except as a decision recorded three hours after the
+    actual close. Early closes are SESSIONS — the enumeration is unchanged."""
     from tree_options.data.real_overlay import RealSessionCalendar
     from tree_options.time.calendar import StaticSessionCalendar
+    from tree_options.time.sessions import early_close_instant
 
     exchange = StaticSessionCalendar(
         REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json",
@@ -1030,20 +1038,26 @@ def _friday_grid():
     )
     fridays = [s for s in exchange.sessions() if s.weekday() == 4 and s <= date(2026, 6, 26)]
     start = fridays.index(date(2025, 8, 1)) - 47
-    grid = RealSessionCalendar(tuple(fridays[start:]), frozenset())
+    early = frozenset(exchange.early_close_sessions())
+    grid = RealSessionCalendar(tuple(fridays[start:]), early & frozenset(fridays[start:]))
     sessions = grid.sessions()
     assert sessions[47] == date(2025, 8, 1)
     assert date(2025, 4, 18) not in sessions  # Good Friday: the fixture omits it
+    # the fixture's early closes ride the grid: 2025-11-28 closes 13:00 ET
+    assert grid.session_close(date(2025, 11, 28)) == early_close_instant(date(2025, 11, 28))
     return grid
 
 
 # (expiry, bar span) per active contract: bars on every NYSE session of the
 # span — the Thursdays the decisions/entries read, the Thursdays the fills
 # select, and the Fridays that keep each contract's observed listing window
-# open through its last execution.
+# open through its last execution. The second span runs through 2025-12-05
+# so the early-close Friday 2025-11-28 is an OVERLAY session too (R2-P1-c:
+# the adapter's decision-at seam is proven on a session both calendars
+# carry, where the two closes genuinely disagree).
 _ERA_CONTRACTS = (
     (date(2025, 9, 19), (date(2025, 7, 24), date(2025, 8, 22))),
-    (date(2025, 12, 19), (date(2025, 10, 23), date(2025, 11, 21))),
+    (date(2025, 12, 19), (date(2025, 10, 23), date(2025, 12, 5))),
     (date(2026, 3, 20), (date(2026, 1, 22), date(2026, 2, 20))),
     (date(2026, 6, 19), (date(2026, 4, 23), date(2026, 5, 1))),
 )
@@ -1198,7 +1212,11 @@ def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, 
     from tree_options.time.calendar import calendar_content_sha256
 
     grid, overlay = era_world
-    surface = VwapPitSurface(overlay)
+    # (R2-P1-c) the adapter carries the grid the runner splits on as its
+    # DECISION calendar: candidate decision_at comes from the grid's
+    # early-close-aware session_close, and the runner's filter (built on the
+    # same grid) finds every snapshot coherent at the TRUE close
+    surface = VwapPitSurface(overlay, decision_calendar=grid)
     world_id = overlay.spec.world_id
     scored = _era_scored_rows(grid)
     decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
@@ -1279,6 +1297,13 @@ def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, 
     assert payload["pooled"]["n_positions"] == 0
     rules = payload["counters"]["rule_histogram"]
     assert rules.get("earnings_span", {}).get("NOT_EVALUABLE", 0) > 0
+    # (R2-P1-c) every evaluated snapshot is COHERENT at the grid's close:
+    # the grid carries the fixture's early closes and the adapter carries
+    # the grid — without the decision-calendar seam the 16:00 overlay stamp
+    # would fail every snapshot on the 13:00 sessions and short-circuit the
+    # whole evaluation (decision_coherence is a SILENT-pass rule: any row
+    # at all is an incoherent snapshot, so the pin is the ZERO)
+    assert "decision_coherence" not in rules
     assert not any(
         code.startswith("BAR_")
         for code in payload["counters"]["rejections"].get("entry_fill_rejections", {})
@@ -1301,6 +1326,50 @@ def _test_sessions_of(fold: dict) -> list[str]:
     grid = _friday_grid()
     index = grid.sessions().index(start)
     return [s.isoformat() for s in grid.sessions()[index : index + fold["n_test_sessions"]]]
+
+
+# ---- (R2-P1-c, Codex round 2) decision_at from the DECISION grid calendar ------------
+
+
+def test_decision_at_on_an_early_close_grid_session_is_the_true_close(era_world, protocol) -> None:
+    """(R2-P1-c) 2025-11-28 sits inside fold 2's test window and the committed
+    NYSE fixture marks it a 13:00 early close — but MassiveDerivedSessionCalendar
+    is the overlay's daily calendar with an EMPTY early-close set, so the
+    adapter's `candidate_snapshot` stamped 16:00 while `CandidateFilter.evaluate`
+    demands the grid's close EXACTLY: no consistent configuration existed. With
+    the grid-supplied `decision_calendar` the snapshot's decision_at IS the
+    grid's 13:00 and decision_coherence PASSES (RED before R2-P1-c: the
+    adapter stamped the overlay's 16:00 and the rule answered NOT_EVALUABLE)."""
+    from tree_options.candidates.filters import CandidateFilter
+    from tree_options.data.vwap_pit_surface import VwapPitSurface
+    from tree_options.synth_options.generate import contract_id_of
+    from tree_options.time.sessions import early_close_instant
+
+    grid, overlay = era_world
+    session = date(2025, 11, 28)
+    assert session in grid.sessions()
+    assert session in overlay.calendar.sessions()
+    contract = overlay.contract(contract_id_of("SPY", date(2025, 12, 19), "C", Decimal("600")))
+
+    bound = VwapPitSurface(overlay, decision_calendar=grid)
+    snap = bound.candidate_snapshot(contract, session)
+    assert snap.decision_at == grid.session_close(session)
+    assert snap.decision_at == early_close_instant(session)  # 13:00 ET, not 16:00
+    decision = CandidateFilter.from_protocol_volume_flow(grid, protocol).evaluate(snap)
+    # decision_coherence is a SILENT-pass rule: a coherent snapshot carries
+    # NO row for it — the short-circuit list below is what incoherence adds
+    assert "decision_coherence" not in {r.rule for r in decision.results}
+
+    # without the dependency: TODAY'S behavior pinned — the overlay (execution)
+    # calendar's 16:00, incoherent against the early-close-aware grid (the
+    # exact NOT_EVALUABLE that made no consistent configuration exist)
+    plain = VwapPitSurface(overlay)
+    unbound = plain.candidate_snapshot(contract, session)
+    assert unbound.decision_at == overlay.calendar.session_close(session)
+    assert unbound.decision_at != early_close_instant(session)
+    plain_decision = CandidateFilter.from_protocol_volume_flow(grid, protocol).evaluate(unbound)
+    plain_coherence = {r.rule: r for r in plain_decision.results}["decision_coherence"]
+    assert plain_coherence.status == "NOT_EVALUABLE"
 
 
 def test_dual_calendar_lane_1_byte_identity_when_calendars_coincide(

@@ -286,7 +286,19 @@ class VwapPitSurface:
     content: the constructor refuses any calendar whose
     `calendar_content_sha256` differs from the pinned
     `REPO_EXCHANGE_CALENDAR_CONTENT_SHA256` — obtain it from
-    `repo_exchange_calendar()`."""
+    `repo_exchange_calendar()`.
+
+    `decision_calendar` (R2-P1-c, Codex round 2) is the DECISION-grid
+    calendar `candidate_snapshot` derives `decision_at` from — the grid the
+    runner splits on, early-close aware, so `CandidateFilter.evaluate`'s
+    exact `decision_at == session_close(decision_session)` check finds the
+    snapshot coherent at the TRUE close (13:00 ET on an early-close
+    Friday, never the overlay's nominal 16:00). Default None keeps today's
+    behavior byte-identically: the OVERLAY (execution) calendar answers,
+    which is correct for lane-1/synthetic worlds where the two calendars
+    are one. The visible-session lookup, publication wall, marks and fills
+    stay on the overlay calendar — only the decision instant changes
+    hands."""
 
     def __init__(
         self,
@@ -295,6 +307,7 @@ class VwapPitSurface:
         spot: Mapping[str, Mapping[date, Decimal]] | None = None,
         spot_v2: Mapping[str, Mapping[date, tuple[Decimal, int]]] | None = None,
         exchange_calendar: SessionCalendar | None = None,
+        decision_calendar: SessionCalendar | None = None,
     ) -> None:
         self._overlay = overlay
         self._spot: dict[str, dict[date, Decimal]] = {
@@ -339,6 +352,12 @@ class VwapPitSurface:
                     " calendar self-certifies exactly where the design says"
                     " fail-closed (the Jan-16 scenario)"
                 )
+        # (R2-P1-c, Codex round 2) the DECISION-grid calendar: None keeps
+        # today's overlay-calendar behavior byte-identically (lane-1/
+        # synthetic); when supplied, `candidate_snapshot` stamps decision_at
+        # from THIS calendar's early-close-aware session_close — the same
+        # grid the runner splits and filters on.
+        self._decision_calendar = decision_calendar
 
     # ---- identity / delegation ------------------------------------------------
 
@@ -544,8 +563,19 @@ class VwapPitSurface:
         """The §9.2 snapshot from the visible session's derived cell, built
         by `build_option_candidate_inputs` (G3): |delta| under the ratified
         provenance, session volume from the bar, bid/ask/OI None. The two
-        unconditional lane-1 stamps are mirrored from the overlay itself."""
-        decision_at = self._overlay.calendar.session_close(decision_session)
+        unconditional lane-1 stamps are mirrored from the overlay itself.
+
+        (R2-P1-c) `decision_at` comes from the DECISION-grid calendar when
+        the constructor carries one — early-close aware, exactly the close
+        `CandidateFilter.evaluate` demands — and from the overlay
+        (execution) calendar otherwise (today's behavior). The 13:00/16:00
+        disagreement cannot move the VISIBLE session: publication walls sit
+        at T+1 09:00, so both closes of one session see the same file."""
+        decision_at = (
+            self._decision_calendar.session_close(decision_session)
+            if self._decision_calendar is not None
+            else self._overlay.calendar.session_close(decision_session)
+        )
         underlying = contract.underlying_security_id
         session = self.visible_file_session(underlying, decision_at)
         if session is None:

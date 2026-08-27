@@ -1286,13 +1286,16 @@ def _friday_grid(first: date, last: date):
     """The Friday-only decision grid derived from the NYSE fixture (the era
     profile's `friday_only_grid_derived_from_the_nyse_fixture`): the
     fixture's Friday sessions in [first, last] — holiday Fridays (Good
-    Friday) are absent because the FIXTURE omits them, not by local rule."""
+    Friday) are absent because the FIXTURE omits them, not by local rule.
+    (R2-P1-c) The grid carries the fixture's early closes — the fixture AS
+    COMMITTED, never a `frozenset()` that silently strips them."""
     from tree_options.data.real_overlay import RealSessionCalendar
 
     exchange = _exchange_calendar()
     fridays = tuple(s for s in exchange.sessions() if s.weekday() == 4 and first <= s <= last)
     assert fridays and fridays[0].weekday() == 4
-    return RealSessionCalendar(fridays, frozenset())
+    early = frozenset(exchange.early_close_sessions())
+    return RealSessionCalendar(fridays, early & frozenset(fridays))
 
 
 def _write_dual_calendar_capture(root: Path) -> Path:
