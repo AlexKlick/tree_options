@@ -3428,11 +3428,14 @@ MUTANTS = [
         id="M286-g5-interval-bound-broken",
         owner="test_scores_live_in_the_unit_interval",
         file="src/tree_options/trials/null_score.py",
-        anchor='    return int.from_bytes(digest[:8], "big") / _DENOMINATOR',
-        replacement='    return int.from_bytes(digest[:9], "big") / _DENOMINATOR',
+        # (P3-7 re-pin) the mapping moved into the pure helper _unit_score
+        # (top 53 bits over 2**53); the SAME mutant — take a ninth byte —
+        # keeps the 53-bit denominator and every score lands at or above 1.0
+        anchor='    return _unit_score(int.from_bytes(digest[:8], "big"))',
+        replacement='    return _unit_score(int.from_bytes(digest[:9], "big"))',
         selectors=[f"{U}/test_null_score.py"],
         invariant=(
-            "G5 the leading 64 bits over 2**64 map onto [0, 1) exactly: taking"
+            "G5 the leading 64 bits map onto [0, 1) exactly: taking"
             " a ninth byte keeps the same denominator and every score lands"
             " at or above 1.0 — the bound the quintile cut and every"
             " comparison against score thresholds rests on"
@@ -3488,6 +3491,172 @@ MUTANTS = [
             " alone starves every session after the first of the volume the"
             " later bars actually traded (M176 pins the cumulative READ"
             " within one bar; this pins the key's second dimension)"
+        ),
+    ),
+    # ---- real-lane round-1 remediation (P1-4/P1-1/P1-3/P1-2/P2-5/P2-6/P3-7,
+    # M290-M300) --------------------------------------------------------------
+    dict(
+        id="M290-p14-exclusion-dropped",
+        owner="test_repo_yaml_hashes_to_the_ledger_bound_identity",
+        file="src/tree_options/protocol/loader.py",
+        anchor=(
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
+            ' == "evaluated":'
+        ),
+        replacement=(
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
+            ' == "__never__":'
+        ),
+        selectors=[f"{U}/test_protocol_loader.py"],
+        invariant=(
+            "P1-4 the canonical hash represents what the yaml DECLARES: the"
+            " defaulted-but-undeclared underlying_liquidity_term must NOT"
+            " ride the 0.2.1 identity — stopping the exclusion re-hashes the"
+            " untouched yaml (3b0b8a85…) and breaks the ledger-bound pin"
+        ),
+    ),
+    dict(
+        id="M291-p14-exclusion-always",
+        owner="test_a_declared_dropped_term_rides_the_hash",
+        file="src/tree_options/protocol/loader.py",
+        anchor=(
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
+            ' == "evaluated":'
+        ),
+        replacement=(
+            '    if isinstance(liquidity, dict) and "underlying_liquidity_term" in liquidity:'
+        ),
+        selectors=[f"{U}/test_protocol_loader.py"],
+        invariant=(
+            "P1-4 the exclusion must not swallow a real DECLARATION: dropping"
+            " the key unconditionally makes a declared"
+            " dropped_no_equity_aggregates model hash identically to the"
+            " default — the disposition is a semantic protocol fact"
+        ),
+    ),
+    dict(
+        id="M292-p13-null-seed-refusal-dropped",
+        owner="test_null_family_without_a_seed_refuses_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if model_family == NULL_SCORE_MODEL_FAMILY and score_seed is None:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P1-3 a null-sha256 trial must DECLARE its seed: dropping the"
+            " refusal lets an undeclared seed register silently — unregistered"
+            " randomness under a deterministic-looking model family"
+        ),
+    ),
+    dict(
+        id="M293-p13-null-seed-verification-skipped",
+        owner="test_null_family_with_a_misstated_seed_refuses_by_name",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if model_family == NULL_SCORE_MODEL_FAMILY and score_seed is not None:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P1-3 the stamped seed is VERIFIED against every scored row:"
+            " skipping the recompute lets a misstated seed masquerade as the"
+            " declared score model (two T-NULL trials, one identity)"
+        ),
+    ),
+    dict(
+        id="M294-p12-exchange-window-falls-back-to-overlay",
+        owner="test_exchange_session_missing_from_every_capture_fails_closed",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        calendar = self._exchange_calendar",
+        replacement="        calendar = self._overlay.calendar",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "P1-2 the 20-session liquidity window is contiguous on the"
+            " EXCHANGE calendar: falling back to the overlay's union-of-"
+            " captures calendar lets a market session missing from every"
+            " capture self-certify as contiguity and the median PASS where"
+            " the design says fail-closed (the Jan-16 scenario)"
+        ),
+    ),
+    dict(
+        id="M295-p25-finiteness-gate-removed",
+        owner="test_non_finite_closes_refuse_cleanly",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="                if not close_value.is_finite() or close_value <= 0:",
+        replacement="                if close_value <= 0:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "P2-5 'Infinity' is POSITIVE-looking: without the finiteness"
+            " gate it loads, and an infinity median flips the liquidity rule"
+            " to PASS — fail-open on a non-finite declared input"
+        ),
+    ),
+    dict(
+        id="M296-p26-disclosure-scope-fields-voided",
+        owner="test_holdout_seal_block_states_its_declared_scope_and_the_artifacts_lane",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            '        "applied": f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})",'
+        ),
+        replacement='        "applied": "",',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P2-6 the holdout_seal block must state HOW the seal was applied"
+            " (unconditional refusal under a lane-2 DECLARED scope): voiding"
+            " the field lets a lane-1 artifact read as claiming a"
+            " lane-1-scoped seal again"
+        ),
+    ),
+    dict(
+        id="M297-p37-mapping-reverts-to-64-bit-float-division",
+        owner="test_maximal_digest_stays_strictly_below_one",
+        file="src/tree_options/trials/null_score.py",
+        anchor="    return (leading_bits >> _SHIFT) / _DENOMINATOR",
+        replacement="    return leading_bits / float(2**64)",
+        selectors=[f"{U}/test_null_score.py"],
+        invariant=(
+            "P3-7 the mapping must be STRICTLY below 1.0 for every input:"
+            " reverting to the 64-bit float division rounds the maximal"
+            " prefixes to exactly 1.0, violating the declared [0, 1)"
+        ),
+    ),
+    dict(
+        id="M298-p11-fill-engine-receives-the-grid-calendar",
+        owner="test_dual_calendar_friday_grid_daily_bars_fills",
+        file="src/tree_options/backtest/options.py",
+        anchor="        fill_calendar,",
+        replacement="        calendar,",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "P1-1 the fill engine carries the EXECUTION calendar: handing it"
+            " the Friday-only decision grid rejects the adapter's daily bar"
+            " (BAR_SESSION_NOT_IN_CALENDAR / BAR_NOT_MOST_RECENT) — the"
+            " ratified real lane cannot fill"
+        ),
+    ),
+    dict(
+        id="M299-p11-splitter-receives-the-execution-calendar",
+        owner="test_dual_calendar_ruled_geometry_yields_the_era_folds",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    splitter = WalkForwardSplitter(\n        calendar,",
+        replacement="    splitter = WalkForwardSplitter(\n        execution_calendar or calendar,",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P1-1 the DECISION GRID drives splitting: enumerating folds on"
+            " the daily execution calendar makes every fold's 13 consecutive"
+            " daily test sessions fall outside a Fridays-only world set —"
+            " the 'no folds' horn of the single-calendar defect"
+        ),
+    ),
+    dict(
+        id="M300-p11-dual-calendar-disclosure-voided",
+        owner="test_dual_calendar_ruled_geometry_yields_the_era_folds",
+        file="src/tree_options/trials/options_run.py",
+        anchor='        payload["decision_calendar"] = _calendar_descriptor(calendar)',
+        replacement='        payload["decision_calendar"] = None',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P1-1 both calendar identities are DISCLOSED in the payload: an"
+            " artifact whose decision_calendar descriptor is voided can no"
+            " longer name which grid split its folds and which calendar its"
+            " fills ran on"
         ),
     ),
 ]

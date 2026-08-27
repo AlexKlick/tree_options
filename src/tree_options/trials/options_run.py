@@ -558,15 +558,13 @@ def run_options_trial(
     # (P1-1) the dual-calendar disclosure fires ONLY when the caller hands
     # the runner a DISTINCT execution calendar: same object (or none) keeps
     # the historical single-calendar config and payload byte-for-byte
-    calendars_differ = execution_calendar is not None and execution_calendar is not calendar
-    calendar_keys: dict[str, object] = (
-        {
+    calendar_keys: dict[str, object] = {}
+    if execution_calendar is not None and execution_calendar is not calendar:
+        calendar_keys = {
             "decision_calendar": _calendar_descriptor(calendar),
             "execution_calendar": _calendar_descriptor(execution_calendar),
         }
-        if calendars_differ
-        else {}
-    )
+    calendars_differ = bool(calendar_keys)
     config: dict[str, object] = {
         "runner": RUNNER_REVISION,
         "world_id": world_id,
