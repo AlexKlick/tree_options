@@ -3892,6 +3892,52 @@ MUTANTS = [
             " liquidity comparison falls through to PASS (fail-open)"
         ),
     ),
+    dict(
+        id="M313-r5a-behavioral-equality-dropped",
+        owner="test_a_wrong_instant_surface_refuses_naming_both_instants",
+        file="src/tree_options/trials/options_run.py",
+        anchor="        if surface_close != declared_close:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R5-P1 the M310/M311 gap Codex round 5 reproduced: the digest"
+            " bind certifies the DISCLOSED calendar, but the decisions call"
+            " decision_close() — a subclass overriding only"
+            " decision_calendar passes the digest while its method answers"
+            " from another calendar. The behavioral equality is what"
+            " catches it. Owner is the WRONG-INSTANT twin (the surface"
+            " answers every decision session, at 16:00 where the stamped"
+            " grid closes 13:00): the digest passes and decision_close()"
+            " never raises, so under this mutant the lying surface"
+            " registers and runs — only the equality kills it. The"
+            " era-overlay lying probe (first decision session outside the"
+            " capture span) deliberately still refuses under this mutant"
+            " via the cannot-answer branch — the twin is the no-masking"
+            " scenario, exactly as M311's twin was"
+        ),
+    ),
+    dict(
+        id="M314-r5b-spot-finiteness-gate-removed",
+        owner="test_the_spot_constructor_refuses_non_finite_spots",
+        file="src/tree_options/data/massive_overlay.py",
+        anchor="    if not spot.is_finite():",
+        replacement="    if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R5-P2 the ORDINARY spot path's shared finiteness gate"
+            " (_validated_spot_token, called at BOTH entry points —"
+            " _load_spot's file path and the adapter's constructor copy"
+            " loop): without it Decimal('Infinity') is POSITIVE-looking,"
+            " passes the <= 0 gate, loads/copies unchanged, and an"
+            " infinite spot flows into intrinsic -> the election policy"
+            " where any finite bid is below Infinity * 0.98 (a forced"
+            " early-exercise election on malformed input); NaN then"
+            " escapes as a raw decimal.InvalidOperation. Killing the"
+            " shared gate fails BOTH refusals (constructor owner here;"
+            " the loader's Infinity test fails under the same mutant —"
+            " verified in reallane-r5-mutantM314-red.log)"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.
