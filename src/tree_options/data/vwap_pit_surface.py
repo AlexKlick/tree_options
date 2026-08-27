@@ -108,6 +108,7 @@ from tree_options.data.massive_overlay import (
     vwap_quote_event,
 )
 from tree_options.data.options_pit import NoOptionFileError
+from tree_options.data.spot_token import SPOT_SENTINEL_SESSION
 from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError
 from tree_options.schemas.options import OptionContract
 from tree_options.time.calendar import (
@@ -118,7 +119,8 @@ from tree_options.time.calendar import (
     calendar_content_sha256,
 )
 
-SPOT_SENTINEL_SESSION = date.min  # the flat form's every-session key
+# SPOT_SENTINEL_SESSION (the flat form's every-session key, date.min) is
+# re-exported from its one owner `tree_options.data.spot_token` (R6-P2).
 DOLLAR_VOLUME_WINDOW_SESSIONS = 20  # the protocol's 20d median term
 
 # (R2-P1-a, Codex round 2) THE EXCHANGE AUTHORITY IS PROVENANCE-BOUND. The

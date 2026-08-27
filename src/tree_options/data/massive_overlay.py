@@ -120,6 +120,7 @@ from tree_options.data.massive_options import (
     parse_daily_bars,
 )
 from tree_options.data.real_overlay import RealSessionCalendar
+from tree_options.data.spot_token import SPOT_SENTINEL_SESSION, validated_spot_token
 from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError
 from tree_options.schemas.options import DeliverableSpec, OptionContract
 from tree_options.synth_options.generate import CENT, contract_id_of
@@ -464,35 +465,16 @@ def _validated_spot_token(where: str, session: date, value: object) -> Decimal:
     Infinity * 0.98 and malformed input forces an early-exercise election —
     while "NaN" raises InvalidOperation on comparison and escaped as a raw
     arithmetic crash. Refusals name the underlying (`where`), the session,
-    and the token."""
-    if isinstance(value, bool):
-        raise MassiveOverlayError(
-            f"{where}[{session.isoformat()}]: spot must be an exact decimal —"
-            " a string token or a Decimal — got bool"
-        )
-    if type(value) is Decimal:
-        spot = value
-    elif isinstance(value, int):
-        spot = Decimal(value)
-    elif isinstance(value, str):
-        try:
-            spot = Decimal(value.strip())
-        except ArithmeticError:
-            raise MassiveOverlayError(
-                f"{where}[{session.isoformat()}]: spot {value!r} is not a decimal"
-            ) from None
-    else:
-        raise MassiveOverlayError(
-            f"{where}[{session.isoformat()}]: spot must be an exact decimal —"
-            f" a string token or a Decimal — got {type(value).__name__}"
-        )
-    if not spot.is_finite():
-        raise MassiveOverlayError(
-            f"{where}[{session.isoformat()}]: spot {spot} is not a finite decimal"
-        )
-    if spot <= 0:
-        raise MassiveOverlayError(f"{where}[{session.isoformat()}]: spot {spot} is not positive")
-    return spot
+    and the token.
+
+    (R6-P2, Codex round 6) the VALIDATION BODY now lives in
+    `tree_options.data.spot_token` — the ONE contract, additionally shared
+    with the census scripts (`inspect_structural_coverage` /
+    `build_coverage_census`), whose own `_dec` + `<= 0` parser was a SECOND
+    contract that accepted "Infinity". This wrapper keeps this module's own
+    error shape (`MassiveOverlayError`) and its private name (the adapter's
+    constructor imports it); it validates, never transforms."""
+    return validated_spot_token(where, session, value, refuse=MassiveOverlayError)
 
 
 def _load_spot(
@@ -537,8 +519,12 @@ def _load_spot(
                 sessions[session] = _validated_spot_token(where, session, spot)
         else:
             # The flat form {"SPY": "5750.00"} declares one spot for every
-            # session; `date.min` is the sentinel the inspector uses too.
-            sessions[date.min] = _validated_spot_token(where, date.min, value)
+            # session; the shared sentinel (date.min — R6-P2 gave it one
+            # owner, `tree_options.data.spot_token`) is the key the census
+            # reads as covering every session too.
+            sessions[SPOT_SENTINEL_SESSION] = _validated_spot_token(
+                where, SPOT_SENTINEL_SESSION, value
+            )
         proxy[underlying] = sessions
     return proxy
 

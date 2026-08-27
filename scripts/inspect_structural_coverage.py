@@ -98,6 +98,7 @@ from itertools import pairwise
 from pathlib import Path
 from typing import Any
 
+from tree_options.data.spot_token import SPOT_SENTINEL_SESSION, validated_spot_token
 from tree_options.time.expiries import (
     is_friday,
     is_third_friday_of_quarter_month,
@@ -793,6 +794,22 @@ def load_bar_series(
     return tuple(sorted(series, key=lambda s: (s.ticker, s.source)))
 
 
+def _validated_spot(where: str, session: date, value: object) -> Decimal:
+    """(R6-P2, Codex round 6) THE ONE runtime contract, shared: the census
+    path's spot tokens go through `tree_options.data.spot_token
+    .validated_spot_token` — the same exact/finite/positive discipline the
+    runtime loader (`massive_overlay._load_spot`) and the lane-2 adapter's
+    constructor copy loop apply — rebranded to this module's own refusal
+    shape. Before R6-P2 this loader parsed with its own `_dec` and gated
+    only `spot <= 0`, so "Infinity" (POSITIVE-looking) LOADED and an
+    explicit-date infinite value satisfied the census's presence-only
+    check: classify_pair answered COMPLETE and a malformed capture exited
+    0. The shared validator lives OUTSIDE `massive_overlay` deliberately —
+    that module imports the WS-D1 client, and this inspector stays
+    import-free of it."""
+    return validated_spot_token(where, session, value, refuse=StructuralCoverageError)
+
+
 def load_spot_proxy(
     path: Path, *, lineage: list[InputLineage] | None = None
 ) -> dict[str, dict[date, Decimal]]:
@@ -800,6 +817,13 @@ def load_spot_proxy(
 
     A spot proxy is DECLARED INPUT, never derived: this tier has no
     underlying quote, and the report says NOT_EVALUABLE without one.
+
+    (R6-P2, Codex round 6) the VALUE tokens share the runtime loader's ONE
+    contract (`_validated_spot` above): exact decimal, FINITE, positive —
+    a token the runtime refuses can never satisfy the census either. The
+    flat form is stored under the shared `SPOT_SENTINEL_SESSION`
+    (date.min), which the census's presence check reads as covering EVERY
+    session (the documented semantics).
     """
     text, record = _read_with_lineage(path)
     if lineage is not None:
@@ -808,20 +832,14 @@ def load_spot_proxy(
     proxy: dict[str, dict[date, Decimal]] = {}
     for underlying, value in payload.items():
         where = f"{path.name}[{underlying!r}]"
+        sessions: dict[date, Decimal] = {}
         if isinstance(value, dict):
-            proxy[underlying] = {
-                _as_date(as_of, where): _dec(spot, f"{where}[{as_of!r}]")
-                for as_of, spot in value.items()
-            }
+            for as_of, spot in value.items():
+                session = _as_date(as_of, where)
+                sessions[session] = _validated_spot(f"{where}[{as_of!r}]", session, spot)
         else:
-            proxy[underlying] = {}
-            proxy[underlying][date.min] = _dec(value, where)
-    for underlying, spots in proxy.items():
-        for as_of, spot in spots.items():
-            if spot <= 0:
-                raise StructuralCoverageError(
-                    f"{path.name}: spot proxy for {underlying} {as_of} is {_plain(spot)} <= 0"
-                )
+            sessions[SPOT_SENTINEL_SESSION] = _validated_spot(where, SPOT_SENTINEL_SESSION, value)
+        proxy[underlying] = sessions
     return proxy
 
 
@@ -1281,7 +1299,7 @@ def _spot_for(
         return None
     if as_of in per_underlying:
         return per_underlying[as_of]
-    return per_underlying.get(date.min)
+    return per_underlying.get(SPOT_SENTINEL_SESSION)
 
 
 def _attribute_bars(
