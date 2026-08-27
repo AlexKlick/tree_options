@@ -408,6 +408,21 @@ class VwapPitSurface:
     def snapshot_id(self) -> str:
         return self._overlay.spec.world_id
 
+    @property
+    def decision_calendar(self) -> SessionCalendar:
+        """(R4-P1, Codex round 4) THE calendar `decision_close` answers from —
+        today's EFFECTIVE authority, now disclosed: the supplied DECISION-grid
+        calendar when the constructor carries one, else the OVERLAY
+        (execution) calendar the nominal-16:00 fallback answers from. The
+        runner binds this identity to its stamped calendar before
+        registration: an unwired surface under a grid-stamped trial is a
+        DIFFERENT authority deciding the same trial, and refuses there —
+        never here (this property never guesses, it only discloses what
+        `decision_close` would actually do)."""
+        if self._decision_calendar is not None:
+            return self._decision_calendar
+        return self._overlay.calendar
+
     def decision_close(self, decision_session: date) -> datetime:
         """(R3-P1-2, Codex round 3) THE decision-instant authority, overriding
         the base surface's: the DECISION-grid calendar's early-close-aware

@@ -60,7 +60,11 @@ from tree_options.registry.scope import TrialScope
 from tree_options.registry.sqlite import TrialRegistry
 from tree_options.schemas.trial import TrialRecord
 from tree_options.splitting.splitter import Fold, WalkForwardSplitter
-from tree_options.time.calendar import SessionCalendar, calendar_content_sha256
+from tree_options.time.calendar import (
+    CalendarIntegrityError,
+    SessionCalendar,
+    calendar_content_sha256,
+)
 from tree_options.trials.null_score import NULL_SCORE_MODEL_FAMILY, null_score
 
 RUNNER_REVISION = "trials.options_run/v1"
@@ -561,6 +565,44 @@ def run_options_trial(
     scored_keys = {(row.session, row.security_id) for row in scored}
     if len(scored_keys) != len(scored):
         raise ValueError("duplicate (session, security_id) in scored rows")
+    # (R4-P1, Codex round 4) BIND the surface's decision-calendar authority to
+    # the trial's stamped calendar BEFORE registration. `decision_calendar`
+    # was referenced only as a stamped descriptor — never verified against the
+    # surface — so a VwapPitSurface constructed WITHOUT one answered
+    # `decision_close()` from the overlay's nominal 16:00 while the trial was
+    # stamped on an early-close-aware grid: different counters under the same
+    # declared configuration (INV-02 + INV-14 at the trial boundary). The
+    # surface must now DISCLOSE the calendar its decisions actually answer
+    # from, and its COMPLETE content identity (`calendar_content_sha256` —
+    # the existing digest machinery, never a second comparison) must equal
+    # the stamped grid's. A surface that cannot disclose its authority — no
+    # property, or a calendar that will not hash completely — cannot be
+    # bound, and refuses; so does any identity mismatch. Byte-identical for
+    # every wired configuration (the base surface's own calendar IS the
+    # runner's calendar; a VwapPitSurface carrying the stamped grid):
+    # digests equal, no keys added, no hash moved.
+    try:
+        disclosed = surface.decision_calendar
+        surface_identity = calendar_content_sha256(disclosed)
+        stamped_identity = calendar_content_sha256(calendar)
+    except (AttributeError, CalendarIntegrityError) as exc:
+        raise ValueError(
+            f"surface {type(surface).__name__} cannot disclose its"
+            f" decision-calendar authority for {world_id!r}: {exc} — a surface"
+            " whose decision_close() answers from an undisclosed calendar"
+            " cannot be bound to this trial's stamped calendar; refusing"
+            " before registration"
+        ) from exc
+    if surface_identity != stamped_identity:
+        raise ValueError(
+            f"the surface's decision-calendar authority is not this trial's"
+            f" stamped calendar for {world_id!r}: the surface's"
+            f" decision_calendar content_sha256 {surface_identity} !="
+            f" the stamped calendar's {stamped_identity} — an unwired surface"
+            " must not run under a grid-stamped trial (its decision_close()"
+            " answers from a calendar the trial never declared); refusing"
+            " before registration"
+        )
     decision_sessions_sha256 = hashlib.sha256(
         json.dumps(
             [session.isoformat() for session in normalized_sessions],

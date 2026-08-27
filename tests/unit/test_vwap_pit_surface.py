@@ -1409,8 +1409,11 @@ def test_run_options_backtest_unmodified_over_the_adapter(surface) -> None:
 
 
 def test_surface_is_option_pit_surface_shaped(surface) -> None:
-    """The consumed method set (backtest/options.py + options/strategy.py)
-    exists on the adapter with the lane-1 signatures."""
+    """The consumed method set (backtest/options.py + options/strategy.py,
+    plus the runner's R4-P1 boundary read) exists on the adapter with the
+    lane-1 signatures. (Ride-along, wave-3 deviation (d): `decision_close`
+    was owed then; `decision_calendar` rides the same declared-method-set
+    tuple because `run_options_trial` now reads it at the boundary.)"""
     for name in (
         "visible_file_session",
         "entry_as_of",
@@ -1421,10 +1424,16 @@ def test_surface_is_option_pit_surface_shaped(surface) -> None:
         "eligible_as_of",
         "live_expiries_as_of",
         "strike_ladder",
+        "decision_close",
     ):
         assert callable(getattr(surface, name)), name
     assert isinstance(surface.snapshot_id, str)
     assert hasattr(surface, "overlay")
+    # (R4-P1) the DISCLOSED decision authority is a property, not a call:
+    # the module fixture is UNWIRED, so the honest disclosure is the overlay
+    # (execution) calendar its decision_close() actually answers from — the
+    # object the runner's boundary digest will hash
+    assert surface.decision_calendar is surface.overlay.calendar
 
 
 # ---- (P1-1, Codex round 1) the dual-calendar seam: Friday grid x daily bars ---------
@@ -1815,7 +1824,16 @@ def test_without_a_decision_calendar_the_overlay_close_stands(
     the OVERLAY (execution) calendar's nominal 16:00 answers the decision
     instant, so the 14:00-published action IS treated as known and the name
     IS excluded (the lane-1/synthetic default, where the two calendars are
-    one and this is correct)."""
+    one and this is correct).
+
+    (R4-P1 scoping note) This is a SURFACE-level pin — the unwired surface
+    keeps its documented 16:00 fallback, honestly disclosed by its
+    `decision_calendar` property — and it stays green as such. The RUNNER
+    is where the unwired authority refuses: a grid-stamped
+    `run_options_trial` over an unwired surface is refused before
+    registration (see test_trials_options_run), so the fallback answers
+    only unwired surfaces on unwired (single-calendar) trials, never a
+    grid-stamped one."""
     from tree_options.time.sessions import early_close_instant
 
     plain = VwapPitSurface(early_close_surface.overlay)

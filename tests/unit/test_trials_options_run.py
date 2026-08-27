@@ -1513,16 +1513,30 @@ def test_a_calendar_differing_by_its_early_close_set_is_a_different_trial_identi
 def test_a_subclassed_decision_calendar_is_a_different_trial_identity(
     world, protocol, tmp_path
 ) -> None:
-    """(R3-P1-1) The same defect at the DESCRIPTOR: `_calendar_descriptor`
-    rides `calendar_content_sha256`, which hashed only the calendar's DATA —
-    so a `StaticSessionCalendar` SUBCLASS with identical sessions and early
+    """(R3-P1-1; re-scoped by R4-P1) `_calendar_descriptor` rides
+    `calendar_content_sha256`, which hashed only the calendar's DATA — so a
+    `StaticSessionCalendar` SUBCLASS with identical sessions and early
     closes was the SAME trial identity as the base class (same config hash,
     same descriptor) even though its methods were free to disagree with its
-    data. The digest now names the concrete class, so the twin grid is a
-    different identity with every lossy field and every data field agreeing
-    (RED before R3-P1-1: identical hash AND descriptor)."""
+    data (RED before R3-P1-1: identical hash AND descriptor). The digest
+    names the concrete class, so the twin grid is a different identity with
+    every lossy field and every data field agreeing — pinned here at the
+    descriptor, the identity surface.
+
+    (R4-P1 re-scope) This test USED to run the twin as a trial and pin the
+    config-hash difference — a configuration where the surface's disclosed
+    decision-calendar authority (the overlay calendar) is NOT the stamped
+    twin grid. That is exactly the unwired-surface-under-a-grid-stamped-
+    trial configuration R4-P1's boundary refuses, so the twin trial no
+    longer exists to be hashed: its identity difference is now pinned as a
+    REFUSAL at the boundary (the digest difference is load-bearing), and
+    lane 1 has exactly one legal grid — the overlay's own calendar — so a
+    legal twin trial is structurally impossible by design. The descriptor
+    comparison keeps the identity pin; the refusal keeps the trial-level
+    one; neither is weakened."""
     from tree_options.data.real_overlay import RealSessionCalendar
     from tree_options.time.calendar import StaticSessionCalendar, calendar_content_sha256
+    from tree_options.trials.options_run import _calendar_descriptor
 
     class _TwinDecisionCalendar(StaticSessionCalendar):
         """IDENTICAL committed data, ZERO overrides — a different WHO."""
@@ -1536,37 +1550,31 @@ def test_a_subclassed_decision_calendar_is_a_different_trial_identity(
     assert twin.early_close_sessions() == calendar.early_close_sessions()
     assert _lossy_fields(twin) == _lossy_fields(calendar)
     assert calendar_content_sha256(twin) != calendar_content_sha256(calendar)
-
-    # a distinct execution calendar is what puts BOTH descriptors in the
-    # hashed config (the P1-1 rule); it is held FIXED so the only difference
-    # between the two trials is the decision grid's concrete class
-    fixed_execution = RealSessionCalendar(calendar.sessions(), frozenset())
-    base = _run_trial(
-        world,
-        protocol,
-        tmp_path,
-        tag="cal_cls_base",
-        execution_calendar=fixed_execution,
-        decision_calendar=calendar,
-    )
-    other = _run_trial(
-        world,
-        protocol,
-        tmp_path,
-        tag="cal_cls_twin",
-        execution_calendar=fixed_execution,
-        decision_calendar=twin,
-    )
-    assert base["stamp"]["config_hash"] != other["stamp"]["config_hash"]
-    differing = {
-        key
-        for key in base["payload"]["decision_calendar"]
-        if base["payload"]["decision_calendar"][key] != other["payload"]["decision_calendar"][key]
-    }
+    base_descriptor = _calendar_descriptor(calendar)
+    twin_descriptor = _calendar_descriptor(twin)
+    differing = {key for key in base_descriptor if base_descriptor[key] != twin_descriptor[key]}
     assert differing == {"content_sha256"}, (
         "a subclassed decision grid is a trial-identity change only the"
         " content hash carries — every disclosed field else agrees"
     )
+
+    # (R4-P1) the twin's identity difference is LOAD-BEARING at the boundary:
+    # an unwired base surface (authority = the overlay calendar) under a
+    # twin-stamped trial refuses before registration — same NAME, same
+    # sessions, same early closes, only the concrete class (the digest)
+    # differs, so an identity comparison weaker than the content digest
+    # would let this configuration run
+    fixed_execution = RealSessionCalendar(calendar.sessions(), frozenset())
+    with pytest.raises(ValueError, match="decision-calendar authority"):
+        _run_trial(
+            world,
+            protocol,
+            tmp_path,
+            tag="cal_cls_twin",
+            execution_calendar=fixed_execution,
+            decision_calendar=twin,
+        )
+    assert trial_count(tmp_path / "cal_cls_twin.db") == 0
 
 
 def test_an_overriding_decision_calendar_is_a_different_identity(world) -> None:
@@ -1596,3 +1604,221 @@ def test_an_overriding_decision_calendar_is_a_different_identity(world) -> None:
     shifted_descriptor = _calendar_descriptor(shifted)
     differing = {key for key in base_descriptor if base_descriptor[key] != shifted_descriptor[key]}
     assert differing == {"content_sha256"}
+
+
+# ---- (R4-P1, Codex round 4) the surface's decision-calendar authority BOUND ----------
+
+
+def _run_era_trial(era_world, protocol, tmp_path, *, tag: str, surface):
+    """The ruled era configuration — `test_dual_calendar_ruled_geometry_
+    yields_the_era_folds`' own — parameterized ONLY by the surface: the
+    exact trial configuration the R4-P1 boundary judges, so the unwired and
+    the wired surface run under byte-identical everything else."""
+    from tree_options.protocol.era_profile import real_lane_split_override
+
+    grid, overlay = era_world
+    world_id = overlay.spec.world_id
+    scored = _era_scored_rows(grid)
+    decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
+    registry = TrialRegistry(tmp_path / f"{tag}.db")
+    try:
+        return run_options_trial(
+            dataset=_RealLaneDataset(  # type: ignore[arg-type]
+                snapshot_id=world_id,
+                bars=(
+                    BarRecord(
+                        security_id="SPY",
+                        session=decision_sessions[-1],
+                        open=Decimal("600.00"),
+                        high=Decimal("600.00"),
+                        low=Decimal("600.00"),
+                        close=Decimal("600.00"),
+                        volume=1_000_000,
+                        source="spot-proxy/declared",
+                        source_record_id="SPY-20260501",
+                        source_row_hash="0" * 64,
+                        snapshot_id=world_id,
+                        available_at=grid.session_close(decision_sessions[-1]),
+                    ),
+                ),
+            ),
+            surface=surface,  # type: ignore[arg-type]
+            calendar=grid,
+            execution_calendar=overlay.calendar,
+            protocol=protocol,
+            world_id=world_id,
+            arm="A",
+            strategy_config=OptionsStrategyConfig(),
+            scored=scored,
+            model_family="null-sha256/1",
+            model_sha256=None,
+            hypothesis=f"unit/{tag}",
+            decision_sessions=decision_sessions,
+            options_manifest_hash="0" * 64,
+            registry=registry,
+            artifacts_dir=tmp_path / tag,
+            repo=REPO_ROOT,
+            clock=FIXED_CLOCK,
+            split_override=real_lane_split_override(),
+            liquidity_lane=2,
+            score_seed="t-null/era",
+            allow_dirty=True,
+        )
+    finally:
+        registry.close()
+
+
+def test_an_unwired_surface_refuses_a_grid_stamped_trial_before_registration(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R4-P1, Codex round 4) The verified defect: `run_options_trial`
+    referenced `decision_calendar` only as a stamped descriptor — it never
+    verified that `surface.decision_close()` is answered by that calendar.
+    An UNWIRED VwapPitSurface (constructor default None -> the overlay's
+    nominal 16:00) under an era-grid-stamped trial therefore ran silently,
+    deciding at 16:00 on the grid's 13:00 early-close sessions: different
+    counters under the same declared configuration (INV-02 + INV-14 at the
+    trial boundary). The boundary now BINDS the disclosed authority to the
+    stamped calendar by COMPLETE content identity and refuses BEFORE
+    registration (RED before R4-P1: this trial registered, ran, and
+    completed — no refusal existed)."""
+    from tree_options.data.vwap_pit_surface import VwapPitSurface
+    from tree_options.time.calendar import calendar_content_sha256
+
+    grid, overlay = era_world
+    unwired = VwapPitSurface(overlay)
+    # the mismatch is real: the surface's EFFECTIVE authority is the overlay's
+    # daily calendar (nominal 16:00 closes), not the early-close-aware grid
+    assert calendar_content_sha256(unwired.decision_calendar) != calendar_content_sha256(grid)
+    with pytest.raises(ValueError, match="decision-calendar authority"):
+        _run_era_trial(era_world, protocol, tmp_path, tag="r4_unwired", surface=unwired)
+    # refused BEFORE registration: no record, no artifact
+    assert trial_count(tmp_path / "r4_unwired.db") == 0
+    assert not (tmp_path / "r4_unwired").exists()
+
+
+def test_a_wired_surface_binds_to_the_stamped_grid_and_runs_unchanged(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R4-P1, the control) A surface wired to the stamped grid —
+    `decision_calendar == grid`, the era test's own construction — binds
+    (digests equal) and runs UNCHANGED: the ruled geometry, the pinned
+    per-fold windows, the known 0.2.1 earnings refusal, and the identical
+    configuration hash the era configuration has always produced. The bind
+    is invisible to trial identity; only the unwired configuration is new
+    (it is a refusal)."""
+    import json
+
+    from tree_options.data.vwap_pit_surface import VwapPitSurface
+    from tree_options.time.calendar import calendar_content_sha256
+
+    grid, overlay = era_world
+    lf = protocol.option_candidate_defaults.liquidity_volume_flow
+    assert lf is not None
+    wired = VwapPitSurface(
+        overlay,
+        decision_calendar=grid,
+        underlying_liquidity_term=lf.underlying_liquidity_term,
+    )
+    assert wired.decision_calendar is grid
+    assert calendar_content_sha256(wired.decision_calendar) == calendar_content_sha256(grid)
+    result = _run_era_trial(era_world, protocol, tmp_path, tag="r4_wired", surface=wired)
+    body = json.loads(result.artifact_path.read_text(encoding="utf-8"))
+    assert result.n_folds == 3
+    per_fold = body["payload"]["per_fold"]
+    assert [f["n_test_sessions"] for f in per_fold] == [13, 13, 13]
+    assert [f["test_window"]["end"] for f in per_fold] == [
+        "2025-10-24",
+        "2026-01-23",
+        "2026-05-01",
+    ]
+    # the positions zero is the KNOWN 0.2.1 earnings refusal, never a bind
+    # failure — the same pinned counters the era test owns
+    assert body["payload"]["pooled"]["n_positions"] == 0
+    rules = body["payload"]["counters"]["rule_histogram"]
+    assert rules.get("earnings_span", {}).get("NOT_EVALUABLE", 0) > 0
+    assert "decision_coherence" not in rules
+    assert not any(
+        code.startswith("BAR_")
+        for code in body["payload"]["counters"]["rejections"].get("entry_fill_rejections", {})
+    )
+
+
+def test_the_base_surface_discloses_the_runners_calendar_and_lane_1_stays_byte_identical(
+    world, protocol, tmp_path
+) -> None:
+    """(R4-P1, lane-1/synthetic byte-identity) The base surface's own calendar
+    IS the runner's calendar — one object, so the disclosed authority's
+    digest equals the stamped one and the bound trial is byte-identical to
+    the unbound configuration it replaces: same config hash, same payload
+    (the guard is a no-op exactly where the design says it must be)."""
+    import json
+
+    from tree_options.time.calendar import calendar_content_sha256
+
+    overlay, calendar, _snap, _ds = world
+    surface = OptionPitSurface(overlay)
+    assert surface.decision_calendar is calendar
+    assert calendar_content_sha256(surface.decision_calendar) == calendar_content_sha256(calendar)
+    bound = _run_trial(world, protocol, tmp_path, tag="r4_lane1_bound")
+    reference = _run_trial(
+        world, protocol, tmp_path, tag="r4_lane1_reference", execution_calendar=calendar
+    )
+    assert bound["stamp"]["config_hash"] == reference["stamp"]["config_hash"]
+    assert json.dumps(bound["payload"], sort_keys=True) == json.dumps(
+        reference["payload"], sort_keys=True
+    )
+
+
+def test_a_surface_that_cannot_disclose_its_authority_refuses_cleanly(
+    world, protocol, tmp_path
+) -> None:
+    """(R4-P1, the attribute-absent branch) A surface with no
+    `decision_calendar` property cannot be BOUND, and the refusal is the
+    runner's own clean ValueError — never a raw AttributeError escaping the
+    boundary. That is the invariant's teeth: a synthetic surface is never
+    SKIPPED past the bind, it must expose its authority honestly (the
+    repo's two real surfaces now do; a double that does not is refused
+    before registration)."""
+    overlay, calendar, snapshot, dataset = world
+
+    class _NonDisclosingSurface:
+        """The lane-1 surface minus the disclosure — nothing else differs."""
+
+        def __init__(self, inner: OptionPitSurface) -> None:
+            self._inner = inner
+
+        def __getattr__(self, name: str):
+            if name == "decision_calendar":
+                raise AttributeError(name)  # exactly the absent property
+            return getattr(self._inner, name)
+
+    opaque = _NonDisclosingSurface(OptionPitSurface(overlay))
+    scored = _scored(world, OptionPitSurface(overlay))
+    registry = TrialRegistry(tmp_path / "opaque.db")
+    try:
+        with pytest.raises(ValueError, match="cannot disclose its decision-calendar authority"):
+            run_options_trial(
+                dataset=dataset,
+                surface=opaque,  # type: ignore[arg-type]
+                calendar=calendar,
+                protocol=protocol,
+                world_id=snapshot.snapshot_id,
+                arm="A",
+                strategy_config=OptionsStrategyConfig(),
+                scored=scored,
+                model_family="fixture:v1",
+                model_sha256=None,
+                hypothesis="must be refused: no disclosed authority",
+                decision_sessions=tuple(sorted({row.session for row in scored})),
+                options_manifest_hash="0" * 64,
+                registry=registry,
+                artifacts_dir=tmp_path / "opaque",
+                repo=REPO_ROOT,
+                clock=FIXED_CLOCK,
+                split_override=SPLIT,
+                allow_dirty=True,
+            )
+    finally:
+        registry.close()
+    assert trial_count(tmp_path / "opaque.db") == 0

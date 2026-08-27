@@ -27,6 +27,7 @@ from tree_options.synth_options import (
     OptionDayFile,
     contract_id_of,
 )
+from tree_options.time.calendar import SessionCalendar
 
 
 class NoOptionFileError(RuntimeError):
@@ -165,6 +166,20 @@ class OptionPitSurface:
 
     def contract(self, contract_id: str) -> OptionContract:
         return self._overlay.contract(contract_id)
+
+    @property
+    def decision_calendar(self) -> SessionCalendar:
+        """(R4-P1, Codex round 4) THE calendar this surface's decision-side
+        authority (`decision_close`) answers from — the overlay's own
+        calendar here. For the lane-1/synthetic worlds that is the one
+        calendar there is, so a trial stamped on it sees DIGEST IDENTITY at
+        the runner's boundary, byte-identically. `VwapPitSurface` overrides
+        this to disclose the DECISION-grid calendar it was constructed with
+        — or, unwired, the overlay calendar its 16:00 fallback actually
+        answers from: the surface's effective authority, now visible to the
+        boundary that binds it (a surface that cannot disclose it cannot be
+        bound, and refuses)."""
+        return self._overlay.calendar
 
     def decision_close(self, decision_session: date) -> datetime:
         """(R3-P1-2, Codex round 3) THE decision-instant authority on the
