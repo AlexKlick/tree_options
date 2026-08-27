@@ -117,6 +117,20 @@ def cross_section(surface, decision_session):
     return surface.eligible_as_of(decision_session)
 
 
+def test_the_base_surface_decision_close_is_its_own_calendar_close(
+    surface, decision_session
+) -> None:
+    """(R3-P1-2, Codex round 3) lane-1/synthetic byte-identity of the new
+    seam: the base `OptionPitSurface` answers `decision_close` from its OWN
+    calendar, so every decision-side read in candidate construction
+    (`build_candidates`' pending-action instant, the expiry/strike probes,
+    the sizing entry read, `candidate_snapshot`'s stamp) is the same instant
+    it was before the seam existed."""
+    assert surface.decision_close(decision_session) == surface.overlay.calendar.session_close(
+        decision_session
+    )
+
+
 @pytest.fixture(scope="module")
 def scores(cross_section, decision_session):
     """Deterministic spread of scores over the eligible cross-section."""

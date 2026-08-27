@@ -158,7 +158,7 @@ def _pick_expiry(
     decision_session: date,
     config: OptionsStrategyConfig,
 ) -> date | None:
-    decision_at = surface.overlay.calendar.session_close(decision_session)
+    decision_at = surface.decision_close(decision_session)
     live = surface.live_expiries_as_of(underlying_id, decision_at)
     in_band = [
         expiration
@@ -183,7 +183,7 @@ def _pick_strike(
     monotonicity is asserted, not assumed — a non-monotone |delta| ladder
     would make "nearest to target" ill-posed. Returns (strike, abs_delta)
     or None when no in-band strike quotes on the visible file."""
-    decision_at = surface.overlay.calendar.session_close(decision_session)
+    decision_at = surface.decision_close(decision_session)
     ladder = surface.strike_ladder(underlying_id, expiration)
     probed: list[tuple[Decimal, Decimal]] = []
     previous: Decimal | None = None
@@ -277,8 +277,16 @@ def build_candidates(
     name whose expiry/strike rule finds no in-band contract, or whose
     §9.2 evaluation rejects, is simply absent from the returned tuple;
     pass `audit` to capture the drop reasons and the per-rule histogram.
+
+    (R3-P1-2, Codex round 3) THE DECISION INSTANT comes from the surface's
+    `decision_close` seam — the DECISION-grid calendar's early-close-aware
+    close on the grid lane, the surface's own calendar on lane-1/synthetic —
+    never from the overlay (execution) calendar's nominal 16:00. This one
+    instant feeds `_pending_action_at` (an action published 13:00-16:00 on an
+    early-close session is FUTURE information at the true close, INV-02) and
+    the expiry/strike/entry reads alike: one authority, consumed everywhere.
     """
-    decision_at = surface.overlay.calendar.session_close(decision_session)
+    decision_at = surface.decision_close(decision_session)
     eligible = frozenset(surface.eligible_as_of(decision_session))
     cross_section = tuple(
         row

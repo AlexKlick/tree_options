@@ -17,6 +17,8 @@ SURFACE METHOD SET (exactly what the unmodified consumers call):
 `backtest/options.py` reads `snapshot_id`, `visible_quotes_as_of`,
 `contract`, `entry_as_of`, `spot_mid_as_of`, `visible_file_session`;
 `options/strategy.py` (via `build_candidates`) reads `overlay.calendar`,
+`decision_close` (R3-P1-2: the decision-instant authority — the base
+surface answers its own calendar's close, this one the decision grid's),
 `eligible_as_of`, `live_expiries_as_of`, `strike_ladder`, `entry_as_of`
 (the ladder |delta| probe), `contract`, `candidate_snapshot`. The fill
 engine consumes only the `VwapQuoteEvent` stream `visible_quotes_as_of`
@@ -406,6 +408,23 @@ class VwapPitSurface:
     def snapshot_id(self) -> str:
         return self._overlay.spec.world_id
 
+    def decision_close(self, decision_session: date) -> datetime:
+        """(R3-P1-2, Codex round 3) THE decision-instant authority, overriding
+        the base surface's: the DECISION-grid calendar's early-close-aware
+        close when the constructor carries one, else the overlay (execution)
+        calendar's — today's behavior, byte-identically, which is correct for
+        lane-1/synthetic worlds where the two calendars are one.
+
+        One seam, not two: this is the wave-2 `candidate_snapshot` seam
+        generalized to every decision-side read (`build_candidates`'
+        pending-action visibility, the expiry/strike ladder probes, the
+        sizing entry read). The visible-session lookup, publication wall,
+        marks and fills stay on the overlay calendar — only the decision
+        instant changes hands."""
+        if self._decision_calendar is not None:
+            return self._decision_calendar.session_close(decision_session)
+        return self._overlay.calendar.session_close(decision_session)
+
     def visible_file_session(self, underlying_id: str, as_of: datetime) -> date | None:
         """The latest session whose captured data for the underlying is
         published at or before as_of — the overlay's own T+1 wall, applied
@@ -434,7 +453,13 @@ class VwapPitSurface:
     def eligible_as_of(self, session: date) -> tuple[str, ...]:
         """The eligible cross-section for a decision session: the eligible
         set of the latest session whose capture is published by the close
-        of the decision session (file(t-1) for a close(t) decision)."""
+        of the decision session (file(t-1) for a close(t) decision).
+
+        Deliberately NOT the `decision_close` seam: this is a
+        publication-wall sweep, and the wall sits at T+1 09:00 — never
+        inside a session — so the visible session is invariant across the
+        13:00/16:00 disagreement and file visibility is the OVERLAY's
+        question, not the decision grid's."""
         decision_at = self._overlay.calendar.session_close(session)
         for candidate in sorted(self._overlay.world_sessions(), reverse=True):
             if not self._overlay.has_any_file(candidate):
@@ -602,17 +627,14 @@ class VwapPitSurface:
         provenance, session volume from the bar, bid/ask/OI None. The two
         unconditional lane-1 stamps are mirrored from the overlay itself.
 
-        (R2-P1-c) `decision_at` comes from the DECISION-grid calendar when
-        the constructor carries one — early-close aware, exactly the close
+        (R2-P1-c, folded into `decision_close` by R3-P1-2) `decision_at`
+        comes from the DECISION-grid calendar when the constructor carries
+        one — early-close aware, exactly the close
         `CandidateFilter.evaluate` demands — and from the overlay
         (execution) calendar otherwise (today's behavior). The 13:00/16:00
         disagreement cannot move the VISIBLE session: publication walls sit
         at T+1 09:00, so both closes of one session see the same file."""
-        decision_at = (
-            self._decision_calendar.session_close(decision_session)
-            if self._decision_calendar is not None
-            else self._overlay.calendar.session_close(decision_session)
-        )
+        decision_at = self.decision_close(decision_session)
         underlying = contract.underlying_security_id
         session = self.visible_file_session(underlying, decision_at)
         if session is None:

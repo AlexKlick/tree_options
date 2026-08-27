@@ -29,6 +29,7 @@ from tests.conftest import REPO_ROOT
 from tests.fixtures import massive_structural_sample as fx
 from tree_options.backtest.options import run_options_backtest
 from tree_options.candidates.filters import CandidateFilter
+from tree_options.data.actions import CorporateActionRecord
 from tree_options.data.bars import BarRecord
 from tree_options.data.cboe_eod import publication_instant
 from tree_options.data.massive_overlay import (
@@ -39,7 +40,7 @@ from tree_options.data.massive_overlay import (
 )
 from tree_options.data.options_pit import NoOptionFileError
 from tree_options.data.vwap_pit_surface import VwapPitSurface, load_spot_proxy_v2
-from tree_options.options import OptionSignal, OptionsStrategyConfig
+from tree_options.options import CandidateAudit, OptionSignal, OptionsStrategyConfig
 from tree_options.protocol.loader import load_protocol
 from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError, conservative_tick
 from tree_options.schemas.options import OptionContract
@@ -1617,3 +1618,216 @@ def test_dual_calendar_friday_grid_daily_bars_fills(tmp_path_factory) -> None:
     # the arm-A hold is 4 GRID sessions (weeks): entry exec 04-11, exit exec 05-16
     sells = [f for f in result.fills if f.side == "sell"]
     assert sells and all(f.execution_session == date(2025, 5, 16) for f in sells)
+
+
+# ---- (R3-P1-2, Codex round 3) the GRID decision instant in candidate construction -----
+
+
+# The Codex scenario: an EARLY-CLOSE grid Friday whose overlay (execution)
+# calendar still answers the nominal 16:00. 2025-11-28 is a 13:00 close in
+# the committed NYSE fixture, and MassiveDerivedSessionCalendar carries an
+# empty early-close set, so the two closes of that one session genuinely
+# disagree — a corporate action PUBLISHED in the 13:00-16:00 gap is future
+# information at the true decision instant and file-visible either way (the
+# publication wall sits at T+1 09:00, never inside a session).
+EC_DECISION = date(2025, 11, 28)  # the early-close Friday after Thanksgiving
+EC_EXPIRY = date(2025, 12, 19)  # the contract the grid lane carries
+EC_BAR_SPAN = (date(2025, 10, 23), date(2025, 12, 5))
+
+
+def _ec_premium(session: date) -> str:
+    price = bs_price(
+        spot=float(SPOT_LEVEL),
+        strike=600.0,
+        dte_calendar_days=(EC_EXPIRY - session).days,
+        iv=IV,
+        risk_free=0.03,
+        dividend_yield=0.0,
+        call_put="C",
+    )
+    return f"{price:.4f}"
+
+
+def _write_early_close_capture(root: Path) -> Path:
+    exchange = _exchange_calendar()
+    bar_sessions = tuple(s for s in exchange.sessions() if EC_BAR_SPAN[0] <= s <= EC_BAR_SPAN[1])
+    assert EC_DECISION in bar_sessions  # the overlay carries the early-close session too
+    masters = root / "masters"
+    masters.mkdir(parents=True)
+    (masters / f"spy_{bar_sessions[0]:%Y-%m-%d}.json").write_text(
+        fx.contracts_payload(
+            results=(
+                fx.contract_result(
+                    ticker=f"O:SPY{EC_EXPIRY:%y%m%d}C00600000",
+                    underlying=SPY,
+                    expiration=f"{EC_EXPIRY:%Y-%m-%d}",
+                    strike="600",
+                    contract_type="call",
+                ),
+            ),
+            as_of=f"{bar_sessions[0]:%Y-%m-%d}",
+        ),
+        encoding="utf-8",
+    )
+    bars = root / "bars"
+    bars.mkdir()
+    rows = tuple(
+        fx.bar(
+            v=FLOW_VOLUME,
+            t=_t(session),
+            vw=_ec_premium(session),
+            o=_ec_premium(session),
+            c=_ec_premium(session),
+            h=str(Decimal(_ec_premium(session)) + Decimal("0.10")),
+            low=str(Decimal(_ec_premium(session)) - Decimal("0.10")),
+            n="24",
+        )
+        for session in bar_sessions
+    )
+    (bars / "bars_c600.json").write_text(
+        fx.bars_payload(
+            ticker=f"O:SPY{EC_EXPIRY:%y%m%d}C00600000", results_count=str(len(rows)), results=rows
+        ),
+        encoding="utf-8",
+    )
+    (root / "spot_proxy.json").write_text(
+        '{"SPY": {' + ", ".join(f'"{s:%Y-%m-%d}": "{SPOT_LEVEL}"' for s in bar_sessions) + "}}",
+        encoding="utf-8",
+    )
+    return root
+
+
+@pytest.fixture(scope="module")
+def early_close_grid():
+    """The Friday-only decision grid over the early-close window, carrying the
+    committed fixture's early closes (so 2025-11-28 answers 13:00 ET)."""
+    return _friday_grid(EC_BAR_SPAN[0], EC_BAR_SPAN[1])
+
+
+@pytest.fixture(scope="module")
+def early_close_surface(tmp_path_factory: pytest.TempPathFactory, early_close_grid):
+    """The grid-supplied surface: `decision_calendar` is the grid, exactly as
+    the runner threads it."""
+    capture = _write_early_close_capture(tmp_path_factory.mktemp("earlyclose") / "capture")
+    overlay = load_derived_surface(capture, staleness_sessions=400)
+    return VwapPitSurface(overlay, decision_calendar=early_close_grid)
+
+
+def _ec_action(available_at: datetime) -> CorporateActionRecord:
+    """A pending ratio action on SPY, published at `available_at`, effective
+    after the decision session — the §2 (i) entry-exclusion shape."""
+    return CorporateActionRecord(
+        security_id=SPY,
+        kind="split",
+        effective_session=date(2025, 12, 5),
+        ratio_numerator=2,
+        ratio_denominator=1,
+        source="declared/v1",
+        source_record_id="ACT-EC-1",
+        source_row_hash="0" * 64,
+        snapshot_id="early-close-world",
+        available_at=available_at,
+    )
+
+
+def _ec_build(surface, grid, protocol, actions) -> CandidateAudit:
+    from tree_options.options import build_candidates
+
+    audit = CandidateAudit()
+    build_candidates(
+        surface=surface,
+        candidate_filter=CandidateFilter.from_protocol_volume_flow(grid, protocol),
+        decision_session=EC_DECISION,
+        scores=(
+            OptionSignal(decision_session=EC_DECISION, security_id=SPY, score=0.9, label=0.01),
+        ),
+        config=OptionsStrategyConfig(),
+        actions=actions,
+        audit=audit,
+    )
+    return audit
+
+
+def test_an_action_published_after_the_true_close_is_not_yet_known(
+    early_close_surface, early_close_grid, protocol
+) -> None:
+    """(R3-P1-2) `build_candidates` derived the decision instant from the
+    OVERLAY (daily, nominal 16:00) calendar while the grid lane decides at
+    the grid's TRUE close — so on the early-close Friday a pending action
+    PUBLISHED 14:00 ET, three hours AFTER the 13:00 close, was treated as
+    known at decision and the name was excluded on future information
+    (INV-02), flipping the audit stamp from the honest earnings
+    NOT_EVALUABLE to `excluded_pending_action`. The decision instant now
+    comes from the surface's `decision_close` seam, which the grid-supplied
+    surface answers from the decision calendar: the action is NOT yet known,
+    the name is NOT excluded, and it flows on to the honest expiry rule (DTE
+    21 to 2025-12-19 is outside the protocol's [30, 60] band — RED before
+    R3-P1-2: excluded_pending_action == 1 and no_in_band_expiry == 0)."""
+    from tree_options.time.sessions import early_close_instant, session_close_instant
+
+    overlay_close = early_close_surface.overlay.calendar.session_close(EC_DECISION)
+    true_close = early_close_grid.session_close(EC_DECISION)
+    assert true_close == early_close_instant(EC_DECISION)  # 13:00 ET
+    assert overlay_close == session_close_instant(EC_DECISION)  # the nominal 16:00
+    published_14_et = shift_instant(true_close, 3600)  # 14:00 ET, inside the gap
+    assert true_close < published_14_et < overlay_close
+
+    audit = _ec_build(
+        early_close_surface, early_close_grid, protocol, (_ec_action(published_14_et),)
+    )
+    assert audit.scored_cross_section == 1
+    assert audit.selected == 1
+    assert audit.excluded_pending_action == 0, (
+        "an action published after the true close is future information at"
+        " the decision instant — the name must not be excluded on it"
+    )
+    # the name was NOT dropped anywhere upstream: it reached the expiry rule
+    assert audit.no_in_band_expiry == 1
+    assert audit.accepted == 0
+
+
+def test_an_action_published_before_the_true_close_is_known(
+    early_close_surface, early_close_grid, protocol
+) -> None:
+    """(R3-P1-2) The seam must not over-correct into ignoring genuinely-known
+    actions: the same action published 12:00 ET — BEFORE the 13:00 true
+    close — IS known at decision and the name IS excluded (the pre-existing
+    §2 (i) behavior, unchanged)."""
+    from tree_options.time.sessions import early_close_instant
+
+    true_close = early_close_grid.session_close(EC_DECISION)
+    assert true_close == early_close_instant(EC_DECISION)
+    published_12_et = shift_instant(true_close, -3600)  # 12:00 ET
+    assert published_12_et < true_close
+
+    audit = _ec_build(
+        early_close_surface, early_close_grid, protocol, (_ec_action(published_12_et),)
+    )
+    assert audit.excluded_pending_action == 1
+    assert audit.no_in_band_expiry == 0
+    assert audit.accepted == 0
+
+
+def test_without_a_decision_calendar_the_overlay_close_stands(
+    early_close_surface, early_close_grid, protocol
+) -> None:
+    """(R3-P1-2) No `decision_calendar` supplied -> today's behavior pinned:
+    the OVERLAY (execution) calendar's nominal 16:00 answers the decision
+    instant, so the 14:00-published action IS treated as known and the name
+    IS excluded (the lane-1/synthetic default, where the two calendars are
+    one and this is correct)."""
+    from tree_options.time.sessions import early_close_instant
+
+    plain = VwapPitSurface(early_close_surface.overlay)
+    assert plain.decision_close(EC_DECISION) == early_close_surface.overlay.calendar.session_close(
+        EC_DECISION
+    )
+    assert plain.decision_close(EC_DECISION) != early_close_instant(EC_DECISION)
+
+    audit = _ec_build(
+        plain,
+        early_close_grid,
+        protocol,
+        (_ec_action(shift_instant(early_close_instant(EC_DECISION), 3600)),),
+    )
+    assert audit.excluded_pending_action == 1
