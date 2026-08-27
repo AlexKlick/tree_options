@@ -488,6 +488,164 @@ def test_empty_score_seed_refuses(world, protocol, tmp_path) -> None:
     registry.close()
 
 
+# ---- (P1-3, Codex round 1) the null-score seed is BOUND to trial identity ----------
+
+
+def _rescored_with(seed: str, scored) -> tuple[ScoredLabel, ...]:
+    """The same cross-section re-scored under one null seed — rows that can
+    only be honest under exactly that seed."""
+    from tree_options.trials.null_score import null_score
+
+    return tuple(
+        ScoredLabel(
+            security_id=row.security_id,
+            session=row.session,
+            score=null_score(seed=seed, session=row.session, security_id=row.security_id),
+            label=row.label,
+        )
+        for row in scored
+    )
+
+
+def test_null_family_without_a_seed_refuses_before_registration(world, protocol, tmp_path) -> None:
+    """(P1-3) `NULL_SCORE_MODEL_FAMILY` was referenced NOWHERE in the runner:
+    `score_seed=None` passed silently for a null-sha256 trial and was omitted
+    from the hashed config, so two T-NULL trials with different seeds got
+    IDENTICAL config hashes. A null trial now REFUSES to run without its
+    seed — an undeclared seed is unregistered randomness (RED before: the
+    trial registered and completed)."""
+    from tree_options.trials.null_score import NULL_SCORE_MODEL_FAMILY
+
+    assert NULL_SCORE_MODEL_FAMILY == "null-sha256/1"
+    overlay, calendar, snapshot, dataset = world
+    surface = OptionPitSurface(overlay)
+    scored = _scored(world, surface)
+    registry = TrialRegistry(tmp_path / "null_noseed.db")
+    try:
+        with pytest.raises(ValueError, match="must declare its seed"):
+            run_options_trial(
+                dataset=dataset,
+                surface=surface,
+                calendar=calendar,
+                protocol=protocol,
+                world_id=snapshot.snapshot_id,
+                arm="A",
+                strategy_config=OptionsStrategyConfig(),
+                scored=scored,
+                model_family=NULL_SCORE_MODEL_FAMILY,
+                model_sha256=None,
+                hypothesis="refused before registration",
+                decision_sessions=tuple(sorted({row.session for row in scored})),
+                options_manifest_hash="0" * 64,
+                registry=registry,
+                artifacts_dir=tmp_path / "null_noseed",
+                repo=REPO_ROOT,
+                clock=FIXED_CLOCK,
+                split_override=SPLIT,
+                allow_dirty=True,
+                score_seed=None,
+            )
+    finally:
+        registry.close()
+    assert trial_count(tmp_path / "null_noseed.db") == 0
+
+
+def test_null_family_with_a_misstated_seed_refuses_by_name(world, protocol, tmp_path) -> None:
+    """(P1-3) The stamped seed must be VERIFIED against every scored row: a
+    seed of 'a' over rows generated under 'b' is a misstatement that could
+    masquerade as the declared score model — the runner now recomputes
+    null_score(seed=score_seed, session, security_id) per row and refuses
+    on any mismatch (RED before: the trial registered and completed)."""
+    from tree_options.trials.null_score import NULL_SCORE_MODEL_FAMILY
+
+    overlay, calendar, snapshot, dataset = world
+    surface = OptionPitSurface(overlay)
+    mislabelled = _rescored_with("t-null/b", _scored(world, surface))
+    registry = TrialRegistry(tmp_path / "null_misstated.db")
+    try:
+        with pytest.raises(ValueError, match="score mismatch against the declared seed"):
+            run_options_trial(
+                dataset=dataset,
+                surface=surface,
+                calendar=calendar,
+                protocol=protocol,
+                world_id=snapshot.snapshot_id,
+                arm="A",
+                strategy_config=OptionsStrategyConfig(),
+                scored=mislabelled,
+                model_family=NULL_SCORE_MODEL_FAMILY,
+                model_sha256=None,
+                hypothesis="refused before registration",
+                decision_sessions=tuple(sorted({row.session for row in mislabelled})),
+                options_manifest_hash="0" * 64,
+                registry=registry,
+                artifacts_dir=tmp_path / "null_misstated",
+                repo=REPO_ROOT,
+                clock=FIXED_CLOCK,
+                split_override=SPLIT,
+                allow_dirty=True,
+                score_seed="t-null/a",
+            )
+    finally:
+        registry.close()
+    assert trial_count(tmp_path / "null_misstated.db") == 0
+
+
+def test_null_family_with_matching_rows_runs_and_binds_the_seed(world, protocol, tmp_path) -> None:
+    """(P1-3) The honest null trial: rows generated under the declared seed
+    pass the verification, the seed rides the config hash (a different seed
+    is a different trial identity), and the payload stamps it. Non-null
+    families keep today's behavior exactly (seed optional, stamped when
+    present) — pinned by test_score_seed_rides_the_config_hash."""
+    import json
+
+    from tree_options.trials.null_score import NULL_SCORE_MODEL_FAMILY, null_scored_labels
+
+    fixture_rows = tuple(
+        (row.session, row.security_id, row.label)
+        for row in _scored(world, OptionPitSurface(world[0]))
+    )
+    honest = null_scored_labels("t-null/a", fixture_rows)
+    other = null_scored_labels("t-null/b", fixture_rows)
+    assert honest[0].score != other[0].score  # the seeds really do differ
+
+    def _null_run(tag: str, seed: str, scored) -> dict:
+        overlay, calendar, snapshot, dataset = world
+        registry = TrialRegistry(tmp_path / f"{tag}.db")
+        try:
+            result = run_options_trial(
+                dataset=dataset,
+                surface=OptionPitSurface(overlay),
+                calendar=calendar,
+                protocol=protocol,
+                world_id=snapshot.snapshot_id,
+                arm="A",
+                strategy_config=OptionsStrategyConfig(),
+                scored=scored,
+                model_family=NULL_SCORE_MODEL_FAMILY,
+                model_sha256=None,
+                hypothesis=f"unit/{tag}",
+                decision_sessions=tuple(sorted({row.session for row in scored})),
+                options_manifest_hash="0" * 64,
+                registry=registry,
+                artifacts_dir=tmp_path / tag,
+                repo=REPO_ROOT,
+                clock=FIXED_CLOCK,
+                split_override=SPLIT,
+                allow_dirty=True,
+                score_seed=seed,
+            )
+        finally:
+            registry.close()
+        return json.loads(result.artifact_path.read_text(encoding="utf-8"))
+
+    run_a = _null_run("null_a", "t-null/a", honest)
+    run_b = _null_run("null_b", "t-null/b", other)
+    assert run_a["stamp"]["config_hash"] != run_b["stamp"]["config_hash"]
+    assert run_a["payload"]["score_seed"] == "t-null/a"
+    assert run_b["payload"]["score_seed"] == "t-null/b"
+
+
 # ---- (w5) the holdout seal guard: runtime refusal + execution-tail disclosure ------
 
 

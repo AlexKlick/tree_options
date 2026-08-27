@@ -61,6 +61,7 @@ from tree_options.registry.sqlite import TrialRegistry
 from tree_options.schemas.trial import TrialRecord
 from tree_options.splitting.splitter import Fold, WalkForwardSplitter
 from tree_options.time.calendar import SessionCalendar
+from tree_options.trials.null_score import NULL_SCORE_MODEL_FAMILY, null_score
 
 RUNNER_REVISION = "trials.options_run/v1"
 OPTIONS_BACKTEST_INITIAL_CASH = Decimal("1000000.00")
@@ -476,6 +477,35 @@ def run_options_trial(
     )
     if score_seed is not None and not score_seed:
         raise ValueError("score_seed must be a non-empty string when supplied")
+    # (P1-3, Codex round 1) the null-score model's seed is BOUND to trial
+    # identity. NULL_SCORE_MODEL_FAMILY was referenced nowhere in this
+    # runner: score_seed=None passed silently and was omitted from the
+    # hashed config, so two T-NULL trials with different seeds got
+    # IDENTICAL config hashes, and nothing verified the rows against the
+    # stamped seed. A null trial must now DECLARE its seed (an undeclared
+    # seed is unregistered randomness) and every scored row must equal the
+    # generator's own output under that seed — a misstated seed can no
+    # longer masquerade as the declared score model. Non-null families keep
+    # today's behavior exactly (seed optional, stamped when present).
+    if model_family == NULL_SCORE_MODEL_FAMILY and score_seed is None:
+        raise ValueError(
+            f"a {NULL_SCORE_MODEL_FAMILY} trial must declare its seed —"
+            " an undeclared seed is unregistered randomness"
+        )
+    if model_family == NULL_SCORE_MODEL_FAMILY and score_seed is not None:
+        misstated = [
+            f"{row.session.isoformat()}/{row.security_id}"
+            for row in scored
+            if row.score
+            != null_score(seed=score_seed, session=row.session, security_id=row.security_id)
+        ]
+        if misstated:
+            raise ValueError(
+                f"score mismatch against the declared seed {score_seed!r}:"
+                f" {misstated[:3]} do not equal {NULL_SCORE_MODEL_FAMILY}"
+                " under that seed — a misstated seed cannot masquerade as"
+                " the declared score model"
+            )
     if not scored:
         raise ValueError("scored rows are required")
     normalized_sessions = tuple(decision_sessions)
