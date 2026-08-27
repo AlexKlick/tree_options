@@ -8,7 +8,9 @@ model is NO model: the score of one (session, security_id) is the leading
 
     seed ‖ "\\x1f" ‖ session ISO ‖ "\\x1f" ‖ security_id
 
-mapped onto [0, 1). Determinism is total — same seed, same scores, on
+mapped onto [0, 1) by exact arithmetic (top 53 bits over 2**53 — strictly
+below 1.0 for EVERY input; see `_unit_score`). Determinism is total — same
+seed, same scores, on
 every host, forever; there is no RNG, no state, and no clock anywhere in
 this module (the trial runner forbids randomness outright). The ASCII
 unit separator makes the preimage injective, so field values can never
@@ -42,7 +44,23 @@ from tree_options.evaluation.stats import ScoredLabel
 NULL_SCORE_MODEL_FAMILY = "null-sha256/1"
 
 _UNIT = "\x1f"  # the ASCII unit separator: the join is injective
-_DENOMINATOR = float(2**64)
+# (P3-7, Codex round 1) exact-arithmetic mapping onto [0, 1): the top
+# _SHIFT bits are dropped and the remaining 53-bit integer is divided by
+# 2**53. A 53-bit integer over 2**53 is EXACTLY representable as a float
+# and strictly smaller than 1.0 for every one of the 2**64 inputs — the
+# previous `int / float(2**64)` rounded to exactly 1.0 for prefixes
+# >= 0xfffffffffffffc00, violating the declared [0, 1) (2^-54 per row).
+_SHIFT = 11
+_DENOMINATOR = 2**53
+
+
+def _unit_score(leading_bits: int) -> float:
+    """Map the leading 64 hash bits onto [0, 1) exactly.
+
+    `(n >> 11) / 2**53`: the quotient of a 53-bit integer by a power of two
+    needs at most 53 significand bits, so the division is exact — no
+    rounding, hence no input can ever map to 1.0."""
+    return (leading_bits >> _SHIFT) / _DENOMINATOR
 
 
 def null_score(*, seed: str, session: date, security_id: str) -> float:
@@ -56,7 +74,7 @@ def null_score(*, seed: str, session: date, security_id: str) -> float:
         )
     preimage = _UNIT.join((seed, session.isoformat(), security_id)).encode("utf-8")
     digest = hashlib.sha256(preimage).digest()
-    return int.from_bytes(digest[:8], "big") / _DENOMINATOR
+    return _unit_score(int.from_bytes(digest[:8], "big"))
 
 
 def null_scored_labels(
