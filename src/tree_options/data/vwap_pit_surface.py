@@ -57,7 +57,10 @@ the volume-flow filter's NOT_APPLICABLE rows. The dollar-volume stamp is
 the DECLARED `spot_proxy_v2` source's 20-session median of close*volume
 (`load_spot_proxy_v2` — the ruled P0-1(b) preferred leg; the capture script
 and the file land post-closeout) whenever that source can answer a true
-contiguous 20-session median, and otherwise the overlay's declared
+contiguous 20-session median — contiguity validated against the EXCHANGE
+calendar (P1-2: an explicit constructor dependency; the overlay's
+union-of-captures calendar self-certifies exactly when a market session is
+missing from every capture) — and otherwise the overlay's declared
 `Decimal("0")` sentinel — this tier never calls the equity-aggregates
 endpoint today, so the protocol's 50M minimum FAILs the rule until the
 recapture lands (an honest audit row, pinned by test; the ruled 0.2.2
@@ -100,7 +103,7 @@ from tree_options.data.massive_overlay import (
 from tree_options.data.options_pit import NoOptionFileError
 from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError
 from tree_options.schemas.options import OptionContract
-from tree_options.time.calendar import NotASessionError
+from tree_options.time.calendar import NotASessionError, SessionCalendar
 
 SPOT_SENTINEL_SESSION = date.min  # the flat form's every-session key
 DOLLAR_VOLUME_WINDOW_SESSIONS = 20  # the protocol's 20d median term
@@ -220,7 +223,12 @@ class VwapPitSurface:
     """The lane-2 PIT read surface over one `MassiveDerivedOverlay` plus
     the declared spot proxy mapping (see `massive_overlay.load_spot_proxy`).
     Fail-closed everywhere: no bar, no spot, no derivation -> None or
-    `NoOptionFileError`, never a synthesized price."""
+    `NoOptionFileError`, never a synthesized price.
+
+    `exchange_calendar` (P1-2) is the EXPLICIT exchange-calendar dependency
+    the optional v2 dollar-volume source validates its 20-session window
+    against — the repo-adopted NYSE fixture the protocol declares, threaded
+    by the caller, never a global; without it the v2 source fails closed."""
 
     def __init__(
         self,
@@ -228,6 +236,7 @@ class VwapPitSurface:
         *,
         spot: Mapping[str, Mapping[date, Decimal]] | None = None,
         spot_v2: Mapping[str, Mapping[date, tuple[Decimal, int]]] | None = None,
+        exchange_calendar: SessionCalendar | None = None,
     ) -> None:
         self._overlay = overlay
         self._spot: dict[str, dict[date, Decimal]] = {
@@ -238,6 +247,14 @@ class VwapPitSurface:
         self._spot_v2: dict[str, dict[date, tuple[Decimal, int]]] = {
             underlying: dict(sessions) for underlying, sessions in (spot_v2 or {}).items()
         }
+        # (P1-2, Codex round 1) the EXCHANGE calendar is an explicit
+        # constructor dependency — never a global, never auto-loaded. The
+        # repo-adopted one is the committed, checksummed NYSE fixture
+        # `research_protocol.yaml` itself declares (0.2.1 ruling,
+        # data/g4/calendar-decision.json "repo-generated-calendar"). Without
+        # it, exchange-session contiguity cannot be proven and the v2
+        # dollar-volume source fails closed (the declared sentinel).
+        self._exchange_calendar = exchange_calendar
 
     # ---- identity / delegation ------------------------------------------------
 
@@ -395,20 +412,35 @@ class VwapPitSurface:
         self, underlying_id: str, visible_session: date, received: datetime
     ) -> AsOf | None:
         """The ruled P0-1(b) dollar-volume stamp: the 20-session median of
-        close*volume over the CONTIGUOUS calendar window ending at the
-        visible session, vendor-observed, available at the window's last
+        close*volume over the CONTIGUOUS EXCHANGE-calendar window ending at
+        the visible session, vendor-observed, available at the window's last
         session's T+1 wall (`received`).
+
+        (P1-2, Codex round 1) The window is enumerated on the REPO-ADOPTED
+        exchange calendar — an explicit constructor dependency — NEVER on
+        the overlay's own calendar, which is the union of CAPTURED dates: a
+        market session missing from every capture vanishes from that union,
+        so a window sliced on it self-certifies as contiguity and the median
+        can pass where the design says fail-closed (the Jan-16 scenario).
+        The 20 sessions of the window are therefore exactly the 20
+        consecutive EXCHANGE sessions ending at the visible session.
 
         Fail-closed on availability (never a median over whatever happened
         to be captured): None when no v2 source is declared for the
-        underlying, when the visible session is not a calendar session, or
-        when the trailing 20 calendar sessions are not ALL present in the
-        declared map — the caller then answers the overlay's declared
-        sentinel and the rule fails honestly."""
+        underlying, when no exchange calendar is threaded, when the visible
+        session is not an exchange session, or when the 20 consecutive
+        exchange sessions are not ALL present in the declared map — the
+        caller then answers the overlay's declared sentinel and the rule
+        fails honestly."""
         rows = self._spot_v2.get(underlying_id)
         if not rows:
             return None
-        calendar = self._overlay.calendar
+        # (P1-2) the exchange calendar is the window's authority; falling
+        # back to the overlay calendar here is exactly the self-certifying
+        # contiguity the guard exists to refuse
+        calendar = self._exchange_calendar
+        if calendar is None:
+            return None
         try:
             end_ordinal = calendar.ordinal(visible_session)
         except NotASessionError:

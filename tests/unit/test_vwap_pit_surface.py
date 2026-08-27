@@ -672,7 +672,7 @@ V2_VOLUME = 80_000_000  # a realistic mega-cap session: ~$48B of notional
 V2_WINDOW = V2_SESSIONS[-21:-1]  # the 20 contiguous sessions ending at the visible one
 
 
-def _write_v2_capture(root: Path) -> Path:
+def _write_v2_capture(root: Path, *, skip: frozenset[date] = frozenset()) -> Path:
     masters = root / "masters"
     masters.mkdir(parents=True)
     (masters / f"spy_{V2_SESSIONS[0]:%Y-%m-%d}.json").write_text(
@@ -692,6 +692,7 @@ def _write_v2_capture(root: Path) -> Path:
     )
     bars = root / "bars"
     bars.mkdir()
+    captured = tuple(session for session in V2_SESSIONS if session not in skip)
     rows = tuple(
         fx.bar(
             v=FLOW_VOLUME,
@@ -703,14 +704,14 @@ def _write_v2_capture(root: Path) -> Path:
             low=str(Decimal(_premium("C", 600, session)) - Decimal("0.10")),
             n="24",
         )
-        for session in V2_SESSIONS
+        for session in captured
     )
     (bars / "bars_c600.json").write_text(
         fx.bars_payload(ticker=_ticker("C", 600), results_count=str(len(rows)), results=rows),
         encoding="utf-8",
     )
     (root / "spot_proxy.json").write_text(
-        '{"SPY": {' + ", ".join(f'"{s:%Y-%m-%d}": "{SPOT_LEVEL}"' for s in V2_SESSIONS) + "}}",
+        '{"SPY": {' + ", ".join(f'"{s:%Y-%m-%d}": "{SPOT_LEVEL}"' for s in captured) + "}}",
         encoding="utf-8",
     )
     return root
@@ -801,10 +802,15 @@ def test_dollar_volume_source_passes_the_50m_rule(v2_capture, protocol) -> None:
     underlying-liquidity term is honestly EVALUABLE: the 20-session median of
     close*volume at realistic mega-cap magnitude clears the protocol's $50M
     minimum by three orders, under vendor provenance at the T+1 wall of the
-    window's last session."""
+    window's last session. (P1-2: the exchange calendar threaded is the
+    repo-adopted NYSE fixture; the fixture span 2025-04-14..05-13 carries no
+    exchange holiday, so the exchange window IS the fixture's 20 weekdays.)"""
     overlay = load_derived_surface(v2_capture, staleness_sessions=10)
     adapter = VwapPitSurface(
-        overlay, spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}}, spot_v2=_v2_map()
+        overlay,
+        spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}},
+        spot_v2=_v2_map(),
+        exchange_calendar=_exchange_calendar(),
     )
     snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
     stamp = snap.underlying_20d_median_dollar_volume
@@ -842,16 +848,18 @@ def test_without_the_source_the_sentinel_fail_stands(v2_capture, protocol) -> No
 
 def test_dollar_volume_requires_a_contiguous_20_session_window(v2_capture, protocol) -> None:
     """Fail-closed on availability: a v2 map with a HOLE inside the trailing
-    20 sessions, or one that does not reach 20 sessions back, is not a 20d
-    median — the adapter falls back to the declared sentinel rather than
-    averaging over whatever happened to be captured."""
+    20 EXCHANGE sessions, or one that does not reach 20 sessions back, is not
+    a 20d median — the adapter falls back to the declared sentinel rather
+    than averaging over whatever happened to be captured."""
     overlay = load_derived_surface(v2_capture, staleness_sessions=10)
     spot = {SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}}
     # a hole: drop the 10th session of the required window
     holed = {SPY: {s: v for s, v in _v2_map()[SPY].items() if s != V2_WINDOW[9]}}
     short = _v2_map(V2_SESSIONS[:5])  # only 5 sessions of history
     for source in (holed, short):
-        adapter = VwapPitSurface(overlay, spot=spot, spot_v2=source)
+        adapter = VwapPitSurface(
+            overlay, spot=spot, spot_v2=source, exchange_calendar=_exchange_calendar()
+        )
         snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
         stamp = snap.underlying_20d_median_dollar_volume
         assert stamp is not None and stamp.value == Decimal("0"), source.keys()
@@ -866,46 +874,67 @@ def test_dollar_volume_requires_a_contiguous_20_session_window(v2_capture, proto
 
 def test_dollar_volume_median_is_exact_over_distinct_values(v2_capture) -> None:
     """(w3) The PASS path's statistic is the exact MEDIAN of the trailing 20
-    sessions' close*volume — never the mean, and never a median over more
-    history than the declared window. The 50M fixture repeats one identical
-    daily value (median == mean == any-window median there), so this seam
-    needs DISTINCT values with a spike, chosen so the three statistics
-    separate:
+    EXCHANGE sessions' close*volume — never the mean, and never a median over
+    more history than the declared window. The 50M fixture repeats one
+    identical daily value (median == mean == any-window median there), so
+    this seam needs DISTINCT values with a spike, chosen so the three
+    statistics separate:
 
         trailing 20 sorted = [10e9 x10, 30e9 x9, 1000e9] -> median 20e9
         trailing 20 mean                                      -> 68.5e9
-        all captured history (21 sessions) sorted             -> 11th = 30e9
-    """
+        all captured history (22 sessions) sorted             -> 11th = 30e9
+
+    (P1-2) The volumes are keyed by POSITION INSIDE the exchange window:
+    the weekday-only fixture carries 2025-04-18 (Good Friday — never an
+    NYSE session), so the overlay-ordinal layout and the exchange window
+    differ, and the session the window actually contains (2025-04-14) is
+    the one the old layout left outside. The never-windowed sessions
+    (Good Friday itself and the decision session) carry distinct values so
+    a wrongly-widened window changes the median."""
     overlay = load_derived_surface(v2_capture, staleness_sessions=10)
-    ordinal_of = {session: i for i, session in enumerate(V2_SESSIONS)}
-    volume_by_ordinal = {
-        0: 300_000_000,  # outside the trailing window but inside the capture
-        **{i: 100_000_000 for i in range(1, 11)},  # ten 10e9 days (close 100)
-        **{i: 300_000_000 for i in range(11, 20)},  # nine 30e9 days
-        20: 10_000_000_000,  # the visible session's 1000e9 spike
-        21: 100_000_000,  # the decision session: never inside any window
+    exchange = _exchange_calendar()
+    end = exchange.ordinal(V2_VISIBLE)
+    window = exchange.sessions()[end - 19 : end + 1]
+    assert len(window) == 20 and window[-1] == V2_VISIBLE
+    good_friday = date(2025, 4, 18)
+    assert good_friday in V2_SESSIONS and not exchange.is_session(good_friday)
+    volume_by_session: dict[date, int] = {
+        session: (100_000_000 if position < 10 else 300_000_000)
+        for position, session in enumerate(window)
     }
-    source = {SPY: {s: (Decimal("100.00"), volume_by_ordinal[ordinal_of[s]]) for s in V2_SESSIONS}}
+    volume_by_session[V2_VISIBLE] = 10_000_000_000  # the visible session's 1000e9 spike
+    volume_by_session[good_friday] = 400_000_000  # never an exchange session
+    volume_by_session[V2_DECISION] = 500_000_000  # the decision session: never windowed
+    assert set(volume_by_session) == set(V2_SESSIONS)
+    source = {SPY: {s: (Decimal("100.00"), volume_by_session[s]) for s in V2_SESSIONS}}
     adapter = VwapPitSurface(
-        overlay, spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}}, spot_v2=source
+        overlay,
+        spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}},
+        spot_v2=source,
+        exchange_calendar=exchange,
     )
     snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
     stamp = snap.underlying_20d_median_dollar_volume
     assert stamp is not None
-    # the exact median of the 20 trailing sessions: the average of the 10th
-    # and 11th sorted values, (10e9 + 30e9) / 2 — an independent oracle, not
-    # a re-derivation through the adapter's own statistics call
+    # the exact median of the 20 trailing exchange sessions: the average of
+    # the 10th and 11th sorted values, (10e9 + 30e9) / 2 — an independent
+    # oracle, not a re-derivation through the adapter's own statistics call
     assert stamp.value == Decimal("20000000000")
 
 
 def test_dollar_volume_needs_twenty_sessions_of_calendar_history(overlay, spot) -> None:
-    """(w3) Fail-closed on history: the module fixture's calendar carries 11
-    sessions — fewer than the declared 20-session window — so even a v2
-    source covering EVERY session cannot answer a 20d median: the adapter
+    """(w3) Fail-closed on history: a calendar carrying only 11 sessions —
+    fewer than the declared 20-session window — cannot answer a 20d median
+    even from a v2 source covering EVERY one of its sessions: the adapter
     must fall back to the declared Decimal("0") sentinel, never a median
-    over the 11 sessions it happens to have."""
+    over the 11 sessions it happens to have. (P1-2: the short calendar is
+    threaded AS the exchange calendar — with the full NYSE fixture the same
+    world fails closed on the in-map check instead, and the 20-session
+    FLOOR would never be exercised again.)"""
     every_session = {SPY: {s: (Decimal("600.00"), 80_000_000) for s in SESSIONS}}
-    adapter = VwapPitSurface(overlay, spot=spot, spot_v2=every_session)
+    adapter = VwapPitSurface(
+        overlay, spot=spot, spot_v2=every_session, exchange_calendar=overlay.calendar
+    )
     snap = adapter.candidate_snapshot(adapter.contract(C600_ID), S6)
     stamp = snap.underlying_20d_median_dollar_volume
     assert stamp is not None
@@ -916,16 +945,128 @@ def test_dollar_volume_refuses_a_non_calendar_visible_session(v2_capture) -> Non
     """(w3) Fail-closed on calendar identity: a visible session that is not
     a calendar session has no ordinal, so no window can be anchored to it —
     the source is refused (None, i.e. the declared sentinel fallback), never
-    silently re-anchored to some other session's window."""
+    silently re-anchored to some other session's window. (P1-2: the exchange
+    calendar threaded here is the OVERLAY's own 22-session calendar so the
+    re-anchor mutant still lands on a window the map fully covers — the
+    kill needs the mutated call to answer a median, not None.)"""
     overlay = load_derived_surface(v2_capture, staleness_sessions=10)
     adapter = VwapPitSurface(
         overlay,
         spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}},
         spot_v2=_v2_map(),  # every session of the 22-session calendar
+        exchange_calendar=overlay.calendar,
     )
     saturday = V2_FIRST + timedelta(days=5)  # 2025-04-19: inside the span, never a session
     assert saturday not in V2_SESSIONS
     assert adapter._dollar_volume_as_of(SPY, saturday, publication_instant(V2_VISIBLE)) is None
+
+
+def _exchange_calendar():
+    """The repo-adopted EXCHANGE calendar (0.2.1 ruling, data/g4/
+    calendar-decision.json "repo-generated-calendar"): the committed,
+    checksummed NYSE fixture `research_protocol.yaml` itself declares —
+    threaded into the adapter as an explicit constructor dependency."""
+    from tree_options.time.calendar import StaticSessionCalendar
+
+    return StaticSessionCalendar(
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json",
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.sha256",
+    )
+
+
+def test_exchange_session_missing_from_every_capture_fails_closed(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """(P1-2, Codex round 1 — the Jan-16 scenario) The 20-session window is
+    enumerated on the EXCHANGE calendar, never on the overlay's union of
+    CAPTURED dates: a market session missing from every capture vanishes
+    from the overlay calendar, and a window sliced on that union
+    SELF-CERTIFIES as contiguity — the hole is simply not in the slice, the
+    v2 proxy looks complete, and the median PASSES where the design says
+    fail-closed. Here the proxy covers every CAPTURED session of the window
+    and exactly one EXCHANGE session (2025-04-24, a regular NYSE Thursday)
+    is absent everywhere: the answer must be the declared sentinel."""
+    hole = date(2025, 4, 24)
+    exchange = _exchange_calendar()
+    assert exchange.is_session(hole)  # the market was open — the capture missed it
+    assert hole in V2_WINDOW  # inside the 20-session window ending at the visible one
+    capture = _write_v2_capture(
+        tmp_path_factory.mktemp("vwappitx") / "capture", skip=frozenset({hole})
+    )
+    overlay = load_derived_surface(capture, staleness_sessions=10)
+    assert hole not in overlay.calendar.sessions()  # the hole self-erased
+    source = {SPY: {s: (Decimal(V2_CLOSE), V2_VOLUME) for s in overlay.calendar.sessions()}}
+    assert hole not in source[SPY]  # complete on the overlay calendar, absent at the hole
+    adapter = VwapPitSurface(
+        overlay,
+        spot={SPY: {s: SPOT_LEVEL for s in overlay.calendar.sessions()}},
+        spot_v2=source,
+        exchange_calendar=exchange,
+    )
+    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
+    stamp = snap.underlying_20d_median_dollar_volume
+    assert stamp is not None and stamp.value == Decimal("0"), (
+        "an exchange session missing from every capture must fail closed to the"
+        " declared sentinel — never a median over the 19 sessions that happened"
+        " to be captured"
+    )
+    protocol = load_protocol()
+    by_rule = {
+        r.rule: r
+        for r in CandidateFilter.from_protocol_volume_flow(overlay.calendar, protocol)
+        .evaluate(snap)
+        .results
+    }
+    assert by_rule["underlying_liquidity"].status == "FAIL"
+
+
+def test_a_true_20_exchange_session_window_answers_the_median(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """(P1-2, the PASS-path control) The same holed capture with the hole
+    MAPPED in the v2 proxy: the window is now exactly the 20 consecutive
+    EXCHANGE sessions ending at the visible session, all present — the
+    median answers and the rule passes. The guard refuses holes, not the
+    lane."""
+    hole = date(2025, 4, 24)
+    exchange = _exchange_calendar()
+    capture = _write_v2_capture(
+        tmp_path_factory.mktemp("vwappitxc") / "capture", skip=frozenset({hole})
+    )
+    overlay = load_derived_surface(capture, staleness_sessions=10)
+    source = {
+        SPY: {
+            **{s: (Decimal(V2_CLOSE), V2_VOLUME) for s in overlay.calendar.sessions()},
+            hole: (Decimal(V2_CLOSE), V2_VOLUME),
+        }
+    }
+    adapter = VwapPitSurface(
+        overlay,
+        spot={SPY: {s: SPOT_LEVEL for s in overlay.calendar.sessions()}},
+        spot_v2=source,
+        exchange_calendar=exchange,
+    )
+    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
+    stamp = snap.underlying_20d_median_dollar_volume
+    assert stamp is not None
+    assert stamp.value == Decimal("48000000000")
+    assert stamp.provenance == "vendor"
+
+
+def test_without_an_exchange_calendar_the_v2_source_never_answers(v2_capture) -> None:
+    """(P1-2) The exchange calendar is an EXPLICIT constructor dependency —
+    never a global, never auto-loaded: without it, contiguity on the
+    exchange cannot be proven and the v2 source must fail closed (the
+    declared sentinel), exactly as with no v2 source at all."""
+    overlay = load_derived_surface(v2_capture, staleness_sessions=10)
+    adapter = VwapPitSurface(
+        overlay,
+        spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}},
+        spot_v2=_v2_map(),  # complete on every captured session
+    )
+    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
+    stamp = snap.underlying_20d_median_dollar_volume
+    assert stamp is not None and stamp.value == Decimal("0")
 
 
 # ---- end to end: the UNMODIFIED backtest over the adapter --------------------------
