@@ -297,12 +297,26 @@ def run_options_backtest(
     end_session: date | None = None,
     fee_model: PerContractFeeModel | None = None,
     max_quote_age_seconds: int = DECLARED_MAX_QUOTE_AGE_SECONDS,
+    execution_calendar: SessionCalendar | None = None,
 ) -> OptionsBacktestResult:
     """Run one arm of the options strategy over supplied PIT signals.
 
     `candidate_filter` and `max_quote_age_seconds` are caller-supplied so
     the trial config hash owns them (the 7200 s override is the owner's
-    declared ruling; the protocol file stays byte-frozen)."""
+    declared ruling; the protocol file stays byte-frozen).
+
+    (P1-1, Codex round 1) THE DUAL-CALENDAR SEAM. `calendar` is the
+    DECISION GRID (the era profile's Friday-only grid): it sequences
+    decisions, entries, exits, marks and the session loop. The FILL
+    ENGINE carries its own session checks (`is_session`,
+    `session_close`, ordinal recency, `EXECUTION_INSTANT_MISMATCH`),
+    and those must run against the EXECUTION calendar — the daily
+    calendar the bars are stamped on (the overlay's
+    `MassiveDerivedSessionCalendar`) — so a Friday decision at D can
+    fill at the next grid Friday D+1 against the previous TRADING day's
+    bar. `execution_calendar=None` (the default) keeps ONE calendar for
+    both roles: lane-1/synthetic behavior is byte-identical."""
+    fill_calendar = calendar if execution_calendar is None else execution_calendar
     bar_map: dict[tuple[str, date], BarRecord] = {}
     for bar in dataset.bars:
         bar_map[(bar.security_id, bar.session)] = bar
@@ -346,7 +360,13 @@ def run_options_backtest(
     )
 
     fees = fee_model or PerContractFeeModel()
-    engine = FillEngine(calendar, fee_model=fees, max_quote_age_seconds=max_quote_age_seconds)
+    # (P1-1) the fill engine runs on the EXECUTION calendar; the grid
+    # calendar keeps every other responsibility in this backtest
+    engine = FillEngine(
+        fill_calendar,
+        fee_model=fees,
+        max_quote_age_seconds=max_quote_age_seconds,
+    )
     ledger = LedgerBook(initial_cash)
     counters = OptionsCounters()
     audit = CandidateAudit()

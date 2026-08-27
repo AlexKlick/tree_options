@@ -1083,9 +1083,9 @@ class _LaneDataset:
     actions: tuple[object, ...] = ()
 
 
-def _lane_dataset(world_id: str) -> _LaneDataset:
+def _lane_dataset(world_id: str, sessions: tuple[date, ...] = SESSIONS) -> _LaneDataset:
     bars = []
-    for session in SESSIONS:
+    for session in sessions:
         bars.append(
             BarRecord(
                 security_id=SPY,
@@ -1161,3 +1161,193 @@ def test_surface_is_option_pit_surface_shaped(surface) -> None:
         assert callable(getattr(surface, name)), name
     assert isinstance(surface.snapshot_id, str)
     assert hasattr(surface, "overlay")
+
+
+# ---- (P1-1, Codex round 1) the dual-calendar seam: Friday grid x daily bars ---------
+
+
+# The Codex scenario: a world whose decision grid is Fridays-only and whose
+# bars are DAILY. A Friday decision at D executes at the NEXT GRID Friday
+# D+1 (2025-04-04 -> 2025-04-11); the adapter supplies the previous TRADING
+# day's bar (2025-04-10, a Thursday that is not a grid session). Under ONE
+# calendar both horns fail: the daily calendar collapses the ruled geometry
+# (13 consecutive daily sessions are never a subset of a Fridays-only set,
+# and arm-A's hold becomes 4 days, not 4 weeks); the Friday-only calendar
+# rejects the daily bar (BAR_SESSION_NOT_IN_CALENDAR / BAR_NOT_MOST_RECENT).
+A_EXP = date(2025, 5, 16)  # the third Friday of May 2025
+# daily bars: the Thursdays the decisions/fills read, through the headroom
+# past the exit execution (the backtest's next-open look-ahead needs one
+# session past end_session on WHICH EVER calendar carries the loop)
+A_BAR_SPAN = (date(2025, 3, 20), date(2025, 6, 5))
+A_DECISION = date(2025, 4, 4)  # a grid Friday, DTE 42 to A_EXP
+A_EXECUTION = date(2025, 4, 11)  # the NEXT GRID Friday
+A_BAR_SESSION = date(2025, 4, 10)  # the previous TRADING day's bar
+
+
+def _a_ticker() -> str:
+    return f"O:SPY{A_EXP:%y%m%d}C00600000"
+
+
+def _a_premium(session: date) -> str:
+    price = bs_price(
+        spot=float(SPOT_LEVEL),
+        strike=600.0,
+        dte_calendar_days=(A_EXP - session).days,
+        iv=IV,
+        risk_free=0.03,
+        dividend_yield=0.0,
+        call_put="C",
+    )
+    return f"{price:.4f}"
+
+
+def _friday_grid(first: date, last: date):
+    """The Friday-only decision grid derived from the NYSE fixture (the era
+    profile's `friday_only_grid_derived_from_the_nyse_fixture`): the
+    fixture's Friday sessions in [first, last] — holiday Fridays (Good
+    Friday) are absent because the FIXTURE omits them, not by local rule."""
+    from tree_options.data.real_overlay import RealSessionCalendar
+
+    exchange = _exchange_calendar()
+    fridays = tuple(s for s in exchange.sessions() if s.weekday() == 4 and first <= s <= last)
+    assert fridays and fridays[0].weekday() == 4
+    return RealSessionCalendar(fridays, frozenset())
+
+
+def _write_dual_calendar_capture(root: Path) -> Path:
+    exchange = _exchange_calendar()
+    bar_sessions = tuple(s for s in exchange.sessions() if A_BAR_SPAN[0] <= s <= A_BAR_SPAN[1])
+    assert len(bar_sessions) > 30
+    grid = _friday_grid(date(2025, 3, 21), date(2025, 5, 30))
+    masters = root / "masters"
+    masters.mkdir(parents=True)
+    (masters / f"spy_{grid.sessions()[0]:%Y-%m-%d}.json").write_text(
+        fx.contracts_payload(
+            results=(
+                fx.contract_result(
+                    ticker=_a_ticker(),
+                    underlying=SPY,
+                    expiration=f"{A_EXP:%Y-%m-%d}",
+                    strike="600",
+                    contract_type="call",
+                ),
+            ),
+            as_of=f"{grid.sessions()[0]:%Y-%m-%d}",
+        ),
+        encoding="utf-8",
+    )
+    bars = root / "bars"
+    bars.mkdir()
+    rows = tuple(
+        fx.bar(
+            v=FLOW_VOLUME,
+            t=_t(session),
+            vw=_a_premium(session),
+            o=_a_premium(session),
+            c=_a_premium(session),
+            h=str(Decimal(_a_premium(session)) + Decimal("0.10")),
+            low=str(Decimal(_a_premium(session)) - Decimal("0.10")),
+            n="24",
+        )
+        for session in bar_sessions
+    )
+    (bars / "bars_c600.json").write_text(
+        fx.bars_payload(ticker=_a_ticker(), results_count=str(len(rows)), results=rows),
+        encoding="utf-8",
+    )
+    (root / "spot_proxy.json").write_text(
+        '{"SPY": {' + ", ".join(f'"{s:%Y-%m-%d}": "{SPOT_LEVEL}"' for s in bar_sessions) + "}}",
+        encoding="utf-8",
+    )
+    return root
+
+
+def _volume_flow_filter_022(protocol, calendar) -> CandidateFilter:
+    """The protocol's volume-flow regime with the ONE ruled 0.2.2 deviation
+    the real lane runs under (earnings rule off — without it 0.2.1 answers
+    NOT_EVALUABLE 'missing' on spans_earnings=None and the lane trades
+    zero, the w2 ruling). Every other knob at the protocol's values,
+    including the $50M liquidity minimum."""
+    d = protocol.option_candidate_defaults
+    lf = d.liquidity_volume_flow
+    assert lf is not None
+    return CandidateFilter(
+        calendar,
+        dte_min=d.dte_min,
+        dte_max=d.dte_max,
+        abs_delta_min=d.abs_delta_min,
+        abs_delta_max=d.abs_delta_max,
+        standard_deliverable_only=d.standard_deliverable_only,
+        min_open_interest=d.min_open_interest,
+        min_same_day_volume=d.min_same_day_volume,
+        volume_only_if_already_available=d.volume_only_if_already_available,
+        max_spread_fraction_of_midpoint=d.max_spread_fraction_of_midpoint,
+        min_underlying_20d_median_dollar_volume=d.min_underlying_20d_median_dollar_volume,
+        exclude_earnings_spanning_hold=False,  # the ruled 0.2.2 shape
+        liquidity_regime="volume_flow",
+        flow_min_session_volume=lf.flow_min_session_volume,
+        accepted_delta_provenance=lf.abs_delta_provenance_accepted,
+    )
+
+
+def test_dual_calendar_friday_grid_daily_bars_fills(tmp_path_factory) -> None:
+    """(P1-1, Codex round 1) The healthy scenario: the DECISION GRID
+    (Friday-only, per the era profile) drives the backtest's decision
+    sequencing — close(D) decision, entry at the next GRID Friday D+1,
+    arm-A hold of 4 GRID sessions (4 weeks) — while the EXECUTION calendar
+    (the overlay's daily MassiveDerivedSessionCalendar) drives the fill
+    engine's session checks, so the adapter's previous-TRADING-day bar
+    (Thursday 2025-04-10) fills at Friday 2025-04-11 without
+    BAR_SESSION_NOT_IN_CALENDAR or BAR_NOT_MOST_RECENT. RED before P1-1
+    under either single-calendar choice (demonstrated at value level in
+    reallane-r1-p1-1-red.log)."""
+    capture = _write_dual_calendar_capture(tmp_path_factory.mktemp("dualcal") / "capture")
+    overlay = load_derived_surface(capture, staleness_sessions=60)
+    grid = _friday_grid(date(2025, 3, 21), date(2025, 5, 30))
+    daily = overlay.calendar
+    exchange = _exchange_calendar()
+    assert A_DECISION in grid.sessions() and A_EXECUTION in grid.sessions()
+    assert A_BAR_SESSION in daily.sessions() and A_BAR_SESSION not in grid.sessions()
+    assert exchange.is_session(A_BAR_SESSION)
+    adapter = VwapPitSurface(
+        overlay,
+        spot={SPY: {s: SPOT_LEVEL for s in daily.sessions()}},
+        spot_v2={
+            SPY: {
+                s: (Decimal("600.00"), 80_000_000)
+                for s in exchange.sessions()
+                if date(2025, 3, 6) <= s <= date(2025, 5, 15)
+            }
+        },
+        exchange_calendar=exchange,
+    )
+    protocol = load_protocol()
+    result = run_options_backtest(
+        calendar=grid,
+        execution_calendar=daily,
+        surface=cast(GeneratedOptionOverlay, adapter),  # the lane-2 cast, as documented
+        dataset=_lane_dataset(adapter.snapshot_id, daily.sessions()),
+        candidate_filter=_volume_flow_filter_022(protocol, daily),
+        signals=(
+            OptionSignal(decision_session=A_DECISION, security_id=SPY, score=0.9, label=0.01),
+        ),
+        initial_cash=Decimal("1000000.00"),
+        config=OptionsStrategyConfig(),
+        arm="A",
+        end_session=date(2025, 5, 16),  # the exit execution; the grid keeps headroom past it
+    )
+    buys = [f for f in result.fills if f.side == "buy"]
+    assert buys, f"no entry fills: {dict(result.counters.entry_fill_rejections)}"
+    assert not any(code.startswith("BAR_") for code in result.counters.entry_fill_rejections), dict(
+        result.counters.entry_fill_rejections
+    )
+    for fill in buys:
+        assert fill.execution_session == A_EXECUTION  # the NEXT GRID Friday, not the next day
+        audit = next(a for a in result.fill_audit if a.fill_id == fill.fill_id)
+        assert audit.decision_session == A_DECISION
+        assert audit.execution_session == A_EXECUTION
+        # the selected bar is the previous TRADING day's: Thursday 2025-04-10
+        assert audit.quote_received_at == publication_instant(A_BAR_SESSION)
+    # the arm-A hold is 4 GRID sessions (weeks): entry exec 04-11, exit exec 05-16
+    sells = [f for f in result.fills if f.side == "sell"]
+    assert sells and all(f.execution_session == date(2025, 5, 16) for f in sells)

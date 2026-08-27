@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 
@@ -9,6 +10,7 @@ import pytest
 
 from tests.conftest import REPO_ROOT
 from tree_options.data.authority import PointInTimeDataset
+from tree_options.data.bars import BarRecord
 from tree_options.data.options_pit import OptionPitSurface
 from tree_options.evaluation.stats import ScoredLabel
 from tree_options.options import OptionsStrategyConfig
@@ -1006,3 +1008,314 @@ def test_the_seal_refusal_still_fires_on_both_lanes(world, protocol, tmp_path, l
     finally:
         registry.close()
     assert trial_count(tmp_path / f"seal_both_lanes_{lane}.db") == 0
+
+
+# ---- (P1-1, Codex round 1) the dual-calendar seam at the runner level ----------------
+
+
+def _friday_grid():
+    """The era's Friday-only decision grid, derived from the NYSE fixture
+    (`friday_only_grid_derived_from_the_nyse_fixture`): the fixture's
+    Friday sessions whose 48th (index 47) is the era profile's first
+    enumerated test session 2025-08-01, running through 2026-06-26 — the
+    execution-tail headroom past the last test quarter (the era profile's
+    deepest execution mark). Holiday Fridays (Good Friday) are absent
+    because the FIXTURE omits them."""
+    from tree_options.data.real_overlay import RealSessionCalendar
+    from tree_options.time.calendar import StaticSessionCalendar
+
+    exchange = StaticSessionCalendar(
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json",
+        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.sha256",
+    )
+    fridays = [s for s in exchange.sessions() if s.weekday() == 4 and s <= date(2026, 6, 26)]
+    start = fridays.index(date(2025, 8, 1)) - 47
+    grid = RealSessionCalendar(tuple(fridays[start:]), frozenset())
+    sessions = grid.sessions()
+    assert sessions[47] == date(2025, 8, 1)
+    assert date(2025, 4, 18) not in sessions  # Good Friday: the fixture omits it
+    return grid
+
+
+# (expiry, bar span) per active contract: bars on every NYSE session of the
+# span — the Thursdays the decisions/entries read, the Thursdays the fills
+# select, and the Fridays that keep each contract's observed listing window
+# open through its last execution.
+_ERA_CONTRACTS = (
+    (date(2025, 9, 19), (date(2025, 7, 24), date(2025, 8, 22))),
+    (date(2025, 12, 19), (date(2025, 10, 23), date(2025, 11, 21))),
+    (date(2026, 3, 20), (date(2026, 1, 22), date(2026, 2, 20))),
+    (date(2026, 6, 19), (date(2026, 4, 23), date(2026, 5, 1))),
+)
+
+
+def _era_scored_rows(grid) -> tuple[ScoredLabel, ...]:
+    """One SPY row per grid Friday whose DTE to the then-live expiry sits
+    in the protocol band [30, 60] — a decision inside every fold's test
+    quarter (the runner refuses a fold with no scored test rows via
+    max() on an empty sequence, so each quarter must carry at least one).
+    The scores are the null model's own under the trial's declared seed
+    (P1-3's verification accepts nothing else)."""
+    from tree_options.trials.null_score import null_score
+
+    rows = []
+    for session in grid.sessions():
+        if session > date(2026, 5, 1):
+            continue
+        for expiry, _span in _ERA_CONTRACTS:
+            dte = (expiry - session).days
+            if 30 <= dte <= 60:
+                rows.append(
+                    ScoredLabel(
+                        security_id="SPY",
+                        session=session,
+                        score=null_score(seed="t-null/era", session=session, security_id="SPY"),
+                        label=0.01,
+                    )
+                )
+                break
+    assert len(rows) >= 12
+    return tuple(rows)
+
+
+@pytest.fixture(scope="module")
+def era_world(tmp_path_factory: pytest.TempPathFactory):
+    """The ruled real-lane geometry's world: a Friday-only decision grid and
+    DAILY Massive bars, built as a vendor-shaped capture through the fixture
+    builders (no network)."""
+    from decimal import Decimal as _Decimal
+
+    from tests.fixtures.massive_structural_sample import (
+        bar,
+        bars_payload,
+        contract_result,
+        contracts_payload,
+    )
+    from tests.unit.test_vwap_pit_surface import _exchange_calendar, _t
+    from tree_options.data.massive_overlay import load_derived_surface
+    from tree_options.synth_options.greeks import bs_price
+
+    grid = _friday_grid()
+    exchange = _exchange_calendar()
+    capture = tmp_path_factory.mktemp("eralane") / "capture"
+    masters = capture / "masters"
+    masters.mkdir(parents=True)
+    first_bar = min(span[0] for _e, span in _ERA_CONTRACTS)
+    (masters / f"spy_{first_bar:%Y-%m-%d}.json").write_text(
+        contracts_payload(
+            results=tuple(
+                contract_result(
+                    ticker=f"O:SPY{expiry:%y%m%d}C00600000",
+                    underlying="SPY",
+                    expiration=f"{expiry:%Y-%m-%d}",
+                    strike="600",
+                    contract_type="call",
+                )
+                for expiry, _span in _ERA_CONTRACTS
+            ),
+            as_of=f"{first_bar:%Y-%m-%d}",
+        ),
+        encoding="utf-8",
+    )
+    bars = capture / "bars"
+    bars.mkdir()
+    spot_sessions = set()
+    for expiry, (lo, hi) in _ERA_CONTRACTS:
+        span = [s for s in exchange.sessions() if lo <= s <= hi]
+        assert len(span) >= 5  # the decision Thursdays + the execution Friday span
+
+        def premium(session: date, _expiry: date = expiry) -> str:
+            price = bs_price(
+                spot=600.0,
+                strike=600.0,
+                dte_calendar_days=(_expiry - session).days,
+                iv=0.18,
+                risk_free=0.03,
+                dividend_yield=0.0,
+                call_put="C",
+            )
+            return f"{price:.4f}"
+
+        rows = tuple(
+            bar(
+                v="120",
+                t=_t(session),
+                vw=premium(session),
+                o=premium(session),
+                c=premium(session),
+                h=f"{_Decimal(premium(session)) + _Decimal('0.10')}",
+                low=f"{_Decimal(premium(session)) - _Decimal('0.10')}",
+                n="24",
+            )
+            for session in span
+        )
+        (bars / f"bars_{expiry:%Y%m%d}.json").write_text(
+            bars_payload(
+                ticker=f"O:SPY{expiry:%y%m%d}C00600000",
+                results_count=str(len(rows)),
+                results=rows,
+            ),
+            encoding="utf-8",
+        )
+        spot_sessions.update(span)
+    (capture / "spot_proxy.json").write_text(
+        '{"SPY": {' + ", ".join(f'"{s:%Y-%m-%d}": "600.00"' for s in sorted(spot_sessions)) + "}}",
+        encoding="utf-8",
+    )
+    overlay = load_derived_surface(capture, staleness_sessions=400)
+    return grid, overlay
+
+
+@dataclass(frozen=True)
+class _RealLaneDataset:
+    """The slice of `PointInTimeDataset` the runner and its backtest read
+    (snapshot identity + bars for the world boundary and the settlement
+    scans). Building the real dataset is the T-NULL driver's job."""
+
+    snapshot_id: str
+    bars: tuple[BarRecord, ...]
+    actions: tuple[object, ...] = ()
+
+
+def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, tmp_path) -> None:
+    """(P1-1, Codex round 1 — the fold-removal horn) The ruled geometry
+    (real_lane_split_override: H=5, E=2, val=6, test=13, roll=13,
+    min_train=34, all in GRID FRIDAYS) on the Friday grid yields the era
+    profile's THREE folds of THIRTEEN test Fridays with no 'no folds'
+    error — while the fill engine runs on the overlay's DAILY calendar.
+    Under the single DAILY calendar the same call removes every fold (13
+    consecutive daily sessions are never a subset of a Fridays-only world
+    set); under the single grid calendar the runner completes but
+    discloses no calendar identities. Lane 2 under the still-current 0.2.1
+    protocol trades zero (the earnings rule answers NOT_EVALUABLE on
+    spans_earnings=None, the w2 ruling) — the positions zero here is that
+    KNOWN refusal, pinned below, never a calendar failure."""
+    import json
+
+    from tree_options.data.bars import BarRecord
+    from tree_options.data.vwap_pit_surface import VwapPitSurface
+    from tree_options.protocol.era_profile import real_lane_split_override
+
+    grid, overlay = era_world
+    surface = VwapPitSurface(overlay)
+    world_id = overlay.spec.world_id
+    scored = _era_scored_rows(grid)
+    decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
+    dataset = _RealLaneDataset(
+        snapshot_id=world_id,
+        bars=(
+            BarRecord(
+                security_id="SPY",
+                session=decision_sessions[-1],
+                open=Decimal("600.00"),
+                high=Decimal("600.00"),
+                low=Decimal("600.00"),
+                close=Decimal("600.00"),
+                volume=1_000_000,
+                source="spot-proxy/declared",
+                source_record_id="SPY-20260501",
+                source_row_hash="0" * 64,
+                snapshot_id=world_id,
+                available_at=grid.session_close(decision_sessions[-1]),
+            ),
+        ),
+    )
+    registry = TrialRegistry(tmp_path / "era_folds.db")
+    try:
+        result = run_options_trial(
+            dataset=dataset,  # type: ignore[arg-type]
+            surface=surface,  # type: ignore[arg-type]
+            calendar=grid,
+            execution_calendar=overlay.calendar,
+            protocol=protocol,
+            world_id=world_id,
+            arm="A",
+            strategy_config=OptionsStrategyConfig(),
+            scored=scored,
+            model_family="null-sha256/1",
+            model_sha256=None,
+            hypothesis="unit: the ruled geometry on the Friday grid",
+            decision_sessions=decision_sessions,
+            options_manifest_hash="0" * 64,
+            registry=registry,
+            artifacts_dir=tmp_path / "era_folds",
+            repo=REPO_ROOT,
+            clock=FIXED_CLOCK,
+            split_override=real_lane_split_override(),
+            liquidity_lane=2,
+            score_seed="t-null/era",
+            allow_dirty=True,
+        )
+    finally:
+        registry.close()
+    assert result.n_folds == 3
+    body = json.loads(result.artifact_path.read_text(encoding="utf-8"))
+    payload = body["payload"]
+    # exactly the era profile's enumeration: three folds x 13 test Fridays,
+    # first test session 2025-08-01, quarters starting 08-01 / 10-31 / 01-30,
+    # 39 tested Fridays in total, pairwise disjoint
+    per_fold = payload["per_fold"]
+    assert [f["n_test_sessions"] for f in per_fold] == [13, 13, 13]
+    starts = [f["test_window"]["start"] for f in per_fold]
+    assert starts == ["2025-08-01", "2025-10-31", "2026-01-30"]
+    [s for f in per_fold for s in [f["test_window"]["start"], f["test_window"]["end"]]]
+    tested = sorted({s for fold in per_fold for s in _test_sessions_of(fold)})
+    assert len(tested) == 39  # 3 x 13, disjoint
+    # both calendar identities are DISCLOSED (additive keys): the grid and
+    # the overlay's daily calendar, by name, session count, and span
+    assert payload["decision_calendar"] == {
+        "name": "cboe-eod-real",
+        "n_sessions": len(grid.sessions()),
+        "first": grid.sessions()[0].isoformat(),
+        "last": grid.sessions()[-1].isoformat(),
+    }
+    assert payload["execution_calendar"]["n_sessions"] == len(overlay.calendar.sessions())
+    assert payload["execution_calendar"]["last"] == overlay.calendar.sessions()[-1].isoformat()
+    # the positions zero is the KNOWN 0.2.1 earnings refusal, never a fill
+    # failure: the earnings rule answered NOT_EVALUABLE and no BAR_* code fired
+    assert payload["pooled"]["n_positions"] == 0
+    rules = payload["counters"]["rule_histogram"]
+    assert rules.get("earnings_span", {}).get("NOT_EVALUABLE", 0) > 0
+    assert not any(
+        code.startswith("BAR_")
+        for code in payload["counters"]["rejections"].get("entry_fill_rejections", {})
+    )
+    # the scored rows are the null model's own under the declared seed (P1-3)
+    from tree_options.trials.null_score import null_score
+
+    for row in scored:
+        assert row.score == null_score(
+            seed="t-null/era", session=row.session, security_id=row.security_id
+        )
+
+
+def _test_sessions_of(fold: dict) -> list[str]:
+    """The fold's test-window sessions, re-derived from the grid span the
+    payload discloses (n_test_sessions consecutive grid Fridays starting at
+    test_window.start)."""
+
+    start = date.fromisoformat(fold["test_window"]["start"])
+    grid = _friday_grid()
+    index = grid.sessions().index(start)
+    return [s.isoformat() for s in grid.sessions()[index : index + fold["n_test_sessions"]]]
+
+
+def test_dual_calendar_lane_1_byte_identity_when_calendars_coincide(
+    world, protocol, tmp_path
+) -> None:
+    """(P1-1) Same object for both calendars -> the default: payload
+    byte-identical, config hash unchanged, NO calendar keys (the pure
+    addition rule — every existing pinned lane-1 artifact is untouched)."""
+    import json
+
+    _overlay, calendar, _snap, _ds = world
+    default = _run_trial(world, protocol, tmp_path, tag="cal_default")
+    explicit = _run_trial(
+        world, protocol, tmp_path, tag="cal_explicit", execution_calendar=calendar
+    )
+    assert default["stamp"]["config_hash"] == explicit["stamp"]["config_hash"]
+    assert json.dumps(default["payload"], sort_keys=True) == json.dumps(
+        explicit["payload"], sort_keys=True
+    )
+    assert "decision_calendar" not in default["payload"]
+    assert "execution_calendar" not in default["payload"]

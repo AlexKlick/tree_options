@@ -362,23 +362,30 @@ def _fold_backtest(
     config: OptionsStrategyConfig,
     arm: Arm,
     world_last_session: date,
+    execution_calendar: SessionCalendar | None = None,
 ) -> tuple[OptionsBacktestResult, tuple[date, ...]]:
     """One fold's backtest plus its EXECUTION TAIL: the evaluated sessions
     strictly after the fold's last test session (the END_BUFFER window where
     the exits, settlements and marks of test-session decisions land). The
     tail is what the holdout-seal disclosure (w5, verdict D7.2) tags —
     decision sessions stay out of the seal, tail consumption is disclosed,
-    never banned."""
+    never banned.
+
+    (P1-1) The DECISION GRID calendar (`calendar`) owns the tail: the
+    buffer is END_BUFFER GRID sessions deep, per the era profile's units.
+    The clamp is in DATE space — `world_last_session` is the last DAILY
+    bar session and need not be a grid session, so an ordinal comparison
+    would refuse exactly the dual-calendar world the seam exists to
+    serve; when the two calendars coincide it decides identically to the
+    ordinal form it replaces."""
     last_test_session = max(fold.test_sessions)
     last_execution = calendar.nth_after(max(row.session for row in fold_scored), 1)
     buffered = calendar.nth_after(last_execution, END_BUFFER_SESSIONS)
-    end_session = (
-        buffered
-        if calendar.ordinal(buffered) <= calendar.ordinal(world_last_session)
-        else world_last_session
-    )
+    last_grid_session = max(s for s in calendar.sessions() if s <= world_last_session)
+    end_session = buffered if buffered <= world_last_session else last_grid_session
     result = run_options_backtest(
         calendar=calendar,
+        execution_calendar=execution_calendar,
         surface=surface,
         dataset=dataset,
         candidate_filter=candidate_filter,
@@ -398,6 +405,20 @@ def _fold_backtest(
     )
     execution_tail = tuple(session for session in result.sessions if session > last_test_session)
     return result, execution_tail
+
+
+def _calendar_descriptor(calendar: SessionCalendar) -> dict[str, object]:
+    """(P1-1) The disclosure identity of one calendar: its declared name,
+    its session count, and its first/last session — enough for an artifact
+    to name WHICH calendar drove decisions and which drove fills, without
+    embedding the whole session list."""
+    sessions = calendar.sessions()
+    return {
+        "name": getattr(calendar, "name", type(calendar).__name__),
+        "n_sessions": len(sessions),
+        "first": sessions[0].isoformat(),
+        "last": sessions[-1].isoformat(),
+    }
 
 
 def _volume_flow_threshold(protocol: ResearchProtocol, override: int | None) -> int:
@@ -448,6 +469,7 @@ def run_options_trial(
     liquidity_lane: int = 1,
     flow_min_session_volume: int | None = None,
     score_seed: str | None = None,
+    execution_calendar: SessionCalendar | None = None,
     allow_dirty: bool = False,
 ) -> OptionsTrialResult:
     """Register, execute, stamp, and complete one options trial.
@@ -457,7 +479,18 @@ def run_options_trial(
     2 selects `from_protocol_volume_flow` for the Massive derived (vwap)
     lane. `flow_min_session_volume` is that regime's EXPLICIT hashed config
     key — default the protocol's ratified value (100), every deviation
-    stamped into the config hash. Neither key perturbs a lane-1 trial."""
+    stamped into the config hash. Neither key perturbs a lane-1 trial.
+
+    (P1-1, Codex round 1) `calendar` is the DECISION GRID (Friday-only on
+    the real lane): it drives splitting, embargo, fold/test windows,
+    decision-session stamps, the holdout guard, and the
+    execution-tail/end_session logic. `execution_calendar` is the EXECUTION
+    calendar (the overlay's daily `MassiveDerivedSessionCalendar`) the fill
+    engine's session checks run against. Omitting it (or passing the SAME
+    object) keeps one calendar for both roles — lane-1/synthetic payloads
+    and config hashes are byte-identical; a DIFFERENT object is disclosed
+    as additive `decision_calendar`/`execution_calendar` descriptors in
+    the payload and rides the config hash."""
     if world_id != dataset.snapshot_id or world_id != surface.snapshot_id:
         raise ValueError(
             f"world_id {world_id!r} must match dataset {dataset.snapshot_id!r} "
@@ -522,6 +555,18 @@ def run_options_trial(
     ).hexdigest()
 
     split = _split_params(protocol, split_override)
+    # (P1-1) the dual-calendar disclosure fires ONLY when the caller hands
+    # the runner a DISTINCT execution calendar: same object (or none) keeps
+    # the historical single-calendar config and payload byte-for-byte
+    calendars_differ = execution_calendar is not None and execution_calendar is not calendar
+    calendar_keys: dict[str, object] = (
+        {
+            "decision_calendar": _calendar_descriptor(calendar),
+            "execution_calendar": _calendar_descriptor(execution_calendar),
+        }
+        if calendars_differ
+        else {}
+    )
     config: dict[str, object] = {
         "runner": RUNNER_REVISION,
         "world_id": world_id,
@@ -549,6 +594,10 @@ def run_options_trial(
         # G5: the null-score generator's REQUIRED seed is a first-class
         # config key — the declared score model's input rides the hash
         **({"score_seed": score_seed} if score_seed is not None else {}),
+        # (P1-1) a dual-calendar trial binds BOTH calendar identities into
+        # its config hash: which grid split the folds and which calendar
+        # the fills ran on is trial identity, not an implementation detail
+        **calendar_keys,
         "model_family": model_family,
         "model_sha256": model_sha256,
         "split": split,
@@ -645,6 +694,7 @@ def run_options_trial(
                 else {}
             ),
             **({"score_seed": score_seed} if score_seed is not None else {}),
+            **calendar_keys,
             "model_family": model_family,
             "model_sha256": model_sha256,
             "split": split,
@@ -680,6 +730,8 @@ def run_options_trial(
             flow_min_session_volume=flow_threshold,
             score_seed=score_seed,
             split_label_horizon=split["label_horizon_sessions"],
+            execution_calendar=execution_calendar,
+            calendars_differ=calendars_differ,
         )
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifacts_dir / f"{trial_id}.json"
@@ -719,6 +771,8 @@ def _execute(
     flow_min_session_volume: int | None = None,
     score_seed: str | None = None,
     split_label_horizon: int = 5,
+    execution_calendar: SessionCalendar | None = None,
+    calendars_differ: bool = False,
 ) -> tuple[dict[str, object], _ODStats]:
     if liquidity_lane == 2:
         # G2: the Massive derived (vwap) lane's ratified regime — OI and the
@@ -761,6 +815,7 @@ def _execute(
             config=strategy_config,
             arm=arm,
             world_last_session=world_last_session,
+            execution_calendar=execution_calendar,
         )
         test_window = sorted(fold.test_sessions)
         sealed_tail_sessions = sorted(
@@ -983,4 +1038,10 @@ def _execute(
         # G5: the declared score model's seed is stamped in the payload so
         # the artifact discloses it without re-hashing the config
         payload["score_seed"] = score_seed
+    if calendars_differ and execution_calendar is not None:
+        # (P1-1) both calendar identities are DISCLOSED: which grid split
+        # the folds and which calendar the fill engine's session checks ran
+        # on — additive keys, absent when the two calendars coincide
+        payload["decision_calendar"] = _calendar_descriptor(calendar)
+        payload["execution_calendar"] = _calendar_descriptor(execution_calendar)
     return payload, stats
