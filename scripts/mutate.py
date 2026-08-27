@@ -3919,7 +3919,7 @@ MUTANTS = [
     dict(
         id="M314-r5b-spot-finiteness-gate-removed",
         owner="test_the_spot_constructor_refuses_non_finite_spots",
-        file="src/tree_options/data/massive_overlay.py",
+        file="src/tree_options/data/spot_token.py",
         anchor="    if not spot.is_finite():",
         replacement="    if False:",
         selectors=[f"{U}/test_vwap_pit_surface.py"],
@@ -3935,7 +3935,80 @@ MUTANTS = [
             " escapes as a raw decimal.InvalidOperation. Killing the"
             " shared gate fails BOTH refusals (constructor owner here;"
             " the loader's Infinity test fails under the same mutant —"
-            " verified in reallane-r5-mutantM314-red.log)"
+            " verified in reallane-r5-mutantM314-red.log). R6-P2 moved"
+            " the gate's body to tree_options/data/spot_token.py (the ONE"
+            " contract the census scripts now share); same anchor, same"
+            " killers — massive_overlay._validated_spot_token is a thin"
+            " rebranding wrapper around it"
+        ),
+    ),
+    dict(
+        id="M315-r6a-frozen-map-bypass",
+        owner="test_a_stateful_lying_surface_runs_identically_to_the_wired_surface",
+        file="src/tree_options/trials/options_run.py",
+        anchor="            return self._decision_closes[decision_session]",
+        replacement=("            return self._bound_underlying.decision_close(decision_session)"),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R6-P1 the frozen-map bypass: the wrapper's decision_close"
+            " falls back to the underlying surface's OVERRIDABLE method —"
+            " exactly the pre-R6 runtime, where the boundary verified the"
+            " method once per session and the run then consulted it again."
+            " The stateful probe (first call right, later calls 16:00)"
+            " passes every boundary guard, so under this mutant the lying"
+            " trial's candidate snapshot on the early-close Friday"
+            " 2025-11-28 is stamped 21:00Z, the filter answers"
+            " decision_coherence NOT_EVALUABLE, and the counters/artifact"
+            " DIVERGE from the correctly-wired run under one declared"
+            " configuration — only the identity assertion kills it. The"
+            " wrapper's other seams (unmapped-session refusal,"
+            " candidate_snapshot rebind) are deliberately NOT the owner:"
+            " honest surfaces behave identically under the bypass, so no"
+            " other test moves"
+        ),
+    ),
+    dict(
+        id="M316-r6b-census-spot-validation-dropped",
+        owner="test_the_census_spot_loader_refuses_non_finite_spots",
+        file="scripts/inspect_structural_coverage.py",
+        anchor=(
+            "    return validated_spot_token(where, session, value, refuse=StructuralCoverageError)"
+        ),
+        replacement="    return _dec(value, where)",
+        selectors=[f"{U}/test_inspect_structural_coverage.py"],
+        invariant=(
+            "R6-P2 the census loader's validation dropped — the return to"
+            " the SECOND contract: _dec accepts 'Infinity' and the old"
+            " <= 0-only gate let POSITIVE infinity LOAD, so an"
+            " explicit-date infinite value satisfied the census's"
+            " presence-only check, classify_pair answered COMPLETE, and a"
+            " malformed capture exited 0. The shared-validator delegation"
+            " is the entire fix on this side; gutting it re-opens the"
+            " probe (the owner fails on BOTH parameters — Infinity loads,"
+            " NaN escapes as a raw decimal.InvalidOperation — and the"
+            " census-side exit-2 test fails under the same mutant)"
+        ),
+    ),
+    dict(
+        id="M317-r6c-flat-form-presence-reverted",
+        owner="test_a_flat_form_spot_proxy_covers_every_session_friday",
+        file="scripts/build_coverage_census.py",
+        anchor=(
+            "            spot_present = friday_date in spot_sessions"
+            " or SPOT_SENTINEL_SESSION in spot_sessions"
+        ),
+        replacement="            spot_present = friday_date in spot_sessions",
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "R6-P2 the flat-form presence check reverted to exact-Friday"
+            " membership only: the loader stores the documented"
+            ' all-session FLAT form ({"SPY": "600.00"}) under the'
+            " date.min sentinel, so a valid flat proxy marks every"
+            " session Friday SPOT_MISSING_SESSION and the census exits 5"
+            " — the exact reproduced defect. The sentinel disjunct is the"
+            " whole fix; the pinned-bytes and manifest guards still pass"
+            " on this capture (no masking), so only the flat-form census"
+            " kills it"
         ),
     ),
 ]
