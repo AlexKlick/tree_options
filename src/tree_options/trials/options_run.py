@@ -36,14 +36,15 @@ import hashlib
 import json
 import math
 import statistics
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 
 from tree_options.backtest.options import Arm, OptionsBacktestResult, run_options_backtest
-from tree_options.candidates.filters import CandidateFilter
+from tree_options.candidates.filters import CandidateFilter, CandidateSnapshot
 from tree_options.data.authority import PointInTimeDataset
 from tree_options.data.options_pit import OptionPitSurface
 from tree_options.evaluation.stats import ScoredLabel, backtest_summary
@@ -58,6 +59,7 @@ from tree_options.protocol.schema import ResearchProtocol
 from tree_options.protocol.stamping import build_stamp, write_artifact
 from tree_options.registry.scope import TrialScope
 from tree_options.registry.sqlite import TrialRegistry
+from tree_options.schemas.options import OptionContract
 from tree_options.schemas.trial import TrialRecord
 from tree_options.splitting.splitter import Fold, WalkForwardSplitter
 from tree_options.time.calendar import (
@@ -464,6 +466,74 @@ def _volume_flow_threshold(protocol: ResearchProtocol, override: int | None) -> 
     return value
 
 
+class _BoundDecisionSurface:
+    """(R6-P1, Codex round 6) THE FROZEN DECISION INSTANTS, bound around one
+    surface for the duration of a run.
+
+    The boundary (`run_options_trial`) verifies `surface.decision_close(s)`
+    against the stamped calendar ONCE per decision session before
+    registration — but the runtime then called the same OVERRIDABLE method
+    again (`options/strategy.py`'s candidate/expiry/strike reads, and the
+    surfaces' own `candidate_snapshot`, which derives its stamped
+    `decision_at` from `self.decision_close`), so a STATEFUL subclass
+    answering the stamped close on each session's FIRST call and something
+    else on later calls passed every boundary comparison while the wrong
+    instant reached `build_candidates` (Codex round 6's call-sequence
+    probe: pre_registration_equal=True, runtime_equal=False — on an
+    early-close Friday a 14:00-published action was then treated as known
+    at the true 13:00 decision, INV-02/INV-14 at runtime).
+
+    This wrapper makes the runtime consume the boundary-verified values
+    themselves, never the surface's method:
+
+    - `decision_close(s)` answers the frozen instant and REFUSES
+      (fail-closed) any session the boundary never verified — nothing falls
+      back to the underlying method, so statefulness cannot express itself;
+    - `candidate_snapshot(...)` executes the UNDERLYING's own method with
+      `self` bound to THIS wrapper (the one decision-side read that lives
+      INSIDE the surface), so its `self.decision_close(...)` resolves to
+      the frozen map too — every attribute it reads beyond that delegates
+      unchanged to the underlying surface;
+    - everything else delegates unchanged (`__getattr__`).
+
+    Byte-identical for every wired configuration: the frozen instants ARE
+    the stamped calendar's closes, which is exactly what an honest surface
+    answers, so nothing is stamped, hashed, or registered differently. The
+    static type stays `OptionPitSurface` by the documented adapter contract
+    (static callers cast — `tests/unit/test_massive_overlay.py`); this
+    runner performs that cast exactly once, at the wrap site."""
+
+    def __init__(
+        self, underlying: OptionPitSurface, decision_closes: Mapping[date, datetime]
+    ) -> None:
+        self._bound_underlying = underlying
+        self._decision_closes: dict[date, datetime] = dict(decision_closes)
+
+    def decision_close(self, decision_session: date) -> datetime:
+        try:
+            return self._decision_closes[decision_session]
+        except KeyError:
+            raise ValueError(
+                f"no frozen decision instant for session"
+                f" {decision_session.isoformat()}: the run consumes only the"
+                " boundary-verified decision sessions — refusing fail-closed"
+                " rather than consulting the surface's overridable"
+                " decision_close()"
+            ) from None
+
+    def candidate_snapshot(
+        self, contract: OptionContract, decision_session: date
+    ) -> CandidateSnapshot:
+        # Rebind: run the underlying's own method with self = THIS wrapper,
+        # so the decision_at it stamps comes from the frozen map while every
+        # other attribute it touches delegates to the real surface.
+        method = type(self._bound_underlying).candidate_snapshot
+        return method(self, contract, decision_session)  # type: ignore[arg-type]
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._bound_underlying, name)
+
+
 def run_options_trial(
     *,
     dataset: PointInTimeDataset,
@@ -648,6 +718,22 @@ def run_options_trial(
                 " disagrees with its disclosed calendar cannot be bound to"
                 " this trial; refusing before registration"
             )
+    # (R6-P1, Codex round 6) FREEZE the verified decision instants. The loop
+    # above is what VERIFIES them — one call per session, compared against
+    # the stamped calendar; its refusals are unchanged. But verification
+    # alone left the runtime consulting the same OVERRIDABLE method again,
+    # so a stateful surface (first call right, later calls wrong) slipped
+    # every comparison while the wrong instant reached build_candidates.
+    # The values just verified ARE the trial's own calendar's closes; the
+    # run below consumes EXACTLY those, through `_BoundDecisionSurface` —
+    # its decision_close answers the frozen map (refusing any session the
+    # boundary never verified) and its candidate_snapshot rebinds the
+    # surface's own method onto the wrapper, so the underlying's
+    # decision_close is never consulted again. Byte-identical for every
+    # wired configuration: the frozen instants are what an honest surface
+    # answers, so no key, hash, or stamp moves.
+    decision_closes = {session: calendar.session_close(session) for session in normalized_sessions}
+    bound_surface = _BoundDecisionSurface(surface, decision_closes)
     decision_sessions_sha256 = hashlib.sha256(
         json.dumps(
             [session.isoformat() for session in normalized_sessions],
@@ -815,7 +901,9 @@ def run_options_trial(
     try:
         payload, stats = _execute(
             dataset=dataset,
-            surface=surface,
+            # (R6-P1) the run consumes the FROZEN boundary-verified instants —
+            # the wrapper, not the caller's (overridable) surface
+            surface=cast(OptionPitSurface, bound_surface),
             calendar=calendar,
             protocol=protocol,
             folds=folds,

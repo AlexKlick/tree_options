@@ -1611,16 +1611,28 @@ def test_an_overriding_decision_calendar_is_a_different_identity(world) -> None:
 # ---- (R4-P1, Codex round 4) the surface's decision-calendar authority BOUND ----------
 
 
-def _run_era_trial(era_world, protocol, tmp_path, *, tag: str, surface):
+def _run_era_trial(
+    era_world,
+    protocol,
+    tmp_path,
+    *,
+    tag: str,
+    surface,
+    scored: tuple[ScoredLabel, ...] | None = None,
+    strategy_config: OptionsStrategyConfig | None = None,
+):
     """The ruled era configuration — `test_dual_calendar_ruled_geometry_
     yields_the_era_folds`' own — parameterized ONLY by the surface: the
     exact trial configuration the R4-P1 boundary judges, so the unwired and
-    the wired surface run under byte-identical everything else."""
+    the wired surface run under byte-identical everything else. (R6-P1)
+    `scored`/`strategy_config` override the ruled rows/config for the
+    call-sequence probe, whose divergence session is an early-close Friday
+    the ruled scored set never decides on."""
     from tree_options.protocol.era_profile import real_lane_split_override
 
     grid, overlay = era_world
     world_id = overlay.spec.world_id
-    scored = _era_scored_rows(grid)
+    scored = _era_scored_rows(grid) if scored is None else scored
     decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
     registry = TrialRegistry(tmp_path / f"{tag}.db")
     try:
@@ -1650,7 +1662,9 @@ def _run_era_trial(era_world, protocol, tmp_path, *, tag: str, surface):
             protocol=protocol,
             world_id=world_id,
             arm="A",
-            strategy_config=OptionsStrategyConfig(),
+            strategy_config=(
+                strategy_config if strategy_config is not None else OptionsStrategyConfig()
+            ),
             scored=scored,
             model_family="null-sha256/1",
             model_sha256=None,
@@ -1978,3 +1992,151 @@ def test_a_behaviorally_bound_subclass_runs_unchanged(era_world, protocol, tmp_p
         code.startswith("BAR_")
         for code in body["payload"]["counters"]["rejections"].get("entry_fill_rejections", {})
     )
+
+
+# ---- (R6-P1, Codex round 6) the FROZEN decision instants: stateful surfaces ----------
+
+
+class _StatefulLyingSurface(VwapPitSurface):
+    """Codex round 6's reproduced probe class: discloses the stamped grid
+    (so the R4-P1 digest binds) and answers each session's FIRST
+    `decision_close()` call with the grid's own close (so the R5-P1
+    equality loop passes), then every LATER call with the no-early-close
+    twin's 16:00 — exactly the call-sequence shape a single-shot boundary
+    comparison cannot see: `pre_registration_equal=True`,
+    `runtime_equal=False`."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)
+        self._lying_grid = grid
+        self._no_early_closes = RealSessionCalendar(grid.sessions(), frozenset())
+        self._answered: set[date] = set()
+
+    @property
+    def decision_calendar(self):
+        return self._lying_grid
+
+    def decision_close(self, decision_session: date) -> datetime:
+        if decision_session not in self._answered:
+            self._answered.add(decision_session)
+            return self._lying_grid.session_close(decision_session)
+        return self._no_early_closes.session_close(decision_session)
+
+
+def _r6_probe_scored(grid) -> tuple[ScoredLabel, ...]:
+    """The call-sequence probe's scored rows: the ruled set PLUS a decision
+    on 2025-11-28 — the grid's early-close Friday inside fold 2's test
+    window, which the ruled scored set never decides on (no era expiry sits
+    in its [30, 60] DTE band). Under the probe's [15, 30] band the 2025-12
+    -19 expiry IS in band from that Friday, so the trial actually builds a
+    candidate there and the 13:00/16:00 disagreement reaches
+    `candidate_snapshot` -> the filter's decision_coherence rule."""
+    from tree_options.trials.null_score import null_score
+
+    rows = list(_era_scored_rows(grid))
+    rows.append(
+        ScoredLabel(
+            security_id="SPY",
+            session=date(2025, 11, 28),
+            score=null_score(seed="t-null/era", session=date(2025, 11, 28), security_id="SPY"),
+            label=0.01,
+        )
+    )
+    return tuple(rows)
+
+
+def test_a_stateful_lying_surface_runs_identically_to_the_wired_surface(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R6-P1, Codex round 6 — the reproduced call-sequence probe) The
+    boundary VERIFIES `decision_close()` once per session before
+    registration; the runtime then called the same OVERRIDABLE method again
+    (`strategy.py`'s candidate/expiry/strike reads and the surfaces'
+    `candidate_snapshot`), so a STATEFUL subclass — first call right, later
+    calls 16:00 — passed every preflight comparison while the wrong instant
+    reached build_candidates: on the early-close Friday 2025-11-28 the
+    probe's candidate snapshot is stamped 21:00Z where the stamped grid
+    closes 18:00Z, the filter's decision_coherence rule answers
+    NOT_EVALUABLE, and the trial's counters and artifact DIVERGE from a
+    correctly-wired surface's run under the same declared configuration
+    (INV-02 + INV-14 at runtime). The runner now FREEZES the
+    boundary-verified instants and the run consumes ONLY those, so the
+    stateful surface cannot express itself: both trials below are
+    byte-identical (RED before R6-P1: the payloads and counters diverge —
+    the wrong instant reached build_candidates)."""
+    import json
+
+    from tree_options.time.calendar import calendar_content_sha256
+
+    grid, overlay = era_world
+    lf = protocol.option_candidate_defaults.liquidity_volume_flow
+    assert lf is not None
+    wired = VwapPitSurface(
+        overlay,
+        decision_calendar=grid,
+        underlying_liquidity_term=lf.underlying_liquidity_term,
+    )
+    liar = _StatefulLyingSurface(overlay, grid)
+    # NO MASKING — the probe passes every guard R4-P1/R5-P1 own: the digest
+    # binds (the disclosure is the stamped grid) and the FIRST call answers
+    # the stamped close; only the frozen map can catch the later calls.
+    probe = _StatefulLyingSurface(overlay, grid)
+    assert calendar_content_sha256(probe.decision_calendar) == calendar_content_sha256(grid)
+    assert probe.decision_close(date(2025, 11, 28)) == grid.session_close(date(2025, 11, 28))
+    assert probe.decision_close(date(2025, 11, 28)) != grid.session_close(date(2025, 11, 28))
+    # the probe's configuration: the ruled geometry, the [15, 30] DTE band
+    # that makes 2025-11-28's candidate reachable, and the scored row on it
+    probe_config = OptionsStrategyConfig(dte_min=15, target_dte=21, dte_max=30)
+    probe_scored = _r6_probe_scored(grid)
+    wired_result = _run_era_trial(
+        era_world,
+        protocol,
+        tmp_path,
+        tag="r6_wired",
+        surface=wired,
+        scored=probe_scored,
+        strategy_config=probe_config,
+    )
+    lying_result = _run_era_trial(
+        era_world,
+        protocol,
+        tmp_path,
+        tag="r6_stateful",
+        surface=liar,
+        scored=probe_scored,
+        strategy_config=probe_config,
+    )
+    assert wired_result.n_folds == lying_result.n_folds == 3
+    assert wired_result.n_positions == lying_result.n_positions
+    wired_body = json.loads(wired_result.artifact_path.read_text(encoding="utf-8"))
+    lying_body = json.loads(lying_result.artifact_path.read_text(encoding="utf-8"))
+    assert wired_body["stamp"]["config_hash"] == lying_body["stamp"]["config_hash"]
+    assert json.dumps(wired_body["payload"], sort_keys=True) == json.dumps(
+        lying_body["payload"], sort_keys=True
+    )
+    # the counters are the identity the divergence moved (RED showed the
+    # liar's decision_coherence NOT_EVALUABLE rows the wired run lacks)
+    assert wired_body["payload"]["counters"] == lying_body["payload"]["counters"]
+    # the run never consulted the surface's method again: the only calls the
+    # stateful surface ever answered are the boundary loop's one-per-session
+    decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
+    assert liar._answered == set(decision_sessions)
+
+
+def test_the_frozen_decision_map_refuses_unmapped_sessions_fail_closed(era_world) -> None:
+    """(R6-P1, the wrapper's fail-closed horn) The frozen map carries
+    EXACTLY the sessions the boundary verified — every decision-side read
+    of the run answers from it, so a session outside the verified set can
+    never silently fall back to the surface's overridable method: the
+    wrapper refuses, naming the session (the guard is what makes "the
+    runtime consumes the frozen map" total rather than best-effort)."""
+    from tree_options.trials.options_run import _BoundDecisionSurface
+
+    grid, overlay = era_world
+    first, second = grid.sessions()[0], grid.sessions()[1]
+    wired = VwapPitSurface(overlay, decision_calendar=grid)
+    bound = _BoundDecisionSurface(wired, {first: grid.session_close(first)})
+    # a mapped session answers the frozen instant, not the surface
+    assert bound.decision_close(first) == grid.session_close(first)
+    with pytest.raises(ValueError, match="no frozen decision instant for session"):
+        bound.decision_close(second)
