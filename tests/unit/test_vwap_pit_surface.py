@@ -872,6 +872,75 @@ def test_dollar_volume_requires_a_contiguous_20_session_window(v2_capture, proto
         assert by_rule["underlying_liquidity"].status == "FAIL"
 
 
+def _dropped_term_filter(adapter: VwapPitSurface, protocol) -> CandidateFilter:
+    """The protocol's volume-flow regime with the ruled 0.2.2
+    `dropped_no_equity_aggregates` disposition — the filter side of the
+    term the adapter must MIRROR (a filter that drops while the snapshot
+    supplies is regime-incoherent by construction)."""
+    d = protocol.option_candidate_defaults
+    lf = d.liquidity_volume_flow
+    assert lf is not None
+    return CandidateFilter(
+        adapter.overlay.calendar,
+        dte_min=d.dte_min,
+        dte_max=d.dte_max,
+        abs_delta_min=d.abs_delta_min,
+        abs_delta_max=d.abs_delta_max,
+        standard_deliverable_only=d.standard_deliverable_only,
+        min_open_interest=d.min_open_interest,
+        min_same_day_volume=d.min_same_day_volume,
+        volume_only_if_already_available=d.volume_only_if_already_available,
+        max_spread_fraction_of_midpoint=d.max_spread_fraction_of_midpoint,
+        min_underlying_20d_median_dollar_volume=d.min_underlying_20d_median_dollar_volume,
+        exclude_earnings_spanning_hold=False,  # the ruled 0.2.2 shape
+        liquidity_regime="volume_flow",
+        flow_min_session_volume=lf.flow_min_session_volume,
+        underlying_liquidity_term="dropped_no_equity_aggregates",
+        accepted_delta_provenance=lf.abs_delta_provenance_accepted,
+    )
+
+
+def test_a_dropped_liquidity_term_supplies_absence_through_the_adapter(
+    overlay, spot, protocol
+) -> None:
+    """(R2-P2-d, Codex round 2) The surface ALWAYS supplied a dollar-volume
+    `AsOf` — the v2 median or the overlay sentinel — never None, so the
+    0.2.2 pre-draft's dropped branch (NOT_APPLICABLE "dropped: no
+    equity-aggregates dollar volume") was UNREACHABLE through the shipped
+    adapter: any supplied value, sentinel included, is judged regime-
+    incoherent -> NOT_EVALUABLE, and the pre-drafted packet would not do
+    what the branch claims. With the DECLARED term threaded, a dropped
+    regime supplies ABSENCE — the regime's premise is NO source, and the
+    sentinel must never be minted into it (RED before R2-P2-d: the filter
+    answered NOT_EVALUABLE 'regime incoherent' on the sentinel)."""
+    adapter = VwapPitSurface(
+        overlay,
+        spot=spot,
+        underlying_liquidity_term="dropped_no_equity_aggregates",
+    )
+    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), S6)
+    assert snap.underlying_20d_median_dollar_volume is None  # ABSENCE, never a value
+    by_rule = {r.rule: r for r in _dropped_term_filter(adapter, protocol).evaluate(snap).results}
+    assert by_rule["underlying_liquidity"].status == "NOT_APPLICABLE"
+    assert by_rule["underlying_liquidity"].detail == (
+        "dropped: no equity-aggregates dollar volume on this tier"
+    )
+    # declared evaluated (the DEFAULT): exactly today's chain — the overlay's
+    # declared Decimal("0") sentinel under the protocol's 50M minimum FAILs
+    evaluated = VwapPitSurface(overlay, spot=spot)
+    evaluated_snap = evaluated.candidate_snapshot(evaluated.contract(C600_ID), S6)
+    stamp = evaluated_snap.underlying_20d_median_dollar_volume
+    assert stamp is not None and stamp.value == Decimal("0")
+
+
+def test_an_unknown_liquidity_term_refuses_at_the_constructor(overlay, spot) -> None:
+    """(R2-P2-d) The declared disposition is a two-token Literal, mirrored
+    from the filter's own constructor gate: an unknown token refuses here
+    exactly as it refuses there — never silently behaves as 'evaluated'."""
+    with pytest.raises(ValueError, match="unknown underlying_liquidity_term"):
+        VwapPitSurface(overlay, spot=spot, underlying_liquidity_term="sometimes")
+
+
 def test_dollar_volume_median_is_exact_over_distinct_values(v2_capture) -> None:
     """(w3) The PASS path's statistic is the exact MEDIAN of the trailing 20
     EXCHANGE sessions' close*volume — never the mean, and never a median over

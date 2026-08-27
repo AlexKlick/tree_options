@@ -58,13 +58,17 @@ the DECLARED `spot_proxy_v2` source's 20-session median of close*volume
 (`load_spot_proxy_v2` — the ruled P0-1(b) preferred leg; the capture script
 and the file land post-closeout) whenever that source can answer a true
 contiguous 20-session median — contiguity validated against the EXCHANGE
-calendar (P1-2: an explicit constructor dependency; the overlay's
-union-of-captures calendar self-certifies exactly when a market session is
-missing from every capture) — and otherwise the overlay's declared
-`Decimal("0")` sentinel — this tier never calls the equity-aggregates
-endpoint today, so the protocol's 50M minimum FAILs the rule until the
-recapture lands (an honest audit row, pinned by test; the ruled 0.2.2
-fallback drops the term with disclosure instead). `spans_earnings` is None —
+calendar (P1-2: an explicit constructor dependency, R2-P1-a provenance-
+bound to the committed fixture; the overlay's union-of-captures calendar
+self-certifies exactly when a market session is missing from every
+capture) — and otherwise the overlay's declared `Decimal("0")` sentinel —
+this tier never calls the equity-aggregates endpoint today, so the
+protocol's 50M minimum FAILs the rule until the recapture lands (an
+honest audit row, pinned by test; the ruled 0.2.2 fallback drops the term
+with disclosure instead — R2-P2-d: under the DECLARED
+`dropped_no_equity_aggregates` term the snapshot supplies ABSENCE, which
+is what makes that NOT_APPLICABLE branch reachable through this adapter
+at all). `spans_earnings` is None —
 the honest "no evidence" encoding (w2,
 theory-panel P0-2 ruling (ii), owner ruled 2026-08-26): this lane carries
 no earnings calendar, and `AsOf(value=False)` would launder a
@@ -298,7 +302,20 @@ class VwapPitSurface:
     which is correct for lane-1/synthetic worlds where the two calendars
     are one. The visible-session lookup, publication wall, marks and fills
     stay on the overlay calendar — only the decision instant changes
-    hands."""
+    hands.
+
+    `underlying_liquidity_term` (R2-P2-d, Codex round 2) is the DECLARED
+    disposition of the underlying-liquidity term — the value the protocol
+    carries at `option_candidate_defaults.liquidity_volume_flow.
+    underlying_liquidity_term`, threaded by whoever builds the surface from
+    the same protocol the runner builds its filter from. "evaluated" (the
+    default) keeps today's chain byte-identically: the v2 median when it
+    can answer, else the overlay's declared sentinel. The ruled 0.2.2
+    `dropped_no_equity_aggregates` supplies ABSENCE instead — the regime's
+    premise is no equity-aggregates source, and the sentinel must never be
+    minted into it (the filter judges any supplied value regime-incoherent,
+    so the ruled NOT_APPLICABLE disclosure would otherwise be unreachable
+    through this adapter)."""
 
     def __init__(
         self,
@@ -308,6 +325,7 @@ class VwapPitSurface:
         spot_v2: Mapping[str, Mapping[date, tuple[Decimal, int]]] | None = None,
         exchange_calendar: SessionCalendar | None = None,
         decision_calendar: SessionCalendar | None = None,
+        underlying_liquidity_term: str = "evaluated",
     ) -> None:
         self._overlay = overlay
         self._spot: dict[str, dict[date, Decimal]] = {
@@ -358,6 +376,13 @@ class VwapPitSurface:
         # from THIS calendar's early-close-aware session_close — the same
         # grid the runner splits and filters on.
         self._decision_calendar = decision_calendar
+        # (R2-P2-d, Codex round 2) the DECLARED liquidity term — mirrored
+        # from the filter's own constructor gate: a two-token Literal, and
+        # an unknown token refuses here exactly as it refuses there, never
+        # silently behaves as "evaluated".
+        if underlying_liquidity_term not in {"evaluated", "dropped_no_equity_aggregates"}:
+            raise ValueError(f"unknown underlying_liquidity_term {underlying_liquidity_term!r}")
+        self._underlying_liquidity_term = underlying_liquidity_term
 
     # ---- identity / delegation ------------------------------------------------
 
@@ -583,19 +608,28 @@ class VwapPitSurface:
                 f"no captured session for {underlying} visible at {decision_at}"
             )
         received = self._overlay.publication_of(session)
-        # (w3) the ruled P0-1 chain: the declared v2 dollar-volume source
-        # when it can answer a true 20-session median, else the overlay's
-        # declared Decimal("0") sentinel — the term fails honestly until the
-        # post-closeout equity-aggregates recapture lands.
-        sourced = self._dollar_volume_as_of(underlying, session, received)
-        dollar_volume = (
-            sourced
-            if sourced is not None
-            else AsOf(
-                value=self._overlay.median_dollar_volume(underlying, session),
-                available_at=received,
+        if self._underlying_liquidity_term == "dropped_no_equity_aggregates":
+            # (R2-P2-d, Codex round 2) the DECLARED liquidity term decides
+            # whether the dollar-volume input exists AT ALL. The ruled 0.2.2
+            # disposition's premise is NO source, so the snapshot supplies
+            # ABSENCE (`None`) — never the sentinel minted into a dropped
+            # regime (any supplied value is regime-incoherent to the filter,
+            # and the ruled NOT_APPLICABLE disclosure would be unreachable).
+            dollar_volume: AsOf | None = None
+        else:
+            # (w3) the ruled P0-1 chain: the declared v2 dollar-volume source
+            # when it can answer a true 20-session median, else the overlay's
+            # declared Decimal("0") sentinel — the term fails honestly until
+            # the post-closeout equity-aggregates recapture lands.
+            sourced = self._dollar_volume_as_of(underlying, session, received)
+            dollar_volume = (
+                sourced
+                if sourced is not None
+                else AsOf(
+                    value=self._overlay.median_dollar_volume(underlying, session),
+                    available_at=received,
+                )
             )
-        )
         # (w2, theory-panel P0-2 ruling (ii), owner ruled 2026-08-26): the
         # honest "no evidence" encoding. This lane carries no earnings
         # calendar, so `AsOf(value=False)` would LAUNDER a vendor-stamped

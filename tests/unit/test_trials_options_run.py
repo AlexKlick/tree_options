@@ -1215,8 +1215,17 @@ def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, 
     # (R2-P1-c) the adapter carries the grid the runner splits on as its
     # DECISION calendar: candidate decision_at comes from the grid's
     # early-close-aware session_close, and the runner's filter (built on the
-    # same grid) finds every snapshot coherent at the TRUE close
-    surface = VwapPitSurface(overlay, decision_calendar=grid)
+    # same grid) finds every snapshot coherent at the TRUE close.
+    # (R2-P2-d) and it carries the DECLARED liquidity term read from the
+    # same protocol node the runner builds its filter from — the driver
+    # pattern: the surface and the filter must never disagree on the term.
+    lf = protocol.option_candidate_defaults.liquidity_volume_flow
+    assert lf is not None
+    surface = VwapPitSurface(
+        overlay,
+        decision_calendar=grid,
+        underlying_liquidity_term=lf.underlying_liquidity_term,
+    )
     world_id = overlay.spec.world_id
     scored = _era_scored_rows(grid)
     decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
