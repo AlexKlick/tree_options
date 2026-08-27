@@ -1286,7 +1286,15 @@ def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, 
     assert [f["n_test_sessions"] for f in per_fold] == [13, 13, 13]
     starts = [f["test_window"]["start"] for f in per_fold]
     assert starts == ["2025-08-01", "2025-10-31", "2026-01-30"]
-    [s for f in per_fold for s in [f["test_window"]["start"], f["test_window"]["end"]]]
+    # (R2 fix 5) the per-fold test-window ENDS, asserted for real: this line
+    # was a bare list comprehension — a NO-OP statement, never asserted —
+    # which is exactly how a wrong quarter-3 end-date claim slipped through
+    # review. 2026-05-01 is the correct 13th session: Good Friday 2026-04-03
+    # is absent from the fixture, making 2026-04-24 the 12th. With R2-P1-c
+    # restoring the fixture's early closes the enumeration is UNCHANGED
+    # (early closes are sessions), and these ends re-pin it.
+    ends = [f["test_window"]["end"] for f in per_fold]
+    assert ends == ["2025-10-24", "2026-01-23", "2026-05-01"], ends
     tested = sorted({s for fold in per_fold for s in _test_sessions_of(fold)})
     assert len(tested) == 39  # 3 x 13, disjoint
     # both calendar identities are DISCLOSED (additive keys): the grid and
