@@ -61,6 +61,7 @@ from tree_options.registry.sqlite import TrialRegistry
 from tree_options.schemas.trial import TrialRecord
 from tree_options.splitting.splitter import Fold, WalkForwardSplitter
 from tree_options.time.calendar import (
+    CalendarError,
     CalendarIntegrityError,
     SessionCalendar,
     calendar_content_sha256,
@@ -603,6 +604,50 @@ def run_options_trial(
             " answers from a calendar the trial never declared); refusing"
             " before registration"
         )
+    # (R5-P1, Codex round 5) the digest above binds the calendar the surface
+    # SAYS it answers from; the loop below binds the calendar it ACTUALLY
+    # answers from — the decisions call `surface.decision_close()`
+    # (options/strategy.py), never the disclosed property, and the adapter
+    # explicitly supports subclassing. A subclass overriding ONLY
+    # `decision_calendar` to return the stamped grid passes the digest (the
+    # disclosure is self-attested) while the inherited `decision_close()`
+    # still reads the unwired overlay calendar: the trial registers under a
+    # configuration whose EFFECTIVE decision behavior differs (Codex's
+    # probe: disclosed close 13:00, actual decision close 16:00 on
+    # 2025-11-28). The boundary therefore additionally requires, for EVERY
+    # session of the trial's full decision set (known here), that
+    # `surface.decision_close(s) == calendar.session_close(s)`: a surface
+    # whose method disagrees with its disclosure is caught by construction,
+    # and a surface whose method agrees on every decision session of THIS
+    # trial is behaviorally bound to the stamped calendar for everything the
+    # trial can decide — which is the invariant. The digest stays as the
+    # fast authority pre-filter (it also produces the unwired-case error);
+    # the behavioral equality is the binding that cannot be self-attested
+    # away. Byte-identical for every wired configuration: the base surface
+    # and a wired adapter answer decision_close from the very calendar the
+    # trial is stamped on, so every comparison is equal and nothing is
+    # stamped, hashed, or registered differently.
+    for session in normalized_sessions:
+        declared_close = calendar.session_close(session)
+        try:
+            surface_close = surface.decision_close(session)
+        except (AttributeError, CalendarError) as exc:
+            raise ValueError(
+                f"the surface's decision_close() cannot answer decision session"
+                f" {session.isoformat()} for {world_id!r}: {exc} — a surface"
+                " behaviorally bound to the stamped calendar answers every"
+                " decision session's close; refusing before registration"
+            ) from exc
+        if surface_close != declared_close:
+            raise ValueError(
+                f"the surface's decision_close() disagrees with the trial's"
+                f" stamped calendar for {world_id!r}: decision session"
+                f" {session.isoformat()} closes {declared_close.isoformat()} on"
+                f" the stamped calendar but the surface answers"
+                f" {surface_close.isoformat()} — a surface whose method"
+                " disagrees with its disclosed calendar cannot be bound to"
+                " this trial; refusing before registration"
+            )
     decision_sessions_sha256 = hashlib.sha256(
         json.dumps(
             [session.isoformat() for session in normalized_sessions],

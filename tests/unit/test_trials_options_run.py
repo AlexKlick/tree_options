@@ -12,6 +12,8 @@ from tests.conftest import REPO_ROOT
 from tree_options.data.authority import PointInTimeDataset
 from tree_options.data.bars import BarRecord
 from tree_options.data.options_pit import OptionPitSurface
+from tree_options.data.real_overlay import RealSessionCalendar
+from tree_options.data.vwap_pit_surface import VwapPitSurface
 from tree_options.evaluation.stats import ScoredLabel
 from tree_options.options import OptionsStrategyConfig
 from tree_options.protocol.loader import load_protocol
@@ -1822,3 +1824,157 @@ def test_a_surface_that_cannot_disclose_its_authority_refuses_cleanly(
     finally:
         registry.close()
     assert trial_count(tmp_path / "opaque.db") == 0
+
+
+# ---- (R5-P1, Codex round 5) the BEHAVIORAL binding: decision_close itself ----------
+
+
+class _LyingDisclosureSurface(VwapPitSurface):
+    """Codex round 5's reproduced probe class: overrides ONLY
+    `decision_calendar` to return the stamped grid — exactly the input the
+    R4-P1 digest boundary hashes — while the INHERITED `decision_close()`
+    keeps answering from the UNWIRED overlay calendar (the constructor was
+    called without one). The disclosure passes the digest guard and lies
+    about behavior; only the R5-P1 equality loop catches it."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)  # deliberately NOT decision_calendar=grid
+        self._lying_grid = grid
+
+    @property
+    def decision_calendar(self):
+        return self._lying_grid
+
+
+class _WrongInstantSurface(VwapPitSurface):
+    """The mismatch branch's owner: discloses the stamped grid AND answers
+    every decision session — at the WRONG instant (a no-early-close twin
+    over the grid's own sessions, exactly what the unwired overlay calendar
+    says wherever it has coverage). The digest passes and `decision_close()`
+    never raises: ONLY the instant equality can catch this surface."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)
+        self._lying_grid = grid
+        self._no_early_closes = RealSessionCalendar(grid.sessions(), frozenset())
+
+    @property
+    def decision_calendar(self):
+        return self._lying_grid
+
+    def decision_close(self, decision_session: date) -> datetime:
+        return self._no_early_closes.session_close(decision_session)
+
+
+class _BehaviorallyBoundSurface(VwapPitSurface):
+    """The passing shape R5-P1 exists to allow: a subclass that ALSO
+    overrides `decision_close` to GENUINELY answer from the stamped grid.
+    Behaviorally bound is bound — which override site supplies the answer
+    is not the invariant."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)
+        self._bound_grid = grid
+
+    @property
+    def decision_calendar(self):
+        return self._bound_grid
+
+    def decision_close(self, decision_session: date) -> datetime:
+        return self._bound_grid.session_close(decision_session)
+
+
+def test_a_lying_disclosure_surface_refuses_before_registration(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R5-P1, Codex round 5 — the reproduced probe) The R4-P1 digest bound
+    the calendar the surface DISCLOSES; nothing verified the method the
+    decisions actually call (`strategy.py` reads `decision_close()`).
+    A VwapPitSurface subclass overriding ONLY `decision_calendar` to return
+    the stamped grid passes the digest — the disclosure is self-attested —
+    while the inherited `decision_close()` still answers from the unwired
+    overlay calendar: the trial registered under a configuration whose
+    effective decision behavior differs (INV-02 + INV-14 at the trial
+    boundary). The boundary now additionally requires
+    `surface.decision_close(s) == calendar.session_close(s)` for EVERY
+    decision session and refuses, naming the first session the surface
+    cannot answer the stamped calendar's way (here the grid's first
+    Friday, which the era overlay's capture never covered — an even
+    stronger disagreement than Codex's 13:00-vs-16:00 probe; RED before
+    R5-P1: the digest matched and the trial REGISTERED, ran, and
+    completed on the unwired 16:00 fallback)."""
+    from tree_options.time.calendar import calendar_content_sha256
+
+    grid, overlay = era_world
+    lying = _LyingDisclosureSurface(overlay, grid)
+    # no masking: the R4-P1 digest guard PASSES on this surface — only the
+    # behavioral equality can refuse it
+    assert calendar_content_sha256(lying.decision_calendar) == calendar_content_sha256(grid)
+    with pytest.raises(ValueError, match=r"decision_close\(\) cannot answer decision session"):
+        _run_era_trial(era_world, protocol, tmp_path, tag="r5_lying", surface=lying)
+    # refused BEFORE registration: no record, no artifact
+    assert trial_count(tmp_path / "r5_lying.db") == 0
+    assert not (tmp_path / "r5_lying").exists()
+
+
+def test_a_wrong_instant_surface_refuses_naming_both_instants(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R5-P1, the instant-mismatch branch — the M313 owner) A surface that
+    discloses the stamped grid AND answers every decision session — at the
+    WRONG instant (16:00 where the grid's early-close Friday closes 13:00,
+    exactly the unwired overlay calendar's answer where it has coverage) —
+    passes the digest and never raises: only the instant equality catches
+    it, and the refusal names the first mismatching session and BOTH
+    instants. 2024-11-29 is the grid's first early-close Friday inside the
+    decision set (RED before R5-P1: the trial REGISTERED and ran, deciding
+    three hours after the true close on every early-close Friday)."""
+    from tree_options.time.calendar import calendar_content_sha256
+
+    grid, overlay = era_world
+    wrong = _WrongInstantSurface(overlay, grid)
+    assert calendar_content_sha256(wrong.decision_calendar) == calendar_content_sha256(grid)
+    # the disagreement is real and the surface CAN answer the session
+    assert wrong.decision_close(date(2024, 11, 29)) != grid.session_close(date(2024, 11, 29))
+    with pytest.raises(ValueError, match=r"2024-11-29.*18:00:00\+00:00.*21:00:00\+00:00") as ei:
+        _run_era_trial(era_world, protocol, tmp_path, tag="r5_wronginstant", surface=wrong)
+    message = str(ei.value)
+    # the refusal names the session, the stamped close, AND the surface's
+    # answer — both instants, not just the fact of a mismatch
+    assert grid.session_close(date(2024, 11, 29)).isoformat() in message
+    assert wrong.decision_close(date(2024, 11, 29)).isoformat() in message
+    assert trial_count(tmp_path / "r5_wronginstant.db") == 0
+    assert not (tmp_path / "r5_wronginstant").exists()
+
+
+def test_a_behaviorally_bound_subclass_runs_unchanged(era_world, protocol, tmp_path) -> None:
+    """(R5-P1, the point of binding BEHAVIOR) A subclass that ALSO overrides
+    `decision_close` to genuinely answer from the stamped grid is
+    BEHAVIORALLY bound and runs UNCHANGED: the same pinned era geometry,
+    per-fold windows, and known 0.2.1 earnings refusal as the wired
+    construction (`test_a_wired_surface_binds_to_the_stamped_grid_and_runs_
+    unchanged`). The invariant is what the trial's decisions actually read,
+    not which override site supplies it."""
+    import json
+
+    grid, overlay = era_world
+    bound = _BehaviorallyBoundSurface(overlay, grid)
+    result = _run_era_trial(era_world, protocol, tmp_path, tag="r5_bound", surface=bound)
+    assert result.n_folds == 3
+    body = json.loads(result.artifact_path.read_text(encoding="utf-8"))
+    per_fold = body["payload"]["per_fold"]
+    assert [f["n_test_sessions"] for f in per_fold] == [13, 13, 13]
+    assert [f["test_window"]["end"] for f in per_fold] == [
+        "2025-10-24",
+        "2026-01-23",
+        "2026-05-01",
+    ]
+    # the positions zero is the KNOWN 0.2.1 earnings refusal, never a bind
+    # failure — the same pinned counters the wired era test owns
+    assert body["payload"]["pooled"]["n_positions"] == 0
+    rules = body["payload"]["counters"]["rule_histogram"]
+    assert rules.get("earnings_span", {}).get("NOT_EVALUABLE", 0) > 0
+    assert not any(
+        code.startswith("BAR_")
+        for code in body["payload"]["counters"]["rejections"].get("entry_fill_rejections", {})
+    )
