@@ -3305,8 +3305,11 @@ MUTANTS = [
         id="M278-w3-loader-volume-gate-gutted",
         owner="test_load_spot_proxy_v2_refuses_everything_else",
         file="src/tree_options/data/vwap_pit_surface.py",
-        anchor="            if type(volume) is not int or volume < 0:",
-        replacement="            if False:",
+        # (R4-P2 re-pin) the loader's row validation moved into the ONE
+        # shared helper `_validated_spot_v2_row` (loader + constructor copy
+        # loop) — same gate, same invariant, now guarding BOTH entry paths
+        anchor="    if type(volume) is not int or volume < 0:",
+        replacement="    if False:",
         selectors=[f"{U}/test_vwap_pit_surface.py"],
         invariant=(
             "w3 volume is a STRICT int >= 0 (bools, strings, and negatives"
@@ -3579,8 +3582,12 @@ MUTANTS = [
         id="M295-p25-finiteness-gate-removed",
         owner="test_non_finite_closes_refuse_cleanly",
         file="src/tree_options/data/vwap_pit_surface.py",
-        anchor="                if not close_value.is_finite() or close_value <= 0:",
-        replacement="                if close_value <= 0:",
+        # (R4-P2 re-pin) the finiteness gate moved into the ONE shared
+        # helper `_validated_spot_v2_row` — same gate, same invariant, now
+        # guarding the constructor's copy loop too (the R4-P2 defect was
+        # exactly this gate existing ONLY at the file gate)
+        anchor="    if not close_value.is_finite() or close_value <= 0:",
+        replacement="    if close_value <= 0:",
         selectors=[f"{U}/test_vwap_pit_surface.py"],
         invariant=(
             "P2-5 'Infinity' is POSITIVE-looking: without the finiteness"
@@ -3822,6 +3829,67 @@ MUTANTS = [
             " early-close sessions, which both breaks the snapshot"
             " coherence the R2 seam existed for and re-opens the"
             " future-information exclusion in candidate construction"
+        ),
+    ),
+    # ---- remediation wave 4 (R4-P1 + R4-P2, M310-M312) ----------------------------
+    dict(
+        id="M310-r4a-unwired-surface-boundary-gutted",
+        owner="test_an_unwired_surface_refuses_a_grid_stamped_trial_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if surface_identity != stamped_identity:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R4-P1 the trial boundary BINDS the surface's disclosed"
+            " decision-calendar authority to the stamped calendar: gutting"
+            " the identity refusal lets an UNWIRED VwapPitSurface (the"
+            " overlay's nominal 16:00) run under an era-grid-stamped trial"
+            " — deciding at 16:00 on the grid's 13:00 early-close sessions,"
+            " different counters under the same declared configuration"
+            " (INV-02/INV-14 at the trial boundary)"
+        ),
+    ),
+    dict(
+        id="M311-r4b-boundary-compares-names-not-content-identity",
+        owner="test_a_subclassed_decision_calendar_is_a_different_trial_identity",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "        disclosed = surface.decision_calendar\n"
+            "        surface_identity = calendar_content_sha256(disclosed)\n"
+            "        stamped_identity = calendar_content_sha256(calendar)"
+        ),
+        replacement=(
+            "        disclosed = surface.decision_calendar\n"
+            '        surface_identity = getattr(disclosed, "name", type(disclosed).__name__)\n'
+            '        stamped_identity = getattr(calendar, "name", type(calendar).__name__)'
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R4-P1 the bind rides the COMPLETE content identity"
+            " (calendar_content_sha256), never a lossy label: the twin"
+            " decision grid — a StaticSessionCalendar SUBCLASS over the"
+            " identical committed fixture — carries the SAME name, the same"
+            " sessions and the same early closes, so a name comparison"
+            " lets the unwired surface run under a grid that differs only"
+            " in WHO computes it (the R3-P1-1 class identity), exactly the"
+            " stamping a content digest exists to refuse"
+        ),
+    ),
+    dict(
+        id="M312-r4c-spot-v2-constructor-validation-removed",
+        owner="test_the_spot_v2_constructor_refuses_invalid_rows",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "                rows[session] = _validated_spot_v2_row(where, session, close, volume)"
+        ),
+        replacement="                rows[session] = (close, volume)",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R4-P2 constructor validation parity: bypassing the shared row"
+            " discipline returns to the bare dict(sessions) copy — an"
+            " injected Decimal('Infinity') close is POSITIVE-looking, the"
+            " median path stamps an infinite vendor value, and the"
+            " liquidity comparison falls through to PASS (fail-open)"
         ),
     ),
 ]
