@@ -103,10 +103,63 @@ from tree_options.data.massive_overlay import (
 from tree_options.data.options_pit import NoOptionFileError
 from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError
 from tree_options.schemas.options import OptionContract
-from tree_options.time.calendar import NotASessionError, SessionCalendar
+from tree_options.time.calendar import (
+    CalendarIntegrityError,
+    NotASessionError,
+    SessionCalendar,
+    StaticSessionCalendar,
+    calendar_content_sha256,
+)
 
 SPOT_SENTINEL_SESSION = date.min  # the flat form's every-session key
 DOLLAR_VOLUME_WINDOW_SESSIONS = 20  # the protocol's 20d median term
+
+# (R2-P1-a, Codex round 2) THE EXCHANGE AUTHORITY IS PROVENANCE-BOUND. The
+# repo-adopted NYSE fixture `research_protocol.yaml` itself declares (0.2.1
+# ruling, data/g4/calendar-decision.json "repo-generated-calendar"): the
+# committed, checksummed files under data/calendar/. The PIN below is that
+# fixture's COMPLETE content identity (full session tuple + early-close
+# map, `calendar_content_sha256`) — an identity the `.sha256` sidecar alone
+# cannot give (it pins file bytes, not semantics, and a regenerated fixture
+# with the same bytes-checksum discipline could carry different sessions).
+# A fixture edit that keeps its sidecar in sync STILL refuses here until
+# the pin is re-derived deliberately: the exchange calendar is trial
+# identity, and identity changes are conscious acts.
+REPO_EXCHANGE_CALENDAR_JSON = Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.json")
+REPO_EXCHANGE_CALENDAR_CHECKSUM = Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.sha256")
+REPO_EXCHANGE_CALENDAR_CONTENT_SHA256 = (
+    "7aa83aa79295eaf4ebf303f46cc86660bce205bfdb5b93557dc3e0f308ee3928"
+)
+
+
+def repo_exchange_calendar(repo_root: Path | str | None = None) -> StaticSessionCalendar:
+    """The BOUND exchange-calendar authority (R2-P1-a): the committed NYSE
+    fixture, checksum-verified by `StaticSessionCalendar` AND bound to its
+    pinned content identity — the only calendar `VwapPitSurface` accepts as
+    `exchange_calendar`.
+
+    `repo_root` defaults to the repository this module lives in (the src
+    layout resolves `tree_options` into `<repo>/src`, so the data/ fixture
+    sits three levels up); an explicit root serves embedders and tests. The
+    factory is the one sanctioned way to obtain the authority: constructing
+    a `StaticSessionCalendar` by hand still works, but the surface's
+    constructor gate refuses it unless its CONTENT identity equals the pin.
+    """
+    root = Path(repo_root) if repo_root is not None else Path(__file__).resolve().parents[3]
+    calendar = StaticSessionCalendar(
+        root / REPO_EXCHANGE_CALENDAR_JSON,
+        root / REPO_EXCHANGE_CALENDAR_CHECKSUM,
+    )
+    bound_identity = calendar_content_sha256(calendar)
+    if bound_identity != REPO_EXCHANGE_CALENDAR_CONTENT_SHA256:
+        raise MassiveOverlayError(
+            "the committed NYSE fixture's content identity changed:"
+            f" calendar_content_sha256 {bound_identity} != the pinned"
+            f" exchange-authority identity {REPO_EXCHANGE_CALENDAR_CONTENT_SHA256}"
+            " — the exchange calendar is trial identity; re-pin it"
+            " deliberately, never in passing"
+        )
+    return calendar
 
 
 def load_spot_proxy_v2(path: Path) -> dict[str, dict[date, tuple[Decimal, int]]]:
@@ -228,7 +281,12 @@ class VwapPitSurface:
     `exchange_calendar` (P1-2) is the EXPLICIT exchange-calendar dependency
     the optional v2 dollar-volume source validates its 20-session window
     against — the repo-adopted NYSE fixture the protocol declares, threaded
-    by the caller, never a global; without it the v2 source fails closed."""
+    by the caller, never a global; without it the v2 source fails closed.
+    (R2-P1-a, Codex round 2) When supplied it must BE that fixture in
+    content: the constructor refuses any calendar whose
+    `calendar_content_sha256` differs from the pinned
+    `REPO_EXCHANGE_CALENDAR_CONTENT_SHA256` — obtain it from
+    `repo_exchange_calendar()`."""
 
     def __init__(
         self,
@@ -255,6 +313,32 @@ class VwapPitSurface:
         # it, exchange-session contiguity cannot be proven and the v2
         # dollar-volume source fails closed (the declared sentinel).
         self._exchange_calendar = exchange_calendar
+        # (R2-P1-a, Codex round 2) and when supplied it is PROVENANCE-BOUND:
+        # only a calendar whose COMPLETE content identity equals the
+        # committed fixture's is the exchange authority. Accepting any
+        # `SessionCalendar` here re-opens the exact self-certification
+        # vector P1-2 closed — the branch's own tests passed
+        # `exchange_calendar=overlay.calendar`, the union of CAPTURED dates,
+        # and a market session missing from every capture would vanish from
+        # the very calendar meant to catch it. The refusal is loud and at
+        # construction, never a silent fall-back to unbounded behavior.
+        if exchange_calendar is not None:
+            try:
+                supplied_identity = calendar_content_sha256(exchange_calendar)
+            except CalendarIntegrityError as exc:
+                raise MassiveOverlayError(
+                    "exchange_calendar must be the repo-adopted NYSE fixture"
+                    f" (repo_exchange_calendar()): {exc}"
+                ) from exc
+            if supplied_identity != REPO_EXCHANGE_CALENDAR_CONTENT_SHA256:
+                raise MassiveOverlayError(
+                    "exchange_calendar must be the repo-adopted NYSE fixture"
+                    " (repo_exchange_calendar()): its content identity"
+                    f" {supplied_identity} != the pinned authority"
+                    f" {REPO_EXCHANGE_CALENDAR_CONTENT_SHA256} — an unbound"
+                    " calendar self-certifies exactly where the design says"
+                    " fail-closed (the Jan-16 scenario)"
+                )
 
     # ---- identity / delegation ------------------------------------------------
 
@@ -527,9 +611,11 @@ class VwapPitSurface:
 
 __all__ = [
     "DOLLAR_VOLUME_WINDOW_SESSIONS",
+    "REPO_EXCHANGE_CALENDAR_CONTENT_SHA256",
     "SPOT_SENTINEL_SESSION",
     "VwapChainEntry",
     "VwapMarkQuote",
     "VwapPitSurface",
     "load_spot_proxy_v2",
+    "repo_exchange_calendar",
 ]

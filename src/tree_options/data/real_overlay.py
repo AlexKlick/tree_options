@@ -97,6 +97,12 @@ class RealSessionCalendar:
     def sessions(self) -> tuple[date, ...]:
         return self._sessions
 
+    def early_close_sessions(self) -> tuple[date, ...]:
+        """The embedded early-close classification, sorted (the disclosure
+        `calendar_content_sha256` hashes — `MassiveDerivedSessionCalendar`
+        inherits this and answers its own honestly-empty set)."""
+        return tuple(sorted(self._early_closes))
+
     def is_session(self, d: date) -> bool:
         return d in self._ordinals
 

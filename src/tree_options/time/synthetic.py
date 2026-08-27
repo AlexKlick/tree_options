@@ -32,6 +32,11 @@ class SyntheticCalendar:
     def sessions(self) -> tuple[date, ...]:
         return self._sessions
 
+    def early_close_sessions(self) -> tuple[date, ...]:
+        """Synthetic weekdays carry no early closes (the honest empty set —
+        this double never claims an identity it does not have)."""
+        return ()
+
     def is_session(self, d: date) -> bool:
         return d in self._ordinals
 

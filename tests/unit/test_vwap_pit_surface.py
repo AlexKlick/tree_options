@@ -923,41 +923,49 @@ def test_dollar_volume_median_is_exact_over_distinct_values(v2_capture) -> None:
 
 
 def test_dollar_volume_needs_twenty_sessions_of_calendar_history(overlay, spot) -> None:
-    """(w3) Fail-closed on history: a calendar carrying only 11 sessions —
-    fewer than the declared 20-session window — cannot answer a 20d median
-    even from a v2 source covering EVERY one of its sessions: the adapter
-    must fall back to the declared Decimal("0") sentinel, never a median
-    over the 11 sessions it happens to have. (P1-2: the short calendar is
-    threaded AS the exchange calendar — with the full NYSE fixture the same
-    world fails closed on the in-map check instead, and the 20-session
-    FLOOR would never be exercised again.)"""
-    every_session = {SPY: {s: (Decimal("600.00"), 80_000_000) for s in SESSIONS}}
+    """(w3) Fail-closed on history: a visible session whose EXCHANGE ordinal
+    sits inside the first 19 sessions of the bound NYSE fixture has no
+    20-session window behind it — the adapter must fall back to the declared
+    Decimal("0") sentinel, never a median over the sessions it happens to
+    have. (R2-P1-a: this test used to thread the 11-session OVERLAY calendar
+    as the exchange authority — the exact unbound self-certification the
+    constructor gate now refuses; the floor is exercised where it lives, at
+    the head of the real fixture, with a v2 map covering EVERY exchange
+    session so the in-map guard passes and the floor is the only refusal.)"""
+    exchange = _exchange_calendar()
+    early = exchange.sessions()[4]  # ordinal 4: window would start at -15
+    every_exchange_session = {
+        SPY: {s: (Decimal("600.00"), 80_000_000) for s in exchange.sessions()}
+    }
     adapter = VwapPitSurface(
-        overlay, spot=spot, spot_v2=every_session, exchange_calendar=overlay.calendar
+        overlay, spot=spot, spot_v2=every_exchange_session, exchange_calendar=exchange
     )
-    snap = adapter.candidate_snapshot(adapter.contract(C600_ID), S6)
-    stamp = snap.underlying_20d_median_dollar_volume
-    assert stamp is not None
-    assert stamp.value == Decimal("0")
+    assert adapter._dollar_volume_as_of(SPY, early, publication_instant(S6)) is None
 
 
 def test_dollar_volume_refuses_a_non_calendar_visible_session(v2_capture) -> None:
     """(w3) Fail-closed on calendar identity: a visible session that is not
     a calendar session has no ordinal, so no window can be anchored to it —
     the source is refused (None, i.e. the declared sentinel fallback), never
-    silently re-anchored to some other session's window. (P1-2: the exchange
-    calendar threaded here is the OVERLAY's own 22-session calendar so the
-    re-anchor mutant still lands on a window the map fully covers — the
-    kill needs the mutated call to answer a median, not None.)"""
+    silently re-anchored to some other session's window. (R2-P1-a: the
+    authority is the BOUND NYSE fixture, and the v2 map covers BOTH the
+    regular window and the fixture's trailing 20 sessions — the re-anchor
+    mutant lands on the LAST fixture session's fully-covered window and
+    answers a median, so the kill needs the mutated call to answer a
+    median, not None.)"""
     overlay = load_derived_surface(v2_capture, staleness_sessions=10)
+    exchange = _exchange_calendar()
+    tail = exchange.sessions()[-20:]
+    source = {SPY: {s: (Decimal(V2_CLOSE), V2_VOLUME) for s in (*V2_SESSIONS, *tail)}}
     adapter = VwapPitSurface(
         overlay,
         spot={SPY: {s: SPOT_LEVEL for s in V2_SESSIONS}},
-        spot_v2=_v2_map(),  # every session of the 22-session calendar
-        exchange_calendar=overlay.calendar,
+        spot_v2=source,
+        exchange_calendar=exchange,
     )
     saturday = V2_FIRST + timedelta(days=5)  # 2025-04-19: inside the span, never a session
     assert saturday not in V2_SESSIONS
+    assert not exchange.is_session(saturday)
     assert adapter._dollar_volume_as_of(SPY, saturday, publication_instant(V2_VISIBLE)) is None
 
 
@@ -965,13 +973,12 @@ def _exchange_calendar():
     """The repo-adopted EXCHANGE calendar (0.2.1 ruling, data/g4/
     calendar-decision.json "repo-generated-calendar"): the committed,
     checksummed NYSE fixture `research_protocol.yaml` itself declares —
-    threaded into the adapter as an explicit constructor dependency."""
-    from tree_options.time.calendar import StaticSessionCalendar
+    loaded through the surface's BOUND factory (R2-P1-a), which verifies
+    the file checksum AND the pinned CONTENT identity before handing the
+    authority to the adapter's constructor gate."""
+    from tree_options.data.vwap_pit_surface import repo_exchange_calendar
 
-    return StaticSessionCalendar(
-        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json",
-        REPO_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.sha256",
-    )
+    return repo_exchange_calendar(REPO_ROOT)
 
 
 def test_exchange_session_missing_from_every_capture_fails_closed(
@@ -1067,6 +1074,80 @@ def test_without_an_exchange_calendar_the_v2_source_never_answers(v2_capture) ->
     snap = adapter.candidate_snapshot(adapter.contract(C600_ID), V2_DECISION)
     stamp = snap.underlying_20d_median_dollar_volume
     assert stamp is not None and stamp.value == Decimal("0")
+
+
+# ---- (R2-P1-a, Codex round 2) the exchange authority is PROVENANCE-BOUND -------------
+
+
+def test_an_unbound_exchange_calendar_refuses_at_construction(overlay, spot) -> None:
+    """(R2-P1-a) `VwapPitSurface.__init__` used to accept ANY `SessionCalendar`
+    as `exchange_calendar` — and this suite itself passed
+    `exchange_calendar=overlay.calendar`, the union of CAPTURED dates: the
+    exact self-certification vector round-1 P1-2 closed, handed back in
+    through the constructor. The overlay calendar now REFUSES, loudly, at
+    construction (RED before R2-P1-a: the constructor accepted it)."""
+    with pytest.raises(MassiveOverlayError, match="repo-adopted NYSE fixture"):
+        VwapPitSurface(overlay, spot=spot, exchange_calendar=overlay.calendar)
+
+
+def test_a_doctored_content_identity_still_refuses(overlay, spot) -> None:
+    """(R2-P1-a) The gate binds CONTENT, not object identity — so a calendar
+    BUILT to look like the fixture still refuses when its semantics differ:
+    (i) one interior session swapped for the adjacent Sunday (same count,
+    same first/last — the lossy-descriptor attack R2-P1-b closes at the
+    descriptor), and (ii) the identical session tuple carrying ONE extra
+    early close. Both must name the bound authority in the refusal."""
+    from tree_options.data.real_overlay import RealSessionCalendar
+
+    sessions = _exchange_calendar().sessions()
+    # (i) find a session whose successor is >= 3 days out (a Friday before a
+    # Monday): Friday+2 is a Sunday strictly between its neighbors
+    index = next(
+        i for i in range(1000, len(sessions) - 1) if (sessions[i + 1] - sessions[i]).days >= 3
+    )
+    doctored = list(sessions)
+    doctored[index] = doctored[index] + timedelta(days=2)
+    assert doctored[index] not in sessions
+    assert len(doctored) == len(sessions)
+    assert doctored[0] == sessions[0] and doctored[-1] == sessions[-1]
+    with pytest.raises(MassiveOverlayError, match="repo-adopted NYSE fixture"):
+        VwapPitSurface(
+            overlay,
+            spot=spot,
+            exchange_calendar=RealSessionCalendar(tuple(doctored), frozenset()),
+        )
+    # (ii) same sessions, one extra early close: the early-close map is part
+    # of the identity, so this is a DIFFERENT authority
+    with pytest.raises(MassiveOverlayError, match="repo-adopted NYSE fixture"):
+        VwapPitSurface(
+            overlay,
+            spot=spot,
+            exchange_calendar=RealSessionCalendar(sessions, frozenset({sessions[100]})),
+        )
+
+
+def test_the_bound_factory_loads_the_committed_fixture(overlay) -> None:
+    """(R2-P1-a) `repo_exchange_calendar()` is the sanctioned way to obtain
+    the authority: it loads the committed checksummed fixture, verifies its
+    COMPLETE content identity against the pin, and the resulting calendar is
+    exactly what the constructor gate accepts (an independent construction
+    of the same committed files hashes identically — the pin is the
+    fixture's identity, not a single load's accident)."""
+    from tree_options.data.vwap_pit_surface import (
+        REPO_EXCHANGE_CALENDAR_CONTENT_SHA256,
+        repo_exchange_calendar,
+    )
+    from tree_options.time.calendar import calendar_content_sha256
+
+    calendar = repo_exchange_calendar()  # default root: the repo itself
+    assert calendar.name == "XNYS"
+    assert calendar_content_sha256(calendar) == REPO_EXCHANGE_CALENDAR_CONTENT_SHA256
+    twin = repo_exchange_calendar(REPO_ROOT)
+    assert twin.sessions() == calendar.sessions()
+    assert twin.early_close_sessions() == calendar.early_close_sessions()
+    # and the bound calendar is ACCEPTED where the doctored ones refuse
+    adapter = VwapPitSurface(overlay, exchange_calendar=calendar)
+    assert adapter._exchange_calendar is calendar
 
 
 # ---- end to end: the UNMODIFIED backtest over the adapter --------------------------
