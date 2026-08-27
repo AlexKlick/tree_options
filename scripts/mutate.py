@@ -3659,6 +3659,108 @@ MUTANTS = [
             " fills ran on"
         ),
     ),
+    # ---- remediation wave 2 (R2-P1-a/b/c + R2-P2-d + the no-op repair,
+    # M301-M306) -----------------------------------------------------------------
+    dict(
+        id="M301-r2a-constructor-gate-gutted",
+        owner="test_an_unbound_exchange_calendar_refuses_at_construction",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="            if supplied_identity != REPO_EXCHANGE_CALENDAR_CONTENT_SHA256:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R2-P1-a the exchange authority is PROVENANCE-BOUND at the"
+            " constructor: gutting the content-identity gate re-accepts ANY"
+            " SessionCalendar — including the overlay's union-of-captures"
+            " calendar, the exact self-certification vector round-1 P1-2"
+            " closed, handed back in through the parameter"
+        ),
+    ),
+    dict(
+        id="M302-r2a-factory-pin-gutted",
+        owner="test_the_bound_factory_refuses_a_checksum_consistent_doctored_fixture",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="    if bound_identity != REPO_EXCHANGE_CALENDAR_CONTENT_SHA256:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R2-P1-a the factory's pin binds SEMANTICS, not file bytes:"
+            " gutting it lets a doctored fixture whose sidecar checksum was"
+            " REGENERATED (checksum-disciplined but content-different) load"
+            " silently as the exchange authority"
+        ),
+    ),
+    dict(
+        id="M303-r2b-descriptor-content-hash-voided",
+        owner="test_a_calendar_differing_by_one_interior_session_is_a_different_trial_identity",
+        file="src/tree_options/trials/options_run.py",
+        anchor='        "content_sha256": calendar_content_sha256(calendar),',
+        replacement='        "content_sha256": "0" * 64,',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R2-P1-b the calendar descriptor's content hash is what makes"
+            " one interior session (or one early close) a trial-identity"
+            " change: voiding it to a constant returns to the lossy"
+            " {name, count, first, last} identity INV-14 refused to stamp"
+        ),
+    ),
+    dict(
+        id="M304-r2c-decision-seam-falls-back-to-overlay",
+        owner="test_decision_at_on_an_early_close_grid_session_is_the_true_close",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "        decision_at = (\n"
+            "            self._decision_calendar.session_close(decision_session)\n"
+            "            if self._decision_calendar is not None\n"
+            "            else self._overlay.calendar.session_close(decision_session)\n"
+            "        )"
+        ),
+        replacement=(
+            "        decision_at = self._overlay.calendar.session_close(decision_session)"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py", f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R2-P1-c the decision instant comes from the DECISION grid"
+            " (early-close aware), never silently from the overlay's"
+            " nominal 16:00: falling back re-opens the 13:00/16:00"
+            " incoherence that made no consistent configuration exist"
+        ),
+    ),
+    dict(
+        id="M305-r2d-dropped-term-sentinel-supplied",
+        owner="test_a_dropped_liquidity_term_supplies_absence_through_the_adapter",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="            dollar_volume: AsOf | None = None",
+        replacement=(
+            "            dollar_volume: AsOf | None = AsOf(\n"
+            "                value=self._overlay.median_dollar_volume(underlying, session),\n"
+            "                available_at=received,\n"
+            "            )"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R2-P2-d a DROPPED liquidity term supplies ABSENCE: minting the"
+            " overlay sentinel into a dropped regime makes the filter judge"
+            " the snapshot regime-incoherent (NOT_EVALUABLE) and the ruled"
+            " 0.2.2 NOT_APPLICABLE disclosure unreachable through the"
+            " adapter again"
+        ),
+    ),
+    dict(
+        id="M306-r2e-fold-test-window-end-disclosure-voided",
+        owner="test_dual_calendar_ruled_geometry_yields_the_era_folds",
+        file="src/tree_options/trials/options_run.py",
+        anchor='                    "end": test_window[-1].isoformat(),',
+        replacement='                    "end": test_window[0].isoformat(),',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R2 fix 5 the per-fold test-window END is real disclosed"
+            " geometry (Good Friday 2026-04-03 absent makes 2026-05-01 the"
+            " 13th session): stamping start-as-end is exactly the wrong"
+            " quarter-3 end-date claim the old no-op assertion let slip"
+            " through review"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.

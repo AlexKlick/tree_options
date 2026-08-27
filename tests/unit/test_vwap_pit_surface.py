@@ -1219,6 +1219,47 @@ def test_the_bound_factory_loads_the_committed_fixture(overlay) -> None:
     assert adapter._exchange_calendar is calendar
 
 
+def test_the_bound_factory_refuses_a_checksum_consistent_doctored_fixture(
+    tmp_path: Path,
+) -> None:
+    """(R2-P1-a) The pin binds SEMANTICS, not file bytes: a doctored fixture
+    copy whose sidecar checksum is REGENERATED to match its own content
+    passes `StaticSessionCalendar`'s checksum gate and every fixture
+    invariant — only the CONTENT changed — and still refuses at the pin.
+    The content identity is the authority, so a fixture edit that keeps the
+    checksum discipline honest cannot slip past as the exchange authority
+    (RED under a gutted pin check: the doctored copy loads silently)."""
+    import hashlib
+    import shutil
+
+    from tree_options.data.vwap_pit_surface import repo_exchange_calendar
+
+    calendar_dir = tmp_path / "repo" / "data" / "calendar"
+    calendar_dir.mkdir(parents=True)
+    fixture = calendar_dir / "nyse_sessions_2018_01_02_2026_12_31.json"
+    sidecar = calendar_dir / "nyse_sessions_2018_01_02_2026_12_31.sha256"
+    for source, target in (
+        (REPO_ROOT / "data" / "calendar" / fixture.name, fixture),
+        (REPO_ROOT / "data" / "calendar" / sidecar.name, sidecar),
+    ):
+        shutil.copyfile(source, target)
+    payload = json.loads(fixture.read_text(encoding="utf-8"))
+    # drop one interior session that is NOT an early close: every fixture
+    # invariant still holds (strictly increasing, no duplicates, early
+    # closes still a subset) — only the session CONTENT changed
+    early = set(payload["early_close_sessions"])
+    victim = next(s for s in payload["sessions"][1:-1] if s not in early)
+    payload["sessions"] = [s for s in payload["sessions"] if s != victim]
+    body = json.dumps(payload)
+    fixture.write_text(body, encoding="utf-8")
+    sidecar.write_text(
+        hashlib.sha256(body.encode("utf-8")).hexdigest() + "  " + fixture.name + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(MassiveOverlayError, match="content identity changed"):
+        repo_exchange_calendar(tmp_path / "repo")
+
+
 # ---- end to end: the UNMODIFIED backtest over the adapter --------------------------
 
 
