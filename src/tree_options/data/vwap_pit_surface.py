@@ -104,6 +104,7 @@ from tree_options.data.massive_overlay import (
     MassiveDerivedOverlay,
     MassiveDerivedQuote,
     MassiveOverlayError,
+    _validated_spot_token,
     vwap_quote_event,
 )
 from tree_options.data.options_pit import NoOptionFileError
@@ -366,9 +367,27 @@ class VwapPitSurface:
         underlying_liquidity_term: str = "evaluated",
     ) -> None:
         self._overlay = overlay
-        self._spot: dict[str, dict[date, Decimal]] = {
-            underlying: dict(sessions) for underlying, sessions in (spot or {}).items()
-        }
+        # (R5-P2, Codex round 5) the ORDINARY spot copy loop VALIDATES every
+        # row through the loader's own discipline — ONE shared row check
+        # (`massive_overlay._validated_spot_token`, the same shape
+        # `_validated_spot_v2_row` gives the v2 source) — so an injected
+        # mapping cannot carry what a file cannot: the loader's parse
+        # accepted "Infinity" and its `<= 0`-only gate let POSITIVE infinity
+        # LOAD, this constructor copied it unchecked, `spot_mid_as_of`
+        # returned it unchanged, and an infinite spot flowed into intrinsic
+        # -> the election policy, where any finite bid is below
+        # Infinity * 0.98 — a forced early-exercise election on malformed
+        # input instead of a refusal. Refusal happens here, at construction,
+        # with the loader's own error shape naming the underlying and the
+        # session. Valid mappings store EXACTLY as before (the check
+        # validates, it never transforms).
+        self._spot: dict[str, dict[date, Decimal]] = {}
+        for spot_underlying, spot_sessions in (spot or {}).items():
+            where = f"spot[{spot_underlying!r}]"
+            self._spot[spot_underlying] = {
+                session: _validated_spot_token(where, session, spot_value)
+                for session, spot_value in spot_sessions.items()
+            }
         # (w3) the OPTIONAL dollar-volume source (see `load_spot_proxy_v2`):
         # None keeps the declared Decimal("0") sentinel — the ruled fallback.
         # (R4-P2, Codex round 4) the copy loop VALIDATES every row through

@@ -402,6 +402,71 @@ def test_load_spot_proxy_refuses_bad_input(tmp_path: Path) -> None:
         load_spot_proxy(path)
 
 
+# ---- (R5-P2, Codex round 5) ordinary-spot finiteness: file + constructor ------------
+
+
+@pytest.mark.parametrize("token", ["Infinity", "NaN"])
+def test_the_spot_proxy_loader_refuses_non_finite_spots(tmp_path: Path, token: str) -> None:
+    """(R5-P2) `_dec` accepts "Infinity" as a Decimal and `_load_spot`'s only
+    gate was `spot <= 0` — POSITIVE infinity passes it. An infinite spot then
+    flows into `intrinsic_value` and the election policy
+    (`should_elect_exercise`): any finite bid is below Infinity * 0.98, so
+    malformed input forces an early-exercise election instead of refusing.
+    Both tokens must refuse with the loader's own error shape, naming the
+    underlying, the session, and the token (RED before R5-P2: Infinity
+    LOADED; "NaN" escaped as a raw decimal.InvalidOperation out of the
+    `<= 0` comparison)."""
+    from tree_options.data.massive_overlay import MassiveOverlayError, load_spot_proxy
+
+    path = tmp_path / "spot_proxy.json"
+    path.write_text(f'{{"SPY": {{"2025-05-05": "{token}"}}}}', encoding="utf-8")
+    with pytest.raises(MassiveOverlayError, match="finite"):
+        load_spot_proxy(path)
+
+
+@pytest.mark.parametrize("value", [Decimal("Infinity"), Decimal("NaN")])
+def test_the_spot_constructor_refuses_non_finite_spots(overlay, value) -> None:
+    """(R5-P2 — the constructor horn, the election probe's entry) The
+    adapter's constructor copied injected ordinary `spot` mappings without
+    validation, so an infinite spot reached `spot_mid_as_of` unchanged and
+    from there the intrinsic -> election chain (a forced early exercise on
+    malformed input). The copy loop now applies the loader's own discipline
+    — ONE shared row check: exact decimal, FINITE, positive — and refuses
+    naming the underlying, the session, and the token (RED before R5-P2:
+    both were accepted silently; an infinite spot could reach
+    `exercise.py`)."""
+    with pytest.raises(MassiveOverlayError, match="finite"):
+        VwapPitSurface(overlay, spot={SPY: {S1: value}})
+
+
+def test_the_spot_constructor_refuses_inexact_and_nonpositive_spots(overlay) -> None:
+    """(R5-P2, the rest of the shared discipline) The ordinary-spot copy
+    loop refuses exactly what the loader refuses: a float close (a binary
+    approximation of a price) and a non-positive close — an injected
+    mapping can never carry what a file cannot."""
+    with pytest.raises(MassiveOverlayError, match="exact decimal"):
+        VwapPitSurface(overlay, spot={SPY: {S1: 600.5}})
+    with pytest.raises(MassiveOverlayError, match="not positive"):
+        VwapPitSurface(overlay, spot={SPY: {S1: Decimal("-600.00")}})
+
+
+def test_the_spot_constructor_loads_a_valid_mapping_exactly(overlay, tmp_path) -> None:
+    """(R5-P2, the parity direction that must not move) A valid ordinary
+    mapping stores EXACTLY as today — same keys, same Decimals — and the
+    loader's own output feeds the constructor identically (byte identity:
+    the shared check validates, it never transforms)."""
+    from tree_options.data.massive_overlay import load_spot_proxy
+    from tree_options.data.vwap_pit_surface import SPOT_SENTINEL_SESSION
+
+    path = tmp_path / "spot_proxy.json"
+    path.write_text('{"SPY": {"2025-05-05": "600.00", "2025-05-06": "601.25"}}', encoding="utf-8")
+    parsed = load_spot_proxy(path)
+    assert VwapPitSurface(overlay, spot=parsed)._spot == parsed
+    # the flat form's date.min sentinel is an ordinary key to the copy loop
+    hand = {SPY: {S1: SPOT_LEVEL, SPOT_SENTINEL_SESSION: Decimal("599.00")}}
+    assert VwapPitSurface(overlay, spot=hand)._spot == hand
+
+
 def test_coverage_era_spot_proxy_is_a_loadable_declared_input() -> None:
     """The brief's DECLARED INPUT (read-only): the coverage-era spot proxy
     parses under the same discipline when present on the host."""

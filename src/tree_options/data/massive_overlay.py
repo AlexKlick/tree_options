@@ -448,6 +448,53 @@ def _load_bars(
     return series
 
 
+def _validated_spot_token(where: str, session: date, value: object) -> Decimal:
+    """(R5-P2, Codex round 5) ONE row discipline for the ORDINARY spot
+    proxy, shared by `_load_spot` (the file path) and the lane-2 adapter's
+    constructor copy loop (`VwapPitSurface(spot=...)`) — the same shape
+    `_validated_spot_v2_row` gives the v2 dollar-volume source, so an
+    injected mapping can never carry what a file cannot.
+
+    The value must be an EXACT decimal — the file's string token, parsed,
+    or an already-exact Decimal (an int stays the file path's own accepted
+    token) — and must be FINITE and positive. Finiteness comes FIRST:
+    `_dec` accepts "Infinity" and it is POSITIVE-looking, so the old
+    `<= 0`-only gate let it LOAD — an infinite spot then flows into
+    intrinsic and the election policy, where any finite bid is below
+    Infinity * 0.98 and malformed input forces an early-exercise election —
+    while "NaN" raises InvalidOperation on comparison and escaped as a raw
+    arithmetic crash. Refusals name the underlying (`where`), the session,
+    and the token."""
+    if isinstance(value, bool):
+        raise MassiveOverlayError(
+            f"{where}[{session.isoformat()}]: spot must be an exact decimal —"
+            " a string token or a Decimal — got bool"
+        )
+    if type(value) is Decimal:
+        spot = value
+    elif isinstance(value, int):
+        spot = Decimal(value)
+    elif isinstance(value, str):
+        try:
+            spot = Decimal(value.strip())
+        except ArithmeticError:
+            raise MassiveOverlayError(
+                f"{where}[{session.isoformat()}]: spot {value!r} is not a decimal"
+            ) from None
+    else:
+        raise MassiveOverlayError(
+            f"{where}[{session.isoformat()}]: spot must be an exact decimal —"
+            f" a string token or a Decimal — got {type(value).__name__}"
+        )
+    if not spot.is_finite():
+        raise MassiveOverlayError(
+            f"{where}[{session.isoformat()}]: spot {spot} is not a finite decimal"
+        )
+    if spot <= 0:
+        raise MassiveOverlayError(f"{where}[{session.isoformat()}]: spot {spot} is not positive")
+    return spot
+
+
 def _load_spot(
     capture_dir: Path,
     lineage: list[tuple[str, str]],
@@ -456,7 +503,9 @@ def _load_spot(
 ) -> dict[str, dict[date, Decimal]]:
     """`spot_proxy.json` — DECLARED INPUT, never a vendor quote: this tier
     carries no underlying price, and the derived lane says NOT_EVALUABLE
-    (refused) without one rather than guessing a spot.
+    (refused) without one rather than guessing a spot. Per-row VALUE
+    validation is `_validated_spot_token` (R5-P2): exact, FINITE,
+    positive — an infinite spot is malformed input, never a price.
 
     Round-5 review fix (2026-08-24, finding 4): ``raw`` lets a caller hand
     in the EXACT bytes the capture-manifest verification hashed (and
@@ -485,14 +534,11 @@ def _load_spot(
                     session = date.fromisoformat(str(as_of).strip())
                 except ValueError as exc:
                     raise MassiveOverlayError(f"{where}: key {as_of!r} is not an ISO date") from exc
-                sessions[session] = _dec(spot, f"{where}[{as_of!r}]")
+                sessions[session] = _validated_spot_token(where, session, spot)
         else:
             # The flat form {"SPY": "5750.00"} declares one spot for every
             # session; `date.min` is the sentinel the inspector uses too.
-            sessions[date.min] = _dec(value, where)
-        for session, spot in sessions.items():
-            if spot <= 0:
-                raise MassiveOverlayError(f"{where}: spot {spot} for {session} is not positive")
+            sessions[date.min] = _validated_spot_token(where, date.min, value)
         proxy[underlying] = sessions
     return proxy
 
@@ -501,7 +547,7 @@ def load_spot_proxy(path: Path) -> dict[str, dict[date, Decimal]]:
     """Parse one `spot_proxy.json` (DECLARED INPUT) under exactly the
     discipline `_load_spot` applies — exact Decimal tokens, ISO session
     keys (or the flat one-spot-for-every-session form, keyed `date.min`),
-    positive values, fail-closed on anything else.
+    FINITE positive values, fail-closed on anything else.
 
     The lane-2 PIT adapter (`data.vwap_pit_surface.VwapPitSurface`) reads
     the coverage-era spot proxy through this loader; the bytes it parses
