@@ -1195,6 +1195,7 @@ def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, 
     from tree_options.data.bars import BarRecord
     from tree_options.data.vwap_pit_surface import VwapPitSurface
     from tree_options.protocol.era_profile import real_lane_split_override
+    from tree_options.time.calendar import calendar_content_sha256
 
     grid, overlay = era_world
     surface = VwapPitSurface(overlay)
@@ -1262,12 +1263,14 @@ def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, 
     tested = sorted({s for fold in per_fold for s in _test_sessions_of(fold)})
     assert len(tested) == 39  # 3 x 13, disjoint
     # both calendar identities are DISCLOSED (additive keys): the grid and
-    # the overlay's daily calendar, by name, session count, and span
+    # the overlay's daily calendar, by name, session count, span, and (R2-P1-b)
+    # COMPLETE content identity — the descriptor a config hash rides on
     assert payload["decision_calendar"] == {
         "name": "cboe-eod-real",
         "n_sessions": len(grid.sessions()),
         "first": grid.sessions()[0].isoformat(),
         "last": grid.sessions()[-1].isoformat(),
+        "content_sha256": calendar_content_sha256(grid),
     }
     assert payload["execution_calendar"]["n_sessions"] == len(overlay.calendar.sessions())
     assert payload["execution_calendar"]["last"] == overlay.calendar.sessions()[-1].isoformat()
@@ -1319,3 +1322,92 @@ def test_dual_calendar_lane_1_byte_identity_when_calendars_coincide(
     )
     assert "decision_calendar" not in default["payload"]
     assert "execution_calendar" not in default["payload"]
+
+
+# ---- (R2-P1-b, Codex round 2) calendar identity in the config hash is COMPLETE -------
+
+
+def _lossy_fields(calendar) -> tuple[object, ...]:
+    """Exactly the fields the descriptor disclosed before R2-P1-b (name,
+    count, first, last) — the lossy identity two doctored calendars can
+    share while differing in content."""
+    sessions = calendar.sessions()
+    return (
+        getattr(calendar, "name", type(calendar).__name__),
+        len(sessions),
+        sessions[0],
+        sessions[-1],
+    )
+
+
+def test_a_calendar_differing_by_one_interior_session_is_a_different_trial_identity(
+    world, protocol, tmp_path
+) -> None:
+    """(R2-P1-b) `_calendar_descriptor` disclosed only
+    {name, n_sessions, first, last} — two calendars differing by ONE
+    interior session (or by their early-close sets) received the SAME
+    config_hash, so INV-14 stamped an incomplete identity. The descriptor
+    now carries content_sha256 over the calendar's COMPLETE semantics, and
+    it rides BOTH the config hash and the payload (RED before R2-P1-b: the
+    two trials below were identical in hash AND descriptor)."""
+    from datetime import timedelta
+
+    from tree_options.data.real_overlay import RealSessionCalendar
+
+    _overlay, calendar, _snap, _ds = world
+    sessions = calendar.sessions()
+    # one interior session swapped for the adjacent Sunday (>= 3 days before
+    # its successor), far past the world's 2018 span so fills never touch it:
+    # same count, same first/last, ONE session of content different
+    index = next(
+        i for i in range(1000, len(sessions) - 1) if (sessions[i + 1] - sessions[i]).days >= 3
+    )
+    swapped = list(sessions)
+    swapped[index] = swapped[index] + timedelta(days=2)
+    baseline = RealSessionCalendar(sessions, frozenset())
+    doctored = RealSessionCalendar(tuple(swapped), frozenset())
+    assert _lossy_fields(baseline) == _lossy_fields(doctored)
+    assert baseline.sessions() != doctored.sessions()
+    base = _run_trial(world, protocol, tmp_path, tag="cal_id_base", execution_calendar=baseline)
+    other = _run_trial(world, protocol, tmp_path, tag="cal_id_swap", execution_calendar=doctored)
+    assert base["stamp"]["config_hash"] != other["stamp"]["config_hash"]
+    assert base["payload"]["execution_calendar"] != other["payload"]["execution_calendar"]
+    differing = {
+        key
+        for key in base["payload"]["execution_calendar"]
+        if base["payload"]["execution_calendar"][key] != other["payload"]["execution_calendar"][key]
+    }
+    assert differing == {"content_sha256"}, (
+        "one interior session of calendar content is a trial-identity change"
+        " the descriptor must carry — only the content hash may differ"
+    )
+
+
+def test_a_calendar_differing_by_its_early_close_set_is_a_different_trial_identity(
+    world, protocol, tmp_path
+) -> None:
+    """(R2-P1-b) The same construction for the EARLY-CLOSE dimension: the
+    identical session tuple with one extra early close is a semantically
+    different calendar (its 13:00 sessions are part of its authority), so
+    its config hash and descriptor must differ even though every lossy
+    field agrees (RED before R2-P1-b: identical hash and descriptor)."""
+    from tree_options.data.real_overlay import RealSessionCalendar
+
+    _overlay, calendar, _snap, _ds = world
+    sessions = calendar.sessions()
+    # the marked session sits far past the world's span, so no order or fill
+    # is ever decided on it — content identity is the ONLY difference
+    marked = sessions[1500]
+    baseline = RealSessionCalendar(sessions, frozenset())
+    doctored = RealSessionCalendar(sessions, frozenset({marked}))
+    assert _lossy_fields(baseline) == _lossy_fields(doctored)
+    assert baseline.sessions() == doctored.sessions()
+    base = _run_trial(world, protocol, tmp_path, tag="cal_ec_base", execution_calendar=baseline)
+    other = _run_trial(world, protocol, tmp_path, tag="cal_ec_marked", execution_calendar=doctored)
+    assert base["stamp"]["config_hash"] != other["stamp"]["config_hash"]
+    differing = {
+        key
+        for key in base["payload"]["execution_calendar"]
+        if base["payload"]["execution_calendar"][key] != other["payload"]["execution_calendar"][key]
+    }
+    assert differing == {"content_sha256"}

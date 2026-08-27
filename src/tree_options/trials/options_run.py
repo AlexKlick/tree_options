@@ -60,7 +60,7 @@ from tree_options.registry.scope import TrialScope
 from tree_options.registry.sqlite import TrialRegistry
 from tree_options.schemas.trial import TrialRecord
 from tree_options.splitting.splitter import Fold, WalkForwardSplitter
-from tree_options.time.calendar import SessionCalendar
+from tree_options.time.calendar import SessionCalendar, calendar_content_sha256
 from tree_options.trials.null_score import NULL_SCORE_MODEL_FAMILY, null_score
 
 RUNNER_REVISION = "trials.options_run/v1"
@@ -409,15 +409,25 @@ def _fold_backtest(
 
 def _calendar_descriptor(calendar: SessionCalendar) -> dict[str, object]:
     """(P1-1) The disclosure identity of one calendar: its declared name,
-    its session count, and its first/last session — enough for an artifact
-    to name WHICH calendar drove decisions and which drove fills, without
-    embedding the whole session list."""
+    its session count, its first/last session, and (R2-P1-b, Codex round 2)
+    its COMPLETE content identity — enough for an artifact to name WHICH
+    calendar drove decisions and which drove fills, without embedding the
+    whole session list.
+
+    (R2-P1-b) `content_sha256` is a domain-separated sha256 over the FULL
+    session tuple plus the early-close map (`calendar_content_sha256`).
+    The lossy fields alone let two calendars differing by ONE interior
+    session — or by their early-close sets — share a config_hash, so INV-14
+    stamped an incomplete identity; the content hash closes that. A
+    calendar that does not disclose its early-close set refuses here
+    (fail-closed), never hashes half its semantics."""
     sessions = calendar.sessions()
     return {
         "name": getattr(calendar, "name", type(calendar).__name__),
         "n_sessions": len(sessions),
         "first": sessions[0].isoformat(),
         "last": sessions[-1].isoformat(),
+        "content_sha256": calendar_content_sha256(calendar),
     }
 
 
