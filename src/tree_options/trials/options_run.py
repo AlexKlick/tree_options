@@ -888,9 +888,19 @@ def _execute(
     # refusal above guarantees the zero), and the execution-tail consumption
     # — exits, settlements and marks after the last test session — is
     # DISCLOSED here, never banned.
+    # (P2-6, Codex round 1) DISCLOSURE HONESTY: the seal is DECLARED-scoped
+    # to lane-2 evaluation folds, but the refusal this runner enforces is
+    # UNCONDITIONAL (strictly safer — a sealed date can never enter a
+    # registered fold on ANY lane). The block therefore states the declared
+    # scope verbatim, the ARTIFACT's own liquidity_lane, and an explicit
+    # `applied` field, so a lane-1 artifact can never again be read as
+    # claiming the seal was lane-1-scoped. Additive keys only.
     seal_disclosure: dict[str, object] = {
         "window_id": FINAL_HOLDOUT_WINDOW_ID,
         "scope": FINAL_HOLDOUT_SCOPE,
+        "declared_scope": FINAL_HOLDOUT_SCOPE,
+        "applied": f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})",
+        "liquidity_lane": liquidity_lane,
         "sealed_dates": sorted(_SEALED_HOLDOUT_SESSIONS),
         "fold_test_window_intersections": 0,
         "folds_with_sealed_execution_tail": sum(

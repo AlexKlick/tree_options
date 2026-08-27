@@ -935,3 +935,74 @@ def test_pooled_session_returns_stamped_and_consistent(world, protocol, tmp_path
     # fold restarts from fresh cash, so nothing is double-counted)
     per_fold_total = sum(len(fold["session_returns"]) for fold in body["payload"]["per_fold"])
     assert per_fold_total == len(series)
+
+
+# ---- (P2-6, Codex round 1) holdout disclosure honesty ---------------------------------
+
+
+@pytest.mark.parametrize("lane", [1, 2])
+def test_holdout_seal_block_states_its_declared_scope_and_the_artifacts_lane(
+    world, protocol, tmp_path, lane
+) -> None:
+    """(P2-6) The seal is SCOPED 'lane-2 evaluation folds (massive-derived-
+    free/1)' but the disclosure was unconditional — every lane-1 artifact
+    read as though it claimed a lane-1-scoped seal. The block now states
+    the DECLARED scope verbatim, the artifact's own liquidity_lane, and an
+    explicit `applied` field naming the unconditional refusal under the
+    declared scope. Additive keys only; the refusal itself stays
+    unconditional on BOTH lanes (RED before: the keys do not exist)."""
+    from tree_options.protocol.holdout import FINAL_HOLDOUT_SCOPE
+
+    body = _run_trial(world, protocol, tmp_path, tag=f"seal_scope_l{lane}", liquidity_lane=lane)
+    seal = body["payload"]["holdout_seal"]
+    assert seal["declared_scope"] == FINAL_HOLDOUT_SCOPE
+    assert seal["declared_scope"] == "lane-2 evaluation folds (massive-derived-free/1)"
+    assert seal["liquidity_lane"] == lane
+    assert seal["applied"] == (f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})")
+    # the pre-existing keys keep their names and shapes (additive only)
+    assert seal["window_id"] == "final-holdout-window-a"
+    assert seal["scope"] == FINAL_HOLDOUT_SCOPE
+    assert len(seal["sealed_dates"]) == 13
+
+
+@pytest.mark.parametrize("lane", [1, 2])
+def test_the_seal_refusal_still_fires_on_both_lanes(world, protocol, tmp_path, lane) -> None:
+    """(P2-6) The refusal stays UNCONDITIONAL (strictly safer: a sealed date
+    can never enter a registered fold on ANY lane) — the fix is disclosure
+    honesty, never a scoped weakening. A grid intersecting the sealed window
+    refuses before registration on lane 1 and lane 2 alike."""
+    _overlay, calendar, snapshot, dataset = world
+    surface = OptionPitSurface(world[0])
+    scored = _scored(world, surface)
+    sessions = calendar.sessions()
+    start = next(i for i, s in enumerate(sessions) if s >= date(2025, 6, 1))
+    end = next(i for i, s in enumerate(sessions) if s >= date(2026, 8, 21))
+    grid = sessions[start : end + 1]
+    registry = TrialRegistry(tmp_path / f"seal_both_lanes_{lane}.db")
+    try:
+        with pytest.raises(ValueError, match="holdout seal"):
+            run_options_trial(
+                dataset=dataset,
+                surface=surface,
+                calendar=calendar,
+                protocol=protocol,
+                world_id=snapshot.snapshot_id,
+                arm="A",
+                strategy_config=OptionsStrategyConfig(),
+                scored=scored,
+                model_family="fixture:v1",
+                model_sha256=None,
+                hypothesis="must be refused before registration on every lane",
+                decision_sessions=grid,
+                options_manifest_hash="0" * 64,
+                registry=registry,
+                artifacts_dir=tmp_path / f"seal_refused_{lane}",
+                repo=REPO_ROOT,
+                clock=FIXED_CLOCK,
+                split_override=SPLIT,
+                liquidity_lane=lane,
+                allow_dirty=True,
+            )
+    finally:
+        registry.close()
+    assert trial_count(tmp_path / f"seal_both_lanes_{lane}.db") == 0
