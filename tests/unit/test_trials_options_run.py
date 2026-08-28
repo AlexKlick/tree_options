@@ -2893,3 +2893,86 @@ def test_a_slotted_calendar_class_is_refused_by_name(era_world) -> None:
     first = grid.sessions()[0]
     with pytest.raises(ValueError, match="__slots__"):
         _bind_decision_calendar(slotted, {first: grid.session_close(first)})
+
+
+# ---- (R9-P1, Codex round 9) the SAME-OBJECT execution calendar ---------------
+
+
+def test_a_same_object_execution_calendar_is_the_none_form_at_runtime(
+    world, protocol, tmp_path
+) -> None:
+    """(R9-P1, Codex round 9 — the same-object horn) The disclosure treats
+    `execution_calendar is calendar` as NO execution calendar (same object
+    keeps the historical single-calendar stamp and hash), but `_execute`
+    received the ORIGINAL object unchanged, and the backtest routes any
+    non-None execution calendar to the fill engine — whose
+    `DECISION_INSTANT_NOT_CLOSE` door re-reads it. `execution_calendar=None`
+    and `execution_calendar=<the same object>` were therefore stamped and
+    hashed IDENTICALLY yet differed at runtime: the None form's fills read
+    the BOUND calendar's frozen instants, the same-object form's read the
+    MUTABLE original. A calendar honest through the boundary's two reads
+    (`declared_close`, then the wired surface's `decision_close`) and 16:00
+    thereafter makes the correctly-stamped 13:00 order die in the same-object
+    horn only (INV-02/INV-14: different counters and fills under one declared
+    configuration). The boundary now normalizes at the `_execute` call, so
+    the same-object form IS the None form at runtime — byte-identical
+    artifacts, both consuming the frozen instants (RED before R9-P1: the
+    same-object run's fill door consumed the liar's third answer and its
+    artifact diverged from the None run's)."""
+    import json
+
+    overlay, calendar, _snap, _ds = world
+    liar_none = _ThirdReadLiarCalendar(calendar)
+    liar_same = _ThirdReadLiarCalendar(calendar)
+    surface_none = _ProbeCalendarSurface(overlay, liar_none)
+    surface_same = _ProbeCalendarSurface(overlay, liar_same)
+    # NO MASKING — the probe passes every guard the boundary owns: it
+    # discloses itself through the wired surface (the digest binds the liar
+    # to the liar), answers both boundary reads with the fixture close, and
+    # never raises. Only the fill engine's read of the UNBOUND original can
+    # catch the third answer.
+    none_body = _run_trial(
+        world,
+        protocol,
+        tmp_path,
+        tag="r9_exec_none",
+        decision_calendar=liar_none,
+        surface=surface_none,
+    )
+    same_body = _run_trial(
+        world,
+        protocol,
+        tmp_path,
+        tag="r9_exec_same",
+        decision_calendar=liar_same,
+        surface=surface_same,
+        execution_calendar=liar_same,
+    )
+    # the defect's premise, pinned: the two forms stamp and hash IDENTICALLY
+    assert none_body["stamp"]["config_hash"] == same_body["stamp"]["config_hash"]
+    # compared per-key with a SHORT failure message (the R8 idiom: a bare
+    # equality on the serialized bodies renders a multi-megabyte diff)
+    none_canon = {k: json.dumps(v, sort_keys=True) for k, v in none_body.items()}
+    same_canon = {k: json.dumps(v, sort_keys=True) for k, v in same_body.items()}
+    diverging = [k for k in none_canon if none_canon[k] != same_canon.get(k)]
+    assert not diverging, f"the same-object run diverges from the None run in: {diverging}"
+    # both runs consume the FROZEN instants: the fill decided on the
+    # early-close session is stamped the verified 13:00 ET close, never the
+    # no-early-close twin's 16:00
+    early = [f for f in same_body["payload"]["fills_log"] if f["decision_session"] == "2018-07-03"]
+    assert early, "the run must actually decide an entry on the early-close session"
+    verified_close = calendar.session_close(date(2018, 7, 3))
+    for fill in early:
+        assert fill["decision_at"] == verified_close.isoformat()
+    # nothing after the boundary consulted either liar: every read count is
+    # exactly the boundary's two (decision sessions) or the freeze's one
+    # boundary-time read (every other calendar session)
+    assert max(liar_none.close_calls.values()) == 2
+    assert max(liar_same.close_calls.values()) == 2
+    # the liar really would have answered differently on its third read —
+    # proven on a SPENT twin so the assertion consumes no read of the runs'
+    # probes
+    spent = _ThirdReadLiarCalendar(calendar)
+    assert spent.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
+    assert spent.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
+    assert spent.session_close(date(2018, 7, 3)) != calendar.session_close(date(2018, 7, 3))

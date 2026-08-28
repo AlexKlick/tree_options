@@ -1115,7 +1115,25 @@ def run_options_trial(
             flow_min_session_volume=flow_threshold,
             score_seed=score_seed,
             split_label_horizon=split["label_horizon_sessions"],
-            execution_calendar=execution_calendar,
+            # (R9-P1, Codex round 9) SAME-OBJECT NORMALIZATION. The
+            # disclosure above treats `execution_calendar is calendar` as
+            # "no execution calendar" — the historical single-calendar
+            # stamp and hash — but this call forwarded the ORIGINAL object,
+            # and the backtest routes ANY non-None execution calendar to
+            # the fill engine (`fill_calendar = calendar if
+            # execution_calendar is None else execution_calendar`), whose
+            # doors re-read it. The None form's fills therefore consumed
+            # the BOUND calendar's frozen instants while the same-object
+            # form's consumed the MUTABLE original: two forms stamped and
+            # hashed IDENTICALLY that differed at runtime — a calendar
+            # honest through the boundary's two reads and 16:00 thereafter
+            # made the correctly-stamped 13:00 order die
+            # DECISION_INSTANT_NOT_CLOSE in the same-object horn only.
+            # Normalized here, the same-object form IS the None form at
+            # runtime, exactly as its stamp always claimed; a DISTINCT
+            # execution calendar flows unchanged (the dual-calendar lane
+            # and its disclosure are untouched).
+            execution_calendar=None if execution_calendar is calendar else execution_calendar,
             calendars_differ=calendars_differ,
         )
         artifacts_dir.mkdir(parents=True, exist_ok=True)
