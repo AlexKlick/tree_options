@@ -3302,3 +3302,106 @@ def test_an_empty_slots_no_dict_surface_refuses_by_name() -> None:
         _bind_decision_surface(  # type: ignore[arg-type]
             stateless, {first: stateless.decision_close(first)}
         )
+
+
+# ---- (round-10 debt-f, Codex round 10) the scan reads CLASS DICTS, not introspection ----
+
+
+class _IntrospectionHidingDescriptor:
+    """(round-10 debt-f) The probe descriptor: `__set__` is DEFINED — a real
+    data descriptor under CPython's protocol, which consults the TYPE's
+    slots/class dicts, never the object's `__getattribute__` — but the
+    descriptor's own class OVERRIDES `__getattribute__` to raise
+    AttributeError for `'__set__'`/`'__delete__'`, so the R9-P2 scan's
+    `hasattr` classification (which consults exactly that override) sees a
+    non-descriptor. `__set__` ACCEPTS the frozen closure; stateful `__get__`
+    returns it for exactly the FIRST post-install read — the R8-P2
+    verification — then answers the instance's lying callable
+    (`_descriptor_lie`, the no-early-close twin's 16:00) on every later
+    read; before any install it answers `_descriptor_honest` (the stamped
+    grid's close), so the preflight's per-session reads pass."""
+
+    def __init__(self) -> None:
+        self._installed: dict[int, object] = {}
+        self._reads: dict[int, int] = {}
+
+    def __getattribute__(self, name):
+        if name in ("__set__", "__delete__"):
+            raise AttributeError(name)  # the hide: hasattr consults this
+        return super().__getattribute__(name)
+
+    def __set__(self, obj, value) -> None:
+        self._installed[id(obj)] = value
+        self._reads[id(obj)] = 0
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        reads = self._reads.get(id(obj), 0) + 1
+        self._reads[id(obj)] = reads
+        installed = self._installed.get(id(obj))
+        if installed is None:
+            return obj._descriptor_honest  # pre-install: the preflight reads
+        if reads == 1:
+            return installed  # the verification: identity holds exactly once
+        return obj._descriptor_lie  # every later read lies
+
+
+class _IntrospectionHidingSurface(VwapPitSurface):
+    """The surface-side probe: `decision_close` IS the introspection-hiding
+    descriptor. The SURFACE class itself overrides nothing the scan names
+    (the `__getattribute__` override lives on the DESCRIPTOR's class, which
+    the surface MRO never sees), so pre-debt-f the scan passes, `__set__`
+    accepts the install, and the first post-install read returns it — only
+    a classification that reads class DICTS, as CPython's own protocol
+    does, can name the shape."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)
+        self._lying_grid = grid
+        self._descriptor_honest = grid.session_close
+        self._descriptor_lie = RealSessionCalendar(grid.sessions(), frozenset()).session_close
+
+    @property
+    def decision_calendar(self):
+        return self._lying_grid
+
+    decision_close = _IntrospectionHidingDescriptor()
+
+
+def test_an_introspection_hiding_descriptor_is_refused_by_name(era_world) -> None:
+    """(round-10 debt-f — the hidden-`__set__` horn) `_refuse_descriptor_
+    seams` classified the seam with `hasattr(seam_attr, "__set__")` /
+    `hasattr(seam_attr, "__delete__")` — attribute access on the descriptor
+    OBJECT, i.e. through its own overridable `__getattribute__`. A hostile
+    descriptor class that DEFINES `__set__` (a real data descriptor under
+    the protocol, which consults the type's class dicts) while raising
+    AttributeError for those two names on introspection therefore passed
+    the scan, accepted the installed closure, returned it for the one-time
+    read-back, and answered an unfrozen callable on every later read (RED
+    before debt-f: the bind succeeded — DID NOT RAISE). The scan now walks
+    `type(seam_attr).__mro__` and refuses when any class's `__dict__`
+    contains `__set__`/`__delete__` — the protocol's actual rule, unhidable
+    by any instance `__getattribute__`."""
+    from tree_options.time.calendar import calendar_content_sha256
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    # NO MASKING — the probe defeats exactly the introspection the scan
+    # used, and nothing else: hasattr sees no __set__, the digest binds
+    # (the disclosure is the stamped grid), and the install verification
+    # holds for its one read — proven on the spent twin below
+    hidden = _IntrospectionHidingSurface.decision_close
+    assert not hasattr(hidden, "__set__")  # the hide is real
+    assert not hasattr(hidden, "__delete__")
+    assert "__set__" in type(hidden).__dict__  # ...and so is the descriptor
+    probe = _IntrospectionHidingSurface(overlay, grid)
+    assert calendar_content_sha256(probe.decision_calendar) == calendar_content_sha256(grid)
+    sentinel = object()
+    probe.decision_close = sentinel  # __set__ ACCEPTS the install
+    assert probe.decision_close is sentinel  # read 1: the verification passes
+    assert probe.decision_close is not sentinel  # read 2+: the lying callable
+    liar = _IntrospectionHidingSurface(overlay, grid)
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="defines decision_close as a class-level data descriptor"):
+        _bind_decision_surface(liar, {first: grid.session_close(first)})

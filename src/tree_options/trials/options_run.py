@@ -493,9 +493,10 @@ def _refuse_descriptor_seams(cls: type, seam: str) -> None:
     instance `__getattribute__` override performs the same temporal
     interception on ANY attribute read. Both factories therefore refuse the
     CLASS SHAPES up front, BY NAME, before any construction: any class in
-    the MRO whose `__dict__` defines the seam as a DATA DESCRIPTOR (has
-    `__set__`/`__delete__` — a property or descriptor object owns the
-    attribute, and an instance attribute cannot durably shadow it), and any
+    the MRO whose `__dict__` defines the seam as a DATA DESCRIPTOR (any
+    class of `type(seam_attr).__mro__` carries `__set__`/`__delete__` in
+    its `__dict__` — a property or descriptor object owns the attribute,
+    and an instance attribute cannot durably shadow it), and any
     class OVERRIDING `__getattribute__` (an override can rewrite any later
     read, so no installed closure is ever authoritative; object's own
     `__getattribute__` is excluded by identity — every MRO ends there).
@@ -508,8 +509,18 @@ def _refuse_descriptor_seams(cls: type, seam: str) -> None:
     the scan cannot name (a `__setattr__` override, for one)."""
     for klass in cls.__mro__:
         seam_attr = klass.__dict__.get(seam)
-        if seam_attr is not None and (
-            hasattr(seam_attr, "__set__") or hasattr(seam_attr, "__delete__")
+        # (round-10 debt-f, Codex round 10) the data-descriptor test walks
+        # the TYPE's MRO class dicts — the protocol's actual rule — never
+        # attribute access on the descriptor object: `hasattr` consults the
+        # object's own overridable `__getattribute__`, so a hostile
+        # descriptor class that DEFINES `__set__` while raising
+        # AttributeError for '__set__'/'__delete__' on introspection hid
+        # from the scan, accepted the install, returned it for the one-time
+        # read-back, and lied thereafter. Class dicts are unhidable by any
+        # instance `__getattribute__`.
+        if seam_attr is not None and any(
+            "__set__" in seam_type.__dict__ or "__delete__" in seam_type.__dict__
+            for seam_type in type(seam_attr).__mro__
         ):
             raise ValueError(
                 f"{cls.__name__} defines {seam} as a class-level data"
