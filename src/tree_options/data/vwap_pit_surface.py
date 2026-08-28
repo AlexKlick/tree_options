@@ -434,10 +434,15 @@ class VwapPitSurface:
         # so this SAME gate also refuses a `StaticSessionCalendar` subclass
         # reporting the canonical data — its methods are free to disagree
         # with its data, and data identity alone cannot certify behavior.
-        # No separate `type() is` check is added: the digest is the one
-        # identity authority (it is what `_calendar_descriptor` and the
-        # config hash ride too), and a second, structural gate could only
-        # drift from it.
+        # (round-10 debt-e, Codex round 10) the digest names the class only
+        # through `__module__` + `__qualname__` STRINGS, and both are plain
+        # assignable class attributes: a subclass that reassigns them to the
+        # canonical values FORGES the pin with no SHA collision. The gate
+        # therefore carries TWO authorities: the pinned digest is the CONTENT
+        # authority (fixture-content drift still refuses), and the in-process
+        # `type(...) is StaticSessionCalendar` below is the CLASS authority —
+        # identity has no string left to spoof, and the two cannot drift
+        # apart because neither is derivable from the other.
         if exchange_calendar is not None:
             try:
                 supplied_identity = calendar_content_sha256(exchange_calendar)
@@ -454,6 +459,28 @@ class VwapPitSurface:
                     f" {REPO_EXCHANGE_CALENDAR_CONTENT_SHA256} — an unbound"
                     " calendar self-certifies exactly where the design says"
                     " fail-closed (the Jan-16 scenario)"
+                )
+            # (round-10 debt-e, Codex round 10) the CLASS authority: the
+            # same class `repo_exchange_calendar()` constructs and the pinned
+            # digest was computed over — checked AFTER the digest so every
+            # content refusal keeps its exact historical error, and checked
+            # `is` (not isinstance) because the digest already carries
+            # subclass data identity; only exact identity is unforgeable.
+            # Deliberately scoped to THIS authority path alone: the trial
+            # boundary and the `decision_calendar` seam keep accepting caller
+            # calendars (including test liar subclasses) — the behavioral
+            # preflight and the freeze apparatus own that surface.
+            if type(exchange_calendar) is not StaticSessionCalendar:
+                raise MassiveOverlayError(
+                    "exchange_calendar must be the canonical"
+                    " StaticSessionCalendar ITSELF"
+                    " (type(exchange_calendar) is StaticSessionCalendar): got"
+                    f" {type(exchange_calendar).__module__}."
+                    f"{type(exchange_calendar).__qualname__} — the pinned"
+                    " digest is the content authority and the concrete class"
+                    " is the class authority, and a subclass that reassigns"
+                    " __module__/__qualname__ forges the former while its"
+                    " methods stay free to disagree with its data"
                 )
         # (R2-P1-c, Codex round 2) the DECISION-grid calendar: None keeps
         # today's overlay-calendar behavior byte-identically (lane-1/
