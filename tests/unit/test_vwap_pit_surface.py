@@ -1440,6 +1440,55 @@ def test_an_overriding_subclass_is_refused_and_a_different_identity(overlay, spo
         VwapPitSurface(overlay, spot=spot, exchange_calendar=shifted)
 
 
+def test_a_digest_spoofing_subclass_is_refused_by_the_class_authority(overlay, spot) -> None:
+    """(round-10 debt-e, Codex round 10 — the forged-identity horn) The
+    digest binds the concrete class only through `__module__` + `__qualname`
+    STRINGS — both plain assignable class attributes — so a subclass that
+    reassigns them to the canonical values, inherits the committed
+    fixture's sessions and early closes, and overrides `ordinal()` FORGES
+    the pinned `REPO_EXCHANGE_CALENDAR_CONTENT_SHA256` with no SHA collision:
+    the digest gate accepts it, and the shifted 20-session window answers a
+    future-including liquidity median at the visible session's `received`
+    time (INV-02/INV-14 under the pinned identity). The gate therefore now
+    carries TWO authorities: the digest is the CONTENT authority, and an
+    in-process `type(exchange_calendar) is StaticSessionCalendar` is the
+    CLASS authority — identity has no string left to spoof (RED before
+    debt-e: the forged twin was ACCEPTED — its digest equals the pin)."""
+    from tree_options.data.vwap_pit_surface import (
+        REPO_EXCHANGE_CALENDAR_CONTENT_SHA256,
+        repo_exchange_calendar,
+    )
+    from tree_options.time.calendar import StaticSessionCalendar, calendar_content_sha256
+
+    class _SpoofedIdentityCalendar(StaticSessionCalendar):
+        """The round-10 probe: canonical DATA, canonical class STRINGS, a
+        shifted `ordinal` — digest-identical to the authority, behaviorally
+        not."""
+
+        def ordinal(self, d: date) -> int:
+            return super().ordinal(d) + 1
+
+    _SpoofedIdentityCalendar.__module__ = StaticSessionCalendar.__module__
+    _SpoofedIdentityCalendar.__qualname__ = StaticSessionCalendar.__qualname__
+
+    json_path, checksum_path = _committed_fixture_paths()
+    twin = _SpoofedIdentityCalendar(json_path, checksum_path)
+    exchange = _exchange_calendar()
+    probe = exchange.sessions()[100]
+    # NO MASKING — the forgery is complete at the digest layer: the twin
+    # carries the committed fixture's exact sessions and early closes, its
+    # digest EQUALS the pin, and only the class authority can refuse it
+    assert twin.sessions() == exchange.sessions()
+    assert twin.early_close_sessions() == exchange.early_close_sessions()
+    assert calendar_content_sha256(twin) == REPO_EXCHANGE_CALENDAR_CONTENT_SHA256
+    assert twin.ordinal(probe) == exchange.ordinal(probe) + 1  # behavior differs
+    # the honest path this gate protects: the sanctioned factory constructs
+    # the BASE class, and the class authority accepts exactly that
+    assert type(repo_exchange_calendar(REPO_ROOT)) is StaticSessionCalendar
+    with pytest.raises(MassiveOverlayError, match="must be the canonical StaticSessionCalendar"):
+        VwapPitSurface(overlay, spot=spot, exchange_calendar=twin)
+
+
 # ---- end to end: the UNMODIFIED backtest over the adapter --------------------------
 
 

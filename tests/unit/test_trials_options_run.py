@@ -3302,3 +3302,195 @@ def test_an_empty_slots_no_dict_surface_refuses_by_name() -> None:
         _bind_decision_surface(  # type: ignore[arg-type]
             stateless, {first: stateless.decision_close(first)}
         )
+
+
+# ---- (round-10 debt-f, Codex round 10) the scan reads CLASS DICTS, not introspection ----
+
+
+class _IntrospectionHidingDescriptor:
+    """(round-10 debt-f) The probe descriptor: `__set__` is DEFINED — a real
+    data descriptor under CPython's protocol, which consults the TYPE's
+    slots/class dicts, never the object's `__getattribute__` — but the
+    descriptor's own class OVERRIDES `__getattribute__` to raise
+    AttributeError for `'__set__'`/`'__delete__'`, so the R9-P2 scan's
+    `hasattr` classification (which consults exactly that override) sees a
+    non-descriptor. `__set__` ACCEPTS the frozen closure; stateful `__get__`
+    returns it for exactly the FIRST post-install read — the R8-P2
+    verification — then answers the instance's lying callable
+    (`_descriptor_lie`, the no-early-close twin's 16:00) on every later
+    read; before any install it answers `_descriptor_honest` (the stamped
+    grid's close), so the preflight's per-session reads pass."""
+
+    def __init__(self) -> None:
+        self._installed: dict[int, object] = {}
+        self._reads: dict[int, int] = {}
+
+    def __getattribute__(self, name):
+        if name in ("__set__", "__delete__"):
+            raise AttributeError(name)  # the hide: hasattr consults this
+        return super().__getattribute__(name)
+
+    def __set__(self, obj, value) -> None:
+        self._installed[id(obj)] = value
+        self._reads[id(obj)] = 0
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        reads = self._reads.get(id(obj), 0) + 1
+        self._reads[id(obj)] = reads
+        installed = self._installed.get(id(obj))
+        if installed is None:
+            return obj._descriptor_honest  # pre-install: the preflight reads
+        if reads == 1:
+            return installed  # the verification: identity holds exactly once
+        return obj._descriptor_lie  # every later read lies
+
+
+class _IntrospectionHidingSurface(VwapPitSurface):
+    """The surface-side probe: `decision_close` IS the introspection-hiding
+    descriptor. The SURFACE class itself overrides nothing the scan names
+    (the `__getattribute__` override lives on the DESCRIPTOR's class, which
+    the surface MRO never sees), so pre-debt-f the scan passes, `__set__`
+    accepts the install, and the first post-install read returns it — only
+    a classification that reads class DICTS, as CPython's own protocol
+    does, can name the shape."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)
+        self._lying_grid = grid
+        self._descriptor_honest = grid.session_close
+        self._descriptor_lie = RealSessionCalendar(grid.sessions(), frozenset()).session_close
+
+    @property
+    def decision_calendar(self):
+        return self._lying_grid
+
+    decision_close = _IntrospectionHidingDescriptor()
+
+
+def test_an_introspection_hiding_descriptor_is_refused_by_name(era_world) -> None:
+    """(round-10 debt-f — the hidden-`__set__` horn) `_refuse_descriptor_
+    seams` classified the seam with `hasattr(seam_attr, "__set__")` /
+    `hasattr(seam_attr, "__delete__")` — attribute access on the descriptor
+    OBJECT, i.e. through its own overridable `__getattribute__`. A hostile
+    descriptor class that DEFINES `__set__` (a real data descriptor under
+    the protocol, which consults the type's class dicts) while raising
+    AttributeError for those two names on introspection therefore passed
+    the scan, accepted the installed closure, returned it for the one-time
+    read-back, and answered an unfrozen callable on every later read (RED
+    before debt-f: the bind succeeded — DID NOT RAISE). The scan now walks
+    `type(seam_attr).__mro__` and refuses when any class's `__dict__`
+    contains `__set__`/`__delete__` — the protocol's actual rule, unhidable
+    by any instance `__getattribute__`."""
+    from tree_options.time.calendar import calendar_content_sha256
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    # NO MASKING — the probe defeats exactly the introspection the scan
+    # used, and nothing else: hasattr sees no __set__, the digest binds
+    # (the disclosure is the stamped grid), and the install verification
+    # holds for its one read — proven on the spent twin below
+    hidden = _IntrospectionHidingSurface.decision_close
+    assert not hasattr(hidden, "__set__")  # the hide is real
+    assert not hasattr(hidden, "__delete__")
+    assert "__set__" in type(hidden).__dict__  # ...and so is the descriptor
+    probe = _IntrospectionHidingSurface(overlay, grid)
+    assert calendar_content_sha256(probe.decision_calendar) == calendar_content_sha256(grid)
+    sentinel = object()
+    probe.decision_close = sentinel  # __set__ ACCEPTS the install
+    assert probe.decision_close is sentinel  # read 1: the verification passes
+    assert probe.decision_close is not sentinel  # read 2+: the lying callable
+    liar = _IntrospectionHidingSurface(overlay, grid)
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="defines decision_close as a class-level data descriptor"):
+        _bind_decision_surface(liar, {first: grid.session_close(first)})
+
+
+# ---- (round-10 debt-g, Codex round 10) the __dict__-copy is a REAL dict --------
+
+
+class _RaisingDictMapping:
+    """(round-10 debt-g) The loud horn: a hostile mapping whose `update`
+    raises, so the unguarded `bound.__dict__.update(...)` threw a RAW
+    RuntimeError out of the boundary instead of refusing by name."""
+
+    def update(self, *args, **kwargs) -> None:
+        raise RuntimeError("the hostile mapping refuses the copy")
+
+
+class _NoopDictMapping:
+    """(round-10 debt-g) The silent horn: a mapping whose `update` accepts
+    and drops everything, so the state copy silently vanished and the run
+    failed LATER, after registration, on the half-bound instance."""
+
+    def update(self, *args, **kwargs) -> None:
+        pass
+
+
+class _RaisingDictCalendar(RealSessionCalendar):
+    """The calendar-side probe: `__dict__` is a class-level property
+    returning the RAISING mapping — present (the presence-only check
+    passed), never a real dict."""
+
+    def __init__(self, grid) -> None:
+        super().__init__(grid.sessions(), frozenset(grid.early_close_sessions()))
+
+    @property
+    def __dict__(self):
+        return _RaisingDictMapping()
+
+
+class _NoopDictSurface(VwapPitSurface):
+    """The surface-side twin: `__dict__` is the same kind of property
+    returning the NO-OP mapping — the copy drops the state silently."""
+
+    def __init__(self, overlay, grid, liquidity_term) -> None:
+        super().__init__(overlay, decision_calendar=grid, underlying_liquidity_term=liquidity_term)
+
+    @property
+    def __dict__(self):
+        return _NoopDictMapping()
+
+
+def test_a_raising_dict_property_calendar_refuses_by_name(era_world) -> None:
+    """(round-10 debt-g — the raw-escape horn, calendar side)
+    `_refuse_dictless_bind` proved only `hasattr(bound, "__dict__")`
+    (presence), and the `bound.__dict__.update(...)` call was unguarded:
+    a class-level `__dict__` property returning a mapping whose `update`
+    RAISES escaped the boundary as the RAW exception (RED before debt-g:
+    RuntimeError, never a named ValueError). The refusal now requires
+    `type(bound.__dict__) is dict` — a property-returned mapping cannot be
+    a real dict — and both factories wrap the copy itself in the same
+    named refusal."""
+    from tree_options.trials.options_run import _bind_decision_calendar
+
+    grid, _overlay = era_world
+    liar = _RaisingDictCalendar(grid)
+    first = grid.sessions()[0]
+    # NO MASKING — the probe defeats exactly the presence-only check the
+    # refusal used: __dict__ IS present, it is simply not a real dict
+    assert hasattr(liar, "__dict__")
+    assert type(liar.__dict__) is not dict
+    with pytest.raises(ValueError, match="not a real dict"):
+        _bind_decision_calendar(liar, {first: grid.session_close(first)})
+
+
+def test_a_noop_dict_property_surface_refuses_by_name(era_world) -> None:
+    """(round-10 debt-g — the silent-drop horn, surface side) The same
+    property shape returning a NO-OP mapping was worse than the raw
+    escape: the copy dropped every attribute, the install still landed in
+    the real per-instance storage (attribute writes do not consult the
+    property), the one-time read-back held identity, and the bind returned
+    a state-stripped instance — accepted silently, failing only later,
+    after registration (RED before debt-g: DID NOT RAISE). The dict-type
+    requirement refuses it BY NAME, before any state moves."""
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    surface = _NoopDictSurface(overlay, grid, "evaluated")
+    first = grid.sessions()[0]
+    assert hasattr(surface, "__dict__")  # presence alone is not dict-hood
+    assert type(surface.__dict__) is not dict
+    with pytest.raises(ValueError, match="not a real dict"):
+        _bind_decision_surface(surface, {first: grid.session_close(first)})

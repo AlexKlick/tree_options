@@ -493,9 +493,10 @@ def _refuse_descriptor_seams(cls: type, seam: str) -> None:
     instance `__getattribute__` override performs the same temporal
     interception on ANY attribute read. Both factories therefore refuse the
     CLASS SHAPES up front, BY NAME, before any construction: any class in
-    the MRO whose `__dict__` defines the seam as a DATA DESCRIPTOR (has
-    `__set__`/`__delete__` — a property or descriptor object owns the
-    attribute, and an instance attribute cannot durably shadow it), and any
+    the MRO whose `__dict__` defines the seam as a DATA DESCRIPTOR (any
+    class of `type(seam_attr).__mro__` carries `__set__`/`__delete__` in
+    its `__dict__` — a property or descriptor object owns the attribute,
+    and an instance attribute cannot durably shadow it), and any
     class OVERRIDING `__getattribute__` (an override can rewrite any later
     read, so no installed closure is ever authoritative; object's own
     `__getattribute__` is excluded by identity — every MRO ends there).
@@ -508,8 +509,18 @@ def _refuse_descriptor_seams(cls: type, seam: str) -> None:
     the scan cannot name (a `__setattr__` override, for one)."""
     for klass in cls.__mro__:
         seam_attr = klass.__dict__.get(seam)
-        if seam_attr is not None and (
-            hasattr(seam_attr, "__set__") or hasattr(seam_attr, "__delete__")
+        # (round-10 debt-f, Codex round 10) the data-descriptor test walks
+        # the TYPE's MRO class dicts — the protocol's actual rule — never
+        # attribute access on the descriptor object: `hasattr` consults the
+        # object's own overridable `__getattribute__`, so a hostile
+        # descriptor class that DEFINES `__set__` while raising
+        # AttributeError for '__set__'/'__delete__' on introspection hid
+        # from the scan, accepted the install, returned it for the one-time
+        # read-back, and lied thereafter. Class dicts are unhidable by any
+        # instance `__getattribute__`.
+        if seam_attr is not None and any(
+            "__set__" in seam_type.__dict__ or "__delete__" in seam_type.__dict__
+            for seam_type in type(seam_attr).__mro__
         ):
             raise ValueError(
                 f"{cls.__name__} defines {seam} as a class-level data"
@@ -540,7 +551,18 @@ def _refuse_dictless_bind(bound: object, seam: str) -> None:
     instance, right after `cls.__new__(cls)`, so every no-dict shape —
     empty `__slots__ = ()` today, anything else later — is a named boundary
     refusal, never a crash. The nonempty-slots MRO scan stays: a slotted
-    class over a `__dict__`-bearing base still loses SLOT state."""
+    class over a `__dict__`-bearing base still loses SLOT state.
+    (round-10 debt-g, Codex round 10) A PRESENT `__dict__` is not yet a
+    REAL one: a class-level `__dict__` property can return any mapping —
+    one whose `update` raises escaped the boundary as a RAW exception, and
+    a no-op one silently dropped the copied state (the install still lands
+    in the real per-instance storage, so the one-time read-back held
+    identity and the run failed only later, after registration). The
+    refusal therefore also requires `type(bound.__dict__) is dict` — a
+    property-returned mapping cannot be a real dict, and the normal
+    `__dict__` is one — and both factories wrap the `.update(...)` itself
+    in the same named refusal: nothing escapes the boundary raw from the
+    copy."""
     if not hasattr(bound, "__dict__"):
         raise ValueError(
             f"{type(bound).__name__} has no instance __dict__ (a legal"
@@ -548,6 +570,16 @@ def _refuse_dictless_bind(bound: object, seam: str) -> None:
             " bind's state copy and the frozen"
             f" {seam} are both __dict__ writes — the freeze cannot be"
             " installed on this class; refusing before registration"
+        )
+    if type(bound.__dict__) is not dict:
+        raise ValueError(
+            f"{type(bound).__name__}.__dict__ is a"
+            f" {type(bound.__dict__).__name__}, not a real dict (a"
+            " class-level __dict__ property returning a hostile mapping):"
+            " the bind's state copy and the frozen"
+            f" {seam} are both __dict__ writes through that mapping — a"
+            " raising one escapes the boundary raw and a no-op one drops"
+            " the state silently; refusing before registration"
         )
 
 
@@ -637,7 +669,20 @@ def _bind_decision_surface(
     # `__slots__ = ()` over no dict-bearing base) refuses by name here,
     # never crashes on the `__dict__` writes below
     _refuse_dictless_bind(bound, "decision_close")
-    bound.__dict__.update(underlying.__dict__)
+    # (round-10 debt-g, Codex round 10) the copy itself is guarded too:
+    # nothing escapes the boundary raw from the state copy (belt-and-
+    # suspenders beside the dict-type refusal above — the SOURCE read
+    # `underlying.__dict__` is the one place a hostile mapping can still
+    # reach this line from)
+    try:
+        bound.__dict__.update(underlying.__dict__)
+    except Exception as exc:
+        raise ValueError(
+            f"cannot copy {type(underlying).__name__} state onto the bound"
+            f" instance: the __dict__ copy raised {type(exc).__name__} — a"
+            " hostile mapping must refuse by name here, never escape the"
+            " boundary raw; refusing before registration"
+        ) from exc
 
     def decision_close(decision_session: date) -> datetime:
         try:
@@ -750,7 +795,18 @@ def _bind_decision_calendar(
     # `__slots__ = ()` over no dict-bearing base) refuses by name here,
     # never crashes on the `__dict__` writes below
     _refuse_dictless_bind(bound, "session_close")
-    bound.__dict__.update(calendar.__dict__)
+    # (round-10 debt-g, Codex round 10) the same guarded copy as the
+    # surface bind: the SOURCE read `calendar.__dict__` is the one place a
+    # hostile mapping can still reach this line from
+    try:
+        bound.__dict__.update(calendar.__dict__)
+    except Exception as exc:
+        raise ValueError(
+            f"cannot copy {type(calendar).__name__} state onto the bound"
+            f" instance: the __dict__ copy raised {type(exc).__name__} — a"
+            " hostile mapping must refuse by name here, never escape the"
+            " boundary raw; refusing before registration"
+        ) from exc
 
     frozen_closes: dict[date, datetime] = dict(decision_closes)
     for session in calendar.sessions():
