@@ -3405,3 +3405,92 @@ def test_an_introspection_hiding_descriptor_is_refused_by_name(era_world) -> Non
     first = grid.sessions()[0]
     with pytest.raises(ValueError, match="defines decision_close as a class-level data descriptor"):
         _bind_decision_surface(liar, {first: grid.session_close(first)})
+
+
+# ---- (round-10 debt-g, Codex round 10) the __dict__-copy is a REAL dict --------
+
+
+class _RaisingDictMapping:
+    """(round-10 debt-g) The loud horn: a hostile mapping whose `update`
+    raises, so the unguarded `bound.__dict__.update(...)` threw a RAW
+    RuntimeError out of the boundary instead of refusing by name."""
+
+    def update(self, *args, **kwargs) -> None:
+        raise RuntimeError("the hostile mapping refuses the copy")
+
+
+class _NoopDictMapping:
+    """(round-10 debt-g) The silent horn: a mapping whose `update` accepts
+    and drops everything, so the state copy silently vanished and the run
+    failed LATER, after registration, on the half-bound instance."""
+
+    def update(self, *args, **kwargs) -> None:
+        pass
+
+
+class _RaisingDictCalendar(RealSessionCalendar):
+    """The calendar-side probe: `__dict__` is a class-level property
+    returning the RAISING mapping — present (the presence-only check
+    passed), never a real dict."""
+
+    def __init__(self, grid) -> None:
+        super().__init__(grid.sessions(), frozenset(grid.early_close_sessions()))
+
+    @property
+    def __dict__(self):
+        return _RaisingDictMapping()
+
+
+class _NoopDictSurface(VwapPitSurface):
+    """The surface-side twin: `__dict__` is the same kind of property
+    returning the NO-OP mapping — the copy drops the state silently."""
+
+    def __init__(self, overlay, grid, liquidity_term) -> None:
+        super().__init__(overlay, decision_calendar=grid, underlying_liquidity_term=liquidity_term)
+
+    @property
+    def __dict__(self):
+        return _NoopDictMapping()
+
+
+def test_a_raising_dict_property_calendar_refuses_by_name(era_world) -> None:
+    """(round-10 debt-g — the raw-escape horn, calendar side)
+    `_refuse_dictless_bind` proved only `hasattr(bound, "__dict__")`
+    (presence), and the `bound.__dict__.update(...)` call was unguarded:
+    a class-level `__dict__` property returning a mapping whose `update`
+    RAISES escaped the boundary as the RAW exception (RED before debt-g:
+    RuntimeError, never a named ValueError). The refusal now requires
+    `type(bound.__dict__) is dict` — a property-returned mapping cannot be
+    a real dict — and both factories wrap the copy itself in the same
+    named refusal."""
+    from tree_options.trials.options_run import _bind_decision_calendar
+
+    grid, _overlay = era_world
+    liar = _RaisingDictCalendar(grid)
+    first = grid.sessions()[0]
+    # NO MASKING — the probe defeats exactly the presence-only check the
+    # refusal used: __dict__ IS present, it is simply not a real dict
+    assert hasattr(liar, "__dict__")
+    assert type(liar.__dict__) is not dict
+    with pytest.raises(ValueError, match="not a real dict"):
+        _bind_decision_calendar(liar, {first: grid.session_close(first)})
+
+
+def test_a_noop_dict_property_surface_refuses_by_name(era_world) -> None:
+    """(round-10 debt-g — the silent-drop horn, surface side) The same
+    property shape returning a NO-OP mapping was worse than the raw
+    escape: the copy dropped every attribute, the install still landed in
+    the real per-instance storage (attribute writes do not consult the
+    property), the one-time read-back held identity, and the bind returned
+    a state-stripped instance — accepted silently, failing only later,
+    after registration (RED before debt-g: DID NOT RAISE). The dict-type
+    requirement refuses it BY NAME, before any state moves."""
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    surface = _NoopDictSurface(overlay, grid, "evaluated")
+    first = grid.sessions()[0]
+    assert hasattr(surface, "__dict__")  # presence alone is not dict-hood
+    assert type(surface.__dict__) is not dict
+    with pytest.raises(ValueError, match="not a real dict"):
+        _bind_decision_surface(surface, {first: grid.session_close(first)})
