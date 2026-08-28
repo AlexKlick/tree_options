@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
@@ -319,6 +319,8 @@ def _run_trial(
     *,
     tag: str,
     decision_calendar=None,
+    surface=None,
+    dataset=None,
     **kwargs,
 ):
     """One fixture-scale trial; returns the stamped artifact body.
@@ -326,13 +328,18 @@ def _run_trial(
     `decision_calendar` (R3-P1-1) swaps ONLY the runner's decision grid for
     another calendar over the same sessions — the world, surface, dataset and
     scored rows are untouched, so any config-hash difference below is exactly
-    the calendars' identity difference."""
+    the calendars' identity difference. (R8-P1) `surface` and `dataset`
+    override the fixture surface/dataset for the calendar-liar probes: a
+    probe calendar must be disclosed by the surface (or the R4-P1 digest
+    refuses), and the cancellation-window probe carries its own action in
+    the dataset."""
     import json
 
-    overlay, calendar, snapshot, dataset = world
+    overlay, calendar, snapshot, world_dataset = world
     if decision_calendar is not None:
         calendar = decision_calendar
-    surface = OptionPitSurface(overlay)
+    surface = OptionPitSurface(overlay) if surface is None else surface
+    dataset = world_dataset if dataset is None else dataset
     scored = _scored(world, surface)
     registry = TrialRegistry(tmp_path / f"{tag}.db")
     try:
@@ -2255,19 +2262,25 @@ def test_the_freeze_consumes_the_verified_instant_never_a_third_calendar_read(
 def test_a_downstream_re_read_of_the_stateful_calendar_fails_closed(
     era_world, protocol, tmp_path
 ) -> None:
-    """(R7-P1, Codex round 7 — the fail-closed horn) The mutable calendar's
-    LATER reads still reach the run's own downstream consumers — the
-    candidate filter's `expected_close` re-reads the stamped calendar
-    directly, never the frozen map. When the runtime decision instant IS the
-    verified one those two disagree on the early-close Friday 2025-11-28
-    (13:00 verified vs the calendar's third-and-later 16:00), and the filter
-    answers decision_coherence NOT_EVALUABLE: the trial FAILS CLOSED on the
-    divergent instant instead of deciding on it. Under the fresh-read freeze
-    both sides read the same lying 16:00, the snapshot is stamped 21:00Z,
-    coherence PASSES and the wrong instant flows on through candidate
-    construction — exactly the future-information decision the guard exists
-    to make impossible (RED before R7-P1: no decision_coherence refusal
-    exists, and the 2025-11-28 candidate rides the 16:00 instant)."""
+    """(R7-P1, Codex round 7 — the fail-closed horn; SUPERSEDED SHAPE under
+    R8-P1, Codex round 8) R7 pinned the transitional guard: the runtime
+    decision instant was the VERIFIED close while the candidate filter's
+    `expected_close` still re-read the stamped calendar DIRECTLY — never
+    the frozen map — so on the early-close Friday 2025-11-28 the two
+    disagreed (13:00 verified vs the calendar's third-and-later 16:00) and
+    the filter answered decision_coherence NOT_EVALUABLE: the trial FAILED
+    CLOSED on the divergent instant instead of deciding on it. R8-P1 bound
+    the CALENDAR too, so the filter's expected close now answers the SAME
+    frozen verified map the snapshot's decision_at answers — the
+    disagreement the transitional guard caught can no longer be EXPRESSED.
+    Under the third-read liar (honest through read 2, 16:00 from read 3 —
+    a strictly weaker liar than R8's fourth-read probe, which survives one
+    more read) the run is now behaviorally IDENTICAL to the honest-grid
+    run, no coherence refusal exists, and nothing is ever decided on the
+    calendar's later answers: the stronger invariant replaces the refusal.
+    (The honest-grid and probe runs' config hashes legitimately differ —
+    the dual-calendar disclosure names the calendar's CLASS — so the
+    identity here is over the run's BEHAVIOR keys, not the descriptors.)"""
     import json
 
     grid, overlay = era_world
@@ -2279,36 +2292,57 @@ def test_a_downstream_re_read_of_the_stateful_calendar_fails_closed(
         decision_calendar=probe,
         underlying_liquidity_term=lf.underlying_liquidity_term,
     )
-    result = _run_era_trial(
+    honest = VwapPitSurface(
+        overlay,
+        decision_calendar=grid,
+        underlying_liquidity_term=lf.underlying_liquidity_term,
+    )
+    probe_scored = _r6_probe_scored(grid)
+    probe_config = OptionsStrategyConfig(dte_min=15, target_dte=21, dte_max=30)
+    liar_result = _run_era_trial(
         era_world,
         protocol,
         tmp_path,
         tag="r7_failclosed",
         surface=wired,
         calendar=probe,
-        scored=_r6_probe_scored(grid),
-        strategy_config=OptionsStrategyConfig(dte_min=15, target_dte=21, dte_max=30),
+        scored=probe_scored,
+        strategy_config=probe_config,
     )
-    body = json.loads(result.artifact_path.read_text(encoding="utf-8"))
-    rules = body["payload"]["counters"]["rule_histogram"]
-    # the runtime instant was the VERIFIED close, so the filter's own
-    # re-read of the stateful calendar DISAGREES and the trial refuses
-    assert rules.get("decision_coherence", {}).get("NOT_EVALUABLE", 0) == 1
-    # ...and the refusal is on the early-close Friday, whose true close is
-    # 13:00 ET (18:00Z) while the calendar's later reads answer 21:00Z
-    assert grid.session_close(date(2025, 11, 28)) != probe.session_close(date(2025, 11, 28))
-    # never a decision on the divergent instant: nothing was entered
-    assert body["payload"]["pooled"]["n_positions"] == 0
-    assert body["payload"]["pooled"]["positions"] == []
-    assert body["payload"]["fills_log"] == []
-    # and the refusal is COHERENCE's, not the liquidity rule the candidate
-    # would otherwise have failed: under the fresh-read freeze the snapshot
-    # is stamped with the calendar's own later 16:00 answer, coherence
-    # PASSES, and the wrong instant rides on into candidate construction
-    # (RED showed underlying_liquidity FAIL 1 and no decision_coherence at
-    # all — the divergence session decided on the future instant)
-    assert rules.get("underlying_liquidity", {}).get("FAIL", 0) == 0
-    assert rules.get("underlying_liquidity", {}).get("NOT_EVALUABLE", 0) == 1
+    honest_result = _run_era_trial(
+        era_world,
+        protocol,
+        tmp_path,
+        tag="r7_failclosed_ref",
+        surface=honest,
+        scored=probe_scored,
+        strategy_config=probe_config,
+    )
+    assert liar_result.n_folds == honest_result.n_folds == 3
+    liar_body = json.loads(liar_result.artifact_path.read_text(encoding="utf-8"))
+    honest_body = json.loads(honest_result.artifact_path.read_text(encoding="utf-8"))
+    for key in ("counters", "fills_log", "per_fold", "pooled"):
+        assert json.dumps(liar_body["payload"][key], sort_keys=True) == json.dumps(
+            honest_body["payload"][key], sort_keys=True
+        ), key
+    # the transitional refusal is GONE — and nothing replaced it with a
+    # decision on the calendar's later 16:00 answers: no coherence rows at
+    # all, because both sides of the comparison answer the frozen map
+    rules = liar_body["payload"]["counters"]["rule_histogram"]
+    assert "decision_coherence" not in rules
+    # the liar really would have answered differently on its third read —
+    # proven on a SPENT twin so the assertion itself consumes no read of
+    # the run's probe
+    spent = _ThirdReadLiarCalendar(grid)
+    assert spent.session_close(date(2025, 11, 28)) == grid.session_close(date(2025, 11, 28))
+    assert spent.session_close(date(2025, 11, 28)) == grid.session_close(date(2025, 11, 28))
+    assert spent.session_close(date(2025, 11, 28)) != grid.session_close(date(2025, 11, 28))
+    # and nothing after the boundary ever consulted the run's probe: the
+    # decision sessions stop at the preflight's two reads, no session
+    # exceeds them
+    decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
+    assert {probe.close_calls[s] for s in decision_sessions} == {2}
+    assert max(probe.close_calls.values()) == 2
 
 
 # ---- (R7-P2, Codex round 7) a GENUINE same-class bind, not a rebind wrapper ----
@@ -2433,3 +2467,267 @@ def test_a_subclass_override_resolves_the_frozen_decision_close(
     assert probing.decision_close(date(2025, 11, 28)) == probing._no_early_closes.session_close(
         date(2025, 11, 28)
     )
+
+
+# ---- (R8-P1, Codex round 8) the CALENDAR too: the runtime's own reads ----------
+
+
+class _FourthReadLiarCalendar:
+    """Codex round 8's probe CALENDAR: `session_close` answers the calendar's
+    own close on each session's FIRST THREE calls and the no-early-close
+    twin's 16:00 on every later call, counting as it goes.
+
+    The boundary reads the stamped calendar exactly twice per decision
+    session (the loop's own `declared_close`, then the wired surface's
+    `decision_close` behind the very same object) and the runtime's FIRST
+    read is the candidate filter's coherence check (`candidates/filters.py`
+    re-reads the stamped calendar directly, never the frozen surface) — three
+    reads the liar answers honestly, so it passes the ENTIRE preflight and
+    the coherence rule alike. Whatever reads it NEXT is fed the wrong
+    instant, and which read that is decides the defect: at HEAD the fourth
+    is `plan_orders`' entry stamp (`options/strategy.py`), so an early-close
+    session's order is stamped 16:00 while its snapshot and the filter
+    agreed on 13:00 — the order executes on information unavailable at the
+    verified decision instant (INV-02)."""
+
+    def __init__(self, grid) -> None:
+        self._grid = grid
+        self._no_early_closes = RealSessionCalendar(grid.sessions(), frozenset())
+        self.close_calls: dict[date, int] = {}
+
+    def sessions(self):
+        return self._grid.sessions()
+
+    def early_close_sessions(self):
+        return self._grid.early_close_sessions()
+
+    def is_session(self, d):
+        return self._grid.is_session(d)
+
+    def ordinal(self, d):
+        return self._grid.ordinal(d)
+
+    def nth_after(self, d, n):
+        return self._grid.nth_after(d, n)
+
+    def session_open(self, d):
+        return self._grid.session_open(d)
+
+    def session_close(self, d):
+        self.close_calls[d] = self.close_calls.get(d, 0) + 1
+        if self.close_calls[d] <= 3:
+            return self._grid.session_close(d)
+        return self._no_early_closes.session_close(d)
+
+    def contains_instant(self, d, ts):
+        return self._grid.contains_instant(d, ts)
+
+
+class _ProbeCalendarSurface(OptionPitSurface):
+    """The honest lane-1 surface bound to a PROBE calendar: discloses it
+    (the R4-P1 digest binds the probe to the probe) and answers
+    `decision_close` from it (the R5-P1 behavioral equality — the accepted
+    behaviorally-bound shape). The calendar's statefulness is the probe's,
+    never the surface's: this surface is exactly as honest as the calendar
+    it answers from, so only the runner's CALENDAR binding can catch the
+    liar — never a surface guard (no masking)."""
+
+    def __init__(self, overlay, probe) -> None:
+        super().__init__(overlay)
+        self._probe_calendar = probe
+
+    @property
+    def decision_calendar(self):
+        return self._probe_calendar
+
+    def decision_close(self, decision_session: date) -> datetime:
+        return self._probe_calendar.session_close(decision_session)
+
+
+def test_a_fourth_read_calendar_liar_runs_identically_to_the_honest_calendar(
+    world, protocol, tmp_path
+) -> None:
+    """(R8-P1, Codex round 8 — the fourth read) The preflight stores the
+    verified `declared_close` and the run consumes the bound SURFACE — but
+    `_execute` receives the ORIGINAL mutable `calendar`, and the runtime
+    re-reads `session_close` directly at eight functional sites (the filter's
+    coherence read, `plan_orders`' entry stamp, `plan_exit_order`, the
+    retry/forced/decided sell stamps, the close(t) mark, and the fill doors).
+    A calendar answering the fixture close on a session's first THREE reads
+    (2 preflight + the coherence read) and 16:00 from the fourth therefore
+    passes every boundary guard while `plan_orders` stamps the early-close
+    session 2018-07-03 at the twin's 16:00 — the one entry fill decided on
+    that session carries the WRONG decision_at under the same declared
+    configuration (INV-02 + INV-14 at runtime). The runner now binds the
+    calendar with the same-class factory and `_execute` consumes ONLY the
+    frozen closes, so the liar cannot express itself: the trial below is
+    byte-identical to the honest-calendar run, and NOTHING after the
+    preflight reads the liar — every decision session's count is exactly the
+    boundary's two (RED before R8-P1: the liar's fills are stamped 20:00Z
+    where the honest run stamps the verified 17:00Z, and its decision
+    sessions carry 5-24 reads)."""
+    import json
+
+    from tree_options.time.calendar import calendar_content_sha256
+
+    overlay, calendar, _snap, _ds = world
+    liar = _FourthReadLiarCalendar(calendar)
+    surface = _ProbeCalendarSurface(overlay, liar)
+    # NO MASKING — the probe passes every guard the boundary owns: it
+    # discloses itself through the wired surface (the R4-P1 digest binds the
+    # probe to the probe — the trial IS stamped on the probe) and answers
+    # the first THREE reads of every session with the calendar's own close —
+    # the two preflight reads AND the filter's coherence read. Only a guard
+    # on the runtime's LATER calendar reads can catch the fourth.
+    probe = _FourthReadLiarCalendar(calendar)
+    disclosed = _ProbeCalendarSurface(overlay, probe)
+    assert calendar_content_sha256(disclosed.decision_calendar) == calendar_content_sha256(probe)
+    assert probe.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
+    assert probe.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
+    assert probe.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
+    assert probe.session_close(date(2018, 7, 3)) != calendar.session_close(date(2018, 7, 3))
+    honest = _run_trial(world, protocol, tmp_path, tag="r8_honest_cal")
+    lying = _run_trial(
+        world, protocol, tmp_path, tag="r8_fourthread", decision_calendar=liar, surface=surface
+    )
+    assert honest["stamp"]["config_hash"] == lying["stamp"]["config_hash"]
+    assert json.dumps(honest, sort_keys=True) == json.dumps(lying, sort_keys=True)
+    # the fill decided on the early-close session is stamped the VERIFIED
+    # close — 13:00 ET (17:00Z), never the twin's 16:00 ET
+    early_fills = [
+        f for f in lying["payload"]["fills_log"] if f["decision_session"] == "2018-07-03"
+    ]
+    assert early_fills, "the run must actually decide an entry on the early-close session"
+    verified_close = calendar.session_close(date(2018, 7, 3))
+    for fill in early_fills:
+        assert fill["decision_at"] == verified_close.isoformat()
+    # nothing after the preflight reads the liar: every decision session's
+    # count is exactly the boundary's two (declared_close + the wired
+    # surface's decision_close), and no session of the calendar exceeds it
+    decision_sessions = sorted({row.session for row in _scored(world, surface)})
+    assert {liar.close_calls[s] for s in decision_sessions} == {2}
+    assert max(liar.close_calls.values()) == 2
+
+
+def test_the_execution_cancellation_window_consumes_the_verified_instant(
+    world, protocol, tmp_path
+) -> None:
+    """(R8-P1, Codex round 8 — the INV-02 window) The execution-cancellation
+    rule (`order.decision_at < action.available_at <= execution_at`) is only
+    as honest as the stamp: on the early-close session 2018-07-03 the
+    verified close is 13:00 ET (17:00Z) and the no-early-close twin answers
+    16:00 ET (20:00Z), so a cash dividend PUBLISHED at 18:30Z — between the
+    two — is future information at the verified instant but "already out" at
+    the liar's stamp. Under the fourth-read liar the entry order decided
+    2018-07-03 is stamped 20:00Z, the window misses the publication, and the
+    order EXECUTES on the underlying whose post-close publication it could
+    not have seen. With the calendar bound, the stamp IS the verified
+    17:00Z, the window catches the publication, and the order is cancelled
+    and counted — exactly ONE more cancellation than the same liar run
+    without the action, and the fill decided 2018-07-03 vanishes (RED before
+    R8-P1: the cancellation count is UNMOVED by the action and the fill
+    decided on the future-published underlying exists). The world's own
+    seeded actions already cancel one entry, so the count is compared as a
+    DELTA between two identical liar runs — never an absolute that the
+    baseline could satisfy on its own (no masking)."""
+    from tree_options.data.actions import CorporateActionRecord
+
+    overlay, calendar, _snap, snap_dataset = world
+    liar = _FourthReadLiarCalendar(calendar)
+    surface = _ProbeCalendarSurface(overlay, liar)
+    verified_close = calendar.session_close(date(2018, 7, 3))
+    published = verified_close + timedelta(minutes=90)
+    # strictly inside the (verified close, the twin's 16:00) window
+    assert (
+        verified_close
+        < published
+        < _FourthReadLiarCalendar(calendar)._no_early_closes.session_close(date(2018, 7, 3))
+    )
+    action = CorporateActionRecord(
+        security_id="SYN-0009",
+        kind="cash_dividend",
+        effective_session=date(2018, 9, 3),
+        cash_amount=Decimal("0.25"),
+        source="synthetic/v1",
+        source_record_id="R8-CANCEL-0001",
+        source_row_hash="0" * 64,
+        snapshot_id=_snap.snapshot_id,
+        available_at=published,
+    )
+    without_action = _run_trial(
+        world,
+        protocol,
+        tmp_path,
+        tag="r8_cancel_base",
+        decision_calendar=(base := _FourthReadLiarCalendar(calendar)),
+        surface=_ProbeCalendarSurface(overlay, base),
+    )
+    lying = _run_trial(
+        world,
+        protocol,
+        tmp_path,
+        tag="r8_cancel",
+        decision_calendar=liar,
+        surface=surface,
+        dataset=_RealLaneDataset(
+            snapshot_id=_snap.snapshot_id,
+            bars=snap_dataset.bars,
+            actions=(*tuple(snap_dataset.actions), action),
+        ),
+    )
+    # the action cancels exactly the one entry its window catches: the
+    # verified 17:00Z stamp < the 18:30Z publication <= the 2018-07-05
+    # execution. Under the liar's 20:00Z stamp the window misses it and the
+    # count is unmoved.
+    without_count = without_action["payload"]["counters"]["entries_cancelled"]
+    with_count = lying["payload"]["counters"]["entries_cancelled"]
+    assert with_count == without_count + 1
+    # the entry that would have executed on the future-published underlying
+    # never filled: the 2018-07-03 decision produces no fill at all
+    decided_early = [
+        f for f in lying["payload"]["fills_log"] if f["decision_session"] == "2018-07-03"
+    ]
+    assert decided_early == []
+
+
+def test_the_bound_calendar_refuses_unmapped_sessions_fail_closed(world) -> None:
+    """(R8-P1, the fail-closed horn) The bound calendar carries the calendar's
+    COMPLETE frozen close map — the VERIFIED instants for the trial's
+    decision sessions plus one boundary-time read for every other session
+    (the runtime's marks, exit decisions and retry/forced stamps read
+    sessions the decision loop never visited) — so a session outside the
+    calendar's own session set can never silently fall back to the
+    overridable method: the bound instance refuses, naming the session. And
+    the map's decision-session values are the VERIFIED ones even when the
+    underlying calendar would now answer differently — the whole point of
+    the freeze (RED before R8-P1: no `_bind_decision_calendar` exists)."""
+    from tree_options.trials.options_run import _bind_decision_calendar
+
+    _overlay, calendar, _snap, _ds = world
+    sessions = calendar.sessions()
+    verified = {s: calendar.session_close(s) for s in sessions[:3]}
+    bound = _bind_decision_calendar(calendar, verified)
+    # the bind is the same concrete class; geometry stays the class's own
+    assert type(bound) is type(calendar)
+    assert bound.sessions() == calendar.sessions()
+    assert bound.ordinal(sessions[5]) == calendar.ordinal(sessions[5])
+    assert bound.nth_after(sessions[0], 2) == sessions[2]
+    # the VERIFIED instants answer; so does every other calendar session
+    # (one boundary-time read, frozen) — never the method again
+    assert bound.session_close(sessions[0]) == verified[sessions[0]]
+    late = calendar.session_close(sessions[100])
+    assert bound.session_close(sessions[100]) == late
+    # a session outside the calendar refuses fail-closed, by name
+    non_session = date(2018, 1, 1)
+    assert not calendar.is_session(non_session)
+    with pytest.raises(ValueError, match="no frozen close for session"):
+        bound.session_close(non_session)
+    # and the verified instant survives the underlying calendar turning:
+    # consume the liar's three honest reads, then bind the VERIFIED value
+    liar = _FourthReadLiarCalendar(calendar)
+    early = date(2018, 7, 3)
+    for _ in range(3):
+        assert liar.session_close(early) == calendar.session_close(early)
+    bound_liar = _bind_decision_calendar(liar, {early: calendar.session_close(early)})
+    assert bound_liar.session_close(early) == calendar.session_close(early)
+    assert liar.session_close(early) != calendar.session_close(early)

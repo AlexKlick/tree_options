@@ -544,6 +544,78 @@ def _bind_decision_surface(
     return bound
 
 
+def _bind_decision_calendar(
+    calendar: SessionCalendar, decision_closes: Mapping[date, datetime]
+) -> SessionCalendar:
+    """(R8-P1, Codex round 8) THE FROZEN CALENDAR CLOSES, bound onto the
+    decision calendar for the duration of a run.
+
+    R6/R7 froze the SURFACE's decision instants; the runtime still re-read
+    the ORIGINAL mutable `calendar` directly at eight functional sites —
+    the candidate filter's coherence read (`candidates/filters.py`), the
+    entry `decision_at` stamp (`options/strategy.py`'s `plan_orders`),
+    `plan_exit_order`, the retry/forced/decided sell stamps and the
+    close(t) mark (`backtest/options.py`), and the fill doors
+    (`guards/fills.py`). A calendar answering the fixture close on a
+    session's first three reads (the two preflight reads plus the filter's
+    coherence read) and 16:00 from the fourth therefore passed EVERY
+    boundary guard while `plan_orders` stamped the early-close session at
+    16:00 — an order executing on information unavailable at the verified
+    decision instant (INV-02), under the configuration the boundary had
+    verified (INV-14). This factory binds the calendar the same way
+    `_bind_decision_surface` binds the surface, and `_execute` consumes
+    ONLY the frozen closes.
+
+    THE MAP covers the calendar's COMPLETE session set, not the decision
+    set alone: the trial's decision sessions answer the loop's own VERIFIED
+    `declared_close` values (R7-P1's discipline — the value the boundary
+    compared, never a re-read), and every OTHER session of the calendar is
+    read ONCE, here, before registration. The runtime's marks, exit
+    decisions, retry and forced-close stamps read sessions the decision
+    loop never visited — `backtest/options.py` stamps `close_at` for EVERY
+    loop session including the execution tail — so a decision-only map
+    would refuse honest reads; the complete map keeps every runtime read
+    frozen while never consulting the overridable method again.
+
+    SCOPING, disclosed: the geometry methods (`sessions`, `ordinal`,
+    `nth_after`, `is_session`, `session_open`, `contains_instant`) stay the
+    class's own over the copied state — the concrete class is digest-bound
+    (round 3), so a different-geometry subclass is already refused at the
+    boundary before this factory runs. Sessions outside the verified map —
+    dates that are not sessions of this calendar at all — refuse
+    fail-closed, naming the session, never an unverified instant. The FILL
+    PATH: when `execution_calendar is None` the fill guard receives this
+    bound calendar, so both sides of the `DECISION_INSTANT_NOT_CLOSE` door
+    read frozen instants — coherent by construction; when the calendars
+    differ the fill calendar remains the EXECUTION calendar (known item
+    (a), 0.2.2-deferred — disclosed, unchanged).
+
+    Byte-identical for every wired configuration: the frozen closes ARE the
+    calendar's own answers, so no key, hash, or stamp moves."""
+    cls = type(calendar)
+    bound = cast(SessionCalendar, cls.__new__(cls))
+    bound.__dict__.update(calendar.__dict__)
+
+    frozen_closes: dict[date, datetime] = dict(decision_closes)
+    for session in calendar.sessions():
+        if session not in frozen_closes:
+            frozen_closes[session] = calendar.session_close(session)
+
+    def session_close(session: date) -> datetime:
+        try:
+            return frozen_closes[session]
+        except KeyError:
+            raise ValueError(
+                f"no frozen close for session {session.isoformat()}: the run"
+                " consumes only calendar sessions frozen at the boundary —"
+                " refusing fail-closed rather than consulting the calendar's"
+                " overridable session_close()"
+            ) from None
+
+    bound.session_close = session_close  # type: ignore[method-assign,assignment]
+    return bound
+
+
 def run_options_trial(
     *,
     dataset: PointInTimeDataset,
@@ -761,6 +833,18 @@ def run_options_trial(
     # Byte-identical for every wired configuration: the frozen instants are
     # what an honest surface answers, so no key, hash, or stamp moves.
     bound_surface = _bind_decision_surface(surface, decision_closes)
+    # (R8-P1, Codex round 8) BIND THE CALENDAR TOO. The surface freeze left
+    # the runtime re-reading the ORIGINAL mutable `calendar` at its own
+    # session_close sites — the filter's coherence read, the order/exit
+    # stamps, the marks, the fill doors — so a calendar honest through the
+    # third read (2 preflight + coherence) and lying from the fourth passed
+    # every boundary guard while the fourth fed `plan_orders` the wrong
+    # instant. The bound calendar below answers the VERIFIED decision
+    # instants (plus one boundary-time read for every non-decision session
+    # the runtime's marks and exits read), and NOTHING after the boundary
+    # consults the overridable method again. Byte-identical for every wired
+    # configuration: the frozen closes ARE the calendar's own answers.
+    bound_calendar = _bind_decision_calendar(calendar, decision_closes)
     decision_sessions_sha256 = hashlib.sha256(
         json.dumps(
             [session.isoformat() for session in normalized_sessions],
@@ -933,7 +1017,12 @@ def run_options_trial(
             # (overridable) surface. The factory already returns the
             # adapter-contract static type, so the one cast lives there.
             surface=bound_surface,
-            calendar=calendar,
+            # (R8-P1, Codex round 8) the run consumes the FROZEN calendar
+            # closes too — never the caller's (overridable) calendar. The
+            # ORIGINAL `calendar` above stays the object the boundary
+            # verified and disclosed: the stamp, the descriptors and the
+            # splitter all ran on it and are unchanged.
+            calendar=bound_calendar,
             protocol=protocol,
             folds=folds,
             scored=scored,
