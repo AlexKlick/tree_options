@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 
 import pytest
@@ -3219,3 +3219,86 @@ def test_a_setattr_raising_class_is_refused_with_the_named_error(era_world) -> N
     first = grid.sessions()[0]
     with pytest.raises(ValueError, match="cannot accept the freeze"):
         _bind_decision_surface(surface, {first: grid.session_close(first)})
+
+
+# ---- (R9-P3, Codex round 9) the empty-slots no-dict class refuses ------------
+
+
+class _StatelessStructuralCalendar:
+    """(R9-P3, Codex round 9) A LEGAL `__slots__ = ()` class over no
+    `__dict__`-bearing base: stateless by construction — the whole geometry
+    is structural (class-level constants and date arithmetic), so there is
+    no per-instance state to lose — and yet BOTH halves of the bind (the
+    `__dict__`-copy state and the frozen override) are `__dict__` writes on
+    an instance that HAS no `__dict__`. The nonempty-slots MRO scan waves it
+    through (empty slots are falsy), so pre-R9-P3 the factory crashed with
+    a raw AttributeError out of the boundary instead of refusing by name."""
+
+    __slots__ = ()
+    _SESSIONS = (date(2018, 7, 2), date(2018, 7, 3), date(2018, 7, 5))
+
+    def sessions(self):
+        return list(self._SESSIONS)
+
+    def early_close_sessions(self):
+        return frozenset()
+
+    def is_session(self, d):
+        return d in self._SESSIONS
+
+    def ordinal(self, d):
+        return self._SESSIONS.index(d)
+
+    def nth_after(self, d, n):
+        return self._SESSIONS[self._SESSIONS.index(d) + n]
+
+    def session_open(self, d):
+        return datetime.combine(d, time(13, 30), tzinfo=UTC)
+
+    def session_close(self, d):
+        return datetime.combine(d, time(20, 0), tzinfo=UTC)
+
+    def contains_instant(self, d, ts):
+        return (
+            datetime.combine(d, time(13, 30), tzinfo=UTC)
+            <= ts
+            <= datetime.combine(d, time(20, 0), tzinfo=UTC)
+        )
+
+
+class _StatelessStructuralSurface:
+    """The surface-side twin: `__slots__ = ()`, no `__dict__` anywhere — the
+    same named refusal on the surface path."""
+
+    __slots__ = ()
+
+    def decision_close(self, decision_session: date) -> datetime:
+        return datetime.combine(decision_session, time(20, 0), tzinfo=UTC)
+
+
+def test_an_empty_slots_no_dict_calendar_refuses_by_name() -> None:
+    """(R9-P3, the empty-slots horn — calendar side) RED before R9-P3: the
+    falsy `__slots__ = ()` passed the nonempty-slots scan and the factory
+    crashed with a raw AttributeError out of the boundary; the refusal is
+    now BY NAME, before registration."""
+    from tree_options.trials.options_run import _bind_decision_calendar
+
+    stateless = _StatelessStructuralCalendar()
+    assert not hasattr(stateless, "__dict__")  # the shape is real
+    first = _StatelessStructuralCalendar._SESSIONS[0]
+    with pytest.raises(ValueError, match="no instance __dict__"):
+        _bind_decision_calendar(stateless, {first: stateless.session_close(first)})  # type: ignore[arg-type]
+
+
+def test_an_empty_slots_no_dict_surface_refuses_by_name() -> None:
+    """(R9-P3, the empty-slots horn — surface side) The surface factory
+    shares the `__dict__`-only copy, so it shares the named refusal."""
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    stateless = _StatelessStructuralSurface()
+    assert not hasattr(stateless, "__dict__")  # the shape is real
+    first = date(2018, 7, 2)
+    with pytest.raises(ValueError, match="no instance __dict__"):
+        _bind_decision_surface(  # type: ignore[arg-type]
+            stateless, {first: stateless.decision_close(first)}
+        )

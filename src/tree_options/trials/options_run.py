@@ -529,6 +529,28 @@ def _refuse_descriptor_seams(cls: type, seam: str) -> None:
             )
 
 
+def _refuse_dictless_bind(bound: object, seam: str) -> None:
+    """(R9-P3, Codex round 9) `_refuse_slotted_bind` tests slot declarations
+    by truthiness, so a legal `__slots__ = ()` passes the scan — and a
+    stateless structural class with empty slots over no `__dict__`-bearing
+    base has NO instance `__dict__` at all, while BOTH halves of the bind
+    (the `__dict__`-copy state and the frozen override) are `__dict__`
+    writes: the factory would raise a raw AttributeError out of the
+    boundary instead of refusing by name. Checked on the CONSTRUCTED
+    instance, right after `cls.__new__(cls)`, so every no-dict shape —
+    empty `__slots__ = ()` today, anything else later — is a named boundary
+    refusal, never a crash. The nonempty-slots MRO scan stays: a slotted
+    class over a `__dict__`-bearing base still loses SLOT state."""
+    if not hasattr(bound, "__dict__"):
+        raise ValueError(
+            f"{type(bound).__name__} has no instance __dict__ (a legal"
+            " __slots__ = () class over no __dict__-bearing base): the"
+            " bind's state copy and the frozen"
+            f" {seam} are both __dict__ writes — the freeze cannot be"
+            " installed on this class; refusing before registration"
+        )
+
+
 def _bind_decision_surface(
     underlying: OptionPitSurface, decision_closes: Mapping[date, datetime]
 ) -> OptionPitSurface:
@@ -611,6 +633,10 @@ def _bind_decision_surface(
     _refuse_slotted_bind(cls, "decision_close")
     _refuse_descriptor_seams(cls, "decision_close")
     bound = cast(OptionPitSurface, cls.__new__(cls))
+    # (R9-P3, Codex round 9) a no-`__dict__` construction (empty
+    # `__slots__ = ()` over no dict-bearing base) refuses by name here,
+    # never crashes on the `__dict__` writes below
+    _refuse_dictless_bind(bound, "decision_close")
     bound.__dict__.update(underlying.__dict__)
 
     def decision_close(decision_session: date) -> datetime:
@@ -720,6 +746,10 @@ def _bind_decision_calendar(
     _refuse_slotted_bind(cls, "session_close")
     _refuse_descriptor_seams(cls, "session_close")
     bound = cast(SessionCalendar, cls.__new__(cls))
+    # (R9-P3, Codex round 9) a no-`__dict__` construction (empty
+    # `__slots__ = ()` over no dict-bearing base) refuses by name here,
+    # never crashes on the `__dict__` writes below
+    _refuse_dictless_bind(bound, "session_close")
     bound.__dict__.update(calendar.__dict__)
 
     frozen_closes: dict[date, datetime] = dict(decision_closes)
