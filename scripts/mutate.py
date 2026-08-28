@@ -3946,25 +3946,29 @@ MUTANTS = [
         id="M315-r6a-frozen-map-bypass",
         owner="test_a_stateful_lying_surface_runs_identically_to_the_wired_surface",
         file="src/tree_options/trials/options_run.py",
-        anchor="            return self._decision_closes[decision_session]",
-        replacement=("            return self._bound_underlying.decision_close(decision_session)"),
+        anchor="            return decision_closes[decision_session]",
+        replacement=("            return underlying.decision_close(decision_session)"),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
-            "R6-P1 the frozen-map bypass: the wrapper's decision_close"
-            " falls back to the underlying surface's OVERRIDABLE method —"
-            " exactly the pre-R6 runtime, where the boundary verified the"
-            " method once per session and the run then consulted it again."
-            " The stateful probe (first call right, later calls 16:00)"
-            " passes every boundary guard, so under this mutant the lying"
-            " trial's candidate snapshot on the early-close Friday"
-            " 2025-11-28 is stamped 21:00Z, the filter answers"
-            " decision_coherence NOT_EVALUABLE, and the counters/artifact"
-            " DIVERGE from the correctly-wired run under one declared"
-            " configuration — only the identity assertion kills it. The"
-            " wrapper's other seams (unmapped-session refusal,"
-            " candidate_snapshot rebind) are deliberately NOT the owner:"
-            " honest surfaces behave identically under the bypass, so no"
-            " other test moves"
+            "R6-P1 the frozen-map bypass: the bound decision_close falls"
+            " back to the underlying surface's OVERRIDABLE method — exactly"
+            " the pre-R6 runtime, where the boundary verified the method"
+            " once per session and the run then consulted it again. The"
+            " stateful probe (first call right, later calls 16:00) passes"
+            " every boundary guard, so under this mutant the lying trial's"
+            " candidate snapshot on the early-close Friday 2025-11-28 is"
+            " stamped 21:00Z, the filter answers decision_coherence"
+            " NOT_EVALUABLE, and the counters/artifact DIVERGE from the"
+            " correctly-wired run under one declared configuration — only"
+            " the identity assertion kills it. The bind's other seams"
+            " (unmapped-session refusal, same-class construction) are"
+            " deliberately NOT the owner: honest surfaces behave"
+            " identically under the bypass, so no other test moves."
+            " (R7-P2 re-pin: the R6 wrapper's"
+            " self._decision_closes[...] return became the factory"
+            " closure's return — same mutant, same owner, same kill; the"
+            " closure's enclosing scope carries `underlying`, which is"
+            " what the bypass replacement delegates to)"
         ),
     ),
     dict(
@@ -4009,6 +4013,54 @@ MUTANTS = [
             " whole fix; the pinned-bytes and manifest guards still pass"
             " on this capture (no masking), so only the flat-form census"
             " kills it"
+        ),
+    ),
+    dict(
+        id="M318-r7a-freeze-rereads-the-calendar",
+        owner="test_the_freeze_consumes_the_verified_instant_never_a_third_calendar_read",
+        file="src/tree_options/trials/options_run.py",
+        anchor="        decision_closes[session] = declared_close",
+        replacement="        decision_closes[session] = calendar.session_close(session)",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R7-P1 the freeze re-reads the stamped calendar instead of"
+            " storing the value the boundary actually compared: the loop's"
+            " own declared_close is DISCARDED and a SECOND, unverified"
+            " calendar.session_close(session) rebuilds the map — the"
+            " pre-R7 construction, where a mutable calendar answering the"
+            " fixture close on a session's first two reads and 16:00"
+            " thereafter passed the entire preflight (the digest hashes"
+            " sessions + early closes + the class, never per-session"
+            " method state) while the THIRD read froze the wrong instant."
+            " The mutable-calendar probe passes every other guard — it"
+            " discloses itself, answers both preflight reads with the"
+            " fixture close, never raises — so the call count on the"
+            " pre-first-scored sessions is the ONLY thing that moves: 3"
+            " reads under the mutant, 2 under the fix (no masking)"
+        ),
+    ),
+    dict(
+        id="M319-r7b-bind-drops-the-instance-attribute-override",
+        owner="test_a_subclass_override_resolves_the_frozen_decision_close",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    bound.decision_close = decision_close  # type: ignore[method-assign]",
+        replacement="    pass",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R7-P2 the bind drops the instance-attribute override: the"
+            " bound instance keeps the CLASS's decision_close, so a"
+            " subclass override of another method that internally calls"
+            " self.decision_close() reaches the UNDERLYING's overridable"
+            " method instead of the frozen map — the second horn of the"
+            " R6 wrapper's __getattr__ delegation, re-expressed on the"
+            " same-class bind (the copied __dict__ carries the liar's"
+            " shared _answered set, already consumed by the boundary's"
+            " one-per-session read, so the class method answers 16:00)."
+            " The probing surface passes every boundary guard — digest"
+            " binds, first call per session answers the stamped close —"
+            " so only the recorded instants move: every probe reads the"
+            " no-early-close twin's close, the early-close Friday"
+            " 2025-11-28 among them (no masking)"
         ),
     ),
 ]
