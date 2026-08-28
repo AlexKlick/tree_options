@@ -2782,31 +2782,31 @@ class _DescriptorLyingSurface(VwapPitSurface):
 
 
 def test_a_descriptor_surface_is_refused_before_registration(era_world, protocol, tmp_path) -> None:
-    """(R8-P2, Codex round 8 — the reproduced probe) `bound.decision_close =
-    decision_close` is a plain instance-attribute write, and Python does NOT
-    let an instance attribute shadow a class-level DATA DESCRIPTOR: a
-    subclass exposing decision_close as a callable-returning property with a
-    no-op setter passes the ENTIRE preflight (the property's first call per
-    session answers the stamped close) while the write silently installs
-    NOTHING — the freeze never lands, the run proceeds on the unfrozen
-    property, and the runtime's later calls answer 16:00 (RED before
-    R8-P2: this trial registered, ran, and completed — no refusal existed).
-    The bind now READS THE ATTRIBUTE BACK and requires identity: a
-    descriptor-intercepted install refuses with the named error BEFORE
-    registration."""
+    """(R8-P2, Codex round 8 — the reproduced probe; R9-P2 re-pin: the MRO
+    pre-scan now refuses the descriptor CLASS SHAPE before the install is
+    ever attempted, so the named error is the scan's — the read-back stays
+    as belt-and-suspenders) `bound.decision_close = decision_close` is a
+    plain instance-attribute write, and Python does NOT let an instance
+    attribute shadow a class-level DATA DESCRIPTOR: a subclass exposing
+    decision_close as a callable-returning property with a no-op setter
+    passes the ENTIRE preflight (the property's first call per session
+    answers the stamped close) while the write silently installs NOTHING —
+    the freeze never lands, the run proceeds on the unfrozen property, and
+    the runtime's later calls answer 16:00 (RED before R8-P2: this trial
+    registered, ran, and completed — no refusal existed)."""
     from tree_options.time.calendar import calendar_content_sha256
 
     grid, overlay = era_world
     liar = _DescriptorLyingSurface(overlay, grid)
     # NO MASKING — the probe passes every guard the boundary owns: the
     # digest binds (the disclosure is the stamped grid) and the FIRST call
-    # per session answers the stamped close; only the install verification
+    # per session answers the stamped close; only the class-shape refusal
     # can catch the descriptor
     probe = _DescriptorLyingSurface(overlay, grid)
     assert calendar_content_sha256(probe.decision_calendar) == calendar_content_sha256(grid)
     assert probe.decision_close(date(2025, 11, 28)) == grid.session_close(date(2025, 11, 28))
     assert probe.decision_close(date(2025, 11, 28)) != grid.session_close(date(2025, 11, 28))
-    with pytest.raises(ValueError, match="data descriptor intercepted the install"):
+    with pytest.raises(ValueError, match="defines decision_close as a class-level data descriptor"):
         _run_era_trial(era_world, protocol, tmp_path, tag="r8_descriptor", surface=liar)
     # refused BEFORE registration: no record, no artifact
     assert trial_count(tmp_path / "r8_descriptor.db") == 0
@@ -2832,17 +2832,20 @@ class _SetterlessPropertySurface(VwapPitSurface):
 
 
 def test_a_setterless_descriptor_refuses_with_the_named_error(era_world) -> None:
-    """(R8-P2, the assignment-raising horn) A setter-less property makes the
-    install assignment itself raise AttributeError. The bind wraps the
-    assignment and refuses with the SAME named refusal — a boundary
-    failure, not a crash (RED before R8-P2: the raw AttributeError from
-    inside `_bind_decision_surface` escapes the boundary)."""
+    """(R8-P2, the assignment-raising horn; R9-P2 re-pin: the MRO pre-scan
+    now refuses the property shape up front, so the named error is the
+    scan's — the assignment-raising wrap stays as belt-and-suspenders) A
+    setter-less property is still a class-level data descriptor, and the
+    install assignment against it raises AttributeError. The refusal is a
+    boundary failure by name, never a raw crash (RED before R8-P2: the raw
+    AttributeError from inside `_bind_decision_surface` escaped the
+    boundary)."""
     from tree_options.trials.options_run import _bind_decision_surface
 
     grid, overlay = era_world
     surface = _SetterlessPropertySurface(overlay, grid)
     first = grid.sessions()[0]
-    with pytest.raises(ValueError, match="setter-less class-level data descriptor"):
+    with pytest.raises(ValueError, match="defines decision_close as a class-level data descriptor"):
         _bind_decision_surface(surface, {first: grid.session_close(first)})
 
 
@@ -2976,3 +2979,243 @@ def test_a_same_object_execution_calendar_is_the_none_form_at_runtime(
     assert spent.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
     assert spent.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
     assert spent.session_close(date(2018, 7, 3)) != calendar.session_close(date(2018, 7, 3))
+
+
+# ---- (R9-P2, Codex round 9) the install refusal is DURABLE --------------------
+
+
+class _TemporalEvasionDescriptor:
+    """Codex round 9's probe descriptor: the STATEFUL data descriptor the
+    R8-P2 read-back cannot catch. `__set__` ACCEPTS the frozen closure and
+    `__get__` returns it for exactly the FIRST post-install read — the
+    verification — then answers the instance's own lying callable
+    (`_descriptor_lie`, the no-early-close twin's 16:00) on every later
+    read. Before any install it answers `_descriptor_honest` (the stamped
+    grid's close), so the preflight's per-session reads pass. The one read
+    the R8 verification ever made holds identity; every read after it lies."""
+
+    def __init__(self) -> None:
+        self._installed: dict[int, object] = {}
+        self._reads: dict[int, int] = {}
+
+    def __set__(self, obj, value) -> None:
+        self._installed[id(obj)] = value
+        self._reads[id(obj)] = 0
+
+    def __get__(self, obj, objtype=None):
+        if obj is None:
+            return self
+        reads = self._reads.get(id(obj), 0) + 1
+        self._reads[id(obj)] = reads
+        installed = self._installed.get(id(obj))
+        if installed is None:
+            return obj._descriptor_honest  # pre-install: the preflight reads
+        if reads == 1:
+            return installed  # the verification: identity holds exactly once
+        return obj._descriptor_lie  # every later read lies
+
+
+class _TemporalEvasionSurface(VwapPitSurface):
+    """The surface-side probe: `decision_close` IS the temporal-evasion
+    descriptor. It passes every guard the boundary owns — the digest (the
+    disclosure is the stamped grid), the behavioral equality (pre-install
+    reads answer the stamped closes) — AND the R8-P2 install verification
+    (`__set__` accepts the closure; the first post-install read returns it).
+    Only a refusal that names the CLASS SHAPE can catch it."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)
+        self._lying_grid = grid
+        self._descriptor_honest = grid.session_close
+        self._descriptor_lie = RealSessionCalendar(grid.sessions(), frozenset()).session_close
+
+    @property
+    def decision_calendar(self):
+        return self._lying_grid
+
+    decision_close = _TemporalEvasionDescriptor()
+
+
+class _TemporalEvasionCalendar(RealSessionCalendar):
+    """The calendar-side twin: the same STATEFUL data descriptor on the
+    `session_close` seam. The R8-P1 calendar factory shares the one-shot
+    read-back, so it shares the same temporal hole; the MRO pre-scan refuses
+    the shape on both paths."""
+
+    session_close = _TemporalEvasionDescriptor()
+
+    def __init__(self, grid) -> None:
+        super().__init__(grid.sessions(), frozenset(grid.early_close_sessions()))
+        self._descriptor_honest = RealSessionCalendar(
+            grid.sessions(), frozenset(grid.early_close_sessions())
+        ).session_close
+        self._descriptor_lie = RealSessionCalendar(grid.sessions(), frozenset()).session_close
+
+
+def test_a_stateful_descriptor_surface_is_refused_before_registration(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R9-P2, Codex round 9 — the temporal-evasion horn) The R8-P2
+    read-back verified exactly ONCE: a STATEFUL data descriptor could accept
+    the closure in `__set__`, return it for the verification `__get__`, and
+    answer the unfrozen 16:00-lying callable on every later read — the
+    trial registers and the runtime consumes the lying callable, the
+    post-close order-stamping defect reborn (RED before R9-P2: this trial
+    registered, ran, and completed on the lying descriptor — no refusal
+    existed). The MRO pre-scan now refuses any class in the MRO defining
+    the seam as a data descriptor, BEFORE the install is attempted, by
+    name, before registration."""
+    from tree_options.time.calendar import calendar_content_sha256
+
+    grid, overlay = era_world
+    liar = _TemporalEvasionSurface(overlay, grid)
+    # NO MASKING — the probe passes every guard the boundary owns AND the
+    # R8 install verification: the digest binds, the pre-install reads
+    # answer the stamped closes, __set__ accepts the closure, and the FIRST
+    # post-install read returns it (identity holds once — proven on the
+    # calendar-side twin below)
+    probe = _TemporalEvasionSurface(overlay, grid)
+    assert calendar_content_sha256(probe.decision_calendar) == calendar_content_sha256(grid)
+    assert probe.decision_close(date(2025, 11, 28)) == grid.session_close(date(2025, 11, 28))
+    with pytest.raises(ValueError, match="defines decision_close as a class-level data descriptor"):
+        _run_era_trial(era_world, protocol, tmp_path, tag="r9_temporal", surface=liar)
+    # refused BEFORE registration: no record, no artifact
+    assert trial_count(tmp_path / "r9_temporal.db") == 0
+    assert not (tmp_path / "r9_temporal").exists()
+
+
+def test_a_stateful_descriptor_calendar_seam_is_refused_by_name(era_world) -> None:
+    """(R9-P2, the temporal-evasion horn — calendar side) The calendar
+    factory shares the surface factory's one-shot read-back, so the same
+    stateful descriptor evades it there too (RED before R9-P2: the bind
+    returned a bound calendar whose every post-verification read lied).
+    The sentinel sequence below IS the evasion, proven: `__set__` accepts
+    the install, the first read returns it (the R8 verification passes),
+    and the second read already answers the liar."""
+    from tree_options.trials.options_run import _bind_decision_calendar
+
+    grid, _overlay = era_world
+    probe = _TemporalEvasionCalendar(grid)
+    sentinel = object()
+    probe.session_close = sentinel  # __set__ ACCEPTS the install
+    assert probe.session_close is sentinel  # read 1: the verification passes
+    assert probe.session_close is not sentinel  # read 2+: the lying callable
+    liar = _TemporalEvasionCalendar(grid)
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="defines session_close as a class-level data descriptor"):
+        _bind_decision_calendar(liar, {first: grid.session_close(first)})
+
+
+class _GetattributeOverrideSurface(VwapPitSurface):
+    """A semantically NEUTRAL `__getattribute__` override — pure delegation,
+    it changes no behavior today. The SHAPE is what the boundary refuses:
+    an override can rewrite ANY later attribute read, so no installed
+    closure is durably authoritative on such a class."""
+
+    def __init__(self, overlay, grid, liquidity_term) -> None:
+        super().__init__(overlay, decision_calendar=grid, underlying_liquidity_term=liquidity_term)
+
+    def __getattribute__(self, name):
+        return super().__getattribute__(name)
+
+
+class _GetattributeOverrideCalendar(RealSessionCalendar):
+    """The calendar-side twin: the same neutral override, the same named
+    refusal — the freeze cannot be durable behind a rewritten lookup."""
+
+    def __init__(self, grid) -> None:
+        super().__init__(grid.sessions(), frozenset(grid.early_close_sessions()))
+
+    def __getattribute__(self, name):
+        return super().__getattribute__(name)
+
+
+def test_a_getattribute_overriding_surface_is_refused_by_name(era_world) -> None:
+    """(R9-P2, the rewritten-lookup horn) An instance `__getattribute__`
+    override performs the temporal interception on ANY attribute read: it
+    can return the installed closure for the verification and something
+    else for every runtime read, so the freeze cannot be durably installed
+    on such a class. The refusal is BY NAME, on the neutral shape itself
+    (RED before R9-P2: this bind succeeded — no refusal existed)."""
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    surface = _GetattributeOverrideSurface(overlay, grid, "evaluated")
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="overrides __getattribute__"):
+        _bind_decision_surface(surface, {first: grid.session_close(first)})
+
+
+def test_a_getattribute_overriding_calendar_is_refused_by_name(era_world) -> None:
+    """(R9-P2, the rewritten-lookup horn — calendar side) Both factories
+    carry the scan; the calendar side refuses the same shape."""
+    from tree_options.trials.options_run import _bind_decision_calendar
+
+    grid, _overlay = era_world
+    calendar = _GetattributeOverrideCalendar(grid)
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="overrides __getattribute__"):
+        _bind_decision_calendar(calendar, {first: grid.session_close(first)})
+
+
+class _SetattrSwallowingSurface(VwapPitSurface):
+    """The belt-and-suspenders shape: a `__setattr__` override that swallows
+    ONLY the seam write. The MRO pre-scan cannot name it (an overriding
+    `__setattr__` is neither a seam descriptor nor `__getattribute__`), the
+    assignment lands in the void, and the class method answers the
+    read-back — so the ONE-TIME READ-BACK is the guard that catches it (the
+    R9-P2 scan's disclosed residue, pinned here)."""
+
+    def __init__(self, overlay, grid, liquidity_term) -> None:
+        super().__init__(overlay, decision_calendar=grid, underlying_liquidity_term=liquidity_term)
+
+    def __setattr__(self, name, value) -> None:
+        if name == "decision_close":
+            return  # the swallow: the freeze never lands
+        super().__setattr__(name, value)
+
+
+def test_a_setattr_swallowing_class_is_still_refused_by_the_read_back(era_world) -> None:
+    """(R9-P2, the belt-and-suspenders horn) The scan names the class shapes
+    it can; this one it cannot — and the read-back still catches it: the
+    swallowed install leaves the class method answering the read-back,
+    identity fails, and the bind refuses by name (owner of M320 under the
+    R9-P2 scan: the descriptor class the mutant's previous owner used is
+    now refused BEFORE the install, which would mask the dropped
+    read-back)."""
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    surface = _SetattrSwallowingSurface(overlay, grid, "evaluated")
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="the freeze cannot be installed"):
+        _bind_decision_surface(surface, {first: grid.session_close(first)})
+
+
+class _SetattrRaisingSurface(VwapPitSurface):
+    """The wrap's residue shape: a `__setattr__` override that RAISES on the
+    seam. The scan cannot name it; the assignment's AttributeError becomes
+    the bind's named refusal instead of escaping the boundary."""
+
+    def __init__(self, overlay, grid, liquidity_term) -> None:
+        super().__init__(overlay, decision_calendar=grid, underlying_liquidity_term=liquidity_term)
+
+    def __setattr__(self, name, value) -> None:
+        if name == "decision_close":
+            raise AttributeError("the seam refuses assignment")
+        super().__setattr__(name, value)
+
+
+def test_a_setattr_raising_class_is_refused_with_the_named_error(era_world) -> None:
+    """(R9-P2, the belt-and-suspenders horn — the AttributeError wrap) The
+    `except AttributeError` wrap around the assignment stays for anything
+    the scan cannot name: a refusing `__setattr__` raises on the install
+    and the bind refuses by name, never a raw AttributeError out of the
+    boundary."""
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    surface = _SetattrRaisingSurface(overlay, grid, "evaluated")
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="cannot accept the freeze"):
+        _bind_decision_surface(surface, {first: grid.session_close(first)})

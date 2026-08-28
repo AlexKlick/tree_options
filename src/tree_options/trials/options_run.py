@@ -484,6 +484,51 @@ def _refuse_slotted_bind(cls: type, seam: str) -> None:
             )
 
 
+def _refuse_descriptor_seams(cls: type, seam: str) -> None:
+    """(R9-P2, Codex round 9) THE INSTALL REFUSAL IS DURABLE: the R8-P2
+    read-back verified exactly ONCE, so a STATEFUL data descriptor could
+    accept the frozen closure in `__set__`, return it for the verification
+    `__get__`, and answer the unfrozen callable on every later read — the
+    trial registers and the runtime consumes the lying callable. An
+    instance `__getattribute__` override performs the same temporal
+    interception on ANY attribute read. Both factories therefore refuse the
+    CLASS SHAPES up front, BY NAME, before any construction: any class in
+    the MRO whose `__dict__` defines the seam as a DATA DESCRIPTOR (has
+    `__set__`/`__delete__` — a property or descriptor object owns the
+    attribute, and an instance attribute cannot durably shadow it), and any
+    class OVERRIDING `__getattribute__` (an override can rewrite any later
+    read, so no installed closure is ever authoritative; object's own
+    `__getattribute__` is excluded by identity — every MRO ends there).
+    No repo surface or calendar defines the seams as descriptors or
+    overrides `__getattribute__`. Disclosed, both keep working: a plain
+    non-data descriptor or method on the seam stays safely shadowed by the
+    installed instance attribute, and a metaclass alone does not control
+    ordinary instance lookup. The one-time read-back and the
+    AttributeError wrap remain below as belt-and-suspenders for anything
+    the scan cannot name (a `__setattr__` override, for one)."""
+    for klass in cls.__mro__:
+        seam_attr = klass.__dict__.get(seam)
+        if seam_attr is not None and (
+            hasattr(seam_attr, "__set__") or hasattr(seam_attr, "__delete__")
+        ):
+            raise ValueError(
+                f"{cls.__name__} defines {seam} as a class-level data"
+                f" descriptor ({klass.__qualname__}): a data descriptor owns"
+                " the attribute — it can accept the frozen closure in"
+                " __set__ and answer something else on every later read, so"
+                " the freeze cannot be durably installed on this class;"
+                " refusing before registration"
+            )
+        getter = klass.__dict__.get("__getattribute__")
+        if getter is not None and getter is not object.__getattribute__:
+            raise ValueError(
+                f"{klass.__qualname__} overrides __getattribute__: the"
+                " override can rewrite any later attribute read, so the"
+                f" frozen {seam} cannot be durably installed on this class;"
+                " refusing before registration"
+            )
+
+
 def _bind_decision_surface(
     underlying: OptionPitSurface, decision_closes: Mapping[date, datetime]
 ) -> OptionPitSurface:
@@ -548,6 +593,13 @@ def _bind_decision_surface(
       setter-less property) into the same named refusal, and refuses any
       class whose MRO declares nonempty `__slots__` (the `__dict__` copy
       cannot carry slot state — an incomplete bind refuses, never runs).
+      (R9-P2, Codex round 9) THE REFUSAL IS NOW DURABLE: the read-back
+      verified exactly once, so a STATEFUL descriptor could accept the
+      closure, return it for the verification read, and lie thereafter —
+      the MRO pre-scan (`_refuse_descriptor_seams`) now refuses the seam's
+      data descriptors and any `__getattribute__` override BY NAME before
+      the install is attempted, and the read-back/wrap below stay as
+      belt-and-suspenders for the shapes the scan cannot name.
 
     Byte-identical for every wired configuration: the frozen instants ARE
     the stamped calendar's closes, which is exactly what an honest surface
@@ -557,6 +609,7 @@ def _bind_decision_surface(
     factory performs that cast exactly once, at the bind."""
     cls = type(underlying)
     _refuse_slotted_bind(cls, "decision_close")
+    _refuse_descriptor_seams(cls, "decision_close")
     bound = cast(OptionPitSurface, cls.__new__(cls))
     bound.__dict__.update(underlying.__dict__)
 
@@ -576,22 +629,27 @@ def _bind_decision_surface(
     # REQUIRE identity — a class-level data descriptor (a property with a
     # no-op setter) swallows the write above without installing anything,
     # and the boundary's refusal is the only thing standing between that
-    # class and a silently unfrozen run.
+    # class and a silently unfrozen run. (R9-P2, Codex round 9) the named
+    # descriptor shapes are now refused BEFORE the install by the MRO
+    # pre-scan; this read-back stays as belt-and-suspenders for the shapes
+    # the scan cannot name — a `__setattr__` override swallowing or refusing
+    # the assignment.
     try:
         bound.decision_close = decision_close  # type: ignore[method-assign]
     except AttributeError as exc:
         raise ValueError(
             f"cannot install the frozen decision_close on"
             f" {type(underlying).__name__}: the assignment raised"
-            " AttributeError — a setter-less class-level data descriptor"
-            " cannot accept the freeze — the freeze cannot be installed on"
-            " this class; refusing before registration"
+            " AttributeError — a setter-less class-level data descriptor or"
+            " a refusing __setattr__ cannot accept the freeze — the freeze"
+            " cannot be installed on this class; refusing before registration"
         ) from exc
     if bound.decision_close is not decision_close:
         raise ValueError(
             f"cannot install the frozen decision_close on"
-            f" {type(underlying).__name__}: a class-level data descriptor"
-            " intercepted the install — the freeze cannot be installed on"
+            f" {type(underlying).__name__}: the install did not land — a"
+            " class-level data descriptor or a __setattr__ override"
+            " intercepted the assignment — the freeze cannot be installed on"
             " this class; refusing before registration"
         )
     return bound
@@ -651,9 +709,16 @@ def _bind_decision_calendar(
     an AttributeError from a setter-less descriptor becomes the same named
     refusal instead of escaping the boundary, and any class in the MRO
     declaring nonempty `__slots__` refuses up front — the `__dict__` copy
-    cannot carry slot state, and an incomplete bind must refuse, never run."""
+    cannot carry slot state, and an incomplete bind must refuse, never run.
+    (R9-P2, Codex round 9) THE REFUSAL IS DURABLE here too: the MRO
+    pre-scan refuses a `session_close` data descriptor or a
+    `__getattribute__` override BY NAME before the install is attempted —
+    a stateful descriptor could hold identity for the one verification
+    read and lie thereafter — and the read-back/wrap below stay as
+    belt-and-suspenders for the shapes the scan cannot name."""
     cls = type(calendar)
     _refuse_slotted_bind(cls, "session_close")
+    _refuse_descriptor_seams(cls, "session_close")
     bound = cast(SessionCalendar, cls.__new__(cls))
     bound.__dict__.update(calendar.__dict__)
 
@@ -676,21 +741,25 @@ def _bind_decision_calendar(
     # (R8-P2, Codex round 8) VERIFY THE INSTALL — same shape, same reason
     # as the surface bind: a class-level data descriptor on `session_close`
     # would swallow the write and leave the run on the overridable method.
+    # (R9-P2, Codex round 9) the named descriptor shapes are now refused
+    # BEFORE the install by the MRO pre-scan; this read-back stays as
+    # belt-and-suspenders for the shapes the scan cannot name.
     try:
         bound.session_close = session_close  # type: ignore[method-assign,assignment]
     except AttributeError as exc:
         raise ValueError(
             f"cannot install the frozen session_close on"
             f" {type(calendar).__name__}: the assignment raised"
-            " AttributeError — a setter-less class-level data descriptor"
-            " cannot accept the freeze — the freeze cannot be installed on"
-            " this class; refusing before registration"
+            " AttributeError — a setter-less class-level data descriptor or"
+            " a refusing __setattr__ cannot accept the freeze — the freeze"
+            " cannot be installed on this class; refusing before registration"
         ) from exc
     if bound.session_close is not session_close:
         raise ValueError(
             f"cannot install the frozen session_close on"
-            f" {type(calendar).__name__}: a class-level data descriptor"
-            " intercepted the install — the freeze cannot be installed on"
+            f" {type(calendar).__name__}: the install did not land — a"
+            " class-level data descriptor or a __setattr__ override"
+            " intercepted the assignment — the freeze cannot be installed on"
             " this class; refusing before registration"
         )
     return bound
