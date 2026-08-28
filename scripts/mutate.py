@@ -4229,6 +4229,32 @@ MUTANTS = [
             " through the shared helper)"
         ),
     ),
+    dict(
+        id="M326-r9d-getattribute-scan-dropped",
+        owner="test_a_getattribute_overriding_surface_is_refused_by_name",
+        file="src/tree_options/trials/options_run.py",
+        anchor=("        if getter is not None and getter is not object.__getattribute__:"),
+        replacement="        if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R9-P2 the __getattribute__ arm of the MRO pre-scan dropped: a"
+            " class overriding __getattribute__ reaches the install again,"
+            " and an instance __getattribute__ override can rewrite ANY"
+            " later attribute read — returning the installed closure for"
+            " the one verification read and something else for every"
+            " runtime read — so the freeze cannot be durably installed on"
+            " such a class, yet the bind accepts it (the pre-R9-P2 state,"
+            " where no refusal existed for the shape). The neutral-"
+            " delegation probe changes no behavior today, so nothing else"
+            " in the boundary moves: only the missing refusal moves — the"
+            " bind succeeds, DID NOT RAISE. The descriptor arm of the same"
+            " scan stays live under this mutant, so every descriptor-shape"
+            " test remains green (no masking); the calendar-side twin test"
+            " co-catches the same arm through the shared helper — the kill"
+            " is DOUBLE-OWNED, exactly as M319's was under its re-pin, and"
+            " the owner asserts first)"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.
