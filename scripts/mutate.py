@@ -4075,23 +4075,26 @@ MUTANTS = [
     # ---- remediation wave 8 (R8-P1 + R8-P2, M320-M322) ---------------------------
     dict(
         id="M320-r8a-bind-install-verification-dropped",
-        owner="test_a_descriptor_surface_is_refused_before_registration",
+        owner="test_a_setattr_swallowing_class_is_still_refused_by_the_read_back",
         file="src/tree_options/trials/options_run.py",
         anchor="    if bound.decision_close is not decision_close:",
         replacement="    if False:",
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
             "R8-P2 the install verification dropped: the bind assigns the"
-            " frozen closure and never reads it back, so a class-level"
-            " DATA DESCRIPTOR (a callable-returning property with a no-op"
-            " setter) swallows the write and installs NOTHING — the"
-            " pre-R8-P2 state, where the descriptor subclass passed the"
-            " entire preflight (the property's first call per session"
-            " answers the stamped close) and the run proceeded silently on"
-            " the unfrozen property, the runtime's later calls answering"
-            " 16:00. The descriptor probe passes every other boundary"
-            " guard — digest binds, behavioral equality binds — so only"
-            " the missing refusal moves: the trial registers and"
+            " frozen closure and never reads it back, so the assignment"
+            " can land in the void and the run proceeds on the class's"
+            " overridable method — the pre-R8-P2 state. (R9-P2 re-pin:"
+            " the previous owner — the descriptor-surface test — is now"
+            " refused BEFORE the install by the MRO pre-scan"
+            " (_refuse_descriptor_seams), which MASKS the dropped"
+            " read-back for every named-descriptor shape; the new owner's"
+            " __setattr__-swallowing class is the shape the scan cannot"
+            " name, so ONLY the read-back catches it — the mutant's kill"
+            " is unique and unmasked). The swallow probe passes every"
+            " other boundary guard — no seam descriptor, no"
+            " __getattribute__, digest and behavioral equality bind — so"
+            " only the missing read-back moves: the trial registers and"
             " completes (no masking; the setter-less and __slots__ horns"
             " keep their own owners)"
         ),
@@ -4140,6 +4143,90 @@ MUTANTS = [
             " answers the same values for mapped sessions); only the"
             " unmapped horn moves: a non-session date raises"
             " NotASessionError, never the named ValueError (no masking)"
+        ),
+    ),
+    # ---- remediation wave 9 (R9-P1 + R9-P2 + R9-P3, M323-M325) ------------------
+    dict(
+        id="M323-r9a-same-object-execution-calendar-denormalized",
+        owner="test_a_same_object_execution_calendar_is_the_none_form_at_runtime",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "            execution_calendar=None if execution_calendar is"
+            " calendar else execution_calendar,"
+        ),
+        replacement="            execution_calendar=execution_calendar,",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R9-P1 the same-object normalization dropped: _execute receives"
+            " the caller's ORIGINAL execution_calendar object even when it"
+            " IS the stamped decision calendar, so the backtest routes it"
+            " to the fill engine — the pre-R9 state, where"
+            " execution_calendar=None and execution_calendar=<the same"
+            " object> were stamped and hashed IDENTICALLY yet differed at"
+            " runtime: the None form's fills read the BOUND calendar's"
+            " frozen instants while the same-object form's doors re-read"
+            " the MUTABLE original, whose third-and-later answers (a"
+            " calendar honest through the boundary's two reads, 16:00"
+            " thereafter) killed the correctly-stamped 13:00 order as"
+            " DECISION_INSTANT_NOT_CLOSE (INV-02/INV-14 under one declared"
+            " configuration). The probe passes every boundary guard and"
+            " the R8 calendar bind alike, so only the fill engine's"
+            " unbound read moves: the same-object run's payload diverges"
+            " from the None run's and its calendar read counts exceed the"
+            " boundary's two (no masking; the dual-calendar lane keeps"
+            " its own owners)"
+        ),
+    ),
+    dict(
+        id="M324-r9b-descriptor-seam-scan-dropped",
+        owner="test_a_stateful_descriptor_surface_is_refused_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "        if seam_attr is not None and (\n"
+            '            hasattr(seam_attr, "__set__") or'
+            ' hasattr(seam_attr, "__delete__")\n'
+            "        ):"
+        ),
+        replacement="        if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R9-P2 the data-descriptor MRO pre-scan dropped: a class"
+            " defining the seam as a data descriptor reaches the install"
+            " again, and a STATEFUL descriptor — __set__ accepts the frozen"
+            " closure, __get__ returns it for exactly the FIRST read —"
+            " passes the R8 read-back (identity holds at the only read it"
+            " ever makes) and answers the unfrozen 16:00-lying callable on"
+            " every later read: the trial registers and the runtime"
+            " consumes the lying callable, the post-close order-stamping"
+            " defect reborn. The probe passes every other boundary guard"
+            " — digest binds, behavioral equality binds, the install"
+            " verification binds — so only the missing class-shape"
+            " refusal moves: the trial registers and completes (no"
+            " masking; the immediately-swallowing descriptor is co-caught"
+            " by the read-back alone, so this owner's stateful descriptor"
+            " is the UNIQUE kill for the scan — and the __getattribute__"
+            " arm of the same scan keeps its own refusal test)"
+        ),
+    ),
+    dict(
+        id="M325-r9c-dictless-bind-refusal-dropped",
+        owner="test_an_empty_slots_no_dict_calendar_refuses_by_name",
+        file="src/tree_options/trials/options_run.py",
+        anchor='    if not hasattr(bound, "__dict__"):',
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R9-P3 the no-__dict__ refusal dropped: a legal __slots__ = ()"
+            " class over no __dict__-bearing base passes the falsy"
+            " nonempty-slots scan, is constructed, and hits the"
+            " unconditional bound.__dict__.update(...) — the pre-R9"
+            " state, where the factory raised a raw AttributeError out of"
+            " the boundary instead of a named refusal. The probe is a"
+            " well-formed stateless structural calendar, so nothing else"
+            " in the boundary moves: only the refusal's absence moves —"
+            " the raw AttributeError escapes the factory, never the named"
+            " ValueError (no masking; the surface-side twin co-catches"
+            " through the shared helper)"
         ),
     ),
 ]
