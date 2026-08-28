@@ -1620,6 +1620,7 @@ def _run_era_trial(
     surface,
     scored: tuple[ScoredLabel, ...] | None = None,
     strategy_config: OptionsStrategyConfig | None = None,
+    calendar=None,
 ):
     """The ruled era configuration — `test_dual_calendar_ruled_geometry_
     yields_the_era_folds`' own — parameterized ONLY by the surface: the
@@ -1627,10 +1628,15 @@ def _run_era_trial(
     the wired surface run under byte-identical everything else. (R6-P1)
     `scored`/`strategy_config` override the ruled rows/config for the
     call-sequence probe, whose divergence session is an early-close Friday
-    the ruled scored set never decides on."""
+    the ruled scored set never decides on. (R7-P1) `calendar` swaps the
+    stamped DECISION grid for a probe calendar (the surface must disclose
+    the SAME object, or the R4-P1 digest refuses); the honest `grid` still
+    builds every fixture-side read — the scored rows, the decision set, the
+    bar's availability — so only the runner's own reads hit the probe."""
     from tree_options.protocol.era_profile import real_lane_split_override
 
     grid, overlay = era_world
+    stamped = grid if calendar is None else calendar
     world_id = overlay.spec.world_id
     scored = _era_scored_rows(grid) if scored is None else scored
     decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
@@ -1657,7 +1663,7 @@ def _run_era_trial(
                 ),
             ),
             surface=surface,  # type: ignore[arg-type]
-            calendar=grid,
+            calendar=stamped,  # type: ignore[arg-type]
             execution_calendar=overlay.calendar,
             protocol=protocol,
             world_id=world_id,
@@ -2140,3 +2146,159 @@ def test_the_frozen_decision_map_refuses_unmapped_sessions_fail_closed(era_world
     assert bound.decision_close(first) == grid.session_close(first)
     with pytest.raises(ValueError, match="no frozen decision instant for session"):
         bound.decision_close(second)
+
+
+# ---- (R7-P1, Codex round 7) the VERIFIED instant, never a fresh read ----------
+
+
+class _ThirdReadLiarCalendar:
+    """Codex round 7's probe CALENDAR: `session_close` answers the fixture
+    close on each session's FIRST TWO calls and the no-early-close twin's
+    16:00 on every later call, counting as it goes.
+
+    The boundary reads the stamped calendar exactly twice per decision
+    session — `declared_close = calendar.session_close(session)`, then the
+    wired surface's `decision_close(session)` behind the very same object —
+    and the digest that binds it hashes sessions + early closes + the class,
+    never per-session METHOD STATE, so a calendar that turns wrong on the
+    third read passes the entire preflight. Whatever reads it NEXT is then
+    fed the wrong instant, and which read that is decides the defect: at
+    HEAD the freeze's own re-read is the third."""
+
+    def __init__(self, grid) -> None:
+        self._grid = grid
+        self._no_early_closes = RealSessionCalendar(grid.sessions(), frozenset())
+        self.close_calls: dict[date, int] = {}
+
+    def sessions(self):
+        return self._grid.sessions()
+
+    def early_close_sessions(self):
+        return self._grid.early_close_sessions()
+
+    def is_session(self, d):
+        return self._grid.is_session(d)
+
+    def ordinal(self, d):
+        return self._grid.ordinal(d)
+
+    def nth_after(self, d, n):
+        return self._grid.nth_after(d, n)
+
+    def session_open(self, d):
+        return self._grid.session_open(d)
+
+    def session_close(self, d):
+        self.close_calls[d] = self.close_calls.get(d, 0) + 1
+        if self.close_calls[d] <= 2:
+            return self._grid.session_close(d)
+        return self._no_early_closes.session_close(d)
+
+    def contains_instant(self, d, ts):
+        return self._grid.contains_instant(d, ts)
+
+
+def test_the_freeze_consumes_the_verified_instant_never_a_third_calendar_read(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R7-P1, Codex round 7 — the call-count horn) The preflight loop
+    VERIFIES `declared_close = calendar.session_close(session)` against the
+    surface's answer and then DISCARDED it: the freeze rebuilt the map with
+    a SECOND, unverified read of the same overridable method. A calendar
+    that answers the fixture close on a session's first two calls and 16:00
+    thereafter therefore passes the whole preflight while the freeze stores
+    the THIRD, never-compared answer. The fix stores the value that was
+    actually compared, so the calendar is never re-read for the freeze: the
+    sessions before the first scored row carry no candidates, no folds and
+    no fills, and the ONLY calendar reads they can ever attract are the
+    preflight's two — exactly two calls pins that the freeze added no third
+    (RED before R7-P1: the freeze IS the third read)."""
+    grid, overlay = era_world
+    lf = protocol.option_candidate_defaults.liquidity_volume_flow
+    assert lf is not None
+    probe = _ThirdReadLiarCalendar(grid)
+    wired = VwapPitSurface(
+        overlay,
+        decision_calendar=probe,
+        underlying_liquidity_term=lf.underlying_liquidity_term,
+    )
+    probe_scored = _r6_probe_scored(grid)
+    decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
+    # NO MASKING — the probe passes every guard the boundary owns: it
+    # discloses itself (the digest binds the probe to the probe), answers
+    # both preflight reads with the fixture close, and never raises. Only
+    # the freeze's read count can catch the third call.
+    assert probe.close_calls == {}
+    result = _run_era_trial(
+        era_world,
+        protocol,
+        tmp_path,
+        tag="r7_mutcal",
+        surface=wired,
+        calendar=probe,
+        scored=probe_scored,
+        strategy_config=OptionsStrategyConfig(dte_min=15, target_dte=21, dte_max=30),
+    )
+    assert result.n_folds == 3
+    untouched = [s for s in decision_sessions if s < min(r.session for r in probe_scored)]
+    assert len(untouched) >= 10  # the first fold's train window: nothing else reads these
+    assert {probe.close_calls[s] for s in untouched} == {2}
+
+
+def test_a_downstream_re_read_of_the_stateful_calendar_fails_closed(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R7-P1, Codex round 7 — the fail-closed horn) The mutable calendar's
+    LATER reads still reach the run's own downstream consumers — the
+    candidate filter's `expected_close` re-reads the stamped calendar
+    directly, never the frozen map. When the runtime decision instant IS the
+    verified one those two disagree on the early-close Friday 2025-11-28
+    (13:00 verified vs the calendar's third-and-later 16:00), and the filter
+    answers decision_coherence NOT_EVALUABLE: the trial FAILS CLOSED on the
+    divergent instant instead of deciding on it. Under the fresh-read freeze
+    both sides read the same lying 16:00, the snapshot is stamped 21:00Z,
+    coherence PASSES and the wrong instant flows on through candidate
+    construction — exactly the future-information decision the guard exists
+    to make impossible (RED before R7-P1: no decision_coherence refusal
+    exists, and the 2025-11-28 candidate rides the 16:00 instant)."""
+    import json
+
+    grid, overlay = era_world
+    lf = protocol.option_candidate_defaults.liquidity_volume_flow
+    assert lf is not None
+    probe = _ThirdReadLiarCalendar(grid)
+    wired = VwapPitSurface(
+        overlay,
+        decision_calendar=probe,
+        underlying_liquidity_term=lf.underlying_liquidity_term,
+    )
+    result = _run_era_trial(
+        era_world,
+        protocol,
+        tmp_path,
+        tag="r7_failclosed",
+        surface=wired,
+        calendar=probe,
+        scored=_r6_probe_scored(grid),
+        strategy_config=OptionsStrategyConfig(dte_min=15, target_dte=21, dte_max=30),
+    )
+    body = json.loads(result.artifact_path.read_text(encoding="utf-8"))
+    rules = body["payload"]["counters"]["rule_histogram"]
+    # the runtime instant was the VERIFIED close, so the filter's own
+    # re-read of the stateful calendar DISAGREES and the trial refuses
+    assert rules.get("decision_coherence", {}).get("NOT_EVALUABLE", 0) == 1
+    # ...and the refusal is on the early-close Friday, whose true close is
+    # 13:00 ET (18:00Z) while the calendar's later reads answer 21:00Z
+    assert grid.session_close(date(2025, 11, 28)) != probe.session_close(date(2025, 11, 28))
+    # never a decision on the divergent instant: nothing was entered
+    assert body["payload"]["pooled"]["n_positions"] == 0
+    assert body["payload"]["pooled"]["positions"] == []
+    assert body["payload"]["fills_log"] == []
+    # and the refusal is COHERENCE's, not the liquidity rule the candidate
+    # would otherwise have failed: under the fresh-read freeze the snapshot
+    # is stamped with the calendar's own later 16:00 answer, coherence
+    # PASSES, and the wrong instant rides on into candidate construction
+    # (RED showed underlying_liquidity FAIL 1 and no decision_coherence at
+    # all — the divergence session decided on the future instant)
+    assert rules.get("underlying_liquidity", {}).get("FAIL", 0) == 0
+    assert rules.get("underlying_liquidity", {}).get("NOT_EVALUABLE", 0) == 1

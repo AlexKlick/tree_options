@@ -697,6 +697,7 @@ def run_options_trial(
     # and a wired adapter answer decision_close from the very calendar the
     # trial is stamped on, so every comparison is equal and nothing is
     # stamped, hashed, or registered differently.
+    decision_closes: dict[date, datetime] = {}
     for session in normalized_sessions:
         declared_close = calendar.session_close(session)
         try:
@@ -718,6 +719,20 @@ def run_options_trial(
                 " disagrees with its disclosed calendar cannot be bound to"
                 " this trial; refusing before registration"
             )
+        # (R7-P1, Codex round 7) THE FROZEN INSTANT IS THE VERIFIED ONE, by
+        # construction. The loop's own `declared_close` is the only value the
+        # boundary compared, so it is the only value the freeze may carry:
+        # the calendar is NEVER re-read for the freeze. (R6-P1 froze the
+        # instants but re-derived them with a second, unverified
+        # `calendar.session_close(session)` call — a mutable calendar that
+        # answers the fixture close on a session's first two reads and 16:00
+        # thereafter passed the entire preflight while the THIRD, unverified
+        # read froze the wrong instant; the digest covers sessions, early
+        # closes and the class, never per-session method state, so nothing
+        # else moved.) Storing it here also keeps the map EXACTLY the set the
+        # boundary verified: a session this loop never reached is a session
+        # the freeze never carries.
+        decision_closes[session] = declared_close
     # (R6-P1, Codex round 6) FREEZE the verified decision instants. The loop
     # above is what VERIFIES them — one call per session, compared against
     # the stamped calendar; its refusals are unchanged. But verification
@@ -732,7 +747,6 @@ def run_options_trial(
     # decision_close is never consulted again. Byte-identical for every
     # wired configuration: the frozen instants are what an honest surface
     # answers, so no key, hash, or stamp moves.
-    decision_closes = {session: calendar.session_close(session) for session in normalized_sessions}
     bound_surface = _BoundDecisionSurface(surface, decision_closes)
     decision_sessions_sha256 = hashlib.sha256(
         json.dumps(
