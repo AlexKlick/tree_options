@@ -41,10 +41,10 @@ from dataclasses import asdict, dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from tree_options.backtest.options import Arm, OptionsBacktestResult, run_options_backtest
-from tree_options.candidates.filters import CandidateFilter, CandidateSnapshot
+from tree_options.candidates.filters import CandidateFilter
 from tree_options.data.authority import PointInTimeDataset
 from tree_options.data.options_pit import OptionPitSurface
 from tree_options.evaluation.stats import ScoredLabel, backtest_summary
@@ -59,7 +59,6 @@ from tree_options.protocol.schema import ResearchProtocol
 from tree_options.protocol.stamping import build_stamp, write_artifact
 from tree_options.registry.scope import TrialScope
 from tree_options.registry.sqlite import TrialRegistry
-from tree_options.schemas.options import OptionContract
 from tree_options.schemas.trial import TrialRecord
 from tree_options.splitting.splitter import Fold, WalkForwardSplitter
 from tree_options.time.calendar import (
@@ -466,9 +465,11 @@ def _volume_flow_threshold(protocol: ResearchProtocol, override: int | None) -> 
     return value
 
 
-class _BoundDecisionSurface:
-    """(R6-P1, Codex round 6) THE FROZEN DECISION INSTANTS, bound around one
-    surface for the duration of a run.
+def _bind_decision_surface(
+    underlying: OptionPitSurface, decision_closes: Mapping[date, datetime]
+) -> OptionPitSurface:
+    """(R6-P1 + R7-P2) THE FROZEN DECISION INSTANTS, bound onto one surface
+    for the duration of a run.
 
     The boundary (`run_options_trial`) verifies `surface.decision_close(s)`
     against the stamped calendar ONCE per decision session before
@@ -479,39 +480,57 @@ class _BoundDecisionSurface:
     answering the stamped close on each session's FIRST call and something
     else on later calls passed every boundary comparison while the wrong
     instant reached `build_candidates` (Codex round 6's call-sequence
-    probe: pre_registration_equal=True, runtime_equal=False — on an
-    early-close Friday a 14:00-published action was then treated as known
-    at the true 13:00 decision, INV-02/INV-14 at runtime).
+    probe: pre_registration_equal=True, runtime_equal=False).
 
-    This wrapper makes the runtime consume the boundary-verified values
-    themselves, never the surface's method:
+    R6 bound a WRAPPER; R7 binds a GENUINE same-class instance, because the
+    wrapper's rebind was not an instance of the underlying's class:
 
-    - `decision_close(s)` answers the frozen instant and REFUSES
-      (fail-closed) any session the boundary never verified — nothing falls
-      back to the underlying method, so statefulness cannot express itself;
-    - `candidate_snapshot(...)` executes the UNDERLYING's own method with
-      `self` bound to THIS wrapper (the one decision-side read that lives
-      INSIDE the surface), so its `self.decision_close(...)` resolves to
-      the frozen map too — every attribute it reads beyond that delegates
-      unchanged to the underlying surface;
-    - everything else delegates unchanged (`__getattr__`).
+    - `type(underlying).candidate_snapshot(self_wrapper, ...)` made a
+      subclass's semantically neutral `super().candidate_snapshot(...)`
+      raise TypeError AFTER registration — a failed registered trial on an
+      input the boundary explicitly accepts (Codex round 7, P2);
+    - `__getattr__`-delegated methods stayed bound to the UNDERLYING, so a
+      subclass override that internally called `self.decision_close()`
+      reached the unfrozen method (Codex round 7, P2).
+
+    `bound` here IS an instance of the same concrete class, so subclass
+    dispatch, `super()`, `self.__class__` and `isinstance` are all ordinary;
+    the instance-attribute `decision_close` SHADOWS the class method at
+    EVERY `self.decision_close(...)` call site — the class's own
+    `candidate_snapshot`, any subclass override, any method that reaches
+    the seam — and REFUSES (fail-closed) any session the boundary never
+    verified, so nothing ever falls back to the overridable method.
+
+    CAVEATS of the construction, which are the price of binding without
+    wrapping:
+
+    - `cls.__new__(cls)` SKIPS `__init__` deliberately: the underlying's
+      constructor validates and re-derives, and must never run twice. All
+      state comes EXCLUSIVELY from the copy below.
+    - the copy is SHALLOW. The underlying is not used again after binding,
+      and the surface's state is read-only for the duration of a run — the
+      bound instance shares (not clones) every mutable attribute it holds,
+      exactly as the underlying's own methods would share them with each
+      other. A surface that mutates its own state mid-run was never a
+      supportable input; the boundary's freeze is what makes that explicit.
+    - `decision_close` is a RESERVED instance-attribute name on a bound
+      surface. A class that itself sets `decision_close` as an instance
+      attribute in `__init__` would be silently overridden here — but such
+      a class is exactly the stateful shape the boundary freezes.
 
     Byte-identical for every wired configuration: the frozen instants ARE
     the stamped calendar's closes, which is exactly what an honest surface
     answers, so nothing is stamped, hashed, or registered differently. The
     static type stays `OptionPitSurface` by the documented adapter contract
     (static callers cast — `tests/unit/test_massive_overlay.py`); this
-    runner performs that cast exactly once, at the wrap site."""
+    factory performs that cast exactly once, at the bind."""
+    cls = type(underlying)
+    bound = cast(OptionPitSurface, cls.__new__(cls))
+    bound.__dict__.update(underlying.__dict__)
 
-    def __init__(
-        self, underlying: OptionPitSurface, decision_closes: Mapping[date, datetime]
-    ) -> None:
-        self._bound_underlying = underlying
-        self._decision_closes: dict[date, datetime] = dict(decision_closes)
-
-    def decision_close(self, decision_session: date) -> datetime:
+    def decision_close(decision_session: date) -> datetime:
         try:
-            return self._decision_closes[decision_session]
+            return decision_closes[decision_session]
         except KeyError:
             raise ValueError(
                 f"no frozen decision instant for session"
@@ -521,17 +540,8 @@ class _BoundDecisionSurface:
                 " decision_close()"
             ) from None
 
-    def candidate_snapshot(
-        self, contract: OptionContract, decision_session: date
-    ) -> CandidateSnapshot:
-        # Rebind: run the underlying's own method with self = THIS wrapper,
-        # so the decision_at it stamps comes from the frozen map while every
-        # other attribute it touches delegates to the real surface.
-        method = type(self._bound_underlying).candidate_snapshot
-        return method(self, contract, decision_session)  # type: ignore[arg-type]
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._bound_underlying, name)
+    bound.decision_close = decision_close  # type: ignore[method-assign]
+    return bound
 
 
 def run_options_trial(
@@ -740,14 +750,17 @@ def run_options_trial(
     # so a stateful surface (first call right, later calls wrong) slipped
     # every comparison while the wrong instant reached build_candidates.
     # The values just verified ARE the trial's own calendar's closes; the
-    # run below consumes EXACTLY those, through `_BoundDecisionSurface` —
-    # its decision_close answers the frozen map (refusing any session the
-    # boundary never verified) and its candidate_snapshot rebinds the
-    # surface's own method onto the wrapper, so the underlying's
-    # decision_close is never consulted again. Byte-identical for every
-    # wired configuration: the frozen instants are what an honest surface
-    # answers, so no key, hash, or stamp moves.
-    bound_surface = _BoundDecisionSurface(surface, decision_closes)
+    # run below consumes EXACTLY those, through `_bind_decision_surface` —
+    # a GENUINE instance of the surface's own class whose INSTANCE-attribute
+    # decision_close answers the frozen map (refusing any session the
+    # boundary never verified), shadowing the class method at every
+    # `self.decision_close(...)` call site so the underlying's overridable
+    # method is never consulted again (R7-P2: the R6 wrapper was not an
+    # instance of the underlying's class, which broke `super()` dispatch
+    # and left `__getattr__`-delegated methods bound to the underlying).
+    # Byte-identical for every wired configuration: the frozen instants are
+    # what an honest surface answers, so no key, hash, or stamp moves.
+    bound_surface = _bind_decision_surface(surface, decision_closes)
     decision_sessions_sha256 = hashlib.sha256(
         json.dumps(
             [session.isoformat() for session in normalized_sessions],
@@ -915,9 +928,11 @@ def run_options_trial(
     try:
         payload, stats = _execute(
             dataset=dataset,
-            # (R6-P1) the run consumes the FROZEN boundary-verified instants —
-            # the wrapper, not the caller's (overridable) surface
-            surface=cast(OptionPitSurface, bound_surface),
+            # (R6-P1/R7-P2) the run consumes the FROZEN boundary-verified
+            # instants — the bound same-class instance, never the caller's
+            # (overridable) surface. The factory already returns the
+            # adapter-contract static type, so the one cast lives there.
+            surface=bound_surface,
             calendar=calendar,
             protocol=protocol,
             folds=folds,

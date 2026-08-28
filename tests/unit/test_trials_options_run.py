@@ -2130,18 +2130,25 @@ def test_a_stateful_lying_surface_runs_identically_to_the_wired_surface(
 
 
 def test_the_frozen_decision_map_refuses_unmapped_sessions_fail_closed(era_world) -> None:
-    """(R6-P1, the wrapper's fail-closed horn) The frozen map carries
-    EXACTLY the sessions the boundary verified — every decision-side read
-    of the run answers from it, so a session outside the verified set can
-    never silently fall back to the surface's overridable method: the
-    wrapper refuses, naming the session (the guard is what makes "the
-    runtime consumes the frozen map" total rather than best-effort)."""
-    from tree_options.trials.options_run import _BoundDecisionSurface
+    """(R6-P1, the fail-closed horn; R7-P2, the bind's shape) The frozen map
+    carries EXACTLY the sessions the boundary verified — every decision-side
+    read of the run answers from it, so a session outside the verified set can
+    never silently fall back to the surface's overridable method: the bound
+    instance refuses, naming the session (the guard is what makes "the runtime
+    consumes the frozen map" total rather than best-effort). (R7-P2) the bind
+    is a GENUINE instance of the same concrete class — same `type`, real
+    `isinstance`, ordinary class-level dispatch everywhere else."""
+    from tree_options.trials.options_run import _bind_decision_surface
 
     grid, overlay = era_world
     first, second = grid.sessions()[0], grid.sessions()[1]
     wired = VwapPitSurface(overlay, decision_calendar=grid)
-    bound = _BoundDecisionSurface(wired, {first: grid.session_close(first)})
+    bound = _bind_decision_surface(wired, {first: grid.session_close(first)})
+    # the bind is the same concrete class, carrying the real state
+    assert type(bound) is type(wired)
+    assert isinstance(bound, VwapPitSurface)
+    assert bound.snapshot_id == wired.snapshot_id
+    assert bound.decision_calendar is wired.decision_calendar
     # a mapped session answers the frozen instant, not the surface
     assert bound.decision_close(first) == grid.session_close(first)
     with pytest.raises(ValueError, match="no frozen decision instant for session"):
@@ -2302,3 +2309,127 @@ def test_a_downstream_re_read_of_the_stateful_calendar_fails_closed(
     # all — the divergence session decided on the future instant)
     assert rules.get("underlying_liquidity", {}).get("FAIL", 0) == 0
     assert rules.get("underlying_liquidity", {}).get("NOT_EVALUABLE", 0) == 1
+
+
+# ---- (R7-P2, Codex round 7) a GENUINE same-class bind, not a rebind wrapper ----
+
+
+class _SuperDelegatingSurface(VwapPitSurface):
+    """Codex round 7's P2 probe class: a semantically NEUTRAL subclass whose
+    `candidate_snapshot` is exactly `super().candidate_snapshot(...)`. It
+    changes nothing about what the run reads — subclassing is an explicitly
+    accepted input (`options_run.py`'s own behaviorally-bound-subclass test)
+    — and yet the wrapper's rebind executed the subclass's function with a
+    `self` that is not an instance of it, so `super()` raised TypeError
+    AFTER registration: a failed registered trial on a legal input."""
+
+    def __init__(self, overlay, grid, liquidity_term) -> None:
+        super().__init__(overlay, decision_calendar=grid, underlying_liquidity_term=liquidity_term)
+
+    def candidate_snapshot(self, contract, decision_session):
+        return super().candidate_snapshot(contract, decision_session)
+
+
+def test_a_super_delegating_subclass_runs_byte_identically_to_the_base_surface(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R7-P2, Codex round 7 — the dispatch horn) `_BoundDecisionSurface.
+    candidate_snapshot` ran `type(underlying).candidate_snapshot(self_wrapper,
+    ...)`, and `self_wrapper` is NOT an instance of the underlying's class —
+    so a subclass whose override is a semantically neutral
+    `super().candidate_snapshot(...)` raised TypeError from inside the run,
+    AFTER registration (a failed registered trial on an input the boundary
+    explicitly accepts). The bind now produces a GENUINE instance of the
+    same concrete class — `cls.__new__(cls)` plus a copy of the real state —
+    so subclass dispatch, `super()` and `isinstance` are ordinary and the
+    neutral subclass runs UNCHANGED: byte-identical payload and config hash
+    to the base surface's run (RED before R7-P2: TypeError)."""
+    import json
+
+    grid, overlay = era_world
+    lf = protocol.option_candidate_defaults.liquidity_volume_flow
+    assert lf is not None
+    wired = VwapPitSurface(
+        overlay,
+        decision_calendar=grid,
+        underlying_liquidity_term=lf.underlying_liquidity_term,
+    )
+    neutral = _SuperDelegatingSurface(overlay, grid, lf.underlying_liquidity_term)
+    wired_result = _run_era_trial(era_world, protocol, tmp_path, tag="r7_wired", surface=wired)
+    neutral_result = _run_era_trial(era_world, protocol, tmp_path, tag="r7_super", surface=neutral)
+    assert wired_result.n_folds == neutral_result.n_folds == 3
+    assert wired_result.n_positions == neutral_result.n_positions
+    wired_body = json.loads(wired_result.artifact_path.read_text(encoding="utf-8"))
+    neutral_body = json.loads(neutral_result.artifact_path.read_text(encoding="utf-8"))
+    assert wired_body["stamp"]["config_hash"] == neutral_body["stamp"]["config_hash"]
+    assert json.dumps(wired_body["payload"], sort_keys=True) == json.dumps(
+        neutral_body["payload"], sort_keys=True
+    )
+    # and the subclass really was dispatched: its override ran, not the base
+    # class's method straight through the wrapper
+    assert neutral.candidate_snapshot is not VwapPitSurface.candidate_snapshot
+
+
+class _FrozenSeamProbingSurface(_StatefulLyingSurface):
+    """Codex round 7's P2 delegation probe: a subclass overriding a DIFFERENT
+    method (`eligible_as_of`, which `build_candidates` calls for every
+    decision session) so that it reaches the decision seam through
+    `self.decision_close(...)`. The base is the R6 stateful liar, so the
+    underlying's own method answers the stamped close only on a session's
+    FIRST call and 16:00 thereafter — exactly the wrong-answer underlying
+    that distinguishes "the override resolved the FROZEN map" from "the
+    override stayed bound to the underlying"."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay, grid)
+        self.probed: dict[date, datetime] = {}
+
+    def eligible_as_of(self, session):
+        # the base's publication-wall sweep, anchored at the seam instead of
+        # the overlay calendar: the wall sits at T+1 09:00, below either
+        # close, so the visible session — and therefore the whole run — is
+        # unchanged; only WHERE the instant came from moves
+        decision_at = self.decision_close(session)
+        self.probed[session] = decision_at
+        for candidate in sorted(self._overlay.world_sessions(), reverse=True):
+            if not self._overlay.has_any_file(candidate):
+                continue
+            if self._overlay.publication_of(candidate) <= decision_at:
+                return self._overlay.eligible_on(candidate)
+        return ()
+
+
+def test_a_subclass_override_resolves_the_frozen_decision_close(
+    era_world, protocol, tmp_path
+) -> None:
+    """(R7-P2, Codex round 7 — the delegation horn) The wrapper delegated
+    unknown attributes with `__getattr__`, so a subclass's override of
+    ANOTHER method stayed bound to the UNDERLYING — its internal
+    `self.decision_close(...)` reached the underlying's unfrozen method, not
+    the frozen map. The bind now copies the real state onto a same-class
+    instance and installs `decision_close` as an INSTANCE attribute, which
+    shadows the class method at EVERY `self.decision_close(...)` call site:
+    the override below records exactly what it resolved, and every recorded
+    instant is the grid's own close — including the early-close Friday
+    2025-11-28's 13:00 ET, which the underlying's later calls answer 16:00
+    (RED before R7-P2: every probe recorded the liar's 16:00)."""
+    grid, overlay = era_world
+    probing = _FrozenSeamProbingSurface(overlay, grid)
+    result = _run_era_trial(
+        era_world, protocol, tmp_path, tag="r7_seam", surface=probing, scored=_r6_probe_scored(grid)
+    )
+    assert result.n_folds == 3
+    assert probing.probed, "the run must actually reach the overridden seam"
+    # every resolved instant is the stamped grid's own close ...
+    assert probing.probed == {s: grid.session_close(s) for s, _ in probing.probed.items()}
+    # ... including the early-close Friday the underlying answers 16:00
+    assert date(2025, 11, 28) in probing.probed
+    assert probing.probed[date(2025, 11, 28)] == grid.session_close(date(2025, 11, 28))
+    assert probing.probed[date(2025, 11, 28)] != probing._no_early_closes.session_close(
+        date(2025, 11, 28)
+    )
+    # and the underlying's own method really does answer 16:00 by now — the
+    # probe is not passing because the liar ran out of lies
+    assert probing.decision_close(date(2025, 11, 28)) == probing._no_early_closes.session_close(
+        date(2025, 11, 28)
+    )
