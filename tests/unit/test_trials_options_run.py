@@ -2731,3 +2731,158 @@ def test_the_bound_calendar_refuses_unmapped_sessions_fail_closed(world) -> None
     bound_liar = _bind_decision_calendar(liar, {early: calendar.session_close(early)})
     assert bound_liar.session_close(early) == calendar.session_close(early)
     assert liar.session_close(early) != calendar.session_close(early)
+
+
+# ---- (R8-P2, Codex round 8) the bind REFUSES when it cannot install --------
+
+
+class _DescriptorLyingSurface(VwapPitSurface):
+    """Codex round 8's P2 probe class: exposes `decision_close` as a
+    callable-returning PROPERTY with a NO-OP setter. The property's stored
+    callable answers each session's FIRST call with the stamped grid's close
+    (so the R4-P1 digest and the R5-P1 behavioral equality both pass) and
+    the no-early-close twin's 16:00 on every later call — the stateful shape
+    R6 froze. But a class-level DATA DESCRIPTOR owns the attribute: the
+    bind's `bound.decision_close = <closure>` writes through the no-op
+    setter and installs NOTHING, so the run proceeds on the unfrozen
+    property and the runtime's second call returns 16:00 (a post-close
+    publication becomes decision-visible, excluding the candidate) —
+    silently, with no refusal anywhere."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)
+        self._lying_grid = grid
+        self._no_early_closes = RealSessionCalendar(grid.sessions(), frozenset())
+        self._answered: set[date] = set()
+
+    @property
+    def decision_calendar(self):
+        return self._lying_grid
+
+    @property
+    def decision_close(self):
+        def stored(decision_session: date) -> datetime:
+            if decision_session not in self._answered:
+                self._answered.add(decision_session)
+                return self._lying_grid.session_close(decision_session)
+            return self._no_early_closes.session_close(decision_session)
+
+        return stored
+
+    @decision_close.setter
+    def decision_close(self, value) -> None:
+        pass  # the no-op: the freeze vanishes
+
+
+def test_a_descriptor_surface_is_refused_before_registration(era_world, protocol, tmp_path) -> None:
+    """(R8-P2, Codex round 8 — the reproduced probe) `bound.decision_close =
+    decision_close` is a plain instance-attribute write, and Python does NOT
+    let an instance attribute shadow a class-level DATA DESCRIPTOR: a
+    subclass exposing decision_close as a callable-returning property with a
+    no-op setter passes the ENTIRE preflight (the property's first call per
+    session answers the stamped close) while the write silently installs
+    NOTHING — the freeze never lands, the run proceeds on the unfrozen
+    property, and the runtime's later calls answer 16:00 (RED before
+    R8-P2: this trial registered, ran, and completed — no refusal existed).
+    The bind now READS THE ATTRIBUTE BACK and requires identity: a
+    descriptor-intercepted install refuses with the named error BEFORE
+    registration."""
+    from tree_options.time.calendar import calendar_content_sha256
+
+    grid, overlay = era_world
+    liar = _DescriptorLyingSurface(overlay, grid)
+    # NO MASKING — the probe passes every guard the boundary owns: the
+    # digest binds (the disclosure is the stamped grid) and the FIRST call
+    # per session answers the stamped close; only the install verification
+    # can catch the descriptor
+    probe = _DescriptorLyingSurface(overlay, grid)
+    assert calendar_content_sha256(probe.decision_calendar) == calendar_content_sha256(grid)
+    assert probe.decision_close(date(2025, 11, 28)) == grid.session_close(date(2025, 11, 28))
+    assert probe.decision_close(date(2025, 11, 28)) != grid.session_close(date(2025, 11, 28))
+    with pytest.raises(ValueError, match="data descriptor intercepted the install"):
+        _run_era_trial(era_world, protocol, tmp_path, tag="r8_descriptor", surface=liar)
+    # refused BEFORE registration: no record, no artifact
+    assert trial_count(tmp_path / "r8_descriptor.db") == 0
+    assert not (tmp_path / "r8_descriptor").exists()
+
+
+class _SetterlessPropertySurface(VwapPitSurface):
+    """A class-level data descriptor with NO setter: the install assignment
+    itself raises AttributeError — the refusal must be the bind's NAMED
+    ValueError, never a raw AttributeError escaping the boundary."""
+
+    def __init__(self, overlay, grid) -> None:
+        super().__init__(overlay)
+        self._lying_grid = grid
+
+    @property
+    def decision_calendar(self):
+        return self._lying_grid
+
+    @property
+    def decision_close(self):
+        return self._lying_grid.session_close
+
+
+def test_a_setterless_descriptor_refuses_with_the_named_error(era_world) -> None:
+    """(R8-P2, the assignment-raising horn) A setter-less property makes the
+    install assignment itself raise AttributeError. The bind wraps the
+    assignment and refuses with the SAME named refusal — a boundary
+    failure, not a crash (RED before R8-P2: the raw AttributeError from
+    inside `_bind_decision_surface` escapes the boundary)."""
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    surface = _SetterlessPropertySurface(overlay, grid)
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="setter-less class-level data descriptor"):
+        _bind_decision_surface(surface, {first: grid.session_close(first)})
+
+
+class _SlottedSurface(VwapPitSurface):
+    """A subclass declaring nonempty `__slots__`: the bind's state copy is
+    `__dict__`-only, so slot state would be silently MISSING on the bound
+    instance — an incomplete bind. No repo surface uses slots; the factory
+    must refuse by name rather than run half-bound (crash-hardening into a
+    named refusal, per the round-8 finding)."""
+
+    __slots__ = ("_slot_state",)
+
+    def __init__(self, overlay, grid, liquidity_term) -> None:
+        super().__init__(overlay, decision_calendar=grid, underlying_liquidity_term=liquidity_term)
+        self._slot_state = "carried by the slot, invisible to __dict__"
+
+
+class _SlottedCalendar(RealSessionCalendar):
+    """The calendar-side twin of `_SlottedSurface`: same named refusal, same
+    reason — the `__dict__` copy cannot carry slot state."""
+
+    __slots__ = ("_extra_state",)
+
+    def __init__(self, grid) -> None:
+        super().__init__(grid.sessions(), frozenset(grid.early_close_sessions()))
+        self._extra_state = 1
+
+
+def test_a_slotted_surface_class_is_refused_by_name(era_world) -> None:
+    """(R8-P2, the slots horn — surface side) RED before R8-P2: the bind
+    constructs and returns a half-copied instance with no refusal."""
+    from tree_options.trials.options_run import _bind_decision_surface
+
+    grid, overlay = era_world
+    surface = _SlottedSurface(overlay, grid, "evaluated")
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="__slots__"):
+        _bind_decision_surface(surface, {first: grid.session_close(first)})
+
+
+def test_a_slotted_calendar_class_is_refused_by_name(era_world) -> None:
+    """(R8-P2, the slots horn — calendar side) The R8-P1 calendar factory
+    shares the `__dict__`-only copy, so it shares the named refusal too."""
+    from tree_options.trials.options_run import _bind_decision_calendar
+
+    grid, _overlay = era_world
+    slotted = _SlottedCalendar(grid)
+    first = grid.sessions()[0]
+    with pytest.raises(ValueError, match="__slots__"):
+        _bind_decision_calendar(slotted, {first: grid.session_close(first)})

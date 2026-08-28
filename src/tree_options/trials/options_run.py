@@ -465,6 +465,25 @@ def _volume_flow_threshold(protocol: ResearchProtocol, override: int | None) -> 
     return value
 
 
+def _refuse_slotted_bind(cls: type, seam: str) -> None:
+    """(R8-P2, Codex round 8) Both bind factories copy state with
+    `__dict__.update` ONLY — a class anywhere in the MRO declaring nonempty
+    `__slots__` carries state that copy cannot reach, so the bound instance
+    would run MISSING it: an incomplete bind. No repo surface or calendar
+    uses slots; this refuses BY NAME before any construction, so a slotted
+    class is a boundary refusal, never a half-bound run or a raw crash."""
+    for klass in cls.__mro__:
+        slots = klass.__dict__.get("__slots__", ())
+        if slots:
+            raise ValueError(
+                f"{cls.__name__} declares __slots__"
+                f" ({klass.__qualname__}: {tuple(slots)!r}): the bind's"
+                " __dict__ copy cannot carry slot state, so the frozen"
+                f" {seam} would ride an instance MISSING it — an incomplete"
+                " bind must refuse before registration, never run half-bound"
+            )
+
+
 def _bind_decision_surface(
     underlying: OptionPitSurface, decision_closes: Mapping[date, datetime]
 ) -> OptionPitSurface:
@@ -517,6 +536,18 @@ def _bind_decision_surface(
       surface. A class that itself sets `decision_close` as an instance
       attribute in `__init__` would be silently overridden here — but such
       a class is exactly the stateful shape the boundary freezes.
+    - (R8-P2, Codex round 8) THE INSTALL IS VERIFIED. The assignment is a
+      plain instance-attribute write, and Python does NOT let an instance
+      attribute shadow a class-level DATA DESCRIPTOR: a subclass exposing
+      `decision_close` as a callable-returning property with a no-op setter
+      passed the ENTIRE preflight while the write silently installed
+      NOTHING — the freeze never landed and the run proceeded on the
+      unfrozen property. The bind now reads the attribute back and
+      REQUIRES identity with the frozen closure (a descriptor-intercepted
+      install refuses by name), wraps the assignment's AttributeError (a
+      setter-less property) into the same named refusal, and refuses any
+      class whose MRO declares nonempty `__slots__` (the `__dict__` copy
+      cannot carry slot state — an incomplete bind refuses, never runs).
 
     Byte-identical for every wired configuration: the frozen instants ARE
     the stamped calendar's closes, which is exactly what an honest surface
@@ -525,6 +556,7 @@ def _bind_decision_surface(
     (static callers cast — `tests/unit/test_massive_overlay.py`); this
     factory performs that cast exactly once, at the bind."""
     cls = type(underlying)
+    _refuse_slotted_bind(cls, "decision_close")
     bound = cast(OptionPitSurface, cls.__new__(cls))
     bound.__dict__.update(underlying.__dict__)
 
@@ -540,7 +572,28 @@ def _bind_decision_surface(
                 " decision_close()"
             ) from None
 
-    bound.decision_close = decision_close  # type: ignore[method-assign]
+    # (R8-P2, Codex round 8) VERIFY THE INSTALL: read the attribute back and
+    # REQUIRE identity — a class-level data descriptor (a property with a
+    # no-op setter) swallows the write above without installing anything,
+    # and the boundary's refusal is the only thing standing between that
+    # class and a silently unfrozen run.
+    try:
+        bound.decision_close = decision_close  # type: ignore[method-assign]
+    except AttributeError as exc:
+        raise ValueError(
+            f"cannot install the frozen decision_close on"
+            f" {type(underlying).__name__}: the assignment raised"
+            " AttributeError — a setter-less class-level data descriptor"
+            " cannot accept the freeze — the freeze cannot be installed on"
+            " this class; refusing before registration"
+        ) from exc
+    if bound.decision_close is not decision_close:
+        raise ValueError(
+            f"cannot install the frozen decision_close on"
+            f" {type(underlying).__name__}: a class-level data descriptor"
+            " intercepted the install — the freeze cannot be installed on"
+            " this class; refusing before registration"
+        )
     return bound
 
 
@@ -591,8 +644,16 @@ def _bind_decision_calendar(
     (a), 0.2.2-deferred — disclosed, unchanged).
 
     Byte-identical for every wired configuration: the frozen closes ARE the
-    calendar's own answers, so no key, hash, or stamp moves."""
+    calendar's own answers, so no key, hash, or stamp moves. (R8-P2, Codex
+    round 8) THE INSTALL IS VERIFIED, exactly as on the surface bind: the
+    assignment is read back and required to BE the frozen closure (a
+    class-level data descriptor intercepting the install refuses by name),
+    an AttributeError from a setter-less descriptor becomes the same named
+    refusal instead of escaping the boundary, and any class in the MRO
+    declaring nonempty `__slots__` refuses up front — the `__dict__` copy
+    cannot carry slot state, and an incomplete bind must refuse, never run."""
     cls = type(calendar)
+    _refuse_slotted_bind(cls, "session_close")
     bound = cast(SessionCalendar, cls.__new__(cls))
     bound.__dict__.update(calendar.__dict__)
 
@@ -612,7 +673,26 @@ def _bind_decision_calendar(
                 " overridable session_close()"
             ) from None
 
-    bound.session_close = session_close  # type: ignore[method-assign,assignment]
+    # (R8-P2, Codex round 8) VERIFY THE INSTALL — same shape, same reason
+    # as the surface bind: a class-level data descriptor on `session_close`
+    # would swallow the write and leave the run on the overridable method.
+    try:
+        bound.session_close = session_close  # type: ignore[method-assign,assignment]
+    except AttributeError as exc:
+        raise ValueError(
+            f"cannot install the frozen session_close on"
+            f" {type(calendar).__name__}: the assignment raised"
+            " AttributeError — a setter-less class-level data descriptor"
+            " cannot accept the freeze — the freeze cannot be installed on"
+            " this class; refusing before registration"
+        ) from exc
+    if bound.session_close is not session_close:
+        raise ValueError(
+            f"cannot install the frozen session_close on"
+            f" {type(calendar).__name__}: a class-level data descriptor"
+            " intercepted the install — the freeze cannot be installed on"
+            " this class; refusing before registration"
+        )
     return bound
 
 
