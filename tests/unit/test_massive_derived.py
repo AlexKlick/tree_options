@@ -176,3 +176,22 @@ def test_assumptions_defaults_pin_the_synthetic_world() -> None:
     assert DEFAULT_PRICING_ASSUMPTIONS == defaults
     with pytest.raises(FrozenInstanceError):
         defaults.risk_free = 0.05  # type: ignore[misc]
+
+
+def test_module_docstring_states_the_landed_filter_seam() -> None:
+    """(w6) Documentation truth, same rot the massive_overlay fix removed:
+    the claim that `build_option_candidate_inputs` "keeps raising
+    unconditionally" has been false since protocol 0.2.0 landed the builder
+    and the G1 lane-2 surface feeds it. The docstring must describe the
+    seam that exists — and stay honest that THIS module still contributes
+    only pure scalar math to it, never a filter input of its own."""
+    import re
+
+    import tree_options.data.massive_derived as md
+
+    # whitespace-normalized: the rot phrase wraps across source lines, so a
+    # raw substring assert would pass vacuously over the line break
+    doc = re.sub(r"\s+", " ", md.__doc__ or "")
+    assert "keeps raising unconditionally" not in doc
+    assert "reserved for a future owner-ratified amendment packet" not in doc
+    assert "build_option_candidate_inputs" in doc

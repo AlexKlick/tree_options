@@ -129,6 +129,13 @@ class _OpenPosition:
     entry_price: Decimal
     entry_session: date
     contract_expiration: date  # stamped on rows: criterion 4 needs it
+    # (G3 extension, verdict D6) the decision-visible selection facts the
+    # band rules classified the entry under; None only for rows minted
+    # before a candidate carried them (never in this runner's path)
+    strike: Decimal | None = None
+    abs_delta: Decimal | None = None
+    dte_at_entry: int | None = None
+    decision_session: date | None = None
     exit_kind: str | None = None  # sell | early_exercise | expiry | terminal
     exit_fill_id: str | None = None
     exit_price: Decimal | None = None
@@ -137,7 +144,15 @@ class _OpenPosition:
 
 @dataclass(frozen=True)
 class PositionRow:
-    """One round trip (or still-open position) — the §4 statistics input."""
+    """One round trip (or still-open position) — the §4 statistics input.
+
+    The G3-extension fields (verdict D6, additive with defaults so existing
+    constructors are untouched) carry the DECISION-VISIBLE selection facts:
+    `strike`/`abs_delta` are the ladder probe's file(t-1) values the band
+    rules classified on, `dte_at_entry` is the filter's calendar-day
+    convention (expiration - decision session), and `decision_session` is
+    the close that ordered the entry — without these T-BAND/T-DTE
+    falsifiers and the earnings retro-tag are not artifact-computable."""
 
     contract_id: str
     underlying_security_id: str
@@ -153,6 +168,10 @@ class PositionRow:
     exit_price: Decimal | None
     exit_session: date | None
     premium_return: float | None  # (exit - entry) / entry, fill to fill
+    strike: Decimal | None = None
+    abs_delta: Decimal | None = None
+    dte_at_entry: int | None = None
+    decision_session: date | None = None
 
 
 @dataclass
@@ -258,6 +277,10 @@ def _row(position: _OpenPosition) -> PositionRow:
         exit_price=position.exit_price,
         exit_session=position.exit_session,
         premium_return=premium_return,
+        strike=position.strike,
+        abs_delta=position.abs_delta,
+        dte_at_entry=position.dte_at_entry,
+        decision_session=position.decision_session,
     )
 
 
@@ -274,12 +297,26 @@ def run_options_backtest(
     end_session: date | None = None,
     fee_model: PerContractFeeModel | None = None,
     max_quote_age_seconds: int = DECLARED_MAX_QUOTE_AGE_SECONDS,
+    execution_calendar: SessionCalendar | None = None,
 ) -> OptionsBacktestResult:
     """Run one arm of the options strategy over supplied PIT signals.
 
     `candidate_filter` and `max_quote_age_seconds` are caller-supplied so
     the trial config hash owns them (the 7200 s override is the owner's
-    declared ruling; the protocol file stays byte-frozen)."""
+    declared ruling; the protocol file stays byte-frozen).
+
+    (P1-1, Codex round 1) THE DUAL-CALENDAR SEAM. `calendar` is the
+    DECISION GRID (the era profile's Friday-only grid): it sequences
+    decisions, entries, exits, marks and the session loop. The FILL
+    ENGINE carries its own session checks (`is_session`,
+    `session_close`, ordinal recency, `EXECUTION_INSTANT_MISMATCH`),
+    and those must run against the EXECUTION calendar — the daily
+    calendar the bars are stamped on (the overlay's
+    `MassiveDerivedSessionCalendar`) — so a Friday decision at D can
+    fill at the next grid Friday D+1 against the previous TRADING day's
+    bar. `execution_calendar=None` (the default) keeps ONE calendar for
+    both roles: lane-1/synthetic behavior is byte-identical."""
+    fill_calendar = calendar if execution_calendar is None else execution_calendar
     bar_map: dict[tuple[str, date], BarRecord] = {}
     for bar in dataset.bars:
         bar_map[(bar.security_id, bar.session)] = bar
@@ -323,12 +360,21 @@ def run_options_backtest(
     )
 
     fees = fee_model or PerContractFeeModel()
-    engine = FillEngine(calendar, fee_model=fees, max_quote_age_seconds=max_quote_age_seconds)
+    # (P1-1) the fill engine runs on the EXECUTION calendar; the grid
+    # calendar keeps every other responsibility in this backtest
+    engine = FillEngine(
+        fill_calendar,
+        fee_model=fees,
+        max_quote_age_seconds=max_quote_age_seconds,
+    )
     ledger = LedgerBook(initial_cash)
     counters = OptionsCounters()
     audit = CandidateAudit()
 
     open_positions: dict[str, _OpenPosition] = {}
+    # (G3 extension) contract_id -> the accepted candidate's decision-visible
+    # (strike, |delta|, dte, decision session), minted in schedule_entries
+    entry_facts: dict[str, tuple[Decimal, Decimal, int, date]] = {}
     closed_rows: list[PositionRow] = []
     fills: list[Fill] = []
     fill_audit: list[FillAudit] = []
@@ -469,6 +515,15 @@ def run_options_backtest(
         )
         for candidate in candidates:
             contract_underlying[candidate.contract_id] = candidate.underlying_security_id
+            # (G3 extension) the decision-visible selection facts, keyed for
+            # the entry fill: the ladder probe's own strike/|delta| pair and
+            # the filter's calendar-day DTE of the DECISION session
+            entry_facts[candidate.contract_id] = (
+                candidate.strike,
+                candidate.abs_delta,
+                (candidate.expiration - candidate.signal.decision_session).days,
+                candidate.signal.decision_session,
+            )
         orders = plan_orders(
             calendar=calendar,
             candidates=candidates,
@@ -662,6 +717,7 @@ def run_options_backtest(
             fills.append(fill)
             traded_notional += fill.notional()
             signal = order_signals.get(order.order_id)
+            facts = entry_facts.get(order.contract_id)
             open_positions[order.contract_id] = _OpenPosition(
                 contract_id=order.contract_id,
                 underlying_id=underlying,
@@ -672,6 +728,10 @@ def run_options_backtest(
                 entry_price=fill.price,
                 entry_session=session,
                 contract_expiration=contract.expiration,
+                strike=facts[0] if facts else None,
+                abs_delta=facts[1] if facts else None,
+                dte_at_entry=facts[2] if facts else None,
+                decision_session=facts[3] if facts else order.decision_session,
             )
             if arm == "A":
                 exit_session = calendar.nth_after(session, config.exit_sessions_after_entry)

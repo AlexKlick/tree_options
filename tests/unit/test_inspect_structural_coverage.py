@@ -853,3 +853,37 @@ def test_lane_files_carry_no_secret_and_no_host_paths() -> None:
     ):
         source = (REPO_ROOT / relative).read_text(encoding="utf-8")
         assert host_path not in source, relative
+
+
+# ---- (R6-P2, Codex round 6) the census spot loader shares the runtime contract --------
+
+
+@pytest.mark.parametrize("token", ["Infinity", "NaN"])
+def test_the_census_spot_loader_refuses_non_finite_spots(tmp_path: Path, token: str) -> None:
+    """(R6-P2) The census path's loader parsed spot tokens with `_dec` and
+    gated only `spot <= 0`, so "Infinity" — POSITIVE-looking — LOADED
+    (Codex's probe returned Decimal('Infinity')) and an explicit-date
+    infinite value then satisfied the census's presence-only check:
+    classify_pair answered COMPLETE and a malformed capture exited 0.
+    The loader's VALUE tokens now go through the SAME validation the
+    runtime loader and the lane-2 adapter's constructor apply
+    (`tree_options.data.spot_token.validated_spot_token` — exact, FINITE,
+    positive), rebranded to this module's own refusal shape (RED before
+    R6-P2: both tokens loaded or escaped as a raw decimal error)."""
+    spot = tmp_path / "spot_proxy.json"
+    spot.write_text(f'{{"SPY": {{"2025-03-07": "{token}"}}}}', encoding="utf-8")
+    with pytest.raises(structural.StructuralCoverageError, match="finite"):
+        structural.load_spot_proxy(spot)
+
+
+def test_the_census_spot_loader_keeps_valid_tokens_and_the_flat_form(tmp_path: Path) -> None:
+    """(R6-P2, the control) Explicit-date valid values behave exactly as
+    today, and the documented FLAT form ({"SPY": "600.00"} — one spot for
+    every session, keyed SPOT_SENTINEL_SESSION) still loads under the
+    shared validator: the shared contract VALIDATES, it never transforms
+    the proxy's shape."""
+    spot = tmp_path / "spot_proxy.json"
+    spot.write_text('{"SPY": {"2025-03-07": "560.12"}, "I:SPX": "5750"}', encoding="utf-8")
+    proxy = structural.load_spot_proxy(spot)
+    assert proxy["SPY"] == {date(2025, 3, 7): Decimal("560.12")}
+    assert proxy["I:SPX"] == {structural.SPOT_SENTINEL_SESSION: Decimal("5750")}

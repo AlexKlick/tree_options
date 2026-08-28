@@ -125,6 +125,7 @@ from tree_options.data.massive_manifest import (  # noqa: E402
     load_massive_capture_manifest,
     verify_massive_capture_manifest,
 )
+from tree_options.data.spot_token import SPOT_SENTINEL_SESSION  # noqa: E402
 from tree_options.protocol.loader import (  # noqa: E402
     load_protocol,
     protocol_hash,
@@ -465,7 +466,15 @@ def reconcile_pairs(
         if not is_session:
             holiday_fridays.append(friday)
         for underlying in universe.underlyings:
-            spot_present = underlying in spot_proxy and friday_date in spot_proxy[underlying]
+            # (R6-P2, Codex round 6) the documented FLAT form ({"SPY":
+            # "600.00"} — one declared spot for every session, stored by the
+            # shared loader under the date.min sentinel) COVERS EVERY
+            # session: the old exact-Friday-membership-only check marked
+            # every session Friday of a valid flat proxy SPOT_MISSING_SESSION
+            # and the census exited 5. Explicit per-session keys behave
+            # exactly as before.
+            spot_sessions = spot_proxy.get(underlying, {})
+            spot_present = friday_date in spot_sessions or SPOT_SENTINEL_SESSION in spot_sessions
             if is_session and spot_present:
                 spot_with_close += 1
             entry = entries.get((underlying, friday))

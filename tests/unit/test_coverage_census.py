@@ -101,12 +101,23 @@ def _build_capture(
     drop_pairs: set[tuple[str, str]] = frozenset(),
     omit_spot: set[tuple[str, str]] = frozenset(),
     content_overrides: dict[tuple[str, str], str] | None = None,
+    raw_spot: str | None = None,
+    flat_spot: str | None = None,
 ) -> Path:
     """A synthetic sealed capture dir: masters + spot proxy + a valid manifest.
 
     `content_overrides` replaces a pair's FILE BODY verbatim (the manifest
     still hashes whatever is on disk, so the round-3 semantic-join fixtures
-    can pin bytes the manifest's own hashes attest)."""
+    can pin bytes the manifest's own hashes attest).
+
+    (R6-P2) `raw_spot` writes those EXACT bytes as spot_proxy.json (the
+    census-loader fixtures: an "Infinity" token the old loader accepted);
+    `flat_spot` writes the documented FLAT form {"<first underlying>":
+    "<token>"} — one spot for every session. Both are built BEFORE the
+    manifest so their bytes are the pinned, verified ones; the manifest's
+    `spot_proxy` lineage field records the per-session shape it can express
+    ({} for the flat form — the field is lineage only, nothing verifies
+    file contents against it)."""
     capture = root / "capture"
     masters_dir = capture / "masters"
     masters_dir.mkdir(parents=True)
@@ -142,9 +153,16 @@ def _build_capture(
             entries.append({k: v for k, v in spec.items() if k != "file_rows"})
             if pair not in omit_spot:
                 spot.setdefault(underlying, {})[friday] = "600.00"
-    (capture / "spot_proxy.json").write_text(
-        json.dumps(spot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    if raw_spot is not None:
+        spot_bytes = raw_spot
+        manifest_spot = {underlying: {} for underlying in underlyings}
+    elif flat_spot is not None:
+        spot_bytes = json.dumps({underlyings[0]: flat_spot}) + "\n"
+        manifest_spot = {underlying: {} for underlying in underlyings}
+    else:
+        spot_bytes = json.dumps(spot, indent=2, sort_keys=True) + "\n"
+        manifest_spot = spot
+    (capture / "spot_proxy.json").write_text(spot_bytes, encoding="utf-8")
     manifest = build_massive_capture_manifest(
         capture,
         capture_version="m4b-capture/1",
@@ -153,7 +171,7 @@ def _build_capture(
         client_stats={"requests": 1},
         masters=entries,
         bars=(),
-        spot_proxy=spot,
+        spot_proxy=manifest_spot,
         notes=(),
     )
     (capture / "capture_manifest.json").write_text(
@@ -578,6 +596,64 @@ def test_session_friday_missing_close_is_incomplete(
     assert len(census.coverage.session_spot_gaps) == 1
     assert census.values.observed_census_fact["pair_spot_missing_session"].v == 1
     assert census.values.observed_census_fact["pair_spot_missing_session"].confidence == "PARTIAL"
+
+
+# ---- (R6-P2, Codex round 6) the census shares the spot-loader contract ----------------
+
+
+def test_a_census_spot_proxy_with_infinity_refuses_exit_2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """(R6-P2 — the reproduced probe) The census path called a SEPARATE
+    loader (isc.load_spot_proxy) that parsed with `_dec` and checked only
+    `spot <= 0`, so "Infinity" LOADED (Codex's probe returned
+    Decimal('Infinity')); an explicit-date infinite value then satisfied
+    the census's presence-only check, classify_pair answered COMPLETE, and
+    a malformed capture EXITED 0. The inspector's loader now routes its
+    token parsing through the SAME validation the runtime loader and the
+    lane-2 adapter apply, so the census refuses with the capture-side
+    exit (RED before R6-P2: this census exited 0 — pairs COMPLETE)."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[SESSION_FRIDAY_A],
+        raw_spot='{"SPY": {"2025-03-07": "Infinity"}}',
+    )
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 2
+    assert "SPOT PROXY REFUSED" in capsys.readouterr().err
+    assert not out_root.exists(), "a refused census emits nothing"
+
+
+def test_a_flat_form_spot_proxy_covers_every_session_friday(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(R6-P2 — the flat form) The inspector's loader stores the documented
+    all-session FLAT form ({"SPY": "600.00"}) under the date.min sentinel,
+    but the census's presence check tested only EXACT Friday membership,
+    so a valid flat proxy marked every session Friday SPOT_MISSING_SESSION
+    and the census exited 5. The documented semantics — one declared spot
+    covers EVERY session — now hold at the census too (RED before R6-P2:
+    SPOT_MISSING_SESSION == 2 and exit 5)."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A, SESSION_FRIDAY_B])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[SESSION_FRIDAY_A, SESSION_FRIDAY_B],
+        flat_spot="600.00",
+    )
+    out_root = tmp_path / "out"
+    assert _census(monkeypatch, capture, universe, out_root) == 0
+    census = CoverageCensus.model_validate_json(
+        next(out_root.iterdir()).joinpath("census.json").read_text()
+    )
+    observed = census.coverage.observed
+    assert observed.COMPLETE == 2
+    assert observed.SPOT_MISSING_SESSION == 0
+    assert census.coverage.findings == ()
+    assert census.coverage.session_spot_gaps == ()
+    assert census.values.observed_census_fact["spot_sessions_with_close"].v == 2
 
 
 # ---- round-6 (finding 5): re-hash every capture file the census derives from ---------

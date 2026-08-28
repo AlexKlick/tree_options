@@ -67,7 +67,22 @@ def default_protocol() -> ResearchProtocol:
 
 
 def canonical_json(protocol: ResearchProtocol) -> str:
-    return json.dumps(protocol.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    dump = protocol.model_dump(mode="json")
+    # (P1-4, Codex round 1) The canonical hash represents what the yaml
+    # DECLARES. `underlying_liquidity_term` is 0.2.2 PRE-DRAFT machinery
+    # (w7a): the standing 0.2.1 yaml does not declare it, so a member that
+    # merely equals its default ("evaluated") must NOT ride the identity —
+    # the defaulted field silently re-hashed the untouched yaml and broke
+    # the bars-authority ledger binding. A DECLARED
+    # "dropped_no_equity_aggregates" (!= default) is a semantic protocol
+    # fact and DOES ride the hash by design, and at the 0.2.2 version bump
+    # the hash changes by design anyway. Surgical on purpose: a blanket
+    # exclude_defaults/exclude_unset would drop other always-defaulted
+    # members and change the hash a second time.
+    liquidity = dump.get("option_candidate_defaults", {}).get("liquidity_volume_flow")
+    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term") == "evaluated":
+        del liquidity["underlying_liquidity_term"]
+    return json.dumps(dump, sort_keys=True, separators=(",", ":"))
 
 
 def protocol_hash(protocol: ResearchProtocol) -> str:

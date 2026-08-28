@@ -169,6 +169,15 @@ class LiquidityFlowConfig(_Strict):
     flow_min_session_volume: int | None = Field(default=None, ge=1, strict=True)
     spread_term: Literal["dropped_no_two_sided_market"]
     open_interest_term: Literal["dropped_no_open_interest"]
+    # 0.2.2 PRE-DRAFT MACHINERY (theory-panel §2 P0-1(a), owner ruled
+    # 2026-08-26) — the yaml itself stays 0.2.1 this wave. The declared
+    # disposition of the underlying-liquidity term: "evaluated" is the
+    # standing default and the ONLY disposition 0.2.1 carries (the rule runs
+    # and the declared Decimal("0") sentinel fails it honestly);
+    # "dropped_no_equity_aggregates" is the ruled fallback for a lane with
+    # no equity-aggregates dollar-volume source — the rule then answers
+    # NOT_APPLICABLE with disclosure instead of failing on the sentinel.
+    underlying_liquidity_term: Literal["evaluated", "dropped_no_equity_aggregates"] = "evaluated"
     # G3 Ask B: model-implied |delta| derived from the bar VWAP under the
     # shared pricer is an ACCEPTED provenance class for the delta rule.
     abs_delta_provenance_accepted: tuple[Literal["vendor", "model-derived-from-vwap"], ...]

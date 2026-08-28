@@ -3126,6 +3126,1135 @@ MUTANTS = [
         selectors=[f"{U}/test_g4_seal.py"],
         invariant="Execute revalidates packet self-binding even after low-level model construction",
     ),
+    # ---- real-lane wave 3 (w5 holdout + w3 liquidity + w2 earnings + w7a
+    # drop + G5 null + G1 adapter, M268-M289) --------------------------------
+    dict(
+        id="M268-w5-refusal-dropped",
+        owner="test_sealed_test_sessions_are_refused_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if sealed_test_intersections:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "w5 (verdict D7.1) a fold TEST session inside the sealed window"
+            " refuses BEFORE registration: dropping the refusal lets a"
+            " mis-declared grid spend the seal, register the leaking trial,"
+            " and burn its config budget"
+        ),
+    ),
+    dict(
+        id="M269-w5-intersection-inverted",
+        owner="test_execution_tail_seal_consumption_is_tagged_not_refused",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "            for session in fold.test_sessions\n"
+            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS"
+        ),
+        replacement=(
+            "            for session in fold.test_sessions\n"
+            "            if session.isoformat() not in _SEALED_HOLDOUT_SESSIONS"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "w5 inverting the intersection refuses EVERY trial (the offender"
+            " set becomes the UNSEALED sessions): a seal the grid never"
+            " touches must never block a legitimate run"
+        ),
+    ),
+    dict(
+        id="M270-w5-full-window-overlap-only",
+        owner="test_sealed_test_sessions_are_refused_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "            for session in fold.test_sessions\n"
+            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS"
+        ),
+        replacement=(
+            "            for session in fold.test_sessions\n"
+            "            if all(s.isoformat() in _SEALED_HOLDOUT_SESSIONS for s in fold.test_sessions)"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "w5 the refusal fires on ANY sealed test session, never only when"
+            " a fold's ENTIRE test window is sealed — a partial overlap (the"
+            " realistic mis-declaration: 13 sealed Fridays inside longer"
+            " windows) must refuse exactly the same"
+        ),
+    ),
+    dict(
+        id="M271-w5-tail-disclosure-voided",
+        owner="test_execution_tail_seal_consumption_is_tagged_not_refused",
+        file="src/tree_options/trials/options_run.py",
+        anchor='                "holdout_seal_consumed_sessions": sealed_tail_sessions,',
+        replacement='                "holdout_seal_consumed_sessions": [],',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "w5 (verdict D7.2) the execution-tail consumption of the sealed"
+            " window is DISCLOSED per fold: an artifact that stops naming the"
+            " consumed sessions silently contains window-A executions"
+        ),
+    ),
+    dict(
+        id="M272-w3-dollar-volume-mean",
+        owner="test_dollar_volume_median_is_exact_over_distinct_values",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "        median = statistics.median("
+            "[rows[session][0] * rows[session][1] for session in window])"
+        ),
+        replacement=(
+            "        median = sum(rows[session][0] * rows[session][1] for session in window)"
+            " / len(window)"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 the dollar-volume stamp is the exact 20-session MEDIAN of"
+            " close*volume: a mean lets one spike day launder the liquidity"
+            " term (the 50M fixture repeats one value, where mean == median —"
+            " the owner seams the statistic with distinct values and a spike)"
+        ),
+    ),
+    dict(
+        id="M273-w3-dollar-volume-window-unbounded",
+        owner="test_dollar_volume_median_is_exact_over_distinct_values",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        start_ordinal = end_ordinal - DOLLAR_VOLUME_WINDOW_SESSIONS + 1",
+        replacement="        start_ordinal = 0",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 the median is over EXACTLY the trailing 20 calendar sessions:"
+            " anchoring at the calendar start turns it into an all-history"
+            " median that drifts with capture length and dilutes staleness"
+        ),
+    ),
+    dict(
+        id="M274-w3-dollar-volume-holes-tolerated",
+        owner="test_dollar_volume_requires_a_contiguous_20_session_window",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        window = calendar.sessions()[start_ordinal : end_ordinal + 1]",
+        replacement=(
+            "        window = tuple(\n"
+            "            s for s in calendar.sessions()[start_ordinal : end_ordinal + 1] if s in rows\n"
+            "        )"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 fail-closed on availability: a hole inside the trailing 20 (or"
+            " a history shorter than 20) must fall back to the declared"
+            " sentinel — median-ing over whatever happened to be captured"
+            " launders a partial window as a 20d median"
+        ),
+    ),
+    dict(
+        id="M275-w3-short-history-floor-gutted",
+        owner="test_dollar_volume_needs_twenty_sessions_of_calendar_history",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        if start_ordinal < 0:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 a calendar with fewer than 20 sessions of history cannot"
+            " answer a 20d median: gutting the floor lets a negative slice"
+            " index quietly window from the calendar's start"
+        ),
+    ),
+    dict(
+        id="M276-w3-non-session-fallback",
+        owner="test_dollar_volume_refuses_a_non_calendar_visible_session",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "        try:\n"
+            "            end_ordinal = calendar.ordinal(visible_session)\n"
+            "        except NotASessionError:\n"
+            "            return None"
+        ),
+        replacement=(
+            "        try:\n"
+            "            end_ordinal = calendar.ordinal(visible_session)\n"
+            "        except NotASessionError:\n"
+            "            end_ordinal = len(calendar.sessions()) - 1"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 a visible session that is not a calendar session has no"
+            " ordinal and no window: re-anchoring it to the LAST session"
+            " stamps a median over a window the caller never named"
+        ),
+    ),
+    dict(
+        id="M277-w3-loader-number-close-laundered",
+        owner="test_load_spot_proxy_v2_refuses_everything_else",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor='            close, volume = cell["close"], cell["volume"]',
+        replacement=(
+            "            close, volume = (\n"
+            '                cell["close"] if isinstance(cell["close"], str) else str(cell["close"]),\n'
+            '                cell["volume"],\n'
+            "            )"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 a JSON NUMBER close is refused outright (loads_exact hands the"
+            " loader a Decimal, and the token-form gate exists precisely"
+            " because a number means the exactness discipline was bypassed"
+            " upstream): re-stringifying the number at the cell read launders"
+            " it past the gate and into the dollar-volume term"
+        ),
+    ),
+    dict(
+        id="M278-w3-loader-volume-gate-gutted",
+        owner="test_load_spot_proxy_v2_refuses_everything_else",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        # (R4-P2 re-pin) the loader's row validation moved into the ONE
+        # shared helper `_validated_spot_v2_row` (loader + constructor copy
+        # loop) — same gate, same invariant, now guarding BOTH entry paths
+        anchor="    if type(volume) is not int or volume < 0:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 volume is a STRICT int >= 0 (bools, strings, and negatives"
+            " all refuse): gutting the gate lets true coerce to 1 and a"
+            " negative count corrupt the dollar-volume product"
+        ),
+    ),
+    dict(
+        id="M279-w3-loader-extra-key-tolerated",
+        owner="test_load_spot_proxy_v2_refuses_everything_else",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor='            if not isinstance(cell, dict) or set(cell) != {"close", "volume"}:',
+        replacement=(
+            '            if not isinstance(cell, dict) or not {"close", "volume"} <= set(cell):'
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 each session object carries EXACTLY close+volume: tolerating"
+            " extra keys lets an undeclared field ride the declared input"
+            " un-parsed and un-refused"
+        ),
+    ),
+    dict(
+        id="M280-w3-loader-non-iso-skipped",
+        owner="test_load_spot_proxy_v2_refuses_everything_else",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "            except ValueError as exc:\n"
+            "                raise MassiveOverlayError(\n"
+            '                    f"{where}: key {raw_session!r} is not an ISO date"\n'
+            "                ) from exc"
+        ),
+        replacement=("            except ValueError:\n                continue"),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w3 a non-ISO session key is REFUSED by name, never silently"
+            " skipped: dropping rows hides capture corruption and under-counts"
+            " the window the median claims to cover"
+        ),
+    ),
+    dict(
+        id="M281-w2-earnings-false-laundered",
+        owner="test_candidate_snapshot_earnings_is_the_honest_no_evidence_encoding",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        spans_earnings: AsOf | None = None",
+        replacement="        spans_earnings: AsOf | None = AsOf(value=False, available_at=received)",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w2 (theory-panel P0-2 ruling (ii)) this lane carries no earnings"
+            " calendar, so AsOf(False) LAUNDERS a vendor-stamped PASS"
+            " 'no spanning earnings' no source supports; the honest encoding"
+            " is None and the 0.2.1 rule answers NOT_EVALUABLE 'missing'"
+        ),
+    ),
+    dict(
+        id="M282-w2-earnings-true-stamped",
+        owner="test_candidate_snapshot_earnings_is_the_honest_no_evidence_encoding",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        spans_earnings: AsOf | None = None",
+        replacement="        spans_earnings: AsOf | None = AsOf(value=True, available_at=received)",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "w2 the symmetric fabrication: stamping AsOf(True) invents an"
+            " earnings-span fact with no evidence either — the snapshot must"
+            " carry no earnings claim at all on this lane"
+        ),
+    ),
+    dict(
+        id="M283-w7a-drop-incoherence-laundered",
+        owner="test_dropped_term_with_a_supplied_value_is_regime_incoherent",
+        file="src/tree_options/candidates/filters.py",
+        anchor="            and snap.underlying_20d_median_dollar_volume is not None",
+        replacement="            and snap.underlying_20d_median_dollar_volume is None",
+        selectors=[f"{U}/test_candidate_volume_flow.py"],
+        invariant=(
+            "w7a the disclosure may not paper over real inputs: a protocol"
+            " that drops the underlying-liquidity term while the snapshot"
+            " SUPPLIES a value is incoherent and answers NOT_EVALUABLE with"
+            " the value withheld — inverting the supplied-check launders the"
+            " contradiction into NOT_APPLICABLE-with-value"
+        ),
+    ),
+    dict(
+        id="M284-w7a-unknown-term-accepted",
+        owner="test_unknown_term_token_refuses_at_the_constructor",
+        file="src/tree_options/candidates/filters.py",
+        anchor=(
+            '        if underlying_liquidity_term not in {"evaluated",'
+            ' "dropped_no_equity_aggregates"}:'
+        ),
+        replacement="        if False:",
+        selectors=[f"{U}/test_candidate_volume_flow.py"],
+        invariant=(
+            "w7a the declared disposition is a two-token Literal: an unknown"
+            " underlying_liquidity_term refuses at the constructor exactly as"
+            " the regime name does — accepting it lets an unratified"
+            " disposition silently behave as 'evaluated'"
+        ),
+    ),
+    dict(
+        id="M285-g5-preimage-fields-swapped",
+        owner="test_the_preimage_contract_is_pinned",
+        file="src/tree_options/trials/null_score.py",
+        anchor=(
+            '    preimage = _UNIT.join((seed, session.isoformat(), security_id)).encode("utf-8")'
+        ),
+        replacement=(
+            '    preimage = _UNIT.join((seed, security_id, session.isoformat())).encode("utf-8")'
+        ),
+        selectors=[f"{U}/test_null_score.py"],
+        invariant=(
+            "G5 the score's preimage is sha256 over seed UNIT session ISO"
+            " UNIT security_id in THAT field order: swapping two fields"
+            " silently re-scores every cross-section while still looking"
+            " deterministic (the owner pins the digest from first principles)"
+        ),
+    ),
+    dict(
+        id="M286-g5-interval-bound-broken",
+        owner="test_scores_live_in_the_unit_interval",
+        file="src/tree_options/trials/null_score.py",
+        # (P3-7 re-pin) the mapping moved into the pure helper _unit_score
+        # (top 53 bits over 2**53); the SAME mutant — take a ninth byte —
+        # keeps the 53-bit denominator and every score lands at or above 1.0
+        anchor='    return _unit_score(int.from_bytes(digest[:8], "big"))',
+        replacement='    return _unit_score(int.from_bytes(digest[:9], "big"))',
+        selectors=[f"{U}/test_null_score.py"],
+        invariant=(
+            "G5 the leading 64 bits map onto [0, 1) exactly: taking"
+            " a ninth byte keeps the same denominator and every score lands"
+            " at or above 1.0 — the bound the quintile cut and every"
+            " comparison against score thresholds rests on"
+        ),
+    ),
+    dict(
+        id="M287-g5-seed-not-hashed",
+        owner="test_score_seed_rides_the_config_hash",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "        # G5: the null-score generator's REQUIRED seed is a first-class\n"
+            "        # config key — the declared score model's input rides the hash\n"
+            '        **({"score_seed": score_seed} if score_seed is not None else {}),'
+        ),
+        replacement=(
+            "        # G5: the null-score generator's REQUIRED seed is a first-class\n"
+            "        # config key — the declared score model's input rides the hash\n"
+            "        **{},"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "G5 the score seed is a first-class config key: dropping it from"
+            " the hashed config lets one null trial masquerade as another"
+            " configuration (the payload stamp alone discloses nothing the"
+            " registry compares)"
+        ),
+    ),
+    dict(
+        id="M288-g1-publication-wall-gutted",
+        owner="test_publication_wall_governs_visibility",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="            if self._overlay.publication_of(session) <= as_of:",
+        replacement="            if True:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "G1 the adapter's own publication gate: only sessions whose T+1"
+            " 09:00 ET wall has passed are visible — gutting it hands every"
+            " read (mark, delta, fill stream, spot) the newest session's bar"
+            " at a close(t) decision, the exact t-1 recency leak the wall"
+            " exists to prevent"
+        ),
+    ),
+    dict(
+        id="M289-g1-participation-key-collapsed",
+        owner="test_each_bar_session_carries_its_own_participation_capacity",
+        file="src/tree_options/guards/fills.py",
+        anchor="            participation_key = (selected.contract_id, selected.session)",
+        replacement="            participation_key = selected.contract_id",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "G1 (via the lane-2 adapter) participation is cumulative per"
+            " (contract, BAR SESSION): collapsing the key to the contract"
+            " alone starves every session after the first of the volume the"
+            " later bars actually traded (M176 pins the cumulative READ"
+            " within one bar; this pins the key's second dimension)"
+        ),
+    ),
+    # ---- real-lane round-1 remediation (P1-4/P1-1/P1-3/P1-2/P2-5/P2-6/P3-7,
+    # M290-M300) --------------------------------------------------------------
+    dict(
+        id="M290-p14-exclusion-dropped",
+        owner="test_repo_yaml_hashes_to_the_ledger_bound_identity",
+        file="src/tree_options/protocol/loader.py",
+        anchor=(
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
+            ' == "evaluated":'
+        ),
+        replacement=(
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
+            ' == "__never__":'
+        ),
+        selectors=[f"{U}/test_protocol_loader.py"],
+        invariant=(
+            "P1-4 the canonical hash represents what the yaml DECLARES: the"
+            " defaulted-but-undeclared underlying_liquidity_term must NOT"
+            " ride the 0.2.1 identity — stopping the exclusion re-hashes the"
+            " untouched yaml (3b0b8a85…) and breaks the ledger-bound pin"
+        ),
+    ),
+    dict(
+        id="M291-p14-exclusion-always",
+        owner="test_a_declared_dropped_term_rides_the_hash",
+        file="src/tree_options/protocol/loader.py",
+        anchor=(
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
+            ' == "evaluated":'
+        ),
+        replacement=(
+            '    if isinstance(liquidity, dict) and "underlying_liquidity_term" in liquidity:'
+        ),
+        selectors=[f"{U}/test_protocol_loader.py"],
+        invariant=(
+            "P1-4 the exclusion must not swallow a real DECLARATION: dropping"
+            " the key unconditionally makes a declared"
+            " dropped_no_equity_aggregates model hash identically to the"
+            " default — the disposition is a semantic protocol fact"
+        ),
+    ),
+    dict(
+        id="M292-p13-null-seed-refusal-dropped",
+        owner="test_null_family_without_a_seed_refuses_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if model_family == NULL_SCORE_MODEL_FAMILY and score_seed is None:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P1-3 a null-sha256 trial must DECLARE its seed: dropping the"
+            " refusal lets an undeclared seed register silently — unregistered"
+            " randomness under a deterministic-looking model family"
+        ),
+    ),
+    dict(
+        id="M293-p13-null-seed-verification-skipped",
+        owner="test_null_family_with_a_misstated_seed_refuses_by_name",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if model_family == NULL_SCORE_MODEL_FAMILY and score_seed is not None:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P1-3 the stamped seed is VERIFIED against every scored row:"
+            " skipping the recompute lets a misstated seed masquerade as the"
+            " declared score model (two T-NULL trials, one identity)"
+        ),
+    ),
+    dict(
+        id="M294-p12-exchange-window-falls-back-to-overlay",
+        owner="test_exchange_session_missing_from_every_capture_fails_closed",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        calendar = self._exchange_calendar",
+        replacement="        calendar = self._overlay.calendar",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "P1-2 the 20-session liquidity window is contiguous on the"
+            " EXCHANGE calendar: falling back to the overlay's union-of-"
+            " captures calendar lets a market session missing from every"
+            " capture self-certify as contiguity and the median PASS where"
+            " the design says fail-closed (the Jan-16 scenario)"
+        ),
+    ),
+    dict(
+        id="M295-p25-finiteness-gate-removed",
+        owner="test_non_finite_closes_refuse_cleanly",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        # (R4-P2 re-pin) the finiteness gate moved into the ONE shared
+        # helper `_validated_spot_v2_row` — same gate, same invariant, now
+        # guarding the constructor's copy loop too (the R4-P2 defect was
+        # exactly this gate existing ONLY at the file gate)
+        anchor="    if not close_value.is_finite() or close_value <= 0:",
+        replacement="    if close_value <= 0:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "P2-5 'Infinity' is POSITIVE-looking: without the finiteness"
+            " gate it loads, and an infinity median flips the liquidity rule"
+            " to PASS — fail-open on a non-finite declared input"
+        ),
+    ),
+    dict(
+        id="M296-p26-disclosure-scope-fields-voided",
+        owner="test_holdout_seal_block_states_its_declared_scope_and_the_artifacts_lane",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            '        "applied": f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})",'
+        ),
+        replacement='        "applied": "",',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P2-6 the holdout_seal block must state HOW the seal was applied"
+            " (unconditional refusal under a lane-2 DECLARED scope): voiding"
+            " the field lets a lane-1 artifact read as claiming a"
+            " lane-1-scoped seal again"
+        ),
+    ),
+    dict(
+        id="M297-p37-mapping-reverts-to-64-bit-float-division",
+        owner="test_maximal_digest_stays_strictly_below_one",
+        file="src/tree_options/trials/null_score.py",
+        anchor="    return (leading_bits >> _SHIFT) / _DENOMINATOR",
+        replacement="    return leading_bits / float(2**64)",
+        selectors=[f"{U}/test_null_score.py"],
+        invariant=(
+            "P3-7 the mapping must be STRICTLY below 1.0 for every input:"
+            " reverting to the 64-bit float division rounds the maximal"
+            " prefixes to exactly 1.0, violating the declared [0, 1)"
+        ),
+    ),
+    dict(
+        id="M298-p11-fill-engine-receives-the-grid-calendar",
+        owner="test_dual_calendar_friday_grid_daily_bars_fills",
+        file="src/tree_options/backtest/options.py",
+        anchor="        fill_calendar,",
+        replacement="        calendar,",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "P1-1 the fill engine carries the EXECUTION calendar: handing it"
+            " the Friday-only decision grid rejects the adapter's daily bar"
+            " (BAR_SESSION_NOT_IN_CALENDAR / BAR_NOT_MOST_RECENT) — the"
+            " ratified real lane cannot fill"
+        ),
+    ),
+    dict(
+        id="M299-p11-splitter-receives-the-execution-calendar",
+        owner="test_dual_calendar_ruled_geometry_yields_the_era_folds",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    splitter = WalkForwardSplitter(\n        calendar,",
+        replacement="    splitter = WalkForwardSplitter(\n        execution_calendar or calendar,",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P1-1 the DECISION GRID drives splitting: enumerating folds on"
+            " the daily execution calendar makes every fold's 13 consecutive"
+            " daily test sessions fall outside a Fridays-only world set —"
+            " the 'no folds' horn of the single-calendar defect"
+        ),
+    ),
+    dict(
+        id="M300-p11-dual-calendar-disclosure-voided",
+        owner="test_dual_calendar_ruled_geometry_yields_the_era_folds",
+        file="src/tree_options/trials/options_run.py",
+        anchor='        payload["decision_calendar"] = _calendar_descriptor(calendar)',
+        replacement='        payload["decision_calendar"] = None',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P1-1 both calendar identities are DISCLOSED in the payload: an"
+            " artifact whose decision_calendar descriptor is voided can no"
+            " longer name which grid split its folds and which calendar its"
+            " fills ran on"
+        ),
+    ),
+    # ---- remediation wave 2 (R2-P1-a/b/c + R2-P2-d + the no-op repair,
+    # M301-M306) -----------------------------------------------------------------
+    dict(
+        id="M301-r2a-constructor-gate-gutted",
+        owner="test_an_unbound_exchange_calendar_refuses_at_construction",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="            if supplied_identity != REPO_EXCHANGE_CALENDAR_CONTENT_SHA256:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R2-P1-a the exchange authority is PROVENANCE-BOUND at the"
+            " constructor: gutting the content-identity gate re-accepts ANY"
+            " SessionCalendar — including the overlay's union-of-captures"
+            " calendar, the exact self-certification vector round-1 P1-2"
+            " closed, handed back in through the parameter"
+        ),
+    ),
+    dict(
+        id="M302-r2a-factory-pin-gutted",
+        owner="test_the_bound_factory_refuses_a_checksum_consistent_doctored_fixture",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="    if bound_identity != REPO_EXCHANGE_CALENDAR_CONTENT_SHA256:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R2-P1-a the factory's pin binds SEMANTICS, not file bytes:"
+            " gutting it lets a doctored fixture whose sidecar checksum was"
+            " REGENERATED (checksum-disciplined but content-different) load"
+            " silently as the exchange authority"
+        ),
+    ),
+    dict(
+        id="M303-r2b-descriptor-content-hash-voided",
+        owner="test_a_calendar_differing_by_one_interior_session_is_a_different_trial_identity",
+        file="src/tree_options/trials/options_run.py",
+        anchor='        "content_sha256": calendar_content_sha256(calendar),',
+        replacement='        "content_sha256": "0" * 64,',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R2-P1-b the calendar descriptor's content hash is what makes"
+            " one interior session (or one early close) a trial-identity"
+            " change: voiding it to a constant returns to the lossy"
+            " {name, count, first, last} identity INV-14 refused to stamp"
+        ),
+    ),
+    dict(
+        id="M304-r2c-decision-seam-falls-back-to-overlay",
+        owner="test_decision_at_on_an_early_close_grid_session_is_the_true_close",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="        decision_at = self.decision_close(decision_session)",
+        replacement=(
+            "        decision_at = self._overlay.calendar.session_close(decision_session)"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py", f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R2-P1-c the decision instant comes from the DECISION grid"
+            " (early-close aware), never silently from the overlay's"
+            " nominal 16:00: falling back re-opens the 13:00/16:00"
+            " incoherence that made no consistent configuration exist."
+            " (R3-P1-2 re-pin: the inline R2 seam became the surface-wide"
+            " decision_close() helper, so the anchor moved to its"
+            " candidate_snapshot call site — same invariant, same owner)"
+        ),
+    ),
+    dict(
+        id="M305-r2d-dropped-term-sentinel-supplied",
+        owner="test_a_dropped_liquidity_term_supplies_absence_through_the_adapter",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="            dollar_volume: AsOf | None = None",
+        replacement=(
+            "            dollar_volume: AsOf | None = AsOf(\n"
+            "                value=self._overlay.median_dollar_volume(underlying, session),\n"
+            "                available_at=received,\n"
+            "            )"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R2-P2-d a DROPPED liquidity term supplies ABSENCE: minting the"
+            " overlay sentinel into a dropped regime makes the filter judge"
+            " the snapshot regime-incoherent (NOT_EVALUABLE) and the ruled"
+            " 0.2.2 NOT_APPLICABLE disclosure unreachable through the"
+            " adapter again"
+        ),
+    ),
+    dict(
+        id="M306-r2e-fold-test-window-end-disclosure-voided",
+        owner="test_dual_calendar_ruled_geometry_yields_the_era_folds",
+        file="src/tree_options/trials/options_run.py",
+        anchor='                    "end": test_window[-1].isoformat(),',
+        replacement='                    "end": test_window[0].isoformat(),',
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R2 fix 5 the per-fold test-window END is real disclosed"
+            " geometry (Good Friday 2026-04-03 absent makes 2026-05-01 the"
+            " 13th session): stamping start-as-end is exactly the wrong"
+            " quarter-3 end-date claim the old no-op assertion let slip"
+            " through review"
+        ),
+    ),
+    # ---- remediation wave 3 (R3-P1-1 + R3-P1-2, M307-M309) ----------------------
+    dict(
+        id="M307-r3a-calendar-class-identity-laundered",
+        owner="test_a_subclassed_exchange_calendar_with_identical_data_refuses",
+        file="src/tree_options/time/calendar.py",
+        anchor=(
+            '            "calendar_class": f"{type(calendar).__module__}'
+            '.{type(calendar).__qualname__}",'
+        ),
+        replacement=(
+            '            "calendar_class": "tree_options.time.calendar.StaticSessionCalendar",'
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py", f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R3-P1-1 the digest names WHO computed the calendar, not just"
+            " WHAT it reports: laundering the class identity to a constant"
+            " lets a StaticSessionCalendar SUBCLASS over the canonical data"
+            " — free to override ordinal()/session_close() (the Codex probe"
+            " moved a liquidity median across the $50M threshold) — retain"
+            " the pinned digest and pass the constructor gate, and lets the"
+            " same subclass ride the trial descriptors as the base class's"
+            " identity"
+        ),
+    ),
+    dict(
+        id="M308-r3b-strategy-decision-instant-falls-back-to-overlay",
+        owner="test_an_action_published_after_the_true_close_is_not_yet_known",
+        file="src/tree_options/options/strategy.py",
+        anchor=(
+            "    decision_at = surface.decision_close(decision_session)\n"
+            "    eligible = frozenset(surface.eligible_as_of(decision_session))"
+        ),
+        replacement=(
+            "    decision_at = surface.overlay.calendar.session_close(decision_session)\n"
+            "    eligible = frozenset(surface.eligible_as_of(decision_session))"
+        ),
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R3-P1-2 build_candidates derives THE decision instant from the"
+            " surface's decision_close seam: reverting to the overlay"
+            " (execution) calendar's nominal 16:00 makes a pending action"
+            " published 13:00-16:00 on an early-close session count as"
+            " KNOWN at decision, so the name is excluded on future"
+            " information (INV-02) and the audit stamp reads"
+            " excluded_pending_action instead of the honest refusal"
+        ),
+    ),
+    dict(
+        id="M309-r3c-decision-close-seam-ignores-the-decision-calendar",
+        owner="test_an_action_published_after_the_true_close_is_not_yet_known",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "        if self._decision_calendar is not None:\n"
+            "            return self._decision_calendar.session_close(decision_session)\n"
+            "        return self._overlay.calendar.session_close(decision_session)"
+        ),
+        replacement="        return self._overlay.calendar.session_close(decision_session)",
+        selectors=[f"{U}/test_vwap_pit_surface.py", f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R3-P1-2 the seam must HONOR a supplied decision calendar:"
+            " ignoring it answers the overlay's nominal 16:00 on the"
+            " early-close sessions, which both breaks the snapshot"
+            " coherence the R2 seam existed for and re-opens the"
+            " future-information exclusion in candidate construction"
+        ),
+    ),
+    # ---- remediation wave 4 (R4-P1 + R4-P2, M310-M312) ----------------------------
+    dict(
+        id="M310-r4a-unwired-surface-boundary-gutted",
+        owner="test_an_unwired_surface_refuses_a_grid_stamped_trial_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if surface_identity != stamped_identity:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R4-P1 the trial boundary BINDS the surface's disclosed"
+            " decision-calendar authority to the stamped calendar: gutting"
+            " the identity refusal lets an UNWIRED VwapPitSurface (the"
+            " overlay's nominal 16:00) run under an era-grid-stamped trial"
+            " — deciding at 16:00 on the grid's 13:00 early-close sessions,"
+            " different counters under the same declared configuration"
+            " (INV-02/INV-14 at the trial boundary)"
+        ),
+    ),
+    dict(
+        id="M311-r4b-boundary-compares-names-not-content-identity",
+        owner="test_a_subclassed_decision_calendar_is_a_different_trial_identity",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "        disclosed = surface.decision_calendar\n"
+            "        surface_identity = calendar_content_sha256(disclosed)\n"
+            "        stamped_identity = calendar_content_sha256(calendar)"
+        ),
+        replacement=(
+            "        disclosed = surface.decision_calendar\n"
+            '        surface_identity = getattr(disclosed, "name", type(disclosed).__name__)\n'
+            '        stamped_identity = getattr(calendar, "name", type(calendar).__name__)'
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R4-P1 the bind rides the COMPLETE content identity"
+            " (calendar_content_sha256), never a lossy label: the twin"
+            " decision grid — a StaticSessionCalendar SUBCLASS over the"
+            " identical committed fixture — carries the SAME name, the same"
+            " sessions and the same early closes, so a name comparison"
+            " lets the unwired surface run under a grid that differs only"
+            " in WHO computes it (the R3-P1-1 class identity), exactly the"
+            " stamping a content digest exists to refuse"
+        ),
+    ),
+    dict(
+        id="M312-r4c-spot-v2-constructor-validation-removed",
+        owner="test_the_spot_v2_constructor_refuses_invalid_rows",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor=(
+            "                rows[session] = _validated_spot_v2_row(where, session, close, volume)"
+        ),
+        replacement="                rows[session] = (close, volume)",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R4-P2 constructor validation parity: bypassing the shared row"
+            " discipline returns to the bare dict(sessions) copy — an"
+            " injected Decimal('Infinity') close is POSITIVE-looking, the"
+            " median path stamps an infinite vendor value, and the"
+            " liquidity comparison falls through to PASS (fail-open)"
+        ),
+    ),
+    dict(
+        id="M313-r5a-behavioral-equality-dropped",
+        owner="test_a_wrong_instant_surface_refuses_naming_both_instants",
+        file="src/tree_options/trials/options_run.py",
+        anchor="        if surface_close != declared_close:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R5-P1 the M310/M311 gap Codex round 5 reproduced: the digest"
+            " bind certifies the DISCLOSED calendar, but the decisions call"
+            " decision_close() — a subclass overriding only"
+            " decision_calendar passes the digest while its method answers"
+            " from another calendar. The behavioral equality is what"
+            " catches it. Owner is the WRONG-INSTANT twin (the surface"
+            " answers every decision session, at 16:00 where the stamped"
+            " grid closes 13:00): the digest passes and decision_close()"
+            " never raises, so under this mutant the lying surface"
+            " registers and runs — only the equality kills it. The"
+            " era-overlay lying probe (first decision session outside the"
+            " capture span) deliberately still refuses under this mutant"
+            " via the cannot-answer branch — the twin is the no-masking"
+            " scenario, exactly as M311's twin was"
+        ),
+    ),
+    dict(
+        id="M314-r5b-spot-finiteness-gate-removed",
+        owner="test_the_spot_constructor_refuses_non_finite_spots",
+        file="src/tree_options/data/spot_token.py",
+        anchor="    if not spot.is_finite():",
+        replacement="    if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "R5-P2 the ORDINARY spot path's shared finiteness gate"
+            " (_validated_spot_token, called at BOTH entry points —"
+            " _load_spot's file path and the adapter's constructor copy"
+            " loop): without it Decimal('Infinity') is POSITIVE-looking,"
+            " passes the <= 0 gate, loads/copies unchanged, and an"
+            " infinite spot flows into intrinsic -> the election policy"
+            " where any finite bid is below Infinity * 0.98 (a forced"
+            " early-exercise election on malformed input); NaN then"
+            " escapes as a raw decimal.InvalidOperation. Killing the"
+            " shared gate fails BOTH refusals (constructor owner here;"
+            " the loader's Infinity test fails under the same mutant —"
+            " verified in reallane-r5-mutantM314-red.log). R6-P2 moved"
+            " the gate's body to tree_options/data/spot_token.py (the ONE"
+            " contract the census scripts now share); same anchor, same"
+            " killers — massive_overlay._validated_spot_token is a thin"
+            " rebranding wrapper around it"
+        ),
+    ),
+    dict(
+        id="M315-r6a-frozen-map-bypass",
+        owner="test_a_stateful_lying_surface_runs_identically_to_the_wired_surface",
+        file="src/tree_options/trials/options_run.py",
+        anchor="            return decision_closes[decision_session]",
+        replacement=("            return underlying.decision_close(decision_session)"),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R6-P1 the frozen-map bypass: the bound decision_close falls"
+            " back to the underlying surface's OVERRIDABLE method — exactly"
+            " the pre-R6 runtime, where the boundary verified the method"
+            " once per session and the run then consulted it again. The"
+            " stateful probe (first call right, later calls 16:00) passes"
+            " every boundary guard, so under this mutant the lying trial's"
+            " candidate snapshot on the early-close Friday 2025-11-28 is"
+            " stamped 21:00Z, the filter answers decision_coherence"
+            " NOT_EVALUABLE, and the counters/artifact DIVERGE from the"
+            " correctly-wired run under one declared configuration — only"
+            " the identity assertion kills it. The bind's other seams"
+            " (unmapped-session refusal, same-class construction) are"
+            " deliberately NOT the owner: honest surfaces behave"
+            " identically under the bypass, so no other test moves."
+            " (R7-P2 re-pin: the R6 wrapper's"
+            " self._decision_closes[...] return became the factory"
+            " closure's return — same mutant, same owner, same kill; the"
+            " closure's enclosing scope carries `underlying`, which is"
+            " what the bypass replacement delegates to)"
+        ),
+    ),
+    dict(
+        id="M316-r6b-census-spot-validation-dropped",
+        owner="test_the_census_spot_loader_refuses_non_finite_spots",
+        file="scripts/inspect_structural_coverage.py",
+        anchor=(
+            "    return validated_spot_token(where, session, value, refuse=StructuralCoverageError)"
+        ),
+        replacement="    return _dec(value, where)",
+        selectors=[f"{U}/test_inspect_structural_coverage.py"],
+        invariant=(
+            "R6-P2 the census loader's validation dropped — the return to"
+            " the SECOND contract: _dec accepts 'Infinity' and the old"
+            " <= 0-only gate let POSITIVE infinity LOAD, so an"
+            " explicit-date infinite value satisfied the census's"
+            " presence-only check, classify_pair answered COMPLETE, and a"
+            " malformed capture exited 0. The shared-validator delegation"
+            " is the entire fix on this side; gutting it re-opens the"
+            " probe (the owner fails on BOTH parameters — Infinity loads,"
+            " NaN escapes as a raw decimal.InvalidOperation — and the"
+            " census-side exit-2 test fails under the same mutant)"
+        ),
+    ),
+    dict(
+        id="M317-r6c-flat-form-presence-reverted",
+        owner="test_a_flat_form_spot_proxy_covers_every_session_friday",
+        file="scripts/build_coverage_census.py",
+        anchor=(
+            "            spot_present = friday_date in spot_sessions"
+            " or SPOT_SENTINEL_SESSION in spot_sessions"
+        ),
+        replacement="            spot_present = friday_date in spot_sessions",
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "R6-P2 the flat-form presence check reverted to exact-Friday"
+            " membership only: the loader stores the documented"
+            ' all-session FLAT form ({"SPY": "600.00"}) under the'
+            " date.min sentinel, so a valid flat proxy marks every"
+            " session Friday SPOT_MISSING_SESSION and the census exits 5"
+            " — the exact reproduced defect. The sentinel disjunct is the"
+            " whole fix; the pinned-bytes and manifest guards still pass"
+            " on this capture (no masking), so only the flat-form census"
+            " kills it"
+        ),
+    ),
+    dict(
+        id="M318-r7a-freeze-rereads-the-calendar",
+        owner="test_the_freeze_consumes_the_verified_instant_never_a_third_calendar_read",
+        file="src/tree_options/trials/options_run.py",
+        anchor="        decision_closes[session] = declared_close",
+        replacement="        decision_closes[session] = calendar.session_close(session)",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R7-P1 the freeze re-reads the stamped calendar instead of"
+            " storing the value the boundary actually compared: the loop's"
+            " own declared_close is DISCARDED and a SECOND, unverified"
+            " calendar.session_close(session) rebuilds the map — the"
+            " pre-R7 construction, where a mutable calendar answering the"
+            " fixture close on a session's first two reads and 16:00"
+            " thereafter passed the entire preflight (the digest hashes"
+            " sessions + early closes + the class, never per-session"
+            " method state) while the THIRD read froze the wrong instant."
+            " The mutable-calendar probe passes every other guard — it"
+            " discloses itself, answers both preflight reads with the"
+            " fixture close, never raises — so the call count on the"
+            " pre-first-scored sessions is the ONLY thing that moves: 3"
+            " reads under the mutant, 2 under the fix (no masking)"
+        ),
+    ),
+    dict(
+        id="M319-r7b-bind-drops-the-instance-attribute-override",
+        owner="test_a_subclass_override_resolves_the_frozen_decision_close",
+        file="src/tree_options/trials/options_run.py",
+        anchor="        bound.decision_close = decision_close  # type: ignore[method-assign]",
+        replacement="        pass",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R7-P2 the bind drops the instance-attribute override: the"
+            " bound instance keeps the CLASS's decision_close, so a"
+            " subclass override of another method that internally calls"
+            " self.decision_close() reaches the UNDERLYING's overridable"
+            " method instead of the frozen map — the second horn of the"
+            " R6 wrapper's __getattr__ delegation, re-expressed on the"
+            " same-class bind (the copied __dict__ carries the liar's"
+            " shared _answered set, already consumed by the boundary's"
+            " one-per-session read, so the class method answers 16:00)."
+            " The probing surface passes every boundary guard — digest"
+            " binds, first call per session answers the stamped close —"
+            " so only the recorded instants move: every probe reads the"
+            " no-early-close twin's close, the early-close Friday"
+            " 2025-11-28 among them (no masking). (R8-P2 re-pin: the"
+            " assignment moved inside the install-verification try block,"
+            " so the anchor re-indented from 4 to 8 spaces — same mutant,"
+            " same owner, same kill; NOTE the kill is now DOUBLE-OWNED:"
+            " the read-back verification co-catches the dropped install"
+            " with its named refusal BEFORE the delegation probes can"
+            " record, so the owner fails on the refusal — the owner still"
+            " fails BY NAME, and with the verification itself removed"
+            " (M320-r8a) this mutant's kill reverts to the delegation"
+            " probes alone)"
+        ),
+    ),
+    # ---- remediation wave 8 (R8-P1 + R8-P2, M320-M322) ---------------------------
+    dict(
+        id="M320-r8a-bind-install-verification-dropped",
+        owner="test_a_setattr_swallowing_class_is_still_refused_by_the_read_back",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if bound.decision_close is not decision_close:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R8-P2 the install verification dropped: the bind assigns the"
+            " frozen closure and never reads it back, so the assignment"
+            " can land in the void and the run proceeds on the class's"
+            " overridable method — the pre-R8-P2 state. (R9-P2 re-pin:"
+            " the previous owner — the descriptor-surface test — is now"
+            " refused BEFORE the install by the MRO pre-scan"
+            " (_refuse_descriptor_seams), which MASKS the dropped"
+            " read-back for every named-descriptor shape; the new owner's"
+            " __setattr__-swallowing class is the shape the scan cannot"
+            " name, so ONLY the read-back catches it — the mutant's kill"
+            " is unique and unmasked). The swallow probe passes every"
+            " other boundary guard — no seam descriptor, no"
+            " __getattribute__, digest and behavioral equality bind — so"
+            " only the missing read-back moves: the trial registers and"
+            " completes (no masking; the setter-less and __slots__ horns"
+            " keep their own owners)"
+        ),
+    ),
+    dict(
+        id="M321-r8b-execute-fed-the-original-calendar",
+        owner="test_a_fourth_read_calendar_liar_runs_identically_to_the_honest_calendar",
+        file="src/tree_options/trials/options_run.py",
+        anchor="            calendar=bound_calendar,",
+        replacement="            calendar=calendar,",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R8-P1 the runtime calendar bind dropped: _execute receives the"
+            " caller's ORIGINAL mutable calendar instead of the bound one,"
+            " so every runtime session_close site — the filter's coherence"
+            " read, plan_orders' entry stamp, plan_exit_order, the"
+            " retry/forced/decided sell stamps, the close(t) mark, the"
+            " fill doors — re-reads the overridable method: the pre-R8"
+            " state, where the fourth-read liar (honest through read 3,"
+            " 16:00 from read 4) stamped the early-close session 2018-07-03's"
+            " entry 20:00Z under one declared configuration while the"
+            " honest run stamped the verified 17:00Z. The probe passes"
+            " every boundary guard (it discloses itself and survives the"
+            " coherence read), so only the runtime reads move: the liar's"
+            " body diverges from the honest run AND its decision sessions"
+            " carry 5-24 reads instead of exactly the preflight's two (no"
+            " masking; the cancellation-window and fail-closed tests move"
+            " under this mutant too, but the owner asserts first)"
+        ),
+    ),
+    dict(
+        id="M322-r8c-calendar-closure-unmapped-fallback-removed",
+        owner="test_the_bound_calendar_refuses_unmapped_sessions_fail_closed",
+        file="src/tree_options/trials/options_run.py",
+        anchor="            return frozen_closes[session]",
+        replacement="            return calendar.session_close(session)",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R8-P1 the calendar closure's fail-closed horn removed: the"
+            " frozen map's return delegates to the calendar's own"
+            " overridable session_close, so a session outside the frozen"
+            " set falls back to the method instead of refusing by name —"
+            " exactly the runtime read of an unverified instant the bind"
+            " exists to make impossible. The owner's honest-calendar"
+            " assertions still pass under the mutant (the delegation"
+            " answers the same values for mapped sessions); only the"
+            " unmapped horn moves: a non-session date raises"
+            " NotASessionError, never the named ValueError (no masking)"
+        ),
+    ),
+    # ---- remediation wave 9 (R9-P1 + R9-P2 + R9-P3, M323-M325) ------------------
+    dict(
+        id="M323-r9a-same-object-execution-calendar-denormalized",
+        owner="test_a_same_object_execution_calendar_is_the_none_form_at_runtime",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "            execution_calendar=None if execution_calendar is"
+            " calendar else execution_calendar,"
+        ),
+        replacement="            execution_calendar=execution_calendar,",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R9-P1 the same-object normalization dropped: _execute receives"
+            " the caller's ORIGINAL execution_calendar object even when it"
+            " IS the stamped decision calendar, so the backtest routes it"
+            " to the fill engine — the pre-R9 state, where"
+            " execution_calendar=None and execution_calendar=<the same"
+            " object> were stamped and hashed IDENTICALLY yet differed at"
+            " runtime: the None form's fills read the BOUND calendar's"
+            " frozen instants while the same-object form's doors re-read"
+            " the MUTABLE original, whose third-and-later answers (a"
+            " calendar honest through the boundary's two reads, 16:00"
+            " thereafter) killed the correctly-stamped 13:00 order as"
+            " DECISION_INSTANT_NOT_CLOSE (INV-02/INV-14 under one declared"
+            " configuration). The probe passes every boundary guard and"
+            " the R8 calendar bind alike, so only the fill engine's"
+            " unbound read moves: the same-object run's payload diverges"
+            " from the None run's and its calendar read counts exceed the"
+            " boundary's two (no masking; the dual-calendar lane keeps"
+            " its own owners)"
+        ),
+    ),
+    dict(
+        id="M324-r9b-descriptor-seam-scan-dropped",
+        owner="test_a_stateful_descriptor_surface_is_refused_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "        if seam_attr is not None and (\n"
+            '            hasattr(seam_attr, "__set__") or'
+            ' hasattr(seam_attr, "__delete__")\n'
+            "        ):"
+        ),
+        replacement="        if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R9-P2 the data-descriptor MRO pre-scan dropped: a class"
+            " defining the seam as a data descriptor reaches the install"
+            " again, and a STATEFUL descriptor — __set__ accepts the frozen"
+            " closure, __get__ returns it for exactly the FIRST read —"
+            " passes the R8 read-back (identity holds at the only read it"
+            " ever makes) and answers the unfrozen 16:00-lying callable on"
+            " every later read: the trial registers and the runtime"
+            " consumes the lying callable, the post-close order-stamping"
+            " defect reborn. The probe passes every other boundary guard"
+            " — digest binds, behavioral equality binds, the install"
+            " verification binds — so only the missing class-shape"
+            " refusal moves: the trial registers and completes (no"
+            " masking; the immediately-swallowing descriptor is co-caught"
+            " by the read-back alone, so this owner's stateful descriptor"
+            " is the UNIQUE kill for the scan — and the __getattribute__"
+            " arm of the same scan keeps its own refusal test)"
+        ),
+    ),
+    dict(
+        id="M325-r9c-dictless-bind-refusal-dropped",
+        owner="test_an_empty_slots_no_dict_calendar_refuses_by_name",
+        file="src/tree_options/trials/options_run.py",
+        anchor='    if not hasattr(bound, "__dict__"):',
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R9-P3 the no-__dict__ refusal dropped: a legal __slots__ = ()"
+            " class over no __dict__-bearing base passes the falsy"
+            " nonempty-slots scan, is constructed, and hits the"
+            " unconditional bound.__dict__.update(...) — the pre-R9"
+            " state, where the factory raised a raw AttributeError out of"
+            " the boundary instead of a named refusal. The probe is a"
+            " well-formed stateless structural calendar, so nothing else"
+            " in the boundary moves: only the refusal's absence moves —"
+            " the raw AttributeError escapes the factory, never the named"
+            " ValueError (no masking; the surface-side twin co-catches"
+            " through the shared helper)"
+        ),
+    ),
+    dict(
+        id="M326-r9d-getattribute-scan-dropped",
+        owner="test_a_getattribute_overriding_surface_is_refused_by_name",
+        file="src/tree_options/trials/options_run.py",
+        anchor=("        if getter is not None and getter is not object.__getattribute__:"),
+        replacement="        if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R9-P2 the __getattribute__ arm of the MRO pre-scan dropped: a"
+            " class overriding __getattribute__ reaches the install again,"
+            " and an instance __getattribute__ override can rewrite ANY"
+            " later attribute read — returning the installed closure for"
+            " the one verification read and something else for every"
+            " runtime read — so the freeze cannot be durably installed on"
+            " such a class, yet the bind accepts it (the pre-R9-P2 state,"
+            " where no refusal existed for the shape). The neutral-"
+            " delegation probe changes no behavior today, so nothing else"
+            " in the boundary moves: only the missing refusal moves — the"
+            " bind succeeds, DID NOT RAISE. The descriptor arm of the same"
+            " scan stays live under this mutant, so every descriptor-shape"
+            " test remains green (no masking); the calendar-side twin test"
+            " co-catches the same arm through the shared helper — the kill"
+            " is DOUBLE-OWNED, exactly as M319's was under its re-pin, and"
+            " the owner asserts first)"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.

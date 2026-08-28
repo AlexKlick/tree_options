@@ -39,6 +39,66 @@ class CalendarIntegrityError(CalendarError):
     """The calendar fixture itself is defective (checksum, ordering, shape)."""
 
 
+# Domain separation for calendar content identity (the same pattern as every
+# other hash in this repo): the digest names WHAT it is a digest of.
+CALENDAR_CONTENT_DOMAIN = b"tree-options-calendar-content-v1"
+
+
+def calendar_content_sha256(calendar: SessionCalendar) -> str:
+    """The COMPLETE content identity of a calendar (R2-P1-a/R2-P1-b, Codex
+    round 2; R3-P1-1, Codex round 3): a domain-separated sha256 over the
+    FULL session tuple, the early-close map, AND the concrete class.
+
+    The digest names WHAT and WHO. WHAT — the data — is the session tuple
+    plus the early-close map. WHO is the concrete class: for the canonical
+    classes behavior is DERIVED deterministically from that data
+    (`StaticSessionCalendar` computes `ordinal` by lookup over `sessions()`
+    and `session_close` from the early-close set; `RealSessionCalendar` and
+    its `MassiveDerivedSessionCalendar` subclass do the same), so class
+    identity + data identity is COMPLETE behavioral identity. A SUBCLASS
+    reporting the canonical data is under no such discipline: it may
+    override `ordinal()` or `session_close()` (Codex's live probe,
+    `super().ordinal(d) + 1`, moved a liquidity median across the $50M
+    protocol threshold) while the self-reported hashed payload stays
+    byte-identical — no SHA collision required. Naming the class closes
+    that: a different qualname is a different digest, whatever it reports.
+
+    The concrete API for early closes is `early_close_sessions()` — every
+    production calendar implements it (`StaticSessionCalendar`,
+    `RealSessionCalendar`, and `MassiveDerivedSessionCalendar` by
+    inheritance). A calendar that does not disclose its early-close set has
+    no COMPLETE identity: hashing it anyway is exactly the INV-14 stamping
+    this function exists to make impossible, so it refuses loudly instead.
+
+    Deliberately NOT hashed: the calendar's `name` (display metadata, not
+    semantics — two differently-named calendars over the same sessions and
+    early closes are the same authority) and the fixture's file bytes (the
+    `.sha256` sidecar pins those; content identity pins the SEMANTICS, so a
+    cosmetic re-serialization of the same calendar is not an identity fork).
+    """
+
+    sessions = calendar.sessions()
+    discloses = getattr(calendar, "early_close_sessions", None)
+    if not callable(discloses):
+        raise CalendarIntegrityError(
+            f"{type(calendar).__name__} does not disclose its early-close set"
+            " (no early_close_sessions()): its content identity would be"
+            " incomplete, and an incomplete identity must refuse — never"
+            " hash half the calendar's semantics"
+        )
+    payload = json.dumps(
+        {
+            "calendar_class": f"{type(calendar).__module__}.{type(calendar).__qualname__}",
+            "n_sessions": len(sessions),
+            "sessions": [session.isoformat() for session in sessions],
+            "early_close_sessions": [session.isoformat() for session in sorted(discloses())],
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
+    return hashlib.sha256(CALENDAR_CONTENT_DOMAIN + payload).hexdigest()
+
+
 class SessionCalendar(Protocol):
     def sessions(self) -> tuple[date, ...]: ...
     def is_session(self, d: date) -> bool: ...
@@ -120,6 +180,12 @@ class StaticSessionCalendar:
 
     def sessions(self) -> tuple[date, ...]:
         return self._sessions
+
+    def early_close_sessions(self) -> tuple[date, ...]:
+        """The fixture's early-close sessions, sorted (the disclosure
+        `calendar_content_sha256` hashes — the calendar's complete
+        semantics, never just its session list)."""
+        return tuple(sorted(self._early_closes))
 
     def is_session(self, d: date) -> bool:
         return d in self._ordinals

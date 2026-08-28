@@ -48,11 +48,13 @@ surface's own mechanisms, never fabrication:
 - derived reads live on this overlay's own surface: `derived_quote`,
   `derived_quotes_for`, `derived_stats`.
 
-CANDIDATE WIRING IS GATED. This module deliberately provides surface reads
-only — there is NO `build_derived_candidate_inputs` here, and
-`tree_options.data.massive_options.build_option_candidate_inputs` keeps
-raising unconditionally: wiring derived quotes into the M3 candidate filter
-awaits a future owner-ratified G3 amendment packet.
+CANDIDATE WIRING IS RATIFIED (protocol 0.2.0) and lives outside this
+module: `tree_options.data.massive_options.build_option_candidate_inputs`
+builds an M3 `CandidateSnapshot` from one derived cell (|delta| under the
+accepted `model-derived-from-vwap` provenance, the bar's volume, no
+fabricated bid/ask/OI), and `tree_options.data.vwap_pit_surface.VwapPitSurface`
+is the lane-2 read surface that feeds it — this module still deliberately
+provides overlay reads only.
 
 PIT semantics (identical to the Cboe lane, by reuse): an EOD bar for session
 t is usable at t+1 09:00 America/New_York — `publication_of` IS
@@ -118,6 +120,7 @@ from tree_options.data.massive_options import (
     parse_daily_bars,
 )
 from tree_options.data.real_overlay import RealSessionCalendar
+from tree_options.data.spot_token import SPOT_SENTINEL_SESSION, validated_spot_token
 from tree_options.schemas.market import VwapQuoteEvent, ZeroVolumeVwapError
 from tree_options.schemas.options import DeliverableSpec, OptionContract
 from tree_options.synth_options.generate import CENT, contract_id_of
@@ -446,6 +449,34 @@ def _load_bars(
     return series
 
 
+def _validated_spot_token(where: str, session: date, value: object) -> Decimal:
+    """(R5-P2, Codex round 5) ONE row discipline for the ORDINARY spot
+    proxy, shared by `_load_spot` (the file path) and the lane-2 adapter's
+    constructor copy loop (`VwapPitSurface(spot=...)`) — the same shape
+    `_validated_spot_v2_row` gives the v2 dollar-volume source, so an
+    injected mapping can never carry what a file cannot.
+
+    The value must be an EXACT decimal — the file's string token, parsed,
+    or an already-exact Decimal (an int stays the file path's own accepted
+    token) — and must be FINITE and positive. Finiteness comes FIRST:
+    `_dec` accepts "Infinity" and it is POSITIVE-looking, so the old
+    `<= 0`-only gate let it LOAD — an infinite spot then flows into
+    intrinsic and the election policy, where any finite bid is below
+    Infinity * 0.98 and malformed input forces an early-exercise election —
+    while "NaN" raises InvalidOperation on comparison and escaped as a raw
+    arithmetic crash. Refusals name the underlying (`where`), the session,
+    and the token.
+
+    (R6-P2, Codex round 6) the VALIDATION BODY now lives in
+    `tree_options.data.spot_token` — the ONE contract, additionally shared
+    with the census scripts (`inspect_structural_coverage` /
+    `build_coverage_census`), whose own `_dec` + `<= 0` parser was a SECOND
+    contract that accepted "Infinity". This wrapper keeps this module's own
+    error shape (`MassiveOverlayError`) and its private name (the adapter's
+    constructor imports it); it validates, never transforms."""
+    return validated_spot_token(where, session, value, refuse=MassiveOverlayError)
+
+
 def _load_spot(
     capture_dir: Path,
     lineage: list[tuple[str, str]],
@@ -454,7 +485,9 @@ def _load_spot(
 ) -> dict[str, dict[date, Decimal]]:
     """`spot_proxy.json` — DECLARED INPUT, never a vendor quote: this tier
     carries no underlying price, and the derived lane says NOT_EVALUABLE
-    (refused) without one rather than guessing a spot.
+    (refused) without one rather than guessing a spot. Per-row VALUE
+    validation is `_validated_spot_token` (R5-P2): exact, FINITE,
+    positive — an infinite spot is malformed input, never a price.
 
     Round-5 review fix (2026-08-24, finding 4): ``raw`` lets a caller hand
     in the EXACT bytes the capture-manifest verification hashed (and
@@ -483,16 +516,30 @@ def _load_spot(
                     session = date.fromisoformat(str(as_of).strip())
                 except ValueError as exc:
                     raise MassiveOverlayError(f"{where}: key {as_of!r} is not an ISO date") from exc
-                sessions[session] = _dec(spot, f"{where}[{as_of!r}]")
+                sessions[session] = _validated_spot_token(where, session, spot)
         else:
             # The flat form {"SPY": "5750.00"} declares one spot for every
-            # session; `date.min` is the sentinel the inspector uses too.
-            sessions[date.min] = _dec(value, where)
-        for session, spot in sessions.items():
-            if spot <= 0:
-                raise MassiveOverlayError(f"{where}: spot {spot} for {session} is not positive")
+            # session; the shared sentinel (date.min — R6-P2 gave it one
+            # owner, `tree_options.data.spot_token`) is the key the census
+            # reads as covering every session too.
+            sessions[SPOT_SENTINEL_SESSION] = _validated_spot_token(
+                where, SPOT_SENTINEL_SESSION, value
+            )
         proxy[underlying] = sessions
     return proxy
+
+
+def load_spot_proxy(path: Path) -> dict[str, dict[date, Decimal]]:
+    """Parse one `spot_proxy.json` (DECLARED INPUT) under exactly the
+    discipline `_load_spot` applies — exact Decimal tokens, ISO session
+    keys (or the flat one-spot-for-every-session form, keyed `date.min`),
+    FINITE positive values, fail-closed on anything else.
+
+    The lane-2 PIT adapter (`data.vwap_pit_surface.VwapPitSurface`) reads
+    the coverage-era spot proxy through this loader; the bytes it parses
+    are the caller's declared input, never a vendor quote."""
+    path = Path(path)
+    return _load_spot(path.parent, [], raw=path.read_bytes())
 
 
 # ---- contract master construction --------------------------------------------
@@ -1041,7 +1088,11 @@ class MassiveDerivedOverlay:
         signal, so the unmodified `OptionPitSurface.candidate_snapshot` answers
         its documented None-inputs / NOT_EVALUABLE path (see the bid/ask
         finding in the module docstring). Derived reads live at
-        `derived_quote`; candidate wiring awaits the G3 amendment packet."""
+        `derived_quote`; candidate wiring is RATIFIED (protocol 0.2.0) and
+        lives outside this module — `build_option_candidate_inputs` builds
+        the snapshot from a derived cell and
+        `data.vwap_pit_surface.VwapPitSurface` is the lane-2 read surface
+        that supplies it — so no chain entry is ever fabricated here."""
         raise ValueError(
             f"no M3 chain entry for {contract_id} on {session}:"
             f" {MASSIVE_DERIVED_PROVIDER} carries no bid/ask and no open interest —"
@@ -1173,5 +1224,6 @@ __all__ = [
     "MassiveExpiryMeta",
     "MassiveOverlayError",
     "load_derived_surface",
+    "load_spot_proxy",
     "vwap_quote_event",
 ]

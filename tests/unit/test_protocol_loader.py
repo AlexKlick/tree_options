@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from decimal import Decimal
+from pathlib import Path
 
 import pydantic
 import pytest
@@ -120,3 +121,74 @@ class TestProtocolHash:
         inv2 = protocol.invariants[1]
         assert "available_at" in inv2.statement
         assert "decision_at" in inv2.statement
+
+
+class TestProtocolIdentityPin:
+    """(P1-4, Codex round 1) The absolute canonical-hash pin.
+
+    w7a added a DEFAULTED schema member `underlying_liquidity_term` and the
+    untouched 0.2.1 yaml silently re-hashed — 1,751 green tests never noticed
+    because nothing pinned the ABSOLUTE value. The canonical hash represents
+    what the yaml DECLARES: a defaulted-but-undeclared member is 0.2.2
+    pre-draft machinery and must not ride the 0.2.1 identity."""
+
+    # the ledger-bound identity (bars-authority binding + every cross-branch
+    # trial identity); verified by execution on this branch before the pin
+    LEDGER_BOUND_PROTOCOL_SHA256 = (
+        "cfafc884d9c45d805f6d6028d6991daf9e2e1751d91823306d780506bbaffeb7"
+    )
+
+    def test_repo_yaml_hashes_to_the_ledger_bound_identity(self):
+        """The absolute pin: the gate can never lose identity stability
+        silently again (RED before P1-4: the defaulted member rode the dump
+        and the same expression yielded 3b0b8a85…)."""
+        from tree_options.protocol.loader import load_protocol, protocol_hash
+
+        assert (
+            protocol_hash(load_protocol(Path("research_protocol.yaml")))
+            == self.LEDGER_BOUND_PROTOCOL_SHA256
+        )
+
+    def test_a_declared_dropped_term_rides_the_hash(self, protocol_path):
+        """The exclusion must not swallow a real declaration: a yaml that
+        DECLARES `dropped_no_equity_aggregates` (!= the default) hashes
+        DIFFERENTLY from the pin — the disposition is a semantic protocol
+        fact, not pre-draft machinery."""
+        from tree_options.protocol.loader import load_protocol, protocol_hash
+
+        base = load_protocol(protocol_path)
+        lf = base.option_candidate_defaults.liquidity_volume_flow
+        assert lf is not None
+        declared = lf.model_copy(
+            update={"underlying_liquidity_term": "dropped_no_equity_aggregates"}
+        )
+        mutated = base.model_copy(
+            update={
+                "option_candidate_defaults": base.option_candidate_defaults.model_copy(
+                    update={"liquidity_volume_flow": declared}
+                )
+            }
+        )
+        assert protocol_hash(mutated) != self.LEDGER_BOUND_PROTOCOL_SHA256
+
+    def test_undeclared_and_defaulted_models_hash_identically(self, protocol_path):
+        """Cross-branch identity: a model constructed WITHOUT the field (the
+        0.2.1 yaml) and one WITH the default stamped explicitly produce the
+        SAME canonical bytes — a default is not a declaration."""
+        from tree_options.protocol.loader import canonical_json, load_protocol
+
+        undeclared = load_protocol(protocol_path)
+        lf = undeclared.option_candidate_defaults.liquidity_volume_flow
+        assert lf is not None
+        defaulted = undeclared.model_copy(
+            update={
+                "option_candidate_defaults": undeclared.option_candidate_defaults.model_copy(
+                    update={
+                        "liquidity_volume_flow": lf.model_copy(
+                            update={"underlying_liquidity_term": "evaluated"}
+                        )
+                    }
+                )
+            }
+        )
+        assert canonical_json(undeclared) == canonical_json(defaulted)

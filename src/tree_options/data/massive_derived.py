@@ -29,10 +29,14 @@ per-underlying rate mechanism in the synthetic world, so none is
 mirrored here. The `version` string lets every derived output name the
 assumptions it was derived under.
 
-NOT WIRED INTO THE FILTER. Nothing here feeds the M3 candidate filter:
-`massive_options.build_option_candidate_inputs` keeps raising
-unconditionally, and lifting that gate is reserved for a future
-owner-ratified amendment packet. These are pure functions over scalars.
+NOT WIRED INTO THE FILTER DIRECTLY. The candidate seam this module feeds
+is LANDED (protocol 0.2.0): `massive_options.build_option_candidate_inputs`
+builds an M3 `CandidateSnapshot` whose |delta| comes from
+`derived_abs_delta` under the ratified `model-derived-from-vwap`
+provenance, and `data.vwap_pit_surface.VwapPitSurface` is the lane-2 read
+surface that supplies the cells. This module itself still contributes
+pure functions over scalars — it reads no overlay, no capture, and no
+filter input of its own.
 """
 
 from __future__ import annotations

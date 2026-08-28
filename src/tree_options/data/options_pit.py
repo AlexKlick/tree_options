@@ -27,6 +27,7 @@ from tree_options.synth_options import (
     OptionDayFile,
     contract_id_of,
 )
+from tree_options.time.calendar import SessionCalendar
 
 
 class NoOptionFileError(RuntimeError):
@@ -166,6 +167,35 @@ class OptionPitSurface:
     def contract(self, contract_id: str) -> OptionContract:
         return self._overlay.contract(contract_id)
 
+    @property
+    def decision_calendar(self) -> SessionCalendar:
+        """(R4-P1, Codex round 4) THE calendar this surface's decision-side
+        authority (`decision_close`) answers from — the overlay's own
+        calendar here. For the lane-1/synthetic worlds that is the one
+        calendar there is, so a trial stamped on it sees DIGEST IDENTITY at
+        the runner's boundary, byte-identically. `VwapPitSurface` overrides
+        this to disclose the DECISION-grid calendar it was constructed with
+        — or, unwired, the overlay calendar its 16:00 fallback actually
+        answers from: the surface's effective authority, now visible to the
+        boundary that binds it (a surface that cannot disclose it cannot be
+        bound, and refuses)."""
+        return self._overlay.calendar
+
+    def decision_close(self, decision_session: date) -> datetime:
+        """(R3-P1-2, Codex round 3) THE decision-instant authority on the
+        surface: the close of the decision session every decision-side read
+        in candidate construction is anchored to (`build_candidates`'s
+        pending-action visibility, the expiry/strike ladder reads, the
+        sizing entry read, and `candidate_snapshot`'s stamp).
+
+        The base surface answers from its OWN calendar — for the
+        lane-1/synthetic worlds that is the one calendar there is, so this
+        is byte-identically today's `overlay.calendar.session_close`.
+        `VwapPitSurface` overrides it when the constructor carries a
+        DECISION-grid calendar (early-close aware); one authority, not two
+        seams that can disagree."""
+        return self._overlay.calendar.session_close(decision_session)
+
     def candidate_snapshot(
         self, contract: OptionContract, decision_session: date
     ) -> CandidateSnapshot:
@@ -173,7 +203,7 @@ class OptionPitSurface:
         instant. A contract absent from that file carries None inputs —
         the filter's NOT_EVALUABLE path, never a silent drop. Builds ONE
         chain entry, never the full file."""
-        decision_at = self._overlay.calendar.session_close(decision_session)
+        decision_at = self.decision_close(decision_session)
         underlying = contract.underlying_security_id
         session = self.visible_file_session(underlying, decision_at)
         if session is None:
@@ -223,7 +253,9 @@ class OptionPitSurface:
     def eligible_as_of(self, session: date) -> tuple[str, ...]:
         """The option-eligible cross-section for a decision session: the
         eligible set of the session whose file the decision sees (the
-        file(t-1) eligible set for a close(t) decision)."""
+        file(t-1) eligible set for a close(t) decision). A publication-wall
+        sweep, so it keeps the overlay calendar's close rather than the
+        `decision_close` seam (see `VwapPitSurface.eligible_as_of`)."""
         decision_at = self._overlay.calendar.session_close(session)
         for candidate_session in sorted(self._overlay.world_sessions(), reverse=True):
             if not self._overlay.has_any_file(candidate_session):

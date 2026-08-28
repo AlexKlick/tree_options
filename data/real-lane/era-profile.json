@@ -1,0 +1,51 @@
+{
+  "content_sha256": "ecd9ed1f5cecf0f01babe40fc0a103c69145435775c748d492c09013a4cb5ef2",
+  "decided": "2026-08-26T00:00:00Z",
+  "embargo_deviation": {
+    "era_embargo_sessions": 2,
+    "priced_alternative": "E5 costs the third fold: mt24/val6 yields 3 folds ending 2026-04-17 (verdict D4); mt29/val6 ends 2026-03-20 and mt27/val6 gives full tail isolation at fold-0 fit 6 (thin)",
+    "protocol_embargo_sessions": 5,
+    "protocol_gap_sessions_at_e5": 10,
+    "rides": "the trial config hash (OptionsSplitOverride) + this record"
+  },
+  "geometry": {
+    "embargo_sessions": 2,
+    "label_horizon_sessions": 5,
+    "min_train_sessions": 34,
+    "roll_sessions": 13,
+    "test_sessions": 13,
+    "val_sessions": 6
+  },
+  "holdout_boundary_rule": {
+    "decision_sessions": "excluded_refused_before_registration",
+    "execution_tail": "tagged_and_counted_never_refused",
+    "sealed_window_id": "final-holdout-window-a"
+  },
+  "owner_decision_id": "m4-real-lane-theory-panel-ruling-2026-08-26",
+  "profile_id": "real-lane-era-1",
+  "ruling_citation": "~/documents/tree_options-logs/theory-panel-verdict.md \u2014 \u00a72 P0-1/P0-2, \u00a73 checklist, D3, D4, D6, D7 (owner ruling 2026-08-26)",
+  "schema_version": "m4-real-lane-era-profile/1",
+  "scope": "lane-2 evaluation folds (massive-derived-free/1)",
+  "seal_consumption_disclosure": {
+    "deepest_execution_mark_session": "2026-06-26",
+    "last_test_session": "2026-05-01",
+    "payload_seat": "holdout_seal",
+    "window_a_decision_sessions": 0
+  },
+  "units": {
+    "arm_a_hold_weeks": 4,
+    "cohort_stride_sessions": 4,
+    "decision_grid": "friday_only_grid_derived_from_the_nyse_fixture",
+    "embargo_unit": "grid_fridays",
+    "end_buffer_sessions": 6,
+    "end_buffer_unit": "grid_fridays",
+    "label_horizon_sessions": 5,
+    "label_horizon_unit": "grid_fridays",
+    "mom_20_warmup_grid_indices": 21,
+    "momentum_windows_weeks": [
+      1,
+      5,
+      20
+    ]
+  }
+}
