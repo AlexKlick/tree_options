@@ -4043,8 +4043,8 @@ MUTANTS = [
         id="M319-r7b-bind-drops-the-instance-attribute-override",
         owner="test_a_subclass_override_resolves_the_frozen_decision_close",
         file="src/tree_options/trials/options_run.py",
-        anchor="    bound.decision_close = decision_close  # type: ignore[method-assign]",
-        replacement="    pass",
+        anchor="        bound.decision_close = decision_close  # type: ignore[method-assign]",
+        replacement="        pass",
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
             "R7-P2 the bind drops the instance-attribute override: the"
@@ -4060,7 +4060,86 @@ MUTANTS = [
             " binds, first call per session answers the stamped close —"
             " so only the recorded instants move: every probe reads the"
             " no-early-close twin's close, the early-close Friday"
-            " 2025-11-28 among them (no masking)"
+            " 2025-11-28 among them (no masking). (R8-P2 re-pin: the"
+            " assignment moved inside the install-verification try block,"
+            " so the anchor re-indented from 4 to 8 spaces — same mutant,"
+            " same owner, same kill; NOTE the kill is now DOUBLE-OWNED:"
+            " the read-back verification co-catches the dropped install"
+            " with its named refusal BEFORE the delegation probes can"
+            " record, so the owner fails on the refusal — the owner still"
+            " fails BY NAME, and with the verification itself removed"
+            " (M320-r8a) this mutant's kill reverts to the delegation"
+            " probes alone)"
+        ),
+    ),
+    # ---- remediation wave 8 (R8-P1 + R8-P2, M320-M322) ---------------------------
+    dict(
+        id="M320-r8a-bind-install-verification-dropped",
+        owner="test_a_descriptor_surface_is_refused_before_registration",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if bound.decision_close is not decision_close:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R8-P2 the install verification dropped: the bind assigns the"
+            " frozen closure and never reads it back, so a class-level"
+            " DATA DESCRIPTOR (a callable-returning property with a no-op"
+            " setter) swallows the write and installs NOTHING — the"
+            " pre-R8-P2 state, where the descriptor subclass passed the"
+            " entire preflight (the property's first call per session"
+            " answers the stamped close) and the run proceeded silently on"
+            " the unfrozen property, the runtime's later calls answering"
+            " 16:00. The descriptor probe passes every other boundary"
+            " guard — digest binds, behavioral equality binds — so only"
+            " the missing refusal moves: the trial registers and"
+            " completes (no masking; the setter-less and __slots__ horns"
+            " keep their own owners)"
+        ),
+    ),
+    dict(
+        id="M321-r8b-execute-fed-the-original-calendar",
+        owner="test_a_fourth_read_calendar_liar_runs_identically_to_the_honest_calendar",
+        file="src/tree_options/trials/options_run.py",
+        anchor="            calendar=bound_calendar,",
+        replacement="            calendar=calendar,",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R8-P1 the runtime calendar bind dropped: _execute receives the"
+            " caller's ORIGINAL mutable calendar instead of the bound one,"
+            " so every runtime session_close site — the filter's coherence"
+            " read, plan_orders' entry stamp, plan_exit_order, the"
+            " retry/forced/decided sell stamps, the close(t) mark, the"
+            " fill doors — re-reads the overridable method: the pre-R8"
+            " state, where the fourth-read liar (honest through read 3,"
+            " 16:00 from read 4) stamped the early-close session 2018-07-03's"
+            " entry 20:00Z under one declared configuration while the"
+            " honest run stamped the verified 17:00Z. The probe passes"
+            " every boundary guard (it discloses itself and survives the"
+            " coherence read), so only the runtime reads move: the liar's"
+            " body diverges from the honest run AND its decision sessions"
+            " carry 5-24 reads instead of exactly the preflight's two (no"
+            " masking; the cancellation-window and fail-closed tests move"
+            " under this mutant too, but the owner asserts first)"
+        ),
+    ),
+    dict(
+        id="M322-r8c-calendar-closure-unmapped-fallback-removed",
+        owner="test_the_bound_calendar_refuses_unmapped_sessions_fail_closed",
+        file="src/tree_options/trials/options_run.py",
+        anchor="            return frozen_closes[session]",
+        replacement="            return calendar.session_close(session)",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "R8-P1 the calendar closure's fail-closed horn removed: the"
+            " frozen map's return delegates to the calendar's own"
+            " overridable session_close, so a session outside the frozen"
+            " set falls back to the method instead of refusing by name —"
+            " exactly the runtime read of an unverified instant the bind"
+            " exists to make impossible. The owner's honest-calendar"
+            " assertions still pass under the mutant (the delegation"
+            " answers the same values for mapped sessions); only the"
+            " unmapped horn moves: a non-session date raises"
+            " NotASessionError, never the named ValueError (no masking)"
         ),
     ),
 ]

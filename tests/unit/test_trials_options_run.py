@@ -2591,7 +2591,14 @@ def test_a_fourth_read_calendar_liar_runs_identically_to_the_honest_calendar(
         world, protocol, tmp_path, tag="r8_fourthread", decision_calendar=liar, surface=surface
     )
     assert honest["stamp"]["config_hash"] == lying["stamp"]["config_hash"]
-    assert json.dumps(honest, sort_keys=True) == json.dumps(lying, sort_keys=True)
+    # compared per-key with a SHORT failure message: a bare equality on the
+    # full serialized bodies makes pytest's failure explanation diff two
+    # multi-megabyte strings — minutes of rendering that turns a fast kill
+    # into a harness timeout
+    honest_canon = {k: json.dumps(v, sort_keys=True) for k, v in honest.items()}
+    lying_canon = {k: json.dumps(v, sort_keys=True) for k, v in lying.items()}
+    diverging = [k for k in honest_canon if honest_canon[k] != lying_canon.get(k)]
+    assert not diverging, f"the liar's artifact diverges from the honest run in: {diverging}"
     # the fill decided on the early-close session is stamped the VERIFIED
     # close — 13:00 ET (17:00Z), never the twin's 16:00 ET
     early_fills = [
