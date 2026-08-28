@@ -4182,9 +4182,10 @@ MUTANTS = [
         owner="test_a_stateful_descriptor_surface_is_refused_before_registration",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            "        if seam_attr is not None and (\n"
-            '            hasattr(seam_attr, "__set__") or'
-            ' hasattr(seam_attr, "__delete__")\n'
+            "        if seam_attr is not None and any(\n"
+            '            "__set__" in seam_type.__dict__ or'
+            ' "__delete__" in seam_type.__dict__\n'
+            "            for seam_type in type(seam_attr).__mro__\n"
             "        ):"
         ),
         replacement="        if False:",
@@ -4205,7 +4206,13 @@ MUTANTS = [
             " masking; the immediately-swallowing descriptor is co-caught"
             " by the read-back alone, so this owner's stateful descriptor"
             " is the UNIQUE kill for the scan — and the __getattribute__"
-            " arm of the same scan keeps its own refusal test)"
+            " arm of the same scan keeps its own refusal test)."
+            " (round-10 debt-f re-pin: the anchor moved with the code it"
+            " pins — the scan now classifies by walking"
+            " type(seam_attr).__mro__ class dicts instead of hasattr —"
+            " the arm's owner and meaning are unchanged, and the"
+            " regression to the OLD classification is its own mutant,"
+            " M329-r10f)"
         ),
     ),
     dict(
@@ -4253,6 +4260,103 @@ MUTANTS = [
             " co-catches the same arm through the shared helper — the kill"
             " is DOUBLE-OWNED, exactly as M319's was under its re-pin, and"
             " the owner asserts first)"
+        ),
+    ),
+    # ---- known-debt wave 10 (round-10 debt-e + debt-f + debt-g,
+    # M327-M329, plus the M324 re-pin above) -----------------------------------
+    dict(
+        id="M327-r10e-class-authority-gate-dropped",
+        owner="test_a_digest_spoofing_subclass_is_refused_by_the_class_authority",
+        file="src/tree_options/data/vwap_pit_surface.py",
+        anchor="            if type(exchange_calendar) is not StaticSessionCalendar:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_vwap_pit_surface.py"],
+        invariant=(
+            "round-10 debt-e the CLASS authority dropped: the pinned"
+            " digest binds the concrete class only through __module__ +"
+            " __qualname__ STRINGS, both plain assignable class"
+            " attributes, so a subclass that reassigns them to the"
+            " canonical values, inherits the committed fixture's sessions"
+            " and early closes, and overrides ordinal() FORGES"
+            " REPO_EXCHANGE_CALENDAR_CONTENT_SHA256 with no SHA collision"
+            " — the content authority ACCEPTS it, and the shifted"
+            " 20-session window answers a future-including liquidity"
+            " median at the visible session's received time (INV-02/"
+            " INV-14 under the pinned identity). The probe passes every"
+            " other guard the gate owns (its digest EQUALS the pin —"
+            " asserted in-test, so the surviving digest arm cannot catch"
+            " it and M301/M307 keep their own owners), and the honest"
+            " repo path constructs the BASE class, so only the missing"
+            " identity check moves: the forged twin is ACCEPTED, DID NOT"
+            " RAISE (no masking; every content-different calendar is"
+            " still refused by the digest under this mutant)"
+        ),
+    ),
+    dict(
+        id="M328-r10g-dict-type-guard-dropped",
+        owner="test_a_noop_dict_property_surface_refuses_by_name",
+        file="src/tree_options/trials/options_run.py",
+        anchor="    if type(bound.__dict__) is not dict:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "round-10 debt-g the dict-type requirement dropped: the R9-P3"
+            " refusal proved only PRESENCE (hasattr), so a class-level"
+            " __dict__ property returning a mapping passes it — the"
+            " pre-debt-g state. The owner's NO-OP mapping silently drops"
+            " the copied state while the install still lands in the real"
+            " per-instance storage (attribute writes never consult the"
+            " property), the one-time read-back holds identity, and the"
+            " bind returns a state-stripped instance — accepted"
+            " silently, failing only later, after registration: the bind"
+            " succeeds, DID NOT RAISE. The raising-horn twin (the"
+            " calendar-side property whose update throws) is co-caught"
+            " under this mutant by the guarded copy's DIFFERENT named"
+            " refusal — the kill is DOUBLE-OWNED, documented exactly as"
+            " M326's, and the owner asserts first (no masking: the"
+            " empty-slots and nonempty-slots refusals keep their own"
+            " owners, M325's anchor line untouched above the guard)"
+        ),
+    ),
+    dict(
+        id="M329-r10f-descriptor-scan-reverted-to-hasattr",
+        owner="test_an_introspection_hiding_descriptor_is_refused_by_name",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "        if seam_attr is not None and any(\n"
+            '            "__set__" in seam_type.__dict__ or'
+            ' "__delete__" in seam_type.__dict__\n'
+            "            for seam_type in type(seam_attr).__mro__\n"
+            "        ):"
+        ),
+        replacement=(
+            "        if seam_attr is not None and (\n"
+            '            hasattr(seam_attr, "__set__") or'
+            ' hasattr(seam_attr, "__delete__")\n'
+            "        ):"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "round-10 debt-f the class-dict walk reverted to hasattr"
+            " introspection: hasattr consults the descriptor OBJECT's own"
+            " overridable __getattribute__, so a hostile descriptor class"
+            " that DEFINES __set__ (a real data descriptor under"
+            " CPython's protocol, which consults the type's class dicts)"
+            " while raising AttributeError for '__set__'/'__delete__' on"
+            " introspection hides from the scan, reaches the install,"
+            " accepts the frozen closure in __set__, returns it for the"
+            " one-time verification read, and answers the unfrozen"
+            " 16:00-lying callable on every later read — the trial"
+            " registers and the runtime consumes the lying callable. The"
+            " probe passes every other boundary guard AND the R8 read-"
+            " back (its __get__ holds identity for exactly the first"
+            " post-install read — proven in-test on the spent twin), so"
+            " only the classification moves: the bind succeeds, DID NOT"
+            " RAISE (no masking: every hasattr-VISIBLE descriptor shape —"
+            " the property, the temporal-evasion descriptor — is still"
+            " refused under the reverted scan, so M324's owner and every"
+            " other descriptor-shape test stay green under this mutant;"
+            " the __getattribute__ arm is untouched)"
         ),
     ),
 ]
@@ -4375,7 +4479,26 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--markdown", type=Path, default=None)
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        default=None,
+        metavar="ID",
+        help=(
+            "run only the named mutant ids (debt-lane evidence for new"
+            " mutants and re-pins; the full 314-mutant run stays the"
+            " m0_gate's authority)"
+        ),
+    )
     args = parser.parse_args()
+    selected = list(MUTANTS)
+    if args.only is not None:
+        wanted = set(args.only)
+        known = {m["id"] for m in MUTANTS}
+        unknown = sorted(wanted - known)
+        if unknown:
+            parser.error(f"unknown mutant ids: {unknown}")
+        selected = [m for m in MUTANTS if m["id"] in wanted]
 
     # The disposable copy must honor the same host rule the seal/bars
     # authority ledgers enforce mechanically: nothing repo-authoritative
@@ -4428,7 +4551,7 @@ def main() -> int:
         subprocess.run(
             ["uv", "sync", "--frozen"], cwd=wt, capture_output=True, timeout=600, check=True
         )
-        results = [run_mutant(wt, m) for m in MUTANTS]
+        results = [run_mutant(wt, m) for m in selected]
         # Restoration proof: full suite in the (restored) worktree. Failures
         # print their traceback tail AND keep the worktree for forensics —
         # a restoration failure that cannot be reproduced in a clean copy
