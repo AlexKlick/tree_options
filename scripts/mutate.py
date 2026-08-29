@@ -4475,7 +4475,7 @@ MUTANTS = [
     ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
     dict(
-        id="M333-spotv2-close-through-float",
+        id="M336-spotv2-close-through-float",
         owner="test_vendor_close_tokens_round_trip_byte_exact",
         file="scripts/capture_spot_proxy_v2.py",
         anchor=("    if isinstance(raw_c, Decimal):\n        exact_close = raw_c"),
@@ -4492,7 +4492,7 @@ MUTANTS = [
         ),
     ),
     dict(
-        id="M334-spotv2-vendor-gap-silenced",
+        id="M337-spotv2-vendor-gap-silenced",
         owner="test_a_vendor_gap_fails_the_run_naming_the_session",
         file="scripts/capture_spot_proxy_v2.py",
         anchor="        if missing:",
@@ -4632,8 +4632,8 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 322-mutant run stays the"
-            " m0_gate's authority)"
+            " mutants and re-pins; the full 325-mutant run stays the"
+            " m0_gate's authority — 323 through PR #21 + M336/M337 here)"
         ),
     )
     args = parser.parse_args()
