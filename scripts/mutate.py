@@ -4359,6 +4359,51 @@ MUTANTS = [
             " the __getattribute__ arm is untouched)"
         ),
     ),
+    dict(
+        id="M330-022-earnings-version-gate-dropped",
+        owner="test_the_version_gate_keeps_021_refusals_under_a_disclosed_absence_declaration",
+        file="src/tree_options/candidates/filters.py",
+        anchor="protocol_version_at_least(protocol.meta.protocol_version, 0, 2, 2)",
+        replacement="True",
+        selectors=[f"{U}/test_candidate_filters.py"],
+        invariant=(
+            "022-B the earnings disclosed-absence pass is VERSION-GATED: the"
+            " same declared `disclosed_absence` on a protocol still stamped"
+            " 0.2.1 must keep the honest dark lane (NOT_EVALUABLE) — the"
+            " version bump is what turns the lane on, and dropping the gate"
+            " activates the 0.2.2 pass one version early"
+        ),
+    ),
+    dict(
+        id="M331-022-disclosed-row-dropped",
+        owner="test_a_022_declared_run_passes_candidates_that_021_refuses",
+        file="src/tree_options/candidates/filters.py",
+        anchor="elif snap.spans_earnings is None and self.earnings_disclosed_absence:",
+        replacement="elif False:",
+        selectors=[f"{U}/test_candidate_filters.py"],
+        invariant=(
+            "022-B the disclosed-absence NOT_APPLICABLE row is EMITTED: a"
+            " 0.2.2-declared pass over a missing spans_earnings without the"
+            " counted audit row is a silent pass — exactly what the"
+            " declaration refuses to be"
+        ),
+    ),
+    dict(
+        id="M332-022-fill-door-decision-close-bypass",
+        owner="test_dual_calendar_early_close_decision_fills_at_the_verified_close",
+        file="src/tree_options/guards/fills.py",
+        anchor="if self.decision_closes is not None:",
+        replacement="if False:",
+        selectors=[f"{U}/test_backtest_options.py"],
+        invariant=(
+            "022-C the fill door's DECISION-side comparison consumes the"
+            " frozen verified decision closes on the dual-calendar lane:"
+            " bypassing the seam re-prices the decision instant against the"
+            " execution calendar's nominal 16:00 and rejects the"
+            " correctly-stamped 13:00 early-close order"
+            " (DECISION_INSTANT_NOT_CLOSE)"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.

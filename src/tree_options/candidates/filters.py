@@ -112,9 +112,8 @@ def _earnings_disclosed_absence_declared(protocol: ResearchProtocol) -> bool:
     the lane on), and a 0.2.2 protocol still declaring "evaluated" refuses
     because nothing was declared absent. Both protocol factories compute the
     flag through this one function so the gate cannot drift between regimes."""
-    return protocol.option_candidate_defaults.earnings_evaluation == "disclosed_absence" and (
-        protocol_version_at_least(protocol.meta.protocol_version, 0, 2, 2)
-    )
+    declared = protocol.option_candidate_defaults.earnings_evaluation == "disclosed_absence"
+    return declared and protocol_version_at_least(protocol.meta.protocol_version, 0, 2, 2)
 
 
 class CandidateFilter:
