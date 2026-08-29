@@ -2898,11 +2898,225 @@ def test_a_slotted_calendar_class_is_refused_by_name(era_world) -> None:
         _bind_decision_calendar(slotted, {first: grid.session_close(first)})
 
 
+# ---- (post-022-C, M323's re-seam) the ERA-world same-object twin ---------------
+#
+# 022-C moved the fill door's DECISION-side comparison onto the threaded
+# frozen `decision_closes` whenever an execution calendar is supplied, so
+# the SYNTHETIC world's same-object kill (the door re-reading the mutable
+# original) no longer moves: this file's fixture world quotes TWO-SIDED
+# events, and the engine's only remaining execution-calendar `session_close`
+# read is the vwap BAR_SESSION_STAMP_MISMATCH line, which never executes
+# without vwap quotes. The era world supplies them — but its stock capture
+# is DAILY, and a grid-calendar fill engine refuses every Thursday bar
+# (BAR_SESSION_NOT_IN_CALENDAR) before any stamp read. The fixture below
+# is the era capture rebuilt with FRIDAY-ONLY bars (and volume big enough
+# that the volume-flow and participation rules pass), so a fill executing
+# at grid Friday D consumes the PREVIOUS GRID FRIDAY's vwap bar and the
+# stamp line reads the engine calendar's close of that bar's session.
+
+
+@pytest.fixture(scope="module")
+def era_friday_world(tmp_path_factory: pytest.TempPathFactory):
+    """`era_world`'s vendor shape with FRIDAY-ONLY bars and 1e6 volume: the
+    overlay calendar aligns with the Friday decision grid, so a fill engine
+    running on the grid consumes grid-Friday vwap bars (the stock daily
+    capture would refuse every intervening Thursday bar before the stamp
+    seam). Each contract's rows run through its expiry so late exits stay
+    inside the listing window."""
+    from decimal import Decimal as _Decimal
+
+    from tests.fixtures.massive_structural_sample import (
+        bar,
+        bars_payload,
+        contract_result,
+        contracts_payload,
+    )
+    from tests.unit.test_vwap_pit_surface import _exchange_calendar, _t
+    from tree_options.data.massive_overlay import load_derived_surface
+    from tree_options.synth_options.greeks import bs_price
+
+    grid = _friday_grid()
+    exchange = _exchange_calendar()
+    capture = tmp_path_factory.mktemp("erafri") / "capture"
+    masters = capture / "masters"
+    masters.mkdir(parents=True)
+    first_bar = min(span[0] for _e, span in _ERA_CONTRACTS)
+    (masters / f"spy_{first_bar:%Y-%m-%d}.json").write_text(
+        contracts_payload(
+            results=tuple(
+                contract_result(
+                    ticker=f"O:SPY{expiry:%y%m%d}C00600000",
+                    underlying="SPY",
+                    expiration=f"{expiry:%Y-%m-%d}",
+                    strike="600",
+                    contract_type="call",
+                )
+                for expiry, _span in _ERA_CONTRACTS
+            ),
+            as_of=f"{first_bar:%Y-%m-%d}",
+        ),
+        encoding="utf-8",
+    )
+    bars = capture / "bars"
+    bars.mkdir()
+    friday_sessions: set[date] = set()
+    for expiry, (lo, _hi) in _ERA_CONTRACTS:
+        last = min(expiry, date(2026, 5, 1))
+        span = [s for s in exchange.sessions() if lo <= s <= last and s.weekday() == 4]
+
+        def premium(session: date, _expiry: date = expiry) -> str:
+            price = bs_price(
+                spot=600.0,
+                strike=600.0,
+                dte_calendar_days=(_expiry - session).days,
+                iv=0.18,
+                risk_free=0.03,
+                dividend_yield=0.0,
+                call_put="C",
+            )
+            return f"{price:.4f}"
+
+        rows = tuple(
+            bar(
+                v="1000000",
+                t=_t(session),
+                vw=premium(session),
+                o=premium(session),
+                c=premium(session),
+                h=f"{_Decimal(premium(session)) + _Decimal('0.10')}",
+                low=f"{_Decimal(premium(session)) - _Decimal('0.10')}",
+                n="24",
+            )
+            for session in span
+        )
+        (bars / f"bars_{expiry:%Y%m%d}.json").write_text(
+            bars_payload(
+                ticker=f"O:SPY{expiry:%y%m%d}C00600000",
+                results_count=str(len(rows)),
+                results=rows,
+            ),
+            encoding="utf-8",
+        )
+        friday_sessions.update(span)
+    (capture / "spot_proxy.json").write_text(
+        '{"SPY": {'
+        + ", ".join(f'"{s:%Y-%m-%d}": "600.00"' for s in sorted(friday_sessions))
+        + "}}",
+        encoding="utf-8",
+    )
+    overlay = load_derived_surface(capture, staleness_sessions=400)
+    return grid, overlay
+
+
+def _protocol_022_lane_on(protocol):
+    """The 0.2.2-declared protocol IN MEMORY (never a yaml edit): the
+    version bump carries its own amendment record and the earnings
+    disclosed-absence declaration — the exact shape the 0.2.2 amendment
+    packet proposes, under which the era lane actually trades (the 0.2.1
+    protocol refuses every candidate NOT_EVALUABLE and no fill ever
+    reaches the engine)."""
+    from tree_options.protocol.schema import ResearchProtocol
+
+    data = protocol.model_dump(mode="json")
+    data["meta"]["protocol_version"] = "0.2.2"
+    data["meta"]["amendments"].append(
+        {
+            "version": "0.2.2",
+            "date": "PENDING-OWNER-RATIFICATION",
+            "decision": "unit fixture: the 0.2.2 lane-on declarations",
+            "changes": "unit fixture only; the real record rides the amendment packet",
+        }
+    )
+    data["option_candidate_defaults"]["earnings_evaluation"] = "disclosed_absence"
+    return ResearchProtocol.model_validate(data)
+
+
+def _run_m323_era_pair(era_friday_world, protocol, tmp_path, *, tag: str, liar, execution_calendar):
+    """One same-object-horn run over the Friday-only era world under the
+    0.2.2-declared protocol: the stamped decision grid is the LIAR (the
+    surface discloses the same object), and `execution_calendar` is the
+    caller's choice — None for the none form, the liar itself for the
+    same-object form. The dataset keeps the underlying alive on every grid
+    session (the runner's silent-death scan) and the surface carries the
+    spot_v2 dollar-volume source over the daily exchange calendar so the
+    underlying-liquidity rule evaluates for real."""
+    import json
+
+    from tests.unit.test_vwap_pit_surface import _exchange_calendar
+    from tree_options.protocol.era_profile import real_lane_split_override
+
+    grid, overlay = era_friday_world
+    world_id = overlay.spec.world_id
+    exchange = _exchange_calendar()
+    surface = VwapPitSurface(
+        overlay,
+        decision_calendar=liar,
+        underlying_liquidity_term="evaluated",
+        spot_v2={
+            "SPY": {
+                s: (Decimal("600.00"), 100_000)
+                for s in exchange.sessions()
+                if date(2025, 6, 1) <= s <= date(2026, 6, 26)
+            }
+        },
+        exchange_calendar=exchange,
+    )
+    decision_sessions = grid.sessions()[: grid.sessions().index(date(2026, 5, 1)) + 1]
+    registry = TrialRegistry(tmp_path / f"{tag}.db")
+    try:
+        result = run_options_trial(
+            dataset=_RealLaneDataset(
+                snapshot_id=world_id,
+                bars=tuple(
+                    BarRecord(
+                        security_id="SPY",
+                        session=session,
+                        open=Decimal("600.00"),
+                        high=Decimal("600.00"),
+                        low=Decimal("600.00"),
+                        close=Decimal("600.00"),
+                        volume=1_000_000,
+                        source="spot-proxy/declared",
+                        source_record_id=f"SPY-{session:%Y%m%d}",
+                        source_row_hash="0" * 64,
+                        snapshot_id=world_id,
+                        available_at=grid.session_close(session),
+                    )
+                    for session in decision_sessions
+                ),
+            ),
+            surface=surface,  # type: ignore[arg-type]
+            calendar=liar,  # type: ignore[arg-type]
+            execution_calendar=execution_calendar,
+            protocol=_protocol_022_lane_on(protocol),
+            world_id=world_id,
+            arm="A",
+            strategy_config=OptionsStrategyConfig(),
+            scored=_era_scored_rows(grid),
+            model_family="null-sha256/1",
+            model_sha256=None,
+            hypothesis=f"unit/{tag}",
+            decision_sessions=decision_sessions,
+            options_manifest_hash="0" * 64,
+            registry=registry,
+            artifacts_dir=tmp_path / tag,
+            repo=REPO_ROOT,
+            clock=FIXED_CLOCK,
+            split_override=real_lane_split_override(),
+            liquidity_lane=2,
+            score_seed="t-null/era",
+            allow_dirty=True,
+        )
+    finally:
+        registry.close()
+    return json.loads(result.artifact_path.read_text(encoding="utf-8"))
+
+
 # ---- (R9-P1, Codex round 9) the SAME-OBJECT execution calendar ---------------
 
 
 def test_a_same_object_execution_calendar_is_the_none_form_at_runtime(
-    world, protocol, tmp_path
+    world, era_friday_world, protocol, tmp_path
 ) -> None:
     """(R9-P1, Codex round 9 — the same-object horn) The disclosure treats
     `execution_calendar is calendar` as NO execution calendar (same object
@@ -2921,7 +3135,21 @@ def test_a_same_object_execution_calendar_is_the_none_form_at_runtime(
     the same-object form IS the None form at runtime — byte-identical
     artifacts, both consuming the frozen instants (RED before R9-P1: the
     same-object run's fill door consumed the liar's third answer and its
-    artifact diverged from the None run's)."""
+    artifact diverged from the None run's).
+
+    (post-022-C re-seam, M323's kill restored) 022-C moved the door's
+    DECISION-side comparison onto the threaded frozen closes, so this
+    synthetic pair alone no longer detects a dropped normalization — its
+    quotes are two-sided and the engine's remaining execution-calendar
+    `session_close` read (the vwap bar-stamp line) never executes. The ERA
+    twin below runs the same pair over the Friday-only era world under the
+    0.2.2-declared protocol, where vwap fills DO flow: with the
+    normalization dropped, the same-object run's engine holds the MUTABLE
+    liar, whose third-and-later answers (the no-early-close 16:00) MATCH
+    the vendor bar's nominal-16:00 stamp on the early-close Friday
+    2025-11-28 — the exit decided there FILLS under the mutant while the
+    None form's bound calendar (frozen 13:00) refuses it
+    BAR_SESSION_STAMP_MISMATCH, and the payloads diverge."""
     import json
 
     overlay, calendar, _snap, _ds = world
@@ -2968,10 +3196,27 @@ def test_a_same_object_execution_calendar_is_the_none_form_at_runtime(
     for fill in early:
         assert fill["decision_at"] == verified_close.isoformat()
     # nothing after the boundary consulted either liar: every read count is
-    # exactly the boundary's two (decision sessions) or the freeze's one
-    # boundary-time read (every other calendar session)
+    # EXACTLY the boundary's entitlement — 2 per decision session (the
+    # declared close + the wired surface's answer) and 1 per every other
+    # calendar session (the freeze's boundary-time population read). The
+    # per-session DICT equality against the None run is the load-bearing
+    # form (re-seamed post-022-C, M323's kill re-proven): the fill door's
+    # decision-side now reads the threaded frozen closes even on the dual
+    # path, so a runtime read of the UNBOUND original only inflates a
+    # NON-decision session (2 where 1 is entitled) — a bare max()==2
+    # cannot see that, because decision sessions are entitled to 2 as
+    # well. The same-object run must consult its mutable calendar
+    # identically to the None run: same sessions, same counts, or the
+    # normalization is dropped and the fill engine holds the original.
     assert max(liar_none.close_calls.values()) == 2
     assert max(liar_same.close_calls.values()) == 2
+    assert liar_same.close_calls == liar_none.close_calls, (
+        "the same-object run consulted the mutable calendar differently"
+        f" than the None run: same={liar_same.close_calls}"
+        f" none={liar_none.close_calls} — a runtime read reached the"
+        " UNBOUND original (an execution-side read the None form's bound"
+        " calendar serves)"
+    )
     # the liar really would have answered differently on its third read —
     # proven on a SPENT twin so the assertion consumes no read of the runs'
     # probes
@@ -2979,6 +3224,77 @@ def test_a_same_object_execution_calendar_is_the_none_form_at_runtime(
     assert spent.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
     assert spent.session_close(date(2018, 7, 3)) == calendar.session_close(date(2018, 7, 3))
     assert spent.session_close(date(2018, 7, 3)) != calendar.session_close(date(2018, 7, 3))
+
+    # ---- the ERA twin (post-022-C re-seam; M323's kill surface) ----------
+    #
+    # The same pair over the Friday-only era world under the 0.2.2-declared
+    # protocol, where VWAP quotes flow through the engine. The early-close
+    # grid Friday 2025-11-28 is a DECISION session: the boundary reads its
+    # close exactly twice, so the engine's bar-stamp read of the 11-28 bar
+    # (the exit decided there executes 2025-12-05 against that bar) is the
+    # liar's THIRD — under a dropped normalization the same-object engine
+    # consumes the 16:00 lie, which MATCHES the vendor bar's nominal-16:00
+    # stamp, and the exit fills; the None form's engine holds the BOUND
+    # calendar whose frozen 13:00 refuses the fill
+    # (BAR_SESSION_STAMP_MISMATCH) and the exit retries a session later.
+    # At HEAD both forms are the None form and the artifacts are identical.
+    era_liar_none = _ThirdReadLiarCalendar(era_friday_world[0])
+    era_liar_same = _ThirdReadLiarCalendar(era_friday_world[0])
+    era_none_body = _run_m323_era_pair(
+        era_friday_world,
+        protocol,
+        tmp_path,
+        tag="r9_era_exec_none",
+        liar=era_liar_none,
+        execution_calendar=None,
+    )
+    era_same_body = _run_m323_era_pair(
+        era_friday_world,
+        protocol,
+        tmp_path,
+        tag="r9_era_exec_same",
+        liar=era_liar_same,
+        execution_calendar=era_liar_same,
+    )
+    assert era_none_body["stamp"]["config_hash"] == era_same_body["stamp"]["config_hash"]
+    era_none_canon = {k: json.dumps(v, sort_keys=True) for k, v in era_none_body.items()}
+    era_same_canon = {k: json.dumps(v, sort_keys=True) for k, v in era_same_body.items()}
+    era_diverging = [k for k in era_none_canon if era_none_canon[k] != era_same_canon.get(k)]
+    assert not era_diverging, (
+        f"the era same-object run diverges from the None run in: {era_diverging}"
+    )
+    # the seam is EXERCISED, not vacuous: the runs trade, and the exit
+    # decided on the early-close Friday is refused by the honest frozen
+    # 13:00 against the bar's nominal 16:00 stamp in BOTH forms — no fill
+    # is decided on 2025-11-28 and the refusal is counted
+    era_rejections = era_none_body["payload"]["counters"]["rejections"]
+    era_fills = era_none_body["payload"]["fills_log"]
+    assert era_fills, "the era twin must actually trade"
+    assert (
+        era_rejections.get("exit_fill_rejections", {}).get("BAR_SESSION_STAMP_MISMATCH", 0) > 0
+    ), "the early-close Friday's vwap bar must exercise the stamp door"
+    assert all(f["decision_session"] != "2025-11-28" for f in era_fills), (
+        "the exit decided on the early-close Friday dies at the stamp door and"
+        " retries a session later — a 2025-11-28-decided fill means the engine"
+        " consumed an unfrozen close"
+    )
+    # and the same dict-equality discipline as the synthetic pair: the
+    # same-object run must consult its mutable calendar IDENTICALLY to the
+    # None run — under a dropped normalization the engine's stamp reads
+    # (one per vwap fill) inflate the same-object liar's counts
+    assert era_liar_same.close_calls == era_liar_none.close_calls, (
+        "the era same-object run consulted the mutable calendar differently"
+        f" than the None run: same={era_liar_same.close_calls}"
+        f" none={era_liar_none.close_calls} — the fill engine's bar-stamp"
+        " reads reached the UNBOUND original"
+    )
+    # the era liar's third answer really is the stamp-matching 16:00 (the
+    # no-early-close twin's answer) — proven on a SPENT twin
+    era_spent = _ThirdReadLiarCalendar(era_friday_world[0])
+    early_friday = date(2025, 11, 28)
+    assert era_spent.session_close(early_friday) == era_friday_world[0].session_close(early_friday)
+    assert era_spent.session_close(early_friday) == era_friday_world[0].session_close(early_friday)
+    assert era_spent.session_close(early_friday) != era_friday_world[0].session_close(early_friday)
 
 
 # ---- (R9-P2, Codex round 9) the install refusal is DURABLE --------------------
