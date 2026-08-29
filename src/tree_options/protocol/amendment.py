@@ -84,6 +84,26 @@ FLOW_MIN_SESSION_VOLUME_ID = "flow_min_session_volume"
 # Determinism: the amendment date is a pending marker, never a clock read.
 AMENDMENT_DATE_PENDING = "PENDING-OWNER-RATIFICATION"
 
+# ---- the 0.2.2 lane-on declaration packet (owner ruling 2026-08-28) ---------------
+#
+# All three declarations were ruled at their recommended options (the
+# ruling record: ~/documents/tree_options-logs/022-ruling-proposal.md).
+# This packet is DRY-RUN ONLY exactly like the 0.2.1 proposal: the yaml
+# flip itself is a post-bars-closeout follow-up sequenced by the
+# orchestrator, never this builder.
+DECLARATION_PACKET_SCHEMA_VERSION = "m4-amendment-declaration-packet/1"
+DECLARATION_BASE_VERSION = "0.2.1"
+DECLARATION_PROPOSED_VERSION = "0.2.2"
+DECLARATION_OWNER_DECISION = "m4-022-ruling-20260828"
+DECLARED_022_FIELDS: tuple[tuple[str, str], ...] = (
+    (
+        "option_candidate_defaults.liquidity_volume_flow.underlying_liquidity_term",
+        "evaluated",
+    ),
+    ("option_candidate_defaults.earnings_evaluation", "disclosed_absence"),
+    ("fills.fill_door_decision_close", "decision_grid"),
+)
+
 
 # ---- errors ------------------------------------------------------------------------
 
@@ -288,6 +308,34 @@ class AmendmentPacket(StrictModel):
     flow_min_session_volume: int
     owner_values_schema_version: str
     inputs: AmendmentInputs
+    emitted: tuple[EmittedArtifact, ...]
+    landed: Literal[False] = False
+
+
+class DeclarationRecord(StrictModel):
+    """One owner-ruled declaration in the 0.2.2 packet: the dotted field
+    path, the declared value, and the owner decision that ruled it."""
+
+    field: str = Field(min_length=1)
+    value: str = Field(min_length=1)
+    owner_decision: str = Field(min_length=1)
+
+
+class AmendmentDeclarationPacket(StrictModel):
+    """The typed record of one dry-run 0.2.2 declaration build. ``landed``
+    is pinned false by the type itself, exactly like ``AmendmentPacket``:
+    this packet never writes a tracked file and never flips the yaml. The
+    projected post-flip hash is COMPUTED over the constructed 0.2.2 model
+    through the real loader's own ``protocol_hash`` — the identity the yaml
+    WILL carry once the owner lands the flip — and is never applied."""
+
+    schema_version: str
+    base_version: str
+    proposed_version: str
+    owner_decision: str
+    declarations: tuple[DeclarationRecord, ...] = Field(min_length=1)
+    protocol_hash_base: str
+    protocol_hash_projected: str
     emitted: tuple[EmittedArtifact, ...]
     landed: Literal[False] = False
 
@@ -1095,6 +1143,15 @@ def build_proposed_amendment(
     _commit_created_output_entries(absent_ancestors)
 
     data: dict[str, Any] = base.model_dump(mode="json")
+    # (0.2.2 lane) BYTE-IDENTITY of the 0.2.1 build: the two further 0.2.2
+    # pre-draft fields must not render into a 0.2.1-era proposal — the
+    # 0.2.1 path's emitted bytes are pinned against its pre-0.2.2 shape.
+    # `underlying_liquidity_term` has rendered into this proposal since w7a
+    # landed the field and keeps rendering; the NEW fields never existed in
+    # a 0.2.1 proposal and must not appear in one. Only members EQUAL TO
+    # THEIR DEFAULTS are dropped: a base that genuinely declares a
+    # disposition renders it (it is real protocol content).
+    _strip_new_pre_draft_fields_from_render(data)
     data["meta"]["protocol_version"] = PROPOSED_PROTOCOL_VERSION
     amendments = list(data["meta"]["amendments"])
     amendments.append(
@@ -1309,6 +1366,302 @@ def build_proposed_amendment(
                 path=schema_path,
                 identity=schema_identity,
                 text=schema_text,
+                custody_fd=final_sweep_fd,
+            )
+            _verify_final_effect(
+                artifact="amendment-diff.md",
+                path=diff_path,
+                identity=diff_identity,
+                text=diff_text,
+                custody_fd=final_sweep_fd,
+            )
+            _verify_final_effect(
+                artifact="amendment-packet.json",
+                path=packet_path,
+                identity=packet_identity,
+                text=packet_text,
+                custody_fd=final_sweep_fd,
+            )
+        finally:
+            os.close(final_sweep_fd)
+        return packet
+    finally:
+        os.close(custody_fd)
+
+
+# ---- the 0.2.2 declaration build ----------------------------------------------------
+
+
+def _strip_new_pre_draft_fields_from_render(data: dict[str, Any]) -> None:
+    """Drop the two 0.2.2 pre-draft members that merely equal their defaults
+    from a model dump destined for a PRE-0.2.2 proposal render (see the
+    call site for the byte-identity contract). Deliberately NOT the
+    loader's era strip: that one also drops ``underlying_liquidity_term``,
+    which HAS rendered into 0.2.1 proposals since w7a and must keep
+    rendering — only fields that never existed in a pre-0.2.2 proposal are
+    dropped here."""
+    ocd = data.get("option_candidate_defaults", {})
+    if isinstance(ocd, dict) and ocd.get("earnings_evaluation") == "evaluated":
+        del ocd["earnings_evaluation"]
+    fills = data.get("fills", {})
+    if isinstance(fills, dict) and fills.get("fill_door_decision_close") == "execution_calendar":
+        del fills["fill_door_decision_close"]
+
+
+def _apply_022_declarations(data: dict[str, Any]) -> None:
+    """Set the three owner-ruled 0.2.2 declarations on a model dump."""
+    liquidity = data.get("option_candidate_defaults", {}).get("liquidity_volume_flow")
+    if not isinstance(liquidity, dict):
+        raise AmendmentError(
+            "the 0.2.2 declaration packet requires the ratified "
+            "liquidity_volume_flow block (a >=0.2 protocol always carries it)"
+        )
+    liquidity["underlying_liquidity_term"] = "evaluated"
+    data["option_candidate_defaults"]["earnings_evaluation"] = "disclosed_absence"
+    data["fills"]["fill_door_decision_close"] = "decision_grid"
+
+
+def _render_declaration_diff(
+    *, base_version: str, n_base_amendments: int, base_hash: str, projected_hash: str
+) -> str:
+    lines = [
+        "# Amendment diff (PROPOSED — NOT LANDED)",
+        "",
+        f"Base: research protocol {base_version}, loaded and verified through the real",
+        "loader. Proposed: "
+        f"{DECLARATION_PROPOSED_VERSION}, emitted by scripts/build_protocol_amendment.py",
+        "(--target-version 0.2.2).",
+        "",
+        f'- meta.protocol_version: "{base_version}" -> "{DECLARATION_PROPOSED_VERSION}"',
+        f"- meta.amendments: {n_base_amendments} -> {n_base_amendments + 1} records",
+        f"  (the new record's date is the pending marker {AMENDMENT_DATE_PENDING!r},",
+        "  never a clock read)",
+        "- option_candidate_defaults.liquidity_volume_flow.underlying_liquidity_term:",
+        '  (undeclared 0.2.1 default "evaluated") -> "evaluated" [DECLARED — it rides',
+        "  the 0.2.2 hash by design: the canonical_json pre-draft strip is",
+        "  version-gated to the pre-0.2.2 era and is OFF at 0.2.2]",
+        "- option_candidate_defaults.earnings_evaluation:",
+        '  (undeclared default "evaluated") -> "disclosed_absence"',
+        "  [a missing spans_earnings becomes a PASS with a counted NOT_APPLICABLE",
+        "  audit row naming the absence — never a silent pass; version-gated, the",
+        "  behavior refuses under 0.2.1]",
+        "- fills.fill_door_decision_close:",
+        '  (undeclared default "execution_calendar") -> "decision_grid"',
+        "  [the fill door's decision-side comparison consumes the frozen verified",
+        "  decision closes on the dual-calendar lane; the execution calendar keeps",
+        "  the execution-side checks]",
+        "",
+        f"Owner decision (all three declarations): {DECLARATION_OWNER_DECISION}",
+        "",
+        f"Base protocol hash: {base_hash}",
+        f"PROJECTED post-flip protocol hash: {projected_hash}",
+        "",
+        "This file is a proposal. Nothing is landed: research_protocol.yaml is not",
+        "modified; landed:false in amendment-packet.json is the machine-readable pin.",
+        "The yaml flip is a post-bars-closeout follow-up, sequenced by the",
+        "orchestrator — this builder never applies it.",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def build_declaration_amendment(
+    *,
+    protocol_path: Path,
+    out_root: Path,
+) -> AmendmentDeclarationPacket:
+    """Build the 0.2.2 lane-on declaration packet (dry-run only).
+
+    Consumes exactly one input — the BASE protocol (must load and be
+    exactly 0.2.1) — plus the owner ruling baked into this module's
+    constants (``m4-022-ruling-20260828`` ruled all three declarations at
+    their recommended options). Constructs the 0.2.2 model in memory
+    (version bump + the amendment record + the three declarations), proves
+    it round-trips through TODAY'S real loader from the rendered text,
+    COMPUTES the projected post-flip identity with the loader's own
+    ``protocol_hash`` (never applies it), and emits the packet under
+    ``<out-root>/<projected-hash[:12]>/`` through the same confinement,
+    custody, and durable-commit machinery as the 0.2.1 builder. Output is
+    byte-identical across re-runs: no clock, no timestamps, no absolute
+    paths in any emitted byte."""
+    protocol_bytes = protocol_path.read_bytes()
+    try:
+        base = load_protocol_bytes(protocol_bytes)
+    except ValueError as exc:
+        raise VersionError(f"base protocol does not load: {exc}") from exc
+    if base.meta.protocol_version != DECLARATION_BASE_VERSION:
+        raise VersionError(
+            f"declaration packet base protocol version must be exactly "
+            f"{DECLARATION_BASE_VERSION!r}, got {base.meta.protocol_version!r}"
+        )
+    base_hash = protocol_hash(base)
+
+    data: dict[str, Any] = base.model_dump(mode="json")
+    data["meta"]["protocol_version"] = DECLARATION_PROPOSED_VERSION
+    amendments = list(data["meta"]["amendments"])
+    amendments.append(
+        {
+            "version": DECLARATION_PROPOSED_VERSION,
+            "date": AMENDMENT_DATE_PENDING,
+            "decision": (
+                f"0.2.2 lane-on packet PROPOSAL — three declarations under "
+                f"owner ruling {DECLARATION_OWNER_DECISION} (dry-run: not "
+                f"landed, owner GO required)"
+            ),
+            "changes": (
+                "declare liquidity_volume_flow.underlying_liquidity_term="
+                "evaluated (rides the 0.2.2 hash by design; the 0.2.1-era "
+                "canonical_json pre-draft strip is version-gated off at "
+                "0.2.2); declare option_candidate_defaults."
+                "earnings_evaluation=disclosed_absence (a missing "
+                "spans_earnings becomes a PASS with a counted NOT_APPLICABLE "
+                "audit row naming the absence — never a silent pass; "
+                "version-gated, refuses under 0.2.1); declare "
+                "fills.fill_door_decision_close=decision_grid (the fill "
+                "door's decision-side comparison consumes the frozen "
+                "verified decision closes on the dual-calendar lane; the "
+                "execution calendar keeps the execution-side checks)"
+            ),
+        }
+    )
+    data["meta"]["amendments"] = amendments
+    _apply_022_declarations(data)
+    proposed_text = yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000)
+
+    # PROOF STEP: the proposal must load through TODAY'S real loader — from
+    # the RENDERED text, never a fresh read of the published path.
+    try:
+        proposed = load_protocol_bytes(proposed_text.encode("utf-8"))
+    except ValueError as exc:
+        raise AmendmentError(
+            f"proposed {DECLARATION_PROPOSED_VERSION} protocol does not load "
+            f"through the current schema: {exc}"
+        ) from exc
+    lf = proposed.option_candidate_defaults.liquidity_volume_flow
+    if (
+        proposed.meta.protocol_version != DECLARATION_PROPOSED_VERSION
+        or lf is None
+        or lf.underlying_liquidity_term != "evaluated"
+        or proposed.option_candidate_defaults.earnings_evaluation != "disclosed_absence"
+        or proposed.fills.fill_door_decision_close != "decision_grid"
+        or len(proposed.meta.amendments) != len(base.meta.amendments) + 1
+    ):
+        raise AmendmentError(
+            f"proposed {DECLARATION_PROPOSED_VERSION} protocol round-trip "
+            "lost the declaration content"
+        )
+    protocol_hash_projected = protocol_hash(proposed)
+
+    # tracked-file write protection: packets live under artifacts/ only
+    # (phrased differently from the 0.2.1 builder's own check on purpose —
+    # the registry's mutation anchors are exact single-occurrence lines)
+    artifacts_root = (_repo_root() / "artifacts").resolve()
+    resolved_out_root = out_root.expanduser().resolve()
+    outside_artifacts = not resolved_out_root.is_relative_to(artifacts_root)
+    if outside_artifacts:
+        raise OutputRefusedError(
+            f"output root {out_root} resolves outside {artifacts_root}: the "
+            "builder writes packets under artifacts/ only"
+        )
+    out_dir = resolved_out_root / protocol_hash_projected[:12]
+    absent_ancestors = _absent_output_ancestors(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_dir = _confine_output(out_dir, out_root=resolved_out_root)
+    _commit_created_output_entries(absent_ancestors)
+
+    diff_text = _render_declaration_diff(
+        base_version=base.meta.protocol_version,
+        n_base_amendments=len(base.meta.amendments),
+        base_hash=base_hash,
+        projected_hash=protocol_hash_projected,
+    )
+
+    custody_fd = _open_output_custody(out_dir)
+    try:
+        proposed_path = _confine_output(
+            out_dir / f"protocol-{DECLARATION_PROPOSED_VERSION}-proposed.yaml",
+            out_root=resolved_out_root,
+        )
+        _refuse_shared_inode(proposed_path)
+        proposed_identity = _emit_custody_write(proposed_path, proposed_text, custody_fd=custody_fd)
+        diff_path = _confine_output(out_dir / "amendment-diff.md", out_root=resolved_out_root)
+        _refuse_shared_inode(diff_path)
+        diff_identity = _emit_custody_write(diff_path, diff_text, custody_fd=custody_fd)
+
+        _verify_final_effect(
+            artifact=f"protocol-{DECLARATION_PROPOSED_VERSION}-proposed.yaml",
+            path=proposed_path,
+            identity=proposed_identity,
+            text=proposed_text,
+            custody_fd=custody_fd,
+        )
+        _verify_final_effect(
+            artifact="amendment-diff.md",
+            path=diff_path,
+            identity=diff_identity,
+            text=diff_text,
+            custody_fd=custody_fd,
+        )
+
+        packet = AmendmentDeclarationPacket(
+            schema_version=DECLARATION_PACKET_SCHEMA_VERSION,
+            base_version=base.meta.protocol_version,
+            proposed_version=DECLARATION_PROPOSED_VERSION,
+            owner_decision=DECLARATION_OWNER_DECISION,
+            declarations=tuple(
+                DeclarationRecord(
+                    field=field, value=value, owner_decision=DECLARATION_OWNER_DECISION
+                )
+                for field, value in DECLARED_022_FIELDS
+            ),
+            protocol_hash_base=base_hash,
+            protocol_hash_projected=protocol_hash_projected,
+            emitted=tuple(
+                EmittedArtifact(name=name, sha256=hashlib.sha256(text.encode("utf-8")).hexdigest())
+                for name, text in sorted(
+                    (
+                        (proposed_path.name, proposed_text),
+                        (diff_path.name, diff_text),
+                    ),
+                    key=lambda pair: pair[0],
+                )
+            ),
+        )
+        packet_path = _confine_output(out_dir / "amendment-packet.json", out_root=resolved_out_root)
+        _refuse_shared_inode(packet_path)
+        packet_text = (
+            json.dumps(json.loads(packet.model_dump_json()), indent=2, sort_keys=True) + "\n"
+        )
+        packet_identity = _emit_custody_write(packet_path, packet_text, custody_fd=custody_fd)
+
+        try:
+            os.fsync(custody_fd)
+            _commit_output_chain(resolved_out_root)
+        except OSError as exc:
+            raise OutputRefusedError(
+                f"the output hierarchy under {resolved_out_root} could not be "
+                f"durably committed ({exc}) — never attest a packet over an "
+                "uncommitted directory chain"
+            ) from None
+
+        final_sweep_fd = _open_output_custody(out_dir)
+        try:
+            held_dir = os.fstat(custody_fd)
+            walked_dir = os.fstat(final_sweep_fd)
+            if (walked_dir.st_dev, walked_dir.st_ino) != (held_dir.st_dev, held_dir.st_ino):
+                raise OutputRefusedError(
+                    f"the output directory {out_dir} no longer holds the "
+                    f"artifacts this builder published (held dev "
+                    f"{held_dir.st_dev} ino {held_dir.st_ino}, at the path "
+                    f"now dev {walked_dir.st_dev} ino {walked_dir.st_ino}):"
+                    " the digest directory was relocated out of the output"
+                    " root — refusing to attest artifacts published outside"
+                    " artifacts/"
+                )
+            _verify_final_effect(
+                artifact=f"protocol-{DECLARATION_PROPOSED_VERSION}-proposed.yaml",
+                path=proposed_path,
+                identity=proposed_identity,
+                text=proposed_text,
                 custody_fd=final_sweep_fd,
             )
             _verify_final_effect(
