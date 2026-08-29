@@ -769,8 +769,11 @@ def _bind_decision_calendar(
     PATH: when `execution_calendar is None` the fill guard receives this
     bound calendar, so both sides of the `DECISION_INSTANT_NOT_CLOSE` door
     read frozen instants — coherent by construction; when the calendars
-    differ the fill calendar remains the EXECUTION calendar (known item
-    (a), 0.2.2-deferred — disclosed, unchanged).
+    differ the fill calendar remains the EXECUTION calendar for every
+    EXECUTION-side check, while the door's DECISION-side comparison
+    consumes this grid's verified closes threaded as `decision_closes`
+    (0.2.2 declaration 3, owner ruling m4-022-ruling-20260828 — the former
+    known item (a), closed).
 
     Byte-identical for every wired configuration: the frozen closes ARE the
     calendar's own answers, so no key, hash, or stamp moves. (R8-P2, Codex
