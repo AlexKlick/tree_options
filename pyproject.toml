@@ -66,6 +66,7 @@ files = [
     "scripts/gen_coverage_universe.py",
     "scripts/build_coverage_census.py",
     "scripts/build_protocol_amendment.py",
+    "scripts/capture_spot_proxy_v2.py",
     "scripts/g4_seal.py",
     "scripts/launch_bars_era.py",
 ]
