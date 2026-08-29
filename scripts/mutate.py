@@ -4473,6 +4473,38 @@ MUTANTS = [
             " that traded more contracts than the session actually did"
         ),
     ),
+    # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
+    dict(
+        id="M333-spotv2-close-through-float",
+        owner="test_vendor_close_tokens_round_trip_byte_exact",
+        file="scripts/capture_spot_proxy_v2.py",
+        anchor=("    if isinstance(raw_c, Decimal):\n        exact_close = raw_c"),
+        replacement=(
+            "    if isinstance(raw_c, Decimal):\n        exact_close = Decimal(str(float(raw_c)))"
+        ),
+        selectors=[f"{U}/test_capture_spot_proxy_v2.py"],
+        invariant=(
+            "spotv2 the vendor's close TOKEN is the provenance: routing the"
+            " exact Decimal through float rewrites every price token longer"
+            " than a float's shortest repr (a 21-digit close silently loses"
+            " its tail) while short tokens survive, so only a byte-exact"
+            " round trip through the real loader catches the laundering"
+        ),
+    ),
+    dict(
+        id="M334-spotv2-vendor-gap-silenced",
+        owner="test_a_vendor_gap_fails_the_run_naming_the_session",
+        file="scripts/capture_spot_proxy_v2.py",
+        anchor="        if missing:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_capture_spot_proxy_v2.py"],
+        invariant=(
+            "spotv2 an era session the vendor response cannot answer is a"
+            " NAMED fatal gap and NOTHING is written: voiding the check"
+            " writes a silently short file that still claims the declared"
+            " window — the exact partial capture this lane exists to refuse"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.
@@ -4600,7 +4632,7 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 314-mutant run stays the"
+            " mutants and re-pins; the full 322-mutant run stays the"
             " m0_gate's authority)"
         ),
     )
