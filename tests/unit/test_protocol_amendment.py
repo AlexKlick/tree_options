@@ -5,12 +5,14 @@ the census script is never invoked. Output roots must live under the real
 repo artifacts/ (the builder refuses anywhere else), so each test creates a
 unique subtree and removes it afterwards.
 
-The BASE protocol is the repo protocol reverted to its pre-0.2.1 shape
-(``_base_020_protocol_bytes``): the repo file LANDED 0.2.1 (cdf38c8,
-owner-ratified 2026-08-26) and the builder refuses a 0.2.1 base outright —
-refusing to re-derive an already-landed amendment — so the 0.2.0 world this
-suite exercises is a fixture rebuilt through the real loader's own models,
-never a hand-typed stand-in.
+The BASE protocol is the pinned 0.2.1 fixture (the pre-flip standing
+protocol) reverted to its pre-0.2.1 shape (``_base_020_protocol_bytes``):
+the repo file LANDED 0.2.1 (cdf38c8, owner-ratified 2026-08-26) and then
+flipped to 0.2.2 (owner ruling m4-022-ruling-20260828, 2026-08-28), and
+the builder refuses a 0.2.1 base outright — refusing to re-derive an
+already-landed amendment — so the 0.2.0 world this suite exercises is a
+fixture rebuilt through the real loader's own models, never a hand-typed
+stand-in.
 """
 
 from __future__ import annotations
@@ -63,6 +65,10 @@ from tree_options.protocol.amendment import (  # noqa: E402
 from tree_options.protocol.loader import load_protocol  # noqa: E402
 
 PROTOCOL_PATH = REPO_ROOT / "research_protocol.yaml"
+# (0.2.2 flip) the 0.2.1-mode base derivation reads the pinned 0.2.1
+# fixture (the pre-flip standing protocol): the live yaml is 0.2.2 since
+# the flip and its declarations must not bleed into the 0.2.0 revert
+PROTOCOL_021 = REPO_ROOT / "tests" / "fixtures" / "protocol-0.2.1.yaml"
 MANIFEST_BODY = b'{"schema_version": "m4b-manifest/1", "entries": []}\n'
 FLOW_RULE_ID = "R-FLOW-FLOOR-DIV-4"
 # floor_div(3045, 4) = 761: the owner value a correct derivation yields.
@@ -167,8 +173,11 @@ def _base_020_protocol_bytes() -> bytes:
     the builder is the pre-amendment protocol rebuilt through the loader's
     own models: load -> revert exactly the three fields the amendment
     landed -> dump. Every landed semantic (invariants, fills, bands, the
-    G3 regime block) is carried unchanged from the real protocol."""
-    data = load_protocol(PROTOCOL_PATH).model_dump(mode="json")
+    G3 regime block) is carried unchanged from the real protocol — which since the 0.2.2
+    flip means the pinned 0.2.1 fixture (the pre-flip standing
+    protocol): the live yaml's three 0.2.2 declarations must not bleed
+    into the reverted 0.2.0 base."""
+    data = load_protocol(PROTOCOL_021).model_dump(mode="json")
     data["meta"]["protocol_version"] = "0.2.0"
     data["meta"]["amendments"] = [
         record for record in data["meta"]["amendments"] if record["version"] != "0.2.1"
@@ -281,7 +290,7 @@ def _build(paths: dict[str, Path], out_root: Path) -> amd.AmendmentPacket:
 
 def _wrong_base_protocol(tmp_path: Path) -> Path:
     """A protocol that LOADS but is not 0.2.0 (version + own record bumped)."""
-    doc = yaml.safe_load(PROTOCOL_PATH.read_text(encoding="utf-8"))
+    doc = yaml.safe_load(PROTOCOL_021.read_text(encoding="utf-8"))
     doc["meta"]["protocol_version"] = "0.2.1"
     doc["meta"]["amendments"].append(
         {

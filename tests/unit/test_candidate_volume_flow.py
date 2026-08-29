@@ -223,9 +223,13 @@ class TestLandedThreshold:
         assert f.liquidity_regime == "volume_flow"
 
     def test_protocol_amendment_record_present(self):
+        """The landed protocol content, carried by the 0.2.2 flip: the live
+        yaml is 0.2.2 and carries all three records — the 0.2.1 record (the
+        threshold landing this class pins) is unchanged inside it, and the
+        0.2.2 record names the flip's owner ruling."""
         p = load_protocol()
-        assert p.meta.protocol_version == "0.2.1"
-        first, landed = p.meta.amendments
+        assert p.meta.protocol_version == "0.2.2"
+        first, landed, flipped = p.meta.amendments
         assert first.version == "0.2.0"
         assert "PR #11" in first.decision
         assert landed.version == "0.2.1"
@@ -233,6 +237,9 @@ class TestLandedThreshold:
         assert "43b0b040ea3c7936fc08e6b1028ce446e46c99f44ca1d87da9fec02099e12e14" in (
             landed.changes
         )
+        assert flipped.version == "0.2.2"
+        assert flipped.date == "2026-08-28"
+        assert "m4-022-ruling-20260828" in flipped.decision
         assert p.fills.vwap.zero_volume_session == "unfillable"
 
 
@@ -470,14 +477,15 @@ class TestRoundTwoHardening:
 
 
 class TestUnderlyingLiquidityTerm:
-    """(w7, theory-panel §2 P0-1(a) — 0.2.2 PRE-DRAFT MACHINERY; the yaml
-    itself stays 0.2.1 this wave) The declared disposition of the
+    """(w7, theory-panel §2 P0-1(a); declared at the 0.2.2 flip, owner
+    ruling m4-022-ruling-20260828) The declared disposition of the
     underlying-liquidity term: the ruled drop-with-disclosure fallback, its
     incoherence guard, and the byte-identical standing default."""
 
     def _dropped_protocol(self):
-        """The 0.2.2 SHAPE as machinery proof: the standing 0.2.1 protocol
-        with exactly one added key (research_protocol.yaml is untouched)."""
+        """The dropped-term SHAPE as machinery proof: the live protocol
+        (0.2.2 since the flip, declaring "evaluated") with exactly that one
+        key flipped to the ruled fallback."""
         p = load_protocol()
         lf = p.option_candidate_defaults.liquidity_volume_flow
         assert lf is not None

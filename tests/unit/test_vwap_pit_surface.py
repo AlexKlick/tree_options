@@ -492,10 +492,12 @@ def _protocol_volume_flow(surface, protocol) -> CandidateFilter:
 def _zeroed_liquidity_volume_flow(surface, protocol) -> CandidateFilter:
     """The strategy-suite convention (test_options_strategy): zeroing the
     underlying-liquidity minimum keeps the small fixture world usable, and
-    (w2) turning the earnings rule OFF adopts the ruled 0.2.2 shape — the
-    adapter's honest `spans_earnings=None` makes the still-current 0.2.1
-    rule NOT_EVALUABLE, so a fixture that kept the rule on would trade
-    zero and exercise none of the adapter's mechanics. Every other knob
+    (w2) turning the earnings rule OFF keeps the ruled shape explicit —
+    post-flip (0.2.2) the adapter's honest `spans_earnings=None` answers
+    the counted NOT_APPLICABLE disclosed-absence row and the candidate
+    still dies on this fixture's $50M liquidity minimum, so a fixture
+    that kept the rule on would trade zero and exercise none of the
+    adapter's mechanics. Every other knob
     stays at the protocol's ratified values; both deviations are pinned
     against the protocol-built filter in the rows test above."""
     d = protocol.option_candidate_defaults
@@ -551,22 +553,28 @@ def test_candidate_snapshot_accepted_under_zeroed_liquidity_min(surface, protoco
 
 
 def test_candidate_snapshot_earnings_is_the_honest_no_evidence_encoding(surface, protocol) -> None:
-    """(w2, theory-panel P0-2 ruling (ii), owner ruled 2026-08-26):
+    """(w2, theory-panel P0-2 ruling (ii), owner ruled 2026-08-26; carried
+    by the 0.2.2 flip, owner ruling m4-022-ruling-20260828):
     `AsOf(value=False)` LAUNDERS — the rule would read a vendor-stamped
     PASS "no spanning earnings" that no source supports, indistinguishable
     from a funded events feed (the lane-1 precedent is honest ONLY for
     synthetic worlds, which contain no earnings events by construction).
     The honest encoding on this lane is `spans_earnings=None`: under the
-    still-current 0.2.1 protocol (`exclude_earnings_spanning_hold: true`)
-    the rule answers NOT_EVALUABLE "missing" and the candidate is REFUSED —
-    lane 2 trades zero until the 0.2.2 packet turns the rule off."""
+    LANDED 0.2.2 protocol (`earnings_evaluation: disclosed_absence`) the
+    rule answers a counted NOT_APPLICABLE row NAMING the disclosed absence
+    — a PASS-side row, never a silent pass and never a laundered vendor
+    stamp. The candidate itself stays REFUSED on this fixture (the $50M
+    underlying-liquidity minimum fails) — the honest dark-lane outcome
+    moved from the earnings rule to the liquidity minimum at the flip."""
     snap = surface.candidate_snapshot(surface.contract(C600_ID), S6)
     assert snap.spans_earnings is None
     decision = _protocol_volume_flow(surface, protocol).evaluate(snap)
     by_rule = {r.rule: r for r in decision.results}
-    assert by_rule["earnings_span"].status == "NOT_EVALUABLE"
-    assert by_rule["earnings_span"].detail == "missing"
-    # NOT_EVALUABLE blocks acceptance: zero trades under 0.2.1, pinned
+    assert by_rule["earnings_span"].status == "NOT_APPLICABLE"
+    assert "no events source on this tier" in by_rule["earnings_span"].detail
+    assert "m4-022-ruling-20260828" in by_rule["earnings_span"].detail
+    # the liquidity minimum is the refusing row now: zero trades, pinned
+    assert by_rule["underlying_liquidity"].status == "FAIL"
     assert not decision.accepted
 
 

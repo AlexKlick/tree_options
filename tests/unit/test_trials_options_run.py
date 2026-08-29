@@ -1217,10 +1217,11 @@ def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, 
     Under the single DAILY calendar the same call removes every fold (13
     consecutive daily sessions are never a subset of a Fridays-only world
     set); under the single grid calendar the runner completes but
-    discloses no calendar identities. Lane 2 under the still-current 0.2.1
-    protocol trades zero (the earnings rule answers NOT_EVALUABLE on
-    spans_earnings=None, the w2 ruling) — the positions zero here is that
-    KNOWN refusal, pinned below, never a calendar failure."""
+    discloses no calendar identities. Lane 2 under the landed 0.2.2
+    protocol (0.2.2 flip, 2026-08-28) carries the counted
+    NOT_APPLICABLE disclosed-absence row on every snapshot and still
+    trades zero — the $50M underlying-liquidity minimum the fixture world
+    cannot meet, pinned below, never a calendar failure."""
     import json
 
     from tree_options.data.bars import BarRecord
@@ -1326,11 +1327,16 @@ def test_dual_calendar_ruled_geometry_yields_the_era_folds(era_world, protocol, 
     }
     assert payload["execution_calendar"]["n_sessions"] == len(overlay.calendar.sessions())
     assert payload["execution_calendar"]["last"] == overlay.calendar.sessions()[-1].isoformat()
-    # the positions zero is the KNOWN 0.2.1 earnings refusal, never a fill
-    # failure: the earnings rule answered NOT_EVALUABLE and no BAR_* code fired
+    # (0.2.2 flip) the earnings dark lane is ON now: every candidate
+    # carries the counted NOT_APPLICABLE disclosed-absence row. The
+    # positions zero is the $50M underlying-liquidity minimum the fixture
+    # world cannot meet (underlying_liquidity FAILs every snapshot) — never
+    # a fill failure: no BAR_* code fired. Pre-flip the zero was the 0.2.1
+    # earnings refusal (NOT_EVALUABLE).
     assert payload["pooled"]["n_positions"] == 0
     rules = payload["counters"]["rule_histogram"]
-    assert rules.get("earnings_span", {}).get("NOT_EVALUABLE", 0) > 0
+    assert rules.get("earnings_span", {}).get("NOT_APPLICABLE", 0) > 0
+    assert rules.get("underlying_liquidity", {}).get("FAIL", 0) > 0
     # (R2-P1-c) every evaluated snapshot is COHERENT at the grid's close:
     # the grid carries the fixture's early closes and the adapter carries
     # the grid — without the decision-calendar seam the 16:00 overlay stamp
@@ -1732,8 +1738,9 @@ def test_a_wired_surface_binds_to_the_stamped_grid_and_runs_unchanged(
     """(R4-P1, the control) A surface wired to the stamped grid —
     `decision_calendar == grid`, the era test's own construction — binds
     (digests equal) and runs UNCHANGED: the ruled geometry, the pinned
-    per-fold windows, the known 0.2.1 earnings refusal, and the identical
-    configuration hash the era configuration has always produced. The bind
+    per-fold windows, the known 0.2.2 disclosed-absence counters (carried
+    by the flip), and the identical configuration hash the era
+    configuration has always produced. The bind
     is invisible to trial identity; only the unwired configuration is new
     (it is a refusal)."""
     import json
@@ -1761,11 +1768,13 @@ def test_a_wired_surface_binds_to_the_stamped_grid_and_runs_unchanged(
         "2026-01-23",
         "2026-05-01",
     ]
-    # the positions zero is the KNOWN 0.2.1 earnings refusal, never a bind
-    # failure — the same pinned counters the era test owns
+    # (0.2.2 flip) the same pinned counters the era test owns, carried to
+    # the 0.2.2 world: the counted NOT_APPLICABLE disclosed-absence row, and
+    # the positions zero from the underlying-liquidity minimum (never a
+    # bind failure)
     assert body["payload"]["pooled"]["n_positions"] == 0
     rules = body["payload"]["counters"]["rule_histogram"]
-    assert rules.get("earnings_span", {}).get("NOT_EVALUABLE", 0) > 0
+    assert rules.get("earnings_span", {}).get("NOT_APPLICABLE", 0) > 0
     assert "decision_coherence" not in rules
     assert not any(
         code.startswith("BAR_")
@@ -1978,9 +1987,9 @@ def test_a_behaviorally_bound_subclass_runs_unchanged(era_world, protocol, tmp_p
     """(R5-P1, the point of binding BEHAVIOR) A subclass that ALSO overrides
     `decision_close` to genuinely answer from the stamped grid is
     BEHAVIORALLY bound and runs UNCHANGED: the same pinned era geometry,
-    per-fold windows, and known 0.2.1 earnings refusal as the wired
-    construction (`test_a_wired_surface_binds_to_the_stamped_grid_and_runs_
-    unchanged`). The invariant is what the trial's decisions actually read,
+    per-fold windows, and known 0.2.2 disclosed-absence counters (carried
+    by the flip) as the wired construction (`test_a_wired_surface_binds_to_
+    the_stamped_grid_and_runs_unchanged`). The invariant is what the trial's decisions actually read,
     not which override site supplies it."""
     import json
 
@@ -1996,11 +2005,12 @@ def test_a_behaviorally_bound_subclass_runs_unchanged(era_world, protocol, tmp_p
         "2026-01-23",
         "2026-05-01",
     ]
-    # the positions zero is the KNOWN 0.2.1 earnings refusal, never a bind
-    # failure — the same pinned counters the wired era test owns
+    # (0.2.2 flip) the same pinned counters the wired era test owns,
+    # carried to the 0.2.2 world (the counted NOT_APPLICABLE
+    # disclosed-absence row; the zero from the liquidity minimum)
     assert body["payload"]["pooled"]["n_positions"] == 0
     rules = body["payload"]["counters"]["rule_histogram"]
-    assert rules.get("earnings_span", {}).get("NOT_EVALUABLE", 0) > 0
+    assert rules.get("earnings_span", {}).get("NOT_APPLICABLE", 0) > 0
     assert not any(
         code.startswith("BAR_")
         for code in body["payload"]["counters"]["rejections"].get("entry_fill_rejections", {})

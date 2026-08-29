@@ -1,0 +1,175 @@
+meta:
+  protocol_version: 0.2.2
+  created: '2026-08-17'
+  owner: architecture/leakage
+  change_policy: Invariants are frozen. Weakening an invariant or an acceptance gate requires an explicit owner decision and a new protocol version.
+  amendments:
+  - version: 0.2.0
+    date: '2026-08-22'
+    decision: 'G3 amendment packet, PR #11 owner-merged (41dfd2a)'
+    changes: Added the vwap quote kind and its fill semantics (session VWAP at a conservative tick, participation-capped by bar volume, zero-volume unfillable, publication-gated); added the volume-flow liquidity regime for tiers without a two-sided market (open interest and the spread term dropped WITH disclosure; threshold pending the coverage-era census); accepted model-derived-from-vwap as an abs_delta provenance class. No existing invariant was weakened.
+  - version: 0.2.1
+    date: '2026-08-26'
+    decision: 0.2.1 ratification package, owner-ratified 2026-08-26 (consensus panel + owner ruling; builder packet f0e6d27abf067d23ed160e47c5778b 305e2186b7194412c4713297f3a9fb486c built from census 43b0b040ea3c).
+    changes: 'set liquidity_volume_flow.flow_min_session_volume = 100 (owner deviation owner decision 2026-08-26 (0.2.1 ratification): flow_min_session_volume=100 bound to census 43b0b040ea3c7936fc08e6b1028ce446e46c99f44ca1d87da9fec02099e12e14 (exit 5: 29 SPOT_MISSING_SESSION pairs on 2026-08-21; masters observed == expected 3045; admission is owner_deviation-only by the 0.2.1 scoped builder change). Evidence base (214 bars): in-band n=61; below-10: 1/61; below-100: 17/61; pooled below-min: 44/214. Continuity: the ratified option_candidate_defaults.min_same_day_volume=100 is the same integer threshold on session volume.); final_holdout_window schema addition proposed separately (NOT_LANDED) because protocol models are extra="forbid"'
+  - version: 0.2.2
+    date: PENDING-OWNER-RATIFICATION
+    decision: "0.2.2 lane-on packet PROPOSAL \u2014 three declarations under owner ruling m4-022-ruling-20260828 (dry-run: not landed, owner GO required)"
+    changes: "declare liquidity_volume_flow.underlying_liquidity_term=evaluated (rides the 0.2.2 hash by design; the 0.2.1-era canonical_json pre-draft strip is version-gated off at 0.2.2); declare option_candidate_defaults.earnings_evaluation=disclosed_absence (a missing spans_earnings becomes a PASS with a counted NOT_APPLICABLE audit row naming the absence \u2014 never a silent pass; version-gated, refuses under 0.2.1); declare fills.fill_door_decision_close=decision_grid (the fill door's decision-side comparison consumes the frozen verified decision closes on the dual-calendar lane; the execution calendar keeps the execution-side checks)"
+invariants:
+- id: INV-01
+  statement: Every feature has observed_at, available_at, source, source record ID, and revision ID.
+  enforced_by:
+  - schemas.features
+- id: INV-02
+  statement: available_at <= decision_at for every training and test row.
+  enforced_by:
+  - guards.availability
+- id: INV-03
+  statement: SEC fundamentals use filing acceptance/publication timing, never fiscal period end.
+  enforced_by:
+  - guards.availability
+  - fixtures.filing_10q
+- id: INV-04
+  statement: Insider activity becomes usable only after the Form 4 is public, never on the private transaction date.
+  enforced_by:
+  - guards.availability
+  - fixtures.form4
+- id: INV-05
+  statement: All rows sharing a decision session stay in the same split.
+  enforced_by:
+  - splitting.splitter
+- id: INV-06
+  statement: Any training label that overlaps the test interval is purged.
+  enforced_by:
+  - splitting.splitter
+  - splitting.checks
+- id: INV-07
+  statement: Imputation, clipping, scaling, feature selection, calibration, and hyperparameter search fit only inside training data.
+  enforced_by:
+  - registry.budget
+- id: INV-08
+  statement: The historical universe includes delisted securities and point-in-time listings.
+  enforced_by:
+  - schemas.security
+  - fixtures.ticker_rename_delisting
+- id: INV-09
+  statement: Option candidates are contracts that actually existed at the decision time.
+  enforced_by:
+  - schemas.options
+  - candidates.filters
+- id: INV-10
+  statement: A feature computed with the close cannot receive a same-close fill.
+  enforced_by:
+  - guards.fills
+- id: INV-11
+  statement: Long-option entry is at an executable buy price and liquidation is at an executable sell price; midpoint is a sensitivity case, not the primary result.
+  enforced_by:
+  - guards.fills
+- id: INV-12
+  statement: Cash, positions, fees, exercises, assignments, and deliverables reconcile exactly.
+  enforced_by:
+  - ledger.book
+- id: INV-13
+  statement: Every attempted configuration is recorded before its outcome is viewed.
+  enforced_by:
+  - registry.sqlite
+- id: INV-14
+  statement: Performance artifacts contain the exact Git SHA, config hash, dataset-manifest hash, and trial ID.
+  enforced_by:
+  - protocol.stamping
+timestamp_semantics:
+  clock: utc
+  session_timezone: America/New_York
+  session_open: 09:30
+  session_close: '16:00'
+  decision_instant: session_close
+  availability_rule: available_at <= decision_at (inclusive)
+  observation_rule: observed_at <= available_at
+  execution_rule: execution_at > decision_at AND execution_session > decision_session
+calendar:
+  implementation: static_json
+  fixture: data/calendar/nyse_sessions_2018_01_02_2026_12_31.json
+  checksum_file: data/calendar/nyse_sessions_2018_01_02_2026_12_31.sha256
+  generator: scripts/gen_calendar.py
+  generator_dependency: exchange-calendars
+folds:
+  shape: anchored_expanding
+  label_horizon_sessions: 5
+  embargo_sessions: 5
+  validation_window_sessions:
+    min: 126
+    max: 252
+    default: 126
+  test_window_sessions:
+    min: 63
+    max: 126
+    default: 63
+  roll_forward_sessions: 63
+  min_train_sessions: 252
+  purge_gap_rule: The last retained train session s must satisfy ordinal(s) + label_horizon_sessions + embargo_sessions < ordinal(first eval session), evaluated on calendar ordinals, globally across the panel.
+inner_loop:
+  max_registered_configs: 32
+fills:
+  primary:
+    long_entry: ask
+    long_exit: bid
+    short_entry: bid
+    short_exit: ask
+  fraction_to_midpoint_sensitivity:
+  - '0.5'
+  - '1.0'
+  max_quote_age_seconds: 900
+  reject_locked_quotes: true
+  fill_size_fraction: '1.0'
+  same_session_execution: reject
+  partial_fills: allowed_by_quote_size
+  money:
+    price_tick: '0.01'
+    fee_tick: '0.01'
+  vwap:
+    executable: session_vwap_conservative_tick
+    participation_cap: bar_volume
+    participation_scope: cumulative_per_contract_session
+    zero_volume_session: unfillable
+    publication_gate: received_timestamp
+    session_stamp: close_of_bar_session
+    bar_recency: previous_session
+    midpoint_fraction: not_applicable
+  fill_door_decision_close: decision_grid
+option_candidate_defaults:
+  dte_min: 30
+  dte_max: 60
+  abs_delta_min: '0.30'
+  abs_delta_max: '0.60'
+  standard_deliverable_only: true
+  min_open_interest: 500
+  min_same_day_volume: 100
+  volume_only_if_already_available: true
+  max_spread_fraction_of_midpoint: '0.10'
+  min_underlying_20d_median_dollar_volume: '50000000'
+  exclude_earnings_spanning_hold: true
+  earnings_evaluation: disclosed_absence
+  liquidity_volume_flow:
+    regime: volume_flow
+    flow_min_session_volume: 100
+    spread_term: dropped_no_two_sided_market
+    open_interest_term: dropped_no_open_interest
+    underlying_liquidity_term: evaluated
+    abs_delta_provenance_accepted:
+    - vendor
+    - model-derived-from-vwap
+universe:
+  include_delisted: true
+  identity_keys:
+  - security_id
+  - figi
+  - cik
+  ticker_is_not_identity: true
+short_options:
+  policy: prohibited
+  note: No naked short options. Short legs in debit spreads are allowed only after expiration, early assignment, dividends, exercise-by-exception, and adjusted-deliverable logic exist and are tested (post-M0).
+trials:
+  register_before_outcome: true
+  duplicate_trial_id: reject
+  storage: sqlite

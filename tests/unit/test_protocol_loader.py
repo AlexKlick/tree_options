@@ -124,39 +124,74 @@ class TestProtocolHash:
 
 
 class TestProtocolIdentityPin:
-    """(P1-4, Codex round 1) The absolute canonical-hash pin.
+    """(P1-4, Codex round 1) The absolute canonical-hash pins.
 
     w7a added a DEFAULTED schema member `underlying_liquidity_term` and the
     untouched 0.2.1 yaml silently re-hashed — 1,751 green tests never noticed
     because nothing pinned the ABSOLUTE value. The canonical hash represents
     what the yaml DECLARES: a defaulted-but-undeclared member is 0.2.2
-    pre-draft machinery and must not ride the 0.2.1 identity."""
+    pre-draft machinery and must not ride the 0.2.1 identity.
 
-    # the ledger-bound identity (bars-authority binding + every cross-branch
-    # trial identity); verified by execution on this branch before the pin
+    (0.2.2 flip, owner ruling m4-022-ruling-20260828, ratified 2026-08-28)
+    The live yaml is 0.2.2 now, so the ABSOLUTE pin moved to the LANDED
+    identity (below); the 0.2.1-era pin lives on unchanged against the
+    pinned pre-flip fixture (tests/fixtures/protocol-0.2.1.yaml), which is
+    what the below-0.2.2 strip mechanics are proven on — the strip is
+    version-gated OFF at 0.2.2, so the LIVE file can no longer exercise
+    it."""
+
+    # the pre-flip ledger-bound 0.2.1 identity (bars-authority binding +
+    # every cross-branch trial identity until the flip); the pinned fixture
+    # must answer it forever
     LEDGER_BOUND_PROTOCOL_SHA256 = (
         "cfafc884d9c45d805f6d6028d6991daf9e2e1751d91823306d780506bbaffeb7"
     )
 
-    def test_repo_yaml_hashes_to_the_ledger_bound_identity(self):
-        """The absolute pin: the gate can never lose identity stability
-        silently again (RED before P1-4: the defaulted member rode the dump
+    # the LANDED 0.2.2 identity (the flip, ratified 2026-08-28): verified by
+    # execution on this branch, and proven model-identical to the builder
+    # packet's proposed model except the ratification record (see
+    # tests/unit/test_protocol_flip_022.py — the field-level proof)
+    LANDED_PROTOCOL_SHA256_022 = "22c782313865fadd37fd18a3ff95ac449dc4e9740102f54f828219c354614521"
+
+    # the pre-flip yaml snapshotted byte-for-byte from git HEAD (merge
+    # ceb92ca) before the flip landed
+    FIXTURE_021 = Path(__file__).resolve().parents[1] / "fixtures" / "protocol-0.2.1.yaml"
+
+    def test_repo_yaml_hashes_to_the_landed_identity(self):
+        """The absolute pin, carried by the flip: the repo yaml is 0.2.2 now
+        and must answer the LANDED identity — the gate can never lose
+        identity stability silently (this was the 0.2.1 pin cfafc884…
+        until the flip; RED before P1-4: the defaulted member rode the dump
         and the same expression yielded 3b0b8a85…)."""
         from tree_options.protocol.loader import load_protocol, protocol_hash
 
         assert (
             protocol_hash(load_protocol(Path("research_protocol.yaml")))
-            == self.LEDGER_BOUND_PROTOCOL_SHA256
+            == self.LANDED_PROTOCOL_SHA256_022
         )
 
-    def test_a_declared_dropped_term_rides_the_hash(self, protocol_path):
-        """The exclusion must not swallow a real declaration: a yaml that
-        DECLARES `dropped_no_equity_aggregates` (!= the default) hashes
-        DIFFERENTLY from the pin — the disposition is a semantic protocol
-        fact, not pre-draft machinery."""
+    def test_the_pinned_021_fixture_hashes_to_the_pre_flip_identity(self):
+        """The 0.2.1 half of the pin, moved onto the fixture: the pre-flip
+        yaml (snapshotted byte-exact at the flip) still answers the identity
+        every prior ledger stamped. The strip mechanics below 0.2.2 are
+        exercised on THIS file — the live 0.2.2 yaml is version-gated past
+        them, so neutering the strip can only be caught here."""
         from tree_options.protocol.loader import load_protocol, protocol_hash
 
-        base = load_protocol(protocol_path)
+        fixture = load_protocol(self.FIXTURE_021)
+        assert fixture.meta.protocol_version == "0.2.1"
+        assert protocol_hash(fixture) == self.LEDGER_BOUND_PROTOCOL_SHA256
+
+    def test_a_declared_dropped_term_rides_the_hash(self):
+        """The exclusion must not swallow a real declaration: a 0.2.1
+        protocol that DECLARES `dropped_no_equity_aggregates` (!= the
+        default) hashes DIFFERENTLY from the pin — the disposition is a
+        semantic protocol fact, not pre-draft machinery. Carried by the
+        flip onto the pinned 0.2.1 fixture (premise: a below-0.2.2
+        protocol)."""
+        from tree_options.protocol.loader import load_protocol, protocol_hash
+
+        base = load_protocol(self.FIXTURE_021)
         lf = base.option_candidate_defaults.liquidity_volume_flow
         assert lf is not None
         declared = lf.model_copy(
@@ -171,13 +206,16 @@ class TestProtocolIdentityPin:
         )
         assert protocol_hash(mutated) != self.LEDGER_BOUND_PROTOCOL_SHA256
 
-    def test_undeclared_and_defaulted_models_hash_identically(self, protocol_path):
+    def test_undeclared_and_defaulted_models_hash_identically(self):
         """Cross-branch identity: a model constructed WITHOUT the field (the
-        0.2.1 yaml) and one WITH the default stamped explicitly produce the
-        SAME canonical bytes — a default is not a declaration."""
+        pre-flip 0.2.1 yaml) and one WITH the default stamped explicitly
+        produce the SAME canonical bytes — a default is not a declaration.
+        Carried by the flip onto the pinned 0.2.1 fixture (premise: a
+        below-0.2.2 protocol — at 0.2.2 the strip is gated off and the
+        equality is trivial)."""
         from tree_options.protocol.loader import canonical_json, load_protocol
 
-        undeclared = load_protocol(protocol_path)
+        undeclared = load_protocol(self.FIXTURE_021)
         lf = undeclared.option_candidate_defaults.liquidity_volume_flow
         assert lf is not None
         defaulted = undeclared.model_copy(
@@ -193,15 +231,17 @@ class TestProtocolIdentityPin:
         )
         assert canonical_json(undeclared) == canonical_json(defaulted)
 
-    def test_the_022_pre_draft_defaults_do_not_move_the_021_pin(self, protocol_path):
+    def test_the_022_pre_draft_defaults_do_not_move_the_021_pin(self):
         """(0.2.2 lane, owner ruling m4-022-ruling-20260828) The two further
         pre-draft fields (`earnings_evaluation`, `fill_door_decision_close`)
         ride the same era-gated discipline as `underlying_liquidity_term`:
         stamped-at-default on a 0.2.1 protocol they hash to the PIN — the
-        schema additions may never silently re-hash the untouched yaml."""
+        schema additions may never silently re-hash the untouched yaml.
+        Carried by the flip onto the pinned 0.2.1 fixture (premise: a
+        below-0.2.2 protocol)."""
         from tree_options.protocol.loader import canonical_json, load_protocol
 
-        undeclared = load_protocol(protocol_path)
+        undeclared = load_protocol(self.FIXTURE_021)
         defaulted = undeclared.model_copy(
             update={
                 "option_candidate_defaults": undeclared.option_candidate_defaults.model_copy(
@@ -219,15 +259,17 @@ class TestProtocolIdentityPin:
 
         assert protocol_hash(defaulted) == self.LEDGER_BOUND_PROTOCOL_SHA256
 
-    def test_a_022_protocol_rides_the_declared_fields_on_the_hash(self, protocol_path):
+    def test_a_022_protocol_rides_the_declared_fields_on_the_hash(self):
         """(0.2.2 declaration 1) At 0.2.2 NOTHING is stripped: the DECLARED
         values — including a DECLARED `underlying_liquidity_term: evaluated`
-        (equal to its default!) — ride the hash by design, so the projected
-        post-flip identity differs from the 0.2.1 pin on exactly the packet's
-        content (version, amendment record, the three declarations)."""
+        (equal to its default!) — ride the hash by design, so the post-flip
+        identity differs from the 0.2.1 pin on exactly the packet's content
+        (version, amendment record, the three declarations). Carried by the
+        flip: the 0.2.1 base is now the pinned fixture (pre-flip the live
+        yaml supplied it)."""
         from tree_options.protocol.loader import canonical_json, load_protocol, protocol_hash
 
-        base = load_protocol(protocol_path)
+        base = load_protocol(self.FIXTURE_021)
         data = base.model_dump(mode="json")
         data["meta"]["protocol_version"] = "0.2.2"
         data["meta"]["amendments"].append(

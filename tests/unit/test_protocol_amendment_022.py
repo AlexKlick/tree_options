@@ -1,7 +1,9 @@
 """The 0.2.2 lane-on declaration packet (owner ruling m4-022-ruling-20260828).
 
 Pins the dry-run builder's contract: the packet is constructed from the
-STANDING 0.2.1 protocol, carries the three owner-ruled declarations each
+pinned 0.2.1 fixture (the pre-flip standing protocol; the flip landed
+2026-08-28 and the builder refuses non-0.2.1 bases), carries the three
+owner-ruled declarations each
 with its owner-decision id, computes (never applies) the projected post-flip
 identity through the real loader's own hashing, emits under artifacts/ only,
 says landed: false, and leaves research_protocol.yaml untouched. The base
@@ -25,6 +27,9 @@ from tree_options.protocol import amendment as amd
 from tree_options.protocol.amendment import build_declaration_amendment
 
 PROTOCOL_PATH = REPO_ROOT / "research_protocol.yaml"
+# (0.2.2 flip) the builder's BASE is the pinned 0.2.1 fixture: the builder
+# refuses non-0.2.1 bases, and the live yaml is 0.2.2 since the flip
+PROTOCOL_021 = REPO_ROOT / "tests" / "fixtures" / "protocol-0.2.1.yaml"
 LEDGER_BOUND_PROTOCOL_SHA256 = "cfafc884d9c45d805f6d6028d6991daf9e2e1751d91823306d780506bbaffeb7"
 
 
@@ -40,7 +45,7 @@ def _out_root() -> Iterator[Path]:
 
 def test_the_declaration_packet_carries_the_three_ruled_declarations(tmp_path: Path) -> None:
     with _out_root() as out:
-        packet = build_declaration_amendment(protocol_path=PROTOCOL_PATH, out_root=out)
+        packet = build_declaration_amendment(protocol_path=PROTOCOL_021, out_root=out)
         assert packet.landed is False
         assert packet.base_version == "0.2.1"
         assert packet.proposed_version == "0.2.2"
@@ -86,7 +91,7 @@ def test_the_projected_hash_is_the_loaders_own_answer_for_the_flipped_yaml(
     from tree_options.protocol.loader import load_protocol, protocol_hash
 
     with _out_root() as out:
-        packet = build_declaration_amendment(protocol_path=PROTOCOL_PATH, out_root=out)
+        packet = build_declaration_amendment(protocol_path=PROTOCOL_021, out_root=out)
         proposed = load_protocol(
             out / packet.protocol_hash_projected[:12] / "protocol-0.2.2-proposed.yaml"
         )
@@ -135,18 +140,20 @@ def test_the_projected_hash_is_the_loaders_own_answer_for_the_flipped_yaml(
 def test_the_builder_is_dry_run_only_the_yaml_never_moves(tmp_path: Path) -> None:
     before = hashlib.sha256(PROTOCOL_PATH.read_bytes()).hexdigest()
     with _out_root() as out:
-        build_declaration_amendment(protocol_path=PROTOCOL_PATH, out_root=out)
+        build_declaration_amendment(protocol_path=PROTOCOL_021, out_root=out)
     after = hashlib.sha256(PROTOCOL_PATH.read_bytes()).hexdigest()
     assert before == after
     from tree_options.protocol.loader import load_protocol, protocol_hash
 
-    assert protocol_hash(load_protocol(PROTOCOL_PATH)) == LEDGER_BOUND_PROTOCOL_SHA256
+    # the builder's base (the pinned pre-flip protocol) IS the ledger-bound
+    # 0.2.1 identity; the live yaml answers the LANDED 0.2.2 pin instead
+    assert protocol_hash(load_protocol(PROTOCOL_021)) == LEDGER_BOUND_PROTOCOL_SHA256
 
 
 def test_a_non_021_base_refuses(tmp_path: Path) -> None:
     import yaml
 
-    doc = yaml.safe_load(PROTOCOL_PATH.read_text(encoding="utf-8"))
+    doc = yaml.safe_load(PROTOCOL_021.read_text(encoding="utf-8"))
     doc["meta"]["protocol_version"] = "0.2.0"
     doc["meta"]["amendments"] = [
         record for record in doc["meta"]["amendments"] if record["version"] != "0.2.1"
@@ -162,17 +169,17 @@ def test_an_out_root_outside_artifacts_refuses(tmp_path: Path) -> None:
     rogue = REPO_ROOT / "data" / "amendment-022-refused-probe"
     try:
         with pytest.raises(amd.OutputRefusedError):
-            build_declaration_amendment(protocol_path=PROTOCOL_PATH, out_root=rogue)
+            build_declaration_amendment(protocol_path=PROTOCOL_021, out_root=rogue)
     finally:
         shutil.rmtree(rogue, ignore_errors=True)
 
 
 def test_rebuilds_are_byte_identical(tmp_path: Path) -> None:
     with _out_root() as out:
-        first = build_declaration_amendment(protocol_path=PROTOCOL_PATH, out_root=out)
+        first = build_declaration_amendment(protocol_path=PROTOCOL_021, out_root=out)
         digest_dir = out / first.protocol_hash_projected[:12]
         first_bytes = {p.name: p.read_bytes() for p in sorted(digest_dir.iterdir()) if p.is_file()}
-        second = build_declaration_amendment(protocol_path=PROTOCOL_PATH, out_root=out)
+        second = build_declaration_amendment(protocol_path=PROTOCOL_021, out_root=out)
         second_bytes = {p.name: p.read_bytes() for p in sorted(digest_dir.iterdir()) if p.is_file()}
     assert first_bytes == second_bytes
     assert first == second
@@ -194,7 +201,15 @@ def _cli(argv: list[str]) -> int:
 
 def test_cli_target_version_022_builds_the_declaration_packet(capsys) -> None:
     with _out_root() as out:
-        assert _cli(["--target-version", "0.2.2", "--out-root", str(out)]) == 0
+        argv = [
+            "--target-version",
+            "0.2.2",
+            "--out-root",
+            str(out),
+            "--protocol",
+            str(PROTOCOL_021),
+        ]
+        assert _cli(argv) == 0
     record = json.loads(capsys.readouterr().out)
     assert record["landed"] is False
     assert record["proposed_version"] == "0.2.2"

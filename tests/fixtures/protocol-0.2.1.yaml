@@ -7,7 +7,7 @@
 # raw bytes: comment edits do not fork the protocol.
 
 meta:
-  protocol_version: "0.2.2"
+  protocol_version: "0.2.1"
   created: "2026-08-17"
   owner: "architecture/leakage"
   change_policy: >-
@@ -46,33 +46,6 @@ meta:
         integer threshold on session volume.); final_holdout_window
         schema addition proposed separately (NOT_LANDED) because protocol
         models are extra="forbid"
-    - version: "0.2.2"
-      date: "2026-08-28"
-      decision: >-
-        0.2.2 lane-on ratification, owner ruling m4-022-ruling-20260828
-        (all three declarations at the recommended options; builder packet
-        5caf56568941 projected
-        5caf56568941fa1fca4c59da65db327f07f3ef094fb7bbfa6c60309b5fd31f8c
-        over base
-        cfafc884d9c45d805f6d6028d6991daf9e2e1751d91823306d780506bbaffeb7;
-        code lane PR #19 owner-merged ceb92ca). Hand-applied preserving
-        comments, model-identical to the packet except this decision and
-        the date record the ratification: the packet's pending markers
-        bound the proposal, not the landed protocol, so the landed
-        identity differs from the packet's projection by exactly this
-        record.
-      changes: >-
-        declare liquidity_volume_flow.underlying_liquidity_term=evaluated
-        (rides the 0.2.2 hash by design; the 0.2.1-era canonical_json
-        pre-draft strip is version-gated off at 0.2.2); declare
-        option_candidate_defaults.earnings_evaluation=disclosed_absence (a
-        missing spans_earnings becomes a PASS with a counted
-        NOT_APPLICABLE audit row naming the absence — never a silent
-        pass; version-gated, refuses under 0.2.1); declare
-        fills.fill_door_decision_close=decision_grid (the fill door's
-        decision-side comparison consumes the frozen verified decision
-        closes on the dual-calendar lane; the execution calendar keeps
-        the execution-side checks)
 
 invariants:
   - id: INV-01
@@ -210,11 +183,6 @@ fills:
     session_stamp: close_of_bar_session
     bar_recency: previous_session
     midpoint_fraction: not_applicable
-  # 0.2.2 (owner ruling m4-022-ruling-20260828): the fill door's
-  # decision-side close comparison consumes the frozen verified decision
-  # closes on the dual-calendar lane; the execution calendar keeps the
-  # execution-side checks.
-  fill_door_decision_close: decision_grid
 
 option_candidate_defaults:
   dte_min: 30
@@ -228,21 +196,12 @@ option_candidate_defaults:
   max_spread_fraction_of_midpoint: "0.10"
   min_underlying_20d_median_dollar_volume: "50000000"
   exclude_earnings_spanning_hold: true
-  # 0.2.2 (owner ruling m4-022-ruling-20260828): this data tier has no
-  # earnings-events source; a missing spans_earnings becomes a PASS with a
-  # counted NOT_APPLICABLE audit row naming the disclosed absence — never
-  # a silent pass. Version-gated in code: refuses under 0.2.1.
-  earnings_evaluation: disclosed_absence
   # G3 Ask D (0.2.0): the volume-flow liquidity regime, for tiers with no
   # two-sided market. flow_min_session_volume set to 100 by the 0.2.1
   # amendment (owner_deviation bound to census 43b0b040ea3c; see the
   # meta.amendments record). Open interest and the spread term are
   # dropped WITH disclosure (NOT_APPLICABLE naming the absence).
   liquidity_volume_flow:
-    # 0.2.2 (owner ruling m4-022-ruling-20260828): DECLARED now — at 0.2.2
-    # the value rides the protocol identity by design (the pre-draft
-    # canonical_json strip is version-gated off).
-    underlying_liquidity_term: evaluated
     regime: volume_flow
     flow_min_session_volume: 100
     spread_term: dropped_no_two_sided_market
