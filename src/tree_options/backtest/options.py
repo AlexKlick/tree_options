@@ -80,6 +80,7 @@ from tree_options.schemas.market import (
     NonTickQuoteError,
     NonTradableConditionError,
     StaleQuoteError,
+    VwapQuoteEvent,
     ZeroSizeQuoteError,
     select_quote,
 )
@@ -204,7 +205,15 @@ class FillAudit:
     """Per-fill provenance for the sealed gate's criterion 2: the order's
     decision instant/session and the SELECTED quote's receipt (re-derived
     through the same shared `select_quote` with the same execution instant
-    the engine used — zero stress, so the selections are identical)."""
+    the engine used — zero stress, so the selections are identical).
+
+    (G4) `quote_session`/`quote_volume` are the SELECTED BAR's own facts,
+    stamped additively when the selected quote is a `VwapQuoteEvent` (lane 2)
+    and left None on the two-sided lanes — so a stamped fill carries the bar
+    session the fill participated in and that bar's observed volume, which is
+    what the G4 fill-discipline criterion (ordinal difference exactly 1;
+    cumulative participation per (contract, bar session) <= observed volume)
+    re-derives from the artifact alone."""
 
     fill_id: str
     decision_session: date
@@ -212,6 +221,8 @@ class FillAudit:
     quote_received_at: datetime
     execution_at: datetime
     execution_session: date
+    quote_session: date | None = None
+    quote_volume: int | None = None
 
 
 @dataclass(frozen=True)
@@ -429,6 +440,11 @@ def run_options_backtest(
                 quote_received_at=selected.received_timestamp,
                 execution_at=fill.execution_at,
                 execution_session=fill.execution_session,
+                # (G4) the selected BAR's own facts, only when the fill drew
+                # from a vwap bar (lane 2); None keeps two-sided artifacts
+                # byte-identical
+                quote_session=(selected.session if isinstance(selected, VwapQuoteEvent) else None),
+                quote_volume=(selected.volume if isinstance(selected, VwapQuoteEvent) else None),
             )
         )
         return fill
