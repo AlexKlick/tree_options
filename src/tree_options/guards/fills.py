@@ -27,7 +27,7 @@ price * quantity * multiplier (snapshotted onto the Fill).
 from __future__ import annotations
 
 import math
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
@@ -162,6 +162,7 @@ class FillEngine:
         max_quote_age_seconds: int = 900,
         reject_locked_quotes: bool = True,
         fill_size_fraction: Decimal = Decimal("1.0"),
+        decision_closes: Mapping[date, datetime] | None = None,
     ) -> None:
         self.calendar = calendar
         self.fee_model: FeeModel = fee_model or PerContractFeeModel()
@@ -170,6 +171,16 @@ class FillEngine:
             raise ValueError(f"fill_size_fraction {fill_size_fraction} must be in (0, 1]")
         self.reject_locked_quotes = reject_locked_quotes
         self.fill_size_fraction = fill_size_fraction
+        # (0.2.2 declaration 3, owner ruling m4-022-ruling-20260828) The
+        # frozen VERIFIED decision closes for the door's DECISION-side
+        # comparison on the dual-calendar lane. None (the default) keeps the
+        # single-calendar behavior byte-identical: the door reads its own
+        # calendar's session_close, exactly as before. When supplied, the
+        # decision-side comparison consumes ONLY this map — an unmapped
+        # decision session refuses by name (DECISION_CLOSE_NOT_MAPPED),
+        # never a fallback to the execution calendar's close for a session
+        # the decision grid never verified.
+        self.decision_closes = decision_closes
         self._fill_seq = 0
         self._executed_orders: set[str] = set()
         self._orders: dict[str, Order] = {}  # order_id -> the order BOUND at first mint
@@ -279,7 +290,33 @@ class FillEngine:
                 f"{contract.contract_id} not listed on decision session "
                 f"{order.decision_session}: unknowable at decision time",
             )
-        calendar_decision_close = self.calendar.session_close(order.decision_session)
+        # (022-C, 0.2.2 declaration 3 — fill_door_decision_close:
+        # "decision_grid") The DECISION-side close: on the dual-calendar
+        # lane the execution calendar's close is NOT the decision instant's
+        # authority — an early-close session reads 16:00 there while the
+        # verified decision_at carries the grid's 13:00, and the door used
+        # to reject exactly the correctly-stamped order (known limitation
+        # (a)). With decision_closes supplied, this comparison consumes the
+        # FROZEN VERIFIED closes of the decision grid; every EXECUTION-side
+        # check below (SAME_SESSION_EXECUTION ordinals,
+        # EXECUTION_INSTANT_MISMATCH, contains_instant, the bar stamps)
+        # stays on the execution calendar. An unmapped decision session
+        # refuses by name — the door never falls back to the execution
+        # calendar's close for a session the decision grid never verified.
+        if self.decision_closes is not None:
+            try:
+                calendar_decision_close = self.decision_closes[order.decision_session]
+            except KeyError:
+                raise FillRejection(
+                    "DECISION_CLOSE_NOT_MAPPED",
+                    f"decision session {order.decision_session} has no frozen "
+                    "verified close in the engine's decision_closes map — the "
+                    "decision-side comparison never falls back to the execution "
+                    "calendar's close for a session the decision grid never "
+                    "verified",
+                ) from None
+        else:
+            calendar_decision_close = self.calendar.session_close(order.decision_session)
         if order.decision_at != calendar_decision_close:
             raise FillRejection(
                 "DECISION_INSTANT_NOT_CLOSE",

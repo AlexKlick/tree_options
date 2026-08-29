@@ -174,3 +174,114 @@ class TestFixtureInventory:
         assert cand.itm  # deep ITM: underlier 62.30 vs strike 50
         assert cand.claim == "DEFERRED_TO_POST_M0"
         assert cand.note.startswith("no assignment engine in M0")
+
+
+# ---- (0.2.2 declaration 2, owner ruling m4-022-ruling-20260828) earnings
+# ---- disclosed absence: a missing spans_earnings under a >=0.2.2 protocol
+# ---- that DECLARES the absence is a PASS with a counted NOT_APPLICABLE
+# ---- audit row; under 0.2.1 (or without the declaration) it stays the
+# ---- honest dark lane (NOT_EVALUABLE) byte-identically. ------------------
+
+
+def _declared_protocol(protocol, *, version: str, earnings_evaluation: str):
+    """The declared protocol IN MEMORY — never a yaml edit: the version bump
+    carries its own amendment record (the version-completeness validator)
+    and `earnings_evaluation` is declared to the given value. Exactly the
+    shape the 0.2.2 amendment packet proposes for the earnings declaration."""
+    from tree_options.protocol.schema import ResearchProtocol
+
+    data = protocol.model_dump(mode="json")
+    data["meta"]["protocol_version"] = version
+    if not any(record["version"] == version for record in data["meta"]["amendments"]):
+        data["meta"]["amendments"].append(
+            {
+                "version": version,
+                "date": "PENDING-OWNER-RATIFICATION",
+                "decision": "unit fixture: the in-memory 0.2.2 declarations",
+                "changes": "unit fixture only; the real record rides the amendment packet",
+            }
+        )
+    data["option_candidate_defaults"]["earnings_evaluation"] = earnings_evaluation
+    return ResearchProtocol.model_validate(data)
+
+
+class TestEarningsDisclosedAbsence:
+    def test_a_022_declared_run_passes_candidates_that_021_refuses(self, protocol, static_calendar):
+        """(022-B red-first case 1) Under 0.2.2 WITH the declared absence a
+        `spans_earnings=None` candidate is ACCEPTED (the lane turns on);
+        under the standing 0.2.1 protocol the same snapshot stays refused
+        NOT_EVALUABLE — the honest dark lane, byte-identical to today."""
+        dark = _snapshot(spans_earnings=None)
+        refusing = CandidateFilter.from_protocol(static_calendar, protocol)
+        decision_021 = refusing.evaluate(dark)
+        assert not decision_021.accepted
+        assert _statuses(decision_021)["earnings_span"] == NOT_EVALUABLE
+        declared = _declared_protocol(
+            protocol, version="0.2.2", earnings_evaluation="disclosed_absence"
+        )
+        decision = CandidateFilter.from_protocol(static_calendar, declared).evaluate(dark)
+        assert decision.accepted
+        row = next(r for r in decision.results if r.rule == "earnings_span")
+        assert row.status == NOT_APPLICABLE
+        assert "no events source on this tier" in row.detail
+        assert "m4-022-ruling-20260828" in row.detail
+
+    def test_the_version_gate_keeps_021_refusals_under_a_disclosed_absence_declaration(
+        self, protocol, static_calendar
+    ):
+        """(022-B red-first case 2, the mutation owner) The version gate is
+        the safety: the SAME disclosed_absence declaration on a protocol
+        still stamped 0.2.1 must NOT activate the pass — the identical code
+        serves both versions and only the version bump turns the lane on."""
+        declared = _declared_protocol(
+            protocol, version="0.2.1", earnings_evaluation="disclosed_absence"
+        )
+        filt = CandidateFilter.from_protocol(static_calendar, declared)
+        decision = filt.evaluate(_snapshot(spans_earnings=None))
+        assert not decision.accepted
+        assert _statuses(decision)["earnings_span"] == NOT_EVALUABLE
+
+    def test_022_without_the_declaration_stays_not_evaluable(self, protocol, static_calendar):
+        """(022-B) The declaration is the second half of the gate: a 0.2.2
+        protocol that still declares `evaluated` keeps refusing missing
+        earnings spans — the version bump alone turns nothing on."""
+        undeclared = _declared_protocol(protocol, version="0.2.2", earnings_evaluation="evaluated")
+        filt = CandidateFilter.from_protocol(static_calendar, undeclared)
+        decision = filt.evaluate(_snapshot(spans_earnings=None))
+        assert not decision.accepted
+        assert _statuses(decision)["earnings_span"] == NOT_EVALUABLE
+
+    def test_the_disclosed_absence_row_is_present_and_counted_on_every_passed_candidate(
+        self, protocol, static_calendar
+    ):
+        """(022-B red-first case 3) Never a silent pass: EVERY passed
+        candidate carries the disclosed-absence row, and the audit stamp
+        counts it through the same CandidateAudit.tally the backtest uses."""
+        from tree_options.options.strategy import CandidateAudit
+
+        declared = _declared_protocol(
+            protocol, version="0.2.2", earnings_evaluation="disclosed_absence"
+        )
+        filt = CandidateFilter.from_protocol(static_calendar, declared)
+        audit = CandidateAudit()
+        for _ in range(3):
+            decision = filt.evaluate(_snapshot(spans_earnings=None))
+            assert decision.accepted
+            for result in decision.results:
+                audit.tally(result.rule, result.status)
+        assert audit.rule_histogram[("earnings_span", NOT_APPLICABLE)] == 3
+
+    def test_a_supplied_earnings_span_still_evaluates_under_022(self, protocol, static_calendar):
+        """The disclosure excuses an ABSENT input only: a SUPPLIED
+        spans_earnings is evaluated exactly as today (False passes, True
+        FAILs the hold) — the declaration may not paper over real inputs."""
+        declared = _declared_protocol(
+            protocol, version="0.2.2", earnings_evaluation="disclosed_absence"
+        )
+        filt = CandidateFilter.from_protocol(static_calendar, declared)
+        clean = filt.evaluate(_snapshot(spans_earnings=AsOf(False, EARLIER)))
+        assert clean.accepted
+        assert _statuses(clean)["earnings_span"] == PASS
+        spanning = filt.evaluate(_snapshot(spans_earnings=AsOf(True, EARLIER)))
+        assert not spanning.accepted
+        assert _statuses(spanning)["earnings_span"] == "FAIL"

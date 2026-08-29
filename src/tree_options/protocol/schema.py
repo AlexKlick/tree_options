@@ -17,6 +17,24 @@ class _Strict(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+def protocol_version_at_least(version: str, major: int, minor: int, patch: int = 0) -> bool:
+    """True when a dotted protocol version (the schema pins
+    ``^\\d+\\.\\d+\\.\\d+$``) is >= the given floor. The 0.2.2 lane-on
+    machinery's VERSION GATE: both the canonical-hash pre-draft strip
+    (loader.canonical_json) and the earnings disclosed-absence pass
+    (candidates.filters) answer "is this protocol 0.2.2-shaped?" through
+    this one comparison, so the gate cannot drift between its two
+    consumers. A malformed version answers False — toward the stricter,
+    pre-0.2.2 behavior, never toward the pass."""
+    try:
+        parts = tuple(int(p) for p in version.split("."))
+    except ValueError:
+        return False
+    if len(parts) != 3:
+        return False
+    return parts >= (major, minor, patch)
+
+
 class AmendmentRecord(_Strict):
     """The provenance of one protocol version bump: what changed, when, and
     under which owner decision. Empty for 0.1.0-shaped protocols (the
@@ -134,6 +152,17 @@ class FillConfig(_Strict):
     partial_fills: Literal["allowed_by_quote_size"]
     money: MoneyConfig
     vwap: VwapFillPolicy
+    # 0.2.2 PRE-DRAFT MACHINERY (owner ruling m4-022-ruling-20260828,
+    # declaration 3): the fill door's DECISION-side close source on the
+    # dual-calendar lane. "execution_calendar" is the standing 0.2.1
+    # behavior (the door compares decision_at against the fill calendar's
+    # own session_close — known limitation (a): an early-close Friday reads
+    # 16:00 there while the verified decision_at carries 13:00);
+    # "decision_grid" is the ruled 0.2.2 disposition: the door's
+    # decision-side comparison consumes the frozen VERIFIED decision
+    # closes while the execution calendar keeps every execution-side check
+    # (ordinals, EXECUTION_INSTANT_MISMATCH, contains_instant, bar stamps).
+    fill_door_decision_close: Literal["execution_calendar", "decision_grid"] = "execution_calendar"
 
     @field_validator("fraction_to_midpoint_sensitivity")
     @classmethod
@@ -202,6 +231,17 @@ class OptionCandidateDefaults(_Strict):
     max_spread_fraction_of_midpoint: Decimal = Field(gt=0)
     min_underlying_20d_median_dollar_volume: Decimal = Field(gt=0)
     exclude_earnings_spanning_hold: bool
+    # 0.2.2 PRE-DRAFT MACHINERY (owner ruling m4-022-ruling-20260828,
+    # declaration 2): the earnings gate's disposition for a tier with no
+    # earnings-events source. "evaluated" is the standing 0.2.1 behavior —
+    # `exclude_earnings_spanning_hold: true` with `spans_earnings=None`
+    # answers NOT_EVALUABLE (the honest dark lane); "disclosed_absence" is
+    # the ruled 0.2.2 disposition — the ABSENCE itself is declared, and a
+    # missing spans_earnings becomes a PASS with a counted NOT_APPLICABLE
+    # audit row naming the absence, never a silent pass. The behavior is
+    # additionally VERSION-GATED in the filter (>= 0.2.2 required): the same
+    # code serves both versions and only the version bump turns the lane on.
+    earnings_evaluation: Literal["evaluated", "disclosed_absence"] = "evaluated"
     # G3: None = the two-sided regime stands alone (M0 default); present =
     # the volume-flow regime is ratified for tiers without two-sided markets.
     liquidity_volume_flow: LiquidityFlowConfig | None = None

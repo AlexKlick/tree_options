@@ -419,3 +419,74 @@ class TestFees:
         assert fill.fees == Decimal("2.60")  # 4 * 0.65
         # cash identity: buy of 4 @ ask 1.10 with 2.60 fees
         assert fill.signed_cash() == Decimal("-440.00")  # 4 * 1.10 * 100 multiplier
+
+
+class TestDecisionClosesSeam:
+    """(022-C, 0.2.2 declaration 3 — owner ruling m4-022-ruling-20260828)
+    The fill door's DECISION-side close source on the dual-calendar lane:
+    the frozen verified decision closes when supplied, the engine's own
+    calendar when not, and a named refusal for a session the map never
+    verified — never a fallback to the execution calendar's close."""
+
+    def test_unmapped_decision_session_refuses_by_name(self, synthetic_calendar):
+        engine = FillEngine(
+            synthetic_calendar,
+            decision_closes={
+                date(2024, 4, 10): synthetic_calendar.session_close(date(2024, 4, 10))
+            },
+        )
+        ex_session, exec_at = _next_exec(synthetic_calendar)
+        with pytest.raises(FillRejection) as ei:
+            engine.execute(
+                _order(),
+                fresh_quote(execution_at=exec_at),
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
+            )
+        assert ei.value.code == "DECISION_CLOSE_NOT_MAPPED"
+        assert "2024-04-15" in ei.value.detail
+
+    def test_a_verified_close_in_the_map_satisfies_the_door(self, synthetic_calendar):
+        """The mapped close IS the door's authority: an order stamped at the
+        frozen close fills even though the engine's calendar would answer a
+        different instant for the same session (the dual-calendar shape)."""
+        from tree_options.time.sessions import session_close_instant
+
+        decision = DECISION_SESSION
+        verified = session_close_instant(decision) - timedelta(hours=3)
+        engine = FillEngine(synthetic_calendar, decision_closes={decision: verified})
+        ex_session = synthetic_calendar.nth_after(decision, 1)
+        exec_at = session_close_instant(decision) + timedelta(hours=18)
+        stamped = _order(decision_session=decision).model_copy(update={"decision_at": verified})
+        fill = engine.execute(
+            stamped,
+            fresh_quote(bid="1.00", ask="1.10", execution_at=exec_at),
+            standard_call(),
+            execution_session=ex_session,
+            execution_at=exec_at,
+        )
+        assert fill.quantity == 5
+
+    def test_a_wrongly_stamped_order_still_refuses_against_the_map(self, synthetic_calendar):
+        """The seam NEVER weakens the door: an order NOT stamped at the
+        frozen verified close is rejected exactly as before — the map is a
+        second AUTHORITY, not a second chance."""
+        from tree_options.time.sessions import session_close_instant
+
+        decision = DECISION_SESSION
+        verified = session_close_instant(decision) - timedelta(hours=3)
+        engine = FillEngine(synthetic_calendar, decision_closes={decision: verified})
+        ex_session = synthetic_calendar.nth_after(decision, 1)
+        exec_at = session_close_instant(decision) + timedelta(hours=18)
+        order = _order(decision_session=decision)
+        misstamped = order.model_copy(update={"decision_at": session_close_instant(decision)})
+        with pytest.raises(FillRejection) as ei:
+            engine.execute(
+                misstamped,
+                fresh_quote(execution_at=exec_at),
+                standard_call(),
+                execution_session=ex_session,
+                execution_at=exec_at,
+            )
+        assert ei.value.code == "DECISION_INSTANT_NOT_CLOSE"

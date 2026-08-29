@@ -43,7 +43,7 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -315,8 +315,23 @@ def run_options_backtest(
     `MassiveDerivedSessionCalendar`) — so a Friday decision at D can
     fill at the next grid Friday D+1 against the previous TRADING day's
     bar. `execution_calendar=None` (the default) keeps ONE calendar for
-    both roles: lane-1/synthetic behavior is byte-identical."""
+    both roles: lane-1/synthetic behavior is byte-identical.
+
+    (022-C, 0.2.2 declaration 3 — owner ruling m4-022-ruling-20260828)
+    On the dual-calendar lane the decision grid also supplies the engine's
+    `decision_closes`: the frozen VERIFIED closes the fill door's
+    DECISION-side comparison consumes (the execution calendar keeps every
+    execution-side check). On the real lane `calendar` arrives as the
+    runner's BOUND calendar, whose own `session_close` answers the
+    boundary-verified map, so the derived dict carries exactly the
+    verified instants; the single-calendar lane passes None and keeps
+    today's door byte-identically."""
     fill_calendar = calendar if execution_calendar is None else execution_calendar
+    decision_closes: Mapping[date, datetime] | None = (
+        None
+        if execution_calendar is None
+        else {s: calendar.session_close(s) for s in calendar.sessions()}
+    )
     bar_map: dict[tuple[str, date], BarRecord] = {}
     for bar in dataset.bars:
         bar_map[(bar.security_id, bar.session)] = bar
@@ -361,11 +376,15 @@ def run_options_backtest(
 
     fees = fee_model or PerContractFeeModel()
     # (P1-1) the fill engine runs on the EXECUTION calendar; the grid
-    # calendar keeps every other responsibility in this backtest
+    # calendar keeps every other responsibility in this backtest.
+    # (022-C) the dual-calendar lane additionally hands the engine the
+    # grid's VERIFIED decision closes for the door's decision-side
+    # comparison — the execution calendar keeps the execution-side checks.
     engine = FillEngine(
         fill_calendar,
         fee_model=fees,
         max_quote_age_seconds=max_quote_age_seconds,
+        decision_closes=decision_closes,
     )
     ledger = LedgerBook(initial_cash)
     counters = OptionsCounters()

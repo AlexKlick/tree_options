@@ -357,6 +357,66 @@ def test_fill_audit_stamps_t1_discipline(world, surface, relaxed_filter) -> None
     assert result.counters.conservation_checks == len(result.sessions)
 
 
+def test_dual_calendar_early_close_decision_fills_at_the_verified_close(
+    world, surface, relaxed_filter
+) -> None:
+    """(022-C, owner ruling m4-022-ruling-20260828, declaration 3) Known
+    limitation (a) closed: on the dual-calendar lane the fill door's
+    DECISION-side comparison consumes the VERIFIED decision closes of the
+    decision grid, while the execution calendar keeps every execution-side
+    check (ordinals, EXECUTION_INSTANT_MISMATCH, contains_instant, bar
+    stamps). The execution twin here is the MassiveDerived shape — same
+    sessions, an EMPTY early-close set — so its session_close reads 16:00
+    ET on the early-close Wednesday 2018-07-03 while the grid's verified
+    decision_at carries the true 13:00 ET close. RED before 022-C: the door
+    compared decision_at against the EXECUTION calendar's close and the
+    correctly-stamped order died DECISION_INSTANT_NOT_CLOSE."""
+    from datetime import date
+
+    from tree_options.data.real_overlay import RealSessionCalendar
+
+    _overlay, calendar, _snap, dataset = world
+    sessions = calendar.sessions()
+    early = date(2018, 7, 3)  # the fixture's early close: 13:00 ET
+    idx = sessions.index(early)
+    exec_twin = RealSessionCalendar(calendar.sessions(), frozenset())
+    assert exec_twin.session_close(early) != calendar.session_close(early)
+    result = run_options_backtest(
+        calendar=calendar,
+        execution_calendar=exec_twin,
+        surface=surface,
+        dataset=dataset,
+        candidate_filter=relaxed_filter,
+        signals=_signals(world, surface, first_index=idx - 6, n_decision_sessions=14),
+        initial_cash=D("1000000.00"),
+        config=CONFIG,
+        arm="A",
+        end_session=sessions[idx + 16],
+    )
+    # the correctly-stamped 13:00 order on the early-close session FILLS
+    early_fills = [a for a in result.fill_audit if a.decision_session == early]
+    assert early_fills, (
+        "the dual-calendar lane must fill the order decided at the early-close "
+        "session's verified 13:00 ET close"
+    )
+    for audit in early_fills:
+        assert audit.decision_at == calendar.session_close(early)
+    # and the door never rejected anything on the execution calendar's 16:00
+    for bucket in (
+        result.counters.entry_fill_rejections,
+        result.counters.exit_fill_rejections,
+        result.counters.force_close_rejections,
+    ):
+        assert "DECISION_INSTANT_NOT_CLOSE" not in bucket
+    # the execution calendar keeps the execution-side discipline: T+1 on
+    # ordinals and instants inside the labeled execution sessions
+    for audit in result.fill_audit:
+        assert exec_twin.ordinal(audit.execution_session) > exec_twin.ordinal(
+            audit.decision_session
+        )
+        assert audit.execution_at > audit.decision_at
+
+
 def test_deterministic_repeat(world, surface, relaxed_filter) -> None:
     _overlay, calendar, _snap, dataset = world
     signals = _signals(world, surface, n_decision_sessions=3)
