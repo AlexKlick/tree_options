@@ -24,7 +24,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 
-from tree_options.protocol.schema import ResearchProtocol
+from tree_options.protocol.schema import ResearchProtocol, protocol_version_at_least
 from tree_options.schemas.options import OptionContract
 from tree_options.time.calendar import NotASessionError
 
@@ -103,6 +103,20 @@ def _tz_aware(ts: datetime) -> bool:
     return getattr(ts, "tzinfo", None) is not None
 
 
+def _earnings_disclosed_absence_declared(protocol: ResearchProtocol) -> bool:
+    """THE 0.2.2 VERSION GATE (owner ruling m4-022-ruling-20260828,
+    declaration 2): the earnings disclosed-absence pass activates ONLY on a
+    >=0.2.2 protocol that DECLARES `earnings_evaluation="disclosed_absence"`.
+    Either half alone keeps the honest dark lane — a 0.2.1 protocol carrying
+    the declaration refuses exactly as today (the version bump is what turns
+    the lane on), and a 0.2.2 protocol still declaring "evaluated" refuses
+    because nothing was declared absent. Both protocol factories compute the
+    flag through this one function so the gate cannot drift between regimes."""
+    return protocol.option_candidate_defaults.earnings_evaluation == "disclosed_absence" and (
+        protocol_version_at_least(protocol.meta.protocol_version, 0, 2, 2)
+    )
+
+
 class CandidateFilter:
     def __init__(
         self,
@@ -123,6 +137,7 @@ class CandidateFilter:
         flow_min_session_volume: int | None = None,
         underlying_liquidity_term: str = "evaluated",
         accepted_delta_provenance: tuple[str, ...] = ("vendor",),
+        earnings_disclosed_absence: bool = False,
     ) -> None:
         self.calendar = calendar
         self.dte_min = dte_min
@@ -169,6 +184,18 @@ class CandidateFilter:
             raise ValueError(f"unknown underlying_liquidity_term {underlying_liquidity_term!r}")
         self.underlying_liquidity_term = underlying_liquidity_term
         self.accepted_delta_provenance = tuple(accepted_delta_provenance)
+        # 0.2.2 pre-draft machinery (owner ruling m4-022-ruling-20260828,
+        # declaration 2): the earnings disclosed-absence pass. Computed ONLY
+        # by the protocol factories below — a direct constructor defaults to
+        # False, so every existing construction keeps today's behavior
+        # byte-identically. The gate is the CONJUNCTION: a >=0.2.2 protocol
+        # AND the declared "disclosed_absence" disposition. Either half
+        # alone keeps the honest dark lane (NOT_EVALUABLE).
+        if not isinstance(earnings_disclosed_absence, bool):
+            raise ValueError(
+                f"earnings_disclosed_absence must be a bool, got {earnings_disclosed_absence!r}"
+            )
+        self.earnings_disclosed_absence = earnings_disclosed_absence
 
     @classmethod
     def from_protocol(cls, calendar, protocol: ResearchProtocol) -> CandidateFilter:
@@ -186,6 +213,7 @@ class CandidateFilter:
             max_spread_fraction_of_midpoint=d.max_spread_fraction_of_midpoint,
             min_underlying_20d_median_dollar_volume=d.min_underlying_20d_median_dollar_volume,
             exclude_earnings_spanning_hold=d.exclude_earnings_spanning_hold,
+            earnings_disclosed_absence=_earnings_disclosed_absence_declared(protocol),
         )
 
     @classmethod
@@ -237,6 +265,7 @@ class CandidateFilter:
             flow_min_session_volume=threshold,
             underlying_liquidity_term=lf.underlying_liquidity_term,
             accepted_delta_provenance=lf.abs_delta_provenance_accepted,
+            earnings_disclosed_absence=_earnings_disclosed_absence_declared(protocol),
         )
 
     def evaluate(self, snap: CandidateSnapshot) -> CandidateDecision:
@@ -556,9 +585,28 @@ class CandidateFilter:
         else:
             results.append(RuleResult("underlying_liquidity", PASS, "above min"))
 
-        # Earnings spanning hold.
+        # Earnings spanning hold. (0.2.2 declaration 2, owner ruling
+        # m4-022-ruling-20260828) Under a >=0.2.2 protocol that DECLARES
+        # `earnings_evaluation: "disclosed_absence"`, an ABSENT
+        # spans_earnings is a PASS WITH DISCLOSURE: the protocol records
+        # that earnings spans are not evaluable on this data tier (no
+        # vendor events feed; the $0 purchase ruling), and this counted
+        # NOT_APPLICABLE row names the absence on every passed candidate —
+        # never a silent pass. The disclosure excuses an ABSENT input only:
+        # a SUPPLIED spans_earnings is evaluated exactly as today. Under
+        # 0.2.1 (or without the declaration) the honest dark lane stands:
+        # NOT_EVALUABLE, byte-identical to the standing behavior.
         if not self.exclude_earnings_spanning_hold:
             results.append(RuleResult("earnings_span", NOT_APPLICABLE, "filter disabled"))
+        elif snap.spans_earnings is None and self.earnings_disclosed_absence:
+            results.append(
+                RuleResult(
+                    "earnings_span",
+                    NOT_APPLICABLE,
+                    "earnings span not evaluable: no events source on this tier"
+                    " (0.2.2 disclosed-absence, owner ruling m4-022-ruling-20260828)",
+                )
+            )
         elif snap.spans_earnings is None:
             results.append(RuleResult("earnings_span", NOT_EVALUABLE, "missing"))
         elif not _tz_aware(snap.spans_earnings.available_at):

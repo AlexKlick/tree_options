@@ -192,3 +192,64 @@ class TestProtocolIdentityPin:
             }
         )
         assert canonical_json(undeclared) == canonical_json(defaulted)
+
+    def test_the_022_pre_draft_defaults_do_not_move_the_021_pin(self, protocol_path):
+        """(0.2.2 lane, owner ruling m4-022-ruling-20260828) The two further
+        pre-draft fields (`earnings_evaluation`, `fill_door_decision_close`)
+        ride the same era-gated discipline as `underlying_liquidity_term`:
+        stamped-at-default on a 0.2.1 protocol they hash to the PIN — the
+        schema additions may never silently re-hash the untouched yaml."""
+        from tree_options.protocol.loader import canonical_json, load_protocol
+
+        undeclared = load_protocol(protocol_path)
+        defaulted = undeclared.model_copy(
+            update={
+                "option_candidate_defaults": undeclared.option_candidate_defaults.model_copy(
+                    update={
+                        "earnings_evaluation": "evaluated",
+                    }
+                ),
+                "fills": undeclared.fills.model_copy(
+                    update={"fill_door_decision_close": "execution_calendar"}
+                ),
+            }
+        )
+        assert canonical_json(undeclared) == canonical_json(defaulted)
+        from tree_options.protocol.loader import protocol_hash
+
+        assert protocol_hash(defaulted) == self.LEDGER_BOUND_PROTOCOL_SHA256
+
+    def test_a_022_protocol_rides_the_declared_fields_on_the_hash(self, protocol_path):
+        """(0.2.2 declaration 1) At 0.2.2 NOTHING is stripped: the DECLARED
+        values — including a DECLARED `underlying_liquidity_term: evaluated`
+        (equal to its default!) — ride the hash by design, so the projected
+        post-flip identity differs from the 0.2.1 pin on exactly the packet's
+        content (version, amendment record, the three declarations)."""
+        from tree_options.protocol.loader import canonical_json, load_protocol, protocol_hash
+
+        base = load_protocol(protocol_path)
+        data = base.model_dump(mode="json")
+        data["meta"]["protocol_version"] = "0.2.2"
+        data["meta"]["amendments"].append(
+            {
+                "version": "0.2.2",
+                "date": "PENDING-OWNER-RATIFICATION",
+                "decision": "unit: the 0.2.2 lane-on declarations",
+                "changes": "unit fixture",
+            }
+        )
+        data["option_candidate_defaults"]["liquidity_volume_flow"]["underlying_liquidity_term"] = (
+            "evaluated"
+        )
+        data["option_candidate_defaults"]["earnings_evaluation"] = "disclosed_absence"
+        data["fills"]["fill_door_decision_close"] = "decision_grid"
+        from tree_options.protocol.schema import ResearchProtocol
+
+        proposed = ResearchProtocol.model_validate(data)
+        assert proposed.meta.protocol_version == "0.2.2"
+        # the DECLARED "evaluated" rides the canonical bytes at 0.2.2 (it is
+        # stripped below 0.2.2) — the version gate is the whole difference
+        assert '"underlying_liquidity_term":"evaluated"' in canonical_json(proposed)
+        assert '"earnings_evaluation":"disclosed_absence"' in canonical_json(proposed)
+        assert '"fill_door_decision_close":"decision_grid"' in canonical_json(proposed)
+        assert protocol_hash(proposed) != self.LEDGER_BOUND_PROTOCOL_SHA256

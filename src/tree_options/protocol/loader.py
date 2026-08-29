@@ -16,7 +16,7 @@ from pathlib import Path
 
 import yaml
 
-from tree_options.protocol.schema import ResearchProtocol
+from tree_options.protocol.schema import ResearchProtocol, protocol_version_at_least
 
 _PROTOCOL_ENV_VAR = "TREE_OPTIONS_PROTOCOL"
 
@@ -66,6 +66,23 @@ def default_protocol() -> ResearchProtocol:
     return _load_cached(str(resolve_protocol_path()))
 
 
+def _strip_pre_draft_defaults(dump: dict) -> None:
+    """Surgically remove the 0.2.2 PRE-DRAFT members that merely equal their
+    defaults from a model dump — the era strip `canonical_json` applies to
+    every protocol BELOW 0.2.2 (see there for the ruling and the reason).
+    Kept as one helper at this indent deliberately: the strip's lines are
+    mutation-registry anchors, and the anchors are single lines."""
+    liquidity = dump.get("option_candidate_defaults", {}).get("liquidity_volume_flow")
+    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term") == "evaluated":
+        del liquidity["underlying_liquidity_term"]
+    ocd = dump.get("option_candidate_defaults", {})
+    if isinstance(ocd, dict) and ocd.get("earnings_evaluation") == "evaluated":
+        del ocd["earnings_evaluation"]
+    fills = dump.get("fills", {})
+    if isinstance(fills, dict) and fills.get("fill_door_decision_close") == "execution_calendar":
+        del fills["fill_door_decision_close"]
+
+
 def canonical_json(protocol: ResearchProtocol) -> str:
     dump = protocol.model_dump(mode="json")
     # (P1-4, Codex round 1) The canonical hash represents what the yaml
@@ -79,9 +96,21 @@ def canonical_json(protocol: ResearchProtocol) -> str:
     # the hash changes by design anyway. Surgical on purpose: a blanket
     # exclude_defaults/exclude_unset would drop other always-defaulted
     # members and change the hash a second time.
-    liquidity = dump.get("option_candidate_defaults", {}).get("liquidity_volume_flow")
-    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term") == "evaluated":
-        del liquidity["underlying_liquidity_term"]
+    #
+    # (0.2.2 lane, owner ruling m4-022-ruling-20260828, declaration 1) The
+    # strip is VERSION-GATED to the pre-0.2.2 era, and the same-era
+    # discipline now covers the two further 0.2.2 pre-draft fields
+    # (`earnings_evaluation`, `fill_door_decision_close`): below 0.2.2 the
+    # yaml does not declare any of them, so members equal to their defaults
+    # must not ride the identity. At 0.2.2 NOTHING is stripped — the packet
+    # DECLARED the fields, and the declared values (including a DECLARED
+    # "evaluated") ride the hash by design; the hash BUMPS with the
+    # version, which is expected and correct. This gate is THE thing
+    # keeping the 0.2.1 pin stable while the pre-draft machinery ships;
+    # weakening it (stripping at 0.2.2, or not stripping a defaulted
+    # pre-draft member below 0.2.2) re-hashes an untouched protocol.
+    if not protocol_version_at_least(protocol.meta.protocol_version, 0, 2, 2):
+        _strip_pre_draft_defaults(dump)
     return json.dumps(dump, sort_keys=True, separators=(",", ":"))
 
 
