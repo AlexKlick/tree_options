@@ -193,10 +193,19 @@ def census_bytes(manifest_bytes: bytes) -> bytes:
     return census.model_dump_json().encode("utf-8")
 
 
-def write_021_protocol(path: Path, base: Path) -> Path:
+def write_021_protocol(path: Path, base: Path | None = None) -> Path:
     """A 0.2.1-shaped protocol built from the REAL base through the repo's own
     models (load -> model_dump -> bump -> dump), so it loads through today's
-    real loader. Fixture-only: nothing lands anywhere."""
+    real loader. Fixture-only: nothing lands anywhere.
+
+    (0.2.2 flip, 2026-08-28) the DEFAULT base is the pinned 0.2.1 fixture
+    (tests/fixtures/protocol-0.2.1.yaml, the pre-flip standing protocol):
+    the live yaml is 0.2.2 now, and deriving from it would mint an
+    incoherent 0.2.1-stamped protocol carrying the three 0.2.2 declarations
+    plus a stray 0.2.2 amendment record — a 0.2.1/0.2.2 hybrid."""
+    if base is None:
+        # this module lives in tests/fixtures/ — the fixture is a sibling
+        base = Path(__file__).resolve().parent / "protocol-0.2.1.yaml"
     from tree_options.protocol.loader import load_protocol
 
     base_protocol = load_protocol(base)

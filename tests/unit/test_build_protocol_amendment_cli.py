@@ -22,6 +22,10 @@ import build_protocol_amendment as cli  # noqa: E402
 from tests.unit.test_protocol_amendment import _base_020_protocol_bytes  # noqa: E402
 
 PROTOCOL_PATH = REPO_ROOT / "research_protocol.yaml"
+# (0.2.2 flip) the landed-base leg feeds the pinned 0.2.1 fixture: the
+# live yaml is 0.2.2 since the flip (ratified 2026-08-28), and this leg
+# pins the refusal of the LANDED 0.2.1 base specifically
+PROTOCOL_021 = REPO_ROOT / "tests" / "fixtures" / "protocol-0.2.1.yaml"
 MANIFEST_BODY = b'{"schema_version": "m4b-manifest/1", "entries": []}\n'
 FLOW_RULE_ID = "R-FLOW-FLOOR-DIV-4"
 FLOW_DERIVED = 761  # floor_div(3045, 4)
@@ -181,10 +185,11 @@ def test_cli_happy_path_builds_not_landed_packet(
 ) -> None:
     paths = _write_bundle(tmp_path)
     with _out_root() as out:
-        # Landed-state gate first: the repo protocol IS 0.2.1 now (cdf38c8),
-        # and the builder refuses it as a base — exit 4, never a packet, the
+        # Landed-state gate first: the pinned 0.2.1 fixture IS the landed
+        # protocol (cdf38c8; the live yaml moved to 0.2.2 at the flip), and
+        # the builder refuses it as a base — exit 4, never a packet, the
         # refusal to re-derive an already-landed amendment.
-        landed = {**paths, "protocol": PROTOCOL_PATH}
+        landed = {**paths, "protocol": PROTOCOL_021}
         assert _run_cli(landed, out) == 4
         assert list(out.rglob("amendment-packet.json")) == [], "no packet for a landed base"
         # the happy path: the pre-0.2.1 base fixture builds the not-landed packet
@@ -221,7 +226,7 @@ def test_cli_exit_4_on_wrong_base_version(tmp_path: Path) -> None:
     import yaml
 
     paths = _write_bundle(tmp_path)
-    doc = yaml.safe_load(PROTOCOL_PATH.read_text(encoding="utf-8"))
+    doc = yaml.safe_load(PROTOCOL_021.read_text(encoding="utf-8"))
     doc["meta"]["protocol_version"] = "0.2.1"
     doc["meta"]["amendments"].append(
         {

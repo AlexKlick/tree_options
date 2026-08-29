@@ -3500,7 +3500,14 @@ MUTANTS = [
     # M290-M300) --------------------------------------------------------------
     dict(
         id="M290-p14-exclusion-dropped",
-        owner="test_repo_yaml_hashes_to_the_ledger_bound_identity",
+        # (0.2.2 flip re-pin, 2026-08-28) the owner moved OFF the live-yaml
+        # pin test: the strip is version-gated OFF at 0.2.2, so the live
+        # 0.2.2 yaml can no longer exercise it (the landed-pin test passes
+        # under this mutant). The owner now sits on the path the new state
+        # does not cover: the pinned 0.2.1 FIXTURE — a real pre-flip file
+        # through the real loader, where neutering the exclusion re-hashes
+        # it off the cfafc884… pin. Same seam, same selectors file.
+        owner="test_the_pinned_021_fixture_hashes_to_the_pre_flip_identity",
         file="src/tree_options/protocol/loader.py",
         anchor=(
             '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
@@ -3515,7 +3522,9 @@ MUTANTS = [
             "P1-4 the canonical hash represents what the yaml DECLARES: the"
             " defaulted-but-undeclared underlying_liquidity_term must NOT"
             " ride the 0.2.1 identity — stopping the exclusion re-hashes the"
-            " untouched yaml (3b0b8a85…) and breaks the ledger-bound pin"
+            " untouched 0.2.1 protocol (3b0b8a85…) and breaks the"
+            " ledger-bound pin, which the pinned 0.2.1 fixture still"
+            " carries post-flip"
         ),
     ),
     dict(

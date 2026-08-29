@@ -135,7 +135,9 @@ def scenario(
     external_manifest_path.write_bytes(manifest_path.read_bytes())
     census_path = tmp_path / "census.json"
     census_path.write_bytes(census_bytes(manifest_path.read_bytes()))
-    protocol_path = write_021_protocol(tmp_path / "protocol-0.2.1.yaml", REAL_PROTOCOL)
+    # (0.2.2 flip) the base is the pinned 0.2.1 fixture (the helper's new
+    # default): the live yaml is 0.2.2 and would mint a hybrid
+    protocol_path = write_021_protocol(tmp_path / "protocol-0.2.1.yaml")
     work_manifest = build_bars_work_manifest(
         capture_dir,
         profile=load_selection_profile(COMMITTED_PROFILE),
@@ -222,7 +224,7 @@ def _argv(
         BOOT,
     ]
     if drop_protocol:
-        pass  # the CLI default is the REAL repo protocol (0.2.1 today)
+        pass  # the CLI default is the REAL repo protocol (0.2.2 since the flip)
     else:
         argv += ["--protocol", str(protocol if protocol else scenario["protocol"])]
     if extra:
@@ -282,25 +284,29 @@ def _sole_store_run_id(store_root: Path) -> str:
 
 
 # ---- preflight: the record half of the protocol gate is closed on main ---------------
-# (0.2.1 landed in cdf38c8, so the version clause passes on the REAL repo
-# protocol today; the refusal is the missing BARS_LAUNCH_APPROVAL record.)
+# (0.2.2 flip, 2026-08-28: the live yaml is 0.2.2 now, so on the REAL repo
+# protocol today the VERSION clause refuses first — REQUIRED_BARS_PROTOCOL_
+# VERSION stays "0.2.1" (the bars era is closed; the launcher is frozen).)
 
 
-def test_preflight_exit_2_on_real_021_protocol_today_without_an_approval_record(
+def test_preflight_exit_2_on_real_022_protocol_today_the_version_clause_refuses(
     scratch_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The documented correct answer on main after 0.2.1 landed: the loaded
-    protocol IS 0.2.1, so the version clause passes and the refusal is the
-    missing BARS_LAUNCH_APPROVAL record — read-only, through the REAL loader."""
-    assert load_protocol(REAL_PROTOCOL).meta.protocol_version == "0.2.1"
+    """The documented correct answer on main after the 0.2.2 flip: the
+    loaded protocol IS 0.2.2 while the launcher still requires 0.2.1, so
+    the version clause refuses FIRST (it is checked before the record
+    lookup) — read-only, through the REAL loader. Pre-flip this test pinned
+    the mirror-image answer (version passes, the missing
+    BARS_LAUNCH_APPROVAL record refuses)."""
+    assert load_protocol(REAL_PROTOCOL).meta.protocol_version == "0.2.2"
     real_authority = REPO_ROOT / "artifacts" / "bars-authority"
     before = _authority_tree_state(real_authority)
     assert launch.main(_real_preflight_argv(scratch_root)) == 2
     err = capsys.readouterr().err
-    assert "no BARS_LAUNCH_APPROVAL record binds the loaded protocol hash" in err
-    # the version clause PASSED (the protocol is 0.2.1 now): the record is
-    # the refusal, not the version
-    assert "protocol version" not in err
+    assert "protocol version '0.2.2' != '0.2.1'" in err
+    # the version clause is the refusal — the record clause is never
+    # reached while the version is wrong
+    assert "BARS_LAUNCH_APPROVAL" not in err
     # read-only: nothing was created anywhere the tool knows about. The real
     # authority tree EXISTS on this host (the live bars era minted a ledger
     # there), so the oracle is UNCHANGED-ness — never host absence
@@ -335,8 +341,11 @@ def test_preflight_refusal_never_writes_a_pre_existing_real_authority_ledger(
 
     assert launch.main(_real_preflight_argv(scratch_root)) == 2
     err = capsys.readouterr().err
-    assert "no BARS_LAUNCH_APPROVAL record binds the loaded protocol hash" in err
-    assert "protocol version" not in err
+    # (0.2.2 flip) the live protocol is 0.2.2, so the refusal the read-only
+    # claim is proven under is the VERSION clause (checked before any
+    # record lookup); pre-flip this was the missing-record message
+    assert "protocol version '0.2.2' != '0.2.1'" in err
+    assert "BARS_LAUNCH_APPROVAL" not in err
     # the isolation oracle: the pre-existing REAL-tree ledger is unchanged
     assert _authority_tree_state(authority) == before
     assert (authority / BARS_LEDGER_FILENAME).read_bytes() == ledger_bytes

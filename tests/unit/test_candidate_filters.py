@@ -206,11 +206,21 @@ def _declared_protocol(protocol, *, version: str, earnings_evaluation: str):
 
 
 class TestEarningsDisclosedAbsence:
-    def test_a_022_declared_run_passes_candidates_that_021_refuses(self, protocol, static_calendar):
+    def test_a_022_declared_run_passes_candidates_that_021_refuses(self, static_calendar):
         """(022-B red-first case 1) Under 0.2.2 WITH the declared absence a
         `spans_earnings=None` candidate is ACCEPTED (the lane turns on);
-        under the standing 0.2.1 protocol the same snapshot stays refused
-        NOT_EVALUABLE — the honest dark lane, byte-identical to today."""
+        under the pinned 0.2.1 fixture (the pre-flip standing protocol —
+        carried by the 0.2.2 flip, which made the LIVE protocol the
+        declaring side) the same snapshot stays refused NOT_EVALUABLE — the
+        honest dark lane, byte-identical to the pre-flip behavior. Both
+        sides derive from the fixture: the pair is the pre-flip version
+        PAIR, constructed exactly as before the flip."""
+        from pathlib import Path
+
+        from tree_options.protocol.loader import load_protocol
+
+        fixture_021 = Path(__file__).resolve().parents[1] / "fixtures" / "protocol-0.2.1.yaml"
+        protocol = load_protocol(fixture_021)
         dark = _snapshot(spans_earnings=None)
         refusing = CandidateFilter.from_protocol(static_calendar, protocol)
         decision_021 = refusing.evaluate(dark)
