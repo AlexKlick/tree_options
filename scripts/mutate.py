@@ -4413,6 +4413,66 @@ MUTANTS = [
             " (DECISION_INSTANT_NOT_CLOSE)"
         ),
     ),
+    # ---- G4 sealed-event gate machinery (m4/g4-sealed-machinery-20260829) ----------
+    dict(
+        id="M333-g4-verdict-and-to-or",
+        owner="test_a_discipline_violation_in_a_stamped_payload_fails_criterion_and_verdict",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor='verdict = "PASS" if all(o.verdict == "PASS" for o in outcomes) else "FAIL"',
+        replacement='verdict = "PASS" if any(o.verdict == "PASS" for o in outcomes) else "FAIL"',
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the sealed gate's verdict is FAIL when ANY pre-declared"
+            " criterion fails: an all->any short-circuit passes a"
+            " discipline-violating payload because some other criterion"
+            " passed — the verdict the plan records verbatim would be a lie"
+        ),
+    ),
+    dict(
+        id="M334-g4-class-map-counts-no-bar",
+        owner="test_the_strict_lane2_class_map_never_counts_no_bar",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=(
+            "    lane2_counted = (\n"
+            '        int(lane2_classes.get("zero_volume_bar_refusals", 0))\n'
+            '        + int(lane2_classes.get("massive_derivation_error_refusals", 0))\n'
+            '        + int(lane2_classes.get("master_row_refusals", 0))\n'
+            "        + flow_fails\n"
+            "    )"
+        ),
+        replacement=(
+            "    lane2_counted = (\n"
+            '        int(lane2_classes.get("zero_volume_bar_refusals", 0))\n'
+            '        + int(lane2_classes.get("massive_derivation_error_refusals", 0))\n'
+            '        + int(lane2_classes.get("master_row_refusals", 0))\n'
+            "        + flow_fails\n"
+            '        + int(lane2_classes.get("no_bar_not_evaluable_disclosed", 0))\n'
+            "    )"
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 4's STRICT per-lane class map: no_bar NOT_EVALUABLE"
+            " rows are an AVAILABILITY DISCLOSURE (~32% of rows by"
+            " construction), never pooled into the floor — counting them"
+            " inflates a degenerate lane to the pre-declared 50 and proves"
+            " nothing (the exact degenerate pass the criterion exists to"
+            " refuse)"
+        ),
+    ),
+    dict(
+        id="M335-g4-participation-cap-dropped",
+        owner="test_over_participation_fails_the_fill_discipline_criterion",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=("        if quantity > bar_volumes[(contract, session)]\n    ]"),
+        replacement=("        if False\n    ]"),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 3's participation clause: cumulative participation"
+            " per (contract, bar session) never exceeds the bar's observed"
+            " volume — dropping the check certifies a stamped fill sequence"
+            " that traded more contracts than the session actually did"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.
