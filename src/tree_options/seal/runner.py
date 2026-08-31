@@ -3,7 +3,7 @@ DECLARED repo calendar (0.2.1 ratification, owner decision 2026-08-26).
 
 PR A left ``verified_inputs.RUNNER_REGISTRY`` empty by design ("Production
 PR A registers nothing — no runner is wired — so every packet build refuses
-until the owner wires machinery"). The ratified calendar decision fills
+until the owner wires machinery"). The ratified calendar decision filled
 exactly that gap: the sealed run consumes the calendar the PROTOCOL
 declares (``research_protocol.yaml`` ``calendar:`` → the committed,
 checksummed NYSE session fixture), so the machinery registration binds that
@@ -15,14 +15,17 @@ layer's digest function re-derives it from the LIVE instance, so calendar
 drift between approval and execution is a refusal, never a silent
 session-arithmetic change.
 
-The evaluation callable itself stays FAIL-CLOSED. The sealed event is
-one-shot at an owner-declared head (docs/m4-g4-sealed-gate-plan.md §3) and
-its gate machinery is authored with that event; the closeout runbook §4.6
-prohibits execute and prohibits wiring a runner into the CLI execute path.
-This registration exists so a verified packet can bind the machinery
-IDENTITY (qualified name, code-file hash, calendar configuration digest);
-invoking the machinery before the sealed-event evaluation is authored
-refuses, and the ``g4_seal`` CLI execute path remains unwired.
+The evaluation callable IS the authored sealed-event machinery (lane
+``m4/g4-sealed-machinery-20260829``): it consumes the held verified-inputs
+bundle and delegates to ``tree_options.trials.g4_event`` (the lane worlds +
+the null trials) and ``tree_options.seal.g4_gate`` (the six pre-declared
+criteria, verdict recorded verbatim). The EVENT PROCEDURE stands: machinery
+authored → the owner DECLARES the head → the owner APPROVES the packet →
+``g4_seal execute`` runs ONCE. Execute without an owner approval record
+still refuses (``execute_sealed_run``'s approval cross-join — unchanged),
+the one-shot discipline refuses any reuse of the sealed registry or
+artifacts, and the ``g4_seal`` CLI execute path stays unwired exactly as
+the closeout runbook §4.6 requires.
 """
 
 from __future__ import annotations
@@ -113,8 +116,9 @@ def calendar_config_digest(config: CalendarRunnerConfig) -> str:
 class RepoCalendarSealedRunner:
     """The G4 sealed-run machinery, configured by the protocol-declared repo
     calendar. Registration binds this configuration into every verified
-    packet; the evaluation callable is fail-closed until the sealed-event
-    gate machinery is authored at the owner-declared head."""
+    packet; the evaluation callable runs the AUTHORED sealed-event
+    machinery (event procedure: machinery authored → owner declares the
+    head → owner approves the packet → execute ONCE)."""
 
     runner_version: str = RUNNER_VERSION
 
@@ -136,15 +140,76 @@ class RepoCalendarSealedRunner:
         return calendar_config_digest(self.config())
 
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
-        raise SealError(
-            "RUNNER_NOT_AUTHORED",
-            "the G4 sealed-event evaluation machinery is not authored: the"
-            " sealed run executes ONCE at an owner-declared head"
-            " (docs/m4-g4-sealed-gate-plan.md §3) and its gate machinery is"
-            " authored with that event — this registration binds the"
-            " calendar configuration a verified packet consumes, it never"
-            " executes (docs/m4-closeout-runbook.md §4.6: EXECUTE IS"
-            " PROHIBITED; the g4_seal CLI execute path wires no runner)",
+        """THE sealed-event evaluation: run the authored machinery over the
+        HELD verified-inputs bundle and return the outcome string.
+
+        The machinery (``tree_options.trials.g4_event`` — the two lane
+        worlds + the null trials — and ``tree_options.seal.g4_gate`` — the
+        six pre-declared criteria, verdict recorded verbatim, evidence
+        triple + stamped payloads) consumes the SAME immutable held-byte
+        bundle that passed ``verify_sealed_inputs``; no original input path
+        is re-read (held bytes are materialized verbatim into a scratch the
+        fail-closed manifest verify re-runs over).
+
+        The event procedure this callable closes (runbook §4.6): machinery
+        authored (this module) -> the owner DECLARES the head -> the owner
+        APPROVES the packet -> ``g4_seal execute`` runs ONCE. Execute
+        without an owner approval record still refuses — that enforcement
+        lives in ``execute_sealed_run`` and is NOT weakened here: this
+        callable is reachable only through it (or a test driving the
+        library directly), never through the CLI, and the one-shot
+        discipline (existing registry/artifacts refuse) plus the approval
+        cross-join stand unchanged.
+        """
+        import subprocess
+
+        from tree_options.seal.g4_gate import evaluate_and_record, production_gate_paths
+        from tree_options.seal.identity import sealed_run_id
+        from tree_options.seal.verified_inputs import identity_from_packet
+        from tree_options.trials.g4_event import run_g4_sealed_event
+
+        repo = self._binding.repo_root
+        head = subprocess.run(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if head.returncode != 0:
+            raise SealError(
+                "SEALED_HEAD_UNRESOLVABLE",
+                f"git rev-parse HEAD failed in {repo}: {head.stderr.strip()[:120]}",
+            )
+        run_id = sealed_run_id(identity_from_packet(inputs.packet))
+        gate_paths = production_gate_paths(repo)
+        run = run_g4_sealed_event(
+            inputs,
+            repo_root=repo,
+            registry_path=gate_paths.registry,
+            artifacts_dir=gate_paths.artifacts_dir,
+            scratch_root=gate_paths.scratch_root,
+            spot_v2_path=(
+                gate_paths.spot_proxy_v2
+                if gate_paths.spot_proxy_v2 is not None and gate_paths.spot_proxy_v2.is_file()
+                else None
+            ),
+        )
+        evaluation = evaluate_and_record(
+            run,
+            inputs,
+            paths=gate_paths,
+            repo_root=repo,
+            head=head.stdout.strip(),
+            log_lines=(
+                f"SEALED_RUN_ID={run_id}",
+                f"SEALED_HEAD={head.stdout.strip()}",
+                *run.log_lines,
+            ),
+        )
+        return (
+            f"{run.run_id} sealed_run_id={run_id} verdict={evaluation.verdict}"
+            f" evidence={gate_paths.evidence_root / 'm4-g4-sealed-gate.json'}"
+            f" artifacts={run.artifacts_dir}"
         )
 
 

@@ -151,13 +151,28 @@ def test_live_config_digest_sees_calendar_drift() -> None:
     assert entry.config_digest_fn(drifted) != entry.config_digest
 
 
-def test_machinery_refuses_to_execute_until_the_sealed_event_is_authored() -> None:
-    """The evaluation callable is fail-closed by design: the sealed event is
-    one-shot at an owner-declared head and its gate machinery is authored
-    with that event; this registration binds configuration, it never
-    executes."""
-    instance = RepoCalendarSealedRunner(protocol_calendar_binding(REPO_ROOT))
-    with pytest.raises(SealError, match="RUNNER_NOT_AUTHORED"):
+def test_machinery_is_authored_and_fails_closed_on_an_unresolvable_head(
+    tmp_path: Path,
+) -> None:
+    """The evaluation callable IS the authored sealed-event machinery (lane
+    m4/g4-sealed-machinery-20260829): RUNNER_NOT_AUTHORED is gone, and the
+    first fail-closed act is resolving the declared head — a repo with no
+    git identity refuses BEFORE any input byte is read. The full delegation
+    (held bundle -> trials -> criteria -> outcome string) is proven on a
+    fixture world in test_g4_event_machinery.py; the approval enforcement is
+    unchanged (execute_sealed_run's cross-join, test_g4_seal.py)."""
+    repo = tmp_path / "not-a-git-repo"
+    repo.mkdir()
+    for relative in (
+        Path("research_protocol.yaml"),
+        Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.json"),
+        Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.sha256"),
+    ):
+        destination = repo / relative
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(REPO_ROOT / relative, destination)
+    instance = RepoCalendarSealedRunner(protocol_calendar_binding(repo))
+    with pytest.raises(SealError, match="SEALED_HEAD_UNRESOLVABLE"):
         instance(None)  # type: ignore[arg-type]
 
 

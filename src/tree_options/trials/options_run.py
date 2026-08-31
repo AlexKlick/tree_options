@@ -302,22 +302,31 @@ def _fill_log(result: OptionsBacktestResult) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for f in result.fills:
         audit = audit_by_fill.get(f.fill_id)
-        rows.append(
-            {
-                "fill_id": f.fill_id,
-                "contract_id": f.contract_id,
-                "side": f.side,
-                "quantity": f.quantity,
-                "price": str(f.price),
-                "execution_at": f.execution_at.isoformat(),
-                "execution_session": f.execution_session.isoformat(),
-                # criterion 2 (sealed gate): T+1 discipline + quote receipt,
-                # re-derivable from the stamped artifact alone
-                "decision_session": (audit.decision_session.isoformat() if audit else None),
-                "decision_at": audit.decision_at.isoformat() if audit else None,
-                "quote_received_at": (audit.quote_received_at.isoformat() if audit else None),
-            }
-        )
+        row: dict[str, object] = {
+            "fill_id": f.fill_id,
+            "contract_id": f.contract_id,
+            "side": f.side,
+            "quantity": f.quantity,
+            "price": str(f.price),
+            "execution_at": f.execution_at.isoformat(),
+            "execution_session": f.execution_session.isoformat(),
+            # criterion 2 (sealed gate): T+1 discipline + quote receipt,
+            # re-derivable from the stamped artifact alone
+            "decision_session": (audit.decision_session.isoformat() if audit else None),
+            "decision_at": audit.decision_at.isoformat() if audit else None,
+            "quote_received_at": (audit.quote_received_at.isoformat() if audit else None),
+        }
+        if audit is not None and audit.quote_session is not None:
+            # (G4) the selected BAR's own facts — additive keys, present only
+            # on vwap-bar fills, so the G4 fill-discipline criterion (bar
+            # received by the execution instant AND belonging to the session
+            # immediately before the execution session; cumulative
+            # participation per (contract, bar session) <= observed volume) is
+            # evaluable from the stamped artifact alone. Two-sided lanes keep
+            # their payloads byte-identically (audit.quote_session is None).
+            row["bar_session"] = audit.quote_session.isoformat()
+            row["bar_volume"] = audit.quote_volume
+        rows.append(row)
     return rows
 
 

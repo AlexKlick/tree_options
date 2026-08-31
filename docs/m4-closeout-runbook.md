@@ -367,7 +367,7 @@ field says "PENDING owner ratification" and every value is tagged
 profile's content hash is bound into every work manifest, so
 ratifying a change invalidates prior manifests.
 
-### 4.6 G4 sealed-event preflight (EXECUTE IS PROHIBITED)
+### 4.6 G4 sealed-event preflight (execute is one-shot at an owner-declared head)
 
 ```
 uv run --frozen python scripts/g4_seal.py preflight \
@@ -396,18 +396,39 @@ The output verdict is structurally null: `verdict` is pinned to `null` and
 one. No network, no broker, no run. A missing owner calendar artifact is an
 unavailable input (exit 2), never a defaulted decision.
 
-**EXECUTE IS PROHIBITED in this campaign.** `g4_seal execute` is
-implemented but the CLI wires no runner and refuses (exit 2) before
-touching the ledger; the one-shot consumption exists as a library seam
-for the sealed event itself, after the owner declares the head. Do not
-run it, do not wire a runner into it.
+**EXECUTE is the one-shot sealed event at an owner-declared head.** The
+machinery is AUTHORED (lane `m4/g4-sealed-machinery-20260829`:
+`tree_options.trials.g4_event` builds the two lane worlds and runs the
+null trials; `tree_options.seal.g4_gate` evaluates the six pre-declared
+criteria and records the verdict verbatim; `RepoCalendarSealedRunner`'s
+callable delegates to both). The event procedure stands:
+
+1. machinery authored (done — this lane);
+2. a NEW preflight at the new head (the runner implementation sha moved,
+   so a new packet is required — the old approval cannot bind it);
+3. the owner DECLARES the head (the commit hash is written into the
+   evidence log before the run) and APPROVES the packet;
+4. `g4_seal execute` runs ONCE.
+
+The CLI execute path still wires no runner and refuses (exit 2) before
+touching the ledger; execute without an owner approval record still
+refuses (the approval cross-join in `execute_sealed_run` — unchanged).
+`scripts/run_m4_sealed_gate.py` is the operator-facing entry over the
+same library machinery (`--yes` is the one-shot confirmation); it
+consumes no seal authority.
 
 The library seam accepts the approved verified packet plus the current
 input paths, not a caller-asserted `SealedIdentity`. Immediately before the
 authority spend it rebuilds the packet, requires byte-for-byte packet
 equality, joins the declared runner version, and rechecks the ledger. The
 runner receives the same immutable held-byte bundle that passed verification;
-it does not re-read input paths.
+it does not re-read input paths (the machinery materializes the held bytes
+verbatim into a scratch the fail-closed manifest verify re-runs over), runs
+the two lane worlds + the null trials ONCE, evaluates the six pre-declared
+criteria from the stamped payload files only, records the verdict verbatim
+to `docs/evidence-logs/m4/m4-g4-sealed-gate.{md,json,log}` plus the stamped
+payloads under `artifacts/g4-sealed/`, and returns the outcome string
+(run id + verdict + evidence paths).
 
 One-shot semantics: any CONSUMPTION record whose `sealed_run_id` OR
 `content_identity` matches this run refuses (exit 7). That is why a

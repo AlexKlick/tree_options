@@ -4413,6 +4413,98 @@ MUTANTS = [
             " (DECISION_INSTANT_NOT_CLOSE)"
         ),
     ),
+    # ---- G4 sealed-event gate machinery (m4/g4-sealed-machinery-20260829) ----------
+    dict(
+        id="M333-g4-verdict-and-to-or",
+        owner="test_a_discipline_violation_in_a_stamped_payload_fails_criterion_and_verdict",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor='verdict = "PASS" if all(o.verdict == "PASS" for o in outcomes) else "FAIL"',
+        replacement='verdict = "PASS" if any(o.verdict == "PASS" for o in outcomes) else "FAIL"',
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the sealed gate's verdict is FAIL when ANY pre-declared"
+            " criterion fails: an all->any short-circuit passes a"
+            " discipline-violating payload because some other criterion"
+            " passed — the verdict the plan records verbatim would be a lie"
+        ),
+    ),
+    dict(
+        id="M334-g4-class-map-counts-no-bar",
+        owner="test_the_strict_lane2_class_map_never_counts_no_bar",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=(
+            "    lane2_counted = (\n"
+            '        int(lane2_classes.get("zero_volume_bar_refusals", 0))\n'
+            '        + int(lane2_classes.get("massive_derivation_error_refusals", 0))\n'
+            '        + int(lane2_classes.get("master_row_refusals", 0))\n'
+            "        + flow_fails\n"
+            "    )"
+        ),
+        replacement=(
+            "    lane2_counted = (\n"
+            '        int(lane2_classes.get("zero_volume_bar_refusals", 0))\n'
+            '        + int(lane2_classes.get("massive_derivation_error_refusals", 0))\n'
+            '        + int(lane2_classes.get("master_row_refusals", 0))\n'
+            "        + flow_fails\n"
+            '        + int(lane2_classes.get("no_bar_not_evaluable_disclosed", 0))\n'
+            "    )"
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 4's STRICT per-lane class map: no_bar NOT_EVALUABLE"
+            " rows are an AVAILABILITY DISCLOSURE (~32% of rows by"
+            " construction), never pooled into the floor — counting them"
+            " inflates a degenerate lane to the pre-declared 50 and proves"
+            " nothing (the exact degenerate pass the criterion exists to"
+            " refuse)"
+        ),
+    ),
+    dict(
+        id="M335-g4-participation-cap-dropped",
+        owner="test_over_participation_fails_the_fill_discipline_criterion",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=("        if quantity > bar_volumes[(contract, session)]\n    ]"),
+        replacement=("        if False\n    ]"),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 3's participation clause: cumulative participation"
+            " per (contract, bar session) never exceeds the bar's observed"
+            " volume — dropping the check certifies a stamped fill sequence"
+            " that traded more contracts than the session actually did"
+        ),
+    ),
+    # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
+    dict(
+        id="M336-spotv2-close-through-float",
+        owner="test_vendor_close_tokens_round_trip_byte_exact",
+        file="scripts/capture_spot_proxy_v2.py",
+        anchor=("    if isinstance(raw_c, Decimal):\n        exact_close = raw_c"),
+        replacement=(
+            "    if isinstance(raw_c, Decimal):\n        exact_close = Decimal(str(float(raw_c)))"
+        ),
+        selectors=[f"{U}/test_capture_spot_proxy_v2.py"],
+        invariant=(
+            "spotv2 the vendor's close TOKEN is the provenance: routing the"
+            " exact Decimal through float rewrites every price token longer"
+            " than a float's shortest repr (a 21-digit close silently loses"
+            " its tail) while short tokens survive, so only a byte-exact"
+            " round trip through the real loader catches the laundering"
+        ),
+    ),
+    dict(
+        id="M337-spotv2-vendor-gap-silenced",
+        owner="test_a_vendor_gap_fails_the_run_naming_the_session",
+        file="scripts/capture_spot_proxy_v2.py",
+        anchor="        if missing:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_capture_spot_proxy_v2.py"],
+        invariant=(
+            "spotv2 an era session the vendor response cannot answer is a"
+            " NAMED fatal gap and NOTHING is written: voiding the check"
+            " writes a silently short file that still claims the declared"
+            " window — the exact partial capture this lane exists to refuse"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.
@@ -4540,8 +4632,8 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 314-mutant run stays the"
-            " m0_gate's authority)"
+            " mutants and re-pins; the full 325-mutant run stays the"
+            " m0_gate's authority — 323 through PR #21 + M336/M337 here)"
         ),
     )
     args = parser.parse_args()
