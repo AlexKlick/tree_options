@@ -377,7 +377,7 @@ def run_capture(
     payload: dict[str, dict[str, dict[str, Any]]] = {}
     receipts: dict[str, dict[str, Any]] = {}
     preexisting_absent: dict[str, list[str]] = {}
-    floor_expected: dict[str, set[date]] = {}
+    floor_expected: dict[str, frozenset[date]] = {}
     written_sessions: dict[str, set[date]] = {}
     first_served: dict[str, date] = {}
     total_rows = 0
