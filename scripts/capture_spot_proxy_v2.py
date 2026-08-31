@@ -245,17 +245,21 @@ def _plain(value: Decimal) -> str:
     return format(value.normalize(), "f")
 
 
-def map_vendor_row(where: str, row: Mapping[str, Any]) -> tuple[date, str, int]:
-    """One /v2/aggs results[] row -> (session, close token, volume).
+def map_vendor_row(where: str, row: Mapping[str, Any]) -> tuple[date, str, int, bool]:
+    """One /v2/aggs results[] row -> (session, close token, volume, truncated).
 
     `t` must be a strict int (the vendor's millisecond epoch); the session
     is its ET calendar date. `c` must arrive EXACT -- a Decimal from the
     client's `loads_exact`, or an int literal -- and is formatted back
     exponent-free; a float (exactness already lost upstream), a string, or
     anything else refuses. `v` may arrive as a strict int or as the vendor's
-    float-shaped token (an INTEGRAL Decimal after `loads_exact` — converted
-    exactly below); everything else — bools, floats, fractional Decimals,
-    strings — refuses, and the loader's own `_validated_spot_v2_row`
+    float-shaped token (a Decimal after `loads_exact`): an INTEGRAL Decimal
+    converts exactly (no float ever exists); a NON-NEGATIVE FRACTIONAL
+    Decimal truncates toward zero — the file's contract is a strict int and
+    truncation never inflates a liquidity measure (the $50M median's
+    conservative direction) — with `truncated=True` so the capture COUNTS
+    it in custody, never silent. Everything else — bools, floats, strings,
+    negatives — refuses, and the loader's own `_validated_spot_v2_row`
     re-validates both fields, so a row this function returns can always
     live in the file the loader parses."""
     raw_t = row.get("t")
@@ -278,19 +282,30 @@ def map_vendor_row(where: str, row: Mapping[str, Any]) -> tuple[date, str, int]:
             f"{row_where}: close must arrive as an exact JSON number (Decimal or int"
             f" after loads_exact), got {type(raw_c).__name__} — never float, never string"
         )
-    # (2026-08-31, the live AAPL refusal) the vendor ships volumes as
+    # (2026-08-31, the live AAPL refusals) the vendor ships volumes as
     # float-shaped JSON tokens (50190574.0), which `loads_exact` hands over
     # as Decimal — an INTEGRAL Decimal is the same number as its int and
-    # converts exactly (no float ever exists); a fractional one is not a
-    # share count and keeps refusing below.
+    # converts exactly; the consolidated feed ALSO emits sub-share volumes
+    # (37308155.220558), which truncate toward zero, never inflating a
+    # liquidity measure, and are counted as truncated for custody.
     raw_v = row.get("v")
-    if isinstance(raw_v, Decimal) and raw_v == raw_v.to_integral_value():
-        raw_v = int(raw_v)
+    truncated = False
+    if isinstance(raw_v, Decimal):
+        truncated = raw_v != raw_v.to_integral_value()
+        if not truncated:
+            raw_v = int(raw_v)
+        else:
+            if raw_v < 0:
+                raise CaptureRefusedError(
+                    f"{row_where}: a negative fractional volume is not a share count"
+                    f" ({raw_v}) — refusing, never truncating a negative toward zero"
+                )
+            raw_v = int(raw_v)
     try:
         close, volume = _validated_spot_v2_row(row_where, session, exact_close, raw_v)
     except MassiveOverlayError as exc:
         raise CaptureRefusedError(f"{row_where}: {exc}") from None
-    return session, _plain(close), volume
+    return session, _plain(close), volume, truncated
 
 
 # ---- the capture -------------------------------------------------------------
@@ -395,10 +410,15 @@ def run_capture(
 
         rows: dict[date, tuple[str, int]] = {}
         outside_window = 0
+        truncated_volume_rows = 0
         for index, raw_row in enumerate(results):
             if not isinstance(raw_row, Mapping):
                 raise CaptureRefusedError(f"{name}[row {index}]: a result row is not an object")
-            session, close_token, volume = map_vendor_row(f"{name}[row {index}]", raw_row)
+            session, close_token, volume, truncated = map_vendor_row(
+                f"{name}[row {index}]", raw_row
+            )
+            if truncated:
+                truncated_volume_rows += 1
             if not start <= session <= end:
                 outside_window += 1
                 continue
@@ -439,6 +459,7 @@ def run_capture(
             "request_id": request_id if isinstance(request_id, str) else None,
             "results_count": results_count if type(results_count) is int else None,
             "rows_in_response": len(results),
+            "truncated_volume_rows": truncated_volume_rows,
             "rows_outside_window": outside_window,
             "rows_written": len(sessions_sorted),
             "expected_era_sessions": len(expected),

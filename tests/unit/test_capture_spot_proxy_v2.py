@@ -465,7 +465,7 @@ def test_mapping_refuses_a_float_close() -> None:
         (True, "strict int"),
         (1.5, "strict int"),
         ("7", "strict int"),
-        (Decimal("7.5"), "strict int"),
+        (Decimal("-5.7"), "negative fractional volume"),
         (-5, "strict int"),
     ],
 )
@@ -482,19 +482,34 @@ def test_mapping_accepts_an_integral_decimal_volume_the_wire_shape() -> None:
     int is the same number, no float ever exists); a fractional one keeps
     refusing. Without this, the first real capture refused AAPL row 0
     (exit 4) and wrote nothing."""
-    _session, _close_token, volume = cap.map_vendor_row(
+    _session, _close_token, volume, truncated = cap.map_vendor_row(
         "AAPL[2024-09-03]",
         {"t": _t(date(2024, 9, 3)), "c": Decimal("226.84"), "v": Decimal("50190574.0")},
     )
     assert volume == 50190574
     assert type(volume) is int
+    assert truncated is False
+
+
+def test_mapping_truncates_a_fractional_volume_toward_zero_counted() -> None:
+    """(2026-08-31, the live AAPL retry) the consolidated feed emits
+    sub-share volumes (37308155.220558 on 2026-02-23). The file's contract
+    is a strict int, and truncating toward zero NEVER inflates a liquidity
+    measure (the $50M median's conservative direction). The truncation is
+    COUNTED per name in the custody receipt — disclosed, never silent."""
+    _session, _close_token, volume, truncated = cap.map_vendor_row(
+        "AAPL[2026-02-23]",
+        {"t": _t(date(2026, 2, 23)), "c": Decimal("270.5"), "v": Decimal("37308155.220558")},
+    )
+    assert volume == 37308155
+    assert truncated is True
 
 
 def test_mapping_accepts_a_zero_volume_as_a_real_observation() -> None:
-    session, close_token, volume = cap.map_vendor_row(
+    session, close_token, volume, truncated = cap.map_vendor_row(
         "SPY[2025-04-07]", {"t": _t(SYN_D1), "c": Decimal("600.00"), "v": 0}
     )
-    assert (session, close_token, volume) == (SYN_D1, "600", 0)
+    assert (session, close_token, volume, truncated) == (SYN_D1, "600", 0, False)
 
 
 def test_a_bool_volume_in_a_vendor_body_fails_the_run(
