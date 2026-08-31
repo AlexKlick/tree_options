@@ -418,6 +418,41 @@ def test_a_vendor_gap_fails_the_run_naming_the_session(
     assert not out.exists() and not custody.exists(), "no partial file may land"
 
 
+def test_a_pre_entitlement_session_is_a_disclosed_recorded_absence(
+    tmp_path: Path, artifacts_dir: Path
+) -> None:
+    """(2026-08-31, the live AAPL run) the free tier serves exactly two years
+    back: sessions the era carries BEFORE the vendor's served boundary
+    (2024-08-23/08-30 vs a 2024-09-02 boundary on the live wire) are
+    ENTITLEMENT-absent — the run succeeds, custody records the boundary and
+    the per-name absence list, and no row is invented for them. Gaps at or
+    after the boundary stay fatal (the vendor-gap test)."""
+    universe = _write_universe(tmp_path, ["SPY", "TSLA"])
+    era = _write_era(tmp_path, {"SPY": [SYN_D1, SYN_D2], "TSLA": [SYN_D1, SYN_D2]})
+    routes = {
+        # both names' responses start at SYN_D2: the shared entitlement boundary
+        aggs_url("SPY", SYN_D1, SYN_D2): _aggs_body(
+            "SPY", [_bar(_t(SYN_D2), "601.00", 81_000_000)], request_id="r-spy"
+        ),
+        aggs_url("TSLA", SYN_D1, SYN_D2): _aggs_body(
+            "TSLA", [_bar(_t(SYN_D2), "271.00", 41_000_000)], request_id="r-tsla"
+        ),
+    }
+    out = artifacts_dir / "spot-proxy-v2.json"
+    custody = artifacts_dir / "spot-proxy-v2-custody.json"
+    code, _ = _run(tmp_path, routes, out=out, custody=custody, universe=universe, era=era)
+    assert code == 0
+    written = json.loads(out.read_text(encoding="utf-8"))
+    assert set(written) == {"SPY", "TSLA"}
+    assert all(list(sessions) == [SYN_D2.isoformat()] for sessions in written.values())
+    record = json.loads(custody.read_text(encoding="utf-8"))
+    assert record["vendor_entitlement_boundary"] == SYN_D2.isoformat()
+    assert record["vendor_entitlement_absent"] == {
+        "SPY": [SYN_D1.isoformat()],
+        "TSLA": [SYN_D1.isoformat()],
+    }
+
+
 def test_a_preexisting_absent_session_is_a_legitimate_recorded_skip(
     tmp_path: Path, artifacts_dir: Path
 ) -> None:

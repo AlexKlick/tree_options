@@ -377,6 +377,9 @@ def run_capture(
     payload: dict[str, dict[str, dict[str, Any]]] = {}
     receipts: dict[str, dict[str, Any]] = {}
     preexisting_absent: dict[str, list[str]] = {}
+    floor_expected: dict[str, set[date]] = {}
+    written_sessions: dict[str, set[date]] = {}
+    first_served: dict[str, date] = {}
     total_rows = 0
 
     for name in names:
@@ -430,15 +433,13 @@ def run_capture(
             rows[session] = (close_token, volume)
 
         expected = era[name]
-        missing = sorted(expected - rows.keys())
-        if missing:
-            named = ", ".join(session.isoformat() for session in missing)
-            raise CaptureRefusedError(
-                f"{name}: {len(missing)} vendor gap(s) — the era itself carries this name"
-                f" on {named}, so the capture cannot answer the declared window;"
-                " refusing to write a partial file"
-            )
-        preexisting_absent[name] = [session.isoformat() for session in sorted(union - expected)]
+        # (2026-08-31, the live AAPL run) the free tier serves exactly two
+        # years back, so era sessions BEFORE the vendor's served boundary
+        # are entitlement-absent, not gaps — the boundary is GLOBAL (the
+        # earliest session ANY name was served) and the floor check runs
+        # after every name is fetched.
+        floor_expected[name] = expected
+        written_sessions[name] = set(rows)
 
         sessions_sorted = sorted(rows)
         payload[name] = {
@@ -467,6 +468,27 @@ def run_capture(
             "last_session": sessions_sorted[-1].isoformat(),
             "gaps": [],
         }
+        first_served[name] = sessions_sorted[0]
+
+    # ---- the declared-window floor, judged against the served boundary ----
+    boundary = min(first_served.values())
+    entitlement_absent: dict[str, list[str]] = {}
+    for name in names:
+        expected = floor_expected[name]
+        entitlement_absent[name] = [
+            session.isoformat() for session in sorted(expected) if session < boundary
+        ]
+        missing = sorted(
+            session for session in expected - written_sessions[name] if session >= boundary
+        )
+        if missing:
+            named = ", ".join(session.isoformat() for session in missing)
+            raise CaptureRefusedError(
+                f"{name}: {len(missing)} vendor gap(s) — the era itself carries this name"
+                f" on {named}, at or after the served boundary {boundary.isoformat()};"
+                " refusing to write a partial file"
+            )
+        preexisting_absent[name] = [session.isoformat() for session in sorted(union - expected)]
 
     payload_text = json.dumps(payload, indent=2, sort_keys=True, separators=(",", ": ")) + "\n"
     custody: dict[str, Any] = {
@@ -499,6 +521,8 @@ def run_capture(
             "names": len(payload),
         },
         "preexisting_absent": preexisting_absent,
+        "vendor_entitlement_boundary": boundary.isoformat(),
+        "vendor_entitlement_absent": entitlement_absent,
         "names": receipts,
     }
     return CaptureOutcome(payload_text=payload_text, custody=custody)
