@@ -465,7 +465,7 @@ def test_mapping_refuses_a_float_close() -> None:
         (True, "strict int"),
         (1.5, "strict int"),
         ("7", "strict int"),
-        (Decimal("7"), "strict int"),
+        (Decimal("7.5"), "strict int"),
         (-5, "strict int"),
     ],
 )
@@ -473,6 +473,21 @@ def test_mapping_refuses_every_loose_volume(volume: Any, complaint: str) -> None
     row = {"t": _t(SYN_D1), "c": Decimal("600.00"), "v": volume}
     with pytest.raises(cap.CaptureRefusedError, match=complaint):
         cap.map_vendor_row("SPY[2025-04-07]", row)
+
+
+def test_mapping_accepts_an_integral_decimal_volume_the_wire_shape() -> None:
+    """(2026-08-31, the live AAPL refusal) the vendor SHIPS volumes as
+    float-shaped JSON tokens (e.g. 50190574.0) — `loads_exact` hands those
+    to the mapping as Decimal. An INTEGRAL Decimal converts exactly (the
+    int is the same number, no float ever exists); a fractional one keeps
+    refusing. Without this, the first real capture refused AAPL row 0
+    (exit 4) and wrote nothing."""
+    _session, _close_token, volume = cap.map_vendor_row(
+        "AAPL[2024-09-03]",
+        {"t": _t(date(2024, 9, 3)), "c": Decimal("226.84"), "v": Decimal("50190574.0")},
+    )
+    assert volume == 50190574
+    assert type(volume) is int
 
 
 def test_mapping_accepts_a_zero_volume_as_a_real_observation() -> None:

@@ -252,10 +252,12 @@ def map_vendor_row(where: str, row: Mapping[str, Any]) -> tuple[date, str, int]:
     is its ET calendar date. `c` must arrive EXACT -- a Decimal from the
     client's `loads_exact`, or an int literal -- and is formatted back
     exponent-free; a float (exactness already lost upstream), a string, or
-    anything else refuses. `v` is validated by the LOADER'S OWN
-    `_validated_spot_v2_row` (strict int >= 0; bools, floats, Decimals and
-    strings all refuse), which also re-validated the close, so a row this
-    function returns can always live in the file the loader parses."""
+    anything else refuses. `v` may arrive as a strict int or as the vendor's
+    float-shaped token (an INTEGRAL Decimal after `loads_exact` — converted
+    exactly below); everything else — bools, floats, fractional Decimals,
+    strings — refuses, and the loader's own `_validated_spot_v2_row`
+    re-validates both fields, so a row this function returns can always
+    live in the file the loader parses."""
     raw_t = row.get("t")
     if type(raw_t) is not int:
         raise CaptureRefusedError(
@@ -276,8 +278,16 @@ def map_vendor_row(where: str, row: Mapping[str, Any]) -> tuple[date, str, int]:
             f"{row_where}: close must arrive as an exact JSON number (Decimal or int"
             f" after loads_exact), got {type(raw_c).__name__} — never float, never string"
         )
+    # (2026-08-31, the live AAPL refusal) the vendor ships volumes as
+    # float-shaped JSON tokens (50190574.0), which `loads_exact` hands over
+    # as Decimal — an INTEGRAL Decimal is the same number as its int and
+    # converts exactly (no float ever exists); a fractional one is not a
+    # share count and keeps refusing below.
+    raw_v = row.get("v")
+    if isinstance(raw_v, Decimal) and raw_v == raw_v.to_integral_value():
+        raw_v = int(raw_v)
     try:
-        close, volume = _validated_spot_v2_row(row_where, session, exact_close, row.get("v"))
+        close, volume = _validated_spot_v2_row(row_where, session, exact_close, raw_v)
     except MassiveOverlayError as exc:
         raise CaptureRefusedError(f"{row_where}: {exc}") from None
     return session, _plain(close), volume
