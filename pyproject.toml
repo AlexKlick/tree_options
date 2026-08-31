@@ -67,6 +67,7 @@ files = [
     "scripts/build_coverage_census.py",
     "scripts/build_protocol_amendment.py",
     "scripts/capture_spot_proxy_v2.py",
+    "scripts/build_lane1_manifest.py",
     "scripts/g4_seal.py",
     "scripts/launch_bars_era.py",
 ]
