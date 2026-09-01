@@ -358,3 +358,16 @@ successor-enablement lane is required first, with its own review:
   SURVIVED) and M353 (deep-JSON recursion); registry 341; 16/16 KILLED
   with restoration pass
   (`tree_options-logs/g4-price-boundary-{verify23,mutations12,mutations14,mutations15}.log`).
+- Codex round 9: 1 P0 / 1 P2, both verified (the hard-link probe — same
+  inodes, no symlink bit — returned criterion5=PASS/overall=PASS; the
+  deep-JSON test covered only the preflight catches). Fixed: the alias
+  detection compares each replay/stamped payload pair by
+  `(st_dev, st_ino)` (hard links share the inode with no symlink bit;
+  absence stays criterion 5's own missing-payload failure); the
+  post-preflight test gained (d) deep-JSON evaluation legs for both the
+  report and the census (the evaluation handlers now convert RecursionError
+  to verdicts, proven on the real path), and mutant M354 owns the
+  evaluation-side census catch specifically. M352 re-pinned to the
+  full-statement anchor including the inode arm. Registry 342; 17/17
+  KILLED with restoration pass
+  (`tree_options-logs/g4-price-boundary-{verify24,mutations16}.log`).

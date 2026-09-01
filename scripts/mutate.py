@@ -4723,7 +4723,8 @@ MUTANTS = [
         file="src/tree_options/seal/g4_gate.py",
         anchor=(
             "        replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(\n"
-            "            path.is_symlink() for path in replay_map.values()\n"
+            "            path.is_symlink() or _shares_inode(path, stamped_paths[name])\n"
+            "            for name, path in replay_map.items()\n"
             "        )"
         ),
         replacement="        replay_aliased = False  # mutant: alias check dropped",
@@ -4749,6 +4750,20 @@ MUTANTS = [
             " contain; the preflight must refuse it (and the evaluation"
             " convert it to a verdict), never let a raw escape follow the"
             " consumption"
+        ),
+    ),
+    dict(
+        id="M354-g4-eval-deep-json-recursion-uncaught",
+        owner="test_post_preflight_auxiliary_changes_fail_criteria_never_raise",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        except (OSError, RecursionError, ValueError, KeyError, TypeError) as exc:",
+        replacement="        except (OSError, ValueError, KeyError, TypeError) as exc:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the EVALUATION-side census parse must contain RecursionError:"
+            " a deeply nested census swapped in after the preflight (and so"
+            " after the CONSUMPTION) FAILs criterion 1 as a verdict — the"
+            " preflight catch alone cannot protect the post-spend path"
         ),
     ),
 ]
@@ -4902,9 +4917,9 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 341-mutant run stays the"
+            " mutants and re-pins; the full 342-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M353 price-boundary here)"
+            " + M338-M354 price-boundary here)"
         ),
     )
     args = parser.parse_args()

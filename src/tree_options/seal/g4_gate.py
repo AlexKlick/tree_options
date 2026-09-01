@@ -930,18 +930,32 @@ def evaluate_and_record(
     # criterion 5 as a verdict — payload_hashes reads eagerly, so an
     # absent/unreadable replay payload would raise FileNotFoundError/OSError
     # AFTER consumption; None is criterion 5's honest absent-replay failure.
-    # round-8 P0: an ALIASED "replay" — payload symlinks onto the run's own
-    # artifacts, or the replay dir IS the artifacts dir — compares
-    # byte-identical BY CONSTRUCTION; criterion 5 must name the aliasing,
-    # never certify determinism by self-comparison
+    # round-8/9 P0: an ALIASED "replay" — payload symlinks or HARD LINKS
+    # onto the run's own artifacts (same inode), or the replay dir IS the
+    # artifacts dir — compares byte-identical BY CONSTRUCTION (is_symlink
+    # alone misses hard links: same st_dev/st_ino, no symlink bit);
+    # criterion 5 must name the aliasing, never certify determinism by
+    # self-comparison
     replay_aliased = False
     if paths.replay_artifacts.is_dir():
         replay_map = {
             name: paths.replay_artifacts / path.relative_to(run.artifacts_dir)
             for name, path in stamped_paths.items()
         }
+
+        def _shares_inode(replay_path: Path, stamped_path: Path) -> bool:
+            if not replay_path.exists():
+                return False  # absence is criterion 5's own missing-payload failure
+            replay_stat = replay_path.stat()
+            stamped_stat = stamped_path.stat()
+            return (replay_stat.st_dev, replay_stat.st_ino) == (
+                stamped_stat.st_dev,
+                stamped_stat.st_ino,
+            )
+
         replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(
-            path.is_symlink() for path in replay_map.values()
+            path.is_symlink() or _shares_inode(path, stamped_paths[name])
+            for name, path in replay_map.items()
         )
         if replay_aliased:
             replay_hashes = None

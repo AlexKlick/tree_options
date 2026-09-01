@@ -11,6 +11,7 @@ read, no coverage peeked, no criterion dry-run on a real payload.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -1148,6 +1149,25 @@ def test_post_preflight_auxiliary_changes_fail_criteria_never_raise(
     finally:
         removed.write_bytes(saved_payload)
 
+    # (d, round-9 P2) deeply nested JSON swapped in post-preflight — the
+    # EVALUATION handlers convert it to a verdict, never a raw
+    # RecursionError after consumption
+    deep = "[" * 100_000 + "]" * 100_000
+    saved_report = mini.mutation_report.read_bytes()
+    mini.mutation_report.write_text(deep, encoding="utf-8")
+    try:
+        evaluation = _evaluate_into("deep-report")
+        assert evaluation.by_id("mutation_campaign").verdict == "FAIL"
+    finally:
+        mini.mutation_report.write_bytes(saved_report)
+    saved_census = mini.era_census.read_bytes()
+    mini.era_census.write_text(deep, encoding="utf-8")
+    try:
+        evaluation = _evaluate_into("deep-census")
+        assert evaluation.by_id("manifest_integrity").verdict == "FAIL"
+    finally:
+        mini.era_census.write_bytes(saved_census)
+
     # and the quiet control: with everything restored, the verdict is PASS
     evaluation = _evaluate_into("restored")
     assert evaluation.verdict == "PASS"
@@ -1188,6 +1208,26 @@ def test_an_aliased_replay_cannot_certify_determinism_by_self_comparison(
     assert determinism.verdict == "FAIL"
     assert any("not independent" in f for f in determinism.failures), determinism.failures
     assert evaluation.verdict == "FAIL"
+
+    # round-9 P0: HARD LINKS carry no symlink bit yet share the run's own
+    # inodes — is_symlink alone missed them and the probe PASSED; the
+    # (st_dev, st_ino) comparison names the aliasing
+    shutil.rmtree(replay_dir)
+    replay_dir.mkdir(parents=True)
+    for payload in sorted(run.artifacts_dir.rglob("*.json")):
+        if payload.name == "sealed-gate-summary.json":
+            continue
+        os.link(payload, replay_dir / payload.name)
+    evaluation = evaluate_and_record(
+        run,
+        held,
+        paths=_paths_for(mini, run, tmp_path / "evidence-hardlink", replay_dir),
+        repo_root=mini.repo,
+        head=mini.head,
+    )
+    determinism = evaluation.by_id("determinism")
+    assert determinism.verdict == "FAIL"
+    assert any("not independent" in f for f in determinism.failures), determinism.failures
 
 
 def test_deeply_nested_auxiliary_json_never_raises_post_consumption(
