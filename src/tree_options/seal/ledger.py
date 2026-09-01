@@ -75,8 +75,15 @@ Record kinds:
 
 * ``APPROVAL`` — the owner's pre-declared approval of an identity tuple;
 * ``CONSUMPTION`` — the one-shot spend of that authority by a sealed run;
+* ``RECONCILIATION`` — the owner's act re-arming authority for sealed CONTENT
+  whose consumption produced no verdict (the 2026-08-31 crash class): it must
+  name the identity of a CONSUMPTION record already in the ledger, and each
+  record permits exactly ONE further consumption of that content — the
+  budget arithmetic lives in ``_check_authority`` (scripts/g4_seal.py), which
+  counts consumptions against reconciliations per content identity;
 * ``RECONCILIATION_NOTE`` — an operator note after an incident (e.g. a crash
-  between consumption and run completion: UNKNOWN, never auto-rerun).
+  between consumption and run completion: UNKNOWN, never auto-rerun). A NOTE
+  carries NO authority semantics: appending one never re-arms anything.
 
 Consumers RECOMPUTE the identity from a record's own payload instead of
 trusting its stored ids — see ``scripts/g4_seal.py`` execute step 2.
@@ -97,7 +104,11 @@ from tree_options.data.digest import sha256_hex
 from tree_options.runstate import custody
 from tree_options.runstate.errors import StoreCustodyError
 from tree_options.schemas.common import StrictModel
-from tree_options.seal.errors import LedgerCorruptError, LedgerRootRefusedError
+from tree_options.seal.errors import (
+    LedgerCorruptError,
+    LedgerRootRefusedError,
+    ReconciliationInvalidError,
+)
 from tree_options.seal.identity import SealedIdentity, content_identity, sealed_run_id
 
 LEDGER_DOMAIN = b"tree-options-g4-ledger-v1"
@@ -111,9 +122,10 @@ DEFAULT_G4_LEDGER_ROOT = Path("artifacts/g4-authority")
 
 TMP_AUTHORITY_ROOT = Path("/tmp")
 
-RecordKind = Literal["APPROVAL", "CONSUMPTION", "RECONCILIATION_NOTE"]
+RecordKind = Literal["APPROVAL", "CONSUMPTION", "RECONCILIATION", "RECONCILIATION_NOTE"]
 KIND_APPROVAL: RecordKind = "APPROVAL"
 KIND_CONSUMPTION: RecordKind = "CONSUMPTION"
+KIND_RECONCILIATION: RecordKind = "RECONCILIATION"
 KIND_RECONCILIATION_NOTE: RecordKind = "RECONCILIATION_NOTE"
 
 
@@ -1293,3 +1305,51 @@ def append_reconciliation_note(
 ) -> LedgerRecord:
     """Leave an operator note after an incident (library API)."""
     return _append_kind(root, KIND_RECONCILIATION_NOTE, identity, reason=reason, at_epoch=at_epoch)
+
+
+def append_reconciliation(
+    root: Path, identity: SealedIdentity, *, reason: str, at_epoch: int
+) -> LedgerRecord:
+    """Re-arm one-shot authority for sealed CONTENT consumed without a
+    verdict (library API — the owner's act, recorded by the orchestrator on
+    instruction exactly like an approval).
+
+    The identity must be the CONSUMED run's own tuple (the record binds BOTH
+    recomputed ids to that exact checkout): a reconciliation may only follow
+    a CONSUMPTION record that already holds it, so it re-arms a real
+    consumed-without-verdict spend and can never pre-authorize a re-run of
+    content nothing has spent yet. Each record permits exactly ONE further
+    consumption — the budget arithmetic is ``_check_authority``'s
+    (scripts/g4_seal.py), which counts consumptions against reconciliations
+    per content identity. The exact consumed CHECKOUT is never re-runnable:
+    the sealed-run-id arm of the authority check stays absolute regardless
+    of any budget."""
+    run_id = sealed_run_id(identity)
+    view = read_ledger(root)
+    for record in view.records:
+        if record.kind != KIND_CONSUMPTION:
+            continue
+        try:
+            record_run_id = sealed_run_id(record.identity)
+            record_content_id = content_identity(record.identity)
+        except Exception:
+            raise LedgerCorruptError(
+                f"CONSUMPTION record {record.record_sha256[:12]}… has an"
+                " unparseable identity payload; the reconciliation cannot"
+                " be joined to it safely — refusing to append"
+            ) from None
+        if record.sealed_run_id != record_run_id or record.content_identity != record_content_id:
+            raise LedgerCorruptError(
+                f"CONSUMPTION record {record.record_sha256[:12]}… stored"
+                " ids disagree with its own identity payload (corruption)"
+            )
+        if record.identity == identity:
+            return _append_kind(
+                root, KIND_RECONCILIATION, identity, reason=reason, at_epoch=at_epoch
+            )
+    raise ReconciliationInvalidError(
+        run_id,
+        "no CONSUMPTION record in the ledger holds this exact consumed"
+        " identity — a reconciliation re-arms an existing"
+        " consumed-without-verdict spend; it is never minted ahead of one",
+    )

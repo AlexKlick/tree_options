@@ -196,7 +196,14 @@ class RepoCalendarSealedRunner:
                 f"git rev-parse HEAD failed in {repo}: {head.stderr.strip()[:120]}",
             )
         run_id = sealed_run_id(identity_from_packet(inputs.packet))
-        gate_paths = production_gate_paths(repo)
+        # Run-scoped outputs (the 2026-08-31 successor-enablement lane): the
+        # registry/artifacts/scratch/replay locations derive from THIS run's
+        # sealed_run_id, so a successor checkout never collides with a prior
+        # run's occupied legacy paths (the crashed event holds
+        # artifacts/g4-sealed*). The declared per-checkout INPUTS stay shared;
+        # the in-workspace one-shot refusals stand unchanged inside the
+        # run root.
+        gate_paths = production_gate_paths(repo, run_key=run_id)
         # Round-5 P0: NO preflight here. execute_sealed_run calls preflight()
         # AFTER the authority cross-join and BEFORE the durable CONSUMPTION
         # append — a second check at this point would run AFTER the append

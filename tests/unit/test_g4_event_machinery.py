@@ -1683,8 +1683,14 @@ def test_the_production_runner_delegates_to_the_machinery(
     mini_gate: MiniGateFixture, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
     """The runner consumes the held bundle and returns the outcome string
-    (run id + verdict + evidence paths) under the PRODUCTION path set and
-    the DEFAULT geometry; a second invocation refuses (one-shot)."""
+    (run id + verdict + evidence paths) under the PRODUCTION path set —
+    RUN-SCOPED to this sealed run's id (the successor-enablement lane: the
+    outputs land under artifacts/g4-sealed-runs/<sealed_run_id>/, never at
+    the crashed 2026-08-31 event's occupied legacy names) — and the DEFAULT
+    geometry; a second invocation refuses (one-shot, inside the run root)."""
+    from tree_options.seal.identity import sealed_run_id
+    from tree_options.seal.verified_inputs import identity_from_packet
+
     replay_root = tmp_path_factory.mktemp("g4runner-replay")
     replay_run = _run_mini_gate(
         mini_gate,
@@ -1692,23 +1698,35 @@ def test_the_production_runner_delegates_to_the_machinery(
         replay_root / "sealed.db",
         replay_root / "scratch",
     )
-    replay_dir = mini_gate.repo / "artifacts" / "g4-sealed-replay"
+    held = verify_sealed_inputs(mini_gate.held_paths)
+    run_id = sealed_run_id(identity_from_packet(held.packet))
+    run_root = mini_gate.repo / "artifacts" / "g4-sealed-runs" / run_id
+    replay_dir = run_root / "replay"
     if replay_dir.exists():
         shutil.rmtree(replay_dir)
     shutil.copytree(replay_run.artifacts_dir, replay_dir)
 
-    held = verify_sealed_inputs(mini_gate.held_paths)
     runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini_gate.repo))
     assert runner.config_digest() == runner.config_digest()  # deterministic
     outcome = runner(held)
     assert outcome.startswith("m4-g4-sealed/1 sealed_run_id=")
     assert "verdict=PASS" in outcome
     assert "m4-g4-sealed-gate.json" in outcome
+    # the run-scoped workspace: registry, artifacts and the replay the
+    # determinism criterion compared all live under the run root, and the
+    # LEGACY names stay untouched (the crashed run's residue is history)
+    assert (run_root / "g4-sealed.db").is_file()
+    assert (run_root / "artifacts" / "sealed-gate-summary.json").is_file()
+    assert (run_root / "replay").is_dir()
+    assert not (mini_gate.repo / "artifacts" / "g4-sealed.db").exists()
+    assert not (mini_gate.repo / "artifacts" / "g4-sealed").exists()
     evidence = mini_gate.repo / "docs" / "evidence-logs" / "m4"
     assert (evidence / "m4-g4-sealed-gate.json").is_file()
     recorded = json.loads((evidence / "m4-g4-sealed-gate.json").read_text(encoding="utf-8"))
     assert recorded["verdict"] == "PASS"
-    with pytest.raises(RuntimeError, match=r"refusing to reuse sealed (registry|artifacts)"):
+    with pytest.raises(
+        RuntimeError, match=r"refusing to reuse sealed (registry|artifacts|scratch)"
+    ):
         runner(held)
 
 

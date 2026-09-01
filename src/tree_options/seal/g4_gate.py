@@ -29,8 +29,9 @@ need an execution session or a volume-flow trial run are marked
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -699,9 +700,26 @@ class G4GatePaths:
     spot_proxy_v2: Path | None = None
 
 
-def production_gate_paths(repo_root: Path) -> G4GatePaths:
+def production_gate_paths(repo_root: Path, *, run_key: str | None = None) -> G4GatePaths:
+    """Every auxiliary location, derived from one repo root.
+
+    ``run_key=None`` is the LEGACY shared layout (the pre-declared gate CLI
+    and the fixture lanes): the outputs land at the fixed
+    ``artifacts/g4-sealed*`` names — which the crashed 2026-08-31 run
+    occupies, and which nothing in this repo may move or reinterpret.
+
+    ``run_key=<sealed_run_id>`` (the production runner's own derivation)
+    scopes every OUTPUT to ``artifacts/g4-sealed-runs/<run_key>/`` — one
+    workspace per sealed run, so a successor checkout never collides with a
+    prior run's occupied registry/artifacts/scratch (the in-workspace
+    one-shot refusals stand unchanged inside it). The DECLARED per-checkout
+    INPUTS (era census, mutation report, the optional spot-proxy sidecar,
+    the evidence root) are shared and never move: they are inputs the
+    preflight validates, not outputs a run owns. The key must be a full
+    64-hex sealed-run-id token — it names a directory under the gitignored
+    artifacts tree, so traversal-shaped or partial keys refuse here."""
     repo_root = Path(repo_root)
-    return G4GatePaths(
+    shared = G4GatePaths(
         evidence_root=repo_root / "docs" / "evidence-logs" / "m4",
         registry=repo_root / "artifacts" / "g4-sealed.db",
         artifacts_dir=repo_root / "artifacts" / "g4-sealed",
@@ -713,6 +731,22 @@ def production_gate_paths(repo_root: Path) -> G4GatePaths:
         # recapture's natural sidecar seat): absent = the protocol's declared
         # term fails honestly on the sentinel, never a fabricated median
         spot_proxy_v2=repo_root / "artifacts" / "spot-proxy-v2.json",
+    )
+    if run_key is None:
+        return shared
+    if not re.fullmatch(r"[0-9a-f]{64}", run_key):
+        raise ValueError(
+            f"run key {run_key!r} is not a sealed run id (64 lowercase hex"
+            " characters) — a run-scoped sealed workspace is keyed by the"
+            " sealed_run_id and never by an arbitrary path fragment"
+        )
+    run_root = repo_root / "artifacts" / "g4-sealed-runs" / run_key
+    return replace(
+        shared,
+        registry=run_root / "g4-sealed.db",
+        artifacts_dir=run_root / "artifacts",
+        scratch_root=run_root,
+        replay_artifacts=run_root / "replay",
     )
 
 

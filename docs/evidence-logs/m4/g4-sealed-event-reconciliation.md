@@ -203,30 +203,64 @@ surprised by it.
    `9b945db3fa3dd92b…`.
 
 Two authority-side facts (verified in source during the Codex round-1
-review) mean the successor event does NOT simply run — a follow-up
-successor-enablement lane is required first, with its own review:
+review) meant the successor event did NOT simply run — both were cleared by
+the successor-enablement lane (branch `m4/g4-successor-20260901`, PR #24),
+with its own review:
 
 - **Content identity collides.** `content_identity()`
    (`src/tree_options/seal/identity.py:52-58`) deliberately blanks the
    checkout-bound fields (`code_sha`, packet hash) so "a fresh checkout of
    the same research content is not fresh one-shot authority", and
-   `_check_authority` (`scripts/g4_seal.py:303`) refuses any new execution
+   `_check_authority` (`scripts/g4_seal.py`) refuses any new execution
    whose content id matches an existing CONSUMPTION. This remediation
    changes no content-bearing input (same era bytes, protocol, criteria,
    runner version), so the successor event's content id equals the consumed
-   run's `0a1ea282…` and would refuse. The design has no lane for
-   "consumed, no verdict, owner-ordered remediation" — the successor lane
-   must add an explicit, owner-issued RECONCILIATION record that re-arms
-   authority for exactly this case (naming the consumed record and the
-   remediation), never a weakening of the content-identity scoping.
+   run's `0a1ea282…` and would refuse. The design had no lane for
+   "consumed, no verdict, owner-ordered remediation".
+   **Cleared:** the ledger gained an authority-bearing `RECONCILIATION`
+   record kind (`ledger.append_reconciliation`, library-only like every
+   authority act). It must name the identity tuple of a CONSUMPTION record
+   already in the ledger (nothing consumed = nothing to re-arm; a foreign
+   identity names no real spend — `RECONCILIATION_INVALID`, exit 8), and
+   each record permits exactly ONE further consumption of that content:
+   `_check_authority` now counts consumptions(content) against
+   reconciliations(content) and refuses while the former exceeds the
+   latter. The content-identity scoping itself is untouched, the
+   sealed-RUN arm stays absolute (the crashed checkout
+   `9b945db3fa3dd92b…` is never re-runnable regardless of budget), and a
+   re-armed successor still needs its OWN approval for its new packet —
+   reconciliation re-arms the content, the approval authorizes the new
+   checkout. `RECONCILIATION_NOTE` remains a pure note with no authority
+   semantics.
 - **The sealed workspace paths are fixed and now occupied.**
-   `production_gate_paths` (`src/tree_options/seal/g4_gate.py`) pins
+   `production_gate_paths` (`src/tree_options/seal/g4_gate.py`) pinned
    `artifacts/g4-sealed.db`, `artifacts/g4-sealed/`, and
    `artifacts/g4-sealed-scratch/`, and the machinery refuses to reuse any
    that exist (`g4_event.py` "refusing to reuse sealed …"). The crashed run
-   left all three. The successor lane must make the workspace run-scoped
-   (fresh paths per `sealed_run_id`, the crashed run's partials preserved
-   untouched as history).
+   left all three.
+   **Cleared:** `production_gate_paths(repo, run_key=<sealed_run_id>)`
+   scopes every OUTPUT to `artifacts/g4-sealed-runs/<run_key>/` (registry,
+   artifacts, scratch, replay), and the production runner derives its
+   `run_key` from its own sealed run id. The declared per-checkout INPUTS
+   (era census, mutation report, spot-proxy sidecar, evidence root) stay
+   shared, the run key must be a full 64-hex sealed-run-id token, and the
+   in-workspace one-shot refusals stand unchanged inside the run root. The
+   legacy layout is pinned by test exactly as this crash left it: the
+   crashed run's partials stay untouched history at the legacy names.
+
+With both cleared, the forward sequence for the successor event is:
+
+1. this successor-enablement lane merges to `main` (owner merges NORMAL);
+2. the owner issues the RECONCILIATION record for the consumed identity
+   (their words as the reason — the orchestrator records the act via the
+   library, exactly as with approvals);
+3. fresh preflight at the new head → new packet (fresh `sealed_run_id`,
+   run-scoped workspace derived from it);
+4. the owner DECLARES the head and APPROVES the packet;
+5. the one-shot driver executes ONCE — run-scoped workspace, budget-covered
+   consumption, verdict recorded verbatim;
+6. **never re-run** the consumed `sealed_run_id` `9b945db3fa3dd92b…` (the
+   run arm is absolute by construction, not by discipline alone).
 
 ## 8. Verification (this lane, hermetic)
 
@@ -390,3 +424,29 @@ successor-enablement lane is required first, with its own review:
   class (a tracked file edited DURING the run trips the evidence
   stamping's dirty-worktree refusal post-consumption), owned by the
   one-shot discipline and the successor lane's reconciliation record.
+
+## 9. The successor-enablement lane (branch `m4/g4-successor-20260901`, after PR #23 merged as `5824f93`)
+
+The two §7 blockers, cleared (red-first; the budget test caught an
+off-by-one in the first drafting — "refuse while consumptions exceed
+reconciliations PLUS ONE" would have granted every reconciliation TWO
+spends):
+
+- RED→GREEN: `tree_options-logs/g4-successor-red.log` (ImportError on the
+  new error class / no `run_key` parameter) →
+  `tree_options-logs/g4-successor-green.log` (the reconciliation +
+  run-scoped-path sections green) →
+  `tree_options-logs/g4-successor-suite.log` (157/157 across the whole
+  seal surface: machinery, seal, runner wiring, ledger, verified inputs,
+  identity).
+- The owner-act surface: `append_reconciliation` (library-only) + the
+  `_check_authority` budget + the `RECONCILIATION_INVALID` exit code (8) +
+  the module-docstring contract. The NOTE kind stays a pure note (owned by
+  test).
+- The run-scoped workspace: `production_gate_paths(repo, run_key=…)` with
+  the 64-hex run-key contract, the runner's own derivation, the pinned
+  legacy layout, and the two-runs-never-share-a-workspace separation.
+- Mutants M356–M363 (registry 343→351); 8/8 KILLED with full-suite
+  restoration pass (`tree_options-logs/g4-successor-mutations.log`);
+  anchor audit: all 351 anchors match exactly once
+  (`tree_options-logs/g4-successor-anchor-audit.log`).

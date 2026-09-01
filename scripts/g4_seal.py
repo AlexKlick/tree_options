@@ -30,19 +30,29 @@ consumes NO authority in PR A:
 
 Execute semantics (``execute_sealed_run``):
 
-1. read the ledger — any CONSUMPTION record whose sealed_run_id OR
-   content_identity matches this run refuses (exit 7). Two checkouts of the
-   same research content share a content_identity, so a second consumption
-   under EITHER id is refused.
+1. read the ledger — a CONSUMPTION record whose sealed_run_id matches this
+   run refuses (exit 7) ABSOLUTELY (the exact checkout is never re-runnable);
+   a CONSUMPTION whose content_identity matches refuses (exit 7) unless owner
+   RECONCILIATION records re-arm the content, one further consumption each
+   (consumptions(content) may exceed reconciliations(content) by at most the
+   original, unreconciled spend). Two checkouts of the same research content
+   share a content_identity, so content authority is one-shot per sealed
+   CONTENT, not per checkout.
 2. an APPROVAL record must exist whose identity, RECOMPUTED from the record's
    own payload, yields this run's packet-bound sealed_run_id (exit 6) — a
-   record's stored ids alone are never trusted.
+   record's stored ids alone are never trusted. A re-armed successor checkout
+   still needs its OWN approval: reconciliation re-arms the content, the
+   approval authorizes the new checkout.
 3. current checkout/protocol/lane payloads/calendar/criteria and runner
    version are re-verified and cross-joined to the approved packet.
 4. the CONSUMPTION record is appended durably (flock + fsync file + fsync
    dir) BEFORE the runner is invoked. A crash after consumption is a
    documented UNKNOWN / RECONCILIATION_REQUIRED state that is NEVER
-   auto-rerun: a later identical execute hits step 1 and refuses.
+   auto-rerun: a later identical execute hits step 1 and refuses (the exact
+   run) or the budget arithmetic (a successor checkout without a fresh owner
+   reconciliation). The remediation path for consumed-without-verdict content
+   is the owner's RECONCILIATION record (``ledger.append_reconciliation``,
+   library-only like every authority act) naming the consumed identity.
 
 Exit codes:
   0  preflight: all six sealed-run inputs available (no verdict computed)
@@ -53,6 +63,9 @@ Exit codes:
      corrupt
   6  APPROVAL_INVALID — no approval record recomputes to this run's identity
   7  SECOND_EXECUTION_REFUSED — this sealed content was already consumed
+  8  RECONCILIATION_INVALID — a reconciliation record cannot be minted for
+     this identity (no matching CONSUMPTION: nothing consumed, nothing to
+     re-arm)
 """
 
 from __future__ import annotations
@@ -89,6 +102,7 @@ from tree_options.seal.ledger import (  # noqa: E402
     DEFAULT_G4_LEDGER_ROOT,
     KIND_APPROVAL,
     KIND_CONSUMPTION,
+    KIND_RECONCILIATION,
     LedgerRecord,
     read_ledger,
 )
@@ -280,10 +294,39 @@ class ExecuteSummary(StrictModel):
 
 
 def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> None:
-    """Refuse duplicate content and require an exact recomputed approval."""
+    """Refuse duplicate content and require an exact recomputed approval.
+
+    The sealed-RUN arm is absolute: a CONSUMPTION matching this exact
+    checkout's sealed_run_id refuses forever — the crashed checkout is never
+    re-runnable (the remediation is, by construction, a different head). The
+    sealed-CONTENT arm is re-armable by owner RECONCILIATION records, each
+    permitting exactly ONE further consumption: a new consumption of content
+    C is refused while consumptions(C) > reconciliations(C)."""
     run_id = sealed_run_id(identity)
     content_id = content_identity(identity)
+    content_consumptions = 0
+    reconciliations = 0
     for record in view.records:
+        if record.kind == KIND_RECONCILIATION:
+            try:
+                reconciliation_content_id = content_identity(record.identity)
+            except Exception:
+                raise LedgerCorruptError(
+                    f"RECONCILIATION record {record.record_sha256[:12]}… has an"
+                    " unparseable identity payload; the re-arm budget cannot"
+                    " be evaluated safely — refusing to append"
+                ) from None
+            if (
+                record.content_identity != reconciliation_content_id
+                or record.sealed_run_id != sealed_run_id(record.identity)
+            ):
+                raise LedgerCorruptError(
+                    f"RECONCILIATION record {record.record_sha256[:12]}… stored"
+                    " ids disagree with its own identity payload (corruption)"
+                )
+            if reconciliation_content_id == content_id:
+                reconciliations += 1
+            continue
         if record.kind != KIND_CONSUMPTION:
             continue
         try:
@@ -300,10 +343,21 @@ def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> 
                 f"CONSUMPTION record {record.record_sha256[:12]}… stored"
                 " ids disagree with its own identity payload (corruption)"
             )
-        if record_run_id == run_id or record_content_id == content_id:
+        if record_run_id == run_id:
             raise SecondExecutionRefusedError(
-                run_id, "a CONSUMPTION record already matches this sealed content"
+                run_id, "a CONSUMPTION record already matches this exact sealed run"
             )
+        if record_content_id == content_id:
+            content_consumptions += 1
+    if content_consumptions > reconciliations:
+        raise SecondExecutionRefusedError(
+            run_id,
+            f"{content_consumptions} CONSUMPTION record(s) already match this"
+            f" sealed content against {reconciliations} owner RECONCILIATION"
+            " record(s) — each reconciliation re-arms exactly one further"
+            " consumption; consumed-without-verdict content is re-armed by an"
+            " owner reconciliation, never by a re-run",
+        )
 
     approval_ok = any(
         record.kind == KIND_APPROVAL

@@ -35,6 +35,8 @@ from tree_options.seal import ledger as L  # noqa: E402
 from tree_options.seal import verified_inputs as vi  # noqa: E402
 from tree_options.seal.errors import (  # noqa: E402
     ApprovalInvalidError,
+    LedgerCorruptError,
+    ReconciliationInvalidError,
     SecondExecutionRefusedError,
     VerifiedInputsError,
 )
@@ -467,6 +469,163 @@ def test_changed_checkout_same_content_still_exit_7(tmp_path: Path, ledger_root:
             git_runner=_git_runner_for("f" * 40),
             at_epoch=T0 + 1,
         )
+
+
+# ---- owner reconciliation: re-arming content consumed without a verdict ---------------
+
+
+def test_reconciliation_re_arms_consumed_content_for_exactly_one_successor(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """The 2026-08-31 remediation path: sealed CONTENT consumed WITHOUT a
+    verdict is re-armed by an owner RECONCILIATION record naming the CONSUMED
+    checkout's identity — one further consumption per record (budget-of-one),
+    so the successor event runs and a THIRD checkout of the same content is
+    refused again until the owner reconciles again."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    _approve(ledger_root, packet_a)
+    # the crashed spend: content consumed, no verdict
+    _execute(packet_a, fixture, ledger_root)
+
+    packet_b = _packet(fixture, git_runner=_git_runner_for("f" * 40))
+    identity_a = identity_from_packet(packet_a)
+    identity_b = identity_from_packet(packet_b)
+    assert content_identity(identity_a) == content_identity(identity_b)
+    _approve(ledger_root, packet_b)
+    # before the owner reconciles, the successor checkout is refused (the
+    # blocker this lane exists to lift)
+    with pytest.raises(SecondExecutionRefusedError):
+        _execute(packet_b, fixture, ledger_root, git_runner=_git_runner_for("f" * 40))
+
+    # the owner's act: a RECONCILIATION record naming the CONSUMED identity
+    record = L.append_reconciliation(
+        ledger_root,
+        identity_a,
+        reason="consumed without verdict — crash in build_lane2_world",
+        at_epoch=T0 + 2,
+    )
+    assert record.kind == L.KIND_RECONCILIATION
+    assert record.sealed_run_id == sealed_run_id(identity_a)
+    assert record.content_identity == content_identity(identity_a)
+
+    summary = _execute(
+        packet_b, fixture, ledger_root, git_runner=_git_runner_for("f" * 40), at_epoch=T0 + 3
+    )
+    assert summary.sealed_run_id == sealed_run_id(identity_b)
+
+    # the budget is SPENT: a third checkout of the same content refuses again
+    packet_c = _packet(fixture, git_runner=_git_runner_for("e" * 40))
+    _approve(ledger_root, packet_c)
+    with pytest.raises(SecondExecutionRefusedError) as spent:
+        _execute(packet_c, fixture, ledger_root, git_runner=_git_runner_for("e" * 40))
+    assert "2 CONSUMPTION" in str(spent.value)
+    assert "1 owner RECONCILIATION" in str(spent.value)
+
+
+def test_the_exact_consumed_checkout_stays_refused_even_after_reconciliation(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """The run-id arm is ABSOLUTE: a reconciliation re-arms the CONTENT for a
+    successor checkout, never the crashed CHECKOUT itself — re-running the
+    exact consumed head (the remediation is not in it) is refused regardless
+    of any reconciliation budget."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    _approve(ledger_root, packet_a)
+    _execute(packet_a, fixture, ledger_root)
+    L.append_reconciliation(
+        ledger_root,
+        identity_from_packet(packet_a),
+        reason="consumed without verdict",
+        at_epoch=T0 + 2,
+    )
+    with pytest.raises(SecondExecutionRefusedError, match="exact sealed run"):
+        _execute(packet_a, fixture, ledger_root, at_epoch=T0 + 3)
+
+
+def test_reconciliation_requires_an_existing_matching_consumption(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """A reconciliation re-arms CONSUMED authority only: on a ledger with no
+    matching CONSUMPTION record (nothing consumed yet, or a different
+    checkout's identity) the append refuses and the ledger is unchanged — a
+    reconciliation can never pre-authorize a re-run, only re-arm a real
+    consumed-without-verdict spend."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    packet_b = _packet(fixture, git_runner=_git_runner_for("f" * 40))
+    _approve(ledger_root, packet_a)
+
+    # nothing consumed yet: refused
+    with pytest.raises(ReconciliationInvalidError) as exc_info:
+        L.append_reconciliation(
+            ledger_root,
+            identity_from_packet(packet_a),
+            reason="premature",
+            at_epoch=T0 + 1,
+        )
+    assert exc_info.value.exit_code == 8
+
+    _execute(packet_a, fixture, ledger_root)
+
+    # a DIFFERENT checkout's identity names no consumed run: refused
+    with pytest.raises(ReconciliationInvalidError):
+        L.append_reconciliation(
+            ledger_root,
+            identity_from_packet(packet_b),
+            reason="foreign identity",
+            at_epoch=T0 + 2,
+        )
+    kinds = [record.kind for record in L.read_ledger(ledger_root).records]
+    assert kinds == ["APPROVAL", "CONSUMPTION"]
+
+
+def test_a_reconciliation_note_is_not_authority(tmp_path: Path, ledger_root: Path) -> None:
+    """The NOTE kind stays a pure operator note (the torn-tail message offers
+    it): appending one never re-arms consumed content."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    _approve(ledger_root, packet_a)
+    _execute(packet_a, fixture, ledger_root)
+    L.append_reconciliation_note(
+        ledger_root,
+        identity_from_packet(packet_a),
+        reason="post-incident note",
+        at_epoch=T0 + 2,
+    )
+    packet_b = _packet(fixture, git_runner=_git_runner_for("f" * 40))
+    _approve(ledger_root, packet_b)
+    with pytest.raises(SecondExecutionRefusedError):
+        _execute(packet_b, fixture, ledger_root, git_runner=_git_runner_for("f" * 40))
+
+
+def test_forged_reconciliation_stored_ids_refused_as_corrupt(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """Mirror of the CONSUMPTION rule (M229's owner): a RECONCILIATION record
+    whose stored ids disagree with its own identity payload is corruption —
+    the re-arm budget is never evaluated from untrusted stored ids."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    _approve(ledger_root, packet_a)
+    _execute(packet_a, fixture, ledger_root)
+    identity_a = identity_from_packet(packet_a)
+    view = L.read_ledger(ledger_root)
+    forged = L.LedgerRecord(
+        kind=L.KIND_RECONCILIATION,
+        identity=identity_a,
+        sealed_run_id="0" * 64,
+        content_identity="1" * 64,  # disagrees with the recomputed payload ids
+        reason="forged",
+        at_epoch=T0 + 9,
+        prev_record_sha256=view.tail_hash,
+    )
+    L.append_record(ledger_root, forged)
+    packet_b = _packet(fixture, git_runner=_git_runner_for("f" * 40))
+    _approve(ledger_root, packet_b)
+    with pytest.raises(LedgerCorruptError, match="RECONCILIATION record"):
+        _execute(packet_b, fixture, ledger_root, git_runner=_git_runner_for("f" * 40))
 
 
 def test_approval_missing_exit_6_before_consumption(tmp_path: Path, ledger_root: Path) -> None:
