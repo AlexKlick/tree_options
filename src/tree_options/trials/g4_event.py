@@ -60,6 +60,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,7 @@ from tree_options.protocol.loader import load_protocol_bytes
 from tree_options.protocol.schema import ResearchProtocol
 from tree_options.protocol.stamping import build_stamp, write_artifact
 from tree_options.registry.sqlite import TrialRegistry
+from tree_options.schemas.common import PRICE_TICK
 from tree_options.seal.verified_inputs import HeldVerifiedSealedInputs
 from tree_options.time.calendar import SessionCalendar
 from tree_options.trials.null_score import NULL_SCORE_MODEL_FAMILY, null_score
@@ -192,6 +194,11 @@ class Lane2World:
     decision_sessions: tuple[date, ...]
     scored_by_arm: dict[str, tuple[ScoredLabel, ...]]
     spot_v2_declared: bool
+    # boundary-quantization custody: how many spot-proxy closes the flat
+    # dataset bars moved to the cent tick, and the largest |close - tick|
+    # distance among them (None when no row needed quantizing)
+    spot_close_quantized_rows: int
+    spot_close_max_quantization_delta: Decimal | None
 
 
 def _friday_grid(overlay: Any, exchange: Any) -> SessionCalendar:
@@ -295,24 +302,57 @@ def build_lane2_world(
     )
     world_id = overlay.spec.world_id
     publication_of = overlay.publication_of
-    dataset_bars = tuple(
-        BarRecord(
-            security_id=underlying,
-            session=session,
-            open=close,
-            high=close,
-            low=close,
-            close=close,
-            volume=1,
-            source="spot-proxy/declared",
-            source_record_id=f"{underlying}-{session:%Y%m%d}",
-            source_row_hash="0" * 64,
-            snapshot_id=world_id,
-            available_at=publication_of(session),
-        )
-        for underlying, sessions in spot.items()
-        for session, close in sorted(sessions.items())
-    )
+    # The spot-proxy close is the VENDOR's exact token; the fabricated flat
+    # dataset bar is a Price (2dp) by the shared schema's design. Real wire
+    # closes sometimes carry a third decimal (the 2026-08-31 sealed event
+    # crashed here on ADBE "417.125"), so every close is quantized to cents
+    # AT THE BarRecord BOUNDARY with the shared PRICE_TICK — a bare
+    # ``quantize`` whose tie rule is the decimal context default
+    # ROUND_HALF_EVEN (the settlement.py idiom) — and every row the tick
+    # moves is counted in custody. The SURFACE keeps the vendor-exact close
+    # untouched (``spot`` above feeds it verbatim), and no consumer compares
+    # a dataset bar close against the surface spot.
+    spot_close_quantized_rows = 0
+    spot_close_max_quantization_delta: Decimal | None = None
+    bars: list[BarRecord] = []
+    for underlying, sessions in spot.items():
+        for session, close in sorted(sessions.items()):
+            quantized = close.quantize(PRICE_TICK)
+            if quantized <= 0:
+                # a positive sub-cent close would quantize to 0.00, which
+                # Price (gt=0) can never carry: refuse naming the row rather
+                # than silently dropping or flooring it
+                raise ValueError(
+                    f"spot close {close} for {underlying} on {session:%Y-%m-%d} quantizes"
+                    f" to {quantized} at tick {PRICE_TICK}: a positive sub-cent close"
+                    " cannot become a Price (gt=0) — refusing rather than"
+                    " flooring the row to zero"
+                )
+            if quantized != close:
+                spot_close_quantized_rows += 1
+                delta = abs(close - quantized)
+                if (
+                    spot_close_max_quantization_delta is None
+                    or delta > spot_close_max_quantization_delta
+                ):
+                    spot_close_max_quantization_delta = delta
+            bars.append(
+                BarRecord(
+                    security_id=underlying,
+                    session=session,
+                    open=quantized,
+                    high=quantized,
+                    low=quantized,
+                    close=quantized,
+                    volume=1,
+                    source="spot-proxy/declared",
+                    source_record_id=f"{underlying}-{session:%Y%m%d}",
+                    source_row_hash="0" * 64,
+                    snapshot_id=world_id,
+                    available_at=publication_of(session),
+                )
+            )
+    dataset_bars = tuple(bars)
     if not dataset_bars:
         raise ValueError("the declared spot proxy carries no sessions: no dataset bars")
 
@@ -341,6 +381,8 @@ def build_lane2_world(
         decision_sessions=decision_sessions,
         scored_by_arm=scored_by_arm,
         spot_v2_declared=spot_v2_declared,
+        spot_close_quantized_rows=spot_close_quantized_rows,
+        spot_close_max_quantization_delta=spot_close_max_quantization_delta,
     )
 
 
@@ -403,6 +445,24 @@ def lane2_census_payload(
             "not_evaluable_stale": stats.not_evaluable_stale,
             "not_evaluable_nobar": stats.not_evaluable_nobar,
             "not_evaluable_refused": stats.not_evaluable_refused,
+        },
+        # the bar-boundary quantization custody (Decimal facts stringified,
+        # the stamped-payload idiom): how many spot-proxy closes the flat
+        # dataset bars moved to the cent tick, by how much, under which tick
+        # and tie rule — the SURFACE keeps the vendor-exact closes
+        "spot_close_quantization": {
+            "rows_quantized": world.spot_close_quantized_rows,
+            "max_delta": (
+                str(world.spot_close_max_quantization_delta)
+                if world.spot_close_max_quantization_delta is not None
+                else None
+            ),
+            "tick": str(PRICE_TICK),
+            "rule": (
+                "quantize to PRICE_TICK at the BarRecord boundary; ties resolve"
+                " by the decimal context default ROUND_HALF_EVEN"
+                " (settlement.py idiom)"
+            ),
         },
         # the STRICT per-lane class map (plan §4 criterion 4): the counted
         # classes, the disclosed-not-counted class, and the audit statistics

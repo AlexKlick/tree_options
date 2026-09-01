@@ -53,6 +53,8 @@ from tree_options.trials.g4_event import (
     G4_SEALED_SEED_LANE1,
     G4_SEALED_SEED_LANE2_ARM_A,
     G4_SEALED_SEED_LANE2_ARM_B,
+    build_lane2_world,
+    lane2_census_payload,
     run_g4_sealed_event,
     sealed_split_override,
 )
@@ -67,6 +69,17 @@ CAPTURE_FIRST = date(2023, 1, 3)
 CAPTURE_LAST = date(2024, 10, 25)
 MASTER_AS_OF = date(2024, 6, 14)
 SPOT = {"SPY": Decimal("600.00"), "TSLA": Decimal("200.00")}
+
+# One REAL-WIRE-SHAPE 3dp close (the 2026-08-31 sealed event's crash class:
+# the vendor serves sub-cent closes — ADBE "417.125" on the real wire): a
+# synthetic VALUE in the real precision CLASS, on ONE SPY session, so the
+# machinery proves the bar-boundary quantization the sealed run needs. The
+# default lane-2 build carries it (the fixture holds the wire shape the
+# sealed event tripped on); a caller can pass {} for the flat ≤2dp world.
+WIRE_SHAPE_3DP_UNDERLYING = "SPY"
+WIRE_SHAPE_3DP_SESSION = date(2024, 6, 14)
+WIRE_SHAPE_3DP_TOKEN = "600.125"
+THREE_DP_PATCH = {(WIRE_SHAPE_3DP_UNDERLYING, WIRE_SHAPE_3DP_SESSION): WIRE_SHAPE_3DP_TOKEN}
 
 # The synthetic contract plan: (ticker, expiry, strike, bar span, volume, mode)
 #   fill       — the FILL contract: ATM, huge volume, the repo pricer's own
@@ -208,7 +221,12 @@ def _build_lane1(root: Path) -> tuple[Path, Path]:
     return source, manifest_path
 
 
-def _build_lane2(root: Path) -> tuple[Path, Path]:
+def _build_lane2(
+    root: Path, *, spot_tokens: dict[tuple[str, date], str] | None = None
+) -> tuple[Path, Path]:
+    """The lane-2 synthetic capture. ``spot_tokens`` overrides per-session
+    close tokens (the real-wire 3dp shape by default — the sealed event's
+    crash class); ``{}`` builds the flat ≤2dp world."""
     lane2 = root / "lane2"
     masters = lane2 / "masters"
     bars = lane2 / "bars"
@@ -275,6 +293,9 @@ def _build_lane2(root: Path) -> tuple[Path, Path]:
         underlying: {session.isoformat(): f"{value.normalize()}" for session in sessions}
         for underlying, value in SPOT.items()
     }
+    tokens = THREE_DP_PATCH if spot_tokens is None else spot_tokens
+    for (underlying, session), token in tokens.items():
+        spot_json[underlying][session.isoformat()] = token
     (lane2 / "spot_proxy.json").write_text(json.dumps(spot_json), encoding="utf-8")
 
     manifest = build_massive_capture_manifest(
@@ -357,15 +378,15 @@ def _build_mutation_report(root: Path) -> Path:
     return path
 
 
-@pytest.fixture(scope="module")
-def mini_gate(tmp_path_factory: pytest.TempPathFactory) -> MiniGateFixture:
+def _build_bundle(
+    root: Path, *, spot_tokens: dict[tuple[str, date], str] | None = None
+) -> MiniGateFixture:
     """The full fixture bundle: a committed fixture repo (a REAL git repo so
     the machinery's fail-closed stamping runs the sealed discipline), both
     lanes' synthetic captures, and the auxiliary stamped inputs."""
-    root = tmp_path_factory.mktemp("g4mach")
     repo = _build_fixture_repo(root)
     source, lane1_manifest = _build_lane1(root)
-    lane2_manifest, spot_v2 = _build_lane2(root)
+    lane2_manifest, spot_v2 = _build_lane2(root, spot_tokens=spot_tokens)
     calendar = root / "calendar-decision.json"
     calendar.write_text(
         build_calendar_decision_artifact(
@@ -411,6 +432,14 @@ def mini_gate(tmp_path_factory: pytest.TempPathFactory) -> MiniGateFixture:
         mutation_report=mutation_report,
         spot_v2=spot_v2,
     )
+
+
+@pytest.fixture(scope="module")
+def mini_gate(tmp_path_factory: pytest.TempPathFactory) -> MiniGateFixture:
+    """The module's default bundle: carries the real-wire 3dp close (the
+    sealed event's crash class) so every end-to-end machinery test in this
+    file runs against the wire shape the sealed run tripped on."""
+    return _build_bundle(tmp_path_factory.mktemp("g4mach"))
 
 
 def _run_mini_gate(mini_gate: MiniGateFixture, artifacts: Path, registry: Path, scratch: Path):
@@ -595,6 +624,118 @@ def test_the_one_shot_discipline_refuses_a_second_invocation(
             scratch_root=tmp_path / "scratch3",
             **_run_via_library,  # type: ignore[arg-type]
         )
+
+
+# ---- the bar-boundary price quantization (the 2026-08-31 crash class) --------------
+
+
+def _world_for(mini: MiniGateFixture, scratch: Path):
+    """The lane-2 WORLD alone (no trials) from a bundle's verified held
+    bytes — the seam the 2026-08-31 sealed event crashed in."""
+    from tree_options.protocol.loader import load_protocol_bytes
+
+    held = verify_sealed_inputs(mini.held_paths)
+    world = build_lane2_world(
+        held,
+        repo_root=mini.repo,
+        scratch=scratch,
+        protocol=load_protocol_bytes(held.protocol_bytes),
+        spot_v2_path=mini.spot_v2,
+    )
+    return held, world
+
+
+def _census_for(mini: MiniGateFixture, held, world) -> dict[str, object]:
+    from tree_options.protocol.loader import load_protocol_bytes
+
+    return lane2_census_payload(
+        world,
+        held=held,
+        protocol=load_protocol_bytes(held.protocol_bytes),
+        spot_v2_path=mini.spot_v2,
+        split_override=sealed_split_override(),
+    )
+
+
+def test_a_three_decimal_wire_close_quantizes_the_flat_bar_at_the_boundary(
+    mini_gate: MiniGateFixture, tmp_path: Path
+) -> None:
+    """The 2026-08-31 sealed event crashed exactly here (BarRecord
+    decimal_max_places on a real-wire 3dp close, ADBE "417.125"): the world
+    must BUILD, the flat bar must carry the cent-quantized close in all four
+    OHLC fields, and the custody counters must name exactly the rows the
+    tick moved."""
+    held, world = _world_for(mini_gate, tmp_path / "scratch")
+    assert world.spot_close_quantized_rows == 1
+    assert world.spot_close_max_quantization_delta == Decimal("0.005")
+    bar = next(
+        b
+        for b in world.dataset.bars
+        if b.security_id == WIRE_SHAPE_3DP_UNDERLYING and b.session == WIRE_SHAPE_3DP_SESSION
+    )
+    # the tie resolves by the decimal context default (ROUND_HALF_EVEN):
+    # 600.125 -> 600.12
+    assert (bar.open, bar.high, bar.low, bar.close) == (Decimal("600.12"),) * 4
+    # nothing dropped: every declared spot row is a bar (2 names x sessions)
+    assert len(world.dataset.bars) == 2 * len(_exchange_sessions())
+    block = _census_for(mini_gate, held, world)["spot_close_quantization"]
+    assert block["rows_quantized"] == 1
+    assert block["max_delta"] == "0.005"
+    assert block["tick"] == "0.01"
+    assert "ROUND_HALF_EVEN" in block["rule"]
+
+
+def test_the_spot_close_quantization_block_stamps_the_exact_census_values(mini_run) -> None:
+    """The custody disclosure is a STAMPED census fact: the wire-shape row
+    count, the exact max delta, the tick, and the tie rule travel inside the
+    sealed payload the criteria read."""
+    _mini, run, _replay = mini_run
+    lane2 = json.loads(run.census_payload_paths["lane2"].read_text(encoding="utf-8"))["payload"]
+    block = lane2["spot_close_quantization"]
+    assert block["rows_quantized"] == 1
+    assert block["max_delta"] == "0.005"
+    assert block["tick"] == "0.01"
+    assert "ROUND_HALF_EVEN" in block["rule"]
+
+
+def test_only_two_decimal_closes_carry_through_exactly_with_no_custody_noise(
+    tmp_path: Path,
+) -> None:
+    """The quiet path: with only ≤2dp closes nothing is quantized, nothing
+    is disclosed, and every flat bar carries its declared close EXACTLY —
+    no custody noise, no re-serialization drift."""
+    root = tmp_path / "flat"
+    root.mkdir()
+    mini = _build_bundle(root, spot_tokens={})
+    held, world = _world_for(mini, tmp_path / "scratch")
+    assert world.spot_close_quantized_rows == 0
+    assert world.spot_close_max_quantization_delta is None
+    declared = json.loads((root / "lane2" / "spot_proxy.json").read_text(encoding="utf-8"))
+    bars = {(bar.security_id, bar.session): bar for bar in world.dataset.bars}
+    assert len(bars) == sum(len(rows) for rows in declared.values())
+    for underlying, rows in declared.items():
+        for session_iso, token in rows.items():
+            bar = bars[(underlying, date.fromisoformat(session_iso))]
+            assert (bar.open, bar.high, bar.low, bar.close) == (Decimal(token),) * 4
+    block = _census_for(mini, held, world)["spot_close_quantization"]
+    assert block["rows_quantized"] == 0
+    assert block["max_delta"] is None
+
+
+def test_a_sub_cent_positive_close_refuses_naming_the_row(tmp_path: Path) -> None:
+    """The fail-closed guard: a positive close under one cent ("0.005")
+    quantizes to 0.00, which Price (gt=0) can never carry — the build
+    REFUSES, naming the underlying, the session, and the original token,
+    rather than silently flooring the row to zero."""
+    root = tmp_path / "subcent"
+    root.mkdir()
+    mini = _build_bundle(
+        root, spot_tokens={(WIRE_SHAPE_3DP_UNDERLYING, WIRE_SHAPE_3DP_SESSION): "0.005"}
+    )
+    with pytest.raises(ValueError, match=r"0\.005 for SPY on 2024-06-14") as excinfo:
+        _world_for(mini, tmp_path / "scratch")
+    assert "quantizes to 0.00" in str(excinfo.value)
+    assert "refusing" in str(excinfo.value).lower()
 
 
 # ---- Fix B: the six pre-declared criteria + the verbatim verdict -------------------
