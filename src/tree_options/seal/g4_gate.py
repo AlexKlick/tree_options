@@ -446,6 +446,7 @@ def _criterion_determinism(
 def _criterion_mutation_campaign(
     mutation_report: Mapping[str, Any] | None,
     mutation_registry_ids: frozenset[str] | None,
+    mutation_registry_digest: str | None,
 ) -> CriterionOutcome:
     failures: list[str] = []
     if mutation_report is None:
@@ -469,6 +470,21 @@ def _criterion_mutation_campaign(
                 f" {len(report_ids)} mutant entries — a self-inconsistent report"
                 " is not this head's campaign"
             )
+        if len(set(report_ids)) != len(report_ids):
+            failures.append(
+                "the mutation report carries duplicate mutant ids — padding"
+                " cannot stand in for a campaign"
+            )
+        # count KILLED from the ENTRIES themselves (round-2 P0): a report
+        # whose totals claim N/N while its own entries say otherwise is a
+        # forgery, not a campaign
+        killed_entries = sum(1 for entry in entries if str(entry.get("verdict")) == "KILLED")
+        if killed_entries != total:
+            failures.append(
+                f"the report's entries carry {killed_entries} KILLED verdicts"
+                f" but declare total={total} — the declared N/N is not what"
+                " the entries say"
+            )
         covering = [
             str(entry.get("id"))
             for entry in entries
@@ -479,15 +495,19 @@ def _criterion_mutation_campaign(
                 "no registry mutant covers the gate's own verdict logic — the"
                 " plan requires at least one"
             )
-        if mutation_registry_ids is None:
+        if mutation_registry_ids is None or mutation_registry_digest is None:
             failures.append(
                 "the live mutation registry was not supplied — criterion 6"
                 " cannot bind the report to the registry at this head (never"
                 " silently skipped)"
             )
         else:
-            missing = sorted(mutation_registry_ids - set(report_ids))
-            foreign = sorted(set(report_ids) - mutation_registry_ids)
+            # None-safe by construction (the branch is entered only when
+            # both are supplied — but a mutant that drops the absence check
+            # must degrade to a behavioral failure, never a TypeError)
+            registry_ids = mutation_registry_ids or frozenset()
+            missing = sorted(registry_ids - set(report_ids))
+            foreign = sorted(set(report_ids) - registry_ids)
             if missing:
                 failures.append(
                     f"the mutation report omits {len(missing)} of the"
@@ -501,15 +521,28 @@ def _criterion_mutation_campaign(
                     f" to the registry (e.g. {foreign[0]}) — a stale or"
                     " foreign report is not this head's campaign"
                 )
+            stamped_digest = mutation_report.get("registry_digest")
+            if not isinstance(stamped_digest, str) or stamped_digest != mutation_registry_digest:
+                failures.append(
+                    "the report's registry_digest does not match the live"
+                    " registry — the campaign was not run against this"
+                    " registry revision (or was not run at all)"
+                )
         reported = {
             "supplied": True,
             "total": total,
             "killed": killed,
+            "killed_entries": killed_entries,
             "restoration_suite_passed": restoration,
             "verdict_logic_mutants": covering[:5],
             "registry_supplied": mutation_registry_ids is not None,
             "registry_total": (
                 len(mutation_registry_ids) if mutation_registry_ids is not None else None
+            ),
+            "registry_digest_match": (
+                mutation_report.get("registry_digest") == mutation_registry_digest
+                if mutation_registry_digest is not None
+                else None
             ),
         }
     return CriterionOutcome(
@@ -539,6 +572,7 @@ def evaluate_g4_criteria(
     mutation_report: Mapping[str, Any] | None,
     era_target: Mapping[str, int],
     mutation_registry_ids: frozenset[str] | None = None,
+    mutation_registry_digest: str | None = None,
     rejection_floor: int = REJECTION_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six pre-declared criteria from the stamped payloads.
@@ -549,17 +583,21 @@ def evaluate_g4_criteria(
     masters, distinct contracts) the plan's criterion 1 targets;
     ``replay_hashes`` the clean-clone replay's payload hashes; and
     ``mutation_report`` the registry report (N/N KILLED + restoration).
-    ``mutation_registry_ids`` is the LIVE registry's id set at this head —
-    criterion 6 binds the report to it (a report that omits registry
-    mutants or carries foreign ids is stale and FAILs; absent = FAIL, never
-    silently skipped)."""
+    ``mutation_registry_ids`` / ``mutation_registry_digest`` are the LIVE
+    registry's id set and content digest at this head — criterion 6 binds
+    the report to them (a report that omits registry mutants, carries
+    foreign or duplicate ids, disagrees with its own entries' verdicts, or
+    lacks the matching registry digest is stale or forged and FAILs;
+    absent registry = FAIL, never silently skipped)."""
     outcomes = (
         _criterion_manifest_integrity(lane1_census, lane2_census, era_target),
         _criterion_candidate_discipline(protocol, lane2_census, trial_payloads),
         _criterion_fill_discipline(trial_payloads, execution_calendar),
         _criterion_rejection_paths(lane1_census, lane2_census, trial_payloads, rejection_floor),
         _criterion_determinism(stamped_hashes, replay_hashes),
-        _criterion_mutation_campaign(mutation_report, mutation_registry_ids),
+        _criterion_mutation_campaign(
+            mutation_report, mutation_registry_ids, mutation_registry_digest
+        ),
     )
     verdict = "PASS" if all(o.verdict == "PASS" for o in outcomes) else "FAIL"
     return G4GateEvaluation(
@@ -632,23 +670,38 @@ def era_target_of(era: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
-def live_mutation_registry_ids(repo_root: Path) -> frozenset[str] | None:
-    """The LIVE mutation registry's id set at this head: the authored
-    ``MUTANTS`` list in ``scripts/mutate.py`` (the JSON artifact is
-    generated output). Loaded by file path — scripts/ is not an importable
-    package. None when the registry file is absent (criterion 6 then FAILs
-    loudly rather than certifying an unbound report)."""
+def live_mutation_registry(repo_root: Path) -> tuple[frozenset[str], str] | None:
+    """The LIVE mutation registry at this head: the authored ``MUTANTS``
+    list in ``scripts/mutate.py`` (the JSON artifact is generated output),
+    as (id set, registry digest). The digest is sha256 over the canonical
+    MUTANTS list — the same value the mutation runner stamps into its
+    report — so a report generated from a different registry revision (or
+    hand-forged) cannot present it. Loaded by file path — scripts/ is not
+    an importable package. None when the registry file is absent (criterion
+    6 then FAILs loudly rather than certifying an unbound report)."""
     registry_path = repo_root / "scripts" / "mutate.py"
     if not registry_path.is_file():
         return None
+    import hashlib
     import importlib.util
+    import json
 
     spec = importlib.util.spec_from_file_location("tree_options_mutation_registry", registry_path)
     if spec is None or spec.loader is None:  # pragma: no cover - malformed path only
         return None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    return frozenset(str(m["id"]) for m in module.MUTANTS)
+    ids = frozenset(str(m["id"]) for m in module.MUTANTS)
+    digest = hashlib.sha256(
+        json.dumps(module.MUTANTS, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    return ids, digest
+
+
+def live_mutation_registry_ids(repo_root: Path) -> frozenset[str] | None:
+    """The LIVE registry's id set alone (see ``live_mutation_registry``)."""
+    loaded = live_mutation_registry(repo_root)
+    return None if loaded is None else loaded[0]
 
 
 def evaluate_and_record(
@@ -661,6 +714,7 @@ def evaluate_and_record(
     allow_dirty: bool = False,
     log_lines: Sequence[str] = (),
     mutation_registry_ids: frozenset[str] | None = None,
+    mutation_registry_digest: str | None = None,
     rejection_floor: int = REJECTION_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six criteria from the run's stamped payloads, write the
@@ -701,7 +755,9 @@ def evaluate_and_record(
     if mutation_registry_ids is None:
         # the LIVE registry at this head, derived from the repo being sealed
         # (absent registry file = None = criterion 6 FAILs, never a skip)
-        mutation_registry_ids = live_mutation_registry_ids(repo_root)
+        loaded_registry = live_mutation_registry(repo_root)
+        if loaded_registry is not None and mutation_registry_digest is None:
+            mutation_registry_ids, mutation_registry_digest = loaded_registry
     if not paths.era_census.is_file():
         raise FileNotFoundError(
             f"the era census {paths.era_census} is absent — criterion 1's count"
@@ -722,6 +778,7 @@ def evaluate_and_record(
         mutation_report=mutation_report,
         era_target=era_target,
         mutation_registry_ids=mutation_registry_ids,
+        mutation_registry_digest=mutation_registry_digest,
         rejection_floor=rejection_floor,
     )
     write_gate_evidence(

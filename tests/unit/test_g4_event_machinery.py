@@ -363,23 +363,25 @@ def _build_era_census(root: Path) -> Path:
     return path
 
 
-def _live_mutation_registry() -> tuple[frozenset[str], tuple[dict[str, str], ...]]:
-    """The LIVE registry (the authored MUTANTS list; the JSON artifact is
-    generated output). Criterion 6 binds the fixture report to it, exactly
-    as the sealed CLI does — through the gate's own loader."""
-    from tree_options.seal.g4_gate import live_mutation_registry_ids
+def _live_mutation_registry() -> tuple[frozenset[str], str]:
+    """The LIVE registry (the authored MUTANTS list + its content digest;
+    the JSON artifact is generated output). Criterion 6 binds the fixture
+    report to both, exactly as the sealed CLI does — through the gate's own
+    loader."""
+    from tree_options.seal.g4_gate import live_mutation_registry
 
-    registry = live_mutation_registry_ids(REPO_ROOT)
-    assert registry is not None, "the live mutation registry must exist at REPO_ROOT"
-    ids = tuple(sorted(registry))
-    return registry, ids
+    loaded = live_mutation_registry(REPO_ROOT)
+    assert loaded is not None, "the live mutation registry must exist at REPO_ROOT"
+    return loaded
 
 
 def _build_mutation_report(root: Path) -> Path:
     """A report shaped like the real one at this head: EVERY live registry
-    id KILLED, N/N, restoration green — so the fixture exercises criterion
-    6's binding rather than a synthetic single-mutant stub."""
-    _registry, ids = _live_mutation_registry()
+    id KILLED, N/N, restoration green, and the registry DIGEST the mutation
+    runner stamps — so the fixture exercises criterion 6's binding rather
+    than a synthetic single-mutant stub."""
+    registry, digest = _live_mutation_registry()
+    ids = tuple(sorted(registry))
     report = {
         "mutants": [
             {
@@ -397,6 +399,7 @@ def _build_mutation_report(root: Path) -> Path:
         "totals": {"KILLED": len(ids)},
         "total": len(ids),
         "restoration_suite_passed": True,
+        "registry_digest": digest,
     }
     path = root / "m0-mutations.json"
     path.write_text(json.dumps(report), encoding="utf-8")
@@ -541,6 +544,7 @@ def _evaluate(mini_run, evidence: Path, *, replay=True, floor: int = MINI_FLOOR)
             repo_root=mini.repo,
             head="0" * 40,
             mutation_registry_ids=_live_mutation_registry()[0],
+            mutation_registry_digest=_live_mutation_registry()[1],
             rejection_floor=floor,
         ),
         replay_dir,
@@ -859,6 +863,54 @@ def test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry(
         "live mutation registry was not supplied" in failure for failure in mutation.failures
     ), mutation.failures
 
+    # round-2 P0 probes: the criterion must count KILLED from the ENTRIES
+    # (a report whose totals claim N/N while every entry says SURVIVED is a
+    # forgery) and reject padded duplicate ids — both probes PASSED before
+    live = sorted(_live_mutation_registry()[0])
+    digest = _live_mutation_registry()[1]
+    forged_verdicts = {
+        "mutants": [
+            {
+                "id": mid,
+                "file": "src/tree_options/seal/g4_gate.py",
+                "invariant": f"registry mutant {mid}",
+                "verdict": "SURVIVED",
+            }
+            for mid in live
+        ],
+        "totals": {"KILLED": len(live)},
+        "total": len(live),
+        "restoration_suite_passed": True,
+        "registry_digest": digest,
+    }
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=forged_verdicts)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("entries say" in failure for failure in mutation.failures), mutation.failures
+
+    padded = {
+        **forged_verdicts,
+        "mutants": [
+            *forged_verdicts["mutants"],
+            {**forged_verdicts["mutants"][0], "verdict": "KILLED"},
+        ],
+        "totals": {"KILLED": len(live) + 1},
+        "total": len(live) + 1,
+    }
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=padded)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("duplicate mutant ids" in f for f in mutation.failures), mutation.failures
+
+    # and a report without the runner's registry digest cannot pose as a
+    # campaign run against this registry revision
+    undigested = {k: v for k, v in forged_verdicts.items() if k != "registry_digest"}
+    undigested["mutants"] = [{**m, "verdict": "KILLED"} for m in undigested["mutants"]]
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=undigested)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("registry_digest" in failure for failure in mutation.failures), mutation.failures
+
 
 def test_a_sub_cent_positive_close_refuses_naming_the_row(tmp_path: Path) -> None:
     """The fail-closed guard: a positive close under one cent ("0.005")
@@ -958,9 +1010,11 @@ def _criteria_over(
     floor: int = MINI_FLOOR,
     mutation_report=None,
     mutation_registry_ids="unset",
+    mutation_registry_digest="unset",
 ):
     from tree_options.protocol.loader import load_protocol_bytes
 
+    live = _live_mutation_registry()
     held = verify_sealed_inputs(mini.held_paths)
     return evaluate_g4_criteria(
         protocol=load_protocol_bytes(held.protocol_bytes),
@@ -979,9 +1033,10 @@ def _criteria_over(
             load_json(mini.mutation_report) if mutation_report is None else mutation_report
         ),
         mutation_registry_ids=(
-            _live_mutation_registry()[0]
-            if mutation_registry_ids == "unset"
-            else mutation_registry_ids
+            live[0] if mutation_registry_ids == "unset" else mutation_registry_ids
+        ),
+        mutation_registry_digest=(
+            live[1] if mutation_registry_digest == "unset" else mutation_registry_digest
         ),
         era_target={"expected_masters": 2, "distinct_contracts": 5},
         rejection_floor=floor,

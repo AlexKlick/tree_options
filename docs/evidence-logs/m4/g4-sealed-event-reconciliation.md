@@ -146,17 +146,23 @@ sealed-gate verdict was computed or observed by this remediation (the
 machinery tests evaluate SYNTHETIC fixture trials and criteria only): the
 sealed verdict remains whatever the NEXT sealed event says.
 
-## 5b. Criterion 6 now binds the report to the live registry (Codex round-1 P0)
+## 5b. Criterion 6 now binds the report to the live registry (Codex rounds 1–2)
 
 Adding registry entries without re-running the full campaign would have let
 criterion 6 certify a stale N/N report: the evaluator read only the report's
 self-declared totals. `_criterion_mutation_campaign` now takes the LIVE
-registry's id set (the sealed CLI derives it from `scripts/mutate.py`'s
-authored `MUTANTS` list) and FAILs when the report omits registry mutants
-(stale), carries ids foreign to the registry, declares a total inconsistent
-with its own entries, or when the registry was not supplied at all — never a
-silent skip. The machinery fixture report is generated from the live
-registry so the binding is exercised at fixture scale.
+registry's id set AND content digest (`live_mutation_registry` loads
+`scripts/mutate.py`'s authored `MUTANTS` list by path; the mutation runner
+stamps the matching `registry_digest` into its report) and FAILs when the
+report omits registry mutants (stale), carries ids foreign to or duplicated
+in the registry, declares a total inconsistent with its own entries, counts
+KILLED from its own entries rather than trusting the declared totals
+(round-2 probe: an all-SURVIVED report with N/N totals previously PASSED),
+lacks the matching registry digest, or when the registry was not supplied
+at all — never a silent skip. The sealed CLI derives the registry BEFORE
+the one-shot event runs (a missing registry refuses with nothing consumed,
+never a burned one-shot), and the machinery fixture report is generated
+from the live registry so the binding is exercised at fixture scale.
 
 ## 6. Side observation (doc only, no action)
 
@@ -221,13 +227,24 @@ successor-enablement lane is required first, with its own review:
 - Mutants M338-M344 (quantize drop, custody counter zeroed, sub-cent refusal
   dropped, max-delta comparator flipped, exponent gate dropped, criterion-6
   stale-report binding dropped, criterion-6 registry-absence silenced) added
-  to the registry in `scripts/mutate.py` (325 → 331); kill log
-  `tree_options-logs/g4-price-boundary-mutations.log`.
+  to the registry in `scripts/mutate.py` (325 → 332); kill logs
+  `tree_options-logs/g4-price-boundary-mutations{,2,3}.log`.
 - `ruff check .` clean; `ruff format` no-op on touched files; `mypy` clean
-  (120 source files).
+  (120 source files); machinery suite green (23 tests after round-1
+  remediation, see the verify logs below).
 - Codex round 1 (gpt-5.6-sol, adversarial brief): 3 P0 / 2 P1 / 3 P2, all
   8 verified in source. The 6 in-lane findings are fixed here (explicit
   rounding, exponent-gated rewrite, representation-exact quiet path,
   max-delta guard + mutant, criterion-6 live-registry binding + mutants,
   doc corrections); the 2 authority-side P0s (content-identity collision,
   fixed sealed paths) are recorded in §7 for the successor-enablement lane.
+- Codex round 2 (same reviewer, delta-focused): 2 P0 / 2 P2, all 4 verified
+  in source (the forged all-SURVIVED report and the duplicate-id report
+  both reproduced as PASS before the fix). Fixed: criterion 6 counts KILLED
+  from the entries and rejects duplicate ids; the report must carry the
+  mutation runner's `registry_digest` matching the live registry; the CLI
+  derives the registry BEFORE the one-shot runs; M344's mutant now kills
+  behaviorally (None-safe else) instead of by TypeError; this verification
+  section rewritten to point at the post-round-2 evidence
+  (`tree_options-logs/g4-price-boundary-verify5.log` and
+  `-mutations3.log`).

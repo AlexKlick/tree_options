@@ -4600,13 +4600,14 @@ MUTANTS = [
         id="M344-g4-criterion6-registry-absence-silenced",
         owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
         file="src/tree_options/seal/g4_gate.py",
-        anchor="        if mutation_registry_ids is None:",
+        anchor="        if mutation_registry_ids is None or mutation_registry_digest is None:",
         replacement="        if False:",
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
-            "G4 criterion 6 with NO live registry supplied must FAIL loudly —"
-            " silencing the absence check lets an unbound report certify"
-            " itself, the exact silent-skip the criterion's contract forbids"
+            "G4 criterion 6 with NO live registry supplied must fail with the"
+            " NAMED absence failure — dropping the check degrades the refusal"
+            " to an anonymous every-id-foreign failure (or worse), losing the"
+            " never-silently-skipped contract the criterion's text declares"
         ),
     ),
 ]
@@ -4736,7 +4737,7 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 331-mutant run stays the"
+            " mutants and re-pins; the full 332-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M344 price-boundary here)"
         ),
@@ -4829,11 +4830,19 @@ def main() -> int:
     for r in results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
 
+    # bind the report to the EXACT registry it ran: the digest over the
+    # canonical MUTANTS list (a criterion-6 evaluator recomputes this from
+    # the live registry and refuses a mismatch — a report from a different
+    # registry revision, or a hand-forged one, does not carry it)
+    registry_digest = hashlib.sha256(
+        json.dumps(MUTANTS, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     payload = {
         "mutants": results,
         "totals": counts,
         "restoration_suite_passed": restored_suite_ok,
         "total": len(results),
+        "registry_digest": registry_digest,
     }
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)

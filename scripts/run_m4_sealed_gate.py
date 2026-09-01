@@ -151,7 +151,7 @@ def run_gate(argv: list[str] | None = None) -> int:
     from tree_options.seal.g4_gate import (
         G4GatePaths,
         evaluate_and_record,
-        live_mutation_registry_ids,
+        live_mutation_registry,
     )
     from tree_options.seal.verified_inputs import (
         SealedInputPaths,
@@ -185,6 +185,22 @@ def run_gate(argv: list[str] | None = None) -> int:
     held = verify_sealed_inputs(paths)
     print(f"SEALED_PACKET={held.packet.packet_content_sha256}")
 
+    # ---- the live mutation registry: derived BEFORE the one-shot runs -----
+    # (round-2 P0: deriving it after the event would burn the one-shot
+    # registry/artifacts paths on a misconfigured repo without a verdict —
+    # the exact crash-then-unknown failure mode this gate exists to prevent)
+    mutation_registry = live_mutation_registry(args.repo)
+    if mutation_registry is None:
+        print(
+            f"REFUSED: the live mutation registry ({args.repo / 'scripts' / 'mutate.py'}) is"
+            " unavailable — criterion 6 cannot bind the report to this head, and"
+            " nothing has run, nothing is consumed",
+            file=sys.stderr,
+        )
+        return 2
+    mutation_registry_ids, mutation_registry_digest = mutation_registry
+    print(f"MUTATION_REGISTRY_IDS={len(mutation_registry_ids)}")
+
     geometry = sealed_split_override(
         tuple(args.geometry) if args.geometry is not None else AGENDA_D_GEOMETRY
     )
@@ -216,16 +232,6 @@ def run_gate(argv: list[str] | None = None) -> int:
             f"REPLAY_ARTIFACTS absent at {gate_paths.replay_artifacts} — criterion 5"
             " will FAIL (never silently skipped)"
         )
-    # criterion 6 binds the report to the LIVE registry at this head: the
-    # authored MUTANTS list in scripts/mutate.py is the registry (the JSON
-    # artifact is generated output)
-    mutation_registry_ids = live_mutation_registry_ids(args.repo)
-    if mutation_registry_ids is None:
-        raise SystemExit(
-            f"the live mutation registry ({args.repo / 'scripts' / 'mutate.py'}) is"
-            " unavailable — criterion 6 cannot bind the report to this head"
-        )
-    print(f"MUTATION_REGISTRY_IDS={len(mutation_registry_ids)}")
     evaluation = evaluate_and_record(
         run,
         held,
@@ -233,6 +239,7 @@ def run_gate(argv: list[str] | None = None) -> int:
         repo_root=args.repo,
         head=head,
         mutation_registry_ids=mutation_registry_ids,
+        mutation_registry_digest=mutation_registry_digest,
         log_lines=(
             f"SEALED_HEAD={head}",
             f"SEALED_PACKET={held.packet.packet_content_sha256}",
