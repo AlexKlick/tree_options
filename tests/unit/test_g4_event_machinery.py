@@ -11,6 +11,7 @@ read, no coverage peeked, no criterion dry-run on a real payload.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -53,6 +54,8 @@ from tree_options.trials.g4_event import (
     G4_SEALED_SEED_LANE1,
     G4_SEALED_SEED_LANE2_ARM_A,
     G4_SEALED_SEED_LANE2_ARM_B,
+    build_lane2_world,
+    lane2_census_payload,
     run_g4_sealed_event,
     sealed_split_override,
 )
@@ -67,6 +70,17 @@ CAPTURE_FIRST = date(2023, 1, 3)
 CAPTURE_LAST = date(2024, 10, 25)
 MASTER_AS_OF = date(2024, 6, 14)
 SPOT = {"SPY": Decimal("600.00"), "TSLA": Decimal("200.00")}
+
+# One REAL-WIRE-SHAPE 3dp close (the 2026-08-31 sealed event's crash class:
+# the vendor serves sub-cent closes — ADBE "417.125" on the real wire): a
+# synthetic VALUE in the real precision CLASS, on ONE SPY session, so the
+# machinery proves the bar-boundary quantization the sealed run needs. The
+# default lane-2 build carries it (the fixture holds the wire shape the
+# sealed event tripped on); a caller can pass {} for the flat ≤2dp world.
+WIRE_SHAPE_3DP_UNDERLYING = "SPY"
+WIRE_SHAPE_3DP_SESSION = date(2024, 6, 14)
+WIRE_SHAPE_3DP_TOKEN = "600.125"
+THREE_DP_PATCH = {(WIRE_SHAPE_3DP_UNDERLYING, WIRE_SHAPE_3DP_SESSION): WIRE_SHAPE_3DP_TOKEN}
 
 # The synthetic contract plan: (ticker, expiry, strike, bar span, volume, mode)
 #   fill       — the FILL contract: ATM, huge volume, the repo pricer's own
@@ -173,6 +187,7 @@ class MiniGateFixture:
     era_census: Path
     mutation_report: Path
     spot_v2: Path
+    head: str
 
 
 def _build_fixture_repo(root: Path) -> Path:
@@ -184,6 +199,10 @@ def _build_fixture_repo(root: Path) -> Path:
         Path("docs/m4-g4-sealed-gate-plan.md"),
         Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.json"),
         Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.sha256"),
+        # the LIVE mutation registry: criterion 6 binds the report to it,
+        # so the fixture repo (a REAL git repo standing in for the head)
+        # carries the registry exactly as the sealed head does
+        Path("scripts/mutate.py"),
     ):
         destination = repo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -208,7 +227,12 @@ def _build_lane1(root: Path) -> tuple[Path, Path]:
     return source, manifest_path
 
 
-def _build_lane2(root: Path) -> tuple[Path, Path]:
+def _build_lane2(
+    root: Path, *, spot_tokens: dict[tuple[str, date], str] | None = None
+) -> tuple[Path, Path]:
+    """The lane-2 synthetic capture. ``spot_tokens`` overrides per-session
+    close tokens (the real-wire 3dp shape by default — the sealed event's
+    crash class); ``{}`` builds the flat ≤2dp world."""
     lane2 = root / "lane2"
     masters = lane2 / "masters"
     bars = lane2 / "bars"
@@ -275,6 +299,9 @@ def _build_lane2(root: Path) -> tuple[Path, Path]:
         underlying: {session.isoformat(): f"{value.normalize()}" for session in sessions}
         for underlying, value in SPOT.items()
     }
+    tokens = THREE_DP_PATCH if spot_tokens is None else spot_tokens
+    for (underlying, session), token in tokens.items():
+        spot_json[underlying][session.isoformat()] = token
     (lane2 / "spot_proxy.json").write_text(json.dumps(spot_json), encoding="utf-8")
 
     manifest = build_massive_capture_manifest(
@@ -338,34 +365,59 @@ def _build_era_census(root: Path) -> Path:
     return path
 
 
-def _build_mutation_report(root: Path) -> Path:
+def _live_mutation_registry() -> tuple[frozenset[str], str]:
+    """The LIVE registry (the authored MUTANTS list + its content digest;
+    the JSON artifact is generated output). Criterion 6 binds the fixture
+    report to both, exactly as the sealed CLI does — through the gate's own
+    loader."""
+    from tree_options.seal.g4_gate import live_mutation_registry
+
+    loaded = live_mutation_registry(REPO_ROOT)
+    assert loaded is not None, "the live mutation registry must exist at REPO_ROOT"
+    return loaded
+
+
+def _build_mutation_report(root: Path, *, head: str) -> Path:
+    """A report shaped like the real one at this head: EVERY live registry
+    id KILLED, N/N, restoration green, and the registry DIGEST + HEAD the
+    mutation runner stamps — so the fixture exercises criterion 6's binding
+    rather than a synthetic single-mutant stub."""
+    registry, digest = _live_mutation_registry()
+    ids = tuple(sorted(registry))
     report = {
         "mutants": [
             {
-                "id": "M333-g4-verdict-and-to-or",
-                "file": "src/tree_options/seal/g4_gate.py",
-                "invariant": "g4 the gate verdict is FAIL when any criterion fails",
+                "id": mid,
+                "file": (
+                    "src/tree_options/seal/g4_gate.py"
+                    if "g4" in mid
+                    else "src/tree_options/trials/options_run.py"
+                ),
+                "invariant": f"registry mutant {mid}",
                 "verdict": "KILLED",
             }
+            for mid in ids
         ],
-        "totals": {"KILLED": 1},
-        "total": 1,
+        "totals": {"KILLED": len(ids)},
+        "total": len(ids),
         "restoration_suite_passed": True,
+        "registry_digest": digest,
+        "head": head,
     }
     path = root / "m0-mutations.json"
     path.write_text(json.dumps(report), encoding="utf-8")
     return path
 
 
-@pytest.fixture(scope="module")
-def mini_gate(tmp_path_factory: pytest.TempPathFactory) -> MiniGateFixture:
+def _build_bundle(
+    root: Path, *, spot_tokens: dict[tuple[str, date], str] | None = None
+) -> MiniGateFixture:
     """The full fixture bundle: a committed fixture repo (a REAL git repo so
     the machinery's fail-closed stamping runs the sealed discipline), both
     lanes' synthetic captures, and the auxiliary stamped inputs."""
-    root = tmp_path_factory.mktemp("g4mach")
     repo = _build_fixture_repo(root)
     source, lane1_manifest = _build_lane1(root)
-    lane2_manifest, spot_v2 = _build_lane2(root)
+    lane2_manifest, spot_v2 = _build_lane2(root, spot_tokens=spot_tokens)
     calendar = root / "calendar-decision.json"
     calendar.write_text(
         build_calendar_decision_artifact(
@@ -378,15 +430,11 @@ def mini_gate(tmp_path_factory: pytest.TempPathFactory) -> MiniGateFixture:
         encoding="utf-8",
     )
     era_census = _build_era_census(root)
-    mutation_report = _build_mutation_report(root)
-    # the PRODUCTION path set the runner consumes (production_gate_paths)
-    production_census = repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
-    production_census.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(era_census, production_census)
-    production_report = repo / "artifacts" / "m0-mutations.json"
-    shutil.copyfile(mutation_report, production_report)
-    production_v2 = repo / "artifacts" / "spot-proxy-v2.json"
-    shutil.copyfile(spot_v2, production_v2)
+    # commit the fixture repo FIRST so its head is fixed BEFORE the
+    # mutation report stamps it (the production artifacts live under the
+    # repo's gitignored artifacts/, so writing them after the commit never
+    # moves the head — the report can bind to the head the runner and CLI
+    # will rev-parse)
     for command in (
         ["git", "init", "-q"],
         ["git", "config", "user.email", "fixture@g4.test"],
@@ -398,8 +446,24 @@ def mini_gate(tmp_path_factory: pytest.TempPathFactory) -> MiniGateFixture:
         ["git", "-C", str(repo), "commit", "-q", "-m", "fixture repo for g4 machinery"],
         check=True,
     )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    mutation_report = _build_mutation_report(root, head=head)
+    # the PRODUCTION path set the runner consumes (production_gate_paths)
+    production_census = repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
+    production_census.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(era_census, production_census)
+    production_report = repo / "artifacts" / "m0-mutations.json"
+    shutil.copyfile(mutation_report, production_report)
+    production_v2 = repo / "artifacts" / "spot-proxy-v2.json"
+    shutil.copyfile(spot_v2, production_v2)
     return MiniGateFixture(
         repo=repo,
+        head=head,
         held_paths=SealedInputPaths(
             repo=repo,
             lane1_manifest=lane1_manifest,
@@ -411,6 +475,14 @@ def mini_gate(tmp_path_factory: pytest.TempPathFactory) -> MiniGateFixture:
         mutation_report=mutation_report,
         spot_v2=spot_v2,
     )
+
+
+@pytest.fixture(scope="module")
+def mini_gate(tmp_path_factory: pytest.TempPathFactory) -> MiniGateFixture:
+    """The module's default bundle: carries the real-wire 3dp close (the
+    sealed event's crash class) so every end-to-end machinery test in this
+    file runs against the wire shape the sealed run tripped on."""
+    return _build_bundle(tmp_path_factory.mktemp("g4mach"))
 
 
 def _run_mini_gate(mini_gate: MiniGateFixture, artifacts: Path, registry: Path, scratch: Path):
@@ -485,7 +557,9 @@ def _evaluate(mini_run, evidence: Path, *, replay=True, floor: int = MINI_FLOOR)
             verify_sealed_inputs(mini.held_paths),
             paths=_paths_for(mini, run, evidence, replay_dir),
             repo_root=mini.repo,
-            head="0" * 40,
+            head=mini.head,
+            mutation_registry_ids=_live_mutation_registry()[0],
+            mutation_registry_digest=_live_mutation_registry()[1],
             rejection_floor=floor,
         ),
         replay_dir,
@@ -597,6 +671,685 @@ def test_the_one_shot_discipline_refuses_a_second_invocation(
         )
 
 
+# ---- the bar-boundary price quantization (the 2026-08-31 crash class) --------------
+
+
+def _world_for(mini: MiniGateFixture, scratch: Path):
+    """The lane-2 WORLD alone (no trials) from a bundle's verified held
+    bytes — the seam the 2026-08-31 sealed event crashed in."""
+    from tree_options.protocol.loader import load_protocol_bytes
+
+    held = verify_sealed_inputs(mini.held_paths)
+    world = build_lane2_world(
+        held,
+        repo_root=mini.repo,
+        scratch=scratch,
+        protocol=load_protocol_bytes(held.protocol_bytes),
+        spot_v2_path=mini.spot_v2,
+    )
+    return held, world
+
+
+def _census_for(mini: MiniGateFixture, held, world) -> dict[str, object]:
+    from tree_options.protocol.loader import load_protocol_bytes
+
+    return lane2_census_payload(
+        world,
+        held=held,
+        protocol=load_protocol_bytes(held.protocol_bytes),
+        spot_v2_path=mini.spot_v2,
+        split_override=sealed_split_override(),
+    )
+
+
+def test_a_three_decimal_wire_close_quantizes_the_flat_bar_at_the_boundary(
+    mini_gate: MiniGateFixture, tmp_path: Path
+) -> None:
+    """The 2026-08-31 sealed event crashed exactly here (BarRecord
+    decimal_max_places on a real-wire 3dp close, ADBE "417.125"): the world
+    must BUILD, the flat bar must carry the cent-quantized close in all four
+    OHLC fields, and the custody counters must name exactly the rows the
+    tick moved."""
+    held, world = _world_for(mini_gate, tmp_path / "scratch")
+    assert world.spot_close_quantized_rows == 1
+    assert world.spot_close_max_quantization_delta == Decimal("0.005")
+    bar = next(
+        b
+        for b in world.dataset.bars
+        if b.security_id == WIRE_SHAPE_3DP_UNDERLYING and b.session == WIRE_SHAPE_3DP_SESSION
+    )
+    # the tie resolves by the decimal context default (ROUND_HALF_EVEN):
+    # 600.125 -> 600.12
+    assert (bar.open, bar.high, bar.low, bar.close) == (Decimal("600.12"),) * 4
+    # nothing dropped: every declared spot row is a bar (2 names x sessions)
+    assert len(world.dataset.bars) == 2 * len(_exchange_sessions())
+    block = _census_for(mini_gate, held, world)["spot_close_quantization"]
+    assert block["rows_quantized"] == 1
+    assert block["max_delta"] == "0.005"
+    assert block["tick"] == "0.01"
+    assert "ROUND_HALF_EVEN" in block["rule"]
+
+
+def test_the_spot_close_quantization_block_stamps_the_exact_census_values(mini_run) -> None:
+    """The custody disclosure is a STAMPED census fact: the wire-shape row
+    count, the exact max delta, the tick, and the tie rule travel inside the
+    sealed payload the criteria read."""
+    _mini, run, _replay = mini_run
+    lane2 = json.loads(run.census_payload_paths["lane2"].read_text(encoding="utf-8"))["payload"]
+    block = lane2["spot_close_quantization"]
+    assert block["rows_quantized"] == 1
+    assert block["max_delta"] == "0.005"
+    assert block["tick"] == "0.01"
+    assert "ROUND_HALF_EVEN" in block["rule"]
+
+
+def test_only_two_decimal_closes_carry_through_exactly_with_no_custody_noise(
+    tmp_path: Path,
+) -> None:
+    """The quiet path: with only ≤2dp closes nothing is quantized, nothing
+    is disclosed, and every flat bar carries its declared close EXACTLY —
+    no custody noise, no re-serialization drift."""
+    root = tmp_path / "flat"
+    root.mkdir()
+    mini = _build_bundle(root, spot_tokens={})
+    held, world = _world_for(mini, tmp_path / "scratch")
+    assert world.spot_close_quantized_rows == 0
+    assert world.spot_close_max_quantization_delta is None
+    declared = json.loads((root / "lane2" / "spot_proxy.json").read_text(encoding="utf-8"))
+    bars = {(bar.security_id, bar.session): bar for bar in world.dataset.bars}
+    assert len(bars) == sum(len(rows) for rows in declared.values())
+    for underlying, rows in declared.items():
+        for session_iso, token in rows.items():
+            bar = bars[(underlying, date.fromisoformat(session_iso))]
+            assert (bar.open, bar.high, bar.low, bar.close) == (Decimal(token),) * 4
+            # REPRESENTATION-exact (Codex round-1 P1): the original Decimal
+            # object passes through untouched — an exponent-0 "6E+2" token
+            # stays "6E+2", never re-serialized as "600.00"
+            assert (str(bar.open), str(bar.high), str(bar.low), str(bar.close)) == (token,) * 4
+    block = _census_for(mini, held, world)["spot_close_quantization"]
+    assert block["rows_quantized"] == 0
+    assert block["max_delta"] is None
+
+
+def test_multi_row_custody_tracks_the_largest_value_movement(tmp_path: Path) -> None:
+    """Two rewritten rows with DIFFERENT deltas (Codex round-1 P2): the
+    counter counts both, max_delta is the largest VALUE movement (not the
+    last, not the smallest — the aggregation comparator is load-bearing),
+    and a non-tie fraction rounds down while the .125 tie resolves to the
+    EVEN cent under the explicit ROUND_HALF_EVEN."""
+    root = tmp_path / "multi"
+    root.mkdir()
+    mini = _build_bundle(
+        root,
+        spot_tokens={
+            (WIRE_SHAPE_3DP_UNDERLYING, WIRE_SHAPE_3DP_SESSION): "600.125",  # tie -> 600.12
+            ("TSLA", WIRE_SHAPE_3DP_SESSION): "200.134",  # plain -> 200.13
+        },
+    )
+    held, world = _world_for(mini, tmp_path / "scratch")
+    assert world.spot_close_quantized_rows == 2
+    assert world.spot_close_max_quantization_delta == Decimal("0.005")
+    bars = {(b.security_id, b.session): b for b in world.dataset.bars}
+    assert bars[("SPY", WIRE_SHAPE_3DP_SESSION)].close == Decimal("600.12")
+    assert bars[("TSLA", WIRE_SHAPE_3DP_SESSION)].close == Decimal("200.13")
+    block = _census_for(mini, held, world)["spot_close_quantization"]
+    assert block["rows_quantized"] == 2
+    assert block["max_delta"] == "0.005"
+
+
+def test_a_trailing_zero_sub_cent_row_is_counted_with_a_zero_delta(tmp_path: Path) -> None:
+    """A "200.130" token carries sub-cent EXPONENT but a cent-grid VALUE:
+    the boundary rewrites it to "200.13", counts it in custody, and reports
+    max_delta 0.000 — the row is disclosed as rewritten-even-though-unmoved,
+    never as silently exact."""
+    root = tmp_path / "trailing"
+    root.mkdir()
+    mini = _build_bundle(root, spot_tokens={("TSLA", WIRE_SHAPE_3DP_SESSION): "200.130"})
+    held, world = _world_for(mini, tmp_path / "scratch")
+    assert world.spot_close_quantized_rows == 1
+    assert world.spot_close_max_quantization_delta == Decimal("0.000")
+    bar = next(
+        b
+        for b in world.dataset.bars
+        if b.security_id == "TSLA" and b.session == WIRE_SHAPE_3DP_SESSION
+    )
+    assert (bar.open, bar.high, bar.low, bar.close) == (Decimal("200.13"),) * 4
+    block = _census_for(mini, held, world)["spot_close_quantization"]
+    assert block["rows_quantized"] == 1
+    assert block["max_delta"] == "0.000"
+
+
+def test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry(
+    mini_run,
+) -> None:
+    """Codex round-1 P0: criterion 6 BINDS the report to the live registry
+    at this head. An N/N + restoration report that omits registry mutants
+    (a stale report — exactly what M338+ additions would leave behind if the
+    full campaign were not re-run) FAILs; so does a report carrying foreign
+    ids; and an unsupplied registry never silently certifies the report."""
+    mini, run, _replay = mini_run
+    trial_payloads = {
+        arm: load_json(path)["payload"] for (_lane, arm), path in run.trial_payload_paths.items()
+    }
+    live = sorted(_live_mutation_registry()[0])
+    stale_report = {
+        "mutants": [
+            {
+                "id": mid,
+                "file": "src/tree_options/seal/g4_gate.py",
+                "invariant": f"registry mutant {mid}",
+                "verdict": "KILLED",
+            }
+            for mid in live[:-1]  # omits exactly one live id
+        ],
+        "totals": {"KILLED": len(live) - 1},
+        "total": len(live) - 1,
+        "restoration_suite_passed": True,
+    }
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=stale_report)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("stale report" in failure for failure in mutation.failures), mutation.failures
+    assert evaluation.verdict == "FAIL"
+
+    foreign_report = {
+        **stale_report,
+        "mutants": [
+            *stale_report["mutants"],
+            {
+                "id": "M999-foreign-id",
+                "file": "src/tree_options/seal/g4_gate.py",
+                "invariant": "g4 foreign",
+                "verdict": "KILLED",
+            },
+        ],
+        "totals": {"KILLED": len(live)},
+        "total": len(live),
+    }
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=foreign_report)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("foreign" in failure for failure in mutation.failures), mutation.failures
+
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_registry_ids=None)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any(
+        "live mutation registry was not supplied" in failure for failure in mutation.failures
+    ), mutation.failures
+
+    # round-2 P0 probes: the criterion must count KILLED from the ENTRIES
+    # (a report whose totals claim N/N while every entry says SURVIVED is a
+    # forgery) and reject padded duplicate ids — both probes PASSED before
+    live = sorted(_live_mutation_registry()[0])
+    digest = _live_mutation_registry()[1]
+    forged_verdicts = {
+        "mutants": [
+            {
+                "id": mid,
+                "file": "src/tree_options/seal/g4_gate.py",
+                "invariant": f"registry mutant {mid}",
+                "verdict": "SURVIVED",
+            }
+            for mid in live
+        ],
+        "totals": {"KILLED": len(live)},
+        "total": len(live),
+        "restoration_suite_passed": True,
+        "registry_digest": digest,
+    }
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=forged_verdicts)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("entries say" in failure for failure in mutation.failures), mutation.failures
+
+    padded = {
+        **forged_verdicts,
+        "mutants": [
+            *forged_verdicts["mutants"],
+            {**forged_verdicts["mutants"][0], "verdict": "KILLED"},
+        ],
+        "totals": {"KILLED": len(live) + 1},
+        "total": len(live) + 1,
+    }
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=padded)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("duplicate mutant ids" in f for f in mutation.failures), mutation.failures
+
+    # and a report without the runner's registry digest cannot pose as a
+    # campaign run against this registry revision
+    undigested = {k: v for k, v in forged_verdicts.items() if k != "registry_digest"}
+    undigested["mutants"] = [{**m, "verdict": "KILLED"} for m in undigested["mutants"]]
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=undigested)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("registry_digest" in failure for failure in mutation.failures), mutation.failures
+
+    # a WRONG nonempty digest (round-3 P2: not just a missing one) and a
+    # report from a DIFFERENT head (round-3 P0: the registry can be
+    # identical across commits while the guarded code moved) both FAIL
+    wrong_digest = {**forged_verdicts}
+    wrong_digest["mutants"] = [{**m, "verdict": "KILLED"} for m in wrong_digest["mutants"]]
+    wrong_digest["registry_digest"] = "0" * 64
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=wrong_digest)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("does not match the live registry" in failure for failure in mutation.failures), (
+        mutation.failures
+    )
+
+    other_head = {**wrong_digest, "registry_digest": _live_mutation_registry()[1]}
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=other_head)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("is not the sealed head" in f for f in mutation.failures), mutation.failures
+
+    # round-4 P0: the restoration flag is a STRICT boolean — the STRING
+    # "false" is truthy under bool() and previously PASSED
+    string_false = {**forged_verdicts}
+    string_false["mutants"] = [{**m, "verdict": "KILLED"} for m in string_false["mutants"]]
+    string_false["head"] = mini.head
+    string_false["restoration_suite_passed"] = "false"
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=string_false)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("restoration suite did not pass" in f for f in mutation.failures), mutation.failures
+
+
+def test_the_preflight_rejects_shape_invalid_reports_before_the_event(tmp_path: Path) -> None:
+    """Round-4 P0: a PRESENT report whose SHAPE cannot be evaluated (a
+    non-int total, a non-boolean restoration flag, a non-list mutants
+    array) refuses at preflight — never raises at evaluation time after
+    the one-shot has run."""
+    from tree_options.seal.g4_gate import (
+        MutationReportSchemaError,
+        validate_mutation_report,
+    )
+
+    for bad in (
+        {"total": "not-an-int"},
+        {"restoration_suite_passed": "false"},
+        {"mutants": "nope"},
+        {"totals": {"KILLED": "3"}},
+        [1, 2, 3],
+    ):
+        with pytest.raises(MutationReportSchemaError):
+            validate_mutation_report(bad)
+    validate_mutation_report(
+        {
+            "mutants": [{"id": "M1", "verdict": "KILLED"}],
+            "totals": {"KILLED": 1},
+            "total": 1,
+            "restoration_suite_passed": True,
+            "head": "a" * 40,
+            "registry_digest": "b" * 64,
+        }
+    )
+
+
+def test_a_report_that_changes_shape_after_preflight_fails_the_criterion(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Round-4 P0 (TOCTOU residue): preflight validated the report before
+    the event; if the file changes shape by evaluation time, criterion 6
+    FAILs as a verdict — never an exception after consumption."""
+    root = tmp_path / "toctou"
+    root.mkdir()
+    mini = _build_bundle(root)
+    primary_root = tmp_path_factory.mktemp("g4toctou-primary")
+    run = _run_mini_gate(
+        mini, primary_root / "artifacts", primary_root / "sealed.db", primary_root / "scratch"
+    )
+    mini.mutation_report.write_text('{"total": "not-an-int"}', encoding="utf-8")
+    replay_dir = mini.repo / "artifacts" / "g4-sealed-replay"
+    evaluation = evaluate_and_record(
+        run,
+        verify_sealed_inputs(mini.held_paths),
+        paths=_paths_for(mini, run, tmp_path / "evidence", replay_dir),
+        repo_root=mini.repo,
+        head=mini.head,
+    )
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("no longer be evaluated" in f for f in mutation.failures), mutation.failures
+    assert evaluation.verdict == "FAIL"
+
+
+def test_the_report_digest_producer_matches_the_gates_recompute() -> None:
+    """Round-3 P2: producer/consumer drift — the digest mutate.py STAMPS
+    (its own ``registry_digest`` producer, the code the report writer
+    calls) must equal the digest the gate RECOMPUTES
+    (``live_mutation_registry``) over the same registry file."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "mutate_producer", REPO_ROOT / "scripts" / "mutate.py"
+    )
+    assert spec is not None and spec.loader is not None
+    producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(producer)
+    assert producer.registry_digest() == _live_mutation_registry()[1]
+
+
+def test_a_malformed_report_makes_the_runner_preflight_refuse(
+    tmp_path: Path,
+) -> None:
+    """Round-3/5 P0: the runner's preflight() — the method
+    execute_sealed_run calls AFTER the authority cross-join and BEFORE the
+    durable CONSUMPTION append — refuses an unparseable report (and a
+    malformed era census), so nothing is created and nothing is consumed.
+    The runner itself does NOT re-preflight inside __call__ (round-5: a
+    second check after the append re-opens the consumed-without-verdict
+    race); this is the single refusal point, above the spend."""
+    from tree_options.seal.g4_gate import GatePreflightError
+    from tree_options.seal.runner import RepoCalendarSealedRunner, protocol_calendar_binding
+
+    root = tmp_path / "malformed"
+    root.mkdir()
+    mini = _build_bundle(root)
+    runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini.repo))
+    (mini.repo / "artifacts" / "m0-mutations.json").write_text("{ not json", encoding="utf-8")
+    with pytest.raises(GatePreflightError, match="cannot be parsed"):
+        runner.preflight()
+    # a malformed ERA census refuses the same way (round-5: existence alone
+    # is not evaluability)
+    census = mini.repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
+    census.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(GatePreflightError, match="era census"):
+        runner.preflight()
+    # and nothing the event would have created exists
+    assert not (mini.repo / "artifacts" / "g4-sealed.db").exists()
+    assert not (mini.repo / "artifacts" / "g4-sealed").exists()
+
+
+def test_post_preflight_auxiliary_changes_fail_criteria_never_raise(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Round-6 P0s: auxiliary inputs that change shape AFTER the preflight
+    (and so after the CONSUMPTION) become honest criterion FAIL verdicts —
+    an unloadable registry (criterion 6), an absent era census (criterion 1)
+    and a partial replay dir (criterion 5) never raise post-spend."""
+    root = tmp_path / "toctou6"
+    root.mkdir()
+    mini = _build_bundle(root)
+    primary_root = tmp_path_factory.mktemp("g4r6-primary")
+    run = _run_mini_gate(
+        mini, primary_root / "artifacts", primary_root / "sealed.db", primary_root / "scratch"
+    )
+    replay_dir = mini.repo / "artifacts" / "g4-sealed-replay"
+    if replay_dir.exists():
+        shutil.rmtree(replay_dir)
+    shutil.copytree(run.artifacts_dir, replay_dir)
+    # the REAL flow's shape: the held bundle is verified ONCE (clean tree),
+    # and evaluation receives the already-verified object — a post-spend
+    # file change never re-trips the dirty-tree guard, exactly like the
+    # sealed event
+    held = verify_sealed_inputs(mini.held_paths)
+
+    def _evaluate_into(name: str):
+        return evaluate_and_record(
+            run,
+            held,
+            paths=_paths_for(mini, run, tmp_path / f"evidence-{name}", replay_dir),
+            repo_root=mini.repo,
+            head=mini.head,
+            # the post-spend shape changes are the SCENARIO (a tracked file
+            # edited mid-run dirties the tree); the verdict must still be
+            # recorded — the stamping discipline's dirty refusal is a
+            # separate, pre-spend concern (execute's re-verify)
+            allow_dirty=True,
+        )
+
+    # (a) the registry becomes UNLOADABLE-but-present after the preflight
+    # (a deleted file returns None cleanly; a syntax-broken one raises —
+    # the case the exception-safe derive exists for)
+    registry = mini.repo / "scripts" / "mutate.py"
+    saved_registry = registry.read_bytes()
+    registry.write_text("def broken(:\n", encoding="utf-8")
+    try:
+        evaluation = _evaluate_into("registry")
+        assert evaluation.by_id("mutation_campaign").verdict == "FAIL"
+        assert any(
+            "registry was not supplied" in f for f in evaluation.by_id("mutation_campaign").failures
+        )
+    finally:
+        registry.write_bytes(saved_registry)
+
+    # (a2, round-7 P0) a SYNTACTICALLY LOADABLE registry whose MUTANTS
+    # entries are malformed (no "id") — the extraction sits inside the
+    # wrapped boundary, so this is a verdict, never a raw KeyError
+    registry.write_text("MUTANTS = [{}]\n", encoding="utf-8")
+    try:
+        evaluation = _evaluate_into("registry-malformed-entries")
+        assert evaluation.by_id("mutation_campaign").verdict == "FAIL"
+    finally:
+        registry.write_bytes(saved_registry)
+
+    # (b) the era census is REMOVED after the preflight (the copy the gate
+    # paths actually read: mini.era_census, outside the fixture repo)
+    saved_census = mini.era_census.read_bytes()
+    mini.era_census.unlink()
+    try:
+        evaluation = _evaluate_into("census-absent")
+        first = evaluation.by_id("manifest_integrity")
+        assert first.verdict == "FAIL"
+        assert any("absent" in f for f in first.failures), first.failures
+    finally:
+        mini.era_census.write_bytes(saved_census)
+
+    # (c) a present but PARTIAL replay dir (one payload removed)
+    payloads = sorted(p for p in replay_dir.rglob("*.json") if p.name != "sealed-gate-summary.json")
+    removed = payloads[0]
+    saved_payload = removed.read_bytes()
+    removed.unlink()
+    try:
+        evaluation = _evaluate_into("replay-partial")
+        assert evaluation.by_id("determinism").verdict == "FAIL"
+    finally:
+        removed.write_bytes(saved_payload)
+
+    # (d, round-9 P2) deeply nested JSON swapped in post-preflight — the
+    # EVALUATION handlers convert it to a verdict, never a raw
+    # RecursionError after consumption
+    deep = "[" * 100_000 + "]" * 100_000
+    saved_report = mini.mutation_report.read_bytes()
+    mini.mutation_report.write_text(deep, encoding="utf-8")
+    try:
+        evaluation = _evaluate_into("deep-report")
+        assert evaluation.by_id("mutation_campaign").verdict == "FAIL"
+    finally:
+        mini.mutation_report.write_bytes(saved_report)
+    saved_census = mini.era_census.read_bytes()
+    mini.era_census.write_text(deep, encoding="utf-8")
+    try:
+        evaluation = _evaluate_into("deep-census")
+        assert evaluation.by_id("manifest_integrity").verdict == "FAIL"
+    finally:
+        mini.era_census.write_bytes(saved_census)
+
+    # and the quiet control: with everything restored, the verdict is PASS
+    evaluation = _evaluate_into("restored")
+    assert evaluation.verdict == "PASS"
+
+
+def test_an_aliased_replay_cannot_certify_determinism_by_self_comparison(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Round-8 P0: a "replay" whose payloads are SYMLINKS onto the run's own
+    artifacts compares byte-identical BY CONSTRUCTION — criterion 5 must
+    name the aliasing and FAIL, never certify determinism by
+    self-comparison (Codex's four-symlink probe returned PASS)."""
+    root = tmp_path / "aliased"
+    root.mkdir()
+    mini = _build_bundle(root)
+    primary_root = tmp_path_factory.mktemp("g4alias-primary")
+    run = _run_mini_gate(
+        mini, primary_root / "artifacts", primary_root / "sealed.db", primary_root / "scratch"
+    )
+    held = verify_sealed_inputs(mini.held_paths)
+    replay_dir = mini.repo / "artifacts" / "g4-sealed-replay"
+    if replay_dir.exists():
+        shutil.rmtree(replay_dir)
+    replay_dir.mkdir(parents=True)
+    for payload in sorted(run.artifacts_dir.rglob("*.json")):
+        if payload.name == "sealed-gate-summary.json":
+            continue
+        target = replay_dir / payload.name
+        target.symlink_to(payload)
+    evaluation = evaluate_and_record(
+        run,
+        held,
+        paths=_paths_for(mini, run, tmp_path / "evidence", replay_dir),
+        repo_root=mini.repo,
+        head=mini.head,
+    )
+    determinism = evaluation.by_id("determinism")
+    assert determinism.verdict == "FAIL"
+    assert any("not independent" in f for f in determinism.failures), determinism.failures
+    assert evaluation.verdict == "FAIL"
+
+    # round-9 P0: HARD LINKS carry no symlink bit yet share the run's own
+    # inodes — is_symlink alone missed them and the probe PASSED; the
+    # (st_dev, st_ino) comparison names the aliasing
+    shutil.rmtree(replay_dir)
+    replay_dir.mkdir(parents=True)
+    for payload in sorted(run.artifacts_dir.rglob("*.json")):
+        if payload.name == "sealed-gate-summary.json":
+            continue
+        os.link(payload, replay_dir / payload.name)
+    evaluation = evaluate_and_record(
+        run,
+        held,
+        paths=_paths_for(mini, run, tmp_path / "evidence-hardlink", replay_dir),
+        repo_root=mini.repo,
+        head=mini.head,
+    )
+    determinism = evaluation.by_id("determinism")
+    assert determinism.verdict == "FAIL"
+    assert any("not independent" in f for f in determinism.failures), determinism.failures
+
+
+def test_a_replay_payload_vanishing_mid_check_never_raises(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-10 P0 (the final round's own finding): the alias check's stat
+    can hit a payload that vanishes mid-check — exists-then-stat is a race.
+    The OSError is treated as absence (criterion 5's own missing-payload
+    failure), never a raw FileNotFoundError after consumption. Simulated by
+    making Path.stat raise for replay payloads, as the race would."""
+    root = tmp_path / "vanish"
+    root.mkdir()
+    mini = _build_bundle(root)
+    primary_root = tmp_path_factory.mktemp("g4vanish-primary")
+    run = _run_mini_gate(
+        mini, primary_root / "artifacts", primary_root / "sealed.db", primary_root / "scratch"
+    )
+    held = verify_sealed_inputs(mini.held_paths)
+    replay_dir = mini.repo / "artifacts" / "g4-sealed-replay"
+    if replay_dir.exists():
+        shutil.rmtree(replay_dir)
+    shutil.copytree(run.artifacts_dir, replay_dir)
+    real_stat = Path.stat
+    real_read_bytes = Path.read_bytes
+
+    def racing_stat(self: Path, *args: object, **kwargs: object) -> object:
+        if self.parent == replay_dir:
+            raise FileNotFoundError(str(self))
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type,return-value]
+
+    def racing_read_bytes(self: Path) -> bytes:
+        if self.parent == replay_dir:
+            raise FileNotFoundError(str(self))
+        return real_read_bytes(self)  # type: ignore[return-value]
+
+    monkeypatch.setattr(Path, "stat", racing_stat)
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    evaluation = evaluate_and_record(
+        run,
+        held,
+        paths=_paths_for(mini, run, tmp_path / "evidence", replay_dir),
+        repo_root=mini.repo,
+        head=mini.head,
+    )
+    monkeypatch.undo()
+    determinism = evaluation.by_id("determinism")
+    assert determinism.verdict == "FAIL"
+    assert evaluation.verdict == "FAIL"
+
+
+def test_deeply_nested_auxiliary_json_never_raises_post_consumption(
+    tmp_path: Path,
+) -> None:
+    """Round-8 P0: json.loads on a deeply nested document raises
+    RecursionError (a RuntimeError the ValueError handlers cannot contain).
+    The report and the census both refuse at preflight and FAIL as verdicts
+    at evaluation — never a raw escape."""
+    from tree_options.seal.g4_gate import GatePreflightError
+    from tree_options.seal.runner import RepoCalendarSealedRunner, protocol_calendar_binding
+
+    deep = "[" * 100_000 + "]" * 100_000
+    root = tmp_path / "deep"
+    root.mkdir()
+    mini = _build_bundle(root)
+    runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini.repo))
+    (mini.repo / "artifacts" / "m0-mutations.json").write_text(deep, encoding="utf-8")
+    with pytest.raises(GatePreflightError, match="cannot be parsed"):
+        runner.preflight()
+    (mini.repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json").write_text(
+        deep, encoding="utf-8"
+    )
+    with pytest.raises(GatePreflightError, match="cannot be parsed"):
+        runner.preflight()
+
+
+def test_an_era_census_with_non_integer_counts_refuses_at_preflight(
+    tmp_path: Path,
+) -> None:
+    """Round-6/7 P0/P2: a JSON float count (1e309 parses to inf) passes a
+    plain shape check and raises OverflowError at int() only after the
+    one-shot ran, and a JSON `true` count SUBCLASSES int (True == 1) and
+    would certify a count that was never stamped as a number —
+    era_target_of requires TRUE ints, bools included, and the preflight
+    calls it."""
+    from tree_options.seal.g4_gate import GatePreflightError
+    from tree_options.seal.runner import RepoCalendarSealedRunner, protocol_calendar_binding
+
+    root = tmp_path / "bad-census"
+    root.mkdir()
+    mini = _build_bundle(root)
+    census = mini.repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
+    runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini.repo))
+    for bad_count in ("1e309", "true", "2.0", '"2"'):
+        census.write_text(
+            json.dumps(
+                {
+                    "coverage": {"expected_masters": json.loads(bad_count)},
+                    "values": {"observed_census_fact": {"distinct_contracts": {"v": 5}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(GatePreflightError, match="cannot be evaluated"):
+            runner.preflight()
+
+
+def test_a_sub_cent_positive_close_refuses_naming_the_row(tmp_path: Path) -> None:
+    """The fail-closed guard: a positive close under one cent ("0.005")
+    quantizes to 0.00, which Price (gt=0) can never carry — the build
+    REFUSES, naming the underlying, the session, and the original token,
+    rather than silently flooring the row to zero."""
+    root = tmp_path / "subcent"
+    root.mkdir()
+    mini = _build_bundle(
+        root, spot_tokens={(WIRE_SHAPE_3DP_UNDERLYING, WIRE_SHAPE_3DP_SESSION): "0.005"}
+    )
+    with pytest.raises(ValueError, match=r"0\.005 for SPY on 2024-06-14") as excinfo:
+        _world_for(mini, tmp_path / "scratch")
+    assert "quantizes to 0.00" in str(excinfo.value)
+    assert "refusing" in str(excinfo.value).lower()
+
+
 # ---- Fix B: the six pre-declared criteria + the verbatim verdict -------------------
 
 
@@ -623,7 +1376,7 @@ def test_the_mini_gate_passes_and_records_the_verdict_verbatim(mini_run, tmp_pat
         (tmp_path / "evidence" / "m4-g4-sealed-gate.json").read_text(encoding="utf-8")
     )
     assert recorded["verdict"] == "PASS"
-    assert recorded["head"] == "0" * 40
+    assert recorded["head"] == mini_run[0].head
     fill = evaluation.by_id("fill_discipline")
     assert fill.reported["n_fills"] > 0
     assert fill.reported["over_participation_pairs"] == 0
@@ -670,9 +1423,21 @@ def test_a_discipline_violation_in_a_stamped_payload_fails_criterion_and_verdict
     assert any("participation cap exceeded" in f for f in fill.failures), fill.failures
 
 
-def _criteria_over(mini, run, trial_payloads, *, lane2_census=None, floor: int = MINI_FLOOR):
+def _criteria_over(
+    mini,
+    run,
+    trial_payloads,
+    *,
+    lane2_census=None,
+    floor: int = MINI_FLOOR,
+    mutation_report=None,
+    mutation_registry_ids="unset",
+    mutation_registry_digest="unset",
+    head="unset",
+):
     from tree_options.protocol.loader import load_protocol_bytes
 
+    live = _live_mutation_registry()
     held = verify_sealed_inputs(mini.held_paths)
     return evaluate_g4_criteria(
         protocol=load_protocol_bytes(held.protocol_bytes),
@@ -687,7 +1452,16 @@ def _criteria_over(mini, run, trial_payloads, *, lane2_census=None, floor: int =
         execution_calendar=run.execution_calendar,
         stamped_hashes={},
         replay_hashes={},
-        mutation_report=load_json(mini.mutation_report),
+        mutation_report=(
+            load_json(mini.mutation_report) if mutation_report is None else mutation_report
+        ),
+        mutation_registry_ids=(
+            live[0] if mutation_registry_ids == "unset" else mutation_registry_ids
+        ),
+        mutation_registry_digest=(
+            live[1] if mutation_registry_digest == "unset" else mutation_registry_digest
+        ),
+        head=(mini.head if head == "unset" else head),
         era_target={"expected_masters": 2, "distinct_contracts": 5},
         rejection_floor=floor,
     )

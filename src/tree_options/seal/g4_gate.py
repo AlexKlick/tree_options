@@ -111,10 +111,20 @@ def _histogram_count(payload: Mapping[str, Any], rule: str, status: str) -> int:
 def _criterion_manifest_integrity(
     lane1_census: Mapping[str, Any],
     lane2_census: Mapping[str, Any],
-    era_target: Mapping[str, int],
+    era_target: Mapping[str, Any],
 ) -> CriterionOutcome:
     failures: list[str] = []
     reported: dict[str, object] = {}
+    if isinstance(era_target.get("__malformed__"), str):
+        # the TOCTOU backstop's era-census residue: the census passed
+        # preflight but changed shape by evaluation time — an honest FAIL,
+        # never a post-consumption exception
+        return CriterionOutcome(
+            criterion_id="manifest_integrity",
+            verdict="FAIL",
+            failures=(f"the era census can no longer be evaluated: {era_target['__malformed__']}",),
+            reported={"era_census_malformed": True},
+        )
     lane2_manifest = lane2_census.get("manifest", {})
     if not lane2_manifest.get("verified"):
         failures.append("lane 2: the typed manifest verify did not pass")
@@ -404,14 +414,30 @@ def _criterion_rejection_paths(
 def _criterion_determinism(
     stamped_hashes: Mapping[str, str],
     replay_hashes: Mapping[str, str] | None,
+    replay_aliased: bool = False,
 ) -> CriterionOutcome:
     failures: list[str] = []
-    if replay_hashes is None:
+    if replay_aliased:
+        # round-8 P0: a "replay" that symlinks back onto the run's own
+        # artifacts (or IS the artifacts dir) self-compares byte-identical
+        # by construction — determinism certified by self-comparison is no
+        # certification at all
+        failures.append(
+            "the replay tree is not independent (symlinked payloads or the"
+            " artifacts dir itself) — criterion 5 cannot be certified by"
+            " self-comparison"
+        )
+        reported: dict[str, object] = {
+            "replayed": False,
+            "payload_count": len(stamped_hashes),
+            "replay_aliased": True,
+        }
+    elif replay_hashes is None:
         failures.append(
             "no clean-clone replay payload hashes were supplied — criterion 5 is"
             " never silently skipped"
         )
-        reported: dict[str, object] = {"replayed": False, "payload_count": len(stamped_hashes)}
+        reported = {"replayed": False, "payload_count": len(stamped_hashes)}
     else:
         missing = sorted(set(stamped_hashes) - set(replay_hashes))
         extra = sorted(set(replay_hashes) - set(stamped_hashes))
@@ -445,6 +471,9 @@ def _criterion_determinism(
 
 def _criterion_mutation_campaign(
     mutation_report: Mapping[str, Any] | None,
+    mutation_registry_ids: frozenset[str] | None,
+    mutation_registry_digest: str | None,
+    head: str | None = None,
 ) -> CriterionOutcome:
     failures: list[str] = []
     if mutation_report is None:
@@ -452,15 +481,48 @@ def _criterion_mutation_campaign(
             "no mutation registry report was supplied — criterion 6 is never silently skipped"
         )
         reported: dict[str, object] = {"supplied": False}
+    elif isinstance(mutation_report.get("__malformed__"), str):
+        # the TOCTOU residue (round-4 P0): the report passed preflight but
+        # changed shape before evaluation — an honest criterion FAIL, never
+        # a post-consumption exception
+        failures.append(
+            f"the mutation report can no longer be evaluated: {mutation_report['__malformed__']}"
+        )
+        reported = {"supplied": True, "malformed": True}
     else:
         total = int(mutation_report.get("total", -1))
         killed = int(mutation_report.get("totals", {}).get("KILLED", -1))
-        restoration = bool(mutation_report.get("restoration_suite_passed", False))
+        # STRICT boolean (round-4 P0): bool("false") is True — a string is a
+        # lie, not a pass; the preflight's schema validation rejects the
+        # type outright, and this is the evaluation-side backstop
+        restoration = mutation_report.get("restoration_suite_passed") is True
         if killed != total:
             failures.append(f"mutation registry {killed}/{total} KILLED — not N/N")
         if not restoration:
             failures.append("the mutation registry's restoration suite did not pass")
         entries = mutation_report.get("mutants", [])
+        report_ids = [str(entry.get("id")) for entry in entries]
+        if total != len(report_ids):
+            failures.append(
+                f"the mutation report declares total={total} but carries"
+                f" {len(report_ids)} mutant entries — a self-inconsistent report"
+                " is not this head's campaign"
+            )
+        if len(set(report_ids)) != len(report_ids):
+            failures.append(
+                "the mutation report carries duplicate mutant ids — padding"
+                " cannot stand in for a campaign"
+            )
+        # count KILLED from the ENTRIES themselves (round-2 P0): a report
+        # whose totals claim N/N while its own entries say otherwise is a
+        # forgery, not a campaign
+        killed_entries = sum(1 for entry in entries if str(entry.get("verdict")) == "KILLED")
+        if killed_entries != total:
+            failures.append(
+                f"the report's entries carry {killed_entries} KILLED verdicts"
+                f" but declare total={total} — the declared N/N is not what"
+                " the entries say"
+            )
         covering = [
             str(entry.get("id"))
             for entry in entries
@@ -471,12 +533,67 @@ def _criterion_mutation_campaign(
                 "no registry mutant covers the gate's own verdict logic — the"
                 " plan requires at least one"
             )
+        if mutation_registry_ids is None or mutation_registry_digest is None:
+            failures.append(
+                "the live mutation registry was not supplied — criterion 6"
+                " cannot bind the report to the registry at this head (never"
+                " silently skipped)"
+            )
+        else:
+            # None-safe by construction (the branch is entered only when
+            # both are supplied — but a mutant that drops the absence check
+            # must degrade to a behavioral failure, never a TypeError)
+            registry_ids = mutation_registry_ids or frozenset()
+            missing = sorted(registry_ids - set(report_ids))
+            foreign = sorted(set(report_ids) - registry_ids)
+            if missing:
+                failures.append(
+                    f"the mutation report omits {len(missing)} of the"
+                    f" registry's {len(mutation_registry_ids)} mutants (e.g."
+                    f" {missing[0]}) — a stale report is not this head's"
+                    " campaign"
+                )
+            if foreign:
+                failures.append(
+                    f"the mutation report carries {len(foreign)} ids foreign"
+                    f" to the registry (e.g. {foreign[0]}) — a stale or"
+                    " foreign report is not this head's campaign"
+                )
+            stamped_digest = mutation_report.get("registry_digest")
+            if not isinstance(stamped_digest, str) or stamped_digest != mutation_registry_digest:
+                failures.append(
+                    "the report's registry_digest does not match the live"
+                    " registry — the campaign was not run against this"
+                    " registry revision (or was not run at all)"
+                )
+        if head is not None:
+            # bind the report to the SEALED head (round-3 P0): the registry
+            # can be identical across commits while the guarded code moved,
+            # so a registry-bound report from another head is still stale
+            stamped_head = mutation_report.get("head")
+            if not isinstance(stamped_head, str) or stamped_head != head:
+                failures.append(
+                    f"the report's head {stamped_head!r} is not the sealed head"
+                    f" {head!r} — the campaign ran at a different head"
+                )
         reported = {
             "supplied": True,
             "total": total,
             "killed": killed,
+            "killed_entries": killed_entries,
             "restoration_suite_passed": restoration,
             "verdict_logic_mutants": covering[:5],
+            "registry_supplied": mutation_registry_ids is not None,
+            "registry_total": (
+                len(mutation_registry_ids) if mutation_registry_ids is not None else None
+            ),
+            "registry_digest_match": (
+                mutation_report.get("registry_digest") == mutation_registry_digest
+                if mutation_registry_digest is not None
+                else None
+            ),
+            "report_head": mutation_report.get("head"),
+            "sealed_head": head,
         }
     return CriterionOutcome(
         criterion_id="mutation_campaign",
@@ -504,6 +621,10 @@ def evaluate_g4_criteria(
     replay_hashes: Mapping[str, str] | None,
     mutation_report: Mapping[str, Any] | None,
     era_target: Mapping[str, int],
+    replay_aliased: bool = False,
+    mutation_registry_ids: frozenset[str] | None = None,
+    mutation_registry_digest: str | None = None,
+    head: str | None = None,
     rejection_floor: int = REJECTION_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six pre-declared criteria from the stamped payloads.
@@ -513,14 +634,24 @@ def evaluate_g4_criteria(
     payloads; ``era_target`` carries the era's stamped counts (expected
     masters, distinct contracts) the plan's criterion 1 targets;
     ``replay_hashes`` the clean-clone replay's payload hashes; and
-    ``mutation_report`` the registry report (N/N KILLED + restoration)."""
+    ``mutation_report`` the registry report (N/N KILLED + restoration).
+    ``mutation_registry_ids`` / ``mutation_registry_digest`` are the LIVE
+    registry's id set and content digest at this head — criterion 6 binds
+    the report to them (a report that omits registry mutants, carries
+    foreign or duplicate ids, disagrees with its own entries' verdicts, or
+    lacks the matching registry digest is stale or forged and FAILs;
+    absent registry = FAIL, never silently skipped). ``head`` (normally
+    always the sealed head) additionally binds the report to the exact
+    commit the campaign ran at."""
     outcomes = (
         _criterion_manifest_integrity(lane1_census, lane2_census, era_target),
         _criterion_candidate_discipline(protocol, lane2_census, trial_payloads),
         _criterion_fill_discipline(trial_payloads, execution_calendar),
         _criterion_rejection_paths(lane1_census, lane2_census, trial_payloads, rejection_floor),
-        _criterion_determinism(stamped_hashes, replay_hashes),
-        _criterion_mutation_campaign(mutation_report),
+        _criterion_determinism(stamped_hashes, replay_hashes, replay_aliased),
+        _criterion_mutation_campaign(
+            mutation_report, mutation_registry_ids, mutation_registry_digest, head
+        ),
     )
     verdict = "PASS" if all(o.verdict == "PASS" for o in outcomes) else "FAIL"
     return G4GateEvaluation(
@@ -586,11 +717,176 @@ def production_gate_paths(repo_root: Path) -> G4GatePaths:
 
 
 def era_target_of(era: Mapping[str, Any]) -> dict[str, int]:
-    """The era's stamped counts the plan's criterion 1 targets."""
+    """The era's stamped counts the plan's criterion 1 targets.
+
+    Every count must be a TRUE int (round-6 P0): a JSON float — including
+    ``1e309``'s ``inf`` — passes a plain ``isinstance(payload, dict)`` check
+    and then raises ``OverflowError`` at ``int()`` only after the one-shot
+    has run. Refused here, where the preflight calls it."""
+
+    def _count(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"era census count {value!r} is not an integer")
+        return value
+
     return {
-        "expected_masters": int(era["coverage"]["expected_masters"]),
-        "distinct_contracts": int(era["values"]["observed_census_fact"]["distinct_contracts"]["v"]),
+        "expected_masters": _count(era["coverage"]["expected_masters"]),
+        "distinct_contracts": _count(
+            era["values"]["observed_census_fact"]["distinct_contracts"]["v"]
+        ),
     }
+
+
+def live_mutation_registry(repo_root: Path) -> tuple[frozenset[str], str] | None:
+    """The LIVE mutation registry at this head: the authored ``MUTANTS``
+    list in ``scripts/mutate.py`` (the JSON artifact is generated output),
+    as (id set, registry digest). The digest is sha256 over the canonical
+    MUTANTS list — the same value the mutation runner stamps into its
+    report — so a report generated from a different registry revision (or
+    hand-forged) cannot present it. Loaded by file path — scripts/ is not
+    an importable package. None when the registry file is absent (criterion
+    6 then FAILs loudly rather than certifying an unbound report)."""
+    registry_path = repo_root / "scripts" / "mutate.py"
+    if not registry_path.is_file():
+        return None
+    import hashlib
+    import importlib.util
+    import json
+
+    spec = importlib.util.spec_from_file_location("tree_options_mutation_registry", registry_path)
+    if spec is None or spec.loader is None:  # pragma: no cover - malformed path only
+        return None
+    module = importlib.util.module_from_spec(spec)
+    try:
+        spec.loader.exec_module(module)
+        mutants = module.MUTANTS
+        digest = hashlib.sha256(
+            json.dumps(mutants, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        # ID extraction INSIDE the wrap (round-7 P0): a syntactically
+        # loadable registry whose MUTANTS entries are malformed (no "id")
+        # raises KeyError here — a preflight fact, never a post-consumption
+        # escape the evaluation's GatePreflightError handler cannot contain
+        ids = frozenset(str(m["id"]) for m in mutants)
+    except Exception as exc:  # an unloadable or malformed registry is a preflight fact
+        raise GatePreflightError(
+            f"the live mutation registry {registry_path} failed to load ({exc!r}) —"
+            " refusing BEFORE the one-shot event runs"
+        ) from None
+    return ids, digest
+
+
+def live_mutation_registry_ids(repo_root: Path) -> frozenset[str] | None:
+    """The LIVE registry's id set alone (see ``live_mutation_registry``)."""
+    loaded = live_mutation_registry(repo_root)
+    return None if loaded is None else loaded[0]
+
+
+class GatePreflightError(RuntimeError):
+    """An auxiliary gate input cannot possibly evaluate. Raised BEFORE the
+    one-shot event runs so a malformed report or an unloadable registry can
+    never burn the sealed workspace (or, under the seal, the CONSUMPTION)
+    without a verdict — the 2026-08-31 failure mode, never again."""
+
+
+class MutationReportSchemaError(GatePreflightError):
+    """A PRESENT mutation report whose shape cannot be evaluated: wrong
+    types where the evaluation would raise (a non-int total, a non-list
+    mutants array, a non-boolean restoration flag). Refused at preflight —
+    BEFORE anything the event creates — and surfaced as an honest criterion
+    FAIL if the file changed shape only after the preflight (the TOCTOU
+    residue), never as a post-consumption exception."""
+
+
+def validate_mutation_report(payload: object) -> None:
+    """Strict shape validation of a mutation report (round-4 P0s).
+
+    Every field the evaluation CASTS or branches on must already be the
+    right TYPE: a present-but-malformed report refuses at preflight, never
+    raises at evaluation time after the one-shot has run. (An ABSENT report
+    is different: that is an honest criterion FAIL, a verdict.)"""
+    if not isinstance(payload, dict):
+        raise MutationReportSchemaError("the mutation report is not a JSON object")
+    mutants = payload.get("mutants")
+    if not isinstance(mutants, list) or not all(isinstance(entry, dict) for entry in mutants):
+        raise MutationReportSchemaError("the mutation report's 'mutants' is not a list of objects")
+    for entry in mutants:
+        if not isinstance(entry.get("id"), str):
+            raise MutationReportSchemaError("a mutant entry carries a non-string id")
+        if not isinstance(entry.get("verdict"), str):
+            raise MutationReportSchemaError("a mutant entry carries a non-string verdict")
+    totals = payload.get("totals")
+    if not isinstance(totals, dict) or not isinstance(totals.get("KILLED"), int):
+        raise MutationReportSchemaError("the mutation report's 'totals.KILLED' is not an integer")
+    if not isinstance(payload.get("total"), int):
+        raise MutationReportSchemaError("the mutation report's 'total' is not an integer")
+    restoration = payload.get("restoration_suite_passed")
+    if not isinstance(restoration, bool):
+        raise MutationReportSchemaError(
+            "the mutation report's 'restoration_suite_passed' is not a boolean"
+            f" (got {type(restoration).__name__!r}: bool('false') is True — the"
+            " string is a lie, not a pass)"
+        )
+    for key in ("head", "registry_digest"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, str):
+            raise MutationReportSchemaError(f"the mutation report's {key!r} is not a string")
+
+
+def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
+    """Refuse BEFORE the one-shot event when the auxiliary criterion inputs
+    would raise at evaluation time.
+
+    An ABSENT report or a stale one is an honest criterion FAIL (a verdict,
+    recorded verbatim); a report that cannot be PARSED or whose SHAPE cannot
+    be evaluated, or a registry that cannot be LOADED, is an exception — and
+    an exception after the event has run leaves consumed authority with no
+    verdict. All are checked here, ahead of anything the event creates."""
+    live_mutation_registry(repo_root)  # raises GatePreflightError when unloadable
+    if not paths.era_census.is_file():
+        raise GatePreflightError(
+            f"the era census {paths.era_census} is absent — criterion 1's count"
+            " target is a REQUIRED stamped input and its absence would raise"
+            " only AFTER the one-shot event ran; refusing before anything is"
+            " created"
+        )
+    # round-5/6 P0: existence alone is not evaluability — a PRESENT census
+    # that cannot be parsed, or whose counts are not true ints (a JSON
+    # float like 1e309 passes a shape check and raises OverflowError only
+    # at the post-event int()), refuses here, with nothing spent
+    try:
+        era_payload = json.loads(paths.era_census.read_text(encoding="utf-8"))
+    except (OSError, RecursionError, ValueError) as exc:
+        raise GatePreflightError(
+            f"the era census {paths.era_census} cannot be parsed ({exc!r}) —"
+            " refusing BEFORE the one-shot event runs"
+        ) from None
+    if not isinstance(era_payload, dict):
+        raise GatePreflightError(
+            f"the era census {paths.era_census} is not a JSON object — refusing"
+            " BEFORE the one-shot event runs"
+        )
+    try:
+        era_target_of(era_payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GatePreflightError(
+            f"the era census {paths.era_census} cannot be evaluated ({exc!r}) —"
+            " refusing BEFORE the one-shot event runs"
+        ) from None
+    if paths.mutation_report.is_file():
+        try:
+            loaded = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
+        except (OSError, RecursionError, ValueError) as exc:
+            raise GatePreflightError(
+                f"the mutation report {paths.mutation_report} cannot be parsed"
+                f" ({exc!r}) — refusing BEFORE the one-shot event runs"
+            ) from None
+        try:
+            validate_mutation_report(loaded)
+        except MutationReportSchemaError as exc:
+            raise GatePreflightError(
+                f"{paths.mutation_report}: {exc} — refusing BEFORE the one-shot event runs"
+            ) from None
 
 
 def evaluate_and_record(
@@ -602,6 +898,8 @@ def evaluate_and_record(
     head: str,
     allow_dirty: bool = False,
     log_lines: Sequence[str] = (),
+    mutation_registry_ids: frozenset[str] | None = None,
+    mutation_registry_digest: str | None = None,
     rejection_floor: int = REJECTION_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six criteria from the run's stamped payloads, write the
@@ -610,9 +908,10 @@ def evaluate_and_record(
     The auxiliary criterion inputs are the prior events' STAMPED artifacts:
     the era census (criterion 1's targets), the clean-clone replay payload
     dir (criterion 5; absent = an honest FAIL, never a skip), and the
-    mutation registry report at the sealed head (criterion 6).
-    ``rejection_floor`` defaults to the pre-declared 50; it is a parameter
-    so a fixture-scale MINI gate can exercise the machinery."""
+    mutation registry report at the sealed head (criterion 6 — bound to
+    ``mutation_registry_ids``, the LIVE registry at this head; a stale
+    report FAILs). ``rejection_floor`` defaults to the pre-declared 50; it
+    is a parameter so a fixture-scale MINI gate can exercise the machinery."""
     protocol = load_protocol_bytes(held.protocol_bytes)
     lane1_census = load_json(run.census_payload_paths["lane1"])["payload"]
     lane2_census = load_json(run.census_payload_paths["lane2"])["payload"]
@@ -627,24 +926,100 @@ def evaluate_and_record(
         **{f"{lane}|{arm}": path for (lane, arm), path in run.trial_payload_paths.items()},
     }
     stamped_hashes = payload_hashes(stamped_paths)
-    replay_hashes = (
-        payload_hashes(
-            {
-                name: paths.replay_artifacts / path.relative_to(run.artifacts_dir)
-                for name, path in stamped_paths.items()
-            }
+    # round-6 P0: a PRESENT but partial or unreadable replay dir must FAIL
+    # criterion 5 as a verdict — payload_hashes reads eagerly, so an
+    # absent/unreadable replay payload would raise FileNotFoundError/OSError
+    # AFTER consumption; None is criterion 5's honest absent-replay failure.
+    # round-8/9 P0: an ALIASED "replay" — payload symlinks or HARD LINKS
+    # onto the run's own artifacts (same inode), or the replay dir IS the
+    # artifacts dir — compares byte-identical BY CONSTRUCTION (is_symlink
+    # alone misses hard links: same st_dev/st_ino, no symlink bit);
+    # criterion 5 must name the aliasing, never certify determinism by
+    # self-comparison
+    replay_aliased = False
+    if paths.replay_artifacts.is_dir():
+        replay_map = {
+            name: paths.replay_artifacts / path.relative_to(run.artifacts_dir)
+            for name, path in stamped_paths.items()
+        }
+
+        def _shares_inode(replay_path: Path, stamped_path: Path) -> bool:
+            # round-10 P0: the payload can VANISH between the alias check and
+            # the stat — an OSError here is absence, which is criterion 5's
+            # own missing-payload failure, never a raw escape after the
+            # CONSUMPTION
+            try:
+                replay_stat = replay_path.stat()
+                stamped_stat = stamped_path.stat()
+            except OSError:
+                return False
+            return (replay_stat.st_dev, replay_stat.st_ino) == (
+                stamped_stat.st_dev,
+                stamped_stat.st_ino,
+            )
+
+        def _symlinked(replay_path: Path) -> bool:
+            # same race through the OTHER stat caller: Path.is_symlink is
+            # implemented via stat(follow_symlinks=False) and raises the
+            # same way when the payload vanishes mid-check
+            try:
+                return replay_path.is_symlink()
+            except OSError:
+                return False
+
+        replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(
+            _symlinked(path) or _shares_inode(path, stamped_paths[name])
+            for name, path in replay_map.items()
         )
-        if paths.replay_artifacts.is_dir()
-        else None
-    )
-    mutation_report = load_json(paths.mutation_report) if paths.mutation_report.is_file() else None
+        if replay_aliased:
+            replay_hashes = None
+        else:
+            try:
+                replay_hashes = payload_hashes(replay_map)
+            except OSError:
+                replay_hashes = None
+    else:
+        replay_hashes = None
+    if paths.mutation_report.is_file():
+        # TOCTOU backstop (round-4 P0): preflight validated this file before
+        # the event ran; if it changed shape since, that is an honest
+        # criterion FAIL — never an exception after consumption
+        try:
+            loaded_report = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
+            validate_mutation_report(loaded_report)
+            mutation_report = loaded_report
+        except (OSError, RecursionError, ValueError) as exc:
+            mutation_report = {"__malformed__": f"unparseable ({exc!r})"}
+        except MutationReportSchemaError as exc:
+            mutation_report = {"__malformed__": str(exc)}
+    else:
+        mutation_report = None
+    if mutation_registry_ids is None:
+        # the LIVE registry at this head, derived from the repo being sealed
+        # (absent registry file = None = criterion 6 FAILs, never a skip).
+        # Round-6 P0: the derive itself must be exception-safe HERE — the
+        # preflight is the refusal point, and a registry that became
+        # unloadable after it is a post-spend shape change: a criterion-6
+        # FAIL verdict, never a propagated GatePreflightError
+        try:
+            loaded_registry = live_mutation_registry(repo_root)
+        except GatePreflightError:
+            loaded_registry = None
+        if loaded_registry is not None and mutation_registry_digest is None:
+            mutation_registry_ids, mutation_registry_digest = loaded_registry
     if not paths.era_census.is_file():
-        raise FileNotFoundError(
-            f"the era census {paths.era_census} is absent — criterion 1's count"
-            " target is a REQUIRED stamped input (never defaulted, never"
-            " silently skipped)"
-        )
-    era_target = era_target_of(load_json(paths.era_census))
+        # round-6 P0: the preflight required this file; its removal after
+        # the preflight is a post-spend shape change — an honest criterion-1
+        # FAIL, never an exception after consumption
+        era_target: dict[str, Any] = {"__malformed__": "absent (removed after the preflight)"}
+    else:
+        # TOCTOU backstop (round-5): the preflight parsed this file before
+        # the event ran; if it changed shape since, criterion 1 FAILs as a
+        # verdict — never an exception after consumption
+        try:
+            era_target = era_target_of(load_json(paths.era_census))
+        except (OSError, RecursionError, ValueError, KeyError, TypeError) as exc:
+            era_target = {"__malformed__": f"unparseable ({exc!r})"}
     assert run.execution_calendar is not None
     evaluation = evaluate_g4_criteria(
         protocol=protocol,
@@ -655,8 +1030,12 @@ def evaluate_and_record(
         execution_calendar=run.execution_calendar,
         stamped_hashes=stamped_hashes,
         replay_hashes=replay_hashes,
+        replay_aliased=replay_aliased,
         mutation_report=mutation_report,
         era_target=era_target,
+        mutation_registry_ids=mutation_registry_ids,
+        mutation_registry_digest=mutation_registry_digest,
+        head=head,
         rejection_floor=rejection_floor,
     )
     write_gate_evidence(

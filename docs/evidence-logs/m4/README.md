@@ -1,5 +1,14 @@
 # M4 retained evidence logs
 
+- `g4-sealed-event-reconciliation.md` — the consumed one-shot M4-G4 sealed
+  event of 2026-08-31 (APPROVAL `468e2cf8…` / CONSUMPTION `bb6a616b…`,
+  `sealed_run_id 9b945db3…`, verdict UNKNOWN, 0 trials): the crash census
+  (8 of 2,871 spot-proxy closes carry a third decimal; zero strikes over
+  2dp in 10,049,160 master rows), the boundary fix (cent quantization at
+  the `BarRecord` seam reusing `PRICE_TICK`, custody-stamped, the shared
+  2dp `Price` type untouched), the `shares_per_contract` 84/232 side
+  observation, and the forward path (new head → new packet → NEW
+  pre-declared gate; the consumed pair stays history, never re-run).
 - `m4-protocol-021-ratification.md` — protocol 0.2.1 ratification package
   (2026-08-26, branch `m4/protocol-021-20260826`): the four fixed owner
   decisions (flow=100 owner_deviation bound to census `43b0b040…`;

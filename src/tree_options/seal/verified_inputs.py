@@ -380,7 +380,22 @@ def register_runner(
     The owning layer (or a test) calls this explicitly; the registry is the
     authority surface for WHICH machinery a verified packet binds. Production
     PR A registers nothing — no runner is wired — so every packet build
-    refuses until the owner wires machinery."""
+    refuses until the owner wires machinery.
+
+    Round-5 P0: an authority-grade runner MUST expose a callable
+    ``preflight()`` — ``execute_sealed_run`` calls it AFTER the authority
+    cross-join and BEFORE the durable CONSUMPTION append, so an unevaluable
+    auxiliary input refuses at zero cost. A runner that cannot be asked
+    "will you even start?" can never be allowed to spend one-shot authority;
+    refusing the REGISTRATION is the only place that guarantee is total."""
+    if not callable(getattr(implementation, "preflight", None)):
+        raise VerifiedInputsError(
+            "runner",
+            "the registered implementation exposes no callable preflight() —"
+            " execute_sealed_run refuses BEFORE the durable CONSUMPTION append"
+            " by calling it, so a runner that cannot be preflighted can never"
+            " safely spend one-shot authority; refusing the registration",
+        )
     entry = RegisteredRunner(
         runner_version=runner_version,
         implementation=implementation,

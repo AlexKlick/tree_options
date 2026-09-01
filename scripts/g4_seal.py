@@ -62,7 +62,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from tree_options.schemas.common import StrictModel
 
@@ -459,6 +459,21 @@ def execute_sealed_run(
     # tail while holding the ledger lock.
     view = read_ledger(ledger_root)
     _check_authority(view, identity)
+
+    # Round-4 P0: the CONSUMPTION below is DURABLE the moment it is
+    # appended, and the runner raises BEFORE any verdict when the gate's
+    # auxiliary inputs cannot evaluate (an unloadable registry, an
+    # unparseable or shape-invalid mutation report, a malformed era census).
+    # Preflight HERE — after the authority cross-join, before the append —
+    # so a refusal costs nothing: no consumption, no workspace, the
+    # approval intact for a corrected attempt. This changes no authority
+    # semantics: the run is still one-shot, still approval-cross-joined.
+    # Round-5 P0: this is the SINGLE preflight point — register_runner
+    # guarantees every authority-grade runner exposes preflight(), and the
+    # runner itself does NOT re-preflight inside __call__ (a second check
+    # after the append would re-open the consumed-without-verdict race).
+    # The cast narrows the Callable-typed registry surface, not an option.
+    cast(Any, runner).preflight()
 
     consumption_record = LedgerRecord(
         kind=KIND_CONSUMPTION,

@@ -139,6 +139,21 @@ class RepoCalendarSealedRunner:
     def config_digest(self) -> str:
         return calendar_config_digest(self.config())
 
+    def preflight(self) -> None:
+        """Refuse BEFORE authority is spent: the gate's auxiliary inputs
+        (registry, mutation report, era census) must be evaluable, or the
+        run would raise after the CONSUMPTION became durable — consumed
+        authority with no verdict (round-4 P0). Called by
+        ``execute_sealed_run`` AFTER the authority cross-join and BEFORE
+        the consumption append — the SINGLE refusal point. ``__call__``
+        deliberately does NOT re-preflight (round-5: a second check after
+        the append re-opens the consumed-without-verdict race); direct
+        library callers invoke this explicitly before spending anything."""
+        from tree_options.seal.g4_gate import preflight_gate_auxiliaries, production_gate_paths
+
+        repo = self._binding.repo_root
+        preflight_gate_auxiliaries(paths=production_gate_paths(repo), repo_root=repo)
+
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
         """THE sealed-event evaluation: run the authored machinery over the
         HELD verified-inputs bundle and return the outcome string.
@@ -182,6 +197,14 @@ class RepoCalendarSealedRunner:
             )
         run_id = sealed_run_id(identity_from_packet(inputs.packet))
         gate_paths = production_gate_paths(repo)
+        # Round-5 P0: NO preflight here. execute_sealed_run calls preflight()
+        # AFTER the authority cross-join and BEFORE the durable CONSUMPTION
+        # append — a second check at this point would run AFTER the append
+        # and re-open the consumed-without-verdict race (corrupting an
+        # auxiliary input between the two checks raised GatePreflightError
+        # with the ledger already holding APPROVAL,CONSUMPTION). Direct
+        # library callers preflight explicitly; the sealed path has exactly
+        # one refusal point, above the spend.
         run = run_g4_sealed_event(
             inputs,
             repo_root=repo,

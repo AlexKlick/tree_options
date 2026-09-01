@@ -3098,12 +3098,12 @@ MUTANTS = [
         ),
         file="scripts/g4_seal.py",
         anchor=(
+            "    # tail while holding the ledger lock.\n"
             "    view = read_ledger(ledger_root)\n"
-            "    _check_authority(view, identity)\n\n"
-            "    consumption_record = LedgerRecord("
+            "    _check_authority(view, identity)"
         ),
         replacement=(
-            "    view = read_ledger(ledger_root)\n\n    consumption_record = LedgerRecord("
+            "    # tail while holding the ledger lock.\n    view = read_ledger(ledger_root)"
         ),
         selectors=[f"{U}/test_g4_seal.py"],
         invariant="Approval and duplicate authority are rechecked at the final spend boundary",
@@ -4505,7 +4505,304 @@ MUTANTS = [
             " window — the exact partial capture this lane exists to refuse"
         ),
     ),
+    # ---- G4 bar-boundary price quantization (m4/g4-price-boundary-20260831) --------
+    dict(
+        id="M338-g4-bar-boundary-quantize-dropped",
+        owner="test_a_three_decimal_wire_close_quantizes_the_flat_bar_at_the_boundary",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="                quantized = close.quantize(PRICE_TICK, rounding=ROUND_HALF_EVEN)",
+        replacement="                quantized = close",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the flat dataset bar quantizes every sub-cent wire close to"
+            " the cent tick AT the BarRecord boundary with an explicit"
+            " ROUND_HALF_EVEN: dropping the quantize feeds a real-wire 3dp"
+            ' close (ADBE "417.125" — the exact class that crashed the'
+            " 2026-08-31 sealed event before any trial ran) straight into"
+            " the shared 2dp Price type and kills the one-shot run at"
+            " world-build time"
+        ),
+    ),
+    dict(
+        id="M339-g4-quantization-custody-counter-zeroed",
+        owner="test_the_spot_close_quantization_block_stamps_the_exact_census_values",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="                spot_close_quantized_rows += 1",
+        replacement="                spot_close_quantized_rows += 0",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the boundary quantization is CUSTODY, not silence: every row"
+            " the tick rewrites is counted and stamped in the census payload —"
+            " zeroing the counter rewrites a quantizing world as an exact one"
+            " while its bars still carry the moved closes"
+        ),
+    ),
+    dict(
+        id="M340-g4-sub-cent-refusal-dropped",
+        owner="test_a_sub_cent_positive_close_refuses_naming_the_row",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="            if quantized <= 0:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 a positive sub-cent close quantizes to 0.00, which Price"
+            " (gt=0) can never carry: the build must REFUSE naming the"
+            " underlying, session, and original token — dropping the guard"
+            " surfaces the anonymous pydantic gt=0 violation instead of the"
+            " named refusal (or floors the row to a zero price)"
+        ),
+    ),
+    dict(
+        id="M341-g4-quantization-max-delta-comparator-flipped",
+        owner="test_multi_row_custody_tracks_the_largest_value_movement",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="                    or delta > spot_close_max_quantization_delta",
+        replacement="                    or delta < spot_close_max_quantization_delta",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the custody max_delta is the LARGEST value movement among"
+            " rewritten rows: flipping the comparator keeps a smaller late"
+            " delta (0.004 over 0.005) and understates the boundary's worst"
+            " case — a single-row world can never catch it"
+        ),
+    ),
+    dict(
+        id="M342-g4-exponent-gate-dropped",
+        owner="test_only_two_decimal_closes_carry_through_exactly_with_no_custody_noise",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="            if exponent < -2:",
+        replacement="            if True:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 only a close whose wire EXPONENT exceeds the cent tick is"
+            " rewritten: quantizing unconditionally re-serializes every"
+            " on-grid row (an exponent-0 '6E+2' becomes '600.00') while"
+            " numeric Decimal equality hides the drift and custody reports"
+            " zero — the quiet path must stay representation-exact"
+        ),
+    ),
+    dict(
+        id="M343-g4-criterion6-stale-report-binding-dropped",
+        owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="            if missing:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 6 binds the mutation report to the LIVE registry at"
+            " this head: an N/N report that omits registry mutants (the stale"
+            " report new registry entries would leave behind without a"
+            " re-run) must FAIL — dropping the binding certifies a campaign"
+            " that never covered this head's guards"
+        ),
+    ),
+    dict(
+        id="M344-g4-criterion6-registry-absence-silenced",
+        owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        if mutation_registry_ids is None or mutation_registry_digest is None:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 6 with NO live registry supplied must fail with the"
+            " NAMED absence failure — dropping the check degrades the refusal"
+            " to an anonymous every-id-foreign failure (or worse), losing the"
+            " never-silently-skipped contract the criterion's text declares"
+        ),
+    ),
+    dict(
+        id="M345-g4-runner-preflight-dropped",
+        owner="test_a_malformed_report_makes_the_runner_preflight_refuse",
+        file="src/tree_options/seal/runner.py",
+        anchor="        preflight_gate_auxiliaries(paths=production_gate_paths(repo), repo_root=repo)",
+        replacement="        pass",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the production runner PREFLIGHTS the gate's auxiliary inputs"
+            " BEFORE the one-shot event runs: dropping the preflight lets an"
+            " unparseable report raise only after the event created the"
+            " sealed registry/artifacts — consumed authority with no verdict,"
+            " the exact 2026-08-31 failure mode"
+        ),
+    ),
+    dict(
+        id="M346-g4-criterion6-head-binding-dropped",
+        owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="            if not isinstance(stamped_head, str) or stamped_head != head:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 6 binds the report to the SEALED head: the registry"
+            " can be identical across commits while the guarded code moved,"
+            " so a registry-bound report from another head is still stale —"
+            " dropping the binding certifies a campaign that ran against"
+            " different code"
+        ),
+    ),
+    dict(
+        id="M347-g4-execute-preflight-dropped",
+        owner="test_execute_preflights_the_runner_before_the_consumption_is_durable",
+        file="scripts/g4_seal.py",
+        anchor="    cast(Any, runner).preflight()",
+        replacement="    pass",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 execute_sealed_run PREFLIGHTS the runner before the"
+            " CONSUMPTION append: the record is durable the moment it is"
+            " written, and a runner that would raise on an unevaluable"
+            " auxiliary input must refuse BEFORE the append — otherwise the"
+            " refusal itself consumes the one-shot and leaves UNKNOWN"
+            " authority with no verdict"
+        ),
+    ),
+    dict(
+        id="M348-g4-restoration-flag-coerced",
+        owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=('        restoration = mutation_report.get("restoration_suite_passed") is True'),
+        replacement=(
+            '        restoration = bool(mutation_report.get("restoration_suite_passed", False))'
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 6's restoration flag is a STRICT boolean: the"
+            ' STRING "false" is truthy under bool() and a report carrying it'
+            " certified a campaign whose restoration suite never passed —"
+            " coercion is a lie, not a pass"
+        ),
+    ),
+    dict(
+        id="M349-g4-registry-derive-unsafe",
+        owner="test_post_preflight_auxiliary_changes_fail_criteria_never_raise",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        except GatePreflightError:",
+        replacement="        except AssertionError:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the evaluation-side registry derive must be exception-safe:"
+            " a registry that became unloadable AFTER the preflight (and so"
+            " after the CONSUMPTION) is a post-spend shape change — a"
+            " criterion-6 FAIL verdict, never a propagated"
+            " GatePreflightError with no verdict"
+        ),
+    ),
+    dict(
+        id="M350-g4-replay-hash-unsafe",
+        owner="test_post_preflight_auxiliary_changes_fail_criteria_never_raise",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="            except OSError:\n                replay_hashes = None",
+        replacement="            except AssertionError:\n                replay_hashes = None",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 a PRESENT but partial replay directory FAILs criterion 5 as a"
+            " verdict: payload_hashes reads eagerly, so an absent replay"
+            " payload would raise FileNotFoundError AFTER consumption — the"
+            " honest absent-replay failure is the criterion's, never an"
+            " exception's"
+        ),
+    ),
+    dict(
+        id="M351-g4-era-count-bool-clause-dropped",
+        owner="test_an_era_census_with_non_integer_counts_refuses_at_preflight",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        if isinstance(value, bool) or not isinstance(value, int):",
+        replacement="        if not isinstance(value, int):",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 an era-census count must be a true int, BOOLS EXCLUDED: JSON"
+            " true parses to Python True, which subclasses int (True == 1)"
+            " and would certify a count that was never stamped as a number —"
+            " floats and strings still refuse via the int clause, so only"
+            " the bool case guards this"
+        ),
+    ),
+    dict(
+        id="M352-g4-replay-alias-check-dropped",
+        owner="test_an_aliased_replay_cannot_certify_determinism_by_self_comparison",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=(
+            "        replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(\n"
+            "            _symlinked(path) or _shares_inode(path, stamped_paths[name])\n"
+            "            for name, path in replay_map.items()\n"
+            "        )"
+        ),
+        replacement="        replay_aliased = False  # mutant: alias check dropped",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 5 certifies a CLEAN-CLONE replay: a replay whose"
+            " payloads symlink onto the run's own artifacts (or whose dir IS"
+            " the artifacts dir) compares byte-identical by construction —"
+            " dropping the alias check lets self-comparison certify"
+            " determinism, which is no certification at all"
+        ),
+    ),
+    dict(
+        id="M353-g4-deep-json-recursion-uncaught",
+        owner="test_deeply_nested_auxiliary_json_never_raises_post_consumption",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor='    except (OSError, RecursionError, ValueError) as exc:\n        raise GatePreflightError(\n            f"the era census {paths.era_census} cannot be parsed ({exc!r}) —"',
+        replacement='    except (OSError, ValueError) as exc:\n        raise GatePreflightError(\n            f"the era census {paths.era_census} cannot be parsed ({exc!r}) —"',
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 a deeply nested auxiliary JSON raises RecursionError from"
+            " json.loads — a RuntimeError the ValueError handlers cannot"
+            " contain; the preflight must refuse it (and the evaluation"
+            " convert it to a verdict), never let a raw escape follow the"
+            " consumption"
+        ),
+    ),
+    dict(
+        id="M354-g4-eval-deep-json-recursion-uncaught",
+        owner="test_post_preflight_auxiliary_changes_fail_criteria_never_raise",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        except (OSError, RecursionError, ValueError, KeyError, TypeError) as exc:",
+        replacement="        except (OSError, ValueError, KeyError, TypeError) as exc:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the EVALUATION-side census parse must contain RecursionError:"
+            " a deeply nested census swapped in after the preflight (and so"
+            " after the CONSUMPTION) FAILs criterion 1 as a verdict — the"
+            " preflight catch alone cannot protect the post-spend path"
+        ),
+    ),
+    dict(
+        id="M355-g4-inode-check-vanish-uncaught",
+        owner="test_a_replay_payload_vanishing_mid_check_never_raises",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=(
+            "            except OSError:\n"
+            "                return False\n"
+            "            return (replay_stat.st_dev, replay_stat.st_ino) == ("
+        ),
+        replacement=(
+            "            except AssertionError:\n"
+            "                return False\n"
+            "            return (replay_stat.st_dev, replay_stat.st_ino) == ("
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the alias check's stat can hit a payload that VANISHES"
+            " mid-check (exists-then-stat is a race): the OSError is absence"
+            " — criterion 5's own missing-payload failure — never a raw"
+            " FileNotFoundError after the CONSUMPTION"
+        ),
+    ),
 ]
+
+
+def registry_digest() -> str:
+    """sha256 over the canonical MUTANTS list — the PRODUCER side of
+    criterion 6's registry binding: stamped into every report this runner
+    writes and recomputed by the G4 gate's ``live_mutation_registry`` at
+    evaluation time. A report from a different registry revision (or a
+    hand-forged one) does not carry the matching value. Any change to the
+    digest formula here MUST be mirrored there — the machinery test pins
+    the two together."""
+    return hashlib.sha256(
+        json.dumps(MUTANTS, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.
 # Generated outputs can contain deliberately adversarial names from custody
@@ -4626,14 +4923,25 @@ def main() -> int:
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--markdown", type=Path, default=None)
     parser.add_argument(
+        "--head",
+        default=None,
+        help=(
+            "the git head the campaign ran at (the orchestrator passes"
+            " `git rev-parse HEAD`); stamped into the report so criterion 6"
+            " can bind it to the sealed head — a report from another head"
+            " is stale and FAILs"
+        ),
+    )
+    parser.add_argument(
         "--only",
         nargs="+",
         default=None,
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 325-mutant run stays the"
-            " m0_gate's authority — 323 through PR #21 + M336/M337 here)"
+            " mutants and re-pins; the full 343-mutant run stays the"
+            " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
+            " + M338-M355 price-boundary here)"
         ),
     )
     args = parser.parse_args()
@@ -4724,11 +5032,17 @@ def main() -> int:
     for r in results:
         counts[r["verdict"]] = counts.get(r["verdict"], 0) + 1
 
+    # bind the report to the EXACT registry it ran: the digest over the
+    # canonical MUTANTS list (a criterion-6 evaluator recomputes this from
+    # the live registry and refuses a mismatch — a report from a different
+    # registry revision, or a hand-forged one, does not carry it)
     payload = {
         "mutants": results,
         "totals": counts,
         "restoration_suite_passed": restored_suite_ok,
         "total": len(results),
+        "registry_digest": registry_digest(),
+        "head": args.head,
     }
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)

@@ -67,6 +67,12 @@ class _FakeSealedRunner:
 
     runner_version = RUNNER_VERSION
 
+    def preflight(self) -> None:
+        # round-5: register_runner refuses an implementation without a
+        # callable preflight — the registration contract applies to every
+        # runner that can hold authority, fakes included
+        return None
+
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
         return "fake-sealed-run-complete"
 
@@ -496,6 +502,16 @@ class _TwinForeignRunner:
 
     runner_version = RUNNER_VERSION
 
+    def preflight(self) -> None:
+
+        # round-5: the registration contract (register_runner refuses
+
+        # a preflightless implementation); a no-op preserves this class's
+
+        # binding-semantics intent
+
+        return None
+
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
         return "foreign-machinery-ran"
 
@@ -504,6 +520,16 @@ class _ConfiguredRunner:
     """The approved class shape, configured at construction."""
 
     runner_version = RUNNER_VERSION
+
+    def preflight(self) -> None:
+
+        # round-5: the registration contract (register_runner refuses
+
+        # a preflightless implementation); a no-op preserves this class's
+
+        # binding-semantics intent
+
+        return None
 
     def __init__(self, mode: str) -> None:
         self.mode = mode

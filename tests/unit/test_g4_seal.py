@@ -139,12 +139,43 @@ class StubRunner:
         self.presented: HeldVerifiedSealedInputs | None = None
         self._callback = callback
 
+    def preflight(self) -> None:
+        # round-5 P0: register_runner REFUSES an implementation without a
+        # callable preflight — the stub carries a no-op one so packets can
+        # bind machinery; the refusing-preflight test subclasses this
+        return None
+
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
         self.calls += 1
         self.presented = inputs
         if self._callback is not None:
             return self._callback(inputs)
         return "sealed-run-complete"
+
+
+def test_registration_refuses_a_runner_that_cannot_be_preflighted() -> None:
+    """Round-5 P0: the preflight contract is enforced at REGISTRATION —
+    execute_sealed_run refuses before the durable CONSUMPTION append by
+    calling preflight(), so a runner that cannot be asked "will you even
+    start?" must never enter the authority registry at all."""
+    vi.RUNNER_REGISTRY.clear()
+    try:
+
+        class Preflightless:
+            runner_version = RUNNER_VERSION
+
+            def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
+                return "never-reachable"
+
+        with pytest.raises(VerifiedInputsError, match="no callable preflight"):
+            vi.register_runner(
+                Preflightless(),  # type: ignore[arg-type]
+                config_digest=TEST_RUNNER_CONFIG_DIGEST,
+                config_digest_fn=lambda _impl: TEST_RUNNER_CONFIG_DIGEST,
+            )
+        assert RUNNER_VERSION not in vi.RUNNER_REGISTRY
+    finally:
+        vi.RUNNER_REGISTRY.clear()
 
 
 # Round-11 finding 8: the runner machinery is REGISTRY authority. The default
@@ -457,6 +488,29 @@ def test_execute_revalidates_packet_self_hash_before_ledger_access(
     assert not (ledger_root / L.LEDGER_FILENAME).exists()
 
 
+def test_execute_preflights_the_runner_before_the_consumption_is_durable(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """Round-4 P0: a runner whose preflight refuses (unloadable registry,
+    malformed mutation report, missing era census) must cost NOTHING — no
+    CONSUMPTION record, the approval intact — because the refusal fires
+    BEFORE the append, never after durable authority was spent."""
+
+    class RefusingPreflightRunner(StubRunner):
+        def preflight(self) -> None:
+            raise RuntimeError("preflight: the mutation report cannot be parsed")
+
+    fixture = write_valid_inputs(tmp_path)
+    with _seeded_registry(RefusingPreflightRunner()):
+        packet = _packet(fixture)
+        _approve(ledger_root, packet)
+        with pytest.raises(RuntimeError, match="preflight: the mutation report"):
+            _execute(packet, fixture, ledger_root)
+        view = L.read_ledger(ledger_root)
+        assert [record.kind for record in view.records] == [L.KIND_APPROVAL]
+        assert not any(record.kind == L.KIND_CONSUMPTION for record in view.records)
+
+
 def test_approval_packet_a_cannot_execute_packet_b(tmp_path: Path, ledger_root: Path) -> None:
     fixture = write_valid_inputs(tmp_path)
     packet_a = _packet(fixture)
@@ -604,6 +658,11 @@ def test_foreign_callable_with_the_approved_version_literal_is_not_authority(
     class ForeignRunner:
         runner_version = RUNNER_VERSION  # the approved literal, merely asserted
 
+        def preflight(self) -> None:
+            # round-5: register_runner requires a callable preflight; this
+            # class tests REGISTRATION-binding semantics, which a no-op preserves
+            return None
+
         def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
             ran.append(True)
             return "unapproved-machinery-ran"
@@ -658,6 +717,9 @@ def test_registered_runner_code_changed_since_approval_refuses(
         "\n"
         "    def __init__(self):\n"
         "        self.calls = 0\n"
+        "\n"
+        "    def preflight(self):\n"
+        "        return None\n"
         "\n"
         "    def __call__(self, inputs):\n"
         "        self.calls += 1\n"
@@ -830,6 +892,11 @@ class _SameFileForeignRunner:
     def __init__(self) -> None:
         self.calls = 0
 
+    def preflight(self) -> None:
+        # round-5: register_runner requires a callable preflight; this
+        # class tests REGISTRATION-binding semantics, which a no-op preserves
+        return None
+
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
         self.calls += 1
         return "same-file-foreign-machinery-ran"
@@ -844,6 +911,11 @@ class _ConfiguredRunner:
     def __init__(self, mode: str) -> None:
         self.mode = mode
         self.calls = 0
+
+    def preflight(self) -> None:
+        # round-5: register_runner requires a callable preflight; this
+        # class tests REGISTRATION-binding semantics, which a no-op preserves
+        return None
 
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
         self.calls += 1
@@ -990,6 +1062,11 @@ class _MutableConfigRunner:
     def __init__(self, mode: str) -> None:
         self.mode = mode
         self.calls = 0
+
+    def preflight(self) -> None:
+        # round-5: register_runner requires a callable preflight; this
+        # class tests REGISTRATION-binding semantics, which a no-op preserves
+        return None
 
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
         self.calls += 1
