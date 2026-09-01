@@ -3098,12 +3098,12 @@ MUTANTS = [
         ),
         file="scripts/g4_seal.py",
         anchor=(
+            "    # tail while holding the ledger lock.\n"
             "    view = read_ledger(ledger_root)\n"
-            "    _check_authority(view, identity)\n\n"
-            "    consumption_record = LedgerRecord("
+            "    _check_authority(view, identity)"
         ),
         replacement=(
-            "    view = read_ledger(ledger_root)\n\n    consumption_record = LedgerRecord("
+            "    # tail while holding the ledger lock.\n    view = read_ledger(ledger_root)"
         ),
         selectors=[f"{U}/test_g4_seal.py"],
         invariant="Approval and duplicate authority are rechecked at the final spend boundary",
@@ -4691,8 +4691,8 @@ MUTANTS = [
         id="M350-g4-replay-hash-unsafe",
         owner="test_post_preflight_auxiliary_changes_fail_criteria_never_raise",
         file="src/tree_options/seal/g4_gate.py",
-        anchor="        except OSError:",
-        replacement="        except AssertionError:",
+        anchor="            except OSError:\n                replay_hashes = None",
+        replacement="            except AssertionError:\n                replay_hashes = None",
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
             "G4 a PRESENT but partial replay directory FAILs criterion 5 as a"
@@ -4770,8 +4770,16 @@ MUTANTS = [
         id="M355-g4-inode-check-vanish-uncaught",
         owner="test_a_replay_payload_vanishing_mid_check_never_raises",
         file="src/tree_options/seal/g4_gate.py",
-        anchor="            except OSError:\n                return False",
-        replacement="            except AssertionError:\n                return False",
+        anchor=(
+            "            except OSError:\n"
+            "                return False\n"
+            "            return (replay_stat.st_dev, replay_stat.st_ino) == ("
+        ),
+        replacement=(
+            "            except AssertionError:\n"
+            "                return False\n"
+            "            return (replay_stat.st_dev, replay_stat.st_ino) == ("
+        ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
             "G4 the alias check's stat can hit a payload that VANISHES"
