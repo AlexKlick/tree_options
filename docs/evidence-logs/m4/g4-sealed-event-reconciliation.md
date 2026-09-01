@@ -371,3 +371,22 @@ successor-enablement lane is required first, with its own review:
   full-statement anchor including the inode arm. Registry 342; 17/17
   KILLED with restoration pass
   (`tree_options-logs/g4-price-boundary-{verify24,mutations16}.log`).
+- Codex round 10 (the FINAL round, by contract — the branch gates after
+  this regardless of verdict): 1 P0, verified — and it was the round-9
+  remediation's own regression: `_shares_inode`'s exists/stat pair could
+  raise a raw FileNotFoundError mid-check. Fixed by guarding BOTH stat
+  callers in the alias probe (`Path.is_symlink` is implemented via
+  `stat(follow_symlinks=False)` and races identically — the guard's test
+  monkeypatch exposed it); an OSError in the probe is absence, criterion
+  5's own missing-payload failure. Mutant M355; registry 343; 18/18
+  KILLED with restoration pass
+  (`tree_options-logs/g4-price-boundary-{verify27,mutations18,mutations19}.log`).
+  FINAL LOOP TALLY: 10 rounds, 26 findings, every one verified real and
+  fixed in-lane; the loop ends here by the right-sizing contract (one
+  bounded review was the directive; each additional round was justified
+  only by reachable P0s, and the final round's finding was a regression
+  introduced by the round-9 fix — the signal that the surface is
+  converged). Residual disclosed above: the concurrent-mid-run-tamper
+  class (a tracked file edited DURING the run trips the evidence
+  stamping's dirty-worktree refusal post-consumption), owned by the
+  one-shot discipline and the successor lane's reconciliation record.

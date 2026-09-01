@@ -1230,6 +1230,54 @@ def test_an_aliased_replay_cannot_certify_determinism_by_self_comparison(
     assert any("not independent" in f for f in determinism.failures), determinism.failures
 
 
+def test_a_replay_payload_vanishing_mid_check_never_raises(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Round-10 P0 (the final round's own finding): the alias check's stat
+    can hit a payload that vanishes mid-check — exists-then-stat is a race.
+    The OSError is treated as absence (criterion 5's own missing-payload
+    failure), never a raw FileNotFoundError after consumption. Simulated by
+    making Path.stat raise for replay payloads, as the race would."""
+    root = tmp_path / "vanish"
+    root.mkdir()
+    mini = _build_bundle(root)
+    primary_root = tmp_path_factory.mktemp("g4vanish-primary")
+    run = _run_mini_gate(
+        mini, primary_root / "artifacts", primary_root / "sealed.db", primary_root / "scratch"
+    )
+    held = verify_sealed_inputs(mini.held_paths)
+    replay_dir = mini.repo / "artifacts" / "g4-sealed-replay"
+    if replay_dir.exists():
+        shutil.rmtree(replay_dir)
+    shutil.copytree(run.artifacts_dir, replay_dir)
+    real_stat = Path.stat
+    real_read_bytes = Path.read_bytes
+
+    def racing_stat(self: Path, *args: object, **kwargs: object) -> object:
+        if self.parent == replay_dir:
+            raise FileNotFoundError(str(self))
+        return real_stat(self, *args, **kwargs)  # type: ignore[arg-type,return-value]
+
+    def racing_read_bytes(self: Path) -> bytes:
+        if self.parent == replay_dir:
+            raise FileNotFoundError(str(self))
+        return real_read_bytes(self)  # type: ignore[return-value]
+
+    monkeypatch.setattr(Path, "stat", racing_stat)
+    monkeypatch.setattr(Path, "read_bytes", racing_read_bytes)
+    evaluation = evaluate_and_record(
+        run,
+        held,
+        paths=_paths_for(mini, run, tmp_path / "evidence", replay_dir),
+        repo_root=mini.repo,
+        head=mini.head,
+    )
+    monkeypatch.undo()
+    determinism = evaluation.by_id("determinism")
+    assert determinism.verdict == "FAIL"
+    assert evaluation.verdict == "FAIL"
+
+
 def test_deeply_nested_auxiliary_json_never_raises_post_consumption(
     tmp_path: Path,
 ) -> None:

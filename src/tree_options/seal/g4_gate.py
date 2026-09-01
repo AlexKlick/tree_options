@@ -944,17 +944,31 @@ def evaluate_and_record(
         }
 
         def _shares_inode(replay_path: Path, stamped_path: Path) -> bool:
-            if not replay_path.exists():
-                return False  # absence is criterion 5's own missing-payload failure
-            replay_stat = replay_path.stat()
-            stamped_stat = stamped_path.stat()
+            # round-10 P0: the payload can VANISH between the alias check and
+            # the stat — an OSError here is absence, which is criterion 5's
+            # own missing-payload failure, never a raw escape after the
+            # CONSUMPTION
+            try:
+                replay_stat = replay_path.stat()
+                stamped_stat = stamped_path.stat()
+            except OSError:
+                return False
             return (replay_stat.st_dev, replay_stat.st_ino) == (
                 stamped_stat.st_dev,
                 stamped_stat.st_ino,
             )
 
+        def _symlinked(replay_path: Path) -> bool:
+            # same race through the OTHER stat caller: Path.is_symlink is
+            # implemented via stat(follow_symlinks=False) and raises the
+            # same way when the payload vanishes mid-check
+            try:
+                return replay_path.is_symlink()
+            except OSError:
+                return False
+
         replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(
-            path.is_symlink() or _shares_inode(path, stamped_paths[name])
+            _symlinked(path) or _shares_inode(path, stamped_paths[name])
             for name, path in replay_map.items()
         )
         if replay_aliased:

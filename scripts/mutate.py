@@ -4723,7 +4723,7 @@ MUTANTS = [
         file="src/tree_options/seal/g4_gate.py",
         anchor=(
             "        replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(\n"
-            "            path.is_symlink() or _shares_inode(path, stamped_paths[name])\n"
+            "            _symlinked(path) or _shares_inode(path, stamped_paths[name])\n"
             "            for name, path in replay_map.items()\n"
             "        )"
         ),
@@ -4764,6 +4764,20 @@ MUTANTS = [
             " a deeply nested census swapped in after the preflight (and so"
             " after the CONSUMPTION) FAILs criterion 1 as a verdict — the"
             " preflight catch alone cannot protect the post-spend path"
+        ),
+    ),
+    dict(
+        id="M355-g4-inode-check-vanish-uncaught",
+        owner="test_a_replay_payload_vanishing_mid_check_never_raises",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="            except OSError:\n                return False",
+        replacement="            except AssertionError:\n                return False",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the alias check's stat can hit a payload that VANISHES"
+            " mid-check (exists-then-stat is a race): the OSError is absence"
+            " — criterion 5's own missing-payload failure — never a raw"
+            " FileNotFoundError after the CONSUMPTION"
         ),
     ),
 ]
@@ -4917,9 +4931,9 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 342-mutant run stays the"
+            " mutants and re-pins; the full 343-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M354 price-boundary here)"
+            " + M338-M355 price-boundary here)"
         ),
     )
     args = parser.parse_args()
