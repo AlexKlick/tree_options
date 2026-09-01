@@ -4505,6 +4505,52 @@ MUTANTS = [
             " window — the exact partial capture this lane exists to refuse"
         ),
     ),
+    # ---- G4 bar-boundary price quantization (m4/g4-price-boundary-20260831) --------
+    dict(
+        id="M338-g4-bar-boundary-quantize-dropped",
+        owner="test_a_three_decimal_wire_close_quantizes_the_flat_bar_at_the_boundary",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="            quantized = close.quantize(PRICE_TICK)",
+        replacement="            quantized = close",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the flat dataset bar quantizes every spot-proxy close to the"
+            " cent tick AT the BarRecord boundary: dropping the quantize feeds"
+            ' a real-wire 3dp close (ADBE "417.125" — the exact class that'
+            " crashed the 2026-08-31 sealed event before any trial ran)"
+            " straight into the shared 2dp Price type and kills the one-shot"
+            " run at world-build time"
+        ),
+    ),
+    dict(
+        id="M339-g4-quantization-custody-counter-zeroed",
+        owner="test_the_spot_close_quantization_block_stamps_the_exact_census_values",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="                spot_close_quantized_rows += 1",
+        replacement="                spot_close_quantized_rows += 0",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the boundary quantization is CUSTODY, not silence: every row"
+            " the tick moves is counted and stamped in the census payload —"
+            " zeroing the counter rewrites a quantizing world as an exact one"
+            " while its bars still carry the moved closes"
+        ),
+    ),
+    dict(
+        id="M340-g4-sub-cent-refusal-dropped",
+        owner="test_a_sub_cent_positive_close_refuses_naming_the_row",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="            if quantized <= 0:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 a positive sub-cent close quantizes to 0.00, which Price"
+            " (gt=0) can never carry: the build must REFUSE naming the"
+            " underlying, session, and original token — dropping the guard"
+            " surfaces the anonymous pydantic gt=0 violation instead of the"
+            " named refusal (or floors the row to a zero price)"
+        ),
+    ),
 ]
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.
@@ -4632,8 +4678,9 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 325-mutant run stays the"
-            " m0_gate's authority — 323 through PR #21 + M336/M337 here)"
+            " mutants and re-pins; the full 328-mutant run stays the"
+            " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
+            " + M338-M340 price-boundary here)"
         ),
     )
     args = parser.parse_args()
