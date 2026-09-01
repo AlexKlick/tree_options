@@ -111,10 +111,20 @@ def _histogram_count(payload: Mapping[str, Any], rule: str, status: str) -> int:
 def _criterion_manifest_integrity(
     lane1_census: Mapping[str, Any],
     lane2_census: Mapping[str, Any],
-    era_target: Mapping[str, int],
+    era_target: Mapping[str, Any],
 ) -> CriterionOutcome:
     failures: list[str] = []
     reported: dict[str, object] = {}
+    if isinstance(era_target.get("__malformed__"), str):
+        # the TOCTOU backstop's era-census residue: the census passed
+        # preflight but changed shape by evaluation time — an honest FAIL,
+        # never a post-consumption exception
+        return CriterionOutcome(
+            criterion_id="manifest_integrity",
+            verdict="FAIL",
+            failures=(f"the era census can no longer be evaluated: {era_target['__malformed__']}",),
+            reported={"era_census_malformed": True},
+        )
     lane2_manifest = lane2_census.get("manifest", {})
     if not lane2_manifest.get("verified"):
         failures.append("lane 2: the typed manifest verify did not pass")
@@ -805,6 +815,21 @@ def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
             " only AFTER the one-shot event ran; refusing before anything is"
             " created"
         )
+    # round-5 P0: existence alone is not evaluability — a PRESENT census
+    # that cannot be parsed raises only at the post-event load, with
+    # authority already consumed
+    try:
+        era_payload = json.loads(paths.era_census.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise GatePreflightError(
+            f"the era census {paths.era_census} cannot be parsed ({exc!r}) —"
+            " refusing BEFORE the one-shot event runs"
+        ) from None
+    if not isinstance(era_payload, dict):
+        raise GatePreflightError(
+            f"the era census {paths.era_census} is not a JSON object — refusing"
+            " BEFORE the one-shot event runs"
+        )
     if paths.mutation_report.is_file():
         try:
             loaded = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
@@ -894,7 +919,13 @@ def evaluate_and_record(
             " target is a REQUIRED stamped input (never defaulted, never"
             " silently skipped)"
         )
-    era_target = era_target_of(load_json(paths.era_census))
+    # TOCTOU backstop (round-5): the preflight parsed this file before the
+    # event ran; if it changed shape since, criterion 1 FAILs as a verdict —
+    # never an exception after consumption
+    try:
+        era_target: dict[str, Any] = era_target_of(load_json(paths.era_census))
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        era_target = {"__malformed__": f"unparseable ({exc!r})"}
     assert run.execution_calendar is not None
     evaluation = evaluate_g4_criteria(
         protocol=protocol,

@@ -207,9 +207,15 @@ def test_preflight_wires_production_machinery_only_when_the_registry_is_empty(
     assert entry.config_digest in payload["criteria_inputs"]["runner"]["evidence"]
 
     # a pre-existing registration is NEVER replaced (a test's stub, or the
-    # sealed event's own machinery, stays authoritative)
+    # sealed event's own machinery, stays authoritative). Round-5: even a
+    # test stub carries the registration contract — a callable preflight()
+    # — because register_runner refuses anything less (no preflightless
+    # runner, stub or production, can ever hold authority)
     class _Stub:
         runner_version = RUNNER_VERSION
+
+        def preflight(self) -> None:  # the registration contract, no-op here
+            return None
 
         def __call__(self, inputs):  # pragma: no cover - never called
             return "stub"

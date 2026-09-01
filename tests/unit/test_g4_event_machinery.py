@@ -1031,25 +1031,33 @@ def test_the_report_digest_producer_matches_the_gates_recompute() -> None:
     assert producer.registry_digest() == _live_mutation_registry()[1]
 
 
-def test_a_malformed_report_makes_the_runner_refuse_before_the_event_runs(
+def test_a_malformed_report_makes_the_runner_preflight_refuse(
     tmp_path: Path,
 ) -> None:
-    """Round-3 P0: the production runner PREFLIGHTS the gate's auxiliary
-    inputs — an unparseable report refuses BEFORE run_g4_sealed_event, so
-    nothing is created and nothing is consumed (never again a burned
-    one-shot with no verdict)."""
+    """Round-3/5 P0: the runner's preflight() — the method
+    execute_sealed_run calls AFTER the authority cross-join and BEFORE the
+    durable CONSUMPTION append — refuses an unparseable report (and a
+    malformed era census), so nothing is created and nothing is consumed.
+    The runner itself does NOT re-preflight inside __call__ (round-5: a
+    second check after the append re-opens the consumed-without-verdict
+    race); this is the single refusal point, above the spend."""
     from tree_options.seal.g4_gate import GatePreflightError
     from tree_options.seal.runner import RepoCalendarSealedRunner, protocol_calendar_binding
 
     root = tmp_path / "malformed"
     root.mkdir()
     mini = _build_bundle(root)
-    (mini.repo / "artifacts" / "m0-mutations.json").write_text("{ not json", encoding="utf-8")
-    held = verify_sealed_inputs(mini.held_paths)
     runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini.repo))
+    (mini.repo / "artifacts" / "m0-mutations.json").write_text("{ not json", encoding="utf-8")
     with pytest.raises(GatePreflightError, match="cannot be parsed"):
-        runner(held)
-    # nothing the event would have created exists
+        runner.preflight()
+    # a malformed ERA census refuses the same way (round-5: existence alone
+    # is not evaluability)
+    census = mini.repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
+    census.write_text("[1, 2, 3]", encoding="utf-8")
+    with pytest.raises(GatePreflightError, match="era census"):
+        runner.preflight()
+    # and nothing the event would have created exists
     assert not (mini.repo / "artifacts" / "g4-sealed.db").exists()
     assert not (mini.repo / "artifacts" / "g4-sealed").exists()
 

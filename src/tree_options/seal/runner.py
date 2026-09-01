@@ -175,11 +175,7 @@ class RepoCalendarSealedRunner:
         """
         import subprocess
 
-        from tree_options.seal.g4_gate import (
-            evaluate_and_record,
-            preflight_gate_auxiliaries,
-            production_gate_paths,
-        )
+        from tree_options.seal.g4_gate import evaluate_and_record, production_gate_paths
         from tree_options.seal.identity import sealed_run_id
         from tree_options.seal.verified_inputs import identity_from_packet
         from tree_options.trials.g4_event import run_g4_sealed_event
@@ -198,12 +194,14 @@ class RepoCalendarSealedRunner:
             )
         run_id = sealed_run_id(identity_from_packet(inputs.packet))
         gate_paths = production_gate_paths(repo)
-        # BEFORE anything the event creates (round-3 P0): an auxiliary gate
-        # input that would raise at evaluation time — an unloadable
-        # registry, an unparseable report — refuses here, so it can never
-        # burn the sealed workspace (or, under the seal, the CONSUMPTION)
-        # without a verdict
-        preflight_gate_auxiliaries(paths=gate_paths, repo_root=repo)
+        # Round-5 P0: NO preflight here. execute_sealed_run calls preflight()
+        # AFTER the authority cross-join and BEFORE the durable CONSUMPTION
+        # append — a second check at this point would run AFTER the append
+        # and re-open the consumed-without-verdict race (corrupting an
+        # auxiliary input between the two checks raised GatePreflightError
+        # with the ledger already holding APPROVAL,CONSUMPTION). Direct
+        # library callers preflight explicitly; the sealed path has exactly
+        # one refusal point, above the spend.
         run = run_g4_sealed_event(
             inputs,
             repo_root=repo,

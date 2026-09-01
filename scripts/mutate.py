@@ -4612,9 +4612,9 @@ MUTANTS = [
     ),
     dict(
         id="M345-g4-runner-preflight-dropped",
-        owner="test_a_malformed_report_makes_the_runner_refuse_before_the_event_runs",
+        owner="test_a_malformed_report_makes_the_runner_preflight_refuse",
         file="src/tree_options/seal/runner.py",
-        anchor="        preflight_gate_auxiliaries(paths=gate_paths, repo_root=repo)",
+        anchor="        preflight_gate_auxiliaries(paths=production_gate_paths(repo), repo_root=repo)",
         replacement="        pass",
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -4644,8 +4644,8 @@ MUTANTS = [
         id="M347-g4-execute-preflight-dropped",
         owner="test_execute_preflights_the_runner_before_the_consumption_is_durable",
         file="scripts/g4_seal.py",
-        anchor='    runner_preflight = getattr(runner, "preflight", None)',
-        replacement="    runner_preflight = None",
+        anchor="    cast(Any, runner).preflight()",
+        replacement="    pass",
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
             "G4 execute_sealed_run PREFLIGHTS the runner before the"

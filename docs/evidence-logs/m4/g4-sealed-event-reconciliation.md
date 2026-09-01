@@ -294,3 +294,19 @@ successor-enablement lane is required first, with its own review:
   consumption. Mutants M347 (execute preflight dropped) and M348
   (restoration flag coerced); registry 325 → 336; 11/11 KILLED with
   restoration (`tree_options-logs/g4-price-boundary-{verify9,mutations5}.log`).
+- Codex round 5: 3 P0, all verified. Fixed: (1) the round-3 in-runner
+  preflight REMOVED — it ran AFTER the append and re-opened the
+  consumed-without-verdict race (Codex corrupted the report between the two
+  checks and produced GatePreflightError with the ledger already holding
+  APPROVAL,CONSUMPTION); `execute_sealed_run`'s call is now the SINGLE
+  refusal point, above the spend; (2) `register_runner` REFUSES an
+  implementation without a callable `preflight()` — the contract is total
+  at registration, so no preflightless runner (stub, foreign callable, or
+  production) can ever hold authority (every existing test stub gained the
+  no-op); (3) the era-census preflight now LOADS and shape-checks the file
+  (existence alone let a malformed census consume authority and raise
+  JSONDecodeError post-event), and `evaluate_and_record` re-validates it at
+  load so a post-preflight shape change FAILs criterion 1 as a verdict.
+  Mutants M345/M347 repointed to the surviving call sites; registry 336;
+  11/11 KILLED with restoration pass
+  (`tree_options-logs/g4-price-boundary-{verify16,mutations7}.log`).
