@@ -1153,6 +1153,68 @@ def test_post_preflight_auxiliary_changes_fail_criteria_never_raise(
     assert evaluation.verdict == "PASS"
 
 
+def test_an_aliased_replay_cannot_certify_determinism_by_self_comparison(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Round-8 P0: a "replay" whose payloads are SYMLINKS onto the run's own
+    artifacts compares byte-identical BY CONSTRUCTION — criterion 5 must
+    name the aliasing and FAIL, never certify determinism by
+    self-comparison (Codex's four-symlink probe returned PASS)."""
+    root = tmp_path / "aliased"
+    root.mkdir()
+    mini = _build_bundle(root)
+    primary_root = tmp_path_factory.mktemp("g4alias-primary")
+    run = _run_mini_gate(
+        mini, primary_root / "artifacts", primary_root / "sealed.db", primary_root / "scratch"
+    )
+    held = verify_sealed_inputs(mini.held_paths)
+    replay_dir = mini.repo / "artifacts" / "g4-sealed-replay"
+    if replay_dir.exists():
+        shutil.rmtree(replay_dir)
+    replay_dir.mkdir(parents=True)
+    for payload in sorted(run.artifacts_dir.rglob("*.json")):
+        if payload.name == "sealed-gate-summary.json":
+            continue
+        target = replay_dir / payload.name
+        target.symlink_to(payload)
+    evaluation = evaluate_and_record(
+        run,
+        held,
+        paths=_paths_for(mini, run, tmp_path / "evidence", replay_dir),
+        repo_root=mini.repo,
+        head=mini.head,
+    )
+    determinism = evaluation.by_id("determinism")
+    assert determinism.verdict == "FAIL"
+    assert any("not independent" in f for f in determinism.failures), determinism.failures
+    assert evaluation.verdict == "FAIL"
+
+
+def test_deeply_nested_auxiliary_json_never_raises_post_consumption(
+    tmp_path: Path,
+) -> None:
+    """Round-8 P0: json.loads on a deeply nested document raises
+    RecursionError (a RuntimeError the ValueError handlers cannot contain).
+    The report and the census both refuse at preflight and FAIL as verdicts
+    at evaluation — never a raw escape."""
+    from tree_options.seal.g4_gate import GatePreflightError
+    from tree_options.seal.runner import RepoCalendarSealedRunner, protocol_calendar_binding
+
+    deep = "[" * 100_000 + "]" * 100_000
+    root = tmp_path / "deep"
+    root.mkdir()
+    mini = _build_bundle(root)
+    runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini.repo))
+    (mini.repo / "artifacts" / "m0-mutations.json").write_text(deep, encoding="utf-8")
+    with pytest.raises(GatePreflightError, match="cannot be parsed"):
+        runner.preflight()
+    (mini.repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json").write_text(
+        deep, encoding="utf-8"
+    )
+    with pytest.raises(GatePreflightError, match="cannot be parsed"):
+        runner.preflight()
+
+
 def test_an_era_census_with_non_integer_counts_refuses_at_preflight(
     tmp_path: Path,
 ) -> None:

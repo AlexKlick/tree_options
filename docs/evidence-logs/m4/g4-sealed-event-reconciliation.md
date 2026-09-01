@@ -343,3 +343,18 @@ successor-enablement lane is required first, with its own review:
   clause, which no float case can guard). Mutant M351; registry 339; 14/14
   KILLED with restoration pass
   (`tree_options-logs/g4-price-boundary-{verify22,mutations11}.log`).
+- Codex round 8: 2 P0, both verified (the four-symlink replay probe
+  returned criterion5=PASS/overall=PASS; a deeply-nested JSON raised raw
+  RecursionError on the real evaluation path). Fixed: criterion 5 refuses
+  an ALIASED replay — payload symlinks onto the run's own artifacts, or a
+  replay dir that IS the artifacts dir, compare byte-identical by
+  construction, so determinism cannot be certified by self-comparison
+  (named failure, `replay_aliased` recorded); and every auxiliary-JSON
+  parse site (preflight report/census, evaluation report/census) catches
+  RecursionError — a RuntimeError subclass the ValueError handlers could
+  not contain. Mutants M352 (alias check — its anchor must span the full
+  multi-line statement, and its replacement must disable BOTH arms:
+  precedence kept the symlink arm alive in the first attempt, which
+  SURVIVED) and M353 (deep-JSON recursion); registry 341; 16/16 KILLED
+  with restoration pass
+  (`tree_options-logs/g4-price-boundary-{verify23,mutations12,mutations14,mutations15}.log`).

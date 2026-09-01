@@ -414,14 +414,30 @@ def _criterion_rejection_paths(
 def _criterion_determinism(
     stamped_hashes: Mapping[str, str],
     replay_hashes: Mapping[str, str] | None,
+    replay_aliased: bool = False,
 ) -> CriterionOutcome:
     failures: list[str] = []
-    if replay_hashes is None:
+    if replay_aliased:
+        # round-8 P0: a "replay" that symlinks back onto the run's own
+        # artifacts (or IS the artifacts dir) self-compares byte-identical
+        # by construction — determinism certified by self-comparison is no
+        # certification at all
+        failures.append(
+            "the replay tree is not independent (symlinked payloads or the"
+            " artifacts dir itself) — criterion 5 cannot be certified by"
+            " self-comparison"
+        )
+        reported: dict[str, object] = {
+            "replayed": False,
+            "payload_count": len(stamped_hashes),
+            "replay_aliased": True,
+        }
+    elif replay_hashes is None:
         failures.append(
             "no clean-clone replay payload hashes were supplied — criterion 5 is"
             " never silently skipped"
         )
-        reported: dict[str, object] = {"replayed": False, "payload_count": len(stamped_hashes)}
+        reported = {"replayed": False, "payload_count": len(stamped_hashes)}
     else:
         missing = sorted(set(stamped_hashes) - set(replay_hashes))
         extra = sorted(set(replay_hashes) - set(stamped_hashes))
@@ -605,6 +621,7 @@ def evaluate_g4_criteria(
     replay_hashes: Mapping[str, str] | None,
     mutation_report: Mapping[str, Any] | None,
     era_target: Mapping[str, int],
+    replay_aliased: bool = False,
     mutation_registry_ids: frozenset[str] | None = None,
     mutation_registry_digest: str | None = None,
     head: str | None = None,
@@ -631,7 +648,7 @@ def evaluate_g4_criteria(
         _criterion_candidate_discipline(protocol, lane2_census, trial_payloads),
         _criterion_fill_discipline(trial_payloads, execution_calendar),
         _criterion_rejection_paths(lane1_census, lane2_census, trial_payloads, rejection_floor),
-        _criterion_determinism(stamped_hashes, replay_hashes),
+        _criterion_determinism(stamped_hashes, replay_hashes, replay_aliased),
         _criterion_mutation_campaign(
             mutation_report, mutation_registry_ids, mutation_registry_digest, head
         ),
@@ -839,7 +856,7 @@ def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
     # at the post-event int()), refuses here, with nothing spent
     try:
         era_payload = json.loads(paths.era_census.read_text(encoding="utf-8"))
-    except (OSError, ValueError) as exc:
+    except (OSError, RecursionError, ValueError) as exc:
         raise GatePreflightError(
             f"the era census {paths.era_census} cannot be parsed ({exc!r}) —"
             " refusing BEFORE the one-shot event runs"
@@ -859,7 +876,7 @@ def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
     if paths.mutation_report.is_file():
         try:
             loaded = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+        except (OSError, RecursionError, ValueError) as exc:
             raise GatePreflightError(
                 f"the mutation report {paths.mutation_report} cannot be parsed"
                 f" ({exc!r}) — refusing BEFORE the one-shot event runs"
@@ -912,17 +929,27 @@ def evaluate_and_record(
     # round-6 P0: a PRESENT but partial or unreadable replay dir must FAIL
     # criterion 5 as a verdict — payload_hashes reads eagerly, so an
     # absent/unreadable replay payload would raise FileNotFoundError/OSError
-    # AFTER consumption; None is criterion 5's honest absent-replay failure
+    # AFTER consumption; None is criterion 5's honest absent-replay failure.
+    # round-8 P0: an ALIASED "replay" — payload symlinks onto the run's own
+    # artifacts, or the replay dir IS the artifacts dir — compares
+    # byte-identical BY CONSTRUCTION; criterion 5 must name the aliasing,
+    # never certify determinism by self-comparison
+    replay_aliased = False
     if paths.replay_artifacts.is_dir():
-        try:
-            replay_hashes = payload_hashes(
-                {
-                    name: paths.replay_artifacts / path.relative_to(run.artifacts_dir)
-                    for name, path in stamped_paths.items()
-                }
-            )
-        except OSError:
+        replay_map = {
+            name: paths.replay_artifacts / path.relative_to(run.artifacts_dir)
+            for name, path in stamped_paths.items()
+        }
+        replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(
+            path.is_symlink() for path in replay_map.values()
+        )
+        if replay_aliased:
             replay_hashes = None
+        else:
+            try:
+                replay_hashes = payload_hashes(replay_map)
+            except OSError:
+                replay_hashes = None
     else:
         replay_hashes = None
     if paths.mutation_report.is_file():
@@ -933,7 +960,7 @@ def evaluate_and_record(
             loaded_report = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
             validate_mutation_report(loaded_report)
             mutation_report = loaded_report
-        except (OSError, ValueError) as exc:
+        except (OSError, RecursionError, ValueError) as exc:
             mutation_report = {"__malformed__": f"unparseable ({exc!r})"}
         except MutationReportSchemaError as exc:
             mutation_report = {"__malformed__": str(exc)}
@@ -963,7 +990,7 @@ def evaluate_and_record(
         # verdict — never an exception after consumption
         try:
             era_target = era_target_of(load_json(paths.era_census))
-        except (OSError, ValueError, KeyError, TypeError) as exc:
+        except (OSError, RecursionError, ValueError, KeyError, TypeError) as exc:
             era_target = {"__malformed__": f"unparseable ({exc!r})"}
     assert run.execution_calendar is not None
     evaluation = evaluate_g4_criteria(
@@ -975,6 +1002,7 @@ def evaluate_and_record(
         execution_calendar=run.execution_calendar,
         stamped_hashes=stamped_hashes,
         replay_hashes=replay_hashes,
+        replay_aliased=replay_aliased,
         mutation_report=mutation_report,
         era_target=era_target,
         mutation_registry_ids=mutation_registry_ids,

@@ -4717,6 +4717,40 @@ MUTANTS = [
             " the bool case guards this"
         ),
     ),
+    dict(
+        id="M352-g4-replay-alias-check-dropped",
+        owner="test_an_aliased_replay_cannot_certify_determinism_by_self_comparison",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=(
+            "        replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(\n"
+            "            path.is_symlink() for path in replay_map.values()\n"
+            "        )"
+        ),
+        replacement="        replay_aliased = False  # mutant: alias check dropped",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 5 certifies a CLEAN-CLONE replay: a replay whose"
+            " payloads symlink onto the run's own artifacts (or whose dir IS"
+            " the artifacts dir) compares byte-identical by construction —"
+            " dropping the alias check lets self-comparison certify"
+            " determinism, which is no certification at all"
+        ),
+    ),
+    dict(
+        id="M353-g4-deep-json-recursion-uncaught",
+        owner="test_deeply_nested_auxiliary_json_never_raises_post_consumption",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor='    except (OSError, RecursionError, ValueError) as exc:\n        raise GatePreflightError(\n            f"the era census {paths.era_census} cannot be parsed ({exc!r}) —"',
+        replacement='    except (OSError, ValueError) as exc:\n        raise GatePreflightError(\n            f"the era census {paths.era_census} cannot be parsed ({exc!r}) —"',
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 a deeply nested auxiliary JSON raises RecursionError from"
+            " json.loads — a RuntimeError the ValueError handlers cannot"
+            " contain; the preflight must refuse it (and the evaluation"
+            " convert it to a verdict), never let a raw escape follow the"
+            " consumption"
+        ),
+    ),
 ]
 
 
@@ -4868,9 +4902,9 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 339-mutant run stays the"
+            " mutants and re-pins; the full 341-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M351 price-boundary here)"
+            " + M338-M353 price-boundary here)"
         ),
     )
     args = parser.parse_args()
