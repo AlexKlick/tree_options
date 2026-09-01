@@ -4807,9 +4807,21 @@ MUTANTS = [
         file="scripts/g4_seal.py",
         anchor=(
             "            if reconciliation_content_id == content_id:\n"
-            "                reconciliations += 1"
+            "                reconciliations += 1\n"
+            "                if reconciliations > content_consumptions:\n"
+            "                    raise LedgerCorruptError(\n"
+            '                        f"RECONCILIATION record {record.record_sha256[:12]}… is"\n'
+            '                        " credited AHEAD of any consumption of this content"\n'
+            '                        f" (prefix holds {reconciliations} reconciliation(s)"\n'
+            '                        f" against {content_consumptions} consumption(s)) —"\n'
+            '                        " authority is never granted ahead of the spend it"\n'
+            '                        " names, not even in a hash-valid hand-chained ledger"\n'
+            "                    )"
         ),
-        replacement="            pass  # mutant: the reconciliation budget is never credited",
+        replacement=(
+            "            pass  # mutant: the reconciliation budget is never"
+            " credited and the prefix order rule never raises"
+        ),
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
             "G4 the successor consumption is permitted only while"
