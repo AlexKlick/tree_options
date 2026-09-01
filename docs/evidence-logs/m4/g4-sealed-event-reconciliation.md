@@ -146,23 +146,35 @@ sealed-gate verdict was computed or observed by this remediation (the
 machinery tests evaluate SYNTHETIC fixture trials and criteria only): the
 sealed verdict remains whatever the NEXT sealed event says.
 
-## 5b. Criterion 6 now binds the report to the live registry (Codex rounds 1–2)
+## 5b. Criterion 6 now binds the report to the live registry and the sealed head (Codex rounds 1–3)
 
 Adding registry entries without re-running the full campaign would have let
 criterion 6 certify a stale N/N report: the evaluator read only the report's
 self-declared totals. `_criterion_mutation_campaign` now takes the LIVE
-registry's id set AND content digest (`live_mutation_registry` loads
-`scripts/mutate.py`'s authored `MUTANTS` list by path; the mutation runner
-stamps the matching `registry_digest` into its report) and FAILs when the
+registry's id set AND content digest AND the sealed head, and FAILs when the
 report omits registry mutants (stale), carries ids foreign to or duplicated
 in the registry, declares a total inconsistent with its own entries, counts
 KILLED from its own entries rather than trusting the declared totals
 (round-2 probe: an all-SURVIVED report with N/N totals previously PASSED),
-lacks the matching registry digest, or when the registry was not supplied
-at all — never a silent skip. The sealed CLI derives the registry BEFORE
-the one-shot event runs (a missing registry refuses with nothing consumed,
-never a burned one-shot), and the machinery fixture report is generated
-from the live registry so the binding is exercised at fixture scale.
+lacks the matching registry digest (the mutation runner stamps
+`registry_digest` — sha256 over the canonical MUTANTS list, exposed as
+`mutate.registry_digest()` on the producer side and recomputed by
+`live_mutation_registry` on the consumer side, pinned together by a
+machinery test), was generated at a different head than the sealed one
+(`--head` passed by `m0_gate.sh`, stamped into the report — the registry can
+be identical across commits while the guarded code moved), or when the
+registry was not supplied at all — never a silent skip.
+
+The report's provenance is additionally protected OUTSIDE the evaluation:
+`preflight_gate_auxiliaries` (called by the production runner and the sealed
+CLI BEFORE the one-shot event runs) refuses an unloadable registry or an
+unparseable report with nothing created and nothing consumed — an exception
+at evaluation time can no longer burn the sealed workspace or, under the
+seal, the CONSUMPTION. TRUST BOUNDARY (stated plainly): criterion 6
+certifies that the report is internally consistent and bound to this head's
+registry and commit — it does not and cannot prove the campaign physically
+executed; that attestation lives in the gate pipeline and the evidence
+chain, exactly as before.
 
 ## 6. Side observation (doc only, no action)
 
@@ -248,3 +260,20 @@ successor-enablement lane is required first, with its own review:
   section rewritten to point at the post-round-2 evidence
   (`tree_options-logs/g4-price-boundary-verify5.log` and
   `-mutations3.log`).
+- Codex round 3: 2 P0 / 1 P2, all verified. Fixed: the report is bound to
+  the SEALED head (`mutate.py --head`, stamped by `m0_gate.sh`, required ==
+  the sealed head by criterion 6 — closes the registry-identical-but-code-
+  moved staleness class); `preflight_gate_auxiliaries` runs in the
+  PRODUCTION RUNNER and the CLI before the one-shot event (a malformed
+  report or unloadable registry refuses with nothing created — Codex's
+  probe of the runner path raising after the event ran); the digest
+  producer/consumer pair is pinned by a machinery test
+  (`mutate.registry_digest()` == the gate's recompute) plus a
+  wrong-nonempty-digest case. Mutants M345 (runner preflight dropped) and
+  M346 (head binding dropped); registry 325 → 334; 9/9 KILLED with
+  restoration (`tree_options-logs/g4-price-boundary-{verify7,mutations4}.log`).
+  The residual — a deliberate forger who reads the code can fabricate a
+  self-consistent, digest- and head-correct report — is a stated trust
+  boundary (§5b), not a defect criterion 6 can close: unsigned JSON cannot
+  prove execution; that attestation lives in the gate pipeline and the
+  evidence chain.

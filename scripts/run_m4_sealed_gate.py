@@ -147,11 +147,29 @@ def _git_head(repo: Path) -> str:
     return result.stdout.strip()
 
 
+def _cli_gate_paths(args: argparse.Namespace):
+    """The gate's path set from the CLI args (built once, used by the
+    preflight BEFORE the event and by the evaluation after it)."""
+    from tree_options.seal.g4_gate import G4GatePaths
+
+    return G4GatePaths(
+        evidence_root=args.evidence_root,
+        registry=args.registry,
+        artifacts_dir=args.artifacts_dir,
+        scratch_root=args.scratch_root,
+        era_census=args.era_census,
+        replay_artifacts=args.replay_artifacts,
+        mutation_report=args.mutation_report,
+        spot_proxy_v2=args.spot_proxy_v2,
+    )
+
+
 def run_gate(argv: list[str] | None = None) -> int:
     from tree_options.seal.g4_gate import (
-        G4GatePaths,
+        GatePreflightError,
         evaluate_and_record,
         live_mutation_registry,
+        preflight_gate_auxiliaries,
     )
     from tree_options.seal.verified_inputs import (
         SealedInputPaths,
@@ -185,20 +203,18 @@ def run_gate(argv: list[str] | None = None) -> int:
     held = verify_sealed_inputs(paths)
     print(f"SEALED_PACKET={held.packet.packet_content_sha256}")
 
-    # ---- the live mutation registry: derived BEFORE the one-shot runs -----
-    # (round-2 P0: deriving it after the event would burn the one-shot
-    # registry/artifacts paths on a misconfigured repo without a verdict —
-    # the exact crash-then-unknown failure mode this gate exists to prevent)
-    mutation_registry = live_mutation_registry(args.repo)
-    if mutation_registry is None:
-        print(
-            f"REFUSED: the live mutation registry ({args.repo / 'scripts' / 'mutate.py'}) is"
-            " unavailable — criterion 6 cannot bind the report to this head, and"
-            " nothing has run, nothing is consumed",
-            file=sys.stderr,
-        )
+    # ---- the gate's auxiliary inputs: checked BEFORE the one-shot runs -----
+    # (round-2/3 P0: an unloadable registry or an unparseable report would
+    # otherwise raise only at evaluation time — AFTER the event created the
+    # one-shot registry/artifacts paths, the exact crash-then-unknown
+    # failure mode that consumed the 2026-08-31 event)
+    try:
+        preflight_gate_auxiliaries(paths=_cli_gate_paths(args), repo_root=args.repo)
+    except GatePreflightError as exc:
+        print(f"REFUSED: {exc}", file=sys.stderr)
         return 2
-    mutation_registry_ids, mutation_registry_digest = mutation_registry
+    mutation_registry = live_mutation_registry(args.repo)
+    mutation_registry_ids, mutation_registry_digest = mutation_registry  # preflight guarantees
     print(f"MUTATION_REGISTRY_IDS={len(mutation_registry_ids)}")
 
     geometry = sealed_split_override(
@@ -217,16 +233,7 @@ def run_gate(argv: list[str] | None = None) -> int:
         print(line)
 
     # ---- the criteria: from the stamped payload files only ---------------
-    gate_paths = G4GatePaths(
-        evidence_root=args.evidence_root,
-        registry=args.registry,
-        artifacts_dir=args.artifacts_dir,
-        scratch_root=args.scratch_root,
-        era_census=args.era_census,
-        replay_artifacts=args.replay_artifacts,
-        mutation_report=args.mutation_report,
-        spot_proxy_v2=args.spot_proxy_v2,
-    )
+    gate_paths = _cli_gate_paths(args)
     if not gate_paths.replay_artifacts.is_dir():
         print(
             f"REPLAY_ARTIFACTS absent at {gate_paths.replay_artifacts} — criterion 5"

@@ -447,6 +447,7 @@ def _criterion_mutation_campaign(
     mutation_report: Mapping[str, Any] | None,
     mutation_registry_ids: frozenset[str] | None,
     mutation_registry_digest: str | None,
+    head: str | None = None,
 ) -> CriterionOutcome:
     failures: list[str] = []
     if mutation_report is None:
@@ -528,6 +529,16 @@ def _criterion_mutation_campaign(
                     " registry — the campaign was not run against this"
                     " registry revision (or was not run at all)"
                 )
+        if head is not None:
+            # bind the report to the SEALED head (round-3 P0): the registry
+            # can be identical across commits while the guarded code moved,
+            # so a registry-bound report from another head is still stale
+            stamped_head = mutation_report.get("head")
+            if not isinstance(stamped_head, str) or stamped_head != head:
+                failures.append(
+                    f"the report's head {stamped_head!r} is not the sealed head"
+                    f" {head!r} — the campaign ran at a different head"
+                )
         reported = {
             "supplied": True,
             "total": total,
@@ -544,6 +555,8 @@ def _criterion_mutation_campaign(
                 if mutation_registry_digest is not None
                 else None
             ),
+            "report_head": mutation_report.get("head"),
+            "sealed_head": head,
         }
     return CriterionOutcome(
         criterion_id="mutation_campaign",
@@ -573,6 +586,7 @@ def evaluate_g4_criteria(
     era_target: Mapping[str, int],
     mutation_registry_ids: frozenset[str] | None = None,
     mutation_registry_digest: str | None = None,
+    head: str | None = None,
     rejection_floor: int = REJECTION_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six pre-declared criteria from the stamped payloads.
@@ -588,7 +602,9 @@ def evaluate_g4_criteria(
     the report to them (a report that omits registry mutants, carries
     foreign or duplicate ids, disagrees with its own entries' verdicts, or
     lacks the matching registry digest is stale or forged and FAILs;
-    absent registry = FAIL, never silently skipped)."""
+    absent registry = FAIL, never silently skipped). ``head`` (normally
+    always the sealed head) additionally binds the report to the exact
+    commit the campaign ran at."""
     outcomes = (
         _criterion_manifest_integrity(lane1_census, lane2_census, era_target),
         _criterion_candidate_discipline(protocol, lane2_census, trial_payloads),
@@ -596,7 +612,7 @@ def evaluate_g4_criteria(
         _criterion_rejection_paths(lane1_census, lane2_census, trial_payloads, rejection_floor),
         _criterion_determinism(stamped_hashes, replay_hashes),
         _criterion_mutation_campaign(
-            mutation_report, mutation_registry_ids, mutation_registry_digest
+            mutation_report, mutation_registry_ids, mutation_registry_digest, head
         ),
     )
     verdict = "PASS" if all(o.verdict == "PASS" for o in outcomes) else "FAIL"
@@ -690,18 +706,56 @@ def live_mutation_registry(repo_root: Path) -> tuple[frozenset[str], str] | None
     if spec is None or spec.loader is None:  # pragma: no cover - malformed path only
         return None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    ids = frozenset(str(m["id"]) for m in module.MUTANTS)
-    digest = hashlib.sha256(
-        json.dumps(module.MUTANTS, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-    return ids, digest
+    try:
+        spec.loader.exec_module(module)
+        mutants = module.MUTANTS
+        digest = hashlib.sha256(
+            json.dumps(mutants, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    except Exception as exc:  # an unloadable registry is a preflight fact, whatever the cause
+        raise GatePreflightError(
+            f"the live mutation registry {registry_path} failed to load ({exc!r}) —"
+            " refusing BEFORE the one-shot event runs"
+        ) from None
+    return frozenset(str(m["id"]) for m in mutants), digest
 
 
 def live_mutation_registry_ids(repo_root: Path) -> frozenset[str] | None:
     """The LIVE registry's id set alone (see ``live_mutation_registry``)."""
     loaded = live_mutation_registry(repo_root)
     return None if loaded is None else loaded[0]
+
+
+class GatePreflightError(RuntimeError):
+    """An auxiliary gate input cannot possibly evaluate. Raised BEFORE the
+    one-shot event runs so a malformed report or an unloadable registry can
+    never burn the sealed workspace (or, under the seal, the CONSUMPTION)
+    without a verdict — the 2026-08-31 failure mode, never again."""
+
+
+def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
+    """Refuse BEFORE the one-shot event when the auxiliary criterion inputs
+    would raise at evaluation time.
+
+    Loadability only: an ABSENT report or a stale one is an honest criterion
+    FAIL (a verdict, recorded verbatim); a report that cannot be PARSED, or
+    a registry that cannot be LOADED, is an exception — and an exception
+    after the event has run leaves consumed authority with no verdict. Both
+    are checked here, ahead of anything the event creates."""
+    live_mutation_registry(repo_root)  # raises GatePreflightError when unloadable
+    if paths.mutation_report.is_file():
+        try:
+            loaded = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise GatePreflightError(
+                f"the mutation report {paths.mutation_report} cannot be parsed"
+                f" ({exc!r}) — refusing BEFORE the one-shot event runs"
+            ) from None
+        if not isinstance(loaded, dict):
+            raise GatePreflightError(
+                f"the mutation report {paths.mutation_report} is not a JSON"
+                " object — refusing BEFORE the one-shot event runs"
+            )
 
 
 def evaluate_and_record(
@@ -779,6 +833,7 @@ def evaluate_and_record(
         era_target=era_target,
         mutation_registry_ids=mutation_registry_ids,
         mutation_registry_digest=mutation_registry_digest,
+        head=head,
         rejection_floor=rejection_floor,
     )
     write_gate_evidence(

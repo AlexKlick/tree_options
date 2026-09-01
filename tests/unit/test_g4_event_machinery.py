@@ -186,6 +186,7 @@ class MiniGateFixture:
     era_census: Path
     mutation_report: Path
     spot_v2: Path
+    head: str
 
 
 def _build_fixture_repo(root: Path) -> Path:
@@ -375,11 +376,11 @@ def _live_mutation_registry() -> tuple[frozenset[str], str]:
     return loaded
 
 
-def _build_mutation_report(root: Path) -> Path:
+def _build_mutation_report(root: Path, *, head: str) -> Path:
     """A report shaped like the real one at this head: EVERY live registry
-    id KILLED, N/N, restoration green, and the registry DIGEST the mutation
-    runner stamps — so the fixture exercises criterion 6's binding rather
-    than a synthetic single-mutant stub."""
+    id KILLED, N/N, restoration green, and the registry DIGEST + HEAD the
+    mutation runner stamps — so the fixture exercises criterion 6's binding
+    rather than a synthetic single-mutant stub."""
     registry, digest = _live_mutation_registry()
     ids = tuple(sorted(registry))
     report = {
@@ -400,6 +401,7 @@ def _build_mutation_report(root: Path) -> Path:
         "total": len(ids),
         "restoration_suite_passed": True,
         "registry_digest": digest,
+        "head": head,
     }
     path = root / "m0-mutations.json"
     path.write_text(json.dumps(report), encoding="utf-8")
@@ -427,15 +429,11 @@ def _build_bundle(
         encoding="utf-8",
     )
     era_census = _build_era_census(root)
-    mutation_report = _build_mutation_report(root)
-    # the PRODUCTION path set the runner consumes (production_gate_paths)
-    production_census = repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
-    production_census.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(era_census, production_census)
-    production_report = repo / "artifacts" / "m0-mutations.json"
-    shutil.copyfile(mutation_report, production_report)
-    production_v2 = repo / "artifacts" / "spot-proxy-v2.json"
-    shutil.copyfile(spot_v2, production_v2)
+    # commit the fixture repo FIRST so its head is fixed BEFORE the
+    # mutation report stamps it (the production artifacts live under the
+    # repo's gitignored artifacts/, so writing them after the commit never
+    # moves the head — the report can bind to the head the runner and CLI
+    # will rev-parse)
     for command in (
         ["git", "init", "-q"],
         ["git", "config", "user.email", "fixture@g4.test"],
@@ -447,8 +445,24 @@ def _build_bundle(
         ["git", "-C", str(repo), "commit", "-q", "-m", "fixture repo for g4 machinery"],
         check=True,
     )
+    head = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    mutation_report = _build_mutation_report(root, head=head)
+    # the PRODUCTION path set the runner consumes (production_gate_paths)
+    production_census = repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
+    production_census.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(era_census, production_census)
+    production_report = repo / "artifacts" / "m0-mutations.json"
+    shutil.copyfile(mutation_report, production_report)
+    production_v2 = repo / "artifacts" / "spot-proxy-v2.json"
+    shutil.copyfile(spot_v2, production_v2)
     return MiniGateFixture(
         repo=repo,
+        head=head,
         held_paths=SealedInputPaths(
             repo=repo,
             lane1_manifest=lane1_manifest,
@@ -542,7 +556,7 @@ def _evaluate(mini_run, evidence: Path, *, replay=True, floor: int = MINI_FLOOR)
             verify_sealed_inputs(mini.held_paths),
             paths=_paths_for(mini, run, evidence, replay_dir),
             repo_root=mini.repo,
-            head="0" * 40,
+            head=mini.head,
             mutation_registry_ids=_live_mutation_registry()[0],
             mutation_registry_digest=_live_mutation_registry()[1],
             rejection_floor=floor,
@@ -911,6 +925,64 @@ def test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry(
     assert mutation.verdict == "FAIL"
     assert any("registry_digest" in failure for failure in mutation.failures), mutation.failures
 
+    # a WRONG nonempty digest (round-3 P2: not just a missing one) and a
+    # report from a DIFFERENT head (round-3 P0: the registry can be
+    # identical across commits while the guarded code moved) both FAIL
+    wrong_digest = {**forged_verdicts}
+    wrong_digest["mutants"] = [{**m, "verdict": "KILLED"} for m in wrong_digest["mutants"]]
+    wrong_digest["registry_digest"] = "0" * 64
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=wrong_digest)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("does not match the live registry" in failure for failure in mutation.failures), (
+        mutation.failures
+    )
+
+    other_head = {**wrong_digest, "registry_digest": _live_mutation_registry()[1]}
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=other_head)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("is not the sealed head" in f for f in mutation.failures), mutation.failures
+
+
+def test_the_report_digest_producer_matches_the_gates_recompute() -> None:
+    """Round-3 P2: producer/consumer drift — the digest mutate.py STAMPS
+    (its own ``registry_digest`` producer, the code the report writer
+    calls) must equal the digest the gate RECOMPUTES
+    (``live_mutation_registry``) over the same registry file."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "mutate_producer", REPO_ROOT / "scripts" / "mutate.py"
+    )
+    assert spec is not None and spec.loader is not None
+    producer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(producer)
+    assert producer.registry_digest() == _live_mutation_registry()[1]
+
+
+def test_a_malformed_report_makes_the_runner_refuse_before_the_event_runs(
+    tmp_path: Path,
+) -> None:
+    """Round-3 P0: the production runner PREFLIGHTS the gate's auxiliary
+    inputs — an unparseable report refuses BEFORE run_g4_sealed_event, so
+    nothing is created and nothing is consumed (never again a burned
+    one-shot with no verdict)."""
+    from tree_options.seal.g4_gate import GatePreflightError
+    from tree_options.seal.runner import RepoCalendarSealedRunner, protocol_calendar_binding
+
+    root = tmp_path / "malformed"
+    root.mkdir()
+    mini = _build_bundle(root)
+    (mini.repo / "artifacts" / "m0-mutations.json").write_text("{ not json", encoding="utf-8")
+    held = verify_sealed_inputs(mini.held_paths)
+    runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini.repo))
+    with pytest.raises(GatePreflightError, match="cannot be parsed"):
+        runner(held)
+    # nothing the event would have created exists
+    assert not (mini.repo / "artifacts" / "g4-sealed.db").exists()
+    assert not (mini.repo / "artifacts" / "g4-sealed").exists()
+
 
 def test_a_sub_cent_positive_close_refuses_naming_the_row(tmp_path: Path) -> None:
     """The fail-closed guard: a positive close under one cent ("0.005")
@@ -954,7 +1026,7 @@ def test_the_mini_gate_passes_and_records_the_verdict_verbatim(mini_run, tmp_pat
         (tmp_path / "evidence" / "m4-g4-sealed-gate.json").read_text(encoding="utf-8")
     )
     assert recorded["verdict"] == "PASS"
-    assert recorded["head"] == "0" * 40
+    assert recorded["head"] == mini_run[0].head
     fill = evaluation.by_id("fill_discipline")
     assert fill.reported["n_fills"] > 0
     assert fill.reported["over_participation_pairs"] == 0
@@ -1011,6 +1083,7 @@ def _criteria_over(
     mutation_report=None,
     mutation_registry_ids="unset",
     mutation_registry_digest="unset",
+    head="unset",
 ):
     from tree_options.protocol.loader import load_protocol_bytes
 
@@ -1038,6 +1111,7 @@ def _criteria_over(
         mutation_registry_digest=(
             live[1] if mutation_registry_digest == "unset" else mutation_registry_digest
         ),
+        head=(mini.head if head == "unset" else head),
         era_target={"expected_masters": 2, "distinct_contracts": 5},
         rejection_floor=floor,
     )

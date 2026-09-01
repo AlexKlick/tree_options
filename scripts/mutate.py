@@ -4610,7 +4610,51 @@ MUTANTS = [
             " never-silently-skipped contract the criterion's text declares"
         ),
     ),
+    dict(
+        id="M345-g4-runner-preflight-dropped",
+        owner="test_a_malformed_report_makes_the_runner_refuse_before_the_event_runs",
+        file="src/tree_options/seal/runner.py",
+        anchor="        preflight_gate_auxiliaries(paths=gate_paths, repo_root=repo)",
+        replacement="        pass",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the production runner PREFLIGHTS the gate's auxiliary inputs"
+            " BEFORE the one-shot event runs: dropping the preflight lets an"
+            " unparseable report raise only after the event created the"
+            " sealed registry/artifacts — consumed authority with no verdict,"
+            " the exact 2026-08-31 failure mode"
+        ),
+    ),
+    dict(
+        id="M346-g4-criterion6-head-binding-dropped",
+        owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="            if not isinstance(stamped_head, str) or stamped_head != head:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 6 binds the report to the SEALED head: the registry"
+            " can be identical across commits while the guarded code moved,"
+            " so a registry-bound report from another head is still stale —"
+            " dropping the binding certifies a campaign that ran against"
+            " different code"
+        ),
+    ),
 ]
+
+
+def registry_digest() -> str:
+    """sha256 over the canonical MUTANTS list — the PRODUCER side of
+    criterion 6's registry binding: stamped into every report this runner
+    writes and recomputed by the G4 gate's ``live_mutation_registry`` at
+    evaluation time. A report from a different registry revision (or a
+    hand-forged one) does not carry the matching value. Any change to the
+    digest formula here MUST be mirrored there — the machinery test pins
+    the two together."""
+    return hashlib.sha256(
+        json.dumps(MUTANTS, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+
 
 # Only tracked source/config/docs belong in the disposable mutation checkout.
 # Generated outputs can contain deliberately adversarial names from custody
@@ -4731,15 +4775,25 @@ def main() -> int:
     parser.add_argument("--json", type=Path, default=None)
     parser.add_argument("--markdown", type=Path, default=None)
     parser.add_argument(
+        "--head",
+        default=None,
+        help=(
+            "the git head the campaign ran at (the orchestrator passes"
+            " `git rev-parse HEAD`); stamped into the report so criterion 6"
+            " can bind it to the sealed head — a report from another head"
+            " is stale and FAILs"
+        ),
+    )
+    parser.add_argument(
         "--only",
         nargs="+",
         default=None,
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 332-mutant run stays the"
+            " mutants and re-pins; the full 334-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M344 price-boundary here)"
+            " + M338-M346 price-boundary here)"
         ),
     )
     args = parser.parse_args()
@@ -4834,15 +4888,13 @@ def main() -> int:
     # canonical MUTANTS list (a criterion-6 evaluator recomputes this from
     # the live registry and refuses a mismatch — a report from a different
     # registry revision, or a hand-forged one, does not carry it)
-    registry_digest = hashlib.sha256(
-        json.dumps(MUTANTS, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
     payload = {
         "mutants": results,
         "totals": counts,
         "restoration_suite_passed": restored_suite_ok,
         "total": len(results),
-        "registry_digest": registry_digest,
+        "registry_digest": registry_digest(),
+        "head": args.head,
     }
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)

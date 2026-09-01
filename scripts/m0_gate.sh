@@ -54,7 +54,8 @@ uv run --frozen pytest -W error
 echo "== mutation harness =="
 uv run --frozen python scripts/mutate.py \
   --json artifacts/m0-mutations.json \
-  --markdown artifacts/m0-mutations.md
+  --markdown artifacts/m0-mutations.md \
+  --head "$(git rev-parse HEAD)"
 echo "== uv build =="
 uv build
 echo "== wheel smoke (fresh environment) =="
