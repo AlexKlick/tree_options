@@ -1110,9 +1110,18 @@ def test_post_preflight_auxiliary_changes_fail_criteria_never_raise(
         evaluation = _evaluate_into("registry")
         assert evaluation.by_id("mutation_campaign").verdict == "FAIL"
         assert any(
-            "registry was not supplied" in f
-            for f in evaluation.by_id("mutation_campaign").failures
+            "registry was not supplied" in f for f in evaluation.by_id("mutation_campaign").failures
         )
+    finally:
+        registry.write_bytes(saved_registry)
+
+    # (a2, round-7 P0) a SYNTACTICALLY LOADABLE registry whose MUTANTS
+    # entries are malformed (no "id") — the extraction sits inside the
+    # wrapped boundary, so this is a verdict, never a raw KeyError
+    registry.write_text("MUTANTS = [{}]\n", encoding="utf-8")
+    try:
+        evaluation = _evaluate_into("registry-malformed-entries")
+        assert evaluation.by_id("mutation_campaign").verdict == "FAIL"
     finally:
         registry.write_bytes(saved_registry)
 
@@ -1147,24 +1156,32 @@ def test_post_preflight_auxiliary_changes_fail_criteria_never_raise(
 def test_an_era_census_with_non_integer_counts_refuses_at_preflight(
     tmp_path: Path,
 ) -> None:
-    """Round-6 P0: a JSON float count (1e309 parses to inf) passes a plain
-    shape check and raises OverflowError at int() only after the one-shot
-    ran — era_target_of requires TRUE ints and the preflight calls it."""
+    """Round-6/7 P0/P2: a JSON float count (1e309 parses to inf) passes a
+    plain shape check and raises OverflowError at int() only after the
+    one-shot ran, and a JSON `true` count SUBCLASSES int (True == 1) and
+    would certify a count that was never stamped as a number —
+    era_target_of requires TRUE ints, bools included, and the preflight
+    calls it."""
     from tree_options.seal.g4_gate import GatePreflightError
     from tree_options.seal.runner import RepoCalendarSealedRunner, protocol_calendar_binding
 
-    root = tmp_path / "inf-census"
+    root = tmp_path / "bad-census"
     root.mkdir()
     mini = _build_bundle(root)
     census = mini.repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
-    census.write_text(
-        '{"coverage": {"expected_masters": 1e309},'
-        ' "values": {"observed_census_fact": {"distinct_contracts": {"v": 5}}}}',
-        encoding="utf-8",
-    )
     runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini.repo))
-    with pytest.raises(GatePreflightError, match="cannot be evaluated"):
-        runner.preflight()
+    for bad_count in ("1e309", "true", "2.0", '"2"'):
+        census.write_text(
+            json.dumps(
+                {
+                    "coverage": {"expected_masters": json.loads(bad_count)},
+                    "values": {"observed_census_fact": {"distinct_contracts": {"v": 5}}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(GatePreflightError, match="cannot be evaluated"):
+            runner.preflight()
 
 
 def test_a_sub_cent_positive_close_refuses_naming_the_row(tmp_path: Path) -> None:

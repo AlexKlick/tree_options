@@ -332,3 +332,14 @@ successor-enablement lane is required first, with its own review:
   class), not the auxiliary-input-shape class this lane eliminates.
   Mutants M349/M350; registry 338; 13/13 KILLED with restoration pass
   (`tree_options-logs/g4-price-boundary-{verify20,mutations9,mutations10}.log`).
+- Codex round 7: 1 P0 / 1 P2, both verified. Fixed: the registry ID
+  extraction moved INSIDE `live_mutation_registry`'s wrapped boundary (a
+  syntactically loadable registry whose MUTANTS entries lack "id" raised a
+  raw KeyError at evaluation — outside the GatePreflightError containment;
+  now a preflight fact / criterion-6 verdict, with the malformed-entries
+  scenario in the owner test); the true-integer census contract gained
+  bool/float/string cases (JSON `true` subclasses int — `True == 1` — and
+  certified a count that was never a number; mutant M351 owns the bool
+  clause, which no float case can guard). Mutant M351; registry 339; 14/14
+  KILLED with restoration pass
+  (`tree_options-logs/g4-price-boundary-{verify22,mutations11}.log`).

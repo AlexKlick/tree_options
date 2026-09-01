@@ -4702,6 +4702,21 @@ MUTANTS = [
             " exception's"
         ),
     ),
+    dict(
+        id="M351-g4-era-count-bool-clause-dropped",
+        owner="test_an_era_census_with_non_integer_counts_refuses_at_preflight",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        if isinstance(value, bool) or not isinstance(value, int):",
+        replacement="        if not isinstance(value, int):",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 an era-census count must be a true int, BOOLS EXCLUDED: JSON"
+            " true parses to Python True, which subclasses int (True == 1)"
+            " and would certify a count that was never stamped as a number —"
+            " floats and strings still refuse via the int clause, so only"
+            " the bool case guards this"
+        ),
+    ),
 ]
 
 
@@ -4853,9 +4868,9 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 338-mutant run stays the"
+            " mutants and re-pins; the full 339-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M350 price-boundary here)"
+            " + M338-M351 price-boundary here)"
         ),
     )
     args = parser.parse_args()

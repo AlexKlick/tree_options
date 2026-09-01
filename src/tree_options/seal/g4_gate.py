@@ -746,12 +746,17 @@ def live_mutation_registry(repo_root: Path) -> tuple[frozenset[str], str] | None
         digest = hashlib.sha256(
             json.dumps(mutants, sort_keys=True, separators=(",", ":")).encode()
         ).hexdigest()
-    except Exception as exc:  # an unloadable registry is a preflight fact, whatever the cause
+        # ID extraction INSIDE the wrap (round-7 P0): a syntactically
+        # loadable registry whose MUTANTS entries are malformed (no "id")
+        # raises KeyError here — a preflight fact, never a post-consumption
+        # escape the evaluation's GatePreflightError handler cannot contain
+        ids = frozenset(str(m["id"]) for m in mutants)
+    except Exception as exc:  # an unloadable or malformed registry is a preflight fact
         raise GatePreflightError(
             f"the live mutation registry {registry_path} failed to load ({exc!r}) —"
             " refusing BEFORE the one-shot event runs"
         ) from None
-    return frozenset(str(m["id"]) for m in mutants), digest
+    return ids, digest
 
 
 def live_mutation_registry_ids(repo_root: Path) -> frozenset[str] | None:
