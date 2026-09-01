@@ -4640,6 +4640,38 @@ MUTANTS = [
             " different code"
         ),
     ),
+    dict(
+        id="M347-g4-execute-preflight-dropped",
+        owner="test_execute_preflights_the_runner_before_the_consumption_is_durable",
+        file="scripts/g4_seal.py",
+        anchor='    runner_preflight = getattr(runner, "preflight", None)',
+        replacement="    runner_preflight = None",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 execute_sealed_run PREFLIGHTS the runner before the"
+            " CONSUMPTION append: the record is durable the moment it is"
+            " written, and a runner that would raise on an unevaluable"
+            " auxiliary input must refuse BEFORE the append — otherwise the"
+            " refusal itself consumes the one-shot and leaves UNKNOWN"
+            " authority with no verdict"
+        ),
+    ),
+    dict(
+        id="M348-g4-restoration-flag-coerced",
+        owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=('        restoration = mutation_report.get("restoration_suite_passed") is True'),
+        replacement=(
+            '        restoration = bool(mutation_report.get("restoration_suite_passed", False))'
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 6's restoration flag is a STRICT boolean: the"
+            ' STRING "false" is truthy under bool() and a report carrying it'
+            " certified a campaign whose restoration suite never passed —"
+            " coercion is a lie, not a pass"
+        ),
+    ),
 ]
 
 
@@ -4791,9 +4823,9 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 334-mutant run stays the"
+            " mutants and re-pins; the full 336-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M346 price-boundary here)"
+            " + M338-M348 price-boundary here)"
         ),
     )
     args = parser.parse_args()

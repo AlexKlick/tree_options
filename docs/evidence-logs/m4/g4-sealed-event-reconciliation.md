@@ -277,3 +277,20 @@ successor-enablement lane is required first, with its own review:
   boundary (§5b), not a defect criterion 6 can close: unsigned JSON cannot
   prove execution; that attestation lives in the gate pipeline and the
   evidence chain.
+- Codex round 4: 3 P0, all verified and both gate-level probes reproduced
+  (a `restoration_suite_passed` of the STRING `"false"` PASSED — truthy
+  under `bool()`; a `total` of `"not-an-int"` raises `ValueError` only at
+  evaluation time). Fixed: `validate_mutation_report` strict-shape-validates
+  every field the evaluation casts or branches on (refused at preflight,
+  before anything the event creates; the era census's absence joins the
+  preflight); the criterion reads `restoration_suite_passed is True`;
+  `execute_sealed_run` calls the RUNNER's new `preflight()` AFTER the
+  authority cross-join and BEFORE the CONSUMPTION append (a refusal now
+  costs nothing — no consumption, no workspace, the approval intact; the
+  round-3 in-runner preflight alone could not protect the LEDGER because
+  the append precedes the runner); and `evaluate_and_record` re-validates
+  the report at load so a file that changes shape between preflight and
+  evaluation (the TOCTOU residue) FAILs as a verdict, never raises after
+  consumption. Mutants M347 (execute preflight dropped) and M348
+  (restoration flag coerced); registry 325 → 336; 11/11 KILLED with
+  restoration (`tree_options-logs/g4-price-boundary-{verify9,mutations5}.log`).

@@ -457,6 +457,29 @@ def test_execute_revalidates_packet_self_hash_before_ledger_access(
     assert not (ledger_root / L.LEDGER_FILENAME).exists()
 
 
+def test_execute_preflights_the_runner_before_the_consumption_is_durable(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """Round-4 P0: a runner whose preflight refuses (unloadable registry,
+    malformed mutation report, missing era census) must cost NOTHING — no
+    CONSUMPTION record, the approval intact — because the refusal fires
+    BEFORE the append, never after durable authority was spent."""
+
+    class RefusingPreflightRunner(StubRunner):
+        def preflight(self) -> None:
+            raise RuntimeError("preflight: the mutation report cannot be parsed")
+
+    fixture = write_valid_inputs(tmp_path)
+    with _seeded_registry(RefusingPreflightRunner()):
+        packet = _packet(fixture)
+        _approve(ledger_root, packet)
+        with pytest.raises(RuntimeError, match="preflight: the mutation report"):
+            _execute(packet, fixture, ledger_root)
+        view = L.read_ledger(ledger_root)
+        assert [record.kind for record in view.records] == [L.KIND_APPROVAL]
+        assert not any(record.kind == L.KIND_CONSUMPTION for record in view.records)
+
+
 def test_approval_packet_a_cannot_execute_packet_b(tmp_path: Path, ledger_root: Path) -> None:
     fixture = write_valid_inputs(tmp_path)
     packet_a = _packet(fixture)

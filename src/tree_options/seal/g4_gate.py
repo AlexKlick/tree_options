@@ -455,10 +455,21 @@ def _criterion_mutation_campaign(
             "no mutation registry report was supplied — criterion 6 is never silently skipped"
         )
         reported: dict[str, object] = {"supplied": False}
+    elif isinstance(mutation_report.get("__malformed__"), str):
+        # the TOCTOU residue (round-4 P0): the report passed preflight but
+        # changed shape before evaluation — an honest criterion FAIL, never
+        # a post-consumption exception
+        failures.append(
+            f"the mutation report can no longer be evaluated: {mutation_report['__malformed__']}"
+        )
+        reported = {"supplied": True, "malformed": True}
     else:
         total = int(mutation_report.get("total", -1))
         killed = int(mutation_report.get("totals", {}).get("KILLED", -1))
-        restoration = bool(mutation_report.get("restoration_suite_passed", False))
+        # STRICT boolean (round-4 P0): bool("false") is True — a string is a
+        # lie, not a pass; the preflight's schema validation rejects the
+        # type outright, and this is the evaluation-side backstop
+        restoration = mutation_report.get("restoration_suite_passed") is True
         if killed != total:
             failures.append(f"mutation registry {killed}/{total} KILLED — not N/N")
         if not restoration:
@@ -733,16 +744,67 @@ class GatePreflightError(RuntimeError):
     without a verdict — the 2026-08-31 failure mode, never again."""
 
 
+class MutationReportSchemaError(GatePreflightError):
+    """A PRESENT mutation report whose shape cannot be evaluated: wrong
+    types where the evaluation would raise (a non-int total, a non-list
+    mutants array, a non-boolean restoration flag). Refused at preflight —
+    BEFORE anything the event creates — and surfaced as an honest criterion
+    FAIL if the file changed shape only after the preflight (the TOCTOU
+    residue), never as a post-consumption exception."""
+
+
+def validate_mutation_report(payload: object) -> None:
+    """Strict shape validation of a mutation report (round-4 P0s).
+
+    Every field the evaluation CASTS or branches on must already be the
+    right TYPE: a present-but-malformed report refuses at preflight, never
+    raises at evaluation time after the one-shot has run. (An ABSENT report
+    is different: that is an honest criterion FAIL, a verdict.)"""
+    if not isinstance(payload, dict):
+        raise MutationReportSchemaError("the mutation report is not a JSON object")
+    mutants = payload.get("mutants")
+    if not isinstance(mutants, list) or not all(isinstance(entry, dict) for entry in mutants):
+        raise MutationReportSchemaError("the mutation report's 'mutants' is not a list of objects")
+    for entry in mutants:
+        if not isinstance(entry.get("id"), str):
+            raise MutationReportSchemaError("a mutant entry carries a non-string id")
+        if not isinstance(entry.get("verdict"), str):
+            raise MutationReportSchemaError("a mutant entry carries a non-string verdict")
+    totals = payload.get("totals")
+    if not isinstance(totals, dict) or not isinstance(totals.get("KILLED"), int):
+        raise MutationReportSchemaError("the mutation report's 'totals.KILLED' is not an integer")
+    if not isinstance(payload.get("total"), int):
+        raise MutationReportSchemaError("the mutation report's 'total' is not an integer")
+    restoration = payload.get("restoration_suite_passed")
+    if not isinstance(restoration, bool):
+        raise MutationReportSchemaError(
+            "the mutation report's 'restoration_suite_passed' is not a boolean"
+            f" (got {type(restoration).__name__!r}: bool('false') is True — the"
+            " string is a lie, not a pass)"
+        )
+    for key in ("head", "registry_digest"):
+        value = payload.get(key)
+        if value is not None and not isinstance(value, str):
+            raise MutationReportSchemaError(f"the mutation report's {key!r} is not a string")
+
+
 def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
     """Refuse BEFORE the one-shot event when the auxiliary criterion inputs
     would raise at evaluation time.
 
-    Loadability only: an ABSENT report or a stale one is an honest criterion
-    FAIL (a verdict, recorded verbatim); a report that cannot be PARSED, or
-    a registry that cannot be LOADED, is an exception — and an exception
-    after the event has run leaves consumed authority with no verdict. Both
-    are checked here, ahead of anything the event creates."""
+    An ABSENT report or a stale one is an honest criterion FAIL (a verdict,
+    recorded verbatim); a report that cannot be PARSED or whose SHAPE cannot
+    be evaluated, or a registry that cannot be LOADED, is an exception — and
+    an exception after the event has run leaves consumed authority with no
+    verdict. All are checked here, ahead of anything the event creates."""
     live_mutation_registry(repo_root)  # raises GatePreflightError when unloadable
+    if not paths.era_census.is_file():
+        raise GatePreflightError(
+            f"the era census {paths.era_census} is absent — criterion 1's count"
+            " target is a REQUIRED stamped input and its absence would raise"
+            " only AFTER the one-shot event ran; refusing before anything is"
+            " created"
+        )
     if paths.mutation_report.is_file():
         try:
             loaded = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
@@ -751,11 +813,12 @@ def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
                 f"the mutation report {paths.mutation_report} cannot be parsed"
                 f" ({exc!r}) — refusing BEFORE the one-shot event runs"
             ) from None
-        if not isinstance(loaded, dict):
+        try:
+            validate_mutation_report(loaded)
+        except MutationReportSchemaError as exc:
             raise GatePreflightError(
-                f"the mutation report {paths.mutation_report} is not a JSON"
-                " object — refusing BEFORE the one-shot event runs"
-            )
+                f"{paths.mutation_report}: {exc} — refusing BEFORE the one-shot event runs"
+            ) from None
 
 
 def evaluate_and_record(
@@ -805,7 +868,20 @@ def evaluate_and_record(
         if paths.replay_artifacts.is_dir()
         else None
     )
-    mutation_report = load_json(paths.mutation_report) if paths.mutation_report.is_file() else None
+    if paths.mutation_report.is_file():
+        # TOCTOU backstop (round-4 P0): preflight validated this file before
+        # the event ran; if it changed shape since, that is an honest
+        # criterion FAIL — never an exception after consumption
+        try:
+            loaded_report = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
+            validate_mutation_report(loaded_report)
+            mutation_report = loaded_report
+        except (OSError, ValueError) as exc:
+            mutation_report = {"__malformed__": f"unparseable ({exc!r})"}
+        except MutationReportSchemaError as exc:
+            mutation_report = {"__malformed__": str(exc)}
+    else:
+        mutation_report = None
     if mutation_registry_ids is None:
         # the LIVE registry at this head, derived from the repo being sealed
         # (absent registry file = None = criterion 6 FAILs, never a skip)

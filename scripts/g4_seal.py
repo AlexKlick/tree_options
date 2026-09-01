@@ -460,6 +460,20 @@ def execute_sealed_run(
     view = read_ledger(ledger_root)
     _check_authority(view, identity)
 
+    # Round-4 P0: the CONSUMPTION below is DURABLE the moment it is
+    # appended, and the runner raises BEFORE any verdict when the gate's
+    # auxiliary inputs cannot evaluate (an unloadable registry, an
+    # unparseable or shape-invalid mutation report, a missing era census).
+    # Preflight HERE — after the authority cross-join, before the append —
+    # so a refusal costs nothing: no consumption, no workspace, the
+    # approval intact for a corrected attempt. This changes no authority
+    # semantics: the run is still one-shot, still approval-cross-joined.
+    # The preflight lives on the RUNNER (the machinery that owns the
+    # production path set); a runner without one is a fixture-scale stand-in.
+    runner_preflight = getattr(runner, "preflight", None)
+    if callable(runner_preflight):
+        runner_preflight()
+
     consumption_record = LedgerRecord(
         kind=KIND_CONSUMPTION,
         identity=identity,

@@ -944,6 +944,76 @@ def test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry(
     assert mutation.verdict == "FAIL"
     assert any("is not the sealed head" in f for f in mutation.failures), mutation.failures
 
+    # round-4 P0: the restoration flag is a STRICT boolean — the STRING
+    # "false" is truthy under bool() and previously PASSED
+    string_false = {**forged_verdicts}
+    string_false["mutants"] = [{**m, "verdict": "KILLED"} for m in string_false["mutants"]]
+    string_false["head"] = mini.head
+    string_false["restoration_suite_passed"] = "false"
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=string_false)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("restoration suite did not pass" in f for f in mutation.failures), mutation.failures
+
+
+def test_the_preflight_rejects_shape_invalid_reports_before_the_event(tmp_path: Path) -> None:
+    """Round-4 P0: a PRESENT report whose SHAPE cannot be evaluated (a
+    non-int total, a non-boolean restoration flag, a non-list mutants
+    array) refuses at preflight — never raises at evaluation time after
+    the one-shot has run."""
+    from tree_options.seal.g4_gate import (
+        MutationReportSchemaError,
+        validate_mutation_report,
+    )
+
+    for bad in (
+        {"total": "not-an-int"},
+        {"restoration_suite_passed": "false"},
+        {"mutants": "nope"},
+        {"totals": {"KILLED": "3"}},
+        [1, 2, 3],
+    ):
+        with pytest.raises(MutationReportSchemaError):
+            validate_mutation_report(bad)
+    validate_mutation_report(
+        {
+            "mutants": [{"id": "M1", "verdict": "KILLED"}],
+            "totals": {"KILLED": 1},
+            "total": 1,
+            "restoration_suite_passed": True,
+            "head": "a" * 40,
+            "registry_digest": "b" * 64,
+        }
+    )
+
+
+def test_a_report_that_changes_shape_after_preflight_fails_the_criterion(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Round-4 P0 (TOCTOU residue): preflight validated the report before
+    the event; if the file changes shape by evaluation time, criterion 6
+    FAILs as a verdict — never an exception after consumption."""
+    root = tmp_path / "toctou"
+    root.mkdir()
+    mini = _build_bundle(root)
+    primary_root = tmp_path_factory.mktemp("g4toctou-primary")
+    run = _run_mini_gate(
+        mini, primary_root / "artifacts", primary_root / "sealed.db", primary_root / "scratch"
+    )
+    mini.mutation_report.write_text('{"total": "not-an-int"}', encoding="utf-8")
+    replay_dir = mini.repo / "artifacts" / "g4-sealed-replay"
+    evaluation = evaluate_and_record(
+        run,
+        verify_sealed_inputs(mini.held_paths),
+        paths=_paths_for(mini, run, tmp_path / "evidence", replay_dir),
+        repo_root=mini.repo,
+        head=mini.head,
+    )
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("no longer be evaluated" in f for f in mutation.failures), mutation.failures
+    assert evaluation.verdict == "FAIL"
+
 
 def test_the_report_digest_producer_matches_the_gates_recompute() -> None:
     """Round-3 P2: producer/consumer drift — the digest mutate.py STAMPS

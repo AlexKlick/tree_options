@@ -139,6 +139,18 @@ class RepoCalendarSealedRunner:
     def config_digest(self) -> str:
         return calendar_config_digest(self.config())
 
+    def preflight(self) -> None:
+        """Refuse BEFORE authority is spent: the gate's auxiliary inputs
+        (registry, mutation report, era census) must be evaluable, or the
+        run would raise after the CONSUMPTION became durable — consumed
+        authority with no verdict (round-4 P0). Called by
+        ``execute_sealed_run`` ahead of the consumption append, and again
+        at the head of ``__call__`` for direct library callers."""
+        from tree_options.seal.g4_gate import preflight_gate_auxiliaries, production_gate_paths
+
+        repo = self._binding.repo_root
+        preflight_gate_auxiliaries(paths=production_gate_paths(repo), repo_root=repo)
+
     def __call__(self, inputs: HeldVerifiedSealedInputs) -> str:
         """THE sealed-event evaluation: run the authored machinery over the
         HELD verified-inputs bundle and return the outcome string.
