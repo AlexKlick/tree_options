@@ -310,3 +310,25 @@ successor-enablement lane is required first, with its own review:
   Mutants M345/M347 repointed to the surviving call sites; registry 336;
   11/11 KILLED with restoration pass
   (`tree_options-logs/g4-price-boundary-{verify16,mutations7}.log`).
+- Codex round 6 (ran detached — two background attempts were killed
+  externally and a foreground attempt hit the 10-minute shell ceiling): 3
+  P0 / 1 P2, all verified. Fixed: `era_target_of` requires TRUE integer
+  counts (JSON `1e309` parses to `inf`, passes a shape check, and raises
+  `OverflowError` at `int()` only post-spend) and the preflight calls it
+  (an absent/shape-invalid census refuses pre-spend); an era census REMOVED
+  after the preflight FAILs criterion 1 as an "absent" verdict instead of
+  raising FileNotFoundError; the evaluation-side registry derive is
+  exception-safe (an unloadable-but-present registry post-preflight is a
+  criterion-6 FAIL verdict, never a propagated GatePreflightError); a
+  present-but-partial replay dir FAILs criterion 5 as a verdict instead of
+  raising from payload_hashes' eager reads; the runner's preflight
+  docstring no longer claims `__call__` re-preflights. One machinery test
+  drives all four post-preflight shape changes with a restored-PASS
+  control. KNOWN REMAINING RAISE POINT (disclosed, not fixed by more
+  preflight): a tracked file edited DURING the run dirties the tree and the
+  evidence stamping's dirty-worktree refusal raises post-consumption — a
+  deliberate concurrent modification of the sealed head mid-run, which the
+  one-shot discipline and the reconciliation record own (the 2026-08-31
+  class), not the auxiliary-input-shape class this lane eliminates.
+  Mutants M349/M350; registry 338; 13/13 KILLED with restoration pass
+  (`tree_options-logs/g4-price-boundary-{verify20,mutations9,mutations10}.log`).

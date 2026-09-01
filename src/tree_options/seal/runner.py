@@ -144,8 +144,11 @@ class RepoCalendarSealedRunner:
         (registry, mutation report, era census) must be evaluable, or the
         run would raise after the CONSUMPTION became durable — consumed
         authority with no verdict (round-4 P0). Called by
-        ``execute_sealed_run`` ahead of the consumption append, and again
-        at the head of ``__call__`` for direct library callers."""
+        ``execute_sealed_run`` AFTER the authority cross-join and BEFORE
+        the consumption append — the SINGLE refusal point. ``__call__``
+        deliberately does NOT re-preflight (round-5: a second check after
+        the append re-opens the consumed-without-verdict race); direct
+        library callers invoke this explicitly before spending anything."""
         from tree_options.seal.g4_gate import preflight_gate_auxiliaries, production_gate_paths
 
         repo = self._binding.repo_root

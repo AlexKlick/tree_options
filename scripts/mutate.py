@@ -4672,6 +4672,36 @@ MUTANTS = [
             " coercion is a lie, not a pass"
         ),
     ),
+    dict(
+        id="M349-g4-registry-derive-unsafe",
+        owner="test_post_preflight_auxiliary_changes_fail_criteria_never_raise",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        except GatePreflightError:",
+        replacement="        except AssertionError:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the evaluation-side registry derive must be exception-safe:"
+            " a registry that became unloadable AFTER the preflight (and so"
+            " after the CONSUMPTION) is a post-spend shape change — a"
+            " criterion-6 FAIL verdict, never a propagated"
+            " GatePreflightError with no verdict"
+        ),
+    ),
+    dict(
+        id="M350-g4-replay-hash-unsafe",
+        owner="test_post_preflight_auxiliary_changes_fail_criteria_never_raise",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        except OSError:",
+        replacement="        except AssertionError:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 a PRESENT but partial replay directory FAILs criterion 5 as a"
+            " verdict: payload_hashes reads eagerly, so an absent replay"
+            " payload would raise FileNotFoundError AFTER consumption — the"
+            " honest absent-replay failure is the criterion's, never an"
+            " exception's"
+        ),
+    ),
 ]
 
 
@@ -4823,9 +4853,9 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 336-mutant run stays the"
+            " mutants and re-pins; the full 338-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M348 price-boundary here)"
+            " + M338-M350 price-boundary here)"
         ),
     )
     args = parser.parse_args()

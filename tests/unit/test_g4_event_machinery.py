@@ -1062,6 +1062,111 @@ def test_a_malformed_report_makes_the_runner_preflight_refuse(
     assert not (mini.repo / "artifacts" / "g4-sealed").exists()
 
 
+def test_post_preflight_auxiliary_changes_fail_criteria_never_raise(
+    tmp_path: Path, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Round-6 P0s: auxiliary inputs that change shape AFTER the preflight
+    (and so after the CONSUMPTION) become honest criterion FAIL verdicts —
+    an unloadable registry (criterion 6), an absent era census (criterion 1)
+    and a partial replay dir (criterion 5) never raise post-spend."""
+    root = tmp_path / "toctou6"
+    root.mkdir()
+    mini = _build_bundle(root)
+    primary_root = tmp_path_factory.mktemp("g4r6-primary")
+    run = _run_mini_gate(
+        mini, primary_root / "artifacts", primary_root / "sealed.db", primary_root / "scratch"
+    )
+    replay_dir = mini.repo / "artifacts" / "g4-sealed-replay"
+    if replay_dir.exists():
+        shutil.rmtree(replay_dir)
+    shutil.copytree(run.artifacts_dir, replay_dir)
+    # the REAL flow's shape: the held bundle is verified ONCE (clean tree),
+    # and evaluation receives the already-verified object — a post-spend
+    # file change never re-trips the dirty-tree guard, exactly like the
+    # sealed event
+    held = verify_sealed_inputs(mini.held_paths)
+
+    def _evaluate_into(name: str):
+        return evaluate_and_record(
+            run,
+            held,
+            paths=_paths_for(mini, run, tmp_path / f"evidence-{name}", replay_dir),
+            repo_root=mini.repo,
+            head=mini.head,
+            # the post-spend shape changes are the SCENARIO (a tracked file
+            # edited mid-run dirties the tree); the verdict must still be
+            # recorded — the stamping discipline's dirty refusal is a
+            # separate, pre-spend concern (execute's re-verify)
+            allow_dirty=True,
+        )
+
+    # (a) the registry becomes UNLOADABLE-but-present after the preflight
+    # (a deleted file returns None cleanly; a syntax-broken one raises —
+    # the case the exception-safe derive exists for)
+    registry = mini.repo / "scripts" / "mutate.py"
+    saved_registry = registry.read_bytes()
+    registry.write_text("def broken(:\n", encoding="utf-8")
+    try:
+        evaluation = _evaluate_into("registry")
+        assert evaluation.by_id("mutation_campaign").verdict == "FAIL"
+        assert any(
+            "registry was not supplied" in f
+            for f in evaluation.by_id("mutation_campaign").failures
+        )
+    finally:
+        registry.write_bytes(saved_registry)
+
+    # (b) the era census is REMOVED after the preflight (the copy the gate
+    # paths actually read: mini.era_census, outside the fixture repo)
+    saved_census = mini.era_census.read_bytes()
+    mini.era_census.unlink()
+    try:
+        evaluation = _evaluate_into("census-absent")
+        first = evaluation.by_id("manifest_integrity")
+        assert first.verdict == "FAIL"
+        assert any("absent" in f for f in first.failures), first.failures
+    finally:
+        mini.era_census.write_bytes(saved_census)
+
+    # (c) a present but PARTIAL replay dir (one payload removed)
+    payloads = sorted(p for p in replay_dir.rglob("*.json") if p.name != "sealed-gate-summary.json")
+    removed = payloads[0]
+    saved_payload = removed.read_bytes()
+    removed.unlink()
+    try:
+        evaluation = _evaluate_into("replay-partial")
+        assert evaluation.by_id("determinism").verdict == "FAIL"
+    finally:
+        removed.write_bytes(saved_payload)
+
+    # and the quiet control: with everything restored, the verdict is PASS
+    evaluation = _evaluate_into("restored")
+    assert evaluation.verdict == "PASS"
+
+
+def test_an_era_census_with_non_integer_counts_refuses_at_preflight(
+    tmp_path: Path,
+) -> None:
+    """Round-6 P0: a JSON float count (1e309 parses to inf) passes a plain
+    shape check and raises OverflowError at int() only after the one-shot
+    ran — era_target_of requires TRUE ints and the preflight calls it."""
+    from tree_options.seal.g4_gate import GatePreflightError
+    from tree_options.seal.runner import RepoCalendarSealedRunner, protocol_calendar_binding
+
+    root = tmp_path / "inf-census"
+    root.mkdir()
+    mini = _build_bundle(root)
+    census = mini.repo / "artifacts" / "census" / "43b0b040ea3c" / "census.json"
+    census.write_text(
+        '{"coverage": {"expected_masters": 1e309},'
+        ' "values": {"observed_census_fact": {"distinct_contracts": {"v": 5}}}}',
+        encoding="utf-8",
+    )
+    runner = RepoCalendarSealedRunner(protocol_calendar_binding(mini.repo))
+    with pytest.raises(GatePreflightError, match="cannot be evaluated"):
+        runner.preflight()
+
+
 def test_a_sub_cent_positive_close_refuses_naming_the_row(tmp_path: Path) -> None:
     """The fail-closed guard: a positive close under one cent ("0.005")
     quantizes to 0.00, which Price (gt=0) can never carry — the build

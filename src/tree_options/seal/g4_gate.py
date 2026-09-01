@@ -700,10 +700,23 @@ def production_gate_paths(repo_root: Path) -> G4GatePaths:
 
 
 def era_target_of(era: Mapping[str, Any]) -> dict[str, int]:
-    """The era's stamped counts the plan's criterion 1 targets."""
+    """The era's stamped counts the plan's criterion 1 targets.
+
+    Every count must be a TRUE int (round-6 P0): a JSON float — including
+    ``1e309``'s ``inf`` — passes a plain ``isinstance(payload, dict)`` check
+    and then raises ``OverflowError`` at ``int()`` only after the one-shot
+    has run. Refused here, where the preflight calls it."""
+
+    def _count(value: object) -> int:
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"era census count {value!r} is not an integer")
+        return value
+
     return {
-        "expected_masters": int(era["coverage"]["expected_masters"]),
-        "distinct_contracts": int(era["values"]["observed_census_fact"]["distinct_contracts"]["v"]),
+        "expected_masters": _count(era["coverage"]["expected_masters"]),
+        "distinct_contracts": _count(
+            era["values"]["observed_census_fact"]["distinct_contracts"]["v"]
+        ),
     }
 
 
@@ -815,9 +828,10 @@ def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
             " only AFTER the one-shot event ran; refusing before anything is"
             " created"
         )
-    # round-5 P0: existence alone is not evaluability — a PRESENT census
-    # that cannot be parsed raises only at the post-event load, with
-    # authority already consumed
+    # round-5/6 P0: existence alone is not evaluability — a PRESENT census
+    # that cannot be parsed, or whose counts are not true ints (a JSON
+    # float like 1e309 passes a shape check and raises OverflowError only
+    # at the post-event int()), refuses here, with nothing spent
     try:
         era_payload = json.loads(paths.era_census.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:
@@ -830,6 +844,13 @@ def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
             f"the era census {paths.era_census} is not a JSON object — refusing"
             " BEFORE the one-shot event runs"
         )
+    try:
+        era_target_of(era_payload)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise GatePreflightError(
+            f"the era census {paths.era_census} cannot be evaluated ({exc!r}) —"
+            " refusing BEFORE the one-shot event runs"
+        ) from None
     if paths.mutation_report.is_file():
         try:
             loaded = json.loads(paths.mutation_report.read_text(encoding="utf-8"))
@@ -883,16 +904,22 @@ def evaluate_and_record(
         **{f"{lane}|{arm}": path for (lane, arm), path in run.trial_payload_paths.items()},
     }
     stamped_hashes = payload_hashes(stamped_paths)
-    replay_hashes = (
-        payload_hashes(
-            {
-                name: paths.replay_artifacts / path.relative_to(run.artifacts_dir)
-                for name, path in stamped_paths.items()
-            }
-        )
-        if paths.replay_artifacts.is_dir()
-        else None
-    )
+    # round-6 P0: a PRESENT but partial or unreadable replay dir must FAIL
+    # criterion 5 as a verdict — payload_hashes reads eagerly, so an
+    # absent/unreadable replay payload would raise FileNotFoundError/OSError
+    # AFTER consumption; None is criterion 5's honest absent-replay failure
+    if paths.replay_artifacts.is_dir():
+        try:
+            replay_hashes = payload_hashes(
+                {
+                    name: paths.replay_artifacts / path.relative_to(run.artifacts_dir)
+                    for name, path in stamped_paths.items()
+                }
+            )
+        except OSError:
+            replay_hashes = None
+    else:
+        replay_hashes = None
     if paths.mutation_report.is_file():
         # TOCTOU backstop (round-4 P0): preflight validated this file before
         # the event ran; if it changed shape since, that is an honest
@@ -909,23 +936,30 @@ def evaluate_and_record(
         mutation_report = None
     if mutation_registry_ids is None:
         # the LIVE registry at this head, derived from the repo being sealed
-        # (absent registry file = None = criterion 6 FAILs, never a skip)
-        loaded_registry = live_mutation_registry(repo_root)
+        # (absent registry file = None = criterion 6 FAILs, never a skip).
+        # Round-6 P0: the derive itself must be exception-safe HERE — the
+        # preflight is the refusal point, and a registry that became
+        # unloadable after it is a post-spend shape change: a criterion-6
+        # FAIL verdict, never a propagated GatePreflightError
+        try:
+            loaded_registry = live_mutation_registry(repo_root)
+        except GatePreflightError:
+            loaded_registry = None
         if loaded_registry is not None and mutation_registry_digest is None:
             mutation_registry_ids, mutation_registry_digest = loaded_registry
     if not paths.era_census.is_file():
-        raise FileNotFoundError(
-            f"the era census {paths.era_census} is absent — criterion 1's count"
-            " target is a REQUIRED stamped input (never defaulted, never"
-            " silently skipped)"
-        )
-    # TOCTOU backstop (round-5): the preflight parsed this file before the
-    # event ran; if it changed shape since, criterion 1 FAILs as a verdict —
-    # never an exception after consumption
-    try:
-        era_target: dict[str, Any] = era_target_of(load_json(paths.era_census))
-    except (OSError, ValueError, KeyError, TypeError) as exc:
-        era_target = {"__malformed__": f"unparseable ({exc!r})"}
+        # round-6 P0: the preflight required this file; its removal after
+        # the preflight is a post-spend shape change — an honest criterion-1
+        # FAIL, never an exception after consumption
+        era_target: dict[str, Any] = {"__malformed__": "absent (removed after the preflight)"}
+    else:
+        # TOCTOU backstop (round-5): the preflight parsed this file before
+        # the event ran; if it changed shape since, criterion 1 FAILs as a
+        # verdict — never an exception after consumption
+        try:
+            era_target = era_target_of(load_json(paths.era_census))
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            era_target = {"__malformed__": f"unparseable ({exc!r})"}
     assert run.execution_calendar is not None
     evaluation = evaluate_g4_criteria(
         protocol=protocol,
