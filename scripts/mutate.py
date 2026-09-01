@@ -4510,16 +4510,17 @@ MUTANTS = [
         id="M338-g4-bar-boundary-quantize-dropped",
         owner="test_a_three_decimal_wire_close_quantizes_the_flat_bar_at_the_boundary",
         file="src/tree_options/trials/g4_event.py",
-        anchor="            quantized = close.quantize(PRICE_TICK)",
-        replacement="            quantized = close",
+        anchor="                quantized = close.quantize(PRICE_TICK, rounding=ROUND_HALF_EVEN)",
+        replacement="                quantized = close",
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
-            "G4 the flat dataset bar quantizes every spot-proxy close to the"
-            " cent tick AT the BarRecord boundary: dropping the quantize feeds"
-            ' a real-wire 3dp close (ADBE "417.125" — the exact class that'
-            " crashed the 2026-08-31 sealed event before any trial ran)"
-            " straight into the shared 2dp Price type and kills the one-shot"
-            " run at world-build time"
+            "G4 the flat dataset bar quantizes every sub-cent wire close to"
+            " the cent tick AT the BarRecord boundary with an explicit"
+            " ROUND_HALF_EVEN: dropping the quantize feeds a real-wire 3dp"
+            ' close (ADBE "417.125" — the exact class that crashed the'
+            " 2026-08-31 sealed event before any trial ran) straight into"
+            " the shared 2dp Price type and kills the one-shot run at"
+            " world-build time"
         ),
     ),
     dict(
@@ -4531,7 +4532,7 @@ MUTANTS = [
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
             "G4 the boundary quantization is CUSTODY, not silence: every row"
-            " the tick moves is counted and stamped in the census payload —"
+            " the tick rewrites is counted and stamped in the census payload —"
             " zeroing the counter rewrites a quantizing world as an exact one"
             " while its bars still carry the moved closes"
         ),
@@ -4549,6 +4550,63 @@ MUTANTS = [
             " underlying, session, and original token — dropping the guard"
             " surfaces the anonymous pydantic gt=0 violation instead of the"
             " named refusal (or floors the row to a zero price)"
+        ),
+    ),
+    dict(
+        id="M341-g4-quantization-max-delta-comparator-flipped",
+        owner="test_multi_row_custody_tracks_the_largest_value_movement",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="                    or delta > spot_close_max_quantization_delta",
+        replacement="                    or delta < spot_close_max_quantization_delta",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the custody max_delta is the LARGEST value movement among"
+            " rewritten rows: flipping the comparator keeps a smaller late"
+            " delta (0.004 over 0.005) and understates the boundary's worst"
+            " case — a single-row world can never catch it"
+        ),
+    ),
+    dict(
+        id="M342-g4-exponent-gate-dropped",
+        owner="test_only_two_decimal_closes_carry_through_exactly_with_no_custody_noise",
+        file="src/tree_options/trials/g4_event.py",
+        anchor="            if exponent < -2:",
+        replacement="            if True:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 only a close whose wire EXPONENT exceeds the cent tick is"
+            " rewritten: quantizing unconditionally re-serializes every"
+            " on-grid row (an exponent-0 '6E+2' becomes '600.00') while"
+            " numeric Decimal equality hides the drift and custody reports"
+            " zero — the quiet path must stay representation-exact"
+        ),
+    ),
+    dict(
+        id="M343-g4-criterion6-stale-report-binding-dropped",
+        owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="            if missing:",
+        replacement="            if False:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 6 binds the mutation report to the LIVE registry at"
+            " this head: an N/N report that omits registry mutants (the stale"
+            " report new registry entries would leave behind without a"
+            " re-run) must FAIL — dropping the binding certifies a campaign"
+            " that never covered this head's guards"
+        ),
+    ),
+    dict(
+        id="M344-g4-criterion6-registry-absence-silenced",
+        owner="test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="        if mutation_registry_ids is None:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 6 with NO live registry supplied must FAIL loudly —"
+            " silencing the absence check lets an unbound report certify"
+            " itself, the exact silent-skip the criterion's contract forbids"
         ),
     ),
 ]
@@ -4678,9 +4736,9 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 328-mutant run stays the"
+            " mutants and re-pins; the full 331-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M340 price-boundary here)"
+            " + M338-M344 price-boundary here)"
         ),
     )
     args = parser.parse_args()

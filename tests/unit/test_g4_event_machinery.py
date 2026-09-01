@@ -197,6 +197,10 @@ def _build_fixture_repo(root: Path) -> Path:
         Path("docs/m4-g4-sealed-gate-plan.md"),
         Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.json"),
         Path("data/calendar/nyse_sessions_2018_01_02_2026_12_31.sha256"),
+        # the LIVE mutation registry: criterion 6 binds the report to it,
+        # so the fixture repo (a REAL git repo standing in for the head)
+        # carries the registry exactly as the sealed head does
+        Path("scripts/mutate.py"),
     ):
         destination = repo / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
@@ -359,18 +363,39 @@ def _build_era_census(root: Path) -> Path:
     return path
 
 
+def _live_mutation_registry() -> tuple[frozenset[str], tuple[dict[str, str], ...]]:
+    """The LIVE registry (the authored MUTANTS list; the JSON artifact is
+    generated output). Criterion 6 binds the fixture report to it, exactly
+    as the sealed CLI does — through the gate's own loader."""
+    from tree_options.seal.g4_gate import live_mutation_registry_ids
+
+    registry = live_mutation_registry_ids(REPO_ROOT)
+    assert registry is not None, "the live mutation registry must exist at REPO_ROOT"
+    ids = tuple(sorted(registry))
+    return registry, ids
+
+
 def _build_mutation_report(root: Path) -> Path:
+    """A report shaped like the real one at this head: EVERY live registry
+    id KILLED, N/N, restoration green — so the fixture exercises criterion
+    6's binding rather than a synthetic single-mutant stub."""
+    _registry, ids = _live_mutation_registry()
     report = {
         "mutants": [
             {
-                "id": "M333-g4-verdict-and-to-or",
-                "file": "src/tree_options/seal/g4_gate.py",
-                "invariant": "g4 the gate verdict is FAIL when any criterion fails",
+                "id": mid,
+                "file": (
+                    "src/tree_options/seal/g4_gate.py"
+                    if "g4" in mid
+                    else "src/tree_options/trials/options_run.py"
+                ),
+                "invariant": f"registry mutant {mid}",
                 "verdict": "KILLED",
             }
+            for mid in ids
         ],
-        "totals": {"KILLED": 1},
-        "total": 1,
+        "totals": {"KILLED": len(ids)},
+        "total": len(ids),
         "restoration_suite_passed": True,
     }
     path = root / "m0-mutations.json"
@@ -515,6 +540,7 @@ def _evaluate(mini_run, evidence: Path, *, replay=True, floor: int = MINI_FLOOR)
             paths=_paths_for(mini, run, evidence, replay_dir),
             repo_root=mini.repo,
             head="0" * 40,
+            mutation_registry_ids=_live_mutation_registry()[0],
             rejection_floor=floor,
         ),
         replay_dir,
@@ -717,9 +743,121 @@ def test_only_two_decimal_closes_carry_through_exactly_with_no_custody_noise(
         for session_iso, token in rows.items():
             bar = bars[(underlying, date.fromisoformat(session_iso))]
             assert (bar.open, bar.high, bar.low, bar.close) == (Decimal(token),) * 4
+            # REPRESENTATION-exact (Codex round-1 P1): the original Decimal
+            # object passes through untouched — an exponent-0 "6E+2" token
+            # stays "6E+2", never re-serialized as "600.00"
+            assert (str(bar.open), str(bar.high), str(bar.low), str(bar.close)) == (token,) * 4
     block = _census_for(mini, held, world)["spot_close_quantization"]
     assert block["rows_quantized"] == 0
     assert block["max_delta"] is None
+
+
+def test_multi_row_custody_tracks_the_largest_value_movement(tmp_path: Path) -> None:
+    """Two rewritten rows with DIFFERENT deltas (Codex round-1 P2): the
+    counter counts both, max_delta is the largest VALUE movement (not the
+    last, not the smallest — the aggregation comparator is load-bearing),
+    and a non-tie fraction rounds down while the .125 tie resolves to the
+    EVEN cent under the explicit ROUND_HALF_EVEN."""
+    root = tmp_path / "multi"
+    root.mkdir()
+    mini = _build_bundle(
+        root,
+        spot_tokens={
+            (WIRE_SHAPE_3DP_UNDERLYING, WIRE_SHAPE_3DP_SESSION): "600.125",  # tie -> 600.12
+            ("TSLA", WIRE_SHAPE_3DP_SESSION): "200.134",  # plain -> 200.13
+        },
+    )
+    held, world = _world_for(mini, tmp_path / "scratch")
+    assert world.spot_close_quantized_rows == 2
+    assert world.spot_close_max_quantization_delta == Decimal("0.005")
+    bars = {(b.security_id, b.session): b for b in world.dataset.bars}
+    assert bars[("SPY", WIRE_SHAPE_3DP_SESSION)].close == Decimal("600.12")
+    assert bars[("TSLA", WIRE_SHAPE_3DP_SESSION)].close == Decimal("200.13")
+    block = _census_for(mini, held, world)["spot_close_quantization"]
+    assert block["rows_quantized"] == 2
+    assert block["max_delta"] == "0.005"
+
+
+def test_a_trailing_zero_sub_cent_row_is_counted_with_a_zero_delta(tmp_path: Path) -> None:
+    """A "200.130" token carries sub-cent EXPONENT but a cent-grid VALUE:
+    the boundary rewrites it to "200.13", counts it in custody, and reports
+    max_delta 0.000 — the row is disclosed as rewritten-even-though-unmoved,
+    never as silently exact."""
+    root = tmp_path / "trailing"
+    root.mkdir()
+    mini = _build_bundle(root, spot_tokens={("TSLA", WIRE_SHAPE_3DP_SESSION): "200.130"})
+    held, world = _world_for(mini, tmp_path / "scratch")
+    assert world.spot_close_quantized_rows == 1
+    assert world.spot_close_max_quantization_delta == Decimal("0.000")
+    bar = next(
+        b
+        for b in world.dataset.bars
+        if b.security_id == "TSLA" and b.session == WIRE_SHAPE_3DP_SESSION
+    )
+    assert (bar.open, bar.high, bar.low, bar.close) == (Decimal("200.13"),) * 4
+    block = _census_for(mini, held, world)["spot_close_quantization"]
+    assert block["rows_quantized"] == 1
+    assert block["max_delta"] == "0.000"
+
+
+def test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry(
+    mini_run,
+) -> None:
+    """Codex round-1 P0: criterion 6 BINDS the report to the live registry
+    at this head. An N/N + restoration report that omits registry mutants
+    (a stale report — exactly what M338+ additions would leave behind if the
+    full campaign were not re-run) FAILs; so does a report carrying foreign
+    ids; and an unsupplied registry never silently certifies the report."""
+    mini, run, _replay = mini_run
+    trial_payloads = {
+        arm: load_json(path)["payload"] for (_lane, arm), path in run.trial_payload_paths.items()
+    }
+    live = sorted(_live_mutation_registry()[0])
+    stale_report = {
+        "mutants": [
+            {
+                "id": mid,
+                "file": "src/tree_options/seal/g4_gate.py",
+                "invariant": f"registry mutant {mid}",
+                "verdict": "KILLED",
+            }
+            for mid in live[:-1]  # omits exactly one live id
+        ],
+        "totals": {"KILLED": len(live) - 1},
+        "total": len(live) - 1,
+        "restoration_suite_passed": True,
+    }
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=stale_report)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("stale report" in failure for failure in mutation.failures), mutation.failures
+    assert evaluation.verdict == "FAIL"
+
+    foreign_report = {
+        **stale_report,
+        "mutants": [
+            *stale_report["mutants"],
+            {
+                "id": "M999-foreign-id",
+                "file": "src/tree_options/seal/g4_gate.py",
+                "invariant": "g4 foreign",
+                "verdict": "KILLED",
+            },
+        ],
+        "totals": {"KILLED": len(live)},
+        "total": len(live),
+    }
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=foreign_report)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("foreign" in failure for failure in mutation.failures), mutation.failures
+
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_registry_ids=None)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any(
+        "live mutation registry was not supplied" in failure for failure in mutation.failures
+    ), mutation.failures
 
 
 def test_a_sub_cent_positive_close_refuses_naming_the_row(tmp_path: Path) -> None:
@@ -811,7 +949,16 @@ def test_a_discipline_violation_in_a_stamped_payload_fails_criterion_and_verdict
     assert any("participation cap exceeded" in f for f in fill.failures), fill.failures
 
 
-def _criteria_over(mini, run, trial_payloads, *, lane2_census=None, floor: int = MINI_FLOOR):
+def _criteria_over(
+    mini,
+    run,
+    trial_payloads,
+    *,
+    lane2_census=None,
+    floor: int = MINI_FLOOR,
+    mutation_report=None,
+    mutation_registry_ids="unset",
+):
     from tree_options.protocol.loader import load_protocol_bytes
 
     held = verify_sealed_inputs(mini.held_paths)
@@ -828,7 +975,14 @@ def _criteria_over(mini, run, trial_payloads, *, lane2_census=None, floor: int =
         execution_calendar=run.execution_calendar,
         stamped_hashes={},
         replay_hashes={},
-        mutation_report=load_json(mini.mutation_report),
+        mutation_report=(
+            load_json(mini.mutation_report) if mutation_report is None else mutation_report
+        ),
+        mutation_registry_ids=(
+            _live_mutation_registry()[0]
+            if mutation_registry_ids == "unset"
+            else mutation_registry_ids
+        ),
         era_target={"expected_masters": 2, "distinct_contracts": 5},
         rejection_floor=floor,
     )

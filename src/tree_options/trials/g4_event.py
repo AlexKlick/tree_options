@@ -60,7 +60,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Decimal
 from pathlib import Path
 from typing import Any
 
@@ -305,30 +305,37 @@ def build_lane2_world(
     # The spot-proxy close is the VENDOR's exact token; the fabricated flat
     # dataset bar is a Price (2dp) by the shared schema's design. Real wire
     # closes sometimes carry a third decimal (the 2026-08-31 sealed event
-    # crashed here on ADBE "417.125"), so every close is quantized to cents
-    # AT THE BarRecord BOUNDARY with the shared PRICE_TICK — a bare
-    # ``quantize`` whose tie rule is the decimal context default
-    # ROUND_HALF_EVEN (the settlement.py idiom) — and every row the tick
-    # moves is counted in custody. The SURFACE keeps the vendor-exact close
-    # untouched (``spot`` above feeds it verbatim), and no consumer compares
-    # a dataset bar close against the surface spot.
+    # crashed here on ADBE "417.125"), so a close whose wire EXPONENT
+    # exceeds the cent tick is quantized to cents AT THE BarRecord BOUNDARY
+    # with the shared PRICE_TICK and an EXPLICIT ROUND_HALF_EVEN — a bare
+    # ``quantize`` would inherit the mutable decimal CONTEXT's rounding, and
+    # a stamped payload's ties must not depend on ambient process state.
+    # Rows already on the cent grid (exponent >= -2, any representation)
+    # pass through as the ORIGINAL object — bit-identical, zero custody, no
+    # representation rewrite (an exponent-0 "417" stays "417", never
+    # "417.00"). Every row the boundary REWRITES is counted in custody
+    # (including a trailing-zero "600.120", whose value does not move — its
+    # delta is 0.000 and only the representation tightened); max_delta is
+    # the largest VALUE movement among them, None when nothing was
+    # rewritten. The SURFACE keeps the vendor-exact close untouched
+    # (``spot`` above feeds it verbatim), and no consumer compares a
+    # dataset bar close against the surface spot.
     spot_close_quantized_rows = 0
     spot_close_max_quantization_delta: Decimal | None = None
     bars: list[BarRecord] = []
     for underlying, sessions in spot.items():
         for session, close in sorted(sessions.items()):
-            quantized = close.quantize(PRICE_TICK)
-            if quantized <= 0:
-                # a positive sub-cent close would quantize to 0.00, which
-                # Price (gt=0) can never carry: refuse naming the row rather
-                # than silently dropping or flooring it
+            exponent = close.as_tuple().exponent
+            if not isinstance(exponent, int):
+                # a NaN/Infinity special carries no exponent at all: it can
+                # never become a Price, and the loader's positive-token
+                # contract means one here is corruption — refuse it named
                 raise ValueError(
-                    f"spot close {close} for {underlying} on {session:%Y-%m-%d} quantizes"
-                    f" to {quantized} at tick {PRICE_TICK}: a positive sub-cent close"
-                    " cannot become a Price (gt=0) — refusing rather than"
-                    " flooring the row to zero"
+                    f"spot close {close} for {underlying} on {session:%Y-%m-%d} is"
+                    " not a finite decimal — refusing the row"
                 )
-            if quantized != close:
+            if exponent < -2:
+                quantized = close.quantize(PRICE_TICK, rounding=ROUND_HALF_EVEN)
                 spot_close_quantized_rows += 1
                 delta = abs(close - quantized)
                 if (
@@ -336,6 +343,19 @@ def build_lane2_world(
                     or delta > spot_close_max_quantization_delta
                 ):
                     spot_close_max_quantization_delta = delta
+            else:
+                quantized = close
+            if quantized <= 0:
+                # a positive sub-cent close would quantize to 0.00, which
+                # Price (gt=0) can never carry (as would any non-positive
+                # close): refuse naming the row rather than silently
+                # dropping or flooring it
+                raise ValueError(
+                    f"spot close {close} for {underlying} on {session:%Y-%m-%d} quantizes"
+                    f" to {quantized} at tick {PRICE_TICK}: a positive sub-cent close"
+                    " cannot become a Price (gt=0) — refusing rather than"
+                    " flooring the row to zero"
+                )
             bars.append(
                 BarRecord(
                     security_id=underlying,
@@ -448,8 +468,11 @@ def lane2_census_payload(
         },
         # the bar-boundary quantization custody (Decimal facts stringified,
         # the stamped-payload idiom): how many spot-proxy closes the flat
-        # dataset bars moved to the cent tick, by how much, under which tick
-        # and tie rule — the SURFACE keeps the vendor-exact closes
+        # dataset bars REWROTE to the cent tick (a trailing-zero rewrite
+        # moves no value and counts with delta 0.000), the largest value
+        # movement among them, the tick, and the tie rule — rows already on
+        # the grid pass through untouched and the SURFACE keeps the
+        # vendor-exact closes
         "spot_close_quantization": {
             "rows_quantized": world.spot_close_quantized_rows,
             "max_delta": (
@@ -459,9 +482,10 @@ def lane2_census_payload(
             ),
             "tick": str(PRICE_TICK),
             "rule": (
-                "quantize to PRICE_TICK at the BarRecord boundary; ties resolve"
-                " by the decimal context default ROUND_HALF_EVEN"
-                " (settlement.py idiom)"
+                "a close whose wire exponent exceeds the cent tick is quantized"
+                " to PRICE_TICK at the BarRecord boundary with an explicit"
+                " ROUND_HALF_EVEN (never the mutable context default); a row"
+                " already on the grid passes through as the original object"
             ),
         },
         # the STRICT per-lane class map (plan §4 criterion 4): the counted

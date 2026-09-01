@@ -81,17 +81,22 @@ corpus. With closes cent-quantized, all 2,871 `BarRecord`s construct.
 `BarRecord` BOUNDARY, reusing the existing `PRICE_TICK`
 (`src/tree_options/schemas/common.py:13`, `Decimal("0.01")`):
 
-- `quantized = close.quantize(PRICE_TICK)` — a bare `quantize`, the house
-  idiom (`options/settlement.py:56` does the same with `FEE_TICK`), whose
-  tie rule is the decimal context default **ROUND_HALF_EVEN** (`600.125` →
-  `600.12`; `137.175` → `137.18`). The rule is recorded in the code comment
-  and stamped in the census payload.
+- `quantized = close.quantize(PRICE_TICK, rounding=ROUND_HALF_EVEN)` — an
+  EXPLICIT tie rule (Codex round-1 P1: a bare `quantize` inherits the
+  mutable decimal CONTEXT's rounding, so a stamped payload's ties could
+  depend on ambient process state). Ties resolve to the even cent:
+  `600.125` → `600.12`, `137.175` → `137.18`.
+- The quantize runs ONLY on a close whose wire exponent exceeds the cent
+  tick (`exponent < -2`). Rows already on the grid pass through as the
+  ORIGINAL `Decimal` object — bit-identical, no representation rewrite (an
+  exponent-0 `6E+2` stays `6E+2`, never `600.00`), zero custody.
 - All four OHLC fields of the flat bar carry `quantized`; the flat shape is
   unchanged.
-- Custody: `Lane2World.spot_close_quantized_rows` counts the rows where
-  `quantized != close`, and `spot_close_max_quantization_delta`
-  (`Decimal | None`, `None` when zero rows quantized) tracks
-  `max(abs(close - quantized))` over those rows.
+- Custody: `Lane2World.spot_close_quantized_rows` counts every row the
+  boundary REWRITES (including a trailing-zero `200.130`, whose value does
+  not move — disclosed as rewritten with delta `0.000`), and
+  `spot_close_max_quantization_delta` (`Decimal | None`, `None` when
+  nothing was rewritten) tracks the largest VALUE movement among them.
 - Fail-closed guard: a quantized value `<= 0` (a positive sub-cent close
   quantizes to `0.00`, which `Price`'s `gt=0` can never carry) raises a
   `ValueError` naming the underlying, the session, and the original token —
@@ -111,11 +116,14 @@ truth. Three facts make the boundary quantization safe rather than lossy:
 1. **The surface keeps the vendor-exact closes.** `spot` feeds
    `VwapPitSurface` verbatim; `spot_mid_as_of` still returns the un-truncated
    3dp token. Nothing on the read surface is rounded.
-2. **No consumer compares a bar close against the surface spot.**
-   `dataset.bars` is consumed in the trial only at `options_run.py:1356`
-   (`max(bar.session …)` — the world's last session) and `options_run.py:1589`
-   (`frozenset({bar.source …})` — dataset provenance). No equality against a
-   spot exists anywhere.
+2. **No consumer compares a bar close against the surface spot** (verified:
+   the decision reads are `surface.decision_close`, the exercise elections
+   read the surface — a bar close and a surface close never meet in an
+   equality anywhere). The bar closes' actual consumers: the world's session
+   span and dataset provenance (`options_run.py:1356`, `:1589`), the
+   backtest's bar index and settlement reference bars
+   (`backtest/options.py:347`, `:511`), and the generic equity lane's bar
+   map (`trials/run.py:427`, not on the G4 options path).
 3. **Settlement stays consistent.** `mint_settlement` takes its
    `settlement_price` from the authoritative `BarRecord`
    (`options/settlement.py:47,70`), so any settlement struck against a
@@ -130,10 +138,25 @@ The machinery tests now carry the real wire shape: the lane-2 fixture's
 synthetic VALUE in the real precision CLASS of ADBE's `417.125`), and the
 default module bundle builds every end-to-end machinery test (both arms, the
 gate CLI, the production runner, the clean-clone replay) against it. A
-sub-cent `"0.005"` variant owns the refusal guard, and a flat ≤2dp variant
-owns the no-custody-noise path. No real held byte was read, no trial outcome
-was computed, and no criterion was evaluated by this remediation: the sealed
-verdict remains whatever the NEXT sealed event says.
+sub-cent `"0.005"` variant owns the refusal guard, a flat ≤2dp variant owns
+the no-custody-noise path, and multi-row / trailing-zero variants own the
+max-delta aggregation and the rewritten-but-unmoved disclosure. No REAL held
+byte was read and no REAL-data trial outcome, sealed criterion verdict, or
+sealed-gate verdict was computed or observed by this remediation (the
+machinery tests evaluate SYNTHETIC fixture trials and criteria only): the
+sealed verdict remains whatever the NEXT sealed event says.
+
+## 5b. Criterion 6 now binds the report to the live registry (Codex round-1 P0)
+
+Adding registry entries without re-running the full campaign would have let
+criterion 6 certify a stale N/N report: the evaluator read only the report's
+self-declared totals. `_criterion_mutation_campaign` now takes the LIVE
+registry's id set (the sealed CLI derives it from `scripts/mutate.py`'s
+authored `MUTANTS` list) and FAILs when the report omits registry mutants
+(stale), carries ids foreign to the registry, declares a total inconsistent
+with its own entries, or when the registry was not supplied at all — never a
+silent skip. The machinery fixture report is generated from the live
+registry so the binding is exercised at fixture scale.
 
 ## 6. Side observation (doc only, no action)
 
@@ -144,7 +167,7 @@ enters the master; this is a recorded property of the era, not a crash
 class, and it is disclosed here so the next packet's census reading is not
 surprised by it.
 
-## 7. The forward path
+## 7. The forward path (and the two authority blockers a successor lane must clear)
 
 1. **New head** — this remediation lands on
    `m4/g4-price-boundary-20260831` and merges to `main` (owner merges
@@ -159,8 +182,33 @@ surprised by it.
    consumed run, and the 2026-08-31 approval's own terms (remediation packet
    plus a NEW pre-declared gate) are the ruling being followed.
 4. **Never re-run** the consumed `sealed_run_id`
-   `9b945db3fa3dd92b…`; the runner's existing-registry/artifacts refusals
-   enforce this mechanically.
+   `9b945db3fa3dd92b…`.
+
+Two authority-side facts (verified in source during the Codex round-1
+review) mean the successor event does NOT simply run — a follow-up
+successor-enablement lane is required first, with its own review:
+
+- **Content identity collides.** `content_identity()`
+   (`src/tree_options/seal/identity.py:52-58`) deliberately blanks the
+   checkout-bound fields (`code_sha`, packet hash) so "a fresh checkout of
+   the same research content is not fresh one-shot authority", and
+   `_check_authority` (`scripts/g4_seal.py:303`) refuses any new execution
+   whose content id matches an existing CONSUMPTION. This remediation
+   changes no content-bearing input (same era bytes, protocol, criteria,
+   runner version), so the successor event's content id equals the consumed
+   run's `0a1ea282…` and would refuse. The design has no lane for
+   "consumed, no verdict, owner-ordered remediation" — the successor lane
+   must add an explicit, owner-issued RECONCILIATION record that re-arms
+   authority for exactly this case (naming the consumed record and the
+   remediation), never a weakening of the content-identity scoping.
+- **The sealed workspace paths are fixed and now occupied.**
+   `production_gate_paths` (`src/tree_options/seal/g4_gate.py`) pins
+   `artifacts/g4-sealed.db`, `artifacts/g4-sealed/`, and
+   `artifacts/g4-sealed-scratch/`, and the machinery refuses to reuse any
+   that exist (`g4_event.py` "refusing to reuse sealed …"). The crashed run
+   left all three. The successor lane must make the workspace run-scoped
+   (fresh paths per `sealed_run_id`, the crashed run's partials preserved
+   untouched as history).
 
 ## 8. Verification (this lane, hermetic)
 
@@ -170,8 +218,16 @@ surprised by it.
 - GREEN: `tree_options-logs/g4-price-boundary-green.log` — 20/20 in
   `tests/unit/test_g4_event_machinery.py` with the 3dp row present in the
   default bundle.
-- Mutants M338-M340 (quantize drop, custody counter zeroed, sub-cent refusal
-  dropped) added to the registry in `scripts/mutate.py` (325 → 328); kill
-  log `tree_options-logs/g4-price-boundary-mutations.log`.
+- Mutants M338-M344 (quantize drop, custody counter zeroed, sub-cent refusal
+  dropped, max-delta comparator flipped, exponent gate dropped, criterion-6
+  stale-report binding dropped, criterion-6 registry-absence silenced) added
+  to the registry in `scripts/mutate.py` (325 → 331); kill log
+  `tree_options-logs/g4-price-boundary-mutations.log`.
 - `ruff check .` clean; `ruff format` no-op on touched files; `mypy` clean
   (120 source files).
+- Codex round 1 (gpt-5.6-sol, adversarial brief): 3 P0 / 2 P1 / 3 P2, all
+  8 verified in source. The 6 in-lane findings are fixed here (explicit
+  rounding, exponent-gated rewrite, representation-exact quiet path,
+  max-delta guard + mutant, criterion-6 live-registry binding + mutants,
+  doc corrections); the 2 authority-side P0s (content-identity collision,
+  fixed sealed paths) are recorded in §7 for the successor-enablement lane.

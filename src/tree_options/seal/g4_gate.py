@@ -445,6 +445,7 @@ def _criterion_determinism(
 
 def _criterion_mutation_campaign(
     mutation_report: Mapping[str, Any] | None,
+    mutation_registry_ids: frozenset[str] | None,
 ) -> CriterionOutcome:
     failures: list[str] = []
     if mutation_report is None:
@@ -461,6 +462,13 @@ def _criterion_mutation_campaign(
         if not restoration:
             failures.append("the mutation registry's restoration suite did not pass")
         entries = mutation_report.get("mutants", [])
+        report_ids = [str(entry.get("id")) for entry in entries]
+        if total != len(report_ids):
+            failures.append(
+                f"the mutation report declares total={total} but carries"
+                f" {len(report_ids)} mutant entries — a self-inconsistent report"
+                " is not this head's campaign"
+            )
         covering = [
             str(entry.get("id"))
             for entry in entries
@@ -471,12 +479,38 @@ def _criterion_mutation_campaign(
                 "no registry mutant covers the gate's own verdict logic — the"
                 " plan requires at least one"
             )
+        if mutation_registry_ids is None:
+            failures.append(
+                "the live mutation registry was not supplied — criterion 6"
+                " cannot bind the report to the registry at this head (never"
+                " silently skipped)"
+            )
+        else:
+            missing = sorted(mutation_registry_ids - set(report_ids))
+            foreign = sorted(set(report_ids) - mutation_registry_ids)
+            if missing:
+                failures.append(
+                    f"the mutation report omits {len(missing)} of the"
+                    f" registry's {len(mutation_registry_ids)} mutants (e.g."
+                    f" {missing[0]}) — a stale report is not this head's"
+                    " campaign"
+                )
+            if foreign:
+                failures.append(
+                    f"the mutation report carries {len(foreign)} ids foreign"
+                    f" to the registry (e.g. {foreign[0]}) — a stale or"
+                    " foreign report is not this head's campaign"
+                )
         reported = {
             "supplied": True,
             "total": total,
             "killed": killed,
             "restoration_suite_passed": restoration,
             "verdict_logic_mutants": covering[:5],
+            "registry_supplied": mutation_registry_ids is not None,
+            "registry_total": (
+                len(mutation_registry_ids) if mutation_registry_ids is not None else None
+            ),
         }
     return CriterionOutcome(
         criterion_id="mutation_campaign",
@@ -504,6 +538,7 @@ def evaluate_g4_criteria(
     replay_hashes: Mapping[str, str] | None,
     mutation_report: Mapping[str, Any] | None,
     era_target: Mapping[str, int],
+    mutation_registry_ids: frozenset[str] | None = None,
     rejection_floor: int = REJECTION_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six pre-declared criteria from the stamped payloads.
@@ -513,14 +548,18 @@ def evaluate_g4_criteria(
     payloads; ``era_target`` carries the era's stamped counts (expected
     masters, distinct contracts) the plan's criterion 1 targets;
     ``replay_hashes`` the clean-clone replay's payload hashes; and
-    ``mutation_report`` the registry report (N/N KILLED + restoration)."""
+    ``mutation_report`` the registry report (N/N KILLED + restoration).
+    ``mutation_registry_ids`` is the LIVE registry's id set at this head —
+    criterion 6 binds the report to it (a report that omits registry
+    mutants or carries foreign ids is stale and FAILs; absent = FAIL, never
+    silently skipped)."""
     outcomes = (
         _criterion_manifest_integrity(lane1_census, lane2_census, era_target),
         _criterion_candidate_discipline(protocol, lane2_census, trial_payloads),
         _criterion_fill_discipline(trial_payloads, execution_calendar),
         _criterion_rejection_paths(lane1_census, lane2_census, trial_payloads, rejection_floor),
         _criterion_determinism(stamped_hashes, replay_hashes),
-        _criterion_mutation_campaign(mutation_report),
+        _criterion_mutation_campaign(mutation_report, mutation_registry_ids),
     )
     verdict = "PASS" if all(o.verdict == "PASS" for o in outcomes) else "FAIL"
     return G4GateEvaluation(
@@ -593,6 +632,25 @@ def era_target_of(era: Mapping[str, Any]) -> dict[str, int]:
     }
 
 
+def live_mutation_registry_ids(repo_root: Path) -> frozenset[str] | None:
+    """The LIVE mutation registry's id set at this head: the authored
+    ``MUTANTS`` list in ``scripts/mutate.py`` (the JSON artifact is
+    generated output). Loaded by file path — scripts/ is not an importable
+    package. None when the registry file is absent (criterion 6 then FAILs
+    loudly rather than certifying an unbound report)."""
+    registry_path = repo_root / "scripts" / "mutate.py"
+    if not registry_path.is_file():
+        return None
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("tree_options_mutation_registry", registry_path)
+    if spec is None or spec.loader is None:  # pragma: no cover - malformed path only
+        return None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return frozenset(str(m["id"]) for m in module.MUTANTS)
+
+
 def evaluate_and_record(
     run: G4SealedRun,
     held: HeldVerifiedSealedInputs,
@@ -602,6 +660,7 @@ def evaluate_and_record(
     head: str,
     allow_dirty: bool = False,
     log_lines: Sequence[str] = (),
+    mutation_registry_ids: frozenset[str] | None = None,
     rejection_floor: int = REJECTION_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six criteria from the run's stamped payloads, write the
@@ -610,9 +669,10 @@ def evaluate_and_record(
     The auxiliary criterion inputs are the prior events' STAMPED artifacts:
     the era census (criterion 1's targets), the clean-clone replay payload
     dir (criterion 5; absent = an honest FAIL, never a skip), and the
-    mutation registry report at the sealed head (criterion 6).
-    ``rejection_floor`` defaults to the pre-declared 50; it is a parameter
-    so a fixture-scale MINI gate can exercise the machinery."""
+    mutation registry report at the sealed head (criterion 6 — bound to
+    ``mutation_registry_ids``, the LIVE registry at this head; a stale
+    report FAILs). ``rejection_floor`` defaults to the pre-declared 50; it
+    is a parameter so a fixture-scale MINI gate can exercise the machinery."""
     protocol = load_protocol_bytes(held.protocol_bytes)
     lane1_census = load_json(run.census_payload_paths["lane1"])["payload"]
     lane2_census = load_json(run.census_payload_paths["lane2"])["payload"]
@@ -638,6 +698,10 @@ def evaluate_and_record(
         else None
     )
     mutation_report = load_json(paths.mutation_report) if paths.mutation_report.is_file() else None
+    if mutation_registry_ids is None:
+        # the LIVE registry at this head, derived from the repo being sealed
+        # (absent registry file = None = criterion 6 FAILs, never a skip)
+        mutation_registry_ids = live_mutation_registry_ids(repo_root)
     if not paths.era_census.is_file():
         raise FileNotFoundError(
             f"the era census {paths.era_census} is absent — criterion 1's count"
@@ -657,6 +721,7 @@ def evaluate_and_record(
         replay_hashes=replay_hashes,
         mutation_report=mutation_report,
         era_target=era_target,
+        mutation_registry_ids=mutation_registry_ids,
         rejection_floor=rejection_floor,
     )
     write_gate_evidence(

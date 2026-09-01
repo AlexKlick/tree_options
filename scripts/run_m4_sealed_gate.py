@@ -151,6 +151,7 @@ def run_gate(argv: list[str] | None = None) -> int:
     from tree_options.seal.g4_gate import (
         G4GatePaths,
         evaluate_and_record,
+        live_mutation_registry_ids,
     )
     from tree_options.seal.verified_inputs import (
         SealedInputPaths,
@@ -215,12 +216,23 @@ def run_gate(argv: list[str] | None = None) -> int:
             f"REPLAY_ARTIFACTS absent at {gate_paths.replay_artifacts} — criterion 5"
             " will FAIL (never silently skipped)"
         )
+    # criterion 6 binds the report to the LIVE registry at this head: the
+    # authored MUTANTS list in scripts/mutate.py is the registry (the JSON
+    # artifact is generated output)
+    mutation_registry_ids = live_mutation_registry_ids(args.repo)
+    if mutation_registry_ids is None:
+        raise SystemExit(
+            f"the live mutation registry ({args.repo / 'scripts' / 'mutate.py'}) is"
+            " unavailable — criterion 6 cannot bind the report to this head"
+        )
+    print(f"MUTATION_REGISTRY_IDS={len(mutation_registry_ids)}")
     evaluation = evaluate_and_record(
         run,
         held,
         paths=gate_paths,
         repo_root=args.repo,
         head=head,
+        mutation_registry_ids=mutation_registry_ids,
         log_lines=(
             f"SEALED_HEAD={head}",
             f"SEALED_PACKET={held.packet.packet_content_sha256}",
