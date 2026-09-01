@@ -92,3 +92,23 @@ class SecondExecutionRefusedError(SealError):
             "per sealed content — a crash after consumption is "
             "RECONCILIATION_REQUIRED, never a re-run",
         )
+
+
+class ReconciliationInvalidError(SealError):
+    """An owner reconciliation record cannot be minted for this identity
+    (exit 8). A RECONCILIATION re-arms one-shot authority for sealed CONTENT
+    whose consumption produced no verdict — it must name the identity of a
+    CONSUMPTION record already in the ledger (nothing consumed means nothing
+    to re-arm, and a foreign identity names no real spend), so it can never
+    pre-authorize a re-run, only re-arm a real consumed-without-verdict
+    spend."""
+
+    exit_code = 8
+
+    def __init__(self, sealed_run_id: str, detail: str) -> None:
+        super().__init__(
+            "RECONCILIATION_INVALID",
+            f"sealed run {sealed_run_id[:12]}…: {detail}; a reconciliation "
+            "re-arms CONSUMED authority for exactly one further consumption "
+            "and is refused for anything else",
+        )

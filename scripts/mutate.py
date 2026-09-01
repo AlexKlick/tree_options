@@ -4788,6 +4788,229 @@ MUTANTS = [
             " FileNotFoundError after the CONSUMPTION"
         ),
     ),
+    dict(
+        id="M356-g4-rearm-budget-voided",
+        owner="test_reconciliation_re_arms_consumed_content_for_exactly_one_successor",
+        file="scripts/g4_seal.py",
+        anchor="    if content_consumptions > reconciliations:",
+        replacement="    if False:  # mutant: the re-arm budget is never enforced",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 each owner RECONCILIATION permits exactly ONE further"
+            " consumption of the content: a third checkout without a second"
+            " owner act refuses"
+        ),
+    ),
+    dict(
+        id="M357-g4-reconciliation-count-dropped",
+        owner="test_reconciliation_re_arms_consumed_content_for_exactly_one_successor",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "            if reconciliation_content_id == content_id:\n"
+            "                reconciliations += 1\n"
+            "                if reconciliations > content_consumptions:\n"
+            "                    raise LedgerCorruptError(\n"
+            '                        f"RECONCILIATION record {record.record_sha256[:12]}… is"\n'
+            '                        " credited AHEAD of any consumption of this content"\n'
+            '                        f" (prefix holds {reconciliations} reconciliation(s)"\n'
+            '                        f" against {content_consumptions} consumption(s)) —"\n'
+            '                        " authority is never granted ahead of the spend it"\n'
+            '                        " names, not even in a hash-valid hand-chained ledger"\n'
+            "                    )"
+        ),
+        replacement=(
+            "            pass  # mutant: the reconciliation budget is never"
+            " credited and the prefix order rule never raises"
+        ),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the successor consumption is permitted only while"
+            " reconciliations(content) covers it: an uncounted"
+            " reconciliation re-arms nothing"
+        ),
+    ),
+    dict(
+        id="M358-g4-exact-run-arm-counted-not-refused",
+        owner="test_the_exact_consumed_checkout_stays_refused_even_after_reconciliation",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "        if record_run_id == run_id:\n"
+            "            raise SecondExecutionRefusedError(\n"
+            '                run_id, "a CONSUMPTION record already matches this exact sealed run"\n'
+            "            )"
+        ),
+        replacement=(
+            "        content_consumptions += 1  # mutant: the exact-run arm counted, never refused"
+        ),
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the sealed-RUN arm is absolute: the crashed checkout is"
+            " never re-runnable regardless of any reconciliation budget"
+            " (the remediation is a different head by construction)"
+        ),
+    ),
+    dict(
+        id="M359-g4-reconciliation-minted-ahead-of-spend",
+        owner="test_reconciliation_requires_an_existing_matching_consumption",
+        file="src/tree_options/seal/ledger.py",
+        anchor="    if not consumed_here:",
+        replacement="    if False:  # mutant: reconciliation minted ahead of any consumption",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 a reconciliation re-arms an EXISTING consumed-without-verdict"
+            " spend only: minting one ahead of a consumption pre-authorizes"
+            " a re-run, which is a second approval channel, never authority"
+        ),
+    ),
+    dict(
+        id="M360-g4-run-key-validation-voided",
+        owner="test_a_run_key_must_be_a_sealed_run_id_shaped_token",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor='    if not re.fullmatch(r"[0-9a-f]{64}", run_key):',
+        replacement="    if False:  # mutant: any run key steers the workspace path",
+        selectors=[f"{U}/test_g4_run_scoped_paths.py"],
+        invariant=(
+            "G4 the run-scoped workspace directory is named by a sealed run"
+            " id (64 lowercase hex): traversal-shaped or partial keys can"
+            " never steer authority outputs outside the run root"
+        ),
+    ),
+    dict(
+        id="M361-g4-run-scoping-falls-back-to-legacy",
+        owner="test_a_run_key_scopes_the_sealed_workspace_under_g4_sealed_runs",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor='    run_root = repo_root / "artifacts" / "g4-sealed-runs" / run_key',
+        replacement='    run_root = repo_root / "artifacts"  # mutant: the run key does not scope',
+        selectors=[f"{U}/test_g4_run_scoped_paths.py"],
+        invariant=(
+            "G4 one workspace per sealed run: without the run-key scoping a"
+            " successor checkout collides with the crashed event's occupied"
+            " legacy outputs and the one-shot refuses"
+        ),
+    ),
+    dict(
+        id="M362-g4-runner-drops-run-key",
+        owner="test_the_production_runner_delegates_to_the_machinery",
+        file="src/tree_options/seal/runner.py",
+        anchor="        gate_paths = production_gate_paths(repo, run_key=run_id)",
+        replacement="        gate_paths = production_gate_paths(repo)  # mutant: legacy fixed paths",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the production runner derives its outputs from THIS run's"
+            " sealed_run_id — the run-scoped workspace the"
+            " successor-enablement lane exists to give it"
+        ),
+    ),
+    dict(
+        id="M363-g4-forged-reconciliation-ids-trusted",
+        owner="test_forged_reconciliation_stored_ids_refused_as_corrupt",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "            if (\n"
+            "                record.content_identity != reconciliation_content_id\n"
+            "                or record.sealed_run_id != sealed_run_id(record.identity)\n"
+            "            ):"
+        ),
+        replacement="            if False:  # mutant: forged reconciliation stored ids trusted",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the re-arm budget is computed from RECOMPUTED ids, never a"
+            " RECONCILIATION record's stored ones (the M229 rule, extended"
+            " to the authority-bearing reconciliation kind)"
+        ),
+    ),
+    dict(
+        id="M364-g4-verdict-guard-runscoped-voided",
+        owner="test_the_guarded_reconciliation_refuses_a_run_scoped_verdict",
+        file="scripts/g4_seal.py",
+        anchor="    if run_scoped_summary.is_file():",
+        replacement="    if False:  # mutant: the run-scoped verdict guard never refuses",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the driver-path reconciliation is verdict-aware at the"
+            " run-scoped workspace: a sealed-gate-summary.json for the"
+            " consumed checkout means the verdict EXISTS and re-arming"
+            " verdicted content is not reconciliation"
+        ),
+    ),
+    dict(
+        id="M365-g4-verdict-guard-legacy-voided",
+        owner="test_the_guarded_reconciliation_refuses_a_legacy_verdict",
+        file="scripts/g4_seal.py",
+        anchor="    if legacy_summary.is_file():",
+        replacement="    if False:  # mutant: the legacy verdict guard never refuses",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the verdict guard also covers the LEGACY artifacts layout"
+            " (the one the 2026-08-31 crashed event ran under): a"
+            " sealed-gate-summary.json there is an existing verdict for the"
+            " consumed content"
+        ),
+    ),
+    dict(
+        id="M366-g4-outstanding-spend-rule-voided",
+        owner="test_a_second_reconciliation_requires_a_new_consumption",
+        file="src/tree_options/seal/ledger.py",
+        anchor="    if consumptions <= reconciliations:",
+        replacement="    if False:  # mutant: stockpiled reconciliations accepted",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 a reconciliation re-arms an OUTSTANDING consumed-without-"
+            " verdict spend: minting another while the crash is already"
+            " covered stockpiles authority ahead of any second failure"
+        ),
+    ),
+    dict(
+        id="M367-g4-prefix-order-rule-voided",
+        owner="test_a_reconciliation_credited_ahead_of_its_consumption_is_corrupt",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "                if reconciliations > content_consumptions:\n"
+            "                    raise LedgerCorruptError("
+        ),
+        replacement="                if False:\n                    raise LedgerCorruptError(",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 causal order at every prefix: a hash-valid reconciliation"
+            " credited AHEAD of any consumption of its content is corruption"
+            " the budget arithmetic may never honor"
+        ),
+    ),
+    dict(
+        id="M368-g4-hosting-root-binding-voided",
+        owner="test_the_verdict_guard_is_bound_to_the_hosting_root",
+        file="scripts/g4_seal.py",
+        anchor="    if not hosted_here:",
+        replacement="    if False:  # mutant: any root attests verdict absence",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the verdict-absence check binds to the HOSTING root (run-"
+            " scoped workspace or legacy residue): a negative filesystem"
+            " check against a root that hosted nothing is not evidence"
+        ),
+    ),
+    dict(
+        id="M369-g4-symlinked-workspace-accepted",
+        owner="test_a_symlinked_run_workspace_component_refuses",
+        file="src/tree_options/trials/g4_event.py",
+        anchor=(
+            "            if stat.S_ISLNK(mode):\n"
+            '                raise RuntimeError(f"refusing a symlinked sealed workspace'
+            ' component: {component}")'
+        ),
+        replacement=(
+            "            if False:  # mutant: a symlinked workspace component is"
+            " accepted\n"
+            "                pass"
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 a directory symlink in the sealed workspace's ancestor chain"
+            " redirects registry/artifacts/scratch/replay outside the"
+            " checkout while lexical checks stay green — the run refuses it"
+            " before a single byte is created"
+        ),
+    ),
 ]
 
 
@@ -4939,9 +5162,10 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 343-mutant run stays the"
+            " mutants and re-pins; the full 357-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M355 price-boundary here)"
+            " + M338-M355 price-boundary + M356-M363 successor-enablement"
+            " here)"
         ),
     )
     args = parser.parse_args()

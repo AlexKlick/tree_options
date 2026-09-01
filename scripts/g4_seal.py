@@ -30,19 +30,29 @@ consumes NO authority in PR A:
 
 Execute semantics (``execute_sealed_run``):
 
-1. read the ledger — any CONSUMPTION record whose sealed_run_id OR
-   content_identity matches this run refuses (exit 7). Two checkouts of the
-   same research content share a content_identity, so a second consumption
-   under EITHER id is refused.
+1. read the ledger — a CONSUMPTION record whose sealed_run_id matches this
+   run refuses (exit 7) ABSOLUTELY (the exact checkout is never re-runnable);
+   a CONSUMPTION whose content_identity matches refuses (exit 7) unless owner
+   RECONCILIATION records re-arm the content, one further consumption each
+   (consumptions(content) may exceed reconciliations(content) by at most the
+   original, unreconciled spend). Two checkouts of the same research content
+   share a content_identity, so content authority is one-shot per sealed
+   CONTENT, not per checkout.
 2. an APPROVAL record must exist whose identity, RECOMPUTED from the record's
    own payload, yields this run's packet-bound sealed_run_id (exit 6) — a
-   record's stored ids alone are never trusted.
+   record's stored ids alone are never trusted. A re-armed successor checkout
+   still needs its OWN approval: reconciliation re-arms the content, the
+   approval authorizes the new checkout.
 3. current checkout/protocol/lane payloads/calendar/criteria and runner
    version are re-verified and cross-joined to the approved packet.
 4. the CONSUMPTION record is appended durably (flock + fsync file + fsync
    dir) BEFORE the runner is invoked. A crash after consumption is a
    documented UNKNOWN / RECONCILIATION_REQUIRED state that is NEVER
-   auto-rerun: a later identical execute hits step 1 and refuses.
+   auto-rerun: a later identical execute hits step 1 and refuses (the exact
+   run) or the budget arithmetic (a successor checkout without a fresh owner
+   reconciliation). The remediation path for consumed-without-verdict content
+   is the owner's RECONCILIATION record (``ledger.append_reconciliation``,
+   library-only like every authority act) naming the consumed identity.
 
 Exit codes:
   0  preflight: all six sealed-run inputs available (no verdict computed)
@@ -53,6 +63,9 @@ Exit codes:
      corrupt
   6  APPROVAL_INVALID — no approval record recomputes to this run's identity
   7  SECOND_EXECUTION_REFUSED — this sealed content was already consumed
+  8  RECONCILIATION_INVALID — a reconciliation record cannot be minted for
+     this identity (no matching CONSUMPTION: nothing consumed, nothing to
+     re-arm)
 """
 
 from __future__ import annotations
@@ -75,6 +88,7 @@ from tree_options.seal import runner as runner_wiring  # noqa: E402
 from tree_options.seal.errors import (  # noqa: E402
     ApprovalInvalidError,
     LedgerCorruptError,
+    ReconciliationInvalidError,
     SealError,
     SecondExecutionRefusedError,
     VerifiedInputsError,
@@ -89,6 +103,7 @@ from tree_options.seal.ledger import (  # noqa: E402
     DEFAULT_G4_LEDGER_ROOT,
     KIND_APPROVAL,
     KIND_CONSUMPTION,
+    KIND_RECONCILIATION,
     LedgerRecord,
     read_ledger,
 )
@@ -280,10 +295,51 @@ class ExecuteSummary(StrictModel):
 
 
 def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> None:
-    """Refuse duplicate content and require an exact recomputed approval."""
+    """Refuse duplicate content and require an exact recomputed approval.
+
+    The sealed-RUN arm is absolute: a CONSUMPTION matching this exact
+    checkout's sealed_run_id refuses forever — the crashed checkout is never
+    re-runnable (the remediation is, by construction, a different head). The
+    sealed-CONTENT arm is re-armable by owner RECONCILIATION records, each
+    permitting exactly ONE further consumption: a new consumption of content
+    C is refused while consumptions(C) > reconciliations(C). Causal order is
+    enforced at EVERY prefix (round 2, P1-1): a hash-valid reconciliation
+    credited AHEAD of any consumption of its content is corruption, never a
+    budget the arithmetic may honor."""
     run_id = sealed_run_id(identity)
     content_id = content_identity(identity)
+    content_consumptions = 0
+    reconciliations = 0
     for record in view.records:
+        if record.kind == KIND_RECONCILIATION:
+            try:
+                reconciliation_content_id = content_identity(record.identity)
+            except Exception:
+                raise LedgerCorruptError(
+                    f"RECONCILIATION record {record.record_sha256[:12]}… has an"
+                    " unparseable identity payload; the re-arm budget cannot"
+                    " be evaluated safely — refusing to append"
+                ) from None
+            if (
+                record.content_identity != reconciliation_content_id
+                or record.sealed_run_id != sealed_run_id(record.identity)
+            ):
+                raise LedgerCorruptError(
+                    f"RECONCILIATION record {record.record_sha256[:12]}… stored"
+                    " ids disagree with its own identity payload (corruption)"
+                )
+            if reconciliation_content_id == content_id:
+                reconciliations += 1
+                if reconciliations > content_consumptions:
+                    raise LedgerCorruptError(
+                        f"RECONCILIATION record {record.record_sha256[:12]}… is"
+                        " credited AHEAD of any consumption of this content"
+                        f" (prefix holds {reconciliations} reconciliation(s)"
+                        f" against {content_consumptions} consumption(s)) —"
+                        " authority is never granted ahead of the spend it"
+                        " names, not even in a hash-valid hand-chained ledger"
+                    )
+            continue
         if record.kind != KIND_CONSUMPTION:
             continue
         try:
@@ -300,10 +356,21 @@ def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> 
                 f"CONSUMPTION record {record.record_sha256[:12]}… stored"
                 " ids disagree with its own identity payload (corruption)"
             )
-        if record_run_id == run_id or record_content_id == content_id:
+        if record_run_id == run_id:
             raise SecondExecutionRefusedError(
-                run_id, "a CONSUMPTION record already matches this sealed content"
+                run_id, "a CONSUMPTION record already matches this exact sealed run"
             )
+        if record_content_id == content_id:
+            content_consumptions += 1
+    if content_consumptions > reconciliations:
+        raise SecondExecutionRefusedError(
+            run_id,
+            f"{content_consumptions} CONSUMPTION record(s) already match this"
+            f" sealed content against {reconciliations} owner RECONCILIATION"
+            " record(s) — each reconciliation re-arms exactly one further"
+            " consumption; consumed-without-verdict content is re-armed by an"
+            " owner reconciliation, never by a re-run",
+        )
 
     approval_ok = any(
         record.kind == KIND_APPROVAL
@@ -319,6 +386,87 @@ def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> 
             run_id,
             "no APPROVAL record recomputes to this verified packet and sealed run id",
         )
+
+
+def reconcile_consumed_without_verdict(
+    ledger_root: Path,
+    repo_root: Path,
+    identity: SealedIdentity,
+    *,
+    reason: str,
+    at_epoch: int,
+) -> seal_ledger.LedgerRecord:
+    """The GUARDED owner reconciliation for the successor-event driver.
+
+    The ledger itself is verdict-blind BY DESIGN — it holds authority
+    records only and has no artifact-layout knowledge — so the verdict guard
+    lives HERE, at the orchestrator-facing layer that owns the paths. Two
+    bindings, both fail-closed:
+
+    * the root must be a HOSTING root — the consumed checkout's run-scoped
+      workspace exists under it (identity-bound: the workspace is keyed by
+      this identity's sealed_run_id), or the LEGACY residue of a sealed run
+      exists there (the registry/artifacts/scratch the pre-run-scoping
+      layout leaves — not identity-bound, disclosed). A root with neither
+      cannot attest verdict ABSENCE, and a negative check against the wrong
+      root is not evidence (round 2, P1-2).
+    * a ``sealed-gate-summary.json`` at either summary location means the
+      consumption HAS its verdict — re-arming verdicted content is not
+      reconciliation and refuses as ``RECONCILIATION_INVALID``.
+
+    Disclosed boundaries: the summary check is a negative filesystem check —
+    a summary created in the window between the checks and the ledger
+    append is not seen (the owner act is the authority; this guard is the
+    driver's honesty check, not a lock); and the LEGACY summary block is
+    intentionally conservative and global (any legacy summary blocks every
+    reconciliation until the owner looks). The raw
+    ``ledger.append_reconciliation`` stays available as the owner's explicit
+    override act (hash-chained and reasoned like every authority record);
+    the driver path uses THIS entry point, so the operational sequence
+    cannot reconcile a verdicted event by accident."""
+    from tree_options.seal.g4_gate import production_gate_paths
+
+    run_id = sealed_run_id(identity)
+    run_scoped = production_gate_paths(repo_root, run_key=run_id)
+    legacy = production_gate_paths(repo_root)
+    run_scoped_summary = run_scoped.artifacts_dir / "sealed-gate-summary.json"
+    legacy_summary = legacy.artifacts_dir / "sealed-gate-summary.json"
+    hosted_here = (
+        run_scoped.registry.exists()
+        or run_scoped.artifacts_dir.exists()
+        or run_scoped.scratch_root.exists()
+        or legacy.registry.exists()
+        or legacy.artifacts_dir.exists()
+        or legacy.scratch_root.exists()
+    )
+    if not hosted_here:
+        raise ReconciliationInvalidError(
+            run_id,
+            f"{repo_root} shows no sealed-run workspace for the consumed"
+            " checkout (no run-scoped registry/artifacts/scratch under"
+            " g4-sealed-runs/<sealed_run_id>/ and no legacy residue) — the"
+            " verdict-absence check cannot be bound to a root that did not"
+            " host the run; pass the HOSTING root, or use the raw ledger API"
+            " as the owner's explicit override act",
+        )
+    if run_scoped_summary.is_file():
+        raise ReconciliationInvalidError(
+            run_id,
+            f"the consumed checkout's run-scoped workspace holds {run_scoped_summary}"
+            " — its verdict EXISTS; re-arming verdicted content is not"
+            " reconciliation (the raw ledger API is the owner's explicit"
+            " override act, never the driver path)",
+        )
+    if legacy_summary.is_file():
+        raise ReconciliationInvalidError(
+            run_id,
+            f"the legacy sealed artifacts hold {legacy_summary} — the consumed"
+            " checkout's verdict EXISTS (the pre-run-scoping layout); re-arming"
+            " verdicted content is not reconciliation",
+        )
+    return seal_ledger.append_reconciliation(
+        ledger_root, identity, reason=reason, at_epoch=at_epoch
+    )
 
 
 def execute_sealed_run(
