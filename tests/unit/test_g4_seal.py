@@ -644,11 +644,92 @@ def test_the_guarded_reconciliation_mints_for_unverdicted_content(
     _execute(packet_a, fixture, ledger_root)
     identity_a = identity_from_packet(packet_a)
     repo = fixture.paths.repo
+    # the hosting root's LEGACY residue — the fingerprints the 2026-08-31
+    # crash left in the real repo (the StubRunner here writes no artifacts)
+    (repo / "artifacts" / "g4-sealed-scratch" / "g4-sealed-scratch").mkdir(parents=True)
     assert not (repo / "artifacts" / "g4-sealed" / "sealed-gate-summary.json").exists()
     record = g4_seal.reconcile_consumed_without_verdict(
         ledger_root, repo, identity_a, reason="consumed without verdict", at_epoch=T0 + 2
     )
     assert record.kind == L.KIND_RECONCILIATION
+
+
+def test_a_second_reconciliation_requires_a_new_consumption(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """Codex round 2, P1-1 (verified by probe): a reconciliation re-arms an
+    OUTSTANDING consumed-without-verdict spend — one with no reconciliation
+    covering it yet. Minting a second reconciliation for the SAME crash
+    stockpiles authority ahead of any second failure and refuses; the budget
+    arithmetic alone would have honored both."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    _approve(ledger_root, packet_a)
+    _execute(packet_a, fixture, ledger_root)
+    identity_a = identity_from_packet(packet_a)
+    L.append_reconciliation(ledger_root, identity_a, reason="the one re-arm", at_epoch=T0 + 2)
+    with pytest.raises(ReconciliationInvalidError, match="OUTSTANDING"):
+        L.append_reconciliation(
+            ledger_root, identity_a, reason="stockpiled ahead of a failure", at_epoch=T0 + 3
+        )
+    assert [r.kind for r in L.read_ledger(ledger_root).records] == [
+        "APPROVAL",
+        "CONSUMPTION",
+        "RECONCILIATION",
+    ]
+
+
+def test_a_reconciliation_credited_ahead_of_its_consumption_is_corrupt(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """Codex round 2, P1-1 (verified by probe): a hash-valid hand-chained
+    ledger holding a RECONCILIATION whose consumption appears LATER credits
+    authority ahead of the spend it names — the authority check refuses it
+    as corruption at EVERY prefix, never honors the budget it implies."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    identity_a = identity_from_packet(packet_a)
+    _approve(ledger_root, packet_a)
+    view = L.read_ledger(ledger_root)
+    ahead = L.LedgerRecord(
+        kind=L.KIND_RECONCILIATION,
+        identity=identity_a,
+        sealed_run_id=sealed_run_id(identity_a),
+        content_identity=content_identity(identity_a),
+        reason="hand-chained ahead of the spend",
+        at_epoch=T0 + 5,
+        prev_record_sha256=view.tail_hash,
+    )
+    L.append_record(ledger_root, ahead)
+    # even the FIRST consumption refuses while the out-of-order
+    # reconciliation sits ahead of it in the chain
+    with pytest.raises(LedgerCorruptError, match="AHEAD of any consumption"):
+        _execute(packet_a, fixture, ledger_root)
+
+
+def test_the_verdict_guard_is_bound_to_the_hosting_root(tmp_path: Path, ledger_root: Path) -> None:
+    """Codex round 2, P1-2 (verified by probe): the guard's negative
+    filesystem check must be bound to the root that HOSTED the consumed
+    run — a root with no sealed-run fingerprints (no run-scoped workspace,
+    no legacy registry/artifacts/scratch residue) cannot attest verdict
+    absence, and the reconciliation refuses rather than minting against a
+    verdict that exists elsewhere."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    _approve(ledger_root, packet_a)
+    _execute(packet_a, fixture, ledger_root)
+    identity_a = identity_from_packet(packet_a)
+    # a real verdict sits under the CONSUMED checkout's repo (legacy layout)
+    summary = fixture.paths.repo / "artifacts" / "g4-sealed" / "sealed-gate-summary.json"
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    summary.write_text('{"verdict": "PASS"}\n', encoding="utf-8")
+    elsewhere = tmp_path / "not-the-consumed-repo"
+    elsewhere.mkdir()
+    with pytest.raises(ReconciliationInvalidError, match="HOSTING root"):
+        g4_seal.reconcile_consumed_without_verdict(
+            ledger_root, elsewhere, identity_a, reason="wrong root", at_epoch=T0 + 9
+        )
+    assert L.KIND_RECONCILIATION not in [r.kind for r in L.read_ledger(ledger_root).records]
 
 
 def test_the_guarded_reconciliation_refuses_a_legacy_verdict(

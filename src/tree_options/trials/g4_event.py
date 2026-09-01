@@ -676,6 +676,32 @@ def _stamp_write(
     write_artifact(path, payload, stamp)
 
 
+def _refuse_symlinked_workspace(*locations: Path) -> None:
+    """Round-2 P1-3: a directory symlink planted anywhere in a sealed
+    workspace's ancestor chain (e.g. ``artifacts/g4-sealed-runs/<key>``
+    itself) would redirect the registry, artifacts, scratch, and any
+    sibling locations OUTSIDE the checkout while every lexical check stays
+    green — the run refuses a symlinked component before a single byte is
+    created, naming it. An ABSENT ancestor is fine (``mkdir(parents=True)``
+    creates the chain as real directories); only a present symlink
+    refuses."""
+    import os
+    import stat
+
+    checked: set[Path] = set()
+    for location in locations:
+        for component in Path(location).absolute().parents:
+            if component in checked:
+                continue
+            checked.add(component)
+            try:
+                mode = os.lstat(component).st_mode
+            except OSError:
+                continue  # absent ancestors are created, never followed
+            if stat.S_ISLNK(mode):
+                raise RuntimeError(f"refusing a symlinked sealed workspace component: {component}")
+
+
 def run_g4_sealed_event(
     held: HeldVerifiedSealedInputs,
     *,
@@ -691,13 +717,16 @@ def run_g4_sealed_event(
     """Run the sealed-event trials ONCE and stamp every payload.
 
     One-shot discipline (the M3 pattern): an existing registry or artifacts
-    directory refuses before a single byte is read. Lane 1 seals the
+    directory refuses before a single byte is read, and a SYMLINKED
+    workspace component refuses before a single byte is created (the
+    workspace stays inside real directories). Lane 1 seals the
     adapter (census payload); lane 2 runs arms A and B through the
     unmodified trial machinery under the declared seeds and geometry."""
     if registry_path.exists():
         raise RuntimeError(f"refusing to reuse sealed registry: {registry_path}")
     if artifacts_dir.exists():
         raise RuntimeError(f"refusing to reuse sealed artifacts: {artifacts_dir}")
+    _refuse_symlinked_workspace(registry_path, artifacts_dir, scratch_root)
     protocol = load_protocol_bytes(held.protocol_bytes)
     geometry = split_override if split_override is not None else sealed_split_override()
     fixed_clock: Any = (lambda: G4_FIXED_CLOCK) if clock is None else clock

@@ -4841,20 +4841,8 @@ MUTANTS = [
         id="M359-g4-reconciliation-minted-ahead-of-spend",
         owner="test_reconciliation_requires_an_existing_matching_consumption",
         file="src/tree_options/seal/ledger.py",
-        anchor=(
-            "    raise ReconciliationInvalidError(\n"
-            "        run_id,\n"
-            '        "no CONSUMPTION record in the ledger holds this exact consumed"\n'
-            '        " identity — a reconciliation re-arms an existing"\n'
-            '        " consumed-without-verdict spend; it is never minted ahead of one",\n'
-            "    )"
-        ),
-        replacement=(
-            "    return _append_kind(\n"
-            "        root, KIND_RECONCILIATION, identity, reason=reason,"
-            " at_epoch=at_epoch\n"
-            "    )  # mutant: reconciliation minted ahead of any consumption"
-        ),
+        anchor="    if not consumed_here:",
+        replacement="    if False:  # mutant: reconciliation minted ahead of any consumption",
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
             "G4 a reconciliation re-arms an EXISTING consumed-without-verdict"
@@ -4945,6 +4933,70 @@ MUTANTS = [
             " (the one the 2026-08-31 crashed event ran under): a"
             " sealed-gate-summary.json there is an existing verdict for the"
             " consumed content"
+        ),
+    ),
+    dict(
+        id="M366-g4-outstanding-spend-rule-voided",
+        owner="test_a_second_reconciliation_requires_a_new_consumption",
+        file="src/tree_options/seal/ledger.py",
+        anchor="    if consumptions <= reconciliations:",
+        replacement="    if False:  # mutant: stockpiled reconciliations accepted",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 a reconciliation re-arms an OUTSTANDING consumed-without-"
+            " verdict spend: minting another while the crash is already"
+            " covered stockpiles authority ahead of any second failure"
+        ),
+    ),
+    dict(
+        id="M367-g4-prefix-order-rule-voided",
+        owner="test_a_reconciliation_credited_ahead_of_its_consumption_is_corrupt",
+        file="scripts/g4_seal.py",
+        anchor=(
+            "                if reconciliations > content_consumptions:\n"
+            "                    raise LedgerCorruptError("
+        ),
+        replacement="                if False:\n                    raise LedgerCorruptError(",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 causal order at every prefix: a hash-valid reconciliation"
+            " credited AHEAD of any consumption of its content is corruption"
+            " the budget arithmetic may never honor"
+        ),
+    ),
+    dict(
+        id="M368-g4-hosting-root-binding-voided",
+        owner="test_the_verdict_guard_is_bound_to_the_hosting_root",
+        file="scripts/g4_seal.py",
+        anchor="    if not hosted_here:",
+        replacement="    if False:  # mutant: any root attests verdict absence",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the verdict-absence check binds to the HOSTING root (run-"
+            " scoped workspace or legacy residue): a negative filesystem"
+            " check against a root that hosted nothing is not evidence"
+        ),
+    ),
+    dict(
+        id="M369-g4-symlinked-workspace-accepted",
+        owner="test_a_symlinked_run_workspace_component_refuses",
+        file="src/tree_options/trials/g4_event.py",
+        anchor=(
+            "            if stat.S_ISLNK(mode):\n"
+            '                raise RuntimeError(f"refusing a symlinked sealed workspace'
+            ' component: {component}")'
+        ),
+        replacement=(
+            "            if False:  # mutant: a symlinked workspace component is"
+            " accepted\n"
+            "                pass"
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 a directory symlink in the sealed workspace's ancestor chain"
+            " redirects registry/artifacts/scratch/replay outside the"
+            " checkout while lexical checks stay green — the run refuses it"
+            " before a single byte is created"
         ),
     ),
 ]
@@ -5098,7 +5150,7 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 353-mutant run stays the"
+            " mutants and re-pins; the full 357-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " here)"

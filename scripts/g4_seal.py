@@ -302,7 +302,10 @@ def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> 
     re-runnable (the remediation is, by construction, a different head). The
     sealed-CONTENT arm is re-armable by owner RECONCILIATION records, each
     permitting exactly ONE further consumption: a new consumption of content
-    C is refused while consumptions(C) > reconciliations(C)."""
+    C is refused while consumptions(C) > reconciliations(C). Causal order is
+    enforced at EVERY prefix (round 2, P1-1): a hash-valid reconciliation
+    credited AHEAD of any consumption of its content is corruption, never a
+    budget the arithmetic may honor."""
     run_id = sealed_run_id(identity)
     content_id = content_identity(identity)
     content_consumptions = 0
@@ -327,6 +330,15 @@ def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> 
                 )
             if reconciliation_content_id == content_id:
                 reconciliations += 1
+                if reconciliations > content_consumptions:
+                    raise LedgerCorruptError(
+                        f"RECONCILIATION record {record.record_sha256[:12]}… is"
+                        " credited AHEAD of any consumption of this content"
+                        f" (prefix holds {reconciliations} reconciliation(s)"
+                        f" against {content_consumptions} consumption(s)) —"
+                        " authority is never granted ahead of the spend it"
+                        " names, not even in a hash-valid hand-chained ledger"
+                    )
             continue
         if record.kind != KIND_CONSUMPTION:
             continue
@@ -388,24 +400,55 @@ def reconcile_consumed_without_verdict(
 
     The ledger itself is verdict-blind BY DESIGN — it holds authority
     records only and has no artifact-layout knowledge — so the verdict guard
-    lives HERE, at the orchestrator-facing layer that owns the paths: a
-    ``sealed-gate-summary.json`` for the consumed checkout, at its
-    RUN-SCOPED workspace (``artifacts/g4-sealed-runs/<sealed_run_id>/``,
-    this lane forward) or at the LEGACY fixed artifacts dir (the layout the
-    2026-08-31 crashed event ran under), means the consumption HAS its
-    verdict — re-arming verdicted content is not reconciliation and refuses
-    as ``RECONCILIATION_INVALID``. The raw ``ledger.append_reconciliation``
-    stays available as the owner's explicit override act (hash-chained and
-    reasoned like every authority record); the driver path uses THIS entry
-    point, so the operational sequence cannot reconcile a verdicted event by
-    accident."""
+    lives HERE, at the orchestrator-facing layer that owns the paths. Two
+    bindings, both fail-closed:
+
+    * the root must be a HOSTING root — the consumed checkout's run-scoped
+      workspace exists under it (identity-bound: the workspace is keyed by
+      this identity's sealed_run_id), or the LEGACY residue of a sealed run
+      exists there (the registry/artifacts/scratch the pre-run-scoping
+      layout leaves — not identity-bound, disclosed). A root with neither
+      cannot attest verdict ABSENCE, and a negative check against the wrong
+      root is not evidence (round 2, P1-2).
+    * a ``sealed-gate-summary.json`` at either summary location means the
+      consumption HAS its verdict — re-arming verdicted content is not
+      reconciliation and refuses as ``RECONCILIATION_INVALID``.
+
+    Disclosed boundaries: the summary check is a negative filesystem check —
+    a summary created in the window between the checks and the ledger
+    append is not seen (the owner act is the authority; this guard is the
+    driver's honesty check, not a lock); and the LEGACY summary block is
+    intentionally conservative and global (any legacy summary blocks every
+    reconciliation until the owner looks). The raw
+    ``ledger.append_reconciliation`` stays available as the owner's explicit
+    override act (hash-chained and reasoned like every authority record);
+    the driver path uses THIS entry point, so the operational sequence
+    cannot reconcile a verdicted event by accident."""
     from tree_options.seal.g4_gate import production_gate_paths
 
     run_id = sealed_run_id(identity)
-    run_scoped_summary = (
-        production_gate_paths(repo_root, run_key=run_id).artifacts_dir / "sealed-gate-summary.json"
+    run_scoped = production_gate_paths(repo_root, run_key=run_id)
+    legacy = production_gate_paths(repo_root)
+    run_scoped_summary = run_scoped.artifacts_dir / "sealed-gate-summary.json"
+    legacy_summary = legacy.artifacts_dir / "sealed-gate-summary.json"
+    hosted_here = (
+        run_scoped.registry.exists()
+        or run_scoped.artifacts_dir.exists()
+        or run_scoped.scratch_root.exists()
+        or legacy.registry.exists()
+        or legacy.artifacts_dir.exists()
+        or legacy.scratch_root.exists()
     )
-    legacy_summary = production_gate_paths(repo_root).artifacts_dir / "sealed-gate-summary.json"
+    if not hosted_here:
+        raise ReconciliationInvalidError(
+            run_id,
+            f"{repo_root} shows no sealed-run workspace for the consumed"
+            " checkout (no run-scoped registry/artifacts/scratch under"
+            " g4-sealed-runs/<sealed_run_id>/ and no legacy residue) — the"
+            " verdict-absence check cannot be bound to a root that did not"
+            " host the run; pass the HOSTING root, or use the raw ledger API"
+            " as the owner's explicit override act",
+        )
     if run_scoped_summary.is_file():
         raise ReconciliationInvalidError(
             run_id,

@@ -713,11 +713,16 @@ def production_gate_paths(repo_root: Path, *, run_key: str | None = None) -> G4G
     workspace per sealed run, so a successor checkout never collides with a
     prior run's occupied registry/artifacts/scratch (the in-workspace
     one-shot refusals stand unchanged inside it). The DECLARED per-checkout
-    INPUTS (era census, mutation report, the optional spot-proxy sidecar,
-    the evidence root) are shared and never move: they are inputs the
-    preflight validates, not outputs a run owns. The key must be a full
-    64-hex sealed-run-id token — it names a directory under the gitignored
-    artifacts tree, so traversal-shaped or partial keys refuse here."""
+    INPUTS (era census, mutation report, the optional spot-proxy sidecar)
+    are shared and never move: they are inputs the preflight validates, not
+    outputs a run owns. The EVIDENCE ROOT is a shared OUTPUT DESTINATION by
+    design (round 2, P2): ``write_gate_evidence`` writes the docs-side
+    triple at fixed filenames, so a later event supersedes an earlier one's
+    docs triple — the durable per-run record is the stamped
+    ``sealed-gate-summary.json`` inside the run's own workspace. The key
+    must be a full 64-hex sealed-run-id token — it names a directory under
+    the gitignored artifacts tree, so traversal-shaped or partial keys
+    refuse here."""
     repo_root = Path(repo_root)
     shared = G4GatePaths(
         evidence_root=repo_root / "docs" / "evidence-logs" / "m4",

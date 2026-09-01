@@ -5,9 +5,12 @@ The crashed sealed event occupies the LEGACY fixed production paths
 refuses to reuse any of them — correctly. The successor event therefore
 derives its OUTPUT locations from its own sealed run id:
 ``artifacts/g4-sealed-runs/<sealed_run_id>/``. The DECLARED per-checkout
-inputs (era census, mutation report, the optional spot-proxy sidecar, the
-evidence root) are shared and never move, and the legacy layout itself is
-pinned: the crashed run's residue stays exactly where the one-shot left it.
+inputs (era census, mutation report, the optional spot-proxy sidecar) are
+shared and never move; the evidence root is a shared OUTPUT destination by
+design (the docs triple at fixed filenames is superseded by a later event —
+the durable per-run record is the run workspace's stamped summary). The
+legacy layout itself is pinned: the crashed run's residue stays exactly
+where the one-shot left it.
 """
 
 from __future__ import annotations
@@ -54,7 +57,11 @@ def test_a_run_key_scopes_the_sealed_workspace_under_g4_sealed_runs() -> None:
     assert paths.artifacts_dir == root / "artifacts"
     assert paths.scratch_root == root  # run_g4_sealed_event appends the scratch name
     assert paths.replay_artifacts == root / "replay"
-    # the DECLARED per-checkout inputs are shared, never run-scoped
+    # the DECLARED per-checkout inputs are shared, never run-scoped; the
+    # evidence root is a shared OUTPUT DESTINATION by design (the docs-side
+    # triple at fixed filenames is superseded by a later event; the durable
+    # per-run record is the stamped summary inside the run's workspace —
+    # round 2, P2, disclosed)
     assert paths.evidence_root == LEGACY.evidence_root
     assert paths.era_census == LEGACY.era_census
     assert paths.mutation_report == LEGACY.mutation_report

@@ -569,6 +569,49 @@ def _evaluate(mini_run, evidence: Path, *, replay=True, floor: int = MINI_FLOOR)
 # ---- Fix A: the lane-2 null-trial library seam ------------------------------------
 
 
+def test_a_symlinked_run_workspace_component_refuses(
+    mini_gate: MiniGateFixture, tmp_path: Path
+) -> None:
+    """Codex round 2, P1-3 (verified by probe): a pre-planted directory
+    symlink at the run-scoped workspace (``artifacts/g4-sealed-runs/<key>``
+    or any component of its chain) would redirect the registry, artifacts,
+    scratch, and replay OUTSIDE the checkout while every lexical check
+    stays green — the sealed run refuses a symlinked workspace component
+    before a single byte is created, naming it."""
+    import os
+
+    outside = tmp_path / "escape-target"
+    outside.mkdir()
+    run_key = "a" * 64
+    runs = mini_gate.repo / "artifacts" / "g4-sealed-runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / run_key).symlink_to(outside)
+    held = verify_sealed_inputs(mini_gate.held_paths)
+    with pytest.raises(RuntimeError, match="symlinked sealed workspace component") as excinfo:
+        run_g4_sealed_event(
+            held,
+            repo_root=mini_gate.repo,
+            registry_path=runs / run_key / "g4-sealed.db",
+            artifacts_dir=runs / run_key / "artifacts",
+            scratch_root=runs / run_key,
+            spot_v2_path=mini_gate.spot_v2,
+        )
+    assert str(runs / run_key) in str(excinfo.value)
+    assert os.path.islink(runs / run_key), "the planted link itself stays untouched"
+    # a REAL directory at the same shape runs (the guard refuses symlinks,
+    # not the run-scoped layout)
+    real_key = "b" * 64
+    run = run_g4_sealed_event(
+        held,
+        repo_root=mini_gate.repo,
+        registry_path=runs / real_key / "g4-sealed.db",
+        artifacts_dir=runs / real_key / "artifacts",
+        scratch_root=runs / real_key,
+        spot_v2_path=mini_gate.spot_v2,
+    )
+    assert run.trial_statuses == {("2", "A"): "COMPLETED", ("2", "B"): "COMPLETED"}
+
+
 def test_the_sealed_lanes_run_end_to_end_on_the_fixture_world(mini_run) -> None:
     """The seam: synthetic capture -> held bundle -> trials -> stamped
     payloads, with ZERO real-artifact reads. Both arms COMPLETE at the

@@ -450,3 +450,51 @@ spends):
   restoration pass (`tree_options-logs/g4-successor-mutations.log`);
   anchor audit: all 351 anchors match exactly once
   (`tree_options-logs/g4-successor-anchor-audit.log`).
+
+## 10. Codex round 2 (the reframed recovery round) — NO-GO, 3 P1 / 1 P2, all verified real and fixed
+
+Round 1's final report was lost to the reviewer host's content filter after
+132k tokens of investigation (one finding recovered from the visible
+narrative — the verdict-blind reconciliation, fixed above). Round 2 was the
+reframed correctness-review re-run: **NO-GO, 0 P0 / 3 P1 / 1 P2**. Every
+finding was reproduced by an independent probe before any fix landed
+(`tree_options-logs/g4-successor-verify-probes.{py,log}`):
+
+- **P1-1 reconciliations were counted globally, without causal order.**
+  Probes: `C,R,R` then two successor consumptions all accepted (one crash
+  stockpiling two re-arms); a hand-chained hash-valid `R` BEFORE its `C`
+  credited by the budget. Fixed BOTH directions: `append_reconciliation`
+  requires an OUTSTANDING spend (`consumptions > reconciliations` at append
+  time — M366); `_check_authority` enforces causal order at EVERY prefix (a
+  reconciliation ahead of any consumption of its content is corruption —
+  M367).
+- **P1-2 the verdict guard's negative check was not root-bound.** Probe: a
+  real PASS summary under the consumed repo, an unrelated empty root passed
+  as `repo_root` → reconciliation minted. Fixed: the guard requires a
+  HOSTING root (the consumed checkout's run-scoped workspace exists under
+  it — identity-bound by the run key — or legacy registry/artifacts/scratch
+  residue exists; M368). Disclosed: the summary check remains a negative
+  filesystem check (a summary created in the check→append window is not
+  seen — the owner act is the authority, this guard is the driver's honesty
+  check), and the legacy summary block is intentionally conservative and
+  global.
+- **P1-3 a directory symlink at the run-scoped workspace escaped the
+  checkout.** Probe: `artifacts/g4-sealed-runs/<64hex>` as a symlink →
+  registry resolved outside the repo. Fixed: `run_g4_sealed_event` refuses
+  a symlinked component anywhere in the workspace's ancestor chain before a
+  byte is created (M369; absent ancestors are created as real directories,
+  only present symlinks refuse — the run-scoped layout itself runs green
+  through a real directory, asserted in the owner test).
+- **P2 the evidence root is a shared OUTPUT destination, not an input.**
+  Corrected the classification everywhere it was misstated: the docs-side
+  evidence triple at fixed filenames is superseded by a later event BY
+  DESIGN; the durable per-run record is the stamped
+  `sealed-gate-summary.json` inside the run's own workspace.
+
+Mutants M366–M369 (registry 353→357) + M359 re-pinned after the
+restructure; 5/5 KILLED with full-suite restoration
+(`tree_options-logs/g4-successor-mutations3.log`); all 357 anchors audited
+to match exactly once. The reviewer's own receipts (focused suite 80/80,
+M356–M365 10/10 KILLED at the reviewed head, the production ledger read
+read-only and untouched — tail `bb6a616b…`) are in
+`tree_options-logs/g4-successor-codex2.log`.
