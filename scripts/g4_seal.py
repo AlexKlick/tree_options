@@ -88,6 +88,7 @@ from tree_options.seal import runner as runner_wiring  # noqa: E402
 from tree_options.seal.errors import (  # noqa: E402
     ApprovalInvalidError,
     LedgerCorruptError,
+    ReconciliationInvalidError,
     SealError,
     SecondExecutionRefusedError,
     VerifiedInputsError,
@@ -373,6 +374,56 @@ def _check_authority(view: seal_ledger.LedgerView, identity: SealedIdentity) -> 
             run_id,
             "no APPROVAL record recomputes to this verified packet and sealed run id",
         )
+
+
+def reconcile_consumed_without_verdict(
+    ledger_root: Path,
+    repo_root: Path,
+    identity: SealedIdentity,
+    *,
+    reason: str,
+    at_epoch: int,
+) -> seal_ledger.LedgerRecord:
+    """The GUARDED owner reconciliation for the successor-event driver.
+
+    The ledger itself is verdict-blind BY DESIGN — it holds authority
+    records only and has no artifact-layout knowledge — so the verdict guard
+    lives HERE, at the orchestrator-facing layer that owns the paths: a
+    ``sealed-gate-summary.json`` for the consumed checkout, at its
+    RUN-SCOPED workspace (``artifacts/g4-sealed-runs/<sealed_run_id>/``,
+    this lane forward) or at the LEGACY fixed artifacts dir (the layout the
+    2026-08-31 crashed event ran under), means the consumption HAS its
+    verdict — re-arming verdicted content is not reconciliation and refuses
+    as ``RECONCILIATION_INVALID``. The raw ``ledger.append_reconciliation``
+    stays available as the owner's explicit override act (hash-chained and
+    reasoned like every authority record); the driver path uses THIS entry
+    point, so the operational sequence cannot reconcile a verdicted event by
+    accident."""
+    from tree_options.seal.g4_gate import production_gate_paths
+
+    run_id = sealed_run_id(identity)
+    run_scoped_summary = (
+        production_gate_paths(repo_root, run_key=run_id).artifacts_dir / "sealed-gate-summary.json"
+    )
+    legacy_summary = production_gate_paths(repo_root).artifacts_dir / "sealed-gate-summary.json"
+    if run_scoped_summary.is_file():
+        raise ReconciliationInvalidError(
+            run_id,
+            f"the consumed checkout's run-scoped workspace holds {run_scoped_summary}"
+            " — its verdict EXISTS; re-arming verdicted content is not"
+            " reconciliation (the raw ledger API is the owner's explicit"
+            " override act, never the driver path)",
+        )
+    if legacy_summary.is_file():
+        raise ReconciliationInvalidError(
+            run_id,
+            f"the legacy sealed artifacts hold {legacy_summary} — the consumed"
+            " checkout's verdict EXISTS (the pre-run-scoping layout); re-arming"
+            " verdicted content is not reconciliation",
+        )
+    return seal_ledger.append_reconciliation(
+        ledger_root, identity, reason=reason, at_epoch=at_epoch
+    )
 
 
 def execute_sealed_run(

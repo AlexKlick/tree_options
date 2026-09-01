@@ -628,6 +628,79 @@ def test_forged_reconciliation_stored_ids_refused_as_corrupt(
         _execute(packet_b, fixture, ledger_root, git_runner=_git_runner_for("f" * 40))
 
 
+def test_the_guarded_reconciliation_mints_for_unverdicted_content(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """Codex round 1 (recovered finding): the LEDGER is verdict-blind by
+    design (authority records only, no path knowledge), so the verdict guard
+    lives at the orchestrator-facing entry point that DOES own the artifact
+    layout. The CRASHED shape — a consumption with no
+    sealed-gate-summary.json anywhere — is exactly what
+    ``reconcile_consumed_without_verdict`` mints for (the 2026-08-31
+    remediation path the driver uses)."""
+    fixture = write_valid_inputs(tmp_path)
+    packet_a = _packet(fixture)
+    _approve(ledger_root, packet_a)
+    _execute(packet_a, fixture, ledger_root)
+    identity_a = identity_from_packet(packet_a)
+    repo = fixture.paths.repo
+    assert not (repo / "artifacts" / "g4-sealed" / "sealed-gate-summary.json").exists()
+    record = g4_seal.reconcile_consumed_without_verdict(
+        ledger_root, repo, identity_a, reason="consumed without verdict", at_epoch=T0 + 2
+    )
+    assert record.kind == L.KIND_RECONCILIATION
+
+
+def test_the_guarded_reconciliation_refuses_a_legacy_verdict(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """A VERDICTED consumption at the LEGACY fixed artifacts layout (the one
+    the 2026-08-31 crashed event ran under) refuses: re-arming verdicted
+    content is not reconciliation (the raw ledger API stays the owner's
+    explicit override act, hash-chained and reasoned like every authority
+    record)."""
+    fixture = write_valid_inputs(tmp_path)
+    packet = _packet(fixture)
+    identity = identity_from_packet(packet)
+    _approve(ledger_root, packet)
+    _execute(packet, fixture, ledger_root)
+    legacy_summary = fixture.paths.repo / "artifacts" / "g4-sealed" / "sealed-gate-summary.json"
+    legacy_summary.parent.mkdir(parents=True, exist_ok=True)
+    legacy_summary.write_text('{"verdict": "PASS"}\n', encoding="utf-8")
+    with pytest.raises(ReconciliationInvalidError, match="legacy sealed artifacts"):
+        g4_seal.reconcile_consumed_without_verdict(
+            ledger_root, fixture.paths.repo, identity, reason="x", at_epoch=T0 + 3
+        )
+    assert L.KIND_RECONCILIATION not in [r.kind for r in L.read_ledger(ledger_root).records]
+
+
+def test_the_guarded_reconciliation_refuses_a_run_scoped_verdict(
+    tmp_path: Path, ledger_root: Path
+) -> None:
+    """The RUN-SCOPED layout (this lane forward) refuses identically: a
+    sealed-gate-summary.json in the consumed checkout's
+    ``artifacts/g4-sealed-runs/<sealed_run_id>/`` workspace is an existing
+    verdict for the content."""
+    from tree_options.seal.g4_gate import production_gate_paths
+
+    fixture = write_valid_inputs(tmp_path)
+    packet = _packet(fixture)
+    identity = identity_from_packet(packet)
+    _approve(ledger_root, packet)
+    _execute(packet, fixture, ledger_root)
+    scoped = (
+        production_gate_paths(fixture.paths.repo, run_key=sealed_run_id(identity)).artifacts_dir
+        / "sealed-gate-summary.json"
+    )
+    scoped.parent.mkdir(parents=True, exist_ok=True)
+    scoped.write_text('{"verdict": "PASS"}\n', encoding="utf-8")
+    with pytest.raises(ReconciliationInvalidError, match="run-scoped"):
+        g4_seal.reconcile_consumed_without_verdict(
+            ledger_root, fixture.paths.repo, identity, reason="x", at_epoch=T0 + 3
+        )
+    assert L.KIND_RECONCILIATION not in [r.kind for r in L.read_ledger(ledger_root).records]
+
+
 def test_approval_missing_exit_6_before_consumption(tmp_path: Path, ledger_root: Path) -> None:
     fixture = write_valid_inputs(tmp_path)
     with pytest.raises(ApprovalInvalidError) as exc_info:

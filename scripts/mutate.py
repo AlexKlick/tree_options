@@ -4919,6 +4919,34 @@ MUTANTS = [
             " to the authority-bearing reconciliation kind)"
         ),
     ),
+    dict(
+        id="M364-g4-verdict-guard-runscoped-voided",
+        owner="test_the_guarded_reconciliation_refuses_a_run_scoped_verdict",
+        file="scripts/g4_seal.py",
+        anchor="    if run_scoped_summary.is_file():",
+        replacement="    if False:  # mutant: the run-scoped verdict guard never refuses",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the driver-path reconciliation is verdict-aware at the"
+            " run-scoped workspace: a sealed-gate-summary.json for the"
+            " consumed checkout means the verdict EXISTS and re-arming"
+            " verdicted content is not reconciliation"
+        ),
+    ),
+    dict(
+        id="M365-g4-verdict-guard-legacy-voided",
+        owner="test_the_guarded_reconciliation_refuses_a_legacy_verdict",
+        file="scripts/g4_seal.py",
+        anchor="    if legacy_summary.is_file():",
+        replacement="    if False:  # mutant: the legacy verdict guard never refuses",
+        selectors=[f"{U}/test_g4_seal.py"],
+        invariant=(
+            "G4 the verdict guard also covers the LEGACY artifacts layout"
+            " (the one the 2026-08-31 crashed event ran under): a"
+            " sealed-gate-summary.json there is an existing verdict for the"
+            " consumed content"
+        ),
+    ),
 ]
 
 
@@ -5070,7 +5098,7 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 351-mutant run stays the"
+            " mutants and re-pins; the full 353-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " here)"
