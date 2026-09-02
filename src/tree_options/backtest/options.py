@@ -181,6 +181,9 @@ class OptionsCounters:
     failed_candidates: int = 0
     no_in_band_expiry: int = 0
     no_in_band_strike: int = 0
+    # (remediation-3) one underlying's non-monotone |delta| ladder: a
+    # counted per-name refusal, never a run abort (the audit's own class)
+    non_monotone_ladder: int = 0
     excluded_pending_action: int = 0
     entries_cancelled: int = 0
     entries_skipped_open: int = 0
@@ -904,6 +907,7 @@ def run_options_backtest(
     counters.failed_candidates = audit.filter_fail
     counters.no_in_band_expiry = audit.no_in_band_expiry
     counters.no_in_band_strike = audit.no_in_band_strike
+    counters.non_monotone_ladder = audit.non_monotone_ladder
     counters.excluded_pending_action = audit.excluded_pending_action
     counters.rule_histogram = dict(audit.rule_histogram)
 

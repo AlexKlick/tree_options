@@ -78,6 +78,19 @@ outcome, mutation campaign + clean-clone determinism at the sealed head.
    value EXACTLY (the census's owner_ratified_policy_value slot is empty by
    construction; any drift = FAIL); every volume-flow decision discloses
    the dropped inputs (NOT_APPLICABLE rows present, OI values withheld).
+   Post-FAIL amendment (owner ruling 2026-09-02, after the event-3 bars-era
+   verdict FAIL 5/6): the criterion's failure text NAMES the stamped
+   `no_in_band_strike` starvation counter whenever it is nonzero — event-3
+   failed exactly here with zero disclosure rows because ZERO candidates
+   ever reached the filter (the derivation's underlying spot was the
+   Friday-only v1 proxy, so every T+1-visible Thursday cell refused
+   "no spot proxy" and every selected name died at the strike pick,
+   no_in_band_strike 312/312, faithfully counted). The same ruling binds
+   the v2 dollar-volume sidecar into the sealed PACKET (held, validated at
+   verify, its hash in the packet's self-binding) and wires its DAILY
+   closes into the derivation ahead of the v1 Friday proxy (the v1 proxy
+   backstops the sessions the sidecar does not cover; the run consumes the
+   HELD sidecar bytes, never a path re-read).
 3. `fill_discipline` (bars leg) — every stamped fill executes strictly
    after its decision session, against a bar received by the execution
    instant AND belonging to the session immediately before the execution

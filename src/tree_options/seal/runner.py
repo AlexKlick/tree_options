@@ -218,11 +218,6 @@ class RepoCalendarSealedRunner:
             registry_path=gate_paths.registry,
             artifacts_dir=gate_paths.artifacts_dir,
             scratch_root=gate_paths.scratch_root,
-            spot_v2_path=(
-                gate_paths.spot_proxy_v2
-                if gate_paths.spot_proxy_v2 is not None and gate_paths.spot_proxy_v2.is_file()
-                else None
-            ),
         )
         evaluation = evaluate_and_record(
             run,

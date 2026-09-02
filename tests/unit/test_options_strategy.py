@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 
@@ -558,3 +559,94 @@ def test_pick_expiry_uses_calendar_days(surface, decision_session) -> None:
             assert _pick_expiry(surface, sid, session, CONFIG) == expected, (sid, session)
             checked += 1
     assert checked >= 10, f"the fixture must exercise in-band expiries broadly (checked {checked})"
+
+
+# ---- the non-monotone ladder (remediation-3, owner ruling 2026-09-02) -------------
+#
+# The real bars era surfaced a put ladder whose derived |delta| ordering
+# INVERTS on one underlying (META/2025-12-19, live probe 2026-09-02) — a
+# data property of noisy derived solves, not a machinery bug. The old fatal
+# raise would abort a whole sealed run over ONE name's ladder (the
+# consumed-authority-no-verdict class); the M165 discipline applies: a
+# refusal is counted and disclosed, never fatal.
+
+
+class _InvertedPutLadderSurface:
+    """Delegates everything to the real surface except ONE underlying: its
+    live expiry is a fixed in-band date and its PUT ladder probes return
+    |delta|s that DECREASE as the strike rises (the put guard's trip)."""
+
+    def __init__(self, inner, uid: str, expiry: date) -> None:
+        self._inner = inner
+        self._uid = uid
+        self._expiry = expiry
+        self._deltas = iter((D("0.55"), D("0.45"), D("0.35")))
+
+    def strike_ladder(self, uid, expiration):
+        if uid == self._uid and expiration == self._expiry:
+            return (D("100"), D("110"), D("120"))
+        return self._inner.strike_ladder(uid, expiration)
+
+    def live_expiries_as_of(self, uid, at):
+        if uid == self._uid:
+            return (self._expiry,)
+        return self._inner.live_expiries_as_of(uid, at)
+
+    def entry_as_of(self, uid, at, contract_id):
+        if uid == self._uid:
+            delta = next(self._deltas, None)
+            if delta is None:
+                return None
+            return SimpleNamespace(abs_delta=delta)
+        return self._inner.entry_as_of(uid, at, contract_id)
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
+def _patched_bottom_name(surface, decision_session, scores):
+    """The wrapper over the real surface, planted on the LOWEST-scored name
+    (the bottom quintile -> the PUT side of the cut)."""
+    target = min(scores, key=lambda s: s.score).security_id
+    return target, _InvertedPutLadderSurface(surface, target, decision_session + timedelta(days=45))
+
+
+def test_pick_strike_raises_the_typed_error_on_an_inverted_put_ladder(
+    surface, decision_session, scores
+) -> None:
+    from tree_options.options.strategy import NonMonotoneLadderError, _pick_strike
+
+    _target, patched = _patched_bottom_name(surface, decision_session, scores)
+    with pytest.raises(NonMonotoneLadderError, match="non-monotone put"):
+        _pick_strike(
+            patched,
+            min(scores, key=lambda s: s.score).security_id,
+            decision_session,
+            decision_session + timedelta(days=45),
+            "P",
+            CONFIG,
+        )
+
+
+def test_build_candidates_counts_and_skips_a_non_monotone_ladder(
+    surface, candidate_filter, decision_session, scores
+) -> None:
+    """THE EVENT-4 LANDMINE: one inverted ladder must cost exactly that one
+    name (counted in the audit, visible in the payload counters), never the
+    run. The other selected names proceed to acceptance as before."""
+    from tree_options.options.strategy import CandidateAudit
+
+    _target, patched = _patched_bottom_name(surface, decision_session, scores)
+    audit = CandidateAudit()
+    candidates = build_candidates(
+        surface=patched,
+        candidate_filter=candidate_filter,
+        decision_session=decision_session,
+        scores=scores,
+        config=CONFIG,
+        audit=audit,
+    )
+    assert audit.selected >= 4, "the fixture must exercise the bottom quintile"
+    assert audit.non_monotone_ladder == 1, audit
+    assert len(candidates) >= 1, "the OTHER names still produce candidates"
+    assert all(c.underlying_security_id != _target for c in candidates)

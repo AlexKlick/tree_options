@@ -232,14 +232,15 @@ def _criterion_candidate_discipline(
         )
     for arm, payload in sorted(trial_payloads.items()):
         key = f"lane2|{arm}"
+        arm_failures: list[str] = []
         stamped_threshold = payload.get("flow_min_session_volume")
         if stamped_threshold != FLOW_MIN_SESSION_VOLUME_AMENDMENT:
-            failures.append(
+            arm_failures.append(
                 f"{key}: stamped flow_min_session_volume {stamped_threshold} != the"
                 f" 0.2.1 amendment value {FLOW_MIN_SESSION_VOLUME_AMENDMENT}"
             )
         if stamped_threshold != protocol_threshold:
-            failures.append(
+            arm_failures.append(
                 f"{key}: stamped flow_min_session_volume {stamped_threshold} != the"
                 f" held protocol's value {protocol_threshold}"
             )
@@ -247,12 +248,12 @@ def _criterion_candidate_discipline(
         oi_dropped = int(hist.get("open_interest", {}).get("NOT_APPLICABLE", 0))
         earnings_disclosed = int(hist.get("earnings_span", {}).get("NOT_APPLICABLE", 0))
         if oi_dropped <= 0:
-            failures.append(
+            arm_failures.append(
                 f"{key}: no counted open_interest NOT_APPLICABLE disclosure row — the"
                 " dropped-with-disclosure term must never be a silent pass"
             )
         if earnings_disclosed <= 0:
-            failures.append(
+            arm_failures.append(
                 f"{key}: no counted earnings_span NOT_APPLICABLE disclosed-absence row"
                 " (owner ruling m4-022-ruling-20260828) — the 0.2.2 disclosure"
                 " family is present + counted, never a silent pass"
@@ -260,21 +261,38 @@ def _criterion_candidate_discipline(
         positions = payload.get("pooled", {}).get("positions", [])
         with_oi = [p for p in positions if "open_interest" in p]
         if with_oi:
-            failures.append(
+            arm_failures.append(
                 f"{key}: {len(with_oi)} stamped position(s) carry an open_interest"
                 " value — OI is withheld on this regime"
             )
         delta_pass = _histogram_count(payload, "delta", "PASS")
         if delta_pass < len(positions):
-            failures.append(
+            arm_failures.append(
                 f"{key}: {len(positions)} stamped position(s) exceed the {delta_pass}"
                 " delta PASS rows — an accepted candidate without an accepted-set"
                 " delta provenance cannot exist"
             )
+        # (remediation-3, owner ruling 2026-09-02; review P1-3) the
+        # starvation counter is named in EVERY failure text this arm
+        # produced, whenever it is nonzero — the plan's "whenever" is
+        # arm-scoped, not disclosure-scoped — and the note STATES THE COUNT
+        # (event-3's 312/312 was universal, but a nonzero count alone does
+        # not establish that every selected name starved)
+        starved = int(payload.get("counters", {}).get("no_in_band_strike", 0))
+        if starved > 0 and arm_failures:
+            starved_note = (
+                f" — the stamped no_in_band_strike counter is {starved}"
+                f" ({starved} selected name(s) found no in-band strike; the"
+                " event-3 root-cause class: a spot-starved or ladder-empty"
+                " derivation upstream of the disclosure family)"
+            )
+            arm_failures = [f"{failure}{starved_note}" for failure in arm_failures]
+        failures.extend(arm_failures)
         reported["per_trial"][key] = {  # type: ignore[index]
             "flow_min_session_volume": stamped_threshold,
             "open_interest_not_applicable_rows": oi_dropped,
             "earnings_span_not_applicable_rows": earnings_disclosed,
+            "no_in_band_strike": starved,
             "n_positions": len(positions),
             "delta_pass_rows": delta_pass,
         }

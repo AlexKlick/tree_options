@@ -1,9 +1,7 @@
 {
   "criteria": [
     {
-      "failures": [
-        "lane 2: verified series 1046462 != the era's stamped distinct_contracts 1046940"
-      ],
+      "failures": [],
       "id": "manifest_integrity",
       "lane1_applicability": "applied",
       "lane1_inapplicable_reason": "",
@@ -13,16 +11,17 @@
           "verified_series": 7630
         },
         "lane2": {
-          "bars_files": 0,
+          "bars_files": 15631,
           "era_target": {
             "distinct_contracts": 1046940,
             "expected_masters": 3045
           },
+          "master_row_refusals": 478,
           "masters_files": 3045,
           "verified_series": 1046462
         }
       },
-      "verdict": "FAIL"
+      "verdict": "PASS"
     },
     {
       "failures": [
@@ -73,9 +72,7 @@
       "verdict": "PASS"
     },
     {
-      "failures": [
-        "lane 1: pooled FIRING parse refusals 0 < 50 (zero-bid rows 723 are the disclosed audit statistic, NOT counted)"
-      ],
+      "failures": [],
       "id": "rejection_paths_live",
       "lane1_applicability": "applied",
       "lane1_inapplicable_reason": "",
@@ -84,19 +81,20 @@
         "lane1": {
           "class_map": "FIRING parse refusals only",
           "counted": 0,
+          "floor": 0,
           "zero_bid_rows_disclosed": 723
         },
         "lane2": {
           "class_map": "zero-volume-bar refusals + MassiveDerivationError + master-row refusals + session_volume_flow below-min FAIL",
-          "counted": 478,
-          "massive_derivation_error_refusals": 0,
+          "counted": 7165,
+          "massive_derivation_error_refusals": 6687,
           "master_row_refusals": 478,
-          "no_bar_not_evaluable_disclosed": 10033184,
+          "no_bar_not_evaluable_disclosed": 43828440,
           "session_volume_flow_fail": 0,
           "zero_volume_bar_refusals": 0
         }
       },
-      "verdict": "FAIL"
+      "verdict": "PASS"
     },
     {
       "failures": [],
@@ -118,16 +116,16 @@
       "lane1_applicability": "applied",
       "lane1_inapplicable_reason": "",
       "reported": {
-        "killed": 357,
-        "killed_entries": 357,
+        "killed": 361,
+        "killed_entries": 361,
         "registry_digest_match": true,
         "registry_supplied": true,
-        "registry_total": 357,
-        "report_head": "646a0dfe50966bf5e035c832971344d043a3f139",
+        "registry_total": 361,
+        "report_head": "60e9ff1b00fbe595ab86a69a8bbd4bfefd9d3924",
         "restoration_suite_passed": true,
-        "sealed_head": "646a0dfe50966bf5e035c832971344d043a3f139",
+        "sealed_head": "60e9ff1b00fbe595ab86a69a8bbd4bfefd9d3924",
         "supplied": true,
-        "total": 357,
+        "total": 361,
         "verdict_logic_mutants": [
           "M244-g4-cboe-foreign-schema-accepted",
           "M245-g4-cboe-real-verifier-bypassed",
@@ -140,7 +138,7 @@
     }
   ],
   "gate": "m4-g4-sealed/1",
-  "head": "646a0dfe50966bf5e035c832971344d043a3f139",
+  "head": "60e9ff1b00fbe595ab86a69a8bbd4bfefd9d3924",
   "reported": {
     "era_target": {
       "distinct_contracts": 1046940,
@@ -148,18 +146,19 @@
     },
     "flow_amendment_value": 100,
     "rejection_floor": 50,
+    "rejection_lane1_floor": 0,
     "trial_statuses": {
       "lane2|A": "COMPLETED",
       "lane2|B": "COMPLETED"
     }
   },
   "stamped_payloads": {
-    "lane1": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/a93589eb18ac1ded40af52dd02cac08d5c78664c3d72a629a4a785367a5c92c8/artifacts/lane1-adapter-census.json",
-    "lane2": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/a93589eb18ac1ded40af52dd02cac08d5c78664c3d72a629a4a785367a5c92c8/artifacts/lane2-census.json"
+    "lane1": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/1e6a64502498c5198ce4c5e1f4c07b064e5e7d2f2fb91f9335c4c1ee5e3da73c/artifacts/lane1-adapter-census.json",
+    "lane2": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/1e6a64502498c5198ce4c5e1f4c07b064e5e7d2f2fb91f9335c4c1ee5e3da73c/artifacts/lane2-census.json"
   },
   "trial_payloads": {
-    "lane2|A": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/a93589eb18ac1ded40af52dd02cac08d5c78664c3d72a629a4a785367a5c92c8/artifacts/trials/m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/3af6b4c72cb0-a-r1.json",
-    "lane2|B": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/a93589eb18ac1ded40af52dd02cac08d5c78664c3d72a629a4a785367a5c92c8/artifacts/trials/m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/3af6b4c72cb0-b-r1.json"
+    "lane2|A": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/1e6a64502498c5198ce4c5e1f4c07b064e5e7d2f2fb91f9335c4c1ee5e3da73c/artifacts/trials/m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/4a395d6c841b-a-r1.json",
+    "lane2|B": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/1e6a64502498c5198ce4c5e1f4c07b064e5e7d2f2fb91f9335c4c1ee5e3da73c/artifacts/trials/m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/4a395d6c841b-b-r1.json"
   },
   "verdict": "FAIL"
 }

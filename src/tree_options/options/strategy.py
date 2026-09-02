@@ -170,6 +170,15 @@ def _pick_expiry(
     return min(in_band, key=lambda e: (abs((e - decision_session).days - config.target_dte), e))
 
 
+class NonMonotoneLadderError(ValueError):
+    """(remediation-3) a |delta| ladder whose ordering inverts — "nearest to
+    target" is ill-posed on it. A DATA condition on the real lane (derived
+    deltas from noisy solves), converted from a fatal raise into a counted
+    per-name refusal by `build_candidates`' handler: one underlying's
+    ladder must never abort a whole sealed run (the consumed-authority-
+    no-verdict class)."""
+
+
 def _pick_strike(
     surface: OptionPitSurface,
     underlying_id: str,
@@ -180,9 +189,11 @@ def _pick_strike(
 ) -> tuple[Decimal, Decimal] | None:
     """Ladder strike whose file(t-1) |delta| is nearest the target inside
     the band. SINGLE-ENTRY lazy reads only (no day-file materialization);
-    monotonicity is asserted, not assumed — a non-monotone |delta| ladder
-    would make "nearest to target" ill-posed. Returns (strike, abs_delta)
-    or None when no in-band strike quotes on the visible file."""
+    monotonicity is CHECKED, not assumed — a non-monotone |delta| ladder
+    would make "nearest to target" ill-posed, so it raises
+    `NonMonotoneLadderError` for the caller's counted-refusal handler.
+    Returns (strike, abs_delta) or None when no in-band strike quotes on
+    the visible file."""
     decision_at = surface.decision_close(decision_session)
     ladder = surface.strike_ladder(underlying_id, expiration)
     probed: list[tuple[Decimal, Decimal]] = []
@@ -195,9 +206,13 @@ def _pick_strike(
             continue  # wing node that did not quote that session
         delta = entry.abs_delta
         if previous is not None and call_put == "C" and delta > previous:
-            raise ValueError(f"non-monotone call |delta| ladder at {underlying_id}/{expiration}")
+            raise NonMonotoneLadderError(
+                f"non-monotone call |delta| ladder at {underlying_id}/{expiration}"
+            )
         if previous is not None and call_put == "P" and delta < previous:
-            raise ValueError(f"non-monotone put |delta| ladder at {underlying_id}/{expiration}")
+            raise NonMonotoneLadderError(
+                f"non-monotone put |delta| ladder at {underlying_id}/{expiration}"
+            )
         previous = delta
         probed.append((strike, delta))
     in_band = [(s, d) for s, d in probed if config.abs_delta_min <= d <= config.abs_delta_max]
@@ -244,6 +259,12 @@ class CandidateAudit:
     excluded_pending_action: int = 0
     no_in_band_expiry: int = 0
     no_in_band_strike: int = 0
+    # (remediation-3) a non-monotone |delta| ladder on ONE underlying is a
+    # DATA condition (real derived deltas from noisy solves can invert
+    # ordering), counted and skipped — never a whole-run abort. The 2026-08-31
+    # crash class (consumed authority, no verdict) is exactly what a fatal
+    # raise here would re-open on the real lane.
+    non_monotone_ladder: int = 0
     filter_not_evaluable: int = 0
     filter_fail: int = 0
     no_visible_quote: int = 0
@@ -318,9 +339,19 @@ def build_candidates(
             if audit is not None:
                 audit.no_in_band_expiry += 1
             continue
-        picked = _pick_strike(
-            surface, underlying_id, decision_session, expiration, call_put, config
-        )
+        try:
+            picked = _pick_strike(
+                surface, underlying_id, decision_session, expiration, call_put, config
+            )
+        except NonMonotoneLadderError:
+            # (remediation-3) counted per-name refusal, never a run abort:
+            # on the real lane this is a data property of one underlying's
+            # derived ladder (META/2025-12-19 surfaced it live), and a fatal
+            # raise here would spend the sealed authority and record no
+            # verdict — the exact 2026-08-31 crash class
+            if audit is not None:
+                audit.non_monotone_ladder += 1
+            continue
         if picked is None:
             if audit is not None:
                 audit.no_in_band_strike += 1

@@ -1,19 +1,17 @@
-SEALED_RUN_ID=a93589eb18ac1ded40af52dd02cac08d5c78664c3d72a629a4a785367a5c92c8
-SEALED_HEAD=646a0dfe50966bf5e035c832971344d043a3f139
+SEALED_RUN_ID=1e6a64502498c5198ce4c5e1f4c07b064e5e7d2f2fb91f9335c4c1ee5e3da73c
+SEALED_HEAD=60e9ff1b00fbe595ab86a69a8bbd4bfefd9d3924
 LANE1_CENSUS_OK contracts=7630 firing_parse_refusals=0
 LANE2_CENSUS_OK contracts=1046462 decision_sessions=86
-SEALED_TRIAL lane=2 ARM=A STATUS=COMPLETED TRIAL_ID=m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/3af6b4c72cb0-a-r1 FOLDS=2 POSITIONS=0
-SEALED_TRIAL lane=2 ARM=B STATUS=COMPLETED TRIAL_ID=m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/3af6b4c72cb0-b-r1 FOLDS=2 POSITIONS=0
+SEALED_TRIAL lane=2 ARM=A STATUS=COMPLETED TRIAL_ID=m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/4a395d6c841b-a-r1 FOLDS=2 POSITIONS=0
+SEALED_TRIAL lane=2 ARM=B STATUS=COMPLETED TRIAL_ID=m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/4a395d6c841b-b-r1 FOLDS=2 POSITIONS=0
 SEALED_GATE_VERDICT=FAIL
-SEALED_CHECK FAIL manifest_integrity
-SEALED_CHECK FAIL manifest_integrity: lane 2: verified series 1046462 != the era's stamped distinct_contracts 1046940
+SEALED_CHECK PASS manifest_integrity
 SEALED_CHECK FAIL candidate_discipline
 SEALED_CHECK FAIL candidate_discipline: lane2|A: no counted open_interest NOT_APPLICABLE disclosure row — the dropped-with-disclosure term must never be a silent pass
 SEALED_CHECK FAIL candidate_discipline: lane2|A: no counted earnings_span NOT_APPLICABLE disclosed-absence row (owner ruling m4-022-ruling-20260828) — the 0.2.2 disclosure family is present + counted, never a silent pass
 SEALED_CHECK FAIL candidate_discipline: lane2|B: no counted open_interest NOT_APPLICABLE disclosure row — the dropped-with-disclosure term must never be a silent pass
 SEALED_CHECK FAIL candidate_discipline: lane2|B: no counted earnings_span NOT_APPLICABLE disclosed-absence row (owner ruling m4-022-ruling-20260828) — the 0.2.2 disclosure family is present + counted, never a silent pass
 SEALED_CHECK PASS fill_discipline
-SEALED_CHECK FAIL rejection_paths_live
-SEALED_CHECK FAIL rejection_paths_live: lane 1: pooled FIRING parse refusals 0 < 50 (zero-bid rows 723 are the disclosed audit statistic, NOT counted)
+SEALED_CHECK PASS rejection_paths_live
 SEALED_CHECK PASS determinism
 SEALED_CHECK PASS mutation_campaign

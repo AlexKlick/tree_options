@@ -1,22 +1,21 @@
 # m4-g4-sealed/1 — sealed real-data gate (evidence log)
 
-- head: `646a0dfe50966bf5e035c832971344d043a3f139`
+- head: `60e9ff1b00fbe595ab86a69a8bbd4bfefd9d3924`
 - verdict: **FAIL** (recorded verbatim; one-shot — no re-run inside the campaign regardless of outcome)
 - trial statuses: `{'lane2|A': 'COMPLETED', 'lane2|B': 'COMPLETED'}`
 
 | # | criterion | verdict | lane-1 applicability |
 |---|-----------|---------|----------------------|
-| 1 | `manifest_integrity` | FAIL | applied |
+| 1 | `manifest_integrity` | PASS | applied |
 | 2 | `candidate_discipline` | FAIL | declared_inapplicable |
 | 3 | `fill_discipline` | PASS | declared_inapplicable |
-| 4 | `rejection_paths_live` | FAIL | applied |
+| 4 | `rejection_paths_live` | PASS | applied |
 | 5 | `determinism` | PASS | applied |
 | 6 | `mutation_campaign` | PASS | applied |
 
-## manifest_integrity — FAIL
+## manifest_integrity — PASS
 
-- failures (verbatim):
-  - lane 2: verified series 1046462 != the era's stamped distinct_contracts 1046940
+- no failures
 - reported (counts + samples):
 
 ```json
@@ -26,11 +25,12 @@
     "verified_series": 7630
   },
   "lane2": {
-    "bars_files": 0,
+    "bars_files": 15631,
     "era_target": {
       "distinct_contracts": 1046940,
       "expected_masters": 3045
     },
+    "master_row_refusals": 478,
     "masters_files": 3045,
     "verified_series": 1046462
   }
@@ -88,10 +88,9 @@
 }
 ```
 
-## rejection_paths_live — FAIL
+## rejection_paths_live — PASS
 
-- failures (verbatim):
-  - lane 1: pooled FIRING parse refusals 0 < 50 (zero-bid rows 723 are the disclosed audit statistic, NOT counted)
+- no failures
 - reported (counts + samples):
 
 ```json
@@ -100,14 +99,15 @@
   "lane1": {
     "class_map": "FIRING parse refusals only",
     "counted": 0,
+    "floor": 0,
     "zero_bid_rows_disclosed": 723
   },
   "lane2": {
     "class_map": "zero-volume-bar refusals + MassiveDerivationError + master-row refusals + session_volume_flow below-min FAIL",
-    "counted": 478,
-    "massive_derivation_error_refusals": 0,
+    "counted": 7165,
+    "massive_derivation_error_refusals": 6687,
     "master_row_refusals": 478,
-    "no_bar_not_evaluable_disclosed": 10033184,
+    "no_bar_not_evaluable_disclosed": 43828440,
     "session_volume_flow_fail": 0,
     "zero_volume_bar_refusals": 0
   }
@@ -136,16 +136,16 @@
 
 ```json
 {
-  "killed": 357,
-  "killed_entries": 357,
+  "killed": 361,
+  "killed_entries": 361,
   "registry_digest_match": true,
   "registry_supplied": true,
-  "registry_total": 357,
-  "report_head": "646a0dfe50966bf5e035c832971344d043a3f139",
+  "registry_total": 361,
+  "report_head": "60e9ff1b00fbe595ab86a69a8bbd4bfefd9d3924",
   "restoration_suite_passed": true,
-  "sealed_head": "646a0dfe50966bf5e035c832971344d043a3f139",
+  "sealed_head": "60e9ff1b00fbe595ab86a69a8bbd4bfefd9d3924",
   "supplied": true,
-  "total": 357,
+  "total": 361,
   "verdict_logic_mutants": [
     "M244-g4-cboe-foreign-schema-accepted",
     "M245-g4-cboe-real-verifier-bypassed",

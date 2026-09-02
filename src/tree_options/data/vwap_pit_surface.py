@@ -226,6 +226,51 @@ def _validated_spot_v2_row(
     return close_value, volume
 
 
+def load_spot_proxy_v2_bytes(raw: bytes, name: str) -> dict[str, dict[date, tuple[Decimal, int]]]:
+    """Parse `spot_proxy_v2.json` bytes — the shared body of the path loader
+    (below) and the sealed-packet verify path (remediation-3: the sidecar's
+    HELD bytes are validated with the exact same discipline at packet-build
+    time, so an unparseable sidecar refuses the packet — never the one-shot
+    run). Shape and validation contracts are the path loader's, verbatim."""
+
+    payload = loads_exact(raw)
+    if not isinstance(payload, dict):
+        raise MassiveOverlayError(f"{name}: top-level JSON is not an object")
+    parsed: dict[str, dict[date, tuple[Decimal, int]]] = {}
+    for underlying, sessions in payload.items():
+        if not isinstance(underlying, str) or not underlying:
+            raise MassiveOverlayError(f"{name}: key {underlying!r} is not a symbol")
+        where = f"{name}[{underlying!r}]"
+        if not isinstance(sessions, dict):
+            raise MassiveOverlayError(f"{where}: session map is not an object")
+        rows: dict[date, tuple[Decimal, int]] = {}
+        for raw_session, cell in sessions.items():
+            try:
+                session = date.fromisoformat(str(raw_session).strip())
+            except ValueError as exc:
+                raise MassiveOverlayError(
+                    f"{where}: key {raw_session!r} is not an ISO date"
+                ) from exc
+            if not isinstance(cell, dict) or set(cell) != {"close", "volume"}:
+                raise MassiveOverlayError(
+                    f"{where}[{raw_session!r}]: each session must carry exactly the"
+                    f" keys close+volume, got {sorted(cell) if isinstance(cell, dict) else cell!r}"
+                )
+            close, volume = cell["close"], cell["volume"]
+            # the FILE form of the exact decimal is the STRING token: a JSON
+            # number arrives here as a Decimal (loads_exact parse_float) and
+            # is refused — the file's own bytes are the provenance, and a
+            # number token is not the vendor's decimal text
+            if not isinstance(close, str):
+                raise MassiveOverlayError(
+                    f"{where}[{raw_session!r}]: close must be an exact decimal STRING"
+                    f" token, got {type(close).__name__}"
+                )
+            rows[session] = _validated_spot_v2_row(where, session, close, volume)
+        parsed[underlying] = rows
+    return parsed
+
+
 def load_spot_proxy_v2(path: Path) -> dict[str, dict[date, tuple[Decimal, int]]]:
     """Parse one `spot_proxy_v2.json` — the OPTIONAL dollar-volume source
     (theory-panel §2 P0-1, option (b): the ~29-call equity-aggregates
@@ -256,42 +301,7 @@ def load_spot_proxy_v2(path: Path) -> dict[str, dict[date, tuple[Decimal, int]]]
     `Decimal("0")` sentinel stands and the $50M term honestly FAILs.
     """
     path = Path(path)
-    payload = loads_exact(path.read_bytes())
-    if not isinstance(payload, dict):
-        raise MassiveOverlayError(f"{path.name}: top-level JSON is not an object")
-    parsed: dict[str, dict[date, tuple[Decimal, int]]] = {}
-    for underlying, sessions in payload.items():
-        if not isinstance(underlying, str) or not underlying:
-            raise MassiveOverlayError(f"{path.name}: key {underlying!r} is not a symbol")
-        where = f"{path.name}[{underlying!r}]"
-        if not isinstance(sessions, dict):
-            raise MassiveOverlayError(f"{where}: session map is not an object")
-        rows: dict[date, tuple[Decimal, int]] = {}
-        for raw_session, cell in sessions.items():
-            try:
-                session = date.fromisoformat(str(raw_session).strip())
-            except ValueError as exc:
-                raise MassiveOverlayError(
-                    f"{where}: key {raw_session!r} is not an ISO date"
-                ) from exc
-            if not isinstance(cell, dict) or set(cell) != {"close", "volume"}:
-                raise MassiveOverlayError(
-                    f"{where}[{raw_session!r}]: each session must carry exactly the"
-                    f" keys close+volume, got {sorted(cell) if isinstance(cell, dict) else cell!r}"
-                )
-            close, volume = cell["close"], cell["volume"]
-            # the FILE form of the exact decimal is the STRING token: a JSON
-            # number arrives here as a Decimal (loads_exact parse_float) and
-            # is refused — the file's own bytes are the provenance, and a
-            # number token is not the vendor's decimal text
-            if not isinstance(close, str):
-                raise MassiveOverlayError(
-                    f"{where}[{raw_session!r}]: close must be an exact decimal STRING"
-                    f" token, got {type(close).__name__}"
-                )
-            rows[session] = _validated_spot_v2_row(where, session, close, volume)
-        parsed[underlying] = rows
-    return parsed
+    return load_spot_proxy_v2_bytes(path.read_bytes(), path.name)
 
 
 @dataclass(frozen=True)
