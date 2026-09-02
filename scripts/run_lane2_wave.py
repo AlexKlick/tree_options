@@ -809,7 +809,9 @@ def execute(slot_ids: Sequence[str]) -> int:
             registry=registry,
             artifacts_dir=run_dir,
             repo=REPO_ROOT,
-            clock=G4_FIXED_CLOCK,
+            # G4_FIXED_CLOCK is a datetime OBJECT; the machinery calls
+            # clock() — wrap it exactly as g4_event.py's fixed_clock does
+            clock=lambda: G4_FIXED_CLOCK,
             split_override=wave0_split_override(),
             liquidity_lane=2,
             flow_min_session_volume=config.flow_min_session_volume,
