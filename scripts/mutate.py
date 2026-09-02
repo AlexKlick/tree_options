@@ -5112,10 +5112,43 @@ MUTANTS = [
         id="M376-g4-packet-sidecar-binding-voided",
         owner="test_the_sidecar_binds_into_the_packet",
         file="src/tree_options/seal/verified_inputs.py",
-        anchor='        spot_proxy_v2_sha256=spot_v2_sha,\n        packet_content_sha256="",',
+        anchor=(
+            '        "spot_proxy_v2_sha256": spot_v2_sha,\n'
+            "    }\n"
+            "    core = VerifiedSealedInputs.model_construct(\n"
+            "        schema_version=VERIFIED_INPUTS_SCHEMA_VERSION,\n"
+            "        code_sha=code_sha,\n"
+            "        protocol_hash=protocol_sha,\n"
+            "        lane1_manifest=lane1,\n"
+            "        lane2_manifest=lane2,\n"
+            "        calendar_decision_artifact_sha256=calendar_sha,\n"
+            "        criteria_artifact_sha256=criteria_sha,\n"
+            "        criteria_source_document_sha256=criteria_source_sha,\n"
+            "        runner_version=RUNNER_VERSION,\n"
+            "        runner_implementation_sha256=registered.implementation_sha256,\n"
+            "        runner_implementation_qualname=registered.implementation_qualname,\n"
+            "        runner_config_digest=registered.config_digest,\n"
+            "        spot_proxy_v2_sha256=spot_v2_sha,\n"
+            '        packet_content_sha256="",'
+        ),
         replacement=(
-            "        spot_proxy_v2_sha256=None,  # mutant: the sidecar rides"
-            ' nothing\n        packet_content_sha256="",'
+            '        "spot_proxy_v2_sha256": None,  # mutant: the sidecar rides nothing\n'
+            "    }\n"
+            "    core = VerifiedSealedInputs.model_construct(\n"
+            "        schema_version=VERIFIED_INPUTS_SCHEMA_VERSION,\n"
+            "        code_sha=code_sha,\n"
+            "        protocol_hash=protocol_sha,\n"
+            "        lane1_manifest=lane1,\n"
+            "        lane2_manifest=lane2,\n"
+            "        calendar_decision_artifact_sha256=calendar_sha,\n"
+            "        criteria_artifact_sha256=criteria_sha,\n"
+            "        criteria_source_document_sha256=criteria_source_sha,\n"
+            "        runner_version=RUNNER_VERSION,\n"
+            "        runner_implementation_sha256=registered.implementation_sha256,\n"
+            "        runner_implementation_qualname=registered.implementation_qualname,\n"
+            "        runner_config_digest=registered.config_digest,\n"
+            "        spot_proxy_v2_sha256=None,  # mutant: both sites, the packet stays self-consistent\n"
+            '        packet_content_sha256="",'
         ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -5154,8 +5187,11 @@ MUTANTS = [
         id="M378-g4-criterion2-starvation-note-voided",
         owner="test_criterion2_names_the_starvation_counter",
         file="src/tree_options/seal/g4_gate.py",
-        anchor='            if starved > 0\n            else ""',
-        replacement='            if False\n            else ""',
+        anchor="        if starved > 0 and arm_failures:",
+        replacement=(
+            "        if False and starved > 0 and arm_failures:  # mutant: the"
+            " counter is never named"
+        ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
             "G4 criterion 2's failure text NAMES the stamped"

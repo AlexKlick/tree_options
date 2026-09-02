@@ -165,6 +165,7 @@ _INPUT_STATUS_KEYS = (
     "lane1",
     "lane2",
     "calendar_decision",
+    "spot_proxy_v2",
     "criteria",
     "runner",
 )
@@ -179,12 +180,26 @@ def _input_paths(args: argparse.Namespace) -> SealedInputPaths:
     ):
         if getattr(args, attribute) is None:
             raise VerifiedInputsError(component, f"--{attribute.replace('_', '-')} is required")
+    # (remediation-3 review P1-1) the preflight is the DOCUMENTED
+    # approval-packet route: it must be able to produce the sidecar-bearing
+    # packet the next sealed run executes, or the approved packet can never
+    # equal the executed one. An explicitly supplied sidecar that is not a
+    # file REFUSES here (a typo'd path is not an absent declaration)
+    spot_proxy_v2 = getattr(args, "spot_proxy_v2", None)
+    if spot_proxy_v2 is not None and not spot_proxy_v2.is_file():
+        raise VerifiedInputsError(
+            "spot_proxy_v2",
+            f"--spot-proxy-v2 {spot_proxy_v2} is not a file — an explicitly"
+            " declared sidecar must exist (omit the flag for the v1-only"
+            " packet shape)",
+        )
     return SealedInputPaths(
         repo=args.repo,
         lane1_manifest=args.lane1_manifest,
         lane1_source=args.lane1_source,
         lane2_manifest=args.lane2_manifest,
         calendar_decision_artifact=args.calendar_decision_artifact,
+        spot_proxy_v2=spot_proxy_v2,
     )
 
 
@@ -203,6 +218,14 @@ def _verified_statuses(packet: VerifiedSealedInputs) -> dict[str, CriterionStatu
             f"payloads={packet.lane2_manifest.referenced_payload_set_hash}"
         ),
         "calendar_decision": _available(packet.calendar_decision_artifact_sha256),
+        # (remediation-3) the sidecar is an availability input of its own:
+        # the preflight DISCLOSES whether the packet carries it (the v1-only
+        # shape prints absent — a visible fact, never a silent default)
+        "spot_proxy_v2": _available(
+            packet.spot_proxy_v2_sha256
+            if packet.spot_proxy_v2_sha256 is not None
+            else "absent (the v1-only packet shape)"
+        ),
         "criteria": _available(
             f"artifact={packet.criteria_artifact_sha256}; "
             f"source={packet.criteria_source_document_sha256}"
@@ -676,6 +699,15 @@ def _add_preflight_args(p: argparse.ArgumentParser) -> None:
         "--calendar-decision-artifact",
         type=Path,
         help="typed, owner-issued holiday-calendar decision artifact",
+    )
+    p.add_argument(
+        "--spot-proxy-v2",
+        type=Path,
+        default=None,
+        help="the OPTIONAL declared daily spot sidecar (remediation-3): when"
+        " supplied it is held, validated, and hash-bound into the packet —"
+        " omit for the v1-only packet shape; a supplied path that is not a"
+        " file refuses",
     )
     p.add_argument(
         "--ledger-root",

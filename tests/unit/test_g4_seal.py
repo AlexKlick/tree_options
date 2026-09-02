@@ -50,12 +50,16 @@ from tree_options.seal.verified_inputs import (  # noqa: E402
 )
 
 T0 = 1_800_000_000
-SEVEN_INPUT_IDS = {
+# (remediation-3) the preflight's availability set gained spot_proxy_v2 —
+# the sidecar is a disclosed packet input (absent = the v1-only shape, a
+# VISIBLE fact in the status output, never a silent default)
+EIGHT_INPUT_IDS = {
     "code_sha",
     "protocol_hash",
     "lane1",
     "lane2",
     "calendar_decision",
+    "spot_proxy_v2",
     "criteria",
     "runner",
 }
@@ -272,7 +276,7 @@ def test_preflight_all_verified_verdict_is_null_and_not_computed(
     assert '"verdict_computed": false' in raw
     assert payload["verdict"] is None
     assert payload["verdict_computed"] is False
-    assert set(payload["criteria_inputs"]) == SEVEN_INPUT_IDS
+    assert set(payload["criteria_inputs"]) == EIGHT_INPUT_IDS
     assert all(status["available"] for status in payload["criteria_inputs"].values())
     assert payload["verified_inputs"]["code_sha"] == CODE_SHA
     assert payload["verified_inputs"]["packet_content_sha256"]

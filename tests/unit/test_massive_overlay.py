@@ -766,3 +766,79 @@ def test_manifest_present_loads_and_tampering_refuses(tmp_path: Path) -> None:
     )
     with pytest.raises(MassiveManifestError):
         load_derived_surface(capture)
+
+
+def test_the_daily_spot_wins_over_v1_on_an_overlap_session(tmp_path: Path) -> None:
+    """(remediation-3 review P2-6) v2 must WIN when both sources cover the
+    session — a v1-first implementation would fill the Monday gap in the
+    other test and still pass; this one pins the PRECEDENCE."""
+    capture = write_capture(
+        tmp_path / "capture",
+        master=fx.contracts_payload(results=(ROW_C650,), as_of="2025-04-07"),
+        bars=(("bars_c650.json", _monday_bar_payload()),),
+        spot=json.dumps({SPY: {S1.isoformat(): "600.00"}}),
+    )
+    overlay = load_derived_surface(capture, spot_v2={SPY: {S1: (Decimal("610.00"), 999)}})
+    assert overlay._spot_for(SPY, S1) == Decimal("610.00")
+
+
+@pytest.mark.parametrize(
+    ("bad_v2", "match"),
+    [
+        ({SPY: {S1: (Decimal("600.00"), -5)}}, "non-negative strict int"),
+        ({SPY: {S1: (Decimal("600.00"), True)}}, "non-negative strict int"),
+        ({SPY: {S1: (Decimal("600.00"), "12")}}, "non-negative strict int"),
+        ({SPY: {"2025-04-07": (Decimal("600.00"), 12)}}, "is not a date"),
+    ],
+)
+def test_an_injected_v2_row_the_loader_would_refuse_refuses(
+    tmp_path: Path, bad_v2: dict, match: str
+) -> None:
+    """(remediation-3 review P2-5) the constructor's parity guarantee is
+    real: a mapping cannot carry the volume-token or session-key shapes the
+    v2 file loader refuses."""
+    capture = write_capture(
+        tmp_path / "capture",
+        master=fx.contracts_payload(results=(ROW_C650,), as_of="2025-04-07"),
+        bars=(("bars_c650.json", _monday_bar_payload()),),
+        spot=FRIDAY_ONLY_SPOT,
+    )
+    with pytest.raises(mo.MassiveOverlayError, match=match):
+        load_derived_surface(capture, spot_v2=bad_v2)
+
+
+def test_the_sidecar_flows_into_the_world_identity(tmp_path: Path) -> None:
+    """(remediation-3 review P1-2) the sidecar's bytes are behavior-bearing
+    research content — two sidecars differing only in a close produce
+    DIFFERENT derived deltas, so they must produce different overlay source
+    identities (world_id, trial ids); a sidecar-free overlay keeps the
+    historical lineage hash unchanged."""
+
+    def _overlay_with(close: str) -> MassiveDerivedOverlay:
+        capture = write_capture(
+            tmp_path / f"cap{close}",
+            master=fx.contracts_payload(results=(ROW_C650,), as_of="2025-04-07"),
+            bars=(("bars_c650.json", _monday_bar_payload()),),
+            spot=FRIDAY_ONLY_SPOT,
+        )
+        return load_derived_surface(capture, spot_v2={SPY: {S1: (Decimal(close), 12_345_678)}})
+
+    a = _overlay_with("600.00")
+    b = _overlay_with("620.00")
+    bare = load_derived_surface(
+        write_capture(
+            tmp_path / "capbare",
+            master=fx.contracts_payload(results=(ROW_C650,), as_of="2025-04-07"),
+            bars=(("bars_c650.json", _monday_bar_payload()),),
+            spot=FRIDAY_ONLY_SPOT,
+        )
+    )
+    assert a.source_sha256 != b.source_sha256, "different sidecars, same identity"
+    assert a.source_sha256 != bare.source_sha256, "the sidecar must ride the lineage"
+    # and the deltas genuinely differ (the identity tracks real behavior)
+    assert a.derived_quote(C650_ID, S1).derived is not None
+    assert b.derived_quote(C650_ID, S1).derived is not None
+    assert (
+        a.derived_quote(C650_ID, S1).derived.abs_delta  # type: ignore[union-attr]
+        != b.derived_quote(C650_ID, S1).derived.abs_delta  # type: ignore[union-attr]
+    )

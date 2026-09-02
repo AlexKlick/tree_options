@@ -204,6 +204,21 @@ def run_gate(argv: list[str] | None = None) -> int:
         return 2
 
     # ---- the precondition: the real typed verifiers over every input -----
+    # (remediation-3 review P1-1) the DEFAULT sidecar path may honestly be
+    # absent (the v1-only packet shape); an EXPLICITLY supplied path that is
+    # not a file REFUSES — a typo'd declaration is not an absent one
+    if args.spot_proxy_v2 == DEFAULT_SPOT_PROXY_V2:
+        declared_sidecar: Path | None = args.spot_proxy_v2 if args.spot_proxy_v2.is_file() else None
+    elif args.spot_proxy_v2.is_file():
+        declared_sidecar = args.spot_proxy_v2
+    else:
+        print(
+            f"REFUSED: --spot-proxy-v2 {args.spot_proxy_v2} is not a file — an"
+            " explicitly declared sidecar must exist (the default path may be"
+            " absent: that is the v1-only packet shape)",
+            file=sys.stderr,
+        )
+        return 2
     paths = SealedInputPaths(
         repo=args.repo,
         lane1_manifest=args.lane1_manifest,
@@ -214,7 +229,7 @@ def run_gate(argv: list[str] | None = None) -> int:
         # PACKET input now — held, validated, and bound into the packet's
         # self-hash (it feeds the derivation's daily spot); the runner
         # consumes the HELD bytes, never this path again
-        spot_proxy_v2=(args.spot_proxy_v2 if args.spot_proxy_v2.is_file() else None),
+        spot_proxy_v2=declared_sidecar,
     )
     held = verify_sealed_inputs(paths)
     print(f"SEALED_PACKET={held.packet.packet_content_sha256}")

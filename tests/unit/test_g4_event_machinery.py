@@ -1732,6 +1732,25 @@ def test_criterion2_names_the_starvation_counter(mini_run) -> None:
     outcome = evaluation.by_id("candidate_discipline")
     assert outcome.verdict == "FAIL"
     assert any("no_in_band_strike counter is 312" in f for f in outcome.failures), outcome.failures
+    # (review P1-3) "whenever nonzero" is ARM-scoped, not disclosure-scoped:
+    # a threshold-only failure with VALID disclosure rows still names the
+    # counter, and the note STATES THE COUNT (never "every selected name"
+    # from a nonzero count alone)
+    threshold_only = {
+        arm: {
+            **p,
+            "flow_min_session_volume": 999,
+            "counters": {**p["counters"], "no_in_band_strike": 4},
+        }
+        for arm, p in payloads.items()
+    }
+    threshold_outcome = _criteria_over(mini, run, threshold_only).by_id("candidate_discipline")
+    assert threshold_outcome.verdict == "FAIL"
+    assert threshold_outcome.failures
+    assert all("no_in_band_strike counter is 4" in f for f in threshold_outcome.failures), (
+        threshold_outcome.failures
+    )
+    assert all("every selected name" not in f for f in threshold_outcome.failures)
     # the healthy shape carries no phantom note (the counter is zero)
     healthy = _criteria_over(mini, run, payloads)
     assert healthy.by_id("candidate_discipline").verdict == "PASS"
