@@ -1,14 +1,14 @@
 # m4-g4-sealed/1 — sealed real-data gate (evidence log)
 
-- head: `8ee37e930cdc5c7bc59bac383d6decb4efca519b`
-- verdict: **FAIL** (recorded verbatim; one-shot — no re-run inside the campaign regardless of outcome)
+- head: `4a40d541af212e9a3e31cb60c67d7bc355e35509`
+- verdict: **PASS** (recorded verbatim; one-shot — no re-run inside the campaign regardless of outcome)
 - trial statuses: `{'lane2|A': 'COMPLETED', 'lane2|B': 'COMPLETED'}`
 
 | # | criterion | verdict | lane-1 applicability |
 |---|-----------|---------|----------------------|
 | 1 | `manifest_integrity` | PASS | applied |
 | 2 | `candidate_discipline` | PASS | declared_inapplicable |
-| 3 | `fill_discipline` | FAIL | declared_inapplicable |
+| 3 | `fill_discipline` | PASS | declared_inapplicable |
 | 4 | `rejection_paths_live` | PASS | applied |
 | 5 | `determinism` | PASS | applied |
 | 6 | `mutation_campaign` | PASS | applied |
@@ -71,48 +71,52 @@
 }
 ```
 
-## fill_discipline — FAIL
+## fill_discipline — PASS
 
 - lane 1: lane-1-inapplicable: one retained session forbids an execution session (the purchase lane is closed; the $0 ruling stands) — no stamped fill can exist on lane 1
-- failures (verbatim):
-  - lane2: participation cap exceeded — OPT-COST-260515-P-00097500/2026-04-09: cumulative 6 > observed 4
+- no failures
 - reported (counts + samples):
 
 ```json
 {
   "n_fills": 271,
-  "over_participation_pairs": 1,
-  "participation_pairs": 254,
+  "over_participation_pairs": 0,
+  "participation_pairs": 271,
   "sample_participation": [
-    {
-      "bar_session": "2025-11-06",
-      "contract": "OPT-AAPL-251219-C-00027500",
-      "cumulative": 10,
-      "observed": 3491
-    },
     {
       "bar_session": "2025-11-13",
       "contract": "OPT-AAPL-251219-P-00027000",
       "cumulative": 10,
-      "observed": 1635
+      "observed": 1635,
+      "trial": "lane2|A"
     },
     {
       "bar_session": "2025-12-11",
       "contract": "OPT-AAPL-251219-P-00027000",
       "cumulative": 10,
-      "observed": 5771
+      "observed": 5771,
+      "trial": "lane2|A"
     },
     {
       "bar_session": "2025-12-04",
       "contract": "OPT-AAPL-260116-C-00028500",
       "cumulative": 10,
-      "observed": 2261
+      "observed": 2261,
+      "trial": "lane2|A"
     },
     {
       "bar_session": "2025-12-31",
       "contract": "OPT-AAPL-260116-C-00028500",
       "cumulative": 10,
-      "observed": 2201
+      "observed": 2201,
+      "trial": "lane2|A"
+    },
+    {
+      "bar_session": "2026-01-08",
+      "contract": "OPT-AAPL-260220-C-00027500",
+      "cumulative": 10,
+      "observed": 5979,
+      "trial": "lane2|A"
     }
   ]
 }
@@ -166,16 +170,16 @@
 
 ```json
 {
-  "killed": 367,
-  "killed_entries": 367,
+  "killed": 368,
+  "killed_entries": 368,
   "registry_digest_match": true,
   "registry_supplied": true,
-  "registry_total": 367,
-  "report_head": "8ee37e930cdc5c7bc59bac383d6decb4efca519b",
+  "registry_total": 368,
+  "report_head": "4a40d541af212e9a3e31cb60c67d7bc355e35509",
   "restoration_suite_passed": true,
-  "sealed_head": "8ee37e930cdc5c7bc59bac383d6decb4efca519b",
+  "sealed_head": "4a40d541af212e9a3e31cb60c67d7bc355e35509",
   "supplied": true,
-  "total": 367,
+  "total": 368,
   "verdict_logic_mutants": [
     "M244-g4-cboe-foreign-schema-accepted",
     "M245-g4-cboe-real-verifier-bypassed",

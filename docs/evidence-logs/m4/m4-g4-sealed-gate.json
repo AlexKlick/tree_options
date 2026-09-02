@@ -56,50 +56,53 @@
       "verdict": "PASS"
     },
     {
-      "failures": [
-        "lane2: participation cap exceeded \u2014 OPT-COST-260515-P-00097500/2026-04-09: cumulative 6 > observed 4"
-      ],
+      "failures": [],
       "id": "fill_discipline",
       "lane1_applicability": "declared_inapplicable",
       "lane1_inapplicable_reason": "lane-1-inapplicable: one retained session forbids an execution session (the purchase lane is closed; the $0 ruling stands) \u2014 no stamped fill can exist on lane 1",
       "reported": {
         "n_fills": 271,
-        "over_participation_pairs": 1,
-        "participation_pairs": 254,
+        "over_participation_pairs": 0,
+        "participation_pairs": 271,
         "sample_participation": [
-          {
-            "bar_session": "2025-11-06",
-            "contract": "OPT-AAPL-251219-C-00027500",
-            "cumulative": 10,
-            "observed": 3491
-          },
           {
             "bar_session": "2025-11-13",
             "contract": "OPT-AAPL-251219-P-00027000",
             "cumulative": 10,
-            "observed": 1635
+            "observed": 1635,
+            "trial": "lane2|A"
           },
           {
             "bar_session": "2025-12-11",
             "contract": "OPT-AAPL-251219-P-00027000",
             "cumulative": 10,
-            "observed": 5771
+            "observed": 5771,
+            "trial": "lane2|A"
           },
           {
             "bar_session": "2025-12-04",
             "contract": "OPT-AAPL-260116-C-00028500",
             "cumulative": 10,
-            "observed": 2261
+            "observed": 2261,
+            "trial": "lane2|A"
           },
           {
             "bar_session": "2025-12-31",
             "contract": "OPT-AAPL-260116-C-00028500",
             "cumulative": 10,
-            "observed": 2201
+            "observed": 2201,
+            "trial": "lane2|A"
+          },
+          {
+            "bar_session": "2026-01-08",
+            "contract": "OPT-AAPL-260220-C-00027500",
+            "cumulative": 10,
+            "observed": 5979,
+            "trial": "lane2|A"
           }
         ]
       },
-      "verdict": "FAIL"
+      "verdict": "PASS"
     },
     {
       "failures": [],
@@ -146,16 +149,16 @@
       "lane1_applicability": "applied",
       "lane1_inapplicable_reason": "",
       "reported": {
-        "killed": 367,
-        "killed_entries": 367,
+        "killed": 368,
+        "killed_entries": 368,
         "registry_digest_match": true,
         "registry_supplied": true,
-        "registry_total": 367,
-        "report_head": "8ee37e930cdc5c7bc59bac383d6decb4efca519b",
+        "registry_total": 368,
+        "report_head": "4a40d541af212e9a3e31cb60c67d7bc355e35509",
         "restoration_suite_passed": true,
-        "sealed_head": "8ee37e930cdc5c7bc59bac383d6decb4efca519b",
+        "sealed_head": "4a40d541af212e9a3e31cb60c67d7bc355e35509",
         "supplied": true,
-        "total": 367,
+        "total": 368,
         "verdict_logic_mutants": [
           "M244-g4-cboe-foreign-schema-accepted",
           "M245-g4-cboe-real-verifier-bypassed",
@@ -168,7 +171,7 @@
     }
   ],
   "gate": "m4-g4-sealed/1",
-  "head": "8ee37e930cdc5c7bc59bac383d6decb4efca519b",
+  "head": "4a40d541af212e9a3e31cb60c67d7bc355e35509",
   "reported": {
     "era_target": {
       "distinct_contracts": 1046940,
@@ -183,12 +186,12 @@
     }
   },
   "stamped_payloads": {
-    "lane1": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/085ae87f06e0c829836d13a29739ebed9deba823dc930e738bd840bdc325d2ea/artifacts/lane1-adapter-census.json",
-    "lane2": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/085ae87f06e0c829836d13a29739ebed9deba823dc930e738bd840bdc325d2ea/artifacts/lane2-census.json"
+    "lane1": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/a7942103b18a5d5ff50250bd9a6378a9c6940c73da756f651268f7becbc9b828/artifacts/lane1-adapter-census.json",
+    "lane2": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/a7942103b18a5d5ff50250bd9a6378a9c6940c73da756f651268f7becbc9b828/artifacts/lane2-census.json"
   },
   "trial_payloads": {
-    "lane2|A": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/085ae87f06e0c829836d13a29739ebed9deba823dc930e738bd840bdc325d2ea/artifacts/trials/m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-a-r1.json",
-    "lane2|B": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/085ae87f06e0c829836d13a29739ebed9deba823dc930e738bd840bdc325d2ea/artifacts/trials/m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-b-r1.json"
+    "lane2|A": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/a7942103b18a5d5ff50250bd9a6378a9c6940c73da756f651268f7becbc9b828/artifacts/trials/m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-a-r1.json",
+    "lane2|B": "/home/alexk/documents/tree_options/artifacts/g4-sealed-runs/a7942103b18a5d5ff50250bd9a6378a9c6940c73da756f651268f7becbc9b828/artifacts/trials/m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-b-r1.json"
   },
-  "verdict": "FAIL"
+  "verdict": "PASS"
 }
