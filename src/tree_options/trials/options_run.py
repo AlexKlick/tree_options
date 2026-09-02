@@ -48,6 +48,7 @@ from tree_options.candidates.filters import CandidateFilter
 from tree_options.data.authority import PointInTimeDataset
 from tree_options.data.options_pit import OptionPitSurface
 from tree_options.evaluation.stats import ScoredLabel, backtest_summary
+from tree_options.ledger.fees import PerContractFeeModel
 from tree_options.options import OptionSignal, OptionsStrategyConfig
 from tree_options.protocol.holdout import (
     FINAL_HOLDOUT_DATES,
@@ -1609,6 +1610,15 @@ def _execute(
         # G5: the declared score model's seed is stamped in the payload so
         # the artifact discloses it without re-hashing the config
         payload["score_seed"] = score_seed
+    # (theory wave-0, D6) the fee model is DISCLOSED in the payload: the
+    # entry/exit fills were priced under the default PerContractFeeModel,
+    # and the artifact alone names its cost constants (string Decimals —
+    # exact tokens, never floats) without re-reading the ledger module
+    payload["fee_model"] = {
+        "model": "PerContractFeeModel",
+        "fee_per_contract": str(PerContractFeeModel.DEFAULT_FEE_PER_CONTRACT),
+        "minimum_per_order": str(PerContractFeeModel.DEFAULT_MINIMUM_PER_ORDER),
+    }
     if calendars_differ and execution_calendar is not None:
         # (P1-1) both calendar identities are DISCLOSED: which grid split
         # the folds and which calendar the fill engine's session checks ran

@@ -1443,6 +1443,20 @@ def test_the_clean_clone_replay_reproduces_the_payload_hashes(mini_run) -> None:
     assert hashes(run.artifacts_dir) == hashes(replay.artifacts_dir)
 
 
+def test_the_trial_payload_discloses_the_fee_model(mini_run) -> None:
+    """(theory wave-0, D6 — M381's owner) the stamped payload names the
+    fee model its fills were priced under, with the exact cost constants
+    as string Decimals (never floats)."""
+    _mini, run, _replay = mini_run
+    path = run.trial_payload_paths[("2", "A")]
+    payload = load_json(path)["payload"]
+    assert payload["fee_model"] == {
+        "model": "PerContractFeeModel",
+        "fee_per_contract": "0.65",
+        "minimum_per_order": "1.00",
+    }
+
+
 def test_a_discipline_violation_in_a_stamped_payload_fails_criterion_and_verdict(
     mini_run, tmp_path: Path
 ) -> None:
