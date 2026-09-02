@@ -1518,8 +1518,10 @@ def _criteria_over(
 
 def test_over_participation_fails_the_fill_discipline_criterion(mini_run) -> None:
     """M335's owner: a stamped fill sequence whose cumulative participation
-    per (contract, bar session) exceeds the bar's observed volume FAILS
-    criterion 3 by name."""
+    per (trial, contract, bar session) exceeds the bar's observed volume
+    FAILS criterion 3 by name (owner ruling 2026-09-02: the ledger is PER
+    TRIAL — the checker never pools the counterfactual arms, so the
+    failure text names the offending trial)."""
     mini, run, _replay = mini_run
     arm_a = run.trial_payload_paths[("2", "A")]
     body = json.loads(arm_a.read_text(encoding="utf-8"))
@@ -1527,10 +1529,67 @@ def test_over_participation_fails_the_fill_discipline_criterion(mini_run) -> Non
     assert payload["fills_log"], "the fixture world must actually fill"
     victim = payload["fills_log"][0]
     victim["quantity"] = victim["bar_volume"] + 1  # one contract over the bar
-    evaluation = _criteria_over(mini, run, {"A": payload, "B": payload})
+    arm_b = load_json(run.trial_payload_paths[("2", "B")])["payload"]
+    evaluation = _criteria_over(mini, run, {"A": payload, "B": arm_b})
     fill = evaluation.by_id("fill_discipline")
     assert fill.verdict == "FAIL"
     assert any("participation cap exceeded" in f for f in fill.failures), fill.failures
+    assert fill.reported["over_participation_pairs"] == 1
+    assert any(
+        f.startswith("lane2: participation cap exceeded — lane2|A ") for f in fill.failures
+    ), fill.failures
+
+
+def test_cross_arm_fills_do_not_pool_participation(mini_run) -> None:
+    """M380's owner (owner ruling 2026-09-02, after the event-4 verdict):
+    arms A and B are INDEPENDENT COUNTERFACTUAL books — the same (contract,
+    bar session) filled within cap by EACH arm is not over-participation.
+    Event-4's only criterion-3 failure was the pooled double-count: arm A
+    bought 3 and arm B bought 3 of the same contract against one 4-volume
+    bar (each book individually within cap)."""
+    mini, run, _replay = mini_run
+    arm_a = run.trial_payload_paths[("2", "A")]
+    body = json.loads(arm_a.read_text(encoding="utf-8"))
+    payload = body["payload"]
+    assert payload["fills_log"], "the fixture world must actually fill"
+    template = payload["fills_log"][0]
+    fill_a = dict(template, quantity=3, bar_volume=4)
+    fill_b = dict(template, quantity=3, bar_volume=4, fill_id=template["fill_id"] + "-B")
+    payload["fills_log"] = [fill_a]
+    arm_b = load_json(run.trial_payload_paths[("2", "B")])["payload"]
+    arm_b = dict(arm_b)
+    arm_b["fills_log"] = [fill_b]
+    evaluation = _criteria_over(mini, run, {"A": payload, "B": arm_b})
+    fill = evaluation.by_id("fill_discipline")
+    assert fill.verdict == "PASS", fill.failures
+    assert fill.reported["over_participation_pairs"] == 0
+    assert fill.reported["participation_pairs"] == 2  # one ledger per trial
+    sample = fill.reported["sample_participation"]
+    assert {row["trial"] for row in sample} == {"lane2|A", "lane2|B"}
+
+
+def test_within_arm_cumulative_participation_still_fails(mini_run) -> None:
+    """The per-trial ruling keeps the CUMULATIVE discipline within one book
+    (M176's read side at the gate): two fills of the SAME trial against the
+    same (contract, bar session) summing past the bar's observed volume
+    still FAIL by name."""
+    mini, run, _replay = mini_run
+    arm_a = run.trial_payload_paths[("2", "A")]
+    body = json.loads(arm_a.read_text(encoding="utf-8"))
+    payload = body["payload"]
+    assert payload["fills_log"], "the fixture world must actually fill"
+    template = payload["fills_log"][0]
+    payload["fills_log"] = [
+        dict(template, quantity=3, bar_volume=4),
+        dict(template, quantity=2, bar_volume=4, fill_id=template["fill_id"] + "-2"),
+    ]
+    arm_b = load_json(run.trial_payload_paths[("2", "B")])["payload"]
+    evaluation = _criteria_over(mini, run, {"A": payload, "B": arm_b})
+    fill = evaluation.by_id("fill_discipline")
+    assert fill.verdict == "FAIL"
+    assert any(
+        f.startswith("lane2: participation cap exceeded — lane2|A ") for f in fill.failures
+    ), fill.failures
     assert fill.reported["over_participation_pairs"] == 1
 
 
