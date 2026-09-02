@@ -4463,14 +4463,31 @@ MUTANTS = [
         id="M335-g4-participation-cap-dropped",
         owner="test_over_participation_fails_the_fill_discipline_criterion",
         file="src/tree_options/seal/g4_gate.py",
-        anchor=("        if quantity > bar_volumes[(contract, session)]\n    ]"),
+        anchor=("        if quantity > bar_volumes[(trial, contract, session)]\n    ]"),
         replacement=("        if False\n    ]"),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
             "G4 criterion 3's participation clause: cumulative participation"
-            " per (contract, bar session) never exceeds the bar's observed"
-            " volume — dropping the check certifies a stamped fill sequence"
-            " that traded more contracts than the session actually did"
+            " per (trial, contract, bar session) never exceeds the bar's"
+            " observed volume (owner ruling 2026-09-02) — dropping the check"
+            " certifies a stamped fill sequence that traded more contracts"
+            " than the session actually did"
+        ),
+    ),
+    dict(
+        id="M380-g4-participation-key-collapsed-to-pooled",
+        owner="test_cross_arm_fills_do_not_pool_participation",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=("            pair = (key, contract_id, str(bar_session))"),
+        replacement=("            pair = (contract_id, str(bar_session))"),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 3's participation ledger is PER TRIAL (owner ruling"
+            " 2026-09-02, after the event-4 verdict): arms A and B are"
+            " independent counterfactual books — collapsing the key back to"
+            " (contract, bar session) pools them and re-fails event-4's"
+            " shape (arm A 3 + arm B 3 > an observed 4 each book"
+            " individually respected)"
         ),
     ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
@@ -5379,11 +5396,11 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 367-mutant run stays the"
+            " mutants and re-pins; the full 368-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " + M364-M369 remediation + M370-M373 remediation-2 +"
-            " M374-M379 remediation-3 here)"
+            " M374-M379 remediation-3 + M380 remediation-4 here)"
         ),
     )
     args = parser.parse_args()

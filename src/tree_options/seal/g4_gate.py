@@ -314,10 +314,17 @@ def _criterion_fill_discipline(
     trial_payloads: Mapping[str, Mapping[str, Any]],
     execution_calendar: SessionCalendar,
 ) -> CriterionOutcome:
+    """(owner ruling 2026-09-02, per-trial evaluation) arms A and B are
+    INDEPENDENT COUNTERFACTUAL books — the fill engine keeps its own
+    cumulative participation ledger per book (the M176/M289 discipline) —
+    so the checker accumulates per (trial, contract, bar session), never
+    pooling the arms against one real bar: event-4's only criterion-3
+    failure was the pooled double-count (arm A 3 + arm B 3 > an observed
+    4 that each book individually respected)."""
     failures: list[str] = []
     total_fills = 0
-    participation: dict[tuple[str, str], int] = {}
-    bar_volumes: dict[tuple[str, str], int] = {}
+    participation: dict[tuple[str, str, str], int] = {}
+    bar_volumes: dict[tuple[str, str, str], int] = {}
     for arm, payload in sorted(trial_payloads.items()):
         key = f"lane2|{arm}"
         for fill in payload.get("fills_log", []):
@@ -361,13 +368,14 @@ def _criterion_fill_discipline(
                     f" {fill.get('execution_session')}), not exactly 1"
                 )
             contract_id = str(fill["contract_id"])
-            pair = (contract_id, str(bar_session))
+            pair = (key, contract_id, str(bar_session))
             participation[pair] = participation.get(pair, 0) + int(fill["quantity"])
             bar_volumes[pair] = int(fill.get("bar_volume", -1))
     over = [
-        f"{contract}/{session}: cumulative {quantity} > observed {bar_volumes[(contract, session)]}"
-        for (contract, session), quantity in sorted(participation.items())
-        if quantity > bar_volumes[(contract, session)]
+        f"{trial} {contract}/{session}: cumulative {quantity}"
+        f" > observed {bar_volumes[(trial, contract, session)]}"
+        for (trial, contract, session), quantity in sorted(participation.items())
+        if quantity > bar_volumes[(trial, contract, session)]
     ]
     for line in over:
         failures.append(f"lane2: participation cap exceeded — {line}")
@@ -381,12 +389,13 @@ def _criterion_fill_discipline(
             "over_participation_pairs": len(over),
             "sample_participation": [
                 {
+                    "trial": t,
                     "contract": c,
                     "bar_session": s,
-                    "cumulative": participation[(c, s)],
-                    "observed": bar_volumes[(c, s)],
+                    "cumulative": participation[(t, c, s)],
+                    "observed": bar_volumes[(t, c, s)],
                 }
-                for (c, s) in sorted(participation)[:5]
+                for (t, c, s) in sorted(participation)[:5]
             ],
         },
         lane1_applicability="declared_inapplicable",

@@ -96,6 +96,15 @@ outcome, mutation campaign + clean-clone determinism at the sealed head.
    instant AND belonging to the session immediately before the execution
    session (ordinal difference exactly 1); cumulative participation per
    (contract, bar session) never exceeds the bar's observed volume.
+   Post-FAIL amendment (owner ruling 2026-09-02, after the event-4
+   bars-era verdict FAIL 5/6): the participation ledger is PER TRIAL —
+   arms A and B are independent counterfactual books, each keeping its
+   own cumulative ledger per (contract, bar session) exactly as the fill
+   engine enforces (the M176/M289 discipline); the checker accumulates
+   per (trial, contract, bar session), never pooling the arms against
+   one real bar. Event-4's only criterion-3 failure was the pooled
+   double-count: arm A bought 3 and arm B bought 3 of the same contract
+   against one 4-volume bar (each book individually within cap).
 4. `rejection_paths_live` — zero-volume/unfillable and provenance-refusal
    paths fire ≥ 50 times pooled per lane (a degenerate all-pass run proves
    nothing). Pre-run amendment (owner decision 2026-08-26, dated BEFORE
