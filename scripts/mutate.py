@@ -4479,15 +4479,17 @@ MUTANTS = [
         owner="test_cross_arm_fills_do_not_pool_participation",
         file="src/tree_options/seal/g4_gate.py",
         anchor=("            pair = (key, contract_id, str(bar_session))"),
-        replacement=("            pair = (contract_id, str(bar_session))"),
+        replacement=('            pair = ("lane2|pooled", contract_id, str(bar_session))'),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
             "G4 criterion 3's participation ledger is PER TRIAL (owner ruling"
             " 2026-09-02, after the event-4 verdict): arms A and B are"
-            " independent counterfactual books — collapsing the key back to"
-            " (contract, bar session) pools them and re-fails event-4's"
-            " shape (arm A 3 + arm B 3 > an observed 4 each book"
-            " individually respected)"
+            " independent counterfactual books — a CONSTANT trial component"
+            " pools them while preserving the key's arity (Codex remediation-4"
+            " P1: the bare 2-tuple collapsed key crashed the reduction's"
+            " unpacking, a crash-kill proving nothing), and the pooled ledger"
+            " re-fails event-4's shape behaviorally (arm A 3 + arm B 3 > an"
+            " observed 4 each book individually respected)"
         ),
     ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
