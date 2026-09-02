@@ -715,6 +715,9 @@ def _held_paths() -> SealedInputPaths:
 def execute(slot_ids: Sequence[str]) -> int:
     registration = load_ledger()
     state = load_state()
+    from tree_options.seal.runner import wire_production_runner
+
+    wire_production_runner(REPO_ROOT)  # the packet binds the runner impl
     held = verify_sealed_inputs(_held_paths())
     scratch = SCRATCH_ROOT / "world"
     scratch.mkdir(parents=True, exist_ok=True)
@@ -868,6 +871,9 @@ def main(argv: list[str] | None = None) -> int:
                 f"REFUSED: {REGISTRATION_PATH} or {STATE_PATH} already exists"
                 " — registration is one-shot"
             )
+        from tree_options.seal.runner import wire_production_runner
+
+        wire_production_runner(REPO_ROOT)  # the packet binds the runner impl
         held = verify_sealed_inputs(_held_paths())
         registration = build_registration(
             manifest_hash=held.packet.lane2_manifest.typed_manifest_content_hash,
