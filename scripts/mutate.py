@@ -5011,6 +5011,63 @@ MUTANTS = [
             " before a single byte is created"
         ),
     ),
+    dict(
+        id="M370-g4-custody-identity-voided",
+        owner="test_criterion1_is_the_custody_identity",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=("    if verified_series + master_row_refusals != era_contracts:"),
+        replacement=(
+            "    if verified_series != era_contracts:  # mutant: the raw"
+            " equality, refused custody invisible"
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 1's target is the CUSTODY IDENTITY (verified +"
+            " counted master-row refusals == stamped, the 2026-09-01 owner"
+            " ruling): honest refusals are custody, and only a row accounted"
+            " for by NEITHER side is silent loss"
+        ),
+    ),
+    dict(
+        id="M371-g4-lane1-floor-voided",
+        owner="test_the_real_lane1_floor_is_zero",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="    if lane1_counted < lane1_floor:",
+        replacement="    if False:  # mutant: the lane-1 floor never enforces",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the lane-1 floor is a PARAMETER (0 real / explicit fixture):"
+            " the explicit fixture floor must still FAIL a clean lane 1 —"
+            " an unenforced floor proves nothing"
+        ),
+    ),
+    dict(
+        id="M372-g4-census-manifest-binding-voided",
+        owner="test_criterion1_binds_the_run_census_to_the_verified_packet",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor="    if stamped_manifest_hash != lane2_manifest_content_hash:",
+        replacement="    if False:  # mutant: a foreign census certifies anything",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the run's lane-2 census must name THE manifest the held"
+            " packet verified (Codex remediation-2 P1-1): a foreign or"
+            " stale census satisfies no arithmetic — its counts certify"
+            " nothing"
+        ),
+    ),
+    dict(
+        id="M373-g4-cli-lane1-floor-default-forced",
+        owner="test_the_gate_cli_requires_yes_and_then_records_the_verdict",
+        file="scripts/run_m4_sealed_gate.py",
+        anchor="        default=REJECTION_LANE1_FLOOR,",
+        replacement="        default=REJECTION_FLOOR,  # mutant: fixture floor forced on real data",
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the CLI (the documented real-data entry) threads the"
+            " ruling's lane-1 floor 0 by default (Codex remediation-2"
+            " P1-2): the floor policy must not depend on the entrypoint"
+        ),
+    ),
 ]
 
 
@@ -5162,7 +5219,7 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 357-mutant run stays the"
+            " mutants and re-pins; the full 361-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " here)"

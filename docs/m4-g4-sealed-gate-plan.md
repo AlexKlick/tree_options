@@ -63,6 +63,15 @@ outcome, mutation campaign + clean-clone determinism at the sealed head.
 1. `manifest_integrity` — lane 2: every master + bar file passes the typed
    manifest verify (zero silent drops); lane 1: the Cboe manifest verifies.
    Count of verified series is reported, target = the era's stamped counts.
+   Post-FAIL amendment (owner ruling 2026-09-01, after the successor sealed
+   event's recorded verdict): the target is the CUSTODY IDENTITY — verified
+   series + counted master-row refusals = the era's stamped
+   distinct_contracts. The era census stamps the masters domain; the
+   manifest verifies the overlay-accepted domain; refused master rows are
+   counted custody (identity restatements, canonical-id collisions, schema
+   refusals), never silent loss. A row accounted for by neither side is the
+   failure. On the 2026-09-01 era: 1,046,462 verified + 478 refused =
+   1,046,940 stamped.
 2. `candidate_discipline` — every accepted candidate carries a delta
    provenance in the protocol's accepted set for its regime; the
    volume-flow threshold in the stamped run equals the 0.2.1 AMENDMENT
@@ -86,7 +95,16 @@ outcome, mutation campaign + clean-clone determinism at the sealed head.
    refusals, MassiveDerivationError, master-row refusals, and
    session_volume_flow below-min FAIL are counted; no_bar NOT_EVALUABLE
    rows are disclosed, NOT counted (~32% of rows by construction — an
-   availability disclosure, never pooled into the floor).
+   availability disclosure, never pooled into the floor). Post-FAIL
+   amendment (owner ruling 2026-09-01, after the successor sealed event's
+   recorded verdict): the lane-1 floor's premise measured FALSE on real
+   data — the retained Cboe session parses perfectly clean (0 FIRING parse
+   refusals; the 723 zero-bid rows remain the disclosed audit statistic,
+   never counted). The REAL lane-1 floor is 0; the lane-2 floor stays the
+   pre-declared 50; fixture/pre-declared gates pass an explicit lane-1
+   floor to keep their teeth, and path-liveness is carried by lane 2's
+   counted classes (the 2026-09-01 event pooled 478 master-row refusals
+   alone) plus the fixture gates.
 5. `determinism` — a clean-clone replay of the sealed run reproduces the
    stamped payload hashes byte-identically (the M3 cleanclone pattern).
 6. `mutation_campaign` — at the sealed head: full suite green, registry

@@ -358,7 +358,7 @@ def _build_era_census(root: Path) -> Path:
     census = {
         "schema_version": "m4-coverage-census/1",
         "coverage": {"expected_masters": 2},
-        "values": {"observed_census_fact": {"distinct_contracts": {"v": 5}}},
+        "values": {"observed_census_fact": {"distinct_contracts": {"v": 6}}},
     }
     path = root / "census.json"
     path.write_text(json.dumps(census), encoding="utf-8")
@@ -561,6 +561,7 @@ def _evaluate(mini_run, evidence: Path, *, replay=True, floor: int = MINI_FLOOR)
             mutation_registry_ids=_live_mutation_registry()[0],
             mutation_registry_digest=_live_mutation_registry()[1],
             rejection_floor=floor,
+            rejection_lane1_floor=floor,  # the fixture gate keeps lane-1 teeth
         ),
         replay_dir,
     )
@@ -1368,7 +1369,7 @@ def test_an_era_census_with_non_integer_counts_refuses_at_preflight(
             json.dumps(
                 {
                     "coverage": {"expected_masters": json.loads(bad_count)},
-                    "values": {"observed_census_fact": {"distinct_contracts": {"v": 5}}},
+                    "values": {"observed_census_fact": {"distinct_contracts": {"v": 6}}},
                 }
             ),
             encoding="utf-8",
@@ -1473,6 +1474,8 @@ def _criteria_over(
     *,
     lane2_census=None,
     floor: int = MINI_FLOOR,
+    lane1_floor: int = MINI_FLOOR,
+    era_contracts: int = 6,
     mutation_report=None,
     mutation_registry_ids="unset",
     mutation_registry_digest="unset",
@@ -1482,6 +1485,7 @@ def _criteria_over(
 
     live = _live_mutation_registry()
     held = verify_sealed_inputs(mini.held_paths)
+    lane2_manifest_hash = held.packet.lane2_manifest.typed_manifest_content_hash
     return evaluate_g4_criteria(
         protocol=load_protocol_bytes(held.protocol_bytes),
         lane1_census=load_json(run.census_payload_paths["lane1"])["payload"],
@@ -1505,8 +1509,10 @@ def _criteria_over(
             live[1] if mutation_registry_digest == "unset" else mutation_registry_digest
         ),
         head=(mini.head if head == "unset" else head),
-        era_target={"expected_masters": 2, "distinct_contracts": 5},
+        era_target={"expected_masters": 2, "distinct_contracts": era_contracts},
         rejection_floor=floor,
+        rejection_lane1_floor=lane1_floor,
+        lane2_manifest_content_hash=lane2_manifest_hash,
     )
 
 
@@ -1581,6 +1587,127 @@ def test_a_flow_threshold_drift_fails_candidate_discipline(mini_run) -> None:
     assert any("101" in failure for failure in candidate.failures)
 
 
+def test_criterion1_is_the_custody_identity(mini_run) -> None:
+    """Owner ruling 2026-09-01 (post-FAIL remediation): the era census stamps
+    the MASTERS domain; the manifest verifies the OVERLAY-ACCEPTED domain.
+    Refused master rows are counted custody — the criterion passes when
+    verified + refused == stamped, and a real gap (a row neither verified
+    nor refused-counted) is the failure, never the honest refusal. The
+    fixture world: 5 verified + 1 refused master row == the stamped 6."""
+    mini, run, _replay = mini_run
+    lane2 = load_json(run.census_payload_paths["lane2"])["payload"]
+    verified = int(lane2["manifest"]["verified_series"])
+    refused = int(lane2["rejection_classes"]["master_row_refusals"])
+    assert refused >= 1, "the fixture must carry the refused-master class"
+    trial_payloads = {
+        arm: load_json(path)["payload"] for (_l, arm), path in run.trial_payload_paths.items()
+    }
+    # the masters-domain stamp: verified + refused (the honest census target)
+    evaluation = _criteria_over(mini, run, trial_payloads, era_contracts=verified + refused)
+    manifest = evaluation.by_id("manifest_integrity")
+    assert manifest.verdict == "PASS", manifest.failures
+    assert manifest.reported["lane2"]["master_row_refusals"] == refused
+    # a REAL gap — a stamp the custody cannot account for — fails naming the
+    # identity (this is the silent-loss case the criterion exists to catch)
+    gap = _criteria_over(mini, run, trial_payloads, era_contracts=verified + refused + 1)
+    assert gap.by_id("manifest_integrity").verdict == "FAIL"
+    assert any(
+        "custody" in f and f"distinct_contracts {verified + refused + 1}" in f
+        for f in gap.by_id("manifest_integrity").failures
+    )
+
+
+def test_the_real_lane1_floor_is_zero(mini_run) -> None:
+    """Owner ruling 2026-09-01 (post-FAIL remediation): the pre-declared
+    lane-1 floor of 50 FIRING parse refusals was the pending pre-run
+    calibration, and its premise measured false — the REAL retained Cboe
+    session parses perfectly clean (0 firing refusals; the 723 zero-bid
+    rows are the disclosed audit statistic). The REAL lane-1 floor is 0;
+    fixture gates keep an explicit floor for teeth (the lane-2 floor stays
+    pre-declared at 50 for the real run)."""
+    mini, run, _replay = mini_run
+    trial_payloads = {
+        arm: load_json(path)["payload"] for (_l, arm), path in run.trial_payload_paths.items()
+    }
+    clean_lane1 = {
+        **load_json(run.census_payload_paths["lane1"])["payload"],
+        "rejection_classes": {"firing_parse_refusals": 0, "zero_bid_rows_disclosed": 723},
+    }
+    from tree_options.protocol.loader import load_protocol_bytes
+
+    held = verify_sealed_inputs(mini.held_paths)
+    base = dict(
+        protocol=load_protocol_bytes(held.protocol_bytes),
+        lane1_census=clean_lane1,
+        lane2_census=load_json(run.census_payload_paths["lane2"])["payload"],
+        trial_payloads=trial_payloads,
+        trial_statuses={"lane2|A": "COMPLETED", "lane2|B": "COMPLETED"},
+        execution_calendar=run.execution_calendar,
+        stamped_hashes={},
+        replay_hashes={},
+        mutation_report=load_json(mini.mutation_report),
+    )
+    live = _live_mutation_registry()
+    from tree_options.seal.g4_gate import REJECTION_LANE1_FLOOR
+
+    assert REJECTION_LANE1_FLOOR == 0, "the real lane-1 floor is the 0 ruling"
+    real = evaluate_g4_criteria(
+        **base,
+        mutation_registry_ids=live[0],
+        mutation_registry_digest=live[1],
+        head=mini.head,
+        era_target={"expected_masters": 2, "distinct_contracts": 6},
+        rejection_floor=MINI_FLOOR,
+        lane2_manifest_content_hash=(held.packet.lane2_manifest.typed_manifest_content_hash),
+    )  # lane1 floor defaults to the ruling's 0
+    assert real.by_id("rejection_paths_live").verdict == "PASS"
+    assert real.by_id("rejection_paths_live").reported["lane1"]["floor"] == 0
+    # an EXPLICIT lane-1 floor still has teeth (the fixture gates' form)
+    fixture = evaluate_g4_criteria(
+        **base,
+        mutation_registry_ids=live[0],
+        mutation_registry_digest=live[1],
+        head=mini.head,
+        era_target={"expected_masters": 2, "distinct_contracts": 6},
+        rejection_floor=MINI_FLOOR,
+        lane2_manifest_content_hash=(held.packet.lane2_manifest.typed_manifest_content_hash),
+        rejection_lane1_floor=5,
+    )
+    rejection = fixture.by_id("rejection_paths_live")
+    assert rejection.verdict == "FAIL"
+    assert any("lane 1: pooled FIRING parse refusals 0 < 5" in f for f in rejection.failures)
+
+
+def test_criterion1_binds_the_run_census_to_the_verified_packet(mini_run) -> None:
+    """Codex remediation-2 review, P1-1 (probe-verified): the custody
+    identity alone accepts a FOREIGN or STALE census — the 2026-09-01
+    zero-bars event's census stamp (manifest 419794d2…) satisfies the
+    identity against a packet that verifies a DIFFERENT manifest. The run's
+    lane-2 census must name THE manifest the held packet verified: the
+    census's typed_manifest_content_hash binds to the packet's, and a
+    mismatch FAILs naming the binding (a compensated count can then only
+    come from tampering the run's own mid-execution artifacts, which the
+    determinism comparison and the disclosed concurrent-tamper class own)."""
+    mini, run, _replay = mini_run
+    lane2 = load_json(run.census_payload_paths["lane2"])["payload"]
+    trial_payloads = {
+        arm: load_json(path)["payload"] for (_l, arm), path in run.trial_payload_paths.items()
+    }
+    held = verify_sealed_inputs(mini.held_paths)
+    packet_hash = held.packet.lane2_manifest.typed_manifest_content_hash
+    assert lane2["manifest"]["typed_manifest_content_hash"] == packet_hash
+    # a FOREIGN census — same arithmetic identity, a DIFFERENT manifest —
+    # refuses naming the binding
+    foreign = json.loads(json.dumps(lane2))
+    foreign["manifest"]["typed_manifest_content_hash"] = "f" * 64
+    evaluation = _criteria_over(mini, run, trial_payloads, lane2_census=foreign)
+    manifest = evaluation.by_id("manifest_integrity")
+    assert manifest.verdict == "FAIL"
+    assert any("a different manifest than the verified packet" in f for f in manifest.failures), (
+        manifest.failures
+    )
+
+
 def test_a_manifest_count_mismatch_fails_manifest_integrity(mini_run) -> None:
     mini, run, _replay = mini_run
     trial_payloads = {
@@ -1601,6 +1728,7 @@ def test_a_manifest_count_mismatch_fails_manifest_integrity(mini_run) -> None:
         mutation_report=load_json(mini.mutation_report),
         era_target={"expected_masters": 2, "distinct_contracts": 99},
         rejection_floor=MINI_FLOOR,
+        lane2_manifest_content_hash=(held.packet.lane2_manifest.typed_manifest_content_hash),
     )
     manifest = mismatch.by_id("manifest_integrity")
     assert manifest.verdict == "FAIL"
@@ -1627,6 +1755,7 @@ def test_a_missing_replay_or_mutation_report_fails_honestly(mini_run) -> None:
         stamped_hashes={},
         era_target={"expected_masters": 2, "distinct_contracts": 5},
         rejection_floor=MINI_FLOOR,
+        lane2_manifest_content_hash=(held.packet.lane2_manifest.typed_manifest_content_hash),
     )
     none_supplied = evaluate_g4_criteria(replay_hashes=None, mutation_report=None, **common)
     assert none_supplied.by_id("determinism").verdict == "FAIL"
@@ -1714,6 +1843,13 @@ def test_the_gate_cli_requires_yes_and_then_records_the_verdict(
     assert "SEALED_GATE_VERDICT=PASS" in out
     assert out.count("SEALED_CHECK PASS") == 6
     assert (tmp_path / "evidence" / "m4-g4-sealed-gate.json").is_file()
+    # the CLI (the documented real-data entry) threads the RULING's lane-1
+    # floor 0 by default — never the fixture's 50 (Codex remediation-2
+    # review, P1-2: the floor policy must not depend on the entrypoint)
+    recorded = json.loads(
+        (tmp_path / "evidence" / "m4-g4-sealed-gate.json").read_text(encoding="utf-8")
+    )
+    assert recorded["criteria"][3]["reported"]["lane1"]["floor"] == 0
     # a second invocation refuses (one-shot)
     with pytest.raises(RuntimeError, match=r"refusing to reuse sealed (registry|artifacts)"):
         cli.run_gate([*args, "--yes"])

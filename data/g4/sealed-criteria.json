@@ -3,7 +3,7 @@
   "gate": "M4-G4 sealed real-data gate",
   "note": "Transcribed for preflight AVAILABILITY checking only (PR A/A5): lists the criteria inputs the sealed run requires and the decision-rule structure exactly as pre-declared in the source plan's section 4. NO verdict logic, NO thresholds the plan does not already state, NO outcome data. The plan doc itself is NOT modified by this transcription.",
   "source": "docs/m4-g4-sealed-gate-plan.md",
-  "source_sha256": "74c71f1ff135f070afb5a607ca88cce68bb272425881dbd4f8ea745ca2860614",
+  "source_sha256": "83147c3a2ff6ce5a8d7b26ab1a14a8189fc9e924a0796333dcf89c1ec4b4c6c6",
   "decision_rule": {
     "evaluation_source": "stamped payload files only",
     "verdict_recording": "verdict PASS or FAIL recorded verbatim",
@@ -15,7 +15,7 @@
   "criteria": [
     {
       "id": "manifest_integrity",
-      "statement": "lane 2: every master + bar file passes the typed manifest verify (zero silent drops); lane 1: the Cboe manifest verifies. Count of verified series is reported, target = the era's stamped counts."
+      "statement": "lane 2: every master + bar file passes the typed manifest verify (zero silent drops); lane 1: the Cboe manifest verifies. Count of verified series is reported, target = the era's stamped counts. Post-FAIL amendment (owner ruling 2026-09-01, after the successor sealed event's recorded verdict): the target is the CUSTODY IDENTITY — verified series + counted master-row refusals = the era's stamped distinct_contracts. The era census stamps the masters domain; the manifest verifies the overlay-accepted domain; refused master rows are counted custody (identity restatements, canonical-id collisions, schema refusals), never silent loss. A row accounted for by neither side is the failure. On the 2026-09-01 era: 1,046,462 verified + 478 refused = 1,046,940 stamped."
     },
     {
       "id": "candidate_discipline",
@@ -27,7 +27,7 @@
     },
     {
       "id": "rejection_paths_live",
-      "statement": "zero-volume/unfillable and provenance-refusal paths fire at least 50 times pooled per lane (a degenerate all-pass run proves nothing). Pre-run amendment (owner decision 2026-08-26, dated BEFORE any sealed run — this is the PENDING owner calibration the draft named, re-set before first look): the pooled floor stays 50 for BOTH lanes under a STRICT per-lane class map. Lane 1 map: FIRING parse refusals only are counted; zero-bid rows are an audit statistic — reported, NOT counted (the purchase lane is closed: one retained session forbids an execution session). Lane 2 map: zero-volume-bar refusals, MassiveDerivationError, master-row refusals, and session_volume_flow below-min FAIL are counted; no_bar NOT_EVALUABLE rows are disclosed, NOT counted (~32% of rows by construction — an availability disclosure, never pooled into the floor)."
+      "statement": "zero-volume/unfillable and provenance-refusal paths fire at least 50 times pooled per lane (a degenerate all-pass run proves nothing). Pre-run amendment (owner decision 2026-08-26, dated BEFORE any sealed run — this is the PENDING owner calibration the draft named, re-set before first look): the pooled floor stays 50 for BOTH lanes under a STRICT per-lane class map. Lane 1 map: FIRING parse refusals only are counted; zero-bid rows are an audit statistic — reported, NOT counted (the purchase lane is closed: one retained session forbids an execution session). Lane 2 map: zero-volume-bar refusals, MassiveDerivationError, master-row refusals, and session_volume_flow below-min FAIL are counted; no_bar NOT_EVALUABLE rows are disclosed, NOT counted (~32% of rows by construction — an availability disclosure, never pooled into the floor). Post-FAIL amendment (owner ruling 2026-09-01, after the successor sealed event's recorded verdict): the lane-1 floor's premise measured FALSE on real data — the retained Cboe session parses perfectly clean (0 FIRING parse refusals; the 723 zero-bid rows remain the disclosed audit statistic, never counted). The REAL lane-1 floor is 0; the lane-2 floor stays the pre-declared 50; fixture/pre-declared gates pass an explicit lane-1 floor to keep their teeth, and path-liveness is carried by lane 2's counted classes (the 2026-09-01 event pooled 478 master-row refusals alone) plus the fixture gates."
     },
     {
       "id": "determinism",
