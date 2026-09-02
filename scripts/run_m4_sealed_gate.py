@@ -166,6 +166,7 @@ def _cli_gate_paths(args: argparse.Namespace):
 
 def run_gate(argv: list[str] | None = None) -> int:
     from tree_options.seal.g4_gate import (
+        REJECTION_FLOOR,
         GatePreflightError,
         evaluate_and_record,
         live_mutation_registry,
@@ -247,6 +248,10 @@ def run_gate(argv: list[str] | None = None) -> int:
         head=head,
         mutation_registry_ids=mutation_registry_ids,
         mutation_registry_digest=mutation_registry_digest,
+        # this CLI is the FIXTURE/pre-declared gate surface: the lane-1 floor
+        # stays the pre-declared 50 here for teeth (the REAL run's lane-1
+        # floor is the 2026-09-01 ruling's 0, the library default)
+        rejection_lane1_floor=REJECTION_FLOOR,
         log_lines=(
             f"SEALED_HEAD={head}",
             f"SEALED_PACKET={held.packet.packet_content_sha256}",

@@ -52,6 +52,15 @@ from tree_options.trials.g4_event import (
 # exercise the machinery — the sealed default is exactly 50.
 REJECTION_FLOOR = 50
 
+# Owner ruling 2026-09-01 (post-FAIL remediation, after the successor sealed
+# event): the lane-1 floor of 50 FIRING parse refusals was the pending
+# pre-run calibration, and its premise measured FALSE — the real retained
+# Cboe session parses perfectly clean (0 firing refusals; the 723 zero-bid
+# rows are the disclosed audit statistic, not counted). The REAL lane-1
+# floor is 0; path-liveness is carried by lane 2's counted classes and the
+# fixture gates, which pass an EXPLICIT lane-1 floor to keep their teeth.
+REJECTION_LANE1_FLOOR = 0
+
 CRITERION_IDS = (
     "manifest_integrity",
     "candidate_discipline",
@@ -142,10 +151,23 @@ def _criterion_manifest_integrity(
         )
     verified_series = int(lane2_manifest.get("verified_series", -1))
     era_contracts = int(era_target["distinct_contracts"])
-    if verified_series != era_contracts:
+    # Owner ruling 2026-09-01 (post-FAIL remediation): the CUSTODY IDENTITY.
+    # The era census stamps the MASTERS domain; the manifest verifies the
+    # OVERLAY-ACCEPTED domain. Refused master rows are counted custody
+    # (identity restatements, canonical-id collisions, schema refusals —
+    # counted + disclosed in the run's own census), never silent loss:
+    # verified + refused == stamped. A row accounted for by NEITHER side is
+    # the real failure. On the 2026-09-01 era this held exactly:
+    # 1,046,462 verified + 478 refused == 1,046,940 stamped.
+    master_row_refusals = int(
+        lane2_census.get("rejection_classes", {}).get("master_row_refusals", 0)
+    )
+    if verified_series + master_row_refusals != era_contracts:
         failures.append(
-            f"lane 2: verified series {verified_series} != the era's stamped"
-            f" distinct_contracts {era_contracts}"
+            f"lane 2: verified series {verified_series} + counted master-row"
+            f" refusals {master_row_refusals} != the era's stamped"
+            f" distinct_contracts {era_contracts} — custody identity: a row"
+            " accounted for by neither side is silent loss"
         )
     if not lane1_census.get("manifest", {}).get("verified"):
         failures.append("lane 1: the Cboe manifest verify did not pass")
@@ -154,6 +176,7 @@ def _criterion_manifest_integrity(
             "masters_files": masters_files,
             "bars_files": lane2_manifest.get("bars_files"),
             "verified_series": verified_series,
+            "master_row_refusals": master_row_refusals,
             "era_target": dict(era_target),
         },
         "lane1": {
@@ -340,23 +363,28 @@ def _criterion_fill_discipline(
 
 def _criterion_rejection_paths(
     lane1_census: Mapping[str, Any],
-    lane2_census: Mapping[str, Any],
+    lane2_census: Mapping[str, Mapping[str, Any]],
     trial_payloads: Mapping[str, Mapping[str, Any]],
     floor: int,
+    lane1_floor: int,
 ) -> CriterionOutcome:
     """The STRICT per-lane class map (plan §4 criterion 4, owner decision
     2026-08-26). Lane 1 counts FIRING parse refusals ONLY (zero-bid rows
-    are an audit statistic, reported never counted). Lane 2 counts
-    zero-volume-bar refusals + MassiveDerivationError + master-row
-    refusals + session_volume_flow below-min FAIL, pooled across the
-    lane's arms; ``no_bar`` NOT_EVALUABLE rows are disclosed, NEVER
-    counted (~availability disclosure, never pooled into the floor)."""
+    are an audit statistic, reported never counted); its floor is the
+    2026-09-01 owner ruling's 0 for the real run (the pre-declared 50 was
+    the pending pre-run calibration and its premise measured false — the
+    real retained session parses clean), with fixture gates passing an
+    explicit floor to keep their teeth. Lane 2 counts zero-volume-bar
+    refusals + MassiveDerivationError + master-row refusals +
+    session_volume_flow below-min FAIL, pooled across the lane's arms;
+    ``no_bar`` NOT_EVALUABLE rows are disclosed, NEVER counted
+    (~availability disclosure, never pooled into the floor)."""
     failures: list[str] = []
     lane1_classes = lane1_census.get("rejection_classes", {})
     lane1_counted = int(lane1_classes.get("firing_parse_refusals", 0))
-    if lane1_counted < floor:
+    if lane1_counted < lane1_floor:
         failures.append(
-            f"lane 1: pooled FIRING parse refusals {lane1_counted} < {floor}"
+            f"lane 1: pooled FIRING parse refusals {lane1_counted} < {lane1_floor}"
             f" (zero-bid rows {lane1_classes.get('zero_bid_rows_disclosed')}"
             " are the disclosed audit statistic, NOT counted)"
         )
@@ -389,6 +417,7 @@ def _criterion_rejection_paths(
             "floor": floor,
             "lane1": {
                 "counted": lane1_counted,
+                "floor": lane1_floor,
                 "class_map": "FIRING parse refusals only",
                 "zero_bid_rows_disclosed": lane1_classes.get("zero_bid_rows_disclosed"),
             },
@@ -627,28 +656,35 @@ def evaluate_g4_criteria(
     mutation_registry_digest: str | None = None,
     head: str | None = None,
     rejection_floor: int = REJECTION_FLOOR,
+    rejection_lane1_floor: int = REJECTION_LANE1_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six pre-declared criteria from the stamped payloads.
 
     ``trial_payloads`` maps the lane-2 arm id to its STAMPED payload (the
     file's ``payload`` object); the censuses are the stamped lane census
     payloads; ``era_target`` carries the era's stamped counts (expected
-    masters, distinct contracts) the plan's criterion 1 targets;
-    ``replay_hashes`` the clean-clone replay's payload hashes; and
-    ``mutation_report`` the registry report (N/N KILLED + restoration).
-    ``mutation_registry_ids`` / ``mutation_registry_digest`` are the LIVE
-    registry's id set and content digest at this head — criterion 6 binds
-    the report to them (a report that omits registry mutants, carries
-    foreign or duplicate ids, disagrees with its own entries' verdicts, or
-    lacks the matching registry digest is stale or forged and FAILs;
-    absent registry = FAIL, never silently skipped). ``head`` (normally
-    always the sealed head) additionally binds the report to the exact
-    commit the campaign ran at."""
+    masters, distinct contracts — criterion 1's CUSTODY IDENTITY target:
+    verified + counted master-row refusals == stamped, the 2026-09-01
+    owner ruling); ``replay_hashes`` the clean-clone replay's payload
+    hashes; and ``mutation_report`` the registry report (N/N KILLED +
+    restoration). ``mutation_registry_ids`` / ``mutation_registry_digest``
+    are the LIVE registry's id set and content digest at this head —
+    criterion 6 binds the report to them (a report that omits registry
+    mutants, carries foreign or duplicate ids, disagrees with its own
+    entries' verdicts, or lacks the matching registry digest is stale or
+    forged and FAILs; absent registry = FAIL, never silently skipped).
+    ``head`` (normally always the sealed head) additionally binds the
+    report to the exact commit the campaign ran at. ``rejection_floor``
+    is lane 2's pre-declared pooled floor; ``rejection_lane1_floor`` is
+    lane 1's floor — 0 for the real run (the 2026-09-01 ruling), explicit
+    in fixture gates for teeth."""
     outcomes = (
         _criterion_manifest_integrity(lane1_census, lane2_census, era_target),
         _criterion_candidate_discipline(protocol, lane2_census, trial_payloads),
         _criterion_fill_discipline(trial_payloads, execution_calendar),
-        _criterion_rejection_paths(lane1_census, lane2_census, trial_payloads, rejection_floor),
+        _criterion_rejection_paths(
+            lane1_census, lane2_census, trial_payloads, rejection_floor, rejection_lane1_floor
+        ),
         _criterion_determinism(stamped_hashes, replay_hashes, replay_aliased),
         _criterion_mutation_campaign(
             mutation_report, mutation_registry_ids, mutation_registry_digest, head
@@ -661,6 +697,7 @@ def evaluate_g4_criteria(
         reported={
             "trial_statuses": dict(trial_statuses),
             "rejection_floor": rejection_floor,
+            "rejection_lane1_floor": rejection_lane1_floor,
             "flow_amendment_value": FLOW_MIN_SESSION_VOLUME_AMENDMENT,
             "era_target": dict(era_target),
         },
@@ -940,17 +977,21 @@ def evaluate_and_record(
     mutation_registry_ids: frozenset[str] | None = None,
     mutation_registry_digest: str | None = None,
     rejection_floor: int = REJECTION_FLOOR,
+    rejection_lane1_floor: int = REJECTION_LANE1_FLOOR,
 ) -> G4GateEvaluation:
     """Evaluate the six criteria from the run's stamped payloads, write the
     evidence triple + the stamped summary, and return the evaluation.
 
     The auxiliary criterion inputs are the prior events' STAMPED artifacts:
-    the era census (criterion 1's targets), the clean-clone replay payload
-    dir (criterion 5; absent = an honest FAIL, never a skip), and the
-    mutation registry report at the sealed head (criterion 6 — bound to
-    ``mutation_registry_ids``, the LIVE registry at this head; a stale
-    report FAILs). ``rejection_floor`` defaults to the pre-declared 50; it
-    is a parameter so a fixture-scale MINI gate can exercise the machinery."""
+    the era census (criterion 1's targets — the CUSTODY IDENTITY: verified
+    + counted master-row refusals == stamped, the 2026-09-01 ruling), the
+    clean-clone replay payload dir (criterion 5; absent = an honest FAIL,
+    never a skip), and the mutation registry report at the sealed head
+    (criterion 6 — bound to ``mutation_registry_ids``, the LIVE registry at
+    this head; a stale report FAILs). ``rejection_floor`` (lane 2) defaults
+    to the pre-declared 50; ``rejection_lane1_floor`` defaults to the
+    2026-09-01 ruling's 0 for the real run — both are parameters so
+    fixture-scale MINI gates can exercise the machinery with teeth."""
     protocol = load_protocol_bytes(held.protocol_bytes)
     lane1_census = load_json(run.census_payload_paths["lane1"])["payload"]
     lane2_census = load_json(run.census_payload_paths["lane2"])["payload"]
@@ -1076,6 +1117,7 @@ def evaluate_and_record(
         mutation_registry_digest=mutation_registry_digest,
         head=head,
         rejection_floor=rejection_floor,
+        rejection_lane1_floor=rejection_lane1_floor,
     )
     write_gate_evidence(
         evaluation,
