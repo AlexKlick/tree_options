@@ -1,0 +1,746 @@
+{
+  "alias_map": {
+    "band-0.35": [
+      "band-0.35"
+    ],
+    "band-0.45": [
+      "band-0.45",
+      "dte-045",
+      "flow-0100",
+      "hold-exit4",
+      "null-s1"
+    ],
+    "band-0.55": [
+      "band-0.55"
+    ],
+    "dte-035": [
+      "dte-035"
+    ],
+    "dte-045": [
+      "band-0.45",
+      "dte-045",
+      "flow-0100",
+      "hold-exit4",
+      "null-s1"
+    ],
+    "dte-055": [
+      "dte-055"
+    ],
+    "flow-0001": [
+      "flow-0001"
+    ],
+    "flow-0010": [
+      "flow-0010"
+    ],
+    "flow-0100": [
+      "band-0.45",
+      "dte-045",
+      "flow-0100",
+      "hold-exit4",
+      "null-s1"
+    ],
+    "flow-1000": [
+      "flow-1000"
+    ],
+    "hold-exit2": [
+      "hold-exit2"
+    ],
+    "hold-exit4": [
+      "band-0.45",
+      "dte-045",
+      "flow-0100",
+      "hold-exit4",
+      "null-s1"
+    ],
+    "hold-exit6": [
+      "hold-exit6"
+    ],
+    "hold-exit8": [
+      "hold-exit8"
+    ],
+    "mom20-a": [
+      "mom20-a"
+    ],
+    "mom20-b": [
+      "mom20-b"
+    ],
+    "null-s1": [
+      "band-0.45",
+      "dte-045",
+      "flow-0100",
+      "hold-exit4",
+      "null-s1"
+    ],
+    "null-s1-b": [
+      "null-s1-b"
+    ],
+    "null-s2": [
+      "null-s2"
+    ],
+    "null-s3": [
+      "null-s3"
+    ]
+  },
+  "dataset_manifest_hash": "119b0d2f0ada3150ca66279991dddf821a9f1e203ad649f824967216d0c7422f",
+  "execution_plan": {
+    "band-0.35": {
+      "aliases": [
+        "band-0.35"
+      ],
+      "canonical": "band-0.35",
+      "canonical_slot": true,
+      "run_index": 5
+    },
+    "band-0.45": {
+      "aliases": [
+        "band-0.45",
+        "dte-045",
+        "flow-0100",
+        "hold-exit4",
+        "null-s1"
+      ],
+      "canonical": "null-s1",
+      "canonical_slot": false,
+      "run_index": 1
+    },
+    "band-0.55": {
+      "aliases": [
+        "band-0.55"
+      ],
+      "canonical": "band-0.55",
+      "canonical_slot": true,
+      "run_index": 6
+    },
+    "dte-035": {
+      "aliases": [
+        "dte-035"
+      ],
+      "canonical": "dte-035",
+      "canonical_slot": true,
+      "run_index": 7
+    },
+    "dte-045": {
+      "aliases": [
+        "band-0.45",
+        "dte-045",
+        "flow-0100",
+        "hold-exit4",
+        "null-s1"
+      ],
+      "canonical": "null-s1",
+      "canonical_slot": false,
+      "run_index": 1
+    },
+    "dte-055": {
+      "aliases": [
+        "dte-055"
+      ],
+      "canonical": "dte-055",
+      "canonical_slot": true,
+      "run_index": 8
+    },
+    "flow-0001": {
+      "aliases": [
+        "flow-0001"
+      ],
+      "canonical": "flow-0001",
+      "canonical_slot": true,
+      "run_index": 9
+    },
+    "flow-0010": {
+      "aliases": [
+        "flow-0010"
+      ],
+      "canonical": "flow-0010",
+      "canonical_slot": true,
+      "run_index": 10
+    },
+    "flow-0100": {
+      "aliases": [
+        "band-0.45",
+        "dte-045",
+        "flow-0100",
+        "hold-exit4",
+        "null-s1"
+      ],
+      "canonical": "null-s1",
+      "canonical_slot": false,
+      "run_index": 1
+    },
+    "flow-1000": {
+      "aliases": [
+        "flow-1000"
+      ],
+      "canonical": "flow-1000",
+      "canonical_slot": true,
+      "run_index": 11
+    },
+    "hold-exit2": {
+      "aliases": [
+        "hold-exit2"
+      ],
+      "canonical": "hold-exit2",
+      "canonical_slot": true,
+      "run_index": 12
+    },
+    "hold-exit4": {
+      "aliases": [
+        "band-0.45",
+        "dte-045",
+        "flow-0100",
+        "hold-exit4",
+        "null-s1"
+      ],
+      "canonical": "null-s1",
+      "canonical_slot": false,
+      "run_index": 1
+    },
+    "hold-exit6": {
+      "aliases": [
+        "hold-exit6"
+      ],
+      "canonical": "hold-exit6",
+      "canonical_slot": true,
+      "run_index": 13
+    },
+    "hold-exit8": {
+      "aliases": [
+        "hold-exit8"
+      ],
+      "canonical": "hold-exit8",
+      "canonical_slot": true,
+      "run_index": 14
+    },
+    "mom20-a": {
+      "aliases": [
+        "mom20-a"
+      ],
+      "canonical": "mom20-a",
+      "canonical_slot": true,
+      "run_index": 4
+    },
+    "mom20-b": {
+      "aliases": [
+        "mom20-b"
+      ],
+      "canonical": "mom20-b",
+      "canonical_slot": true,
+      "run_index": 2
+    },
+    "null-s1": {
+      "aliases": [
+        "band-0.45",
+        "dte-045",
+        "flow-0100",
+        "hold-exit4",
+        "null-s1"
+      ],
+      "canonical": "null-s1",
+      "canonical_slot": true,
+      "run_index": 1
+    },
+    "null-s1-b": {
+      "aliases": [
+        "null-s1-b"
+      ],
+      "canonical": "null-s1-b",
+      "canonical_slot": true,
+      "run_index": 1
+    },
+    "null-s2": {
+      "aliases": [
+        "null-s2"
+      ],
+      "canonical": "null-s2",
+      "canonical_slot": true,
+      "run_index": 2
+    },
+    "null-s3": {
+      "aliases": [
+        "null-s3"
+      ],
+      "canonical": "null-s3",
+      "canonical_slot": true,
+      "run_index": 3
+    }
+  },
+  "geometry_grid_fridays": {
+    "embargo": 2,
+    "label_horizon": 5,
+    "min_train": 34,
+    "roll": 13,
+    "test": 13,
+    "val": 6
+  },
+  "program": "theory-wave-0",
+  "protocol_hash": "22c782313865fadd37fd18a3ff95ac449dc4e9740102f54f828219c354614521",
+  "registered_at_head": "216fbe1090bc5b2de8e6d57ffd80dd7c6d0fcf12",
+  "rules": {
+    "holdout": "D7: no end clamp + mandatory exit/label-window tagging (stamped by the runner) + the w5 fold-test refusal",
+    "sequencing": "Agenda A (owner ruling 2026-09-02): T-NULL x3 FIRST (D8 calibration); wave 1 T-MOM -> T-HOLD; wave 2 T-BAND -> T-DTE -> T-FLOW",
+    "tripwire": "prior_stride4_cohort_ic_sd comes ONLY from the executed null artifacts (the calibration block); verdict rule 2-SE. prior_fidelity_rho is DISCLOSED NULL: the null rows carry a constant label, so Spearman(labels) has zero rank variance and every null artifact stamps fidelity_rho = null \u2014 the fidelity tripwire binds at signal-config first look, never on the nulls"
+  },
+  "slots": [
+    {
+      "arm": "A",
+      "canonical": "null-s1",
+      "exit_sessions_after_entry": 4,
+      "family": "T-NULL",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-NULL seed 1: the vehicle's cost floor under deterministic hash-random entry \u2014 cohort_ic_mean expected ~0 (stride-4 t insignificant), total_return expected negative (fee + tick drag); produces the rejection baseline every other config must beat and the D8 tripwire calibration (realized stride4_cohort_ic_sd + fidelity_rho become the priors; the synthetic 0.9/0.16 priors are FORBIDDEN on the real lane)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 1,
+      "score_seed": "theory-null-1",
+      "slot_id": "null-s1",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "null-s2",
+      "exit_sessions_after_entry": 4,
+      "family": "T-NULL",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-NULL seed 2: the vehicle's cost floor under deterministic hash-random entry \u2014 cohort_ic_mean expected ~0 (stride-4 t insignificant), total_return expected negative (fee + tick drag); produces the rejection baseline every other config must beat and the D8 tripwire calibration (realized stride4_cohort_ic_sd + fidelity_rho become the priors; the synthetic 0.9/0.16 priors are FORBIDDEN on the real lane)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-2",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 2,
+      "score_seed": "theory-null-2",
+      "slot_id": "null-s2",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "null-s3",
+      "exit_sessions_after_entry": 4,
+      "family": "T-NULL",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-NULL seed 3: the vehicle's cost floor under deterministic hash-random entry \u2014 cohort_ic_mean expected ~0 (stride-4 t insignificant), total_return expected negative (fee + tick drag); produces the rejection baseline every other config must beat and the D8 tripwire calibration (realized stride4_cohort_ic_sd + fidelity_rho become the priors; the synthetic 0.9/0.16 priors are FORBIDDEN on the real lane)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-3",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 3,
+      "score_seed": "theory-null-3",
+      "slot_id": "null-s3",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "mom20-a",
+      "exit_sessions_after_entry": 4,
+      "family": "T-MOM",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-MOM: momentum-quintile vehicle transmission \u2014 score = mom_20 in GRID WEEKS (Agenda C re-denomination; log(c_last/c_first) over exactly 21 PIT-visible grid closes, warm-up omits the first 21 grid indices \u2014 the decision session's own T+1-walled bar never counts), quintile cut top->calls / bottom->puts; falsifiers: cohort_ic_mean inside the T-NULL x3 spread, total_return <= the null cost floor",
+      "model_family": "mom20-quintile/v1",
+      "params_key": [
+        "A",
+        "mom20-quintile/v1",
+        "None",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 4,
+      "score_seed": null,
+      "slot_id": "mom20-a",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "band-0.35",
+      "exit_sessions_after_entry": 4,
+      "family": "T-BAND",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-BAND 0.35: the delta-target ladder point on the null cohort \u2014 falsifiers: premium-return dispersion not increasing as target delta falls (the derived delta does not order risk), empty cohorts at the wing (no_in_band_strike)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.35",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 5,
+      "score_seed": "theory-null-1",
+      "slot_id": "band-0.35",
+      "target_abs_delta": "0.35",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "null-s1",
+      "exit_sessions_after_entry": 4,
+      "family": "T-BAND",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-BAND 0.45: the delta-target ladder point on the null cohort \u2014 falsifiers: premium-return dispersion not increasing as target delta falls (the derived delta does not order risk), empty cohorts at the wing (no_in_band_strike)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 1,
+      "score_seed": "theory-null-1",
+      "slot_id": "band-0.45",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "band-0.55",
+      "exit_sessions_after_entry": 4,
+      "family": "T-BAND",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-BAND 0.55: the delta-target ladder point on the null cohort \u2014 falsifiers: premium-return dispersion not increasing as target delta falls (the derived delta does not order risk), empty cohorts at the wing (no_in_band_strike)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.55",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 6,
+      "score_seed": "theory-null-1",
+      "slot_id": "band-0.55",
+      "target_abs_delta": "0.55",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "dte-035",
+      "exit_sessions_after_entry": 4,
+      "family": "T-DTE",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-DTE 35: the dte-target ladder point on the null cohort (monthly-only grid quantizes the ladder \u2014 read by REALIZED dte from stamped contract_expiration rows); falsifier: monotone returns across dte surviving the T-NULL spread",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "35",
+        "4",
+        "100"
+      ],
+      "run_index": 7,
+      "score_seed": "theory-null-1",
+      "slot_id": "dte-035",
+      "target_abs_delta": "0.45",
+      "target_dte": 35
+    },
+    {
+      "arm": "A",
+      "canonical": "null-s1",
+      "exit_sessions_after_entry": 4,
+      "family": "T-DTE",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-DTE 45: the dte-target ladder point on the null cohort (monthly-only grid quantizes the ladder \u2014 read by REALIZED dte from stamped contract_expiration rows); falsifier: monotone returns across dte surviving the T-NULL spread",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 1,
+      "score_seed": "theory-null-1",
+      "slot_id": "dte-045",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "dte-055",
+      "exit_sessions_after_entry": 4,
+      "family": "T-DTE",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-DTE 55: the dte-target ladder point on the null cohort (monthly-only grid quantizes the ladder \u2014 read by REALIZED dte from stamped contract_expiration rows); falsifier: monotone returns across dte surviving the T-NULL spread",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "55",
+        "4",
+        "100"
+      ],
+      "run_index": 8,
+      "score_seed": "theory-null-1",
+      "slot_id": "dte-055",
+      "target_abs_delta": "0.45",
+      "target_dte": 55
+    },
+    {
+      "arm": "A",
+      "canonical": "flow-0001",
+      "exit_sessions_after_entry": 4,
+      "family": "T-FLOW",
+      "flow_min_session_volume": 1,
+      "hypothesis": "theory wave-0 T-FLOW 1: flow-screen dose-response on the null score \u2014 is session volume-flow predictive of executable premium returns or only a fill-feasibility screen? Disclose that the screen and the participation cap key on the SAME variable (bar volume)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "1"
+      ],
+      "run_index": 9,
+      "score_seed": "theory-null-1",
+      "slot_id": "flow-0001",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "flow-0010",
+      "exit_sessions_after_entry": 4,
+      "family": "T-FLOW",
+      "flow_min_session_volume": 10,
+      "hypothesis": "theory wave-0 T-FLOW 10: flow-screen dose-response on the null score \u2014 is session volume-flow predictive of executable premium returns or only a fill-feasibility screen? Disclose that the screen and the participation cap key on the SAME variable (bar volume)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "10"
+      ],
+      "run_index": 10,
+      "score_seed": "theory-null-1",
+      "slot_id": "flow-0010",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "null-s1",
+      "exit_sessions_after_entry": 4,
+      "family": "T-FLOW",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-FLOW 100: flow-screen dose-response on the null score \u2014 is session volume-flow predictive of executable premium returns or only a fill-feasibility screen? Disclose that the screen and the participation cap key on the SAME variable (bar volume)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 1,
+      "score_seed": "theory-null-1",
+      "slot_id": "flow-0100",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "flow-1000",
+      "exit_sessions_after_entry": 4,
+      "family": "T-FLOW",
+      "flow_min_session_volume": 1000,
+      "hypothesis": "theory wave-0 T-FLOW 1000: flow-screen dose-response on the null score \u2014 is session volume-flow predictive of executable premium returns or only a fill-feasibility screen? Disclose that the screen and the participation cap key on the SAME variable (bar volume)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "1000"
+      ],
+      "run_index": 11,
+      "score_seed": "theory-null-1",
+      "slot_id": "flow-1000",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "hold-exit2",
+      "exit_sessions_after_entry": 2,
+      "family": "T-HOLD",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-HOLD exit 2: the hold-structure ladder point \u2014 where the long premium decays (short-hold turnover vs theta); arm B rides to expiry settlement (the fill-free premium-decay read)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "2",
+        "100"
+      ],
+      "run_index": 12,
+      "score_seed": "theory-null-1",
+      "slot_id": "hold-exit2",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "null-s1",
+      "exit_sessions_after_entry": 4,
+      "family": "T-HOLD",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-HOLD exit 4: the hold-structure ladder point \u2014 where the long premium decays (short-hold turnover vs theta); arm B rides to expiry settlement (the fill-free premium-decay read)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 1,
+      "score_seed": "theory-null-1",
+      "slot_id": "hold-exit4",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "hold-exit6",
+      "exit_sessions_after_entry": 6,
+      "family": "T-HOLD",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-HOLD exit 6: the hold-structure ladder point \u2014 where the long premium decays (short-hold turnover vs theta); arm B rides to expiry settlement (the fill-free premium-decay read)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "6",
+        "100"
+      ],
+      "run_index": 13,
+      "score_seed": "theory-null-1",
+      "slot_id": "hold-exit6",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "A",
+      "canonical": "hold-exit8",
+      "exit_sessions_after_entry": 8,
+      "family": "T-HOLD",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 T-HOLD exit 8: the hold-structure ladder point \u2014 where the long premium decays (short-hold turnover vs theta); arm B rides to expiry settlement (the fill-free premium-decay read)",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "A",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "8",
+        "100"
+      ],
+      "run_index": 14,
+      "score_seed": "theory-null-1",
+      "slot_id": "hold-exit8",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "B",
+      "canonical": "null-s1-b",
+      "exit_sessions_after_entry": 4,
+      "family": "T-NULL",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 arm B on the null score (seed 1): ride-to-expiry settlement or early-exercise election \u2014 entry VWAP vs settlement intrinsic, the cleanest premium-decay measurement in the menu; boundary disclosed: expiries past the 2026-08-14 spot proxy settle clamped",
+      "model_family": "null-sha256/1",
+      "params_key": [
+        "B",
+        "null-sha256/1",
+        "theory-null-1",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 1,
+      "score_seed": "theory-null-1",
+      "slot_id": "null-s1-b",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    },
+    {
+      "arm": "B",
+      "canonical": "mom20-b",
+      "exit_sessions_after_entry": 4,
+      "family": "T-MOM",
+      "flow_min_session_volume": 100,
+      "hypothesis": "theory wave-0 arm B on the T-MOM score: ride-to-expiry settlement or early-exercise election \u2014 entry VWAP vs settlement intrinsic, the cleanest premium-decay measurement in the menu; boundary disclosed: expiries past the 2026-08-14 spot proxy settle clamped",
+      "model_family": "mom20-quintile/v1",
+      "params_key": [
+        "B",
+        "mom20-quintile/v1",
+        "None",
+        "0.45",
+        "45",
+        "4",
+        "100"
+      ],
+      "run_index": 2,
+      "score_seed": null,
+      "slot_id": "mom20-b",
+      "target_abs_delta": "0.45",
+      "target_dte": 45
+    }
+  ],
+  "unique_configs": 16
+}
