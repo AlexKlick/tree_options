@@ -1458,6 +1458,7 @@ def _execute(
             "failed_candidates",
             "no_in_band_expiry",
             "no_in_band_strike",
+            "non_monotone_ladder",
             "excluded_pending_action",
             "entries_cancelled",
             "entries_skipped_open",

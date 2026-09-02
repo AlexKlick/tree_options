@@ -5164,6 +5164,34 @@ MUTANTS = [
             " of reading as a silent nothing-happened"
         ),
     ),
+    dict(
+        id="M379-non-monotone-ladder-refusal-dropped",
+        owner="test_build_candidates_counts_and_skips_a_non_monotone_ladder",
+        file="src/tree_options/options/strategy.py",
+        anchor=(
+            "        except NonMonotoneLadderError:\n"
+            "            # (remediation-3) counted per-name refusal, never a run abort:\n"
+            "            # on the real lane this is a data property of one underlying's\n"
+            "            # derived ladder (META/2025-12-19 surfaced it live), and a fatal\n"
+            "            # raise here would spend the sealed authority and record no\n"
+            "            # verdict — the exact 2026-08-31 crash class\n"
+            "            if audit is not None:\n"
+            "                audit.non_monotone_ladder += 1\n"
+            "            continue"
+        ),
+        replacement=(
+            "        except NonMonotoneLadderError:\n"
+            "            raise  # mutant: one name's data condition aborts the run"
+        ),
+        selectors=[f"{U}/test_options_strategy.py"],
+        invariant=(
+            "STRATEGY one underlying's non-monotone |delta| ladder is a"
+            " counted per-name refusal (the M165 discipline), never a"
+            " whole-run abort: a fatal raise here re-opens the"
+            " consumed-authority-no-verdict class on the real lane"
+            " (META/2025-12-19, live probe 2026-09-02)"
+        ),
+    ),
 ]
 
 
@@ -5315,11 +5343,11 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 366-mutant run stays the"
+            " mutants and re-pins; the full 367-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " + M364-M369 remediation + M370-M373 remediation-2 +"
-            " M374-M378 remediation-3 here)"
+            " M374-M379 remediation-3 here)"
         ),
     )
     args = parser.parse_args()
