@@ -4492,6 +4492,70 @@ MUTANTS = [
             " observed 4 each book individually respected)"
         ),
     ),
+    # ---- theory wave-0 tooling (owner rulings 2026-09-02, P1 package) -------
+    dict(
+        id="M381-fee-model-stamp-voided",
+        owner="test_the_trial_payload_discloses_the_fee_model",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            '    payload["fee_model"] = {\n'
+            '        "model": "PerContractFeeModel",\n'
+            '        "fee_per_contract": str(PerContractFeeModel.DEFAULT_FEE_PER_CONTRACT),\n'
+            '        "minimum_per_order": str(PerContractFeeModel.DEFAULT_MINIMUM_PER_ORDER),\n'
+            "    }"
+        ),
+        replacement=('    payload["fee_model"] = {}'),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "D6 (theory wave-0): the stamped payload DISCLOSES the fee model"
+            " its fills were priced under — the exact PerContractFeeModel"
+            " cost constants as string Decimals; an empty stamp certifies"
+            " artifacts whose cost basis must be re-derived from source"
+        ),
+    ),
+    dict(
+        id="M382-momentum-lookahead-accepted",
+        owner="test_momentum_uses_only_pit_visible_closes",
+        file="scripts/run_lane2_wave.py",
+        anchor=("                if bar.available_at <= close_at\n            )"),
+        replacement=("                if bar.session <= session\n            )"),
+        selectors=[f"{U}/test_run_lane2_wave.py"],
+        invariant=(
+            "T-MOM (Agenda C re-denomination): mom_20 reads only closes whose"
+            " stamped available_at (the T+1 publication wall) is <= the"
+            " decision instant — comparing the SESSION instead leaks the"
+            " decision Friday's own close into the score (INV-02 lookahead"
+            " in the feature)"
+        ),
+    ),
+    dict(
+        id="M383-wave-ledger-drift-refusal-dropped",
+        owner="test_the_ledger_roundtrips_and_drift_refuses",
+        file="scripts/run_lane2_wave.py",
+        anchor=('    if row["params_key"] != key:'),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_lane2_wave.py"],
+        invariant=(
+            "wave-0 pre-registration: an execution whose params differ from"
+            " the COMMITTED ledger row refuses before anything runs —"
+            " dropping the comparison lets an undrifted hypothesis run"
+            " under post-hoc parameters"
+        ),
+    ),
+    dict(
+        id="M384-wave-sequencing-guard-dropped",
+        owner="test_the_sequencing_guard_requires_calibration_for_non_null",
+        file="scripts/run_lane2_wave.py",
+        anchor=('    if not ledger.get("calibration"):'),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_lane2_wave.py"],
+        invariant=(
+            "Agenda A sequencing: a non-null config refuses while the D8"
+            " calibration block is absent — the T-NULL x3 seeds must run"
+            " first and their realized stats become the tripwire priors"
+            " (the synthetic priors are FORBIDDEN on the real lane)"
+        ),
+    ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
     dict(
         id="M336-spotv2-close-through-float",
@@ -5398,11 +5462,12 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 368-mutant run stays the"
+            " mutants and re-pins; the full 372-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " + M364-M369 remediation + M370-M373 remediation-2 +"
-            " M374-M379 remediation-3 + M380 remediation-4 here)"
+            " M374-M379 remediation-3 + M380 remediation-4 + M381-M384"
+            " theory wave-0 here)"
         ),
     )
     args = parser.parse_args()
