@@ -5068,6 +5068,102 @@ MUTANTS = [
             " P1-2): the floor policy must not depend on the entrypoint"
         ),
     ),
+    dict(
+        id="M374-g4-daily-spot-consult-voided",
+        owner="test_the_daily_spot_source_unblocks_the_non_friday_session",
+        file="src/tree_options/data/massive_overlay.py",
+        anchor=(
+            "        daily = self._spot_v2.get(sid)\n"
+            "        if daily and session in daily:\n"
+            "            return daily[session]"
+        ),
+        replacement=(
+            "        daily = self._spot_v2.get(sid)\n"
+            "        if False and daily and session in daily:\n"
+            "            return daily[session]  # mutant: the daily source is ignored"
+        ),
+        selectors=[f"{U}/test_massive_overlay.py"],
+        invariant=(
+            "G4 the derivation's underlying spot consults the declared DAILY"
+            " source first (owner ruling 2026-09-02): event-3 failed"
+            " criterion 2 precisely because the Friday-only v1 proxy left"
+            " every T+1-visible non-Friday cell spot-less (no_in_band_strike"
+            " 312/312, zero candidates)"
+        ),
+    ),
+    dict(
+        id="M375-g4-daily-spot-validation-dropped",
+        owner="test_an_injected_non_finite_daily_close_refuses_at_construction",
+        file="src/tree_options/data/massive_overlay.py",
+        anchor="                v2_rows[v2_session] = _validated_spot_token(v2_where, v2_session, v2_close)",
+        replacement=(
+            "                v2_rows[v2_session] = v2_close  # mutant: the copy"
+            " loop launders what a file cannot"
+        ),
+        selectors=[f"{U}/test_massive_overlay.py"],
+        invariant=(
+            "G4 the v2 copy loop validates every close through the shared"
+            " spot-token discipline (the R5-P2/R4-P2 class): an injected"
+            " Infinity close must refuse at construction, never flow into"
+            " intrinsic and the election policy"
+        ),
+    ),
+    dict(
+        id="M376-g4-packet-sidecar-binding-voided",
+        owner="test_the_sidecar_binds_into_the_packet",
+        file="src/tree_options/seal/verified_inputs.py",
+        anchor='        spot_proxy_v2_sha256=spot_v2_sha,\n        packet_content_sha256="",',
+        replacement=(
+            "        spot_proxy_v2_sha256=None,  # mutant: the sidecar rides"
+            ' nothing\n        packet_content_sha256="",'
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the v2 sidecar's hash is bound into the packet's"
+            " self-binding (owner ruling 2026-09-02): it feeds the"
+            " derivation's daily spot, so the packet must pin its bytes —"
+            " an unbound sidecar is swappable research content"
+        ),
+    ),
+    dict(
+        id="M377-g4-runner-drops-held-sidecar",
+        owner="test_the_run_consumes_the_held_sidecar_bytes_not_the_path",
+        file="src/tree_options/trials/g4_event.py",
+        anchor=(
+            "    spot_v2_path: Path | None = None\n"
+            "    if held.spot_proxy_v2_bytes is not None:\n"
+            '        spot_v2_path = scratch / "spot-proxy-v2.json"\n'
+            "        spot_v2_path.write_bytes(held.spot_proxy_v2_bytes)"
+        ),
+        replacement=(
+            "    spot_v2_path: Path | None = None\n"
+            "    if False and held.spot_proxy_v2_bytes is not None:\n"
+            '        spot_v2_path = scratch / "spot-proxy-v2.json"\n'
+            "        spot_v2_path.write_bytes(held.spot_proxy_v2_bytes)  # mutant: held sidecar dropped"
+        ),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 the run materializes and consumes the HELD sidecar bytes in"
+            " its own scratch (M262's discipline extended): dropping them"
+            " silently reverts the run to the v1-only spot semantics the"
+            " event-3 verdict already refused, and the census's"
+            " spot_v2_declared + derivation_spot_source disclose it"
+        ),
+    ),
+    dict(
+        id="M378-g4-criterion2-starvation-note-voided",
+        owner="test_criterion2_names_the_starvation_counter",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor='            if starved > 0\n            else ""',
+        replacement='            if False\n            else ""',
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "G4 criterion 2's failure text NAMES the stamped"
+            " no_in_band_strike counter (owner ruling 2026-09-02): a future"
+            " FAIL verdict must self-point at the starvation cause instead"
+            " of reading as a silent nothing-happened"
+        ),
+    ),
 ]
 
 
@@ -5219,10 +5315,11 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 361-mutant run stays the"
+            " mutants and re-pins; the full 366-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
-            " here)"
+            " + M364-M369 remediation + M370-M373 remediation-2 +"
+            " M374-M378 remediation-3 here)"
         ),
     )
     args = parser.parse_args()

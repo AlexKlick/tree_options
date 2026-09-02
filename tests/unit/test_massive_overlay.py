@@ -466,6 +466,86 @@ def test_missing_spot_proxy_refuses_every_derivation(tmp_path: Path) -> None:
     assert any("spot_proxy" in issue for issue in overlay.issues)
 
 
+# ---- the daily spot source (remediation-3, owner ruling 2026-09-02) ---------------
+#
+# Event-3's recorded FAIL: the capture's own spot proxy is FRIDAY-ONLY while
+# option bars are DAILY — the T+1-visible session at a close(t)-Friday
+# decision is a THURSDAY, every such cell refused "no spot proxy", no
+# candidate ever carried a derived |delta| (no_in_band_strike 312/312), and
+# the gate FAILED criterion 2 with zero candidates constructed. These tests
+# pin the fix: the v2 sidecar's DAILY closes are consulted first; the v1
+# proxy backstops the sessions it does cover; an injected non-finite close
+# refuses at construction exactly as a file would.
+
+
+def _monday_bar_payload() -> str:
+    return fx.bars_payload(
+        ticker=C650_TICKER,
+        results_count="1",
+        results=(
+            fx.bar(
+                v="50", t=T_S1, vw="12.50", o="12.45", c="12.55", h="12.60", low="12.40", n="10"
+            ),
+        ),
+    )
+
+
+FRIDAY_ONLY_SPOT = json.dumps({SPY: {"2025-04-11": "600.00"}})
+
+
+def test_a_non_friday_session_without_daily_spot_refuses(tmp_path: Path) -> None:
+    """THE EVENT-3 CLASS: a Monday bar under a Friday-only per-session proxy
+    (the flat form is deliberately NOT used — it would cover every session
+    and hide the gap the sealed event died on)."""
+    capture = write_capture(
+        tmp_path / "capture",
+        master=fx.contracts_payload(results=(ROW_C650,), as_of="2025-04-07"),
+        bars=(("bars_c650.json", _monday_bar_payload()),),
+        spot=FRIDAY_ONLY_SPOT,
+    )
+    overlay = load_derived_surface(capture)
+    quote = overlay.derived_quote(C650_ID, S1)
+    assert quote.status == "NOT_EVALUABLE"
+    assert quote.reason is not None and "no spot proxy" in quote.reason
+
+
+def test_the_daily_spot_source_unblocks_the_non_friday_session(tmp_path: Path) -> None:
+    capture = write_capture(
+        tmp_path / "capture",
+        master=fx.contracts_payload(results=(ROW_C650,), as_of="2025-04-07"),
+        bars=(("bars_c650.json", _monday_bar_payload()),),
+        spot=FRIDAY_ONLY_SPOT,
+    )
+    overlay = load_derived_surface(capture, spot_v2={SPY: {S1: (Decimal("600.00"), 12_345_678)}})
+    quote = overlay.derived_quote(C650_ID, S1)
+    assert quote.status == "DERIVED", quote.reason
+
+
+def test_the_v1_proxy_backstops_a_session_the_sidecar_lacks(tmp_path: Path) -> None:
+    capture = write_capture(
+        tmp_path / "capture",
+        master=fx.contracts_payload(results=(ROW_C650,), as_of="2025-04-07"),
+        bars=(("bars_c650.json", _monday_bar_payload()),),
+        spot=json.dumps({SPY: {S1.isoformat(): "600.00"}}),
+    )
+    # the sidecar covers a DIFFERENT session only — the derivation must fall
+    # back to the v1 proxy's own per-session row for S1
+    overlay = load_derived_surface(capture, spot_v2={SPY: {S2: (Decimal("601.00"), 100)}})
+    quote = overlay.derived_quote(C650_ID, S1)
+    assert quote.status == "DERIVED", quote.reason
+
+
+def test_an_injected_non_finite_daily_close_refuses_at_construction(tmp_path: Path) -> None:
+    capture = write_capture(
+        tmp_path / "capture",
+        master=fx.contracts_payload(results=(ROW_C650,), as_of="2025-04-07"),
+        bars=(("bars_c650.json", _monday_bar_payload()),),
+        spot=FRIDAY_ONLY_SPOT,
+    )
+    with pytest.raises(mo.MassiveOverlayError, match="spot_v2"):
+        load_derived_surface(capture, spot_v2={SPY: {S1: (Decimal("Infinity"), 1)}})
+
+
 def test_derived_stats_census(overlay: MassiveDerivedOverlay) -> None:
     stats = overlay.derived_stats()
     assert stats.contracts == 3

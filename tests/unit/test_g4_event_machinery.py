@@ -470,6 +470,10 @@ def _build_bundle(
             lane1_source=source,
             lane2_manifest=lane2_manifest,
             calendar_decision_artifact=calendar,
+            # (remediation-3) the sidecar is a PACKET input: the fixture's
+            # held inputs carry it, so every machinery test in this module
+            # exercises the packet-held v2 path (the derivation's daily spot)
+            spot_proxy_v2=spot_v2,
         ),
         era_census=era_census,
         mutation_report=mutation_report,
@@ -493,7 +497,6 @@ def _run_mini_gate(mini_gate: MiniGateFixture, artifacts: Path, registry: Path, 
         registry_path=registry,
         artifacts_dir=artifacts,
         scratch_root=scratch,
-        spot_v2_path=mini_gate.spot_v2,
     )
 
 
@@ -595,7 +598,6 @@ def test_a_symlinked_run_workspace_component_refuses(
             registry_path=runs / run_key / "g4-sealed.db",
             artifacts_dir=runs / run_key / "artifacts",
             scratch_root=runs / run_key,
-            spot_v2_path=mini_gate.spot_v2,
         )
     assert str(runs / run_key) in str(excinfo.value)
     assert os.path.islink(runs / run_key), "the planted link itself stays untouched"
@@ -608,7 +610,6 @@ def test_a_symlinked_run_workspace_component_refuses(
         registry_path=runs / real_key / "g4-sealed.db",
         artifacts_dir=runs / real_key / "artifacts",
         scratch_root=runs / real_key,
-        spot_v2_path=mini_gate.spot_v2,
     )
     assert run.trial_statuses == {("2", "A"): "COMPLETED", ("2", "B"): "COMPLETED"}
 
@@ -691,7 +692,6 @@ def test_the_one_shot_discipline_refuses_a_second_invocation(
         held=held,
         repo_root=mini_gate.repo,
         split_override=None,
-        spot_v2_path=mini_gate.spot_v2,
     )
     run_g4_sealed_event(
         registry_path=registry,
@@ -1706,6 +1706,109 @@ def test_criterion1_binds_the_run_census_to_the_verified_packet(mini_run) -> Non
     assert any("a different manifest than the verified packet" in f for f in manifest.failures), (
         manifest.failures
     )
+
+
+def test_criterion2_names_the_starvation_counter(mini_run) -> None:
+    """(remediation-3, owner ruling 2026-09-02) event-3 failed criterion 2
+    with zero disclosure rows BECAUSE zero candidates ever reached the
+    filter: the derivation's Friday-only spot left every T+1-visible
+    Thursday cell without a derived |delta|, so every selected name died at
+    the strike pick (no_in_band_strike 312/312 — faithfully stamped in the
+    run's own counters). The failure text must NAME that counter so a
+    future FAIL verdict self-points at the cause instead of reading as a
+    silent nothing-happened."""
+    mini, run, _replay = mini_run
+    payloads = {
+        arm: load_json(path)["payload"] for (_l, arm), path in run.trial_payload_paths.items()
+    }
+    starved = {
+        arm: {
+            **p,
+            "counters": {**p["counters"], "rule_histogram": {}, "no_in_band_strike": 312},
+        }
+        for arm, p in payloads.items()
+    }
+    evaluation = _criteria_over(mini, run, starved)
+    outcome = evaluation.by_id("candidate_discipline")
+    assert outcome.verdict == "FAIL"
+    assert any("no_in_band_strike counter is 312" in f for f in outcome.failures), outcome.failures
+    # the healthy shape carries no phantom note (the counter is zero)
+    healthy = _criteria_over(mini, run, payloads)
+    assert healthy.by_id("candidate_discipline").verdict == "PASS"
+    assert not any("no_in_band_strike" in f for f in healthy.by_id("candidate_discipline").failures)
+
+
+def test_the_sidecar_binds_into_the_packet(mini_gate) -> None:
+    """(remediation-3, owner ruling 2026-09-02) the v2 dollar-volume sidecar
+    is a PACKET input now: held, validated with the loader's own discipline
+    at verify time, and its hash bound into the packet's self-binding. The
+    sealed IDENTITY model is deliberately untouched — SealedIdentity is
+    serialization-frozen so every ledger record ever written still
+    recomputes its content_identity byte-identically under this code; the
+    sidecar therefore rides the PACKET hash (the sealed_run_id), and the
+    next event's fresh CONTENT authority comes from the amended criteria
+    artifact (this packet's criterion-2 wording change), never from the
+    sidecar alone."""
+    import dataclasses
+
+    from tree_options.data.digest import sha256_hex
+    from tree_options.seal.identity import content_identity, sealed_run_id
+    from tree_options.seal.verified_inputs import identity_from_packet
+
+    held = verify_sealed_inputs(mini_gate.held_paths)
+    assert held.spot_proxy_v2_bytes is not None
+    assert held.packet.spot_proxy_v2_sha256 == sha256_hex(held.spot_proxy_v2_bytes)
+    # a packet built WITHOUT the sidecar: absent field, a DIFFERENT packet
+    # hash, and the SAME content identity (the documented governance)
+    bare_held = verify_sealed_inputs(dataclasses.replace(mini_gate.held_paths, spot_proxy_v2=None))
+    assert bare_held.packet.spot_proxy_v2_sha256 is None
+    assert bare_held.spot_proxy_v2_bytes is None
+    assert bare_held.packet.packet_content_sha256 != held.packet.packet_content_sha256
+    assert sealed_run_id(identity_from_packet(bare_held.packet)) != sealed_run_id(
+        identity_from_packet(held.packet)
+    )
+    assert content_identity(identity_from_packet(bare_held.packet)) == content_identity(
+        identity_from_packet(held.packet)
+    )
+
+
+def test_an_unparseable_sidecar_refuses_the_packet(mini_gate, tmp_path) -> None:
+    """The sidecar is validated at VERIFY time with the loader's own
+    discipline — a malformed sidecar refuses before any packet is emitted
+    (never the one-shot run)."""
+    import dataclasses
+
+    bad = tmp_path / "bad-spot-proxy-v2.json"
+    bad.write_text('{"SPY": {"2025-04-07": {"close": 600.00, "volume": 1}}}', encoding="utf-8")
+    paths = dataclasses.replace(mini_gate.held_paths, spot_proxy_v2=bad)
+    with pytest.raises(Exception, match="close must be an exact decimal STRING"):
+        verify_sealed_inputs(paths)
+
+
+def test_the_run_consumes_the_held_sidecar_bytes_not_the_path(mini_gate, tmp_path) -> None:
+    """(remediation-3) M262's discipline extended to the sidecar: the run
+    materializes and consumes the HELD bytes — a poisoned SOURCE file
+    swapped in after verify changes nothing (a path re-read would refuse on
+    the poison), and the census discloses the daily spot source."""
+    held = verify_sealed_inputs(mini_gate.held_paths)
+    original = mini_gate.spot_v2.read_bytes()
+    mini_gate.spot_v2.write_text(
+        '{"SPY": {"2025-04-07": {"close": "Infinity", "volume": 1}}}', encoding="utf-8"
+    )
+    try:
+        run = run_g4_sealed_event(
+            held,
+            repo_root=mini_gate.repo,
+            registry_path=tmp_path / "sealed.db",
+            artifacts_dir=tmp_path / "artifacts",
+            scratch_root=tmp_path / "scratch",
+        )
+    finally:
+        mini_gate.spot_v2.write_bytes(original)
+    census = load_json(run.census_payload_paths["lane2"])["payload"]
+    declared = census["declared_configuration"]
+    assert declared["spot_v2_declared"] is True
+    assert declared["derivation_spot_source"] == "spot-proxy-v2-daily+v1-friday-backstop"
 
 
 def test_a_manifest_count_mismatch_fails_manifest_integrity(mini_run) -> None:

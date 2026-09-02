@@ -210,6 +210,11 @@ def run_gate(argv: list[str] | None = None) -> int:
         lane1_source=args.lane1_source,
         lane2_manifest=args.lane2_manifest,
         calendar_decision_artifact=args.calendar_decision_artifact,
+        # (remediation-3, owner ruling 2026-09-02) the v2 sidecar is a
+        # PACKET input now — held, validated, and bound into the packet's
+        # self-hash (it feeds the derivation's daily spot); the runner
+        # consumes the HELD bytes, never this path again
+        spot_proxy_v2=(args.spot_proxy_v2 if args.spot_proxy_v2.is_file() else None),
     )
     held = verify_sealed_inputs(paths)
     print(f"SEALED_PACKET={held.packet.packet_content_sha256}")
@@ -238,7 +243,6 @@ def run_gate(argv: list[str] | None = None) -> int:
         artifacts_dir=args.artifacts_dir,
         scratch_root=args.scratch_root,
         split_override=geometry,
-        spot_v2_path=(args.spot_proxy_v2 if args.spot_proxy_v2.is_file() else None),
     )
     for line in run.log_lines:
         print(line)

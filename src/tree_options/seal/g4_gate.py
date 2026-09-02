@@ -246,16 +246,33 @@ def _criterion_candidate_discipline(
         hist = payload.get("counters", {}).get("rule_histogram", {})
         oi_dropped = int(hist.get("open_interest", {}).get("NOT_APPLICABLE", 0))
         earnings_disclosed = int(hist.get("earnings_span", {}).get("NOT_APPLICABLE", 0))
+        # (remediation-3, owner ruling 2026-09-02) the starvation counter is
+        # named IN the failure so a future FAIL self-points at the cause:
+        # event-3 failed exactly here with no_in_band_strike 312/312 — the
+        # derivation's Friday-only spot left every T+1-visible Thursday cell
+        # without a derived |delta|, so no candidate ever reached the filter
+        # whose disclosure rows the criterion counts
+        starved = int(payload.get("counters", {}).get("no_in_band_strike", 0))
+        starved_note = (
+            f" — the stamped no_in_band_strike counter is {starved}: every selected"
+            " name found no in-band strike, so the filter never evaluated a"
+            " candidate (the event-3 root-cause class: a spot-starved or"
+            " ladder-empty derivation upstream of the disclosure family)"
+            if starved > 0
+            else ""
+        )
         if oi_dropped <= 0:
             failures.append(
                 f"{key}: no counted open_interest NOT_APPLICABLE disclosure row — the"
                 " dropped-with-disclosure term must never be a silent pass"
+                f"{starved_note}"
             )
         if earnings_disclosed <= 0:
             failures.append(
                 f"{key}: no counted earnings_span NOT_APPLICABLE disclosed-absence row"
                 " (owner ruling m4-022-ruling-20260828) — the 0.2.2 disclosure"
                 " family is present + counted, never a silent pass"
+                f"{starved_note}"
             )
         positions = payload.get("pooled", {}).get("positions", [])
         with_oi = [p for p in positions if "open_interest" in p]

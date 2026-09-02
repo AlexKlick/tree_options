@@ -197,6 +197,15 @@ class VerifiedSealedInputs(StrictModel):
     # exact equality on all four.
     runner_implementation_qualname: IdStr
     runner_config_digest: Sha256
+    # (remediation-3, owner ruling 2026-09-02) the OPTIONAL declared v2
+    # dollar-volume sidecar's file hash — None in a packet built without
+    # one (the pre-remediation shape). The sidecar feeds the derivation's
+    # DAILY underlying spot, so its bytes are research content the packet
+    # must pin; it deliberately rides the PACKET's self-binding hash (and
+    # therefore the sealed_run_id), not SealedIdentity — the identity model
+    # is serialization-frozen so every ledger record ever written still
+    # recomputes its content_identity byte-identically under this code.
+    spot_proxy_v2_sha256: Sha256 | None = None
     packet_content_sha256: Sha256
 
     @model_validator(mode="after")
@@ -217,6 +226,7 @@ def _build_packet(
     calendar_sha: str,
     criteria_sha: str,
     criteria_source_sha: str,
+    spot_v2_sha: str | None = None,
 ) -> VerifiedSealedInputs:
     registered = _registered_runner_binding()
     fields = {
@@ -232,6 +242,7 @@ def _build_packet(
         "runner_implementation_sha256": registered.implementation_sha256,
         "runner_implementation_qualname": registered.implementation_qualname,
         "runner_config_digest": registered.config_digest,
+        "spot_proxy_v2_sha256": spot_v2_sha,
     }
     core = VerifiedSealedInputs.model_construct(
         schema_version=VERIFIED_INPUTS_SCHEMA_VERSION,
@@ -246,6 +257,7 @@ def _build_packet(
         runner_implementation_sha256=registered.implementation_sha256,
         runner_implementation_qualname=registered.implementation_qualname,
         runner_config_digest=registered.config_digest,
+        spot_proxy_v2_sha256=spot_v2_sha,
         packet_content_sha256="",
     )
     digest = sha256_hex(VERIFIED_INPUTS_DOMAIN + canonical_bytes(core))
@@ -443,6 +455,10 @@ class HeldVerifiedSealedInputs:
     criteria_artifact_bytes: bytes
     criteria: SealedCriteriaArtifact
     criteria_source_document_bytes: bytes
+    # (remediation-3, owner ruling 2026-09-02) the OPTIONAL declared daily
+    # spot sidecar's HELD bytes — the run materializes THESE (never a path
+    # re-read); None keeps the v1-only packet shape exactly as before
+    spot_proxy_v2_bytes: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -452,6 +468,10 @@ class SealedInputPaths:
     lane1_source: Path
     lane2_manifest: Path
     calendar_decision_artifact: Path
+    # (remediation-3) the OPTIONAL declared v2 dollar-volume sidecar — when
+    # set it is held, validated, and bound into the packet's self-hash (it
+    # feeds the derivation's daily spot, so the packet must pin its bytes)
+    spot_proxy_v2: Path | None = None
 
 
 def _porcelain_dirty(lines: list[str]) -> list[str]:
@@ -710,6 +730,26 @@ def verify_sealed_inputs(
             f"checkout moved from {before_sha} to {after_sha} while inputs were verified",
         )
 
+    # (remediation-3) the OPTIONAL declared v2 dollar-volume sidecar: held,
+    # VALIDATED with the loader's own discipline here (an unparseable or
+    # malformed sidecar refuses the packet — never the one-shot run), and
+    # its hash bound into the packet's self-binding
+    spot_v2_raw: bytes | None = None
+    spot_v2_sha: str | None = None
+    if paths.spot_proxy_v2 is not None:
+        spot_v2_raw = read_file_once(
+            paths.spot_proxy_v2,
+            component="spot_proxy_v2",
+            purpose="declared daily spot sidecar",
+        )
+        from tree_options.data.vwap_pit_surface import load_spot_proxy_v2_bytes
+
+        try:
+            load_spot_proxy_v2_bytes(spot_v2_raw, paths.spot_proxy_v2.name)
+        except Exception as exc:
+            _raise("spot_proxy_v2", f"sidecar validation failed: {exc}")
+        spot_v2_sha = sha256_hex(spot_v2_raw)
+
     packet = _build_packet(
         code_sha=before_sha,
         protocol_sha=protocol_sha,
@@ -718,6 +758,7 @@ def verify_sealed_inputs(
         calendar_sha=sha256_hex(calendar_raw),
         criteria_sha=sha256_hex(criteria_raw),
         criteria_source_sha=criteria_source_sha,
+        spot_v2_sha=spot_v2_sha,
     )
     return HeldVerifiedSealedInputs(
         packet=packet,
@@ -731,6 +772,7 @@ def verify_sealed_inputs(
         criteria_artifact_bytes=criteria_raw,
         criteria=criteria,
         criteria_source_document_bytes=criteria_source_raw,
+        spot_proxy_v2_bytes=spot_v2_raw,
     )
 
 

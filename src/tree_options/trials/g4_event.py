@@ -278,7 +278,17 @@ def build_lane2_world(
     from tree_options.data.massive_overlay import load_derived_surface
 
     capture = materialize_held_lane2(held, scratch)
-    overlay = load_derived_surface(capture, staleness_sessions=staleness_sessions)
+    # (remediation-3, owner ruling 2026-09-02) the v2 sidecar is loaded
+    # BEFORE the overlay so its DAILY closes can feed the derivation —
+    # event-3 failed criterion 2 precisely because the Friday-only v1 proxy
+    # left every T+1-visible Thursday cell spot-less (no_in_band_strike
+    # 312/312, zero candidates). The surface keeps the same mapping for the
+    # liquidity term; the overlay consults the closes first, v1 backstops.
+    spot_v2 = None
+    spot_v2_declared = spot_v2_path is not None
+    if spot_v2_path is not None:
+        spot_v2 = load_spot_proxy_v2(spot_v2_path)
+    overlay = load_derived_surface(capture, staleness_sessions=staleness_sessions, spot_v2=spot_v2)
     exchange = repo_exchange_calendar(repo_root)
     grid = _friday_grid(overlay, exchange)
     decision_sessions = _lane2_decision_sessions(grid)
@@ -288,10 +298,6 @@ def build_lane2_world(
     if lf is None:
         raise ValueError("the protocol carries no liquidity_volume_flow block")
     spot = load_spot_proxy(capture / "spot_proxy.json")
-    spot_v2 = None
-    spot_v2_declared = spot_v2_path is not None
-    if spot_v2_path is not None:
-        spot_v2 = load_spot_proxy_v2(spot_v2_path)
     surface = VwapPitSurface(
         overlay,
         spot=spot,
@@ -544,6 +550,16 @@ def lane2_census_payload(
             # the FILE NAME only (never an absolute checkout path — the
             # census payload must be byte-identical across clones)
             "spot_v2_file": (spot_v2_path.name if spot_v2_path is not None else None),
+            # (remediation-3) the derivation's declared underlying spot
+            # source — event-3's root cause was the Friday-only v1 proxy
+            # refusing every T+1-visible Thursday cell; with the sidecar the
+            # chain is v2-daily first, the v1 Friday proxy backstopping the
+            # sessions the sidecar does not cover
+            "derivation_spot_source": (
+                "spot-proxy-v2-daily+v1-friday-backstop"
+                if world.spot_v2_declared
+                else "spot-proxy-v1-friday"
+            ),
         },
     }
     return census
@@ -710,7 +726,6 @@ def run_g4_sealed_event(
     artifacts_dir: Path,
     scratch_root: Path,
     split_override: OptionsSplitOverride | None = None,
-    spot_v2_path: Path | None = None,
     allow_dirty: bool = False,
     clock: Any = None,
 ) -> G4SealedRun:
@@ -721,7 +736,14 @@ def run_g4_sealed_event(
     workspace component refuses before a single byte is created (the
     workspace stays inside real directories). Lane 1 seals the
     adapter (census payload); lane 2 runs arms A and B through the
-    unmodified trial machinery under the declared seeds and geometry."""
+    unmodified trial machinery under the declared seeds and geometry.
+
+    (remediation-3, owner ruling 2026-09-02) the v2 dollar-volume sidecar
+    rides the PACKET: when the held inputs carry it, the run materializes
+    the HELD bytes into this run's scratch and consumes those — never a
+    caller-supplied path re-read (M262's discipline extended to the
+    sidecar). A packet without the sidecar keeps the declared v1-only
+    semantics."""
     if registry_path.exists():
         raise RuntimeError(f"refusing to reuse sealed registry: {registry_path}")
     if artifacts_dir.exists():
@@ -734,6 +756,10 @@ def run_g4_sealed_event(
     if scratch.exists():
         raise RuntimeError(f"refusing to reuse sealed scratch: {scratch}")
     scratch.mkdir(parents=True)
+    spot_v2_path: Path | None = None
+    if held.spot_proxy_v2_bytes is not None:
+        spot_v2_path = scratch / "spot-proxy-v2.json"
+        spot_v2_path.write_bytes(held.spot_proxy_v2_bytes)
     log: list[str] = []
 
     registry_path.parent.mkdir(parents=True, exist_ok=True)

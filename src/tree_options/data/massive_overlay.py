@@ -672,6 +672,7 @@ class MassiveDerivedOverlay:
         assumptions: PricingAssumptions,
         staleness_sessions: int,
         issues: tuple[str, ...] = (),
+        spot_v2: Mapping[str, Mapping[date, tuple[Decimal, int]]] | None = None,
     ) -> None:
         if staleness_sessions < 0:
             raise ValueError(f"staleness_sessions must be >= 0, got {staleness_sessions}")
@@ -684,6 +685,34 @@ class MassiveDerivedOverlay:
         self._masters = dict(masters)
         self._bars = {ticker: {bar.session: bar for bar in one} for ticker, one in bars.items()}
         self._spot = spot
+        # (remediation-3, owner ruling 2026-09-02) the DAILY spot source: the
+        # v2 dollar-volume sidecar's closes, consulted BEFORE the capture's
+        # Friday-only spot proxy so a NON-Friday bar session (the T+1-visible
+        # Thursday of a close(t)-Friday decision) can derive at all. Event-3's
+        # root cause was exactly this gap: option bars are daily, the v1 proxy
+        # is 99 sessions all Fridays, so every Thursday-visible cell refused
+        # "no spot proxy", no candidate ever carried a derived |delta|
+        # (no_in_band_strike 312/312), and the gate FAILED criterion 2 with
+        # zero candidates constructed. The v1 proxy stays the BACKSTOP for
+        # sessions the sidecar does not cover (the era's first Fridays) and
+        # the flat-form sentinel keeps its meaning under it. Validation is the
+        # SAME copy-loop discipline as the adapter's (R5-P2/R4-P2): an
+        # injected mapping can never carry what a file cannot.
+        self._spot_v2: dict[str, dict[date, Decimal]] = {}
+        for v2_underlying, v2_sessions in (spot_v2 or {}).items():
+            v2_where = f"spot_v2[{v2_underlying!r}]"
+            v2_rows: dict[date, Decimal] = {}
+            for v2_session, v2_row in v2_sessions.items():
+                try:
+                    v2_close, _v2_volume = v2_row
+                except (TypeError, ValueError):
+                    raise MassiveOverlayError(
+                        f"{v2_where}[{v2_session.isoformat()}]: each session must"
+                        " carry exactly the keys close+volume, got"
+                        f" {v2_row!r}"
+                    ) from None
+                v2_rows[v2_session] = _validated_spot_token(v2_where, v2_session, v2_close)
+            self._spot_v2[v2_underlying] = v2_rows
         self.underlyings: tuple[str, ...] = tuple(sorted({sid for sid, _as_of in masters}))
         extra_issues = list(issues)
 
@@ -918,6 +947,13 @@ class MassiveDerivedOverlay:
         )
 
     def _spot_for(self, sid: str, session: date) -> Decimal | None:
+        # (remediation-3) the declared DAILY source first — the v1 Friday
+        # proxy cannot answer a Thursday, and a Thursday-answerable spot is
+        # the entire point of the v2 wiring; the v1 per-session proxy then
+        # the flat-form sentinel follow as the backstop chain.
+        daily = self._spot_v2.get(sid)
+        if daily and session in daily:
+            return daily[session]
         per_underlying = self._spot.get(sid)
         if not per_underlying:
             return None
@@ -1157,6 +1193,7 @@ def load_derived_surface(
     *,
     assumptions: PricingAssumptions | None = None,
     staleness_sessions: int = 5,
+    spot_v2: Mapping[str, Mapping[date, tuple[Decimal, int]]] | None = None,
 ) -> MassiveDerivedOverlay:
     """Load one capture directory (masters/ + bars/ + optional spot_proxy.json
     and capture_manifest.json) into a derived overlay.
@@ -1166,7 +1203,13 @@ def load_derived_surface(
     synthetic-world defaults) and `staleness_sessions=5`. When a capture
     manifest is present it is verified fail-closed first — a capture whose
     files do not reconcile with its manifest refuses here rather than
-    loading unprovenance bytes."""
+    loading unprovenance bytes.
+
+    (remediation-3) `spot_v2` is the OPTIONAL declared daily underlying
+    source (the sidecar's parsed close+volume rows): its closes are
+    consulted BEFORE the capture's own Friday-only spot proxy so non-Friday
+    bar sessions can derive (event-3's root cause). `None` keeps the
+    historical Friday-only spot semantics."""
 
     capture_dir = Path(capture_dir)
     if not capture_dir.is_dir():
@@ -1206,6 +1249,7 @@ def load_derived_surface(
         assumptions=assumptions if assumptions is not None else PricingAssumptions(),
         staleness_sessions=staleness_sessions,
         issues=tuple(issues),
+        spot_v2=spot_v2,
     )
 
 
