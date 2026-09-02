@@ -122,6 +122,7 @@ def _criterion_manifest_integrity(
     lane1_census: Mapping[str, Any],
     lane2_census: Mapping[str, Any],
     era_target: Mapping[str, Any],
+    lane2_manifest_content_hash: str,
 ) -> CriterionOutcome:
     failures: list[str] = []
     reported: dict[str, object] = {}
@@ -138,6 +139,20 @@ def _criterion_manifest_integrity(
     lane2_manifest = lane2_census.get("manifest", {})
     if not lane2_manifest.get("verified"):
         failures.append("lane 2: the typed manifest verify did not pass")
+    # Codex remediation-2 review (P1-1, probe-verified): the custody
+    # identity alone accepts a FOREIGN or STALE census — the census the
+    # criterion consumes must name THE manifest the held packet verified
+    # (the run's own stamp binds to the packet's; a mismatch means the
+    # census is not this run's output for this packet, and no arithmetic
+    # over its counts may certify anything)
+    stamped_manifest_hash = str(lane2_manifest.get("typed_manifest_content_hash", ""))
+    if stamped_manifest_hash != lane2_manifest_content_hash:
+        failures.append(
+            f"lane 2: the run's census names manifest {stamped_manifest_hash[:12]}…"
+            f" — a different manifest than the verified packet's"
+            f" {lane2_manifest_content_hash[:12]}… (the census is not this"
+            " run's output for this packet; its counts certify nothing)"
+        )
     listed = lane2_manifest.get("listed_files")
     held = lane2_manifest.get("held_payloads")
     if listed != held:
@@ -657,6 +672,7 @@ def evaluate_g4_criteria(
     head: str | None = None,
     rejection_floor: int = REJECTION_FLOOR,
     rejection_lane1_floor: int = REJECTION_LANE1_FLOOR,
+    lane2_manifest_content_hash: str = "",
 ) -> G4GateEvaluation:
     """Evaluate the six pre-declared criteria from the stamped payloads.
 
@@ -679,7 +695,9 @@ def evaluate_g4_criteria(
     lane 1's floor — 0 for the real run (the 2026-09-01 ruling), explicit
     in fixture gates for teeth."""
     outcomes = (
-        _criterion_manifest_integrity(lane1_census, lane2_census, era_target),
+        _criterion_manifest_integrity(
+            lane1_census, lane2_census, era_target, lane2_manifest_content_hash
+        ),
         _criterion_candidate_discipline(protocol, lane2_census, trial_payloads),
         _criterion_fill_discipline(trial_payloads, execution_calendar),
         _criterion_rejection_paths(
@@ -1118,6 +1136,7 @@ def evaluate_and_record(
         head=head,
         rejection_floor=rejection_floor,
         rejection_lane1_floor=rejection_lane1_floor,
+        lane2_manifest_content_hash=held.packet.lane2_manifest.typed_manifest_content_hash,
     )
     write_gate_evidence(
         evaluation,

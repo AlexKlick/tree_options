@@ -78,6 +78,8 @@ DEFAULT_SPOT_PROXY_V2 = REPO_ROOT / "artifacts" / "spot-proxy-v2.json"
 
 
 def _parser() -> argparse.ArgumentParser:
+    from tree_options.seal.g4_gate import REJECTION_LANE1_FLOOR
+
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
@@ -127,6 +129,15 @@ def _parser() -> argparse.ArgumentParser:
         " proposal 5 2 12 13 13 40, owner-ratified at head declaration)",
     )
     parser.add_argument(
+        "--rejection-lane1-floor",
+        type=int,
+        default=REJECTION_LANE1_FLOOR,
+        help="lane 1's pooled FIRING-parse-refusal floor (default: the"
+        " 2026-09-01 owner ruling's 0 for real data — the pre-declared 50's"
+        " premise measured false on a clean real session; pass 50 to"
+        " restore the original fixture-rehearsal teeth)",
+    )
+    parser.add_argument(
         "--yes",
         action="store_true",
         help="required to run: the sealed event is one-shot and this switch"
@@ -166,7 +177,6 @@ def _cli_gate_paths(args: argparse.Namespace):
 
 def run_gate(argv: list[str] | None = None) -> int:
     from tree_options.seal.g4_gate import (
-        REJECTION_FLOOR,
         GatePreflightError,
         evaluate_and_record,
         live_mutation_registry,
@@ -248,10 +258,12 @@ def run_gate(argv: list[str] | None = None) -> int:
         head=head,
         mutation_registry_ids=mutation_registry_ids,
         mutation_registry_digest=mutation_registry_digest,
-        # this CLI is the FIXTURE/pre-declared gate surface: the lane-1 floor
-        # stays the pre-declared 50 here for teeth (the REAL run's lane-1
-        # floor is the 2026-09-01 ruling's 0, the library default)
-        rejection_lane1_floor=REJECTION_FLOOR,
+        # the lane-1 floor DEFAULTS to the 2026-09-01 ruling's 0 (the real
+        # gate); --rejection-lane1-floor restores the pre-declared 50 for
+        # fixture rehearsal wanting its original teeth (Codex remediation-2
+        # review, P1-2: this CLI is the documented real-data entry and must
+        # not force the fixture floor)
+        rejection_lane1_floor=args.rejection_lane1_floor,
         log_lines=(
             f"SEALED_HEAD={head}",
             f"SEALED_PACKET={held.packet.packet_content_sha256}",

@@ -92,3 +92,28 @@ two criterion-domain mismatches:
 3. New gate → new packet (NEW content identity — fresh one-shot authority)
    → owner declaration + approval → the one-shot event. The two prior
    consumptions stay history.
+
+## 6. The bounded review round (Codex, gpt-5.6-sol) — NO-GO, 2 P1, both probe-verified and fixed
+
+- **P1-1 the custody identity accepted a foreign census.** Probe: the
+  2026-09-01 zero-bars event's census stamp (manifest `419794d2…`)
+  satisfied the identity against a packet verifying a DIFFERENT manifest
+  (`119b0d2f…`), and a compensated count (verified −1, refusals +1) also
+  passed. Fixed: the run's lane-2 census must name THE manifest the held
+  packet verified — `_criterion_manifest_integrity` binds the census's
+  `typed_manifest_content_hash` to the packet's (a mismatch FAILs naming
+  the binding; `evaluate_and_record` threads it from the held packet).
+  With the binding, a compensated count can only come from tampering the
+  run's own mid-execution artifacts — the determinism comparison and the
+  disclosed concurrent-tamper class own that.
+- **P1-2 the documented real-data CLI forced the fixture floor.** The CLI
+  (`run_m4_sealed_gate.py`, the documented real-data entry) hardcoded
+  `rejection_lane1_floor=50` — a clean real lane 1 through it would take a
+  false FAIL. Fixed: `--rejection-lane1-floor` defaulting to the ruling's
+  0 (50 restorable for fixture rehearsal); the CLI test asserts the
+  evidence json's reported lane-1 floor is 0.
+
+Mutants M372/M373 added (registry 359→361); M370–M373 4/4 KILLED with
+full-suite restoration; all 361 anchors audited exactly-once. Reviewer
+receipts (focused 63/63, M370/M371 2/2 KILLED at the reviewed head,
+read-only probes only): `g4-remediation-codex.log`.
