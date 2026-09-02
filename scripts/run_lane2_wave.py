@@ -12,15 +12,28 @@ re-denomination bundle.
 Pre-registration discipline (the register-at-execution registry makes
 upfront ROWS impossible — a pre-inserted trial_id would collide with the
 runner's own register and double-burn the cap): the menu + exact params +
-hypothesis texts + the frozen manifest/protocol hashes are written to a
-COMMITTED ledger artifact BEFORE any outcome-bearing execution, and every
-execution asserts param-identity against it (drift refuses).
+hypothesis texts + the execution plan (per-alias-group run_index; only
+the CANONICAL slot of each alias group executes, every alias names it
+and refuses) + the frozen manifest/protocol hashes are written to a
+TRACKED registration (docs/theory/wave0-registration.json) that is
+COMMITTED before any outcome-bearing execution; a separate execution
+state (artifacts/theory/wave0/state.json) records the registration's
+content hash at registration time, and every execution re-verifies it
+plus the manifest/protocol/geometry binding (a post-registration rewrite
+or swapped inputs refuse). Aliased slots share one executed config: the
+registry's primary key is m3-{world}-{arm}-r{run_index}, so each alias
+group carries its own per-arm run_index.
 
 Sequencing (Agenda A): T-NULL x3 runs FIRST; their realized pooled
-stride4_cohort_ic_sd + fidelity_rho (D8) are appended to the ledger by
-``--calibrate`` and become the tripwire priors — the synthetic priors are
-FORBIDDEN on the real lane. ``--execute`` REFUSES any non-null config
-while the calibration block is absent.
+stride4_cohort_ic_sd (D8) is recorded into the state by ``--calibrate``
+and becomes the tripwire prior — the synthetic priors are FORBIDDEN on
+the real lane. prior_fidelity_rho is DISCLOSED NULL: the null rows carry
+a constant label, so the rank-variance-zero Spearman stamps fidelity_rho
+= null on every null artifact (the fidelity tripwire binds at
+signal-config first look). ``--execute`` REFUSES any non-null config
+while the calibration block is absent or malformed, and calibration
+reads ONLY the artifacts the state recorded (stamp-bound to their
+trial_id — planted unstamped JSON is not evidence).
 
 Holdout (D7): already enforced by the machinery — the w5 guard refuses
 any fold TEST session inside FINAL_HOLDOUT_DATES before registration, the
@@ -99,7 +112,11 @@ MOM_MODEL_FAMILY = "mom20-quintile/v1"
 WAVE0_NULL_LABEL = 0.01
 
 WAVE0_ROOT = REPO_ROOT / "artifacts" / "theory" / "wave0"
-LEDGER_PATH = WAVE0_ROOT / "wave0-registration.json"
+# (Codex wave-0 P1-3) the pre-registration lives at a TRACKED path — it is
+# committed BEFORE any execution, and its content hash is bound into the
+# mutable execution state (a post-registration rewrite refuses at execute)
+REGISTRATION_PATH = REPO_ROOT / "docs" / "theory" / "wave0-registration.json"
+STATE_PATH = WAVE0_ROOT / "state.json"
 REGISTRY_PATH = WAVE0_ROOT / "wave0.db"
 TRIALS_DIR = WAVE0_ROOT / "trials"
 SCRATCH_ROOT = WAVE0_ROOT / "scratch"
@@ -160,8 +177,9 @@ _NULL_HYPOTHESIS = (
 _MOM_HYPOTHESIS = (
     "theory wave-0 T-MOM: momentum-quintile vehicle transmission — score ="
     " mom_20 in GRID WEEKS (Agenda C re-denomination; log(c_last/c_first)"
-    " over exactly 21 PIT-visible grid closes, warm-up omits the first 20"
-    " grid indices), quintile cut top->calls / bottom->puts; falsifiers:"
+    " over exactly 21 PIT-visible grid closes, warm-up omits the first 21"
+    " grid indices — the decision session's own T+1-walled bar never"
+    " counts), quintile cut top->calls / bottom->puts; falsifiers:"
     " cohort_ic_mean inside the T-NULL x3 spread, total_return <= the null"
     " cost floor"
 )
@@ -415,8 +433,45 @@ def momentum_scored_rows(
     return tuple(rows)
 
 
-def build_ledger(manifest_hash: str, protocol_hash: str) -> dict[str, Any]:
+def execution_plan(menu: Sequence[WaveConfig]) -> dict[str, dict[str, Any]]:
+    """(Codex wave-0 P1-1) the registry keys trials by
+    ``m3-{world}-{arm}-r{run_index}`` with ``run_index`` defaulting to 1 —
+    every slot in an arm would collide on the same primary key. The plan
+    assigns each ALIAS GROUP (equivalent params) a distinct per-arm
+    run_index in menu order; the group's FIRST slot is its canonical
+    representative (the one that executes); every other member names the
+    canonical and refuses to execute itself."""
+    plan: dict[str, dict[str, Any]] = {}
+    per_arm: dict[str, int] = {}
+    seen: dict[tuple[Any, ...], dict[str, Any]] = {}
+    for config in menu:
+        key = config.params_key()
+        if key not in seen:
+            per_arm[config.arm] = per_arm.get(config.arm, 0) + 1
+            seen[key] = {
+                "run_index": per_arm[config.arm],
+                "canonical": config.slot_id,
+                "aliases": [config.slot_id],
+            }
+            plan[config.slot_id] = seen[key]
+        else:
+            entry = seen[key]
+            entry["aliases"].append(config.slot_id)
+            plan[config.slot_id] = entry
+    return {
+        slot: {
+            "run_index": entry["run_index"],
+            "canonical": entry["canonical"],
+            "canonical_slot": slot == entry["canonical"],
+            "aliases": sorted(entry["aliases"]),
+        }
+        for slot, entry in plan.items()
+    }
+
+
+def build_registration(manifest_hash: str, protocol_hash: str) -> dict[str, Any]:
     menu = wave0_menu()
+    plan = execution_plan(menu)
     slots = [
         {
             "slot_id": config.slot_id,
@@ -430,6 +485,8 @@ def build_ledger(manifest_hash: str, protocol_hash: str) -> dict[str, Any]:
             "exit_sessions_after_entry": config.exit_sessions_after_entry,
             "flow_min_session_volume": config.flow_min_session_volume,
             "params_key": [str(part) for part in config.params_key()],
+            "run_index": plan[config.slot_id]["run_index"],
+            "canonical": plan[config.slot_id]["canonical"],
         }
         for config in menu
     ]
@@ -439,9 +496,13 @@ def build_ledger(manifest_hash: str, protocol_hash: str) -> dict[str, Any]:
             "sequencing": "Agenda A (owner ruling 2026-09-02): T-NULL x3 FIRST"
             " (D8 calibration); wave 1 T-MOM -> T-HOLD; wave 2 T-BAND -> T-DTE"
             " -> T-FLOW",
-            "tripwire": "prior_stride4_cohort_ic_sd + prior_fidelity_rho come"
-            " ONLY from the executed null artifacts (the calibration block);"
-            " verdict rule 2-SE",
+            "tripwire": "prior_stride4_cohort_ic_sd comes ONLY from the"
+            " executed null artifacts (the calibration block); verdict rule"
+            " 2-SE. prior_fidelity_rho is DISCLOSED NULL: the null rows carry"
+            " a constant label, so Spearman(labels) has zero rank variance"
+            " and every null artifact stamps fidelity_rho = null — the"
+            " fidelity tripwire binds at signal-config first look, never on"
+            " the nulls",
             "holdout": "D7: no end clamp + mandatory exit/label-window tagging"
             " (stamped by the runner) + the w5 fold-test refusal",
         },
@@ -457,10 +518,16 @@ def build_ledger(manifest_hash: str, protocol_hash: str) -> dict[str, Any]:
         "protocol_hash": protocol_hash,
         "slots": slots,
         "alias_map": alias_map(menu),
+        "execution_plan": plan,
         "unique_configs": len({tuple(s["params_key"]) for s in slots}),
-        "calibration": None,
-        "executions": [],
     }
+
+
+def _registration_sha256(registration: Mapping[str, Any]) -> str:
+    import hashlib
+
+    body = json.dumps(registration, indent=2, sort_keys=True) + "\n"
+    return hashlib.sha256(body.encode("utf-8")).hexdigest()
 
 
 def _git_head(repo: Path) -> str:
@@ -475,81 +542,144 @@ def _git_head(repo: Path) -> str:
     return result.stdout.strip()
 
 
-def load_ledger(path: Path = LEDGER_PATH) -> dict[str, Any]:
+def load_ledger(path: Path = REGISTRATION_PATH) -> dict[str, Any]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def verify_config_against_ledger(ledger: Mapping[str, Any], config: WaveConfig) -> None:
-    """Drift refusal: an execution whose params differ from the committed
-    pre-registration row refuses before anything runs."""
-    rows = {row["slot_id"]: row for row in ledger["slots"]}
+def load_state(path: Path = STATE_PATH) -> dict[str, Any]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def save_state(state: Mapping[str, Any], path: Path = STATE_PATH) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
+def verify_registration_binding(
+    registration: Mapping[str, Any],
+    state: Mapping[str, Any],
+    *,
+    manifest_hash: str,
+    protocol_hash: str,
+) -> None:
+    """(Codex wave-0 P1-3) the pre-registration must actually BIND the
+    execution: the tracked registration's content hash must equal the
+    hash the state recorded at registration time (a post-registration
+    rewrite refuses), and the manifest/protocol hashes the run verified
+    must equal the registered ones (swapped inputs refuse)."""
+    recorded = state.get("registration_sha256")
+    actual = _registration_sha256(registration)
+    if recorded != actual:
+        raise SystemExit(
+            "REFUSED: the pre-registration registration's content hash no"
+            f" longer matches the state's recorded hash ({recorded} !="
+            f" {actual}) — the registration was rewritten after the fact or"
+            " the state is not this registration's"
+        )
+    if registration["dataset_manifest_hash"] != manifest_hash:
+        raise SystemExit(
+            "REFUSED: the verified bars manifest does not match the"
+            " pre-registered dataset_manifest_hash — swapped inputs refuse"
+        )
+    if registration["protocol_hash"] != protocol_hash:
+        raise SystemExit(
+            "REFUSED: the loaded protocol does not match the pre-registered"
+            " protocol_hash — a protocol change requires a NEW registration"
+        )
+
+
+def verify_config_against_ledger(registration: Mapping[str, Any], config: WaveConfig) -> None:
+    """Drift refusal: an execution whose params OR hypothesis text differ
+    from the committed pre-registration row refuses before anything runs."""
+    rows = {row["slot_id"]: row for row in registration["slots"]}
     row = rows.get(config.slot_id)
     if row is None:
         raise SystemExit(
-            f"REFUSED: slot {config.slot_id} is not in the committed pre-registration ledger"
+            f"REFUSED: slot {config.slot_id} is not in the committed pre-registration registration"
         )
     key = [str(part) for part in config.params_key()]
     if row["params_key"] != key:
         raise SystemExit(
             f"REFUSED: slot {config.slot_id} drifted from the committed"
-            f" pre-registration ledger (ledger {row['params_key']} !="
+            f" pre-registration (registered {row['params_key']} !="
             f" executed {key})"
         )
-
-
-def require_calibration(ledger: Mapping[str, Any], config: WaveConfig) -> None:
-    """Agenda A's sequencing guard: a non-null config refuses while the
-    D8 calibration block is absent (the T-NULL x3 seeds must have run and
-    their realized stats become the priors)."""
-    if config.family == "T-NULL":
-        return
-    if not ledger.get("calibration"):
+    if row["hypothesis"] != config.hypothesis:
         raise SystemExit(
-            "REFUSED: the D8 calibration block is absent — the T-NULL x3"
-            " seeds must run and --calibrate must append their realized"
-            " stride4_cohort_ic_sd + fidelity_rho before any non-null"
-            " config executes (Agenda A sequencing)"
+            f"REFUSED: slot {config.slot_id}'s hypothesis text drifted from"
+            " the committed pre-registration — the pre-registered"
+            " falsifiable claim is part of the registration"
         )
 
 
-def calibrate(artifacts_dir: Path) -> dict[str, Any]:
-    """D8: read the three null artifacts' POOLED stats and build the
-    recalibrated tripwire priors (2-SE rule). Synthetic priors never
-    appear here — the priors are MEASURED on the real lane."""
-    menu = wave0_menu()
-    null_seeds = [c for c in menu if c.family == "T-NULL" and c.arm == "A"]
-    realized: dict[str, dict[str, float]] = {}
-    for config in null_seeds:
-        # the runner writes artifacts_dir / f"{trial_id}.json" — one
-        # artifact per executed slot directory
-        matches = sorted((artifacts_dir / config.slot_id).glob("*.json"))
-        if not matches:
+def require_calibration(state: Mapping[str, Any], config: WaveConfig) -> None:
+    """Agenda A's sequencing guard: a non-null config refuses while the
+    D8 calibration block is absent or malformed (the T-NULL x3 seeds must
+    have run and their realized priors been recorded)."""
+    if config.family == "T-NULL":
+        return
+    calibration = state.get("calibration")
+    if not isinstance(calibration, dict) or not isinstance(
+        calibration.get("prior_stride4_cohort_ic_sd"), (int, float)
+    ):
+        raise SystemExit(
+            "REFUSED: the D8 calibration block is absent or malformed — the"
+            " T-NULL x3 seeds must run and --calibrate must record their"
+            " realized stride4_cohort_ic_sd before any non-null config"
+            " executes (Agenda A sequencing)"
+        )
+
+
+def calibrate(registration: Mapping[str, Any], state: Mapping[str, Any]) -> dict[str, Any]:
+    """D8: read the three null executions' POOLED stats — from the
+    artifacts the STATE recorded (never a directory glob: an unstamped
+    JSON planted next to the artifacts is not evidence), each artifact's
+    stamp must carry the recorded trial_id — and build the recalibrated
+    tripwire priors. Synthetic priors never appear here; prior_fidelity_rho
+    is DISCLOSED NULL (constant-label nulls cannot produce it)."""
+    executions = {row["slot_id"]: row for row in state["executions"]}
+    realized: dict[str, dict[str, float | None]] = {}
+    for row in registration["slots"]:
+        if not (row["family"] == "T-NULL" and row["arm"] == "A"):
+            continue
+        execution = executions.get(row["slot_id"])
+        if execution is None:
             raise SystemExit(
-                f"REFUSED: no stamped artifact found for {config.slot_id} —"
-                " run the null seeds before calibrating"
+                f"REFUSED: {row['slot_id']} has no executed artifact recorded"
+                " in the state — run the null seeds before calibrating"
             )
-        payload = json.loads(matches[-1].read_text(encoding="utf-8"))["payload"]
+        artifact = REPO_ROOT / execution["artifact_path"]
+        body = json.loads(artifact.read_text(encoding="utf-8"))
+        stamp = body.get("stamp", {})
+        if stamp.get("trial_id") != execution["trial_id"]:
+            raise SystemExit(
+                f"REFUSED: {row['slot_id']}'s artifact stamp carries"
+                f" {stamp.get('trial_id')!r}, the state recorded"
+                f" {execution['trial_id']!r} — only the EXECUTED artifact is"
+                " calibration evidence"
+            )
+        payload = body["payload"]
         pooled = payload.get("pooled")
         if not isinstance(pooled, dict):
             pooled = {}
-        # .get + the None check below: a stats-less payload is a NAMED
-        # refusal, never a raw KeyError out of the calibration path
-        realized[config.slot_id] = {
+        realized[row["slot_id"]] = {
             "stride4_cohort_ic_sd": pooled.get("stride4_cohort_ic_sd"),
             "fidelity_rho": pooled.get("fidelity_rho"),
-            "total_return": pooled.get("total_return"),
+            "total_return": payload.get("backtest", {}).get("total_return"),
         }
     sds = [v["stride4_cohort_ic_sd"] for v in realized.values()]
-    rhos = [v["fidelity_rho"] for v in realized.values()]
-    if any(v is None for v in sds + rhos):
+    if len(realized) != 3 or any(v is None for v in sds):
         raise SystemExit(
-            "REFUSED: a null artifact carries no pooled stride4_cohort_ic_sd"
-            " / fidelity_rho — the calibration cannot be built"
+            "REFUSED: the null artifacts do not carry three pooled"
+            " stride4_cohort_ic_sd values — the calibration cannot be built"
         )
+    # prior_fidelity_rho stays NULL by disclosure (constant-label nulls
+    # have zero rank variance) — see the registration's rules block
     return {
-        "rule": "2-SE against the priors below",
-        "prior_stride4_cohort_ic_sd": sum(sds) / len(sds),
-        "prior_fidelity_rho": sum(rhos) / len(rhos),
+        "rule": "2-SE against prior_stride4_cohort_ic_sd below;"
+        " prior_fidelity_rho is null by disclosure",
+        "prior_stride4_cohort_ic_sd": sum(float(v) for v in sds) / len(sds),
+        "prior_fidelity_rho": None,
         "realized": realized,
     }
 
@@ -583,13 +713,40 @@ def _held_paths() -> SealedInputPaths:
 
 
 def execute(slot_ids: Sequence[str]) -> int:
-    ledger = load_ledger()
+    registration = load_ledger()
+    state = load_state()
     held = verify_sealed_inputs(_held_paths())
     scratch = SCRATCH_ROOT / "world"
     scratch.mkdir(parents=True, exist_ok=True)
     from tree_options.protocol.loader import load_protocol_bytes
 
     protocol = load_protocol_bytes(held.protocol_bytes)
+    # (Codex wave-0 P1-3) the tracked registration BINDS this execution
+    verify_registration_binding(
+        registration,
+        state,
+        manifest_hash=held.packet.lane2_manifest.typed_manifest_content_hash,
+        protocol_hash=held.packet.protocol_hash,
+    )
+    if (
+        tuple(
+            registration["geometry_grid_fridays"][k]
+            for k in (
+                "label_horizon",
+                "embargo",
+                "val",
+                "test",
+                "roll",
+                "min_train",
+            )
+        )
+        != WAVE0_GEOMETRY
+    ):
+        raise SystemExit(
+            "REFUSED: the registered geometry is not this driver's"
+            " WAVE0_GEOMETRY — the fold shapes would differ from the"
+            " pre-declaration"
+        )
     world = build_lane2_world(
         held,
         repo_root=REPO_ROOT,
@@ -609,14 +766,22 @@ def execute(slot_ids: Sequence[str]) -> int:
     if leaked:
         raise SystemExit(f"REFUSED: decision sessions inside the holdout: {sorted(leaked)}")
     menu = {c.slot_id: c for c in wave0_menu()}
+    plan = registration["execution_plan"]
     registry = TrialRegistry(REGISTRY_PATH)
     manifest_hash = held.packet.lane2_manifest.typed_manifest_content_hash
     for slot_id in slot_ids:
         config = menu.get(slot_id)
         if config is None:
             raise SystemExit(f"REFUSED: unknown slot {slot_id}")
-        verify_config_against_ledger(ledger, config)
-        require_calibration(ledger, config)
+        entry = plan[slot_id]
+        if not entry["canonical_slot"]:
+            raise SystemExit(
+                f"REFUSED: {slot_id} is an ALIAS of {entry['canonical']} —"
+                " execute the canonical slot (the registry dedups identical"
+                " params; the alias map is the receipt)"
+            )
+        verify_config_against_ledger(registration, config)
+        require_calibration(state, config)
         run_dir = TRIALS_DIR / config.slot_id
         if run_dir.exists():
             raise SystemExit(
@@ -646,13 +811,14 @@ def execute(slot_ids: Sequence[str]) -> int:
             liquidity_lane=2,
             flow_min_session_volume=config.flow_min_session_volume,
             score_seed=config.score_seed,
+            run_index=entry["run_index"],
         )
         print(
             f"{config.slot_id}: {result.trial_id} ->"
             f" folds={result.n_folds} positions={result.n_positions}",
             flush=True,
         )
-        executions = list(ledger["executions"])
+        executions = list(state["executions"])
         executions.append(
             {
                 "slot_id": config.slot_id,
@@ -663,10 +829,8 @@ def execute(slot_ids: Sequence[str]) -> int:
                 "at_head": _git_head(REPO_ROOT),
             }
         )
-        ledger["executions"] = executions
-        LEDGER_PATH.write_text(
-            json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        state["executions"] = executions
+        save_state(state)
     return 0
 
 
@@ -678,57 +842,67 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--register-only",
         action="store_true",
-        help="write the pre-registration ledger (the committed menu +"
-        " hashes) and exit — run BEFORE any execution",
+        help="write the pre-registration (the TRACKED, committed menu +"
+        " hashes + execution plan) and its execution state — run BEFORE"
+        " any execution, then COMMIT the registration before executing",
     )
     parser.add_argument(
         "--calibrate",
         action="store_true",
-        help="D8: append the tripwire calibration block from the three"
-        " executed null artifacts (run after T-NULL x3, before anything"
-        " else)",
+        help="D8: record the tripwire calibration from the three EXECUTED"
+        " null artifacts (run after T-NULL x3, before anything else)",
     )
     parser.add_argument(
         "--execute",
         nargs="+",
         default=[],
         metavar="SLOT",
-        help="execute the named pre-registered slots (one-shot per slot)",
+        help="execute the named pre-registered CANONICAL slots (one-shot"
+        " per slot; alias slots refuse and name their canonical)",
     )
     args = parser.parse_args(argv)
 
     if args.register_only:
-        if LEDGER_PATH.exists():
-            raise SystemExit(f"REFUSED: {LEDGER_PATH} already exists — one-shot")
+        if REGISTRATION_PATH.exists() or STATE_PATH.exists():
+            raise SystemExit(
+                f"REFUSED: {REGISTRATION_PATH} or {STATE_PATH} already exists"
+                " — registration is one-shot"
+            )
         held = verify_sealed_inputs(_held_paths())
-        ledger = build_ledger(
+        registration = build_registration(
             manifest_hash=held.packet.lane2_manifest.typed_manifest_content_hash,
             protocol_hash=held.packet.protocol_hash,
         )
-        WAVE0_ROOT.mkdir(parents=True, exist_ok=True)
-        LEDGER_PATH.write_text(
-            json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        registration["registered_at_head"] = _git_head(REPO_ROOT)
+        state = {
+            "registration_sha256": _registration_sha256(registration),
+            "executions": [],
+            "calibration": None,
+        }
+        REGISTRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        REGISTRATION_PATH.write_text(
+            json.dumps(registration, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
+        save_state(state)
         print(
-            f"pre-registration ledger written: {LEDGER_PATH}"
-            f" ({len(ledger['slots'])} slots,"
-            f" {ledger['unique_configs']} unique configs)"
+            f"pre-registration written: {REGISTRATION_PATH}"
+            f" ({len(registration['slots'])} slots,"
+            f" {registration['unique_configs']} unique configs) — COMMIT it"
+            " before any execution"
         )
         return 0
 
     if args.calibrate:
-        ledger = load_ledger()
-        if ledger.get("calibration"):
+        registration = load_ledger()
+        state = load_state()
+        if state.get("calibration"):
             raise SystemExit("REFUSED: the calibration block already exists — one-shot")
-        ledger["calibration"] = calibrate(TRIALS_DIR)
-        LEDGER_PATH.write_text(
-            json.dumps(ledger, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-        )
+        state["calibration"] = calibrate(registration, state)
+        save_state(state)
         print(
-            "calibration appended: prior sd"
-            f" {ledger['calibration']['prior_stride4_cohort_ic_sd']:.6g},"
-            " prior rho"
-            f" {ledger['calibration']['prior_fidelity_rho']:.6g}"
+            "calibration recorded: prior stride4_cohort_ic_sd"
+            f" {state['calibration']['prior_stride4_cohort_ic_sd']:.6g}"
+            " (prior_fidelity_rho null by disclosure)"
         )
         return 0
 

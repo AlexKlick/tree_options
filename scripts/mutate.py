@@ -4537,23 +4537,58 @@ MUTANTS = [
         selectors=[f"{U}/test_run_lane2_wave.py"],
         invariant=(
             "wave-0 pre-registration: an execution whose params differ from"
-            " the COMMITTED ledger row refuses before anything runs —"
-            " dropping the comparison lets an undrifted hypothesis run"
+            " the COMMITTED registration row refuses before anything runs —"
+            " dropping the comparison lets a pre-registered hypothesis run"
             " under post-hoc parameters"
         ),
     ),
     dict(
         id="M384-wave-sequencing-guard-dropped",
-        owner="test_the_sequencing_guard_requires_calibration_for_non_null",
+        owner="test_the_sequencing_guard_requires_a_wellformed_calibration",
         file="scripts/run_lane2_wave.py",
-        anchor=('    if not ledger.get("calibration"):'),
+        anchor=(
+            "    if not isinstance(calibration, dict) or not isinstance(\n"
+            '        calibration.get("prior_stride4_cohort_ic_sd"), (int, float)\n'
+            "    ):"
+        ),
         replacement=("    if False:"),
         selectors=[f"{U}/test_run_lane2_wave.py"],
         invariant=(
             "Agenda A sequencing: a non-null config refuses while the D8"
-            " calibration block is absent — the T-NULL x3 seeds must run"
-            " first and their realized stats become the tripwire priors"
-            " (the synthetic priors are FORBIDDEN on the real lane)"
+            " calibration block is absent or malformed — the T-NULL x3 seeds"
+            " must run first and their realized stride4_cohort_ic_sd become"
+            " the tripwire prior (a truthy-but-malformed block is not"
+            " calibration; the synthetic priors are FORBIDDEN on the real"
+            " lane)"
+        ),
+    ),
+    dict(
+        id="M385-wave-registration-binding-dropped",
+        owner="test_the_registration_binding_refuses_rewrites_and_swapped_inputs",
+        file="scripts/run_lane2_wave.py",
+        anchor=("    if recorded != actual:"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_lane2_wave.py"],
+        invariant=(
+            "wave-0 (Codex P1-3): the TRACKED pre-registration's content"
+            " hash must equal the hash the execution state recorded at"
+            " registration time — dropping the comparison lets a"
+            " registration rewritten after the facts silently govern"
+            " executions it never pre-declared"
+        ),
+    ),
+    dict(
+        id="M386-calibrate-trusts-unledgered-artifacts",
+        owner="test_calibrate_builds_priors_from_the_executed_null_artifacts",
+        file="scripts/run_lane2_wave.py",
+        anchor=('        if stamp.get("trial_id") != execution["trial_id"]:'),
+        replacement=("        if False:"),
+        selectors=[f"{U}/test_run_lane2_wave.py"],
+        invariant=(
+            "wave-0 D8 (Codex P1-4): calibration reads ONLY the artifacts"
+            " the execution state recorded, each STAMP-bound to its"
+            " recorded trial_id — dropping the stamp check lets planted"
+            " unstamped JSON pass as the null seeds' realized evidence"
         ),
     ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
@@ -5462,11 +5497,11 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 372-mutant run stays the"
+            " mutants and re-pins; the full 374-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " + M364-M369 remediation + M370-M373 remediation-2 +"
-            " M374-M379 remediation-3 + M380 remediation-4 + M381-M384"
+            " M374-M379 remediation-3 + M380 remediation-4 + M381-M386"
             " theory wave-0 here)"
         ),
     )

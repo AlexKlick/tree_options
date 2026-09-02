@@ -57,8 +57,9 @@ def test_the_menu_is_the_predeclared_budget() -> None:
 
 def test_the_alias_map_dedups_the_default_config_group() -> None:
     """band-0.45 / dte-045 / flow-0100 / hold-exit4 all alias null-s1's
-    default config — one executed config serves five pre-declared slots,
-    and the unique-config count fits the 32-cap with room to spare."""
+    default config — ONE canonical execution serves five pre-declared
+    slots, and the unique-config count fits the 32-cap with room to
+    spare."""
     menu = wave.wave0_menu()
     aliases = wave.alias_map(menu)
     assert aliases["null-s1"] == [
@@ -68,9 +69,32 @@ def test_the_alias_map_dedups_the_default_config_group() -> None:
         "hold-exit4",
         "null-s1",
     ]
-    ledger = wave.build_ledger(manifest_hash="m" * 64, protocol_hash="p" * 64)
-    assert ledger["unique_configs"] == 16
-    assert ledger["unique_configs"] <= 32
+    registration = wave.build_registration(manifest_hash="m" * 64, protocol_hash="p" * 64)
+    assert registration["unique_configs"] == 16
+    assert registration["unique_configs"] <= 32
+
+
+def test_the_execution_plan_gives_every_alias_group_a_unique_run_index() -> None:
+    """(Codex wave-0 P1-1) the registry's primary key is
+    m3-{world}-{arm}-r{run_index} with run_index defaulting to 1 — every
+    slot in an arm would collide. The plan assigns each alias group a
+    distinct per-arm run_index; aliases refuse and name their canonical."""
+    menu = wave.wave0_menu()
+    arms = {c.slot_id: c.arm for c in menu}
+    plan = wave.execution_plan(menu)
+    # the five default-group members share null-s1 as canonical
+    for alias in ("band-0.45", "dte-045", "flow-0100", "hold-exit4"):
+        assert plan[alias]["canonical"] == "null-s1"
+        assert plan[alias]["canonical_slot"] is False
+    assert plan["null-s1"]["canonical_slot"] is True
+    # per-arm run indexes are distinct across each arm's canonical groups
+    for arm in ("A", "B"):
+        indexes = sorted(
+            p["run_index"] for slot, p in plan.items() if p["canonical_slot"] and arms[slot] == arm
+        )
+        assert indexes == list(range(1, len(indexes) + 1)), arm
+    # 14 arm-A + 2 arm-B canonical groups = the 16 unique configs
+    assert sum(1 for p in plan.values() if p["canonical_slot"]) == 16
 
 
 def test_the_geometry_is_the_d4_ruling() -> None:
@@ -87,19 +111,22 @@ def test_the_geometry_is_the_d4_ruling() -> None:
 
 
 def test_the_ledger_roundtrips_and_drift_refuses() -> None:
-    """Every menu slot verifies against its own ledger row; a drifted
-    param (a different flow threshold) refuses before anything runs; an
-    unknown slot refuses."""
-    ledger = wave.build_ledger(manifest_hash="m" * 64, protocol_hash="p" * 64)
+    """Every menu slot verifies against its own registration row; a
+    drifted param (a different flow threshold) OR a drifted hypothesis
+    text refuses before anything runs; an unknown slot refuses."""
+    registration = wave.build_registration(manifest_hash="m" * 64, protocol_hash="p" * 64)
     for config in wave.wave0_menu():
-        wave.verify_config_against_ledger(ledger, config)
+        wave.verify_config_against_ledger(registration, config)
     drifted = next(c for c in wave.wave0_menu() if c.slot_id == "flow-0010")
-    drifted_fixed = wave.WaveConfig(**{**drifted.__dict__, "flow_min_session_volume": 5})
+    drifted_params = wave.WaveConfig(**{**drifted.__dict__, "flow_min_session_volume": 5})
     with pytest.raises(SystemExit, match="drifted"):
-        wave.verify_config_against_ledger(ledger, drifted_fixed)
+        wave.verify_config_against_ledger(registration, drifted_params)
+    drifted_hypothesis = wave.WaveConfig(**{**drifted.__dict__, "hypothesis": "y" * 20})
+    with pytest.raises(SystemExit, match="hypothesis text drifted"):
+        wave.verify_config_against_ledger(registration, drifted_hypothesis)
     with pytest.raises(SystemExit, match="not in the committed"):
         wave.verify_config_against_ledger(
-            ledger,
+            registration,
             wave.WaveConfig(
                 slot_id="not-a-slot",
                 family="T-FLOW",
@@ -115,19 +142,50 @@ def test_the_ledger_roundtrips_and_drift_refuses() -> None:
         )
 
 
-def test_the_sequencing_guard_requires_calibration_for_non_null() -> None:
+def test_the_registration_binding_refuses_rewrites_and_swapped_inputs() -> None:
+    """(Codex wave-0 P1-3) the tracked registration's content hash must
+    equal the state's recorded hash; a rewritten registration, a swapped
+    manifest, or a changed protocol each refuse by name."""
+    registration = wave.build_registration(manifest_hash="m" * 64, protocol_hash="p" * 64)
+    state = {
+        "registration_sha256": wave._registration_sha256(registration),
+        "executions": [],
+        "calibration": None,
+    }
+    wave.verify_registration_binding(
+        registration, state, manifest_hash="m" * 64, protocol_hash="p" * 64
+    )
+    rewritten = {**registration, "protocol_hash": "q" * 64}
+    with pytest.raises(SystemExit, match="no longer matches"):
+        wave.verify_registration_binding(
+            rewritten, state, manifest_hash="m" * 64, protocol_hash="p" * 64
+        )
+    with pytest.raises(SystemExit, match="bars manifest"):
+        wave.verify_registration_binding(
+            registration, state, manifest_hash="z" * 64, protocol_hash="p" * 64
+        )
+    with pytest.raises(SystemExit, match="protocol"):
+        wave.verify_registration_binding(
+            registration, state, manifest_hash="m" * 64, protocol_hash="z" * 64
+        )
+
+
+def test_the_sequencing_guard_requires_a_wellformed_calibration() -> None:
     """(Agenda A) T-NULL slots always run; every non-null slot refuses
-    while the D8 calibration block is absent and passes once it exists."""
-    ledger = wave.build_ledger(manifest_hash="m" * 64, protocol_hash="p" * 64)
+    while the D8 calibration block is absent OR malformed, and passes
+    once a numeric prior exists."""
     menu = {c.slot_id: c for c in wave.wave0_menu()}
-    wave.require_calibration(ledger, menu["null-s1"])
-    wave.require_calibration(ledger, menu["null-s1-b"])  # family T-NULL
-    with pytest.raises(SystemExit, match="calibration block is absent"):
-        wave.require_calibration(ledger, menu["mom20-a"])
-    with pytest.raises(SystemExit, match="calibration block is absent"):
-        wave.require_calibration(ledger, menu["band-0.35"])
-    ledger["calibration"] = {"prior_stride4_cohort_ic_sd": 0.1}
-    wave.require_calibration(ledger, menu["mom20-a"])
+    state = {"calibration": None}
+    wave.require_calibration(state, menu["null-s1"])
+    wave.require_calibration(state, menu["null-s1-b"])  # family T-NULL
+    with pytest.raises(SystemExit, match="absent or malformed"):
+        wave.require_calibration(state, menu["mom20-a"])
+    # a truthy-but-malformed block still refuses (Codex P1-4)
+    state["calibration"] = {"prior_stride4_cohort_ic_sd": None}
+    with pytest.raises(SystemExit, match="absent or malformed"):
+        wave.require_calibration(state, menu["mom20-a"])
+    state["calibration"] = {"prior_stride4_cohort_ic_sd": 0.13}
+    wave.require_calibration(state, menu["mom20-a"])
 
 
 @dataclass
@@ -211,44 +269,60 @@ def test_momentum_reads_the_realized_dte_not_the_target() -> None:
     assert "REALIZED dte" in menu["dte-035"].hypothesis
 
 
-def test_calibrate_builds_priors_from_the_null_artifacts(tmp_path: Path) -> None:
-    """D8: the priors are the MEAN of the three realized pooled stats —
-    a missing artifact refuses; a stats-less payload refuses; the priors
-    never carry a synthetic constant."""
-    trials = tmp_path / "trials"
+def test_calibrate_builds_priors_from_the_executed_null_artifacts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """D8: the priors come ONLY from the artifacts the STATE recorded —
+    each artifact's stamp must carry the recorded trial_id (planted
+    unstamped JSON is not evidence, Codex P1-4), total_return is read
+    from the payload's backtest block (P2-1), and prior_fidelity_rho is
+    DISCLOSED NULL (constant-label nulls cannot produce it, P1-2)."""
+    registration = wave.build_registration(manifest_hash="m" * 64, protocol_hash="p" * 64)
     sds = [0.11, 0.13, 0.15]
-    rhos = [0.02, 0.04, 0.06]
-    for slot, sd, rho in zip(("null-s1", "null-s2", "null-s3"), sds, rhos, strict=True):
-        slot_dir = trials / slot
-        slot_dir.mkdir(parents=True)
-        (slot_dir / "m3-world-a-r1.json").write_text(
+    executions = []
+    for slot, sd, run_index in zip(("null-s1", "null-s2", "null-s3"), sds, (1, 2, 3), strict=True):
+        trial_id = f"m3-world-a-r{run_index}"
+        artifact = tmp_path / f"{slot}.json"
+        artifact.write_text(
             json.dumps(
                 {
+                    "stamp": {"trial_id": trial_id},
                     "payload": {
                         "pooled": {
                             "stride4_cohort_ic_sd": sd,
-                            "fidelity_rho": rho,
-                            "total_return": "-0.01",
-                        }
-                    }
+                            "fidelity_rho": None,  # the real null shape
+                        },
+                        "backtest": {"total_return": "-0.0123"},
+                    },
                 }
             ),
             encoding="utf-8",
         )
-    calibration = wave.calibrate(trials)
+        executions.append({"slot_id": slot, "trial_id": trial_id, "artifact_path": str(artifact)})
+    state = {"executions": executions, "calibration": None}
+    monkeypatch.setattr(wave, "REPO_ROOT", tmp_path)
+    calibration = wave.calibrate(registration, state)
     assert calibration["prior_stride4_cohort_ic_sd"] == pytest.approx(0.13)
-    assert calibration["prior_fidelity_rho"] == pytest.approx(0.04)
+    assert calibration["prior_fidelity_rho"] is None
     assert set(calibration["realized"]) == {"null-s1", "null-s2", "null-s3"}
-    # a missing artifact refuses
-    (trials / "null-s3" / "m3-world-a-r1.json").unlink()
-    with pytest.raises(SystemExit, match="no stamped artifact"):
-        wave.calibrate(trials)
+    assert calibration["realized"]["null-s1"]["total_return"] == "-0.0123"
+    # a stamp carrying a foreign trial_id refuses (the planted-JSON vector)
+    body = json.loads((tmp_path / "null-s3.json").read_text(encoding="utf-8"))
+    body["stamp"]["trial_id"] = "m3-forged-a-r1"
+    (tmp_path / "null-s3.json").write_text(json.dumps(body), encoding="utf-8")
+    with pytest.raises(SystemExit, match="only the EXECUTED artifact"):
+        wave.calibrate(registration, state)
+    # an unexecuted seed refuses
+    state["executions"] = executions[:2]
+    with pytest.raises(SystemExit, match="no executed artifact recorded"):
+        wave.calibrate(registration, state)
     # a stats-less payload refuses
-    (trials / "null-s3" / "m3-world-a-r1.json").write_text(
-        json.dumps({"payload": {"pooled": {}}}), encoding="utf-8"
-    )
+    state["executions"] = executions
+    body["stamp"]["trial_id"] = "m3-world-a-r3"
+    body["payload"]["pooled"] = {}
+    (tmp_path / "null-s3.json").write_text(json.dumps(body), encoding="utf-8")
     with pytest.raises(SystemExit, match="cannot be built"):
-        wave.calibrate(trials)
+        wave.calibrate(registration, state)
 
 
 def test_the_null_rows_match_the_generator() -> None:
