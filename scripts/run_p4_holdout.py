@@ -684,7 +684,15 @@ def _validate_approval_record(record: Any) -> dict[str, Any]:
         )
     if record.get("window_id") != P4_WINDOW_ID:
         raise SystemExit(f"REFUSED: the approval names window {record.get('window_id')!r}")
-    for field in ("world_id", "protocol_hash", "dataset_manifest_hash", "registration_sha256"):
+    # world_id is the lane-2 world's COMPOSITE identity (e.g.
+    # "massive-derived/AAPL+…/d467d7878609-…"), not a hex sha — the
+    # execute path BINDS it twice (against the built world and the
+    # registration), so validation here only demands a non-empty string
+    # (the 2026-09-03 first execute refused on a hex requirement the real
+    # world id can never satisfy — caught pre-consumption, zero spent)
+    if not isinstance(record.get("world_id"), str) or not record["world_id"].strip():
+        raise SystemExit("REFUSED: the approval's world_id is empty")
+    for field in ("protocol_hash", "dataset_manifest_hash", "registration_sha256"):
         if not _is_hex64(record.get(field)):
             raise SystemExit(f"REFUSED: the approval's {field} is not a 64-hex sha256")
     declared = record.get("declared_head")
