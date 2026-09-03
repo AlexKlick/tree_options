@@ -361,6 +361,19 @@ class HoldoutEvaluationAuthority:
     world, the protocol, the registration's content hash, the owner's
     approval-record hash, the declared head, and the exact permitted
     date set. Anything that drifts refuses BEFORE registration.
+
+    (Codex round 1, P1-1 — the DECLARED trust boundary) the authority is
+    an INTERNAL SEAM, not cryptography: this runner validates its shape
+    and its binding to the trial's own world/protocol, and it makes the
+    evaluation LOUD (config-hash + payload disclosure, the exact-set
+    fold verification). The OWNER ACT lives one layer up — the P4
+    driver's approval record (validated kind/binding), its flock-held
+    one-shot consumption ledger, and the TRACKED evidence file that
+    travels with the repo. A caller that fabricates an authority object
+    by hand has left the audited surface entirely — the same boundary
+    every other caller-supplied seam (OptionsSplitOverride, score_seed)
+    lives inside; the w5 default-refusal still gates every path that
+    does not deliberately construct this object.
     """
 
     window_id: str

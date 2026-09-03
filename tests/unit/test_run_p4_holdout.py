@@ -60,6 +60,9 @@ def isolated(tmp_path, monkeypatch):
         p4, "VERDICT_PATH", tmp_path / "artifacts" / "theory" / "p4" / "verdict.json"
     )
     monkeypatch.setattr(
+        p4, "EVIDENCE_PATH", tmp_path / "docs" / "evidence-logs" / "m4" / "m4-p4-window-a.json"
+    )
+    monkeypatch.setattr(
         p4, "WAVE0_STATE_PATH", tmp_path / "artifacts" / "theory" / "wave0" / "state.json"
     )
     return tmp_path
@@ -241,41 +244,181 @@ def test_config_drift_refuses_by_name(isolated) -> None:
         p4._verify_config_against_registration(registration, stranger)
 
 
-def test_the_verdict_refuses_incomplete_or_misstamped_sets(isolated, tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(p4, "REPO_ROOT", tmp_path)
-    art_dir = tmp_path / "artifacts"
-    art_dir.mkdir(parents=True, exist_ok=True)
-
-    def _write(slot: str, trial_id: str, stamped_as: str) -> None:
-        (art_dir / f"{slot}.json").write_text(
-            json.dumps({"stamp": {"trial_id": stamped_as}, "payload": {}}), encoding="utf-8"
-        )
-
-    # scenario A — an incomplete set: five honest artifacts, the sixth
-    # execution absent from the state
-    state = {
-        "executions": [
-            {"slot_id": slot, "trial_id": f"t-{slot}", "artifact_path": f"artifacts/{slot}.json"}
-            for slot in p4.P4_SLOT_ORDER[:-1]
-        ]
+def _approval_record(**overrides) -> dict[str, Any]:
+    base = {
+        "kind": "P4_HOLDOUT_APPROVAL",
+        "window_id": "final-holdout-window-a",
+        "world_id": "a" * 64,
+        "protocol_hash": "b" * 64,
+        "dataset_manifest_hash": "c" * 64,
+        "registration_sha256": "d" * 64,
+        "declared_head": "d" * 40,
+        "permitted_test_sessions": ["2026-05-08", "2026-05-15"],
+        "reason": "the owner's declaration",
+        "at_epoch": 1_700_000_000,
     }
-    for execution in state["executions"]:
-        _write(execution["slot_id"], execution["trial_id"], execution["trial_id"])
-    with pytest.raises(SystemExit, match="no executed artifact"):
+    base.update(overrides)
+    return base
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    [
+        ("wrong kind", {"kind": "SOMETHING_ELSE"}),
+        ("wrong window", {"window_id": "final-holdout-window-b"}),
+        ("short hash", {"registration_sha256": "a" * 63}),
+        ("bad head", {"declared_head": "zzz"}),
+        ("unsealed permitted", {"permitted_test_sessions": ["2026-05-07"]}),
+        ("empty permitted", {"permitted_test_sessions": []}),
+        ("no reason", {"reason": "  "}),
+        ("bad epoch", {"at_epoch": 0}),
+        ("not an object", None),
+    ],
+)
+def test_approval_lookalikes_refuse_by_name(isolated, label, mutate) -> None:
+    """(Codex round 1 P1-1) the approval RECORD is the owner act: a
+    hand-written lookalike — wrong kind, wrong window, partial hashes, an
+    unsealed or empty permitted set, no reason, a bogus timestamp — is
+    not an approval."""
+    record = mutate if mutate is None else _approval_record(**mutate)
+    if mutate is None:
+        with pytest.raises(SystemExit, match="not an object"):
+            p4._validate_approval_record(record)
+    else:
+        with pytest.raises(SystemExit, match="REFUSED"):
+            p4._validate_approval_record(record)
+
+
+def test_the_verdict_requires_a_consumption(isolated, monkeypatch) -> None:
+    """(Codex round 1 P1-3) no approval or no consumption record means
+    nothing was spent — a verdict cannot certify a bare state file."""
+    state = {"executions": []}
+    with pytest.raises(SystemExit, match="no approval record"):
         p4._verdict_from_state(state)
-    # scenario B — a misstamped artifact: the stamp names a different
-    # trial than the state recorded; only the EXECUTED artifact is
-    # verdict evidence
-    state["executions"].append(
+    p4.APPROVAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    p4.APPROVAL_PATH.write_text(json.dumps(_approval_record()), encoding="utf-8")
+    with pytest.raises(SystemExit, match="no consumption record"):
+        p4._verdict_from_state(state)
+
+
+def test_the_verdict_refuses_fabricated_evidence(isolated, tmp_path, monkeypatch) -> None:
+    """(Codex round 1 P1-3) fabricated artifacts refuse at EVERY new
+    binding: a path outside the driver's trial directory, a trial the
+    registry does not hold COMPLETE, and a stamp from another head."""
+    monkeypatch.setattr(p4, "REPO_ROOT", tmp_path)
+    p4.APPROVAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    approval = _approval_record()
+    p4.APPROVAL_PATH.write_text(json.dumps(approval), encoding="utf-8")
+    p4._append_consumption(
         {
-            "slot_id": "p4-hold-exit2",
-            "trial_id": "t-right",
-            "artifact_path": "artifacts/p4-hold-exit2.json",
+            "kind": "P4_CONSUMPTION",
+            "content_identity": p4._content_identity(approval),
+            "head": "d" * 40,
         }
     )
-    _write("p4-hold-exit2", "t-right", "t-WRONG")
-    with pytest.raises(SystemExit, match="only the EXECUTED artifact"):
+    body = {
+        "stamp": {"trial_id": "t-1", "git_sha": "d" * 40},
+        "payload": {"backtest": {"total_return": -1.0}},
+    }
+    art_dir = tmp_path / "artifacts" / "theory" / "p4" / "trials" / "p4-null-1"
+    art_dir.mkdir(parents=True)
+    (art_dir / "t.json").write_text(json.dumps(body), encoding="utf-8")
+    executions = [
+        {
+            "slot_id": slot,
+            "trial_id": "t-1",
+            "artifact_path": "artifacts/theory/p4/trials/p4-null-1/t.json",
+        }
+        for slot in p4.P4_SLOT_ORDER
+    ]
+    state = {"executions": executions}
+
+    # no registry row at all
+    with pytest.raises(SystemExit, match="not registered-and-COMPLETED"):
         p4._verdict_from_state(state)
+    from datetime import UTC as _UTC
+    from datetime import datetime as _dt
+
+    from tree_options.registry.scope import TrialScope as _Scope
+    from tree_options.registry.sqlite import TrialRegistry as _Reg
+    from tree_options.schemas.trial import TrialRecord as _Rec
+
+    registry = _Reg(str(p4.REGISTRY_PATH))
+    scope = _Scope(
+        protocol_id="tree_options",
+        protocol_hash="b" * 64,
+        outer_fold_id="p4",
+        target_horizon="h5",
+        feature_set_id="p4|options|ov1",
+        model_family="options_A:v1",
+    )
+    record = _Rec(
+        trial_id="t-1",
+        created_at=_dt(2026, 9, 3, tzinfo=_UTC),
+        hypothesis="the registered window-A trial",
+        git_sha="d" * 40,
+        config_hash="c" * 64,
+        dataset_manifest_hash="m" * 64,
+        hyperparameters={},
+        scope_key=scope.scope_key(),
+    )
+    registry.register(record, scope)
+    registry.mark_running(
+        "t-1",
+        git_sha="d" * 40,
+        config_hash="c" * 64,
+        dataset_manifest_hash="m" * 64,
+        at=_dt(2026, 9, 3, tzinfo=_UTC),
+    )
+    registry.complete("t-1", "file://p4", outcome_at=_dt(2026, 9, 3, tzinfo=_UTC))
+    registry.close()
+    # path that ESCAPES the slot's own directory (normpath collapses
+    # the .. — a bare startswith would have let it through)
+    state["executions"][1]["artifact_path"] = (
+        "artifacts/theory/p4/trials/p4-null-2/../../p4-null-1/t.json"
+    )
+    with pytest.raises(SystemExit, match="not under"):
+        p4._verdict_from_state(state)
+    state["executions"][1]["artifact_path"] = "artifacts/theory/p4/trials/p4-null-1/t.json"
+    # the stamp names another head
+    wrong_head = json.dumps(
+        {
+            "stamp": {"trial_id": "t-1", "git_sha": "e" * 40},
+            "payload": {"backtest": {"total_return": -1.0}},
+        }
+    )
+    (art_dir / "t.json").write_text(wrong_head, encoding="utf-8")
+    with pytest.raises(SystemExit, match="another head"):
+        p4._verdict_from_state(state)
+
+
+def test_the_tracked_evidence_file_refuses_a_second_consumption(isolated) -> None:
+    """(Codex round 1 P1-2) the TRACKED evidence record travels with the
+    repo — its existence alone refuses the window (the cross-checkout
+    one-shot: a second worktree's local ledger never saw the spend)."""
+    approval = _approval_record()
+    p4.EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    p4.EVIDENCE_PATH.write_text("{}", encoding="utf-8")
+    with pytest.raises(SystemExit, match="tracked window-A evidence"):
+        p4._refuse_second_consumption(approval)
+
+
+def test_the_locked_consume_is_one_act(isolated) -> None:
+    """(Codex round 1 P1-2) _consume_authority appends the chained record
+    under the flock and refuses the same content a second time — the
+    check and the append cannot interleave."""
+    approval = _approval_record()
+    p4.APPROVAL_PATH.parent.mkdir(parents=True, exist_ok=True)
+    p4.APPROVAL_PATH.write_text(json.dumps(approval), encoding="utf-8")
+    first = p4._consume_authority(approval, "d" * 40)
+    records = p4._read_consumptions()
+    assert len(records) == 1 and records[0]["record_sha256"] == first
+    with pytest.raises(SystemExit, match="already consumed"):
+        p4._consume_authority(approval, "d" * 40)
+    other = p4._consume_authority({**approval, "registration_sha256": "q" * 64}, "d" * 40)
+    assert len(p4._read_consumptions()) == 2
+    assert p4._read_consumptions()[1]["prev_record_sha256"] == first
+    assert p4._read_consumptions()[1]["record_sha256"] == other
 
 
 def test_decision_sessions_exclude_unpermitted_sealed_dates() -> None:

@@ -50,6 +50,7 @@ import hashlib
 import importlib.util
 import json
 import os
+import posixpath
 import subprocess
 import sys
 import time
@@ -121,6 +122,11 @@ AUTHORITY_ROOT = REPO_ROOT / "artifacts" / "p4-authority"
 APPROVAL_PATH = AUTHORITY_ROOT / "approval.json"
 CONSUMPTION_PATH = AUTHORITY_ROOT / "consumption.jsonl"
 VERDICT_PATH = P4_ROOT / "verdict.json"
+# (Codex round 1 P1-2) the TRACKED one-shot record: written by --execute,
+# committed by the owner after the run — it travels with the repo, so a
+# SECOND CHECKOUT (whose local artifacts/ never saw the first spend)
+# still refuses the same window
+EVIDENCE_PATH = REPO_ROOT / "docs" / "evidence-logs" / "m4" / "m4-p4-window-a.json"
 WAVE0_STATE_PATH = REPO_ROOT / "artifacts" / "theory" / "wave0" / "state.json"
 
 # (D4, unchanged from the theory waves) H, embargo, val, test, roll,
@@ -531,7 +537,21 @@ def approve(declared_head: str, reason: str) -> int:
         "at_epoch": int(time.time()),
     }
     AUTHORITY_ROOT.mkdir(parents=True, exist_ok=True)
-    APPROVAL_PATH.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # (Codex round 1 P1-2) O_CREAT|O_EXCL: the exists() check and the
+    # write are one OS-atomic act — two concurrent approvals cannot both
+    # land
+    payload = json.dumps(record, indent=2, sort_keys=True) + "\n"
+    try:
+        fd = os.open(APPROVAL_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+    except FileExistsError:
+        raise SystemExit(
+            f"REFUSED: {APPROVAL_PATH} already exists — the approval is the owner's ONE act"
+        ) from None
+    try:
+        os.write(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     print(
         f"approved: head={declared_head[:12]}… permitted={record['permitted_test_sessions']}",
         flush=True,
@@ -643,12 +663,64 @@ def _wave0_prior() -> float:
     return float(prior)
 
 
+_HEX64 = set("0123456789abcdef")
+
+
+def _is_hex64(value: Any) -> bool:
+    return isinstance(value, str) and len(value) == 64 and set(value) <= _HEX64
+
+
+def _validate_approval_record(record: Any) -> dict[str, Any]:
+    """(Codex round 1 P1-1) the approval RECORD is the owner act — a
+    hand-written lookalike must refuse. Shape AND binding: the ratified
+    kind, the ratified window, full binding hashes, a well-formed head,
+    exactly the sealed-date shape for the permitted set, a non-empty
+    reason, a positive timestamp. Anything else is not an approval."""
+    if not isinstance(record, dict):
+        raise SystemExit("REFUSED: the approval record is not an object")
+    if record.get("kind") != "P4_HOLDOUT_APPROVAL":
+        raise SystemExit(
+            f"REFUSED: the approval kind is {record.get('kind')!r}, not P4_HOLDOUT_APPROVAL"
+        )
+    if record.get("window_id") != P4_WINDOW_ID:
+        raise SystemExit(f"REFUSED: the approval names window {record.get('window_id')!r}")
+    for field in ("world_id", "protocol_hash", "dataset_manifest_hash", "registration_sha256"):
+        if not _is_hex64(record.get(field)):
+            raise SystemExit(f"REFUSED: the approval's {field} is not a 64-hex sha256")
+    declared = record.get("declared_head")
+    if not isinstance(declared, str) or not 40 <= len(declared) <= 64 or set(declared) > _HEX64:
+        raise SystemExit(f"REFUSED: the approval's declared_head {declared!r} is not a commit hash")
+    permitted = record.get("permitted_test_sessions")
+    sealed = list(FINAL_HOLDOUT_DATES)
+    if not isinstance(permitted, list) or not permitted or any(d not in sealed for d in permitted):
+        raise SystemExit(
+            "REFUSED: the approval's permitted set is not a non-empty window-A date list"
+        )
+    if not isinstance(record.get("reason"), str) or not record["reason"].strip():
+        raise SystemExit("REFUSED: the approval carries no reason")
+    if (
+        not isinstance(record.get("at_epoch"), int)
+        or isinstance(record.get("at_epoch"), bool)
+        or record["at_epoch"] <= 0
+    ):
+        raise SystemExit("REFUSED: the approval's at_epoch is not a positive integer")
+    return record
+
+
 def _refuse_second_consumption(approval: dict[str, Any]) -> None:
     """The one-shot check: any consumption record already in the ledger
     whose content identity matches this approval's content refuses — a
     second look at the same window is the thing the seal exists to
     prevent (head-INDEPENDENT: a re-run at a new head is still the same
-    content)."""
+    content). The TRACKED evidence record closes the same hole across
+    checkouts: it travels with the repo, so a second worktree (whose
+    local artifacts/ know nothing of the first spend) still refuses."""
+    if EVIDENCE_PATH.is_file():
+        raise SystemExit(
+            f"REFUSED: the tracked window-A evidence {EVIDENCE_PATH}"
+            " already exists — this window was consumed (possibly in"
+            " another checkout); the evidence file is the durable record"
+        )
     identity = _content_identity(approval)
     for record in _read_consumptions():
         if record.get("content_identity") == identity:
@@ -658,6 +730,48 @@ def _refuse_second_consumption(approval: dict[str, Any]) -> None:
                 f" head {str(record.get('head', ''))[:12]}…) — a second"
                 " look is the one thing the seal exists to prevent"
             )
+
+
+def _consume_authority(approval: dict[str, Any], head: str) -> str:
+    """(Codex round 1 P1-2) the duplicate check and the append are ONE
+    flock-held act: read-verify-refuse-append under an exclusive lock on
+    the ledger file, so two concurrent executions cannot both pass the
+    check and both spend."""
+    import fcntl
+
+    AUTHORITY_ROOT.mkdir(parents=True, exist_ok=True)
+    identity = _content_identity(approval)
+    fd = os.open(CONSUMPTION_PATH, os.O_CREAT | os.O_RDWR, 0o644)
+    handle = os.fdopen(fd, "r+", encoding="utf-8")
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        existing = _read_consumptions()
+        for record in existing:
+            if record.get("content_identity") == identity:
+                raise SystemExit(
+                    "REFUSED: this window-A content was already consumed"
+                    f" (consumption {record.get('record_sha256', '')[:12]}…)"
+                    " — a second look is the one thing the seal exists to"
+                    " prevent"
+                )
+        prev = existing[-1]["record_sha256"] if existing else "0" * 64
+        record = {
+            "kind": "P4_CONSUMPTION",
+            "content_identity": identity,
+            "approval_sha256": _sha256_bytes(APPROVAL_PATH.read_bytes()),
+            "head": head,
+            "at_epoch": int(time.time()),
+            "prev_record_sha256": prev,
+        }
+        record_sha = _sha256_json(record)
+        record["record_sha256"] = record_sha
+        handle.seek(0, os.SEEK_END)
+        handle.write(json.dumps(record, sort_keys=True) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+        return record_sha
+    finally:
+        handle.close()
 
 
 def _execute() -> int:
@@ -676,7 +790,7 @@ def _execute() -> int:
             f"REFUSED: no approval record at {APPROVAL_PATH} — the owner"
             " approves (once) before any execution"
         )
-    approval = json.loads(APPROVAL_PATH.read_text(encoding="utf-8"))
+    approval = _validate_approval_record(json.loads(APPROVAL_PATH.read_text(encoding="utf-8")))
     head = _git_head(REPO_ROOT)
     if approval["declared_head"] != head:
         raise SystemExit(
@@ -709,6 +823,12 @@ def _execute() -> int:
             " approval; a new approval is required"
         )
     expected = registration["evaluation_window"]["expected_permitted"]
+    if approval["permitted_test_sessions"] != expected:
+        raise SystemExit(
+            "REFUSED: the approval's permitted set is not the REGISTERED"
+            " expected_permitted set — a lookalike approval that swapped"
+            " the window refuses"
+        )
     if expected != permitted_iso:
         raise SystemExit(
             "REFUSED: the recomputed label-complete set differs from the"
@@ -717,17 +837,8 @@ def _execute() -> int:
         )
     # the one-shot spend, durably recorded BEFORE the first trial
     # registers (a crash after this line is UNKNOWN / reconciliation,
-    # never a silent retry)
-    identity = _content_identity(approval)
-    consumption_sha = _append_consumption(
-        {
-            "kind": "P4_CONSUMPTION",
-            "content_identity": identity,
-            "approval_sha256": _sha256_bytes(APPROVAL_PATH.read_bytes()),
-            "head": head,
-            "at_epoch": int(time.time()),
-        }
-    )
+    # never a silent retry) — check and append are ONE flock-held act
+    consumption_sha = _consume_authority(approval, head)
     authority = HoldoutEvaluationAuthority(
         window_id=approval["window_id"],
         world_id=approval["world_id"],
@@ -807,6 +918,29 @@ def _execute() -> int:
     state["verdict"] = verdict
     save_state(state)
     VERDICT_PATH.write_text(json.dumps(verdict, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    # (Codex round 1 P1-2/P1-3) the TRACKED evidence record: the durable,
+    # repo-travelling proof of the consumption + the verdict. The owner
+    # commits it after the run; a second checkout (or an erased local
+    # ledger) still refuses the same window at the next --execute.
+    EVIDENCE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    EVIDENCE_PATH.write_text(
+        json.dumps(
+            {
+                "program": "p4-window-a",
+                "consumption_sha256": consumption_sha,
+                "content_identity": _content_identity(approval),
+                "approval_sha256": _sha256_bytes(APPROVAL_PATH.read_bytes()),
+                "declared_head": head,
+                "permitted_test_sessions": [d.isoformat() for d in permitted],
+                "trials": {row["slot_id"]: row["trial_id"] for row in state["executions"]},
+                "verdict": verdict,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     print(f"consumption: {consumption_sha[:12]}…", flush=True)
     print(
         f"VERDICT: F1 bleed_persisted={verdict['f1_bleed_persisted']}"
@@ -818,25 +952,81 @@ def _execute() -> int:
 
 
 def _verdict_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    """(Codex round 1 P1-3) the verdict certifies only EXECUTED evidence.
+    Beyond the stamp binding: each artifact must live at the driver's own
+    TRIALS_DIR path shape, the six paths must be DISTINCT, the trial
+    registry must hold each trial COMPLETE, a consumption record for THIS
+    content must exist, and every stamp's git_sha must equal the approval's
+    declared head. Fabricated state + JSON alone can no longer produce a
+    verdict."""
     executions = {row["slot_id"]: row for row in state["executions"]}
-    bodies: dict[str, Any] = {}
-    for slot_id in P4_SLOT_ORDER:
-        execution = executions.get(slot_id)
-        if execution is None:
-            raise SystemExit(
-                f"REFUSED: {slot_id} has no executed artifact recorded in"
-                " the state — the verdict refuses an incomplete set"
-            )
-        artifact = REPO_ROOT / execution["artifact_path"]
-        body = json.loads(artifact.read_text(encoding="utf-8"))
-        if body.get("stamp", {}).get("trial_id") != execution["trial_id"]:
-            raise SystemExit(
-                f"REFUSED: {slot_id}'s artifact stamp carries"
-                f" {body.get('stamp', {}).get('trial_id')!r}, the state"
-                f" recorded {execution['trial_id']!r} — only the EXECUTED"
-                " artifact is verdict evidence"
-            )
-        bodies[slot_id] = body
+    if not APPROVAL_PATH.is_file():
+        raise SystemExit("REFUSED: no approval record — nothing has been consumed to verdict")
+    approval = _validate_approval_record(json.loads(APPROVAL_PATH.read_text(encoding="utf-8")))
+    consumed = any(
+        record.get("content_identity") == _content_identity(approval)
+        for record in _read_consumptions()
+    )
+    if not consumed:
+        raise SystemExit(
+            "REFUSED: no consumption record for this approval — the verdict"
+            " follows a consumption, never a bare state file"
+        )
+    registry = TrialRegistry(REGISTRY_PATH)
+    try:
+        bodies: dict[str, Any] = {}
+        seen_paths: set[str] = set()
+        for slot_id in P4_SLOT_ORDER:
+            execution = executions.get(slot_id)
+            if execution is None:
+                raise SystemExit(
+                    f"REFUSED: {slot_id} has no executed artifact recorded in"
+                    " the state — the verdict refuses an incomplete set"
+                )
+            artifact_path = execution["artifact_path"]
+            expected_prefix = f"artifacts/theory/p4/trials/{slot_id}/"
+            # normpath FIRST: a `..` segment escapes the slot directory
+            # while keeping the literal prefix (Codex round 1 P1-3)
+            if not posixpath.normpath(artifact_path).startswith(expected_prefix):
+                raise SystemExit(
+                    f"REFUSED: {slot_id}'s recorded artifact path"
+                    f" {artifact_path!r} is not under {expected_prefix!r}"
+                    " — only the driver's own trial directory is verdict"
+                    " evidence"
+                )
+            if artifact_path in seen_paths:
+                raise SystemExit(
+                    f"REFUSED: artifact path {artifact_path!r} serves two"
+                    " slots — the six executions are six DISTINCT artifacts"
+                )
+            seen_paths.add(artifact_path)
+            if not registry.is_registered(execution["trial_id"]) or (
+                registry.status(execution["trial_id"]) != "COMPLETED"
+            ):
+                raise SystemExit(
+                    f"REFUSED: {slot_id}'s trial {execution['trial_id']!r} is"
+                    " not registered-and-COMPLETED in the registry — the"
+                    " verdict certifies finished executions only"
+                )
+            artifact = REPO_ROOT / artifact_path
+            body = json.loads(artifact.read_text(encoding="utf-8"))
+            if body.get("stamp", {}).get("trial_id") != execution["trial_id"]:
+                raise SystemExit(
+                    f"REFUSED: {slot_id}'s artifact stamp carries"
+                    f" {body.get('stamp', {}).get('trial_id')!r}, the state"
+                    f" recorded {execution['trial_id']!r} — only the EXECUTED"
+                    " artifact is verdict evidence"
+                )
+            if body.get("stamp", {}).get("git_sha") != approval["declared_head"]:
+                raise SystemExit(
+                    f"REFUSED: {slot_id}'s artifact was stamped at"
+                    f" {str(body.get('stamp', {}).get('git_sha'))[:12]}…, not"
+                    " the approval's declared head — evidence from another"
+                    " head is not this consumption's verdict"
+                )
+            bodies[slot_id] = body
+    finally:
+        registry.close()
     return evaluate_window_a(bodies, _wave0_prior())
 
 

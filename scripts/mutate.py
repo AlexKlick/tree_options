@@ -3147,18 +3147,33 @@ MUTANTS = [
         owner="test_execution_tail_seal_consumption_is_tagged_not_refused",
         file="src/tree_options/trials/options_run.py",
         anchor=(
+            "    sealed_test_intersections = sorted(\n"
+            "        {\n"
+            "            session.isoformat()\n"
+            "            for fold in folds\n"
             "            for session in fold.test_sessions\n"
-            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS"
+            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS\n"
+            "        }\n"
+            "    )"
         ),
         replacement=(
+            "    sealed_test_intersections = sorted(\n"
+            "        {\n"
+            "            session.isoformat()\n"
+            "            for fold in folds\n"
             "            for session in fold.test_sessions\n"
-            "            if session.isoformat() not in _SEALED_HOLDOUT_SESSIONS"
+            "            if session.isoformat() not in _SEALED_HOLDOUT_SESSIONS\n"
+            "        }\n"
+            "    )"
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
             "w5 inverting the intersection refuses EVERY trial (the offender"
             " set becomes the UNSEALED sessions): a seal the grid never"
-            " touches must never block a legitimate run"
+            " touches must never block a legitimate run. (P4 re-pin: the"
+            " P4 seal-disclosure block added a second identical"
+            " comprehension — the anchor now pins the guard-side one via"
+            " its assignment line)"
         ),
     ),
     dict(
@@ -3166,12 +3181,24 @@ MUTANTS = [
         owner="test_sealed_test_sessions_are_refused_before_registration",
         file="src/tree_options/trials/options_run.py",
         anchor=(
+            "    sealed_test_intersections = sorted(\n"
+            "        {\n"
+            "            session.isoformat()\n"
+            "            for fold in folds\n"
             "            for session in fold.test_sessions\n"
-            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS"
+            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS\n"
+            "        }\n"
+            "    )"
         ),
         replacement=(
+            "    sealed_test_intersections = sorted(\n"
+            "        {\n"
+            "            session.isoformat()\n"
+            "            for fold in folds\n"
+            "            if all(s.isoformat() in _SEALED_HOLDOUT_SESSIONS for s in fold.test_sessions)\n"
             "            for session in fold.test_sessions\n"
-            "            if all(s.isoformat() in _SEALED_HOLDOUT_SESSIONS for s in fold.test_sessions)"
+            "        }\n"
+            "    )"
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
@@ -3609,9 +3636,9 @@ MUTANTS = [
         owner="test_holdout_seal_block_states_its_declared_scope_and_the_artifacts_lane",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            '        "applied": f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})",'
+            '        applied = f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})"'
         ),
-        replacement='        "applied": "",',
+        replacement='        applied = ""',
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
             "P2-6 the holdout_seal block must state HOW the seal was applied"
@@ -4791,6 +4818,60 @@ MUTANTS = [
             " window-A evidence"
         ),
     ),
+    dict(
+        id="M400-p4-approval-lookalike-accepted",
+        owner="test_approval_lookalikes_refuse_by_name",
+        file="scripts/run_p4_holdout.py",
+        anchor=('    if record.get("kind") != "P4_HOLDOUT_APPROVAL":'),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 (Codex round 1 P1-1): the approval RECORD is the owner act —"
+            " a hand-written lookalike with a foreign kind must refuse, or"
+            " any JSON object on that path governs the window"
+        ),
+    ),
+    dict(
+        id="M401-p4-verdict-accepts-escaped-paths",
+        owner="test_the_verdict_refuses_fabricated_evidence",
+        file="scripts/run_p4_holdout.py",
+        anchor=(
+            "            if not posixpath.normpath(artifact_path).startswith(expected_prefix):"
+        ),
+        replacement=("            if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 (Codex round 1 P1-3): verdict evidence lives only under the"
+            " driver's own per-slot trial directory (normpath-collapsed) —"
+            " dropping the check lets a ..-bearing path point anywhere"
+        ),
+    ),
+    dict(
+        id="M402-p4-verdict-without-consumption",
+        owner="test_the_verdict_requires_a_consumption",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if not consumed:"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 (Codex round 1 P1-3): the verdict follows a CONSUMPTION — a"
+            " bare state file cannot certify window-A outcomes nothing"
+            " spent"
+        ),
+    ),
+    dict(
+        id="M404-p4-tracked-evidence-refusal-dropped",
+        owner="test_the_tracked_evidence_file_refuses_a_second_consumption",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if EVIDENCE_PATH.is_file():"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 (Codex round 1 P1-2): the TRACKED evidence record travels"
+            " with the repo — its existence refuses the window even from a"
+            " second checkout whose local ledger never saw the spend"
+        ),
+    ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
     dict(
         id="M336-spotv2-close-through-float",
@@ -5697,7 +5778,7 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 387-mutant run stays the"
+            " mutants and re-pins; the full 391-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " + M364-M369 remediation + M370-M373 remediation-2 +"
