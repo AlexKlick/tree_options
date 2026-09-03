@@ -4635,9 +4635,7 @@ MUTANTS = [
         id="M390-seal-disclosure-lies-under-authority",
         owner="test_holdout_authority_executes_the_single_window_a_fold",
         file="src/tree_options/trials/options_run.py",
-        anchor=(
-            "        reported_intersections: int | list[str] = actual_test_intersections"
-        ),
+        anchor=("        reported_intersections: int | list[str] = actual_test_intersections"),
         replacement=("        reported_intersections: int | list[str] = 0"),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
@@ -4668,7 +4666,7 @@ MUTANTS = [
         id="M392-holdout-authority-not-trial-identity",
         owner="test_holdout_authority_is_trial_identity",
         file="src/tree_options/trials/options_run.py",
-        anchor='''        # (P4) an authorized window-A evaluation is TRIAL IDENTITY: the
+        anchor="""        # (P4) an authorized window-A evaluation is TRIAL IDENTITY: the
         # authority block rides the config hash so two artifacts can never
         # differ by authorization status under one config hash
         **(
@@ -4687,9 +4685,9 @@ MUTANTS = [
             }
             if holdout_evaluation is not None
             else {}
-        ),''',
-        replacement='''        # (P4-mutant) the authority block no longer rides the config hash
-        **({} if holdout_evaluation is None else {"holdout_evaluation": {"mutant": True}}),''',
+        ),""",
+        replacement="""        # (P4-mutant) the authority block no longer rides the config hash
+        **({} if holdout_evaluation is None else {"holdout_evaluation": {"mutant": True}}),""",
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
             "P4: authorization status is TRIAL IDENTITY — stripping the"
@@ -4757,9 +4755,7 @@ MUTANTS = [
         id="M397-momentum-include-holdout-ignored",
         owner="test_momentum_rows_score_sealed_sessions_only_under_the_flag",
         file="scripts/run_lane2_wave.py",
-        anchor=(
-            "        if session.isoformat() in holdout and not include_holdout:"
-        ),
+        anchor=("        if session.isoformat() in holdout and not include_holdout:"),
         replacement=("        if session.isoformat() in holdout:"),
         selectors=[f"{U}/test_run_p4_holdout.py"],
         invariant=(

@@ -55,7 +55,13 @@ def test_real_world_shape_permits_exactly_eight_dates() -> None:
     assert permitted == tuple(_REAL_SEALED[:8])
     assert permitted[-1] == date(2026, 7, 10)
     excluded = set(_REAL_SEALED) - set(permitted)
-    assert excluded == {date(2026, 7, 17), date(2026, 7, 24), date(2026, 7, 31), date(2026, 8, 7), date(2026, 8, 14)}
+    assert excluded == {
+        date(2026, 7, 17),
+        date(2026, 7, 24),
+        date(2026, 7, 31),
+        date(2026, 8, 7),
+        date(2026, 8, 14),
+    }
 
 
 def test_a_longer_world_admits_the_earlier_boundary_dates() -> None:
@@ -159,9 +165,21 @@ def test_secondary_disclosures_carry_the_ic_bar_and_ladder_reading() -> None:
 @pytest.mark.parametrize(
     ("label", "bodies", "match"),
     [
-        ("missing slot", {k: v for k, v in _six((-0.1, -0.2, -0.3), (0.1, 0.2), 0.0).items() if k != "p4-mom-b"}, "missing artifacts"),
-        ("extra slot", {**_six((-0.1, -0.2, -0.3), (0.1, 0.2), 0.0), "p4-band": _body(0.1)}, "unexpected artifacts"),
-        ("non-numeric return", {**_six((-0.1, -0.2, -0.3), (0.1, 0.2), 0.0), "p4-hold-exit2": _body("nan")}, "total_return is not numeric"),
+        (
+            "missing slot",
+            {k: v for k, v in _six((-0.1, -0.2, -0.3), (0.1, 0.2), 0.0).items() if k != "p4-mom-b"},
+            "missing artifacts",
+        ),
+        (
+            "extra slot",
+            {**_six((-0.1, -0.2, -0.3), (0.1, 0.2), 0.0), "p4-band": _body(0.1)},
+            "unexpected artifacts",
+        ),
+        (
+            "non-numeric return",
+            {**_six((-0.1, -0.2, -0.3), (0.1, 0.2), 0.0), "p4-hold-exit2": _body("nan")},
+            "total_return is not numeric",
+        ),
     ],
 )
 def test_malformed_evaluation_sets_refuse_by_name(label, bodies, match) -> None:

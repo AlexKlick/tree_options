@@ -4035,14 +4035,14 @@ def test_holdout_authority_is_trial_identity(p4_world, protocol, tmp_path) -> No
                     roll_sessions=13,
                     min_train_sessions=34,
                 ),
-                holdout_evaluation=_p4_authority(
-                    protocol, registration_sha256=registration
-                ),
+                holdout_evaluation=_p4_authority(protocol, registration_sha256=registration),
                 allow_dirty=True,
             )
         finally:
             registry.close()
-        hashes.append(_json.loads(result.artifact_path.read_text(encoding="utf-8"))["stamp"]["config_hash"])
+        hashes.append(
+            _json.loads(result.artifact_path.read_text(encoding="utf-8"))["stamp"]["config_hash"]
+        )
     assert hashes[0] != hashes[1]
 
 

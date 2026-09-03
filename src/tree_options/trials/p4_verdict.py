@@ -86,7 +86,9 @@ def label_complete_permitted_sessions(
         raise P4VerdictError("the grid is empty")
     in_world = [s for s in sessions if s <= world_last_session]
     if not in_world:
-        raise P4VerdictError(f"no grid session is at or before the world's last session {world_last_session}")
+        raise P4VerdictError(
+            f"no grid session is at or before the world's last session {world_last_session}"
+        )
     last_index = sessions.index(in_world[-1])
     sealed = frozenset(FINAL_HOLDOUT_DATES)
     permitted = tuple(
