@@ -4767,10 +4767,18 @@ MUTANTS = [
     ),
     dict(
         id="M396-p4-second-consumption-allowed",
-        owner="test_a_second_consumption_of_the_same_content_refuses",
+        owner="test_the_locked_consume_is_one_act",
         file="scripts/run_p4_holdout.py",
-        anchor=('        if record.get("content_identity") == identity:'),
-        replacement=("        if False:"),
+        anchor=(
+            "        existing = _read_consumptions()\n"
+            "        for record in existing:\n"
+            '            if record.get("content_identity") == identity:'
+        ),
+        replacement=(
+            "        existing = _read_consumptions()\n"
+            "        for record in existing:\n"
+            "            if False:"
+        ),
         selectors=[f"{U}/test_run_p4_holdout.py"],
         invariant=(
             "P4 one-shot: a consumption record matching the approval's"
@@ -4807,10 +4815,10 @@ MUTANTS = [
     ),
     dict(
         id="M399-p4-verdict-trusts-unstamped-artifacts",
-        owner="test_the_verdict_refuses_incomplete_or_misstamped_sets",
+        owner="test_the_verdict_refuses_fabricated_evidence",
         file="scripts/run_p4_holdout.py",
-        anchor=('        if body.get("stamp", {}).get("trial_id") != execution["trial_id"]:'),
-        replacement=("        if False:"),
+        anchor=('            if body.get("stamp", {}).get("trial_id") != execution["trial_id"]:'),
+        replacement=("            if False:"),
         selectors=[f"{U}/test_run_p4_holdout.py"],
         invariant=(
             "P4: the verdict reads ONLY the EXECUTED artifacts — dropping"

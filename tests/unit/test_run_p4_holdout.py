@@ -390,6 +390,16 @@ def test_the_verdict_refuses_fabricated_evidence(isolated, tmp_path, monkeypatch
     (art_dir / "t.json").write_text(wrong_head, encoding="utf-8")
     with pytest.raises(SystemExit, match="another head"):
         p4._verdict_from_state(state)
+    # the stamp names a DIFFERENT TRIAL than the state recorded
+    mismatched_trial = json.dumps(
+        {
+            "stamp": {"trial_id": "t-OTHER", "git_sha": "d" * 40},
+            "payload": {"backtest": {"total_return": -1.0}},
+        }
+    )
+    (art_dir / "t.json").write_text(mismatched_trial, encoding="utf-8")
+    with pytest.raises(SystemExit, match="only the EXECUTED artifact"):
+        p4._verdict_from_state(state)
 
 
 def test_the_tracked_evidence_file_refuses_a_second_consumption(isolated) -> None:
