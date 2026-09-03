@@ -86,7 +86,7 @@ from tree_options.schemas.market import (
 )
 from tree_options.schemas.options import OptionContract
 from tree_options.schemas.trading import Fill, Order
-from tree_options.time.calendar import SessionCalendar
+from tree_options.time.calendar import NotASessionError, SessionCalendar
 from tree_options.time.sessions import shift_instant
 
 Arm = Literal["A", "B"]
@@ -523,7 +523,18 @@ def run_options_backtest(
         )
 
     def retry_sell(contract_id: str, quantity: int, *, decided_session: date) -> None:
-        retry_session = calendar.nth_after(decided_session, 1)
+        # (P4, Codex round 1 P2) a rejected exit at the CALENDAR's final
+        # session has no next retry window inside the run: the position
+        # stays OPEN — the position rows disclose it (exit_kind None) and
+        # the exit_fill_rejections counter already counted the rejection —
+        # where the unbounded nth_after raised, crashing an evaluation
+        # whose one-shot authority was already spent. (schedule_entries
+        # needs no twin: a decision session is never the calendar's last
+        # session under the label-complete rule.)
+        try:
+            retry_session = calendar.nth_after(decided_session, 1)
+        except NotASessionError:
+            return
         pending_exits[retry_session].append(
             Order(
                 order_id=f"OPT-R{retry_session:%Y%m%d}-{contract_id}",
@@ -796,7 +807,16 @@ def run_options_backtest(
         # and the action must be visible by tomorrow's open (review r1 P1-3:
         # firing on availability alone settled a pub(t-1)/effective(t) merger
         # at t-1 against the pre-merger bar)
-        next_open = calendar.session_open(calendar.nth_after(session, 1))
+        # (P4) At the CALENDAR's final session there is no tomorrow: the
+        # run's horizon is this session's own close. Visibility ends there —
+        # an action publishing after the horizon never fires within the run
+        # (no lookahead) — where the previous form died on NotASessionError
+        # the moment an evaluation's end_session reached the world's last
+        # session (the window-A evaluation clamps exactly there).
+        try:
+            next_open = calendar.session_open(calendar.nth_after(session, 1))
+        except NotASessionError:
+            next_open = calendar.session_close(session)
         for contract_id in sorted(open_positions):
             for action in actions_by_sid.get(open_positions[contract_id].underlying_id, ()):
                 if (

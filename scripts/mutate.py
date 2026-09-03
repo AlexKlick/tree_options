@@ -3147,18 +3147,33 @@ MUTANTS = [
         owner="test_execution_tail_seal_consumption_is_tagged_not_refused",
         file="src/tree_options/trials/options_run.py",
         anchor=(
+            "    sealed_test_intersections = sorted(\n"
+            "        {\n"
+            "            session.isoformat()\n"
+            "            for fold in folds\n"
             "            for session in fold.test_sessions\n"
-            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS"
+            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS\n"
+            "        }\n"
+            "    )"
         ),
         replacement=(
+            "    sealed_test_intersections = sorted(\n"
+            "        {\n"
+            "            session.isoformat()\n"
+            "            for fold in folds\n"
             "            for session in fold.test_sessions\n"
-            "            if session.isoformat() not in _SEALED_HOLDOUT_SESSIONS"
+            "            if session.isoformat() not in _SEALED_HOLDOUT_SESSIONS\n"
+            "        }\n"
+            "    )"
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
             "w5 inverting the intersection refuses EVERY trial (the offender"
             " set becomes the UNSEALED sessions): a seal the grid never"
-            " touches must never block a legitimate run"
+            " touches must never block a legitimate run. (P4 re-pin: the"
+            " P4 seal-disclosure block added a second identical"
+            " comprehension — the anchor now pins the guard-side one via"
+            " its assignment line)"
         ),
     ),
     dict(
@@ -3166,12 +3181,24 @@ MUTANTS = [
         owner="test_sealed_test_sessions_are_refused_before_registration",
         file="src/tree_options/trials/options_run.py",
         anchor=(
+            "    sealed_test_intersections = sorted(\n"
+            "        {\n"
+            "            session.isoformat()\n"
+            "            for fold in folds\n"
             "            for session in fold.test_sessions\n"
-            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS"
+            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS\n"
+            "        }\n"
+            "    )"
         ),
         replacement=(
+            "    sealed_test_intersections = sorted(\n"
+            "        {\n"
+            "            session.isoformat()\n"
+            "            for fold in folds\n"
+            "            if all(s.isoformat() in _SEALED_HOLDOUT_SESSIONS for s in fold.test_sessions)\n"
             "            for session in fold.test_sessions\n"
-            "            if all(s.isoformat() in _SEALED_HOLDOUT_SESSIONS for s in fold.test_sessions)"
+            "        }\n"
+            "    )"
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
@@ -3609,9 +3636,9 @@ MUTANTS = [
         owner="test_holdout_seal_block_states_its_declared_scope_and_the_artifacts_lane",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            '        "applied": f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})",'
+            '        applied = f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})"'
         ),
-        replacement='        "applied": "",',
+        replacement='        applied = ""',
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
             "P2-6 the holdout_seal block must state HOW the seal was applied"
@@ -4591,6 +4618,268 @@ MUTANTS = [
             " unstamped JSON pass as the null seeds' realized evidence"
         ),
     ),
+    dict(
+        id="M387-holdout-fold-admits-unpermitted-sealed",
+        owner="test_holdout_authority_refuses_grid_hygiene_violations",
+        file="src/tree_options/trials/options_run.py",
+        anchor=("    if unpermitted_sealed:"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P4 (owner ruling 2026-09-03): the evaluation fold builder"
+            " refuses a decision grid carrying a sealed date OUTSIDE the"
+            " permit — dropping the refusal lets an unpermitted sealed"
+            " session ride the grid as an unevaluated passenger"
+        ),
+    ),
+    dict(
+        id="M388-holdout-fold-fills-missing-permitted",
+        owner="test_holdout_authority_refuses_grid_hygiene_violations",
+        file="src/tree_options/trials/options_run.py",
+        anchor=("    if missing:"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P4: a permitted date ABSENT from the decision grid refuses —"
+            " dropping the check lets the fold claim a permitted test"
+            " session the grid never carried"
+        ),
+    ),
+    dict(
+        id="M389-holdout-authority-window-unchecked",
+        owner="test_holdout_authority_shape_and_binding_refusals",
+        file="src/tree_options/trials/options_run.py",
+        anchor=("    if authority.window_id != FINAL_HOLDOUT_WINDOW_ID:"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P4: the authority must name the RATIFIED window id — dropping"
+            " the check lets a permit for some other window consume"
+            " window A's seal"
+        ),
+    ),
+    dict(
+        id="M390-seal-disclosure-lies-under-authority",
+        owner="test_holdout_authority_executes_the_single_window_a_fold",
+        file="src/tree_options/trials/options_run.py",
+        anchor=("        reported_intersections: int | list[str] = actual_test_intersections"),
+        replacement=("        reported_intersections: int | list[str] = 0"),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P4 disclosure honesty: an authorized artifact must report the"
+            " REAL test-window/seal intersections — the refusal-era"
+            " hardcoded zero would let an evaluation artifact claim it"
+            " never touched the window it evaluated"
+        ),
+    ),
+    dict(
+        id="M391-end-buffer-one-session-short",
+        owner="test_authorized_exits_fill_at_the_calendars_last_session",
+        file="src/tree_options/trials/options_run.py",
+        anchor=(
+            "        min(last_execution_ordinal + END_BUFFER_SESSIONS, len(calendar_sessions) - 1)"
+        ),
+        replacement=(
+            "        min(last_execution_ordinal + END_BUFFER_SESSIONS, len(calendar_sessions) - 2)"
+        ),
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P4 bounded end-buffer: an exit scheduled at the calendar's"
+            " FINAL session must fill — shaving one session off the bound"
+            " silently truncates the last exits at the world's edge"
+        ),
+    ),
+    dict(
+        id="M392-holdout-authority-not-trial-identity",
+        owner="test_holdout_authority_is_trial_identity",
+        file="src/tree_options/trials/options_run.py",
+        anchor="""        # (P4) an authorized window-A evaluation is TRIAL IDENTITY: the
+        # authority block rides the config hash so two artifacts can never
+        # differ by authorization status under one config hash
+        **(
+            {
+                "holdout_evaluation": {
+                    "window_id": holdout_evaluation.window_id,
+                    "world_id": holdout_evaluation.world_id,
+                    "protocol_hash": holdout_evaluation.protocol_hash_value,
+                    "permitted_test_sessions": [
+                        d.isoformat() for d in holdout_evaluation.permitted_test_sessions
+                    ],
+                    "registration_sha256": holdout_evaluation.registration_sha256,
+                    "authority_record_sha256": holdout_evaluation.authority_record_sha256,
+                    "declared_head": holdout_evaluation.declared_head,
+                }
+            }
+            if holdout_evaluation is not None
+            else {}
+        ),""",
+        replacement="""        # (P4-mutant) the authority block no longer rides the config hash
+        **({} if holdout_evaluation is None else {"holdout_evaluation": {"mutant": True}}),""",
+        selectors=[f"{U}/test_trials_options_run.py"],
+        invariant=(
+            "P4: authorization status is TRIAL IDENTITY — stripping the"
+            " authority block from the config hash lets two evaluations"
+            " that differ by approval record share one hash"
+        ),
+    ),
+    dict(
+        id="M393-f2-bar-not-strict",
+        owner="test_f2_requires_both_arms_strictly_above_the_null_max",
+        file="src/tree_options/trials/p4_verdict.py",
+        anchor=("    f2_anomaly_persisted = min(mom_returns.values()) > null_max"),
+        replacement=("    f2_anomaly_persisted = min(mom_returns.values()) >= null_max"),
+        selectors=[f"{U}/test_p4_verdict.py"],
+        invariant=(
+            "P4 ruling 2 (owner 2026-09-03): F2's bar is STRICTLY above the"
+            " null max — a tie against the worst null is not anomaly"
+            " persistence"
+        ),
+    ),
+    dict(
+        id="M394-f1-bar-loosened",
+        owner="test_f1_fails_at_one_of_three_negative",
+        file="src/tree_options/trials/p4_verdict.py",
+        anchor=("    f1_bleed_persisted = negatives >= 2"),
+        replacement=("    f1_bleed_persisted = negatives >= 1"),
+        selectors=[f"{U}/test_p4_verdict.py"],
+        invariant=(
+            "P4 ruling 2: F1 needs >=2 of 3 null seeds negative — one bad"
+            " seed inside a positive spread is not bleed persistence"
+        ),
+    ),
+    dict(
+        id="M395-label-complete-horizon-off-by-one",
+        owner="test_real_world_shape_permits_exactly_eight_dates",
+        file="src/tree_options/trials/p4_verdict.py",
+        anchor=(
+            "        if session.isoformat() in sealed and (last_index - index) >= label_horizon_sessions"
+        ),
+        replacement=(
+            "        if session.isoformat() in sealed and (last_index - index) > label_horizon_sessions"
+        ),
+        selectors=[f"{U}/test_p4_verdict.py"],
+        invariant=(
+            "P4 ruling 3: label-complete means >= H grid steps of headroom"
+            " (the exit-4 consumption matures exactly at H) — an exclusive"
+            " bound quietly drops the deepest complete date from the"
+            " evaluation"
+        ),
+    ),
+    dict(
+        id="M396-p4-second-consumption-allowed",
+        owner="test_the_locked_consume_is_one_act",
+        file="scripts/run_p4_holdout.py",
+        anchor=(
+            "        existing = _read_consumptions()\n"
+            "        for record in existing:\n"
+            '            if record.get("content_identity") == identity:'
+        ),
+        replacement=(
+            "        existing = _read_consumptions()\n"
+            "        for record in existing:\n"
+            "            if False:"
+        ),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 one-shot: a consumption record matching the approval's"
+            " content identity refuses — dropping the check re-opens the"
+            " consumed window for a second look"
+        ),
+    ),
+    dict(
+        id="M397-momentum-include-holdout-ignored",
+        owner="test_momentum_rows_score_sealed_sessions_only_under_the_flag",
+        file="scripts/run_lane2_wave.py",
+        anchor=("        if session.isoformat() in holdout and not include_holdout:"),
+        replacement=("        if session.isoformat() in holdout:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4: the momentum scorer's seal skip lifts ONLY under"
+            " include_holdout (the authorized evaluation) — ignoring the"
+            " flag would make every research caller score sealed sessions"
+            " too"
+        ),
+    ),
+    dict(
+        id="M398-p4-approve-skips-commitment-check",
+        owner="test_approve_requires_a_committed_registration",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    _require_committed_registration(declared_head)"),
+        replacement=("    pass  # (mutant) commitment check skipped"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4: the approval binds COMMITTED registration content —"
+            " skipping the check lets a dirty working tree be approved as"
+            " if it were the committed pre-registration"
+        ),
+    ),
+    dict(
+        id="M399-p4-verdict-trusts-unstamped-artifacts",
+        owner="test_the_verdict_refuses_fabricated_evidence",
+        file="scripts/run_p4_holdout.py",
+        anchor=('            if body.get("stamp", {}).get("trial_id") != execution["trial_id"]:'),
+        replacement=("            if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4: the verdict reads ONLY the EXECUTED artifacts — dropping"
+            " the stamp binding lets any same-named JSON pass as the"
+            " window-A evidence"
+        ),
+    ),
+    dict(
+        id="M400-p4-approval-lookalike-accepted",
+        owner="test_approval_lookalikes_refuse_by_name",
+        file="scripts/run_p4_holdout.py",
+        anchor=('    if record.get("kind") != "P4_HOLDOUT_APPROVAL":'),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 (Codex round 1 P1-1): the approval RECORD is the owner act —"
+            " a hand-written lookalike with a foreign kind must refuse, or"
+            " any JSON object on that path governs the window"
+        ),
+    ),
+    dict(
+        id="M401-p4-verdict-accepts-escaped-paths",
+        owner="test_the_verdict_refuses_fabricated_evidence",
+        file="scripts/run_p4_holdout.py",
+        anchor=(
+            "            if not posixpath.normpath(artifact_path).startswith(expected_prefix):"
+        ),
+        replacement=("            if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 (Codex round 1 P1-3): verdict evidence lives only under the"
+            " driver's own per-slot trial directory (normpath-collapsed) —"
+            " dropping the check lets a ..-bearing path point anywhere"
+        ),
+    ),
+    dict(
+        id="M402-p4-verdict-without-consumption",
+        owner="test_the_verdict_requires_a_consumption",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if not consumed:"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 (Codex round 1 P1-3): the verdict follows a CONSUMPTION — a"
+            " bare state file cannot certify window-A outcomes nothing"
+            " spent"
+        ),
+    ),
+    dict(
+        id="M404-p4-tracked-evidence-refusal-dropped",
+        owner="test_the_tracked_evidence_file_refuses_a_second_consumption",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if EVIDENCE_PATH.is_file():"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_run_p4_holdout.py"],
+        invariant=(
+            "P4 (Codex round 1 P1-2): the TRACKED evidence record travels"
+            " with the repo — its existence refuses the window even from a"
+            " second checkout whose local ledger never saw the spend"
+        ),
+    ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
     dict(
         id="M336-spotv2-close-through-float",
@@ -5497,7 +5786,7 @@ def main() -> int:
         metavar="ID",
         help=(
             "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 374-mutant run stays the"
+            " mutants and re-pins; the full 391-mutant run stays the"
             " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " + M364-M369 remediation + M370-M373 remediation-2 +"

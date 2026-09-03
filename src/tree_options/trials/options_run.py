@@ -344,6 +344,148 @@ class OptionsSplitOverride:
     min_train_sessions: int
 
 
+@dataclass(frozen=True)
+class HoldoutEvaluationAuthority:
+    """(P4, owner rulings 2026-09-03) the owner-approved permit that lets
+    ONE trial evaluate ON the sealed window-A dates as its test sessions.
+
+    Without this object the w5 refusal stands unconditionally: a sealed
+    date can never enter a registered fold's test window on ANY lane.
+    With it, the trial runs a SINGLE fold whose test sessions are exactly
+    ``permitted_test_sessions`` — the label-complete sealed dates — and
+    the config hash + payload both disclose the authority (approval
+    record, registration, declared head), so an authorized evaluation is
+    never mistakable for an unsealed research trial.
+
+    The object binds what the tracked P4 pre-registration fixed: the
+    world, the protocol, the registration's content hash, the owner's
+    approval-record hash, the declared head, and the exact permitted
+    date set. Anything that drifts refuses BEFORE registration.
+
+    (Codex round 1, P1-1 — the DECLARED trust boundary) the authority is
+    an INTERNAL SEAM, not cryptography: this runner validates its shape
+    and its binding to the trial's own world/protocol, and it makes the
+    evaluation LOUD (config-hash + payload disclosure, the exact-set
+    fold verification). The OWNER ACT lives one layer up — the P4
+    driver's approval record (validated kind/binding), its flock-held
+    one-shot consumption ledger, and the TRACKED evidence file that
+    travels with the repo. A caller that fabricates an authority object
+    by hand has left the audited surface entirely — the same boundary
+    every other caller-supplied seam (OptionsSplitOverride, score_seed)
+    lives inside; the w5 default-refusal still gates every path that
+    does not deliberately construct this object.
+    """
+
+    window_id: str
+    world_id: str
+    protocol_hash_value: str
+    registration_sha256: str
+    authority_record_sha256: str
+    declared_head: str
+    permitted_test_sessions: tuple[date, ...]
+
+
+def _holdout_authority_refusal(detail: str) -> ValueError:
+    return ValueError(f"holdout evaluation authority refused: {detail}")
+
+
+def _validate_holdout_authority_shape(authority: HoldoutEvaluationAuthority) -> None:
+    """Shape checks that need nothing but the authority itself. Binding
+    checks against the trial's own identity live at the call site (the
+    world/protocol the trial ACTUALLY runs must match, not just look
+    well-formed)."""
+    if authority.window_id != FINAL_HOLDOUT_WINDOW_ID:
+        raise _holdout_authority_refusal(
+            f"window_id {authority.window_id!r} is not the ratified {FINAL_HOLDOUT_WINDOW_ID!r}"
+        )
+    for name, value, width in (
+        ("registration_sha256", authority.registration_sha256, 64),
+        ("authority_record_sha256", authority.authority_record_sha256, 64),
+    ):
+        if len(value) != width or any(c not in "0123456789abcdef" for c in value):
+            raise _holdout_authority_refusal(f"{name} is not a {width}-char hex sha256")
+    if not 40 <= len(authority.declared_head) <= 64 or any(
+        c not in "0123456789abcdef" for c in authority.declared_head
+    ):
+        raise _holdout_authority_refusal(
+            f"declared_head {authority.declared_head!r} is not a 40-64 char hex commit"
+        )
+    permitted = authority.permitted_test_sessions
+    if not permitted or tuple(sorted(set(permitted))) != permitted:
+        raise _holdout_authority_refusal(
+            "permitted_test_sessions must be non-empty, unique, and strictly increasing"
+        )
+    sealed = frozenset(FINAL_HOLDOUT_DATES)
+    outside = [d.isoformat() for d in permitted if d.isoformat() not in sealed]
+    if outside:
+        raise _holdout_authority_refusal(
+            f"permitted sessions {outside} are not sealed window-A dates"
+        )
+
+
+def _holdout_evaluation_fold(
+    sessions: tuple[date, ...],
+    split: Mapping[str, int],
+    authority: HoldoutEvaluationAuthority,
+) -> Fold:
+    """THE single evaluation fold: test = the permitted sealed dates
+    exactly; train/val = the prior research grid under the SAME geometry
+    the splitter would roll (mirroring ``WalkForwardSplitter.splits``'
+    block math, anchored at the permitted window's first ordinal).
+
+    Seal hygiene: every sealed date in ``sessions`` must be permitted, no
+    sealed date may sit in train/val/final-fit, and the fold's test set
+    must EQUAL the permitted set — a partial or padded window refuses.
+    """
+    sealed = frozenset(FINAL_HOLDOUT_DATES)
+    unpermitted_sealed = [
+        d.isoformat()
+        for d in sessions
+        if d.isoformat() in sealed and d not in authority.permitted_test_sessions
+    ]
+    if unpermitted_sealed:
+        raise _holdout_authority_refusal(
+            f"decision sessions include sealed dates outside the permit: {unpermitted_sealed}"
+        )
+    permitted = authority.permitted_test_sessions
+    missing = [d.isoformat() for d in permitted if d not in frozenset(sessions)]
+    if missing:
+        raise _holdout_authority_refusal(
+            f"permitted test sessions absent from the decision grid: {missing}"
+        )
+    t0 = sessions.index(permitted[0])
+    gap = split["label_horizon_sessions"] + split["embargo_sessions"]
+    val_sessions = split["val_sessions"]
+    if t0 < val_sessions:
+        raise _holdout_authority_refusal(
+            f"no room for the {val_sessions}-session validation block before the permitted window"
+        )
+    train_end = t0 - val_sessions - gap  # exclusive ordinal (splitter's math)
+    if train_end < split["min_train_sessions"]:
+        raise _holdout_authority_refusal(
+            f"only {train_end} train sessions before the permitted window;"
+            f" geometry requires {split['min_train_sessions']}"
+        )
+    train_block = sessions[:train_end]
+    val_block = sessions[t0 - val_sessions : t0]
+    # the splitter's final-fit rule: train plus the purged head of val
+    keep_val = [sessions[i] for i in range(t0 - val_sessions, t0) if (t0 - i) > gap]
+    for name, block in (("train", train_block), ("validation", val_block), ("final-fit", keep_val)):
+        leaked = [d.isoformat() for d in block if d.isoformat() in sealed]
+        if leaked:
+            raise _holdout_authority_refusal(f"{name} block intersects the sealed window: {leaked}")
+    fold = Fold(
+        fold_id=0,
+        train_sessions=frozenset(train_block),
+        validation_sessions=frozenset(val_block),
+        test_sessions=frozenset(permitted),
+        final_fit_train_sessions=frozenset(train_block) | frozenset(keep_val),
+    )
+    if fold.test_sessions != frozenset(permitted):
+        raise _holdout_authority_refusal("the built fold's test set is not the permitted set")
+    return fold
+
+
 def _split_params(
     protocol: ResearchProtocol, override: OptionsSplitOverride | None
 ) -> dict[str, int]:
@@ -393,11 +535,28 @@ def _fold_backtest(
     bar session and need not be a grid session, so an ordinal comparison
     would refuse exactly the dual-calendar world the seam exists to
     serve; when the two calendars coincide it decides identically to the
-    ordinal form it replaces."""
+    ordinal form it replaces.
+
+    (P4) The buffer is BOUNDED by the calendar's own end: an evaluation
+    whose last test decision sits closer than END_BUFFER sessions to the
+    grid's last session (the window-A evaluation: the world's grid ends
+    2026-08-14, four sessions past the deepest scheduled exit) previously
+    DIED on ``nth_after``'s NotASessionError before the world-end clamp
+    could apply. The bounded form takes the buffer when it fits and the
+    calendar's LAST session otherwise — which the clamp below then bounds
+    to the world exactly as a longer calendar would have; the D7
+    tail-tagging discloses whatever tail the world actually allows. For
+    every fold with full buffer headroom the bounded form is
+    byte-identical (``sessions[ordinal + END_BUFFER]`` IS
+    ``nth_after(..., END_BUFFER)``)."""
     last_test_session = max(fold.test_sessions)
     last_execution = calendar.nth_after(max(row.session for row in fold_scored), 1)
-    buffered = calendar.nth_after(last_execution, END_BUFFER_SESSIONS)
-    last_grid_session = max(s for s in calendar.sessions() if s <= world_last_session)
+    calendar_sessions = calendar.sessions()
+    last_execution_ordinal = calendar_sessions.index(last_execution)
+    buffered = calendar_sessions[
+        min(last_execution_ordinal + END_BUFFER_SESSIONS, len(calendar_sessions) - 1)
+    ]
+    last_grid_session = max(s for s in calendar_sessions if s <= world_last_session)
     end_session = buffered if buffered <= world_last_session else last_grid_session
     result = run_options_backtest(
         calendar=calendar,
@@ -885,6 +1044,7 @@ def run_options_trial(
     clock: Callable[[], datetime],
     run_index: int = 1,
     split_override: OptionsSplitOverride | None = None,
+    holdout_evaluation: HoldoutEvaluationAuthority | None = None,
     liquidity_lane: int = 1,
     flow_min_session_volume: int | None = None,
     score_seed: str | None = None,
@@ -909,7 +1069,18 @@ def run_options_trial(
     object) keeps one calendar for both roles — lane-1/synthetic payloads
     and config hashes are byte-identical; a DIFFERENT object is disclosed
     as additive `decision_calendar`/`execution_calendar` descriptors in
-    the payload and rides the config hash."""
+    the payload and rides the config hash.
+
+    (P4, owner rulings 2026-09-03) `holdout_evaluation` is the OWNER-
+    APPROVED window-A consumption permit. Absent (the default), behavior
+    is byte-identical to before: sealed dates can never enter a fold's
+    test window. Present, the trial runs ONE fold whose test sessions are
+    exactly the authority's permitted sealed dates — the label-complete
+    window-A subset — with train/validation on the prior research grid
+    under the same geometry; the authority block rides the config hash
+    and the payload discloses the evaluation (`holdout_evaluation` block;
+    the seal-disclosure block reports the real test-window
+    intersections and names the authority in `applied`)."""
     if world_id != dataset.snapshot_id or world_id != surface.snapshot_id:
         raise ValueError(
             f"world_id {world_id!r} must match dataset {dataset.snapshot_id!r} "
@@ -1151,6 +1322,26 @@ def run_options_trial(
         "cohort_stride": COHORT_STRIDE,
         "options_manifest_hash": options_manifest_hash,
         "run_index": run_index,
+        # (P4) an authorized window-A evaluation is TRIAL IDENTITY: the
+        # authority block rides the config hash so two artifacts can never
+        # differ by authorization status under one config hash
+        **(
+            {
+                "holdout_evaluation": {
+                    "window_id": holdout_evaluation.window_id,
+                    "world_id": holdout_evaluation.world_id,
+                    "protocol_hash": holdout_evaluation.protocol_hash_value,
+                    "permitted_test_sessions": [
+                        d.isoformat() for d in holdout_evaluation.permitted_test_sessions
+                    ],
+                    "registration_sha256": holdout_evaluation.registration_sha256,
+                    "authority_record_sha256": holdout_evaluation.authority_record_sha256,
+                    "declared_head": holdout_evaluation.declared_head,
+                }
+            }
+            if holdout_evaluation is not None
+            else {}
+        ),
     }
     trial_id = f"m3-{world_id}-{arm.lower()}-r{run_index}"
     scope = TrialScope(
@@ -1172,16 +1363,36 @@ def run_options_trial(
         min_train_sessions=split["min_train_sessions"],
     )
     world_sessions_set = frozenset(normalized_sessions)
-    folds = [
-        fold
-        for fold in splitter.splits(normalized_sessions)
-        if fold.test_sessions <= world_sessions_set
-    ]
-    if not folds:
-        raise ValueError(
-            f"no folds for {world_id}: {len(normalized_sessions)} decision sessions "
-            f"cannot carry the requested geometry {split}"
-        )
+    # (P4, owner rulings 2026-09-03) the AUTHORIZED window-A evaluation
+    # replaces the splitter's rolling folds with ONE fold whose test
+    # sessions are exactly the permitted sealed dates. Everything the
+    # authority must match is checked HERE, before the stamp and the
+    # registry write: a mismatched world, protocol, or permitted set
+    # burns no config budget and never exists as a record.
+    if holdout_evaluation is not None:
+        _validate_holdout_authority_shape(holdout_evaluation)
+        if holdout_evaluation.world_id != world_id:
+            raise _holdout_authority_refusal(
+                f"authority binds world {holdout_evaluation.world_id!r},"
+                f" this trial runs {world_id!r}"
+            )
+        if holdout_evaluation.protocol_hash_value != protocol_hash(protocol):
+            raise _holdout_authority_refusal(
+                "authority binds a different protocol hash than the loaded"
+                " protocol — a protocol change requires a new authority"
+            )
+        folds = [_holdout_evaluation_fold(normalized_sessions, split, holdout_evaluation)]
+    else:
+        folds = [
+            fold
+            for fold in splitter.splits(normalized_sessions)
+            if fold.test_sessions <= world_sessions_set
+        ]
+        if not folds:
+            raise ValueError(
+                f"no folds for {world_id}: {len(normalized_sessions)} decision sessions "
+                f"cannot carry the requested geometry {split}"
+            )
 
     # (w5, verdict D7.1) The holdout seal, ENFORCED at registration time:
     # window A was previously declared (protocol.holdout) but consumed by
@@ -1191,6 +1402,9 @@ def run_options_trial(
     # registry write, so a leaking trial burns no config budget and never
     # exists as a record. (The EXECUTION tail after the last test session is
     # a different, disclosed matter — see the payload's holdout_seal block.)
+    # (P4) WITH an authority the refusal inverts into an EXACT-SET
+    # verification: the sealed test sessions must be precisely the
+    # permitted set the owner approved — never more, never less.
     sealed_test_intersections = sorted(
         {
             session.isoformat()
@@ -1199,14 +1413,22 @@ def run_options_trial(
             if session.isoformat() in _SEALED_HOLDOUT_SESSIONS
         }
     )
-    if sealed_test_intersections:
-        raise ValueError(
-            f"holdout seal violated for {world_id}: fold TEST sessions "
-            f"{sealed_test_intersections} intersect the sealed window "
-            f"{FINAL_HOLDOUT_WINDOW_ID!r} ({FINAL_HOLDOUT_SCOPE}); sealed "
-            "decision sessions are never evaluable — refusing before "
-            "registration"
-        )
+    if holdout_evaluation is None:
+        if sealed_test_intersections:
+            raise ValueError(
+                f"holdout seal violated for {world_id}: fold TEST sessions "
+                f"{sealed_test_intersections} intersect the sealed window "
+                f"{FINAL_HOLDOUT_WINDOW_ID!r} ({FINAL_HOLDOUT_SCOPE}); sealed "
+                "decision sessions are never evaluable — refusing before "
+                "registration"
+            )
+    else:
+        permitted_iso = [d.isoformat() for d in holdout_evaluation.permitted_test_sessions]
+        if sorted(sealed_test_intersections) != sorted(permitted_iso):
+            raise _holdout_authority_refusal(
+                f"the evaluation fold's sealed test sessions {sealed_test_intersections}"
+                f" are not exactly the permitted set {sorted(permitted_iso)}"
+            )
 
     stamp = build_stamp(
         protocol,
@@ -1303,6 +1525,7 @@ def run_options_trial(
             # and its disclosure are untouched).
             execution_calendar=None if execution_calendar is calendar else execution_calendar,
             calendars_differ=calendars_differ,
+            holdout_evaluation=holdout_evaluation,
         )
         artifacts_dir.mkdir(parents=True, exist_ok=True)
         artifact_path = artifacts_dir / f"{trial_id}.json"
@@ -1344,6 +1567,7 @@ def _execute(
     split_label_horizon: int = 5,
     execution_calendar: SessionCalendar | None = None,
     calendars_differ: bool = False,
+    holdout_evaluation: HoldoutEvaluationAuthority | None = None,
 ) -> tuple[dict[str, object], _ODStats]:
     if liquidity_lane == 2:
         # G2: the Massive derived (vwap) lane's ratified regime — OI and the
@@ -1514,7 +1738,8 @@ def _execute(
     # carries: window A's decision sessions are never evaluated (the D7.1
     # refusal above guarantees the zero), and the execution-tail consumption
     # — exits, settlements and marks after the last test session — is
-    # DISCLOSED here, never banned.
+    # DISCLOSED here, never banned. (P4: the "never evaluated" half is
+    # suspended BY AUTHORITY for the permitted set — see below.)
     # (P2-6, Codex round 1) DISCLOSURE HONESTY: the seal is DECLARED-scoped
     # to lane-2 evaluation folds, but the refusal this runner enforces is
     # UNCONDITIONAL (strictly safer — a sealed date can never enter a
@@ -1522,14 +1747,37 @@ def _execute(
     # scope verbatim, the ARTIFACT's own liquidity_lane, and an explicit
     # `applied` field, so a lane-1 artifact can never again be read as
     # claiming the seal was lane-1-scoped. Additive keys only.
+    # (P4) Under an AUTHORIZED evaluation the "never evaluated" invariant
+    # is deliberately suspended for the permitted set — the block must say
+    # so: `applied` names the authority record and
+    # `fold_test_window_intersections` reports the REAL count (the
+    # permitted dates), never the refusal-era hardcoded zero.
+    actual_test_intersections = sorted(
+        {
+            session.isoformat()
+            for fold in folds
+            for session in fold.test_sessions
+            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS
+        }
+    )
+    if holdout_evaluation is not None:
+        applied = (
+            "authorized holdout evaluation — the permitted window-A dates ARE"
+            f" the test sessions (approval {holdout_evaluation.authority_record_sha256[:12]}…,"
+            f" declared head {holdout_evaluation.declared_head[:12]}…)"
+        )
+        reported_intersections: int | list[str] = actual_test_intersections
+    else:
+        applied = f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})"
+        reported_intersections = 0
     seal_disclosure: dict[str, object] = {
         "window_id": FINAL_HOLDOUT_WINDOW_ID,
         "scope": FINAL_HOLDOUT_SCOPE,
         "declared_scope": FINAL_HOLDOUT_SCOPE,
-        "applied": f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})",
+        "applied": applied,
         "liquidity_lane": liquidity_lane,
         "sealed_dates": sorted(_SEALED_HOLDOUT_SESSIONS),
-        "fold_test_window_intersections": 0,
+        "fold_test_window_intersections": reported_intersections,
         "folds_with_sealed_execution_tail": sum(
             1 for fold in per_fold if fold["holdout_seal_consumed"]
         ),
@@ -1582,6 +1830,32 @@ def _execute(
         },
         # (w5, verdict D7.2) the holdout seal's disclosure block
         "holdout_seal": seal_disclosure,
+        # (P4) the authorized-evaluation disclosure: absent for every
+        # research trial (additive key, byte-identical payloads), present
+        # and complete for a window-A evaluation — the authority's full
+        # binding plus the not-permitted sealed dates (disclosed as
+        # excluded, never silently dropped)
+        **(
+            {
+                "holdout_evaluation": {
+                    "window_id": holdout_evaluation.window_id,
+                    "world_id": holdout_evaluation.world_id,
+                    "protocol_hash": holdout_evaluation.protocol_hash_value,
+                    "permitted_test_sessions": [
+                        d.isoformat() for d in holdout_evaluation.permitted_test_sessions
+                    ],
+                    "registration_sha256": holdout_evaluation.registration_sha256,
+                    "authority_record_sha256": holdout_evaluation.authority_record_sha256,
+                    "declared_head": holdout_evaluation.declared_head,
+                    "excluded_sealed_dates": sorted(
+                        _SEALED_HOLDOUT_SESSIONS
+                        - {d.isoformat() for d in holdout_evaluation.permitted_test_sessions}
+                    ),
+                }
+            }
+            if holdout_evaluation is not None
+            else {}
+        ),
         "backtest": {
             # G3 extension (w4): derived from the dataset's identity, never
             # hardcoded — synthetic-sourced worlds keep the historical token
