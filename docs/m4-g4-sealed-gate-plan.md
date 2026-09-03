@@ -90,13 +90,7 @@ outcome, mutation campaign + clean-clone determinism at the sealed head.
    verify, its hash in the packet's self-binding) and wires its DAILY
    closes into the derivation ahead of the v1 Friday proxy (the v1 proxy
    backstops the sessions the sidecar does not cover; the run consumes the
-   HELD sidecar bytes, never a path re-read). Hygiene addendum (owed
-   observation, recorded here as the event-3 analysis): the cascade's end
-   state was stamped `n_positions: 0` in BOTH arms — zero candidates
-   means zero positions means zero fills, which is also why event-3
-   passed criterion 3 trivially (nothing exercised the participation
-   check); the sidecar fix's before/after is event-3's 0 positions vs
-   event-4's 90/91 (and 271 fills).
+   HELD sidecar bytes, never a path re-read).
 3. `fill_discipline` (bars leg) — every stamped fill executes strictly
    after its decision session, against a bar received by the execution
    instant AND belonging to the session immediately before the execution
