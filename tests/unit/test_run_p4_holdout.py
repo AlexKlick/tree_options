@@ -248,7 +248,7 @@ def _approval_record(**overrides) -> dict[str, Any]:
     base = {
         "kind": "P4_HOLDOUT_APPROVAL",
         "window_id": "final-holdout-window-a",
-        "world_id": "a" * 64,
+        "world_id": "massive-derived/AAPL+ADBE+AMD+AMZN+AVGO/d467d7878609-a",
         "protocol_hash": "b" * 64,
         "dataset_manifest_hash": "c" * 64,
         "registration_sha256": "d" * 64,
@@ -272,6 +272,7 @@ def _approval_record(**overrides) -> dict[str, Any]:
         ("empty permitted", {"permitted_test_sessions": []}),
         ("no reason", {"reason": "  "}),
         ("bad epoch", {"at_epoch": 0}),
+        ("empty world", {"world_id": "  "}),
         ("not an object", None),
     ],
 )
