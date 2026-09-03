@@ -2173,3 +2173,27 @@ def test_the_predeclared_floor_default_is_50() -> None:
     """The sealed default is the pre-declared pooled floor; the mini gates'
     smaller floor is a test-only parameter, never a machinery default."""
     assert REJECTION_FLOOR == 50
+
+
+def test_materialization_refuses_leftover_scratch_by_name(tmp_path: Path) -> None:
+    """(successor packet 2026-09-03) a leftover scratch surface used to die
+    as a bare FileExistsError from deep inside a wave launch (the P3 wave-1
+    crash class); the refusal is now NAMED. `held` is never touched before
+    the mkdir, so None exercises the refusal path without building a
+    fixture bundle."""
+    from tree_options.trials.g4_event import materialize_held_lane1, materialize_held_lane2
+
+    scratch = tmp_path / "scratch"
+    (scratch / "lane2-capture").mkdir(parents=True)
+    with pytest.raises(RuntimeError, match="refusing to reuse lane-2 scratch"):
+        materialize_held_lane2(None, scratch)  # type: ignore[arg-type]
+
+    scratch2 = tmp_path / "scratch2"
+    (scratch2 / "lane1").mkdir(parents=True)
+    # lane1 validates the held payload count BEFORE the mkdir, so the stub
+    # must carry a single-element payload list to reach the refusal
+    from types import SimpleNamespace
+
+    one_payload = SimpleNamespace(lane1_payloads=[b""])
+    with pytest.raises(RuntimeError, match="refusing to reuse lane-1 scratch"):
+        materialize_held_lane1(one_payload, scratch2)

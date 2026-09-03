@@ -49,10 +49,12 @@ execute_sealed_run consumes).
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -120,6 +122,9 @@ STATE_PATH = WAVE0_ROOT / "state.json"
 REGISTRY_PATH = WAVE0_ROOT / "wave0.db"
 TRIALS_DIR = WAVE0_ROOT / "trials"
 SCRATCH_ROOT = WAVE0_ROOT / "scratch"
+# per-process sequence so two fresh-scratch invocations inside one clock
+# second still derive distinct dirs
+_SCRATCH_SEQ = itertools.count(1)
 
 _NULL = NULL_SCORE_MODEL_FAMILY
 _DEFAULT_DELTA = Decimal("0.45")
@@ -729,8 +734,14 @@ def execute(slot_ids: Sequence[str]) -> int:
 
     wire_production_runner(REPO_ROOT)  # the packet binds the runner impl
     held = verify_sealed_inputs(_held_paths())
-    scratch = SCRATCH_ROOT / "world"
-    scratch.mkdir(parents=True, exist_ok=True)
+    # fresh scratch per invocation (the P3-era collision lesson, made
+    # structural here the way run_p4_holdout._fresh_scratch already is):
+    # build_lane2_world materializes into scratch/lane2-capture and a shared
+    # dir wedged consecutive waves with a bare FileExistsError. The sequence
+    # suffix keeps two invocations inside one clock second distinct.
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    scratch = SCRATCH_ROOT / f"world-{stamp}-{os.getpid()}-{next(_SCRATCH_SEQ)}"
+    scratch.mkdir(parents=True, exist_ok=False)
     from tree_options.protocol.loader import load_protocol_bytes
 
     protocol = load_protocol_bytes(held.protocol_bytes)
