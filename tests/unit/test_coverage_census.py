@@ -2170,3 +2170,155 @@ def test_an_exit_5_idempotent_retry_also_commits_the_digest_dir_entries_first(
         "the incomplete census still attests its summary over the prior publication and exits 5"
     )
     _assert_digest_dir_committed_before_attesting(events, digest_dir)
+
+
+# ---- PR #13's round-16 KNOWN DEBT, repaired (the R18 shape): bind ONE
+# canonical resolved out_root BEFORE any classification, mkdir, emission, or
+# durability walk. A symlink + `..` spelling (--out-root <tmp>/jump/../census
+# with jump -> <tmp>/deep/real) makes the KERNEL resolve the emission to
+# <tmp>/deep/census while the lexical abspath the walks used lands on the
+# DECOY chain <tmp>/census — the real hierarchy's entries stay uncommitted at
+# attestation. The owning tests pin the ACTUAL parent's fsync on BOTH
+# attesting exits (0 and 5) and that the decoy is never written.
+
+
+def _decoy_world(tmp_path: Path, *, drop_a_pair: bool):
+    """jump -> deep/real; the spelling jump/../census resolves (kernel AND
+    realpath) to deep/census, while lexical normalization lands on the
+    pre-created EMPTY decoy <tmp>/census."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A, SESSION_FRIDAY_B])
+    capture = _build_capture(
+        tmp_path,
+        underlyings=["SPY"],
+        fridays=[SESSION_FRIDAY_A, SESSION_FRIDAY_B],
+        drop_pairs={("SPY", SESSION_FRIDAY_B)} if drop_a_pair else frozenset(),
+    )
+    deep = tmp_path / "deep"
+    deep.mkdir()
+    (deep / "real").mkdir()
+    (tmp_path / "jump").symlink_to(deep / "real")
+    decoy = tmp_path / "census"
+    decoy.mkdir()  # pre-exists EMPTY: any digest entry in it is the decoy class
+    spelling = tmp_path / "jump" / ".." / "census"
+    canonical = deep / "census"  # os.path.realpath(spelling)
+    return universe, capture, spelling, canonical, decoy, deep
+
+
+def _assert_the_actual_chain_is_committed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, expected_exit: int
+) -> None:
+    universe, capture, spelling, canonical, decoy, deep = _decoy_world(
+        tmp_path, drop_a_pair=(expected_exit != 0)
+    )
+    digest_creations = 0
+    fsynced: list[tuple[tuple[int, int], int]] = []  # (dir identity, creations)
+    real_mkdir, real_fsync = os.mkdir, os.fsync
+
+    def traced_mkdir(path, mode=0o777, *, dir_fd=None):  # type: ignore[no-untyped-def]
+        real_mkdir(path, mode, dir_fd=dir_fd)
+        nonlocal digest_creations
+        # compare RESOLVED parents: pre-fix the mkdir target is spelled
+        # through the symlink, post-fix it is the canonical path — both
+        # must count so the assertion below isolates the WALK's divergence
+        if Path(os.fsdecode(path)).resolve().parent == canonical:
+            digest_creations += 1
+
+    def traced_fsync(fd: int) -> None:
+        held = os.fstat(fd)
+        fsynced.append(((held.st_dev, held.st_ino), digest_creations))
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "mkdir", traced_mkdir)
+    monkeypatch.setattr(os, "fsync", traced_fsync)
+    assert _census(monkeypatch, capture, universe, spelling) == expected_exit
+    monkeypatch.undo()
+
+    # the publication physically lands on the CANONICAL chain (the kernel
+    # resolves the symlink even pre-fix) — and ONLY there: the decoy never
+    # receives a digest entry
+    assert digest_creations == 1, "a fresh publication creates the digest dir once"
+    digest_dir = next(canonical.iterdir())
+    census = CoverageCensus.model_validate_json((digest_dir / "census.json").read_text())
+    verify_census(census)
+    assert digest_dir.name == census.content_sha256[:12]
+    assert list(decoy.iterdir()) == [], "the decoy chain must never be written"
+
+    # THE repair: the ACTUAL parent of the canonical root is fsynced after
+    # the digest entry's creation — pre-fix the durability walks walked the
+    # lexical (decoy) chain and left deep/census's real entry uncommitted
+    deep_identity = (os.stat(deep).st_dev, os.stat(deep).st_ino)
+    canonical_identity = (os.stat(canonical).st_dev, os.stat(canonical).st_ino)
+    assert any(identity == deep_identity and count >= 1 for identity, count in fsynced), (
+        "the canonical root's own entry (in its REAL parent) is never committed"
+        " after the digest dir was created — the symlinked `..` spelling"
+        " committed the decoy chain instead (PR #13 round-16 debt)"
+    )
+    assert any(identity == canonical_identity and count >= 1 for identity, count in fsynced), (
+        "the canonical root's CONTENTS are never committed before attestation"
+    )
+
+
+def test_a_symlink_dotted_out_root_commits_the_actual_parents_exit_0(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_the_actual_chain_is_committed(monkeypatch, tmp_path, expected_exit=0)
+
+
+def test_a_symlink_dotted_out_root_commits_the_actual_parents_exit_5(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assert_the_actual_chain_is_committed(monkeypatch, tmp_path, expected_exit=5)
+
+
+# ---- (successor Codex round P1-2) the publication is re-verified against
+# the HELD digest directory before anything attests: the durability walks
+# reopen by pathname, and between custody and those walks a rename-aside
+# (or an in-place member substitution) used to attest a stranger's tree.
+
+
+def test_a_substituted_digest_directory_never_attests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The digest directory is renamed aside and replaced with an empty
+    decoy between the custody writes and the chain walk — pre-fix the walk
+    fsynced the decoy and the run attested exit 0 over it."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A, SESSION_FRIDAY_B])
+    capture = _build_capture(
+        tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A, SESSION_FRIDAY_B]
+    )
+    out_root = tmp_path / "census-out"
+    real_commit = bcc._commit_output_chain
+
+    def substituting_commit(root):
+        digest_dir = next(Path(root).iterdir())
+        os.rename(digest_dir, digest_dir.with_name(digest_dir.name + "-aside"))
+        digest_dir.mkdir()  # the stranger's empty replacement at the name
+        return real_commit(root)
+
+    monkeypatch.setattr(bcc, "_commit_output_chain", substituting_commit)
+    assert _census(monkeypatch, capture, universe, out_root) == 4
+    # the run's real publication survived, aside, untouched
+    aside = next(p for p in out_root.iterdir() if p.name.endswith("-aside"))
+    assert (aside / "census.json").is_file()
+
+
+def test_a_substituted_member_never_attests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member is rewritten in place after the durability walks — pre-fix
+    nothing re-read the members, and the run attested bytes it never
+    verified."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A, SESSION_FRIDAY_B])
+    capture = _build_capture(
+        tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A, SESSION_FRIDAY_B]
+    )
+    out_root = tmp_path / "census-out"
+    real_commit = bcc._commit_digest_directory_entries
+
+    def tampering_commit(out_dir):
+        result = real_commit(out_dir)
+        (Path(out_dir) / "census.md").write_text("stranger bytes", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(bcc, "_commit_digest_directory_entries", tampering_commit)
+    assert _census(monkeypatch, capture, universe, out_root) == 4

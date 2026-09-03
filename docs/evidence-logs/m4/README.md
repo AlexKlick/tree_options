@@ -1,5 +1,13 @@
 # M4 retained evidence logs
 
+- `g4-event3-positions-note.md` — the owed POSITIONS=0 observation
+  (event-3 analysis addendum, 2026-09-03): event-3 stamped n_positions 0
+  in both arms (zero candidates → zero positions → zero fills; criterion 3
+  passed trivially with nothing exercising participation), vs event-4's
+  90/91 positions + 271 fills after the sidecar fix. Lives here because
+  the plan doc §4 (the event-3 analysis) is packet-hash-bound
+  (`criteria_source_document_sha256`) — editing it refuses every future
+  typed-input bundle, proven live by this packet's first kill run.
 - `m4-p4-window-a.json` — the consumed one-shot P4 window-A sealed
   evaluation (2026-09-03, head `2e09ac5`, APPROVAL `c8b742dc…` /
   CONSUMPTION `bcbbc3c8…`, content identity `5217679e…`): the 8

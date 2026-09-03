@@ -9,11 +9,16 @@ Taxonomy (gate requires zero of everything except KILLED):
   MUTATION_DRIFT   anchor not present exactly once (re-pin, never skip)
   HARNESS_ERROR    baseline failure, restore failure, unexpected crash
 
-Runs in a DISPOSABLE WORKTREE copy of the repo — the authoring tree is never
-mutated. Baseline selectors must pass before each mutant. The mutated file's
-pre-hash is recorded; restoration is byte-verified. After all mutants, the
-full suite runs in the worktree to prove restoration. Outputs JSON and
-Markdown tables.
+Runs in DISPOSABLE WORKTREE copies of the repo — the authoring tree is never
+mutated. Baseline selectors must pass before each mutant (cached per
+selector set within a shard; restore is byte-verified per mutant, and any
+HARNESS_ERROR verdict clears the cache). The mutated file's pre-hash is
+recorded; restoration is byte-verified. With --jobs N the registry is split
+into N contiguous shards, each in its own disposable copy (threads; the work
+is per-mutant subprocesses), and after all shards the full suite runs in
+one shard's restored worktree to prove restoration. Outputs JSON and
+Markdown tables; the report carries jobs + a selection block, and criterion
+6 accepts only selection.mode == "full".
 """
 
 from __future__ import annotations
@@ -4880,6 +4885,95 @@ MUTANTS = [
             " second checkout whose local ledger never saw the spend"
         ),
     ),
+    # ---- successor packet 2026-09-03: canonical out_root + harness guards ----
+    dict(
+        id="M405-census-out-root-lexical",
+        owner="test_a_symlink_dotted_out_root_commits_the_actual_parents_exit_0",
+        file="scripts/build_coverage_census.py",
+        anchor=(
+            "    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape)"
+            " bind ONE\n"
+            "    # canonical resolved out_root BEFORE any classification,"
+            " mkdir,\n"
+            "    # emission, or durability walk. A symlink- or `..`-laden"
+            " spelling made\n"
+            "    # the kernel-resolved EMISSION land on the real chain while"
+            " the lexical\n"
+            "    # abspath the no-follow walks traversed committed the DECOY"
+            " chain — the\n"
+            "    # real hierarchy's entries stayed uncommitted at attestation."
+            " Every\n"
+            "    # downstream consumer now sees the same resolved path, so"
+            " there is no\n"
+            "    # second spelling left to walk.\n"
+            "    args.out_root = Path(os.path.realpath(args.out_root))"
+        ),
+        replacement=(
+            "    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape)"
+            " bind ONE\n"
+            "    # canonical resolved out_root BEFORE any classification,"
+            " mkdir,\n"
+            "    # emission, or durability walk. A symlink- or `..`-laden"
+            " spelling made\n"
+            "    # the kernel-resolved EMISSION land on the real chain while"
+            " the lexical\n"
+            "    # abspath the no-follow walks traversed committed the DECOY"
+            " chain — the\n"
+            "    # real hierarchy's entries stayed uncommitted at attestation."
+            " Every\n"
+            "    # downstream consumer now sees the same resolved path, so"
+            " there is no\n"
+            "    # second spelling left to walk.\n"
+            "    args.out_root = Path(os.path.abspath(args.out_root))"
+        ),
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "PR #13 R18: out_root is bound ONCE as the canonical RESOLVED"
+            " path — realpath, never the lexical abspath. The lexical form"
+            " re-opens the round-16 decoy: the kernel-resolved emission"
+            " lands on the real chain while the no-follow walks commit the"
+            " decoy chain and the real parent's entry stays uncommitted at"
+            " attestation (owner horns: exit-0 AND exit-5, actual-parent"
+            " fsync + decoy-never-written)"
+        ),
+    ),
+    dict(
+        id="M406-criterion6-nonfull-selection-accepted",
+        owner="test_an_iteration_mode_report_is_not_gate_authority",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=('        if selection_mode != "full":'),
+        replacement=('        if False and selection_mode != "full":'),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "criterion 6 accepts ONLY a full-registry campaign: an --only or"
+            " --changed-since report (or a pre-2026-09-03 shape with no"
+            " selection block) is iteration evidence, never gate authority"
+            " — a sharded --jobs run is still FULL and stays authority"
+        ),
+    ),
+    dict(
+        id="M407-harness-baseline-cache-not-cleared",
+        owner="test_a_harness_error_clears_the_baseline_cache",
+        file="scripts/mutate.py",
+        anchor=(
+            "            r = run_mutant(wt, m, baseline_cache=cache)\n"
+            '            if r["verdict"] == "HARNESS_ERROR":\n'
+            "                cache.clear()"
+        ),
+        replacement=(
+            "            r = run_mutant(wt, m, baseline_cache=cache)\n"
+            '            if r["verdict"] == "HARNESS_ERROR":\n'
+            "                pass  # cache-clear dropped: a damaged tree keeps"
+            " stale baselines"
+        ),
+        selectors=[f"{U}/test_mutate_harness.py"],
+        invariant=(
+            "harness: any HARNESS_ERROR verdict clears the shard's baseline"
+            " cache — restore is byte-verified per mutant, so a damaged tree"
+            " can no longer be assumed pristine and cached baseline passes"
+            " stop being statements about this tree"
+        ),
+    ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
     dict(
         id="M336-spotv2-close-through-float",
@@ -5674,7 +5768,7 @@ def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedP
     )
 
 
-def run_mutant(worktree: Path, mutant: dict) -> dict:
+def run_mutant(worktree: Path, mutant: dict, baseline_cache: dict | None = None) -> dict:
     path = worktree / mutant["file"]
     original = path.read_text()
     pre_hash = hashlib.sha256(original.encode()).hexdigest()
@@ -5694,25 +5788,37 @@ def run_mutant(worktree: Path, mutant: dict) -> dict:
 
     # Baseline: the owning selectors must pass BEFORE mutation (one retry —
     # a transient toolchain hiccup must not be misread as a harness error).
-    base = None
-    import time
+    # The baseline is CACHEABLE per selector set (success packet 2026-09-03):
+    # restore is byte-verified per mutant (a mismatch is a HARNESS_ERROR),
+    # so within a shard the tree is provably pristine whenever a later
+    # baseline would run — the cached pass still describes this tree. The
+    # shard loop CLEARS the cache on any HARNESS_ERROR verdict; only
+    # successful baselines are ever stored.
+    cache_key = tuple(mutant["selectors"])
+    base = baseline_cache.get(cache_key) if baseline_cache is not None else None
+    if base is None:
+        import time
 
-    for _attempt in range(3):
-        try:
-            base = _run(
-                worktree, ["pytest", *mutant["selectors"], "-q", "-p", "no:cacheprovider"], 600
-            )
-        except subprocess.TimeoutExpired:
-            result["verdict"], result["detail"] = "HARNESS_ERROR", "baseline timeout"
+        for _attempt in range(3):
+            try:
+                base = _run(
+                    worktree,
+                    ["pytest", *mutant["selectors"], "-q", "-p", "no:cacheprovider"],
+                    600,
+                )
+            except subprocess.TimeoutExpired:
+                result["verdict"], result["detail"] = "HARNESS_ERROR", "baseline timeout"
+                return result
+            if base.returncode == 0:
+                break
+            time.sleep(2)
+        if base is None or base.returncode != 0:
+            tail = (base.stdout if base else "").strip().splitlines()[-1:] or ["<no output>"]
+            result["verdict"] = "HARNESS_ERROR"
+            result["detail"] = f"baseline selectors fail: {tail[0][:100]}"
             return result
-        if base.returncode == 0:
-            break
-        time.sleep(2)
-    if base is None or base.returncode != 0:
-        tail = (base.stdout if base else "").strip().splitlines()[-1:] or ["<no output>"]
-        result["verdict"] = "HARNESS_ERROR"
-        result["detail"] = f"baseline selectors fail: {tail[0][:100]}"
-        return result
+        if baseline_cache is not None:
+            baseline_cache[cache_key] = base
 
     path.write_text(original.replace(mutant["anchor"], mutant["replacement"]))
     try:
@@ -5765,60 +5871,31 @@ def run_mutant(worktree: Path, mutant: dict) -> dict:
     return result
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--json", type=Path, default=None)
-    parser.add_argument("--markdown", type=Path, default=None)
-    parser.add_argument(
-        "--head",
-        default=None,
-        help=(
-            "the git head the campaign ran at (the orchestrator passes"
-            " `git rev-parse HEAD`); stamped into the report so criterion 6"
-            " can bind it to the sealed head — a report from another head"
-            " is stale and FAILs"
-        ),
-    )
-    parser.add_argument(
-        "--only",
-        nargs="+",
-        default=None,
-        metavar="ID",
-        help=(
-            "run only the named mutant ids (debt-lane evidence for new"
-            " mutants and re-pins; the full 391-mutant run stays the"
-            " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
-            " + M338-M355 price-boundary + M356-M363 successor-enablement"
-            " + M364-M369 remediation + M370-M373 remediation-2 +"
-            " M374-M379 remediation-3 + M380 remediation-4 + M381-M386"
-            " theory wave-0 here)"
-        ),
-    )
-    args = parser.parse_args()
-    selected = list(MUTANTS)
-    if args.only is not None:
-        wanted = set(args.only)
-        known = {m["id"] for m in MUTANTS}
-        unknown = sorted(wanted - known)
-        if unknown:
-            parser.error(f"unknown mutant ids: {unknown}")
-        selected = [m for m in MUTANTS if m["id"] in wanted]
+def _split_contiguous(items: list, parts: int) -> list[list]:
+    """Split into at most `parts` CONTIGUOUS chunks (registry order
+    preserved — concatenating the chunks in order reproduces the input;
+    file locality stays inside one shard because the registry groups by
+    target file)."""
+    if parts <= 1 or len(items) <= 1:
+        return [list(items)]
+    size, rem = divmod(len(items), parts)
+    chunks: list[list] = []
+    start = 0
+    for i in range(parts):
+        end = start + size + (1 if i < rem else 0)
+        if start < end:
+            chunks.append(list(items[start:end]))
+        start = end
+    return chunks or [[]]
 
-    # The disposable copy must honor the same host rule the seal/bars
-    # authority ledgers enforce mechanically: nothing repo-authoritative
-    # may resolve under /tmp (wiped on reboot). The A4/A5 ledger tests
-    # place their scratch at repo-relative artifacts/ paths precisely to
-    # stay off /tmp; a /tmp-based copy makes those paths resolve under
-    # /tmp, the (correct) LedgerRootRefusedError then fails every owning
-    # test at baseline, and the gate reports HARNESS_ERROR for those
-    # mutants plus a failed restoration suite (first full-gate attempt
-    # 2026-08-23: 10x HARNESS_ERROR, all M208-M212/M214-M218). Scratch
-    # therefore lives BESIDE the repo — never under /tmp, never inside
-    # the tree being copied (copytree into a subdir of its own source
-    # would recurse). TREE_OPTIONS_MUTATE_ROOT overrides for operators.
-    scratch_parent = Path(os.environ.get("TREE_OPTIONS_MUTATE_ROOT") or REPO.parent)
+
+def _prepare_worktree(scratch_parent: Path) -> tuple[Path, Path]:
+    """One disposable copy + synthetic git baseline + frozen env. Returns
+    (worktree_root, repo_dir). A failure anywhere inside (copy, synthetic
+    git, uv sync) removes the PARTIAL tree it created — the root is
+    allocated before anything can fail, so nothing leaks (successor Codex
+    round, P2-5)."""
     worktree = Path(tempfile.mkdtemp(prefix=f"{REPO.name}-mutate-", dir=scratch_parent))
-    keep_worktree = False
     try:
         shutil.copytree(
             REPO,
@@ -5855,13 +5932,188 @@ def main() -> int:
         subprocess.run(
             ["uv", "sync", "--frozen"], cwd=wt, capture_output=True, timeout=600, check=True
         )
-        results = [run_mutant(wt, m) for m in selected]
-        # Restoration proof: full suite in the (restored) worktree. Failures
-        # print their traceback tail AND keep the worktree for forensics —
-        # a restoration failure that cannot be reproduced in a clean copy
-        # (seen twice on test_run_options_trial_end_to_end, clean in both
-        # isolated replicas) must be diagnosable from the retained state.
-        final = _run(wt, ["pytest", "-q", "--tb=short", "-p", "no:cacheprovider"], 1800)
+    except BaseException:
+        shutil.rmtree(worktree, ignore_errors=True)
+        raise
+    return worktree, wt
+
+
+def _run_shard(mutants: list[dict], scratch_parent: Path) -> tuple[list[dict], Path, Path]:
+    """Run one slice of the registry in this thread's OWN disposable copy
+    (per-mutant subprocesses are the work, so threads parallelize without
+    sharing anything but the read-only registry). The baseline cache lives
+    per shard and is CLEARED on any HARNESS_ERROR verdict: a damaged tree
+    can no longer be assumed pristine, so cached baseline passes stop
+    being statements about this tree. Returns (results, worktree_root,
+    repo_dir); the caller owns cleanup, this function only cleans up its
+    own copy on failure."""
+    worktree, wt = _prepare_worktree(scratch_parent)
+    try:
+        cache: dict = {}
+        results = []
+        for m in mutants:
+            r = run_mutant(wt, m, baseline_cache=cache)
+            if r["verdict"] == "HARNESS_ERROR":
+                cache.clear()
+            results.append(r)
+        return results, worktree, wt
+    except BaseException:
+        shutil.rmtree(worktree, ignore_errors=True)
+        raise
+
+
+def _changed_files(ref: str) -> set[str]:
+    proc = subprocess.run(
+        ["git", "diff", "--name-only", ref], cwd=REPO, capture_output=True, text=True
+    )
+    if proc.returncode != 0:
+        raise SystemExit(f"--changed-since: bad ref {ref!r}: {proc.stderr.strip()[:160]}")
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+def _select_changed_since(mutants: list[dict], changed: set[str]) -> list[dict]:
+    """The NON-AUTHORITY iteration selection: a mutant is relevant when its
+    TARGET file or any of its owning SELECTOR files changed vs the ref."""
+    return [m for m in mutants if m["file"] in changed or any(s in changed for s in m["selectors"])]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--json", type=Path, default=None)
+    parser.add_argument("--markdown", type=Path, default=None)
+    parser.add_argument(
+        "--head",
+        default=None,
+        help=(
+            "the git head the campaign ran at (the orchestrator passes"
+            " `git rev-parse HEAD`); stamped into the report so criterion 6"
+            " can bind it to the sealed head — a report from another head"
+            " is stale and FAILs"
+        ),
+    )
+    parser.add_argument(
+        "--only",
+        nargs="+",
+        default=None,
+        metavar="ID",
+        help=(
+            "run only the named mutant ids (debt-lane evidence for new"
+            " mutants and re-pins; the full registry run stays the"
+            " m0_gate's authority — 323 through PR #21 + M336/M337 spotv2"
+            " + M338-M355 price-boundary + M356-M363 successor-enablement"
+            " + M364-M369 remediation + M370-M373 remediation-2 +"
+            " M374-M379 remediation-3 + M380 remediation-4 + M381-M386"
+            " theory wave-0 + M387-M404 P4 window-A + M405-M407 successor"
+            " here)"
+        ),
+    )
+    parser.add_argument(
+        "--changed-since",
+        default=None,
+        metavar="REF",
+        help=(
+            "NON-AUTHORITY iteration mode: run only mutants whose target"
+            " file or owning selector files changed vs REF (git diff"
+            " --name-only REF). Iteration evidence only — criterion 6"
+            " refuses any report whose selection is not the full campaign"
+        ),
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        metavar="N",
+        help=(
+            "run the campaign across N worker shards, each in its own"
+            " disposable copy (threads; the work is per-mutant"
+            " subprocesses). Verdicts, report schema, and the restoration"
+            " proof are identical to the serial run; only wall-clock"
+            " changes (plus a per-shard copy+uv-sync setup cost)"
+        ),
+    )
+    args = parser.parse_args()
+    if args.jobs < 1:
+        parser.error("--jobs must be >= 1")
+    if args.only is not None and args.changed_since is not None:
+        parser.error("--only and --changed-since are mutually exclusive")
+    selected = list(MUTANTS)
+    selection_mode = "full"
+    selection_ref = None
+    if args.only is not None:
+        wanted = set(args.only)
+        known = {m["id"] for m in MUTANTS}
+        unknown = sorted(wanted - known)
+        if unknown:
+            parser.error(f"unknown mutant ids: {unknown}")
+        selected = [m for m in MUTANTS if m["id"] in wanted]
+        selection_mode = "only"
+    elif args.changed_since is not None:
+        changed = _changed_files(args.changed_since)
+        selected = _select_changed_since(MUTANTS, changed)
+        selection_mode = "changed-since"
+        selection_ref = args.changed_since
+
+    # The disposable copy must honor the same host rule the seal/bars
+    # authority ledgers enforce mechanically: nothing repo-authoritative
+    # may resolve under /tmp (wiped on reboot). The A4/A5 ledger tests
+    # place their scratch at repo-relative artifacts/ paths precisely to
+    # stay off /tmp; a /tmp-based copy makes those paths resolve under
+    # /tmp, the (correct) LedgerRootRefusedError then fails every owning
+    # test at baseline, and the gate reports HARNESS_ERROR for those
+    # mutants plus a failed restoration suite (first full-gate attempt
+    # 2026-08-23: 10x HARNESS_ERROR, all M208-M212/M214-M218). Scratch
+    # therefore lives BESIDE the repo — never under /tmp, never inside
+    # the tree being copied (copytree into a subdir of its own source
+    # would recurse). TREE_OPTIONS_MUTATE_ROOT overrides for operators.
+    scratch_parent = Path(os.environ.get("TREE_OPTIONS_MUTATE_ROOT") or REPO.parent)
+    actual_jobs = max(1, min(args.jobs, len(selected) or 1))
+    chunks = _split_contiguous(selected, actual_jobs)
+    keep_worktrees = False
+    shards: list[tuple[list[dict], Path, Path]] = []
+    try:
+        if actual_jobs == 1:
+            shards = [_run_shard(chunks[0], scratch_parent)]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+
+            pool = ThreadPoolExecutor(max_workers=actual_jobs)
+            try:
+                pending = [pool.submit(_run_shard, chunk, scratch_parent) for chunk in chunks]
+                # futures are collected in SUBMIT order, so the merged
+                # results are registry order by construction (chunks are
+                # contiguous slices); results are appended INCREMENTALLY so
+                # a shard exception still leaves the already-completed
+                # siblings in `shards` for the finally-cleanup — the
+                # all-or-nothing comprehension leaked them (successor Codex
+                # round, P2-5)
+                for future in pending:
+                    try:
+                        shards.append(future.result())
+                    except BaseException:
+                        # cancel what has not started, then DRAIN the rest:
+                        # every sibling that completes gets its worktree
+                        # registered for cleanup; only then re-raise
+                        for other in pending:
+                            other.cancel()
+                        for other in pending:
+                            try:
+                                shards.append(other.result())
+                            except BaseException:
+                                pass  # the failing future(s) — already failing
+                        raise
+            finally:
+                pool.shutdown(wait=True)
+        # Chunks are contiguous in registry order — concatenation IS the
+        # registry-ordered result list, regardless of completion order.
+        results = [r for shard_results, _, _ in shards for r in shard_results]
+        # Restoration proof: full suite in ONE shard's (restored) worktree —
+        # every shard verifies byte-exact restore per mutant, so any shard's
+        # final tree is the pristine baseline; shard 0 is used for
+        # determinism of the receipt. Failures print their traceback tail AND
+        # keep the worktrees for forensics — a restoration failure that
+        # cannot be reproduced in a clean copy must be diagnosable from the
+        # retained state.
+        final = _run(shards[0][2], ["pytest", "-q", "--tb=short", "-p", "no:cacheprovider"], 1800)
         restored_suite_ok = final.returncode == 0
         if not restored_suite_ok:
             print("RESTORATION SUITE FAILURES:", flush=True)
@@ -5872,11 +6124,13 @@ def main() -> int:
             print("---- traceback tail ----", flush=True)
             for ln in lines[-60:]:
                 print(" ", ln[:200], flush=True)
-            print(f"RETAINED WORKTREE: {wt}", flush=True)
-            keep_worktree = True
+            for _, worktree_root, _ in shards:
+                print(f"RETAINED WORKTREE: {worktree_root}", flush=True)
+            keep_worktrees = True
     finally:
-        if not keep_worktree:
-            shutil.rmtree(worktree, ignore_errors=True)
+        if not keep_worktrees:
+            for _, worktree_root, _ in shards:
+                shutil.rmtree(worktree_root, ignore_errors=True)
 
     counts: dict[str, int] = {}
     for r in results:
@@ -5893,6 +6147,15 @@ def main() -> int:
         "total": len(results),
         "registry_digest": registry_digest(),
         "head": args.head,
+        # additive (successor packet 2026-09-03): how this campaign ran.
+        # criterion 6 requires selection.mode == "full" — an --only or
+        # --changed-since run is iteration evidence, never gate authority.
+        "jobs": actual_jobs,
+        "selection": {
+            "mode": selection_mode,
+            "ref": selection_ref,
+            "count": len(selected),
+        },
     }
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
@@ -5911,6 +6174,7 @@ def main() -> int:
         args.markdown.write_text("\n".join(lines) + "\n")
     print(f"totals: {counts}  total={len(results)}")
     print(f"restoration full-suite pass: {restored_suite_ok}")
+    print(f"jobs: {actual_jobs}  selection: {selection_mode}")
     bad = sum(v for k, v in counts.items() if k != "KILLED")
     if bad or not restored_suite_ok:
         return 1

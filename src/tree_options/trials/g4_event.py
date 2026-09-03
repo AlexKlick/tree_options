@@ -155,7 +155,14 @@ def materialize_held_lane2(held: HeldVerifiedSealedInputs, scratch: Path) -> Pat
     bytes — an unlisted or tampered scratch file refuses there, never loads
     silently."""
     capture = scratch / "lane2-capture"
-    capture.mkdir(parents=True)
+    try:
+        capture.mkdir(parents=True)
+    except FileExistsError as exc:
+        # named, not bare: a leftover scratch used to surface as an
+        # unexplained FileExistsError from deep inside a wave launch (the
+        # P3 wave-1 crash class) — every caller passes a fresh-per-invocation
+        # scratch dir, so a collision is a reuse bug to fix, never noise
+        raise RuntimeError(f"refusing to reuse lane-2 scratch: {capture}") from exc
     (capture / "capture_manifest.json").write_bytes(held.lane2_manifest_bytes)
     for payload in held.lane2_payloads:
         target = capture / payload.logical_id
@@ -172,7 +179,10 @@ def materialize_held_lane1(held: HeldVerifiedSealedInputs, scratch: Path) -> Pat
             f"expected exactly one held lane-1 source payload, got {len(held.lane1_payloads)}"
         )
     lane1 = scratch / "lane1"
-    lane1.mkdir(parents=True)
+    try:
+        lane1.mkdir(parents=True)
+    except FileExistsError as exc:
+        raise RuntimeError(f"refusing to reuse lane-1 scratch: {lane1}") from exc
     source = lane1 / "cboe-source.csv"
     source.write_bytes(held.lane1_payloads[0].raw)
     return source
