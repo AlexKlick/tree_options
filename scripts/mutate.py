@@ -4885,6 +4885,95 @@ MUTANTS = [
             " second checkout whose local ledger never saw the spend"
         ),
     ),
+    # ---- successor packet 2026-09-03: canonical out_root + harness guards ----
+    dict(
+        id="M405-census-out-root-lexical",
+        owner="test_a_symlink_dotted_out_root_commits_the_actual_parents_exit_0",
+        file="scripts/build_coverage_census.py",
+        anchor=(
+            "    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape)"
+            " bind ONE\n"
+            "    # canonical resolved out_root BEFORE any classification,"
+            " mkdir,\n"
+            "    # emission, or durability walk. A symlink- or `..`-laden"
+            " spelling made\n"
+            "    # the kernel-resolved EMISSION land on the real chain while"
+            " the lexical\n"
+            "    # abspath the no-follow walks traversed committed the DECOY"
+            " chain — the\n"
+            "    # real hierarchy's entries stayed uncommitted at attestation."
+            " Every\n"
+            "    # downstream consumer now sees the same resolved path, so"
+            " there is no\n"
+            "    # second spelling left to walk.\n"
+            "    args.out_root = Path(os.path.realpath(args.out_root))"
+        ),
+        replacement=(
+            "    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape)"
+            " bind ONE\n"
+            "    # canonical resolved out_root BEFORE any classification,"
+            " mkdir,\n"
+            "    # emission, or durability walk. A symlink- or `..`-laden"
+            " spelling made\n"
+            "    # the kernel-resolved EMISSION land on the real chain while"
+            " the lexical\n"
+            "    # abspath the no-follow walks traversed committed the DECOY"
+            " chain — the\n"
+            "    # real hierarchy's entries stayed uncommitted at attestation."
+            " Every\n"
+            "    # downstream consumer now sees the same resolved path, so"
+            " there is no\n"
+            "    # second spelling left to walk.\n"
+            "    args.out_root = Path(os.path.abspath(args.out_root))"
+        ),
+        selectors=[f"{U}/test_coverage_census.py"],
+        invariant=(
+            "PR #13 R18: out_root is bound ONCE as the canonical RESOLVED"
+            " path — realpath, never the lexical abspath. The lexical form"
+            " re-opens the round-16 decoy: the kernel-resolved emission"
+            " lands on the real chain while the no-follow walks commit the"
+            " decoy chain and the real parent's entry stays uncommitted at"
+            " attestation (owner horns: exit-0 AND exit-5, actual-parent"
+            " fsync + decoy-never-written)"
+        ),
+    ),
+    dict(
+        id="M406-criterion6-nonfull-selection-accepted",
+        owner="test_an_iteration_mode_report_is_not_gate_authority",
+        file="src/tree_options/seal/g4_gate.py",
+        anchor=("        if selection_mode != \"full\":"),
+        replacement=("        if False and selection_mode != \"full\":"),
+        selectors=[f"{U}/test_g4_event_machinery.py"],
+        invariant=(
+            "criterion 6 accepts ONLY a full-registry campaign: an --only or"
+            " --changed-since report (or a pre-2026-09-03 shape with no"
+            " selection block) is iteration evidence, never gate authority"
+            " — a sharded --jobs run is still FULL and stays authority"
+        ),
+    ),
+    dict(
+        id="M407-harness-baseline-cache-not-cleared",
+        owner="test_a_harness_error_clears_the_baseline_cache",
+        file="scripts/mutate.py",
+        anchor=(
+            "            r = run_mutant(wt, m, baseline_cache=cache)\n"
+            "            if r[\"verdict\"] == \"HARNESS_ERROR\":\n"
+            "                cache.clear()"
+        ),
+        replacement=(
+            "            r = run_mutant(wt, m, baseline_cache=cache)\n"
+            "            if r[\"verdict\"] == \"HARNESS_ERROR\":\n"
+            "                pass  # cache-clear dropped: a damaged tree keeps"
+            " stale baselines"
+        ),
+        selectors=[f"{U}/test_mutate_harness.py"],
+        invariant=(
+            "harness: any HARNESS_ERROR verdict clears the shard's baseline"
+            " cache — restore is byte-verified per mutant, so a damaged tree"
+            " can no longer be assumed pristine and cached baseline passes"
+            " stop being statements about this tree"
+        ),
+    ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
     dict(
         id="M336-spotv2-close-through-float",
@@ -5905,7 +5994,8 @@ def main() -> int:
             " + M338-M355 price-boundary + M356-M363 successor-enablement"
             " + M364-M369 remediation + M370-M373 remediation-2 +"
             " M374-M379 remediation-3 + M380 remediation-4 + M381-M386"
-            " theory wave-0 + M387-M404 P4 window-A here)"
+            " theory wave-0 + M387-M404 P4 window-A + M405-M407 successor"
+            " here)"
         ),
     )
     parser.add_argument(

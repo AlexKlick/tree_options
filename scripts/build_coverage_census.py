@@ -1485,6 +1485,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
+    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape) bind ONE
+    # canonical resolved out_root BEFORE any classification, mkdir,
+    # emission, or durability walk. A symlink- or `..`-laden spelling made
+    # the kernel-resolved EMISSION land on the real chain while the lexical
+    # abspath the no-follow walks traversed committed the DECOY chain — the
+    # real hierarchy's entries stayed uncommitted at attestation. Every
+    # downstream consumer now sees the same resolved path, so there is no
+    # second spelling left to walk.
+    args.out_root = Path(os.path.realpath(args.out_root))
+
     # 1. The declared universe (any defect refuses before anything is read).
     try:
         universe = load_universe(args.universe)
