@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -365,6 +366,78 @@ def test_the_world_decision_sessions_never_touch_the_holdout() -> None:
     assert min(FINAL_HOLDOUT_DATES) == "2026-05-08"
     assert max(FINAL_HOLDOUT_DATES) == "2026-08-14"
     assert all(date.fromisoformat(d).weekday() == 4 for d in FINAL_HOLDOUT_DATES)
+
+
+def test_execute_hands_run_options_trial_a_callable_fixed_clock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The driver must pass run_options_trial a CALLABLE clock: G4_FIXED_CLOCK
+    is a datetime OBJECT (options_run.py calls clock() at registration), and
+    g4_event.py wraps it as ``lambda: G4_FIXED_CLOCK`` — this driver passed
+    the bare object and the first real null-seed execution died at
+    options_run.py:1224 (TypeError, 2026-09-02). The wave tests never reached
+    the run_options_trial call kwargs; this pins the shape."""
+    from types import SimpleNamespace
+
+    registration = wave.build_registration(manifest_hash="m" * 64, protocol_hash="p" * 64)
+    state = {
+        "registration_sha256": wave._registration_sha256(registration),
+        "executions": [],
+        "calibration": None,
+    }
+    monkeypatch.setattr(wave, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(wave, "SCRATCH_ROOT", tmp_path / "scratch")
+    monkeypatch.setattr(wave, "TRIALS_DIR", tmp_path / "trials")
+    monkeypatch.setattr(wave, "load_ledger", lambda: registration)
+    monkeypatch.setattr(wave, "load_state", lambda: dict(state))
+    saved: dict[str, Any] = {}
+    monkeypatch.setattr(wave, "save_state", lambda s: saved.update(s))
+    monkeypatch.setattr(wave, "_git_head", lambda root: "deadbeef")
+    monkeypatch.setattr("tree_options.seal.runner.wire_production_runner", lambda root: None)
+    monkeypatch.setattr("tree_options.protocol.loader.load_protocol_bytes", lambda raw: object())
+    held = SimpleNamespace(
+        protocol_bytes=b"p",
+        packet=SimpleNamespace(
+            lane2_manifest=SimpleNamespace(typed_manifest_content_hash="m" * 64),
+            protocol_hash="p" * 64,
+        ),
+    )
+    monkeypatch.setattr(wave, "_held_paths", lambda: object())
+    monkeypatch.setattr(wave, "verify_sealed_inputs", lambda paths: held)
+    monkeypatch.setattr(wave, "verify_registration_binding", lambda *a, **k: None)
+    world = SimpleNamespace(
+        dataset=object(),
+        surface=object(),
+        grid=SimpleNamespace(),
+        overlay=SimpleNamespace(calendar=object()),
+        decision_sessions=[],
+        world_id="world",
+    )
+    monkeypatch.setattr(wave, "build_lane2_world", lambda *a, **k: world)
+    monkeypatch.setattr(wave, "TrialRegistry", lambda path: object())
+    monkeypatch.setattr(wave, "_scored_for", lambda config, w: object())
+
+    captured: dict[str, Any] = {}
+
+    def fake_run_options_trial(**kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return SimpleNamespace(
+            trial_id="m3-world-A-r1",
+            n_folds=3,
+            n_positions=0,
+            artifact_path=tmp_path / "null-s1.json",
+        )
+
+    monkeypatch.setattr(wave, "run_options_trial", fake_run_options_trial)
+
+    assert wave.execute(["null-s1"]) == 0
+
+    clock = captured["clock"]
+    assert callable(clock), "the driver must hand over a CALLABLE fixed clock"
+    assert clock() == wave.G4_FIXED_CLOCK
+    assert captured["liquidity_lane"] == 2
+    assert captured["run_index"] == 1
+    assert saved["executions"][0]["slot_id"] == "null-s1"
 
 
 def test_simple_namespace_import_guards() -> None:
