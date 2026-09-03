@@ -4941,8 +4941,8 @@ MUTANTS = [
         id="M406-criterion6-nonfull-selection-accepted",
         owner="test_an_iteration_mode_report_is_not_gate_authority",
         file="src/tree_options/seal/g4_gate.py",
-        anchor=("        if selection_mode != \"full\":"),
-        replacement=("        if False and selection_mode != \"full\":"),
+        anchor=('        if selection_mode != "full":'),
+        replacement=('        if False and selection_mode != "full":'),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
             "criterion 6 accepts ONLY a full-registry campaign: an --only or"
@@ -4957,12 +4957,12 @@ MUTANTS = [
         file="scripts/mutate.py",
         anchor=(
             "            r = run_mutant(wt, m, baseline_cache=cache)\n"
-            "            if r[\"verdict\"] == \"HARNESS_ERROR\":\n"
+            '            if r["verdict"] == "HARNESS_ERROR":\n'
             "                cache.clear()"
         ),
         replacement=(
             "            r = run_mutant(wt, m, baseline_cache=cache)\n"
-            "            if r[\"verdict\"] == \"HARNESS_ERROR\":\n"
+            '            if r["verdict"] == "HARNESS_ERROR":\n'
             "                pass  # cache-clear dropped: a damaged tree keeps"
             " stale baselines"
         ),
