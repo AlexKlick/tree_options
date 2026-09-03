@@ -5891,41 +5891,50 @@ def _split_contiguous(items: list, parts: int) -> list[list]:
 
 def _prepare_worktree(scratch_parent: Path) -> tuple[Path, Path]:
     """One disposable copy + synthetic git baseline + frozen env. Returns
-    (worktree_root, repo_dir)."""
+    (worktree_root, repo_dir). A failure anywhere inside (copy, synthetic
+    git, uv sync) removes the PARTIAL tree it created — the root is
+    allocated before anything can fail, so nothing leaks (successor Codex
+    round, P2-5)."""
     worktree = Path(tempfile.mkdtemp(prefix=f"{REPO.name}-mutate-", dir=scratch_parent))
-    shutil.copytree(
-        REPO,
-        worktree / "repo",
-        ignore=shutil.ignore_patterns(*DISPOSABLE_COPY_IGNORE),
-    )
-    wt = worktree / "repo"
-    # The copy excludes .git by design, but WS-F stamping (build_stamp)
-    # fail-closes without a usable repository: git rev-parse HEAD plus a
-    # clean tree. The three runs of the M3 campaign all failed the
-    # restoration suite solely on test_run_options_trial_end_to_end for
-    # exactly this reason (retained worktree: no .git at all). A
-    # synthetic baseline commit provides both without inheriting state
-    # from the source checkout; mutant apply/restore is file-byte based,
-    # so .git is inert to the loop. Committed BEFORE uv sync so the
-    # .venv it creates stays ignored, and .gitignore (copied with the
-    # tree) keeps artifacts/ and dist/ out of the baseline as well.
-    for _cmd in (
-        ["git", "-c", "init.defaultBranch=main", "init", "-q"],
-        ["git", "add", "-A"],
-        [
-            "git",
-            "-c",
-            "user.email=harness@localhost",
-            "-c",
-            "user.name=mutation harness",
-            "commit",
-            "-q",
-            "-m",
-            "mutation harness baseline",
-        ],
-    ):
-        subprocess.run(_cmd, cwd=wt, capture_output=True, check=True)
-    subprocess.run(["uv", "sync", "--frozen"], cwd=wt, capture_output=True, timeout=600, check=True)
+    try:
+        shutil.copytree(
+            REPO,
+            worktree / "repo",
+            ignore=shutil.ignore_patterns(*DISPOSABLE_COPY_IGNORE),
+        )
+        wt = worktree / "repo"
+        # The copy excludes .git by design, but WS-F stamping (build_stamp)
+        # fail-closes without a usable repository: git rev-parse HEAD plus a
+        # clean tree. The three runs of the M3 campaign all failed the
+        # restoration suite solely on test_run_options_trial_end_to_end for
+        # exactly this reason (retained worktree: no .git at all). A
+        # synthetic baseline commit provides both without inheriting state
+        # from the source checkout; mutant apply/restore is file-byte based,
+        # so .git is inert to the loop. Committed BEFORE uv sync so the
+        # .venv it creates stays ignored, and .gitignore (copied with the
+        # tree) keeps artifacts/ and dist/ out of the baseline as well.
+        for _cmd in (
+            ["git", "-c", "init.defaultBranch=main", "init", "-q"],
+            ["git", "add", "-A"],
+            [
+                "git",
+                "-c",
+                "user.email=harness@localhost",
+                "-c",
+                "user.name=mutation harness",
+                "commit",
+                "-q",
+                "-m",
+                "mutation harness baseline",
+            ],
+        ):
+            subprocess.run(_cmd, cwd=wt, capture_output=True, check=True)
+        subprocess.run(
+            ["uv", "sync", "--frozen"], cwd=wt, capture_output=True, timeout=600, check=True
+        )
+    except BaseException:
+        shutil.rmtree(worktree, ignore_errors=True)
+        raise
     return worktree, wt
 
 
@@ -6067,12 +6076,33 @@ def main() -> int:
         else:
             from concurrent.futures import ThreadPoolExecutor
 
-            with ThreadPoolExecutor(max_workers=actual_jobs) as pool:
+            pool = ThreadPoolExecutor(max_workers=actual_jobs)
+            try:
                 pending = [pool.submit(_run_shard, chunk, scratch_parent) for chunk in chunks]
                 # futures are collected in SUBMIT order, so the merged
                 # results are registry order by construction (chunks are
-                # contiguous slices); a shard exception re-raises here
-                shards = [future.result() for future in pending]
+                # contiguous slices); results are appended INCREMENTALLY so
+                # a shard exception still leaves the already-completed
+                # siblings in `shards` for the finally-cleanup — the
+                # all-or-nothing comprehension leaked them (successor Codex
+                # round, P2-5)
+                for future in pending:
+                    try:
+                        shards.append(future.result())
+                    except BaseException:
+                        # cancel what has not started, then DRAIN the rest:
+                        # every sibling that completes gets its worktree
+                        # registered for cleanup; only then re-raise
+                        for other in pending:
+                            other.cancel()
+                        for other in pending:
+                            try:
+                                shards.append(other.result())
+                            except BaseException:
+                                pass  # the failing future(s) — already failing
+                        raise
+            finally:
+                pool.shutdown(wait=True)
         # Chunks are contiguous in registry order — concatenation IS the
         # registry-ordered result list, regardless of completion order.
         results = [r for shard_results, _, _ in shards for r in shard_results]

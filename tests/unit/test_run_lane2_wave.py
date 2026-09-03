@@ -386,6 +386,7 @@ def test_execute_hands_run_options_trial_a_callable_fixed_clock(
         "calibration": None,
     }
     monkeypatch.setattr(wave, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(wave, "WAVE0_ROOT", tmp_path / "wave0")
     monkeypatch.setattr(wave, "SCRATCH_ROOT", tmp_path / "scratch")
     monkeypatch.setattr(wave, "TRIALS_DIR", tmp_path / "trials")
     monkeypatch.setattr(wave, "load_ledger", lambda: registration)
@@ -447,13 +448,11 @@ def test_simple_namespace_import_guards() -> None:
     assert wave.WAVE0_GEOMETRY == (5, 2, 6, 13, 13, 34)
 
 
-def test_execute_builds_a_fresh_scratch_dir_per_invocation(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """(the P3 wave-1 crash class, made structural) consecutive executions
-    must derive DISTINCT scratch dirs — the pre-fix driver reused
-    SCRATCH_ROOT/'world' and the second wave died inside build_lane2_world
-    on a bare FileExistsError from materialize_held_lane2."""
+def _execute_scaffold(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> list[Path]:
+    """The full fake surface for execute(): no world build, no trials, no
+    registry — every external effect monkeypatched. Returns the list that
+    captures each build_lane2_world scratch path (also a world-build
+    counter)."""
     from types import SimpleNamespace
 
     registration = wave.build_registration(manifest_hash="m" * 64, protocol_hash="p" * 64)
@@ -463,6 +462,7 @@ def test_execute_builds_a_fresh_scratch_dir_per_invocation(
         "calibration": {"prior_stride4_cohort_ic_sd": 0.5},
     }
     monkeypatch.setattr(wave, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(wave, "WAVE0_ROOT", tmp_path / "wave0")
     monkeypatch.setattr(wave, "SCRATCH_ROOT", tmp_path / "scratch")
     monkeypatch.setattr(wave, "TRIALS_DIR", tmp_path / "trials")
     monkeypatch.setattr(wave, "load_ledger", lambda: registration)
@@ -508,6 +508,19 @@ def test_execute_builds_a_fresh_scratch_dir_per_invocation(
             artifact_path=tmp_path / "null-s1.json",
         ),
     )
+    return scratches
+
+
+def test_execute_builds_a_fresh_scratch_dir_per_invocation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(the P3 wave-1 crash class, made structural) consecutive executions
+    must derive DISTINCT scratch dirs — the pre-fix driver reused
+    SCRATCH_ROOT/'world' and the second wave died inside build_lane2_world
+    on a bare FileExistsError from materialize_held_lane2. (Successor Codex
+    round P2-4) each tree is REMOVED after the invocation — trials are the
+    durable artifacts; scratch is rebuildable."""
+    scratches = _execute_scaffold(monkeypatch, tmp_path)
 
     assert wave.execute(["null-s1"]) == 0
     assert wave.execute(["null-s2"]) == 0  # a second invocation, fresh scratch
@@ -517,3 +530,47 @@ def test_execute_builds_a_fresh_scratch_dir_per_invocation(
     assert all(s.name.startswith("world-") for s in scratches)
     # the shared-dir shape that used to collide is gone
     assert all(s != tmp_path / "scratch" / "world" for s in scratches)
+    # the scratch trees are cleaned up after success (P2-4)
+    assert all(not s.exists() for s in scratches)
+    # the durable artifacts survive
+    assert (tmp_path / "trials" / "null-s1").is_dir()
+    assert (tmp_path / "trials" / "null-s2").is_dir()
+
+
+def test_concurrent_wave_executions_refuse_via_the_wave_lock(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(successor Codex round P1-3) state.json is an unlocked write — two
+    concurrent invocations would last-writer-wins DROP a completed
+    execution row. A second execution while the wave lock is held refuses
+    BEFORE anything runs."""
+    import fcntl
+    import os as _os
+
+    scratches = _execute_scaffold(monkeypatch, tmp_path)
+    lock_root = tmp_path / "wave0"
+    lock_root.mkdir(parents=True, exist_ok=True)
+    holder = _os.open(lock_root / "execute.lock", _os.O_CREAT | _os.O_RDWR, 0o644)
+    try:
+        fcntl.flock(holder, fcntl.LOCK_EX)
+        with pytest.raises(SystemExit, match="wave lock"):
+            wave.execute(["null-s1"])
+        assert scratches == []  # refused before the world materialized
+        assert not (tmp_path / "trials").exists()
+    finally:
+        _os.close(holder)
+
+
+def test_a_completed_slot_refuses_before_the_world_materializes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """(successor Codex round P2-4) the fresh scratch tree is ~2.2 GiB /
+    ~18.7k files; a retry of an already-completed slot used to build a
+    whole world and only then refuse at the run-dir check, leaking the
+    tree. Every per-slot refusal now runs BEFORE materialization."""
+    scratches = _execute_scaffold(monkeypatch, tmp_path)
+    assert wave.execute(["null-s1"]) == 0
+    worlds_before = len(scratches)
+    with pytest.raises(SystemExit, match="one-shot per slot"):
+        wave.execute(["null-s1"])
+    assert len(scratches) == worlds_before, "a refused retry must not build a world"

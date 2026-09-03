@@ -34,7 +34,17 @@ Two consequences worth naming:
    v2-daily derivation spot didn't just improve the counts, it took the
    book from structurally empty to exercised.
 
-Stamped sources: `artifacts/g4-sealed-runs/<event-3 run>/artifacts/`
-trial payloads (`n_positions`, `no_in_band_strike` counters), summarized
-in `m4-g4-sealed-gate-plan.md` §4 and the event-4 evidence
-(`docs/evidence-logs/m4/m4-g4-sealed-gate.md` history at that head).
+Stamped sources: event-3 ran 2026-09-02 at gated head `60e9ff1b00fbe595`
+under sealed run `1e6a64502498c5198ce4c5e1f4c07b064e5e7d2f2fb91f9335c4c1ee5e3da73c`
+(workspace `artifacts/g4-sealed-runs/1e6a64502498c5198ce4c5e1f4c07b064e5e7d2f2fb91f9335c4c1ee5e3da73c/`,
+untracked by design — artifacts are truth, the DB is a rebuildable index);
+the two stamped trial payloads are
+`…/artifacts/trials/m3-massive-derived/AAPL+…/4a395d6c841b-a-r1.json`
+(sha256 `abb9d8b143251c1dfd6becb4f372f00fcc8fc3f80ba20d11dc4618dc85226dba`)
+and `…/4a395d6c841b-b-r1.json`
+(sha256 `cb16d6803f4c5c5d60c262ae97fafffb8ec1274fa9a3c3bd4f0dd91626b57d`),
+each carrying `n_positions: 0` and the `no_in_band_strike` counters. The
+summary is `…/artifacts/sealed-gate-summary.json`; the criteria text is
+`docs/m4-g4-sealed-gate-plan.md` §4 (packet-hash-bound, byte-frozen) and
+the event-4 evidence is `docs/evidence-logs/m4/m4-g4-sealed-gate.md`
+(history at that head).

@@ -586,6 +586,36 @@ def _criterion_mutation_campaign(
                 " --changed-since run is iteration evidence, never gate"
                 " authority"
             )
+        elif isinstance(selection, dict):
+            # (successor Codex round, P1-1 tightening) the full-selection
+            # claim must be internally consistent: count == total and a
+            # real positive jobs integer — a hand-built "full" report
+            # omitting them previously masqueraded as a campaign.
+            # DECLARED BOUNDARY (unchanged since round 1): criterion 6
+            # consumes STAMPED evidence — the report the m0 gate writes at
+            # the sealed head — and binds id-set + digest + head +
+            # restoration + selection shape. An adversary who can author
+            # artifacts/ under the sealed head can forge ANY criterion
+            # input; that authority surface is the seal's ledger, never
+            # this evaluator.
+            selection_count = selection.get("count")
+            if not isinstance(selection_count, int) or isinstance(selection_count, bool):
+                failures.append(
+                    "the report's selection.count is not an integer — a"
+                    " hand-built report is not a harness run"
+                )
+            elif selection_count != total:
+                failures.append(
+                    "the report's selection.count does not equal its total"
+                    f" ({selection_count!r} vs {total!r}) — a"
+                    " self-inconsistent full-campaign claim"
+                )
+            jobs = mutation_report.get("jobs")
+            if not isinstance(jobs, int) or isinstance(jobs, bool) or jobs < 1:
+                failures.append(
+                    "the report's 'jobs' is not a positive integer — a"
+                    " hand-built report is not a harness run"
+                )
         entries = mutation_report.get("mutants", [])
         report_ids = [str(entry.get("id")) for entry in entries]
         if total != len(report_ids):
@@ -977,6 +1007,15 @@ def validate_mutation_report(payload: object) -> None:
         raise MutationReportSchemaError(
             "the mutation report's 'selection' is not an object with a string 'mode'"
         )
+    if isinstance(selection, dict):
+        count = selection.get("count")
+        if count is not None and (not isinstance(count, int) or isinstance(count, bool)):
+            raise MutationReportSchemaError(
+                "the mutation report's 'selection.count' is not an integer"
+            )
+    jobs = payload.get("jobs")
+    if jobs is not None and (not isinstance(jobs, int) or isinstance(jobs, bool)):
+        raise MutationReportSchemaError("the mutation report's 'jobs' is not an integer")
 
 
 def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:

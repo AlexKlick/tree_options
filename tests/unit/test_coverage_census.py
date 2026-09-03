@@ -2268,3 +2268,57 @@ def test_a_symlink_dotted_out_root_commits_the_actual_parents_exit_5(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _assert_the_actual_chain_is_committed(monkeypatch, tmp_path, expected_exit=5)
+
+
+# ---- (successor Codex round P1-2) the publication is re-verified against
+# the HELD digest directory before anything attests: the durability walks
+# reopen by pathname, and between custody and those walks a rename-aside
+# (or an in-place member substitution) used to attest a stranger's tree.
+
+
+def test_a_substituted_digest_directory_never_attests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The digest directory is renamed aside and replaced with an empty
+    decoy between the custody writes and the chain walk — pre-fix the walk
+    fsynced the decoy and the run attested exit 0 over it."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A, SESSION_FRIDAY_B])
+    capture = _build_capture(
+        tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A, SESSION_FRIDAY_B]
+    )
+    out_root = tmp_path / "census-out"
+    real_commit = bcc._commit_output_chain
+
+    def substituting_commit(root):
+        digest_dir = next(Path(root).iterdir())
+        os.rename(digest_dir, digest_dir.with_name(digest_dir.name + "-aside"))
+        digest_dir.mkdir()  # the stranger's empty replacement at the name
+        return real_commit(root)
+
+    monkeypatch.setattr(bcc, "_commit_output_chain", substituting_commit)
+    assert _census(monkeypatch, capture, universe, out_root) == 4
+    # the run's real publication survived, aside, untouched
+    aside = next(p for p in out_root.iterdir() if p.name.endswith("-aside"))
+    assert (aside / "census.json").is_file()
+
+
+def test_a_substituted_member_never_attests(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A member is rewritten in place after the durability walks — pre-fix
+    nothing re-read the members, and the run attested bytes it never
+    verified."""
+    universe = _write_universe(tmp_path, ["SPY"], [SESSION_FRIDAY_A, SESSION_FRIDAY_B])
+    capture = _build_capture(
+        tmp_path, underlyings=["SPY"], fridays=[SESSION_FRIDAY_A, SESSION_FRIDAY_B]
+    )
+    out_root = tmp_path / "census-out"
+    real_commit = bcc._commit_digest_directory_entries
+
+    def tampering_commit(out_dir):
+        result = real_commit(out_dir)
+        (Path(out_dir) / "census.md").write_text("stranger bytes", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(bcc, "_commit_digest_directory_entries", tampering_commit)
+    assert _census(monkeypatch, capture, universe, out_root) == 4

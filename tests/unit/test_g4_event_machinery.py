@@ -1059,6 +1059,24 @@ def test_an_iteration_mode_report_is_not_gate_authority(mini_run) -> None:
     assert mutation.verdict == "FAIL"
     assert any("not a full-registry campaign" in f for f in mutation.failures), mutation.failures
 
+    # (successor Codex round P1-1) a hand-built "full" report whose
+    # selection.count disagrees with total, or whose jobs integer is
+    # missing, refuses — the full-selection claim must be internally
+    # consistent
+    inconsistent = _report("full")
+    inconsistent["selection"] = {"mode": "full", "ref": None, "count": len(ids) - 1}
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=inconsistent)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("selection.count" in f for f in mutation.failures), mutation.failures
+
+    jobless = _report("full")
+    del jobless["jobs"]
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=jobless)
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("'jobs'" in f for f in mutation.failures), mutation.failures
+
 
 def test_the_preflight_rejects_shape_invalid_reports_before_the_event(tmp_path: Path) -> None:
     """Round-4 P0: a PRESENT report whose SHAPE cannot be evaluated (a
@@ -1080,6 +1098,8 @@ def test_the_preflight_rejects_shape_invalid_reports_before_the_event(tmp_path: 
         # evaluation time (absent is criterion 6's honest FAIL, a verdict)
         {"selection": "full"},
         {"selection": {"mode": 3}},
+        {"selection": {"mode": "full", "count": "3"}},
+        {"jobs": "4"},
     ):
         with pytest.raises(MutationReportSchemaError):
             validate_mutation_report(bad)

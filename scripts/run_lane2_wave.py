@@ -730,134 +730,172 @@ def _held_paths() -> SealedInputPaths:
 def execute(slot_ids: Sequence[str]) -> int:
     registration = load_ledger()
     state = load_state()
-    from tree_options.seal.runner import wire_production_runner
+    # (successor Codex round P1-3) ONE wave execution at a time: state.json
+    # is an unlocked write — two concurrent invocations running different
+    # slots would last-writer-wins DROP the other's completed execution
+    # rows while the registry keeps both trials. An exclusive wave lock
+    # covers state load, slot claims, execution, and state replacement.
+    import fcntl
 
-    wire_production_runner(REPO_ROOT)  # the packet binds the runner impl
-    held = verify_sealed_inputs(_held_paths())
-    # fresh scratch per invocation (the P3-era collision lesson, made
-    # structural here the way run_p4_holdout._fresh_scratch already is):
-    # build_lane2_world materializes into scratch/lane2-capture and a shared
-    # dir wedged consecutive waves with a bare FileExistsError. The sequence
-    # suffix keeps two invocations inside one clock second distinct.
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    scratch = SCRATCH_ROOT / f"world-{stamp}-{os.getpid()}-{next(_SCRATCH_SEQ)}"
-    scratch.mkdir(parents=True, exist_ok=False)
-    from tree_options.protocol.loader import load_protocol_bytes
+    WAVE0_ROOT.mkdir(parents=True, exist_ok=True)
+    lock_fd = os.open(WAVE0_ROOT / "execute.lock", os.O_CREAT | os.O_RDWR, 0o644)
+    try:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            raise SystemExit(
+                "REFUSED: another wave execution holds the wave lock —"
+                " state.json is not concurrent-safe; one execution at a time"
+            ) from None
+        # (successor Codex round P2-4) every per-slot refusal runs BEFORE
+        # the world materializes: the fresh scratch tree is ~2.2 GiB /
+        # ~18.7k files per invocation, and a retry of an already-completed
+        # slot used to build a whole world only to refuse at the run-dir
+        # check, leaking the tree.
+        menu = {c.slot_id: c for c in wave0_menu()}
+        plan = registration["execution_plan"]
+        for slot_id in slot_ids:
+            config = menu.get(slot_id)
+            if config is None:
+                raise SystemExit(f"REFUSED: unknown slot {slot_id}")
+            entry = plan[slot_id]
+            if not entry["canonical_slot"]:
+                raise SystemExit(
+                    f"REFUSED: {slot_id} is an ALIAS of {entry['canonical']} —"
+                    " execute the canonical slot (the registry dedups identical"
+                    " params; the alias map is the receipt)"
+                )
+            verify_config_against_ledger(registration, config)
+            require_calibration(state, config)
+            run_dir = TRIALS_DIR / config.slot_id
+            if run_dir.exists():
+                raise SystemExit(
+                    f"REFUSED: {run_dir} already exists — wave executions are one-shot per slot"
+                )
+        from tree_options.seal.runner import wire_production_runner
 
-    protocol = load_protocol_bytes(held.protocol_bytes)
-    # (Codex wave-0 P1-3) the tracked registration BINDS this execution
-    verify_registration_binding(
-        registration,
-        state,
-        manifest_hash=held.packet.lane2_manifest.typed_manifest_content_hash,
-        protocol_hash=held.packet.protocol_hash,
-    )
-    if (
-        tuple(
-            registration["geometry_grid_fridays"][k]
-            for k in (
-                "label_horizon",
-                "embargo",
-                "val",
-                "test",
-                "roll",
-                "min_train",
+        wire_production_runner(REPO_ROOT)  # the packet binds the runner impl
+        held = verify_sealed_inputs(_held_paths())
+        # fresh scratch per invocation (the P3-era collision lesson, made
+        # structural here the way run_p4_holdout._fresh_scratch already is):
+        # build_lane2_world materializes into scratch/lane2-capture and a shared
+        # dir wedged consecutive waves with a bare FileExistsError. The sequence
+        # suffix keeps two invocations inside one clock second distinct.
+        # (successor Codex round P2-4) the tree is REMOVED in the finally —
+        # trials are the durable artifacts; scratch is rebuildable.
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        scratch = SCRATCH_ROOT / f"world-{stamp}-{os.getpid()}-{next(_SCRATCH_SEQ)}"
+        scratch.mkdir(parents=True, exist_ok=False)
+        import shutil as _shutil
+
+        from tree_options.protocol.loader import load_protocol_bytes
+
+        try:
+            protocol = load_protocol_bytes(held.protocol_bytes)
+            # (Codex wave-0 P1-3) the tracked registration BINDS this execution
+            verify_registration_binding(
+                registration,
+                state,
+                manifest_hash=held.packet.lane2_manifest.typed_manifest_content_hash,
+                protocol_hash=held.packet.protocol_hash,
             )
-        )
-        != WAVE0_GEOMETRY
-    ):
-        raise SystemExit(
-            "REFUSED: the registered geometry is not this driver's"
-            " WAVE0_GEOMETRY — the fold shapes would differ from the"
-            " pre-declaration"
-        )
-    world = build_lane2_world(
-        held,
-        repo_root=REPO_ROOT,
-        scratch=scratch,
-        protocol=protocol,
-        spot_v2_path=REPO_ROOT / "artifacts" / "spot-proxy-v2.json",
-        staleness_sessions=G4_STALENESS_SESSIONS,
-    )
-    # D7 defensive assertion: the world's decision sessions never touch
-    # the sealed window (the machinery's own guards also refuse it);
-    # FINAL_HOLDOUT_DATES carries ISO strings, so compare in that domain
-    leaked = {
-        session.isoformat()
-        for session in world.decision_sessions
-        if session.isoformat() in frozenset(FINAL_HOLDOUT_DATES)
-    }
-    if leaked:
-        raise SystemExit(f"REFUSED: decision sessions inside the holdout: {sorted(leaked)}")
-    menu = {c.slot_id: c for c in wave0_menu()}
-    plan = registration["execution_plan"]
-    registry = TrialRegistry(REGISTRY_PATH)
-    manifest_hash = held.packet.lane2_manifest.typed_manifest_content_hash
-    for slot_id in slot_ids:
-        config = menu.get(slot_id)
-        if config is None:
-            raise SystemExit(f"REFUSED: unknown slot {slot_id}")
-        entry = plan[slot_id]
-        if not entry["canonical_slot"]:
-            raise SystemExit(
-                f"REFUSED: {slot_id} is an ALIAS of {entry['canonical']} —"
-                " execute the canonical slot (the registry dedups identical"
-                " params; the alias map is the receipt)"
+            if (
+                tuple(
+                    registration["geometry_grid_fridays"][k]
+                    for k in (
+                        "label_horizon",
+                        "embargo",
+                        "val",
+                        "test",
+                        "roll",
+                        "min_train",
+                    )
+                )
+                != WAVE0_GEOMETRY
+            ):
+                raise SystemExit(
+                    "REFUSED: the registered geometry is not this driver's"
+                    " WAVE0_GEOMETRY — the fold shapes would differ from the"
+                    " pre-declaration"
+                )
+            world = build_lane2_world(
+                held,
+                repo_root=REPO_ROOT,
+                scratch=scratch,
+                protocol=protocol,
+                spot_v2_path=REPO_ROOT / "artifacts" / "spot-proxy-v2.json",
+                staleness_sessions=G4_STALENESS_SESSIONS,
             )
-        verify_config_against_ledger(registration, config)
-        require_calibration(state, config)
-        run_dir = TRIALS_DIR / config.slot_id
-        if run_dir.exists():
-            raise SystemExit(
-                f"REFUSED: {run_dir} already exists — wave executions are one-shot per slot"
-            )
-        run_dir.mkdir(parents=True)
-        result = run_options_trial(
-            dataset=world.dataset,
-            surface=world.surface,
-            calendar=world.grid,
-            execution_calendar=world.overlay.calendar,
-            protocol=protocol,
-            world_id=world.world_id,
-            arm=config.arm,
-            strategy_config=config.strategy_config(),
-            scored=_scored_for(config, world),
-            model_family=config.model_family,
-            model_sha256=None,
-            hypothesis=config.hypothesis,
-            decision_sessions=world.decision_sessions,
-            options_manifest_hash=manifest_hash,
-            registry=registry,
-            artifacts_dir=run_dir,
-            repo=REPO_ROOT,
-            # G4_FIXED_CLOCK is a datetime OBJECT; the machinery calls
-            # clock() — wrap it exactly as g4_event.py's fixed_clock does
-            clock=lambda: G4_FIXED_CLOCK,
-            split_override=wave0_split_override(),
-            liquidity_lane=2,
-            flow_min_session_volume=config.flow_min_session_volume,
-            score_seed=config.score_seed,
-            run_index=entry["run_index"],
-        )
-        print(
-            f"{config.slot_id}: {result.trial_id} ->"
-            f" folds={result.n_folds} positions={result.n_positions}",
-            flush=True,
-        )
-        executions = list(state["executions"])
-        executions.append(
-            {
-                "slot_id": config.slot_id,
-                "trial_id": result.trial_id,
-                "artifact_path": str(result.artifact_path.relative_to(REPO_ROOT)),
-                "n_folds": result.n_folds,
-                "n_positions": result.n_positions,
-                "at_head": _git_head(REPO_ROOT),
+            # D7 defensive assertion: the world's decision sessions never touch
+            # the sealed window (the machinery's own guards also refuse it);
+            # FINAL_HOLDOUT_DATES carries ISO strings, so compare in that domain
+            leaked = {
+                session.isoformat()
+                for session in world.decision_sessions
+                if session.isoformat() in frozenset(FINAL_HOLDOUT_DATES)
             }
-        )
-        state["executions"] = executions
-        save_state(state)
-    return 0
+            if leaked:
+                raise SystemExit(f"REFUSED: decision sessions inside the holdout: {sorted(leaked)}")
+            registry = TrialRegistry(REGISTRY_PATH)
+            manifest_hash = held.packet.lane2_manifest.typed_manifest_content_hash
+            for slot_id in slot_ids:
+                config = menu[slot_id]
+                run_dir = TRIALS_DIR / config.slot_id
+                if run_dir.exists():  # re-checked under the wave lock
+                    raise SystemExit(
+                        f"REFUSED: {run_dir} already exists — wave executions are one-shot per slot"
+                    )
+                run_dir.mkdir(parents=True)
+                result = run_options_trial(
+                    dataset=world.dataset,
+                    surface=world.surface,
+                    calendar=world.grid,
+                    execution_calendar=world.overlay.calendar,
+                    protocol=protocol,
+                    world_id=world.world_id,
+                    arm=config.arm,
+                    strategy_config=config.strategy_config(),
+                    scored=_scored_for(config, world),
+                    model_family=config.model_family,
+                    model_sha256=None,
+                    hypothesis=config.hypothesis,
+                    decision_sessions=world.decision_sessions,
+                    options_manifest_hash=manifest_hash,
+                    registry=registry,
+                    artifacts_dir=run_dir,
+                    repo=REPO_ROOT,
+                    # G4_FIXED_CLOCK is a datetime OBJECT; the machinery calls
+                    # clock() — wrap it exactly as g4_event.py's fixed_clock does
+                    clock=lambda: G4_FIXED_CLOCK,
+                    split_override=wave0_split_override(),
+                    liquidity_lane=2,
+                    flow_min_session_volume=config.flow_min_session_volume,
+                    score_seed=config.score_seed,
+                    run_index=entry["run_index"],
+                )
+                print(
+                    f"{config.slot_id}: {result.trial_id} ->"
+                    f" folds={result.n_folds} positions={result.n_positions}",
+                    flush=True,
+                )
+                executions = list(state["executions"])
+                executions.append(
+                    {
+                        "slot_id": config.slot_id,
+                        "trial_id": result.trial_id,
+                        "artifact_path": str(result.artifact_path.relative_to(REPO_ROOT)),
+                        "n_folds": result.n_folds,
+                        "n_positions": result.n_positions,
+                        "at_head": _git_head(REPO_ROOT),
+                    }
+                )
+                state["executions"] = executions
+                save_state(state)
+        finally:
+            _shutil.rmtree(scratch, ignore_errors=True)
+        return 0
+    finally:
+        os.close(lock_fd)
 
 
 def main(argv: list[str] | None = None) -> int:

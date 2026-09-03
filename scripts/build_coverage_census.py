@@ -1319,6 +1319,68 @@ def _commit_output_chain(out_root: Path) -> None:
         os.close(fd)
 
 
+def _verify_publication_in_custody(
+    held_fd: int | None,
+    out_dir: Path,
+    outputs: tuple[tuple[str, str], ...],
+) -> None:
+    """(successor Codex round, P1-2) re-verify the publication against the
+    HELD digest directory before anything attests.
+
+    The durability walks (``_commit_output_chain``,
+    ``_commit_digest_directory_entries``) reopen by PATHNAME. Between the
+    custody writes and those walks, the verified digest directory could be
+    renamed aside and replaced — the command would fsync the replacement
+    and attest a stranger's tree without re-reading a single member. Here
+    the name must still resolve to the held inode (``held_fd`` from the
+    emit path; on the idempotent recovery path, which never held custody,
+    a fresh no-follow open stands in) and every committed member must
+    re-read byte-identically THROUGH that descriptor. Any divergence is a
+    ``CensusEmitRefused`` — the caller's exit-4 family, nothing attests."""
+
+    fd = (
+        held_fd
+        if held_fd is not None
+        else os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    )
+    try:
+        held = os.fstat(fd)
+        try:
+            named = os.stat(out_dir, follow_symlinks=False)
+        except OSError as exc:
+            raise CensusEmitRefused(
+                f"the digest directory {out_dir} vanished before attestation"
+                f" ({exc.strerror}) — the durability walks committed a name"
+                " that no longer resolves"
+            ) from None
+        if (named.st_dev, named.st_ino) != (held.st_dev, held.st_ino):
+            raise CensusEmitRefused(
+                f"the digest directory {out_dir} was substituted after"
+                f" custody (held dev/inode {held.st_dev}/{held.st_ino}, the"
+                f" name now holds dev/inode {named.st_dev}/{named.st_ino})"
+                " — refusing to attest a directory this run did not publish"
+            )
+        for name, expected in outputs:
+            member_fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd)
+            try:
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(member_fd, 1 << 16)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            finally:
+                os.close(member_fd)
+            if b"".join(chunks) != expected.encode():
+                raise CensusEmitRefused(
+                    f"the member {name} no longer reads back the published"
+                    " bytes — refusing to attest a substituted publication"
+                )
+    finally:
+        if held_fd is None:
+            os.close(fd)
+
+
 def _commit_digest_directory_entries(out_dir: Path) -> None:
     """R17 review fix (2026-08-25, round-15 finding, P2): commit the digest
     directory's OWN entries — the three final member names inside it.
@@ -1695,6 +1757,7 @@ def main(argv: list[str] | None = None) -> int:
     emitted = publish is None  # an idempotent recovery attests the prior publication
     refusal_exit: int | None = None
     held_dir_identity: tuple[int, int] | None = None
+    held_fd: int | None = None
     if publish is not None:
         try:
             out_fd = os.open(out_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
@@ -1704,6 +1767,7 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 4
+        held_fd = out_fd
         # Round-10 P1 (finding 8): capture the held digest directory's
         # identity BEFORE the fd closes — once custody ends, the PATHNAME
         # alone proves nothing, and the nothing-was-published cleanup below
@@ -1740,8 +1804,17 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             refusal_exit = 4
-        finally:
-            os.close(out_fd)
+        # (successor Codex round P1-2) on SUCCESS paths custody of the
+        # digest directory PERSISTS past this block: the durability walks
+        # below reopen by PATHNAME, and the final attestation verifies the
+        # name still resolves to this held inode with members re-read
+        # through it — a rename-aside/replacement between custody and the
+        # walks used to fsync a stranger's tree and attest it. On REFUSED
+        # paths custody ends here exactly as before: the round-10
+        # verify-then-delete cleanup below depends on the close boundary.
+        if refusal_exit is not None:
+            os.close(held_fd)
+            held_fd = None
     if not emitted:
         if not fresh_publication:
             # A refused ROLL-FORWARD never deletes by pathname a residue this
@@ -1831,6 +1904,28 @@ def main(argv: list[str] | None = None) -> int:
                 file=sys.stderr,
             )
             return 4
+        # (successor Codex round P1-2) the walks above reopened by PATHNAME;
+        # before anything attests, the publication is re-verified against
+        # the HELD directory (fresh no-follow open on the idempotent path,
+        # which never held custody): the name must still resolve to the
+        # held inode and every member must re-read byte-identically through
+        # the held descriptor.
+        try:
+            _verify_publication_in_custody(held_fd, out_dir, outputs)
+        except CensusEmitRefused as exc:
+            print(f"EMISSION REFUSED: {exc}", file=sys.stderr)
+            return 4
+        except OSError as exc:
+            print(
+                f"EMISSION REFUSED: the publication under {out_dir} could not "
+                f"be re-verified in custody ({exc.strerror}) — never attest "
+                "a directory that cannot be re-read",
+                file=sys.stderr,
+            )
+            return 4
+        finally:
+            if held_fd is not None:
+                os.close(held_fd)
 
     # Whole coverage = zero INCOMPLETE pairs. Holiday Fridays
     # (SPOT_MISSING_HOLIDAY) are EXPECTED gaps — the exchange was closed —
