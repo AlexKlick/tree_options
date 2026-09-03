@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json as _json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
@@ -11,15 +12,22 @@ import pytest
 from tests.conftest import REPO_ROOT
 from tree_options.data.authority import PointInTimeDataset
 from tree_options.data.bars import BarRecord
+from tree_options.data.ingest import ingest_snapshot
 from tree_options.data.options_pit import OptionPitSurface
 from tree_options.data.real_overlay import RealSessionCalendar
 from tree_options.data.vwap_pit_surface import VwapPitSurface
 from tree_options.evaluation.stats import ScoredLabel
 from tree_options.options import OptionsStrategyConfig
-from tree_options.protocol.loader import load_protocol
+from tree_options.protocol.holdout import FINAL_HOLDOUT_DATES
+from tree_options.protocol.loader import load_protocol, protocol_hash
 from tree_options.registry.sqlite import TrialRegistry
+from tree_options.synth import generate_world
+from tree_options.synth.spec import WorldSpec
+from tree_options.synth_options import OptionsOverlaySpec, generate_overlay
+from tree_options.time.calendar import StaticSessionCalendar
 from tree_options.trials import OptionsSplitOverride, run_options_trial
 from tree_options.trials.options_run import (
+    HoldoutEvaluationAuthority,
     _cohort_series,
     _lag1_autocorrelation,
     _spearman,
@@ -3823,17 +3831,6 @@ def test_a_noop_dict_property_surface_refuses_by_name(era_world) -> None:
 
 
 # ---- (P4, owner rulings 2026-09-03) the authorized window-A evaluation seam ----
-import json as _json
-
-from tree_options.protocol.holdout import FINAL_HOLDOUT_DATES
-from tree_options.protocol.loader import protocol_hash
-from tree_options.data.ingest import ingest_snapshot
-from tree_options.synth import generate_world
-from tree_options.synth.spec import WorldSpec
-from tree_options.synth_options import OptionsOverlaySpec, generate_overlay
-from tree_options.time.calendar import StaticSessionCalendar
-from tree_options.trials.options_run import HoldoutEvaluationAuthority
-
 _P4_WORLD_ID = "m3-unit-p4-holdout-907"
 
 
@@ -3936,7 +3933,7 @@ def _p4_scored(p4_world) -> tuple[ScoredLabel, ...]:
 def _p4_grid(p4_world, permitted: tuple[date, ...]) -> tuple[date, ...]:
     """The driver's session set: the research grid (everything strictly
     before the seal) plus EXACTLY the permitted sealed dates."""
-    overlay, calendar, _snap, _ds = p4_world
+    _overlay, calendar, _snap, _ds = p4_world
     first_sealed = date.fromisoformat(FINAL_HOLDOUT_DATES[0])
     research = tuple(s for s in calendar.sessions() if s < first_sealed)
     return tuple(sorted(set(research) | set(permitted)))
