@@ -3820,3 +3820,392 @@ def test_a_noop_dict_property_surface_refuses_by_name(era_world) -> None:
     assert type(surface.__dict__) is not dict
     with pytest.raises(ValueError, match="not a real dict"):
         _bind_decision_surface(surface, {first: grid.session_close(first)})
+
+
+# ---- (P4, owner rulings 2026-09-03) the authorized window-A evaluation seam ----
+import json as _json
+
+from tree_options.protocol.holdout import FINAL_HOLDOUT_DATES
+from tree_options.protocol.loader import protocol_hash
+from tree_options.data.ingest import ingest_snapshot
+from tree_options.synth import generate_world
+from tree_options.synth.spec import WorldSpec
+from tree_options.synth_options import OptionsOverlaySpec, generate_overlay
+from tree_options.time.calendar import StaticSessionCalendar
+from tree_options.trials.options_run import HoldoutEvaluationAuthority
+
+_P4_WORLD_ID = "m3-unit-p4-holdout-907"
+
+
+def _p4_fridays() -> list[date]:
+    """Every Friday 2025-04-04..2026-08-21 — the sealed window with a full
+    exit/label-horizon margin past its last enumerated date."""
+    out: list[date] = []
+    cursor = date(2025, 4, 4)
+    while cursor <= date(2026, 8, 21):
+        out.append(cursor)
+        cursor += timedelta(weeks=1)
+    return out
+
+
+@pytest.fixture(scope="module")
+def p4_world(tmp_path_factory):
+    """A synthetic world whose grid RUNS THROUGH the sealed window (the
+    shared 2018 fixture cannot host an authorized evaluation: its bars end
+    eight years before window A). Checksum verification is off for the
+    ad-hoc fixture; the runner's seal logic keys on DATES, not fixtures."""
+    sessions = _p4_fridays()
+    payload = {
+        "calendar": "XNYS",
+        "source": "p4-unit-fixture",
+        "timezone": "America/New_York",
+        "open": "09:30",
+        "close": "16:00",
+        "early_close": "13:00",
+        "early_close_sessions": [],
+        "sessions": [s.isoformat() for s in sessions],
+    }
+    root = tmp_path_factory.mktemp("p4_calendar")
+    (root / "cal.json").write_text(_json.dumps(payload), encoding="utf-8")
+    calendar = StaticSessionCalendar(
+        root / "cal.json", root / "cal.json.sha256", verify_checksum=False
+    )
+    spec = WorldSpec(
+        world_id=_P4_WORLD_ID, seed=907, kind="null", n_securities=12, n_sessions=len(sessions)
+    )
+    world = generate_world(spec, calendar)
+    snapshot = ingest_snapshot(
+        world.payload, world.master, snapshot_id=spec.world_id, normalization_code_sha="0" * 64
+    )
+    overlay = generate_overlay(
+        spec=OptionsOverlaySpec(world_id=_P4_WORLD_ID, seed=907, eligible_top_n=10),
+        bars=snapshot.bars,
+        master=snapshot.master,
+        actions=snapshot.actions,
+        calendar=calendar,
+    )
+    dataset = PointInTimeDataset(
+        snapshot, calendar, universe_id=f"{snapshot.snapshot_id}|pit-universe-v1"
+    )
+    return overlay, calendar, snapshot, dataset
+
+
+# the owner-ratified label-complete shape: the first nine sealed dates
+_P4_PERMITTED = tuple(date.fromisoformat(d) for d in FINAL_HOLDOUT_DATES[:9])
+_P4_EXCLUDED = tuple(date.fromisoformat(d) for d in FINAL_HOLDOUT_DATES[9:])
+
+
+def _p4_authority(
+    protocol,
+    permitted: tuple[date, ...] = _P4_PERMITTED,
+    **overrides,
+) -> HoldoutEvaluationAuthority:
+    base = dict(
+        window_id="final-holdout-window-a",
+        world_id=_P4_WORLD_ID,
+        protocol_hash_value=protocol_hash(protocol),
+        registration_sha256="a" * 64,
+        authority_record_sha256="b" * 64,
+        declared_head="c" * 40,
+        permitted_test_sessions=permitted,
+    )
+    base.update(overrides)
+    return HoldoutEvaluationAuthority(**base)
+
+
+def _p4_scored(p4_world) -> tuple[ScoredLabel, ...]:
+    """Deterministic rows on every grid session — the fold consumes only
+    the permitted test sessions; train rows are present but unused."""
+    overlay, calendar, _snap, _ds = p4_world
+    surface = OptionPitSurface(overlay)
+    rows: list[ScoredLabel] = []
+    for i, session in enumerate(calendar.sessions()):
+        eligible = surface.eligible_as_of(session)
+        for j, sid in enumerate(sorted(eligible)):
+            rows.append(
+                ScoredLabel(
+                    security_id=sid,
+                    session=session,
+                    score=((i * 7 + j * 13) % 31) / 31.0,
+                    label=((i * 11 + j * 17) % 37) / 37.0 - 0.5,
+                )
+            )
+    return tuple(rows)
+
+
+def _p4_grid(p4_world, permitted: tuple[date, ...]) -> tuple[date, ...]:
+    """The driver's session set: the research grid (everything strictly
+    before the seal) plus EXACTLY the permitted sealed dates."""
+    overlay, calendar, _snap, _ds = p4_world
+    first_sealed = date.fromisoformat(FINAL_HOLDOUT_DATES[0])
+    research = tuple(s for s in calendar.sessions() if s < first_sealed)
+    return tuple(sorted(set(research) | set(permitted)))
+
+
+def test_holdout_authority_executes_the_single_window_a_fold(p4_world, protocol, tmp_path) -> None:
+    """The authorized path: ONE fold, test sessions EXACTLY the permitted
+    sealed dates, and a payload that can never be mistaken for a research
+    trial — the holdout_evaluation block, the real intersection list, and
+    an `applied` that names the authority record."""
+    overlay, _cal, snapshot, dataset = p4_world
+    surface = OptionPitSurface(overlay)
+    registry = TrialRegistry(tmp_path / "p4_exec.db")
+    try:
+        result = run_options_trial(
+            dataset=dataset,
+            surface=surface,
+            calendar=p4_world[1],
+            protocol=protocol,
+            world_id=snapshot.snapshot_id,
+            arm="A",
+            strategy_config=OptionsStrategyConfig(),
+            scored=_p4_scored(p4_world),
+            model_family="fixture:v1",
+            model_sha256=None,
+            hypothesis="the authorized window-A evaluation",
+            decision_sessions=_p4_grid(p4_world, _P4_PERMITTED),
+            options_manifest_hash="0" * 64,
+            registry=registry,
+            artifacts_dir=tmp_path / "p4_exec",
+            repo=REPO_ROOT,
+            clock=FIXED_CLOCK,
+            split_override=OptionsSplitOverride(
+                label_horizon_sessions=5,
+                embargo_sessions=2,
+                val_sessions=6,
+                test_sessions=13,
+                roll_sessions=13,
+                min_train_sessions=34,
+            ),
+            holdout_evaluation=_p4_authority(protocol),
+            allow_dirty=True,
+        )
+    finally:
+        registry.close()
+    assert result.n_folds == 1
+    body = _json.loads(result.artifact_path.read_text(encoding="utf-8"))
+    payload = body["payload"]
+    evaluation = payload["holdout_evaluation"]
+    assert evaluation["permitted_test_sessions"] == [d.isoformat() for d in _P4_PERMITTED]
+    assert evaluation["excluded_sealed_dates"] == [d.isoformat() for d in _P4_EXCLUDED]
+    assert evaluation["registration_sha256"] == "a" * 64
+    seal = payload["holdout_seal"]
+    assert seal["fold_test_window_intersections"] == [d.isoformat() for d in _P4_PERMITTED]
+    assert "authorized holdout evaluation" in seal["applied"]
+    assert "bbbbbbbbbbbb" in seal["applied"]
+    assert payload["per_fold"][0]["test_window"] == {
+        "start": _P4_PERMITTED[0].isoformat(),
+        "end": _P4_PERMITTED[-1].isoformat(),
+    }
+
+
+def test_holdout_authority_is_trial_identity(p4_world, protocol, tmp_path) -> None:
+    """Two authorities that differ ONLY by registration binding produce
+    different stamp config hashes — authorization status can never hide
+    inside one config hash."""
+    overlay, _cal, snapshot, dataset = p4_world
+    surface = OptionPitSurface(overlay)
+    hashes = []
+    for registration in ("a" * 64, "d" * 64):
+        registry = TrialRegistry(tmp_path / f"p4_hash_{registration[0]}.db")
+        try:
+            result = run_options_trial(
+                dataset=dataset,
+                surface=surface,
+                calendar=p4_world[1],
+                protocol=protocol,
+                world_id=snapshot.snapshot_id,
+                arm="A",
+                strategy_config=OptionsStrategyConfig(),
+                scored=_p4_scored(p4_world),
+                model_family="fixture:v1",
+                model_sha256=None,
+                hypothesis="hash binding",
+                decision_sessions=_p4_grid(p4_world, _P4_PERMITTED),
+                options_manifest_hash="0" * 64,
+                registry=registry,
+                artifacts_dir=tmp_path / f"p4_hash_{registration[0]}",
+                repo=REPO_ROOT,
+                clock=FIXED_CLOCK,
+                split_override=OptionsSplitOverride(
+                    label_horizon_sessions=5,
+                    embargo_sessions=2,
+                    val_sessions=6,
+                    test_sessions=13,
+                    roll_sessions=13,
+                    min_train_sessions=34,
+                ),
+                holdout_evaluation=_p4_authority(
+                    protocol, registration_sha256=registration
+                ),
+                allow_dirty=True,
+            )
+        finally:
+            registry.close()
+        hashes.append(_json.loads(result.artifact_path.read_text(encoding="utf-8"))["stamp"]["config_hash"])
+    assert hashes[0] != hashes[1]
+
+
+@pytest.mark.parametrize(
+    ("label", "mutate"),
+    [
+        ("wrong window", {"window_id": "final-holdout-window-b"}),
+        ("short sha", {"registration_sha256": "a" * 63}),
+        ("non-hex sha", {"authority_record_sha256": "z" * 64}),
+        ("bad head", {"declared_head": "zzz"}),
+        ("empty permitted", {"permitted_test_sessions": ()}),
+        (
+            "unsealed permitted date",
+            {"permitted_test_sessions": (date(2026, 5, 7), date(2026, 5, 14))},
+        ),
+        ("wrong world", {"world_id": "some-other-world"}),
+        ("wrong protocol", {"protocol_hash_value": "9" * 64}),
+    ],
+)
+def test_holdout_authority_shape_and_binding_refusals(
+    p4_world, protocol, tmp_path, label, mutate
+) -> None:
+    """Every malformed or mis-bound authority refuses BEFORE registration
+    — no config budget is ever burned on an unauthorized evaluation."""
+    overlay, _cal, snapshot, dataset = p4_world
+    surface = OptionPitSurface(overlay)
+    registry = TrialRegistry(tmp_path / "p4_refuse.db")
+    try:
+        with pytest.raises(ValueError, match="holdout evaluation authority refused"):
+            run_options_trial(
+                dataset=dataset,
+                surface=surface,
+                calendar=p4_world[1],
+                protocol=protocol,
+                world_id=snapshot.snapshot_id,
+                arm="A",
+                strategy_config=OptionsStrategyConfig(),
+                scored=_p4_scored(p4_world),
+                model_family="fixture:v1",
+                model_sha256=None,
+                hypothesis="must refuse",
+                decision_sessions=_p4_grid(p4_world, _P4_PERMITTED),
+                options_manifest_hash="0" * 64,
+                registry=registry,
+                artifacts_dir=tmp_path / "p4_refuse",
+                repo=REPO_ROOT,
+                clock=FIXED_CLOCK,
+                split_override=OptionsSplitOverride(
+                    label_horizon_sessions=5,
+                    embargo_sessions=2,
+                    val_sessions=6,
+                    test_sessions=13,
+                    roll_sessions=13,
+                    min_train_sessions=34,
+                ),
+                holdout_evaluation=_p4_authority(protocol, **mutate),
+                allow_dirty=True,
+            )
+    finally:
+        registry.close()
+    assert trial_count(tmp_path / "p4_refuse.db") == 0
+
+
+def test_holdout_authority_refuses_grid_hygiene_violations(p4_world, protocol, tmp_path) -> None:
+    """The fold-builder hygiene: a sealed date OUTSIDE the permit in the
+    decision grid refuses; a permitted date MISSING from the grid refuses;
+    and a permitted window with no train depth refuses."""
+    overlay, _cal, snapshot, dataset = p4_world
+    surface = OptionPitSurface(overlay)
+
+    def _run(sessions, permitted):
+        registry = TrialRegistry(tmp_path / "p4_hygiene.db")
+        try:
+            with pytest.raises(ValueError, match="holdout evaluation authority refused"):
+                run_options_trial(
+                    dataset=dataset,
+                    surface=surface,
+                    calendar=p4_world[1],
+                    protocol=protocol,
+                    world_id=snapshot.snapshot_id,
+                    arm="A",
+                    strategy_config=OptionsStrategyConfig(),
+                    scored=_p4_scored(p4_world),
+                    model_family="fixture:v1",
+                    model_sha256=None,
+                    hypothesis="must refuse",
+                    decision_sessions=sessions,
+                    options_manifest_hash="0" * 64,
+                    registry=registry,
+                    artifacts_dir=tmp_path / "p4_hygiene",
+                    repo=REPO_ROOT,
+                    clock=FIXED_CLOCK,
+                    split_override=OptionsSplitOverride(
+                        label_horizon_sessions=5,
+                        embargo_sessions=2,
+                        val_sessions=6,
+                        test_sessions=13,
+                        roll_sessions=13,
+                        min_train_sessions=34,
+                    ),
+                    holdout_evaluation=_p4_authority(protocol, permitted),
+                    allow_dirty=True,
+                )
+        finally:
+            registry.close()
+
+    # an unpermitted sealed date rides the grid
+    _run(_p4_grid(p4_world, _P4_PERMITTED + _P4_EXCLUDED[:1]), _P4_PERMITTED)
+    # a permitted date is absent from the grid
+    _run(_p4_grid(p4_world, _P4_PERMITTED[:-1]), _P4_PERMITTED)
+    # no train depth: the permit starts at the grid's first session
+    _run(
+        tuple(sorted(set(_P4_PERMITTED))),
+        _P4_PERMITTED,
+    )
+    assert trial_count(tmp_path / "p4_hygiene.db") == 0
+
+
+def test_authorized_exits_fill_at_the_calendars_last_session(p4_world, protocol, tmp_path) -> None:
+    """(P4) The BOUNDED end-buffer: a decision whose exit-4 exit lands
+    EXACTLY on the grid's final session (2026-07-17 -> entry 07-24 ->
+    exit 08-21) must still fill — the buffer takes the last session when
+    six full sessions do not remain, where the unbounded nth_after form
+    died before the fold could end at the world's edge."""
+    overlay, _cal, snapshot, dataset = p4_world
+    surface = OptionPitSurface(overlay)
+    registry = TrialRegistry(tmp_path / "p4_edge.db")
+    try:
+        result = run_options_trial(
+            dataset=dataset,
+            surface=surface,
+            calendar=p4_world[1],
+            protocol=protocol,
+            world_id=snapshot.snapshot_id,
+            arm="A",
+            strategy_config=OptionsStrategyConfig(exit_sessions_after_entry=4),
+            scored=_p4_scored(p4_world),
+            model_family="fixture:v1",
+            model_sha256=None,
+            hypothesis="the boundary exit fills",
+            decision_sessions=_p4_grid(p4_world, (date(2026, 7, 17),)),
+            options_manifest_hash="0" * 64,
+            registry=registry,
+            artifacts_dir=tmp_path / "p4_edge",
+            repo=REPO_ROOT,
+            clock=FIXED_CLOCK,
+            split_override=OptionsSplitOverride(
+                label_horizon_sessions=5,
+                embargo_sessions=2,
+                val_sessions=6,
+                test_sessions=13,
+                roll_sessions=13,
+                min_train_sessions=34,
+            ),
+            holdout_evaluation=_p4_authority(protocol, permitted=(date(2026, 7, 17),)),
+            allow_dirty=True,
+        )
+    finally:
+        registry.close()
+    body = _json.loads(result.artifact_path.read_text(encoding="utf-8"))
+    positions = body["payload"]["pooled"]["positions"]
+    final_exits = [p for p in positions if p.get("exit_session") == "2026-08-21"]
+    assert final_exits, "the exit scheduled at the calendar's LAST session must fill"
+    # and the fold's end_session disclosure is honest about the clamp
+    fold = body["payload"]["per_fold"][0]
+    assert fold["test_window"]["end"] == "2026-07-17"

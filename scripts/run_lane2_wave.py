@@ -388,6 +388,8 @@ def momentum_scored_rows(
     bars: Sequence[Any],
     grid: Any,
     sessions: Sequence[date],
+    *,
+    include_holdout: bool = False,
 ) -> tuple[ScoredLabel, ...]:
     """T-MOM rows: mom_20 IN GRID WEEKS from the PIT-visible dataset bars.
 
@@ -398,7 +400,15 @@ def momentum_scored_rows(
     mom_20 = ln(c_last / c_first) over exactly the last 21 visible bars;
     a name with fewer (the warm-up: Agenda C's 21-grid-index dead zone,
     or a capture hole) gets NO row — absent from the quintile cut, never
-    imputed across the gap."""
+    imputed across the gap.
+
+    ``include_holdout`` (P4, default False — the research-wave behavior
+    is byte-identical): False SKIPS sealed window-A sessions (the wave-0
+    seal guard); True scores them — legal ONLY under the P4
+    HoldoutEvaluationAuthority, whose runner is the sole caller that
+    passes it. The score itself is strictly backward-looking (21 PIT
+    bars BEFORE the decision), so a sealed decision's score consumes no
+    forward seal information."""
     by_security: dict[str, dict[date, Any]] = {}
     for bar in bars:
         by_security.setdefault(bar.security_id, {})[bar.session] = bar
@@ -407,8 +417,8 @@ def momentum_scored_rows(
     holdout = frozenset(FINAL_HOLDOUT_DATES)
     rows: list[ScoredLabel] = []
     for session in sessions:
-        if session.isoformat() in holdout:  # pragma: no cover - world excludes
-            continue
+        if session.isoformat() in holdout and not include_holdout:
+            continue  # pragma: no cover - world excludes holdout sessions
         close_at = grid.session_close(session)
         for security_id in sorted(by_security):
             visible = sorted(
