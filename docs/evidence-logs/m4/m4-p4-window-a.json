@@ -1,0 +1,55 @@
+{
+  "approval_sha256": "c8b742dcc051f6679c44eea5dae363286d0e5ecc69475b842b13a51056c23bc5",
+  "consumption_sha256": "bcbbc3c8384ab95bbf57cc19f042050255c963ba52ef4783e84cda0461d6c9a4",
+  "content_identity": "5217679e959e7d46ef7dfbd2d73d3df26c0ea7dcf748b3d40d23d9b55da61535",
+  "declared_head": "2e09ac58c11f14198cc4d9382c8dd09cd3bbcdb3",
+  "permitted_test_sessions": [
+    "2026-05-08",
+    "2026-05-15",
+    "2026-05-22",
+    "2026-05-29",
+    "2026-06-05",
+    "2026-06-12",
+    "2026-06-26",
+    "2026-07-10"
+  ],
+  "program": "p4-window-a",
+  "trials": {
+    "p4-hold-exit2": "m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-a-r19",
+    "p4-mom-a": "m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-a-r18",
+    "p4-mom-b": "m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-b-r3",
+    "p4-null-1": "m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-a-r15",
+    "p4-null-2": "m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-a-r16",
+    "p4-null-3": "m3-massive-derived/AAPL+ADBE+AMD+AMZN+AVGO+COST+CRM+DIS+GOOGL+HD+INTC+IWM+JPM+KO+LLY+MA+META+MSFT+NFLX+NVDA+PEP+PG+QCOM+QQQ+SPY+TSLA+UNH+V+XOM/d467d7878609-a-r17"
+  },
+  "verdict": {
+    "f1_bleed_persisted": true,
+    "f1_null_negative_count": 3,
+    "f1_null_returns": {
+      "p4-null-1": -0.003025699999999798,
+      "p4-null-2": -0.025535000000000085,
+      "p4-null-3": -0.02849524999999986
+    },
+    "f2_anomaly_persisted": false,
+    "f2_mom_returns": {
+      "p4-mom-a": -0.08112354999999993,
+      "p4-mom-b": -0.10561160000000003
+    },
+    "f2_null_max": -0.003025699999999798,
+    "rule": "owner ruling 2026-09-03 (return-channel dual falsifier): F1 = at least 2 of 3 window-A null seeds negative; F2 = BOTH momentum arms strictly above the max of the 3 window-A null seeds",
+    "secondary_disclosures": {
+      "cohort_ic_mean": {
+        "p4-hold-exit2": -0.11746031746031747,
+        "p4-mom-a": -0.695857379878499,
+        "p4-mom-b": -0.5319061074502315,
+        "p4-null-1": -0.1598087304476631,
+        "p4-null-2": -0.46400373325506417,
+        "p4-null-3": -0.44294653481130747
+      },
+      "cohort_ic_two_se_bar": 0.5910175256535402,
+      "hold_exit2_above_null_max": true,
+      "hold_exit2_return": -0.0003039000000000236,
+      "prior_stride4_cohort_ic_sd": 0.5118361912977869
+    }
+  }
+}

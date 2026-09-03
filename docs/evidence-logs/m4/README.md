@@ -1,5 +1,19 @@
 # M4 retained evidence logs
 
+- `m4-p4-window-a.json` — the consumed one-shot P4 window-A sealed
+  evaluation (2026-09-03, head `2e09ac5`, APPROVAL `c8b742dc…` /
+  CONSUMPTION `bcbbc3c8…`, content identity `5217679e…`): the 8
+  label-complete permitted dates 2026-05-08…2026-07-10 of the 13 sealed
+  (07-17…08-14 not label-complete in-world), 6 trials under
+  `HoldoutEvaluationAuthority` (null×3 `-a-r15..r17`, mom `-a-r18` +
+  `-b-r3`, hold-exit2 `-a-r19`; folds=1, positions 22–27). Verdict —
+  **F1 (bleed persistence) FIRED: 3/3 nulls negative** (−0.30%, −2.55%,
+  −2.85%) and **F2 (anomaly persistence) NOT fired: both mom arms BELOW
+  the null max** (−8.11%, −10.56% vs −0.30%); secondary cohort ICs all
+  negative (−0.12…−0.70), none above the 0.591 two-SE bar. The
+  stride-4-era positive returns do not survive the seal; nothing earns
+  promotion. The window is spent — never re-run (a second `--execute`
+  refuses on the tracked consumption identity).
 - `g4-sealed-event-reconciliation.md` — the consumed one-shot M4-G4 sealed
   event of 2026-08-31 (APPROVAL `468e2cf8…` / CONSUMPTION `bb6a616b…`,
   `sealed_run_id 9b945db3…`, verdict UNKNOWN, 0 trials): the crash census
