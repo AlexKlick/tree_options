@@ -403,6 +403,8 @@ def _build_mutation_report(root: Path, *, head: str) -> Path:
         "restoration_suite_passed": True,
         "registry_digest": digest,
         "head": head,
+        "selection": {"mode": "full", "ref": None, "count": len(ids)},
+        "jobs": 4,
     }
     path = root / "m0-mutations.json"
     path.write_text(json.dumps(report), encoding="utf-8")
@@ -1001,6 +1003,63 @@ def test_a_stale_mutation_report_fails_criterion_six_against_the_live_registry(
     assert any("restoration suite did not pass" in f for f in mutation.failures), mutation.failures
 
 
+def test_an_iteration_mode_report_is_not_gate_authority(mini_run) -> None:
+    """Successor packet 2026-09-03: the harness gained --only /
+    --changed-since iteration modes and a selection block. A report whose
+    selection.mode is not "full" (or that lacks the block — pre-2026-09-03
+    shape) FAILs criterion 6; a sharded --jobs run is still FULL and stays
+    authority."""
+    mini, run, _replay = mini_run
+    trial_payloads = {
+        arm: load_json(path)["payload"] for (_lane, arm), path in run.trial_payload_paths.items()
+    }
+    registry, digest = _live_mutation_registry()
+    ids = sorted(registry)
+
+    def _report(mode: str | None) -> dict:
+        report = {
+            "mutants": [
+                {
+                    "id": mid,
+                    "file": "src/tree_options/seal/g4_gate.py",
+                    "invariant": "g4 registry mutant",
+                    "verdict": "KILLED",
+                }
+                for mid in ids
+            ],
+            "totals": {"KILLED": len(ids)},
+            "total": len(ids),
+            "restoration_suite_passed": True,
+            "registry_digest": digest,
+            "head": mini.head,
+            "jobs": 4,
+        }
+        if mode is not None:
+            report["selection"] = {"mode": mode, "ref": None, "count": len(ids)}
+        return report
+
+    # a sharded FULL campaign is authority (only wall-clock changed)
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=_report("full"))
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "PASS", mutation.failures
+    assert mutation.reported["selection_mode"] == "full"
+
+    for mode in ("only", "changed-since"):
+        evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=_report(mode))
+        mutation = evaluation.by_id("mutation_campaign")
+        assert mutation.verdict == "FAIL"
+        assert any("not a full-registry campaign" in f for f in mutation.failures), (
+            mutation.failures
+        )
+
+    # pre-2026-09-03 report shape: no selection block at all — refused,
+    # never grandfathered
+    evaluation = _criteria_over(mini, run, trial_payloads, mutation_report=_report(None))
+    mutation = evaluation.by_id("mutation_campaign")
+    assert mutation.verdict == "FAIL"
+    assert any("not a full-registry campaign" in f for f in mutation.failures), mutation.failures
+
+
 def test_the_preflight_rejects_shape_invalid_reports_before_the_event(tmp_path: Path) -> None:
     """Round-4 P0: a PRESENT report whose SHAPE cannot be evaluated (a
     non-int total, a non-boolean restoration flag, a non-list mutants
@@ -1017,6 +1076,10 @@ def test_the_preflight_rejects_shape_invalid_reports_before_the_event(tmp_path: 
         {"mutants": "nope"},
         {"totals": {"KILLED": "3"}},
         [1, 2, 3],
+        # present-but-malformed selection would branch on a non-string at
+        # evaluation time (absent is criterion 6's honest FAIL, a verdict)
+        {"selection": "full"},
+        {"selection": {"mode": 3}},
     ):
         with pytest.raises(MutationReportSchemaError):
             validate_mutation_report(bad)
@@ -1028,6 +1091,8 @@ def test_the_preflight_rejects_shape_invalid_reports_before_the_event(tmp_path: 
             "restoration_suite_passed": True,
             "head": "a" * 40,
             "registry_digest": "b" * 64,
+            "selection": {"mode": "full", "ref": None, "count": 1},
+            "jobs": 4,
         }
     )
 

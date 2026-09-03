@@ -52,10 +52,22 @@ uv run --frozen python -m compileall -q src tests scripts
 echo "== pytest -W error (hypothesis profile: default, derandomized, 50 examples) =="
 uv run --frozen pytest -W error
 echo "== mutation harness =="
+# TREE_OPTIONS_MUTATE_JOBS shards the campaign across disposable copies
+# (receipts identical to the serial run; default 4 — set 1 to force serial).
 uv run --frozen python scripts/mutate.py \
   --json artifacts/m0-mutations.json \
   --markdown artifacts/m0-mutations.md \
-  --head "$(git rev-parse HEAD)"
+  --head "$(git rev-parse HEAD)" \
+  --jobs "${TREE_OPTIONS_MUTATE_JOBS:-4}"
+# authority receipt: the gate accepts ONLY a full-registry campaign — an
+# --only / --changed-since report is iteration evidence, never gate authority
+uv run --frozen python - <<'PY'
+import json
+report = json.loads(open("artifacts/m0-mutations.json", encoding="utf-8").read())
+selection = report.get("selection")
+assert isinstance(selection, dict) and selection.get("mode") == "full", selection
+print(f"mutation receipt ok: full campaign, jobs={report.get('jobs')}")
+PY
 echo "== uv build =="
 uv build
 echo "== wheel smoke (fresh environment) =="

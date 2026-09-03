@@ -572,6 +572,20 @@ def _criterion_mutation_campaign(
             failures.append(f"mutation registry {killed}/{total} KILLED — not N/N")
         if not restoration:
             failures.append("the mutation registry's restoration suite did not pass")
+        # authority receipt (successor packet 2026-09-03): the harness's
+        # --only / --changed-since modes are iteration evidence; a sharded
+        # --jobs run is still FULL and remains authority. A report without
+        # the selection block is pre-2026-09-03 shape — refused, never
+        # grandfathered: the gate binds to the report THIS gate produced.
+        selection = mutation_report.get("selection")
+        selection_mode = selection.get("mode") if isinstance(selection, dict) else None
+        if selection_mode != "full":
+            failures.append(
+                "the mutation report is not a full-registry campaign"
+                f" (selection.mode={selection_mode!r}) — an --only or"
+                " --changed-since run is iteration evidence, never gate"
+                " authority"
+            )
         entries = mutation_report.get("mutants", [])
         report_ids = [str(entry.get("id")) for entry in entries]
         if total != len(report_ids):
@@ -654,6 +668,7 @@ def _criterion_mutation_campaign(
             "killed": killed,
             "killed_entries": killed_entries,
             "restoration_suite_passed": restoration,
+            "selection_mode": selection_mode,
             "verdict_logic_mutants": covering[:5],
             "registry_supplied": mutation_registry_ids is not None,
             "registry_total": (
@@ -952,6 +967,16 @@ def validate_mutation_report(payload: object) -> None:
         value = payload.get(key)
         if value is not None and not isinstance(value, str):
             raise MutationReportSchemaError(f"the mutation report's {key!r} is not a string")
+    selection = payload.get("selection")
+    if selection is not None and (
+        not isinstance(selection, dict) or not isinstance(selection.get("mode"), str)
+    ):
+        # absent is fine — that is criterion 6's honest FAIL (a verdict);
+        # PRESENT-but-malformed would branch on a non-string at evaluation
+        # time, which is exactly what this preflight exists to prevent
+        raise MutationReportSchemaError(
+            "the mutation report's 'selection' is not an object with a string 'mode'"
+        )
 
 
 def preflight_gate_auxiliaries(*, paths: G4GatePaths, repo_root: Path) -> None:
