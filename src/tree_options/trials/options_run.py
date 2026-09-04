@@ -54,6 +54,7 @@ from tree_options.protocol.holdout import (
     FINAL_HOLDOUT_DATES,
     FINAL_HOLDOUT_SCOPE,
     FINAL_HOLDOUT_WINDOW_ID,
+    RATIFIED_HOLDOUT_WINDOW_IDS,
 )
 from tree_options.protocol.loader import protocol_hash
 from tree_options.protocol.schema import ResearchProtocol
@@ -394,9 +395,10 @@ def _validate_holdout_authority_shape(authority: HoldoutEvaluationAuthority) -> 
     checks against the trial's own identity live at the call site (the
     world/protocol the trial ACTUALLY runs must match, not just look
     well-formed)."""
-    if authority.window_id != FINAL_HOLDOUT_WINDOW_ID:
+    if authority.window_id not in RATIFIED_HOLDOUT_WINDOW_IDS:
         raise _holdout_authority_refusal(
-            f"window_id {authority.window_id!r} is not the ratified {FINAL_HOLDOUT_WINDOW_ID!r}"
+            f"window_id {authority.window_id!r} is not a ratified holdout window"
+            f" {tuple(RATIFIED_HOLDOUT_WINDOW_IDS)!r}"
         )
     for name, value, width in (
         ("registration_sha256", authority.registration_sha256, 64),
@@ -1771,7 +1773,14 @@ def _execute(
         applied = f"unconditional-refusal (declared scope: {FINAL_HOLDOUT_SCOPE})"
         reported_intersections = 0
     seal_disclosure: dict[str, object] = {
-        "window_id": FINAL_HOLDOUT_WINDOW_ID,
+        # the window the AUTHORITY names (window A or its ratified
+        # extension) — a static window-A id here would mislabel an
+        # authorized extension evaluation
+        "window_id": (
+            holdout_evaluation.window_id
+            if holdout_evaluation is not None
+            else FINAL_HOLDOUT_WINDOW_ID
+        ),
         "scope": FINAL_HOLDOUT_SCOPE,
         "declared_scope": FINAL_HOLDOUT_SCOPE,
         "applied": applied,

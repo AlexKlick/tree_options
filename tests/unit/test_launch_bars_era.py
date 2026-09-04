@@ -2,11 +2,13 @@
 
 The full valid scenario is synthetic end to end (tests/fixtures/bars_sample.py):
 a capture dir + capture manifest + census bound to those exact bytes, a
-0.2.1-shaped protocol built through the repo's own models, a work manifest
-REGENERATED from the captures via the declared profile, a 0600 key file, and
-a run store walked to BARS_READY. Authority ledger + run store live under
-scratch roots in the repo's gitignored artifacts/ (never /tmp — the ledger
-refuses it, and durable run state may not live where a reboot wipes it).
+0.2.2-shaped protocol built through the repo's own models (the launcher's
+gate is re-opened at 0.2.2 for the window-A-extension continuation), a work
+manifest REGENERATED from the captures via the declared profile, a 0600 key
+file, and a run store walked to BARS_READY. Authority ledger + run store
+live under scratch roots in the repo's gitignored artifacts/ (never /tmp —
+the ledger refuses it, and durable run state may not live where a reboot
+wipes it).
 """
 
 from __future__ import annotations
@@ -36,7 +38,7 @@ from tests.fixtures.bars_sample import (  # noqa: E402
     census_bytes,
     make_matching_run_identity,
     make_run_identity,
-    write_021_protocol,
+    write_022_protocol,
     write_bars_capture,
     write_capture_manifest,
 )
@@ -135,9 +137,11 @@ def scenario(
     external_manifest_path.write_bytes(manifest_path.read_bytes())
     census_path = tmp_path / "census.json"
     census_path.write_bytes(census_bytes(manifest_path.read_bytes()))
-    # (0.2.2 flip) the base is the pinned 0.2.1 fixture (the helper's new
-    # default): the live yaml is 0.2.2 and would mint a hybrid
-    protocol_path = write_021_protocol(tmp_path / "protocol-0.2.1.yaml")
+    # (window-A extension continuation, 2026-09-04) the launcher's
+    # protocol gate is re-opened at the LIVE version 0.2.2, so the
+    # full-pass scenario binds a coherent 0.2.2 protocol (built from the
+    # live yaml; the pinned 0.2.1 fixture would mint a hybrid)
+    protocol_path = write_022_protocol(tmp_path / "protocol-0.2.2.yaml")
     work_manifest = build_bars_work_manifest(
         capture_dir,
         profile=load_selection_profile(COMMITTED_PROFILE),
@@ -148,7 +152,7 @@ def scenario(
     work_path.write_text(work_manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
     packet_path = tmp_path / "amendment-packet.json"
     packet_path.write_text(
-        json.dumps({"landed": False, "proposed_version": "0.2.1"}, sort_keys=True),
+        json.dumps({"landed": False, "proposed_version": "0.2.2"}, sort_keys=True),
         encoding="utf-8",
     )
     key_path = tmp_path / "polygon.key"
@@ -284,29 +288,31 @@ def _sole_store_run_id(store_root: Path) -> str:
 
 
 # ---- preflight: the record half of the protocol gate is closed on main ---------------
-# (0.2.2 flip, 2026-08-28: the live yaml is 0.2.2 now, so on the REAL repo
-# protocol today the VERSION clause refuses first — REQUIRED_BARS_PROTOCOL_
-# VERSION stays "0.2.1" (the bars era is closed; the launcher is frozen).)
+# (window-A extension continuation, 2026-09-04: the launcher's protocol
+# gate is RE-OPENED at the live 0.2.2, so on the REAL repo protocol today
+# the VERSION clause passes and the RECORD clause refuses — the standing
+# approval in the live ledger binds the 0.2.1-era protocol hash, which is
+# not the loaded one; the continuation needs a NEW approval record binding
+# the 0.2.2 hash. During the closed era (2026-08-28..09-04) this same test
+# pinned the mirror-image answer: the 0.2.1 version clause refusing first.)
 
 
-def test_preflight_exit_2_on_real_022_protocol_today_the_version_clause_refuses(
+def test_preflight_exit_2_on_real_022_protocol_today_the_record_clause_refuses(
     scratch_root: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    """The documented correct answer on main after the 0.2.2 flip: the
-    loaded protocol IS 0.2.2 while the launcher still requires 0.2.1, so
-    the version clause refuses FIRST (it is checked before the record
-    lookup) — read-only, through the REAL loader. Pre-flip this test pinned
-    the mirror-image answer (version passes, the missing
-    BARS_LAUNCH_APPROVAL record refuses)."""
+    """The documented correct answer on main with the gate re-opened at
+    0.2.2: the loaded protocol IS 0.2.2 and the launcher accepts the
+    version, so the RECORD clause is the refusal (no BARS_LAUNCH_APPROVAL
+    record in the REAL ledger binds the loaded 0.2.2 hash — the standing
+    2026-08-26 approval binds the 0.2.1-era hash) — read-only, through the
+    REAL loader."""
     assert load_protocol(REAL_PROTOCOL).meta.protocol_version == "0.2.2"
     real_authority = REPO_ROOT / "artifacts" / "bars-authority"
     before = _authority_tree_state(real_authority)
     assert launch.main(_real_preflight_argv(scratch_root)) == 2
     err = capsys.readouterr().err
-    assert "protocol version '0.2.2' != '0.2.1'" in err
-    # the version clause is the refusal — the record clause is never
-    # reached while the version is wrong
-    assert "BARS_LAUNCH_APPROVAL" not in err
+    assert "no BARS_LAUNCH_APPROVAL record binds the loaded protocol hash" in err
+    assert "protocol version" not in err
     # read-only: nothing was created anywhere the tool knows about. The real
     # authority tree EXISTS on this host (the live bars era minted a ledger
     # there), so the oracle is UNCHANGED-ness — never host absence
@@ -341,11 +347,13 @@ def test_preflight_refusal_never_writes_a_pre_existing_real_authority_ledger(
 
     assert launch.main(_real_preflight_argv(scratch_root)) == 2
     err = capsys.readouterr().err
-    # (0.2.2 flip) the live protocol is 0.2.2, so the refusal the read-only
-    # claim is proven under is the VERSION clause (checked before any
-    # record lookup); pre-flip this was the missing-record message
-    assert "protocol version '0.2.2' != '0.2.1'" in err
-    assert "BARS_LAUNCH_APPROVAL" not in err
+    # (window-A extension continuation) the gate accepts the live 0.2.2, so
+    # the refusal the read-only claim is proven under is the RECORD clause
+    # (the pre-existing fixture record binds no hash at all — certainly not
+    # the loaded one); during the closed era this was the version-clause
+    # message
+    assert "no BARS_LAUNCH_APPROVAL record binds the loaded protocol hash" in err
+    assert "protocol version" not in err
     # the isolation oracle: the pre-existing REAL-tree ledger is unchanged
     assert _authority_tree_state(authority) == before
     assert (authority / BARS_LEDGER_FILENAME).read_bytes() == ledger_bytes
@@ -357,10 +365,11 @@ def test_preflight_exit_2_wrong_version_even_with_matching_record(
     scenario: dict[str, Path], tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """A record binding the loaded protocol's hash does not open the gate
-    when the version is wrong: the 0.2.1 requirement is its own refusal.
-    The repo protocol is 0.2.1 now (0.2.1 landed in cdf38c8), so the
-    wrong-version leg is the pre-amendment 0.2.0 shape, rebuilt through the
-    loader's own models, with a record binding exactly its hash."""
+    when the version is wrong: the 0.2.2 requirement is its own refusal.
+    The wrong-version leg is the pre-amendment 0.2.0 shape, rebuilt through
+    the loader's own models, with a record binding exactly its hash (the
+    scenario protocol is 0.2.2; the 0.2.0 load refuses on the version
+    clause before any record lookup)."""
     pre_amendment = tmp_path / "protocol-0.2.0.yaml"
     pre_amendment.write_bytes(_base_020_protocol_bytes())
     _approve(scenario, protocol_hash=protocol_hash(load_protocol(pre_amendment)))

@@ -131,7 +131,15 @@ from tree_options.runstate.store import DEFAULT_STORE_ROOT  # noqa: E402
 from tree_options.schemas.common import StrictModel  # noqa: E402
 from tree_options.seal.errors import SealError  # noqa: E402
 
-REQUIRED_BARS_PROTOCOL_VERSION = "0.2.1"
+# (window-A extension continuation, 2026-09-04) re-opened at the LIVE
+# protocol version: the 0.2.1 freeze was the closed-era state ("the bars
+# era is closed; the launcher is frozen" — the flip note in the tests).
+# The continuation capture (Fridays 2026-08-28 onward, growing the world
+# so the five window-A-excluded sealed dates become label-complete) runs
+# under a NEW BARS_LAUNCH_APPROVAL record that binds the 0.2.2 protocol
+# hash (owner-ratified in the 0.2.2 flip); the standing 0.2.1 approval
+# can no longer open this gate — its protocol hash is not the loaded one.
+REQUIRED_BARS_PROTOCOL_VERSION = "0.2.2"
 COMMITTED_UNIVERSE_PATH = REPO_ROOT / "data" / "coverage" / "coverage_universe.json"
 
 # ---- pinned constants: the ONLY accepted values (no fallback path exists) ------

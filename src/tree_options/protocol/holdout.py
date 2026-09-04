@@ -23,6 +23,14 @@ from typing import Any
 
 RATIFIED_HOLDOUT_CENSUS_SHA256 = "43b0b040ea3c7936fc08e6b1028ce446e46c99f44ca1d87da9fec02099e12e14"
 FINAL_HOLDOUT_WINDOW_ID = "final-holdout-window-a"
+# (window-A extension, owner direction 2026-09-04) the SECOND ratified
+# window: the five sealed dates window A never evaluated (not
+# label-complete on the window-A world — 2026-07-17..2026-08-14). A NEW
+# packet under a NEW authority once the world grows; the spent window-A
+# packet stays sealed forever. Same enumeration, same census binding —
+# only the window identity (and its derived driver surfaces) differ.
+FINAL_HOLDOUT_EXT_WINDOW_ID = "final-holdout-window-a-ext-1"
+RATIFIED_HOLDOUT_WINDOW_IDS = (FINAL_HOLDOUT_WINDOW_ID, FINAL_HOLDOUT_EXT_WINDOW_ID)
 FINAL_HOLDOUT_SCOPE = "lane-2 evaluation folds (massive-derived-free/1)"
 FINAL_HOLDOUT_OWNER_DECISION = "m4-protocol-021-ratification-2026-08-26"
 FINAL_HOLDOUT_DECIDED = "2026-08-26"
@@ -73,10 +81,12 @@ def final_holdout_window_record(census_content_sha256: str) -> dict[str, Any] | 
 __all__ = [
     "FINAL_HOLDOUT_DATES",
     "FINAL_HOLDOUT_DECIDED",
+    "FINAL_HOLDOUT_EXT_WINDOW_ID",
     "FINAL_HOLDOUT_OWNER_DECISION",
     "FINAL_HOLDOUT_PLACEHOLDER",
     "FINAL_HOLDOUT_SCOPE",
     "FINAL_HOLDOUT_WINDOW_ID",
     "RATIFIED_HOLDOUT_CENSUS_SHA256",
+    "RATIFIED_HOLDOUT_WINDOW_IDS",
     "final_holdout_window_record",
 ]

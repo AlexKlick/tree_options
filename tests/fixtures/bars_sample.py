@@ -228,6 +228,41 @@ def write_021_protocol(path: Path, base: Path | None = None) -> Path:
     return path
 
 
+def write_022_protocol(path: Path, base: Path | None = None) -> Path:
+    """A 0.2.2-shaped protocol built from the REAL live yaml through the
+    repo's own models (load -> model_dump -> re-stamp -> dump), so it loads
+    through today's real loader. Fixture-only: nothing lands anywhere.
+
+    (window-A extension continuation, 2026-09-04) the launcher's protocol
+    gate is re-opened at 0.2.2 — the live protocol version since the flip —
+    so the full-pass scenario binds a COHERENT 0.2.2 protocol (deriving
+    0.2.2 from the pinned 0.2.1 fixture would strip the three 0.2.2
+    declarations; the live yaml already IS the coherent base).
+    """
+    if base is None:
+        base = Path(__file__).resolve().parents[2] / "research_protocol.yaml"
+    from tree_options.protocol.loader import load_protocol
+
+    base_protocol = load_protocol(base)
+    data = base_protocol.model_dump(mode="json")
+    data["meta"]["protocol_version"] = "0.2.2"
+    amendments = list(data["meta"]["amendments"])
+    amendments.append(
+        {
+            "version": "0.2.2",
+            "date": "PENDING-OWNER-RATIFICATION",
+            "decision": "test fixture only (tests/fixtures/bars_sample.py)",
+            "changes": "fixture base for the window-A-extension launcher gate tests",
+        }
+    )
+    data["meta"]["amendments"] = amendments
+    path.write_text(
+        yaml.safe_dump(data, sort_keys=False, default_flow_style=False, width=1000),
+        encoding="utf-8",
+    )
+    return path
+
+
 def make_run_identity():
     """A RunIdentity for the synthetic bars-era run."""
     from tree_options.runstate import RunIdentity
