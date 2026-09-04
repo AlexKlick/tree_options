@@ -5186,12 +5186,8 @@ MUTANTS = [
         id="M421-as-of-min-boundary-exclusive",
         owner="test_as_of_min_pins_only_the_continuation_work",
         file="src/tree_options/data/bars_manifest.py",
-        anchor=(
-            "        entries = [entry for entry in entries if entry.as_of >= as_of_min]"
-        ),
-        replacement=(
-            "        entries = [entry for entry in entries if entry.as_of > as_of_min]"
-        ),
+        anchor=("        entries = [entry for entry in entries if entry.as_of >= as_of_min]"),
+        replacement=("        entries = [entry for entry in entries if entry.as_of > as_of_min]"),
         selectors=[f"{U}/test_bars_manifest.py"],
         invariant=(
             "the continuation filter is inclusive at the declared Friday —"
@@ -5204,9 +5200,7 @@ MUTANTS = [
         id="M422-as-of-min-filter-dropped",
         owner="test_as_of_min_pins_only_the_continuation_work",
         file="src/tree_options/data/bars_manifest.py",
-        anchor=(
-            "        entries = [entry for entry in entries if entry.as_of >= as_of_min]"
-        ),
+        anchor=("        entries = [entry for entry in entries if entry.as_of >= as_of_min]"),
         replacement=("        entries = list(entries)"),
         selectors=[f"{U}/test_bars_manifest.py"],
         invariant=(
@@ -5235,7 +5229,7 @@ MUTANTS = [
         id="M424-build-canonical-iso-dropped",
         owner="test_non_canonical_as_of_min_refuses",
         file="src/tree_options/data/bars_manifest.py",
-        anchor=("            _require_canonical_iso_date(as_of_min, field=\"as_of_min\")"),
+        anchor=('            _require_canonical_iso_date(as_of_min, field="as_of_min")'),
         replacement=("            pass  # mutant: canonical-ISO check dropped"),
         selectors=[f"{U}/test_bars_manifest.py"],
         invariant=(
@@ -5249,7 +5243,7 @@ MUTANTS = [
         id="M425-model-canonical-iso-dropped",
         owner="test_a_non_canonical_as_of_min_refuses_at_parse",
         file="src/tree_options/data/bars_manifest.py",
-        anchor=("        _require_canonical_iso_date(value, field=\"as_of_min\")"),
+        anchor=('        _require_canonical_iso_date(value, field="as_of_min")'),
         replacement=("        pass  # mutant: model-level canonical-ISO check dropped"),
         selectors=[f"{U}/test_bars_manifest.py"],
         invariant=(
@@ -5263,9 +5257,7 @@ MUTANTS = [
         id="M426-duplicate-approval-guard-dropped",
         owner="test_second_approval_of_the_same_tuple_refused_under_lock",
         file="src/tree_options/data/bars_manifest.py",
-        anchor=(
-            "        guard=_refuse_duplicate_approval(protocol_hash, work_manifest_sha256),"
-        ),
+        anchor=("        guard=_refuse_duplicate_approval(protocol_hash, work_manifest_sha256),"),
         replacement=("        guard=None,"),
         selectors=[f"{U}/test_bars_manifest.py"],
         invariant=(
@@ -5310,9 +5302,7 @@ MUTANTS = [
         id="M429-approval-cli-version-unpinned",
         owner="test_a_stale_protocol_version_refuses",
         file="scripts/append_bars_launch_approval.py",
-        anchor=(
-            "    if protocol.meta.protocol_version != REQUIRED_BARS_PROTOCOL_VERSION:"
-        ),
+        anchor=("    if protocol.meta.protocol_version != REQUIRED_BARS_PROTOCOL_VERSION:"),
         replacement=("    if False:"),
         selectors=[f"{U}/test_append_bars_launch_approval.py"],
         invariant=(
