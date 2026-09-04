@@ -41,6 +41,18 @@ Procedure (the sealed-event discipline, wave-0 registration pattern):
 The w5 seal stays enforced in the runner: sealed test sessions are
 impossible WITHOUT the HoldoutEvaluationAuthority this driver builds
 from the approval record — no other path can consume window A.
+
+(window-A extension, owner direction 2026-09-04) The five sealed dates
+window A never evaluated (2026-07-17..2026-08-14 — not label-complete on
+the window-A world) become evaluable once the world grows, as a NEW
+packet under a NEW authority: ``--window window-a-ext-1`` rebinds every
+driver surface (registration/authority/evidence paths, window id,
+program id, run-index namespaces a-r20..r24/b-r4) to the extension; the
+extension's date scope is DERIVED from the spent packet (the sealed
+enumeration minus window A's registered permitted set, gated on the
+tracked window-A evidence existing), so a spent date can never ride a
+second window and the default invocation (window A) refuses a second
+look exactly as before.
 """
 
 from __future__ import annotations
@@ -75,7 +87,10 @@ if str(REPO_ROOT / "src") not in sys.path:  # pragma: no cover - import plumbing
 if str(REPO_ROOT / "scripts") not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from tree_options.protocol.holdout import FINAL_HOLDOUT_DATES  # noqa: E402
+from tree_options.protocol.holdout import (  # noqa: E402
+    FINAL_HOLDOUT_DATES,
+    FINAL_HOLDOUT_WINDOW_ID,
+)
 from tree_options.protocol.loader import protocol_hash  # noqa: E402
 from tree_options.registry.sqlite import TrialRegistry  # noqa: E402
 from tree_options.seal.verified_inputs import (  # noqa: E402
@@ -129,20 +144,396 @@ VERDICT_PATH = P4_ROOT / "verdict.json"
 EVIDENCE_PATH = REPO_ROOT / "docs" / "evidence-logs" / "m4" / "m4-p4-window-a.json"
 WAVE0_STATE_PATH = REPO_ROOT / "artifacts" / "theory" / "wave0" / "state.json"
 
+# (window-A extension, owner direction 2026-09-04) the BASE window's
+# tracked records — NEVER rebound: the extension's date scope derives
+# from the base registration, and the base evidence's existence is what
+# proves the base look was spent before any extension may exist.
+WINDOW_A_REGISTRATION_PATH = REGISTRATION_PATH
+WINDOW_A_EVIDENCE_PATH = EVIDENCE_PATH
+
 # (D4, unchanged from the theory waves) H, embargo, val, test, roll,
 # min_train — in GRID Fridays
 P4_GEOMETRY = (5, 2, 6, 13, 13, 34)
 P4_LABEL_HORIZON = P4_GEOMETRY[0]
 P4_WINDOW_ID = "final-holdout-window-a"
+P4_PROGRAM_ID = "p4-window-a"
+
+
+@dataclass(frozen=True)
+class P4Window:
+    """One sealed-evaluation window's COMPLETE binding: identity, paths,
+    run-index namespaces, and pre-registration texts. The module globals
+    below are the ACTIVE window's binding (the module loads bound to
+    WINDOW_A — the spent packet — so its one-shot refusals keep firing
+    through the default invocation exactly as before); ``--window`` calls
+    ``_bind_window`` ONCE at CLI entry, before any mode function runs."""
+
+    key: str
+    window_id: str
+    program: str
+    p4_root: Path
+    registration_path: Path
+    authority_root: Path
+    evidence_path: Path
+    null_run_base: int
+    mom_b_run_index: int
+    extends_window_a: bool
+    null_hypothesis: str
+    mom_hypothesis: str
+    hold_hypothesis: str
+    f1_text: str
+    f2_text: str
+    verdict_rule: str
+    rules: dict[str, str]
+
+    @property
+    def state_path(self) -> Path:
+        return self.p4_root / "state.json"
+
+    @property
+    def registry_path(self) -> Path:
+        return self.p4_root / "registry.db"
+
+    @property
+    def trials_dir(self) -> Path:
+        return self.p4_root / "trials"
+
+    @property
+    def scratch_root(self) -> Path:
+        return self.p4_root / "scratch"
+
+    @property
+    def verdict_path(self) -> Path:
+        return self.p4_root / "verdict.json"
+
+    @property
+    def approval_path(self) -> Path:
+        return self.authority_root / "approval.json"
+
+    @property
+    def consumption_path(self) -> Path:
+        return self.authority_root / "consumption.jsonl"
+
+
+# window-A's verdict texts, hoisted so the registration's criteria rule
+# interpolates them EXACTLY as the original inline f-string did (the
+# tracked registration's bytes are the reference)
+_WA_F1_TEXT = (
+    "F1 (bleed persistence): at least 2 of the 3 window-A null seeds"
+    " post negative pooled total_return"
+)
+_WA_F2_TEXT = (
+    "F2 (anomaly persistence): BOTH momentum arms post total_return"
+    " strictly above the maximum of the 3 window-A null seeds"
+)
+
+WINDOW_A = P4Window(
+    key="window-a",
+    window_id="final-holdout-window-a",
+    program="p4-window-a",
+    p4_root=REPO_ROOT / "artifacts" / "theory" / "p4",
+    registration_path=REPO_ROOT / "docs" / "theory" / "p4-window-a-registration.json",
+    authority_root=REPO_ROOT / "artifacts" / "p4-authority",
+    evidence_path=REPO_ROOT / "docs" / "evidence-logs" / "m4" / "m4-p4-window-a.json",
+    null_run_base=15,
+    mom_b_run_index=3,
+    extends_window_a=False,
+    null_hypothesis=(
+        "P4 F1 reference: the null book (seed {seed}) on window A — the"
+        " out-of-sample bleed bar. Pre-registered expectation: negative"
+        " total_return (fee + tick drag persists); F1 confirms at >=2 of 3"
+        " seeds negative"
+    ),
+    mom_hypothesis=(
+        "P4 F2: the mom20-quintile composition book on window A — the P3"
+        " in-sample composition anomaly (+4.2%/+5.6%, both arms above the"
+        " research-era null spread) tested out-of-sample. F2 replicates"
+        " ONLY if BOTH arms post total_return strictly above the window-A"
+        " null max; the ranking channel is NOT under test (P3 killed it)"
+    ),
+    hold_hypothesis=(
+        "P4 disclosure: exit-2 on window A — the lose-least ladder point"
+        " against the window-A null spread (secondary reading, never a"
+        " verdict)"
+    ),
+    f1_text=_WA_F1_TEXT,
+    f2_text=_WA_F2_TEXT,
+    verdict_rule=(
+        # byte-identical to p4_verdict._VERDICT_RULE (the spent packet's
+        # --verdict re-read must render the same rule it rendered at
+        # consumption) — pinned by test
+        "owner ruling 2026-09-03 (return-channel dual falsifier): F1 = at"
+        " least 2 of 3 window-A null seeds negative; F2 = BOTH momentum arms"
+        " strictly above the max of the 3 window-A null seeds"
+    ),
+    rules={
+        "configs": (
+            "owner ruling 2026-09-03: null x3 (seeds theory-null-1/2/3,"
+            " arm A) + mom20-quintile (arms A and B) + hold exit-2 (arm"
+            " A) — six trials on the single window-A consumption"
+        ),
+        "criteria": (
+            "owner ruling 2026-09-03 (return-channel dual falsifier):"
+            f" {_WA_F1_TEXT}; {_WA_F2_TEXT}. Secondary disclosures (never"
+            " verdicts): cohort ICs vs the wave-0 calibrated 2-SE bar"
+            " 2*prior/sqrt(3), and exit-2 against the window-A null"
+            " spread"
+        ),
+        "date_scope": (
+            "owner ruling 2026-09-03: the label-complete subset computed"
+            " by the machinery (>= label_horizon grid steps of headroom"
+            " to the world's last grid session); the remaining sealed"
+            " dates are disclosed as not-label-complete-in-world"
+        ),
+        "seeds": (
+            "owner ruling 2026-09-03: reuse theory-null-1/2/3 (paired"
+            " continuity with the research-era null spread; the"
+            " hash-null draw on new dates is fresh anyway)"
+        ),
+    },
+)
+
+# the extension's verdict texts (same hoist-and-interpolate pattern)
+_EXT_F1_TEXT = (
+    "F1 (bleed persistence): at least 2 of the 3 extension null"
+    " seeds post negative pooled total_return"
+)
+_EXT_F2_TEXT = (
+    "F2 (anomaly persistence): BOTH momentum arms post total_return"
+    " strictly above the maximum of the 3 extension null seeds"
+)
+
+WINDOW_A_EXT_1 = P4Window(
+    key="window-a-ext-1",
+    window_id="final-holdout-window-a-ext-1",
+    program="p4-window-a-ext-1",
+    p4_root=REPO_ROOT / "artifacts" / "theory" / "p4-ext-1",
+    registration_path=REPO_ROOT / "docs" / "theory" / "p4-window-a-ext-1-registration.json",
+    authority_root=REPO_ROOT / "artifacts" / "p4-authority-ext-1",
+    evidence_path=REPO_ROOT / "docs" / "evidence-logs" / "m4" / "m4-p4-window-a-ext-1.json",
+    null_run_base=20,
+    mom_b_run_index=4,
+    extends_window_a=True,
+    null_hypothesis=(
+        "P4-ext F1 reference: the null book (seed {seed}) on the"
+        " window-A extension — the out-of-sample bleed bar on the five"
+        " sealed dates window A never evaluated. Pre-registered"
+        " expectation: negative total_return (fee + tick drag persists);"
+        " F1 confirms at >=2 of 3 seeds negative"
+    ),
+    mom_hypothesis=(
+        "P4-ext F2: the mom20-quintile composition book on the window-A"
+        " extension — the P3 in-sample composition anomaly tested"
+        " out-of-sample on the dates window A never evaluated. F2"
+        " replicates ONLY if BOTH arms post total_return strictly above"
+        " the extension null max; the ranking channel is NOT under test"
+        " (P3 killed it; window A's F2 did not fire)"
+    ),
+    hold_hypothesis=(
+        "P4-ext disclosure: exit-2 on the window-A extension — the"
+        " lose-least ladder point against the extension null spread"
+        " (secondary reading, never a verdict)"
+    ),
+    f1_text=_EXT_F1_TEXT,
+    f2_text=_EXT_F2_TEXT,
+    verdict_rule=(
+        "owner direction 2026-09-04 (window-A extension, return-channel"
+        " dual falsifier): F1 = at least 2 of 3 extension null seeds"
+        " negative; F2 = BOTH momentum arms strictly above the max of the"
+        " 3 extension null seeds"
+    ),
+    rules={
+        "configs": (
+            "owner direction 2026-09-04 (window-A extension): the same"
+            " six-trial budget as window A — null x3 (seeds"
+            " theory-null-1/2/3, arm A) + mom20-quintile (arms A and B)"
+            " + hold exit-2 (arm A) — six trials on the single"
+            " extension consumption; run indices continue the per-arm"
+            " namespace (a-r20..r24, b-r4)"
+        ),
+        "criteria": (
+            "owner direction 2026-09-04 (window-A extension): the same"
+            " return-channel dual falsifier, re-registered BEFORE the"
+            f" look at the extension dates — {_EXT_F1_TEXT};"
+            f" {_EXT_F2_TEXT}. Secondary"
+            " disclosures (never verdicts): cohort ICs vs the wave-0"
+            " calibrated 2-SE bar 2*prior/sqrt(3), and exit-2 against"
+            " the extension null spread"
+        ),
+        "date_scope": (
+            "owner direction 2026-09-04 (window-A extension): ONLY the"
+            " sealed dates window A never consumed — derived from the"
+            " tracked window-A registration (the enumeration minus its"
+            " expected_permitted) and gated on the tracked window-A"
+            " evidence existing (the base look must be spent); within"
+            " that scope, the label-complete subset computed by the"
+            " machinery (>= label_horizon grid steps of headroom to the"
+            " grown world's last grid session)"
+        ),
+        "seeds": (
+            "owner direction 2026-09-04 (window-A extension): reuse"
+            " theory-null-1/2/3 (paired continuity with the window-A"
+            " null spread; the hash-null draw on the extension dates is"
+            " fresh anyway)"
+        ),
+    },
+)
+
+P4_WINDOWS: dict[str, P4Window] = {window.key: window for window in (WINDOW_A, WINDOW_A_EXT_1)}
+
+# the ACTIVE window's binding — the module loads bound to WINDOW_A
+_ACTIVE_WINDOW = WINDOW_A
+_NULL_HYPOTHESIS = WINDOW_A.null_hypothesis
+_MOM_HYPOTHESIS = WINDOW_A.mom_hypothesis
+_HOLD_HYPOTHESIS = WINDOW_A.hold_hypothesis
+_F1_TEXT = WINDOW_A.f1_text
+_F2_TEXT = WINDOW_A.f2_text
+_RULES = WINDOW_A.rules
+_NULL_RUN_BASE = 15  # the wave consumed a-r1..a-r14 and b-r1..b-r2
+_MOM_B_RUN_INDEX = 3
+
+# every global _bind_window moves — exported so tests can snapshot and
+# restore the binding (a leaked extension binding would silently
+# re-target later tests' paths)
+_BINDING_GLOBALS = (
+    "P4_WINDOW_ID",
+    "P4_PROGRAM_ID",
+    "P4_ROOT",
+    "REGISTRATION_PATH",
+    "STATE_PATH",
+    "REGISTRY_PATH",
+    "TRIALS_DIR",
+    "SCRATCH_ROOT",
+    "AUTHORITY_ROOT",
+    "APPROVAL_PATH",
+    "CONSUMPTION_PATH",
+    "VERDICT_PATH",
+    "EVIDENCE_PATH",
+    "_NULL_HYPOTHESIS",
+    "_MOM_HYPOTHESIS",
+    "_HOLD_HYPOTHESIS",
+    "_F1_TEXT",
+    "_F2_TEXT",
+    "_RULES",
+    "_NULL_RUN_BASE",
+    "_MOM_B_RUN_INDEX",
+    "_ACTIVE_WINDOW",
+)
+
+
+def _bind_window(window: P4Window) -> None:
+    """Rebind the driver to ``window`` — the ONE rebind point, called at
+    CLI entry (and by tests). Window A's module-load binding is the spent
+    packet's surface; the extension moves EVERY path, identity, text, and
+    run-index namespace so no extension artifact can land on a window-A
+    surface or vice versa."""
+    global P4_WINDOW_ID, P4_PROGRAM_ID, P4_ROOT, REGISTRATION_PATH, STATE_PATH
+    global REGISTRY_PATH, TRIALS_DIR, SCRATCH_ROOT, AUTHORITY_ROOT, APPROVAL_PATH
+    global CONSUMPTION_PATH, VERDICT_PATH, EVIDENCE_PATH, _ACTIVE_WINDOW
+    global _NULL_HYPOTHESIS, _MOM_HYPOTHESIS, _HOLD_HYPOTHESIS
+    global _F1_TEXT, _F2_TEXT, _RULES, _NULL_RUN_BASE, _MOM_B_RUN_INDEX
+    P4_WINDOW_ID = window.window_id
+    P4_PROGRAM_ID = window.program
+    P4_ROOT = window.p4_root
+    REGISTRATION_PATH = window.registration_path
+    STATE_PATH = window.state_path
+    REGISTRY_PATH = window.registry_path
+    TRIALS_DIR = window.trials_dir
+    SCRATCH_ROOT = window.scratch_root
+    AUTHORITY_ROOT = window.authority_root
+    APPROVAL_PATH = window.approval_path
+    CONSUMPTION_PATH = window.consumption_path
+    VERDICT_PATH = window.verdict_path
+    EVIDENCE_PATH = window.evidence_path
+    _NULL_HYPOTHESIS = window.null_hypothesis
+    _MOM_HYPOTHESIS = window.mom_hypothesis
+    _HOLD_HYPOTHESIS = window.hold_hypothesis
+    _F1_TEXT = window.f1_text
+    _F2_TEXT = window.f2_text
+    _RULES = window.rules
+    _NULL_RUN_BASE = window.null_run_base
+    _MOM_B_RUN_INDEX = window.mom_b_run_index
+    _ACTIVE_WINDOW = window
+    _refuse_aliased_roots(window)
+
+
+_VOLATILE_ROOTS = (Path("/tmp"), Path("/var/tmp"))
+
+
+def _refuse_aliased_roots(window: P4Window) -> None:
+    """(Codex round 1 F3) the bound window's writable surfaces must be
+    real directories-in-waiting, checked ONCE at bind before any mode
+    function can write:
+
+    - every EXISTING path component from the repo root down to each
+      artifact root is a real directory, never a symlink (a preplanted
+      ``p4-ext-1 -> p4`` alias routes extension state/registry/trials
+      writes into the SPENT packet's tree);
+    - neither artifact root RESOLVES onto the other window's roots
+      (cross-window aliasing) or under a volatile root (/tmp and
+      friends — authority may not live where a reboot wipes it);
+    - the tracked file surfaces (registration, evidence) refuse a
+      pre-existing symlink leaf.
+
+    Mid-invocation swaps by a concurrent writer remain out of scope
+    under the owner's ruled threat model; this closes the sequential
+    preplant."""
+    for label, root in (("p4-root", window.p4_root), ("authority-root", window.authority_root)):
+        try:
+            parts = root.relative_to(REPO_ROOT).parts
+        except ValueError:
+            parts = ()
+        component = REPO_ROOT
+        for part in parts:
+            component = component / part
+            if component.is_symlink():
+                raise SystemExit(
+                    f"REFUSED: the {label} path component {component} is a"
+                    " symlink — the window's writable surfaces must be real"
+                    " directories (an alias onto another window's surface"
+                    " or a volatile root refuses)"
+                )
+        resolved = root.resolve()
+        for volatile in _VOLATILE_ROOTS:
+            if resolved == volatile or volatile in resolved.parents:
+                raise SystemExit(
+                    f"REFUSED: the {label} {root} resolves onto the"
+                    f" volatile root {volatile} — durable authority may"
+                    " not live where a reboot wipes it"
+                )
+        other = WINDOW_A if window is not WINDOW_A else WINDOW_A_EXT_1
+        other_label = "extension" if window is WINDOW_A else "base"
+        for other_kind, other_root in (
+            ("p4-root", other.p4_root),
+            ("authority-root", other.authority_root),
+        ):
+            other_resolved = other_root.resolve()
+            if (
+                resolved == other_resolved
+                or other_resolved in resolved.parents
+                or resolved in other_resolved.parents
+            ):
+                raise SystemExit(
+                    f"REFUSED: the {label} {root} resolves onto the"
+                    f" {other_label} window's {other_kind} — the two"
+                    " windows' writable surfaces must stay disjoint"
+                )
+    for label, tracked in (
+        ("registration", window.registration_path),
+        ("evidence", window.evidence_path),
+    ):
+        if tracked.is_symlink():
+            raise SystemExit(
+                f"REFUSED: the {label} path {tracked} is a symlink — the"
+                " tracked surfaces are real files, never aliases"
+            )
+
 
 _DEFAULT_DELTA = Decimal("0.45")
 _DEFAULT_DTE = 45
 _DEFAULT_EXIT = 4
 _DEFAULT_FLOW = 100
 _MOM = "mom20-quintile/v1"
-
-_NULL_RUN_BASE = 15  # the wave consumed a-r1..a-r14 and b-r1..b-r2
-_MOM_B_RUN_INDEX = 3
 
 
 @dataclass(frozen=True)
@@ -181,26 +572,6 @@ class P4Config:
             target_dte=self.target_dte,
             exit_sessions_after_entry=self.exit_sessions_after_entry,
         )
-
-
-_NULL_HYPOTHESIS = (
-    "P4 F1 reference: the null book (seed {seed}) on window A — the"
-    " out-of-sample bleed bar. Pre-registered expectation: negative"
-    " total_return (fee + tick drag persists); F1 confirms at >=2 of 3"
-    " seeds negative"
-)
-_MOM_HYPOTHESIS = (
-    "P4 F2: the mom20-quintile composition book on window A — the P3"
-    " in-sample composition anomaly (+4.2%/+5.6%, both arms above the"
-    " research-era null spread) tested out-of-sample. F2 replicates"
-    " ONLY if BOTH arms post total_return strictly above the window-A"
-    " null max; the ranking channel is NOT under test (P3 killed it)"
-)
-_HOLD_HYPOTHESIS = (
-    "P4 disclosure: exit-2 on window A — the lose-least ladder point"
-    " against the window-A null spread (secondary reading, never a"
-    " verdict)"
-)
 
 
 def p4_menu() -> tuple[P4Config, ...]:
@@ -260,16 +631,6 @@ def p4_menu() -> tuple[P4Config, ...]:
         run_index=_NULL_RUN_BASE + 4,
     )
     return (*nulls, mom_a, mom_b, hold)
-
-
-_F1_TEXT = (
-    "F1 (bleed persistence): at least 2 of the 3 window-A null seeds"
-    " post negative pooled total_return"
-)
-_F2_TEXT = (
-    "F2 (anomaly persistence): BOTH momentum arms post total_return"
-    " strictly above the maximum of the 3 window-A null seeds"
-)
 
 
 def _git_head(repo: Path) -> str:
@@ -350,9 +711,124 @@ def _build_world():
     return world, protocol, manifest_hash
 
 
+def _committed_file_bytes(path: Path) -> bytes | None:
+    """The file's bytes as committed at HEAD, or None if HEAD does not
+    carry it (uncommitted, rewritten, or not a git tree — all fail-closed
+    for the caller's committed-clean comparison)."""
+    try:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        out = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"HEAD:{rel}"],
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None
+    return out.stdout
+
+
+def _active_date_scope() -> frozenset[str]:
+    """The sealed dates the ACTIVE window may evaluate (ISO strings).
+
+    Window A: the full ratified enumeration. The extension: ONLY the
+    dates window A never consumed — derived from the BASE window's
+    TRACKED registration (the enumeration minus its expected_permitted),
+    and only after the tracked window-A evidence exists: the base look
+    must be spent before a second window may exist at all. Spent dates
+    can never ride a second window — that is the one-shot the seal
+    exists for.
+
+    (Codex round 1 F2) the base records are VERIFIED, not merely present:
+    the registration must be the COMMITTED-CLEAN canonical bytes at HEAD
+    (git-tracked, so an offline rewrite is a working-tree diff, not a
+    silent input), it must carry the window-A program/window identity,
+    and the evidence must CORROBORATE the registration's permitted set —
+    the scope and the spent-date check must not both derive from one
+    untrusted list."""
+    if not _ACTIVE_WINDOW.extends_window_a:
+        return frozenset(FINAL_HOLDOUT_DATES)
+    if not WINDOW_A_EVIDENCE_PATH.is_file():
+        raise SystemExit(
+            f"REFUSED: the tracked window-A evidence {WINDOW_A_EVIDENCE_PATH}"
+            " does not exist — the extension may only be registered after"
+            " the base window was consumed"
+        )
+    if not WINDOW_A_REGISTRATION_PATH.is_file():
+        raise SystemExit(
+            f"REFUSED: the tracked window-A registration"
+            f" {WINDOW_A_REGISTRATION_PATH} does not exist — the extension"
+            " scope derives from the base window's registered permitted set"
+        )
+    raw = WINDOW_A_REGISTRATION_PATH.read_bytes()
+    committed = _committed_file_bytes(WINDOW_A_REGISTRATION_PATH)
+    if committed is None or committed != raw:
+        raise SystemExit(
+            "REFUSED: the tracked window-A registration is not"
+            " committed-clean at HEAD — the extension scope derives from"
+            " the CANONICAL spent packet, never a working-tree rewrite"
+        )
+    base = json.loads(raw.decode("utf-8"))
+    if (
+        base.get("program") != "p4-window-a"
+        or (base.get("evaluation_window") or {}).get("window_id") != FINAL_HOLDOUT_WINDOW_ID
+    ):
+        raise SystemExit(
+            "REFUSED: the base registration does not carry the window-A"
+            " program/window identity — this is not the tracked"
+            " registration and the scope refuses to derive from it"
+        )
+    consumed = (base.get("evaluation_window") or {}).get("expected_permitted")
+    if not isinstance(consumed, list) or not consumed:
+        raise SystemExit(
+            "REFUSED: the window-A registration carries no expected_permitted"
+            " set — the extension scope cannot derive from it"
+        )
+    evidence = json.loads(WINDOW_A_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    if evidence.get("program") != "p4-window-a" or (
+        evidence.get("permitted_test_sessions") != consumed
+    ):
+        raise SystemExit(
+            "REFUSED: the tracked window-A evidence does not corroborate"
+            " the base registration's permitted set — the base-consumed"
+            " record and the base registration disagree; reconcile with"
+            " the owner before any extension exists"
+        )
+    sealed = frozenset(FINAL_HOLDOUT_DATES)
+    foreign = sorted(set(consumed) - sealed)
+    if foreign:
+        raise SystemExit(
+            f"REFUSED: the window-A registration names dates {foreign} that"
+            " are not sealed window-A dates — this is not the tracked"
+            " registration and the scope refuses to derive from it"
+        )
+    return sealed - set(consumed)
+
+
 def _world_permitted(world) -> tuple[date, ...]:
     world_last = max(bar.session for bar in world.dataset.bars)
-    return label_complete_permitted_sessions(world.grid.sessions(), world_last, P4_LABEL_HORIZON)
+    permitted = label_complete_permitted_sessions(
+        world.grid.sessions(), world_last, P4_LABEL_HORIZON
+    )
+    scope = _active_date_scope()
+    scoped = tuple(d for d in permitted if d.isoformat() in scope)
+    if not _ACTIVE_WINDOW.extends_window_a:
+        return scoped
+    # (Codex round 1 F1) the extension consumes ALL of its derived scope
+    # or NONE of it: the window is one-shot, so a partial registration
+    # would irreversibly strand the still-immature dates (a later look at
+    # them needs a NEWLY ratified window). Grow the world until every
+    # scoped date has >= label_horizon grid Fridays of headroom.
+    immature = sorted(scope - {d.isoformat() for d in scoped})
+    if immature:
+        raise SystemExit(
+            "REFUSED: the extension is all-or-nothing — the scoped dates"
+            f" {immature} are not yet label-complete on this world, and a"
+            " partial consumption would strand them forever (the window"
+            " is one-shot); grow the world (a sealed date needs >="
+            f" {P4_LABEL_HORIZON} grid Fridays of headroom) and register"
+            " only when ALL scoped dates are mature"
+        )
+    return scoped
 
 
 def _decision_sessions(world, permitted: tuple[date, ...]) -> tuple[date, ...]:
@@ -376,9 +852,9 @@ def register_only() -> int:
         raise SystemExit("REFUSED: duplicate params in the P4 menu")
     world, protocol, manifest_hash = _build_world()
     permitted = _world_permitted(world)
-    excluded = sorted(set(FINAL_HOLDOUT_DATES) - {d.isoformat() for d in permitted})
+    excluded = sorted(_active_date_scope() - {d.isoformat() for d in permitted})
     registration = {
-        "program": "p4-window-a",
+        "program": P4_PROGRAM_ID,
         "registered_at_head": _git_head(REPO_ROOT),
         "world_id": world.world_id,
         "dataset_manifest_hash": manifest_hash,
@@ -391,31 +867,7 @@ def register_only() -> int:
             "roll": P4_GEOMETRY[4],
             "min_train": P4_GEOMETRY[5],
         },
-        "rules": {
-            "configs": (
-                "owner ruling 2026-09-03: null x3 (seeds theory-null-1/2/3,"
-                " arm A) + mom20-quintile (arms A and B) + hold exit-2 (arm"
-                " A) — six trials on the single window-A consumption"
-            ),
-            "criteria": (
-                "owner ruling 2026-09-03 (return-channel dual falsifier):"
-                f" {_F1_TEXT}; {_F2_TEXT}. Secondary disclosures (never"
-                " verdicts): cohort ICs vs the wave-0 calibrated 2-SE bar"
-                " 2*prior/sqrt(3), and exit-2 against the window-A null"
-                " spread"
-            ),
-            "date_scope": (
-                "owner ruling 2026-09-03: the label-complete subset computed"
-                " by the machinery (>= label_horizon grid steps of headroom"
-                " to the world's last grid session); the remaining sealed"
-                " dates are disclosed as not-label-complete-in-world"
-            ),
-            "seeds": (
-                "owner ruling 2026-09-03: reuse theory-null-1/2/3 (paired"
-                " continuity with the research-era null spread; the"
-                " hash-null draw on new dates is fresh anyway)"
-            ),
-        },
+        "rules": _RULES,
         "evaluation_window": {
             "window_id": P4_WINDOW_ID,
             "label_horizon_sessions": P4_LABEL_HORIZON,
@@ -451,8 +903,11 @@ def register_only() -> int:
     )
     print(f"excluded (not label-complete in world): {excluded}", flush=True)
     print(
-        "NEXT: commit docs/theory/p4-window-a-registration.json, then the"
-        " owner approves at the declared head (scripts/run_p4_holdout.py"
+        f"NEXT: commit {REGISTRATION_PATH},"
+        " then the owner approves at the declared head"
+        " "
+        "(scripts/run_p4_holdout.py"
+        f" --window {_ACTIVE_WINDOW.key}"
         " --approve --declared-head <sha> --reason '...')",
         flush=True,
     )
@@ -461,7 +916,10 @@ def register_only() -> int:
 
 def _require_committed_registration(declared_head: str) -> None:
     """The registration must live in HEAD's tree with the on-disk bytes —
-    an uncommitted or edited registration cannot be approved."""
+    an uncommitted or edited registration cannot be approved. The path is
+    the ACTIVE window's registration (window A and its extension each
+    carry their own tracked file)."""
+    registration_rel = REGISTRATION_PATH.relative_to(REPO_ROOT).as_posix()
     blob = subprocess.run(
         [
             "git",
@@ -469,13 +927,13 @@ def _require_committed_registration(declared_head: str) -> None:
             str(REPO_ROOT),
             "cat-file",
             "-e",
-            f"{declared_head}:docs/theory/p4-window-a-registration.json",
+            f"{declared_head}:{registration_rel}",
         ],
         capture_output=True,
     )
     if blob.returncode != 0:
         raise SystemExit(
-            f"REFUSED: docs/theory/p4-window-a-registration.json is not"
+            f"REFUSED: {registration_rel} is not"
             f" committed at {declared_head[:12]}… — commit the registration"
             " before approving"
         )
@@ -485,7 +943,7 @@ def _require_committed_registration(declared_head: str) -> None:
             "-C",
             str(REPO_ROOT),
             "show",
-            f"{declared_head}:docs/theory/p4-window-a-registration.json",
+            f"{declared_head}:{registration_rel}",
         ],
         capture_output=True,
         check=True,
@@ -542,7 +1000,11 @@ def approve(declared_head: str, reason: str) -> int:
     # land
     payload = json.dumps(record, indent=2, sort_keys=True) + "\n"
     try:
-        fd = os.open(APPROVAL_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(
+            APPROVAL_PATH,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+            0o644,
+        )
     except FileExistsError:
         raise SystemExit(
             f"REFUSED: {APPROVAL_PATH} already exists — the approval is the owner's ONE act"
@@ -556,7 +1018,13 @@ def approve(declared_head: str, reason: str) -> int:
         f"approved: head={declared_head[:12]}… permitted={record['permitted_test_sessions']}",
         flush=True,
     )
-    print("NEXT: scripts/run_p4_holdout.py --execute (one-shot)", flush=True)
+    # (Codex round 1 F8) the printed command must name the ACTIVE window —
+    # following a window-A-spelled instruction after approving the
+    # extension invokes the spent default binding and refuses
+    print(
+        f"NEXT: scripts/run_p4_holdout.py --window {_ACTIVE_WINDOW.key} --execute (one-shot)",
+        flush=True,
+    )
     return 0
 
 
@@ -699,10 +1167,33 @@ def _validate_approval_record(record: Any) -> dict[str, Any]:
     if not isinstance(declared, str) or not 40 <= len(declared) <= 64 or set(declared) > _HEX64:
         raise SystemExit(f"REFUSED: the approval's declared_head {declared!r} is not a commit hash")
     permitted = record.get("permitted_test_sessions")
-    sealed = list(FINAL_HOLDOUT_DATES)
-    if not isinstance(permitted, list) or not permitted or any(d not in sealed for d in permitted):
+    if not isinstance(permitted, list) or not permitted:
         raise SystemExit(
             "REFUSED: the approval's permitted set is not a non-empty window-A date list"
+        )
+    # (Codex round 1 F4) every element must be a STRING before any set
+    # membership — a frozenset membership test on an unhashable element
+    # raises TypeError where the pre-extension list-membership check
+    # refused cleanly; the default window's refusal must stay a refusal
+    if any(not isinstance(d, str) for d in permitted):
+        raise SystemExit(
+            "REFUSED: the approval's permitted set is not a non-empty window-A date list"
+        )
+    # the permitted set must live inside the ACTIVE window's scope: the
+    # extension may never re-permit a date window A consumed
+    scope = _active_date_scope()
+    sealed = frozenset(FINAL_HOLDOUT_DATES)
+    spent = sorted(d for d in permitted if d in sealed and d not in scope)
+    unsealed = sorted(d for d in permitted if d not in sealed)
+    if spent:
+        raise SystemExit(
+            f"REFUSED: the approval's permitted set names {spent} —"
+            " consumed by window A (spent dates can never ride a second"
+            " window; that is the one-shot the seal exists for)"
+        )
+    if unsealed:
+        raise SystemExit(
+            f"REFUSED: the approval's permitted set names {unsealed} — not sealed window-A dates"
         )
     if not isinstance(record.get("reason"), str) or not record["reason"].strip():
         raise SystemExit("REFUSED: the approval carries no reason")
@@ -934,7 +1425,7 @@ def _execute() -> int:
     EVIDENCE_PATH.write_text(
         json.dumps(
             {
-                "program": "p4-window-a",
+                "program": P4_PROGRAM_ID,
                 "consumption_sha256": consumption_sha,
                 "content_identity": _content_identity(approval),
                 "approval_sha256": _sha256_bytes(APPROVAL_PATH.read_bytes()),
@@ -957,6 +1448,13 @@ def _execute() -> int:
         flush=True,
     )
     return 0
+
+
+def _trials_rel_prefix() -> str:
+    """The verdict's artifact-path prefix for the ACTIVE window (repo
+    relative, trailing slash) — extension evidence lives under the
+    extension's own trials directory, never window A's."""
+    return TRIALS_DIR.relative_to(REPO_ROOT).as_posix() + "/"
 
 
 def _verdict_from_state(state: dict[str, Any]) -> dict[str, Any]:
@@ -992,7 +1490,7 @@ def _verdict_from_state(state: dict[str, Any]) -> dict[str, Any]:
                     " the state — the verdict refuses an incomplete set"
                 )
             artifact_path = execution["artifact_path"]
-            expected_prefix = f"artifacts/theory/p4/trials/{slot_id}/"
+            expected_prefix = f"{_trials_rel_prefix()}{slot_id}/"
             # normpath FIRST: a `..` segment escapes the slot directory
             # while keeping the literal prefix (Codex round 1 P1-3)
             if not posixpath.normpath(artifact_path).startswith(expected_prefix):
@@ -1035,7 +1533,10 @@ def _verdict_from_state(state: dict[str, Any]) -> dict[str, Any]:
             bodies[slot_id] = body
     finally:
         registry.close()
-    return evaluate_window_a(bodies, _wave0_prior())
+    # (Codex round 1 F6) the verdict's self-describing rule follows the
+    # ACTIVE window — extension evidence carries the extension's rule,
+    # never the base window's ruling text
+    return evaluate_window_a(bodies, _wave0_prior(), rule=_ACTIVE_WINDOW.verdict_rule)
 
 
 def verdict_only() -> int:
@@ -1055,9 +1556,21 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument("--approve", action="store_true")
     modes.add_argument("--execute", action="store_true")
     modes.add_argument("--verdict", action="store_true")
+    parser.add_argument(
+        "--window",
+        choices=sorted(P4_WINDOWS),
+        default="window-a",
+        help=(
+            "the sealed window to bind (default: window-a, the SPENT"
+            " packet — its one-shot refusals keep firing; window-a-ext-1"
+            " is the extension of the five dates window A never"
+            " evaluated, own registration/authority/evidence surfaces)"
+        ),
+    )
     parser.add_argument("--declared-head", help="the commit the owner declares (with --approve)")
     parser.add_argument("--reason", help="the approval's recorded reason (with --approve)")
     args = parser.parse_args(argv)
+    _bind_window(P4_WINDOWS[args.window])
     if args.approve:
         if not args.declared_head or not args.reason:
             raise SystemExit("--approve requires --declared-head and --reason")

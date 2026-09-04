@@ -4654,11 +4654,15 @@ MUTANTS = [
         id="M389-holdout-authority-window-unchecked",
         owner="test_holdout_authority_shape_and_binding_refusals",
         file="src/tree_options/trials/options_run.py",
-        anchor=("    if authority.window_id != FINAL_HOLDOUT_WINDOW_ID:"),
+        # (window-A extension, 2026-09-04) RE-ANCHORED from the pre-extension
+        # equality check to the ratified-set membership line the extension
+        # replaced it with; the mutant still drops the check entirely — the
+        # window-A-equality variant lives in M412
+        anchor=("    if authority.window_id not in RATIFIED_HOLDOUT_WINDOW_IDS:"),
         replacement=("    if False:"),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
-            "P4: the authority must name the RATIFIED window id — dropping"
+            "P4: the authority must name a RATIFIED window id — dropping"
             " the check lets a permit for some other window consume"
             " window A's seal"
         ),
@@ -4972,6 +4976,208 @@ MUTANTS = [
             " cache — restore is byte-verified per mutant, so a damaged tree"
             " can no longer be assumed pristine and cached baseline passes"
             " stop being statements about this tree"
+        ),
+    ),
+    # ---- window-A extension lane (owner direction 2026-09-04) ----------------
+    dict(
+        id="M408-ext-scope-not-derived",
+        owner="test_the_extension_scope_is_the_unconsumed_remainder",
+        file="scripts/run_p4_holdout.py",
+        anchor=(
+            "    if not _ACTIVE_WINDOW.extends_window_a:\n"
+            "        return frozenset(FINAL_HOLDOUT_DATES)"
+        ),
+        replacement=("    if True:\n        return frozenset(FINAL_HOLDOUT_DATES)"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the extension's date scope is DERIVED from the spent packet —"
+            " FINAL_HOLDOUT_DATES minus window A's registered permitted set."
+            " Returning the full enumeration for the extension re-opens the"
+            " consumed dates to a second look (the one-shot the seal exists"
+            " to prevent)"
+        ),
+    ),
+    dict(
+        id="M409-ext-base-evidence-unrequired",
+        owner="test_the_extension_requires_the_consumed_base",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if not WINDOW_A_EVIDENCE_PATH.is_file():"),
+        replacement=("    if False and not WINDOW_A_EVIDENCE_PATH.is_file():"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the extension may only exist AFTER the base window was"
+            " consumed — the tracked window-A evidence file is the durable"
+            " cross-checkout proof of that spend; without it a"
+            " never-consumed base window could be silently widened instead"
+            " of extended"
+        ),
+    ),
+    dict(
+        id="M410-ext-permitted-unscoped",
+        owner="test_extension_permitted_filters_out_window_a_dates",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    scoped = tuple(d for d in permitted if d.isoformat() in scope)"),
+        replacement=("    scoped = tuple(permitted)"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the permitted set is the label-complete sessions INTERSECTED"
+            " with the active window's scope — on a fully-grown world the"
+            " extension still yields ONLY the five unconsumed dates;"
+            " window A's spent dates can never ride a second evaluation"
+        ),
+    ),
+    dict(
+        id="M411-approval-spent-date-accepted",
+        owner="test_extension_approval_validates_against_the_ext_scope",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if spent:"),
+        replacement=("    if False and spent:"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "an approval whose permitted set smuggles a window-A-consumed"
+            " date refuses by name — spent dates are the one-shot; a"
+            " lookalike approval that swaps in a wider window is exactly"
+            " the forgery the record validation exists to catch"
+        ),
+    ),
+    dict(
+        id="M412-authority-ext-window-refused",
+        owner="test_the_authority_shape_accepts_the_ratified_extension_id",
+        file="src/tree_options/trials/options_run.py",
+        anchor=("    if authority.window_id not in RATIFIED_HOLDOUT_WINDOW_IDS:"),
+        replacement=("    if authority.window_id != FINAL_HOLDOUT_WINDOW_ID:"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the authority shape accepts every RATIFIED holdout window id"
+            " (window A and its extension) and refuses everything else —"
+            " reverting to window-A equality alone makes the ratified"
+            " extension unevaluable and untested ids pass the same check"
+        ),
+    ),
+    dict(
+        id="M413-launcher-protocol-refrozen",
+        owner="test_the_launcher_requires_the_current_protocol_version",
+        file="scripts/launch_bars_era.py",
+        anchor=('REQUIRED_BARS_PROTOCOL_VERSION = "0.2.2"'),
+        replacement=('REQUIRED_BARS_PROTOCOL_VERSION = "0.2.1"'),
+        selectors=[f"{U}/test_p4_window_extension.py", f"{U}/test_launch_bars_era.py"],
+        invariant=(
+            "the continuation capture runs under the LIVE protocol 0.2.2"
+            " (owner-ratified in the flip); re-freezing the gate at 0.2.1"
+            " closes the era launcher against the only protocol the"
+            " continuation approval can bind"
+        ),
+    ),
+    dict(
+        id="M414-ext-run-index-reuse",
+        owner="test_the_extension_rebinds_every_surface",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    _NULL_RUN_BASE = window.null_run_base"),
+        replacement=("    _NULL_RUN_BASE = 15"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the extension's arm-A trials continue the per-arm run-index"
+            " namespace (a-r20..r24, b-r4) — reusing window A's base"
+            " (15..19, b-3) mints colliding trial identifiers across the"
+            " two packets' per-arm namespaces"
+        ),
+    ),
+    dict(
+        id="M415-ext-trials-prefix-static",
+        owner="test_the_trials_prefix_follows_the_binding",
+        file="scripts/run_p4_holdout.py",
+        anchor=('    return TRIALS_DIR.relative_to(REPO_ROOT).as_posix() + "/"'),
+        replacement=('    return "artifacts/theory/p4/trials/"'),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the verdict's artifact-path prefix is derived from the ACTIVE"
+            " window's trials directory — a static window-A prefix accepts"
+            " window-A artifacts as extension verdict evidence (and refuses"
+            " every genuine extension artifact)"
+        ),
+    ),
+    dict(
+        id="M416-work-manifest-rewrite",
+        owner="test_the_work_manifest_wrapper_is_write_once",
+        file="scripts/build_bars_work_manifest.py",
+        # (Codex round 1 F5) RE-ANCHORED onto the atomic create: the
+        # exists()-then-write pair was a TOCTOU and its early refusal is
+        # gone; the write-once discipline now lives in O_EXCL — dropping
+        # it makes the open TRUNCATE an existing (possibly
+        # approval-bound) manifest
+        anchor=(
+            "        fd = os.open(args.out, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644)"
+        ),
+        replacement=(
+            "        fd = os.open(args.out, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o644)"
+        ),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the work-manifest wrapper is write-once — the output is"
+            " created atomically with O_CREAT|O_EXCL|O_NOFOLLOW; a rebuilt"
+            " manifest is a NEW manifest and an approval may already bind"
+            " the existing file's raw sha256, so a silent replace (or a"
+            " truncating open) strands that approval against bytes"
+            " nothing holds"
+        ),
+    ),
+    dict(
+        id="M418-ext-partial-tranche-accepted",
+        owner="test_extension_refuses_a_partial_tranche",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if immature:"),
+        replacement=("    if False and immature:"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "Codex round 1 F1: the extension consumes ALL of its derived"
+            " scope or NONE of it — the window is one-shot, so a partial"
+            " registration would irreversibly strand the still-immature"
+            " dates; a later look at them needs a NEWLY ratified window"
+        ),
+    ),
+    dict(
+        id="M419-ext-base-registration-uncommitted-accepted",
+        owner="test_the_base_registration_must_be_committed_clean",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if committed is None or committed != raw:"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "Codex round 1 F2: the extension scope derives from the"
+            " CANONICAL spent packet — the base registration must read"
+            " committed-clean at HEAD (on-disk bytes == committed bytes),"
+            " so an offline working-tree rewrite can never widen or"
+            " narrow the derived scope"
+        ),
+    ),
+    dict(
+        id="M420-ext-root-alias-unchecked",
+        owner="test_a_preplanted_root_alias_refuses_the_binding",
+        file="scripts/run_p4_holdout.py",
+        anchor=("            if component.is_symlink():"),
+        replacement=("            if False:"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "Codex round 1 F3: the bound window's writable surfaces are"
+            " real directories-in-waiting — a preplanted symlinked"
+            " component routes extension state/registry/trials writes"
+            " into the spent packet's tree (or a volatile root); the"
+            " bind-time component walk refuses it before any write"
+        ),
+    ),
+    dict(
+        id="M417-committed-registration-path-static",
+        owner="test_committed_registration_check_uses_the_active_window_path",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    registration_rel = REGISTRATION_PATH.relative_to(REPO_ROOT).as_posix()"),
+        replacement=('    registration_rel = "docs/theory/p4-window-a-registration.json"'),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the committed-registration check names the ACTIVE window's"
+            " tracked path — a static window-A path lets an extension"
+            " approval be satisfied by the window-A registration being"
+            " committed (and would refuse every genuine extension"
+            " registration)"
         ),
     ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
@@ -6004,7 +6210,7 @@ def main() -> int:
             " + M364-M369 remediation + M370-M373 remediation-2 +"
             " M374-M379 remediation-3 + M380 remediation-4 + M381-M386"
             " theory wave-0 + M387-M404 P4 window-A + M405-M407 successor"
-            " here)"
+            " + M408-M417 window-A extension here)"
         ),
     )
     parser.add_argument(

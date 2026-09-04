@@ -1,23 +1,29 @@
 #!/usr/bin/env python
 """ATM-grid bars-era launcher: read-only preflight + doubly-gated execute (PR A4).
 
-CONTRACT: this tool is structurally incapable of STARTING the era today. The
-default mode is ``--preflight`` (omitting the flag runs preflight), which is
-READ-ONLY — it creates nothing, writes nothing, and journals nothing. The
-``--execute`` mode is doubly gated and BOTH gates are closed on main now:
-the loaded protocol must be exactly 0.2.1 (it is 0.2.0) and a
-BARS_LAUNCH_APPROVAL authority record must bind the current protocol hash
-(none exists). The CLI execute path additionally refuses outright: the runner
-is a FUNCTION PARAMETER of the library seam only (never a flag — authority
-must not be consumable from a CLI argument), so the CLI refuses before
-touching anything. Zero network in any code path here.
+CONTRACT: this tool cannot START an era by itself. The default mode is
+``--preflight`` (omitting the flag runs preflight), which is READ-ONLY — it
+creates nothing, writes nothing, and journals nothing. The ``--execute``
+mode is doubly gated: the loaded protocol must be exactly the REQUIRED
+version (0.2.2 — the live protocol since the 2026-08-28 flip; the gate was
+re-opened at 0.2.2 on 2026-09-04 for the window-A-extension continuation,
+whose new approval record binds the 0.2.2 hash) AND a BARS_LAUNCH_APPROVAL
+authority record must bind the CURRENT loaded protocol hash (the standing
+2026-08-26 record binds the 0.2.1-era hash, so on main today the RECORD
+clause is the refusal — exit 2 is the DOCUMENTED correct answer until the
+owner appends the continuation approval). The CLI execute path additionally
+refuses outright: the runner is a FUNCTION PARAMETER of the library seam
+only (never a flag — authority must not be consumable from a CLI argument),
+so the CLI refuses before touching anything. Zero network in any code path
+here.
 
 Preflight checks (first failure wins; every check is read-only):
 
-1. protocol gate — loaded protocol version == 0.2.1 AND a
+1. protocol gate — loaded protocol version == 0.2.2 AND a
    BARS_LAUNCH_APPROVAL record exists whose protocol_hash equals the CURRENT
    loaded protocol hash. Without a record this check cannot pass. On main
-   today the protocol is 0.2.0, so exit 2 is the DOCUMENTED correct answer.
+   today no record binds the 0.2.2 hash, so exit 2 is the DOCUMENTED
+   correct answer.
 2. census currency — the census re-hashes, passes its fail-closed
    verification, and still describes the capture manifest bytes on disk now
    (``provenance.input_manifest_sha256`` staleness double-check, same as A3).
@@ -52,8 +58,8 @@ refuses; a crash after consumption is RECONCILIATION_REQUIRED, never a retry.
 Exit codes (contract):
   0  preflight: every gate passed (nothing started); execute: consumed + run
   1  unexpected error
-  2  protocol gate: not 0.2.1, or no BARS_LAUNCH_APPROVAL record binds the
-     current protocol hash (correct on main today)
+  2  protocol gate: not 0.2.2, or no BARS_LAUNCH_APPROVAL record binds the
+     current protocol hash (the record clause is the refusal on main today)
   3  census gate: census invalid, unhashable, or stale vs the capture manifest
   4  refuse-fallback: an override flag differs from its pinned constant
   5  run-state gate: store missing/unreadable, state != BARS_READY, or an
@@ -131,7 +137,15 @@ from tree_options.runstate.store import DEFAULT_STORE_ROOT  # noqa: E402
 from tree_options.schemas.common import StrictModel  # noqa: E402
 from tree_options.seal.errors import SealError  # noqa: E402
 
-REQUIRED_BARS_PROTOCOL_VERSION = "0.2.1"
+# (window-A extension continuation, 2026-09-04) re-opened at the LIVE
+# protocol version: the 0.2.1 freeze was the closed-era state ("the bars
+# era is closed; the launcher is frozen" — the flip note in the tests).
+# The continuation capture (Fridays 2026-08-28 onward, growing the world
+# so the five window-A-excluded sealed dates become label-complete) runs
+# under a NEW BARS_LAUNCH_APPROVAL record that binds the 0.2.2 protocol
+# hash (owner-ratified in the 0.2.2 flip); the standing 0.2.1 approval
+# can no longer open this gate — its protocol hash is not the loaded one.
+REQUIRED_BARS_PROTOCOL_VERSION = "0.2.2"
 COMMITTED_UNIVERSE_PATH = REPO_ROOT / "data" / "coverage" / "coverage_universe.json"
 
 # ---- pinned constants: the ONLY accepted values (no fallback path exists) ------
