@@ -886,6 +886,21 @@ def test_the_wrapper_from_as_of_builds_the_continuation_manifest(tmp_path) -> No
     ]
     assert p4_work_manifest_main(argv_full) == 4
     assert not full_out.exists()
+    # (Codex round-1 finding 3) the legacy-shape build's FILE omits the unset
+    # filter — byte-shape parity with the standing era's manifests
+    legacy_out = tmp_path / "work-manifest-legacy.json"
+    argv_legacy = [
+        "--capture-dir",
+        str(capture_dir),
+        "--capture-manifest",
+        str(manifest_path),
+        "--budget",
+        "60",
+        "--out",
+        str(legacy_out),
+    ]
+    assert p4_work_manifest_main(argv_legacy) == 0
+    assert "as_of_min" not in json.loads(legacy_out.read_text(encoding="utf-8"))
 
 
 def test_the_wrapper_verify_mode_is_read_only(tmp_path, capsys) -> None:

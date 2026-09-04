@@ -363,7 +363,12 @@ def test_empty_selection_refused(tmp_path: Path) -> None:
 def test_as_of_min_pins_only_the_continuation_work(grown_bundle: dict[str, Path]) -> None:
     """A continuation manifest over a GROWN capture describes exactly the
     new work: entries at or after the declared Friday, a cost pre-charge
-    over only that work, and the filter declared on the manifest itself."""
+    over only that work, and the filter declared on the manifest itself.
+
+    (Codex round-1 finding 2, 2026-09-04) the second master RE-LISTS one
+    first-Friday contract (2025-04-18 is in the 30-60 DTE band from both
+    Fridays), so the continuation is 8 entries — the seven new contracts
+    plus the re-selection. The full grid still dedups it to 03-05 (14)."""
     full = _build(grown_bundle, budget_limit=60)  # the legacy full-grid shape
     assert full.as_of_min is None
     assert {e.as_of for e in full.entries} == {AS_OF, SECOND_AS_OF}
@@ -371,12 +376,30 @@ def test_as_of_min_pins_only_the_continuation_work(grown_bundle: dict[str, Path]
     continuation = _build(grown_bundle, budget_limit=45, as_of_min=SECOND_AS_OF)
     assert continuation.as_of_min == SECOND_AS_OF
     assert {e.as_of for e in continuation.entries} == {SECOND_AS_OF}
-    assert continuation.cost.expected_requests == len(continuation.entries) == 7
+    assert continuation.cost.expected_requests == len(continuation.entries) == 8
     # the filter is LOAD-BEARING for the budget rail: the full grid's worst
-    # case (14x4=56) is not pre-chargeable at 45 — the continuation's (28) is
+    # case (14x4=56) is not pre-chargeable at 45 — the continuation's (32) is
     full_at_45 = _build(grown_bundle, budget_limit=45)
     assert full_at_45.cost.budget_covers_worst_case is False
     assert continuation.cost.budget_covers_worst_case is True
+
+
+def test_the_window_re_selects_a_contract_first_chosen_before_the_window(
+    grown_bundle: dict[str, Path],
+) -> None:
+    """(Codex round-1 finding 2, 2026-09-04) the continuation window must
+    select like the stage-3 launch selects: deduped WITHIN the window, never
+    across the whole retained history. O:SPY250418C00580000 is in the 30-60
+    DTE band from BOTH Fridays, so the full grid attributes it to 03-05
+    while a fresh 03-19 selection picks it — a post-pick as_of_min filter
+    would drop it from the continuation manifest and the approved work would
+    not cover what the launch actually fetches."""
+    full = _build(grown_bundle, budget_limit=60)
+    relisted = "O:SPY250418C00580000"
+    assert [e.as_of for e in full.entries if e.ticker == relisted] == [AS_OF]
+    continuation = _build(grown_bundle, budget_limit=45, as_of_min=SECOND_AS_OF)
+    picked = [e for e in continuation.entries if e.ticker == relisted]
+    assert [(e.as_of, e.expiry) for e in picked] == [(SECOND_AS_OF, MONTHLY_EXPIRY)]
 
 
 def test_as_of_min_manifest_verifies_by_regeneration(grown_bundle: dict[str, Path]) -> None:
@@ -444,16 +467,48 @@ def test_a_non_canonical_as_of_min_refuses_at_parse(grown_bundle: dict[str, Path
         bm.parse_bars_work_manifest(json.dumps(doc).encode("utf-8"), source="tampered")
 
 
+def _pre_field_hash(doc: dict[str, object]) -> str:
+    """The hash algorithm EXACTLY as it was before ``as_of_min`` existed:
+    canonical ``json.dumps`` over the model dump with ``content_sha256``
+    emptied and NO ``as_of_min`` key anywhere (Codex round-1 finding 3,
+    2026-09-04 — the standing era manifest, hashed by this algorithm, must
+    keep verifying after the field was added)."""
+    body = {key: value for key, value in doc.items() if key != "as_of_min"}
+    body["content_sha256"] = ""
+    preimage = json.dumps(body, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return bm.sha256_hex(bm.BARS_WORK_DOMAIN + preimage)
+
+
+def test_a_pre_field_legacy_manifest_still_hashes_as_it_did(
+    capture_bundle: dict[str, Path],
+) -> None:
+    """A manifest whose JSON predates the field parses to ``as_of_min=None``
+    and MUST hash exactly as the pre-field algorithm did — re-introducing
+    the null field into the preimage breaks every standing era manifest
+    (the real artifacts/bars/work-manifest.json at 95129b58… stopped
+    verifying under the first cut of this packet)."""
+    manifest = _build(capture_bundle)  # as_of_min=None: the legacy shape
+    assert manifest.as_of_min is None
+    doc = json.loads(manifest.model_dump_json())
+    doc.pop("as_of_min")  # the pre-field bytes
+    legacy = bm.parse_bars_work_manifest(json.dumps(doc).encode("utf-8"), source="legacy")
+    assert legacy.as_of_min is None
+    assert bm.work_manifest_content_sha256(legacy) == _pre_field_hash(doc)
+    assert bm.work_manifest_content_sha256(legacy) == manifest.content_sha256
+
+
 def test_a_legacy_manifest_without_the_field_is_the_full_grid(
     capture_bundle: dict[str, Path],
 ) -> None:
     """Back-compat pin: a manifest whose JSON predates the field (the
-    standing era's shape) parses as the legacy None filter, equals its
-    rebuilt twin, and still verifies by regeneration."""
+    standing era's shape — including its PRE-FIELD content hash) parses as
+    the legacy None filter, equals its rebuilt twin, and still verifies by
+    regeneration."""
     manifest = _build(capture_bundle)
     doc = json.loads(manifest.model_dump_json())
     assert "as_of_min" in doc  # fresh builds declare the field explicitly
     doc.pop("as_of_min")  # the standing files carry no such key
+    doc["content_sha256"] = _pre_field_hash(doc)  # …and carry the old hash
     legacy = bm.parse_bars_work_manifest(json.dumps(doc).encode("utf-8"), source="legacy")
     assert legacy.as_of_min is None
     assert legacy == manifest

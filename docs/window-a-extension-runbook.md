@@ -62,7 +62,14 @@ Hard rules:
    never touch git. The only committed surfaces are code, tests, docs,
    and (Phase C) the tracked registration + evidence.
 
-## Per-cycle procedure (N = 1 or 2)
+## Per-cycle procedure
+
+Cycle 1 fetches Fridays **2026-08-28 + 2026-09-04** with window
+`--from-as-of 2026-08-28`; cycle 2 fetches **2026-09-11 + 2026-09-18** with
+window `--from-as-of 2026-09-11`. The window bound is CYCLE-SPECIFIC: a
+cycle-2 manifest built at 08-28 would re-authorize cycle 1's already-spent
+work (Codex round-1 finding 4, 2026-09-04). Below, `<c1|c2>` marks every
+cycle-dependent value.
 
 ### Stage 0 — pre-stage (any time before the cycle's Friday)
 
@@ -99,18 +106,20 @@ uv run --frozen python scripts/runstate_mark.py \
     --reason "ext-1 cycle N stage 1: masters+spot, Fridays <this cycle's dates>" \
     <run_id> CAPTURING
 
-# 2. the wrapper (mirrors artifacts/bars/run.sh), detached:
-#    capture_massive_structural.py --out-dir artifacts/bars/capture \
-    --as-of 2026-08-28 --as-of 2026-09-04        # cycle 1 (cycle 2: 09-11, 09-18)
-    --bars 0 ... (same atm-grid/dte/band/expiries/sides flags as run.sh;
-    --budget 4000)
-setsid ... > /tmp/m4-ext1-cN-stage1.log 2>&1   # then append ERA_EXIT to
-artifacts/bars/capture/era-ext-1-cN.log
+# 2. the staged wrapper, detached (cycle 1 shown; cycle 2's carries its own
+#    dates). --spot-merge-existing is LOAD-BEARING: it unions this run's
+#    closes into the standing spot_proxy.json instead of overwriting it
+#    (Codex round-1 finding 1 — a plain run would erase the v1 history the
+#    whole label surface stands on):
+setsid bash artifacts/bars/run-ext-1-c1-stage1.sh \
+    > /home/alexk/documents/tree_options-logs/ext1-c1-stage1.log 2>&1 \
+    < /dev/null &   # then append ERA_EXIT to the log per the era recipe
 ```
 
 Post-checks: `ls artifacts/bars/capture/masters | wc -l` (cycle 1:
 3103 = 3045 + 58); the capture's `spot_proxy.json` last close per name ==
-the cycle's last Friday; record the new
+the cycle's last Friday AND the FIRST close is still the era's first
+session (the merge must have kept history); record the new
 `sha256sum artifacts/bars/capture/capture_manifest.json` as **G(N)**.
 Journal `CAPTURE_COMPLETE` (reason cites G(N)).
 
@@ -118,16 +127,19 @@ Journal `CAPTURE_COMPLETE` (reason cites G(N)).
 
 ```
 # 1. the continuation work manifest (write-once) + read-only verify:
+#    <from-as-of>: c1 2026-08-28 / c2 2026-09-11 — NEVER the other cycle's
 uv run --frozen python scripts/build_bars_work_manifest.py \
     --capture-dir artifacts/bars/capture \
     --capture-manifest artifacts/bars/capture/capture_manifest.json \
-    --from-as-of 2026-08-28 \
-    --budget 8000 --out artifacts/bars/work-manifest-ext-1-cN.json
+    --from-as-of <2026-08-28 | 2026-09-11> \
+    --budget 8000 --out artifacts/bars/work-manifest-ext-1-c<N>.json
 uv run --frozen python scripts/build_bars_work_manifest.py \
     --capture-dir artifacts/bars/capture \
     --capture-manifest artifacts/bars/capture/capture_manifest.json \
-    --verify artifacts/bars/work-manifest-ext-1-cN.json
-# → entries ONLY for this cycle's Fridays; record the file sha256 as W(N)
+    --verify artifacts/bars/work-manifest-ext-1-c<N>.json
+# → entries ONLY for this cycle's Fridays (the window re-selects contracts
+#   first chosen earlier but re-listed inside the window — deduped WITHIN
+#   the window, exactly what stage 3 will fetch); record the file sha256 W(N)
 
 # 2. journal INSPECTION_RUNNING → INSPECTED (reason cites W(N))
 
@@ -136,13 +148,14 @@ uv run --frozen python scripts/append_bars_launch_approval.py \
     --protocol research_protocol.yaml \
     --amendment-packet artifacts/amendment/022-declaration/5caf56568941/amendment-packet.json \
     --census artifacts/census/43b0b040ea3c/census.json \
-    --work-manifest artifacts/bars/work-manifest-ext-1-cN.json \
+    --work-manifest artifacts/bars/work-manifest-ext-1-c<N>.json \
     --reason "owner standing authorization <date>: window-A-extension continuation cycle N, Fridays <dates>, protocol 0.2.2"
 # → record sha256 R(N)
 
 # 4. journal AMENDMENT_PENDING_OWNER → AMENDMENT_READY (no-pending notes:
 #    census 43b0b040 and protocol 0.2.2 stand; no threshold change), then
-#    BARS_READY pinning the grown manifest (one invocation each):
+#    PIN and TRANSITION as TWO invocations (runstate_mark refuses a combined
+#    to_state + --pin-manifest with exit 2 — Codex round-1 finding 5):
 uv run --frozen python scripts/runstate_mark.py \
     --reason "no amendment pending: census 43b0b040 and protocol 0.2.2 stand" \
     <run_id> AMENDMENT_PENDING_OWNER
@@ -150,6 +163,9 @@ uv run --frozen python scripts/runstate_mark.py \
     --reason "no amendment pending (carried)" <run_id> AMENDMENT_READY
 uv run --frozen python scripts/runstate_mark.py \
     --pin-manifest <G(N)> \
+    --reason "pinning the grown capture manifest before BARS_READY" \
+    <run_id>
+uv run --frozen python scripts/runstate_mark.py \
     --reason "BARS_READY under approval <R(N)> binding work manifest <W(N)>" \
     <run_id> BARS_READY
 
@@ -159,16 +175,21 @@ uv run --frozen python scripts/launch_bars_era.py \
     --census artifacts/census/43b0b040ea3c/census.json \
     --capture-manifest artifacts/bars/capture/capture_manifest.json \
     --capture-dir artifacts/bars/capture \
-    --work-manifest artifacts/bars/work-manifest-ext-1-cN.json
+    --work-manifest artifacts/bars/work-manifest-ext-1-c<N>.json
 ```
 
-### Stage 3 — bars
+### Stage 3 — bars (the approved work, exactly)
 
-Journal `BARS_CAPTURING`; run the stage-2 wrapper (same CLI with the
-bars flags of `run.sh`, `--bars 2000 --budget 8000`), detached; on
-ERA_EXIT=0 journal `BARS_COMPLETE` (reason cites the final manifest sha
-G(N)' and the bars-file count). `scripts/era_status.py` before each
-launch (no duplicate runs — there is no lease under the wrapper path).
+Journal `BARS_CAPTURING`; run the staged stage-2 wrapper detached. It adds
+`--bars-from-manifest artifacts/bars/work-manifest-ext-1-c<N>.json`: the
+bridge verifies the manifest by FULL regeneration against the capture and
+the committed profile BEFORE any wire request, then fetches EXACTLY its
+entries — a series already on disk is left standing (never overwritten),
+and any manifest entry without a series on disk at the end is an INVENTORY
+MISMATCH (exit 5). On exit 0 (and `BARS FROM MANIFEST ok` in the log)
+journal `BARS_COMPLETE` (reason cites the final capture-manifest sha and
+the bars-file count). `scripts/era_status.py` before each launch (no
+duplicate runs — there is no lease under the wrapper path).
 
 ### Stage 4 — complete the world
 

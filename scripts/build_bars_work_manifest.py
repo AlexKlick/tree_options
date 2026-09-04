@@ -198,7 +198,12 @@ def main(argv: list[str] | None = None) -> int:
     # manifest would be truncated by write_text); the exclusive no-follow
     # create is one OS-atomic act and refuses both races and preplanted
     # aliases
-    payload = (manifest.model_dump_json(indent=2) + "\n").encode("utf-8")
+    # (Codex round-1 finding 3, 2026-09-04) the unset filter is omitted from
+    # the file too: a legacy-shape build byte-matches the standing era's
+    # manifest shape (no as_of_min key), and the unset field never enters
+    # the content-hash preimage (see work_manifest_content_sha256).
+    exclude = None if manifest.as_of_min is not None else {"as_of_min"}
+    payload = (manifest.model_dump_json(indent=2, exclude=exclude) + "\n").encode("utf-8")
     try:
         fd = os.open(args.out, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
     except FileExistsError:

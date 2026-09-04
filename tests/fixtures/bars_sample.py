@@ -136,6 +136,13 @@ SECOND_SPY_ROWS: tuple[str, ...] = (
     _second_row("O:SPY250516P00570000", "570", "put"),
     _second_row("O:SPY250516C00590000", "590", "call"),
     _second_row("O:SPY250516P00590000", "590", "put"),
+    # (Codex round-1 finding 2, 2026-09-04) the same contract RE-LISTED by the
+    # later master: 2025-04-18 is in the 30-60 DTE band from BOTH Fridays
+    # (44 and 30 DTE), so a fresh window selection picks it at 03-19 while the
+    # global dedup attributes it to 03-05 — a post-pick as_of_min filter would
+    # silently drop it from the continuation manifest even though the stage-3
+    # launch would fetch it. The window must dedupe WITHIN itself.
+    _row("O:SPY250418C00580000", "580", "call"),
 )
 
 

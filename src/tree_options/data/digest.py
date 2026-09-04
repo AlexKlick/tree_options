@@ -25,9 +25,18 @@ def _default(o: Any) -> str:
     raise TypeError(f"not canonically serializable: {type(o)}")
 
 
-def canonical_bytes(model: BaseModel) -> bytes:
+def canonical_bytes(model: BaseModel, *, exclude: set[str] | None = None) -> bytes:
+    """Canonical bytes of a model's dump.
+
+    ``exclude`` drops field names from the preimage entirely (never writes
+    them as null) — the additive hook behind pre-field hash parity: a model
+    that GREW a ``None``-defaulted field must hash exactly as it did before
+    the field existed, or every manifest hashed by the older algorithm stops
+    verifying (Codex round-1 finding 3, 2026-09-04). ``None`` (the default)
+    keeps the historical byte-for-byte behavior for every other caller.
+    """
     return json.dumps(
-        model.model_dump(),
+        model.model_dump(exclude=exclude),
         sort_keys=True,
         separators=(",", ":"),
         default=_default,

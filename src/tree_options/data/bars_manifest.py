@@ -379,8 +379,17 @@ def _require_canonical_iso_date(value: str, *, field: str) -> None:
 
 
 def work_manifest_content_sha256(manifest: BarsWorkManifest) -> str:
+    """The work manifest's content hash.
+
+    (Codex round-1 finding 3, 2026-09-04) a manifest whose ``as_of_min`` is
+    unset — every standing era manifest — must hash EXACTLY as it did before
+    the field existed, so the unset field is dropped from the preimage rather
+    than serialized as null (the standing artifacts/bars/work-manifest.json
+    at 95129b58… must keep verifying). A set filter stays content-bound.
+    """
     core = manifest.model_copy(update={"content_sha256": ""})
-    return sha256_hex(BARS_WORK_DOMAIN + canonical_bytes(core))
+    exclude = {"as_of_min"} if core.as_of_min is None else None
+    return sha256_hex(BARS_WORK_DOMAIN + canonical_bytes(core, exclude=exclude))
 
 
 # ---- the unmodified bridge (selection + Budget) ------------------------------------
@@ -728,14 +737,13 @@ def build_bars_work_manifest(
     profile, and the same cost inputs yield byte-identical output (no clock,
     no host paths). Re-runs the bridge's UNMODIFIED ``select_atm_grid_bars``.
 
-    (window-A extension continuation, 2026-09-04) ``as_of_min`` filters the
-    picked entries to those at or after the declared Friday — a continuation
-    manifest over a GROWN capture pins exactly the new work, and its cost
-    pre-charge covers only that work. The filter is applied to the picked
-    entries BEFORE the zero-selection refusal (a filter that empties the
-    list names the filter, not the profile) and before the cost arithmetic
-    (the budget rail must cover what the continuation will actually
-    request).
+    (window-A extension continuation, 2026-09-04) ``as_of_min`` windows the
+    MASTERS before selection — a continuation manifest over a GROWN capture
+    pins exactly the work a FRESH run over the window's Fridays would
+    request, deduped within the window, and its cost pre-charge covers only
+    that work. A window that selects no masters names the filter (never the
+    profile), and the cost arithmetic counts only the window's entries (the
+    budget rail must cover what the continuation will actually request).
 
     Round-7 review fix (2026-08-24, finding 3): the capture manifest bytes
     are read ONCE at the top and threaded into ``rebuild_master_captures``
@@ -754,6 +762,11 @@ def build_bars_work_manifest(
         if max_attempts_per_request is None
         else max_attempts_per_request
     )
+    if as_of_min is not None:
+        try:
+            _require_canonical_iso_date(as_of_min, field="as_of_min")
+        except ValueError as exc:
+            raise BarsManifestError(f"as_of_min invalid: {exc}") from None
     try:
         manifest_raw = Path(capture_manifest).read_bytes()
     except OSError as exc:
@@ -765,6 +778,25 @@ def build_bars_work_manifest(
         capture_manifest=capture_manifest,
         capture_manifest_raw=manifest_raw,
     )
+    if as_of_min is not None:
+        # (Codex round-1 finding 2, 2026-09-04) the window is applied to the
+        # MASTERS before selection, so the continuation manifest picks what a
+        # FRESH run over the window's dates picks — deduped WITHIN the window,
+        # never across the whole retained history. Filtering the picked
+        # entries instead would silently drop every contract first chosen
+        # before the window yet re-listed inside it (adjacent Fridays share
+        # the in-band monthly), and the approved work would not cover what
+        # the launch actually fetches.
+        window_floor = date.fromisoformat(as_of_min)
+        windowed = [c for c in captures if c.as_of >= window_floor]
+        if not windowed:
+            raise BarsManifestError(
+                f"the as_of_min continuation filter ({as_of_min}) selected no"
+                " contracts — the capture carries no selected master at or after"
+                " that date; a continuation manifest with zero requests is a"
+                " configuration defect, not an empty manifest"
+            )
+        captures = windowed
     bridge = _capture_bridge()
     picks, notes = bridge.select_atm_grid_bars(
         captures,
@@ -777,20 +809,7 @@ def build_bars_work_manifest(
         sides=_profile_token(profile.sides, "sides", BARS_SIDE_FILTERS),
     )
     entries = _entries_from_picks(picks, ticker_index)
-    if as_of_min is not None:
-        try:
-            _require_canonical_iso_date(as_of_min, field="as_of_min")
-        except ValueError as exc:
-            raise BarsManifestError(f"as_of_min invalid: {exc}") from None
-        entries = [entry for entry in entries if entry.as_of >= as_of_min]
     if not entries:
-        if as_of_min is not None:
-            raise BarsManifestError(
-                f"the as_of_min continuation filter ({as_of_min}) selected no"
-                " contracts — the capture carries no selected master at or after"
-                " that date; a continuation manifest with zero requests is a"
-                " configuration defect, not an empty manifest"
-            )
         raise BarsManifestError(
             "the declared profile selected no contracts — a bars era with zero"
             " requests is a configuration defect, not an empty manifest"
