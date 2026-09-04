@@ -130,6 +130,8 @@ def _cohort_ic_mean(slot: str, bodies: Mapping[str, Mapping[str, Any]]) -> float
 def evaluate_window_a(
     bodies: Mapping[str, Mapping[str, Any]],
     prior_stride4_cohort_ic_sd: float,
+    *,
+    rule: str = _VERDICT_RULE,
 ) -> dict[str, Any]:
     """The return-channel dual falsifier over the six stamped artifacts.
 
@@ -137,7 +139,11 @@ def evaluate_window_a(
     (the parsed JSON, payload included) — exactly what the artifacts on
     disk are. ``prior_stride4_cohort_ic_sd`` is the wave-0 calibration
     prior (0.5118…, recorded in the wave-0 state); it feeds ONLY the
-    secondary IC disclosure, never F1/F2."""
+    secondary IC disclosure, never F1/F2.
+
+    ``rule`` is the verdict's self-describing rule TEXT (the default is
+    the window-A owner ruling; the extension passes its own rule so the
+    extension evidence never carries the base window's ruling text)."""
     expected = set(P4_SLOT_ORDER)
     extra = sorted(set(bodies) - expected)
     if extra:
@@ -158,7 +164,7 @@ def evaluate_window_a(
     f2_anomaly_persisted = min(mom_returns.values()) > null_max
     ic_bar = 2.0 * prior_stride4_cohort_ic_sd / math.sqrt(3.0)
     return {
-        "rule": _VERDICT_RULE,
+        "rule": rule,
         "f1_bleed_persisted": f1_bleed_persisted,
         "f1_null_negative_count": negatives,
         "f1_null_returns": null_returns,

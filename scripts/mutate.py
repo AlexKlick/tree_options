@@ -4983,8 +4983,11 @@ MUTANTS = [
         id="M408-ext-scope-not-derived",
         owner="test_the_extension_scope_is_the_unconsumed_remainder",
         file="scripts/run_p4_holdout.py",
-        anchor=("    if not _ACTIVE_WINDOW.extends_window_a:"),
-        replacement=("    if True:"),
+        anchor=(
+            "    if not _ACTIVE_WINDOW.extends_window_a:\n"
+            "        return frozenset(FINAL_HOLDOUT_DATES)"
+        ),
+        replacement=("    if True:\n        return frozenset(FINAL_HOLDOUT_DATES)"),
         selectors=[f"{U}/test_p4_window_extension.py"],
         invariant=(
             "the extension's date scope is DERIVED from the spent packet —"
@@ -5097,14 +5100,69 @@ MUTANTS = [
         id="M416-work-manifest-rewrite",
         owner="test_the_work_manifest_wrapper_is_write_once",
         file="scripts/build_bars_work_manifest.py",
-        anchor=("    if args.out.exists():"),
-        replacement=("    if False and args.out.exists():"),
+        # (Codex round 1 F5) RE-ANCHORED onto the atomic create: the
+        # exists()-then-write pair was a TOCTOU and its early refusal is
+        # gone; the write-once discipline now lives in O_EXCL — dropping
+        # it makes the open TRUNCATE an existing (possibly
+        # approval-bound) manifest
+        anchor=(
+            "        fd = os.open(args.out, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644)"
+        ),
+        replacement=(
+            "        fd = os.open(args.out, os.O_CREAT | os.O_WRONLY | os.O_NOFOLLOW, 0o644)"
+        ),
         selectors=[f"{U}/test_p4_window_extension.py"],
         invariant=(
-            "the work-manifest wrapper is write-once — a rebuilt manifest"
-            " is a NEW manifest and an approval may already bind the"
-            " existing file's raw sha256; a silent replace strands that"
-            " approval against bytes nothing holds"
+            "the work-manifest wrapper is write-once — the output is"
+            " created atomically with O_CREAT|O_EXCL|O_NOFOLLOW; a rebuilt"
+            " manifest is a NEW manifest and an approval may already bind"
+            " the existing file's raw sha256, so a silent replace (or a"
+            " truncating open) strands that approval against bytes"
+            " nothing holds"
+        ),
+    ),
+    dict(
+        id="M418-ext-partial-tranche-accepted",
+        owner="test_extension_refuses_a_partial_tranche",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if immature:"),
+        replacement=("    if False and immature:"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "Codex round 1 F1: the extension consumes ALL of its derived"
+            " scope or NONE of it — the window is one-shot, so a partial"
+            " registration would irreversibly strand the still-immature"
+            " dates; a later look at them needs a NEWLY ratified window"
+        ),
+    ),
+    dict(
+        id="M419-ext-base-registration-uncommitted-accepted",
+        owner="test_the_base_registration_must_be_committed_clean",
+        file="scripts/run_p4_holdout.py",
+        anchor=("    if committed is None or committed != raw:"),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "Codex round 1 F2: the extension scope derives from the"
+            " CANONICAL spent packet — the base registration must read"
+            " committed-clean at HEAD (on-disk bytes == committed bytes),"
+            " so an offline working-tree rewrite can never widen or"
+            " narrow the derived scope"
+        ),
+    ),
+    dict(
+        id="M420-ext-root-alias-unchecked",
+        owner="test_a_preplanted_root_alias_refuses_the_binding",
+        file="scripts/run_p4_holdout.py",
+        anchor=("            if component.is_symlink():"),
+        replacement=("            if False:"),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "Codex round 1 F3: the bound window's writable surfaces are"
+            " real directories-in-waiting — a preplanted symlinked"
+            " component routes extension state/registry/trials writes"
+            " into the spent packet's tree (or a volatile root); the"
+            " bind-time component walk refuses it before any write"
         ),
     ),
     dict(

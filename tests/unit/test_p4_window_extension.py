@@ -127,9 +127,9 @@ def _ext_bound(monkeypatch, tmp_path):
 
 
 def _synthetic_window_a_base(monkeypatch, tmp_path) -> None:
-    """The never-rebound window-A base records: a registration whose
-    expected_permitted is exactly the spent permitted set, plus the tracked
-    evidence file proving the base window was consumed."""
+    """The never-rebound window-A base records in their CANONICAL shape:
+    a committed-clean registration carrying the window-A identity and the
+    spent permitted set, plus the tracked evidence corroborating both."""
     base_registration = tmp_path / "window-a-registration.json"
     base_registration.write_text(
         json.dumps(
@@ -144,9 +144,20 @@ def _synthetic_window_a_base(monkeypatch, tmp_path) -> None:
         encoding="utf-8",
     )
     base_evidence = tmp_path / "m4-p4-window-a.json"
-    base_evidence.write_text("{}", encoding="utf-8")
+    base_evidence.write_text(
+        json.dumps(
+            {
+                "program": "p4-window-a",
+                "permitted_test_sessions": list(_WINDOW_A_PERMITTED),
+            }
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setattr(p4, "WINDOW_A_REGISTRATION_PATH", base_registration)
     monkeypatch.setattr(p4, "WINDOW_A_EVIDENCE_PATH", base_evidence)
+    # the base registration reads as COMMITTED-CLEAN at HEAD (the git
+    # round-trip is stubbed; the bytes comparison stays live)
+    monkeypatch.setattr(p4, "_committed_file_bytes", lambda path: path.read_bytes())
 
 
 # ---- the window configurations ----------------------------------------------------
@@ -267,14 +278,23 @@ def test_a_corrupt_base_registration_refuses_the_scope(
     corrupt (it cannot be the tracked window-A registration) — the scope
     derivation refuses rather than deriving a widened or narrowed set."""
     _ext_bound(monkeypatch, tmp_path)
+    foreign = ["2027-01-01", *list(_WINDOW_A_PERMITTED)]
     p4.WINDOW_A_REGISTRATION_PATH.write_text(
         json.dumps(
             {
+                "program": "p4-window-a",
                 "evaluation_window": {
-                    "expected_permitted": ["2027-01-01", *list(_WINDOW_A_PERMITTED)]
-                }
+                    "window_id": "final-holdout-window-a",
+                    "expected_permitted": foreign,
+                },
             }
         ),
+        encoding="utf-8",
+    )
+    # the evidence AGREES with the forged list — the sealed-enumeration
+    # check must be the refusal even under a self-consistent forgery
+    p4.WINDOW_A_EVIDENCE_PATH.write_text(
+        json.dumps({"program": "p4-window-a", "permitted_test_sessions": foreign}),
         encoding="utf-8",
     )
     with pytest.raises(SystemExit, match="not sealed"):
@@ -282,6 +302,193 @@ def test_a_corrupt_base_registration_refuses_the_scope(
     p4.WINDOW_A_REGISTRATION_PATH.unlink()
     with pytest.raises(SystemExit, match="window-A registration"):
         p4._active_date_scope()
+
+
+# ---- the Codex round-1 fix round ---------------------------------------------------
+
+
+def test_extension_refuses_a_partial_tranche(monkeypatch, tmp_path, restore_binding) -> None:
+    """(F1) The extension is all-or-nothing: on a world grown through
+    2026-09-04 exactly three of the five scoped dates are label-complete —
+    registering then would consume ext-1 for those three and STRAND
+    08-07/08-14 forever (the window is one-shot). The machinery refuses,
+    naming the immature dates."""
+    _ext_bound(monkeypatch, tmp_path)
+    partial = _World(date(2026, 9, 4))  # matures 07-17/07-24/07-31 only
+    with pytest.raises(SystemExit, match="all-or-nothing") as exc_info:
+        p4._world_permitted(partial)
+    assert "2026-08-07" in str(exc_info.value) and "2026-08-14" in str(exc_info.value)
+
+
+def test_the_base_registration_must_be_committed_clean(
+    monkeypatch, tmp_path, restore_binding
+) -> None:
+    """(F2) The scope derives from the CANONICAL spent packet: a base
+    registration whose on-disk bytes differ from HEAD's committed bytes
+    (an offline rewrite) refuses — never a working-tree forgery."""
+    _ext_bound(monkeypatch, tmp_path)
+    monkeypatch.setattr(p4, "_committed_file_bytes", lambda path: b"stale\n")
+    with pytest.raises(SystemExit, match="committed-clean"):
+        p4._active_date_scope()
+    monkeypatch.setattr(p4, "_committed_file_bytes", lambda path: None)
+    with pytest.raises(SystemExit, match="committed-clean"):
+        p4._active_date_scope()
+
+
+def test_the_base_registration_must_carry_the_window_a_identity(
+    monkeypatch, tmp_path, restore_binding
+) -> None:
+    """(F2) Bytes alone are not identity: a committed-clean registration
+    that does not carry the window-A program/window identity is some other
+    file — the scope refuses to derive from it."""
+    _ext_bound(monkeypatch, tmp_path)
+    for body in (
+        {
+            "program": "p4-window-a-ext-1",
+            "evaluation_window": {
+                "window_id": "final-holdout-window-a",
+                "expected_permitted": list(_WINDOW_A_PERMITTED),
+            },
+        },
+        {
+            "program": "p4-window-a",
+            "evaluation_window": {
+                "window_id": "some-other-window",
+                "expected_permitted": list(_WINDOW_A_PERMITTED),
+            },
+        },
+    ):
+        p4.WINDOW_A_REGISTRATION_PATH.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(SystemExit, match="window-A program/window identity"):
+            p4._active_date_scope()
+
+
+def test_the_base_evidence_must_corroborate_the_registration(
+    monkeypatch, tmp_path, restore_binding
+) -> None:
+    """(F2) The base-consumed record must AGREE with the base registration
+    — an evidence file naming a different permitted set (or a different
+    program) means the two base records disagree; the scope refuses
+    rather than trusting either list alone."""
+    _ext_bound(monkeypatch, tmp_path)
+    p4.WINDOW_A_EVIDENCE_PATH.write_text(
+        json.dumps({"program": "p4-window-a", "permitted_test_sessions": ["2026-05-08"]}),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="corroborate"):
+        p4._active_date_scope()
+    p4.WINDOW_A_EVIDENCE_PATH.write_text(
+        json.dumps(
+            {
+                "program": "p4-window-a-ext-1",
+                "permitted_test_sessions": list(_WINDOW_A_PERMITTED),
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="corroborate"):
+        p4._active_date_scope()
+
+
+def test_a_preplanted_root_alias_refuses_the_binding(tmp_path, restore_binding) -> None:
+    """(F3) A preplanted symlink on the extension's root path routes
+    extension writes into the SPENT packet's tree — the bind-time walk
+    refuses any existing symlinked component."""
+    import dataclasses as _dc
+    import shutil as _shutil
+    import uuid as _uuid
+
+    scratch = REPO / "artifacts" / "ext-alias-tests" / _uuid.uuid4().hex
+    scratch.mkdir(parents=True, exist_ok=True)
+    try:
+        aliased = scratch / "p4-ext-1"
+        aliased.symlink_to(REPO / "artifacts" / "theory" / "p4")
+        window = _dc.replace(p4.WINDOW_A_EXT_1, p4_root=aliased)
+        with pytest.raises(SystemExit, match="symlink"):
+            p4._bind_window(window)
+    finally:
+        _shutil.rmtree(scratch, ignore_errors=True)
+
+
+def test_a_volatile_root_refuses_the_binding(restore_binding) -> None:
+    """(F3) A window whose artifact root resolves under /tmp refuses at
+    bind — durable authority may not live where a reboot wipes it."""
+    import dataclasses as _dc
+
+    window = _dc.replace(p4.WINDOW_A_EXT_1, p4_root=Path("/tmp") / "ext-volatile")
+    with pytest.raises(SystemExit, match="volatile root"):
+        p4._bind_window(window)
+
+
+def test_malformed_permitted_elements_refuse_cleanly(
+    monkeypatch, tmp_path, restore_binding
+) -> None:
+    """(F4) A non-string permitted element is a controlled REFUSED — never
+    the TypeError the frozenset-membership regression raised (the default
+    window-A validation must keep refusing exactly as it did before the
+    extension existed)."""
+    for bind_ext in (False, True):
+        if bind_ext:
+            _ext_bound(monkeypatch, tmp_path)
+        else:
+            _synthetic_window_a_base(monkeypatch, tmp_path)
+        record = _approval_record(
+            window_id="final-holdout-window-a-ext-1" if bind_ext else "final-holdout-window-a",
+            permitted_test_sessions=[{"not": "a date"}],
+        )
+        with pytest.raises(SystemExit, match="REFUSED"):
+            p4._validate_approval_record(record)
+
+
+def test_the_verdict_rule_follows_the_window() -> None:
+    """(F6) The verdict's self-describing rule is the ACTIVE window's:
+    window A keeps the exact ruling text of the spent packet (pinned to
+    p4_verdict's default), and the extension carries its own direction —
+    extension evidence never labels itself with the base window's
+    ruling."""
+    from tree_options.trials.p4_verdict import _VERDICT_RULE
+
+    assert p4.WINDOW_A.verdict_rule == _VERDICT_RULE
+    assert p4.WINDOW_A_EXT_1.verdict_rule != _VERDICT_RULE
+    assert "extension" in p4.WINDOW_A_EXT_1.verdict_rule
+    assert "2026-09-04" in p4.WINDOW_A_EXT_1.verdict_rule
+
+
+def test_the_approval_next_names_the_active_window(
+    monkeypatch, tmp_path, restore_binding, capsys
+) -> None:
+    """(F8) The printed follow-on command names the ACTIVE window —
+    following a window-A-spelled instruction after approving the
+    extension would invoke the spent default binding and refuse."""
+    _ext_bound(monkeypatch, tmp_path)
+    registration = {
+        "program": "p4-window-a-ext-1",
+        "world_id": "massive-derived/FIXTURE/grown",
+        "protocol_hash": "p" * 64,
+        "dataset_manifest_hash": "m" * 64,
+        "evaluation_window": {
+            "window_id": "final-holdout-window-a-ext-1",
+            "expected_permitted": list(_EXT_SCOPE),
+        },
+        "slots": [
+            {
+                "slot_id": config.slot_id,
+                "params_key": [str(part) for part in config.params_key()],
+                "hypothesis": config.hypothesis,
+                "run_index": config.run_index,
+            }
+            for config in p4.p4_menu()
+        ],
+    }
+    raw = p4._registration_bytes(registration)
+    p4.REGISTRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+    p4.REGISTRATION_PATH.write_bytes(raw)
+    p4.save_state({"registration_sha256": p4._sha256_bytes(raw), "executions": [], "verdict": None})
+    monkeypatch.setattr(p4, "_git_head", lambda repo: "d" * 40)
+    monkeypatch.setattr(p4, "_require_committed_registration", lambda head: None)
+    assert p4.approve("d" * 40, "the owner's extension declaration") == 0
+    err = capsys.readouterr().out
+    assert "--window window-a-ext-1 --execute" in err
 
 
 class _World:

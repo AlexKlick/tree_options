@@ -87,7 +87,10 @@ if str(REPO_ROOT / "src") not in sys.path:  # pragma: no cover - import plumbing
 if str(REPO_ROOT / "scripts") not in sys.path:  # pragma: no cover
     sys.path.insert(0, str(REPO_ROOT / "scripts"))
 
-from tree_options.protocol.holdout import FINAL_HOLDOUT_DATES  # noqa: E402
+from tree_options.protocol.holdout import (  # noqa: E402
+    FINAL_HOLDOUT_DATES,
+    FINAL_HOLDOUT_WINDOW_ID,
+)
 from tree_options.protocol.loader import protocol_hash  # noqa: E402
 from tree_options.registry.sqlite import TrialRegistry  # noqa: E402
 from tree_options.seal.verified_inputs import (  # noqa: E402
@@ -180,6 +183,7 @@ class P4Window:
     hold_hypothesis: str
     f1_text: str
     f2_text: str
+    verdict_rule: str
     rules: dict[str, str]
 
     @property
@@ -254,6 +258,14 @@ WINDOW_A = P4Window(
     ),
     f1_text=_WA_F1_TEXT,
     f2_text=_WA_F2_TEXT,
+    verdict_rule=(
+        # byte-identical to p4_verdict._VERDICT_RULE (the spent packet's
+        # --verdict re-read must render the same rule it rendered at
+        # consumption) — pinned by test
+        "owner ruling 2026-09-03 (return-channel dual falsifier): F1 = at"
+        " least 2 of 3 window-A null seeds negative; F2 = BOTH momentum arms"
+        " strictly above the max of the 3 window-A null seeds"
+    ),
     rules={
         "configs": (
             "owner ruling 2026-09-03: null x3 (seeds theory-null-1/2/3,"
@@ -324,6 +336,12 @@ WINDOW_A_EXT_1 = P4Window(
     ),
     f1_text=_EXT_F1_TEXT,
     f2_text=_EXT_F2_TEXT,
+    verdict_rule=(
+        "owner direction 2026-09-04 (window-A extension, return-channel"
+        " dual falsifier): F1 = at least 2 of 3 extension null seeds"
+        " negative; F2 = BOTH momentum arms strictly above the max of the"
+        " 3 extension null seeds"
+    ),
     rules={
         "configs": (
             "owner direction 2026-09-04 (window-A extension): the same"
@@ -436,6 +454,79 @@ def _bind_window(window: P4Window) -> None:
     _NULL_RUN_BASE = window.null_run_base
     _MOM_B_RUN_INDEX = window.mom_b_run_index
     _ACTIVE_WINDOW = window
+    _refuse_aliased_roots(window)
+
+
+_VOLATILE_ROOTS = (Path("/tmp"), Path("/var/tmp"))
+
+
+def _refuse_aliased_roots(window: P4Window) -> None:
+    """(Codex round 1 F3) the bound window's writable surfaces must be
+    real directories-in-waiting, checked ONCE at bind before any mode
+    function can write:
+
+    - every EXISTING path component from the repo root down to each
+      artifact root is a real directory, never a symlink (a preplanted
+      ``p4-ext-1 -> p4`` alias routes extension state/registry/trials
+      writes into the SPENT packet's tree);
+    - neither artifact root RESOLVES onto the other window's roots
+      (cross-window aliasing) or under a volatile root (/tmp and
+      friends — authority may not live where a reboot wipes it);
+    - the tracked file surfaces (registration, evidence) refuse a
+      pre-existing symlink leaf.
+
+    Mid-invocation swaps by a concurrent writer remain out of scope
+    under the owner's ruled threat model; this closes the sequential
+    preplant."""
+    for label, root in (("p4-root", window.p4_root), ("authority-root", window.authority_root)):
+        try:
+            parts = root.relative_to(REPO_ROOT).parts
+        except ValueError:
+            parts = ()
+        component = REPO_ROOT
+        for part in parts:
+            component = component / part
+            if component.is_symlink():
+                raise SystemExit(
+                    f"REFUSED: the {label} path component {component} is a"
+                    " symlink — the window's writable surfaces must be real"
+                    " directories (an alias onto another window's surface"
+                    " or a volatile root refuses)"
+                )
+        resolved = root.resolve()
+        for volatile in _VOLATILE_ROOTS:
+            if resolved == volatile or volatile in resolved.parents:
+                raise SystemExit(
+                    f"REFUSED: the {label} {root} resolves onto the"
+                    f" volatile root {volatile} — durable authority may"
+                    " not live where a reboot wipes it"
+                )
+        other = WINDOW_A if window is not WINDOW_A else WINDOW_A_EXT_1
+        other_label = "extension" if window is WINDOW_A else "base"
+        for other_kind, other_root in (
+            ("p4-root", other.p4_root),
+            ("authority-root", other.authority_root),
+        ):
+            other_resolved = other_root.resolve()
+            if (
+                resolved == other_resolved
+                or other_resolved in resolved.parents
+                or resolved in other_resolved.parents
+            ):
+                raise SystemExit(
+                    f"REFUSED: the {label} {root} resolves onto the"
+                    f" {other_label} window's {other_kind} — the two"
+                    " windows' writable surfaces must stay disjoint"
+                )
+    for label, tracked in (
+        ("registration", window.registration_path),
+        ("evidence", window.evidence_path),
+    ):
+        if tracked.is_symlink():
+            raise SystemExit(
+                f"REFUSED: the {label} path {tracked} is a symlink — the"
+                " tracked surfaces are real files, never aliases"
+            )
 
 
 _DEFAULT_DELTA = Decimal("0.45")
@@ -620,6 +711,22 @@ def _build_world():
     return world, protocol, manifest_hash
 
 
+def _committed_file_bytes(path: Path) -> bytes | None:
+    """The file's bytes as committed at HEAD, or None if HEAD does not
+    carry it (uncommitted, rewritten, or not a git tree — all fail-closed
+    for the caller's committed-clean comparison)."""
+    try:
+        rel = path.relative_to(REPO_ROOT).as_posix()
+        out = subprocess.run(
+            ["git", "-C", str(REPO_ROOT), "show", f"HEAD:{rel}"],
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, ValueError, subprocess.CalledProcessError):
+        return None
+    return out.stdout
+
+
 def _active_date_scope() -> frozenset[str]:
     """The sealed dates the ACTIVE window may evaluate (ISO strings).
 
@@ -629,7 +736,15 @@ def _active_date_scope() -> frozenset[str]:
     and only after the tracked window-A evidence exists: the base look
     must be spent before a second window may exist at all. Spent dates
     can never ride a second window — that is the one-shot the seal
-    exists for."""
+    exists for.
+
+    (Codex round 1 F2) the base records are VERIFIED, not merely present:
+    the registration must be the COMMITTED-CLEAN canonical bytes at HEAD
+    (git-tracked, so an offline rewrite is a working-tree diff, not a
+    silent input), it must carry the window-A program/window identity,
+    and the evidence must CORROBORATE the registration's permitted set —
+    the scope and the spent-date check must not both derive from one
+    untrusted list."""
     if not _ACTIVE_WINDOW.extends_window_a:
         return frozenset(FINAL_HOLDOUT_DATES)
     if not WINDOW_A_EVIDENCE_PATH.is_file():
@@ -644,12 +759,39 @@ def _active_date_scope() -> frozenset[str]:
             f" {WINDOW_A_REGISTRATION_PATH} does not exist — the extension"
             " scope derives from the base window's registered permitted set"
         )
-    base = json.loads(WINDOW_A_REGISTRATION_PATH.read_text(encoding="utf-8"))
+    raw = WINDOW_A_REGISTRATION_PATH.read_bytes()
+    committed = _committed_file_bytes(WINDOW_A_REGISTRATION_PATH)
+    if committed is None or committed != raw:
+        raise SystemExit(
+            "REFUSED: the tracked window-A registration is not"
+            " committed-clean at HEAD — the extension scope derives from"
+            " the CANONICAL spent packet, never a working-tree rewrite"
+        )
+    base = json.loads(raw.decode("utf-8"))
+    if (
+        base.get("program") != "p4-window-a"
+        or (base.get("evaluation_window") or {}).get("window_id") != FINAL_HOLDOUT_WINDOW_ID
+    ):
+        raise SystemExit(
+            "REFUSED: the base registration does not carry the window-A"
+            " program/window identity — this is not the tracked"
+            " registration and the scope refuses to derive from it"
+        )
     consumed = (base.get("evaluation_window") or {}).get("expected_permitted")
     if not isinstance(consumed, list) or not consumed:
         raise SystemExit(
             "REFUSED: the window-A registration carries no expected_permitted"
             " set — the extension scope cannot derive from it"
+        )
+    evidence = json.loads(WINDOW_A_EVIDENCE_PATH.read_text(encoding="utf-8"))
+    if evidence.get("program") != "p4-window-a" or (
+        evidence.get("permitted_test_sessions") != consumed
+    ):
+        raise SystemExit(
+            "REFUSED: the tracked window-A evidence does not corroborate"
+            " the base registration's permitted set — the base-consumed"
+            " record and the base registration disagree; reconcile with"
+            " the owner before any extension exists"
         )
     sealed = frozenset(FINAL_HOLDOUT_DATES)
     foreign = sorted(set(consumed) - sealed)
@@ -669,16 +811,22 @@ def _world_permitted(world) -> tuple[date, ...]:
     )
     scope = _active_date_scope()
     scoped = tuple(d for d in permitted if d.isoformat() in scope)
-    if not scoped:
-        # window A on its own world never lands here (its scope is the
-        # full enumeration and label_complete_permitted_sessions raises
-        # its own refusal when NOTHING is label-complete); this is the
-        # extension's grow-the-world gate
+    if not _ACTIVE_WINDOW.extends_window_a:
+        return scoped
+    # (Codex round 1 F1) the extension consumes ALL of its derived scope
+    # or NONE of it: the window is one-shot, so a partial registration
+    # would irreversibly strand the still-immature dates (a later look at
+    # them needs a NEWLY ratified window). Grow the world until every
+    # scoped date has >= label_horizon grid Fridays of headroom.
+    immature = sorted(scope - {d.isoformat() for d in scoped})
+    if immature:
         raise SystemExit(
-            "REFUSED: no active-window date is label-complete on this world"
-            f" — grow the world (a sealed date needs >={P4_LABEL_HORIZON}"
-            " grid Fridays of headroom before it may be evaluated);"
-            " refusing rather than evaluating a padded or borrowed set"
+            "REFUSED: the extension is all-or-nothing — the scoped dates"
+            f" {immature} are not yet label-complete on this world, and a"
+            " partial consumption would strand them forever (the window"
+            " is one-shot); grow the world (a sealed date needs >="
+            f" {P4_LABEL_HORIZON} grid Fridays of headroom) and register"
+            " only when ALL scoped dates are mature"
         )
     return scoped
 
@@ -852,7 +1000,11 @@ def approve(declared_head: str, reason: str) -> int:
     # land
     payload = json.dumps(record, indent=2, sort_keys=True) + "\n"
     try:
-        fd = os.open(APPROVAL_PATH, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644)
+        fd = os.open(
+            APPROVAL_PATH,
+            os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+            0o644,
+        )
     except FileExistsError:
         raise SystemExit(
             f"REFUSED: {APPROVAL_PATH} already exists — the approval is the owner's ONE act"
@@ -866,7 +1018,13 @@ def approve(declared_head: str, reason: str) -> int:
         f"approved: head={declared_head[:12]}… permitted={record['permitted_test_sessions']}",
         flush=True,
     )
-    print("NEXT: scripts/run_p4_holdout.py --execute (one-shot)", flush=True)
+    # (Codex round 1 F8) the printed command must name the ACTIVE window —
+    # following a window-A-spelled instruction after approving the
+    # extension invokes the spent default binding and refuses
+    print(
+        f"NEXT: scripts/run_p4_holdout.py --window {_ACTIVE_WINDOW.key} --execute (one-shot)",
+        flush=True,
+    )
     return 0
 
 
@@ -1010,6 +1168,14 @@ def _validate_approval_record(record: Any) -> dict[str, Any]:
         raise SystemExit(f"REFUSED: the approval's declared_head {declared!r} is not a commit hash")
     permitted = record.get("permitted_test_sessions")
     if not isinstance(permitted, list) or not permitted:
+        raise SystemExit(
+            "REFUSED: the approval's permitted set is not a non-empty window-A date list"
+        )
+    # (Codex round 1 F4) every element must be a STRING before any set
+    # membership — a frozenset membership test on an unhashable element
+    # raises TypeError where the pre-extension list-membership check
+    # refused cleanly; the default window's refusal must stay a refusal
+    if any(not isinstance(d, str) for d in permitted):
         raise SystemExit(
             "REFUSED: the approval's permitted set is not a non-empty window-A date list"
         )
@@ -1367,7 +1533,10 @@ def _verdict_from_state(state: dict[str, Any]) -> dict[str, Any]:
             bodies[slot_id] = body
     finally:
         registry.close()
-    return evaluate_window_a(bodies, _wave0_prior())
+    # (Codex round 1 F6) the verdict's self-describing rule follows the
+    # ACTIVE window — extension evidence carries the extension's rule,
+    # never the base window's ruling text
+    return evaluate_window_a(bodies, _wave0_prior(), rule=_ACTIVE_WINDOW.verdict_rule)
 
 
 def verdict_only() -> int:

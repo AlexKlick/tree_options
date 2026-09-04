@@ -20,7 +20,8 @@ Fail-closed, write-once:
   - the declared budget must cover the WORST-CASE wire requests (the
     Budget pre-charge model) — an uncoverable grid refuses at build time,
     before any approval could bind it;
-  - ``--out`` is never overwritten: a rebuilt manifest is a NEW manifest
+  - ``--out`` is never overwritten: the output is created atomically with
+    O_CREAT|O_EXCL|O_NOFOLLOW — a rebuilt manifest is a NEW manifest
     (different content hash) and must not silently replace one an
     approval already binds.
 """
@@ -88,15 +89,6 @@ def main(argv: list[str] | None = None) -> int:
     if args.budget <= 0:
         print("REFUSED: --budget must be a positive integer", file=sys.stderr)
         return 2
-    if args.out.exists():
-        print(
-            f"REFUSED: {args.out} already exists — a work manifest is written"
-            " once; a rebuild is a NEW manifest and requires removing the"
-            " file as a deliberate owner act (an approval may already bind"
-            " its bytes)",
-            file=sys.stderr,
-        )
-        return 2
     try:
         profile = load_selection_profile(args.selection_profile)
         manifest = build_bars_work_manifest(
@@ -118,7 +110,31 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 4
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    # (Codex round 1 F5) serialize FIRST, then create the final file
+    # atomically: O_CREAT|O_EXCL|O_NOFOLLOW — the exists()-then-write pair
+    # was a TOCTOU (an intervening file or symlink to an already-approved
+    # manifest would be truncated by write_text); the exclusive no-follow
+    # create is one OS-atomic act and refuses both races and preplanted
+    # aliases
+    payload = (manifest.model_dump_json(indent=2) + "\n").encode("utf-8")
+    import os
+
+    try:
+        fd = os.open(args.out, os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW, 0o644)
+    except FileExistsError:
+        print(
+            f"REFUSED: {args.out} already exists — a work manifest is written"
+            " once; a rebuild is a NEW manifest and requires removing the"
+            " file as a deliberate owner act (an approval may already bind"
+            " its bytes)",
+            file=sys.stderr,
+        )
+        return 2
+    try:
+        os.write(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
     import hashlib
 
     print(
