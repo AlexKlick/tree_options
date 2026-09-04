@@ -33,11 +33,14 @@ from tests.fixtures.bars_sample import (  # noqa: E402
     AS_OF,
     EXPECTED_ENTRIES,
     MONTHLY_EXPIRY,
+    SECOND_AS_OF,
     SPOT,
     SPX_ROWS,
     SPY_ROWS,
     write_bars_capture,
     write_capture_manifest,
+    write_two_as_of_capture,
+    write_two_as_of_capture_manifest,
 )
 from tests.fixtures.massive_structural_sample import contracts_payload  # noqa: E402
 from tree_options.data import bars_manifest as bm  # noqa: E402
@@ -84,7 +87,21 @@ def _build(bundle: dict[str, Path], **overrides: object) -> bm.BarsWorkManifest:
         profile=profile,
         capture_manifest=bundle["capture_manifest"],
         budget_limit=overrides.pop("budget_limit", 45),
+        as_of_min=overrides.pop("as_of_min", None),
     )
+
+
+@pytest.fixture()
+def grown_bundle(tmp_path: Path) -> dict[str, Path]:
+    """(window-A extension continuation) the GROWN capture: one extra
+    continuation Friday's master appended in place, the earlier masters
+    untouched, the spot anchor extended — the shape of
+    ``artifacts/bars/capture`` after a continuation stage lands."""
+    capture_dir = write_two_as_of_capture(tmp_path / "capture")
+    manifest_path = write_two_as_of_capture_manifest(
+        capture_dir, capture_dir / "capture_manifest.json"
+    )
+    return {"capture_dir": capture_dir, "capture_manifest": manifest_path}
 
 
 # ---- committed selection profile ---------------------------------------------------
@@ -340,6 +357,114 @@ def test_empty_selection_refused(tmp_path: Path) -> None:
         )
 
 
+# ---- (window-A extension continuation, 2026-09-04) the as_of_min filter ---------------
+
+
+def test_as_of_min_pins_only_the_continuation_work(grown_bundle: dict[str, Path]) -> None:
+    """A continuation manifest over a GROWN capture describes exactly the
+    new work: entries at or after the declared Friday, a cost pre-charge
+    over only that work, and the filter declared on the manifest itself."""
+    full = _build(grown_bundle, budget_limit=60)  # the legacy full-grid shape
+    assert full.as_of_min is None
+    assert {e.as_of for e in full.entries} == {AS_OF, SECOND_AS_OF}
+    assert full.cost.expected_requests == len(full.entries) == 14
+    continuation = _build(grown_bundle, budget_limit=45, as_of_min=SECOND_AS_OF)
+    assert continuation.as_of_min == SECOND_AS_OF
+    assert {e.as_of for e in continuation.entries} == {SECOND_AS_OF}
+    assert continuation.cost.expected_requests == len(continuation.entries) == 7
+    # the filter is LOAD-BEARING for the budget rail: the full grid's worst
+    # case (14x4=56) is not pre-chargeable at 45 — the continuation's (28) is
+    full_at_45 = _build(grown_bundle, budget_limit=45)
+    assert full_at_45.cost.budget_covers_worst_case is False
+    assert continuation.cost.budget_covers_worst_case is True
+
+
+def test_as_of_min_manifest_verifies_by_regeneration(grown_bundle: dict[str, Path]) -> None:
+    """The verify path threads the manifest's OWN filter into regeneration —
+    a continuation manifest must reproduce through the same filter (an
+    unfiltered rebuild would diverge from every continuation manifest)."""
+    continuation = _build(grown_bundle, budget_limit=45, as_of_min=SECOND_AS_OF)
+    bm.verify_bars_work_manifest(
+        continuation,
+        profile=bm.load_selection_profile(COMMITTED_PROFILE),
+        capture_manifest_sha256=continuation.capture_manifest_sha256,
+        capture_dir=grown_bundle["capture_dir"],
+    )
+
+
+def test_as_of_min_is_content_bound_and_semantically_checked(grown_bundle: dict[str, Path]) -> None:
+    """Two refusals: a hand-edited as_of_min breaks the self-hash binding;
+    a RE-HASHED widened filter no longer matches what regeneration through
+    that filter produces (the entries still describe the narrower work)."""
+    continuation = _build(grown_bundle, budget_limit=45, as_of_min=SECOND_AS_OF)
+    profile = bm.load_selection_profile(COMMITTED_PROFILE)
+    with pytest.raises(bm.BarsManifestError, match="does not bind"):
+        bm.verify_bars_work_manifest(
+            continuation.model_copy(update={"as_of_min": AS_OF}),
+            profile=profile,
+            capture_manifest_sha256=continuation.capture_manifest_sha256,
+            capture_dir=grown_bundle["capture_dir"],
+        )
+    widened = continuation.model_copy(update={"as_of_min": AS_OF, "content_sha256": ""})
+    widened = widened.model_copy(
+        update={"content_sha256": bm.work_manifest_content_sha256(widened)}
+    )
+    with pytest.raises(bm.BarsManifestError, match="does not reproduce"):
+        bm.verify_bars_work_manifest(
+            widened,
+            profile=profile,
+            capture_manifest_sha256=continuation.capture_manifest_sha256,
+            capture_dir=grown_bundle["capture_dir"],
+        )
+
+
+def test_as_of_min_that_filters_everything_refuses_naming_the_filter(
+    grown_bundle: dict[str, Path],
+) -> None:
+    with pytest.raises(bm.BarsManifestError, match="as_of_min continuation filter"):
+        _build(grown_bundle, budget_limit=45, as_of_min="2025-03-26")
+
+
+def test_non_canonical_as_of_min_refuses(grown_bundle: dict[str, Path]) -> None:
+    """as_of comparison is lexicographic over ISO text, so only canonical
+    dates may filter (2025-3-19 would silently compare the wrong way)."""
+    with pytest.raises(bm.BarsManifestError, match="ISO date"):
+        _build(grown_bundle, budget_limit=45, as_of_min="2025-3-19")
+
+
+def test_a_non_canonical_as_of_min_refuses_at_parse(grown_bundle: dict[str, Path]) -> None:
+    """The model itself refuses the field at parse time — a hand-written
+    manifest JSON carrying a non-canonical filter never becomes an
+    approval-bindable object (the build-side check alone would leave the
+    parse path unguarded)."""
+    manifest = _build(grown_bundle, budget_limit=45, as_of_min=SECOND_AS_OF)
+    doc = json.loads(manifest.model_dump_json())
+    doc["as_of_min"] = "2025-3-19"
+    with pytest.raises(bm.BarsManifestError, match="ISO date"):
+        bm.parse_bars_work_manifest(json.dumps(doc).encode("utf-8"), source="tampered")
+
+
+def test_a_legacy_manifest_without_the_field_is_the_full_grid(
+    capture_bundle: dict[str, Path],
+) -> None:
+    """Back-compat pin: a manifest whose JSON predates the field (the
+    standing era's shape) parses as the legacy None filter, equals its
+    rebuilt twin, and still verifies by regeneration."""
+    manifest = _build(capture_bundle)
+    doc = json.loads(manifest.model_dump_json())
+    assert "as_of_min" in doc  # fresh builds declare the field explicitly
+    doc.pop("as_of_min")  # the standing files carry no such key
+    legacy = bm.parse_bars_work_manifest(json.dumps(doc).encode("utf-8"), source="legacy")
+    assert legacy.as_of_min is None
+    assert legacy == manifest
+    bm.verify_bars_work_manifest(
+        legacy,
+        profile=bm.load_selection_profile(COMMITTED_PROFILE),
+        capture_manifest_sha256=legacy.capture_manifest_sha256,
+        capture_dir=capture_bundle["capture_dir"],
+    )
+
+
 # ---- determinism / ordering -----------------------------------------------------------
 
 
@@ -518,6 +643,47 @@ def test_consumption_for_a_different_work_manifest_still_appends(
         "BARS_LAUNCH_CONSUMED",
         "BARS_LAUNCH_CONSUMED",
     ]
+    assert view.tail_hash == second.record_sha256
+
+
+# ---- (window-A extension continuation, 2026-09-04) one approval per tuple ------------
+
+
+def test_second_approval_of_the_same_tuple_refused_under_lock(scratch_root: Path) -> None:
+    """The owner's grant of one (protocol, work manifest) tuple is recorded
+    exactly once: a duplicate APPROVAL adds no authority the first does not
+    already carry, and a rewritten reason must not ride what looks like a
+    fresh grant. Refused inside the locked append (the same race-safety the
+    consumption guard has); nothing is appended past the standing record."""
+    bm.append_bars_launch_approval(
+        scratch_root, reason="owner approved the grid", at_epoch=T0, **_approval()
+    )
+    with pytest.raises(bm.DuplicateApprovalRefusedError, match="already grants this tuple"):
+        bm.append_bars_launch_approval(
+            scratch_root, reason="approved again by mistake", at_epoch=T0 + 1, **_approval()
+        )
+    view = bm.read_bars_ledger(scratch_root)
+    assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL"]
+    assert view.records[0].reason == "owner approved the grid"  # history stands
+
+
+def test_approval_of_the_same_protocol_over_a_new_work_manifest_appends(
+    scratch_root: Path,
+) -> None:
+    """The continuation's exact ledger shape: cycle 2 approves a NEW work
+    manifest under the SAME (live) protocol — legal (round-4 review fix,
+    finding 6: the tuple is protocol + manifest, never protocol alone)."""
+    bm.append_bars_launch_approval(
+        scratch_root, reason="cycle 1: Fridays 2026-08-28..09-04", at_epoch=T0, **_approval()
+    )
+    second = bm.append_bars_launch_approval(
+        scratch_root,
+        reason="cycle 2: Fridays 2026-09-11..09-18",
+        at_epoch=T0 + 1,
+        **_approval(work_manifest_sha256="e" * 64),
+    )
+    view = bm.read_bars_ledger(scratch_root)
+    assert [r.kind for r in view.records] == ["BARS_LAUNCH_APPROVAL", "BARS_LAUNCH_APPROVAL"]
     assert view.tail_hash == second.record_sha256
 
 

@@ -837,6 +837,162 @@ def test_the_work_manifest_wrapper_refuses_an_uncoverable_budget(tmp_path) -> No
     assert not out_path.exists()
 
 
+def test_the_wrapper_from_as_of_builds_the_continuation_manifest(tmp_path) -> None:
+    """(window-A extension continuation) the owner-runnable filter: over a
+    GROWN capture the wrapper pins exactly the continuation Fridays, and
+    the filter is what makes the continuation pre-chargeable — the unfiltered
+    grid's worst case busts the same budget the continuation covers."""
+    from tests.fixtures.bars_sample import (
+        SECOND_AS_OF,
+        write_two_as_of_capture,
+        write_two_as_of_capture_manifest,
+    )
+    from tree_options.data.bars_manifest import parse_bars_work_manifest
+
+    capture_dir = write_two_as_of_capture(tmp_path / "capture")
+    manifest_path = write_two_as_of_capture_manifest(
+        capture_dir, capture_dir / "capture_manifest.json"
+    )
+    out_path = tmp_path / "work-manifest-ext-1-c1.json"
+    argv = [
+        "--capture-dir",
+        str(capture_dir),
+        "--capture-manifest",
+        str(manifest_path),
+        "--from-as-of",
+        SECOND_AS_OF,
+        "--budget",
+        "45",
+        "--out",
+        str(out_path),
+    ]
+    assert p4_work_manifest_main(argv) == 0
+    parsed = parse_bars_work_manifest(out_path.read_bytes(), source=str(out_path))
+    assert parsed.as_of_min == SECOND_AS_OF
+    assert {e.as_of for e in parsed.entries} == {SECOND_AS_OF}
+    assert parsed.cost.budget_covers_worst_case is True  # 28 <= 45
+    # the SAME budget cannot pre-charge the unfiltered grid (worst 56 > 45):
+    # without the filter the continuation wrapper refuses at build time
+    full_out = tmp_path / "work-manifest-full.json"
+    argv_full = [
+        "--capture-dir",
+        str(capture_dir),
+        "--capture-manifest",
+        str(manifest_path),
+        "--budget",
+        "45",
+        "--out",
+        str(full_out),
+    ]
+    assert p4_work_manifest_main(argv_full) == 4
+    assert not full_out.exists()
+
+
+def test_the_wrapper_verify_mode_is_read_only(tmp_path, capsys) -> None:
+    """--verify re-parses, self-hash-binds, and REGENERATES the written file
+    through the same library path the launcher will use — green on the honest
+    build, refusing a tampered one, and never accepting --out/--budget."""
+    from tests.fixtures.bars_sample import (
+        SECOND_AS_OF,
+        write_two_as_of_capture,
+        write_two_as_of_capture_manifest,
+    )
+
+    capture_dir = write_two_as_of_capture(tmp_path / "capture")
+    manifest_path = write_two_as_of_capture_manifest(
+        capture_dir, capture_dir / "capture_manifest.json"
+    )
+    out_path = tmp_path / "work-manifest-ext-1-c1.json"
+    build_argv = [
+        "--capture-dir",
+        str(capture_dir),
+        "--capture-manifest",
+        str(manifest_path),
+        "--from-as-of",
+        SECOND_AS_OF,
+        "--budget",
+        "45",
+        "--out",
+        str(out_path),
+    ]
+    assert p4_work_manifest_main(build_argv) == 0
+    honest = out_path.read_bytes()
+    verify_argv = [
+        "--capture-dir",
+        str(capture_dir),
+        "--capture-manifest",
+        str(manifest_path),
+        "--verify",
+        str(out_path),
+    ]
+    assert p4_work_manifest_main(verify_argv) == 0
+    assert "verified:" in capsys.readouterr().out
+    assert out_path.read_bytes() == honest  # read-only
+    # a tampered body (parse-valid, self-hash broken) refuses
+    doc = json.loads(out_path.read_text(encoding="utf-8"))
+    doc["cost"]["budget_limit"] = 46
+    out_path.write_text(json.dumps(doc), encoding="utf-8")
+    assert p4_work_manifest_main(verify_argv) == 3
+    # the mode refuses write-mode flags outright
+    assert p4_work_manifest_main([*verify_argv, "--out", str(tmp_path / "x.json")]) == 2
+
+
+def test_the_friday_grid_counts_a_vendor_gap_friday_with_no_close() -> None:
+    """(window-A extension, the 08-21 resolution) the grid is calendar
+    Fridays inside the overlay SPAN — a Friday whose master exists but
+    whose close the vendor never carried still counts as a grid step. This
+    is the load-bearing link that makes world_last 2026-09-18 admit all
+    five extension dates despite the 08-21 gap."""
+    from tree_options.trials.g4_event import _friday_grid
+
+    class _Sessions:
+        def __init__(self, sessions: tuple[date, ...]) -> None:
+            self._sessions = sessions
+
+        def sessions(self) -> tuple[date, ...]:
+            return self._sessions
+
+    class _Overlay:
+        def __init__(self, sessions: tuple[date, ...]) -> None:
+            self.calendar = _Sessions(sessions)
+
+    class _Exchange:
+        def sessions(self) -> tuple[date, ...]:
+            return (
+                date(2026, 8, 14),
+                date(2026, 8, 18),  # a Tuesday: filtered by is_friday
+                date(2026, 8, 21),
+                date(2026, 8, 28),
+                date(2026, 9, 4),
+                date(2026, 9, 11),
+                date(2026, 9, 18),
+            )
+
+        def early_close_sessions(self) -> tuple[date, ...]:
+            return ()
+
+    # the overlay's own sessions carry NO 2026-08-21 (the vendor gap): the
+    # span endpoints alone bound the grid
+    overlay = _Overlay(
+        (
+            date(2026, 8, 14),
+            date(2026, 8, 28),
+            date(2026, 9, 4),
+            date(2026, 9, 11),
+            date(2026, 9, 18),
+        )
+    )
+    grid = _friday_grid(overlay, _Exchange())
+    assert grid.sessions() == (
+        date(2026, 8, 14),
+        date(2026, 8, 21),  # in the grid with no overlay session behind it
+        date(2026, 8, 28),
+        date(2026, 9, 4),
+        date(2026, 9, 11),
+        date(2026, 9, 18),
+    )
+
+
 def p4_work_manifest_main(argv: list[str]) -> int:
     """Load scripts/build_bars_work_manifest.py by path (the wave/p4
     script-loading pattern) and run its main."""

@@ -106,6 +106,101 @@ def write_bars_capture(capture_dir: Path) -> Path:
     return capture_dir
 
 
+# (window-A extension continuation, 2026-09-04) the GROWN-capture shape:
+# a second Friday's master appended in place, the earlier masters and the
+# spot anchor extended — exactly what artifacts/bars/capture looks like
+# after a continuation stage lands. The second master lists a DIFFERENT
+# in-band monthly expiry (58 DTE): the selection dedupes by ticker across
+# the whole run, so re-listing the first date's contracts would contribute
+# nothing — the real continuation's new Friday carries its own contracts.
+SECOND_AS_OF = "2025-03-19"
+SECOND_MONTHLY_EXPIRY = "2025-05-16"  # the third Friday of May 2025
+TWO_AS_OF_SPOT = {"SPY": {AS_OF: "580.00", SECOND_AS_OF: "581.00"}, "I:SPX": {AS_OF: "5750.00"}}
+
+
+def _second_row(ticker: str, strike: str, kind: str) -> str:
+    return contract_result(
+        ticker=ticker,
+        underlying="SPY",
+        expiration=SECOND_MONTHLY_EXPIRY,
+        strike=strike,
+        contract_type=kind,
+    )
+
+
+SECOND_SPY_ROWS: tuple[str, ...] = (
+    _second_row("O:SPY250516C00580000", "580", "call"),
+    _second_row("O:SPY250516P00580000", "580", "put"),
+    _second_row("O:SPY250516C00587500", "587.5", "call"),
+    _second_row("O:SPY250516C00570000", "570", "call"),
+    _second_row("O:SPY250516P00570000", "570", "put"),
+    _second_row("O:SPY250516C00590000", "590", "call"),
+    _second_row("O:SPY250516P00590000", "590", "put"),
+)
+
+
+def write_two_as_of_capture(capture_dir: Path) -> Path:
+    """The one-as-of scenario GROWN by one continuation Friday."""
+    write_bars_capture(capture_dir)
+    (capture_dir / "masters" / "spy_2025-03-19.json").write_text(
+        contracts_payload(results=SECOND_SPY_ROWS, as_of=SECOND_AS_OF), encoding="utf-8"
+    )
+    (capture_dir / "spot_proxy.json").write_text(
+        json.dumps(TWO_AS_OF_SPOT, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    return capture_dir
+
+
+def write_two_as_of_capture_manifest(capture_dir: Path, path: Path) -> Path:
+    """A self-consistent capture manifest over the grown two-as-of capture."""
+    from tree_options.data.massive_manifest import build_massive_capture_manifest
+
+    manifest = build_massive_capture_manifest(
+        capture_dir,
+        capture_version="m4b-capture/1",
+        budget_limit=45,
+        requests_charged=6,
+        client_stats={"requests": 6},
+        masters=[
+            {
+                "underlying": "SPY",
+                "as_of": AS_OF,
+                "pages": 1,
+                "rows": len(SPY_ROWS),
+                "complete": True,
+                "truncated": False,
+                "error": None,
+                "file": "spy_2025-03-05.json",
+            },
+            {
+                "underlying": "I:SPX",
+                "as_of": AS_OF,
+                "pages": 1,
+                "rows": len(SPX_ROWS),
+                "complete": True,
+                "truncated": False,
+                "error": None,
+                "file": "spx_2025-03-05.json",
+            },
+            {
+                "underlying": "SPY",
+                "as_of": SECOND_AS_OF,
+                "pages": 1,
+                "rows": len(SECOND_SPY_ROWS),
+                "complete": True,
+                "truncated": False,
+                "error": None,
+                "file": "spy_2025-03-19.json",
+            },
+        ],
+        bars=[],
+        spot_proxy=TWO_AS_OF_SPOT,
+        notes=["synthetic two-as-of continuation fixture (tests/fixtures/bars_sample.py)"],
+    )
+    path.write_text(manifest.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return path
+
+
 def write_capture_manifest(capture_dir: Path, path: Path) -> Path:
     """A self-consistent capture manifest over the synthetic capture."""
     from tree_options.data.massive_manifest import build_massive_capture_manifest

@@ -5180,6 +5180,170 @@ MUTANTS = [
             " registration)"
         ),
     ),
+    # ---- window-A extension CONTINUATION (owner ruling 2026-09-04: the
+    # two-cycle capture — enablement packet M421-M430) ----------------------
+    dict(
+        id="M421-as-of-min-boundary-exclusive",
+        owner="test_as_of_min_pins_only_the_continuation_work",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor=(
+            "        entries = [entry for entry in entries if entry.as_of >= as_of_min]"
+        ),
+        replacement=(
+            "        entries = [entry for entry in entries if entry.as_of > as_of_min]"
+        ),
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "the continuation filter is inclusive at the declared Friday —"
+            " an exclusive boundary silently drops that Friday's own work"
+            " from the continuation manifest (and empties a one-date"
+            " continuation entirely)"
+        ),
+    ),
+    dict(
+        id="M422-as-of-min-filter-dropped",
+        owner="test_as_of_min_pins_only_the_continuation_work",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor=(
+            "        entries = [entry for entry in entries if entry.as_of >= as_of_min]"
+        ),
+        replacement=("        entries = list(entries)"),
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "the continuation filter is load-bearing: without it a"
+            " continuation manifest over a GROWN capture re-pins the whole"
+            " grid (dates the standing era already captured) and its"
+            " pre-charge covers work the continuation will never do"
+        ),
+    ),
+    dict(
+        id="M423-verify-regeneration-unfiltered",
+        owner="test_as_of_min_manifest_verifies_by_regeneration",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor=("        as_of_min=manifest.as_of_min,"),
+        replacement=("        as_of_min=None,"),
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "verification regenerates through the manifest's OWN filter —"
+            " an unfiltered rebuild diverges from every continuation"
+            " manifest, so threading None would refuse all of them (and"
+            " never notice a manifest whose entries predate its declared"
+            " filter)"
+        ),
+    ),
+    dict(
+        id="M424-build-canonical-iso-dropped",
+        owner="test_non_canonical_as_of_min_refuses",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor=("            _require_canonical_iso_date(as_of_min, field=\"as_of_min\")"),
+        replacement=("            pass  # mutant: canonical-ISO check dropped"),
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "as_of comparison is lexicographic over ISO text — a"
+            " non-canonical filter date (2025-3-19) compares the wrong"
+            " side of every canonical date, silently filtering everything"
+            " or nothing; the build refuses it in the manifest error family"
+        ),
+    ),
+    dict(
+        id="M425-model-canonical-iso-dropped",
+        owner="test_a_non_canonical_as_of_min_refuses_at_parse",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor=("        _require_canonical_iso_date(value, field=\"as_of_min\")"),
+        replacement=("        pass  # mutant: model-level canonical-ISO check dropped"),
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "the MODEL refuses a non-canonical as_of_min at parse time —"
+            " the build-side check alone leaves hand-written manifest JSON"
+            " unguarded (an approval must never bind a manifest whose"
+            " filter text compares wrong)"
+        ),
+    ),
+    dict(
+        id="M426-duplicate-approval-guard-dropped",
+        owner="test_second_approval_of_the_same_tuple_refused_under_lock",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor=(
+            "        guard=_refuse_duplicate_approval(protocol_hash, work_manifest_sha256),"
+        ),
+        replacement=("        guard=None,"),
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "one approval per (protocol, work manifest) tuple: a duplicate"
+            " APPROVAL adds no authority the first does not carry, and a"
+            " rewritten reason must not ride what looks like a fresh grant"
+            " — refused under the ledger lock, race-safe"
+        ),
+    ),
+    dict(
+        id="M427-duplicate-guard-protocol-only",
+        owner="test_approval_of_the_same_protocol_over_a_new_work_manifest_appends",
+        file="src/tree_options/data/bars_manifest.py",
+        anchor=(
+            "                and record.protocol_hash == protocol_hash\n"
+            "                and record.work_manifest_sha256 == work_manifest_sha256"
+        ),
+        replacement=("                and record.protocol_hash == protocol_hash"),
+        selectors=[f"{U}/test_bars_manifest.py"],
+        invariant=(
+            "the duplicate-approval guard keys on the TUPLE, never the"
+            " protocol alone — keying on the protocol would refuse the"
+            " legal two-cycle continuation shape (a NEW work manifest"
+            " approved under the same live protocol)"
+        ),
+    ),
+    dict(
+        id="M428-approval-cli-binds-content-hash",
+        owner="test_appends_exactly_one_record_binding_the_verified_bytes",
+        file="scripts/append_bars_launch_approval.py",
+        anchor=("    work_file_sha = hashlib.sha256(raw).hexdigest()"),
+        replacement=("    work_file_sha = manifest.content_sha256"),
+        selectors=[f"{U}/test_append_bars_launch_approval.py"],
+        invariant=(
+            "the approval record binds the work manifest's RAW FILE sha256"
+            " — exactly what the launcher's authority join compares; binding"
+            " the model content hash instead strands every approval against"
+            " a digest nothing joins on"
+        ),
+    ),
+    dict(
+        id="M429-approval-cli-version-unpinned",
+        owner="test_a_stale_protocol_version_refuses",
+        file="scripts/append_bars_launch_approval.py",
+        anchor=(
+            "    if protocol.meta.protocol_version != REQUIRED_BARS_PROTOCOL_VERSION:"
+        ),
+        replacement=("    if False:"),
+        selectors=[f"{U}/test_append_bars_launch_approval.py"],
+        invariant=(
+            "the continuation approval binds the LIVE protocol version —"
+            " an unpinned CLI would mint a record under a stale protocol"
+            " yaml that the re-opened launcher gate can never open"
+        ),
+    ),
+    dict(
+        id="M430-wrapper-verify-regeneration-skipped",
+        owner="test_the_wrapper_verify_mode_is_read_only",
+        file="scripts/build_bars_work_manifest.py",
+        anchor=(
+            "    verify_bars_work_manifest(\n"
+            "        manifest,\n"
+            "        profile=profile,\n"
+            "        capture_manifest_sha256=capture_manifest_sha,\n"
+            "        capture_dir=args.capture_dir,\n"
+            "    )"
+        ),
+        replacement=(
+            "    _ = (profile, capture_manifest_sha, args.capture_dir)  # mutant: verify skipped"
+        ),
+        selectors=[f"{U}/test_p4_window_extension.py"],
+        invariant=(
+            "the wrapper's --verify REGENERATES the file through the same"
+            " library path the launcher will use — a parse-only verify"
+            " would bless a tampered or drifted manifest the preflight"
+            " must refuse"
+        ),
+    ),
     # ---- spotv2 capture lane (owner ruling 2026-08-29 "Capture it") ----------
     dict(
         id="M336-spotv2-close-through-float",
@@ -6210,7 +6374,8 @@ def main() -> int:
             " + M364-M369 remediation + M370-M373 remediation-2 +"
             " M374-M379 remediation-3 + M380 remediation-4 + M381-M386"
             " theory wave-0 + M387-M404 P4 window-A + M405-M407 successor"
-            " + M408-M417 window-A extension here)"
+            " + M408-M420 window-A extension + M421-M430 extension"
+            " continuation here)"
         ),
     )
     parser.add_argument(
