@@ -47,6 +47,7 @@ import stat
 import sys
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal, NoReturn
@@ -126,6 +127,28 @@ class SecondExecutionRefusedError(BarsManifestError):
             f"work manifest {work_manifest_sha256[:12]}…: {detail}; the launch"
             " authority is one-shot per work manifest — a crash after"
             " consumption is RECONCILIATION_REQUIRED, never a re-run"
+        )
+
+
+class DuplicateApprovalRefusedError(BarsManifestError):
+    """This (protocol, work manifest) tuple is already approved (owner CLI).
+
+    (window-A extension continuation, 2026-09-04) an approval RECORD is the
+    owner's grant of one (protocol, packet, census, work-manifest) tuple; a
+    second APPROVAL of the SAME tuple adds no authority the first does not
+    already carry, and silently chaining one would let a rewritten reason
+    ride what looks like a fresh grant. A NEW approval needs a NEW work
+    manifest (the continuation discipline: one manifest, one approval, one
+    launch). Checked inside the locked append, against the freshly replayed
+    view — the same race-safety the consumption guard has."""
+
+    def __init__(self, protocol_hash: str, work_manifest_sha256: str, detail: str) -> None:
+        super().__init__(
+            f"a BARS_LAUNCH_APPROVAL record already binds protocol"
+            f" {protocol_hash[:12]}… and work manifest"
+            f" {work_manifest_sha256[:12]}… ({detail}); the existing record"
+            " already grants this tuple — a new approval needs a NEW work"
+            " manifest, never a duplicate record"
         )
 
 
@@ -301,15 +324,32 @@ class BarsCostEstimate(StrictModel):
 
 
 class BarsWorkManifest(StrictModel):
-    """The pinned request list of one bars era, bound to profile + captures."""
+    """The pinned request list of one bars era, bound to profile + captures.
+
+    (window-A extension continuation, 2026-09-04) ``as_of_min`` is the
+    CONTINUATION filter: a manifest built over a grown capture may pin only
+    the work at or after a declared Friday, so a continuation manifest
+    describes exactly the requests the continuation launch will make — never
+    a re-pinned list over dates the standing era already captured. ``None``
+    is the legacy full-grid shape: a manifest without the field regenerates
+    exactly as it did before the field existed."""
 
     schema_version: str
     profile_sha256: str
     capture_manifest_sha256: str
+    as_of_min: str | None = None
     entries: tuple[BarsWorkEntry, ...] = Field(min_length=1)
     selection_notes: tuple[str, ...] = ()
     cost: BarsCostEstimate
     content_sha256: str
+
+    @field_validator("as_of_min")
+    @classmethod
+    def _as_of_min_canonical_iso(cls, value: str | None) -> str | None:
+        if value is None:
+            return value
+        _require_canonical_iso_date(value, field="as_of_min")
+        return value
 
     @model_validator(mode="after")
     def _entries_canonically_ordered(self) -> BarsWorkManifest:
@@ -322,9 +362,34 @@ class BarsWorkManifest(StrictModel):
         return self
 
 
+def _require_canonical_iso_date(value: str, *, field: str) -> None:
+    """Refuse a non-canonical date text: entry ``as_of`` comparison is
+    lexicographic over ISO text, so ``2026-8-28`` would silently filter the
+    wrong side of every date. Canonical form only (round-trips through
+    ``date.fromisoformat``)."""
+    try:
+        parsed = date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{field} must be an ISO date (YYYY-MM-DD), got {value!r}") from exc
+    if parsed.isoformat() != value:
+        raise ValueError(
+            f"{field} must be a canonical ISO date (YYYY-MM-DD), got {value!r}"
+            " — lexicographic as_of comparison is only correct on canonical text"
+        )
+
+
 def work_manifest_content_sha256(manifest: BarsWorkManifest) -> str:
+    """The work manifest's content hash.
+
+    (Codex round-1 finding 3, 2026-09-04) a manifest whose ``as_of_min`` is
+    unset — every standing era manifest — must hash EXACTLY as it did before
+    the field existed, so the unset field is dropped from the preimage rather
+    than serialized as null (the standing artifacts/bars/work-manifest.json
+    at 95129b58… must keep verifying). A set filter stays content-bound.
+    """
     core = manifest.model_copy(update={"content_sha256": ""})
-    return sha256_hex(BARS_WORK_DOMAIN + canonical_bytes(core))
+    exclude = {"as_of_min"} if core.as_of_min is None else None
+    return sha256_hex(BARS_WORK_DOMAIN + canonical_bytes(core, exclude=exclude))
 
 
 # ---- the unmodified bridge (selection + Budget) ------------------------------------
@@ -664,12 +729,21 @@ def build_bars_work_manifest(
     capture_manifest: Path,
     budget_limit: int,
     max_attempts_per_request: int | None = None,
+    as_of_min: str | None = None,
 ) -> BarsWorkManifest:
     """Regenerate the work manifest from the captures + the declared profile.
 
     Deterministic over identical inputs: the same capture bytes, the same
     profile, and the same cost inputs yield byte-identical output (no clock,
     no host paths). Re-runs the bridge's UNMODIFIED ``select_atm_grid_bars``.
+
+    (window-A extension continuation, 2026-09-04) ``as_of_min`` windows the
+    MASTERS before selection — a continuation manifest over a GROWN capture
+    pins exactly the work a FRESH run over the window's Fridays would
+    request, deduped within the window, and its cost pre-charge covers only
+    that work. A window that selects no masters names the filter (never the
+    profile), and the cost arithmetic counts only the window's entries (the
+    budget rail must cover what the continuation will actually request).
 
     Round-7 review fix (2026-08-24, finding 3): the capture manifest bytes
     are read ONCE at the top and threaded into ``rebuild_master_captures``
@@ -688,6 +762,11 @@ def build_bars_work_manifest(
         if max_attempts_per_request is None
         else max_attempts_per_request
     )
+    if as_of_min is not None:
+        try:
+            _require_canonical_iso_date(as_of_min, field="as_of_min")
+        except ValueError as exc:
+            raise BarsManifestError(f"as_of_min invalid: {exc}") from None
     try:
         manifest_raw = Path(capture_manifest).read_bytes()
     except OSError as exc:
@@ -699,6 +778,25 @@ def build_bars_work_manifest(
         capture_manifest=capture_manifest,
         capture_manifest_raw=manifest_raw,
     )
+    if as_of_min is not None:
+        # (Codex round-1 finding 2, 2026-09-04) the window is applied to the
+        # MASTERS before selection, so the continuation manifest picks what a
+        # FRESH run over the window's dates picks — deduped WITHIN the window,
+        # never across the whole retained history. Filtering the picked
+        # entries instead would silently drop every contract first chosen
+        # before the window yet re-listed inside it (adjacent Fridays share
+        # the in-band monthly), and the approved work would not cover what
+        # the launch actually fetches.
+        window_floor = date.fromisoformat(as_of_min)
+        windowed = [c for c in captures if c.as_of >= window_floor]
+        if not windowed:
+            raise BarsManifestError(
+                f"the as_of_min continuation filter ({as_of_min}) selected no"
+                " contracts — the capture carries no selected master at or after"
+                " that date; a continuation manifest with zero requests is a"
+                " configuration defect, not an empty manifest"
+            )
+        captures = windowed
     bridge = _capture_bridge()
     picks, notes = bridge.select_atm_grid_bars(
         captures,
@@ -740,6 +838,7 @@ def build_bars_work_manifest(
         schema_version=BARS_WORK_SCHEMA_VERSION,
         profile_sha256=profile.content_sha256,
         capture_manifest_sha256=sha256_hex(manifest_raw),
+        as_of_min=as_of_min,
         entries=order_entries(entries),
         selection_notes=tuple(notes),
         cost=cost,
@@ -932,6 +1031,11 @@ def verify_bars_work_manifest(
         capture_manifest=candidate,
         budget_limit=manifest.cost.budget_limit,
         max_attempts_per_request=manifest.cost.max_attempts_per_request,
+        # (window-A extension continuation) the regeneration honors the
+        # manifest's OWN continuation filter — a filtered manifest must
+        # regenerate through the same filter or every continuation manifest
+        # would "diverge" from its own unfiltered rebuild
+        as_of_min=manifest.as_of_min,
     )
     # Round-2 fix, layer 2: compare the FULL manifest, not just entries —
     # the capture-manifest binding, profile pin, cost, and notes must all
@@ -1493,6 +1597,32 @@ def _refuse_duplicate_consumption(
     return guard
 
 
+def _refuse_duplicate_approval(
+    protocol_hash: str,
+    work_manifest_sha256: str,
+) -> Callable[[BarsLedgerView], None]:
+    """(window-A extension continuation, 2026-09-04) no second APPROVAL may
+    bind the same (protocol, work manifest) tuple — evaluated under the
+    ledger flock, mirroring the consumption guard. Approvals of the same
+    protocol over DIFFERENT work manifests stay legitimate (round-4 review
+    fix, finding 6: APPROVAL(P, M1) then APPROVAL(P, M2) is a legal ledger)."""
+
+    def guard(view: BarsLedgerView) -> None:
+        for record in view.records:
+            if (
+                record.kind == KIND_BARS_LAUNCH_APPROVAL
+                and record.protocol_hash == protocol_hash
+                and record.work_manifest_sha256 == work_manifest_sha256
+            ):
+                raise DuplicateApprovalRefusedError(
+                    protocol_hash,
+                    work_manifest_sha256,
+                    f"record {record.record_sha256[:12]}…, appended at epoch {record.at_epoch}",
+                )
+
+    return guard
+
+
 def _append_bars_kind(
     root: Path,
     kind: BarsAuthorityKind,
@@ -1531,7 +1661,11 @@ def append_bars_launch_approval(
     at_epoch: int,
 ) -> BarsAuthorityRecord:
     """Record the owner's approval of one (protocol, packet, census, manifest)
-    tuple (library API — the CLI never writes authority)."""
+    tuple (library API — the CLI never writes authority).
+
+    (window-A extension continuation, 2026-09-04) duplicate-tuple refused
+    under the lock: the same (protocol, work manifest) pair is approved
+    exactly once — a second approval needs a NEW work manifest."""
     return _append_bars_kind(
         root,
         KIND_BARS_LAUNCH_APPROVAL,
@@ -1541,6 +1675,7 @@ def append_bars_launch_approval(
         work_manifest_sha256=work_manifest_sha256,
         reason=reason,
         at_epoch=at_epoch,
+        guard=_refuse_duplicate_approval(protocol_hash, work_manifest_sha256),
     )
 
 
@@ -1596,6 +1731,7 @@ __all__ = [
     "BarsWorkEntry",
     "BarsWorkManifest",
     "DraftParameter",
+    "DuplicateApprovalRefusedError",
     "SecondExecutionRefusedError",
     "SelectionProfile",
     "append_bars_launch_approval",

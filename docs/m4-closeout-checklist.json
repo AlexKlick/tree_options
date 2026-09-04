@@ -136,7 +136,7 @@
       "--work-manifest", "artifacts/bars/work-manifest.json"
     ],
     "expect_exit": 2,
-    "description": "Read-only (preflight is the default): on protocol 0.2.0 with no BARS_LAUNCH_APPROVAL record, exit 2 is the DOCUMENTED correct answer, not a failure to fix (runbook 4.5).",
+    "description": "Read-only (preflight is the default): on the live 0.2.2 protocol with no BARS_LAUNCH_APPROVAL record binding its hash, exit 2 on the RECORD clause is the DOCUMENTED correct answer, not a failure to fix (runbook 4.5). After the continuation approval is appended, the documented answer for a continuation launch becomes exit 3 on the census clause (the census stays sealed at the coverage era; see docs/window-a-extension-runbook.md).",
     "mutates": false
   },
   {

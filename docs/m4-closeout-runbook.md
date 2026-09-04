@@ -348,12 +348,22 @@ uv run --frozen python scripts/launch_bars_era.py \
 ```
 
 Omitting `--preflight` runs preflight; it is read-only. On main today
-the honest answer is **exit 2** (the protocol is 0.2.0 and no
-BARS_LAUNCH_APPROVAL record exists) — that is the documented correct
-answer, not a failure to fix.
+the honest answer is **exit 2** on the RECORD clause — (window-A
+extension continuation, 2026-09-04) the gate is re-opened at the LIVE
+protocol 0.2.2, so the loaded protocol passes the version check and the
+refusal is that no `BARS_LAUNCH_APPROVAL` record in the live ledger
+binds the loaded 0.2.2 hash (the standing 2026-08-26 approval binds
+the 0.2.1-era hash). That is the documented correct answer, not a
+failure to fix. After the owner appends the continuation approval
+(`scripts/append_bars_launch_approval.py`), the protocol gate opens and
+the honest answer for a CONTINUATION launch becomes **exit 3** on the
+census clause — the census deliberately stays sealed at the coverage
+era; the continuation's authority is the ledger record + the journaled
+run store, never a second census (see
+`docs/window-a-extension-runbook.md`).
 
 Execute is **doubly gated** and BOTH gates must pass: the loaded
-protocol must be exactly 0.2.1 with a hash matching a
+protocol must be exactly 0.2.2 with a hash matching a
 BARS_LAUNCH_APPROVAL authority record at `artifacts/bars-authority/`,
 AND that record must bind the work manifest. The CLI `--execute` path
 moreover refuses outright (exit 10, nothing touched): the runner is a
@@ -562,9 +572,12 @@ Exit codes (contract):
 Exit codes (contract):
   0  preflight: every gate passed (nothing started); execute: consumed + run
   1  unexpected error
-  2  protocol gate: not 0.2.1, or no BARS_LAUNCH_APPROVAL record binds the
-     current protocol hash (correct on main today)
+  2  protocol gate: not 0.2.2, or no BARS_LAUNCH_APPROVAL record binds the
+     current protocol hash (the record clause is the refusal on main
+     until the continuation approval is appended)
   3  census gate: census invalid, unhashable, or stale vs the capture manifest
+     (the DOCUMENTED answer for a continuation launch once the approval
+     exists — the census stays sealed at the coverage era)
   4  refuse-fallback: an override flag differs from its pinned constant
   5  run-state gate: store missing/unreadable, state != BARS_READY, or an
      existing lease (HELD = duplicate launch)

@@ -77,6 +77,42 @@ def test_a_longer_world_admits_the_earlier_boundary_dates() -> None:
     assert len(permitted) == 13
 
 
+def test_a_world_through_2026_09_18_admits_all_thirteen_at_the_exact_boundary() -> None:
+    """(window-A extension, owner ruling 2026-09-04: the two-cycle capture)
+    THE seal-math pin for the continuation: with the grid carried through
+    Friday 2026-09-18, the sealed 08-14 decision has EXACTLY five grid
+    steps of headroom — 08-21, 08-28, 09-04, 09-11, 09-18 — so every sealed
+    date is label-complete and the extension scope (all five excluded
+    dates) completes. 08-21 counts as a grid step although the vendor
+    carried no close that day: the grid is calendar-Fridays-within-span
+    (the 08-21 MASTER exists), not the set of closes — pinned here by
+    membership, pinned at the grid constructor in the extension tests."""
+    grown = _grid(date(2024, 8, 9), date(2026, 9, 18))
+    assert date(2026, 8, 21) in grown  # the vendor-gap Friday is a grid step
+    steps_after_0814 = [s for s in grown if s > date(2026, 8, 14)]
+    assert steps_after_0814 == [
+        date(2026, 8, 21),
+        date(2026, 8, 28),
+        date(2026, 9, 4),
+        date(2026, 9, 11),
+        date(2026, 9, 18),
+    ]
+    permitted = label_complete_permitted_sessions(grown, date(2026, 9, 18), _H)
+    assert len(permitted) == 13
+    assert permitted[-1] == date(2026, 8, 14)  # exactly-5 counts: >= H holds
+
+
+def test_a_world_one_friday_short_leaves_08_14_immature() -> None:
+    """The other side of the boundary: through 09-11 only, 08-14 has four
+    steps of headroom — the all-or-nothing extension scope cannot complete
+    on that world (the capture MUST reach 09-18, or 09-25 if the vendor
+    gaps another scoped Friday)."""
+    short = _grid(date(2024, 8, 9), date(2026, 9, 11))
+    permitted = label_complete_permitted_sessions(short, date(2026, 9, 11), _H)
+    assert permitted[-1] == date(2026, 8, 7)
+    assert date(2026, 8, 14) not in permitted
+
+
 def test_world_last_between_grid_sessions_resolves_to_the_prior_grid_session() -> None:
     """The world's last BAR session need not be a grid session: the rule
     measures from the last grid session at or before it (a Wednesday

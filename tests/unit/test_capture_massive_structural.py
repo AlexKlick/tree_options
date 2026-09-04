@@ -1611,3 +1611,383 @@ def test_a_full_capture_round_trips_into_the_inspector(
     assert Decimal(FRACTIONAL_STRIKE) in {c.strike for m in masters for c in m.contracts}, (
         "the fractional strike round-tripped exactly"
     )
+
+
+# ---- (Codex round-1 findings 1+2, 2026-09-04) the continuation lanes --------
+# The window-A-extension capture grows an EXISTING world: the bridge needs a
+# merge for the v1 spot history (the plain run used to overwrite it with only
+# the new dates) and a manifest-driven bars mode (the approved work manifest,
+# not a fresh selection, names the wire work — history's already-captured
+# series are left standing).
+
+FRI1 = date(2025, 3, 7)  # the "history" Friday
+FRI2 = date(2025, 3, 14)  # the "continuation" Friday
+SHARED_MONTHLY = date(2025, 4, 18)  # 42/35 DTE: in the 30-60 band from BOTH
+RELISTED = "O:SPY250418C00560000"  # selected at FRI1 AND re-listed at FRI2
+RELISTED_P = "O:SPY250418P00560000"  # FRI1's other grid contract
+FRESH_C = "O:SPY250418C00580000"
+FRESH_P = "O:SPY250418P00580000"
+
+
+def _spot_two_sessions(
+    ticker: str, first: date, first_close: str, second: date, second_close: str
+) -> str:
+    """One spot RANGE response carrying a different close per session (the
+    multi-date run fetches min..max as_of in one request)."""
+    rows = [
+        f'{{"v":1,"vw":1,"o":1,"c":{close},"h":1,"l":1,"t":{et_midnight_ms(day)},"n":1}}'
+        for day, close in ((first, first_close), (second, second_close))
+    ]
+    return (
+        f'{{"ticker":"{ticker}","resultsCount":{len(rows)},"adjusted":true,'
+        f'"results":[{",".join(rows)}],"status":"OK","request_id":"a"}}'
+    )
+
+
+def _fri2_master_rows() -> list[str]:
+    return [
+        contract_json("SPY", SHARED_MONTHLY, "560", "call"),  # the re-listing
+        contract_json("SPY", SHARED_MONTHLY, "580", "call"),
+        contract_json("SPY", SHARED_MONTHLY, "580", "put"),
+    ]
+
+
+def _two_friday_routes() -> dict[str, str]:
+    """The history run's + the continuation's routes. FRI2 (spot 570)
+    re-lists FRI1's 560 call and adds a 580 call/put, so the fresh window
+    selection differs from the globally-deduped one — the finding-2 shape."""
+    return {
+        # the history run asks FRI1..FRI1; the continuation asks FRI1..FRI2
+        spot_url("SPY", FRI1, FRI1): spot_page("SPY", [FRI1], close="560"),
+        spot_url("SPY", FRI1, FRI2): _spot_two_sessions("SPY", FRI1, "560", FRI2, "570"),
+        contracts_url("SPY", FRI1): contracts_page(
+            [
+                contract_json("SPY", SHARED_MONTHLY, "560", "call"),
+                contract_json("SPY", SHARED_MONTHLY, "560", "put"),
+            ],
+            request_id="r1",
+        ),
+        contracts_url("SPY", FRI2): contracts_page(_fri2_master_rows(), request_id="r2"),
+        # the history run's two series (FRI1's grid: the 560 call and put)
+        aggs_url(RELISTED, FRI1, SHARED_MONTHLY): bars_page(RELISTED, [date(2025, 3, 10)]),
+        aggs_url(RELISTED_P, FRI1, SHARED_MONTHLY): bars_page(RELISTED_P, [date(2025, 3, 10)]),
+        # the continuation's new series
+        aggs_url(FRESH_C, FRI2, SHARED_MONTHLY): bars_page(FRESH_C, [date(2025, 3, 17)]),
+        aggs_url(FRESH_P, FRI2, SHARED_MONTHLY): bars_page(FRESH_P, [date(2025, 3, 17)]),
+    }
+
+
+def _history_argv(out: Path) -> list[str]:
+    """The standing era's shape: one process, one Friday, bars in-run."""
+    return [
+        "--out-dir",
+        str(out),
+        "--budget",
+        "2100",
+        "--underlyings",
+        "SPY",
+        "--as-of",
+        FRI1.isoformat(),
+        "--bars",
+        "2000",
+    ]
+
+
+def _drive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, routes: dict[str, str]
+) -> RoutingVendor:
+    vendor = RoutingVendor(routes)
+    monkeypatch.setattr(
+        cap, "client_from_environment", lambda **kwargs: make_client(tmp_path, vendor)
+    )
+    return vendor
+
+
+def _stage1_argv(out: Path) -> list[str]:
+    return [
+        "--out-dir",
+        str(out),
+        "--budget",
+        "40",
+        "--underlyings",
+        "SPY",
+        "--as-of",
+        FRI1.isoformat(),
+        "--as-of",
+        FRI2.isoformat(),
+        "--bars",
+        "0",
+        "--spot-merge-existing",
+    ]
+
+
+def _continuation_manifest(out: Path, tmp_path: Path) -> Path:
+    """The continuation work manifest over the grown capture (window FRI2)."""
+    from tree_options.data.bars_manifest import build_bars_work_manifest, load_selection_profile
+
+    wm = build_bars_work_manifest(
+        out,
+        profile=load_selection_profile(REPO_ROOT / "data" / "bars" / "selection-profile.json"),
+        capture_manifest=out / "capture_manifest.json",
+        budget_limit=8000,
+        as_of_min=FRI2.isoformat(),
+    )
+    assert {e.ticker for e in wm.entries} == {RELISTED, FRESH_C, FRESH_P}
+    path = tmp_path / "work-manifest.json"
+    path.write_text(wm.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def test_spot_merge_existing_unions_history_and_is_idempotent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 1: a continuation run must MERGE the v1 spot history, not
+    overwrite it — after the run the proxy covers the history AND the new
+    Fridays, and replaying the same dates is a no-op (equal closes pass)."""
+    out = tmp_path / "captures"
+    out.mkdir(parents=True)
+    (out / "spot_proxy.json").write_text(
+        json.dumps({"SPY": {"2025-02-28": "555"}}), encoding="utf-8"
+    )
+    vendor = _drive(tmp_path, monkeypatch, _two_friday_routes())
+
+    assert cap.main(_stage1_argv(out)) == 0
+    merged = json.loads((out / "spot_proxy.json").read_text(encoding="utf-8"))
+    assert merged["SPY"] == {
+        "2025-02-28": "555",
+        FRI1.isoformat(): "560",
+        FRI2.isoformat(): "570",
+    }
+    live = len(vendor.calls)
+    before = (out / "spot_proxy.json").read_bytes()
+
+    assert cap.main(_stage1_argv(out)) == 0  # the resume path: same closes
+    assert (out / "spot_proxy.json").read_bytes() == before
+    assert len(vendor.calls) == live, "the replay served everything from cache"
+
+
+def test_spot_merge_refuses_a_conflicting_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A different close for an already-pinned session is a vendor revision
+    of history — refused (exit 2), the history file left untouched."""
+    out = tmp_path / "captures"
+    out.mkdir(parents=True)
+    (out / "spot_proxy.json").write_text(
+        json.dumps({"SPY": {FRI2.isoformat(): "999"}}), encoding="utf-8"
+    )
+    _drive(
+        tmp_path,
+        monkeypatch,
+        {spot_url("SPY", FRI2, FRI2): spot_page("SPY", [FRI2], close="570")},
+    )
+
+    rc = cap.main(
+        [
+            "--out-dir",
+            str(out),
+            "--budget",
+            "20",
+            "--underlyings",
+            "SPY",
+            "--as-of",
+            FRI2.isoformat(),
+            "--bars",
+            "0",
+            "--spot-merge-existing",
+        ]
+    )
+    assert rc == 2
+    assert json.loads((out / "spot_proxy.json").read_text(encoding="utf-8")) == {
+        "SPY": {FRI2.isoformat(): "999"}
+    }
+
+
+def test_without_the_merge_flag_the_overwrite_stands(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Era-compat pin: without --spot-merge-existing the run overwrites the
+    proxy with only its own dates — exactly the behavior the standing era
+    was captured under (one process, every Friday, one accumulated map)."""
+    out = tmp_path / "captures"
+    out.mkdir(parents=True)
+    (out / "spot_proxy.json").write_text(
+        json.dumps({"SPY": {"2025-02-28": "555"}}), encoding="utf-8"
+    )
+    _drive(tmp_path, monkeypatch, _two_friday_routes())
+
+    argv = [a for a in _stage1_argv(out)]
+    argv.remove("--spot-merge-existing")
+    assert cap.main(argv) == 0
+    assert json.loads((out / "spot_proxy.json").read_text(encoding="utf-8")) == {
+        "SPY": {FRI1.isoformat(): "560", FRI2.isoformat(): "570"}
+    }
+
+
+def test_bars_from_manifest_fetches_exactly_the_approved_work(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Finding 2: stage 3 consumes the APPROVED work manifest — only its
+    entries go to the wire, a series already on disk is left standing
+    (never overwritten), and the end state satisfies the inventory."""
+    out = tmp_path / "captures"
+    vendor = _drive(tmp_path, monkeypatch, _two_friday_routes())
+    assert cap.main(_history_argv(out)) == 0  # the era: FRI1 + its series
+
+    # post-era, the already-captured series is a pinned artifact — stamp it
+    # so the never-overwritten claim is byte-exact (the continuation stage-1
+    # manifest's directory scan pins these very bytes into files[])
+    standing = out / "bars" / f"{RELISTED.replace(':', '_')}.json"
+    sentinel = '{"results":[{"v":1}],"sentinel":true}\n'
+    standing.write_text(sentinel, encoding="utf-8")
+    assert cap.main(_stage1_argv(out)) == 0
+    wm_path = _continuation_manifest(out, tmp_path)
+    live = len(vendor.calls)
+
+    rc = cap.main(
+        [
+            "--out-dir",
+            str(out),
+            "--budget",
+            "2100",
+            "--underlyings",
+            "SPY",
+            "--as-of",
+            FRI1.isoformat(),
+            "--as-of",
+            FRI2.isoformat(),
+            "--bars",
+            "2000",
+            "--bars-from-manifest",
+            str(wm_path),
+            "--spot-merge-existing",
+        ]
+    )
+    assert rc == 0
+    # ONLY the two new series hit the wire — masters and spot replayed from
+    # the cache, and the re-listed contract was skipped, not re-fetched.
+    assert set(vendor.calls[live:]) == {
+        aggs_url(FRESH_C, FRI2, SHARED_MONTHLY),
+        aggs_url(FRESH_P, FRI2, SHARED_MONTHLY),
+    }
+    assert standing.read_text(encoding="utf-8") == sentinel, (
+        "an already-captured series is never overwritten"
+    )
+    assert {p.name for p in (out / "bars").glob("*.json")} == {
+        f"{RELISTED.replace(':', '_')}.json",
+        f"{RELISTED_P.replace(':', '_')}.json",
+        f"{FRESH_C.replace(':', '_')}.json",
+        f"{FRESH_P.replace(':', '_')}.json",
+    }
+    verify_massive_capture_manifest(
+        load_massive_capture_manifest(out / "capture_manifest.json"),
+        out,
+        capture_version=cap.CAPTURE_VERSION,
+    )
+
+
+def test_bars_from_manifest_reports_an_inventory_mismatch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A manifest entry whose series cannot be written (no prints) leaves
+    the inventory short — the run must SAY so and exit nonzero."""
+    out = tmp_path / "captures"
+    routes = dict(_two_friday_routes())
+    routes[aggs_url(FRESH_C, FRI2, SHARED_MONTHLY)] = (
+        '{"ticker":"x","results":[],"status":"OK","request_id":"agg"}'
+    )
+    _drive(tmp_path, monkeypatch, routes)
+    assert cap.main(_history_argv(out)) == 0  # the era owns the re-listed series
+    assert cap.main(_stage1_argv(out)) == 0
+    wm_path = _continuation_manifest(out, tmp_path)
+
+    rc = cap.main(
+        [
+            "--out-dir",
+            str(out),
+            "--budget",
+            "2100",
+            "--underlyings",
+            "SPY",
+            "--as-of",
+            FRI1.isoformat(),
+            "--as-of",
+            FRI2.isoformat(),
+            "--bars",
+            "2000",
+            "--bars-from-manifest",
+            str(wm_path),
+            "--spot-merge-existing",
+        ]
+    )
+    assert rc == 5
+    err = capsys.readouterr().err
+    assert "INVENTORY MISMATCH" in err
+    assert FRESH_C in err
+
+
+def test_bars_from_manifest_refuses_a_tampered_manifest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A manifest that no longer binds its own bytes never reaches the
+    wire — refused before any request."""
+    out = tmp_path / "captures"
+    vendor = _drive(tmp_path, monkeypatch, _two_friday_routes())
+    assert cap.main(_stage1_argv(out)) == 0
+    wm_path = _continuation_manifest(out, tmp_path)
+
+    doc = json.loads(wm_path.read_text(encoding="utf-8"))
+    doc["entries"][0]["strike"] = "1"
+    wm_path.write_text(json.dumps(doc), encoding="utf-8")
+    live = len(vendor.calls)
+
+    rc = cap.main(
+        [
+            "--out-dir",
+            str(out),
+            "--budget",
+            "40",
+            "--underlyings",
+            "SPY",
+            "--as-of",
+            FRI2.isoformat(),
+            "--bars",
+            "2000",
+            "--bars-from-manifest",
+            str(wm_path),
+        ]
+    )
+    assert rc == 2
+    assert len(vendor.calls) == live, "nothing went to the wire"
+
+    # the sneaky variant: the tamper is RE-HASHED, so the self-hash binds and
+    # only the bridge's own REGENERATION can catch it ("does not reproduce")
+    from tree_options.data.bars_manifest import (
+        BarsWorkManifest,
+        work_manifest_content_sha256,
+    )
+
+    doc = json.loads(wm_path.read_text(encoding="utf-8"))
+    doc["entries"][0]["strike"] = "2"
+    doc["content_sha256"] = ""
+    doc["content_sha256"] = work_manifest_content_sha256(BarsWorkManifest.model_validate(doc))
+    wm_path.write_text(json.dumps(doc), encoding="utf-8")
+
+    rc = cap.main(
+        [
+            "--out-dir",
+            str(out),
+            "--budget",
+            "40",
+            "--underlyings",
+            "SPY",
+            "--as-of",
+            FRI2.isoformat(),
+            "--bars",
+            "2000",
+            "--bars-from-manifest",
+            str(wm_path),
+        ]
+    )
+    assert rc == 2
+    assert len(vendor.calls) == live, "still nothing went to the wire"

@@ -684,6 +684,54 @@ def capture_bars(
     return files, notes
 
 
+class SpotMergeRefused(RuntimeError):
+    """A continuation run's close conflicts with the pinned spot history."""
+
+
+def merge_spot_proxy(
+    existing_path: Path, new: Mapping[str, Mapping[str, str]]
+) -> dict[str, dict[str, str]]:
+    """Union a continuation run's closes into the standing v1 spot history.
+
+    (Codex round-1 finding 1, 2026-09-04) the plain run initializes ``spot``
+    empty and overwrites ``spot_proxy.json`` with ONLY its own dates — fine
+    for the one-process era, world-destroying for a continuation. This merge
+    is the continuation's write policy: a session only the new run carries is
+    added; a session both carry must agree token-for-token — an equal replay
+    is the resume path, a DIFFERENT close is a vendor revision of pinned
+    history the operator must rule on (refused, the file left untouched).
+    """
+    try:
+        payload = json.loads(existing_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise SpotMergeRefused(f"{existing_path}: unreadable spot history ({exc})") from None
+    if not isinstance(payload, dict):
+        raise SpotMergeRefused(f"{existing_path}: spot history is not an object")
+    for name, pinned_sessions in payload.items():
+        if (
+            not isinstance(name, str)
+            or not isinstance(pinned_sessions, dict)
+            or not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in pinned_sessions.items()
+            )
+        ):
+            raise SpotMergeRefused(f"{existing_path}: {name!r} session map is malformed")
+    merged: dict[str, dict[str, str]] = {}
+    for name in sorted(set(payload) | set(new)):
+        sessions: dict[str, str] = dict(payload.get(name) or {})
+        for session, close in sorted((new.get(name) or {}).items()):
+            prior = sessions.get(session)
+            if prior is not None and prior != close:
+                raise SpotMergeRefused(
+                    f"{name} {session}: pinned close {prior!r} != fresh close {close!r}"
+                    " — a vendor revision of pinned history must be ruled on,"
+                    " never merged"
+                )
+            sessions[session] = close
+        merged[name] = sessions
+    return merged
+
+
 def build_manifest(
     client: MassiveClient,
     out_dir: Path,
@@ -747,6 +795,8 @@ def run_capture(
     bars_expiries: str | None = None,
     bars_sides: str | None = None,
     dry_run: bool = False,
+    spot_merge_existing: bool = False,
+    manifest_picks: Sequence[tuple[str, date, date]] | None = None,
 ) -> dict[str, Any]:
     """Spot proxy, then contract masters, then bars -- writing as we go.
 
@@ -756,6 +806,14 @@ def run_capture(
     which is what keeps the CLI defaults and the test monkeypatches on one
     source of truth. `bars_mode` picks the bar strategy: "representative"
     (the default, unchanged) or the "atm-grid" grid of `select_atm_grid_bars`.
+
+    (Codex round-1 findings 1+2, 2026-09-04) the two continuation lanes:
+    `spot_merge_existing` unions this run's closes into the standing
+    `spot_proxy.json` instead of overwriting it (a continuation must GROW the
+    v1 history, never replace it), and `manifest_picks` — the verified
+    entries of an approved work manifest — REPLACES the fresh selection, so
+    the wire work is exactly the approved work; a manifest series already on
+    disk is left standing, never overwritten.
     """
     underlyings = UNDERLYINGS if underlyings is None else tuple(underlyings)
     as_ofs = AS_OF_DATES if as_ofs is None else tuple(as_ofs)
@@ -788,9 +846,23 @@ def run_capture(
         )
         notes.extend(spot_notes)
         if spot:
+            spot_proxy_path = out_dir / "spot_proxy.json"
+            if spot_merge_existing and spot_proxy_path.exists():
+                try:
+                    spot = merge_spot_proxy(spot_proxy_path, spot)
+                except SpotMergeRefused:
+                    # The finally-block manifest must attest the DISK truth —
+                    # the untouched history — never the refused run's map,
+                    # or the next rebuild would anchor off a world that
+                    # isn't there.
+                    try:
+                        spot = json.loads(spot_proxy_path.read_text(encoding="utf-8"))
+                    except (OSError, ValueError):
+                        spot = {}
+                    raise
             # Written as soon as it exists, not at the end: a crash later in
             # the run must not strand the spot data in memory only.
-            (out_dir / "spot_proxy.json").write_text(
+            spot_proxy_path.write_text(
                 json.dumps(spot, indent=2, sort_keys=True) + "\n", encoding="utf-8"
             )
 
@@ -827,7 +899,31 @@ def run_capture(
         notes.extend(deepened)
 
         budget.release(bars_wanted)
-        if bars_mode == "atm-grid":
+        if manifest_picks is not None:
+            # The approved-work lane: the verified work manifest names the
+            # requests, a fresh selection never re-decides them. A series
+            # already on disk is left standing (the era's captured data is
+            # never overwritten) and does not pay wire budget.
+            standing = [
+                ticker
+                for ticker, _start, _end in manifest_picks
+                if (bars_dir / f"{ticker.replace(':', '_')}.json").exists()
+            ]
+            if standing:
+                notes.append(
+                    f"{len(standing)} manifest series already on disk — left"
+                    f" standing: {', '.join(sorted(standing))}"
+                )
+            picks = [
+                (ticker, start, end)
+                for ticker, start, end in manifest_picks
+                if ticker not in set(standing)
+            ]
+            pick_notes = [
+                f"bars driven by the verified work manifest ({len(manifest_picks)}"
+                f" entries, {len(standing)} left standing)"
+            ]
+        elif bars_mode == "atm-grid":
             picks, pick_notes = select_atm_grid_bars(
                 captures,
                 spot,
@@ -1003,6 +1099,33 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--spot-merge-existing",
+        action="store_true",
+        help=(
+            "continuation: union this run's closes into the standing spot_proxy.json"
+            " instead of overwriting it. An equal replay of a pinned session is a"
+            " no-op (the resume path); a DIFFERENT close is refused — a vendor"
+            " revision of pinned history must be ruled on, never merged"
+        ),
+    )
+    parser.add_argument(
+        "--bars-from-manifest",
+        type=Path,
+        help=(
+            "continuation: fetch exactly the entries of this verified work manifest"
+            " (verified here against --out-dir and --selection-profile by full"
+            " regeneration before any wire request). A manifest series already on"
+            " disk is left standing; a manifest entry with no series on disk at the"
+            " end of the run is an INVENTORY MISMATCH (exit 5)"
+        ),
+    )
+    parser.add_argument(
+        "--selection-profile",
+        type=Path,
+        default=REPO_ROOT / "data" / "bars" / "selection-profile.json",
+        help="the committed selection profile --bars-from-manifest must verify against",
+    )
+    parser.add_argument(
         "--cache-dir", type=Path, help="response cache location (default: artifacts/massive-cache)"
     )
     parser.add_argument("--timeout", type=float, help="per-request HTTP timeout in seconds")
@@ -1032,6 +1155,39 @@ def main(argv: list[str] | None = None) -> int:
 
     budget = Budget(limit=args.budget)
     client = client_from_environment(**client_kwargs)
+    manifest_picks: list[tuple[str, date, date]] | None = None
+    work_manifest = None
+    if args.bars_from_manifest is not None:
+        # (Codex round-1 finding 2, 2026-09-04) the approved-work lane: load
+        # and FULLY verify the work manifest (self-hash + regeneration
+        # against this out-dir's capture manifest and the committed profile)
+        # BEFORE any wire request, then let the run fetch exactly its entries.
+        from tree_options.data.bars_manifest import (
+            BarsManifestError,
+            load_selection_profile,
+            parse_bars_work_manifest,
+            verify_bars_work_manifest,
+        )
+        from tree_options.data.digest import sha256_hex
+
+        try:
+            work_manifest = parse_bars_work_manifest(
+                args.bars_from_manifest.read_bytes(), source=str(args.bars_from_manifest)
+            )
+            capture_manifest_raw = (args.out_dir / CAPTURE_MANIFEST_FILENAME).read_bytes()
+            verify_bars_work_manifest(
+                work_manifest,
+                profile=load_selection_profile(args.selection_profile),
+                capture_manifest_sha256=sha256_hex(capture_manifest_raw),
+                capture_dir=args.out_dir,
+            )
+        except (BarsManifestError, OSError) as exc:
+            print(f"WORK MANIFEST REFUSED: {exc}", file=sys.stderr)
+            return 2
+        manifest_picks = [
+            (e.ticker, date.fromisoformat(e.as_of), date.fromisoformat(e.expiry))
+            for e in work_manifest.entries
+        ]
     try:
         manifest = run_capture(
             client,
@@ -1048,6 +1204,8 @@ def main(argv: list[str] | None = None) -> int:
             bars_expiries=args.bars_expiries,
             bars_sides=args.bars_sides,
             dry_run=args.dry_run,
+            spot_merge_existing=args.spot_merge_existing,
+            manifest_picks=manifest_picks,
         )
     except MassiveNotEntitledError as exc:
         print(f"NOT ENTITLED: {exc}", file=sys.stderr)
@@ -1059,6 +1217,27 @@ def main(argv: list[str] | None = None) -> int:
         # run_capture's finally has already written the manifest.
         print(f"BUDGET EXHAUSTED: {exc}", file=sys.stderr)
         return 4
+    except SpotMergeRefused as exc:
+        print(f"SPOT MERGE REFUSED: {exc}", file=sys.stderr)
+        return 2
+    if work_manifest is not None:
+        missing = sorted(
+            entry.ticker
+            for entry in work_manifest.entries
+            if not (args.out_dir / "bars" / f"{entry.ticker.replace(':', '_')}.json").exists()
+        )
+        if missing:
+            print(
+                f"INVENTORY MISMATCH: {len(missing)} work-manifest entries have no"
+                f" series on disk: {', '.join(missing)}",
+                file=sys.stderr,
+            )
+            return 5
+        print(
+            f"BARS FROM MANIFEST ok: {len(work_manifest.entries)} entries verified,"
+            " inventory complete",
+            file=sys.stderr,
+        )
 
     print(json.dumps(manifest, indent=2, sort_keys=True))
     masters = manifest["masters"]
