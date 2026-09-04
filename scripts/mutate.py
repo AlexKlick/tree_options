@@ -5183,31 +5183,35 @@ MUTANTS = [
     # ---- window-A extension CONTINUATION (owner ruling 2026-09-04: the
     # two-cycle capture — enablement packet M421-M430) ----------------------
     dict(
-        id="M421-as-of-min-boundary-exclusive",
-        owner="test_as_of_min_pins_only_the_continuation_work",
+        id="M421-window-empty-refusal-dropped",
+        owner="test_as_of_min_that_filters_everything_refuses_naming_the_filter",
         file="src/tree_options/data/bars_manifest.py",
-        anchor=("        entries = [entry for entry in entries if entry.as_of >= as_of_min]"),
-        replacement=("        entries = [entry for entry in entries if entry.as_of > as_of_min]"),
+        anchor="        if not windowed:",
+        replacement="        if False:",
         selectors=[f"{U}/test_bars_manifest.py"],
         invariant=(
-            "the continuation filter is inclusive at the declared Friday —"
-            " an exclusive boundary silently drops that Friday's own work"
-            " from the continuation manifest (and empties a one-date"
-            " continuation entirely)"
+            "(round-2 re-pin, 2026-09-04: the original post-pick boundary"
+            " anchor moved to M433 when the filter became pre-pick) a window"
+            " that selects no masters must refuse NAMING THE FILTER — voiding"
+            " the check lets the empty window fall through to selection and"
+            " surface as the wrong (profile-empty) refusal, hiding the"
+            " configuration defect the message exists to name"
         ),
     ),
     dict(
-        id="M422-as-of-min-filter-dropped",
-        owner="test_as_of_min_pins_only_the_continuation_work",
+        id="M422-window-assignment-dropped",
+        owner="test_the_window_re_selects_a_contract_first_chosen_before_the_window",
         file="src/tree_options/data/bars_manifest.py",
-        anchor=("        entries = [entry for entry in entries if entry.as_of >= as_of_min]"),
-        replacement=("        entries = list(entries)"),
+        anchor="        captures = windowed",
+        replacement="        pass",
         selectors=[f"{U}/test_bars_manifest.py"],
         invariant=(
-            "the continuation filter is load-bearing: without it a"
-            " continuation manifest over a GROWN capture re-pins the whole"
-            " grid (dates the standing era already captured) and its"
-            " pre-charge covers work the continuation will never do"
+            "(round-2 re-pin, 2026-09-04: the original post-pick filter-drop"
+            " anchor moved to M432 when the filter became pre-pick) computing"
+            " the windowed master list without APPLYING it re-pins the whole"
+            " grid — the continuation manifest would authorize dates the"
+            " standing era already captured and mis-attribute window"
+            " re-selections to history"
         ),
     ),
     dict(
