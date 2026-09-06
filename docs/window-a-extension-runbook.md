@@ -205,6 +205,48 @@ mature, 08-07/08-14 not; cycle 2: all five), and the FULL test suite on
 the grown tree (proves main stays green on a grown world — the spent
 window-A pins are not re-verified against live inputs).
 
+## Cycle-2 expected frictions (live lessons from cycle 1)
+
+The launcher fires 16:14 MDT, minutes after the close. Cycle 1 hit three
+frictions the procedure above does not describe; expect them again:
+
+1. **Same-day lag.** The free tier may not publish the 09-18 daily aggs
+   that evening (09-04 was still unpublished ~21:00 MDT and appeared by
+   the next morning). A first stage-1 pass ending with spot one Friday
+   short is the vendor, not a bug.
+2. **Cache freeze.** Every empty pass CACHES the empty range response; a
+   plain re-run reads the freeze forever. Purge BEFORE every retry, per
+   NAME over the cycle's spot range:
+   ```
+   uv run --frozen python - <<'PY'
+   from pathlib import Path
+   from tree_options.data.massive_client import cache_key_for
+   key = cache_key_for("/v2/aggs/ticker/SPY/range/1/day/2026-09-11/2026-09-18",
+                       {"adjusted": "false"})
+   src = Path("artifacts/massive-cache") / f"{key}.json"
+   src.rename(src.with_suffix(".json.bak"))  # keep the freeze as evidence
+   PY
+   ```
+   then re-run the stage-1 wrapper — `--spot-merge-existing` makes the
+   re-walk an idempotent union (an equal replay of a pinned session is the
+   resume path; a DIFFERENT close refuses with exit 2 for an owner ruling).
+3. **Cycle 2 has NO (b)-style truncation.** Cycle 1 could accept
+   world_last 2026-08-28 (a rehearsal; owner ruling (b) on 2026-09-04).
+   Cycle 2 cannot: the seal math needs world_last 2026-09-18 for all five
+   scoped dates to mature. Retry ladder: ~17:30 / 19:00 / 20:30 MDT, then
+   NEXT MORNING (~08:30 Sat 09-19 — the 09-04 precedent published
+   overnight). If Saturday morning still finds no 09-18 closes: STOP and
+   report for an owner ruling — never let stage 4's label check run
+   against a 09-11 world.
+4. **No-print bar series.** Stage 3 may end 1-2 entries short with a
+   "no prints between … -- not written" note (cycle 1: 404/406,
+   owner-accepted). Same precedent: name the shortfall in the
+   BARS_COMPLETE reason and the evidence. An INVENTORY MISMATCH (exit 5)
+   is different — that is a bug, not a shortfall.
+5. **Shape checks.** Masters after stage 1 ≈ 3161 (29 underlyings × 2 new
+   Fridays over the standing history); stage 4's v2 proxy ends
+   2026-09-18, gaps [].
+
 ## Phase C — the seal (after cycle 2; ~Mon 2026-09-21)
 
 ```
