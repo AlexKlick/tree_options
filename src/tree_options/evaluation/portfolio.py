@@ -65,6 +65,12 @@ def _validate_periods(periods_per_year: float) -> None:
         raise ValueError("periods_per_year must be finite and > 0")
 
 
+def _subtract_or_none(a: float | None, b: float | None) -> float | None:
+    if a is None or b is None:
+        return None
+    return a - b
+
+
 def annualized_sharpe(
     session_returns: Sequence[float], *, periods_per_year: float = 252.0
 ) -> float | None:
@@ -241,17 +247,14 @@ def cost_bridge(
     per_side = (fee_bps_per_side + slippage_bps_per_side) / 10_000.0
     fee_only = [g - c * (fee_bps_per_side / 10_000.0) for g, c in zip(gross, churn, strict=True)]
     with_slippage = [g - c * per_side for g, c in zip(gross, churn, strict=True)]
+    gross_cagr_value = cagr(gross, periods_per_year=periods_per_year)
+    fee_only_cagr_value = cagr(fee_only, periods_per_year=periods_per_year)
+    net_cagr_value = cagr(with_slippage, periods_per_year=periods_per_year)
     return CostBridge(
-        gross_cagr=cagr(gross, periods_per_year=periods_per_year),
-        fee_drag_cagr=(
-            cagr(gross, periods_per_year=periods_per_year)
-            - cagr(fee_only, periods_per_year=periods_per_year)
-        ),
-        slippage_drag_cagr=(
-            cagr(fee_only, periods_per_year=periods_per_year)
-            - cagr(with_slippage, periods_per_year=periods_per_year)
-        ),
-        net_cagr=cagr(with_slippage, periods_per_year=periods_per_year),
+        gross_cagr=gross_cagr_value,
+        fee_drag_cagr=_subtract_or_none(gross_cagr_value, fee_only_cagr_value),
+        slippage_drag_cagr=_subtract_or_none(fee_only_cagr_value, net_cagr_value),
+        net_cagr=net_cagr_value,
         round_trip_cost_fraction=per_side,
     )
 
