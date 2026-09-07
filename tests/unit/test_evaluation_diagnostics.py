@@ -51,6 +51,16 @@ def test_bootstrap_is_deterministic_given_the_seed_and_consumes_draws_in_order()
     assert first is not None
     assert first.lower == min(expected)
     assert first.upper == max(expected)
+    # the nearest-rank percentile contract on a LUMPY distribution: with
+    # ties among the resample statistics the 2.5% bound is NOT the minimum,
+    # and the ceil-then-decrement index is load-bearing — the pinned bounds
+    # below sit strictly inside the sampled range (min resample mean 1.295,
+    # the no-decrement index would read 1.665)
+    lumpy = (0.0, 0.37, 1.48, 3.33, 5.92, 9.25, 13.32, 18.13)
+    ci = block_bootstrap_ci(lumpy, statistic=MEAN, block_size=2, iterations=50, seed=11)
+    assert ci is not None
+    assert ci.valid_iterations == 50
+    assert (ci.lower, ci.upper) == (1.295, 10.915)
 
 
 def test_bootstrap_bounds_stay_inside_the_sample_range_and_vary_by_seed() -> None:

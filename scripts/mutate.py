@@ -6258,8 +6258,9 @@ MUTANTS = [
         invariant=(
             "M5 the nearest-rank percentile is the ceil-then-decrement index"
             " — dropping the decrement silently slides every bootstrap"
-            " interval toward the sample's higher order statistics, and the"
-            " 2.5% lower bound of a three-statistic resample is the minimum"
+            " interval toward the sample's higher order statistics, and on"
+            " a lumpy distribution (ties among resample means) the 2.5%"
+            " bound is strictly above the minimum, not equal to it"
         ),
     ),
     dict(
