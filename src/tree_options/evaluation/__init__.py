@@ -1,5 +1,35 @@
-"""Evaluation statistics for the M2-proper research pipeline."""
+"""Evaluation identities, statistics, and M5 adversarial controls."""
 
+from tree_options.evaluation.bundle import (
+    COUNT_SEMANTICS,
+    EVALUATION_BUNDLE_SCHEMA_VERSION,
+    EvaluationBundle,
+    EvaluationBundleError,
+    HeldEvaluationArtifact,
+    build_evaluation_bundle,
+    evaluation_bundle_content_sha256,
+    verify_evaluation_bundle,
+)
+from tree_options.evaluation.controls import (
+    DeflatedSharpe,
+    PboAssessment,
+    block_shuffle,
+    concentration_hhi,
+    cscv_pbo,
+    deflated_sharpe_ratio,
+    expected_max_sharpe,
+    random_scores,
+)
+from tree_options.evaluation.diagnostics import (
+    BootstrapCI,
+    CalibrationBin,
+    block_bootstrap_ci,
+    brier_score,
+    calibration_bins,
+    ndcg_at_k,
+    quantile_spread,
+    selected_tail_precision,
+)
 from tree_options.evaluation.stats import (
     BacktestSummary,
     FalsePositiveAssessment,
@@ -15,15 +45,39 @@ from tree_options.evaluation.stats import (
 )
 
 __all__ = [
+    "COUNT_SEMANTICS",
+    "EVALUATION_BUNDLE_SCHEMA_VERSION",
     "BacktestSummary",
+    "BootstrapCI",
+    "CalibrationBin",
+    "DeflatedSharpe",
+    "EvaluationBundle",
+    "EvaluationBundleError",
     "FalsePositiveAssessment",
+    "HeldEvaluationArtifact",
+    "PboAssessment",
     "ScoredLabel",
     "SessionRankIC",
     "assess_false_positives",
     "backtest_summary",
+    "block_bootstrap_ci",
+    "block_shuffle",
+    "brier_score",
+    "build_evaluation_bundle",
+    "calibration_bins",
+    "concentration_hhi",
+    "cscv_pbo",
+    "deflated_sharpe_ratio",
+    "evaluation_bundle_content_sha256",
     "exact_binomial_upper_tail",
+    "expected_max_sharpe",
     "max_allowed_rejections",
+    "ndcg_at_k",
     "one_sample_t_statistic",
     "per_session_rank_ics",
+    "quantile_spread",
+    "random_scores",
+    "selected_tail_precision",
     "spearman_rank_ic",
+    "verify_evaluation_bundle",
 ]

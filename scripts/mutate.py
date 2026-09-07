@@ -6247,6 +6247,183 @@ MUTANTS = [
             " (META/2025-12-19, live probe 2026-09-02)"
         ),
     ),
+    # ---- M5 statistical kernel (Issue 5, packet 1) -----------------------------------
+    dict(
+        id="M441-bootstrap-nearest-rank-shifted",
+        owner="test_bootstrap_is_deterministic_given_the_seed_and_consumes_draws_in_order",
+        file="src/tree_options/evaluation/diagnostics.py",
+        anchor="        return ordered[max(0, min(m - 1, math.ceil(fraction * m) - 1))]",
+        replacement="        return ordered[max(0, min(m - 1, math.ceil(fraction * m)))]",
+        selectors=[f"{U}/test_evaluation_diagnostics.py"],
+        invariant=(
+            "M5 the nearest-rank percentile is the ceil-then-decrement index"
+            " — dropping the decrement silently slides every bootstrap"
+            " interval toward the sample's higher order statistics, and the"
+            " 2.5% lower bound of a three-statistic resample is the minimum"
+        ),
+    ),
+    dict(
+        id="M442-ndcg-position-discount-dropped",
+        owner="test_ndcg_perfect_inverse_and_partial_orderings",
+        file="src/tree_options/evaluation/diagnostics.py",
+        anchor="        (1.0 if relevance[i] else 0.0) / math.log2(position + 2)",
+        replacement="        (1.0 if relevance[i] else 0.0) / math.log2(position + 1)",
+        selectors=[f"{U}/test_evaluation_diagnostics.py"],
+        invariant=(
+            "M5 NDCG's position discount is log2 of the 1-BASED position"
+            " — the 0-based log makes the top position's discount log2(1)"
+            " and the metric divides by zero or stops discounting at all"
+        ),
+    ),
+    dict(
+        id="M443-selection-order-ascending",
+        owner="test_tail_precision_exact_topk_behaviour",
+        file="src/tree_options/evaluation/diagnostics.py",
+        anchor="    return tuple(sorted(range(len(scores)), key=lambda i: (-scores[i], i)))",
+        replacement="    return tuple(sorted(range(len(scores)), key=lambda i: (scores[i], i)))",
+        selectors=[f"{U}/test_evaluation_diagnostics.py"],
+        invariant=(
+            "M5 selection quality ranks by score DESCENDING — an ascending"
+            " selector measures the bottom tail and reports it as the top,"
+            " inverting every selected-tail diagnostic the M5 gate reads"
+        ),
+    ),
+    dict(
+        id="M444-quantile-spread-sign-flipped",
+        owner="test_quantile_spread_monotone_and_inverse",
+        file="src/tree_options/evaluation/diagnostics.py",
+        anchor="    return statistics.fmean(top) - statistics.fmean(bottom)",
+        replacement="    return statistics.fmean(bottom) - statistics.fmean(top)",
+        selectors=[f"{U}/test_evaluation_diagnostics.py"],
+        invariant=(
+            "M5 the quantile spread is TOP-minus-BOTTOM by construction —"
+            " flipping the sign turns a monotone signal into an inverse one"
+            " and any inverse signal into a discovery"
+        ),
+    ),
+    dict(
+        id="M445-brier-sum-not-mean",
+        owner="test_brier_perfect_anti_and_flat_forecasts",
+        file="src/tree_options/evaluation/diagnostics.py",
+        anchor="    ) / len(p)",
+        replacement="    ) * len(p)",
+        selectors=[f"{U}/test_evaluation_diagnostics.py"],
+        invariant=(
+            "M5 the Brier score is the MEAN squared error — multiplying by"
+            " the count makes it grow with sample size and stops flat"
+            " 0.5-forecasts from scoring their honest 0.25"
+        ),
+    ),
+    dict(
+        id="M446-calibration-edge-unclamped",
+        owner="test_calibration_bins_partition_and_empty_means",
+        file="src/tree_options/evaluation/diagnostics.py",
+        anchor="        index = min(int(value * bins), bins - 1)",
+        replacement="        index = int(value * bins)",
+        selectors=[f"{U}/test_evaluation_diagnostics.py"],
+        invariant=(
+            "M5 a probability of exactly 1.0 must land in the LAST bin —"
+            " without the clamp the reliability partition raises instead"
+            " of binning the most confident forecast it will ever see"
+        ),
+    ),
+    dict(
+        id="M447-sr0-euler-weights-swapped",
+        owner="test_expected_max_sharpe_matches_the_declared_formula",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="        (1.0 - _EULER_MASCHERONI) * left + _EULER_MASCHERONI * right",
+        replacement="        _EULER_MASCHERONI * left + (1.0 - _EULER_MASCHERONI) * right",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 the expected-max-Sharpe hurdle weights the two quantiles by"
+            " (1-gamma) and gamma as written — swapping them lowers/raises"
+            " the multiplicity hurdle every deflated Sharpe is judged"
+            " against, quietly re-pricing the whole search"
+        ),
+    ),
+    dict(
+        id="M448-dsr-sample-size-dropped",
+        owner="test_deflated_sharpe_hand_case_zero_mean_symmetric",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="    numerator = (sharpe - sr0) * math.sqrt(t - 1)",
+        replacement="    numerator = (sharpe - sr0) * math.sqrt(t)",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 the deflation numerator scales by sqrt(T-1) (the sampling"
+            " uncertainty of the mean uses the degrees of freedom, not the"
+            " count) — sqrt(T) over-credits short samples exactly where"
+            " overfitting lives"
+        ),
+    ),
+    dict(
+        id="M449-pbo-median-boundary-erased",
+        owner="test_cscv_full_anti_dominance_gives_one",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="        if rank >= n / 2:",
+        replacement="        if rank >= n:",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 below-median means rank at or past the halfway boundary —"
+            " moving the boundary to n makes PBO identically zero and the"
+            " overfitting control reports perfect calibration for any"
+            " backtest, including fully anti-consistent ones"
+        ),
+    ),
+    dict(
+        id="M450-pbo-logit-inverted",
+        owner="test_cscv_dominance_gives_zero_pbo_and_positive_logits",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="        logits.append(math.log(w / (1.0 - w)))",
+        replacement="        logits.append(math.log((1.0 - w) / w))",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 the CSCV logit is positive exactly when the train-best"
+            " beats the median out-of-sample (w = (N - rank)/(N + 1) is"
+            " high when good) — the inverted fraction labels dominance as"
+            " overfitting and overfitting as dominance"
+        ),
+    ),
+    dict(
+        id="M451-hhi-squared-dropped",
+        owner="test_hhi_equal_monopoly_and_normalization",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="    return math.fsum((value / total) ** 2 for value in values)",
+        replacement="    return math.fsum(value / total for value in values)",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 HHI squares the normalized weights — the linear sum is"
+            " identically 1 for every portfolio and concentration stops"
+            " existing as a diagnostic"
+        ),
+    ),
+    dict(
+        id="M452-block-shuffle-order-frozen",
+        owner="test_block_shuffle_identity_determinism_and_block_integrity",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="    random.Random(seed).shuffle(order)",
+        replacement="    pass",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 the block-shuffle negative control must actually permute"
+            " block ORDER from its seed — a frozen order hands every"
+            " leakage audit a copy of the original series and it can only"
+            " ever agree with the strategy"
+        ),
+    ),
+    dict(
+        id="M453-random-scores-bound-halved",
+        owner="test_random_scores_deterministic_and_bounded",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="    return tuple(rng.uniform(0.0, 1.0) for _ in range(count))",
+        replacement="    return tuple(rng.uniform(0.0, 0.5) for _ in range(count))",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 the random-score negative control draws U(0,1) — the"
+            " pinned seed-7 literals are the control's byte contract, and"
+            " any change of bound, seed plumbing, or RNG is a different"
+            " control than the one the audit declared"
+        ),
+    ),
 ]
 
 
