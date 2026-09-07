@@ -36,6 +36,13 @@ def test_expected_max_sharpe_matches_the_declared_formula() -> None:
         EULER * NORMAL.inv_cdf(1.0 - 1.0 / (2 * math.e))
     )
     assert expected_max_sharpe(10, 1.0) > expected_max_sharpe(2, 1.0)
+    # the N=10 oracle exercises BOTH quantile terms (at N=2 the left one
+    # vanishes with Phi^-1(1/2) = 0, and deleting it survived review)
+    want10 = (1.0 - EULER) * NORMAL.inv_cdf(1.0 - 1.0 / 10) + EULER * NORMAL.inv_cdf(
+        1.0 - 1.0 / (10 * math.e)
+    )
+    assert expected_max_sharpe(10, 1.0) == pytest.approx(want10)
+    assert expected_max_sharpe(10, 1.0) == pytest.approx(1.57459830134575)
     assert expected_max_sharpe(8, 4.0) == pytest.approx(2.0 * expected_max_sharpe(8, 1.0))
     with pytest.raises(ValueError, match="n_trials"):
         expected_max_sharpe(1, 1.0)
@@ -67,6 +74,21 @@ def test_deflated_sharpe_strong_strategy_clears_the_hurdle() -> None:
     expected = NORMAL.cdf(((math.sqrt(3.0) / 2.0) - sr0) * math.sqrt(3.0))
     assert result.deflated == pytest.approx(expected)
     assert result.deflated > 0.5
+
+
+def test_deflated_sharpe_nonzero_skew_and_kurtosis_drive_the_denominator() -> None:
+    # [0, 0, 0, 4]: mean 1, ddof=1 std 2, SR 0.5; skew 6/3^1.5 and kurt
+    # 21/9 — the first fixture where the higher-moment correction carries
+    # weight, so replacing the denominator with 1.0 is visible
+    result = deflated_sharpe_ratio([0.0, 0.0, 0.0, 4.0], n_trials=2, trial_variance=0.01)
+    assert result is not None
+    assert result.sharpe == pytest.approx(0.5)
+    assert result.skewness == pytest.approx(6.0 / 3.0**1.5)
+    assert result.kurtosis == pytest.approx(21.0 / 9.0)
+    sr0 = expected_max_sharpe(2, 0.01)
+    denominator = math.sqrt(1.0 - (6.0 / 3.0**1.5) * 0.5 + (21.0 / 9.0 - 1.0) / 4.0 * 0.5**2)
+    assert result.deflated == pytest.approx(NORMAL.cdf((0.5 - sr0) * math.sqrt(3.0) / denominator))
+    assert result.deflated == pytest.approx(0.862347)  # transcribed independently
 
 
 def test_deflated_sharpe_unevaluable_and_refusals() -> None:
@@ -112,6 +134,28 @@ def test_cscv_mixed_blocks_exact_hand_count() -> None:
     assert result is not None
     assert result.n_below_median == 2
     assert result.pbo == pytest.approx(2.0 / 6.0)
+
+
+def test_cscv_test_rank_ties_break_to_the_lower_index() -> None:
+    # Codex round-1 P1: the declared ascending-index tiebreak applies to the
+    # TEST ranking too. Train {0} crowns B (index 1); out-of-sample both
+    # strategies return 0 and the tie demotes B below A. Train {1} ties the
+    # trains at 0, crowns A (index 0), and B's 1 beats A's 0 out-of-sample.
+    # Both combinations rank the train-best below the median: PBO 1.0.
+    result = cscv_pbo([[0.0, 0.0], [1.0, 0.0]], splits=2)
+    assert result is not None
+    assert result.combinations == 2
+    assert result.n_below_median == 2
+    assert result.pbo == 1.0
+    assert result.mean_logit == pytest.approx(-math.log(2.0))
+
+
+def test_cscv_odd_strategy_count_median_is_never_below() -> None:
+    # with 3 strategies the median rank is 1 and "below the median" is rank
+    # 2 only — an integer-halved boundary would count the median itself
+    result = cscv_pbo([[3.0, 2.0], [2.0, 3.0], [1.0, 1.0]], splits=2)
+    assert result is not None
+    assert result.pbo == 0.0
 
 
 def test_cscv_unevaluable_and_refusals() -> None:

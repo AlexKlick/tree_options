@@ -93,6 +93,21 @@ def test_bootstrap_refusals_and_none_propagation() -> None:
         block_bootstrap_ci([1.0, math.nan], statistic=MEAN, block_size=1, iterations=5, seed=0)
 
 
+def test_bootstrap_skips_unevaluable_resamples_not_the_whole_interval() -> None:
+    # a statistic that refuses constant resamples (Codex round-1: the None
+    # path only ever exited at the POINT statistic before) — the surviving
+    # resamples still bound the interval
+    def skip_constant(sample: tuple[float, ...]) -> float | None:
+        return None if len(set(sample)) == 1 else MEAN(sample)
+
+    ci = block_bootstrap_ci(
+        (0.0, 1.0), statistic=skip_constant, block_size=1, iterations=10, seed=0
+    )
+    assert ci is not None
+    assert ci.valid_iterations == 6
+    assert (ci.lower, ci.upper, ci.point) == (0.5, 0.5, 0.5)
+
+
 # ---- ndcg_at_k ------------------------------------------------------------------------
 
 
@@ -147,6 +162,15 @@ def test_quantile_spread_monotone_and_inverse() -> None:
     assert quantile_spread(scores, [60.0, 50.0, 40.0, 30.0, 20.0, 10.0], quantiles=2) == -30.0
 
 
+def test_quantile_spread_uneven_allocation_is_rank_proportional() -> None:
+    # n=5, q=2: bucket = r*2//5 puts THREE names in the bottom (ranks 0-2)
+    # and two in the top — floor-equal groups would move the rank-2 name
+    # into the top and read 10/3 instead of the declared allocation's 5
+    assert (
+        quantile_spread([0.0, 1.0, 2.0, 3.0, 4.0], [0.0, 0.0, 0.0, 0.0, 10.0], quantiles=2) == 5.0
+    )
+
+
 def test_quantile_spread_unevaluable_and_refusals() -> None:
     assert quantile_spread([1.0, 2.0], [1.0, 2.0], quantiles=3) is None  # n < quantiles
     with pytest.raises(ValueError, match="quantiles must be"):
@@ -166,6 +190,19 @@ def test_brier_perfect_anti_and_flat_forecasts() -> None:
         brier_score([1.5], [True])
     with pytest.raises(ValueError, match="bool"):
         brier_score([0.5], [1])  # type: ignore[list-item]
+
+
+def test_calibration_bins_aggregate_forecasts_within_one_bin() -> None:
+    # both forecasts land in bin 0 (0.1 and 0.2 at bins=2): the bin's means
+    # are over BOTH members — an overwrite instead of accumulation would
+    # report the last forecast's 0.10 as the bin mean
+    bins = calibration_bins([0.1, 0.2], [True, False], bins=2)
+    assert (bins[0].count, bins[0].mean_probability, bins[0].mean_outcome) == (
+        2,
+        pytest.approx(0.15),
+        0.5,
+    )
+    assert (bins[1].count, bins[1].mean_probability, bins[1].mean_outcome) == (0, None, None)
 
 
 def test_calibration_bins_partition_and_empty_means() -> None:

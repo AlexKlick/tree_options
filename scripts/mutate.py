@@ -6425,6 +6425,52 @@ MUTANTS = [
             " control than the one the audit declared"
         ),
     ),
+    # ---- M5 packet-1 Codex round-1 fixes ----------------------------------------------
+    dict(
+        id="M454-cscv-test-rank-tie-shared",
+        owner="test_cscv_test_rank_ties_break_to_the_lower_index",
+        file="src/tree_options/evaluation/controls.py",
+        anchor=(
+            "        rank = sum(\n"
+            "            1 for other in range(n) if (test_means[other], -other) > (test_means[best], -best)\n"
+            "        )"
+        ),
+        replacement="        rank = sum(1 for value in test_means if value > test_means[best])",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 the declared ascending-index tiebreak applies to the TEST"
+            " ranking too — letting ties share the better rank understates"
+            " PBO exactly when the out-of-sample field is indistinguishable"
+            " (Codex round-1 P1: [[0,0],[1,0]] read 0.5 instead of 1.0)"
+        ),
+    ),
+    dict(
+        id="M455-cscv-odd-median-erased",
+        owner="test_cscv_odd_strategy_count_median_is_never_below",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="        if rank >= n / 2:",
+        replacement="        if rank >= n // 2:",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 below-median means rank at or past n/2 as a REAL boundary —"
+            " integer-halving counts the median strategy itself as below"
+            " and inflates PBO on every odd strategy count"
+        ),
+    ),
+    dict(
+        id="M456-dsr-denominator-replaced",
+        owner="test_deflated_sharpe_nonzero_skew_and_kurtosis_drive_the_denominator",
+        file="src/tree_options/evaluation/controls.py",
+        anchor="    denominator = math.sqrt(max(0.0, 1.0 - skewness * sharpe + (kurtosis - 1.0) / 4.0 * sharpe**2))",
+        replacement="    denominator = 1.0",
+        selectors=[f"{U}/test_evaluation_controls.py"],
+        invariant=(
+            "M5 the DSR higher-moment denominator is the deflation —"
+            " replacing it with 1.0 strips the skew/kurtosis correction"
+            " and over-credits fat-tailed strategies exactly where the"
+            " Sharpe ratio lies most"
+        ),
+    ),
 ]
 
 

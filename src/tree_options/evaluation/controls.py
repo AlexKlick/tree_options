@@ -174,8 +174,14 @@ def cscv_pbo(
         train_means = [mean_over(strategy, train_mask) for strategy in range(n)]
         best = max(range(n), key=lambda s: (train_means[s], -s))
         test_means = [mean_over(strategy, test_mask) for strategy in range(n)]
-        # 0-based test rank of the train-best (0 == best); ties to lower index
-        rank = sum(1 for value in test_means if value > test_means[best])
+        # 0-based test rank of the train-best (0 == best); the DECLARED
+        # ascending-index tiebreak applies on BOTH sides, so a tie against
+        # a lower-index strategy demotes the train-best (Codex round-1 P1:
+        # sharing the better rank understates overfitting exactly when the
+        # out-of-sample field is indistinguishable)
+        rank = sum(
+            1 for other in range(n) if (test_means[other], -other) > (test_means[best], -best)
+        )
         w = (n - rank) / (n + 1)
         logits.append(math.log(w / (1.0 - w)))
         combinations += 1
