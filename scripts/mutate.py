@@ -6471,6 +6471,115 @@ MUTANTS = [
             " Sharpe ratio lies most"
         ),
     ),
+    # ---- M5 packet-2: portfolio diagnostics --------------------------------------------
+    dict(
+        id="M457-sharpe-annualization-dropped",
+        owner="test_sharpe_zero_mean_and_formula_transcription",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="    return mean / math.sqrt(variance) * math.sqrt(periods_per_year)",
+        replacement="    return mean / math.sqrt(variance)",
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 Sharpe annualizes the per-session ratio by sqrt(periods_per_year)"
+            " — dropping the factor reports a per-session figure under an"
+            " annualized name, and every threshold calibrated in annual units"
+            " silently loosens by sqrt(252)"
+        ),
+    ),
+    dict(
+        id="M458-sortino-downside-only-divisor",
+        owner="test_sortino_full_sample_downside_denominator",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="        math.fsum(max(target_return - value, 0.0) ** 2 for value in sample) / len(sample)",
+        replacement=(
+            "        math.fsum(max(target_return - value, 0.0) ** 2 for value in sample)\n"
+            "        / max(1, sum(1 for value in sample if value < target_return))"
+        ),
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 Sortino's downside deviation divides by ALL sessions —"
+            " dividing only over downside sessions shrinks the denominator"
+            " and inflates the ratio by construction, understating exactly"
+            " the risk the metric exists to isolate"
+        ),
+    ),
+    dict(
+        id="M459-drawdown-curve-additive",
+        owner="test_max_drawdown_depth_location_and_recovery",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="        curve.append(curve[-1] * (1.0 + value))",
+        replacement="        curve.append(curve[-1] + value)",
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 drawdown runs over the COMPOUNDED equity curve — an additive"
+            " curve misprices every drawdown that follows prior gains (the"
+            " classic -10% on a doubled book is -20% of origin, not -10%)"
+        ),
+    ),
+    dict(
+        id="M460-calmar-drawdown-multiplied",
+        owner="test_calmar_classic_definition",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="    return annual / abs(drawdown.depth)",
+        replacement="    return annual * abs(drawdown.depth)",
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 Calmar DIVIDES by the drawdown depth — multiplying rewards"
+            " deep-drawdown strategies with positive CAGR, the exact"
+            " inversion of the risk-adjustment the ratio is"
+        ),
+    ),
+    dict(
+        id="M461-profit-factor-inverted",
+        owner="test_profit_factor_and_hit_rate_exact",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="    return gains / losses",
+        replacement="    return losses / gains",
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 profit factor is gross gains over gross losses — the inverse"
+            " calls a losing strategy (losses dominate) efficient"
+        ),
+    ),
+    dict(
+        id="M462-cost-bridge-bps-misconverted",
+        owner="test_cost_bridge_telescopes_gross_to_net",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="    per_side = (fee_bps_per_side + slippage_bps_per_side) / 10_000.0",
+        replacement="    per_side = (fee_bps_per_side + slippage_bps_per_side) / 100_000.0",
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 basis points convert by 10_000 — a stray zero makes every"
+            " cost bridge ten times too cheap and high-turnover strategies"
+            " survive frictions they cannot afford"
+        ),
+    ),
+    dict(
+        id="M463-matched-risk-scale-inverted",
+        owner="test_matched_risk_scale_and_refusals",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="    return target_volatility / realized_volatility",
+        replacement="    return realized_volatility / target_volatility",
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 matched-risk scaling is target over realized vol — the"
+            " inverse leverages UP the riskier book, comparing options at"
+            " their own vol against equity at matched-and-doubled vol"
+        ),
+    ),
+    dict(
+        id="M464-slice-compounding-dropped",
+        owner="test_slice_stability_first_seen_order_and_within_group_curves",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="            compounded_return=compounded_return(rows),",
+        replacement="            compounded_return=math.fsum(rows),",
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 stability slices compound WITHIN the group — an additive"
+            " stand-in diverges from the group curve whenever gains and"
+            " losses share a slice, mis-stating regime stability"
+        ),
+    ),
 ]
 
 
