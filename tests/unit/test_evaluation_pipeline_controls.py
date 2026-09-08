@@ -94,5 +94,10 @@ def test_perfect_foresight_feature_scores_exactly_one() -> None:
     assert spearman_rank_ic(feature, labels) == 1.0
     with pytest.raises(ValueError, match="two"):
         perfect_foresight_feature((1.0,))
+    # constant labels are REFUSED: their IC is None (no rank information),
+    # so the canary cannot fire — accepting them would let a harness pass
+    # a corruption that proves nothing
+    with pytest.raises(ValueError, match="DISTINCT"):
+        perfect_foresight_feature((0.5, 0.5, 0.5))
     with pytest.raises(ValueError, match="finite"):
         perfect_foresight_feature((1.0, float("-inf")))

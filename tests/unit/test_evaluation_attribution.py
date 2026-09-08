@@ -121,11 +121,41 @@ def test_aggregate_recomputes_residual_on_aggregate_numbers() -> None:
     assert aggregate_attributions([]) is None
 
 
+def test_aggregate_residual_is_recomputed_not_summed() -> None:
+    """Non-dyadic rows where the two definitions DIVERGE in float.
+
+    Mathematically sum(residuals) == sum(totals) - sum(legs) always; in
+    float they round differently, and the DECLARED convention is the
+    recomputation (conservation must hold on the aggregate numbers a
+    reader checks, not on per-row roundings).
+    """
+    row1 = GreekAttribution(0.3, 0.0, 0.0, 0.0, 0.1 - 0.3, 0.1)
+    row2 = GreekAttribution(0.0, 0.0, 0.0, 0.0, 0.2, 0.2)
+    summed = math.fsum((row1.residual, row2.residual))
+    aggregate = aggregate_attributions([row1, row2])
+    assert aggregate is not None
+    assert summed == 2.7755575615628914e-17  # the per-row roundings
+    assert aggregate.residual == 5.551115123125783e-17  # the aggregate identity
+    assert summed != aggregate.residual  # the definitions are distinguishable here
+    assert aggregate.residual == aggregate.total_pnl - (
+        aggregate.delta_pnl + aggregate.gamma_pnl + aggregate.theta_pnl + aggregate.vega_pnl
+    )
+
+
 def test_attribution_share_signed_and_refuses_zero_total() -> None:
     row = _fixture_row()
     assert attribution_share(row.delta_pnl, row) == 0.25
     assert attribution_share(row.theta_pnl, row) == -0.125
     assert attribution_share(row.residual, row) == 0.59375
+    # division + denominator sign pinned against NON-unit totals: the
+    # losing book (total -0.5) keeps its sign — shares are leg / total,
+    # never leg / |total|
+    losing = GreekAttribution(-0.125, 0.0078125, -0.25, -0.5, 0.3671875, -0.5)
+    assert attribution_share(losing.delta_pnl, losing) == 0.25  # -0.125 / -0.5
+    assert attribution_share(losing.theta_pnl, losing) == 0.5  # -0.25 / -0.5
+    assert attribution_share(losing.vega_pnl, losing) == 1.0  # -0.5 / -0.5
+    # halving the denominator doubles the share: the division itself is pinned
+    assert attribution_share(0.125, GreekAttribution(0.125, 0.0, 0.0, 0.0, 0.375, 0.5)) == 0.25
     flat = attribute_position(
         entry_value=1.0,
         exit_value=1.0,

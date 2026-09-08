@@ -94,8 +94,17 @@ def perfect_foresight_feature(labels: Sequence[float]) -> tuple[float, ...]:
     verdict downstream: rank IC against the labels is EXACTLY 1.0 — any
     evaluation harness that lets a perfect-foresight feature through its
     gates without flagging it is not measuring discovery at all.
+
+    Constant label vectors are REFUSED: with no rank information the IC
+    is undefined (``None``), so the canary cannot fire and the corrupted
+    input would silently prove nothing.
     """
     series = _finite_series(labels, name="label")
     if len(series) < 2:
         raise ValueError("labels must have at least two values")
+    if len(set(series)) < 2:
+        raise ValueError(
+            "labels must have at least two DISTINCT values "
+            "(a constant vector has no rank information)"
+        )
     return series

@@ -6770,10 +6770,17 @@ MUTANTS = [
         owner="test_perfect_foresight_feature_scores_exactly_one",
         file="src/tree_options/evaluation/pipeline_controls.py",
         anchor=(
-            '        raise ValueError("labels must have at least two values")\n    return series'
+            "        raise ValueError(\n"
+            '            "labels must have at least two DISTINCT values "\n'
+            '            "(a constant vector has no rank information)"\n'
+            "        )\n"
+            "    return series"
         ),
         replacement=(
-            '        raise ValueError("labels must have at least two values")\n'
+            "        raise ValueError(\n"
+            '            "labels must have at least two DISTINCT values "\n'
+            '            "(a constant vector has no rank information)"\n'
+            "        )\n"
             "    return tuple(reversed(series))"
         ),
         selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
@@ -6781,6 +6788,60 @@ MUTANTS = [
             "M5 the perfect-foresight canary must BE the label vector so"
             " rank IC is exactly 1.0 — a reversed vector breaks the canary"
             " and the harness check it anchors"
+        ),
+    ),
+    dict(
+        id="M477-perfect-foresight-accepts-constant-labels",
+        owner="test_perfect_foresight_feature_scores_exactly_one",
+        file="src/tree_options/evaluation/pipeline_controls.py",
+        anchor=(
+            "    if len(set(series)) < 2:\n"
+            "        raise ValueError(\n"
+            '            "labels must have at least two DISTINCT values "\n'
+            '            "(a constant vector has no rank information)"\n'
+            "        )\n"
+            "    return series"
+        ),
+        replacement="    return series",
+        selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
+        invariant=(
+            "M5 constant labels are REFUSED by the perfect-foresight"
+            " canary — their rank IC is None (no rank information), so"
+            " accepting them lets a harness pass a corruption that"
+            " proves nothing"
+        ),
+    ),
+    dict(
+        id="M478-aggregate-residual-summed-from-rows",
+        owner="test_aggregate_residual_is_recomputed_not_summed",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor=(
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
+            "    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
+        ),
+        replacement=(
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
+            "    residual = math.fsum(row.residual for row in materialized)"
+        ),
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 the aggregate residual is RECOMPUTED as aggregate total"
+            " minus aggregate legs — summing per-row residuals instead"
+            " carries per-row float roundings and the book-level"
+            " conservation identity a reader checks can drift"
+        ),
+    ),
+    dict(
+        id="M479-share-denominator-absolute-valued",
+        owner="test_attribution_share_signed_and_refuses_zero_total",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor="    return value / attribution.total_pnl",
+        replacement="    return value / abs(attribution.total_pnl)",
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 attribution shares divide by the SIGNED total — an abs()"
+            " denominator whitewashes losing books, flipping the sign of"
+            " every leg's contribution exactly when honesty matters most"
         ),
     ),
 ]
