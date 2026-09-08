@@ -200,9 +200,7 @@ def test_cost_bridge_turnover_multiplier_changes_the_charge() -> None:
     assert bridge.fee_drag_cagr == pytest.approx(
         (1.01 * 1.02 - 1.0) - (1.01 * 1.018 - 1.0)  # 0.0302 - 0.028318 = 0.001882
     )
-    assert bridge.slippage_drag_cagr == pytest.approx(
-        (1.01 * 1.018 - 1.0) - (1.01 * 1.016 - 1.0)
-    )
+    assert bridge.slippage_drag_cagr == pytest.approx((1.01 * 1.018 - 1.0) - (1.01 * 1.016 - 1.0))
     assert bridge.round_trip_cost_fraction == pytest.approx(0.002)
 
 

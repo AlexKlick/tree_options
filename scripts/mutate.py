@@ -6603,9 +6603,7 @@ MUTANTS = [
         id="M466-presample-peak-labeled-as-first-session",
         owner="test_max_drawdown_presample_peak_is_none_not_first_session",
         file="src/tree_options/evaluation/portfolio.py",
-        anchor=(
-            "    peak_session: date | None = dates[worst[0] - 1] if worst[0] > 0 else None"
-        ),
+        anchor=("    peak_session: date | None = dates[worst[0] - 1] if worst[0] > 0 else None"),
         replacement=(
             "    peak_session: date | None = dates[worst[0] - 1] if worst[0] > 0 else dates[0]"
         ),
@@ -6622,18 +6620,18 @@ MUTANTS = [
         owner="test_max_drawdown_depth_location_and_recovery",
         file="src/tree_options/evaluation/portfolio.py",
         anchor=(
-            "    sample = _finite(session_returns, name=\"session return\")\n"
+            '    sample = _finite(session_returns, name="session return")\n'
             "    if sessions is not None and len(sessions) != len(sample):\n"
-            "        raise ValueError(\"sessions must align with the returns\")\n"
+            '        raise ValueError("sessions must align with the returns")\n'
             "    if not sample:\n"
             "        return None"
         ),
         replacement=(
-            "    sample = _finite(session_returns, name=\"session return\")\n"
+            '    sample = _finite(session_returns, name="session return")\n'
             "    if not sample:\n"
             "        return None\n"
             "    if sessions is not None and len(sessions) != len(sample):\n"
-            "        raise ValueError(\"sessions must align with the returns\")"
+            '        raise ValueError("sessions must align with the returns")'
         ),
         selectors=[f"{U}/test_evaluation_portfolio.py"],
         invariant=(
