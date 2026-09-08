@@ -122,16 +122,22 @@ def compounded_return(session_returns: Sequence[float]) -> float:
 
 
 def cagr(session_returns: Sequence[float], *, periods_per_year: float = 252.0) -> float | None:
-    """Geometric annualization of the compounded curve."""
+    """Geometric annualization of the compounded curve.
+
+    Computed in LOG SPACE so long-running series (e.g. thousands of small
+    gains or losses) don't blow up or vanish under floating-point prod/exp:
+    ``cagr = exp(Σ log(1+rᵢ) / years) - 1``. The ``Σ log(1+rᵢ)`` stays
+    finite for any sequence with ``1+rᵢ > 0``; the only ruin case is
+    ``rᵢ == -1`` for every session (already excluded by the <= -1 refusal in
+    ``compounded_return``).
+    """
     sample = _finite(session_returns, name="session return")
     _validate_periods(periods_per_year)
     if not sample:
         return None
-    total = compounded_return(sample)
-    if total <= -1.0:
-        return None  # total ruin has no finite annualization
+    log_total = math.fsum(math.log(1.0 + value) for value in sample)
     years = len(sample) / periods_per_year
-    return (1.0 + total) ** (1.0 / years) - 1.0
+    return math.exp(log_total / years) - 1.0
 
 
 def max_drawdown(
@@ -142,13 +148,16 @@ def max_drawdown(
     The peak is the running maximum of the curve; the reported drawdown is
     the deepest point below the peak that PRECEDED it.  ``recovered_session``
     is the first session whose equity closes at or above that peak (``None``
-    if the sample ends underwater).
+    if the sample ends underwater).  ``peak_session`` is the session whose
+    closing equity EQUALLED the recorded peak; when the recorded peak is the
+    pre-sample origin (curve index 0) NO session closed there, so the field
+    is ``None`` rather than being silently mislabeled as the first session.
     """
     sample = _finite(session_returns, name="session return")
-    if not sample:
-        return None
     if sessions is not None and len(sessions) != len(sample):
         raise ValueError("sessions must align with the returns")
+    if not sample:
+        return None
     dates = list(sessions) if sessions is not None else [date(2000, 1, 1)] * len(sample)
     if any(value <= -1.0 for value in sample):
         raise ValueError("session return cannot be less than or equal to -1")
@@ -178,9 +187,10 @@ def max_drawdown(
         (index - 1 for index in range(worst[1] + 1, len(curve)) if curve[index] >= peak_equity),
         None,
     )
+    peak_session: date | None = dates[worst[0] - 1] if worst[0] > 0 else None
     return DrawdownAssessment(
         depth=depth,
-        peak_session=dates[worst[0] - 1] if worst[0] > 0 else dates[0],
+        peak_session=peak_session,
         trough_session=dates[worst[1] - 1],
         recovered_session=dates[recovered] if recovered is not None else None,
     )

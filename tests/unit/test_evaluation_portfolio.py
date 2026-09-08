@@ -77,6 +77,19 @@ def test_cagr_geometric_annualization() -> None:
     assert cagr([]) is None
 
 
+def test_cagr_log_space_avoids_overflow_and_underflow() -> None:
+    """Long-running series must survive log-space arithmetic.
+
+    With ``periods_per_year=1`` the annualization is the geometric mean of
+    the per-session growths, so 1024 doublings give a per-year rate of 1.0
+    (100%) and 54 halvings give a per-year rate of -0.5 (-50%) — the
+    multiplicative form blew up / vanished in float64 prod under exactly
+    these inputs; log-space keeps both finite.
+    """
+    assert cagr([1.0] * 1024, periods_per_year=1) == pytest.approx(1.0)
+    assert cagr([-0.5] * 54, periods_per_year=1) == pytest.approx(-0.5)
+
+
 def test_max_drawdown_depth_location_and_recovery() -> None:
     result = max_drawdown([0.10, -0.10, 0.05, 0.10, -0.05], sessions=[D1, D2, D3, D4, D5])
     assert result is not None
@@ -95,6 +108,29 @@ def test_max_drawdown_depth_location_and_recovery() -> None:
     assert max_drawdown([]) is None
     with pytest.raises(ValueError, match="align"):
         max_drawdown([0.01], sessions=[D1, D2])
+    # alignment validation runs BEFORE the empty short-circuit
+    with pytest.raises(ValueError, match="align"):
+        max_drawdown([], sessions=[D1])
+
+
+def test_max_drawdown_presample_peak_is_none_not_first_session() -> None:
+    """When the recorded peak is the pre-sample origin, no session closed there."""
+    result = max_drawdown([-0.1, 0.0], sessions=[D1, D2])
+    assert result is not None
+    assert result.depth == pytest.approx(-0.1)
+    assert result.peak_session is None  # the peak was pre-sample, NOT D1
+    assert result.trough_session == D1
+
+
+def test_max_drawdown_recovery_equality_boundary() -> None:
+    """The `>=` boundary is pinned: D3 closes exactly at the peak (1.25 == 1.25)."""
+    result = max_drawdown([0.25, -0.2, 0.25], sessions=[D1, D2, D3])
+    assert result is not None
+    # curve 1.0 -> 1.25 -> 1.0 -> 1.25; peak at curve index 1 = 1.25; trough at 2 = 1.0
+    assert result.depth == pytest.approx(-0.2)
+    assert result.peak_session == D1
+    assert result.trough_session == D2
+    assert result.recovered_session == D3  # 1.25 >= 1.25 — the boundary case
 
 
 def test_calmar_classic_definition() -> None:
@@ -142,6 +178,32 @@ def test_cost_bridge_telescopes_gross_to_net() -> None:
         cost_bridge([0.01], turnovers=[-0.5], fee_bps_per_side=1, slippage_bps_per_side=1)
     with pytest.raises(ValueError, match="fee_bps_per_side"):
         cost_bridge([0.01], turnovers=[1.0], fee_bps_per_side=-1, slippage_bps_per_side=1)
+
+
+def test_cost_bridge_turnover_multiplier_changes_the_charge() -> None:
+    """Zero and 2x turnovers pin the per-side multiplier is actually applied."""
+    # session 0 turnover=0 -> no charge; session 1 turnover=2 -> double charge
+    # gross: 0.01, 0.02; fee 10bps + slip 10bps = 20bps = 0.002 per unit turnover
+    bridge = cost_bridge(
+        [0.01, 0.02],
+        turnovers=[0.0, 2.0],
+        fee_bps_per_side=10.0,
+        slippage_bps_per_side=10.0,
+        periods_per_year=2.0,
+    )
+    # fee_only = [0.01, 0.02 - 2*0.001] = [0.01, 0.018]
+    # with_slippage = [0.01, 0.018 - 2*0.002 + 0.001] = [0.01, 0.016]
+    # Wait: per_side = 0.002; with_slippage = g - c*0.002
+    # session 0: 0.01 - 0 = 0.01
+    # session 1: 0.02 - 2*0.002 = 0.016
+    assert bridge.net_cagr == pytest.approx(1.01 * 1.016 - 1.0)  # 0.026256
+    assert bridge.fee_drag_cagr == pytest.approx(
+        (1.01 * 1.02 - 1.0) - (1.01 * 1.018 - 1.0)  # 0.0302 - 0.028318 = 0.001882
+    )
+    assert bridge.slippage_drag_cagr == pytest.approx(
+        (1.01 * 1.018 - 1.0) - (1.01 * 1.016 - 1.0)
+    )
+    assert bridge.round_trip_cost_fraction == pytest.approx(0.002)
 
 
 # ---- matched risk / baselines / stability -----------------------------------------------

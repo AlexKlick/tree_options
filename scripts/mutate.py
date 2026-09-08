@@ -6580,6 +6580,69 @@ MUTANTS = [
             " losses share a slice, mis-stating regime stability"
         ),
     ),
+    dict(
+        id="M465-cagr-log-space-reverted-to-mul",
+        owner="test_cagr_log_space_avoids_overflow_and_underflow",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor="    log_total = math.fsum(math.log(1.0 + value) for value in sample)",
+        replacement=(
+            "    compounded = math.fsum(0.0)\n"
+            "    for value in sample:\n"
+            "        compounded += math.log(1.0 + value)\n"
+            "    _ = compounded  # discarded; revert to multiplicative form"
+        ),
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 cagr annualizes via exp(Σ log(1+r)/years) - 1 — reverting to"
+            " prod-based compounding makes 1024 +100% sessions overflow and"
+            " 54 -50% sessions underflow to -1.0 (ruin) where the math says"
+            " the annualization is still finite"
+        ),
+    ),
+    dict(
+        id="M466-presample-peak-labeled-as-first-session",
+        owner="test_max_drawdown_presample_peak_is_none_not_first_session",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor=(
+            "    peak_session: date | None = dates[worst[0] - 1] if worst[0] > 0 else None"
+        ),
+        replacement=(
+            "    peak_session: date | None = dates[worst[0] - 1] if worst[0] > 0 else dates[0]"
+        ),
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 max_drawdown's peak_session is the session whose closing"
+            " equity EQUALLED the recorded peak — when the peak is the"
+            " pre-sample origin (curve index 0) NO session closed there,"
+            " so the field is None, never silently relabeled as D1"
+        ),
+    ),
+    dict(
+        id="M467-max-drawdown-empty-bypasses-alignment",
+        owner="test_max_drawdown_depth_location_and_recovery",
+        file="src/tree_options/evaluation/portfolio.py",
+        anchor=(
+            "    sample = _finite(session_returns, name=\"session return\")\n"
+            "    if sessions is not None and len(sessions) != len(sample):\n"
+            "        raise ValueError(\"sessions must align with the returns\")\n"
+            "    if not sample:\n"
+            "        return None"
+        ),
+        replacement=(
+            "    sample = _finite(session_returns, name=\"session return\")\n"
+            "    if not sample:\n"
+            "        return None\n"
+            "    if sessions is not None and len(sessions) != len(sample):\n"
+            "        raise ValueError(\"sessions must align with the returns\")"
+        ),
+        selectors=[f"{U}/test_evaluation_portfolio.py"],
+        invariant=(
+            "M5 max_drawdown validates sessions alignment BEFORE the empty"
+            " short-circuit — max_drawdown([], sessions=[D1]) MUST raise"
+            " rather than silently returning None, otherwise a mismatched"
+            " call shape is hidden as a no-result"
+        ),
+    ),
 ]
 
 
