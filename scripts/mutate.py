@@ -6971,6 +6971,30 @@ MUTANTS = [
             " outcome of every same-instant application-order pair"
         ),
     ),
+    dict(
+        id="M488-same-instant-chain-basis-ignores-superseded",
+        owner="test_same_instant_chained_replace_resolves_superseded_request_via_its_basis",
+        file="src/tree_options/execution/lifecycle.py",
+        anchor=(
+            "            pending is not None\n"
+            "            and record.record_id == pending_basis_id\n"
+            "            and superseded_pending is not None"
+        ),
+        replacement=(
+            "            pending is not None\n"
+            "            and record.record_id == pending_basis_id\n"
+            "            and False"
+        ),
+        selectors=[f"{U}/test_execution_lifecycle_remediation.py"],
+        invariant=(
+            "M6 a same-instant chained replacement's NAMED BASIS readback"
+            " resolves the request it superseded — ignoring the superseded"
+            " request misreads the explicitly confirmed total change as"
+            " UNEXPECTED_CONFIRMED_TOTAL_CHANGE, strapping a sticky false"
+            " reconciliation onto the cleanest possible chain (Codex"
+            " round-1 P1)"
+        ),
+    ),
 ]
 
 

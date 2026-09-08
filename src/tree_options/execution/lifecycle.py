@@ -294,6 +294,7 @@ def _derive_quantity_authority(
     pending: int | None = None
     pending_basis_id: str | None = None
     pending_created_at: datetime | None = None
+    superseded_pending: int | None = None
     confirmed_at: datetime | None = None
     submitted = False
     reasons: set[ReconciliationReason] = set()
@@ -315,6 +316,12 @@ def _derive_quantity_authority(
                 confirmed_at = record.broker_acknowledged_at
             continue
         if isinstance(record, ReplaceIntent):
+            if pending is not None:
+                # The new request's NAMED BASIS readback is, in the
+                # same-instant chain, also the confirmation of the request
+                # it supersedes — remember it so the basis readback can
+                # resolve it instead of misreading the change as unexpected.
+                superseded_pending = pending
             pending = record.new_total_quantity
             pending_basis_id = record.based_on_readback_id
             pending_created_at = record.replace_created_at
@@ -322,7 +329,22 @@ def _derive_quantity_authority(
         if record.total_quantity is None:
             continue
         observed = record.total_quantity
-        if pending is not None and record.record_id != pending_basis_id:
+        if (
+            pending is not None
+            and record.record_id == pending_basis_id
+            and superseded_pending is not None
+        ):
+            # The current request's own basis readback, arriving after a
+            # same-instant successor request superseded an outstanding one:
+            # the trader read THIS readback and acted on it, so it confirms
+            # the SUPERSEDED request. Resolve that request against it; the
+            # current request stays pending for its own confirmation.
+            if observed != superseded_pending:
+                reasons.add(ReconciliationReason.REPLACE_CONFIRMATION_MISMATCH)
+            confirmed = observed
+            confirmed_at = record.broker_snapshot_at
+            superseded_pending = None
+        elif pending is not None and record.record_id != pending_basis_id:
             if pending_created_at is not None and record.broker_snapshot_at <= pending_created_at:
                 if observed != confirmed:
                     reasons.add(ReconciliationReason.AMBIGUOUS_REPLACE_CONFIRMATION)

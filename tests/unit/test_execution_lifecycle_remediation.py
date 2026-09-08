@@ -1616,3 +1616,55 @@ def test_terminal_fact_reconciliation_overrides_later_uncertainty() -> None:
     assert terminal_first.state is ExecutionState.RECONCILIATION_REQUIRED
     assert "FILL_KIND_TOTAL_MISMATCH" in terminal_first.reconciliation_reasons
     assert disconnected in terminal_first.records
+
+
+def test_same_instant_chained_replace_resolves_superseded_request_via_its_basis() -> None:
+    """Codex round-1 P1: a same-instant chained replacement must not misread
+    its own named basis as an unexpected total change.
+
+    The successor request (5->6 at t17, based on readback-002 whose snapshot
+    is also t17) sorts BEFORE its basis (local actions outrank broker facts
+    at equal instants), so it overwrites the outstanding 3->5 request; the
+    basis readback then arrives and must resolve THAT request — the trader
+    read this very readback and acted on it — while the successor stays
+    pending for its own confirmation.
+    """
+    acknowledged = _acknowledged()
+    chained = (
+        acknowledged.apply(_readback(1, total_quantity=3, snapshot_at=11))
+        .apply(_replace(1, total=5, basis=1, created_at=13))
+        .apply(_readback(2, total_quantity=5, snapshot_at=17, received=17))
+        .apply(_replace(2, total=6, basis=2, created_at=17))
+        .apply(_readback(3, total_quantity=6, snapshot_at=18, received=18))
+    )
+    assert chained.state is ExecutionState.ACKNOWLEDGED
+    assert chained.broker_confirmed_total_quantity == 6
+    assert chained.pending_replace_total_quantity is None
+    assert chained.reconciliation_reasons == frozenset()
+    # application order does not matter once the doors' causal
+    # prerequisites hold (a replace's basis readback must already be in
+    # the set): the same FINAL record set converges
+    reordered = (
+        acknowledged.apply(_readback(1, total_quantity=3, snapshot_at=11))
+        .apply(_readback(2, total_quantity=5, snapshot_at=17, received=17))
+        .apply(_readback(3, total_quantity=6, snapshot_at=18, received=18))
+        .apply(_replace(1, total=5, basis=1, created_at=13))
+        .apply(_replace(2, total=6, basis=2, created_at=17))
+    )
+    assert _semantic(chained) == _semantic(reordered)
+
+
+def test_same_instant_chain_with_conflicting_basis_is_refused_at_the_door() -> None:
+    """A same-instant successor whose basis readback CONTRADICTS the
+    outstanding request never enters the record set: the conflicting
+    readback invalidates the replace basis and the door refuses — the
+    world must reconcile before another replace can act on it."""
+    acknowledged = _acknowledged()
+    staged = (
+        acknowledged.apply(_readback(1, total_quantity=3, snapshot_at=11))
+        .apply(_replace(1, total=5, basis=1, created_at=13))
+        # the basis readback of the successor shows 4, NOT the requested 5
+        .apply(_readback(2, total_quantity=4, snapshot_at=17, received=17))
+    )
+    with pytest.raises(ReplacementRefusedError, match="current matching readback"):
+        staged.apply(_replace(2, total=6, basis=2, created_at=17))
