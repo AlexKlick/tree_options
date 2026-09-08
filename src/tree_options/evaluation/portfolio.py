@@ -26,7 +26,7 @@ class DrawdownAssessment:
     """Peak-to-trough drawdown of the compounded curve, with its location."""
 
     depth: float  # strictly <= 0, as a fraction of the running peak
-    peak_session: date
+    peak_session: date | None  # None when the recorded peak is the pre-sample origin
     trough_session: date
     recovered_session: date | None  # first session closing at/above the peak
 
