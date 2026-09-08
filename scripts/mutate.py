@@ -6844,6 +6844,133 @@ MUTANTS = [
             " every leg's contribution exactly when honesty matters most"
         ),
     ),
+    dict(
+        id="M480-records-naive-datetime-accepted",
+        owner="test_every_timestamp_role_rejects_naive_datetime",
+        file="src/tree_options/execution/records.py",
+        anchor=(
+            "    if parsed.tzinfo is None or parsed.utcoffset() is None:\n"
+            '        raise ValueError("naive datetime rejected")'
+        ),
+        replacement=('    if False:\n        raise ValueError("naive datetime rejected")'),
+        selectors=[f"{U}/test_execution_records.py"],
+        invariant=(
+            "M6 every execution timestamp is a tz-aware UTC instant — a"
+            " naive datetime is ambiguous by construction and accepting one"
+            " lets a local-clock value smuggle into broker-neutral state"
+        ),
+    ),
+    dict(
+        id="M481-records-float-money-accepted",
+        owner="test_monetary_fields_refuse_float_inputs",
+        file="src/tree_options/execution/records.py",
+        anchor=(
+            '        raise ValueError(f"monetary value must be Decimal, got {type(value).__name__}")'
+        ),
+        replacement="        exact = Decimal(str(value))",
+        selectors=[f"{U}/test_execution_records.py"],
+        invariant=(
+            "M6 monetary fields accept only Decimal or its lossless string —"
+            " a binary float is already rounded and would poison exact"
+            " broker-neutral economics at ingestion"
+        ),
+    ),
+    dict(
+        id="M482-fill-overlap-detection-gutted",
+        owner="test_overlapping_fill_economics_reconcile_in_either_application_order",
+        file="src/tree_options/execution/lifecycle.py",
+        anchor="    overlap = any(\n        left_start < right_end and right_start < left_end",
+        replacement="    overlap = False and any(\n        left_start < right_end and right_start < left_end",
+        selectors=[f"{U}/test_execution_lifecycle_remediation.py"],
+        invariant=(
+            "M6 overlapping fill intervals are a reconciliation reason by"
+            " construction — gutting the overlap flag lets contradictory"
+            " broker economics pass as a coherent fill history"
+        ),
+    ),
+    dict(
+        id="M483-fill-regression-boundary-inclusive",
+        owner="test_fill_above_confirmed_total_does_not_infer_pending_replace_acceptance",
+        file="src/tree_options/execution/lifecycle.py",
+        anchor="        and later.cumulative_quantity < earlier.cumulative_quantity",
+        replacement="        and later.cumulative_quantity <= earlier.cumulative_quantity",
+        selectors=[
+            f"{U}/test_execution_lifecycle.py",
+            f"{U}/test_execution_lifecycle_remediation.py",
+        ],
+        invariant=(
+            "M6 a cumulative fill regression is STRICTLY lower — an"
+            " inclusive boundary flags every adjacent equal-cumulative"
+            " fill as a regression, crying wolf exactly when the broker"
+            " history is coherent"
+        ),
+    ),
+    dict(
+        id="M484-retry-knowledge-boundary-strict",
+        owner="test_retry_at_known_broker_receipt_time_is_retained_for_reconciliation",
+        file="src/tree_options/execution/lifecycle.py",
+        anchor="        boundary <= retry.send_attempt_at",
+        replacement="        boundary < retry.send_attempt_at",
+        selectors=[
+            f"{U}/test_execution_lifecycle.py",
+            f"{U}/test_execution_lifecycle_remediation.py",
+        ],
+        invariant=(
+            "M6 a retry sent AT the instant knowledge arrived is already"
+            " racing the broker — the boundary is INCLUSIVE so a"
+            " same-instant retry is retained for reconciliation, never"
+            " silently treated as blindly sent"
+        ),
+    ),
+    dict(
+        id="M485-covers-through-any-interval",
+        owner="test_missing_fill_interval_closes_gap_and_application_orders_converge",
+        file="src/tree_options/execution/lifecycle.py",
+        anchor="    return intervals == ((0, quantity),)",
+        replacement="    return bool(intervals)",
+        selectors=[f"{U}/test_execution_lifecycle_remediation.py"],
+        invariant=(
+            "M6 terminal full-fill states require COMPLETE fill economics"
+            " — exactly (0, quantity), contiguous from zero; accepting any"
+            " interval as coverage lets a partial history authorize a"
+            " terminal quantity it never earned"
+        ),
+    ),
+    dict(
+        id="M486-observed-cumulative-min",
+        owner="test_readback_cannot_erase_an_observed_fill_quantity",
+        file="src/tree_options/execution/lifecycle.py",
+        anchor="    return max(quantities, default=0)",
+        replacement="    return min(quantities, default=0)",
+        selectors=[
+            f"{U}/test_execution_lifecycle.py",
+            f"{U}/test_execution_lifecycle_remediation.py",
+        ],
+        invariant=(
+            "M6 the observed cumulative is the MAXIMUM across fills and"
+            " readbacks — a readback echoing a lower total can never erase"
+            " quantity the exchange already reported"
+        ),
+    ),
+    dict(
+        id="M487-event-sort-priority-flipped",
+        owner="test_equal_time_replace_confirmation_fails_closed_in_either_order",
+        file="src/tree_options/execution/lifecycle.py",
+        anchor=("    priority = 0 if isinstance(record, (SubmitAttempt, ReplaceIntent)) else 1"),
+        replacement=(
+            "    priority = 1 if isinstance(record, (SubmitAttempt, ReplaceIntent)) else 0"
+        ),
+        selectors=[
+            f"{U}/test_execution_lifecycle.py",
+            f"{U}/test_execution_lifecycle_remediation.py",
+        ],
+        invariant=(
+            "M6 equal-instant events order LOCAL ACTIONS (submit/replace)"
+            " before broker facts — the tiebreak that makes permutation"
+            " pairs converge deterministically; flipping it changes the"
+            " outcome of every same-instant application-order pair"
+        ),
+    ),
 ]
 
 
