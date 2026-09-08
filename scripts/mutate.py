@@ -6641,6 +6641,209 @@ MUTANTS = [
             " call shape is hidden as a no-result"
         ),
     ),
+    dict(
+        id="M468-attribution-residual-zeroed",
+        owner="test_attribute_position_exact_legs_and_residual",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor=(
+            "    vega_pnl = vega * iv\n"
+            "    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
+        ),
+        replacement=("    vega_pnl = vega * iv\n    residual = 0.0"),
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 the attribution residual is total minus the four legs —"
+            " zeroing it hides every cross/interaction term and claims the"
+            " first-order Taylor expansion explains the whole position"
+        ),
+    ),
+    dict(
+        id="M469-attribution-gamma-half-dropped",
+        owner="test_attribute_position_exact_legs_and_residual",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor="    gamma_pnl = 0.5 * gamma * move * move",
+        replacement="    gamma_pnl = gamma * move * move",
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 the gamma leg of the Taylor expansion carries the 1/2 —"
+            " dropping it doubles the convexity claim, mis-crediting every"
+            " position that rode a large squared move"
+        ),
+    ),
+    dict(
+        id="M470-attribution-theta-unscaled",
+        owner="test_zero_move_and_zero_changes_collapse_to_theta_plus_residual",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor="    theta_pnl = theta * years",
+        replacement="    theta_pnl = theta",
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 theta is quoted PER YEAR and must be scaled by the holding"
+            " year_fraction — an unscaled theta leg charges a full year of"
+            " decay on every holding period however short"
+        ),
+    ),
+    dict(
+        id="M471-attribution-vega-sign-inverted",
+        owner="test_attribute_position_exact_legs_and_residual",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor="    vega_pnl = vega * iv",
+        replacement="    vega_pnl = -vega * iv",
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 the vega leg is vega times the iv CHANGE — a sign flip"
+            " attributes vol gains to vol losses, turning the volatility"
+            " exposure report into its own negation"
+        ),
+    ),
+    dict(
+        id="M472-aggregate-residual-folded-into-delta",
+        owner="test_aggregate_recomputes_residual_on_aggregate_numbers",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor=(
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
+            "    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
+        ),
+        replacement=(
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
+            "    delta_pnl += total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)\n"
+            "    residual = 0.0"
+        ),
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 the aggregate residual is carried as its own line — folding"
+            " it into the delta leg disguises unexplained P&L as directional"
+            " skill, the exact misattribution this module exists to prevent"
+        ),
+    ),
+    dict(
+        id="M473-future-shift-becomes-safe-lag",
+        owner="test_future_shifted_series_is_the_lookahead_tail",
+        file="src/tree_options/evaluation/pipeline_controls.py",
+        anchor="    return series[shift:]",
+        replacement="    return series[:-shift]",
+        selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
+        invariant=(
+            "M5 the future-shift corruption must look FORWARD (value at t"
+            " becomes value at t+shift) — emitting the safe lagged series"
+            " instead produces a legitimate feature and the negative"
+            " control proves nothing"
+        ),
+    ),
+    dict(
+        id="M474-chronology-inversion-reverses-values-too",
+        owner="test_invert_chronology_reverses_sessions_not_values",
+        file="src/tree_options/evaluation/pipeline_controls.py",
+        anchor="    return tuple(reversed(tuple(sessions))), tuple(values)",
+        replacement="    return tuple(reversed(tuple(sessions))), tuple(reversed(values))",
+        selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
+        invariant=(
+            "M5 timestamp inversion must leave the VALUES in place so every"
+            " (timestamp, value) pair misaligns — reversing both is a no-op"
+            " relabeling that joins cleanly and proves nothing"
+        ),
+    ),
+    dict(
+        id="M475-same-close-fills-reversed",
+        owner="test_same_close_fills_collapses_execution_onto_decision",
+        file="src/tree_options/evaluation/pipeline_controls.py",
+        anchor=(
+            "    if not decision_sessions:\n"
+            '        raise ValueError("decision_sessions must be non-empty")\n'
+            "    return tuple(decision_sessions)"
+        ),
+        replacement=(
+            "    if not decision_sessions:\n"
+            '        raise ValueError("decision_sessions must be non-empty")\n'
+            "    return tuple(reversed(decision_sessions))"
+        ),
+        selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
+        invariant=(
+            "M5 the same-close corruption must pair each decision with ITS"
+            " OWN session — a reversed tuple pairs decisions with the"
+            " wrong sessions' closes, a different (and uncontrolled)"
+            " corruption entirely"
+        ),
+    ),
+    dict(
+        id="M476-perfect-foresight-reversed",
+        owner="test_perfect_foresight_feature_scores_exactly_one",
+        file="src/tree_options/evaluation/pipeline_controls.py",
+        anchor=(
+            "        raise ValueError(\n"
+            '            "labels must have at least two DISTINCT values "\n'
+            '            "(a constant vector has no rank information)"\n'
+            "        )\n"
+            "    return series"
+        ),
+        replacement=(
+            "        raise ValueError(\n"
+            '            "labels must have at least two DISTINCT values "\n'
+            '            "(a constant vector has no rank information)"\n'
+            "        )\n"
+            "    return tuple(reversed(series))"
+        ),
+        selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
+        invariant=(
+            "M5 the perfect-foresight canary must BE the label vector so"
+            " rank IC is exactly 1.0 — a reversed vector breaks the canary"
+            " and the harness check it anchors"
+        ),
+    ),
+    dict(
+        id="M477-perfect-foresight-accepts-constant-labels",
+        owner="test_perfect_foresight_feature_scores_exactly_one",
+        file="src/tree_options/evaluation/pipeline_controls.py",
+        anchor=(
+            "    if len(set(series)) < 2:\n"
+            "        raise ValueError(\n"
+            '            "labels must have at least two DISTINCT values "\n'
+            '            "(a constant vector has no rank information)"\n'
+            "        )\n"
+            "    return series"
+        ),
+        replacement="    return series",
+        selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
+        invariant=(
+            "M5 constant labels are REFUSED by the perfect-foresight"
+            " canary — their rank IC is None (no rank information), so"
+            " accepting them lets a harness pass a corruption that"
+            " proves nothing"
+        ),
+    ),
+    dict(
+        id="M478-aggregate-residual-summed-from-rows",
+        owner="test_aggregate_residual_is_recomputed_not_summed",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor=(
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
+            "    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
+        ),
+        replacement=(
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
+            "    residual = math.fsum(row.residual for row in materialized)"
+        ),
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 the aggregate residual is RECOMPUTED as aggregate total"
+            " minus aggregate legs — summing per-row residuals instead"
+            " carries per-row float roundings and the book-level"
+            " conservation identity a reader checks can drift"
+        ),
+    ),
+    dict(
+        id="M479-share-denominator-absolute-valued",
+        owner="test_attribution_share_signed_and_refuses_zero_total",
+        file="src/tree_options/evaluation/attribution.py",
+        anchor="    return value / attribution.total_pnl",
+        replacement="    return value / abs(attribution.total_pnl)",
+        selectors=[f"{U}/test_evaluation_attribution.py"],
+        invariant=(
+            "M5 attribution shares divide by the SIGNED total — an abs()"
+            " denominator whitewashes losing books, flipping the sign of"
+            " every leg's contribution exactly when honesty matters most"
+        ),
+    ),
 ]
 
 

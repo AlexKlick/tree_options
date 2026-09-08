@@ -1,5 +1,13 @@
 """Evaluation identities, statistics, and M5 adversarial controls."""
 
+from tree_options.evaluation.attribution import (
+    GreekAttribution,
+    PositionGreeks,
+    aggregate_attributions,
+    attribute_position,
+    attribution_share,
+    leg_values,
+)
 from tree_options.evaluation.bundle import (
     COUNT_SEMANTICS,
     EVALUATION_BUNDLE_SCHEMA_VERSION,
@@ -29,6 +37,12 @@ from tree_options.evaluation.diagnostics import (
     ndcg_at_k,
     quantile_spread,
     selected_tail_precision,
+)
+from tree_options.evaluation.pipeline_controls import (
+    future_shifted_series,
+    invert_chronology,
+    perfect_foresight_feature,
+    same_close_fills,
 )
 from tree_options.evaluation.portfolio import (
     CostBridge,
@@ -73,13 +87,18 @@ __all__ = [
     "EvaluationBundle",
     "EvaluationBundleError",
     "FalsePositiveAssessment",
+    "GreekAttribution",
     "GroupStat",
     "HeldEvaluationArtifact",
     "PboAssessment",
+    "PositionGreeks",
     "ScoredLabel",
     "SessionRankIC",
+    "aggregate_attributions",
     "annualized_sharpe",
     "assess_false_positives",
+    "attribute_position",
+    "attribution_share",
     "backtest_summary",
     "block_bootstrap_ci",
     "block_shuffle",
@@ -97,16 +116,21 @@ __all__ = [
     "exact_binomial_upper_tail",
     "excess_over_baseline",
     "expected_max_sharpe",
+    "future_shifted_series",
     "hit_rate",
+    "invert_chronology",
+    "leg_values",
     "matched_risk_scale",
     "max_allowed_rejections",
     "max_drawdown",
     "ndcg_at_k",
     "one_sample_t_statistic",
     "per_session_rank_ics",
+    "perfect_foresight_feature",
     "profit_factor",
     "quantile_spread",
     "random_scores",
+    "same_close_fills",
     "selected_tail_precision",
     "slice_stability",
     "sortino_ratio",
