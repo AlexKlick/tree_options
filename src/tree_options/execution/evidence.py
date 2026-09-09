@@ -34,14 +34,14 @@ from tree_options.execution.lifecycle import (
     ExecutionLifecycle,
     ExecutionState,
 )
+from tree_options.execution.reconciliation import (
+    ReconciliationReport,
+    reconcile,
+)
 from tree_options.execution.records import (
     BrokerReadback,
     CompleteFill,
     PartialFill,
-)
-from tree_options.execution.reconciliation import (
-    ReconciliationReport,
-    reconcile,
 )
 
 #: States that end an order's story.  Only these can be evidence.
