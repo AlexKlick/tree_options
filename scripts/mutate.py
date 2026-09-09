@@ -7204,9 +7204,7 @@ MUTANTS = [
         id="M501-reconciliation-severity-flipped",
         owner="test_overlapping_fills_are_adjudicated_economic_with_the_pinned_explanation",
         file="src/tree_options/execution/reconciliation.py",
-        anchor=(
-            "    ReconciliationReason.FILL_ECONOMIC_OVERLAP: ReconciliationSeverity.ECONOMIC,"
-        ),
+        anchor=("    ReconciliationReason.FILL_ECONOMIC_OVERLAP: ReconciliationSeverity.ECONOMIC,"),
         replacement=(
             "    ReconciliationReason.FILL_ECONOMIC_OVERLAP: ReconciliationSeverity.PROTOCOL,"
         ),
@@ -7357,23 +7355,22 @@ MUTANTS = [
         id="M512-evidence-canceled-origin-dropped",
         owner="test_canceled_economics_not_hanging_from_zero_are_refused",
         file="src/tree_options/execution/evidence.py",
-        anchor="    if intervals and intervals[0][0] != 0:",
+        anchor="    if intervals and (len(intervals) != 1 or intervals[0][0] != 0):",
         replacement="    if False:",
         selectors=[f"{U}/test_execution_evidence.py"],
         invariant=(
-            "M6 CANCELED/REJECTED economics must hang contiguously from zero —"
-            " dropping the origin check certifies fills whose contracts"
-            " materialized from nowhere"
+            "M6 CANCELED/REJECTED economics must hang contiguously from zero"
+            " as ONE merged interval — dropping the check certifies fills"
+            " whose contracts materialized from nowhere or left interior"
+            " gaps (Codex round-1 P1)"
         ),
     ),
     dict(
         id="M513-evidence-buy-net-drops-fees",
         owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
         file="src/tree_options/execution/evidence.py",
-        anchor=(
-            '    if lifecycle.intent.side == "BUY":\n' "        net = -(gross + fees)"
-        ),
-        replacement=('    if lifecycle.intent.side == "BUY":\n' "        net = -gross"),
+        anchor='        if lifecycle.intent.side == "BUY":\n            net = -(gross + fees)',
+        replacement='        if lifecycle.intent.side == "BUY":\n            net = -gross',
         selectors=[f"{U}/test_execution_evidence.py"],
         invariant=(
             "M6 a BUY's cash flow is gross PLUS fees out — dropping the fees"
@@ -7384,8 +7381,8 @@ MUTANTS = [
         id="M514-evidence-sell-net-sign-flipped",
         owner="test_sell_side_net_cash_flow_is_proceeds_net_of_fees",
         file="src/tree_options/execution/evidence.py",
-        anchor="        net = gross - fees",
-        replacement="        net = -(gross - fees)",
+        anchor="            net = gross - fees",
+        replacement="            net = -(gross - fees)",
         selectors=[f"{U}/test_execution_evidence.py"],
         invariant=(
             "M6 a SELL's cash flow is proceeds IN (gross minus fees) —"
@@ -7420,16 +7417,16 @@ MUTANTS = [
         owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
         file="src/tree_options/execution/evidence.py",
         anchor=(
-            "    gross = sum(\n"
-            "        (Decimal(fill.fill_quantity) * fill.unit_price for fill in fills),\n"
-            '        Decimal("0"),\n'
-            "    )"
+            "        gross = sum(\n"
+            "            (Decimal(fill.fill_quantity) * fill.unit_price for fill in fills),\n"
+            '            Decimal("0"),\n'
+            "        )"
         ),
         replacement=(
-            "    gross = sum(\n"
-            "        (Decimal(1) * fill.unit_price for fill in fills),\n"
-            '        Decimal("0"),\n'
-            "    )"
+            "        gross = sum(\n"
+            "            (Decimal(1) * fill.unit_price for fill in fills),\n"
+            '            Decimal("0"),\n'
+            "        )"
         ),
         selectors=[f"{U}/test_execution_evidence.py"],
         invariant=(
@@ -7442,8 +7439,8 @@ MUTANTS = [
         id="M517-evidence-fees-zeroed",
         owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
         file="src/tree_options/execution/evidence.py",
-        anchor='    fees = sum((fill.fees for fill in fills), Decimal("0"))',
-        replacement='    fees = Decimal("0")',
+        anchor='        fees = sum((fill.fees for fill in fills), Decimal("0"))',
+        replacement='        fees = Decimal("0")',
         selectors=[f"{U}/test_execution_evidence.py"],
         invariant=(
             "M6 fees sum per fill off the retained records — zeroing them"
@@ -7482,6 +7479,47 @@ MUTANTS = [
             "M6 an ADMISSIBLE receipt reports the RECOMPUTED covered"
             " quantity — zeroing it vouches for an execution while reporting"
             " that nothing executed"
+        ),
+    ),
+    dict(
+        id="M520-evidence-observed-drift-blind",
+        owner="test_observed_quantity_drift_is_refused",
+        file="src/tree_options/execution/evidence.py",
+        anchor="    if lifecycle.filled_quantity != observed:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 the gate re-derives the OBSERVED cumulative (fills and"
+            " readbacks) and refuses on drift — trusting the claim lets a"
+            " lifecycle assert 999 observed on a 3-contract record set"
+            " (Codex round-1 probe)"
+        ),
+    ),
+    dict(
+        id="M521-evidence-ambient-precision",
+        owner="test_large_quantity_economics_are_exact_and_context_independent",
+        file="src/tree_options/execution/evidence.py",
+        anchor="        context.prec = max(60, len(str(total_contracts)) + 24)",
+        replacement="        context.prec = 28",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 the money sums run under a precision that keeps quantity x"
+            " 18-digit-price products EXACT — inheriting the ambient 28"
+            " digits rounds gross and makes the receipt caller-dependent"
+            " (Codex round-1 P1)"
+        ),
+    ),
+    dict(
+        id="M522-evidence-confirmed-total-ignored",
+        owner="test_confirmed_replace_total_outranks_the_immutable_intent_quantity",
+        file="src/tree_options/execution/evidence.py",
+        anchor="    confirmed = lifecycle.broker_confirmed_total_quantity",
+        replacement="    confirmed = None",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 a FILLED lifecycle must cover the BROKER-CONFIRMED total —"
+            " a clean replace to 5 on an intent of 3 refutes a gate that"
+            " demands ((0, 3)) (Codex round-1 P1)"
         ),
     ),
 ]

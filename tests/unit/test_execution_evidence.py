@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, localcontext
 
 from tree_options.execution import (
     BrokerAcknowledgement,
@@ -20,6 +20,7 @@ from tree_options.execution import (
     PaperLag,
     PaperQuote,
     PartialFill,
+    ReplaceIntent,
     SubmitAttempt,
     assess_evidence,
 )
@@ -256,6 +257,8 @@ def test_filled_claim_with_partial_economics_is_refused() -> None:
         state=ExecutionState.FILLED,
         broker_state=ExecutionState.FILLED,
         records=records,
+        filled_quantity=1,
+        fill_economic_intervals=((0, 1),),  # claim exactly what the records say
     )
     receipt = assess_evidence(claimed)
     assert receipt.verdict is EvidenceVerdict.REFUSED
@@ -271,6 +274,7 @@ def test_derivation_drift_between_records_and_claims_is_refused() -> None:
         state=ExecutionState.FILLED,
         broker_state=ExecutionState.FILLED,
         records=records,
+        filled_quantity=3,
         fill_economic_intervals=((0, 2),),
     )
     receipt = assess_evidence(drifted)
@@ -283,12 +287,154 @@ def test_derivation_drift_between_records_and_claims_is_refused() -> None:
         state=ExecutionState.FILLED,
         broker_state=ExecutionState.FILLED,
         records=records,
+        filled_quantity=3,
         fill_economic_intervals=((0, 1), (1, 3)),
     )
     assert unmerged.economically_covered_quantity == 3  # same sum, wrong shape
     receipt = assess_evidence(unmerged)
     assert receipt.verdict is EvidenceVerdict.REFUSED
     assert any(b.kind is EvidenceBlockerKind.DERIVATION_MISMATCH for b in receipt.blockers)
+
+
+def test_observed_quantity_drift_is_refused() -> None:
+    """Codex round-1 probe: the gate verifies the OBSERVED quantity claim too,
+    not just the interval claims — a lifecycle claiming 999 observed on a
+    (0, 3) record set is a drifted derivation."""
+    records = _filled_lifecycle().records
+    drifted = ExecutionLifecycle(
+        intent=_intent(),
+        state=ExecutionState.FILLED,
+        broker_state=ExecutionState.FILLED,
+        records=records,
+        filled_quantity=999,
+        fill_economic_intervals=((0, 3),),
+    )
+    receipt = assess_evidence(drifted)
+    assert receipt.verdict is EvidenceVerdict.REFUSED
+    mismatch = [b for b in receipt.blockers if b.kind is EvidenceBlockerKind.DERIVATION_MISMATCH]
+    assert any("observed quantity 999" in b.detail for b in mismatch)
+
+
+def test_canceled_interior_gap_is_refused() -> None:
+    """Codex round-1 P1: CANCELED economics hanging from zero but with a HOLE
+    ((0,1),(2,3)) are incomplete — the merged interval chain must be one
+    contiguous interval, not merely one that starts at zero."""
+    intent = _intent()
+    first = _partial(1)
+    second = _partial(2, fill_quantity=1, cumulative_quantity=3)
+    gapped = ExecutionLifecycle(
+        intent=intent,
+        state=ExecutionState.CANCELED,
+        broker_state=ExecutionState.CANCELED,
+        records=(intent, first, second),
+        filled_quantity=3,
+        fill_economic_intervals=((0, 1), (2, 3)),
+    )
+    receipt = assess_evidence(gapped)
+    assert receipt.verdict is EvidenceVerdict.REFUSED
+    assert receipt.economics is None
+    assert any(b.kind is EvidenceBlockerKind.INCOMPLETE_FILL_ECONOMICS for b in receipt.blockers)
+
+
+def test_confirmed_replace_total_outranks_the_immutable_intent_quantity() -> None:
+    """Codex round-1 P1: a cleanly-replaced order that FILLED against the
+    confirmed total 5 (intent said 3) is admissible — the gate must demand
+    ((0, confirmed)), not ((0, intent.quantity))."""
+
+    def _rb(number: int, total: int) -> BrokerReadback:
+        return BrokerReadback(
+            record_id=f"readback-{number:03d}",
+            intent_id="intent-001",
+            status=BrokerReadbackStatus.OPEN,
+            broker_order_id="paper-order-001",
+            total_quantity=total,
+            cumulative_quantity=0,
+            broker_snapshot_at=_at(10 + 5 * number),
+            locally_received_at=_at(11 + 5 * number),
+            source="synthetic-paper-adapter",
+            source_sequence_id=f"readback-seq-{number:03d}",
+            broker_sequence_id=f"broker-readback-{number:03d}",
+        )
+
+    lifecycle = (
+        ExecutionLifecycle.start(_intent())
+        .apply(_attempt())
+        .apply(_ack())
+        .apply(_rb(1, 3))
+        .apply(
+            ReplaceIntent(
+                record_id="replace-001",
+                intent_id="intent-001",
+                based_on_readback_id="readback-001",
+                broker_order_id="paper-order-001",
+                new_total_quantity=5,
+                new_limit_price=Decimal("1.10"),
+                replace_created_at=_at(17),
+                source="executor",
+                source_sequence_id="replace-seq-001",
+            )
+        )
+        .apply(_rb(2, 5))
+    )
+    for number in range(1, 5):
+        # fills AFTER the confirming readback (door discipline: the basis
+        # readback's cumulative must still match observed quantity)
+        lifecycle = lifecycle.apply(
+            _partial(
+                number,
+                exchange_event_at=_at(30 + number),
+                locally_received_at=_at(31 + number),
+            )
+        )
+    lifecycle = lifecycle.apply(
+        _complete(
+            record_id="fill-005",
+            source_sequence_id="source-fill-005",
+            broker_sequence_id="broker-fill-005",
+            fill_quantity=1,
+            cumulative_quantity=5,
+            exchange_event_at=_at(36),
+            locally_received_at=_at(37),
+        )
+    )
+    assert lifecycle.state is ExecutionState.FILLED
+    assert sorted(r.value for r in lifecycle.reconciliation_reasons) == []
+    assert lifecycle.broker_confirmed_total_quantity == 5
+    receipt = assess_evidence(lifecycle)
+    assert receipt.verdict is EvidenceVerdict.ADMISSIBLE
+    assert receipt.economics is not None
+    assert receipt.economically_covered_quantity == 5
+    # 4 partials at 1.20 + the qty-1 closer at the builder's 1.22
+    assert receipt.economics.gross_amount == Decimal("6.02")
+    assert receipt.economics.total_fees == Decimal("5.20")  # 4 x 0.65 + 2.60
+
+
+def test_large_quantity_economics_are_exact_and_context_independent() -> None:
+    """Codex round-1 P1: gross must not inherit ambient Decimal precision —
+    quantity x an 18-digit price can exceed the default 28 significant
+    digits, and a precision-60 caller must get the same receipt."""
+    big = 10**21 + 1
+    intent = _intent(quantity=big)
+    single = _complete(fill_quantity=big, cumulative_quantity=big, unit_price="1.23456789")
+    lifecycle = ExecutionLifecycle(
+        intent=intent,
+        state=ExecutionState.FILLED,
+        broker_state=ExecutionState.FILLED,
+        records=(intent, single),
+        filled_quantity=big,
+        fill_economic_intervals=((0, big),),
+    )
+    with localcontext() as context:
+        context.prec = 60  # compute the hand-check exactly
+        expected_gross = Decimal(big) * Decimal("1.23456789")
+    assert expected_gross == Decimal("1234567890000000000001.23456789")  # 30 sig digits
+    receipt = assess_evidence(lifecycle)
+    assert receipt.verdict is EvidenceVerdict.ADMISSIBLE
+    assert receipt.economics is not None
+    assert receipt.economics.gross_amount == expected_gross
+    with localcontext() as context:
+        context.prec = 60
+        assert assess_evidence(lifecycle) == receipt
 
 
 def test_canceled_with_partial_fills_hanging_from_zero_is_admissible() -> None:
@@ -320,6 +466,8 @@ def test_canceled_economics_not_hanging_from_zero_are_refused() -> None:
         state=ExecutionState.CANCELED,
         broker_state=ExecutionState.CANCELED,
         records=records,
+        filled_quantity=2,
+        fill_economic_intervals=((1, 2),),  # claim exactly what the records say
     )
     receipt = assess_evidence(canceled)
     assert receipt.verdict is EvidenceVerdict.REFUSED

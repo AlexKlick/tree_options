@@ -27,18 +27,22 @@ byte-deterministic for one lifecycle.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from enum import StrEnum
 
 from tree_options.execution.lifecycle import (
     ExecutionLifecycle,
     ExecutionState,
 )
+from tree_options.execution.records import (
+    BrokerReadback,
+    CompleteFill,
+    PartialFill,
+)
 from tree_options.execution.reconciliation import (
     ReconciliationReport,
     reconcile,
 )
-from tree_options.execution.records import CompleteFill, PartialFill
 
 #: States that end an order's story.  Only these can be evidence.
 _TERMINAL_STATES = frozenset(
@@ -123,15 +127,19 @@ def _merge_intervals(
 
 def _recompute_economics(
     lifecycle: ExecutionLifecycle,
-) -> tuple[tuple[tuple[int, int], ...], int, ExecutionEconomics]:
-    """Independent re-derivation: intervals, observed quantity, and money.
+) -> tuple[tuple[tuple[int, int], ...], int, int, ExecutionEconomics]:
+    """Independent re-derivation: intervals, covered/observed quantity, money.
 
     A fill record states what it added (``fill_quantity``) and the running
     total (``cumulative_quantity``) — its interval is the delta
     ``(cumulative - fill_quantity, cumulative)``, and touching intervals
-    merge.  The money sums each fill's own economics; exact for the
-    non-overlapping fills an ADMISSIBLE set requires (a refused set never
-    publishes its economics).
+    merge.  The OBSERVED quantity is the max cumulative across fills and
+    readbacks (the lifecycle's quantity authority); the money sums each
+    fill's own economics under a precision that keeps the products EXACT
+    (an int quantity times an 18-digit price can exceed the default 28
+    significant digits, which would round gross and make the receipt
+    context-dependent); exact for the non-overlapping fills an ADMISSIBLE
+    set requires (a refused set never publishes its economics).
     """
     fills = _fill_records(lifecycle)
     intervals = _merge_intervals(
@@ -141,18 +149,31 @@ def _recompute_economics(
         )
     )
     covered = sum(end - start for start, end in intervals)
-    gross = sum(
-        (Decimal(fill.fill_quantity) * fill.unit_price for fill in fills),
-        Decimal("0"),
+    observed = max(
+        (
+            record.cumulative_quantity
+            for record in lifecycle.records
+            if isinstance(record, (PartialFill, CompleteFill, BrokerReadback))
+        ),
+        default=0,
     )
-    fees = sum((fill.fees for fill in fills), Decimal("0"))
-    if lifecycle.intent.side == "BUY":
-        net = -(gross + fees)
-    else:
-        net = gross - fees
+    total_contracts = sum(fill.fill_quantity for fill in fills)
+    with localcontext() as context:
+        # Digits needed: quantity digits + 18-digit price + generous sum headroom.
+        context.prec = max(60, len(str(total_contracts)) + 24)
+        gross = sum(
+            (Decimal(fill.fill_quantity) * fill.unit_price for fill in fills),
+            Decimal("0"),
+        )
+        fees = sum((fill.fees for fill in fills), Decimal("0"))
+        if lifecycle.intent.side == "BUY":
+            net = -(gross + fees)
+        else:
+            net = gross - fees
     return (
         intervals,
         covered,
+        observed,
         ExecutionEconomics(
             filled_quantity=covered,
             gross_amount=gross,
@@ -162,13 +183,26 @@ def _recompute_economics(
     )
 
 
+def _expected_terminal_total(lifecycle: ExecutionLifecycle) -> int:
+    """The quantity a FILLED lifecycle must have covered exactly.
+
+    A confirmed replacement total OUTRANKS the immutable intent quantity —
+    the broker-confirmed total is the order the fills answered; falling
+    back to the intent quantity only when nothing confirmed a total.
+    """
+    confirmed = lifecycle.broker_confirmed_total_quantity
+    if confirmed is not None:
+        return confirmed
+    return lifecycle.intent.quantity
+
+
 def _economics_blockers(
     lifecycle: ExecutionLifecycle,
     intervals: tuple[tuple[int, int], ...],
 ) -> tuple[EvidenceBlocker, ...]:
     """Completeness of the claimed economics for the claimed terminal state."""
     if lifecycle.state is ExecutionState.FILLED:
-        expected: tuple[tuple[int, int], ...] = ((0, lifecycle.intent.quantity),)
+        expected: tuple[tuple[int, int], ...] = ((0, _expected_terminal_total(lifecycle)),)
         if intervals != expected:
             return (
                 EvidenceBlocker(
@@ -177,13 +211,16 @@ def _economics_blockers(
                 ),
             )
         return ()
-    # CANCELED / REJECTED: whatever executed must hang contiguously from zero.
-    if intervals and intervals[0][0] != 0:
+    # CANCELED / REJECTED: whatever executed must hang contiguously from zero —
+    # the intervals are touching-merged, so any SECOND interval is an interior
+    # gap and a first origin away from zero means contracts from nowhere.
+    if intervals and (len(intervals) != 1 or intervals[0][0] != 0):
         return (
             EvidenceBlocker(
                 kind=EvidenceBlockerKind.INCOMPLETE_FILL_ECONOMICS,
                 detail=(
-                    f"{lifecycle.state.value} economics must start at 0; intervals are {intervals}"
+                    f"{lifecycle.state.value} economics must be one interval from 0; "
+                    f"intervals are {intervals}"
                 ),
             ),
         )
@@ -195,7 +232,7 @@ def assess_evidence(lifecycle: ExecutionLifecycle) -> EvidenceReceipt:
     report: ReconciliationReport = reconcile(lifecycle)
     blockers: list[EvidenceBlocker] = []
 
-    intervals, covered, economics = _recompute_economics(lifecycle)
+    intervals, covered, observed, economics = _recompute_economics(lifecycle)
 
     if lifecycle.state not in _TERMINAL_STATES:
         blockers.append(
@@ -213,6 +250,16 @@ def assess_evidence(lifecycle: ExecutionLifecycle) -> EvidenceReceipt:
                 detail=(
                     f"lifecycle claims intervals {lifecycle.fill_economic_intervals}; "
                     f"records re-derive {intervals}"
+                ),
+            )
+        )
+    if lifecycle.filled_quantity != observed:
+        blockers.append(
+            EvidenceBlocker(
+                kind=EvidenceBlockerKind.DERIVATION_MISMATCH,
+                detail=(
+                    f"lifecycle claims observed quantity {lifecycle.filled_quantity}; "
+                    f"records re-derive {observed}"
                 ),
             )
         )
