@@ -6995,6 +6995,97 @@ MUTANTS = [
             " round-1 P1)"
         ),
     ),
+    dict(
+        id="M489-paper-cumulative-not-accumulating",
+        owner="test_fills_are_strictly_cumulative_at_the_midpoint_with_scaled_fees",
+        file="src/tree_options/execution/paper.py",
+        anchor="            cumulative += clip",
+        replacement="            cumulative = clip",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 paper fills accumulate STRICTLY increasing cumulative"
+            " quantity that closes exactly at the order total — resetting"
+            " per clip emits a regressing fill history the lifecycle would"
+            " have to reconcile"
+        ),
+    ),
+    dict(
+        id="M490-paper-clips-overshoot-the-order",
+        owner="test_fill_plan_clips_cover_exactly_with_last_clip_trimmed",
+        file="src/tree_options/execution/paper.py",
+        anchor="            clips.append(min(clip, remaining))",
+        replacement="            clips.append(clip)",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the fill plan's LAST clip is trimmed so the clips cover"
+            " the order quantity EXACTLY — an untrimmed plan overfills the"
+            " order and the terminal economics never close at the total"
+        ),
+    ),
+    dict(
+        id="M491-paper-broker-order-id-minted-per-attempt",
+        owner="test_retries_acknowledge_the_same_broker_order",
+        file="src/tree_options/execution/paper.py",
+        anchor=(
+            '            broker_order_id=f"paper-order-{self.intent.intent_id}",\n'
+            "            broker_acknowledged_at=acknowledged_at,"
+        ),
+        replacement=(
+            "            broker_order_id=(\n"
+            '                f"paper-order-{self.intent.intent_id}-{self._broker_order_seq}"\n'
+            "            ),\n"
+            "            broker_acknowledged_at=acknowledged_at,"
+        ),
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the paper broker order id derives from the INTENT identity"
+            " so send retries acknowledge the same broker order — minting"
+            " a fresh id per attempt turns every retry into a conflicting"
+            " broker identity the lifecycle must reconcile"
+        ),
+    ),
+    dict(
+        id="M492-paper-readback-precedes-the-last-fill",
+        owner="test_timestamps_never_precede_their_cause",
+        file="src/tree_options/execution/paper.py",
+        anchor=(
+            "        snapshot_at = shift_instant(fills[-1].exchange_event_at, self.lag.fill_spacing_seconds)"
+        ),
+        replacement="        snapshot_at = fills[0].exchange_event_at",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the terminal readback snapshots AFTER the last fill's"
+            " exchange event — snapshotting at the first fill claims the"
+            " order complete before its economics exist, a temporal"
+            " contradiction the lifecycle would retain"
+        ),
+    ),
+    dict(
+        id="M493-paper-fills-priced-at-the-ask",
+        owner="test_fills_are_strictly_cumulative_at_the_midpoint_with_scaled_fees",
+        file="src/tree_options/execution/paper.py",
+        anchor="        midpoint = (self.quote.bid + self.quote.ask) / Decimal(2)",
+        replacement="        midpoint = self.quote.ask",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 paper fills execute at the quote's midpoint — pricing"
+            " every clip at the ask silently hands the paper book the"
+            " taker's worst case and biases any cost analysis built on it"
+        ),
+    ),
+    dict(
+        id="M494-paper-fees-charged-per-order",
+        owner="test_fills_are_strictly_cumulative_at_the_midpoint_with_scaled_fees",
+        file="src/tree_options/execution/paper.py",
+        anchor="                    fees=self.quote.fee_per_contract * clip,",
+        replacement="                    fees=self.quote.fee_per_contract,",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 paper fees scale with the CLIP's contract count — a flat"
+            " per-order fee undercharges multi-clip fills and the paper"
+            " cost basis stops matching the declared fee schedule"
+        ),
+    ),
 ]
 
 

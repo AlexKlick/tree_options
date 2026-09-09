@@ -12,6 +12,12 @@ from tree_options.execution.lifecycle import (
     TemporalOrderError,
     TransitionRefusedError,
 )
+from tree_options.execution.paper import (
+    PaperBroker,
+    PaperFillPlan,
+    PaperLag,
+    PaperQuote,
+)
 from tree_options.execution.records import (
     BrokerAcknowledgement,
     BrokerReadback,
@@ -46,6 +52,10 @@ __all__ = [
     "IntentMismatchError",
     "OrderIntent",
     "OrderReject",
+    "PaperBroker",
+    "PaperFillPlan",
+    "PaperLag",
+    "PaperQuote",
     "PartialFill",
     "ReconciliationReason",
     "RecordIdentityCollisionError",
