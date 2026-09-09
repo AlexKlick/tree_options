@@ -1,5 +1,13 @@
 """Broker-neutral execution contracts and pure lifecycle projection."""
 
+from tree_options.execution.evidence import (
+    EvidenceBlocker,
+    EvidenceBlockerKind,
+    EvidenceReceipt,
+    EvidenceVerdict,
+    ExecutionEconomics,
+    assess_evidence,
+)
 from tree_options.execution.lifecycle import (
     ExecutionLifecycle,
     ExecutionLifecycleError,
@@ -17,6 +25,12 @@ from tree_options.execution.paper import (
     PaperFillPlan,
     PaperLag,
     PaperQuote,
+)
+from tree_options.execution.reconciliation import (
+    ReconciliationFinding,
+    ReconciliationReport,
+    ReconciliationSeverity,
+    reconcile,
 )
 from tree_options.execution.records import (
     BrokerAcknowledgement,
@@ -42,8 +56,13 @@ __all__ = [
     "BrokerReadbackStatus",
     "CompleteFill",
     "DisconnectObserved",
+    "EvidenceBlocker",
+    "EvidenceBlockerKind",
+    "EvidenceReceipt",
+    "EvidenceVerdict",
     "ExactMoney",
     "ExactPrice",
+    "ExecutionEconomics",
     "ExecutionLifecycle",
     "ExecutionLifecycleError",
     "ExecutionRecord",
@@ -57,7 +76,10 @@ __all__ = [
     "PaperLag",
     "PaperQuote",
     "PartialFill",
+    "ReconciliationFinding",
     "ReconciliationReason",
+    "ReconciliationReport",
+    "ReconciliationSeverity",
     "RecordIdentityCollisionError",
     "ReplaceIntent",
     "ReplacementRefusedError",
@@ -66,4 +88,6 @@ __all__ = [
     "TemporalOrderError",
     "TimeoutObserved",
     "TransitionRefusedError",
+    "assess_evidence",
+    "reconcile",
 ]
