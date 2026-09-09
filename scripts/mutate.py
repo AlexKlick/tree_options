@@ -6995,6 +6995,211 @@ MUTANTS = [
             " round-1 P1)"
         ),
     ),
+    dict(
+        id="M489-paper-cumulative-not-accumulating",
+        owner="test_lifecycle_clean_fill_path",
+        file="src/tree_options/execution/paper.py",
+        anchor="            cumulative += clip",
+        replacement="            cumulative = clip",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 paper fills accumulate STRICTLY increasing cumulative"
+            " quantity that closes exactly at the order total — resetting"
+            " per clip emits a regressing fill history the lifecycle would"
+            " have to reconcile"
+        ),
+    ),
+    dict(
+        id="M490-paper-clips-overshoot-the-order",
+        owner="test_fill_plan_clips_cover_exactly_with_last_clip_trimmed",
+        file="src/tree_options/execution/paper.py",
+        anchor="            clips.append(min(clip, remaining))",
+        replacement="            clips.append(clip)",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the fill plan's LAST clip is trimmed so the clips cover"
+            " the order quantity EXACTLY — an untrimmed plan overfills the"
+            " order and the terminal economics never close at the total"
+        ),
+    ),
+    dict(
+        id="M491-paper-broker-order-id-minted-per-attempt",
+        owner="test_lifecycle_clean_fill_path",
+        file="src/tree_options/execution/paper.py",
+        anchor=(
+            '            record_id=f"paper-ack-{self.intent.intent_id}-{attempt.record_id}",\n'
+            "            intent_id=self.intent.intent_id,\n"
+            '            broker_order_id=f"paper-order-{self.intent.intent_id}",'
+        ),
+        replacement=(
+            '            record_id=f"paper-ack-{self.intent.intent_id}-{attempt.record_id}",\n'
+            "            intent_id=self.intent.intent_id,\n"
+            "            broker_order_id=(\n"
+            '                f"paper-order-{self.intent.intent_id}-{attempt.record_id}"\n'
+            "            ),"
+        ),
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the paper broker order id derives from the INTENT identity"
+            " so send retries acknowledge the same broker order — minting"
+            " a fresh id per attempt turns every retry into a conflicting"
+            " broker identity the lifecycle must reconcile"
+        ),
+    ),
+    dict(
+        id="M492-paper-readback-precedes-the-last-fill",
+        owner="test_lifecycle_clean_fill_path",
+        file="src/tree_options/execution/paper.py",
+        anchor=(
+            "        snapshot_at = shift_instant(fills[-1].exchange_event_at, self.lag.fill_spacing_seconds)"
+        ),
+        replacement="        snapshot_at = fills[0].exchange_event_at",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the terminal readback snapshots AFTER the last fill's"
+            " exchange event — snapshotting at the first fill claims the"
+            " order complete before its economics exist, a temporal"
+            " contradiction the lifecycle would retain"
+        ),
+    ),
+    dict(
+        id="M493-paper-fills-priced-at-the-ask",
+        owner="test_fills_are_strictly_cumulative_at_the_executable_price_with_scaled_fees",
+        file="src/tree_options/execution/paper.py",
+        anchor="        return ((self.bid + self.ask) / Decimal(2)).quantize(_PRICE_QUANTUM, ROUND_HALF_UP)",
+        replacement="        return self.ask",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 paper fills execute at the quote's midpoint — pricing"
+            " every clip at the ask silently hands the paper book the"
+            " taker's worst case and biases any cost analysis built on it"
+        ),
+    ),
+    dict(
+        id="M494-paper-fees-charged-per-order",
+        owner="test_fills_are_strictly_cumulative_at_the_executable_price_with_scaled_fees",
+        file="src/tree_options/execution/paper.py",
+        anchor="                    fees=self.quote.fee_per_contract * clip,",
+        replacement="                    fees=self.quote.fee_per_contract,",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 paper fees scale with the CLIP's contract count — a flat"
+            " per-order fee undercharges multi-clip fills and the paper"
+            " cost basis stops matching the declared fee schedule"
+        ),
+    ),
+    dict(
+        id="M495-paper-retry-anchors-to-latest-attempt",
+        owner="test_retry_answers_with_identical_economics_not_duplicates",
+        file="src/tree_options/execution/paper.py",
+        anchor=(
+            "        if attempt.intent_id != self.intent.intent_id:\n"
+            '            raise ValueError("attempt belongs to a different intent")\n'
+            "        if self._anchor_attempt is None:"
+        ),
+        replacement=(
+            "        if attempt.intent_id != self.intent.intent_id:\n"
+            '            raise ValueError("attempt belongs to a different intent")\n'
+            "        if True:"
+        ),
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 fill economics anchor to the FIRST acknowledged submit —"
+            " re-anchoring on every attempt re-dates the whole fill history"
+            " under the same record ids, and the retry's facts stop being"
+            " the identity-preserving no-op the lifecycle contract expects"
+            " (Codex round-1 P1: duplicate economics on retry)"
+        ),
+    ),
+    dict(
+        id="M496-paper-fills-without-acknowledgement",
+        owner="test_fills_require_acknowledgement_and_refuse_foreign_intents",
+        file="src/tree_options/execution/paper.py",
+        anchor=(
+            "    def _require_anchor(self) -> SubmitAttempt:\n"
+            "        if self._anchor_attempt is None:\n"
+            '            raise ValueError("acknowledge a submit before requesting broker facts")\n'
+            "        return self._anchor_attempt"
+        ),
+        replacement=(
+            "    def _require_anchor(self) -> SubmitAttempt:\n        return self._anchor_attempt"
+        ),
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 broker facts require an acknowledged submit first — emitting"
+            " fills with no anchor fabricates broker economics that no"
+            " submit ever requested (Codex round-1 P1: facts leaked to"
+            " unanchored callers)"
+        ),
+    ),
+    dict(
+        id="M497-paper-spacing-zero-accepted",
+        owner="test_quote_and_lag_validations",
+        file="src/tree_options/execution/paper.py",
+        anchor="        if not isinstance(spacing, int) or isinstance(spacing, bool) or spacing < 1:",
+        replacement="        if not isinstance(spacing, int) or isinstance(spacing, bool) or spacing < 0:",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 fill spacing is at least one second so exchange events are"
+            " STRICTLY ordered — accepting zero collapses every fill and"
+            " the terminal snapshot onto one instant, destroying the event"
+            " order the lifecycle's tiebreaks depend on (Codex round-1 P1)"
+        ),
+    ),
+    dict(
+        id="M498-paper-price-unquantized",
+        owner="test_executable_price_is_quantized_within_the_bracket",
+        file="src/tree_options/execution/paper.py",
+        anchor="        return ((self.bid + self.ask) / Decimal(2)).quantize(_PRICE_QUANTUM, ROUND_HALF_UP)",
+        replacement="        return (self.bid + self.ask) / Decimal(2)",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the executable price is quantized to the record schema's"
+            " 8-decimal bound — a raw midpoint can carry more precision"
+            " than any fill record can store and the adapter crashes at"
+            " emission instead of executing (Codex round-1 P1)"
+        ),
+    ),
+    dict(
+        id="M499-paper-fee-infinity-accepted",
+        owner="test_quote_and_lag_validations",
+        file="src/tree_options/execution/paper.py",
+        anchor=(
+            "        if (\n"
+            "            not isinstance(self.fee_per_contract, Decimal)\n"
+            "            or not self.fee_per_contract.is_finite()\n"
+            "            or self.fee_per_contract < 0\n"
+            "        ):"
+        ),
+        replacement=(
+            "        if (\n"
+            "            not isinstance(self.fee_per_contract, Decimal)\n"
+            "            or self.fee_per_contract < 0\n"
+            "        ):"
+        ),
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the declared fee must be a FINITE Decimal — an infinite"
+            " fee passes quote validation and detonates later at fill"
+            " emission, far from the input that caused it (Codex round-1 P1)"
+        ),
+    ),
+    dict(
+        id="M500-paper-broker-offset-hardcoded",
+        owner="test_nondefault_lag_offsets_are_exact",
+        file="src/tree_options/execution/paper.py",
+        anchor=(
+            "        exchange_at = shift_instant(anchor.send_attempt_at, self.lag.broker_offset_seconds)"
+        ),
+        replacement="        exchange_at = shift_instant(anchor.send_attempt_at, 1)",
+        selectors=[f"{U}/test_execution_paper.py"],
+        invariant=(
+            "M6 the declared broker offset drives every exchange-event"
+            " instant — hardcoding it detaches fill timing from the declared"
+            " lag while the anchor attempt still flows through, silently"
+            " mis-dating the economics (Codex round-1 P2: offsets unpinned)"
+        ),
+    ),
 ]
 
 
