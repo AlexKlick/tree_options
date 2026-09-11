@@ -7200,6 +7200,328 @@ MUTANTS = [
             " mis-dating the economics (Codex round-1 P2: offsets unpinned)"
         ),
     ),
+    dict(
+        id="M501-reconciliation-severity-flipped",
+        owner="test_overlapping_fills_are_adjudicated_economic_with_the_pinned_explanation",
+        file="src/tree_options/execution/reconciliation.py",
+        anchor=("    ReconciliationReason.FILL_ECONOMIC_OVERLAP: ReconciliationSeverity.ECONOMIC,"),
+        replacement=(
+            "    ReconciliationReason.FILL_ECONOMIC_OVERLAP: ReconciliationSeverity.PROTOCOL,"
+        ),
+        selectors=[f"{U}/test_execution_reconciliation.py"],
+        invariant=(
+            "M6 double-booked fill economics poison the MONEY story —"
+            " reclassifying FILL_ECONOMIC_OVERLAP as a mere protocol lapse"
+            " buries the worst finding class at the bottom of the report"
+        ),
+    ),
+    dict(
+        id="M502-reconciliation-explanation-blanked",
+        owner="test_overlapping_fills_are_adjudicated_economic_with_the_pinned_explanation",
+        file="src/tree_options/execution/reconciliation.py",
+        anchor="                    explanation=_REASON_EXPLANATIONS[reason],",
+        replacement='                    explanation="",',
+        selectors=[f"{U}/test_execution_reconciliation.py"],
+        invariant=(
+            "M6 every retained reason carries its own deterministic"
+            " explanation — blanking them leaves an auditor with machine"
+            " names and no statement of what the discrepancy means"
+        ),
+    ),
+    dict(
+        id="M503-reconciliation-findings-name-sorted",
+        owner="test_findings_sort_worst_severity_first_then_reason_name",
+        file="src/tree_options/execution/reconciliation.py",
+        anchor=(
+            "            key=lambda finding: (_SEVERITY_RANK[finding.severity], finding.reason.value),"
+        ),
+        replacement="            key=lambda finding: finding.reason.value,",
+        selectors=[f"{U}/test_execution_reconciliation.py"],
+        invariant=(
+            "M6 findings sort worst-severity FIRST then by name — a name-only"
+            " sort reads alphabetically and can bury an ECONOMIC finding"
+            " beneath an IDENTITY one"
+        ),
+    ),
+    dict(
+        id="M504-reconciliation-cleanliness-graded",
+        owner="test_overlapping_fills_are_adjudicated_economic_with_the_pinned_explanation",
+        file="src/tree_options/execution/reconciliation.py",
+        anchor="        return not self.findings",
+        replacement="        return len(self.findings) < 2",
+        selectors=[f"{U}/test_execution_reconciliation.py"],
+        invariant=(
+            "M6 cleanliness is BINARY — a single retained reason already"
+            " poisons the record set; grading it tolerable under one finding"
+            " admits a silently double-booked execution"
+        ),
+    ),
+    dict(
+        id="M505-reconciliation-severities-empty",
+        owner="test_overlapping_fills_are_adjudicated_economic_with_the_pinned_explanation",
+        file="src/tree_options/execution/reconciliation.py",
+        anchor="        return frozenset(finding.severity for finding in self.findings)",
+        replacement="        return frozenset()",
+        selectors=[f"{U}/test_execution_reconciliation.py"],
+        invariant=(
+            "M6 the severities property exposes what trust the retained"
+            " reasons poison — an always-empty view hides an ECONOMIC"
+            " discrepancy from severity-filtering consumers"
+        ),
+    ),
+    dict(
+        id="M506-reconciliation-economic-filter-dropped",
+        owner="test_findings_sort_worst_severity_first_then_reason_name",
+        file="src/tree_options/execution/reconciliation.py",
+        anchor=(
+            "        return tuple(\n"
+            "            finding\n"
+            "            for finding in self.findings\n"
+            "            if finding.severity is ReconciliationSeverity.ECONOMIC\n"
+            "        )"
+        ),
+        replacement="        return self.findings",
+        selectors=[f"{U}/test_execution_reconciliation.py"],
+        invariant=(
+            "M6 the economic_findings view isolates the findings that poison"
+            " the money story — returning every finding lets a non-economic"
+            " lapse masquerade as broken economics"
+        ),
+    ),
+    dict(
+        id="M507-reconciliation-clean-summary-loses-state",
+        owner="test_clean_lifecycle_reports_no_findings",
+        file="src/tree_options/execution/reconciliation.py",
+        anchor='        return f"{self.intent_id}: clean ({self.state.value})"',
+        replacement='        return f"{self.intent_id}: clean"',
+        selectors=[f"{U}/test_execution_reconciliation.py"],
+        invariant=(
+            "M6 the clean summary names the terminal state it vouches for —"
+            " dropping it leaves an auditor unable to tell FILLED from"
+            " CREATED at a glance"
+        ),
+    ),
+    dict(
+        id="M508-reconciliation-finds-nothing",
+        owner="test_overlapping_fills_are_adjudicated_economic_with_the_pinned_explanation",
+        file="src/tree_options/execution/reconciliation.py",
+        anchor="                for reason in lifecycle.reconciliation_reasons",
+        replacement="                for reason in frozenset()",
+        selectors=[f"{U}/test_execution_reconciliation.py"],
+        invariant=(
+            "M6 reconcile() adjudicates EVERY retained reason — an empty"
+            " iteration reports a dirty record set as a clean one"
+        ),
+    ),
+    dict(
+        id="M509-evidence-nonterminal-admitted",
+        owner="test_non_terminal_states_are_refused_without_economics",
+        file="src/tree_options/execution/evidence.py",
+        anchor="    if lifecycle.state not in _TERMINAL_STATES:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 only a TERMINAL state can be execution proof — admitting a"
+            " SUBMITTING order certifies an execution that has not happened"
+        ),
+    ),
+    dict(
+        id="M510-evidence-derivation-drift-blind",
+        owner="test_derivation_drift_between_records_and_claims_is_refused",
+        file="src/tree_options/execution/evidence.py",
+        anchor="    if lifecycle.fill_economic_intervals != intervals:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 the gate re-derives the fill intervals from the retained"
+            " records and refuses on drift — trusting the lifecycle's claim"
+            " makes the gate a rubber stamp for the layer it exists to check"
+        ),
+    ),
+    dict(
+        id="M511-evidence-filled-completeness-dropped",
+        owner="test_filled_claim_with_partial_economics_is_refused",
+        file="src/tree_options/execution/evidence.py",
+        anchor="        if intervals != expected:",
+        replacement="        if False:",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 a FILLED claim requires EXACTLY (0, quantity) economics —"
+            " dropping the check certifies a complete execution on partial"
+            " fills"
+        ),
+    ),
+    dict(
+        id="M512-evidence-canceled-origin-dropped",
+        owner="test_canceled_economics_not_hanging_from_zero_are_refused",
+        file="src/tree_options/execution/evidence.py",
+        anchor="    if intervals and (len(intervals) != 1 or intervals[0][0] != 0):",
+        replacement="    if False:",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 CANCELED/REJECTED economics must hang contiguously from zero"
+            " as ONE merged interval — dropping the check certifies fills"
+            " whose contracts materialized from nowhere or left interior"
+            " gaps (Codex round-1 P1)"
+        ),
+    ),
+    dict(
+        id="M513-evidence-buy-net-drops-fees",
+        owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
+        file="src/tree_options/execution/evidence.py",
+        anchor='        if lifecycle.intent.side == "BUY":\n            net = -(gross + fees)',
+        replacement='        if lifecycle.intent.side == "BUY":\n            net = -gross',
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 a BUY's cash flow is gross PLUS fees out — dropping the fees"
+            " understates the cost of every admitted execution"
+        ),
+    ),
+    dict(
+        id="M514-evidence-sell-net-sign-flipped",
+        owner="test_sell_side_net_cash_flow_is_proceeds_net_of_fees",
+        file="src/tree_options/execution/evidence.py",
+        anchor="            net = gross - fees",
+        replacement="            net = -(gross - fees)",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 a SELL's cash flow is proceeds IN (gross minus fees) —"
+            " flipping the sign books every close as an outflow"
+        ),
+    ),
+    dict(
+        id="M515-evidence-refused-leaks-economics",
+        owner="test_non_terminal_states_are_refused_without_economics",
+        file="src/tree_options/execution/evidence.py",
+        anchor=(
+            "            verdict=EvidenceVerdict.REFUSED,\n"
+            "            state=lifecycle.state,\n"
+            "            economically_covered_quantity=covered,\n"
+            "            economics=None,"
+        ),
+        replacement=(
+            "            verdict=EvidenceVerdict.REFUSED,\n"
+            "            state=lifecycle.state,\n"
+            "            economically_covered_quantity=covered,\n"
+            "            economics=economics,"
+        ),
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 a REFUSED receipt carries NO money story — publishing"
+            " economics alongside the refusal invites consuming a record set"
+            " that failed verification"
+        ),
+    ),
+    dict(
+        id="M516-evidence-gross-ignores-fill-quantity",
+        owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
+        file="src/tree_options/execution/evidence.py",
+        anchor=(
+            "        gross = sum(\n"
+            "            (Decimal(fill.fill_quantity) * fill.unit_price for fill in fills),\n"
+            '            Decimal("0"),\n'
+            "        )"
+        ),
+        replacement=(
+            "        gross = sum(\n"
+            "            (Decimal(1) * fill.unit_price for fill in fills),\n"
+            '            Decimal("0"),\n'
+            "        )"
+        ),
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 gross notional prices EACH fill's full quantity — a"
+            " one-contract-per-fill sum undercharges every multi-contract"
+            " clip"
+        ),
+    ),
+    dict(
+        id="M517-evidence-fees-zeroed",
+        owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
+        file="src/tree_options/execution/evidence.py",
+        anchor='        fees = sum((fill.fees for fill in fills), Decimal("0"))',
+        replacement='        fees = Decimal("0")',
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 fees sum per fill off the retained records — zeroing them"
+            " certifies a frictionless execution that never existed"
+        ),
+    ),
+    dict(
+        id="M518-evidence-reasons-not-blocking",
+        owner="test_retained_reasons_block_admission_individually",
+        file="src/tree_options/execution/evidence.py",
+        anchor="    if not report.is_clean:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 EVERY retained reconciliation reason blocks admission"
+            " individually — skipping the blockers lets a discrepant record"
+            " set certify itself"
+        ),
+    ),
+    dict(
+        id="M519-evidence-admissible-coverage-zeroed",
+        owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
+        file="src/tree_options/execution/evidence.py",
+        anchor=(
+            "        verdict=EvidenceVerdict.ADMISSIBLE,\n"
+            "        state=lifecycle.state,\n"
+            "        economically_covered_quantity=covered,"
+        ),
+        replacement=(
+            "        verdict=EvidenceVerdict.ADMISSIBLE,\n"
+            "        state=lifecycle.state,\n"
+            "        economically_covered_quantity=0,"
+        ),
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 an ADMISSIBLE receipt reports the RECOMPUTED covered"
+            " quantity — zeroing it vouches for an execution while reporting"
+            " that nothing executed"
+        ),
+    ),
+    dict(
+        id="M520-evidence-observed-drift-blind",
+        owner="test_observed_quantity_drift_is_refused",
+        file="src/tree_options/execution/evidence.py",
+        anchor="    if lifecycle.filled_quantity != observed:",
+        replacement="    if False:",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 the gate re-derives the OBSERVED cumulative (fills and"
+            " readbacks) and refuses on drift — trusting the claim lets a"
+            " lifecycle assert 999 observed on a 3-contract record set"
+            " (Codex round-1 probe)"
+        ),
+    ),
+    dict(
+        id="M521-evidence-ambient-precision",
+        owner="test_large_quantity_economics_are_exact_and_context_independent",
+        file="src/tree_options/execution/evidence.py",
+        anchor="        context.prec = max(60, len(str(total_contracts)) + 24)",
+        replacement="        context.prec = 28",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 the money sums run under a precision that keeps quantity x"
+            " 18-digit-price products EXACT — inheriting the ambient 28"
+            " digits rounds gross and makes the receipt caller-dependent"
+            " (Codex round-1 P1)"
+        ),
+    ),
+    dict(
+        id="M522-evidence-confirmed-total-ignored",
+        owner="test_confirmed_replace_total_outranks_the_immutable_intent_quantity",
+        file="src/tree_options/execution/evidence.py",
+        anchor="    confirmed = lifecycle.broker_confirmed_total_quantity",
+        replacement="    confirmed = None",
+        selectors=[f"{U}/test_execution_evidence.py"],
+        invariant=(
+            "M6 a FILLED lifecycle must cover the BROKER-CONFIRMED total —"
+            " a clean replace to 5 on an intent of 3 refutes a gate that"
+            " demands ((0, 3)) (Codex round-1 P1)"
+        ),
+    ),
 ]
 
 
