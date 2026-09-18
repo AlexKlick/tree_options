@@ -1,0 +1,19 @@
+[Unit]
+Description=trex exit machine (touch/time-stop supervisor for the options book)
+Documentation=file:///home/alexk/documents/tree_options/src/tree_options/trex/README.md
+# The gateway is a container; after boot it needs ~60s to log in.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alexk/documents/tree_options
+ExecStart=/home/alexk/.local/bin/uv run --group trex python -m tree_options.trex.monitor --plan plans/2026-09-18.toml
+Restart=on-failure
+RestartSec=15
+# The monitor is the trade: if it stays down, the book has no exit machine.
+# systemd restarts it; the entry runner independently refuses to arm while
+# its heartbeat/flock are dead.
+
+[Install]
+WantedBy=default.target

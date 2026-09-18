@@ -1,0 +1,26 @@
+# IB Gateway (IBC) in paper mode for trex.
+# Credentials: cp ib.env.example ~/.config/trex/ib.env (chmod 600) and fill in.
+# Paper API lands on 127.0.0.1:4002; noVNC on 127.0.0.1:6080 for the rare
+# manual login/2FA look. Never expose these ports beyond loopback.
+services:
+  ib-gateway:
+    image: ghcr.io/gnzsnz/ib-gateway:10.51.1a
+    container_name: trex-ib-gateway
+    restart: unless-stopped
+    env_file: ${TREX_IB_ENV:-/home/alexk/.config/trex/ib.env}
+    environment:
+      TRADING_MODE: paper
+    ports:
+      - "127.0.0.1:4002:4002"
+      - "127.0.0.1:6080:6080"
+    volumes:
+      - ibgw-settings:/home/ibgateway
+    healthcheck:
+      test: ["CMD-SHELL", "nc -z 127.0.0.1 4002 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 10
+      start_period: 120s
+
+volumes:
+  ibgw-settings:
