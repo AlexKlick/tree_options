@@ -36,13 +36,16 @@ function HistorySection({ history }: { history: PlanDetailResponse['history'] })
 }
 
 function NetPositionsSection({ rows }: { rows: PlanDetailResponse['net_positions'] }) {
-  return rows.length > 0 ? (
+  // `?? []` keeps a cached SPA from white-screening against a not-yet-
+  // upgraded API during the restart window.
+  const visible = rows ?? []
+  return visible.length > 0 ? (
     <>
       <h2 className="section-title">
         Net positions{' '}
         <span className="muted section-sub">(per underlying · open exposure only)</span>
       </h2>
-      <NetPositionsTable rows={rows} />
+      <NetPositionsTable rows={visible} />
     </>
   ) : null
 }
@@ -148,21 +151,27 @@ export function PlanDetail({ id }: { id: string }) {
           </a>
           <RunbookBanner d={d} />
           <StatTiles summary={d.book_summary} marks={d.marks} />
-          <h2 className="section-title">
-            Live marks{' '}
-            <span className="muted section-sub">
-              (delayed quotes · mark-to-mid · refresh ~20s)
-            </span>
-          </h2>
-          <MarksTable marks={d.marks} specs={d.plan.structures} />
+          <div className="duo">
+            <section>
+              <h2 className="section-title">
+                Live marks{' '}
+                <span className="muted section-sub">
+                  (delayed quotes · mark-to-mid · refresh ~20s)
+                </span>
+              </h2>
+              <MarksTable marks={d.marks} specs={d.plan.structures} />
+            </section>
+            <section>
+              <h2 className="section-title">
+                Unrealized since entry{' '}
+                <span className="muted section-sub">
+                  (total book · every monitor tick · time-proportional)
+                </span>
+              </h2>
+              <HistorySection history={d.history} />
+            </section>
+          </div>
           <NetPositionsSection rows={d.net_positions} />
-          <h2 className="section-title">
-            Unrealized since entry{' '}
-            <span className="muted section-sub">
-              (total book · every monitor tick · time-proportional)
-            </span>
-          </h2>
-          <HistorySection history={d.history} />
           <h2 className="section-title">
             Payoff at expiry{' '}
             <span className="muted section-sub">

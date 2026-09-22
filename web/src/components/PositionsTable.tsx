@@ -14,7 +14,7 @@ export function PositionsTable({
 }) {
   return (
     <div className="card table-card">
-      <div style={{ overflowX: 'auto' }}>
+      <div className="table-scroll">
         <table>
           <thead>
             <tr>

@@ -26,7 +26,7 @@ export function MarksTable({
   const rows = specs.filter((s) => marks.structures[s.id] !== undefined)
   return (
     <div className="card table-card">
-      <div style={{ overflowX: 'auto' }}>
+      <div className="table-scroll">
         <table>
           <thead>
             <tr>
