@@ -509,11 +509,7 @@ def create_app(
             "now": now.isoformat(),
             "symbol": sym_up,
             "quote": quote,
-            "quote_age_seconds": (
-                _age((quote or {}).get("source_as_of"), now)
-                if quote and str((quote or {}).get("source_as_of", "")).count("-") > 0
-                else None  # CBOE timestamps are not ISO; age via bars/news envs
-            ),
+            "quote_age_seconds": _age((quote or {}).get("source_as_of"), now),
             "bars": bars_series,
             "news": news[:12],
         }

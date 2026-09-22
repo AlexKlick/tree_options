@@ -21,7 +21,7 @@ const detail: SymbolDetail = {
     close: 773.38,
     iv30: 11.431,
     change_pct: -0.42,
-    source_as_of: '2026-09-22 22:08:55',
+    source_as_of: '2026-09-22T22:08:55+00:00',
   },
   quote_age_seconds: null,
   bars: {
@@ -42,6 +42,7 @@ describe('SymbolPage', () => {
     render(<SymbolPage sym="SPY" />)
     await waitFor(() => expect(screen.getByText('Quote (mid)')).toBeTruthy())
     expect(screen.getByRole('img', { name: /Daily closes for SPY/ })).toBeTruthy()
+    expect(screen.getByText(/source 18:08 ET/)).toBeTruthy()
     expect(screen.getByText(((773.25 + 773.3) / 2).toFixed(2))).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Nvidia chips surge' })).toBeTruthy()
     expect(screen.getByText(/Reuters · Mon, 21 Sep 2026/)).toBeTruthy()

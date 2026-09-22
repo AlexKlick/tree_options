@@ -102,7 +102,7 @@ class TestFetchers:
         assert q["close"] == pytest.approx(773.38)
         assert q["iv30"] == pytest.approx(11.431)
         assert q["change_pct"] == pytest.approx(-0.42)
-        assert q["source_as_of"] == "2026-09-22 22:08:55"
+        assert q["source_as_of"] == "2026-09-22T22:08:55+00:00"
 
     def test_chain_puts_only_with_greeks(self) -> None:
         t = _transport(json.dumps(CBOE_CHAIN_BODY).encode())
@@ -176,7 +176,7 @@ class TestMarketCycle:
         doc = json.loads((state / "market.json").read_text())
         spy = doc["symbols"]["SPY"]
         assert spy["bid"] == pytest.approx(773.25)
-        assert spy["source_as_of"] == "2026-09-22 22:08:55"
+        assert spy["source_as_of"] == "2026-09-22T22:08:55+00:00"
         assert doc["last_refresh"]
 
     def test_fresh_cache_skips_fetch(self, tmp_path: Path) -> None:

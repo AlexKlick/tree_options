@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -25,12 +25,19 @@ def _fnum(raw: Any) -> float | None:
 
 
 def _age(iso: Any, now: datetime) -> int | None:
+    """Seconds since an ISO stamp, 0-floor, None on junk/absent.
+
+    Naive stamps (CBOE quotes cached before source_as_of normalization)
+    read as UTC so a stale cache entry can never raise on the aware ``now``.
+    """
     if not isinstance(iso, str):
         return None
     try:
         stamped = datetime.fromisoformat(iso)
     except ValueError:
         return None
+    if stamped.tzinfo is None:
+        stamped = stamped.replace(tzinfo=UTC)
     return max(0, int((now - stamped).total_seconds()))
 
 

@@ -21,7 +21,7 @@ import logging
 import os
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -115,6 +115,21 @@ def _get_json(url: str, transport: Transport, timeout: float = REQUEST_TIMEOUT) 
     return json.loads(body)
 
 
+def _source_as_of(raw: object) -> str | None:
+    """CBOE's data.timestamp is a naive UTC wall stamp ("2026-09-22
+    23:35:04"); normalize to an aware ISO instant so age math and UI
+    rendering stay honest. Unparseable stamps pass through untouched."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        ts = datetime.fromisoformat(raw)
+    except ValueError:
+        return raw
+    if ts.tzinfo is None:
+        ts = ts.replace(tzinfo=UTC)
+    return ts.isoformat()
+
+
 def fetch_equity_quote(sym: str, transport: Transport) -> dict[str, Any]:
     """CBOE delayed quote with the payload timestamp as source_as_of."""
     doc = _get_json(CBOE_QUOTE_URL.format(sym=sym), transport)
@@ -125,7 +140,7 @@ def fetch_equity_quote(sym: str, transport: Transport) -> dict[str, Any]:
         "close": d.get("close"),
         "iv30": d.get("iv30"),
         "change_pct": d.get("price_change_percent"),
-        "source_as_of": doc.get("timestamp"),
+        "source_as_of": _source_as_of(doc.get("timestamp")),
     }
 
 

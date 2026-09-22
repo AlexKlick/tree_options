@@ -1149,7 +1149,7 @@ class TestMarketWatchAndSymbol:
                     "last_refresh": "2026-09-22T18:59:30-04:00",
                     "symbols": {"SPY": {"bid": 1.0, "ask": 1.1, "close": 1.05,
                                          "iv30": 11.0, "change_pct": 0.1,
-                                         "source_as_of": "t"}},
+                                         "source_as_of": "2026-09-22 18:59:00"}},
                     "errors": {},
                 }
             )
@@ -1174,6 +1174,10 @@ class TestMarketWatchAndSymbol:
         payload = client.get("/api/market/SPY").json()
         assert payload["symbol"] == "SPY"
         assert payload["quote"]["bid"] == pytest.approx(1.0)
+        # naive CBOE-style stamp must not raise on the aware now (deployed
+        # 500); it reads as UTC and yields a 0-floored age. Junk -> None.
+        assert isinstance(payload["quote_age_seconds"], int)
+        assert payload["quote_age_seconds"] >= 0
         assert payload["bars"]["points"][0][1] == pytest.approx(750.1)
         assert payload["news"][0]["title"] == "t"
 

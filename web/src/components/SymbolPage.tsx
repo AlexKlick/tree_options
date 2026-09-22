@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { getSymbol, requestMarketRefresh } from '../lib/api'
-import { num2 } from '../lib/format'
+import { etTime, num2 } from '../lib/format'
 import { usePoll } from '../hooks/usePoll'
 import type { SymbolDetail } from '../lib/types'
 import { AppShell } from './AppShell'
@@ -47,7 +47,7 @@ export function SymbolPage({ sym }: { sym: string }) {
         <a href="#/market" className="muted">
           ← Market
         </a>
-        {q?.source_as_of && <Pill variant="empty">source {q.source_as_of} ET</Pill>}
+        {q?.source_as_of && <Pill variant="empty">source {etTime(q.source_as_of)} ET</Pill>}
         <Pill variant="empty">delayed · CBOE/Polygon</Pill>
         <button type="button" className="chip" onClick={refresh}>
           {refreshing ? 'refreshing…' : 'Refresh data'}

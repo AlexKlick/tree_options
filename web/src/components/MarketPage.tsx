@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { getMarket, watchOp } from '../lib/api'
-import { num2 } from '../lib/format'
+import { etTime, num2 } from '../lib/format'
 import { usePoll } from '../hooks/usePoll'
 import type { MarketQuote } from '../lib/types'
 import { AppShell } from './AppShell'
@@ -33,7 +33,7 @@ function QuoteCard({ sym, q }: { sym: string; q: MarketQuote }) {
         {q.iv30 !== null && ` · iv30 ${q.iv30.toFixed(1)}`}
       </p>
       <p className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>
-        {q.source_as_of ? `source ${q.source_as_of} ET` : 'source time unknown'}
+        {q.source_as_of ? `source ${etTime(q.source_as_of)} ET` : 'source time unknown'}
       </p>
     </a>
   )

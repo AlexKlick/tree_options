@@ -24,7 +24,7 @@ const payload: MarketResponse = {
       close: 773.38,
       iv30: 11.431,
       change_pct: -0.42,
-      source_as_of: '2026-09-22 22:08:55',
+      source_as_of: '2026-09-22T22:08:55+00:00',
     },
   },
   errors: {},
@@ -38,7 +38,7 @@ describe('MarketPage', () => {
     expect(screen.getByText('-0.42%')).toBeTruthy()
     expect(screen.getByText(((773.25 + 773.3) / 2).toFixed(2))).toBeTruthy() // mid
     expect(screen.getByText(/iv30 11.4/)).toBeTruthy()
-    expect(screen.getByText(/source 2026-09-22 22:08:55 ET/)).toBeTruthy()
+    expect(screen.getByText(/source 18:08 ET/)).toBeTruthy() // 22:08:55Z -> ET
     expect(screen.getByText('● 30s old')).toBeTruthy()
   })
 
