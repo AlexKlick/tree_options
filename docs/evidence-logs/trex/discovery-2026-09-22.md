@@ -36,3 +36,19 @@ frontend tsc + vitest 42/42 + vite build.
   after the live table showed "+$19" as a max loss.
 - (earlier, C4) probe expiry selection now filters to the DTE window —
   `expirations[0]` was 0DTE and unqualifiable at 15:52 ET.
+
+## Follow-up (f76112c): positions back on the plans index
+
+Operator reported the root "degraded" — post-SPA, `/` had become the
+portfolio index and positions were one click deep with no affordance.
+`/api/plans` now carries portfolio-level `net_positions` (per-plan rows
+merged by underlying; structure-id collisions across books prefixed
+with the plan id), rendered under the tiles; plan cards gained an
+"open plan →" cue. Marks staleness after 16:00 ET is market close, not
+decay (monitor stops marking outside session hours; book/account stay
+fresh). Also fixed two host-state leaks the deployment created in the
+web tests (module `_client` isolates the discovery dir;
+`test_empty_state` pins `TREX_DISCOVERY_CONFIG`). Gates: ruff+mypy
+clean, pytest 2630 dots; web 45/45 + build. Live-verified loopback:
+merged NVDA row (8 open, $477, −$3) on `#/`, full detail page intact
+behind the card, 0 console errors.
