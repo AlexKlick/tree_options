@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import socket
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -13,11 +14,14 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from tree_options.trex.clock import now_et
+from tree_options.trex.discovery.artifact import write_scan_request
+from tree_options.trex_web.discovery_view import discovery_payload
 from tree_options.trex_web.payoff import (
     payoff_series,
     pnl_history_series,
     summarize_book,
 )
+from tree_options.trex_web.portfolio import plan_realized, plan_unrealized, portfolio_rollup
 from tree_options.trex_web.positions import net_positions
 from tree_options.trex_web.reader import (
     compute_runbook_status_from_view,
@@ -40,6 +44,11 @@ DEFAULT_PLANS_ROOT = Path("~/documents/tree_options/plans").expanduser()
 DEFAULT_GATEWAY_HOST = "127.0.0.1"
 DEFAULT_GATEWAY_PORT = 4002
 GATEWAY_PROBE_TIMEOUT_SECONDS = 1.0
+
+# Discovery artifacts + scan-on-demand spool (written ONLY here — the one
+# directory the systemd unit's ReadWritePaths allows).
+DEFAULT_DISCOVERY_ROOT = Path("~/.local/state/trex-discovery").expanduser()
+DEFAULT_DISCOVERY_CONFIG = Path("~/.config/trex/discovery.toml").expanduser()
 
 # Served at / when the built SPA is missing (fresh clone, interrupted
 # build): tell the operator exactly what to run instead of crashing.
@@ -126,11 +135,19 @@ def _marks_payload(marks: dict[str, Any] | None) -> dict[str, Any] | None:
     }
 
 
-def _plans_payload(state_root: Path, plans_root: Path) -> dict[str, object]:
-    """GET /api/plans body: one summary per plan TOML (no marks data)."""
+def _plans_payload(
+    state_root: Path,
+    plans_root: Path,
+    discovery_dir: Path | None = None,
+) -> dict[str, object]:
+    """GET /api/plans body: per-plan summaries + portfolio + account."""
     plans: list[dict[str, object]] = []
+    rollup_entries: list[tuple[Any, dict[str, Any] | None]] = []
     for view in list_plans(state_root, plans_root):
         rb = compute_runbook_status_from_view(view)
+        marks = load_marks(state_root, view.plan.id)
+        u_open, u_filled = plan_unrealized(view, marks)
+        realized, _partial = plan_realized(view)
         plans.append(
             {
                 "id": view.plan.id,
@@ -149,13 +166,61 @@ def _plans_payload(state_root: Path, plans_root: Path) -> dict[str, object]:
                 "open_qty": view.total_open_qty,
                 "days_to_expiry": view.days_to_expiry,
                 "days_to_deadline": view.days_to_deadline,
+                "unrealized_open": u_open,
+                "unrealized_filled": u_filled,
+                "realized": realized,
             }
         )
+        rollup_entries.append((view, marks))
+    portfolio = portfolio_rollup(rollup_entries)
+    account_payload, accounts_seen = _freshest_account(state_root, discovery_dir)
     return {
         "now": now_et().isoformat(),
         "gateway_reachable": probe_gateway(),
         "plans": plans,
+        "portfolio": portfolio,
+        "account": account_payload,
+        "accounts_seen": accounts_seen,
     }
+
+
+def _freshest_account(
+    state_root: Path, discovery_dir: Path | None
+) -> tuple[dict[str, Any] | None, list[str]]:
+    """Freshest account.json across plan run dirs (+ discovery copy)."""
+    from tree_options.trex.account import freshest
+
+    candidates = sorted(state_root.glob("*/account.json"))
+    if discovery_dir is not None:
+        candidates.append(discovery_dir / "account.json")
+    winner = freshest(candidates)
+    if winner is None:
+        return None, []
+    path, payload = winner
+    payload = dict(payload)
+    # plain numbers at the boundary (repo convention); keep the broker ts
+    for key in ("net_liquidation", "cash", "buying_power"):
+        try:
+            payload[key] = float(payload[key])
+        except (KeyError, TypeError, ValueError):
+            pass
+    payload["source"] = str(path)
+    payload["age_seconds"] = _account_age(payload)
+    seen: list[str] = []
+    for candidate in candidates:
+        data = freshest([candidate])
+        if data is None:
+            continue
+        account_id = str(data[1].get("account_id", ""))
+        if account_id and account_id not in seen:
+            seen.append(account_id)
+    return payload, seen
+
+
+def _account_age(payload: dict[str, Any]) -> int | None:
+    from tree_options.trex.account import account_age_seconds
+
+    return account_age_seconds(payload)
 
 
 def _plan_payload(
@@ -271,6 +336,7 @@ def create_app(
     state_dir: str | None = None,
     plans_dir: str | None = None,
     static_dir: str | None = None,
+    discovery_dir: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Public for tests; production wires ``__main__``.
 
@@ -282,6 +348,14 @@ def create_app(
     plans_root = _resolve_plans_root(plans_dir)
     static_root = (
         Path(static_dir).expanduser() if static_dir else Path(__file__).parent / "static"
+    )
+    discovery_root = (
+        Path(discovery_dir).expanduser()
+        if discovery_dir
+        else Path(os.environ.get("TREX_DISCOVERY_DIR", str(DEFAULT_DISCOVERY_ROOT)))
+    )
+    discovery_config = Path(
+        os.environ.get("TREX_DISCOVERY_CONFIG", str(DEFAULT_DISCOVERY_CONFIG))
     )
 
     app = FastAPI(
@@ -304,7 +378,7 @@ def create_app(
 
     @app.get("/api/plans")
     def api_plans() -> dict[str, object]:
-        return _plans_payload(state_root, plans_root)
+        return _plans_payload(state_root, plans_root, discovery_root)
 
     @app.get("/api/plans/{plan_id}")
     def api_plan_detail(plan_id: str) -> dict[str, object]:
@@ -312,6 +386,35 @@ def create_app(
         if payload is None:
             raise HTTPException(status_code=404, detail=f"plan {plan_id!r} not found")
         return payload
+
+    @app.get("/api/discovery")
+    def api_discovery() -> dict[str, object]:
+        return discovery_payload(discovery_root, discovery_config)
+
+    @app.post("/api/discovery/scan", status_code=202)
+    def api_discovery_scan() -> dict[str, object]:
+        """Scan-on-demand: drop a spool request for the discovery runner.
+
+        The unit's ReadWritePaths allows writing ONLY the spool dir; any
+        other failure surfaces as a clean 503, never a 500 trace.
+        """
+        request_id = uuid.uuid4().hex[:12]
+        request_ts = now_et()
+        spool = discovery_root / "spool"
+        try:
+            write_scan_request(spool, request_id, request_ts)
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"spool unwritable ({exc}); trex-web ReadWritePaths missing?",
+            ) from exc
+        return {
+            "accepted": True,
+            "request_id": request_id,
+            "request_ts": request_ts.isoformat(),
+            "spool_pending": True,
+            "note": "consumed by trex-discovery --serve",
+        }
 
     @app.get("/", response_class=HTMLResponse, include_in_schema=False)
     def spa_shell() -> Response:

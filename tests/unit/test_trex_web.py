@@ -10,6 +10,7 @@ endpoints, and the shell/shim behavior.
 from __future__ import annotations
 
 import json
+import unittest.mock
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -18,6 +19,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from tree_options.trex.clock import ET
+from tree_options.trex.discovery.artifact import DiscoveryStamp, write_scan
 from tree_options.trex.state import BookState, Status
 from tree_options.trex_web.app import create_app
 from tree_options.trex_web.payoff import (
@@ -557,6 +559,221 @@ class TestNetPositions:
         assert net_positions(self._specs(), {}, {}) == []
         working = {"nvda-oct": {"entry_fill": None, "filled_qty": 0, "open_qty": 0}}
         assert net_positions(self._specs(), working, {}) == []
+
+
+class TestPortfolioPayload:
+    """C11: cross-plan rollup + freshest account in /api/plans."""
+
+    def _seed_open_book(self, tmp_path: Path, plan_id: str = "putspread-test") -> Path:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        run = tmp_path / "state" / plan_id
+        run.mkdir(parents=True)
+        book = BookState(["nvda-oct", "qqq-nov"])
+        st = book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, datetime.now(ET))
+        st.to(Status.OPEN, datetime.now(ET))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        book.save(run / "book.json")
+        (run / "marks.json").write_text(
+            json.dumps(
+                {
+                    "ts": datetime.now(ET).isoformat(),
+                    "total_unrealized": "-5.00",
+                    "structures": {
+                        "nvda-oct": {
+                            "qty": 5,
+                            "entry": "0.21",
+                            "bid": "0.19",
+                            "ask": "0.21",
+                            "mark": "0.20",
+                            "unrealized": "-5.00",
+                        }
+                    },
+                }
+            )
+        )
+        return run
+
+    def test_portfolio_block_present(self, tmp_path: Path) -> None:
+        self._seed_open_book(tmp_path)
+        client = _client(tmp_path / "state", tmp_path / "plans")
+        payload = client.get("/api/plans").json()
+        pf = payload["portfolio"]
+        assert pf["plans_count"] == 1
+        assert pf["plans_with_state"] == 1
+        assert pf["open_qty"] == 8 or pf["open_qty"] == 5  # nvda(5 open) + qqq(0)
+        assert pf["unrealized_open"] == pytest.approx(-5.0)  # (0.20-0.21)*5*100
+        assert pf["unrealized_filled"] == pytest.approx(-5.0)
+        assert pf["marks_stale"] is False
+
+    def test_per_plan_unrealized_and_realized(self, tmp_path: Path) -> None:
+        self._seed_open_book(tmp_path)
+        client = _client(tmp_path / "state", tmp_path / "plans")
+        entry = client.get("/api/plans").json()["plans"][0]
+        assert entry["unrealized_open"] == pytest.approx(-5.0)
+        assert entry["realized"] is None  # no exits yet
+
+    def test_open_qty_not_filled_qty_basis(self, tmp_path: Path) -> None:
+        """The C11 regression: partially exited structures must value the
+        REMAINING contracts, not the original fill."""
+        run = self._seed_open_book(tmp_path)
+        # exit 2 of 5 at a profit
+        book = BookState.load(run / "book.json", ["nvda-oct", "qqq-nov"])
+        st = book.structures["nvda-oct"]
+        st.exit_fill = Decimal("0.35")
+        st.exit_filled_qty = 2
+        book.save(run / "book.json")
+        client = _client(tmp_path / "state", tmp_path / "plans")
+        pf = client.get("/api/plans").json()["portfolio"]
+        assert pf["open_qty"] == 3
+        # open basis: (0.20 - 0.21) * 3 * 100
+        assert pf["unrealized_open"] == pytest.approx(-3.0)
+        # filled basis (marks.json total) stays -5.0
+        assert pf["unrealized_filled"] == pytest.approx(-5.0)
+        assert pf["realized"] == pytest.approx((0.35 - 0.21) * 2 * 100)
+
+    def test_freshest_account_wins_and_seen_listed(self, tmp_path: Path) -> None:
+        from tree_options.trex.account import AccountSnapshot, write_account
+
+        run = self._seed_open_book(tmp_path)
+        old = AccountSnapshot(
+            account_id="DUT143714",
+            net_liquidation=Decimal("1.00"),
+            cash=Decimal("1.00"),
+            buying_power=Decimal("1.00"),
+            currency="USD",
+            ts=datetime.now(ET) - timedelta(minutes=5),
+        )
+        new = AccountSnapshot(
+            account_id="DUT143714",
+            net_liquidation=Decimal("1000252.09"),
+            cash=Decimal("999516.91"),
+            buying_power=Decimal("3998067.63"),
+            currency="USD",
+            ts=datetime.now(ET),
+        )
+        write_account(run / "account.json", old)
+        disc = tmp_path / "discovery"
+        write_account(disc / "account.json", new)
+        client = TestClient(
+            create_app(
+                state_dir=str(tmp_path / "state"),
+                plans_dir=str(tmp_path / "plans"),
+                discovery_dir=str(disc),
+            )
+        )
+        payload = client.get("/api/plans").json()
+        assert payload["account"]["net_liquidation"] == 1000252.09  # freshest
+        assert payload["account"]["source"] == str(disc / "account.json")
+        assert payload["accounts_seen"] == ["DUT143714"]
+
+    def test_no_account_is_null(self, tmp_path: Path) -> None:
+        self._seed_open_book(tmp_path)
+        client = _client(tmp_path / "state", tmp_path / "plans")
+        assert client.get("/api/plans").json()["account"] is None
+
+
+class TestDiscoveryEndpoints:
+    """C10: GET /api/discovery + POST /api/discovery/scan (spool write)."""
+
+    def _client(self, tmp_path: Path) -> TestClient:
+        return TestClient(
+            create_app(
+                state_dir=str(tmp_path / "state"),
+                plans_dir=str(tmp_path / "plans"),
+                discovery_dir=str(tmp_path / "discovery"),
+            )
+        )
+
+    def _stamp(self) -> DiscoveryStamp:
+        return DiscoveryStamp(
+            git_sha="test", config_hash="x", generated_at=datetime.now(ET).isoformat(), runner="manual"
+        )
+
+    def test_empty_state(self, tmp_path: Path) -> None:
+        client = self._client(tmp_path)
+        payload = client.get("/api/discovery").json()
+        assert payload["latest"] is None
+        assert payload["runs"] == []
+        assert payload["spool"]["pending"] is False
+        assert payload["config_present"] is False
+
+    def test_serves_latest_scan(self, tmp_path: Path) -> None:
+        disc = tmp_path / "discovery"
+        write_scan(
+            disc,
+            {
+                "generated_at": datetime.now(ET).isoformat(),
+                "mode": "manual",
+                "data_quality": {"chains_available": True, "notes": ["delayed"]},
+                "candidates": [_cand("NVDA", 5.0, 1.0)],
+                "rejected": [],
+            },
+            self._stamp(),
+            now=datetime.now(ET),
+        )
+        payload = self._client(tmp_path).get("/api/discovery").json()
+        assert payload["latest"] is not None
+        assert payload["latest"]["age_seconds"] is not None
+        assert payload["latest"]["candidates"][0]["underlying"] == "NVDA"
+        assert payload["runs"][0]["accepted"] == 1
+
+    def test_post_scan_writes_spool_request(self, tmp_path: Path) -> None:
+        client = self._client(tmp_path)
+        r = client.post("/api/discovery/scan")
+        assert r.status_code == 202
+        request_id = r.json()["request_id"]
+        files = list((tmp_path / "discovery" / "spool").glob("scan.request.*"))
+        assert len(files) == 1
+        assert request_id in files[0].name
+
+    def test_post_scan_503_when_spool_unwritable(self, tmp_path: Path) -> None:
+        client = self._client(tmp_path)
+        with monkeypatch_unwritable():
+            r = client.post("/api/discovery/scan")
+        assert r.status_code == 503
+        assert "unwritable" in r.json()["detail"]
+
+    def test_guard_extends_to_discovery_pure_modules(self) -> None:
+        import tree_options.trex.discovery.artifact as artifact_module
+        import tree_options.trex.discovery.config as config_module
+        import tree_options.trex.discovery.engine as engine_module
+        import tree_options.trex_web.discovery_view as view_module
+
+        for module in (artifact_module, config_module, engine_module, view_module):
+            assert "ib_async" not in module.__dict__
+            for name in dir(module):
+                obj = getattr(module, name)
+                assert not (getattr(obj, "__module__", "") or "").startswith("ib_async")
+
+
+def _cand(underlying: str, width: float, debit: float) -> dict:
+    return {
+        "underlying": underlying,
+        "expiry": "20261016",
+        "dte": 24,
+        "short_strike": 150.0,
+        "long_strike": 150.0 + width,
+        "width": width,
+        "debit_mid": debit,
+        "yield_ratio": (width - debit) / debit,
+        "accepted": True,
+        "rank": 1,
+        "rules": [],
+        "reasons": [],
+    }
+
+
+def monkeypatch_unwritable():
+    """Force the spool write to fail as it would inside the sandboxed unit."""
+    import tree_options.trex.discovery.artifact as artifact
+
+    def boom(*a: object, **k: object) -> None:
+        raise OSError("read-only file system")
+
+    return unittest.mock.patch.object(artifact, "_atomic_write", boom)
 
 
 class TestApiPlanDetail:
