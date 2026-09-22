@@ -1,0 +1,19 @@
+[Unit]
+Description=trex discovery runner (scan-on-demand + daily auto scan)
+Documentation=file:///home/alexk/documents/tree_options/docs/trex-discovery-runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alexk/documents/tree_options
+ExecStart=/home/alexk/.local/bin/uv run --group trex python -m tree_options.trex.discovery --serve
+Restart=on-failure
+RestartSec=30
+# Broker-side lane (owns gateway clientId 74; never places orders). NOT
+# sandboxed: uv must write .venv/cache on group switches and the runner
+# writes scans/account under %h/.local/state/trex-discovery.
+# Config: %h/.config/trex/discovery.toml (default ships in deploy/trex/)
+
+[Install]
+WantedBy=default.target

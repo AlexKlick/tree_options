@@ -10,14 +10,16 @@ WorkingDirectory=/home/alexk/documents/tree_options
 ExecStart=/home/alexk/.local/bin/uv run --group trex-web python -m tree_options.trex_web --host 127.0.0.1 --port 8090
 Restart=on-failure
 RestartSec=5
-# Read-only operator tool: only the trex state dir under %h/.local/state/trex
-# is read. Hardening mirrors fileviewer.service; we keep ProtectSystem=strict
-# but allow uv's cache so ``uv run`` doesn't trip on its temp-file lock.
+# Read-only operator tool: only the trex state dirs under %h/.local/state
+# are read, plus ONE writable directory — the discovery spool (scan
+# requests from the site). The spool dir must EXIST before the unit
+# starts (ReadWritePaths on a missing path fails the unit):
+#   mkdir -p ~/.local/state/trex-discovery/spool
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/alexk/.cache/uv /home/alexk/.local/share/uv
+ReadWritePaths=/home/alexk/.cache/uv /home/alexk/.local/share/uv /home/alexk/.local/state/trex-discovery/spool
 RestrictAddressFamilies=AF_INET AF_INET6
 
 [Install]
