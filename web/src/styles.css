@@ -332,6 +332,18 @@ footer {
 }
 .chart-hint { margin: 10px 2px 0; font-size: 0.8rem; }
 
+.leg-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.leg-chip {
+  display: inline-block;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 2px 8px;
+  font-size: 0.8rem;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.leg-note { font-size: 0.78rem; }
+
 /* ---- responsive ---- */
 
 /* Wide: run the marks table and the P&L history side by side so a big
