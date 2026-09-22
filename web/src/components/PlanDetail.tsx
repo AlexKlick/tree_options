@@ -1,9 +1,11 @@
 import { getPlan } from '../lib/api'
+import { deriveFills } from '../lib/fills'
 import type { Payoff, PlanDetailResponse } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { useDensity } from '../density'
 import { AppShell } from './AppShell'
 import { EventsLedger } from './EventsLedger'
+import { FillsTable } from './FillsTable'
 import { MarksTable } from './MarksTable'
 import { NetPositionsTable } from './NetPositionsTable'
 import { PayoffCard } from './PayoffCard'
@@ -119,7 +121,12 @@ export function PlanDetail({ id }: { id: string }) {
               {
                 id: 'ledger',
                 label: 'Ledger',
-                content: <EventsLedger events={d.events} />,
+                content: (
+                  <>
+                    <FillsTable fills={deriveFills(d.events)} />
+                    <EventsLedger events={d.events} />
+                  </>
+                ),
               },
             ]}
           />
@@ -155,6 +162,10 @@ export function PlanDetail({ id }: { id: string }) {
           <PayoffSection payoffs={d.payoffs} />
           <h2 className="section-title">Positions</h2>
           <PositionsTable specs={d.plan.structures} structures={d.structures} />
+          <h2 className="section-title">
+            Fills <span className="muted section-sub">(every execution · signed cash flow)</span>
+          </h2>
+          <FillsTable fills={deriveFills(d.events)} />
           <h2 className="section-title">
             Events <span className="muted section-sub">(last {d.events.length})</span>
           </h2>

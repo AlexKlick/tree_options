@@ -117,6 +117,8 @@ button.card.plan-card:focus-visible { outline: 2px solid var(--accent); outline-
 .badge-open { background: #1f4a32; color: var(--pos); }
 .badge-exit_working { background: #5a2f1f; color: #f4a877; }
 .badge-closed { background: var(--border); color: var(--ink); }
+.badge-entry { background: #5a4a1f; color: #f4d77f; }
+.badge-exit { background: #1f4a32; color: var(--pos); }
 
 .density-toggle {
   display: inline-flex;
