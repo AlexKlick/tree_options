@@ -20,6 +20,19 @@ log = logging.getLogger("trex.discovery.probe")
 PROBE_SUBSCRIPTIONS = 6  # stay far under the ~50-line paper budget
 
 
+def _pick_expiry(expirations: list[str], today: datetime, dte_min: int, dte_max: int) -> str | None:
+    """First listed expiry inside the DTE window (skips 0DTE/weeklies past it)."""
+    for raw in expirations:
+        try:
+            expiry = datetime.strptime(raw, "%Y%m%d")
+        except ValueError:
+            continue
+        dte = (expiry.date() - today.date()).days  # calendar-day DTE
+        if dte_min <= dte <= dte_max:
+            return raw
+    return None
+
+
 def _stock(symbol: str) -> Any:
     """Real ib_async Stock on the gateway; duck-typed stand-in for tests.
 
@@ -69,11 +82,13 @@ def _expirations(ib: Any, symbol: str, conid: int) -> list[str]:
     return sorted({e for p in smart for e in p.expirations}) if smart else []
 
 
-def _greeks_sample(ibk: IbkrTrex, symbol: str, conid: int, expirations: list[str]) -> dict[str, int]:
+def _greeks_sample(
+    ibk: IbkrTrex, symbol: str, conid: int, expirations: list[str], today: datetime
+) -> dict[str, int]:
     """Subscribe a few strikes in the middle of the chain and count greeks."""
-    if not expirations:
-        return {"rows_total": 0, "rows_with_greeks": 0}
-    expiry = expirations[0]
+    expiry = _pick_expiry(expirations, today, dte_min=20, dte_max=60)
+    if expiry is None:
+        return {"rows_total": 0, "rows_with_greeks": 0, "expiry": None}
     params = ibk._ib.reqSecDefOptParams(symbol, "", "STK", conid)
     smart = [p for p in params if p.exchange == "SMART"] or params
     strikes = sorted({float(s) for p in smart for s in p.strikes})
@@ -97,13 +112,16 @@ def _greeks_sample(ibk: IbkrTrex, symbol: str, conid: int, expirations: list[str
         ibk._ib.sleep(4)
     finally:
         log.info("probe subscribed %d option rows for %s", total, symbol)
-    return {"rows_total": total, "rows_with_greeks": with_greeks}
+    return {"rows_total": total, "rows_with_greeks": with_greeks, "expiry": expiry}
 
 
 def probe_json(ibk: IbkrTrex, underlyings: list[str], now: datetime | None = None) -> dict[str, Any]:
     """Capability report: account + chains + greeks, no files written."""
+    from tree_options.trex.clock import ET
+
     assert ibk._ib is not None
     ib = ibk._ib
+    ib_now = now or datetime.now(ET)
     account = ibk.account_snapshot()
     chains: dict[str, Any] = {}
     greeks = {"rows_total": 0, "rows_with_greeks": 0}
@@ -117,7 +135,8 @@ def probe_json(ibk: IbkrTrex, underlyings: list[str], now: datetime | None = Non
             params = ib.reqSecDefOptParams(symbol, "", "STK", conid)
             smart = [p for p in params if p.exchange == "SMART"] or params
             chains[symbol]["strikes"] = len({float(s) for p in smart for s in p.strikes})
-            sample = _greeks_sample(ibk, symbol, conid, expirations)
+            sample = _greeks_sample(ibk, symbol, conid, expirations, ib_now)
+            chains[symbol]["expiry_probed"] = sample.get("expiry")
             chains[symbol]["greeks_sample"] = sample
             greeks["rows_total"] += sample["rows_total"]
             greeks["rows_with_greeks"] += sample["rows_with_greeks"]
