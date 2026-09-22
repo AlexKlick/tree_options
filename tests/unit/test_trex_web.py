@@ -26,6 +26,7 @@ from tree_options.trex_web.payoff import (
     pnl_history_series,
     summarize_book,
 )
+from tree_options.trex_web.positions import net_positions
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -462,6 +463,102 @@ class TestApiPlans:
         assert entry["state_present"] is True
 
 
+class TestNetPositions:
+    """Net exposure rollup: filled structures grouped by underlying.
+
+    Exposure metrics are computed on open_qty (filled minus exited), so a
+    fully-exited structure drops out and a partial exit shrinks the row.
+    """
+
+    def _specs(self) -> list[dict[str, object]]:
+        return [
+            {
+                "id": "nvda-oct",
+                "underlying": "NVDA",
+                "long_strike": 185.0,
+                "short_strike": 150.0,
+                "expiry": "2026-10-16",
+            },
+            {
+                "id": "nvda-nov",
+                "underlying": "NVDA",
+                "long_strike": 185.0,
+                "short_strike": 150.0,
+                "expiry": "2026-11-20",
+            },
+            {
+                "id": "qqq-nov",
+                "underlying": "QQQ",
+                "long_strike": 600.0,
+                "short_strike": 475.0,
+                "expiry": "2026-11-20",
+            },
+        ]
+
+    def test_groups_by_underlying_and_sums_open_exposure(self) -> None:
+        states = {
+            "nvda-oct": {"entry_fill": 0.21, "filled_qty": 5, "open_qty": 5},
+            "nvda-nov": {"entry_fill": 1.24, "filled_qty": 3, "open_qty": 3},
+        }
+        marks = {
+            "nvda-oct": {"unrealized": -5.0},
+            "nvda-nov": {"unrealized": -6.0},
+        }
+        rows = net_positions(self._specs(), states, marks)
+        assert len(rows) == 1  # QQQ never filled -> no exposure row
+        r = rows[0]
+        assert r["underlying"] == "NVDA"
+        assert r["structure_count"] == 2
+        assert r["open_qty"] == 8
+        assert r["avg_entry"] == pytest.approx((0.21 * 5 + 1.24 * 3) / 8)
+        assert r["committed"] == pytest.approx(105.0 + 372.0)
+        assert r["unrealized"] == pytest.approx(-11.0)
+        assert r["short_floor"] == 150.0
+        assert r["long_ceiling"] == 185.0
+        assert r["max_gain"] == pytest.approx(17395.0 + 10128.0)
+        assert r["max_loss"] == pytest.approx(-477.0)
+        assert [leg["structure_id"] for leg in r["legs"]] == ["nvda-oct", "nvda-nov"]
+        assert r["legs"][0] == {
+            "structure_id": "nvda-oct",
+            "expiry": "2026-10-16",
+            "long_strike": 185.0,
+            "short_strike": 150.0,
+            "open_qty": 5,
+            "entry": 0.21,
+        }
+
+    def test_partial_exit_shrinks_and_full_exit_drops_out(self) -> None:
+        specs = self._specs()[:1]
+        states = {
+            "nvda-oct": {
+                "entry_fill": 0.50,
+                "filled_qty": 5,
+                "open_qty": 3,  # exited 2 of 5
+            }
+        }
+        rows = net_positions(specs, states, {})
+        assert rows[0]["open_qty"] == 3
+        assert rows[0]["committed"] == pytest.approx(0.50 * 3 * 100)
+        # fully closed: no row at all
+        closed = dict(states["nvda-oct"], open_qty=0)
+        assert net_positions(specs, {"nvda-oct": closed}, {}) == []
+
+    def test_unrealized_sums_available_quotes_and_none_without_any(self) -> None:
+        states = {
+            "nvda-oct": {"entry_fill": 0.21, "filled_qty": 5, "open_qty": 5},
+            "nvda-nov": {"entry_fill": 1.24, "filled_qty": 3, "open_qty": 3},
+        }
+        partial = {"nvda-oct": {"unrealized": -5.0}}  # nvda-nov has no quote
+        rows = net_positions(self._specs(), states, partial)
+        assert rows[0]["unrealized"] == pytest.approx(-5.0)
+        assert net_positions(self._specs(), states, {})[0]["unrealized"] is None
+
+    def test_missing_state_or_fill_is_skipped(self) -> None:
+        assert net_positions(self._specs(), {}, {}) == []
+        working = {"nvda-oct": {"entry_fill": None, "filled_qty": 0, "open_qty": 0}}
+        assert net_positions(self._specs(), working, {}) == []
+
+
 class TestApiPlanDetail:
     def _seeded_client(self, tmp_path: Path) -> TestClient:
         plans = tmp_path / "plans"
@@ -527,6 +624,49 @@ class TestApiPlanDetail:
         assert payload["payoffs"][0]["labels"]["max_gain"] == "+$17,395"
         assert payload["history"]["points"][0][1] == -1.5
         assert isinstance(payload["events"], list)
+        # the seeded structure is fully exited (exit_filled_qty == filled)
+        # -> no open exposure anywhere in the book
+        assert payload["net_positions"] == []
+
+    def test_net_positions_for_open_book(self, tmp_path: Path) -> None:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        run = tmp_path / "state" / "putspread-test"
+        run.mkdir(parents=True)
+        book = BookState(["nvda-oct", "qqq-nov"])
+        st = book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, datetime.now(ET))
+        st.to(Status.OPEN, datetime.now(ET))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        book.save(run / "book.json")
+        (run / "marks.json").write_text(
+            json.dumps(
+                {
+                    "ts": datetime.now(ET).isoformat(),
+                    "total_unrealized": "-5.00",
+                    "structures": {
+                        "nvda-oct": {
+                            "qty": 5,
+                            "entry": "0.21",
+                            "bid": None,
+                            "ask": None,
+                            "mark": "0.20",
+                            "unrealized": "-5.00",
+                        }
+                    },
+                }
+            )
+        )
+        client = _client(tmp_path / "state", plans)
+        rows = client.get("/api/plans/putspread-test").json()["net_positions"]
+        assert len(rows) == 1
+        r = rows[0]
+        assert r["underlying"] == "NVDA"
+        assert r["open_qty"] == 5
+        assert r["committed"] == pytest.approx(105.0)
+        assert r["unrealized"] == pytest.approx(-5.0)
+        assert r["legs"][0]["structure_id"] == "nvda-oct"
 
     def test_unknown_id_is_json_404(self, tmp_path: Path) -> None:
         plans = tmp_path / "plans"

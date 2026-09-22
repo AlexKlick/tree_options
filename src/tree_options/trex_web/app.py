@@ -18,6 +18,7 @@ from tree_options.trex_web.payoff import (
     pnl_history_series,
     summarize_book,
 )
+from tree_options.trex_web.positions import net_positions
 from tree_options.trex_web.reader import (
     compute_runbook_status_from_view,
     list_plans,
@@ -259,6 +260,7 @@ def _plan_payload(
         "structures": structures,
         "marks": marks_view,
         "book_summary": book_summary,
+        "net_positions": net_positions(specs, structures, marks_view.get("structures") if marks_view else None),
         "payoffs": payoffs,
         "history": history,
         "events": view.events,

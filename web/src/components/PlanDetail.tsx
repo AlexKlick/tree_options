@@ -5,6 +5,7 @@ import { useDensity } from '../density'
 import { AppShell } from './AppShell'
 import { EventsLedger } from './EventsLedger'
 import { MarksTable } from './MarksTable'
+import { NetPositionsTable } from './NetPositionsTable'
 import { PayoffCard } from './PayoffCard'
 import { PnlHistoryChart } from './PnlHistoryChart'
 import { PositionsTable } from './PositionsTable'
@@ -30,6 +31,18 @@ function HistorySection({ history }: { history: PlanDetailResponse['history'] })
   ) : (
     <ChartPlaceholder note="P&L history appears after the monitor records a few ticks." />
   )
+}
+
+function NetPositionsSection({ rows }: { rows: PlanDetailResponse['net_positions'] }) {
+  return rows.length > 0 ? (
+    <>
+      <h2 className="section-title">
+        Net positions{' '}
+        <span className="muted section-sub">(per underlying · open exposure only)</span>
+      </h2>
+      <NetPositionsTable rows={rows} />
+    </>
+  ) : null
 }
 
 function PayoffSection({ payoffs }: { payoffs: Payoff[] }) {
@@ -97,7 +110,10 @@ export function PlanDetail({ id }: { id: string }) {
                 id: 'positions',
                 label: 'Positions',
                 content: (
-                  <PositionsTable specs={d.plan.structures} structures={d.structures} />
+                  <>
+                    <NetPositionsSection rows={d.net_positions} />
+                    <PositionsTable specs={d.plan.structures} structures={d.structures} />
+                  </>
                 ),
               },
               {
@@ -122,6 +138,7 @@ export function PlanDetail({ id }: { id: string }) {
             </span>
           </h2>
           <MarksTable marks={d.marks} specs={d.plan.structures} />
+          <NetPositionsSection rows={d.net_positions} />
           <h2 className="section-title">
             Unrealized since entry{' '}
             <span className="muted section-sub">

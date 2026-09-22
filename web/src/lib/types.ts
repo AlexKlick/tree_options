@@ -101,6 +101,29 @@ export interface BookSummary {
   short_floor: number | null
 }
 
+export interface NetPositionLeg {
+  structure_id: string
+  expiry: string
+  long_strike: number
+  short_strike: number
+  open_qty: number
+  entry: number
+}
+
+export interface NetPosition {
+  underlying: string
+  structure_count: number
+  open_qty: number
+  avg_entry: number | null
+  committed: number
+  max_gain: number
+  max_loss: number
+  unrealized: number | null
+  short_floor: number
+  long_ceiling: number
+  legs: NetPositionLeg[]
+}
+
 export interface Payoff {
   structure_id: string
   underlying: string
@@ -146,6 +169,7 @@ export interface PlanDetailResponse {
   structures: Record<string, StructureStateView>
   marks: Marks | null
   book_summary: BookSummary | null
+  net_positions: NetPosition[]
   payoffs: Payoff[]
   history: HistorySeries | null
   events: EventRecord[]
