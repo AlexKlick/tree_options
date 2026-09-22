@@ -130,17 +130,10 @@ def pnl_history_series(
     if len(pts) < 2 or pts[-1][0] - pts[0][0] < 1000:
         return None
 
-    if len(pts) > max_points:
-        stride = len(pts) / max_points
-        keep = sorted(
-            {0, len(pts) - 1} | {int(i * stride) for i in range(max_points - 1)}
-        )
-        pts = [pts[i] for i in keep]
+    from tree_options.trex.series import decimate_pairs, y_extent
 
-    y_lo = min(0.0, *(v for _, v in pts))
-    y_hi = max(0.0, *(v for _, v in pts))
-    if y_hi - y_lo < 1.0:
-        y_hi = y_lo + 1.0
+    pts = decimate_pairs(pts, max_points)
+    y_lo, y_hi = y_extent(pts)
     return {
         "points": [[t, v] for t, v in pts],
         "y_lo": y_lo,

@@ -44,6 +44,12 @@ export function AppShell({
             >
               Discover
             </a>
+            <a
+              href="#/stats"
+              aria-current={title === 'Performance' ? 'page' : undefined}
+            >
+              Performance
+            </a>
           </nav>
         </div>
         <div className="header-right">

@@ -300,7 +300,55 @@ export interface HistorySeries {
   points: [number, number][]
   y_lo: number
   y_hi: number
-  last: { ts_ms: number; pnl: number; pos: boolean }
+  last: { ts_ms: number; pnl?: number; value?: number; pos: boolean }
+}
+
+export interface StatsDay {
+  date: string
+  realized: number
+  unrealized_eod: number | null
+  total: number | null
+}
+
+export interface StatsTotals {
+  realized: number
+  unrealized_last: number | null
+  wins: number
+  losses: number
+  win_rate: number | null
+  best_day: number | null
+  worst_day: number | null
+  plans_tracked: number
+  structures_closed: number
+}
+
+export interface StatsPlanRow {
+  plan_id: string
+  realized: number
+  unrealized_last: number | null
+  structures_closed: number
+  first_ts: string | null
+  last_ts: string | null
+}
+
+export interface StatsStructureRow {
+  plan_id: string
+  structure_id: string
+  underlying: string
+  status: string
+  entry_fill: number | null
+  filled_qty: number
+  realized: number | null
+}
+
+export interface StatsResponse {
+  now: string
+  tracking_since: string | null
+  equity: HistorySeries | null
+  days: StatsDay[]
+  totals: StatsTotals
+  per_plan: StatsPlanRow[]
+  per_structure: StatsStructureRow[]
 }
 
 export type EventRecord = Record<string, unknown> & { ts?: string; event?: string }

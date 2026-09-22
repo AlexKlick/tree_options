@@ -420,6 +420,12 @@ def create_app(
     def api_discovery() -> dict[str, object]:
         return discovery_payload(discovery_root, discovery_config)
 
+    @app.get("/api/stats")
+    def api_stats() -> dict[str, object]:
+        from tree_options.trex_web.stats import stats_payload
+
+        return stats_payload(state_root, plans_root, discovery_root, now_et())
+
     @app.post("/api/discovery/scan", status_code=202)
     def api_discovery_scan() -> dict[str, object]:
         """Scan-on-demand: drop a spool request for the discovery runner.

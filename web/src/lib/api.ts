@@ -3,6 +3,7 @@ import type {
   PlanDetailResponse,
   PlansResponse,
   ScanRequestResponse,
+  StatsResponse,
 } from './types'
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -28,6 +29,8 @@ export const getPlan = (id: string): Promise<PlanDetailResponse> =>
   fetchJson(`api/plans/${encodeURIComponent(id)}`)
 
 export const getDiscovery = (): Promise<DiscoveryResponse> => fetchJson('api/discovery')
+
+export const getStats = (): Promise<StatsResponse> => fetchJson('api/stats')
 
 export const requestScan = (): Promise<ScanRequestResponse> =>
   fetchJson('api/discovery/scan', { method: 'POST' })

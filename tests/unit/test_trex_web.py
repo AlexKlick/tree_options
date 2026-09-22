@@ -767,6 +767,69 @@ class TestPortfolioPayload:
         assert client.get("/api/plans").json()["account"] is None
 
 
+class TestStatsApi:
+    """M2: GET /api/stats — paper-money stats + equity curve."""
+
+    def test_stats_payload_from_fixtures(self, tmp_path: Path) -> None:
+
+        self._seed(tmp_path)
+        client = _client(tmp_path / "state", tmp_path / "plans", tmp_path / "discovery")
+        payload = client.get("/api/stats").json()
+        assert payload["tracking_since"] is not None
+        assert payload["equity"] is not None
+        assert payload["equity"]["points"][0][1] == pytest.approx(1000000.0)
+        assert payload["totals"]["realized"] == pytest.approx(28.0)
+        assert payload["days"][0]["date"] == "2026-09-22"
+
+    def test_stats_empty_state(self, tmp_path: Path) -> None:
+        (tmp_path / "plans").mkdir()
+        (tmp_path / "state").mkdir()
+        (tmp_path / "discovery").mkdir()
+        client = _client(tmp_path / "state", tmp_path / "plans", tmp_path / "discovery")
+        payload = client.get("/api/stats").json()
+        assert payload["equity"] is None
+        assert payload["tracking_since"] is None
+
+    def _seed(self, tmp_path: Path) -> None:
+        from zoneinfo import ZoneInfo
+
+        from tree_options.trex.history import append_line
+        from tree_options.trex.state import BookState, Status
+
+        et = ZoneInfo("America/New_York")
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        run = tmp_path / "state" / "putspread-test"
+        run.mkdir(parents=True)
+        book = BookState(["nvda-oct", "qqq-nov"])
+        st = book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, datetime(2026, 9, 22, 10, 5, tzinfo=et))
+        st.to(Status.OPEN, datetime(2026, 9, 22, 10, 5, tzinfo=et))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        st.exit_fill = Decimal("0.35")
+        st.exit_filled_qty = 2
+        book.save(run / "book.json")
+        (run / "events.jsonl").write_text(
+            '{"ts": "2026-09-22T11:00:00-04:00", "event": "exit_fill",'
+            ' "structure": "nvda-oct", "filled": 2, "avg": "0.35"}\n'
+        )
+        append_line(
+            run / "marks_history.jsonl",
+            {"ts": "2026-09-22T15:00:00-04:00", "total_unrealized": "-5.00"},
+        )
+        disc = tmp_path / "discovery"
+        disc.mkdir()
+        append_line(
+            disc / "account_history.jsonl",
+            {"ts": "2026-09-22T14:00:00-04:00", "net_liquidation": "1000000.00"},
+        )
+        append_line(
+            disc / "account_history.jsonl",
+            {"ts": "2026-09-22T15:00:00-04:00", "net_liquidation": "1000005.00"},
+        )
+
+
 class TestDiscoveryEndpoints:
     """C10: GET /api/discovery + POST /api/discovery/scan (spool write)."""
 
