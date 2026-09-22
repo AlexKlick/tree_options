@@ -47,11 +47,21 @@ function NetPositionsSection({ rows }: { rows: PlanDetailResponse['net_positions
   ) : null
 }
 
-function PayoffSection({ payoffs }: { payoffs: Payoff[] }) {
+function PayoffSection({
+  payoffs,
+  marks,
+}: {
+  payoffs: Payoff[]
+  marks: PlanDetailResponse['marks']
+}) {
   return payoffs.length > 0 ? (
     <div className="grid">
       {payoffs.map((p) => (
-        <PayoffCard key={p.structure_id} payoff={p} />
+        <PayoffCard
+          key={p.structure_id}
+          payoff={p}
+          mark={marks?.structures[p.structure_id]}
+        />
       ))}
     </div>
   ) : (
@@ -106,7 +116,7 @@ export function PlanDetail({ id }: { id: string }) {
               {
                 id: 'payoff',
                 label: 'Payoff',
-                content: <PayoffSection payoffs={d.payoffs} />,
+                content: <PayoffSection payoffs={d.payoffs} marks={d.marks} />,
               },
               {
                 id: 'positions',
@@ -159,7 +169,7 @@ export function PlanDetail({ id }: { id: string }) {
               (terminal value · the discipline exits long before)
             </span>
           </h2>
-          <PayoffSection payoffs={d.payoffs} />
+          <PayoffSection payoffs={d.payoffs} marks={d.marks} />
           <h2 className="section-title">Positions</h2>
           <PositionsTable specs={d.plan.structures} structures={d.structures} />
           <h2 className="section-title">

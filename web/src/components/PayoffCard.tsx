@@ -1,8 +1,16 @@
-import type { Payoff } from '../lib/types'
+import type { MarkRow, Payoff } from '../lib/types'
 import { PayoffChart } from './PayoffChart'
-import { usd2 } from '../lib/format'
+import { usd2, usdSigned } from '../lib/format'
 
-export function PayoffCard({ payoff }: { payoff: Payoff }) {
+/** One structure's payoff card: chart + levels + the live mark when the
+ * monitor has a quote for it. */
+export function PayoffCard({
+  payoff,
+  mark,
+}: {
+  payoff: Payoff
+  mark?: MarkRow | null
+}) {
   const l = payoff.levels
   return (
     <div className="card chart-card">
@@ -11,6 +19,11 @@ export function PayoffCard({ payoff }: { payoff: Payoff }) {
           {payoff.underlying} {l.long_strike}/{l.short_strike} put spread
         </h3>
         <span className="muted num">
+          {mark?.unrealized != null && (
+            <strong className={mark.unrealized >= 0 ? 'pnl-pos' : 'pnl-neg'}>
+              {usdSigned(mark.unrealized)}{' '}
+            </strong>
+          )}
           {l.qty}&times; @ {usd2(l.entry)}
         </span>
       </div>

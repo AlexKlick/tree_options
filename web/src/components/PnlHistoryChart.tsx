@@ -5,6 +5,7 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { HistorySeries } from '../lib/types'
 import { clamp, nearestIndex } from '../lib/interp'
+import { tipTransform } from '../lib/chart'
 import { etTimeMs, usdSigned } from '../lib/format'
 
 const VW = 640
@@ -48,7 +49,11 @@ export function PnlHistoryChart({ series }: { series: HistorySeries }) {
   const hoverPt = hover ? pts[hover.i] : null
 
   return (
-    <div className="chart-wrap">
+    <div
+      className="chart-wrap"
+      role="img"
+      aria-label={`Total unrealized P&L from ${etTimeMs(t0)} to ${etTimeMs(t1Raw)} ET, latest ${usdSigned(lastPt[1])}`}
+    >
       <svg ref={svgRef} viewBox={`0 0 ${VW} ${VH}`} className="chart-svg" aria-hidden="true">
         {/* gridlines + y labels (deduped: an extent can sit exactly on 0) */}
         {Array.from(new Set([yHi, 0, yLo])).map((v) => (
@@ -133,10 +138,7 @@ export function PnlHistoryChart({ series }: { series: HistorySeries }) {
           className="chart-tip"
           style={{
             left: hover.cssX,
-            transform:
-              hover.cssX > hover.cssW * 0.6
-                ? 'translateX(calc(-100% - 12px))'
-                : 'translateX(12px)',
+            transform: tipTransform(hover.cssX, hover.cssW, 0.6),
           }}
         >
           <div className="tip-price num">{etTimeMs(hoverPt[0])} ET</div>

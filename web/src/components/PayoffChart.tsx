@@ -12,6 +12,7 @@ import {
 import type { Payoff } from '../lib/types'
 import { clamp, interpAt } from '../lib/interp'
 import { payoffRegions, type PixelScale } from '../lib/regions'
+import { tipTransform } from '../lib/chart'
 import { usd2, usdSigned } from '../lib/format'
 
 const VW = 640
@@ -193,7 +194,7 @@ export function PayoffChart({ payoff }: { payoff: Payoff }) {
         {/* the payoff line */}
         <polyline points={line} className="payoff-line" />
 
-        {/* strike ticks + labels */}
+        {/* strike ticks + labels (side named: which strike is short/long) */}
         {ticks.map((t) => (
           <line
             key={t}
@@ -212,7 +213,7 @@ export function PayoffChart({ payoff }: { payoff: Payoff }) {
             textAnchor="middle"
             className="axis-label"
           >
-            {t}
+            {t} {t === levels.short_strike ? 'short' : 'long'}
           </text>
         ))}
 
@@ -334,10 +335,7 @@ export function PayoffChart({ payoff }: { payoff: Payoff }) {
           className="chart-tip"
           style={{
             left: hover.cssX,
-            transform:
-              hover.cssX > hover.cssW * 0.66
-                ? 'translateX(calc(-100% - 12px))'
-                : 'translateX(12px)',
+            transform: tipTransform(hover.cssX, hover.cssW),
           }}
         >
           <div className="tip-price num">{usd2(hover.price)}</div>
