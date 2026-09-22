@@ -13,7 +13,11 @@ export default function App() {
   }, [])
   return (
     <DensityProvider>
-      {route.view === 'plan' ? <PlanDetail id={route.id} /> : <PlanList />}
+      {route.view === 'plan' ? (
+        <PlanDetail key={route.id} id={route.id} />
+      ) : (
+        <PlanList />
+      )}
     </DensityProvider>
   )
 }

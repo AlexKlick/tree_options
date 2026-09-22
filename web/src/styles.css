@@ -171,6 +171,98 @@ footer {
   gap: 8px;
 }
 
+/* ---- plan detail ---- */
+
+.back { display: inline-block; margin-bottom: 14px; }
+
+.banner-title { margin: 4px 0; }
+.banner-sub { margin: 6px 0 0; }
+.pill-col { display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+
+.section-title { margin: 28px 0 12px; font-size: 1.15rem; }
+.section-sub { font-size: 0.86rem; font-weight: 400; }
+
+.tiles {
+  display: grid;
+  gap: 14px;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  margin-top: 18px;
+}
+.tile { padding: 14px 18px; }
+.tile-label {
+  margin: 0;
+  font-size: 0.72rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.tile-value { font-size: 1.5rem; font-weight: 700; margin-top: 2px; }
+
+.table-card { padding: 14px 16px; }
+.table-note { margin: 10px 2px 0; font-size: 0.85rem; }
+.total-row td { border-bottom: none; background: var(--border-soft); }
+
+.chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.chip {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--muted);
+  font: 600 0.75rem/1 inherit;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+.chip[aria-pressed="true"] {
+  background: var(--border-soft);
+  color: var(--ink);
+  border-color: var(--accent);
+}
+.chip-alt { border-style: dashed; }
+.chip:focus-visible, .ledger-head:focus-visible, .tab-list button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.ledger { display: flex; flex-direction: column; }
+.ledger-row { border-bottom: 1px solid var(--border-soft); }
+.ledger-row:last-child { border-bottom: none; }
+.ledger-head {
+  display: flex;
+  gap: 14px;
+  align-items: baseline;
+  width: 100%;
+  background: transparent;
+  border: 0;
+  color: var(--ink);
+  font: 0.9rem/1.5 inherit;
+  padding: 7px 2px;
+  cursor: pointer;
+  text-align: left;
+}
+.ledger-summary { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ledger-row pre { margin: 0 0 10px; }
+
+.tabbed { margin-top: 18px; }
+.tab-list {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.tab-list button {
+  background: transparent;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  color: var(--muted);
+  font: 600 0.9rem/1.4 inherit;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+.tab-list button[aria-selected="true"] {
+  color: var(--ink);
+  border-bottom-color: var(--accent);
+}
+
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
     transition-duration: 0.01ms !important;
