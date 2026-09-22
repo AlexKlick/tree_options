@@ -231,7 +231,8 @@ class TestHonesty:
         assert top.debit_mid is not None
         assert top.debit_mid > 0
         assert top.max_profit == pytest.approx((top.width - top.debit_mid) * 100)
-        assert top.max_loss == pytest.approx(top.debit_mid * 100)
+        assert top.max_loss == pytest.approx(-top.debit_mid * 100)
+        assert top.max_loss < 0 < top.max_profit
         assert top.long_strike - top.short_strike == top.width
 
     def test_debit_mid_matches_leg_mids(self) -> None:

@@ -283,7 +283,7 @@ def _evaluate(
             c.debit_ask = (long_row.ask or 0.0) - (short_row.bid or 0.0)
             c.debit_mid = long_mid - short_mid
             c.max_profit = (c.width - c.debit_mid) * 100
-            c.max_loss = c.debit_mid * 100
+            c.max_loss = -c.debit_mid * 100  # negative: money paid at risk
             c.yield_ratio = (c.width - c.debit_mid) / c.debit_mid if c.debit_mid > 0 else None
 
             # min debit floor
