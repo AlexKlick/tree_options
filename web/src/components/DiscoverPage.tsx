@@ -5,6 +5,7 @@ import { etTime } from '../lib/format'
 import type { CandidateRow } from '../lib/types'
 import { AppShell } from './AppShell'
 import { CandidateTable } from './CandidateTable'
+import { ShadowSection } from './ShadowSection'
 import { Pill } from './Pill'
 
 function agePill(seconds: number | null): JSX.Element {
@@ -120,8 +121,10 @@ export function DiscoverPage() {
               <CandidateTable rows={latest.rejected} />
             </>
           )}
+          <ShadowSection shadow={d?.shadow ?? null} />
         </>
       )}
+      {!latest && <ShadowSection shadow={d?.shadow ?? null} />}
     </AppShell>
   )
 }

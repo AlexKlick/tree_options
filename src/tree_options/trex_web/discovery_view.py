@@ -63,6 +63,22 @@ def _latest_view(latest: dict[str, Any] | None, now: datetime) -> dict[str, Any]
     }
 
 
+def _shadow_view(discovery_dir: Path, now: datetime) -> dict[str, Any] | None:
+    """Shadow alternatives block; None when the runner has not opened any."""
+    from tree_options.trex.discovery.shadow import load_shadow, shadow_stats
+
+    book = load_shadow(discovery_dir)
+    if book is None:
+        return None
+    payload = book.to_payload()
+    payload["stats"] = shadow_stats(book)
+    payload["age_seconds"] = None
+    newest = max((p.last_mark_at for p in book.positions if p.last_mark_at), default=None)
+    if isinstance(newest, str):
+        payload["age_seconds"] = _age(newest, now)
+    return payload
+
+
 def discovery_payload(
     discovery_dir: Path,
     config_path: Path,
@@ -88,6 +104,7 @@ def discovery_payload(
         "config_present": config_present,
         "config": config,
         "latest": _latest_view(read_latest(discovery_dir), now),
+        "shadow": _shadow_view(discovery_dir, now),
         "runs": read_runs(discovery_dir, limit=10),
         "spool": {
             "pending": spool_pending(spool),

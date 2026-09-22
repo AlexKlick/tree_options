@@ -169,12 +169,50 @@ export interface DiscoveryConfig {
   max_candidates_total: number
 }
 
+export interface ShadowPosition {
+  episode_id: string
+  key: string
+  underlying: string
+  expiry: string
+  short_strike: number
+  long_strike: number
+  width: number
+  qty: number
+  debit_paid: number
+  opened_at: string
+  opened_run_id: string
+  status: string
+  last_mark: number | null
+  last_mark_at: string | null
+  mark_source: string
+  best_pnl: number | null
+  worst_pnl: number | null
+  final_pnl: number | null
+  pnl: number | null
+}
+
+export interface ShadowStats {
+  open: number
+  expired: number
+  mean_pnl: number | null
+  hit_rate: number | null
+  not_executed: boolean
+}
+
+export interface ShadowBlock {
+  version: number
+  positions: ShadowPosition[]
+  stats: ShadowStats
+  age_seconds: number | null
+}
+
 export interface DiscoveryResponse {
   now: string
   state_dir: string
   config_present: boolean
   config: DiscoveryConfig | null
   latest: DiscoveryLatest | null
+  shadow: ShadowBlock | null
   runs: DiscoveryRun[]
   spool: DiscoverySpool
 }

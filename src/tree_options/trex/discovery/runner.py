@@ -227,6 +227,66 @@ def _maybe_account_history(source: ChainSource, state_dir: Path, now: datetime) 
         log.exception("account history append failed (continuing)")
 
 
+def _live_plan_identities(repo: Path | None) -> list[tuple[str, object, object, object]]:
+    """(underlying, expiry, short, long) of every structure in every plan
+    TOML - shadow positions must never shadow a real holding."""
+    from tree_options.trex.plan import load_plan
+
+    if repo is None:
+        return []
+    out: list[tuple[str, object, object, object]] = []
+    for path in sorted((repo / "plans").glob("*.toml")):
+        try:
+            plan = load_plan(path)
+        except (OSError, ValueError):
+            continue
+        for s in plan.structures:
+            out.append((s.underlying, s.expiry, s.short_strike, s.long_strike))
+    return out
+
+
+def _post_scan_shadow(state_dir: Path, repo: Path | None, now: datetime) -> None:
+    """After a successful scan: open + mark shadow alternatives.
+
+    Failure-isolated AFTER the scan receipt is complete (Codex-2): a
+    shadow problem never fails or delays the scan itself. Marks come from
+    the scan's own rows; M5 upgrades marking to the CBOE full chain.
+    """
+    from tree_options.trex.discovery.artifact import read_latest
+    from tree_options.trex.discovery.shadow import (
+        ShadowBook,
+        append_shadow_mark,
+        load_shadow,
+        mark_from_payload,
+        open_from_scan,
+        save_shadow,
+        shadow_stats,
+    )
+
+    doc = read_latest(state_dir)
+    if doc is None:
+        return
+    payload = doc.get("payload", {})
+    book = load_shadow(state_dir) or ShadowBook()
+    book = open_from_scan(
+        book, payload, run_id=str(doc.get("run_id", "?")), now=now,
+        excluded=_live_plan_identities(repo),
+    )
+    book = mark_from_payload(book, payload, now=now)
+    save_shadow(state_dir, book)
+    marks = [
+        {"key": p.key, "value": p.last_mark, "pnl": p.pnl, "source": p.mark_source}
+        for p in book.positions
+        if p.status == "open" and p.pnl is not None
+    ]
+    append_shadow_mark(state_dir, str(doc.get("run_id", "?")), marks, now)
+    stats = shadow_stats(book)
+    log.info(
+        "shadow: %d open / %d expired, mean pnl %s",
+        stats["open"], stats["expired"], stats["mean_pnl"],
+    )
+
+
 def serve_tick(
     source: ChainSource,
     cfg: ScanConfig,
@@ -255,6 +315,10 @@ def serve_tick(
                     "finished_at": now_et().isoformat(),
                 },
             )
+            try:
+                _post_scan_shadow(state_dir, repo, now)
+            except Exception:
+                log.exception("post-scan shadow hook failed (scan unaffected)")
             return True
         except Exception as exc:
             log.exception("scan for request %s failed", request_id)
@@ -283,6 +347,10 @@ def serve_tick(
     if now >= due and (last is None or last.date() != now.date()):
         run_once(source, cfg, state_dir, "auto", repo=repo, now=now)
         state.write_text(now.isoformat())
+        try:
+            _post_scan_shadow(state_dir, repo, now)
+        except Exception:
+            log.exception("post-scan shadow hook failed (scan unaffected)")
         return True
     return False
 

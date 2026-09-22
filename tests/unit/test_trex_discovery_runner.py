@@ -242,3 +242,41 @@ class TestAccountHistory:
         state = tmp_path / "state"
         serve_tick(FakeChainSource(account=None), _cfg(), state, now=NOW)
         assert not self._path(state).exists()
+
+
+class TestShadowHook:
+    """M3: serve_tick opens + marks shadow alternatives after each scan."""
+
+    def test_scan_creates_shadow_book(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        spool = state / "spool"
+        write_scan_request(spool, "req-s1", NOW)
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        book = (state / "shadow_book.json")
+        assert book.exists()
+        doc = json.loads(book.read_text())
+        assert doc["version"] == 1
+        assert doc["positions"], "fake scan should accept at least one candidate"
+        pos = doc["positions"][0]
+        assert pos["status"] == "open"
+        assert pos["qty"] == 1
+        assert pos["debit_paid"] > 0
+        assert (state / "shadow_marks.jsonl").exists()
+
+    def test_shadow_failure_never_fails_the_scan(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        spool = state / "spool"
+        write_scan_request(spool, "req-s2", NOW)
+        import tree_options.trex.discovery.runner as runner_mod
+
+        original = runner_mod._post_scan_shadow
+        runner_mod._post_scan_shadow = lambda *a, **k: (_ for _ in ()).throw(
+            RuntimeError("shadow exploded")
+        )
+        try:
+            done = serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        finally:
+            runner_mod._post_scan_shadow = original
+        assert done is True
+        result = read_scan_result(spool)
+        assert result is not None and result["status"] == "ok"

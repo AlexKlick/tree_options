@@ -1063,3 +1063,53 @@ class TestApiPlanDetail:
         assert payload["book_summary"] is None
         assert payload["payoffs"] == []
         assert payload["history"] is None
+
+
+class TestDiscoveryShadowBlock:
+    """M3: /api/discovery carries the shadow alternatives book."""
+
+    def test_shadow_present_from_fixture(self, tmp_path: Path) -> None:
+        disc = tmp_path / "discovery"
+        disc.mkdir()
+        (disc / "shadow_book.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "positions": [
+                        {
+                            "episode_id": "NVDA|20261016|150|185#run-1",
+                            "key": "NVDA|20261016|150|185",
+                            "underlying": "NVDA",
+                            "expiry": "20261016",
+                            "short_strike": 150.0,
+                            "long_strike": 185.0,
+                            "width": 35.0,
+                            "qty": 1,
+                            "debit_paid": 0.21,
+                            "opened_at": "2026-09-22T16:11:00-04:00",
+                            "opened_run_id": "run-1",
+                            "status": "open",
+                            "last_mark": 0.35,
+                            "last_mark_at": "2026-09-22T16:41:00-04:00",
+                            "mark_source": "scan",
+                            "best_pnl": 14.0,
+                            "worst_pnl": 14.0,
+                            "final_pnl": None,
+                            "pnl": 14.0,
+                        }
+                    ],
+                }
+            )
+        )
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        shadow = client.get("/api/discovery").json()["shadow"]
+        assert shadow is not None
+        assert shadow["positions"][0]["pnl"] == pytest.approx(14.0)
+        assert shadow["stats"]["open"] == 1
+        assert shadow["stats"]["not_executed"] is True
+
+    def test_shadow_absent_is_none(self, tmp_path: Path) -> None:
+        client = _client(
+            tmp_path / "state", tmp_path / "plans", tmp_path / "discovery"
+        )
+        assert client.get("/api/discovery").json()["shadow"] is None
