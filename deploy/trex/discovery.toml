@@ -1,0 +1,30 @@
+# trex discovery scan config (operator-owned; copy to ~/.config/trex/discovery.toml)
+# NEVER place this in plans/ - the plan glob would adopt it as a trade plan.
+# Probe evidence 2026-09-22: delayed chains flow, delayed modelGreeks do NOT,
+# so target_mode=auto degrades to premium-floor per scan (stamped in artifacts).
+
+underlyings = ["NVDA", "QQQ", "SPY", "AMD", "MU"]
+dte_min = 20
+dte_max = 60
+widths = [5.0, 10.0, 15.0, 20.0]
+
+# auto: delta (if greeks ever appear) -> %OTM (if spot supplied) -> premium-floor
+target_mode = "auto"
+target_delta = 0.30
+target_otm_frac = 0.06
+delta_band = [0.20, 0.45]
+
+# quote-hygiene / liquidity rules (engine enforces, tri-state)
+min_debit = 0.15
+max_leg_spread_frac = 0.25
+
+# gateway paper budget is ~50 mkt-data lines; keep headroom
+max_quotes_per_underlying = 24
+max_candidates_per_underlying = 3
+max_candidates_total = 12
+
+# 71 monitor / 72 enter / 77 library default are reserved
+client_id = 74
+
+# serve loop: daily rescan shortly after the close (ET)
+auto_scan_et = "16:11"
