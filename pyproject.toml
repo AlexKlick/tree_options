@@ -95,3 +95,10 @@ mypy_path = "src"
 # profile; individual modules may tighten later.
 check_untyped_defs = true
 warn_unused_ignores = false
+
+# ib_async lives only in the optional `trex` group; the base/web gate env
+# legitimately lacks it (trex_web must stay broker-free). The override is a
+# no-op when the module IS installed, so `--group trex` runs keep real types.
+[[tool.mypy.overrides]]
+module = "ib_async.*"
+ignore_missing_imports = true

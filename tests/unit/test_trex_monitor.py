@@ -8,6 +8,7 @@ cancel before replacing (never two sells on one position).
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -306,6 +307,77 @@ class TestExitReprice:
         fake.quote = ComboQuote(Decimal("0.30"), Decimal("0.34"))
         mon._tick()
         assert fake.placed[-1] == ("nvda-oct", "SELL", 5, Decimal("0.32"))
+
+
+class TestCumulativeExitAccounting:
+    """D2 regression: order-local fill counts restart on every replacement.
+
+    The old drain compared an order-local count against the book's
+    cumulative exit_filled_qty — a replacement order that filled the rest
+    recorded a phantom open qty and the refresh path then re-sold
+    contracts no longer held (naked short). These tests pin cumulative
+    quantity + blended average price across replacements.
+    """
+
+    def test_replacement_fill_blends_into_cumulative_and_closes(
+        self, tmp_path: Path
+    ) -> None:
+        fake = FakeIbkr(spot="184.50")
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        mon._tick()
+        a = mon.orders["nvda-oct"]
+
+        fake.fill(a, 2, "2.10")  # partial: 3 still held
+        mon._tick()  # drain 2 + replace for the remainder
+        b = mon.orders["nvda-oct"]
+        assert b is not a
+        assert fake.placed[-1] == ("nvda-oct", "SELL", 3, Decimal("0.44"))
+
+        fake.fill(b, 3, "2.20")  # the remainder fills
+        mon._tick()
+
+        assert st.exit_filled_qty == 5
+        assert st.exit_fill == (Decimal("2.10") * 2 + Decimal("2.20") * 3) / 5
+        assert st.open_qty == 0
+        assert st.status is Status.CLOSED
+        assert len(fake.placed) == 2  # NO third sell on phantom qty
+
+        fills = [
+            json.loads(line)
+            for line in (mon.run_dir / "events.jsonl").read_text().splitlines()
+            if "exit_fill" in line
+        ]
+        assert [e["filled"] for e in fills] == [2, 5]  # cumulative
+        assert [e["order_filled"] for e in fills] == [2, 3]  # order-local
+        assert fills[-1]["avg"] == str(st.exit_fill)
+
+    def test_replacement_smaller_local_count_still_completes(
+        self, tmp_path: Path
+    ) -> None:
+        fake = FakeIbkr(spot="184.50")
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        mon._tick()
+        ref = mon.orders["nvda-oct"]
+
+        fake.fill(ref, 4, "2.00")
+        mon._tick()
+        # the replacement's order-local count (1) is smaller than the
+        # previous order's local count (4) — cumulative must still reach 5
+        b = mon.orders["nvda-oct"]
+        fake.fill(b, 1, "2.50")
+        mon._tick()
+
+        assert st.exit_filled_qty == 5
+        assert st.exit_fill == (Decimal("2.00") * 4 + Decimal("2.50") * 1) / 5
+        assert st.open_qty == 0
 
 
 class TestAdoption:

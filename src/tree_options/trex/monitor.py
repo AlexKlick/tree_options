@@ -124,6 +124,12 @@ class Monitor:
         self.run_dir = run_dir
         self._clock = clock or now_et
         self.orders: dict[str, OrderRef] = {}  # structure_id -> working exit OrderRef
+        # Order-local fill counts RESTART on every replacement, so the drain
+        # merges increments (seen -> now) into the book's cumulative totals.
+        # Comparing a local count against the cumulative once recorded a
+        # phantom open qty and the refresh path re-sold contracts no longer
+        # held (naked short) — see test_trex_monitor.TestCumulativeExitAccounting.
+        self._order_seen: dict[str, int] = {}
         self._history: list[dict[str, str]] | None = None  # marks history, lazy-loaded
 
     def _now(self) -> datetime:
@@ -214,6 +220,7 @@ class Monitor:
                 trade,
             )
             self.orders[sid] = ref
+            self._order_seen[sid] = 0  # adopted: local fills since now are new
             self.book.structures[sid].exit_order = str(trade.order.orderId)
             log.info("adopted working exit order for %s (oid %s)", sid, trade.order.orderId)
         self.book.save(self.run_dir / "book.json")
@@ -296,6 +303,7 @@ class Monitor:
             return
         ref = self.ib.place_combo(spread, "SELL", qty, limit)
         self.orders[spread.id] = ref
+        self._order_seen[spread.id] = 0  # new order: local count starts over
         self.book.structures[spread.id].exit_order = f"{ref.trade.order.orderId}"
         self.book.save(self.run_dir / "book.json")
         self.book.event(
@@ -393,15 +401,29 @@ class Monitor:
             if ref is None:
                 continue
             info = self.ib.order_status(ref)
-            if info.filled > st.exit_filled_qty:
-                st.exit_filled_qty = info.filled
-                st.exit_fill = info.avg_fill_price or st.exit_fill
+            seen = self._order_seen.get(sid, 0)
+            if info.filled > seen:
+                # merge only the order-local increment into the cumulative
+                # book, re-blending the average price across all fills
+                new_fills = info.filled - seen
+                new_cum = st.exit_filled_qty + new_fills
+                if info.avg_fill_price:
+                    if st.exit_fill is not None and st.exit_filled_qty > 0:
+                        st.exit_fill = (
+                            st.exit_fill * st.exit_filled_qty
+                            + info.avg_fill_price * new_fills
+                        ) / new_cum
+                    else:
+                        st.exit_fill = info.avg_fill_price
+                st.exit_filled_qty = new_cum
+                self._order_seen[sid] = info.filled
                 self.book.event(
                     self.events_path,
                     "exit_fill",
                     structure=sid,
-                    filled=info.filled,
-                    avg=str(info.avg_fill_price),
+                    filled=st.exit_filled_qty,
+                    order_filled=info.filled,
+                    avg=str(st.exit_fill),
                     status=info.status,
                 )
             if st.open_qty <= 0 and info.status in ("Filled", "Cancelled", "ApiCancelled"):

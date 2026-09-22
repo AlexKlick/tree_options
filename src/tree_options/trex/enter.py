@@ -48,12 +48,23 @@ POLL_SECONDS = 15
 
 
 class Enterer:
-    def __init__(self, plan, ib: IbkrTrex, book: BookState, run_dir: Path) -> None:
+    def __init__(
+        self,
+        plan,
+        ib: IbkrTrex,
+        book: BookState,
+        run_dir: Path,
+        clock=None,
+    ) -> None:
         self.plan = plan
         self.ib = ib
         self.book = book
         self.run_dir = run_dir
+        self._clock = clock or now_et  # injectable for tests, mirrors Monitor
         self.orders: dict[str, OrderRef] = {}
+        # Order-local fill counts restart on replacement; drain merges
+        # increments into the book's cumulative filled_qty (C1 regression).
+        self._order_seen: dict[str, int] = {}
 
     @property
     def events_path(self) -> Path:
@@ -130,7 +141,7 @@ class Enterer:
         )
 
     def _tick(self) -> None:
-        now = now_et()
+        now = self._clock()
         if not is_session(now):
             log.info("non-session day — nothing to enter")
             return
@@ -162,19 +173,26 @@ class Enterer:
         if st.status is Status.PLANNED:
             st.to(Status.ENTER_WORKING, now_et())
         # reprice path: already ENTER_WORKING, no transition needed
+        # a partial fill may already be in the book — buy only the remainder
+        remaining = spread.quantity - st.filled_qty
+        if remaining <= 0:
+            st.to(Status.OPEN, now_et())  # fully filled already
+            self.book.save(self.run_dir / "book.json")
+            return
         self.book.save(self.run_dir / "book.json")
-        ref = self.ib.place_combo(spread, "BUY", spread.quantity, limit)
+        ref = self.ib.place_combo(spread, "BUY", remaining, limit)
         self.orders[spread.id] = ref
+        self._order_seen[spread.id] = 0  # new order: local count starts over
         st.entry_order = str(ref.trade.order.orderId)
         self.book.event(
             self.events_path,
             "entry_order",
             structure=spread.id,
-            qty=spread.quantity,
+            qty=remaining,
             limit=str(limit),
             order=st.entry_order,
         )
-        log.info("%s: BUY %d @ %s", spread.id, spread.quantity, limit)
+        log.info("%s: BUY %d @ %s", spread.id, remaining, limit)
         self.book.save(self.run_dir / "book.json")
 
     def _reprice(self, spread: PutSpread, limit: Decimal) -> None:
@@ -256,15 +274,27 @@ class Enterer:
             if ref is None or st.status is not Status.ENTER_WORKING:
                 continue
             info = self.ib.order_status(ref)
-            if info.filled > st.filled_qty:
-                st.filled_qty = info.filled
-                st.entry_fill = info.avg_fill_price
+            seen = self._order_seen.get(sid, 0)
+            if info.filled > seen:
+                # merge only the order-local increment; re-blend the avg
+                new_fills = info.filled - seen
+                new_cum = st.filled_qty + new_fills
+                if info.avg_fill_price:
+                    if st.entry_fill is not None and st.filled_qty > 0:
+                        st.entry_fill = (
+                            st.entry_fill * st.filled_qty + info.avg_fill_price * new_fills
+                        ) / new_cum
+                    else:
+                        st.entry_fill = info.avg_fill_price
+                st.filled_qty = new_cum
+                self._order_seen[sid] = info.filled
                 self.book.event(
                     self.events_path,
                     "entry_fill",
                     structure=sid,
-                    filled=info.filled,
-                    avg=str(info.avg_fill_price),
+                    filled=st.filled_qty,
+                    order_filled=info.filled,
+                    avg=str(st.entry_fill),
                     status=info.status,
                 )
             if info.status in ("Filled", "Cancelled", "ApiCancelled"):
