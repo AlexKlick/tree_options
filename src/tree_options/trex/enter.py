@@ -65,6 +65,8 @@ class Enterer:
         # Order-local fill counts restart on replacement; drain merges
         # increments into the book's cumulative filled_qty (C1 regression).
         self._order_seen: dict[str, int] = {}
+        # per-order cumulative notional (avg * filled) for notional blends
+        self._order_notional: dict[str, Decimal] = {}
 
     @property
     def events_path(self) -> Path:
@@ -183,6 +185,7 @@ class Enterer:
         ref = self.ib.place_combo(spread, "BUY", remaining, limit)
         self.orders[spread.id] = ref
         self._order_seen[spread.id] = 0  # new order: local count starts over
+        self._order_notional[spread.id] = Decimal(0)
         st.entry_order = str(ref.trade.order.orderId)
         self.book.event(
             self.events_path,
@@ -276,16 +279,23 @@ class Enterer:
             info = self.ib.order_status(ref)
             seen = self._order_seen.get(sid, 0)
             if info.filled > seen:
-                # merge only the order-local increment; re-blend the avg
+                # merge the order-local increment, blending by NOTIONAL:
+                # the order's cumulative average times only its new fills
+                # would re-price the earlier fills (Codex-M2 #2)
                 new_fills = info.filled - seen
                 new_cum = st.filled_qty + new_fills
+                prev_notional = self._order_notional.get(sid, Decimal(0))
                 if info.avg_fill_price:
+                    inc_notional = info.avg_fill_price * info.filled - prev_notional
                     if st.entry_fill is not None and st.filled_qty > 0:
                         st.entry_fill = (
-                            st.entry_fill * st.filled_qty + info.avg_fill_price * new_fills
+                            st.entry_fill * st.filled_qty + inc_notional
                         ) / new_cum
                     else:
-                        st.entry_fill = info.avg_fill_price
+                        st.entry_fill = (
+                            inc_notional / new_fills if new_fills else info.avg_fill_price
+                        )
+                    self._order_notional[sid] = info.avg_fill_price * info.filled
                 st.filled_qty = new_cum
                 self._order_seen[sid] = info.filled
                 self.book.event(

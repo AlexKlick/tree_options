@@ -5,7 +5,7 @@
 // never zeros.
 
 import { getStats } from '../lib/api'
-import { usd, usdSigned } from '../lib/format'
+import { usd2, usdLevel, usdSigned } from '../lib/format'
 import { usePoll } from '../hooks/usePoll'
 import type { StatsResponse } from '../lib/types'
 import { AppShell } from './AppShell'
@@ -46,6 +46,7 @@ export function PerformancePage() {
         <>
           <div className="pill-row" style={{ marginBottom: 14 }}>
             <TrackingPill since={d?.tracking_since ?? null} />
+            {d?.equity_account && <Pill variant="empty">account {d.equity_account}</Pill>}
             <Pill variant="empty">equity = net liquidization · P&L = book-derived</Pill>
           </div>
 
@@ -76,7 +77,7 @@ export function PerformancePage() {
               <TimeSeriesChart
                 series={d.equity}
                 ariaLabel="Account net liquidation over time"
-                valueFormat={usd}
+                valueFormat={usdLevel}
               />
             </div>
           ) : (
@@ -100,7 +101,7 @@ export function PerformancePage() {
                       <th>Date</th>
                       <th className="num">Realized</th>
                       <th className="num">Unrealized EOD</th>
-                      <th className="num">Total</th>
+                      <th className="num">Day P&L</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -182,7 +183,7 @@ export function PerformancePage() {
                       <td>
                         <span className={`badge badge-${s.status}`}>{s.status}</span>
                       </td>
-                      <td className="num">{s.entry_fill != null ? usd(s.entry_fill) : '—'}</td>
+                      <td className="num">{s.entry_fill != null ? usd2(s.entry_fill) : '—'}</td>
                       <td className="num">{s.filled_qty}</td>
                       <td className={`num ${pnlClass(s.realized)}`}>
                         {s.realized != null ? usdSigned(s.realized) : '—'}

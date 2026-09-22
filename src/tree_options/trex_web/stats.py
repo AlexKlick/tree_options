@@ -57,13 +57,17 @@ def realized_by_day(
 ) -> dict[str, float]:
     """Realized P&L per ISO date, diffed from cumulative exit_fill events.
 
-    ``filled`` counters are cumulative per structure; each event's
-    increment realizes ``(avg - entry) * increment * 100`` on its date.
-    Blended-entry is the final book entry (an approximation only when an
-    entry_fill postdates the first exit_fill - disclosed by the caller).
-    Unknown entry -> the event is skipped, never fabricated.
+    Events carry CUMULATIVE quantity and the BLENDED cumulative average,
+    so the day's realized cash is the change in cumulative proceeds
+    (``filled * avg``) minus the incremental entry cost - never
+    ``(avg - entry) * increment`` (that mis-prices every fill after the
+    first when the average blends multiple prices). Blended-entry is the
+    final book entry (an approximation only when an entry_fill postdates
+    the first exit_fill - disclosed by the caller). Unknown entry -> the
+    event is skipped, never fabricated.
     """
     prev_filled: dict[str, int] = {}
+    prev_proceeds: dict[str, float] = {}
     out: dict[str, float] = {}
     for ev in events:
         if not isinstance(ev, dict):
@@ -80,25 +84,51 @@ def realized_by_day(
         except (KeyError, TypeError, ValueError):
             continue
         increment = filled - prev_filled.get(sid, 0)
+        proceeds = filled * avg  # cumulative notional at this blended avg
+        day_cash = (proceeds - prev_proceeds.get(sid, 0.0)) - increment * entry_fills[sid]
         prev_filled[sid] = filled
+        prev_proceeds[sid] = proceeds
         if increment <= 0:
             continue
-        out[day] = out.get(day, 0.0) + (avg - entry_fills[sid]) * increment * 100
+        out[day] = out.get(day, 0.0) + day_cash * 100
     return out
 
 
-def unrealized_eod_by_day(rows: list[dict[str, Any]]) -> dict[str, float]:
-    """Last total_unrealized sample per ISO date (one plan's history)."""
-    last: dict[str, float] = {}
-    for row in rows:
+def unrealized_eod_by_day(rows: list[dict[str, Any]]) -> dict[str, float | None]:
+    """End-of-day OPEN-basis unrealized per ISO date (one plan's history).
+
+    Rows are sorted by parsed instant; each day takes its last sample's
+    ``total_unrealized_open``. A day whose last sample had zero quote
+    coverage is a GAP (None) - missing marks are never zero. Rows without
+    the open-basis field (none in practice - the writer has shipped it
+    from the first line) fall back to None rather than the filled-basis
+    total.
+    """
+    def _inst(row: dict[str, Any]) -> float:
+        ts = row.get("ts")
+        if not isinstance(ts, str):
+            return 0.0
+        try:
+            return datetime.fromisoformat(ts).timestamp()
+        except ValueError:
+            return 0.0
+
+    ordered = sorted(rows, key=_inst)
+    last: dict[str, float | None] = {}
+    for row in ordered:
         day = _day(row.get("ts"))
         if day is None:
             continue
-        try:
-            val = float(row["total_unrealized"])
-        except (KeyError, TypeError, ValueError):
+        coverage = row.get("quote_coverage")
+        quoted = coverage.get("quoted") if isinstance(coverage, dict) else None
+        if isinstance(quoted, int) and quoted == 0:
+            last[day] = None  # no quotes all day: gap, not zero
             continue
-        last[day] = val  # rows are chronological; later samples win
+        raw = row.get("total_unrealized_open")
+        try:
+            last[day] = float(str(raw)) if raw is not None else None
+        except (TypeError, ValueError):
+            last[day] = None
     return last
 
 
@@ -112,14 +142,40 @@ def stats_payload(
     from tree_options.trex_web.reader import read_account_history
 
     views = list_plans(state_root, plans_root)
-    equity_rows = read_account_history(discovery_root)
+    # dedupe by plan id: a copied TOML with the same id would double every
+    # aggregate (the plans-glob trap; the portfolio rollup already dedupes)
+    seen_ids: set[str] = set()
+    deduped = []
+    for view in views:
+        if view.plan.id in seen_ids:
+            continue
+        seen_ids.add(view.plan.id)
+        deduped.append(view)
+    views = deduped
+
+    equity_rows_all = read_account_history(discovery_root)
+    # one equity curve per account: switching gateway accounts must never
+    # splice two ledgers into one fictitious line - keep the freshest
+    # account's rows and expose which one won
+    equity_account: str | None = None
+    equity_rows: list[dict[str, Any]] = []
+    if equity_rows_all:
+        freshest = max(
+            equity_rows_all, key=lambda r: str(r.get("ts", ""))
+        )
+        equity_account = (
+            str(freshest.get("account_id")) if freshest.get("account_id") else None
+        )
+        equity_rows = [
+            r for r in equity_rows_all if r.get("account_id") == equity_account
+        ]
 
     realized_days: dict[str, float] = {}
-    unrealized_days: dict[str, float] = {}
+    unrealized_days: dict[str, float | None] = {}
     per_plan: list[dict[str, Any]] = []
     per_structure: list[dict[str, Any]] = []
     totals_realized = 0.0
-    totals_unrealized_last = 0.0
+    totals_unrealized_last: float | None = None
     structures_closed = 0
     wins = 0
     losses = 0
@@ -138,13 +194,30 @@ def stats_payload(
         for day, val in realized_by_day(events, entry_fills).items():
             realized_days[day] = realized_days.get(day, 0.0) + val
             plan_realized += val
-        for day, val in unrealized_eod_by_day(marks_rows).items():
-            unrealized_days[day] = unrealized_days.get(day, 0.0) + val
-        if marks_rows:
-            try:
-                plan_unrealized_last = float(str(marks_rows[-1]["total_unrealized"]))
-            except (KeyError, TypeError, ValueError):
-                plan_unrealized_last = None
+        plan_eod = unrealized_eod_by_day(marks_rows)
+        for day, level in plan_eod.items():
+            if level is None:
+                unrealized_days.setdefault(day, None)
+                continue
+            existing = unrealized_days.get(day)
+            if existing is None:
+                unrealized_days[day] = level
+            else:
+                unrealized_days[day] = existing + level
+        # latest OPEN-basis unrealized with quotes (a quote-less tail is a
+        # gap, not zero)
+        for row in reversed(marks_rows):
+            raw = row.get("total_unrealized_open")
+            coverage = row.get("quote_coverage")
+            quoted = coverage.get("quoted") if isinstance(coverage, dict) else 0
+            if isinstance(quoted, int) and quoted == 0:
+                continue
+            if raw is not None:
+                try:
+                    plan_unrealized_last = float(str(raw))
+                except (TypeError, ValueError):
+                    plan_unrealized_last = None
+                break
         first_ts: str | None = None
         last_ts: str | None = None
         for spec in view.plan.structures:
@@ -186,7 +259,11 @@ def stats_payload(
             first_ts = ts0 if first_ts is None else min(first_ts, ts0)
         totals_realized += plan_realized
         if plan_unrealized_last is not None:
-            totals_unrealized_last += plan_unrealized_last
+            totals_unrealized_last = (
+                plan_unrealized_last
+                if totals_unrealized_last is None
+                else totals_unrealized_last + plan_unrealized_last
+            )
         per_plan.append(
             {
                 "plan_id": view.plan.id,
@@ -202,26 +279,45 @@ def stats_payload(
             }
         )
 
-    for row in equity_rows:
-        ts = row.get("ts")
-        if isinstance(ts, str):
-            tracking_since = ts if tracking_since is None else min(tracking_since, ts)
-    for view in views:
-        rows = read_marks_history(state_root, view.plan.id)
-        if rows and isinstance(rows[0].get("ts"), str):
-            ts0 = str(rows[0]["ts"])
-            tracking_since = ts0 if tracking_since is None else min(tracking_since, ts0)
+    # tracking inception: the persisted marker beats any retained-window
+    # boundary (rotation truncates old rows; inception must not move)
+    marker = discovery_root / ".tracking_since"
+    if marker.exists():
+        try:
+            tracking_since = marker.read_text().strip() or None
+        except OSError:
+            tracking_since = None
+    if tracking_since is None:
+        for row in equity_rows:
+            ts = row.get("ts")
+            if isinstance(ts, str):
+                tracking_since = ts if tracking_since is None else min(tracking_since, ts)
+        for view in views:
+            rows = read_marks_history(state_root, view.plan.id)
+            if rows and isinstance(rows[0].get("ts"), str):
+                ts0 = str(rows[0]["ts"])
+                tracking_since = ts0 if tracking_since is None else min(tracking_since, ts0)
 
+    # day rows: realized that day + the CHANGE in open-basis unrealized
+    # (an unchanged position must not re-report its level every day);
+    # a gap day (no quotes) yields total None
     days: list[dict[str, Any]] = []
+    prev_unrealized: float | None = None  # last KNOWN level
     for day in sorted(set(realized_days) | set(unrealized_days)):
         realized = realized_days.get(day, 0.0)
         unrealized = unrealized_days.get(day)
+        if unrealized is None:
+            total = None
+        else:
+            baseline = prev_unrealized if prev_unrealized is not None else 0.0
+            total = realized + (unrealized - baseline)
+            prev_unrealized = unrealized
         days.append(
             {
                 "date": day,
                 "realized": realized,
-                "unrealized_eod": unrealized,  # None = gap, never zero
-                "total": realized + unrealized if unrealized is not None else None,
+                "unrealized_eod": unrealized,  # LEVEL; None = gap, never zero
+                "total": total,  # daily change; None across a gap
             }
         )
     best_day = max((d["total"] for d in days if d["total"] is not None), default=None)
@@ -231,11 +327,12 @@ def stats_payload(
     return {
         "now": now.isoformat(),
         "tracking_since": tracking_since,
+        "equity_account": equity_account,
         "equity": equity_series(equity_rows),
         "days": days,
         "totals": {
             "realized": totals_realized,
-            "unrealized_last": totals_unrealized_last if views else None,
+            "unrealized_last": totals_unrealized_last,
             "wins": wins,
             "losses": losses,
             "win_rate": (wins / closed_with_pnl) if closed_with_pnl else None,

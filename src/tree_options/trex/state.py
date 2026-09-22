@@ -72,6 +72,8 @@ class StructureState:
         "exit_fill",
         "exit_filled_qty",
         "exit_order",
+        "exit_order_notional",
+        "exit_order_seen",
         "exit_reason",
         "filled_qty",
         "status",
@@ -94,6 +96,8 @@ class StructureState:
         close_reason: str | None = None,
         touch_ts: datetime | None = None,
         updated_at: datetime | None = None,
+        exit_order_seen: int = 0,
+        exit_order_notional: Decimal | None = None,
     ) -> None:
         self.status = status
         self.entry_order = entry_order
@@ -108,6 +112,12 @@ class StructureState:
         self.close_reason = close_reason
         self.touch_ts = touch_ts
         self.updated_at = updated_at
+        # order-execution checkpoint (Codex-M2 #8): how much of THIS exit
+        # order the book has already recorded, so a restarted monitor
+        # adopts idempotently (no re-counting recorded fills) while still
+        # absorbing fills that happened during downtime
+        self.exit_order_seen = exit_order_seen
+        self.exit_order_notional = exit_order_notional
 
     @property
     def open_qty(self) -> int:
@@ -135,6 +145,12 @@ class StructureState:
             "close_reason": self.close_reason,
             "touch_ts": _iso(self.touch_ts),
             "updated_at": _iso(self.updated_at),
+            "exit_order_seen": self.exit_order_seen,
+            "exit_order_notional": (
+                str(self.exit_order_notional)
+                if self.exit_order_notional is not None
+                else None
+            ),
         }
 
     @classmethod
@@ -153,6 +169,12 @@ class StructureState:
             close_reason=raw.get("close_reason"),
             touch_ts=_parse_iso(raw.get("touch_ts")),
             updated_at=_parse_iso(raw.get("updated_at")),
+            exit_order_seen=int(raw.get("exit_order_seen", 0)),
+            exit_order_notional=(
+                Decimal(raw["exit_order_notional"])
+                if raw.get("exit_order_notional")
+                else None
+            ),
         )
 
 

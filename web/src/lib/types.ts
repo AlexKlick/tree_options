@@ -382,6 +382,7 @@ export interface StatsStructureRow {
 export interface StatsResponse {
   now: string
   tracking_since: string | null
+  equity_account: string | null
   equity: HistorySeries | null
   days: StatsDay[]
   totals: StatsTotals

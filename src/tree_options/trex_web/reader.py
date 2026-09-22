@@ -173,27 +173,45 @@ def _load_events(events_path: Path) -> list[dict[str, object]]:
 
 def read_marks_history(state_root: Path, plan_id: str) -> list[dict[str, object]]:
     """Bounded tail read of a plan's marks_history.jsonl (per-structure
-    observation history). Junk-tolerant; oldest first."""
+    observation history). Junk-tolerant; sorted by parsed instant."""
     from tree_options.trex.history import read_tail
 
-    return read_tail(state_root / plan_id / "marks_history.jsonl")
+    rows = read_tail(state_root / plan_id / "marks_history.jsonl")
+    return _sorted_by_instant(rows)
 
 
 def read_account_history(discovery_root: Path) -> list[dict[str, object]]:
     """Account equity history owned by the discovery loop. Deduped by
-    (account_id, ts), sorted by ts, oldest first."""
+    (account_id, ts), sorted by parsed instant (string compare reverses
+    repeated hours across DST). Sized for the full retained window - the
+    60k-line cap is ~9MB, comfortably under this read bound."""
     from tree_options.trex.history import read_tail
 
-    rows = read_tail(discovery_root / "account_history.jsonl")
+    rows = read_tail(discovery_root / "account_history.jsonl", max_bytes=16_000_000)
     seen: set[tuple[object, object]] = set()
     out: list[dict[str, object]] = []
-    for row in sorted(rows, key=lambda r: str(r.get("ts", ""))):
+    for row in _sorted_by_instant(rows):
         key = (row.get("account_id"), row.get("ts"))
         if key in seen:
             continue
         seen.add(key)
         out.append(row)
     return out
+
+
+def _sorted_by_instant(rows: list[dict[str, object]]) -> list[dict[str, object]]:
+    from datetime import datetime as _dt
+
+    def inst(row: dict[str, object]) -> float:
+        ts = row.get("ts")
+        if not isinstance(ts, str):
+            return 0.0
+        try:
+            return _dt.fromisoformat(ts).timestamp()
+        except ValueError:
+            return 0.0
+
+    return sorted(rows, key=inst)
 
 
 def _resolve_plan_toml(plan_id: str, plans_root: Path) -> Path | None:

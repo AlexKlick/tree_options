@@ -134,6 +134,10 @@ class Monitor:
         # phantom open qty and the refresh path re-sold contracts no longer
         # held (naked short) — see test_trex_monitor.TestCumulativeExitAccounting.
         self._order_seen: dict[str, int] = {}
+        # per-order cumulative notional (avg * filled), so blends merge
+        # NOTIONAL increments - an order's cumulative average times only
+        # its new fills would re-price the old ones (Codex-M2 #2)
+        self._order_notional: dict[str, Decimal] = {}
         self._account_writes = 0
         self._history: list[dict[str, str]] | None = None  # marks history, lazy-loaded
         self._marks_history_lines: int | None = None  # jsonl line count, lazy
@@ -173,14 +177,17 @@ class Monitor:
         os.replace(tmp, self.run_dir / "marks.json")
         return payload
 
-    def _marks_history_cycle(self, payload: dict[str, Any]) -> None:
+    def _marks_history_cycle(self, payload: dict[str, Any] | None) -> None:
         """Append one marks_history.jsonl line with contemporaneous fields.
 
         OWN failure boundary, called at the END of the tick (after exit
         decisions): a history failure costs one sample, never an exit
         decision. Per-structure rows carry the book's open_qty / entry
-        basis / realized-to-date AT SAMPLE TIME, so the web stats never
-        have to repair history from the CURRENT book.
+        basis / realized-to-date AT SAMPLE TIME, and unrealized is
+        OPEN-basis (remaining contracts) - the filled-basis marks.json
+        total is a different, separately-labeled number. ``payload=None``
+        writes a quote-less terminal line (a fill that closed a structure
+        outside session hours must not leave the last sample stale).
         """
         try:
             path = self.run_dir / "marks_history.jsonl"
@@ -192,16 +199,27 @@ class Monitor:
             structures: dict[str, dict[str, Any]] = {}
             open_ct = 0
             quoted_ct = 0
+            total_open_unrealized = Decimal("0.00")
             for spread in self.plan.structures:
                 st = self.book.structures[spread.id]
-                if st.open_qty <= 0:
+                # live exposure rows only - except on the quote-less
+                # terminal path, where a just-closed structure's final
+                # state must be recorded (its previous sample is now stale)
+                if st.open_qty <= 0 and not (payload is None and st.filled_qty > 0):
                     continue
                 open_ct += 1
-                row = payload.get("structures", {}).get(spread.id)
-                row = row if isinstance(row, dict) else {}
+                row_raw = (payload or {}).get("structures", {}).get(spread.id)
+                row = row_raw if isinstance(row_raw, dict) else {}
                 mark = row.get("mark")
-                if mark is not None:
+                entry = st.entry_fill
+                unrealized_open: Decimal | None = None
+                if mark is not None and entry is not None:
                     quoted_ct += 1
+                    try:
+                        unrealized_open = (Decimal(str(mark)) - entry) * st.open_qty * 100
+                        total_open_unrealized += unrealized_open
+                    except Exception:
+                        unrealized_open = None
                 realized = Decimal("0.00")
                 if (
                     st.entry_fill is not None
@@ -211,14 +229,17 @@ class Monitor:
                     realized = (st.exit_fill - st.entry_fill) * st.exit_filled_qty * 100
                 structures[spread.id] = {
                     "mark": mark,  # already a money-string or None
-                    "unrealized": row.get("unrealized"),
+                    "unrealized": (
+                        str(unrealized_open) if unrealized_open is not None else None
+                    ),
                     "open_qty": st.open_qty,
-                    "entry": str(st.entry_fill) if st.entry_fill is not None else None,
+                    "entry": str(entry) if entry is not None else None,
                     "realized_to_date": str(realized),
                 }
             line: dict[str, Any] = {
-                "ts": payload.get("ts"),
-                "total_unrealized": payload.get("total_unrealized"),
+                "ts": (payload or {}).get("ts") or now_et().isoformat(),
+                "total_unrealized": (payload or {}).get("total_unrealized"),
+                "total_unrealized_open": str(total_open_unrealized),
                 "structures": structures,
                 "quote_coverage": {"open": open_ct, "quoted": quoted_ct},
             }
@@ -229,6 +250,10 @@ class Monitor:
                 self._marks_history_lines = history.count_lines(path)
         except Exception:
             log.exception("marks history append failed (exit machine unaffected)")
+            # a torn partial write must not poison the next append: forget
+            # the repair/count caches so the next cycle repairs + recounts
+            self._marks_history_repaired = False
+            self._marks_history_lines = None
 
     def _marks_history(self, ts: str, total: str) -> list[dict[str, str]]:
         """Bounded (ts, total-unrealized) series, resumed across restarts."""
@@ -293,7 +318,14 @@ class Monitor:
         self._account_writes += 1
 
     def adopt_open_exits(self) -> None:
-        """Re-adopt our SELL combos still working at the broker after a restart."""
+        """Re-adopt our SELL combos still working at the broker after a restart.
+
+        Idempotent via the persisted order checkpoint (Codex-M2 #8): when
+        the working order id matches the book's, already-recorded fills
+        form the baseline (downtime fills still merge); an UNKNOWN order
+        id adopts the broker's current cumulative state as baseline so
+        nothing is re-counted either way.
+        """
         for trade in self.ib.open_combo_trades():
             sid = self.ib.structure_for_bag(trade.contract)
             if sid is None or trade.order.action != "SELL":
@@ -306,9 +338,29 @@ class Monitor:
                 trade,
             )
             self.orders[sid] = ref
-            self._order_seen[sid] = 0  # adopted: local fills since now are new
-            self.book.structures[sid].exit_order = str(trade.order.orderId)
-            log.info("adopted working exit order for %s (oid %s)", sid, trade.order.orderId)
+            st = self.book.structures[sid]
+            order_id = str(trade.order.orderId)
+            info = self.ib.order_status(ref)
+            if st.exit_order == order_id:
+                # known order: resume from the persisted checkpoint; fills
+                # since then (downtime) merge on the next drain
+                self._order_seen[sid] = st.exit_order_seen
+                self._order_notional[sid] = st.exit_order_notional or Decimal(0)
+            else:
+                # unknown order (replaced while we were down): baseline the
+                # broker's current execution state, disclose the adoption
+                self._order_seen[sid] = info.filled
+                self._order_notional[sid] = info.avg_fill_price * info.filled
+                self.book.event(
+                    self.events_path,
+                    "exit_adopt_baseline",
+                    structure=sid,
+                    order=order_id,
+                    filled=info.filled,
+                    note="unknown order adopted at broker state; prior fills attributed to book history",
+                )
+            st.exit_order = order_id
+            log.info("adopted working exit order for %s (oid %s)", sid, order_id)
         self.book.save(self.run_dir / "book.json")
 
     def _all_closed(self) -> bool:
@@ -317,7 +369,11 @@ class Monitor:
     def _tick(self) -> None:
         now = self._now()
         if not is_session(now) or now.time() < SESSION_OPEN or now.time() > SESSION_END:
-            self._drain_orders()  # still absorb fills outside the session
+            # still absorb fills outside the session; a book-changing fill
+            # writes a quote-less terminal history line (marks need quotes,
+            # the position change must not be lost to a stale last sample)
+            if self._drain_orders():
+                self._marks_history_cycle(None)
             return
 
         # Drain fills BEFORE deciding: a fully-filled exit order must be
@@ -393,6 +449,7 @@ class Monitor:
         ref = self.ib.place_combo(spread, "SELL", qty, limit)
         self.orders[spread.id] = ref
         self._order_seen[spread.id] = 0  # new order: local count starts over
+        self._order_notional[spread.id] = Decimal(0)  # and its notional too
         self.book.structures[spread.id].exit_order = f"{ref.trade.order.orderId}"
         self.book.save(self.run_dir / "book.json")
         self.book.event(
@@ -482,7 +539,10 @@ class Monitor:
         self.book.save(self.run_dir / "book.json")
         self.book.event(self.events_path, "entry_cancelled", structure=spread.id, reason=reason)
 
-    def _drain_orders(self) -> None:
+    def _drain_orders(self) -> bool:
+        """Merge order-local fill increments into the book. Returns True
+        when anything changed (a fill merged or a structure closed)."""
+        changed = False
         for spread in self.plan.structures:
             sid = spread.id
             st = self.book.structures[sid]
@@ -492,20 +552,26 @@ class Monitor:
             info = self.ib.order_status(ref)
             seen = self._order_seen.get(sid, 0)
             if info.filled > seen:
-                # merge only the order-local increment into the cumulative
-                # book, re-blending the average price across all fills
+                # merge the order-local increment into the cumulative book,
+                # blending by NOTIONAL: the order's cumulative average times
+                # only its new fills would re-price the earlier fills
                 new_fills = info.filled - seen
                 new_cum = st.exit_filled_qty + new_fills
+                prev_notional = self._order_notional.get(sid, Decimal(0))
                 if info.avg_fill_price:
+                    inc_notional = info.avg_fill_price * info.filled - prev_notional
                     if st.exit_fill is not None and st.exit_filled_qty > 0:
                         st.exit_fill = (
-                            st.exit_fill * st.exit_filled_qty
-                            + info.avg_fill_price * new_fills
+                            st.exit_fill * st.exit_filled_qty + inc_notional
                         ) / new_cum
                     else:
-                        st.exit_fill = info.avg_fill_price
+                        st.exit_fill = (
+                            inc_notional / new_fills if new_fills else info.avg_fill_price
+                        )
+                    self._order_notional[sid] = info.avg_fill_price * info.filled
                 st.exit_filled_qty = new_cum
                 self._order_seen[sid] = info.filled
+                changed = True
                 self.book.event(
                     self.events_path,
                     "exit_fill",
@@ -515,6 +581,10 @@ class Monitor:
                     avg=str(st.exit_fill),
                     status=info.status,
                 )
+            # persist the order checkpoint whenever it moved (adoption
+            # idempotency; Codex-M2 #8)
+            st.exit_order_seen = self._order_seen.get(sid, 0)
+            st.exit_order_notional = self._order_notional.get(sid)
             if st.open_qty <= 0 and info.status in ("Filled", "Cancelled", "ApiCancelled"):
                 st.to(Status.CLOSED, self._now())
                 st.close_reason = st.exit_reason or "flat"
@@ -523,7 +593,9 @@ class Monitor:
                     self.events_path, "closed", structure=sid, reason=st.close_reason
                 )
                 del self.orders[sid]
+                changed = True
         self.book.save(self.run_dir / "book.json")
+        return changed
 
 
 def main(argv: list[str] | None = None) -> int:

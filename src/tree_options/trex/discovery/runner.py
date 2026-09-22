@@ -221,6 +221,11 @@ def _maybe_account_history(source: ChainSource, state_dir: Path, now: datetime) 
                 "source": "discovery",
             },
         )
+        # persist tracking inception ONCE: rotation truncates old rows and
+        # the retained-window boundary must never masquerade as inception
+        marker = state_dir / ".tracking_since"
+        if not marker.exists():
+            marker.write_text(snap.ts.isoformat())
         if history.count_lines(path) > ACCOUNT_HISTORY_MAX_LINES:
             history.rotate_halving(path, ACCOUNT_HISTORY_MAX_LINES)
     except Exception:
@@ -361,17 +366,21 @@ def serve(
     state_dir: Path,
     repo: Path | None = None,
 ) -> None:
+    import time
+
     lock = ensure_lock(state_dir / "discovery.lock")
     try:
         log.info("discovery serve loop up (auto_scan_et %s)", cfg.auto_scan_et)
+        # A blocking time.sleep never pumps the ib event loop, so cached
+        # account values would go stale between scans; prefer the source's
+        # pumping sleep when it has one (tests use plain sources without).
+        sleeper = getattr(source, "sleep", None) or time.sleep
         while True:
             try:
                 serve_tick(source, cfg, state_dir, repo=repo)
             except Exception:
                 log.exception("serve tick failed")
-            import time
-
-            time.sleep(POLL_SECONDS)
+            sleeper(POLL_SECONDS)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()

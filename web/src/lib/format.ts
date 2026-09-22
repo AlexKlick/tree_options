@@ -39,6 +39,11 @@ export const usdSigned = (v: number): string =>
 
 export const usd2 = (v: number): string => `$${v.toFixed(2)}`
 
+/** Currency for LEVELS (equity, balances): minus preserved when negative,
+ * no forced positive sign (that is P&L semantics - usdSigned). */
+export const usdLevel = (v: number): string =>
+  `${v < 0 ? '-' : ''}$${Math.abs(Math.round(v)).toLocaleString('en-US')}`
+
 export const num2 = (v: number): string => v.toFixed(2)
 
 export function ageSeconds(iso: string | null, now: number = Date.now()): number | null {

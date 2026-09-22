@@ -67,11 +67,18 @@ def rotate_halving(path: Path, cap: int) -> bool:
 
 def read_tail(path: Path, max_bytes: int = 4_000_000) -> list[dict[str, Any]]:
     """Bounded tolerant read: the last ``max_bytes`` bytes, junk lines
-    skipped, torn leading fragment ignored."""
-    if not path.exists():
+    skipped, torn leading fragment ignored. Opens the file BEFORE sizing
+    it (fstat on the open descriptor): a rotation that replaces the file
+    between a path stat and the open would seek past the new, halved
+    file's end and silently return empty history."""
+    import os as _os
+
+    try:
+        f = path.open("rb")
+    except (FileNotFoundError, IsADirectoryError, PermissionError):
         return []
-    size = path.stat().st_size
-    with path.open("rb") as f:
+    with f:
+        size = _os.fstat(f.fileno()).st_size
         if size > max_bytes:
             f.seek(size - max_bytes)
         raw = f.read()

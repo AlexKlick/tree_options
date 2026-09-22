@@ -64,16 +64,18 @@ class TestEquitySeries:
 
 
 class TestRealizedByDay:
-    def test_diffs_cumulative_fills_across_days(self) -> None:
+    def test_diffs_cumulative_proceeds_across_days(self) -> None:
         events = [
             {"ts": _iso(10, 0), "event": "entry_fill", "structure": "nvda-oct",
              "filled": 5, "avg": "0.21"},
-            # day 1: exit 2 at 0.35 -> (0.35-0.21)*2*100 = +28
+            # day 1: exit 2 at 0.35 -> proceeds 0.70 - 2*0.21 = +28
             {"ts": _iso(11, 0), "event": "exit_fill", "structure": "nvda-oct",
              "filled": 2, "avg": "0.35"},
-            # day 2: exit the remaining 3 at 0.50 -> (0.50-0.21)*3*100 = +87
+            # day 2: the remaining 3 exit at 0.50 each. The event carries
+            # the BLENDED cumulative avg (2*0.35+3*0.50)/5 = 0.44:
+            # proceeds delta (5*0.44 - 2*0.35) - 3*0.21 = +87
             {"ts": _iso(10, 30, day=23), "event": "exit_fill", "structure": "nvda-oct",
-             "filled": 5, "avg": "0.50"},
+             "filled": 5, "avg": "0.44"},
         ]
         by_day = realized_by_day(events, {"nvda-oct": 0.21})
         assert by_day["2026-09-22"] == pytest.approx(28.0)
@@ -96,15 +98,33 @@ class TestRealizedByDay:
 
 
 class TestUnrealizedEod:
-    def test_last_sample_per_day(self) -> None:
+    def _row(self, ts: str, open_total: str, quoted: int = 1) -> dict:
+        return {
+            "ts": ts,
+            "total_unrealized_open": open_total,
+            "quote_coverage": {"open": 1, "quoted": quoted},
+        }
+
+    def test_last_sample_per_day_open_basis(self) -> None:
         rows = [
-            {"ts": _iso(10, 0), "total_unrealized": "-10.00"},
-            {"ts": _iso(15, 0), "total_unrealized": "-14.00"},  # day's last
-            {"ts": _iso(10, 0, day=23), "total_unrealized": "-5.00"},
+            self._row(_iso(10, 0), "-10.00"),
+            self._row(_iso(15, 0), "-14.00"),  # day's last
+            self._row(_iso(10, 0, day=23), "-5.00"),
         ]
         by_day = unrealized_eod_by_day(rows)
         assert by_day["2026-09-22"] == pytest.approx(-14.0)
         assert by_day["2026-09-23"] == pytest.approx(-5.0)
+
+    def test_quoteless_day_is_a_gap_not_zero(self) -> None:
+        rows = [self._row(_iso(15, 0), "-14.00", quoted=0)]
+        assert unrealized_eod_by_day(rows) == {"2026-09-22": None}
+
+    def test_out_of_order_rows_sorted_by_instant(self) -> None:
+        rows = [
+            self._row(_iso(15, 0), "-14.00"),
+            self._row(_iso(10, 0), "-10.00"),
+        ]
+        assert unrealized_eod_by_day(rows) == {"2026-09-22": pytest.approx(-14.0)}
 
     def test_empty(self) -> None:
         assert unrealized_eod_by_day([]) == {}
@@ -142,10 +162,16 @@ class TestStatsPayload:
         )
         from tree_options.trex.history import append_line
 
-        append_line(run / "marks_history.jsonl",
-                    {"ts": _iso(10, 0), "total_unrealized": "0.00"})
-        append_line(run / "marks_history.jsonl",
-                    {"ts": _iso(15, 0), "total_unrealized": "-5.00"})
+        append_line(run / "marks_history.jsonl", {
+            "ts": _iso(10, 0), "total_unrealized": "0.00",
+            "total_unrealized_open": "0.00",
+            "quote_coverage": {"open": 1, "quoted": 1},
+        })
+        append_line(run / "marks_history.jsonl", {
+            "ts": _iso(15, 0), "total_unrealized": "-5.00",
+            "total_unrealized_open": "-5.00",
+            "quote_coverage": {"open": 1, "quoted": 1},
+        })
         disc = tmp_path / "discovery"
         disc.mkdir()
         append_line(disc / "account_history.jsonl",

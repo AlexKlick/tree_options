@@ -15,6 +15,7 @@ afterEach(() => {
 const payload: StatsResponse = {
   now: '2026-09-22T18:00:00-04:00',
   tracking_since: '2026-09-22T12:00:00-04:00',
+  equity_account: 'DUT143714',
   equity: {
     points: [
       [1790088000000, 1000000],

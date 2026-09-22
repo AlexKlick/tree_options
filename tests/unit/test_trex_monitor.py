@@ -604,3 +604,159 @@ class TestMarksHistoryLog:
         # 7th append trips the cap -> halved to 3; the 8th appends to 4.
         lines = self._history_path(tmp_path).read_text().splitlines()
         assert len(lines) == cap // 2 + 1
+
+
+class TestNotionalBlending:
+    """Codex-M2 #2: an order's cumulative average times only its NEW
+    fills re-prices old fills; blends must merge NOTIONAL increments."""
+
+    def _open_with_exit(self, tmp_path: Path, fake: FakeIbkr) -> tuple[Monitor, Any, Any]:
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        mon._tick()  # touch exit fires (spot 184.50)
+        return mon, st, mon.orders["nvda-oct"]
+
+    def test_exit_blending_merges_notionals_across_prices(self, tmp_path: Path) -> None:
+        fake = FakeIbkr(spot="184.50")
+        mon, st, ref = self._open_with_exit(tmp_path, fake)
+        fake.fill(ref, 2, "0.35")
+        ref.trade.orderStatus.status = "Submitted"  # still working
+        mon._tick()  # drain 1: 2 @ 0.35
+        # same order fills 1 more at 0.50 -> order cumulative avg 0.40
+        ref.trade.orderStatus.filled = 3
+        ref.trade.orderStatus.avgFillPrice = 0.40
+        mon._tick()  # drain 2
+        # correct blend: (2*0.35 + 1*0.50) / 3 = 0.40 (NOT 0.3667)
+        assert st.exit_fill == Decimal("0.40")
+        assert st.exit_filled_qty == 3
+
+
+class TestAdoptionCheckpoint:
+    """Codex-M2 #8: adoption must not re-add fills the book already
+    recorded, but MUST absorb fills that happened during downtime."""
+
+    def _working_exit(self, tmp_path: Path) -> tuple[Path, FakeIbkr]:
+        fake = FakeIbkr(spot="184.50")
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        mon._tick()
+        ref = mon.orders["nvda-oct"]
+        fake.fill(ref, 2, "0.35")
+        ref.trade.orderStatus.status = "Submitted"  # still working
+        mon._tick()  # records 2 fills; order keeps working
+        return tmp_path, fake
+
+    def test_restart_does_not_recount_recorded_fills(self, tmp_path: Path) -> None:
+        run, fake = self._working_exit(tmp_path)
+        book2 = BookState.load(run / "run" / "book.json", ["nvda-oct"])
+        mon2 = Monitor(_plan(), fake, book2, run / "run", clock=lambda: _at(13, 30))
+        mon2.adopt_open_exits()
+        mon2._tick()  # drain: nothing new at the broker
+        st = mon2.book.structures["nvda-oct"]
+        assert st.exit_filled_qty == 2  # NOT 4
+
+    def test_downtime_fills_are_absorbed(self, tmp_path: Path) -> None:
+        run, fake = self._working_exit(tmp_path)
+        trade = fake.open_trades[0]
+        # one more contract filled while the monitor was down: 3 total,
+        # blended order avg (2*0.35 + 1*0.50)/3 = 0.40
+        trade.orderStatus.filled = 3
+        trade.orderStatus.avgFillPrice = 0.40
+        book2 = BookState.load(run / "run" / "book.json", ["nvda-oct"])
+        mon2 = Monitor(_plan(), fake, book2, run / "run", clock=lambda: _at(13, 30))
+        mon2.adopt_open_exits()
+        mon2._tick()
+        st = mon2.book.structures["nvda-oct"]
+        assert st.exit_filled_qty == 3
+        assert st.exit_fill == Decimal("0.40")
+
+
+class TestMarksHistoryBasis:
+    """Codex-M2 #3: history unrealized must be OPEN-basis (remaining
+    contracts), not the filled-basis marks.json total."""
+
+    def test_open_basis_unrealized_and_total(self, tmp_path: Path) -> None:
+        mon = _monitor(tmp_path, FakeIbkr(), _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        st.exit_filled_qty = 2  # 3 remain open
+        mon._tick()
+        path = tmp_path / "run" / "marks_history.jsonl"
+        (row,) = [json.loads(line) for line in path.read_text().splitlines()]
+        # (0.44 - 0.21) * 3 * 100 = 69.00 (NOT the filled-basis 115.00)
+        assert row["total_unrealized_open"] == "69.00"
+        assert row["structures"]["nvda-oct"]["unrealized"] == "69.00"
+        assert row["structures"]["nvda-oct"]["open_qty"] == 3
+
+    def test_early_return_drain_writes_terminal_line(self, tmp_path: Path) -> None:
+        fake = FakeIbkr(spot="184.50")
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        mon._tick()  # exit working
+        fake.fill(mon.orders["nvda-oct"], 5, "2.10")
+        # the fill lands outside session hours: early-return drain path
+        mon._clock = lambda: _at(3, 0)
+        mon._tick()
+        st2 = mon.book.structures["nvda-oct"]
+        assert st2.status is Status.CLOSED
+        path = tmp_path / "run" / "marks_history.jsonl"
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+        terminal = lines[-1]
+        assert terminal["quote_coverage"]["quoted"] == 0
+        assert terminal["structures"]["nvda-oct"]["open_qty"] == 0
+        assert terminal["structures"]["nvda-oct"]["realized_to_date"] == "945.00"
+
+
+class TestHistoryFailureResetsRepair:
+    """Codex-M2 #11: a failed append must reset the repair/count caches or
+    the next append concatenates onto the torn fragment."""
+
+    def test_flags_reset_after_failure(self, tmp_path: Path) -> None:
+        import tree_options.trex.history as history_mod
+        import tree_options.trex.monitor as monitor_mod
+
+        mon = _monitor(tmp_path, FakeIbkr(), _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        mon._tick()  # one good line
+        path = tmp_path / "run" / "marks_history.jsonl"
+        first_line = path.read_text().splitlines()[0]
+        original = history_mod.append_line
+        state = {"failed": False}
+
+        def torn_then_raise(p: object, obj: object) -> None:
+            if not state["failed"]:
+                state["failed"] = True
+                with open(p, "a", encoding="utf-8") as fh:  # type: ignore[arg-type]
+                    fh.write('{"ts": "tor')
+                raise OSError("disk hiccup")
+            original(p, obj)  # type: ignore[arg-type]
+
+        monitor_mod.history.append_line = torn_then_raise
+        try:
+            mon._tick()  # torn write + raise (isolated by the cycle's guard)
+        finally:
+            monitor_mod.history.append_line = original
+        mon._tick()  # must repair the torn tail and append cleanly
+        lines = [ln for ln in path.read_text().splitlines() if ln.strip()]
+        parsed = [json.loads(ln) for ln in lines]
+        assert len(parsed) == 2  # nothing lost to concatenation
+        assert lines[0] == first_line

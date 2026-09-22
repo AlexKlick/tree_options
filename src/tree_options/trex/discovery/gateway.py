@@ -34,6 +34,13 @@ class IbkrDiscovery:
     def disconnect(self) -> None:
         self._ibk.disconnect()
 
+    def sleep(self, seconds: float) -> None:
+        """Event-loop-pumping sleep: between scans this is what lets
+        ib_async deliver account-value updates, so account_history rows
+        carry FRESH broker values instead of the first cached read
+        re-stamped forever."""
+        self._ibk.sleep(seconds)
+
     def account(self) -> AccountSnapshot | None:
         return self._ibk.account_snapshot()
 
