@@ -31,6 +31,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from tree_options.trex.account import write_account
 from tree_options.trex.clock import EntryWindow, is_session, now_et
 from tree_options.trex.engine import (
     AbortEntry,
@@ -52,6 +53,7 @@ log = logging.getLogger("trex.monitor")
 
 POLL_SECONDS = 20
 MAX_MARKS_HISTORY = 2000  # ~11h of 20s ticks; older samples drop off
+ACCOUNT_EVERY = 3  # account.json cadence (polls)
 HEARTBEAT_FRESH_SECONDS = 30
 SESSION_OPEN = dtime(9, 30)
 SESSION_END = dtime(16, 15)
@@ -130,6 +132,7 @@ class Monitor:
         # phantom open qty and the refresh path re-sold contracts no longer
         # held (naked short) — see test_trex_monitor.TestCumulativeExitAccounting.
         self._order_seen: dict[str, int] = {}
+        self._account_writes = 0
         self._history: list[dict[str, str]] | None = None  # marks history, lazy-loaded
 
     def _now(self) -> datetime:
@@ -200,11 +203,32 @@ class Monitor:
                 self._tick()
             except Exception:
                 log.exception("tick failed — retrying next poll")
+            # in run(), NOT in _tick: the tick exits early outside session
+            # hours and account.json would freeze overnight (C9)
+            try:
+                self._account_cycle()
+            except Exception:
+                log.exception("account cycle failed — retrying next poll")
             self.ib.sleep(POLL_SECONDS)
         self.book.beat()
         self.book.save(self.run_dir / "book.json")
         log.info("book fully closed; monitor exiting")
         return 0
+
+    def _account_cycle(self) -> None:
+        """Persist account equity every ACCOUNT_EVERY cycles, failure-isolated.
+
+        The web lane reads the freshest account.json across run dirs; a
+        broker hiccup here must never touch the exit machine.
+        """
+        if self._account_writes % ACCOUNT_EVERY == 0:
+            try:
+                snap = self.ib.account_snapshot()
+                if snap is not None:
+                    write_account(self.run_dir / "account.json", snap)
+            except Exception:
+                log.exception("account snapshot failed (continuing)")
+        self._account_writes += 1
 
     def adopt_open_exits(self) -> None:
         """Re-adopt our SELL combos still working at the broker after a restart."""

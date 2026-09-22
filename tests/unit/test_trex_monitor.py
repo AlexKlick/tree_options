@@ -107,6 +107,13 @@ class FakeIbkr:
         self.cancelled: list[int] = []
         self.open_trades: list[Any] = []
         self._next_oid = 100
+        self.account: Any = None  # AccountSnapshot | None (C9)
+        self.account_raises = False
+
+    def account_snapshot(self) -> Any:
+        if self.account_raises:
+            raise RuntimeError("gateway hiccup")
+        return self.account
 
     def snapshot(self, spreads: list[PutSpread], ts: datetime) -> Any:
         from tree_options.trex.engine import Snapshot
@@ -378,6 +385,65 @@ class TestCumulativeExitAccounting:
         assert st.exit_filled_qty == 5
         assert st.exit_fill == (Decimal("2.00") * 4 + Decimal("2.50") * 1) / 5
         assert st.open_qty == 0
+
+
+class TestAccountWrite:
+    """C9: account.json rides the monitor loop, failure-isolated."""
+
+    def _snapshot(self) -> Any:
+        from tree_options.trex.account import AccountSnapshot
+
+        return AccountSnapshot(
+            account_id="DUT143714",
+            net_liquidation=Decimal("1000252.09"),
+            cash=Decimal("999516.91"),
+            buying_power=Decimal("3998067.63"),
+            currency="USD",
+            ts=datetime.now(ET),
+        )
+
+    def test_writes_account_json_into_the_run_dir(self, tmp_path: Path) -> None:
+        fake = FakeIbkr(spot="200.00")
+        fake.account = self._snapshot()
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+
+        mon._account_cycle()
+
+        payload = json.loads((mon.run_dir / "account.json").read_text())
+        assert payload["account_id"] == "DUT143714"
+        assert payload["net_liquidation"] == "1000252.09"
+
+    def test_every_third_cycle(self, tmp_path: Path) -> None:
+        fake = FakeIbkr(spot="200.00")
+        fake.account = self._snapshot()
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        calls = {"n": 0}
+        original = fake.account_snapshot
+
+        def counting() -> Any:
+            calls["n"] += 1
+            return original()
+
+        fake.account_snapshot = counting  # type: ignore[method-assign]
+        for _ in range(4):
+            mon._account_cycle()
+        assert calls["n"] == 2  # cycles 1 and 4
+
+    def test_broker_failure_never_breaks_the_loop(self, tmp_path: Path) -> None:
+        fake = FakeIbkr(spot="200.00")
+        fake.account = self._snapshot()
+        fake.account_raises = True
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+
+        mon._account_cycle()  # must not raise
+
+        assert not (mon.run_dir / "account.json").exists()
+
+    def test_no_account_data_writes_nothing(self, tmp_path: Path) -> None:
+        fake = FakeIbkr(spot="200.00")  # account stays None (tags absent)
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        mon._account_cycle()
+        assert not (mon.run_dir / "account.json").exists()
 
 
 class TestAdoption:
