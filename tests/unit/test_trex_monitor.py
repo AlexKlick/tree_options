@@ -174,7 +174,7 @@ def _monitor(tmp_path: Path, fake: FakeIbkr, clock_dt: datetime) -> Monitor:
     plan = _plan()
     book = BookState(["nvda-oct"])
     run_dir = tmp_path / "run"
-    run_dir.mkdir()
+    run_dir.mkdir(exist_ok=True)
     return Monitor(plan, fake, book, run_dir, clock=lambda: clock_dt)
 
 
@@ -515,3 +515,92 @@ class TestComputeMarks:
         marks = compute_marks([self._spread()], book, {"nvda-oct": None})
         assert marks["structures"]["nvda-oct"]["mark"] is None
         assert marks["total_unrealized"] == "0.00"
+
+
+class TestMarksHistoryLog:
+    """M1: per-structure marks history as append-only JSONL.
+
+    The append has its OWN failure boundary and sits at the END of the
+    tick, after exit decisions - a history failure costs one sample, never
+    an exit decision (the Codex-3 pin).
+    """
+
+    def _open_monitor(self, tmp_path: Path, fake: FakeIbkr | None = None) -> Monitor:
+        fake = fake or FakeIbkr()
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        return mon
+
+    def _history_path(self, tmp_path: Path) -> Path:
+        return tmp_path / "run" / "marks_history.jsonl"
+
+    def test_one_line_per_tick_with_contemporaneous_fields(self, tmp_path: Path) -> None:
+        mon = self._open_monitor(tmp_path)
+        mon._tick()
+        path = self._history_path(tmp_path)
+        assert path.exists()
+        (row,) = [json.loads(line) for line in path.read_text().splitlines()]
+        assert row["total_unrealized"] == "115.00"  # (0.44-0.21)*5*100
+        st = row["structures"]["nvda-oct"]
+        assert st["mark"] == "0.44" and st["open_qty"] == 5
+        assert st["entry"] == "0.21" and st["realized_to_date"] == "0.00"
+        assert row["quote_coverage"] == {"open": 1, "quoted": 1}
+
+    def test_no_history_when_tick_early_returns(self, tmp_path: Path) -> None:
+        mon = self._open_monitor(tmp_path)
+        mon._clock = lambda: _at(3, 0)  # far outside the session
+        mon._tick()
+        assert not self._history_path(tmp_path).exists()
+
+    def test_history_failure_never_blocks_exit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = FakeIbkr(spot="184.50")  # below long strike -> touch exit fires
+        mon = self._open_monitor(tmp_path, fake)
+        import tree_options.trex.history as history_mod
+
+        def boom(path: object, obj: object) -> None:
+            raise OSError("disk full")
+
+        monkeypatch.setattr(history_mod, "append_line", boom)
+        mon._tick()
+        st = mon.book.structures["nvda-oct"]
+        assert st.status is Status.EXIT_WORKING  # the exit STILL ran
+        assert fake.placed  # the SELL order was placed
+
+    def test_restart_resumes_without_truncation(self, tmp_path: Path) -> None:
+        mon = self._open_monitor(tmp_path)
+        mon._tick()
+        mon2 = self._open_monitor(tmp_path)  # fresh instance, same run dir
+        mon2._tick()
+        lines = self._history_path(tmp_path).read_text().splitlines()
+        assert len(lines) == 2
+
+    def test_torn_tail_repaired_on_first_append(self, tmp_path: Path) -> None:
+        path = self._history_path(tmp_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"ts": "partial", "total_unrealized": ')  # killed
+        mon = self._open_monitor(tmp_path)
+        mon._tick()
+        rows = [json.loads(line) for line in path.read_text().splitlines()]
+        assert len(rows) == 1 and "total_unrealized" in rows[0]
+
+    def test_rotation_at_cap_keeps_newest_half(self, tmp_path: Path) -> None:
+        import tree_options.trex.monitor as monitor_mod
+
+        mon = self._open_monitor(tmp_path)
+        cap = 6
+        original = monitor_mod.MAX_MARKS_HISTORY_LINES
+        monitor_mod.MAX_MARKS_HISTORY_LINES = cap
+        try:
+            for _ in range(cap + 2):
+                mon._tick()
+        finally:
+            monitor_mod.MAX_MARKS_HISTORY_LINES = original
+        # 7th append trips the cap -> halved to 3; the 8th appends to 4.
+        lines = self._history_path(tmp_path).read_text().splitlines()
+        assert len(lines) == cap // 2 + 1

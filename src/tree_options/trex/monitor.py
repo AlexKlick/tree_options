@@ -31,6 +31,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from tree_options.trex import history
 from tree_options.trex.account import write_account
 from tree_options.trex.clock import EntryWindow, is_session, now_et
 from tree_options.trex.engine import (
@@ -53,6 +54,7 @@ log = logging.getLogger("trex.monitor")
 
 POLL_SECONDS = 20
 MAX_MARKS_HISTORY = 2000  # ~11h of 20s ticks; older samples drop off
+MAX_MARKS_HISTORY_LINES = 25_000  # marks_history.jsonl cap (~21 session-days)
 ACCOUNT_EVERY = 3  # account.json cadence (polls)
 HEARTBEAT_FRESH_SECONDS = 30
 SESSION_OPEN = dtime(9, 30)
@@ -134,6 +136,8 @@ class Monitor:
         self._order_seen: dict[str, int] = {}
         self._account_writes = 0
         self._history: list[dict[str, str]] | None = None  # marks history, lazy-loaded
+        self._marks_history_lines: int | None = None  # jsonl line count, lazy
+        self._marks_history_repaired = False
 
     def _now(self) -> datetime:
         return self._clock()
@@ -158,7 +162,7 @@ class Monitor:
         disk = BookState.load(self.run_dir / "book.json", list(self.book.structures))
         self.book.structures = disk.structures
 
-    def _write_marks(self, snap: Snapshot) -> None:
+    def _write_marks(self, snap: Snapshot) -> dict[str, Any]:
         """Persist the observation-only marks payload for the status panel."""
         payload = compute_marks(self.plan.structures, self.book, snap.quotes)
         payload["spots"] = {sym: str(px) for sym, px in snap.spots.items()}
@@ -167,6 +171,64 @@ class Monitor:
         tmp = self.run_dir / "marks.json.tmp"
         tmp.write_text(json.dumps(payload) + "\n")
         os.replace(tmp, self.run_dir / "marks.json")
+        return payload
+
+    def _marks_history_cycle(self, payload: dict[str, Any]) -> None:
+        """Append one marks_history.jsonl line with contemporaneous fields.
+
+        OWN failure boundary, called at the END of the tick (after exit
+        decisions): a history failure costs one sample, never an exit
+        decision. Per-structure rows carry the book's open_qty / entry
+        basis / realized-to-date AT SAMPLE TIME, so the web stats never
+        have to repair history from the CURRENT book.
+        """
+        try:
+            path = self.run_dir / "marks_history.jsonl"
+            if not self._marks_history_repaired:
+                history.repair_torn_tail(path)
+                self._marks_history_repaired = True
+            if self._marks_history_lines is None:
+                self._marks_history_lines = history.count_lines(path)
+            structures: dict[str, dict[str, Any]] = {}
+            open_ct = 0
+            quoted_ct = 0
+            for spread in self.plan.structures:
+                st = self.book.structures[spread.id]
+                if st.open_qty <= 0:
+                    continue
+                open_ct += 1
+                row = payload.get("structures", {}).get(spread.id)
+                row = row if isinstance(row, dict) else {}
+                mark = row.get("mark")
+                if mark is not None:
+                    quoted_ct += 1
+                realized = Decimal("0.00")
+                if (
+                    st.entry_fill is not None
+                    and st.exit_fill is not None
+                    and st.exit_filled_qty > 0
+                ):
+                    realized = (st.exit_fill - st.entry_fill) * st.exit_filled_qty * 100
+                structures[spread.id] = {
+                    "mark": mark,  # already a money-string or None
+                    "unrealized": row.get("unrealized"),
+                    "open_qty": st.open_qty,
+                    "entry": str(st.entry_fill) if st.entry_fill is not None else None,
+                    "realized_to_date": str(realized),
+                }
+            line: dict[str, Any] = {
+                "ts": payload.get("ts"),
+                "total_unrealized": payload.get("total_unrealized"),
+                "structures": structures,
+                "quote_coverage": {"open": open_ct, "quoted": quoted_ct},
+            }
+            history.append_line(path, line)
+            self._marks_history_lines = (self._marks_history_lines or 0) + 1
+            if self._marks_history_lines > MAX_MARKS_HISTORY_LINES:
+                history.rotate_halving(path, MAX_MARKS_HISTORY_LINES)
+                self._marks_history_lines = history.count_lines(path)
+        except Exception:
+            log.exception("marks history append failed (exit machine unaffected)")
 
     def _marks_history(self, ts: str, total: str) -> list[dict[str, str]]:
         """Bounded (ts, total-unrealized) series, resumed across restarts."""
@@ -264,7 +326,7 @@ class Monitor:
         self._drain_orders()
 
         snap = self.ib.snapshot(self.plan.structures, now)
-        self._write_marks(snap)
+        marks_payload = self._write_marks(snap)
         flatten = self._flatten_requested()
 
         for spread in self.plan.structures:
@@ -288,6 +350,9 @@ class Monitor:
             self._apply(spread, action)
 
         self._drain_orders()
+        # history LAST: its failure boundary is its own, after every
+        # order decision this tick (see _marks_history_cycle)
+        self._marks_history_cycle(marks_payload)
 
     def _apply(self, spread: PutSpread, action: Action) -> None:
         st = self.book.structures[spread.id]

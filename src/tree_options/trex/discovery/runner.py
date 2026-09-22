@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from tree_options.trex import history
 from tree_options.trex.account import AccountSnapshot, write_account
 from tree_options.trex.clock import now_et
 from tree_options.trex.discovery.artifact import (
@@ -29,6 +30,8 @@ from tree_options.trex.discovery.engine import ScanInput, scan, select_top
 log = logging.getLogger("trex.discovery.runner")
 
 POLL_SECONDS = 5
+ACCOUNT_HISTORY_TTL_SECONDS = 60  # equity curve cadence; discovery owns it
+ACCOUNT_HISTORY_MAX_LINES = 60_000
 
 
 class ChainUnavailable(RuntimeError):
@@ -183,6 +186,47 @@ def _candidate_dicts(candidates: list[Any]) -> list[dict[str, Any]]:
     return out
 
 
+def _maybe_account_history(source: ChainSource, state_dir: Path, now: datetime) -> None:
+    """Append an account equity sample at most once per TTL window.
+
+    The DISCOVERY loop owns account history (a per-plan monitor dies with
+    its book; this service runs continuously). Failure-isolated: a broker
+    hiccup never touches scan or spool handling. Money stays in
+    Decimal-strings (book-lane convention).
+    """
+    try:
+        path = state_dir / "account_history.jsonl"
+        rows = history.read_tail(path, max_bytes=64_000)
+        if rows:
+            last_ts = rows[-1].get("ts")
+            if isinstance(last_ts, str):
+                try:
+                    last = datetime.fromisoformat(last_ts)
+                except ValueError:
+                    last = None
+                if last is not None and (now - last).total_seconds() < ACCOUNT_HISTORY_TTL_SECONDS:
+                    return
+        snap = source.account()
+        if snap is None:
+            return
+        history.repair_torn_tail(path)  # no-op on healthy files; prevents
+        # a torn tail from swallowing the appended record
+        history.append_line(
+            path,
+            {
+                "ts": snap.ts.isoformat(),
+                "account_id": snap.account_id,
+                "net_liquidation": str(snap.net_liquidation),
+                "cash": str(snap.cash),
+                "source": "discovery",
+            },
+        )
+        if history.count_lines(path) > ACCOUNT_HISTORY_MAX_LINES:
+            history.rotate_halving(path, ACCOUNT_HISTORY_MAX_LINES)
+    except Exception:
+        log.exception("account history append failed (continuing)")
+
+
 def serve_tick(
     source: ChainSource,
     cfg: ScanConfig,
@@ -194,6 +238,7 @@ def serve_tick(
 
     Returns True when a scan ran (either mode)."""
     now = now or now_et()
+    _maybe_account_history(source, state_dir, now)
     spool = state_dir / "spool"
     claim = claim_scan_request(spool, now=now)
     if claim is not None:

@@ -171,6 +171,31 @@ def _load_events(events_path: Path) -> list[dict[str, object]]:
     return out
 
 
+def read_marks_history(state_root: Path, plan_id: str) -> list[dict[str, object]]:
+    """Bounded tail read of a plan's marks_history.jsonl (per-structure
+    observation history). Junk-tolerant; oldest first."""
+    from tree_options.trex.history import read_tail
+
+    return read_tail(state_root / plan_id / "marks_history.jsonl")
+
+
+def read_account_history(discovery_root: Path) -> list[dict[str, object]]:
+    """Account equity history owned by the discovery loop. Deduped by
+    (account_id, ts), sorted by ts, oldest first."""
+    from tree_options.trex.history import read_tail
+
+    rows = read_tail(discovery_root / "account_history.jsonl")
+    seen: set[tuple[object, object]] = set()
+    out: list[dict[str, object]] = []
+    for row in sorted(rows, key=lambda r: str(r.get("ts", ""))):
+        key = (row.get("account_id"), row.get("ts"))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(row)
+    return out
+
+
 def _resolve_plan_toml(plan_id: str, plans_root: Path) -> Path | None:
     """Find a plan TOML by its in-file ``id`` field.
 

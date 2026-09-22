@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import fcntl
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -187,3 +187,58 @@ class TestLock:
         with pytest.raises(OSError):
             ensure_lock(lock)
         fcntl.flock(first, fcntl.LOCK_UN)
+
+
+class TestAccountHistory:
+    """M1: the discovery serve loop owns account equity history (a
+    per-plan monitor dies with its book; discovery runs continuously)."""
+
+    def _acct(self, ts: datetime, nlv: str = "1000252.09") -> AccountSnapshot:
+        return AccountSnapshot(
+            account_id="DUT143714",
+            net_liquidation=Decimal(nlv),
+            cash=Decimal("999516.91"),
+            buying_power=Decimal("3998067.63"),
+            currency="USD",
+            ts=ts,
+        )
+
+    def _path(self, state: Path) -> Path:
+        return state / "account_history.jsonl"
+
+    def test_appends_when_stale_and_skips_when_fresh(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.runner import ACCOUNT_HISTORY_TTL_SECONDS
+
+        state = tmp_path / "state"
+        src = FakeChainSource(account=self._acct(NOW))
+        serve_tick(src, _cfg(), state, now=NOW)
+        lines = self._path(state).read_text().splitlines()
+        assert len(lines) == 1
+        row = json.loads(lines[0])
+        assert row["account_id"] == "DUT143714"
+        assert row["net_liquidation"] == "1000252.09"  # strings: book-lane money
+        assert row["source"] == "discovery"
+        # within the TTL: no second line
+        fresh = NOW + timedelta(seconds=ACCOUNT_HISTORY_TTL_SECONDS - 5)
+        serve_tick(src, _cfg(), state, now=fresh)
+        assert len(self._path(state).read_text().splitlines()) == 1
+        # past the TTL: appends again
+        stale = NOW + timedelta(seconds=ACCOUNT_HISTORY_TTL_SECONDS + 5)
+        serve_tick(src, _cfg(), state, now=stale)
+        assert len(self._path(state).read_text().splitlines()) == 2
+
+    def test_account_failure_is_isolated(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+
+        class AccountRaising(FakeChainSource):
+            def account(self) -> AccountSnapshot | None:
+                raise RuntimeError("gateway hiccup")
+
+        # no exception escapes; the rest of the tick still runs
+        assert serve_tick(AccountRaising(), _cfg(), state, now=NOW) is False
+        assert not self._path(state).exists()
+
+    def test_none_account_writes_nothing(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        serve_tick(FakeChainSource(account=None), _cfg(), state, now=NOW)
+        assert not self._path(state).exists()
