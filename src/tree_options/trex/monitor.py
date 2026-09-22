@@ -92,6 +92,20 @@ class Monitor:
 
     # -- kill files --------------------------------------------------------
 
+    def _sync_book_from_disk(self) -> None:
+        """Adopt the entry runner's book writes each cycle.
+
+        The monitor and the entry runner share ``book.json``; without this
+        reload the monitor's periodic save would clobber enter's
+        OPEN/ENTER_WORKING states with its stale in-memory copy, and
+        entries placed after arming would never be supervised — the exit
+        machine only acts on statuses it can see. Entry-side fields are
+        enter's to write; the monitor owns exit-side fields, which enter
+        never touches, so taking disk structures wholesale is safe.
+        """
+        disk = BookState.load(self.run_dir / "book.json", list(self.book.structures))
+        self.book.structures = disk.structures
+
     def _flatten_requested(self) -> bool:
         return (self.run_dir / "FLATTEN").exists()
 
@@ -104,6 +118,7 @@ class Monitor:
         log.info("monitor armed for plan %s (%d structures)", self.plan.id, len(self.plan.structures))
         self.adopt_open_exits()
         while not self._all_closed():
+            self._sync_book_from_disk()
             self.book.beat()
             self.book.save(self.run_dir / "book.json")
             try:

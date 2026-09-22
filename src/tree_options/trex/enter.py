@@ -103,12 +103,25 @@ class Enterer:
         self.adopt_open_entries()
         while self._entry_pending():
             try:
+                self._sync_book_from_disk()
                 self._tick()
             except Exception:
                 log.exception("tick failed — retrying next poll")
             self.ib.sleep(POLL_SECONDS)
         log.info("entry phase complete; book is with the monitor")
         return 0
+
+    def _sync_book_from_disk(self) -> None:
+        """Adopt the monitor's book writes each cycle.
+
+        The monitor and the entry runner share ``book.json``; without this
+        reload a whole-book save here could revert a monitor's FLATTEN
+        cancel (re-placing a killed BUY = double book) or its exit states
+        with a stale in-memory copy. Monitor-owned exit-side fields ride
+        along untouched: this runner never writes them.
+        """
+        disk = BookState.load(self.run_dir / "book.json", list(self.book.structures))
+        self.book.structures = disk.structures
 
     def _entry_pending(self) -> bool:
         return any(
