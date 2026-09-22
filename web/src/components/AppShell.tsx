@@ -34,6 +34,17 @@ export function AppShell({
         <div>
           <div className="eyebrow">trex · read-only cockpit</div>
           <h1>{title}</h1>
+          <nav className="nav" aria-label="Sections">
+            <a href="#/" aria-current={title === 'Plans' ? 'page' : undefined}>
+              Plans
+            </a>
+            <a
+              href="#/discover"
+              aria-current={title === 'Discover' ? 'page' : undefined}
+            >
+              Discover
+            </a>
+          </nav>
         </div>
         <div className="header-right">
           <PollBadges poll={poll} />

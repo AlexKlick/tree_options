@@ -26,12 +26,163 @@ export interface PlanSummary {
   open_qty: number
   days_to_expiry: Record<string, number>
   days_to_deadline: Record<string, number>
+  unrealized_open: number | null
+  unrealized_filled: number | null
+  realized: number | null
+}
+
+export interface PortfolioModeBucket {
+  open_qty: number
+  committed_filled: number
+  unrealized_open: number
+  unrealized_filled: number
+  realized: number
+}
+
+export interface PortfolioBlock {
+  plans_count: number
+  plans_with_state: number
+  open_qty: number
+  committed_at_caps: number
+  committed_filled: number
+  unrealized_open: number | null
+  unrealized_filled: number | null
+  realized: number | null
+  realized_partial_count: number
+  marks_age_seconds: number | null
+  marks_stale: boolean
+  worst_state: string | null
+  by_account_mode: Record<string, PortfolioModeBucket>
+}
+
+export interface AccountBlock {
+  account_id: string
+  net_liquidation: number
+  cash: number
+  buying_power: number
+  currency: string
+  ts: string
+  age_seconds: number | null
+  source: string
 }
 
 export interface PlansResponse {
   now: string
   gateway_reachable: boolean
   plans: PlanSummary[]
+  portfolio: PortfolioBlock
+  account: AccountBlock | null
+  accounts_seen: string[]
+}
+
+export interface RuleResultRow {
+  rule: string
+  status: string
+  detail: string
+}
+
+export interface CandidateRow {
+  underlying: string
+  expiry: string
+  dte: number
+  short_strike: number
+  long_strike: number
+  width: number
+  debit_mid: number | null
+  debit_bid: number | null
+  debit_ask: number | null
+  short_mid: number | null
+  long_mid: number | null
+  short_delta: number | null
+  long_delta: number | null
+  short_spread_frac: number | null
+  long_spread_frac: number | null
+  yield_ratio: number | null
+  max_profit: number | null
+  max_loss: number | null
+  target_mode_used: string
+  rank: number
+  accepted: boolean
+  rules: RuleResultRow[]
+  reasons: string[]
+}
+
+export interface DiscoveryDataQuality {
+  underlyings_requested: number
+  underlyings_scanned: number
+  chains_available: boolean
+  greeks_available: boolean
+  expiries_scanned: number
+  rows_quoted: number
+  rows_unquoted: number
+  notes: string[]
+}
+
+export interface DiscoveryLatest {
+  run_id: string
+  generated_at: string | null
+  age_seconds: number | null
+  mode: string
+  request_id: string | null
+  git_sha: string
+  config_hash: string
+  effective_target_modes: string[]
+  data_quality: DiscoveryDataQuality
+  candidates: CandidateRow[]
+  rejected: CandidateRow[]
+}
+
+export interface DiscoveryRun {
+  run_id: string
+  generated_at: string | null
+  scanned: number
+  accepted: number
+  rejected: number
+}
+
+export interface DiscoverySpool {
+  pending: boolean
+  last_result: {
+    request_id: string
+    status: string
+    run_id?: string
+    started_at?: string
+    finished_at?: string
+    detail?: string
+  } | null
+}
+
+export interface DiscoveryConfig {
+  underlyings: string[]
+  dte_min: number
+  dte_max: number
+  widths: number[]
+  target_mode: string
+  target_delta: number
+  target_otm_frac: number
+  delta_band: number[]
+  min_debit: number
+  max_leg_spread_frac: number
+  max_candidates_per_underlying: number
+  max_candidates_total: number
+}
+
+export interface DiscoveryResponse {
+  now: string
+  state_dir: string
+  config_present: boolean
+  config: DiscoveryConfig | null
+  latest: DiscoveryLatest | null
+  runs: DiscoveryRun[]
+  spool: DiscoverySpool
+}
+
+export interface ScanRequestResponse {
+  accepted: boolean
+  request_id: string
+  request_ts: string
+  spool_pending: boolean
+  note: string
 }
 
 export interface PlanStructureSpec {

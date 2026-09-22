@@ -332,6 +332,29 @@ footer {
 }
 .chart-hint { margin: 10px 2px 0; font-size: 0.8rem; }
 
+/* ---- nav + discovery ---- */
+
+.nav { display: flex; gap: 14px; margin-top: 4px; }
+.nav a {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 600;
+  padding: 2px 0;
+  border-bottom: 2px solid transparent;
+}
+.nav a[aria-current='page'] {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+.nav a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.rule-list { margin: 6px 0 0; padding-left: 18px; font-size: 0.8rem; color: var(--muted); }
+.rule-status { font-weight: 700; font-size: 0.72rem; letter-spacing: 0.04em; }
+.rule-pass { color: var(--pos); }
+.rule-fail { color: var(--neg); }
+.rule-not_evaluable, .rule-not_applicable { color: var(--muted); }
+
 .leg-chips { display: flex; flex-wrap: wrap; gap: 6px; }
 .leg-chip {
   display: inline-block;

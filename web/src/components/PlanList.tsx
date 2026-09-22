@@ -1,10 +1,11 @@
 import { getPlans } from '../lib/api'
 import { navigate } from '../lib/router'
-import { usd } from '../lib/format'
+import { usd, usdSigned } from '../lib/format'
 import { usePoll } from '../hooks/usePoll'
 import type { PlanSummary } from '../lib/types'
 import { AppShell } from './AppShell'
 import { Pill } from './Pill'
+import { PortfolioTiles } from './PortfolioTiles'
 
 function WindowPill({ p }: { p: PlanSummary }) {
   if (p.window_state === 'during') return <Pill variant="armed">● window open</Pill>
@@ -16,6 +17,8 @@ function WindowPill({ p }: { p: PlanSummary }) {
 }
 
 function PlanCard({ p }: { p: PlanSummary }) {
+  const pnlClass = (v: number | null) =>
+    v === null ? '' : v >= 0 ? 'pnl-pos' : 'pnl-neg'
   return (
     <button
       type="button"
@@ -34,6 +37,21 @@ function PlanCard({ p }: { p: PlanSummary }) {
         {p.account_mode.toUpperCase()} · {p.structure_count} structures · cap{' '}
         {usd(p.total_debit_cap)}
       </p>
+      <p className="num">
+        {p.unrealized_open !== null ? (
+          <span className={pnlClass(p.unrealized_open)}>
+            open {usdSigned(p.unrealized_open)}
+          </span>
+        ) : (
+          <span className="muted">open —</span>
+        )}
+        {' · '}
+        {p.realized !== null ? (
+          <span className={pnlClass(p.realized)}>realized {usdSigned(p.realized)}</span>
+        ) : (
+          <span className="muted">realized —</span>
+        )}
+      </p>
       <div className="pill-row">
         {p.armed ? (
           <Pill variant="armed">● armed</Pill>
@@ -50,6 +68,7 @@ function PlanCard({ p }: { p: PlanSummary }) {
 
 export function PlanList() {
   const poll = usePoll(getPlans)
+  const d = poll.data
   return (
     <AppShell title="Plans" poll={poll}>
       {poll.data === null && poll.error ? (
@@ -65,9 +84,12 @@ export function PlanList() {
           <p className="muted">No plan TOMLs in the plans directory.</p>
         </div>
       ) : (
-        <div className="grid">
-          {poll.data?.plans.map((p) => <PlanCard key={p.id} p={p} />)}
-        </div>
+        <>
+          <PortfolioTiles portfolio={d?.portfolio ?? null} account={d?.account ?? null} />
+          <div className="grid" style={{ marginTop: 18 }}>
+            {d?.plans.map((p) => <PlanCard key={p.id} p={p} />)}
+          </div>
+        </>
       )}
     </AppShell>
   )

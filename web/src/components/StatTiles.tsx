@@ -2,7 +2,7 @@ import { useTween } from '../hooks/useTween'
 import { usd, usdSigned } from '../lib/format'
 import type { BookSummary, Marks } from '../lib/types'
 
-function Tile({
+export function Tile({
   label,
   value,
   className,
