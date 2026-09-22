@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
+from tree_options.trex_web.payoff import build_payoff_chart
 from tree_options.trex_web.reader import (
     compute_runbook_status_from_view,
     list_plans,
@@ -118,6 +119,29 @@ def create_app(
         runbook = compute_runbook_status_from_view(view)
         gateway_reachable = probe_gateway()
         marks = load_marks(state_root, plan_id)
+        payoff_charts: dict[str, object] = {}
+        raw_spots = marks.get("spots") if marks else None
+        for s in view.plan.structures:
+            st = view.structures.get(s.id)
+            if st is None or st.entry_fill is None or st.filled_qty <= 0:
+                continue
+            spot = None
+            if isinstance(raw_spots, dict):
+                raw = raw_spots.get(s.underlying)
+                if isinstance(raw, str):
+                    try:
+                        spot = float(raw)
+                    except ValueError:
+                        spot = None
+            chart = build_payoff_chart(
+                float(s.long_strike),
+                float(s.short_strike),
+                float(st.entry_fill),
+                int(st.filled_qty),
+                spot,
+            )
+            if chart is not None:
+                payoff_charts[s.id] = chart
         return templates.TemplateResponse(
             request=request,
             name="plan.html",
@@ -127,6 +151,7 @@ def create_app(
                 "gateway_reachable": gateway_reachable,
                 "marks": marks,
                 "marks_age": marks_age_seconds(marks),
+                "payoff_charts": payoff_charts,
             },
         )
 

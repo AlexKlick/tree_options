@@ -208,6 +208,64 @@ journalctl --user -u trex-monitor.service -f</code></pre>
 {% endif %}
 
 <h2 style="margin-top: 28px;">
+  Payoff at expiry <span class="muted" style="font-size: 0.86rem;">(terminal value · the discipline exits long before)</span>
+</h2>
+{% if payoff_charts %}
+<div class="grid">
+  {% for sid, pc in payoff_charts.items() %}
+  <div class="card">
+    <div class="card-head">
+      <h3>{{ sid }} <span class="muted">·</span> <span class="strike">{{ pc.levels.long_strike }}/{{ pc.levels.short_strike }}P</span> <span class="muted">· {{ pc.levels.qty }} spreads @ {{ pc.levels.entry }}</span></h3>
+    </div>
+    <svg viewBox="0 0 {{ pc.w }} {{ pc.h }}" role="img"
+         aria-label="Payoff at expiry for {{ sid }}: max gain {{ pc.levels.max_gain_usd }} below {{ pc.levels.short_strike }}, max loss {{ pc.levels.max_loss_usd }} above {{ pc.levels.long_strike }}, breakeven {{ pc.levels.breakeven }}"
+         style="width: 100%; height: auto; display: block;">
+      {% for t in pc.y_ticks %}
+      <line x1="{{ 66 }}" y1="{{ t.y }}" x2="{{ pc.w - 18 }}" y2="{{ t.y }}" stroke="#25334a" stroke-width="1"/>
+      <text x="8" y="{{ t.y + 4 }}" fill="#b1bdd0" font-size="11" font-family="ui-monospace, Menlo, monospace">{{ t.label }}</text>
+      {% endfor %}
+      <line x1="{{ 66 }}" y1="{{ pc.zero_y }}" x2="{{ pc.w - 18 }}" y2="{{ pc.zero_y }}" stroke="#b1bdd0" stroke-width="1.5"/>
+      {% if pc.pos_area %}
+      <polygon points="{{ pc.pos_area }}" fill="#9de2ca" fill-opacity="0.16"/>
+      {% endif %}
+      {% if pc.neg_area %}
+      <polygon points="{{ pc.neg_area }}" fill="#f4a877" fill-opacity="0.16"/>
+      {% endif %}
+      <polyline points="{{ pc.polyline }}" fill="none" stroke="#e9edf6" stroke-width="2" stroke-linejoin="round"/>
+      {% if pc.spot %}
+      <line x1="{{ pc.spot.x }}" y1="16" x2="{{ pc.spot.x }}" y2="{{ pc.h - 30 }}" stroke="#b1bdd0" stroke-width="1" stroke-dasharray="3,3">
+        <title>{{ pc.spot.label }}</title>
+      </line>
+      <text x="{{ pc.spot.x }}" y="12" fill="#b1bdd0" font-size="11" text-anchor="middle">{{ pc.spot.label }}</text>
+      {% endif %}
+      <circle cx="{{ pc.x_ticks[1].x }}" cy="{{ pc.zero_y }}" r="3.5" fill="#9de2ca">
+        <title>breakeven {{ pc.levels.breakeven }}</title>
+      </circle>
+      {% for t in pc.x_ticks %}
+      <text x="{{ t.x }}" y="{{ pc.h - 8 }}" fill="{% if 'BE' in t.label %}#9de2ca{% else %}#b1bdd0{% endif %}" font-size="11" text-anchor="middle">{{ t.label }}</text>
+      {% endfor %}
+    </svg>
+    <dl class="kv">
+      <dt>Max gain</dt><dd class="pnl-pos"><strong>{{ pc.levels.max_gain_usd }}</strong> at ≤ {{ pc.levels.short_strike }}</dd>
+      <dt>Max loss</dt><dd class="pnl-neg"><strong>{{ pc.levels.max_loss_usd }}</strong> at ≥ {{ pc.levels.long_strike }}</dd>
+      <dt>Breakeven at expiry</dt><dd>{{ pc.levels.breakeven }}</dd>
+      <dt>Width</dt><dd>{{ pc.levels.width }} pts</dd>
+      {% if pc.levels.spot %}<dt>Spot now</dt><dd>{{ pc.levels.spot }}</dd>{% endif %}
+    </dl>
+  </div>
+  {% endfor %}
+</div>
+<p class="muted" style="font-size: 0.85rem;">
+  At-expiry shape only — the trade's EV is harvested by discipline: touch-exit
+  at the long strike, hard time stops before expiry, never held to terminal value.
+</p>
+{% else %}
+<div class="card">
+  <p class="muted" style="margin: 0;">No positions yet — payoff charts render once a structure fills.</p>
+</div>
+{% endif %}
+
+<h2 style="margin-top: 28px;">
   Events <span class="muted" style="font-size: 0.86rem;">(last {{ view.events|length }})</span>
 </h2>
 {% if view.events %}

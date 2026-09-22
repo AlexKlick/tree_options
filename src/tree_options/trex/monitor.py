@@ -44,7 +44,7 @@ from tree_options.trex.engine import (
     configure,
     decide,
 )
-from tree_options.trex.ibkr import IbkrTrex, OrderRef
+from tree_options.trex.ibkr import IbkrTrex, OrderRef, Snapshot
 from tree_options.trex.plan import PutSpread, TradePlan, cents, load_plan
 from tree_options.trex.state import BookState, Status
 
@@ -147,9 +147,10 @@ class Monitor:
         disk = BookState.load(self.run_dir / "book.json", list(self.book.structures))
         self.book.structures = disk.structures
 
-    def _write_marks(self, quotes: Mapping[str, ComboQuote | None]) -> None:
+    def _write_marks(self, snap: Snapshot) -> None:
         """Persist the observation-only marks payload for the status panel."""
-        payload = compute_marks(self.plan.structures, self.book, quotes)
+        payload = compute_marks(self.plan.structures, self.book, snap.quotes)
+        payload["spots"] = {sym: str(px) for sym, px in snap.spots.items()}
         payload["ts"] = now_et().isoformat()
         tmp = self.run_dir / "marks.json.tmp"
         tmp.write_text(json.dumps(payload) + "\n")
@@ -213,7 +214,7 @@ class Monitor:
         self._drain_orders()
 
         snap = self.ib.snapshot(self.plan.structures, now)
-        self._write_marks(snap.quotes)
+        self._write_marks(snap)
         flatten = self._flatten_requested()
 
         for spread in self.plan.structures:

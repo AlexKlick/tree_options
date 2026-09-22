@@ -12,11 +12,13 @@ from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 
 from tree_options.trex.clock import ET
 from tree_options.trex.state import BookState, Status
 from tree_options.trex_web.app import create_app
+from tree_options.trex_web.payoff import build_payoff_chart, expiry_pnl
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -485,3 +487,50 @@ class TestMarksPanel:
         client = _client(tmp_path / "state", plans)
         body = client.get("/plan/putspread-test").text
         assert "No marks yet" in body
+
+
+class TestPayoffChart:
+    """Pure at-expiry payoff math (put debit spreads) + render."""
+
+    def test_expiry_pnl_hockey_stick(self) -> None:
+        # nvda-oct shape: 185/150, entry 0.21, qty 5
+        kw = dict(long_strike=185.0, short_strike=150.0, entry=0.21, qty=5)
+        assert expiry_pnl(s=200.0, **kw) == pytest.approx(-105.0)
+        assert expiry_pnl(s=140.0, **kw) == pytest.approx((35.0 - 0.21) * 500)
+        assert expiry_pnl(s=170.0, **kw) == pytest.approx((15.0 - 0.21) * 500)
+        assert expiry_pnl(s=184.79, **kw) == pytest.approx(0.0, abs=0.5)
+
+    def test_build_chart_levels_and_regions(self) -> None:
+        chart = build_payoff_chart(185.0, 150.0, 0.21, 5, spot=184.35)
+        assert chart is not None
+        assert chart["levels"]["max_gain_usd"] == "+$17,395"
+        assert chart["levels"]["max_loss_usd"] == "-$105"
+        assert chart["levels"]["breakeven"] == "184.79"
+        assert chart["pos_area"] and chart["neg_area"]
+        assert chart["spot"]["label"] == "spot 184.35"
+        # breakeven tick sits between the strike ticks
+        xs = [t["x"] for t in chart["x_ticks"]]
+        assert xs[0] < xs[1] < xs[2]
+
+    def test_build_chart_no_position_returns_none(self) -> None:
+        assert build_payoff_chart(185.0, 150.0, 0.21, 0) is None
+
+    def test_plan_detail_renders_payoff_for_filled_structures(self, tmp_path: Path) -> None:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        state = tmp_path / "state"
+        run = state / "putspread-test"
+        run.mkdir(parents=True)
+        book = BookState(["nvda-oct", "qqq-nov"])
+        st = book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, datetime.now(ET))
+        st.to(Status.OPEN, datetime.now(ET))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        book.save(run / "book.json")
+        client = _client(state, plans)
+        body = client.get("/plan/putspread-test").text
+        assert "Payoff at expiry" in body
+        assert "+$17,395" in body
+        assert "184.79" in body
+        assert "Max loss" in body
