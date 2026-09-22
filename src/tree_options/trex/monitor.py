@@ -51,6 +51,7 @@ from tree_options.trex.state import BookState, Status
 log = logging.getLogger("trex.monitor")
 
 POLL_SECONDS = 20
+MAX_MARKS_HISTORY = 2000  # ~11h of 20s ticks; older samples drop off
 HEARTBEAT_FRESH_SECONDS = 30
 SESSION_OPEN = dtime(9, 30)
 SESSION_END = dtime(16, 15)
@@ -123,6 +124,7 @@ class Monitor:
         self.run_dir = run_dir
         self._clock = clock or now_et
         self.orders: dict[str, OrderRef] = {}  # structure_id -> working exit OrderRef
+        self._history: list[dict[str, str]] | None = None  # marks history, lazy-loaded
 
     def _now(self) -> datetime:
         return self._clock()
@@ -152,9 +154,26 @@ class Monitor:
         payload = compute_marks(self.plan.structures, self.book, snap.quotes)
         payload["spots"] = {sym: str(px) for sym, px in snap.spots.items()}
         payload["ts"] = now_et().isoformat()
+        payload["history"] = self._marks_history(payload["ts"], payload["total_unrealized"])
         tmp = self.run_dir / "marks.json.tmp"
         tmp.write_text(json.dumps(payload) + "\n")
         os.replace(tmp, self.run_dir / "marks.json")
+
+    def _marks_history(self, ts: str, total: str) -> list[dict[str, str]]:
+        """Bounded (ts, total-unrealized) series, resumed across restarts."""
+        if self._history is None:
+            self._history = []
+            prior = self.run_dir / "marks.json"
+            if prior.exists():
+                try:
+                    resumed = json.loads(prior.read_text()).get("history")
+                    if isinstance(resumed, list):
+                        self._history = [h for h in resumed if isinstance(h, dict)]
+                except (OSError, json.JSONDecodeError):
+                    pass  # unreadable prior marks: start a fresh history
+        self._history.append({"ts": ts, "total": total})
+        del self._history[:-MAX_MARKS_HISTORY]
+        return self._history
 
     def _flatten_requested(self) -> bool:
         return (self.run_dir / "FLATTEN").exists()

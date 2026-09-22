@@ -8,7 +8,7 @@ The web lane is broker-free and stateless — every test sets up a
 from __future__ import annotations
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -18,7 +18,12 @@ from fastapi.testclient import TestClient
 from tree_options.trex.clock import ET
 from tree_options.trex.state import BookState, Status
 from tree_options.trex_web.app import create_app
-from tree_options.trex_web.payoff import build_payoff_chart, expiry_pnl
+from tree_options.trex_web.payoff import (
+    build_payoff_chart,
+    build_pnl_history_chart,
+    expiry_pnl,
+    summarize_book,
+)
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -534,3 +539,31 @@ class TestPayoffChart:
         assert "+$17,395" in body
         assert "184.79" in body
         assert "Max loss" in body
+        # book summary tiles render for the filled structure
+        assert "Committed debit" in body
+        assert ">$105<" in body  # the committed-debit tile value
+
+    def test_summarize_book_takes_wings_and_debits(self) -> None:
+        summary = summarize_book(
+            [(185.0, 150.0, 0.21, 5), (185.0, 150.0, 1.24, 3)]
+        )
+        assert summary["committed_usd"] == "$477"
+        assert summary["max_gain_usd"] == "+$27,523"
+        assert summary["max_loss_usd"] == "-$477"
+        assert summary["short_floor"] == "150"
+
+    def test_pnl_history_chart_renders_series(self) -> None:
+        base = datetime(2026, 9, 22, 12, 0, tzinfo=ET)
+        samples = [
+            {"ts": (base + timedelta(minutes=m)).isoformat(), "total": total}
+            for m, total in ((0, "-6.50"), (5, "-9.50"), (10, "-11.00"), (15, "-4.25"))
+        ]
+        chart = build_pnl_history_chart(samples)
+        assert chart is not None
+        assert chart["polyline"].count(" ") == 3  # four points
+        assert chart["last"]["label"] == "-$4"
+        assert chart["last"]["pos"] is False
+        # malformed rows are skipped, not fatal
+        assert build_pnl_history_chart([*samples, {"junk": 1}]) is not None
+        # a single point is not a line
+        assert build_pnl_history_chart(samples[:1]) is None

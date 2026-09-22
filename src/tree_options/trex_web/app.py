@@ -11,7 +11,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from tree_options.trex_web.payoff import build_payoff_chart
+from tree_options.trex_web.payoff import (
+    build_payoff_chart,
+    build_pnl_history_chart,
+    summarize_book,
+)
 from tree_options.trex_web.reader import (
     compute_runbook_status_from_view,
     list_plans,
@@ -120,11 +124,15 @@ def create_app(
         gateway_reachable = probe_gateway()
         marks = load_marks(state_root, plan_id)
         payoff_charts: dict[str, object] = {}
+        legs: list[tuple[float, float, float, int]] = []
         raw_spots = marks.get("spots") if marks else None
         for s in view.plan.structures:
             st = view.structures.get(s.id)
             if st is None or st.entry_fill is None or st.filled_qty <= 0:
                 continue
+            legs.append(
+                (float(s.long_strike), float(s.short_strike), float(st.entry_fill), int(st.filled_qty))
+            )
             spot = None
             if isinstance(raw_spots, dict):
                 raw = raw_spots.get(s.underlying)
@@ -142,6 +150,13 @@ def create_app(
             )
             if chart is not None:
                 payoff_charts[s.id] = chart
+        book_summary = summarize_book(legs) if legs else None
+        history_chart = None
+        raw_history = marks.get("history") if marks else None
+        if isinstance(raw_history, list):
+            history_chart = build_pnl_history_chart(
+                [h for h in raw_history if isinstance(h, dict)]
+            )
         return templates.TemplateResponse(
             request=request,
             name="plan.html",
@@ -152,6 +167,8 @@ def create_app(
                 "marks": marks,
                 "marks_age": marks_age_seconds(marks),
                 "payoff_charts": payoff_charts,
+                "book_summary": book_summary,
+                "history_chart": history_chart,
             },
         )
 

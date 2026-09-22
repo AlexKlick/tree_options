@@ -160,6 +160,27 @@ journalctl --user -u trex-monitor.service -f</code></pre>
   {% endfor %}
 </div>
 
+{% if book_summary %}
+<div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); margin-top: 24px;">
+  <div class="card" style="padding: 14px 18px;">
+    <p class="muted" style="margin: 0; font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase;">Committed debit</p>
+    <div style="font-size: 1.5rem; font-weight: 700; margin-top: 2px;">{{ book_summary.committed_usd }}</div>
+  </div>
+  <div class="card" style="padding: 14px 18px;">
+    <p class="muted" style="margin: 0; font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase;">Unrealized now</p>
+    <div style="font-size: 1.5rem; font-weight: 700; margin-top: 2px;" class="{{ 'pnl-pos' if marks and marks.total_unrealized|float >= 0 else 'pnl-neg' }}">{% if marks %}{{ "{:+,.2f}".format(marks.total_unrealized|float) }}{% else %}—{% endif %}</div>
+  </div>
+  <div class="card" style="padding: 14px 18px;">
+    <p class="muted" style="margin: 0; font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase;">Max profit {% if book_summary.short_floor %}(≤ {{ book_summary.short_floor }}){% endif %}</p>
+    <div class="pnl-pos" style="font-size: 1.5rem; font-weight: 700; margin-top: 2px;">{{ book_summary.max_gain_usd }}</div>
+  </div>
+  <div class="card" style="padding: 14px 18px;">
+    <p class="muted" style="margin: 0; font-size: 0.74rem; letter-spacing: 0.1em; text-transform: uppercase;">Max loss (at/above longs)</p>
+    <div class="pnl-neg" style="font-size: 1.5rem; font-weight: 700; margin-top: 2px;">{{ book_summary.max_loss_usd }}</div>
+  </div>
+</div>
+{% endif %}
+
 <h2 style="margin-top: 28px;">
   Live marks <span class="muted" style="font-size: 0.86rem;">(delayed quotes · mark-to-mid · refresh ~20s)</span>
 </h2>
@@ -207,6 +228,33 @@ journalctl --user -u trex-monitor.service -f</code></pre>
 </div>
 {% endif %}
 
+{% if history_chart %}
+<h2 style="margin-top: 28px;">
+  Unrealized since entry <span class="muted" style="font-size: 0.86rem;">(total book · every monitor tick · time-proportional)</span>
+</h2>
+<div class="card" style="overflow-x: auto;">
+  <svg viewBox="0 0 {{ history_chart.w }} {{ history_chart.h }}" role="img"
+       aria-label="Unrealized profit and loss over time for the whole book"
+       style="width: 100%; height: auto; display: block;">
+    {% for t in history_chart.y_ticks %}
+    <line x1="66" y1="{{ t.y }}" x2="{{ history_chart.w - 52 }}" y2="{{ t.y }}" stroke="#25334a" stroke-width="1"/>
+    <text x="8" y="{{ t.y + 4 }}" fill="#b1bdd0" font-size="11" font-family="ui-monospace, Menlo, monospace">{{ t.label }}</text>
+    {% endfor %}
+    <line x1="66" y1="{{ history_chart.zero_y }}" x2="{{ history_chart.w - 52 }}" y2="{{ history_chart.zero_y }}" stroke="#b1bdd0" stroke-width="1.5"/>
+    <polyline points="{{ history_chart.polyline }}" fill="none" stroke="#e9edf6" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="{{ history_chart.last.x }}" cy="{{ history_chart.last.y }}" r="3.5" fill="{{ '#9de2ca' if history_chart.last.pos else '#f4a877' }}">
+      <title>{{ history_chart.last.label }}</title>
+    </circle>
+    <text x="{{ history_chart.last.x - 8 }}" y="{{ history_chart.last.y + 4 }}" text-anchor="end"
+          fill="{{ '#9de2ca' if history_chart.last.pos else '#f4a877' }}" font-size="12" font-weight="600"
+          font-family="ui-monospace, Menlo, monospace">{{ history_chart.last.label }}</text>
+    {% for t in history_chart.x_ticks %}
+    <text x="{{ t.x }}" y="{{ history_chart.h - 6 }}" fill="#b1bdd0" font-size="11" text-anchor="{{ t.anchor }}">{{ t.label }}</text>
+    {% endfor %}
+  </svg>
+</div>
+{% endif %}
+
 <h2 style="margin-top: 28px;">
   Payoff at expiry <span class="muted" style="font-size: 0.86rem;">(terminal value · the discipline exits long before)</span>
 </h2>
@@ -232,6 +280,7 @@ journalctl --user -u trex-monitor.service -f</code></pre>
       <polygon points="{{ pc.neg_area }}" fill="#f4a877" fill-opacity="0.16"/>
       {% endif %}
       <polyline points="{{ pc.polyline }}" fill="none" stroke="#e9edf6" stroke-width="2" stroke-linejoin="round"/>
+      <text x="{{ pc.max_gain_label.x }}" y="{{ pc.max_gain_label.y }}" fill="#9de2ca" font-size="12" font-weight="600" font-family="ui-monospace, Menlo, monospace">{{ pc.max_gain_label.text }}</text>
       {% if pc.spot %}
       <line x1="{{ pc.spot.x }}" y1="16" x2="{{ pc.spot.x }}" y2="{{ pc.h - 30 }}" stroke="#b1bdd0" stroke-width="1" stroke-dasharray="3,3">
         <title>{{ pc.spot.label }}</title>

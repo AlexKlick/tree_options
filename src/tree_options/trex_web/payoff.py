@@ -1,19 +1,22 @@
-"""Pure at-expiry payoff math + SVG geometry for the cockpit.
+"""Pure chart math + SVG geometry for the cockpit (broker-free).
 
-Broker-free by construction: consumes plan numbers (strikes, entry, qty)
-and an optional current spot, and emits ready-to-render coordinates and
-labels. The payoff of a put debit spread is a hockey stick:
+Three surfaces:
 
-    S >= long strike   ->  lose the debit
-    short < S < long   ->  (long - S - entry) per spread, linear
-    S <= short strike  ->  maximum (width - entry) per spread
+- At-expiry payoff per structure (hockey stick): S >= long strike loses
+  the debit; short < S < long is linear; S <= short strike is maximum.
+- Book summary tiles: committed debit, max gain at/below the short
+  strikes, max loss at/above the long strikes.
+- Unrealized-P&L-over-time line from the monitor's marks history.
 
-The trade's discipline never holds to expiry (touch-exit at the long
-strike, hard time stops); this chart shows the terminal shape only.
+All functions consume plan numbers / persisted marks and emit
+ready-to-render coordinates; the trade's discipline never holds to
+expiry (touch-exit at the long strike, hard time stops) — the payoff
+chart shows the terminal shape only.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 MULT = 100
@@ -135,6 +138,7 @@ def build_payoff_chart(
         "x_ticks": x_ticks,
         "y_ticks": y_ticks,
         "spot": spot_mark,
+        "max_gain_label": {"x": round(sx(x_lo) + 6, 1), "y": round(sy(max_gain) - 6, 1), "text": _usd(max_gain)},
         "levels": {
             "long_strike": f"{long_strike:g}",
             "short_strike": f"{short_strike:g}",
@@ -145,5 +149,89 @@ def build_payoff_chart(
             "max_gain_usd": _usd(max_gain),
             "max_loss_usd": _usd(max_loss),
             "spot": f"{spot:g}" if spot is not None else None,
+        },
+    }
+
+
+def summarize_book(legs: list[tuple[float, float, float, int]]) -> dict[str, Any]:
+    """Book-level tiles: committed debit, max gain, max loss.
+
+    Each leg is (long_strike, short_strike, entry, qty). Max gain is the
+    sum of the wings at/below the short strikes; max loss is the sum of
+    the debits (at/above the long strikes).
+    """
+    committed = sum(entry * qty * MULT for _, _, entry, qty in legs)
+    max_gain = sum((long_s - short_s - entry) * qty * MULT for long_s, short_s, entry, qty in legs)
+    short_floor = min((short_s for _, short_s, _, _ in legs), default=None)
+    return {
+        "committed_usd": f"${committed:,.0f}",
+        "max_gain_usd": _usd(max_gain),
+        "max_loss_usd": _usd(-committed),
+        "short_floor": f"{short_floor:g}" if short_floor is not None else None,
+    }
+
+
+HIST_W = 640
+HIST_H = 180
+HIST_PAD_L = 66
+HIST_PAD_R = 52
+HIST_PAD_T = 14
+HIST_PAD_B = 26
+
+
+def build_pnl_history_chart(samples: list[dict[str, str]]) -> dict[str, Any] | None:
+    """Unrealized-P&L-over-time line from the monitor's marks history.
+
+    X is proportional to wall-clock time (gaps when the monitor was down
+    compress honestly); y spans the observed range plus zero.
+    """
+    pts_raw: list[tuple[datetime, float]] = []
+    for s in samples:
+        try:
+            ts = datetime.fromisoformat(str(s["ts"]))
+            val = float(s["total"])
+        except (KeyError, ValueError):
+            continue
+        pts_raw.append((ts, val))
+    if len(pts_raw) < 2:
+        return None
+
+    t0 = pts_raw[0][0].timestamp()
+    t1 = pts_raw[-1][0].timestamp()
+    if t1 - t0 < 1.0:
+        return None
+    y_lo = min(0.0, *(v for _, v in pts_raw))
+    y_hi = max(0.0, *(v for _, v in pts_raw))
+    if y_hi - y_lo < 1.0:
+        y_hi = y_lo + 1.0
+
+    def hx(ts: datetime) -> float:
+        return HIST_PAD_L + (ts.timestamp() - t0) / (t1 - t0) * (HIST_W - HIST_PAD_L - HIST_PAD_R)
+
+    def hy(v: float) -> float:
+        return HIST_PAD_T + (y_hi - v) / (y_hi - y_lo) * (HIST_H - HIST_PAD_T - HIST_PAD_B)
+
+    polyline = " ".join(f"{hx(ts):.1f},{hy(v):.1f}" for ts, v in pts_raw)
+    last_ts, last_v = pts_raw[-1]
+
+    return {
+        "w": HIST_W,
+        "h": HIST_H,
+        "polyline": polyline,
+        "zero_y": round(hy(0.0), 1),
+        "y_ticks": [
+            {"y": round(hy(y_hi), 1), "label": _usd(y_hi)},
+            {"y": round(hy(0.0), 1), "label": "$0"},
+            {"y": round(hy(y_lo), 1), "label": _usd(y_lo)},
+        ],
+        "x_ticks": [
+            {"x": round(hx(pts_raw[0][0]), 1), "label": pts_raw[0][0].strftime("%H:%M"), "anchor": "start"},
+            {"x": round(hx(last_ts), 1), "label": last_ts.strftime("%H:%M"), "anchor": "end"},
+        ],
+        "last": {
+            "x": round(hx(last_ts), 1),
+            "y": round(hy(last_v), 1),
+            "label": _usd(last_v),
+            "pos": last_v >= 0,
         },
     }
