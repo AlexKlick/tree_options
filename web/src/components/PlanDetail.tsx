@@ -1,9 +1,12 @@
 import { getPlan } from '../lib/api'
+import type { Payoff, PlanDetailResponse } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { useDensity } from '../density'
 import { AppShell } from './AppShell'
 import { EventsLedger } from './EventsLedger'
 import { MarksTable } from './MarksTable'
+import { PayoffCard } from './PayoffCard'
+import { PnlHistoryChart } from './PnlHistoryChart'
 import { PositionsTable } from './PositionsTable'
 import { RunbookBanner } from './RunbookBanner'
 import { StatTiles } from './StatTiles'
@@ -16,6 +19,28 @@ function ChartPlaceholder({ note }: { note: string }) {
         {note}
       </p>
     </div>
+  )
+}
+
+function HistorySection({ history }: { history: PlanDetailResponse['history'] }) {
+  return history ? (
+    <div className="card chart-card">
+      <PnlHistoryChart series={history} />
+    </div>
+  ) : (
+    <ChartPlaceholder note="P&L history appears after the monitor records a few ticks." />
+  )
+}
+
+function PayoffSection({ payoffs }: { payoffs: Payoff[] }) {
+  return payoffs.length > 0 ? (
+    <div className="grid">
+      {payoffs.map((p) => (
+        <PayoffCard key={p.structure_id} payoff={p} />
+      ))}
+    </div>
+  ) : (
+    <ChartPlaceholder note="Payoff curves appear once a structure fills." />
   )
 }
 
@@ -59,16 +84,14 @@ export function PlanDetail({ id }: { id: string }) {
                 content: (
                   <>
                     <MarksTable marks={d.marks} specs={d.plan.structures} />
-                    <ChartPlaceholder note="P&L-over-time chart lands in the next commit." />
+                    <HistorySection history={d.history} />
                   </>
                 ),
               },
               {
                 id: 'payoff',
                 label: 'Payoff',
-                content: (
-                  <ChartPlaceholder note="Interactive payoff charts land in the next commit." />
-                ),
+                content: <PayoffSection payoffs={d.payoffs} />,
               },
               {
                 id: 'positions',
@@ -105,14 +128,14 @@ export function PlanDetail({ id }: { id: string }) {
               (total book · every monitor tick · time-proportional)
             </span>
           </h2>
-          <ChartPlaceholder note="Interactive P&L-over-time chart lands in the next commit." />
+          <HistorySection history={d.history} />
           <h2 className="section-title">
             Payoff at expiry{' '}
             <span className="muted section-sub">
               (terminal value · the discipline exits long before)
             </span>
           </h2>
-          <ChartPlaceholder note="Interactive payoff charts land in the next commit." />
+          <PayoffSection payoffs={d.payoffs} />
           <h2 className="section-title">Positions</h2>
           <PositionsTable specs={d.plan.structures} structures={d.structures} />
           <h2 className="section-title">

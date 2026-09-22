@@ -28,12 +28,16 @@ export function interpAt(points: [number, number][], x: number): number {
   if (x <= points[0][0]) return points[0][1]
   const last = points.length - 1
   if (x >= points[last][0]) return points[last][1]
-  const i = nearestIndex(
-    points.map((p) => p[0]),
-    x,
-  )
-  const [x0, y0] = points[i]
-  const [x1, y1] = points[Math.min(i + 1, last)]
+  // bracket: points[lo][0] <= x < points[hi][0]
+  let lo = 0
+  let hi = last
+  while (hi - lo > 1) {
+    const mid = (lo + hi) >> 1
+    if (points[mid][0] <= x) lo = mid
+    else hi = mid
+  }
+  const [x0, y0] = points[lo]
+  const [x1, y1] = points[hi]
   if (x1 === x0) return y0
   return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0)
 }

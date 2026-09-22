@@ -28,3 +28,4 @@ artifacts/massive-cache/
 # deploy-time step (cd web && npm ci && npm run build), never committed.
 web/node_modules/
 src/tree_options/trex_web/static/
+.notes-c4/
