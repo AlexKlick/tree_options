@@ -73,7 +73,11 @@ export function PerformancePage() {
           </h2>
           {d?.equity ? (
             <div className="card chart-card">
-              <TimeSeriesChart series={d.equity} ariaLabel="Account net liquidation over time" />
+              <TimeSeriesChart
+                series={d.equity}
+                ariaLabel="Account net liquidation over time"
+                valueFormat={usd}
+              />
             </div>
           ) : (
             <div className="card empty-state">
