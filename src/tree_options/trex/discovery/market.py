@@ -241,7 +241,12 @@ def fetch_daily_bars(sym: str, client: BarsClient | None = None) -> list[dict[st
         use_cache=False,
     )
     return [
-        {"t": int(b["t"]), "c": float(b["c"]), "v": b.get("v")}
+        {
+            "t": int(b["t"]),
+            "c": float(b["c"]),
+            # MassiveClient yields Decimal volumes (adjusted) - JSON-safe them
+            "v": float(b["v"]) if b.get("v") is not None else None,
+        }
         for b in body.get("results", [])
         if isinstance(b.get("t"), (int, float)) and b.get("c") is not None
     ]

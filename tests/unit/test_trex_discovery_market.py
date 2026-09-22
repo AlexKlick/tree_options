@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import ClassVar
 from zoneinfo import ZoneInfo
@@ -144,7 +145,7 @@ class TestFetchers:
                 return {
                     "results": [
                         {"t": 1789992000000, "c": 750.1},
-                        {"t": 1790078400000, "c": 757.67},
+                        {"t": 1790078400000, "c": 757.67, "v": Decimal("13803038.3")},
                     ]
                 }
 
@@ -152,8 +153,11 @@ class TestFetchers:
         bars = fetch_daily_bars("SPY", client)
         assert bars == [
             {"t": 1789992000000, "c": 750.1, "v": None},
-            {"t": 1790078400000, "c": 757.67, "v": None},
+            {"t": 1790078400000, "c": 757.67, "v": 13803038.3},
         ]
+        # Decimal volumes must be JSON-serializable (the cache envelope write
+        # silently swallowed TypeError before this pin)
+        json.dumps(bars)
         assert "/v2/aggs/ticker/SPY/range/1/day/" in client.calls[0]
 
 
