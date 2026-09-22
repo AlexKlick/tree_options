@@ -23,3 +23,8 @@ artifacts/massive-cache/
 .idea/
 .vscode/
 *.swp
+
+# Web (trex cockpit SPA): deps and the Vite build output. The build is a
+# deploy-time step (cd web && npm ci && npm run build), never committed.
+web/node_modules/
+src/tree_options/trex_web/static/

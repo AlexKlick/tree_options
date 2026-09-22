@@ -419,5 +419,10 @@ def create_app(
         app.mount(
             "/static", StaticFiles(directory=str(static_root), html=True), name="static"
         )
+        # Root mount LAST: the built shell references './assets/...', so it
+        # must resolve wherever the app is mounted (/ loopback, /trex/
+        # portal-stripped). Routes registered above (including the Jinja
+        # panel during migration) still win for their exact paths.
+        app.mount("/", StaticFiles(directory=str(static_root), html=True), name="spa")
 
     return app
