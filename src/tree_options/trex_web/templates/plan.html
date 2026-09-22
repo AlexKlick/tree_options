@@ -1,7 +1,9 @@
 {% extends "base.html" %}
+{% set home = "../" %}
 {% block heading %}Plan {{ view.plan.id }}{% endblock %}
 {% block footer_extra %}
-<a href="/plan/{{ view.plan.id }}/book.json">raw book.json</a> · <a href="/plan/{{ view.plan.id }}/events.jsonl">events.jsonl</a>
+{# document-relative: page sits at /plan/<id>, raw files one level deeper #}
+<a href="{{ view.plan.id }}/book.json">raw book.json</a> · <a href="{{ view.plan.id }}/events.jsonl">events.jsonl</a>
 {% endblock %}
 {% block content %}
 {# ----- runbook banner ----- #}

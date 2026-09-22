@@ -54,7 +54,7 @@
     <h1>{% block heading %}Options book{% endblock %}</h1>
   </div>
   <div style="text-align: right;">
-    <a href="/">All plans</a>
+    <a href="{{ home | default('/') }}">All plans</a>
     <p class="muted" style="margin: 4px 0 0; font-size: 0.82rem;">auto-refresh 30s · broker-free</p>
   </div>
 </header>
