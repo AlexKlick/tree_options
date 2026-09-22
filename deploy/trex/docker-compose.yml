@@ -1,7 +1,15 @@
 # IB Gateway (IBC) in paper mode for trex.
 # Credentials: cp ib.env.example ~/.config/trex/ib.env (chmod 600) and fill in.
-# Paper API lands on 127.0.0.1:4002; noVNC on 127.0.0.1:6080 for the rare
-# manual login/2FA look. Never expose these ports beyond loopback.
+# Paper API lands on 127.0.0.1:4002.
+#
+# The gateway image ships **x11vnc** (raw VNC on 5900), not noVNC — and it
+# only starts x11vnc when VNC_SERVER_PASSWORD is set. The `novnc` sidecar
+# below bridges that VNC session to a browser UI on 127.0.0.1:6080 for the
+# rare manual login / 2FA look.
+#
+# Both host bindings stay on loopback. To reach the noVNC UI from another
+# machine, put it on the tailnet with `tailscale serve` (tailnet-only) —
+# never `tailscale funnel`, which would publish a live broker session.
 services:
   ib-gateway:
     image: ghcr.io/gnzsnz/ib-gateway:10.51.1a
@@ -10,17 +18,47 @@ services:
     env_file: ${TREX_IB_ENV:-/home/alexk/.config/trex/ib.env}
     environment:
       TRADING_MODE: paper
+      # The gateway defaults its API to Read-Only, which rejects
+      # ReqOpenOrders/placeOrder. trex needs order rights on the paper
+      # account. (Equivalent GUI path: Configure > Settings > API >
+      # Settings > uncheck "Read-Only API".)
+      READ_ONLY_API: "no"
+    # The host's uplink DNS list leads with a stale LAN resolver, so Docker's
+    # embedded resolver stalls and the gateway reports "No Internet connection"
+    # while raw-IP egress still works. Pin public resolvers.
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
     ports:
-      - "127.0.0.1:4002:4002"
-      - "127.0.0.1:6080:6080"
+      # The gateway binds its API to container-localhost only; the image's
+      # socat bridge on 4004 is the externally reachable end. Host 4002
+      # (what trex connects to) -> container 4004 -> gateway's 127.0.0.1:4002.
+      - "127.0.0.1:4002:4004"
     volumes:
       - ibgw-settings:/home/ibgateway
     healthcheck:
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 4002 || exit 1"]
+      # The image ships no `nc` — socat is present (the image's own 4004
+      # bridge uses it). Probe the gateway's API socket directly.
+      test: ["CMD-SHELL", "socat /dev/null TCP:127.0.0.1:4002,connect-timeout=5 || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 10
       start_period: 120s
+
+  novnc:
+    image: geek1011/easy-novnc:latest
+    container_name: trex-novnc
+    restart: unless-stopped
+    depends_on:
+      - ib-gateway
+    command:
+      - --addr=:6080
+      - --host=ib-gateway
+      - --port=5900
+      - --basic-ui
+      - --no-url-password
+    ports:
+      - "127.0.0.1:6080:6080"
 
 volumes:
   ibgw-settings:

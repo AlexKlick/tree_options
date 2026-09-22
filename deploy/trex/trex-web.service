@@ -1,0 +1,24 @@
+[Unit]
+Description=trex read-only HTTP status panel (loopback :8090)
+Documentation=file:///home/alexk/documents/tree_options/src/tree_options/trex_web/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alexk/documents/tree_options
+ExecStart=/home/alexk/.local/bin/uv run --group trex-web python -m tree_options.trex_web --host 127.0.0.1 --port 8090
+Restart=on-failure
+RestartSec=5
+# Read-only operator tool: only the trex state dir under %h/.local/state/trex
+# is read. Hardening mirrors fileviewer.service; we keep ProtectSystem=strict
+# but allow uv's cache so ``uv run`` doesn't trip on its temp-file lock.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/alexk/.cache/uv /home/alexk/.local/share/uv
+RestrictAddressFamilies=AF_INET AF_INET6
+
+[Install]
+WantedBy=default.target

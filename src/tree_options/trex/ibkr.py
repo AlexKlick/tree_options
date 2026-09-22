@@ -125,12 +125,16 @@ class IbkrTrex:
                 spread.underlying, Stock(spread.underlying, "SMART", "USD")
             )
 
-        self._ib.qualifyContracts(*option_legs)
-        # qualifyContracts fills conId in place; a leg it could not resolve
-        # is left with conId 0.
-        unqualified = [str(c) for c in option_legs if getattr(c, "conId", 0) == 0]
+        # Spot stocks are qualified alongside the option legs, not separately:
+        # they are used as ``_tickers`` / ``_spots`` dict keys below, and
+        # ib_async refuses to hash a Contract whose conId is still unset.
+        to_qualify = [*option_legs, *spot_contracts.values()]
+        self._ib.qualifyContracts(*to_qualify)
+        # qualifyContracts fills conId in place; a contract it could not
+        # resolve is left with conId 0.
+        unqualified = [str(c) for c in to_qualify if getattr(c, "conId", 0) == 0]
         if unqualified:
-            raise RuntimeError(f"unqualified option legs: {unqualified}")
+            raise RuntimeError(f"unqualified contracts: {unqualified}")
 
         for spread in spreads:
             long_leg = self._legs[(spread.id, "long")]

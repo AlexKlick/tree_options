@@ -21,6 +21,15 @@ dev = [
 trex = [
     "ib-async>=2.1.0",
 ]
+trex-web = [
+    # Read-only status panel (HTTP). Kept broker-free: never pulls ib_async
+    # so the base env / test gate stays green without an IB Gateway.
+    "fastapi>=0.110,<0.116",  # pin upper: fastapi 0.116 pins starlette >=1.0 which drops anyio compat
+    "uvicorn[standard]>=0.29",
+    "jinja2>=3.1",
+    "httpx>=0.27",  # required by fastapi.testclient.TestClient
+    "anyio>=4.0,<4.8",  # pin upper: anyio 4.8 deprecates BlockingPortal; starlette 0.x still uses it
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -56,7 +65,15 @@ testpaths = ["tests"]
 addopts = "-q"
 # Fail-closed default: strict about unexpected warnings would be nice, but the
 # gate is the mutation harness; keep the run deterministic instead.
-filterwarnings = ["error::DeprecationWarning:tree_options.*"]
+filterwarnings = [
+    "error::DeprecationWarning:tree_options.*",
+    # starlette 1.0+ uses anyio.abc.BlockingPortal which is deprecated by
+    # anyio itself; the test surface is unaffected. Without this filter the
+    # trex_web tests blow up on `-W error` from starlette's own import path.
+    "ignore:.*BlockingPortal.*deprecated",
+    "ignore::DeprecationWarning:anyio._lazyimport",
+    "ignore::DeprecationWarning:starlette.testclient",
+]
 
 [tool.mypy]
 python_version = "3.12"

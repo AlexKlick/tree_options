@@ -1,0 +1,194 @@
+{% extends "base.html" %}
+{% block heading %}Plan {{ view.plan.id }}{% endblock %}
+{% block footer_extra %}
+<a href="/plan/{{ view.plan.id }}/book.json">raw book.json</a> · <a href="/plan/{{ view.plan.id }}/events.jsonl">events.jsonl</a>
+{% endblock %}
+{% block content %}
+{# ----- runbook banner ----- #}
+{% set rb = runbook %}
+{% set gw = gateway_reachable %}
+<section class="card" style="border-color: {% if rb.window_state == 'during' and not view.armed %}#5a4a1f{% elif rb.window_state == 'after' and not view.armed %}#5a2f1f{% else %}#344259{% endif %};">
+  <div class="card-head">
+    <div>
+      <div class="eyebrow">live runbook</div>
+      <h2 style="margin: 4px 0;">
+        {% if view.armed %}
+          <span class="pill pill-armed">● armed</span> monitor is live
+        {% elif view.heartbeat %}
+          <span class="pill pill-disarmed">● disarmed</span> heartbeat stale
+        {% else %}
+          <span class="pill pill-empty">○ not armed</span> monitor has not started
+        {% endif %}
+      </h2>
+      <p class="muted" style="margin: 6px 0 0;">
+        Current ET: <code>{{ rb.now_et.strftime('%Y-%m-%d %H:%M:%S') }}</code> ·
+        Entry date: <code>{{ rb.entry_date }}</code>
+      </p>
+    </div>
+    <div style="text-align: right;">
+      {% if rb.window_state == 'during' %}
+        <span class="pill pill-armed">● entry window open</span>
+      {% elif rb.window_state == 'before' %}
+        <span class="pill pill-empty">○ window opens {{ rb.window_start.strftime('%H:%M') }}</span>
+      {% elif rb.window_state == 'after' %}
+        <span class="pill pill-disarmed">● window closed at {{ rb.window_end.strftime('%H:%M') }} ET</span>
+      {% else %}
+        <span class="pill pill-empty">○ entry date {{ rb.entry_date }} is not today</span>
+      {% endif %}
+      {% if gw %}
+        <p class="muted" style="margin: 6px 0 0; font-size: 0.82rem;">
+          <span class="pill pill-armed">● gateway :4002</span>
+        </p>
+      {% else %}
+        <p class="muted" style="margin: 6px 0 0; font-size: 0.82rem;">
+          <span class="pill pill-disarmed">○ gateway :4002 not reachable</span>
+        </p>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if not view.state_present %}
+  <hr style="border: 0; border-top: 1px solid #344259; margin: 16px 0;">
+  <p class="muted" style="margin: 0 0 8px;">
+    <strong>Why no state:</strong>
+    the monitor service has not written <code>book.json</code> for this plan.
+    Without it, there are no fills, no heartbeat, no events to render.
+  </p>
+  <p class="muted" style="margin: 0 0 8px;">Runbook:</p>
+  <pre><code># 1. paper creds (one-time)
+cp ~/documents/tree_options/deploy/trex/ib.env.example ~/.config/trex/ib.env
+chmod 600 ~/.config/trex/ib.env
+$EDITOR ~/.config/trex/ib.env   # set TWS_USERNAME, TWS_PASSWORD, TRADING_MODE=paper
+
+# 2. bring up the IB Gateway paper container (loopback :4002)
+docker compose -f ~/documents/tree_options/deploy/trex/docker-compose.yml up -d
+
+# 3. arm the exit machine (writes heartbeat + book.json on every poll)
+systemctl --user enable --now trex-monitor.service
+
+# 4. follow the heartbeat (window 09:45–12:00 ET today)
+journalctl --user -u trex-monitor.service -f</code></pre>
+  {% endif %}
+</section>
+
+{# ----- plan summary ----- #}
+<section class="card" style="margin-top: 18px;">
+  <div class="card-head">
+    <div>
+      <h2 style="margin-bottom: 4px;">{{ view.plan.id }}</h2>
+      <p class="muted" style="margin: 0;">
+        Account: <strong>{{ view.plan.account_mode|upper }}</strong> ·
+        Window: <strong>{{ view.plan.entry_window_start }}–{{ view.plan.entry_window_end }}</strong> ET ·
+        Book cap: <strong>${{ "{:,.2f}".format(view.plan.total_debit_cap) }}</strong> ·
+        At caps: <strong>${{ "{:,.2f}".format(view.plan.committed_at_caps) }}</strong>
+      </p>
+    </div>
+    <div style="text-align: right;">
+      {% if view.heartbeat %}
+        <p class="muted" style="margin: 6px 0 0; font-size: 0.82rem;">
+          last heartbeat: <code>{{ view.heartbeat.strftime('%Y-%m-%d %H:%M:%S %Z') }}</code>
+        </p>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<h2 style="margin-top: 28px;">Structures</h2>
+<div class="grid">
+  {% for s in view.plan.structures %}
+  {% set st = view.structures.get(s.id) %}
+  {% set ddl = rb.days_to_exit_deadline.get(s.id, '?') %}
+  {% set dexp = rb.days_to_expiry.get(s.id, '?') %}
+  <div class="card">
+    <div class="card-head">
+      <h3>
+        {{ s.id }}
+        <span class="muted">·</span>
+        <span class="strike">{{ s.long_strike }}/{{ s.short_strike }}</span>
+        <span class="muted">· {{ s.underlying }}</span>
+      </h3>
+      {% if st %}<span class="badge badge-{{ st.state.value }}">{{ st.state.value }}</span>{% endif %}
+    </div>
+    <p class="muted" style="margin: 4px 0 4px;">
+      Qty {{ s.quantity }} ·
+      Cap ${{ "{:.2f}".format(s.limit_cap) }} ·
+      Width {{ s.width }}
+    </p>
+    <p class="muted" style="margin: 0 0 12px;">
+      Expiry <strong>{{ s.expiry.strftime('%Y-%m-%d') }}</strong>
+      {% if dexp is number %}
+        ({{ dexp }}d{% if dexp < 0 %}, past{% endif %})
+      {% endif %}
+      <br>
+      Deadline <strong>{{ s.exit_deadline.strftime('%Y-%m-%d') }}</strong>
+      {% if ddl is number %}
+        ({{ ddl }}d
+        {% if ddl < 0 %}
+          <span class="pnl-neg">— deadline passed, should be flattened</span>
+        {% elif ddl <= 7 %}
+          <span class="pnl-neg">— flatten window starts in {{ ddl }}d</span>
+        {% endif %})
+      {% endif %}
+    </p>
+    {% if st %}
+    <dl class="kv">
+      <dt>Entry fill</dt><dd>{{ "%.2f"|format(st.entry_fill) if st.entry_fill is not none else "—" }}</dd>
+      <dt>Filled qty</dt><dd>{{ st.filled_qty }} / {{ s.quantity }}</dd>
+      <dt>Open qty</dt><dd>{{ st.open_qty }}</dd>
+      <dt>Exit fill</dt><dd>{{ "%.2f"|format(st.exit_fill) if st.exit_fill is not none else "—" }}</dd>
+      <dt>Exit filled qty</dt><dd>{{ st.exit_filled_qty }}</dd>
+      <dt>Entry cycles</dt><dd>{{ st.entry_cycles }}</dd>
+      <dt>Exit cycles</dt><dd>{{ st.exit_cycles }}</dd>
+      {% if st.exit_reason %}<dt>Exit reason</dt><dd>{{ st.exit_reason }}</dd>{% endif %}
+      {% if st.close_reason %}<dt>Close reason</dt><dd>{{ st.close_reason }}</dd>{% endif %}
+      {% if st.touch_ts %}<dt>First touch</dt><dd>{{ st.touch_ts.strftime('%Y-%m-%d %H:%M:%S %Z') }}</dd>{% endif %}
+      {% if st.updated_at %}<dt>Last update</dt><dd>{{ st.updated_at.strftime('%Y-%m-%d %H:%M:%S %Z') }}</dd>{% endif %}
+      {% if st.realized_pnl is not none %}
+        {% if st.realized_pnl >= 0 %}
+        <dt>Realized P&amp;L</dt><dd class="pnl-pos">${{ "{:,.2f}".format(st.realized_pnl) }}</dd>
+        {% else %}
+        <dt>Realized P&amp;L</dt><dd class="pnl-neg">${{ "{:,.2f}".format(st.realized_pnl) }}</dd>
+        {% endif %}
+      {% endif %}
+    </dl>
+    {% else %}
+    <p class="muted">No state persisted for this structure yet.</p>
+    {% endif %}
+  </div>
+  {% endfor %}
+</div>
+
+<h2 style="margin-top: 28px;">
+  Events <span class="muted" style="font-size: 0.86rem;">(last {{ view.events|length }})</span>
+</h2>
+{% if view.events %}
+<div class="card" style="overflow-x: auto;">
+  <table>
+    <thead>
+      <tr><th style="width: 200px;">Time (ET)</th><th style="width: 160px;">Event</th><th>Details</th></tr>
+    </thead>
+    <tbody>
+      {% for e in view.events|reverse %}
+      <tr>
+        <td class="muted"><code>{{ e.get('ts', '?') }}</code></td>
+        <td><code>{{ e.get('event', '?') }}</code></td>
+        <td><code>{{ e | tojson }}</code></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card">
+  <p class="muted" style="margin: 0;">
+    {% if view.state_present %}
+    No events recorded yet for this run.
+    {% else %}
+    No events yet — the monitor has not armed for this plan.
+    Once armed, the touch-exit / time-stop supervisors append to
+    <code>{{ view.plan.id }}/events.jsonl</code> as state changes.
+    {% endif %}
+  </p>
+</div>
+{% endif %}
+{% endblock %}
