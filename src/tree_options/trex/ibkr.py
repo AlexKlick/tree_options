@@ -21,6 +21,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any
 
+from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.engine import ComboQuote, Snapshot
 from tree_options.trex.plan import PutSpread
 
@@ -253,3 +254,58 @@ class IbkrTrex:
     def sleep(self, seconds: float) -> None:
         """Pump the event loop (ib_async needs its own sleep, not time.sleep)."""
         self._ib.sleep(seconds)
+
+    # -- account -----------------------------------------------------------
+
+    def account_snapshot(self) -> AccountSnapshot | None:
+        """Net liq / cash / buying power from the gateway session.
+
+        Reads the cached accountValues rows first (ib_async auto-subscribes
+        account updates on connect); falls back to ``accountSummary(account)``
+        — which RETURNS rows — when the cache is empty. Never fabricates:
+        a NaN or missing tag means None, not zero.
+        """
+        from datetime import datetime
+
+        from tree_options.trex.clock import ET
+
+        assert self._ib is not None
+        ib = self._ib
+        rows = list(ib.accountValues())
+        if not rows:
+            accounts = list(ib.managedAccounts())
+            if not accounts:
+                return None
+            rows = list(ib.accountSummary(accounts[0]))
+        if not rows:
+            return None
+
+        def tag(tag_name: str) -> Decimal | None:
+            for row in rows:
+                if row.tag != tag_name:
+                    continue
+                try:
+                    value = Decimal(str(row.value))
+                except Exception:  # junk value: treated as absent
+                    continue
+                if value == value and value.is_finite():  # NaN guard
+                    return value
+            return None
+
+        net_liquidation = tag("NetLiquidation")
+        cash = tag("TotalCashValue")
+        buying_power = tag("BuyingPower")
+        if net_liquidation is None or cash is None or buying_power is None:
+            return None
+        account_id = next((str(r.account) for r in rows if getattr(r, "account", "")), "")
+        if not account_id:
+            accounts = list(ib.managedAccounts())
+            account_id = accounts[0] if accounts else ""
+        return AccountSnapshot(
+            account_id=account_id,
+            net_liquidation=net_liquidation,
+            cash=cash,
+            buying_power=buying_power,
+            currency="USD",
+            ts=datetime.now(ET),
+        )
