@@ -80,3 +80,59 @@ def net_positions(
         row["unrealized"] = sum(vals) if vals else None
         rows.append(row)
     return rows
+
+
+def merge_net_positions(
+    rows_per_plan: list[tuple[str, list[dict[str, Any]]]],
+) -> list[dict[str, Any]]:
+    """Portfolio-level net positions: merge per-plan rows by underlying.
+
+    Feeds the plans index, where the operator expects to see current
+    positions without clicking into a plan. ``rows_per_plan`` carries the
+    owning plan id per row list so a structure id colliding across plans
+    (nvda-oct exists in every weekly book) is disambiguated instead of
+    producing duplicate React keys downstream.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for plan_id, plan_rows in rows_per_plan:
+        for row in plan_rows:
+            key = str(row["underlying"])
+            target = merged.setdefault(
+                key,
+                {
+                    "underlying": key,
+                    "structure_count": 0,
+                    "open_qty": 0,
+                    "committed": 0.0,
+                    "max_gain": 0.0,
+                    "short_floor": row["short_floor"],
+                    "long_ceiling": row["long_ceiling"],
+                    "legs": [],
+                    "unrealized_vals": [],
+                },
+            )
+            target["structure_count"] += int(row["structure_count"])
+            target["open_qty"] += int(row["open_qty"])
+            target["committed"] += float(row["committed"])
+            target["max_gain"] += float(row["max_gain"])
+            target["short_floor"] = min(target["short_floor"], row["short_floor"])
+            target["long_ceiling"] = max(target["long_ceiling"], row["long_ceiling"])
+            for leg in row["legs"]:
+                leg = dict(leg)
+                sid = str(leg["structure_id"])
+                if any(str(other["structure_id"]) == sid for other in target["legs"]):
+                    leg["structure_id"] = f"{plan_id}/{sid}"
+                target["legs"].append(leg)
+            if row["unrealized"] is not None:
+                target["unrealized_vals"].append(float(row["unrealized"]))
+
+    rows: list[dict[str, Any]] = []
+    for row in merged.values():
+        vals: list[float] = row.pop("unrealized_vals")
+        open_qty = int(row["open_qty"])
+        row["avg_entry"] = row["committed"] / open_qty / MULT if open_qty else None
+        row["max_loss"] = -float(row["committed"])
+        row["unrealized"] = sum(vals) if vals else None
+        rows.append(row)
+    rows.sort(key=lambda r: str(r["underlying"]))
+    return rows

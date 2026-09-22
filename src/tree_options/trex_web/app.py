@@ -22,7 +22,7 @@ from tree_options.trex_web.payoff import (
     summarize_book,
 )
 from tree_options.trex_web.portfolio import plan_realized, plan_unrealized, portfolio_rollup
-from tree_options.trex_web.positions import net_positions
+from tree_options.trex_web.positions import merge_net_positions, net_positions
 from tree_options.trex_web.reader import (
     compute_runbook_status_from_view,
     list_plans,
@@ -143,11 +143,39 @@ def _plans_payload(
     """GET /api/plans body: per-plan summaries + portfolio + account."""
     plans: list[dict[str, object]] = []
     rollup_entries: list[tuple[Any, dict[str, Any] | None]] = []
+    position_rows: list[tuple[str, list[dict[str, Any]]]] = []
     for view in list_plans(state_root, plans_root):
         rb = compute_runbook_status_from_view(view)
         marks = load_marks(state_root, view.plan.id)
+        marks_view = _marks_payload(marks)
         u_open, u_filled = plan_unrealized(view, marks)
         realized, _partial = plan_realized(view)
+        specs = [
+            {
+                "id": s.id,
+                "underlying": s.underlying,
+                "long_strike": float(s.long_strike),
+                "short_strike": float(s.short_strike),
+                "expiry": s.expiry.isoformat(),
+            }
+            for s in view.plan.structures
+        ]
+        states = {
+            sid: {
+                "open_qty": st.open_qty,
+                "entry_fill": float(st.entry_fill) if st.entry_fill is not None else None,
+            }
+            for sid, st in view.structures.items()
+            if st is not None
+        }
+        position_rows.append(
+            (
+                view.plan.id,
+                net_positions(
+                    specs, states, marks_view.get("structures") if marks_view else None
+                ),
+            )
+        )
         plans.append(
             {
                 "id": view.plan.id,
@@ -179,6 +207,7 @@ def _plans_payload(
         "gateway_reachable": probe_gateway(),
         "plans": plans,
         "portfolio": portfolio,
+        "net_positions": merge_net_positions(position_rows),
         "account": account_payload,
         "accounts_seen": accounts_seen,
     }

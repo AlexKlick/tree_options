@@ -92,7 +92,8 @@ button.card.plan-card:focus-visible {
 button.card.plan-card:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .plan-card p { margin: 4px 0 12px; }
 
-.pill-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.pill-row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.card-open-hint { margin-left: auto; font-size: 0.85rem; white-space: nowrap; }
 
 .pill {
   display: inline-block;

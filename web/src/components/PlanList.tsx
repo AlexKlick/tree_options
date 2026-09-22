@@ -6,6 +6,7 @@ import type { PlanSummary } from '../lib/types'
 import { AppShell } from './AppShell'
 import { Pill } from './Pill'
 import { PortfolioTiles } from './PortfolioTiles'
+import { NetPositionsTable } from './NetPositionsTable'
 
 function WindowPill({ p }: { p: PlanSummary }) {
   if (p.window_state === 'during') return <Pill variant="armed">● window open</Pill>
@@ -61,6 +62,7 @@ function PlanCard({ p }: { p: PlanSummary }) {
           <Pill variant="empty">○ no heartbeat</Pill>
         )}
         <WindowPill p={p} />
+        <span className="muted card-open-hint">open plan →</span>
       </div>
     </button>
   )
@@ -86,7 +88,19 @@ export function PlanList() {
       ) : (
         <>
           <PortfolioTiles portfolio={d?.portfolio ?? null} account={d?.account ?? null} />
-          <div className="grid" style={{ marginTop: 18 }}>
+          {(d?.net_positions ?? []).length > 0 ? (
+            <>
+              <h2 className="section-title" style={{ marginTop: 24 }}>
+                Current positions{' '}
+                <span className="muted section-sub">
+                  (all plans · per underlying · click a plan for legs, fills, payoff)
+                </span>
+              </h2>
+              <NetPositionsTable rows={d?.net_positions ?? []} />
+            </>
+          ) : null}
+          <h2 className="section-title" style={{ marginTop: 24 }}>Plans</h2>
+          <div className="grid">
             {d?.plans.map((p) => <PlanCard key={p.id} p={p} />)}
           </div>
         </>

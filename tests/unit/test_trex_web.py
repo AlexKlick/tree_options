@@ -10,10 +10,12 @@ endpoints, and the shell/shim behavior.
 from __future__ import annotations
 
 import json
+import os
 import unittest.mock
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -28,7 +30,7 @@ from tree_options.trex_web.payoff import (
     pnl_history_series,
     summarize_book,
 )
-from tree_options.trex_web.positions import net_positions
+from tree_options.trex_web.positions import merge_net_positions, net_positions
 
 # ---------------------------------------------------------------------------
 # fixtures
@@ -75,8 +77,18 @@ def _write_plan(
     return path
 
 
-def _client(state_root: Path, plans_root: Path) -> TestClient:
-    return TestClient(create_app(state_dir=str(state_root), plans_dir=str(plans_root)))
+def _client(state_root: Path, plans_root: Path, discovery_dir: Path | None = None) -> TestClient:
+    """Isolate the discovery surface from host state: the DEPLOYED
+    ~/.local/state/trex-discovery/account.json and ~/.config/trex/discovery.toml
+    otherwise leak into every default-config app built here."""
+    discovery = discovery_dir if discovery_dir is not None else state_root.parent / "discovery"
+    return TestClient(
+        create_app(
+            state_dir=str(state_root),
+            plans_dir=str(plans_root),
+            discovery_dir=str(discovery),
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -561,6 +573,71 @@ class TestNetPositions:
         assert net_positions(self._specs(), working, {}) == []
 
 
+class TestMergeNetPositions:
+    """Portfolio-level net positions: per-plan rows merged by underlying so
+    the plans index can show current positions without a detail fetch."""
+
+    def _row(
+        self,
+        underlying: str,
+        open_qty: int,
+        entry: float,
+        unrealized: float | None = None,
+        sid: str = "nvda-oct",
+    ) -> list[dict[str, Any]]:
+        specs = [
+            {
+                "id": sid,
+                "underlying": underlying,
+                "long_strike": 185.0,
+                "short_strike": 150.0,
+                "expiry": "2026-10-16",
+            }
+        ]
+        states = {sid: {"entry_fill": entry, "filled_qty": open_qty, "open_qty": open_qty}}
+        marks = {sid: {"unrealized": unrealized}} if unrealized is not None else {}
+        return net_positions(specs, states, marks)
+
+    def test_same_underlying_across_plans_merges(self) -> None:
+        a = self._row("NVDA", 5, 0.21, unrealized=-5.0)
+        b = self._row("NVDA", 3, 1.24, sid="nvda-nov")
+        merged = merge_net_positions([("plan-a", a), ("plan-b", b)])
+        assert len(merged) == 1
+        row = merged[0]
+        assert row["open_qty"] == 8
+        assert row["structure_count"] == 2
+        committed = 0.21 * 5 * 100 + 1.24 * 3 * 100
+        assert row["committed"] == pytest.approx(committed)
+        assert row["avg_entry"] == pytest.approx(committed / 8 / 100)
+        assert row["max_loss"] == pytest.approx(-committed)
+        assert row["max_gain"] == pytest.approx((35 - 0.21) * 500 + (35 - 1.24) * 300)
+        assert row["unrealized"] == pytest.approx(-5.0)
+        assert [leg["structure_id"] for leg in row["legs"]] == ["nvda-oct", "nvda-nov"]
+
+    def test_structure_id_collision_across_plans_is_disambiguated(self) -> None:
+        a = self._row("NVDA", 5, 0.21)
+        b = self._row("NVDA", 3, 1.24)  # same structure id in another plan
+        merged = merge_net_positions([("p1", a), ("p2", b)])
+        ids = [leg["structure_id"] for leg in merged[0]["legs"]]
+        assert len(ids) == 2
+        assert len(set(ids)) == 2  # no duplicate React keys
+
+    def test_distinct_underlyings_stay_separate_and_sorted(self) -> None:
+        qqq = self._row("QQQ", 2, 0.50, sid="qqq-a")
+        amd = self._row("AMD", 1, 0.50, sid="amd-a")
+        merged = merge_net_positions([("p1", qqq), ("p2", amd)])
+        assert [r["underlying"] for r in merged] == ["AMD", "QQQ"]
+
+    def test_unrealized_none_when_no_plan_had_quotes(self) -> None:
+        a = self._row("NVDA", 5, 0.21)
+        b = self._row("NVDA", 3, 1.24, sid="nvda-nov")
+        assert merge_net_positions([("p1", a), ("p2", b)])[0]["unrealized"] is None
+
+    def test_empty_inputs(self) -> None:
+        assert merge_net_positions([]) == []
+        assert merge_net_positions([("p1", [])]) == []
+
+
 class TestPortfolioPayload:
     """C11: cross-plan rollup + freshest account in /api/plans."""
 
@@ -607,6 +684,21 @@ class TestPortfolioPayload:
         assert pf["unrealized_open"] == pytest.approx(-5.0)  # (0.20-0.21)*5*100
         assert pf["unrealized_filled"] == pytest.approx(-5.0)
         assert pf["marks_stale"] is False
+
+    def test_net_positions_top_level(self, tmp_path: Path) -> None:
+        """The plans index carries current positions so the operator does
+        not need to click into a plan to see the book."""
+        self._seed_open_book(tmp_path)
+        client = _client(tmp_path / "state", tmp_path / "plans")
+        rows = client.get("/api/plans").json()["net_positions"]
+        assert len(rows) == 1  # qqq-nov never filled -> no row
+        row = rows[0]
+        assert row["underlying"] == "NVDA"
+        assert row["open_qty"] == 5
+        assert row["committed"] == pytest.approx(105.0)
+        assert row["unrealized"] == pytest.approx(-5.0)
+        assert row["legs"][0]["structure_id"] == "nvda-oct"
+        assert row["legs"][0]["entry"] == pytest.approx(0.21)
 
     def test_per_plan_unrealized_and_realized(self, tmp_path: Path) -> None:
         self._seed_open_book(tmp_path)
@@ -693,8 +785,13 @@ class TestDiscoveryEndpoints:
         )
 
     def test_empty_state(self, tmp_path: Path) -> None:
-        client = self._client(tmp_path)
-        payload = client.get("/api/discovery").json()
+        # pin the config path too: the deployed ~/.config/trex/discovery.toml
+        # would flip config_present on any host where the lane is installed
+        with unittest.mock.patch.dict(
+            os.environ, {"TREX_DISCOVERY_CONFIG": str(tmp_path / "absent.toml")}
+        ):
+            client = self._client(tmp_path)
+            payload = client.get("/api/discovery").json()
         assert payload["latest"] is None
         assert payload["runs"] == []
         assert payload["spool"]["pending"] is False

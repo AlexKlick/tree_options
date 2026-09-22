@@ -71,6 +71,8 @@ export interface PlansResponse {
   gateway_reachable: boolean
   plans: PlanSummary[]
   portfolio: PortfolioBlock
+  /** Portfolio-level net exposure; null during the API restart window. */
+  net_positions: NetPosition[] | null
   account: AccountBlock | null
   accounts_seen: string[]
 }
