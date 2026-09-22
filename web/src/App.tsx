@@ -4,6 +4,8 @@ import { DensityProvider } from './density'
 import { DiscoverPage } from './components/DiscoverPage'
 import { PerformancePage } from './components/PerformancePage'
 import { PlanDetail } from './components/PlanDetail'
+import { MarketPage } from './components/MarketPage'
+import { SymbolPage } from './components/SymbolPage'
 import { PlanList } from './components/PlanList'
 
 export default function App() {
@@ -21,6 +23,10 @@ export default function App() {
         <DiscoverPage />
       ) : route.view === 'stats' ? (
         <PerformancePage />
+      ) : route.view === 'market' ? (
+        <MarketPage />
+      ) : route.view === 'symbol' ? (
+        <SymbolPage key={route.id} sym={route.id} />
       ) : (
         <PlanList />
       )}

@@ -114,6 +114,10 @@ class TestSpool:
         assert first is not None
         assert first[0] == "req-1"
         assert second is None  # the request is claimed; no read-then-unlink race
+        # retain-until-complete: the request persists while claimed, so a
+        # crashed runner's acknowledged request is never lost
+        assert spool_pending(tmp_path) is True
+        complete_scan(tmp_path, "req-1", {"request_id": "req-1", "status": "ok"})
         assert spool_pending(tmp_path) is False
 
     def test_complete_scan_writes_result_and_frees_claim(self, tmp_path: Path) -> None:
@@ -122,6 +126,7 @@ class TestSpool:
         result = {"request_id": "req-1", "status": "ok", "run_id": "r1"}
         complete_scan(tmp_path, "req-1", result)
         assert list(tmp_path.glob("scan.claim.*")) == []
+        assert list(tmp_path.glob("scan.request.*")) == []
         got = read_scan_result(tmp_path)
         assert got is not None and got["request_id"] == "req-1"
 
@@ -132,11 +137,16 @@ class TestSpool:
         claim = next(tmp_path.glob("scan.claim.*"))
         stale = time.time() - STALE_CLAIM_SECONDS - 5
         os.utime(claim, (stale, stale))
-        # a new request arrives; the stale claim must not block it
+        # reclaim RETURNS the retained request to the pool (a crashed
+        # runner's acknowledged request is re-executed, not lost), then
+        # the later request follows in ts order
         write_scan_request(tmp_path, "req-2", NOW + timedelta(seconds=1))
         won = claim_scan_request(tmp_path, now=NOW + timedelta(seconds=2))
         assert won is not None
-        assert won[0] == "req-2"
+        assert won[0] == "req-1"  # requeued after the stale reclaim
+        complete_scan(tmp_path, "req-1", {"request_id": "req-1", "status": "ok"})
+        again = claim_scan_request(tmp_path, now=NOW + timedelta(seconds=3))
+        assert again is not None and again[0] == "req-2"
 
     def test_empty_spool_is_none(self, tmp_path: Path) -> None:
         assert spool_pending(tmp_path) is False

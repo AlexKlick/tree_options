@@ -3,7 +3,9 @@ import type {
   PlanDetailResponse,
   PlansResponse,
   ScanRequestResponse,
+  MarketResponse,
   StatsResponse,
+  SymbolDetail,
 } from './types'
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -34,3 +36,27 @@ export const getStats = (): Promise<StatsResponse> => fetchJson('api/stats')
 
 export const requestScan = (): Promise<ScanRequestResponse> =>
   fetchJson('api/discovery/scan', { method: 'POST' })
+
+export const getMarket = (): Promise<MarketResponse> => fetchJson('api/market')
+
+export const getSymbol = (sym: string): Promise<SymbolDetail> =>
+  fetchJson(`api/market/${encodeURIComponent(sym)}`)
+
+export const requestMarketRefresh = (
+  symbols?: string[],
+): Promise<{ accepted: boolean; request_id: string }> =>
+  fetchJson('api/market/refresh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(symbols ? { symbols } : {}),
+  })
+
+export const watchOp = (
+  op: 'add' | 'remove',
+  symbol: string,
+): Promise<{ accepted: boolean; request_id: string }> =>
+  fetchJson('api/market/watch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ op, symbol }),
+  })

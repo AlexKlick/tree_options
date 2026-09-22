@@ -410,3 +410,20 @@ footer {
     animation-duration: 0.01ms !important;
   }
 }
+
+/* market desk */
+.chip-input {
+  background: var(--panel, #0b1322);
+  border: 1px solid var(--border, #23304a);
+  color: inherit;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font: inherit;
+  min-width: 150px;
+}
+.quote-card-wrap { display: flex; flex-direction: column; gap: 6px; }
+.quote-card { text-decoration: none; }
+.chip-subtle { align-self: flex-start; opacity: 0.75; }
+.news-list { margin: 0; padding-left: 18px; }
+.news-list li { margin-bottom: 10px; }
+.news-list a { color: inherit; }

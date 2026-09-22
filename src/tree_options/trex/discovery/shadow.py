@@ -217,6 +217,66 @@ def _intrinsic(pos: ShadowPosition, spot: float) -> float:
     return (max(0.0, pos.long_strike - spot) - max(0.0, pos.short_strike - spot))
 
 
+def mark_from_chain(
+    book: ShadowBook,
+    chains: dict[str, Any],
+    now: datetime,
+    spots: dict[str, float] | None = None,
+) -> ShadowBook:
+    """Mark open shadows from CBOE full-chain rows (the M5 upgrade).
+
+    ``chains``: {symbol: {expiry_yyyymmdd: {strike: {bid, ask, ...}}}}
+    - strike keys arrive as JSON strings through the cache; both forms
+    are accepted. Value = mid(long) - mid(short); a leg miss carries the
+    last mark (source 'carry'). Past expiry finalizes at intrinsic with
+    the spot when known.
+    """
+    spots = spots or {}
+    marks: list[dict[str, Any]] = []
+    for pos in book.positions:
+        if pos.status != "open":
+            continue
+        expiry = datetime.strptime(pos.expiry, "%Y%m%d").date()
+        if now.date() > expiry:
+            spot = spots.get(pos.underlying)
+            if spot is not None:
+                _apply_mark(pos, _intrinsic(pos, spot), now, "intrinsic-approx")
+                pos.final_pnl = pos.pnl
+                pos.status = "expired"
+            continue
+        rows = (chains.get(pos.underlying) or {}).get(pos.expiry) or {}
+        by_strike: dict[float, dict[str, Any]] = {}
+        for key, row in rows.items():
+            try:
+                by_strike[float(key)] = row
+            except (TypeError, ValueError):
+                continue
+        long_row = by_strike.get(pos.long_strike)
+        short_row = by_strike.get(pos.short_strike)
+
+        def _mid(row: dict[str, Any] | None) -> float | None:
+            if not row or row.get("bid") is None or row.get("ask") is None:
+                return None
+            bid, ask = float(row["bid"]), float(row["ask"])
+            if bid <= 0 or ask < bid:
+                return None
+            return (bid + ask) / 2
+
+        long_mid, short_mid = _mid(long_row), _mid(short_row)
+        if long_mid is not None and short_mid is not None:
+            _apply_mark(pos, long_mid - short_mid, now, "chain")
+        elif pos.last_mark is not None:
+            pos.mark_source = "carry"
+            pos.last_mark_at = now.isoformat()
+        else:
+            pos.mark_source = "none"
+        if pos.pnl is not None:
+            marks.append(
+                {"key": pos.key, "value": pos.last_mark, "pnl": pos.pnl, "source": pos.mark_source}
+            )
+    return book
+
+
 def mark_from_payload(
     book: ShadowBook,
     payload: dict[str, Any],

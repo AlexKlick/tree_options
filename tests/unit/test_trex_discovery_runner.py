@@ -280,3 +280,57 @@ class TestShadowHook:
         assert done is True
         result = read_scan_result(spool)
         assert result is not None and result["status"] == "ok"
+
+
+class TestMarketTick:
+    """M5a: serve_tick drives the TTL-gated market refresh (with an
+    injected transport; None skips the wire)."""
+
+    def _transport(self, body: bytes):
+        def t(url: str, *, timeout: float = 10.0):
+            return 200, body
+
+        return t
+
+    def test_market_cycle_writes_market_json(self, tmp_path: Path) -> None:
+        import json as _json
+
+        state = tmp_path / "state"
+        body = _json.dumps(
+            {
+                "timestamp": "2026-09-22 22:08:55",
+                "data": {"bid": 1.0, "ask": 1.1, "close": 1.05, "iv30": 12.0,
+                          "price_change_percent": 0.1},
+            }
+        ).encode()
+        serve_tick(
+            FakeChainSource(), _cfg(), state, now=NOW, market_transport=self._transport(body)
+        )
+        doc = _json.loads((state / "market.json").read_text())
+        assert "NVDA" in doc["symbols"] and "QQQ" in doc["symbols"]
+
+    def test_no_transport_means_no_market_work(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        assert not (state / "market.json").exists()
+
+    def test_force_request_round_trip(self, tmp_path: Path) -> None:
+        import json as _json
+
+        from tree_options.trex.discovery.artifact import (
+            read_result,
+            write_request,
+        )
+
+        state = tmp_path / "state"
+        body = _json.dumps(
+            {"timestamp": "t", "data": {"bid": 1.0, "ask": 1.1, "close": 1.0}}
+        ).encode()
+        write_request(
+            state / "spool", "market", "req-m1", {"request_ts": NOW.isoformat()}
+        )
+        serve_tick(
+            FakeChainSource(), _cfg(), state, now=NOW, market_transport=self._transport(body)
+        )
+        result = read_result(state / "spool", "market")
+        assert result is not None and result["status"] == "ok"

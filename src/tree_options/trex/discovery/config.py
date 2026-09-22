@@ -42,6 +42,7 @@ class ScanConfig:
     max_candidates_total: int = 12
     client_id: int = DISCOVERY_CLIENT_ID
     auto_scan_et: str = "16:11"  # serve-loop daily rescan (just after close)
+    market_refresh_seconds: int = 60  # quote refresh cadence in serve loop
 
     @property
     def reserved_client_ids(self) -> frozenset[int]:
@@ -52,6 +53,8 @@ _FIELDS = {f for f in ScanConfig.__dataclass_fields__ if f != "reserved_client_i
 
 
 def _check(cfg: ScanConfig) -> None:
+    if cfg.market_refresh_seconds <= 0:
+        raise ValueError("market_refresh_seconds must be positive")
     if not cfg.underlyings:
         raise ValueError("underlyings must not be empty")
     if cfg.dte_min >= cfg.dte_max or cfg.dte_min < 0:
@@ -97,6 +100,7 @@ def load_scan_config(path: Path) -> ScanConfig:
         max_candidates_total=int(raw.get("max_candidates_total", 12)),
         client_id=int(raw.get("client_id", DISCOVERY_CLIENT_ID)),
         auto_scan_et=str(raw.get("auto_scan_et", "16:11")),
+        market_refresh_seconds=int(raw.get("market_refresh_seconds", 60)),
     )
     _check(cfg)
     return cfg
@@ -115,6 +119,7 @@ def config_echo(cfg: ScanConfig) -> dict[str, Any]:
         "delta_band": list(cfg.delta_band),
         "min_debit": cfg.min_debit,
         "max_leg_spread_frac": cfg.max_leg_spread_frac,
+        "market_refresh_seconds": cfg.market_refresh_seconds,
         "max_candidates_per_underlying": cfg.max_candidates_per_underlying,
         "max_candidates_total": cfg.max_candidates_total,
     }

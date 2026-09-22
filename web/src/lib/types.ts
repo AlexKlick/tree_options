@@ -414,3 +414,37 @@ export interface PlanDetailResponse {
   history: HistorySeries | null
   events: EventRecord[]
 }
+
+export interface MarketQuote {
+  bid: number | null
+  ask: number | null
+  close: number | null
+  iv30: number | null
+  change_pct: number | null
+  source_as_of: string | null
+}
+
+export interface MarketResponse {
+  now: string
+  last_refresh: string | null
+  age_seconds: number | null
+  watchlist: string[]
+  symbols: Record<string, MarketQuote>
+  errors: Record<string, string>
+}
+
+export interface NewsItem {
+  title: string
+  link: string
+  pub: string | null
+  source: string
+}
+
+export interface SymbolDetail {
+  now: string
+  symbol: string
+  quote: MarketQuote | null
+  quote_age_seconds: number | null
+  bars: HistorySeries | null
+  news: NewsItem[]
+}

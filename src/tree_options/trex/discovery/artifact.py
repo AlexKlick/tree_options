@@ -150,15 +150,89 @@ def read_runs(state_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
     return out
 
 
-# -- spool (scan-on-demand) -------------------------------------------------
+# -- spool (kind-based requests: scan, watch, market, backtest) -------------
+#
+# Durability contract (Codex-arch #1): the request file is RETAINED until
+# durable completion - claim and request coexist, complete removes both.
+# A runner crash mid-processing leaves the stale claim to be reclaimed,
+# which returns the request to the pool (execution must be idempotent).
+# Claims are ordered by request_ts, never by the random id filename.
+
+
+def write_request(
+    spool_dir: Path, kind: str, request_id: str, payload: dict[str, Any]
+) -> Path:
+    body = {"request_id": request_id, "kind": kind, **payload}
+    _atomic_write(spool_dir / f"{kind}.request.{request_id}", body)
+    return spool_dir / f"{kind}.request.{request_id}"
+
+
+def claim_request(
+    spool_dir: Path, kinds: list[str], now: datetime | None = None
+) -> tuple[str, str, dict[str, Any]] | None:
+    """Atomically claim the oldest pending request of the given kinds.
+
+    link() is the POSIX atomic-claim: two runners racing on the same
+    request cannot both win. Returns (kind, request_id, payload) or None.
+    """
+    if not spool_dir.exists():
+        return None
+    _reclaim_stale_claims(spool_dir)
+    candidates: list[tuple[str, str, Path, dict[str, Any]]] = []
+    for kind in kinds:
+        for request in spool_dir.glob(f"{kind}.request.*"):
+            try:
+                payload = json.loads(request.read_text())
+            except (OSError, json.JSONDecodeError):
+                continue
+            ts = str(payload.get("request_ts", ""))
+            candidates.append((ts, request.name, request, payload))
+    for _ts, _name, request, payload in sorted(candidates):
+        request_id = str(payload.get("request_id", ""))
+        claim = spool_dir / f"{payload.get('kind', 'scan')}.claim.{request_id}"
+        try:
+            os.link(request, claim)  # atomic: fails if the claim exists
+        except FileExistsError:
+            continue  # another runner won this one
+        return str(payload.get("kind", "scan")), request_id, payload
+    return None
+
+
+def complete_request(
+    spool_dir: Path, kind: str, request_id: str, result: dict[str, Any]
+) -> None:
+    (spool_dir / f"{kind}.claim.{request_id}").unlink(missing_ok=True)
+    (spool_dir / f"{kind}.request.{request_id}").unlink(missing_ok=True)
+    _atomic_write(spool_dir / f"{kind}.result", result)
+
+
+def read_result(spool_dir: Path, kind: str) -> dict[str, Any] | None:
+    path = spool_dir / f"{kind}.result"
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _reclaim_stale_claims(spool_dir: Path) -> None:
+    cutoff = time.time() - STALE_CLAIM_SECONDS
+    for claim in spool_dir.glob("*.claim.*"):
+        try:
+            if claim.stat().st_mtime < cutoff:
+                claim.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+# -- scan-kind wrappers (existing names + wire format preserved) -------------
 
 
 def write_scan_request(spool_dir: Path, request_id: str, request_ts: datetime) -> Path:
-    _atomic_write(
-        spool_dir / f"scan.request.{request_id}",
-        {"request_id": request_id, "request_ts": request_ts.isoformat()},
+    return write_request(
+        spool_dir, "scan", request_id, {"request_ts": request_ts.isoformat()}
     )
-    return spool_dir / f"scan.request.{request_id}"
 
 
 def spool_pending(spool_dir: Path) -> bool:
@@ -168,53 +242,16 @@ def spool_pending(spool_dir: Path) -> bool:
 def claim_scan_request(
     spool_dir: Path, now: datetime | None = None
 ) -> tuple[str, dict[str, Any]] | None:
-    """Atomically claim the oldest pending request.
-
-    link()+unlink is the POSIX atomic-claim: two runners racing on the
-    same request cannot both win (the second link() sees the claim name
-    already exists). Returns (request_id, payload) or None.
-    """
-    if not spool_dir.exists():
+    claimed = claim_request(spool_dir, ["scan"], now=now)
+    if claimed is None:
         return None
-    _reclaim_stale_claims(spool_dir)
-    requests = sorted(spool_dir.glob("scan.request.*"))
-    for request in requests:
-        payload: dict[str, Any] | None = None
-        try:
-            payload = json.loads(request.read_text())
-        except (OSError, json.JSONDecodeError):
-            continue
-        claim = spool_dir / f"scan.claim.{payload.get('request_id', request.name)}"
-        try:
-            os.link(request, claim)  # atomic: fails if the claim exists
-        except FileExistsError:
-            continue  # another runner won this one
-        request.unlink(missing_ok=True)
-        return str(payload.get("request_id", "")), payload
-    return None
-
-
-def _reclaim_stale_claims(spool_dir: Path) -> None:
-    cutoff = time.time() - STALE_CLAIM_SECONDS
-    for claim in spool_dir.glob("scan.claim.*"):
-        try:
-            if claim.stat().st_mtime < cutoff:
-                claim.unlink(missing_ok=True)
-        except OSError:
-            continue
+    _kind, request_id, payload = claimed
+    return request_id, payload
 
 
 def complete_scan(spool_dir: Path, request_id: str, result: dict[str, Any]) -> None:
-    claim = spool_dir / f"scan.claim.{request_id}"
-    claim.unlink(missing_ok=True)
-    _atomic_write(spool_dir / "scan.result", result)
+    complete_request(spool_dir, "scan", request_id, result)
 
 
 def read_scan_result(spool_dir: Path) -> dict[str, Any] | None:
-    path = spool_dir / "scan.result"
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
+    return read_result(spool_dir, "scan")

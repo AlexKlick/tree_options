@@ -1113,3 +1113,74 @@ class TestDiscoveryShadowBlock:
             tmp_path / "state", tmp_path / "plans", tmp_path / "discovery"
         )
         assert client.get("/api/discovery").json()["shadow"] is None
+
+
+class TestMarketWatchAndSymbol:
+    """M5b: watch mutations via the spool + the symbol detail endpoint."""
+
+    def _disc(self, tmp_path: Path) -> Path:
+        disc = tmp_path / "discovery"
+        (disc / "market" / "cache").mkdir(parents=True, exist_ok=True)
+        return disc
+
+    def test_watch_post_spools(self, tmp_path: Path) -> None:
+        disc = self._disc(tmp_path)
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        r = client.post("/api/market/watch", json={"op": "add", "symbol": "spy"})
+        assert r.status_code == 202
+        body = r.json()
+        assert body["accepted"] is True
+        assert list((disc / "spool").glob("watch.request.*"))
+
+    def test_refresh_post_spools(self, tmp_path: Path) -> None:
+        disc = self._disc(tmp_path)
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        r = client.post("/api/market/refresh", json={"symbols": ["SPY"]})
+        assert r.status_code == 202
+        assert list((disc / "spool").glob("market.request.*"))
+
+    def test_symbol_detail_assembles_from_cache(self, tmp_path: Path) -> None:
+        import json as _json
+
+        disc = self._disc(tmp_path)
+        (disc / "market.json").write_text(
+            _json.dumps(
+                {
+                    "last_refresh": "2026-09-22T18:59:30-04:00",
+                    "symbols": {"SPY": {"bid": 1.0, "ask": 1.1, "close": 1.05,
+                                         "iv30": 11.0, "change_pct": 0.1,
+                                         "source_as_of": "t"}},
+                    "errors": {},
+                }
+            )
+        )
+        fresh = datetime.now(ET).isoformat()
+        bars_env = {
+            "fetched_at": fresh,
+            "ttl_seconds": 86400,
+            "payload": {"bars": [{"t": 1789992000000, "c": 750.1, "v": 1}]},
+        }
+        (disc / "market" / "cache" / "bars").mkdir(parents=True, exist_ok=True)
+        (disc / "market" / "cache" / "bars" / "SPY.json").write_text(_json.dumps(bars_env))
+        news_env = {
+            "fetched_at": fresh,
+            "ttl_seconds": 1800,
+            "payload": {"items": [{"title": "t", "link": "https://x", "pub": None,
+                                    "source": "s"}]},
+        }
+        (disc / "market" / "cache" / "news").mkdir(parents=True, exist_ok=True)
+        (disc / "market" / "cache" / "news" / "SPY.json").write_text(_json.dumps(news_env))
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        payload = client.get("/api/market/SPY").json()
+        assert payload["symbol"] == "SPY"
+        assert payload["quote"]["bid"] == pytest.approx(1.0)
+        assert payload["bars"]["points"][0][1] == pytest.approx(750.1)
+        assert payload["news"][0]["title"] == "t"
+
+    def test_symbol_cold_cache_is_none_not_error(self, tmp_path: Path) -> None:
+        disc = self._disc(tmp_path)
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        payload = client.get("/api/market/SPY").json()
+        assert payload["bars"] is None
+        assert payload["news"] == []
+        assert client.get("/api/market/not%20a%20symbol").status_code == 404

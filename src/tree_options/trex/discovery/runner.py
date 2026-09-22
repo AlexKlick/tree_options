@@ -10,6 +10,7 @@ post-close rescan at the configured ET time.
 from __future__ import annotations
 
 import fcntl
+import json
 import logging
 from datetime import datetime
 from pathlib import Path
@@ -254,14 +255,16 @@ def _post_scan_shadow(state_dir: Path, repo: Path | None, now: datetime) -> None
     """After a successful scan: open + mark shadow alternatives.
 
     Failure-isolated AFTER the scan receipt is complete (Codex-2): a
-    shadow problem never fails or delays the scan itself. Marks come from
-    the scan's own rows; M5 upgrades marking to the CBOE full chain.
+    shadow problem never fails or delays the scan itself. Marks prefer
+    the CBOE full chain (works post-close; IBKR delayed quotes stop) with
+    the scan's own rows as fallback.
     """
     from tree_options.trex.discovery.artifact import read_latest
     from tree_options.trex.discovery.shadow import (
         ShadowBook,
         append_shadow_mark,
         load_shadow,
+        mark_from_chain,
         mark_from_payload,
         open_from_scan,
         save_shadow,
@@ -277,7 +280,29 @@ def _post_scan_shadow(state_dir: Path, repo: Path | None, now: datetime) -> None
         book, payload, run_id=str(doc.get("run_id", "?")), now=now,
         excluded=_live_plan_identities(repo),
     )
-    book = mark_from_payload(book, payload, now=now)
+    marked_from_chain = False
+    if any(p.status == "open" for p in book.positions):
+        try:
+            from tree_options.trex.discovery.market import (
+                MarketCache,
+                fetch_chain_puts,
+                urllib_transport,
+            )
+
+            cache = MarketCache(state_dir / "market" / "cache")
+            chains: dict[str, Any] = {}
+            for sym in {p.underlying for p in book.positions if p.status == "open"}:
+                cached = cache.get("chain", sym, now)
+                if cached is None:
+                    cached = fetch_chain_puts(sym, urllib_transport)
+                    cache.put("chain", sym, cached, now)
+                chains[sym] = cached
+            book = mark_from_chain(book, chains, now=now)
+            marked_from_chain = True
+        except Exception:
+            log.exception("chain marking failed; falling back to scan rows")
+    if not marked_from_chain:
+        book = mark_from_payload(book, payload, now=now)
     save_shadow(state_dir, book)
     marks = [
         {"key": p.key, "value": p.last_mark, "pnl": p.pnl, "source": p.mark_source}
@@ -292,18 +317,107 @@ def _post_scan_shadow(state_dir: Path, repo: Path | None, now: datetime) -> None
     )
 
 
+def _market_tick(
+    state_dir: Path,
+    cfg: ScanConfig,
+    now: datetime,
+    transport: object | None,
+    repo: Path | None = None,
+) -> None:
+    """TTL-gated market refresh + on-demand force requests.
+
+    Market data NEVER requires the IBKR connection (Codex-arch #2): this
+    runs whether or not the broker session is up. Failure-isolated from
+    scan handling entirely.
+    """
+    from tree_options.trex.discovery.artifact import claim_request, complete_request
+
+    if transport is None:
+        return  # tests that don't exercise market data skip the wire
+    from tree_options.trex.discovery.market import market_cycle
+    from tree_options.trex.discovery.watchlist import load_watchlist, seed_symbols
+
+    try:
+        plans_dir = (repo / "plans") if repo is not None else None
+        wl = load_watchlist(
+            state_dir, seed=seed_symbols(cfg, plans_dir), now=now
+        )
+        watch_symbols = [row["symbol"] for row in wl.get("symbols", [])]
+        watch = claim_request(state_dir / "spool", ["watch"], now=now)
+        if watch is not None:
+            from tree_options.trex.discovery.watchlist import apply_watch_op
+
+            _kind, w_req_id, w_payload = watch
+            result = apply_watch_op(
+                state_dir,
+                str(w_payload.get("op", "")),
+                symbol=w_payload.get("symbol"),
+                proposal_id=w_payload.get("proposal_id"),
+                now=now,
+            )
+            complete_request(
+                state_dir / "spool",
+                "watch",
+                w_req_id,
+                {"request_id": w_req_id, **result, "finished_at": now_et().isoformat()},
+            )
+        forced = claim_request(state_dir / "spool", ["market"], now=now)
+        force_symbols: list[str] | None = None
+        if forced is not None:
+            _kind, req_id, payload = forced
+            raw = payload.get("symbols")
+            force_symbols = (
+                [str(s).upper() for s in raw] if isinstance(raw, list) and raw else None
+            )
+        # market.json mtime gates the cadence; force bypasses it
+        marker = state_dir / "market.json"
+        due = not marker.exists()
+        if not due:
+            try:
+                refreshed = datetime.fromisoformat(
+                    json.loads(marker.read_text()).get("last_refresh", "")
+                )
+                due = (now - refreshed).total_seconds() >= cfg.market_refresh_seconds
+            except (OSError, ValueError, json.JSONDecodeError):
+                due = True
+        if due or forced is not None:
+            market_cycle(
+                state_dir,
+                cfg,
+                now,
+                symbols=(force_symbols or watch_symbols),
+                force=forced is not None,
+                transport=transport,  # type: ignore[arg-type]
+            )
+        if forced is not None:
+            complete_request(
+                state_dir / "spool",
+                "market",
+                req_id,
+                {
+                    "request_id": req_id,
+                    "status": "ok",
+                    "finished_at": now_et().isoformat(),
+                },
+            )
+    except Exception:
+        log.exception("market tick failed (scan handling unaffected)")
+
+
 def serve_tick(
     source: ChainSource,
     cfg: ScanConfig,
     state_dir: Path,
     now: datetime | None = None,
     repo: Path | None = None,
+    market_transport: object | None = None,
 ) -> bool:
     """One serve-loop cycle: manual request first, then the auto rescan.
 
     Returns True when a scan ran (either mode)."""
     now = now or now_et()
     _maybe_account_history(source, state_dir, now)
+    _market_tick(state_dir, cfg, now, market_transport, repo=repo)
     spool = state_dir / "spool"
     claim = claim_scan_request(spool, now=now)
     if claim is not None:
@@ -375,9 +489,13 @@ def serve(
         # account values would go stale between scans; prefer the source's
         # pumping sleep when it has one (tests use plain sources without).
         sleeper = getattr(source, "sleep", None) or time.sleep
+        from tree_options.trex.discovery.market import urllib_transport
+
         while True:
             try:
-                serve_tick(source, cfg, state_dir, repo=repo)
+                serve_tick(
+                    source, cfg, state_dir, repo=repo, market_transport=urllib_transport
+                )
             except Exception:
                 log.exception("serve tick failed")
             sleeper(POLL_SECONDS)

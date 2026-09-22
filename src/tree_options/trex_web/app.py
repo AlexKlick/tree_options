@@ -14,7 +14,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from tree_options.trex.clock import now_et
-from tree_options.trex.discovery.artifact import write_scan_request
+from tree_options.trex.discovery.artifact import write_request, write_scan_request
 from tree_options.trex_web.discovery_view import discovery_payload
 from tree_options.trex_web.payoff import (
     payoff_series,
@@ -425,6 +425,144 @@ def create_app(
         from tree_options.trex_web.stats import stats_payload
 
         return stats_payload(state_root, plans_root, discovery_root, now_et())
+
+    @app.get("/api/market")
+    def api_market() -> dict[str, object]:
+        """Market snapshot written by the discovery lane's market cycle.
+        Freshness = the snapshot's own last_refresh, never transport."""
+        from tree_options.trex.discovery.watchlist import load_watchlist
+        from tree_options.trex_web.discovery_view import _age
+
+        path = discovery_root / "market.json"
+        doc: dict[str, Any] | None = None
+        if path.exists():
+            try:
+                doc = json.loads(path.read_text())
+            except (OSError, json.JSONDecodeError):
+                doc = None
+        wl = load_watchlist(discovery_root)
+        base: dict[str, Any]
+        if doc is None:
+            base = {
+                "last_refresh": None,
+                "symbols": {},
+                "errors": {},
+                "age_seconds": None,
+            }
+        else:
+            base = {
+                "last_refresh": doc.get("last_refresh"),
+                "symbols": doc.get("symbols", {}),
+                "errors": doc.get("errors", {}),
+                "age_seconds": _age(doc.get("last_refresh"), now_et()),
+            }
+        base["watchlist"] = [row.get("symbol") for row in wl.get("symbols", [])]
+        base["now"] = now_et().isoformat()
+        return base
+
+    @app.get("/api/market/{sym}")
+    def api_market_symbol(sym: str) -> dict[str, object]:
+        """Symbol detail: quote + daily bars + news, assembled from the
+        discovery lane's cache envelopes. Cold caches return None sections
+        (the UI offers a refresh, which warms them via the spool)."""
+        import re as _re
+
+        from tree_options.trex.discovery.market import MarketCache
+        from tree_options.trex.series import decimate_pairs, y_extent
+        from tree_options.trex_web.discovery_view import _age
+
+        sym_up = sym.upper()
+        if not _re.match(r"^[A-Z.]{1,6}$", sym_up):
+            raise HTTPException(status_code=404, detail="unknown symbol")
+        now = now_et()
+        cache = MarketCache(discovery_root / "market" / "cache")
+        quote_doc = None
+        market_path = discovery_root / "market.json"
+        if market_path.exists():
+            try:
+                quote_doc = json.loads(market_path.read_text())
+            except (OSError, json.JSONDecodeError):
+                quote_doc = None
+        quote = (quote_doc or {}).get("symbols", {}).get(sym_up)
+        if quote is None:
+            quote = cache.get("quote", sym_up, now)
+        bars_env = cache.get("bars", sym_up, now)
+        news_env = cache.get("news", sym_up, now)
+        bars_series: dict[str, object] | None = None
+        if bars_env and isinstance(bars_env.get("bars"), list):
+            pts = [
+                (int(b["t"]), float(b["c"]))
+                for b in bars_env["bars"]
+                if isinstance(b, dict) and b.get("t") is not None and b.get("c") is not None
+            ]
+            pts = decimate_pairs(pts, 600)
+            if pts:
+                y_lo, y_hi = y_extent(pts)
+                bars_series = {
+                    "points": [[t, v] for t, v in pts],
+                    "y_lo": y_lo,
+                    "y_hi": y_hi,
+                    "last": {"ts_ms": pts[-1][0], "value": pts[-1][1], "pos": True},
+                }
+        news = news_env.get("items", []) if news_env else []
+        return {
+            "now": now.isoformat(),
+            "symbol": sym_up,
+            "quote": quote,
+            "quote_age_seconds": (
+                _age((quote or {}).get("source_as_of"), now)
+                if quote and str((quote or {}).get("source_as_of", "")).count("-") > 0
+                else None  # CBOE timestamps are not ISO; age via bars/news envs
+            ),
+            "bars": bars_series,
+            "news": news[:12],
+        }
+
+    @app.post("/api/market/watch", status_code=202)
+    def api_market_watch(body: dict[str, Any]) -> dict[str, object]:
+        """Spool a watchlist mutation for the discovery runner (202/503)."""
+        op = str(body.get("op", ""))
+        symbol = body.get("symbol")
+        request_id = uuid.uuid4().hex[:12]
+        try:
+            write_request(
+                discovery_root / "spool",
+                "watch",
+                request_id,
+                {
+                    "request_ts": now_et().isoformat(),
+                    "op": op,
+                    "symbol": str(symbol).upper() if symbol else None,
+                    "proposal_id": body.get("proposal_id"),
+                },
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"spool unwritable ({exc}); trex-web ReadWritePaths missing?",
+            ) from exc
+        return {"accepted": True, "request_id": request_id, "op": op}
+
+    @app.post("/api/market/refresh", status_code=202)
+    def api_market_refresh(body: dict[str, Any] | None = None) -> dict[str, object]:
+        """Spool a forced market refresh (warms quotes + bars + news)."""
+        symbols = None
+        if isinstance(body, dict) and isinstance(body.get("symbols"), list):
+            symbols = [str(s).upper() for s in body["symbols"]][:12]
+        request_id = uuid.uuid4().hex[:12]
+        try:
+            write_request(
+                discovery_root / "spool",
+                "market",
+                request_id,
+                {"request_ts": now_et().isoformat(), "symbols": symbols},
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"spool unwritable ({exc}); trex-web ReadWritePaths missing?",
+            ) from exc
+        return {"accepted": True, "request_id": request_id, "symbols": symbols}
 
     @app.post("/api/discovery/scan", status_code=202)
     def api_discovery_scan() -> dict[str, object]:

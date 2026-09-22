@@ -50,6 +50,12 @@ export function AppShell({
             >
               Performance
             </a>
+            <a
+              href="#/market"
+              aria-current={title === 'Market' ? 'page' : undefined}
+            >
+              Market
+            </a>
           </nav>
         </div>
         <div className="header-right">
