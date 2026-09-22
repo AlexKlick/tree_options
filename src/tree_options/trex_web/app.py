@@ -1,4 +1,4 @@
-"""FastAPI app for the trex read-only status panel."""
+"""FastAPI app for the trex read-only cockpit (SPA shell + JSON API)."""
 
 from __future__ import annotations
 
@@ -8,15 +8,12 @@ import socket
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
 
 from tree_options.trex.clock import now_et
 from tree_options.trex_web.payoff import (
-    build_payoff_chart,
-    build_pnl_history_chart,
     payoff_series,
     pnl_history_series,
     summarize_book,
@@ -43,7 +40,20 @@ DEFAULT_GATEWAY_HOST = "127.0.0.1"
 DEFAULT_GATEWAY_PORT = 4002
 GATEWAY_PROBE_TIMEOUT_SECONDS = 1.0
 
-_TEMPLATE_DIR = Path(__file__).parent / "templates"
+# Served at / when the built SPA is missing (fresh clone, interrupted
+# build): tell the operator exactly what to run instead of crashing.
+_FALLBACK_SHELL = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>trex cockpit - not built</title>
+<style>body{background:#101725;color:#e9edf6;font:16px/1.6 system-ui,sans-serif;
+display:grid;place-items:center;min-height:100vh;margin:0}code{background:#0b1322;
+padding:2px 6px;border-radius:6px}</style></head><body>
+<div style="max-width:34rem"><h1>trex cockpit: web app not built</h1>
+<p>The JSON API is live, but the SPA bundle is missing from this install.</p>
+<p>Build it on the host (node is interactive-shells only):</p>
+<pre><code>cd web &amp;&amp; npm ci &amp;&amp; npm run build</code></pre>
+<p>then restart <code>trex-web.service</code>. No server-side change is needed.</p>
+</div></body></html>
+"""
 
 
 def _resolve_state_root(override: str | None) -> Path:
@@ -215,18 +225,7 @@ def _plan_payload(
                 series["underlying"] = s.underlying
                 payoffs.append(series)
 
-    book_summary: dict[str, object] | None = None
-    if legs:
-        committed = sum(entry * qty * 100 for _, _, entry, qty in legs)
-        max_gain = sum(
-            (lo - sh - entry) * qty * 100 for lo, sh, entry, qty in legs
-        )
-        book_summary = {
-            "committed": committed,
-            "max_gain": max_gain,
-            "max_loss": -committed,
-            "short_floor": min(sh for _, sh, _, _ in legs),
-        }
+    book_summary: dict[str, Any] | None = summarize_book(legs) if legs else None
 
     history: dict[str, object] | None = None
     raw_history = marks.get("history") if marks else None
@@ -283,8 +282,6 @@ def create_app(
         Path(static_dir).expanduser() if static_dir else Path(__file__).parent / "static"
     )
 
-    templates = Jinja2Templates(directory=str(_TEMPLATE_DIR))
-
     app = FastAPI(
         title="trex options cockpit",
         docs_url=None,  # operator tool; no Swagger UI in prod
@@ -314,83 +311,39 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"plan {plan_id!r} not found")
         return payload
 
-    @app.get("/", response_class=HTMLResponse)
-    def index(request: Request) -> object:
-        plans = list_plans(state_root, plans_root)
-        runs: list[dict[str, object]] = []
-        for view in plans:
-            runs.append(
-                {
-                    "view": view,
-                    "runbook": compute_runbook_status_from_view(view),
-                    "gateway_reachable": probe_gateway(),
-                }
-            )
-        return templates.TemplateResponse(
-            request=request,
-            name="index.html",
-            context={
-                "runs": runs,
-                "plans_root": str(plans_root),
-                "state_root": str(state_root),
-            },
-        )
+    @app.get("/", response_class=HTMLResponse, include_in_schema=False)
+    def spa_shell() -> Response:
+        index = static_root / "index.html"
+        if index.is_file():
+            return FileResponse(index, media_type="text/html")
+        return HTMLResponse(_FALLBACK_SHELL, status_code=503)
 
-    @app.get("/plan/{plan_id}", response_class=HTMLResponse)
-    def plan_detail(request: Request, plan_id: str) -> object:
-        view = load_plan_view(plan_id, state_root, plans_root)
-        if view is None:
-            raise HTTPException(status_code=404, detail=f"plan {plan_id!r} not found")
-        runbook = compute_runbook_status_from_view(view)
-        gateway_reachable = probe_gateway()
-        marks = load_marks(state_root, plan_id)
-        payoff_charts: dict[str, object] = {}
-        legs: list[tuple[float, float, float, int]] = []
-        raw_spots = marks.get("spots") if marks else None
-        for s in view.plan.structures:
-            st = view.structures.get(s.id)
-            if st is None or st.entry_fill is None or st.filled_qty <= 0:
-                continue
-            legs.append(
-                (float(s.long_strike), float(s.short_strike), float(st.entry_fill), int(st.filled_qty))
-            )
-            spot = None
-            if isinstance(raw_spots, dict):
-                raw = raw_spots.get(s.underlying)
-                if isinstance(raw, str):
-                    try:
-                        spot = float(raw)
-                    except ValueError:
-                        spot = None
-            chart = build_payoff_chart(
-                float(s.long_strike),
-                float(s.short_strike),
-                float(st.entry_fill),
-                int(st.filled_qty),
-                spot,
-            )
-            if chart is not None:
-                payoff_charts[s.id] = chart
-        book_summary = summarize_book(legs) if legs else None
-        history_chart = None
-        raw_history = marks.get("history") if marks else None
-        if isinstance(raw_history, list):
-            history_chart = build_pnl_history_chart(
-                [h for h in raw_history if isinstance(h, dict)]
-            )
-        return templates.TemplateResponse(
-            request=request,
-            name="plan.html",
-            context={
-                "view": view,
-                "runbook": runbook,
-                "gateway_reachable": gateway_reachable,
-                "marks": marks,
-                "marks_age": marks_age_seconds(marks),
-                "payoff_charts": payoff_charts,
-                "book_summary": book_summary,
-                "history_chart": history_chart,
-            },
+    @app.get("/plan/{plan_id}", response_class=HTMLResponse, include_in_schema=False)
+    def plan_bookmark_shim(plan_id: str) -> HTMLResponse:
+        """Legacy ``/plan/<id>`` bookmarks -> the SPA hash route.
+
+        A tiny page whose inline script rewrites to ``../#/plan/<id>``:
+        the relative ``..`` resolves to the app root under / (loopback)
+        AND under a stripped prefix (/trex/ through the family portal).
+        NEVER an HTTP redirect — an absolute Location would escape the
+        portal prefix and land on the wrong app.
+        """
+        # json.dumps gives a double-quoted JS literal; the <, >, & escapes
+        # keep a hostile id from breaking out of the <script> element
+        # (json alone does not escape forward slashes).
+        safe_id = (
+            json.dumps(plan_id)
+            .replace("<", "\\u003c")
+            .replace(">", "\\u003e")
+            .replace("&", "\\u0026")
+        )
+        return HTMLResponse(
+            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            "<title>trex cockpit</title></head><body>"
+            "<p>Opening the cockpit plan view…</p>"
+            "<script>location.replace('../#/plan/' + encodeURIComponent("
+            + safe_id
+            + "))</script></body></html>"
         )
 
     @app.get("/plan/{plan_id}/book.json")
@@ -416,13 +369,10 @@ def create_app(
         return Response(content=body, media_type="application/x-ndjson")
 
     if static_root.exists():
-        app.mount(
-            "/static", StaticFiles(directory=str(static_root), html=True), name="static"
-        )
         # Root mount LAST: the built shell references './assets/...', so it
         # must resolve wherever the app is mounted (/ loopback, /trex/
-        # portal-stripped). Routes registered above (including the Jinja
-        # panel during migration) still win for their exact paths.
+        # portal-stripped). Routes registered above (API, raw JSON, the
+        # bookmark shim) still win for their exact paths.
         app.mount("/", StaticFiles(directory=str(static_root), html=True), name="spa")
 
     return app
