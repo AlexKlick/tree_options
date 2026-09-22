@@ -161,6 +161,53 @@ journalctl --user -u trex-monitor.service -f</code></pre>
 </div>
 
 <h2 style="margin-top: 28px;">
+  Live marks <span class="muted" style="font-size: 0.86rem;">(delayed quotes · mark-to-mid · refresh ~20s)</span>
+</h2>
+{% if marks and marks.structures %}
+<div class="card" style="overflow-x: auto;">
+  <table>
+    <thead>
+      <tr><th>Structure</th><th>Qty</th><th>Entry</th><th>Bid</th><th>Ask</th><th>Mark</th><th>Unrealized</th></tr>
+    </thead>
+    <tbody>
+      {% for sid, m in marks.structures.items() %}
+      <tr>
+        <td><code>{{ sid }}</code></td>
+        <td>{{ m.qty }}</td>
+        <td>{{ m.entry }}</td>
+        {% if m.mark %}
+        <td>{{ m.bid }}</td>
+        <td>{{ m.ask }}</td>
+        <td><strong>{{ m.mark }}</strong></td>
+        <td class="{{ 'pnl-pos' if m.unrealized|float >= 0 else 'pnl-neg' }}">{{ "{:+.2f}".format(m.unrealized|float) }}</td>
+        {% else %}
+        <td class="muted" colspan="4">no quote this cycle</td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+      <tr>
+        <td colspan="6"><strong>Total unrealized</strong></td>
+        <td class="{{ 'pnl-pos' if marks.total_unrealized|float >= 0 else 'pnl-neg' }}"><strong>{{ "{:+.2f}".format(marks.total_unrealized|float) }}</strong></td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="muted" style="margin: 8px 0 0;">
+    as of <code>{{ marks.ts }}</code>
+    {% if marks_age is not none %}
+      · {{ marks_age }}s ago{% if marks_age > 120 %} <span class="pnl-neg">— stale, monitor not refreshing</span>{% endif %}
+    {% endif %}
+  </p>
+</div>
+{% else %}
+<div class="card">
+  <p class="muted" style="margin: 0;">
+    No marks yet — the monitor writes <code>marks.json</code> every cycle (~20s)
+    once a structure has filled.
+  </p>
+</div>
+{% endif %}
+
+<h2 style="margin-top: 28px;">
   Events <span class="muted" style="font-size: 0.86rem;">(last {{ view.events|length }})</span>
 </h2>
 {% if view.events %}

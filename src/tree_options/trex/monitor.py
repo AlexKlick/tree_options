@@ -20,19 +20,22 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import logging
 import os
 import sys
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from datetime import time as dtime
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from tree_options.trex.clock import EntryWindow, is_session, now_et
 from tree_options.trex.engine import (
     AbortEntry,
     Action,
+    ComboQuote,
     EngineConfig,
     ExitOrder,
     ExitReason,
@@ -51,6 +54,44 @@ POLL_SECONDS = 20
 HEARTBEAT_FRESH_SECONDS = 30
 SESSION_OPEN = dtime(9, 30)
 SESSION_END = dtime(16, 15)
+
+
+_CENT = Decimal("0.01")
+
+
+def compute_marks(
+    spreads: list[PutSpread],
+    book: BookState,
+    quotes: Mapping[str, ComboQuote | None],
+) -> dict[str, Any]:
+    """Mark-to-mid observation of filled structures.
+
+    Serialized to ``marks.json`` in the run dir every tick so the
+    broker-free status panel can render live P&L without importing
+    ``ib_async``. Observation only — never an input to any decision.
+    """
+    rows: dict[str, dict[str, object]] = {}
+    total = Decimal("0")
+    for spread in spreads:
+        st = book.structures[spread.id]
+        if st.filled_qty <= 0 or st.entry_fill is None:
+            continue
+        row: dict[str, object] = {"qty": st.filled_qty, "entry": str(st.entry_fill)}
+        quote = quotes.get(spread.id)
+        if quote is None:
+            row["mark"] = None
+        else:
+            mid = (quote.bid + quote.ask) / 2
+            unrealized = (mid - st.entry_fill) * st.filled_qty * 100
+            total += unrealized
+            row.update(
+                bid=str(quote.bid),
+                ask=str(quote.ask),
+                mark=str(mid.quantize(_CENT)),
+                unrealized=str(unrealized.quantize(_CENT)),
+            )
+        rows[spread.id] = row
+    return {"structures": rows, "total_unrealized": str(total.quantize(_CENT))}
 
 
 def _engine_config(plan: TradePlan) -> EngineConfig:
@@ -105,6 +146,14 @@ class Monitor:
         """
         disk = BookState.load(self.run_dir / "book.json", list(self.book.structures))
         self.book.structures = disk.structures
+
+    def _write_marks(self, quotes: Mapping[str, ComboQuote | None]) -> None:
+        """Persist the observation-only marks payload for the status panel."""
+        payload = compute_marks(self.plan.structures, self.book, quotes)
+        payload["ts"] = now_et().isoformat()
+        tmp = self.run_dir / "marks.json.tmp"
+        tmp.write_text(json.dumps(payload) + "\n")
+        os.replace(tmp, self.run_dir / "marks.json")
 
     def _flatten_requested(self) -> bool:
         return (self.run_dir / "FLATTEN").exists()
@@ -164,6 +213,7 @@ class Monitor:
         self._drain_orders()
 
         snap = self.ib.snapshot(self.plan.structures, now)
+        self._write_marks(snap.quotes)
         flatten = self._flatten_requested()
 
         for spread in self.plan.structures:

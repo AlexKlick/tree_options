@@ -258,6 +258,37 @@ def list_plans(state_root: Path, plans_root: Path) -> list[PlanView]:
     return out
 
 
+def load_marks(state_root: Path, plan_id: str) -> dict[str, object] | None:
+    """Latest broker marks written by the monitor's observation loop.
+
+    The web lane stays broker-free: it only ever reads the
+    ``marks.json`` the monitor persists each tick.
+    """
+    path = state_root / plan_id / "marks.json"
+    if not path.exists():
+        return None
+    try:
+        parsed = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def marks_age_seconds(marks: dict[str, object] | None) -> int | None:
+    """Age of the marks payload in whole seconds (None when unreadable)."""
+    if not marks:
+        return None
+    ts = marks.get("ts")
+    if not isinstance(ts, str):
+        return None
+    try:
+        stamped = datetime.fromisoformat(ts)
+    except ValueError:
+        return None
+    age = (now_et() - stamped).total_seconds()
+    return int(age) if age >= 0 else None
+
+
 def _parse_window(bound: str) -> time:
     """``"HH:MM"`` -> ``time``. The plan's entry_window_start/end are stored
     as raw strings for TOML readability; the engine parses them on each tick.

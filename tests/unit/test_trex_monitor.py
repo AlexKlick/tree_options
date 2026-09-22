@@ -19,7 +19,7 @@ import pytest
 
 from tree_options.trex.clock import EntryWindow
 from tree_options.trex.engine import ComboQuote, EngineConfig, configure
-from tree_options.trex.monitor import Monitor
+from tree_options.trex.monitor import Monitor, compute_marks
 from tree_options.trex.plan import PutSpread, TradePlan
 from tree_options.trex.state import BookState, Status
 
@@ -330,3 +330,50 @@ class TestAdoption:
         fake.fill(orphan, 5, "2.00")
         mon._tick()
         assert st.status is Status.CLOSED
+
+
+class TestComputeMarks:
+    """Observation-only mark-to-mid payload for the status panel."""
+
+    def _spread(self, sid: str = "nvda-oct") -> PutSpread:
+        return PutSpread(
+            id=sid,
+            underlying="NVDA",
+            entry_date=date(2026, 9, 18),
+            expiry=date(2026, 10, 16),
+            long_strike="185",
+            short_strike="150",
+            quantity=5,
+            limit_cap="0.50",
+            exit_deadline=date(2026, 10, 9),
+        )
+
+    def test_mark_to_mid_unrealized_and_total(self) -> None:
+        book = BookState(["nvda-oct", "qqq-nov"])
+        st = book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(9, 50))
+        st.to(Status.OPEN, _at(10, 0))
+        st.filled_qty = 2
+        st.entry_fill = Decimal("1.00")
+        quotes = {
+            "nvda-oct": ComboQuote(bid=Decimal("1.10"), ask=Decimal("1.30")),
+            "qqq-nov": None,
+        }
+        marks = compute_marks([self._spread()], book, quotes)
+        row = marks["structures"]["nvda-oct"]
+        assert row["mark"] == "1.20"
+        assert row["unrealized"] == "40.00"
+        assert marks["total_unrealized"] == "40.00"
+        # unfilled structures are omitted entirely
+        assert "qqq-nov" not in marks["structures"]
+
+    def test_no_quote_leaves_mark_none(self) -> None:
+        book = BookState(["nvda-oct"])
+        st = book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(9, 50))
+        st.to(Status.OPEN, _at(10, 0))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        marks = compute_marks([self._spread()], book, {"nvda-oct": None})
+        assert marks["structures"]["nvda-oct"]["mark"] is None
+        assert marks["total_unrealized"] == "0.00"

@@ -14,7 +14,9 @@ from fastapi.templating import Jinja2Templates
 from tree_options.trex_web.reader import (
     compute_runbook_status_from_view,
     list_plans,
+    load_marks,
     load_plan_view,
+    marks_age_seconds,
 )
 
 # Defaults picked to match the deployed host conventions. Both can be
@@ -115,6 +117,7 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"plan {plan_id!r} not found")
         runbook = compute_runbook_status_from_view(view)
         gateway_reachable = probe_gateway()
+        marks = load_marks(state_root, plan_id)
         return templates.TemplateResponse(
             request=request,
             name="plan.html",
@@ -122,6 +125,8 @@ def create_app(
                 "view": view,
                 "runbook": runbook,
                 "gateway_reachable": gateway_reachable,
+                "marks": marks,
+                "marks_age": marks_age_seconds(marks),
             },
         )
 

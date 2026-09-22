@@ -445,3 +445,43 @@ class TestRunbookBannerInTemplate:
         assert "ib.env" in body
         assert "docker compose" in body
         assert "trex-monitor.service" in body
+
+
+class TestMarksPanel:
+    def _write_marks(self, state: Path, payload: dict[str, object]) -> None:
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "marks.json").write_text(json.dumps(payload))
+
+    def test_plan_detail_renders_live_marks(self, tmp_path: Path) -> None:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        state = tmp_path / "state"
+        self._write_marks(
+            state / "putspread-test",
+            {
+                "ts": datetime.now(ET).isoformat(),
+                "structures": {
+                    "nvda-oct": {
+                        "qty": 5,
+                        "entry": "0.21",
+                        "bid": "0.20",
+                        "ask": "0.22",
+                        "mark": "0.21",
+                        "unrealized": "0.00",
+                    }
+                },
+                "total_unrealized": "0.00",
+            },
+        )
+        client = _client(state, plans)
+        body = client.get("/plan/putspread-test").text
+        assert "Live marks" in body
+        assert "<strong>0.21</strong>" in body
+        assert "Total unrealized" in body
+
+    def test_plan_detail_without_marks_shows_placeholder(self, tmp_path: Path) -> None:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        client = _client(tmp_path / "state", plans)
+        body = client.get("/plan/putspread-test").text
+        assert "No marks yet" in body
