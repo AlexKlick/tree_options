@@ -15,7 +15,7 @@ from typing import Any
 try:
     import tomllib
 except ModuleNotFoundError:  # py<3.11
-    import tomli as tomllib  # type: ignore[no-redef]
+    import tomli as tomllib  # type: ignore[import-not-found,no-redef]
 
 # 71 monitor / 72 enter / 77 IbkrTrex library default — a collision makes
 # two clients kick each other off the gateway mid-scan.

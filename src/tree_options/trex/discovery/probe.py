@@ -84,7 +84,7 @@ def _expirations(ib: Any, symbol: str, conid: int) -> list[str]:
 
 def _greeks_sample(
     ibk: IbkrTrex, symbol: str, conid: int, expirations: list[str], today: datetime
-) -> dict[str, int]:
+) -> dict[str, Any]:
     """Subscribe a few strikes in the middle of the chain and count greeks."""
     expiry = _pick_expiry(expirations, today, dte_min=20, dte_max=60)
     if expiry is None:
