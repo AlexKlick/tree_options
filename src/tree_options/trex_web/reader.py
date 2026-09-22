@@ -87,7 +87,7 @@ class StructureView:
             return None
         if self.exit_filled_qty <= 0:
             return None
-        return (self.entry_fill - self.exit_fill) * self.exit_filled_qty * 100
+        return (self.exit_fill - self.entry_fill) * self.exit_filled_qty * 100
 
 
 @dataclass(frozen=True)

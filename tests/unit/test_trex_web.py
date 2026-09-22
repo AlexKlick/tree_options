@@ -22,6 +22,8 @@ from tree_options.trex_web.payoff import (
     build_payoff_chart,
     build_pnl_history_chart,
     expiry_pnl,
+    payoff_series,
+    pnl_history_series,
     summarize_book,
 )
 
@@ -248,7 +250,7 @@ class TestPlanDetail:
         nvda.entry_fill = Decimal("0.50")
         nvda.filled_qty = 5
         nvda.to(Status.EXIT_WORKING, now)
-        nvda.exit_fill = Decimal("0.20")
+        nvda.exit_fill = Decimal("0.80")
         nvda.exit_filled_qty = 5
         nvda.to(Status.CLOSED, now)
         nvda.exit_reason = "time_stop"
@@ -256,7 +258,7 @@ class TestPlanDetail:
         book.save(run / "book.json")
         client = _client(state, plans)
         r = client.get("/plan/putspread-test")
-        # Realized P&L = (0.50 - 0.20) * 5 * 100 = $150
+        # Realized P&L = exit credit 0.80 - entry debit 0.50, x5 spreads x100 = $150
         assert "$150.00" in r.text
         assert "time_stop" in r.text
 
@@ -567,3 +569,197 @@ class TestPayoffChart:
         assert build_pnl_history_chart([*samples, {"junk": 1}]) is not None
         # a single point is not a line
         assert build_pnl_history_chart(samples[:1]) is None
+
+
+class TestPayoffSeries:
+    """Data-space payoff series for the SPA (dense, kinks exact)."""
+
+    def test_dense_series_with_exact_kinks(self) -> None:
+        series = payoff_series(185.0, 150.0, 0.21, 5, spot=184.35)
+        assert series is not None
+        pts = series["points"]
+        assert len(pts) >= 120
+        xs = [p[0] for p in pts]
+        assert xs == sorted(xs)
+        for kink in (150.0, 185.0, 184.79):
+            assert any(abs(x - kink) < 1e-6 for x in xs), f"kink {kink} missing"
+        for x, y in pts:
+            assert y == pytest.approx(
+                expiry_pnl(185.0, 150.0, 0.21, 5, x), abs=1e-3
+            )
+        assert series["levels"]["max_gain"] == 17395.0
+        assert series["levels"]["breakeven"] == pytest.approx(184.79)
+        assert series["labels"]["max_gain"] == "+$17,395"
+        assert series["labels"]["max_loss"] == "-$105"
+        assert series["levels"]["spot"] == 184.35
+
+    def test_no_position_returns_none(self) -> None:
+        assert payoff_series(185.0, 150.0, 0.21, 0) is None
+
+
+class TestHistorySeries:
+    """Data-space P&L history with bounded decimation."""
+
+    def _samples(self, n: int) -> list[dict[str, str]]:
+        base = datetime(2026, 9, 22, 12, 0, tzinfo=ET)
+        return [
+            {
+                "ts": (base + timedelta(seconds=20 * i)).isoformat(),
+                "total": f"{-1.0 - i * 0.01:.2f}",
+            }
+            for i in range(n)
+        ]
+
+    def test_four_sample_pin(self) -> None:
+        base = datetime(2026, 9, 22, 12, 0, tzinfo=ET)
+        samples = [
+            {"ts": (base + timedelta(minutes=m)).isoformat(), "total": total}
+            for m, total in ((0, "-6.50"), (5, "-9.50"), (10, "-11.00"), (15, "-4.25"))
+        ]
+        series = pnl_history_series(samples)
+        assert series is not None
+        assert series["points"][0] == [int(base.timestamp() * 1000), -6.5]
+        assert series["last"]["pnl"] == -4.25
+        assert series["last"]["pos"] is False
+        assert series["y_lo"] == -11.0
+        assert series["y_hi"] == 0.0
+
+    def test_short_or_malformed_returns_none(self) -> None:
+        assert pnl_history_series([{"junk": 1}]) is None
+        assert pnl_history_series(self._samples(1)) is None
+
+    def test_decimation_keeps_endpoints_and_bound(self) -> None:
+        samples = self._samples(1500)
+        series = pnl_history_series(samples)
+        assert series is not None
+        assert len(series["points"]) <= 600
+        first_ts = int(
+            datetime.fromisoformat(samples[0]["ts"]).timestamp() * 1000
+        )
+        last_ts = int(
+            datetime.fromisoformat(samples[-1]["ts"]).timestamp() * 1000
+        )
+        assert series["points"][0][0] == first_ts
+        assert series["points"][-1][0] == last_ts
+
+
+class TestApiPlans:
+    def test_contract_types_and_entries(self, tmp_path: Path) -> None:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        client = _client(tmp_path / "state", plans)
+        payload = client.get("/api/plans").json()
+        datetime.fromisoformat(payload["now"])
+        assert isinstance(payload["gateway_reachable"], bool)
+        assert len(payload["plans"]) == 1
+        entry = payload["plans"][0]
+        assert entry["id"] == "putspread-test"
+        assert entry["account_mode"] == "paper"
+        assert entry["structure_count"] == 2
+        assert isinstance(entry["total_debit_cap"], float)
+        assert entry["state_present"] is False
+        assert entry["worst_state"] is None
+        assert entry["window_state"] in {"before", "during", "after", "wrong_day"}
+
+    def test_empty_plans_dir_returns_empty_list(self, tmp_path: Path) -> None:
+        client = _client(tmp_path / "state", tmp_path / "plans")
+        assert client.get("/api/plans").json()["plans"] == []
+
+    def test_armed_reflects_fresh_heartbeat(self, tmp_path: Path) -> None:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        run = tmp_path / "state" / "putspread-test"
+        run.mkdir(parents=True)
+        book = BookState(["nvda-oct", "qqq-nov"])
+        book.heartbeat = datetime.now(ET)
+        book.save(run / "book.json")
+        client = _client(tmp_path / "state", plans)
+        entry = client.get("/api/plans").json()["plans"][0]
+        assert entry["armed"] is True
+        assert entry["state_present"] is True
+
+
+class TestApiPlanDetail:
+    def _seeded_client(self, tmp_path: Path) -> TestClient:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        run = tmp_path / "state" / "putspread-test"
+        run.mkdir(parents=True)
+        book = BookState(["nvda-oct", "qqq-nov"])
+        st = book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, datetime.now(ET))
+        st.to(Status.OPEN, datetime.now(ET))
+        st.filled_qty = 5
+        st.entry_fill = Decimal("0.21")
+        st.exit_fill = Decimal("0.51")
+        st.exit_filled_qty = 5
+        book.save(run / "book.json")
+        t0 = datetime.now(ET)
+        marks = {
+            "ts": t0.isoformat(),
+            "total_unrealized": "-1.50",
+            "spots": {"NVDA": "184.35"},
+            "history": [
+                {"ts": t0.isoformat(), "total": "-1.50"},
+                {"ts": (t0 + timedelta(minutes=2)).isoformat(), "total": "-2.00"},
+            ],
+            "structures": {
+                "nvda-oct": {
+                    "qty": 5,
+                    "entry": "0.21",
+                    "bid": "0.19",
+                    "ask": "0.21",
+                    "mark": "0.20",
+                    "unrealized": "-5.00",
+                },
+                "qqq-nov": {"qty": 4, "entry": "1.37", "mark": None},
+            },
+        }
+        (run / "marks.json").write_text(json.dumps(marks))
+        return _client(tmp_path / "state", plans)
+
+    def test_detail_contract(self, tmp_path: Path) -> None:
+        client = self._seeded_client(tmp_path)
+        payload = client.get("/api/plans/putspread-test").json()
+        assert payload["plan"]["structures"][0]["long_strike"] == 185.0
+        assert payload["plan"]["structures"][0]["width"] == 35.0
+        assert payload["runbook"]["window_state"] in {
+            "before",
+            "during",
+            "after",
+            "wrong_day",
+        }
+        st = payload["structures"]["nvda-oct"]
+        assert st["state"] == "open"
+        assert st["entry_fill"] == 0.21
+        assert st["realized_pnl"] == 150.0  # exit 0.51 > entry 0.21 = profit
+        assert payload["marks"]["structures"]["nvda-oct"]["mark"] == 0.20
+        assert payload["marks"]["structures"]["qqq-nov"]["mark"] is None
+        assert payload["marks"]["total_unrealized"] == -1.5
+        assert payload["marks"]["spots"]["NVDA"] == 184.35
+        assert payload["book_summary"]["committed"] == 105.0
+        assert payload["book_summary"]["max_gain"] == 17395.0
+        assert payload["payoffs"][0]["structure_id"] == "nvda-oct"
+        assert payload["payoffs"][0]["levels"]["spot"] == 184.35
+        assert payload["payoffs"][0]["labels"]["max_gain"] == "+$17,395"
+        assert payload["history"]["points"][0][1] == -1.5
+        assert isinstance(payload["events"], list)
+
+    def test_unknown_id_is_json_404(self, tmp_path: Path) -> None:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        client = _client(tmp_path / "state", plans)
+        r = client.get("/api/plans/nope")
+        assert r.status_code == 404
+        assert "nope" in r.json()["detail"]
+
+    def test_no_state_payload_renders_minimal(self, tmp_path: Path) -> None:
+        plans = tmp_path / "plans"
+        _write_plan(plans)
+        client = _client(tmp_path / "state", plans)
+        payload = client.get("/api/plans/putspread-test").json()
+        assert payload["state_present"] is False
+        assert payload["marks"] is None
+        assert payload["book_summary"] is None
+        assert payload["payoffs"] == []
+        assert payload["history"] is None

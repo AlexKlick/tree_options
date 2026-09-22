@@ -235,3 +235,98 @@ def build_pnl_history_chart(samples: list[dict[str, str]]) -> dict[str, Any] | N
             "pos": last_v >= 0,
         },
     }
+
+
+def payoff_series(
+    long_strike: float,
+    short_strike: float,
+    entry: float,
+    qty: int,
+    spot: float | None = None,
+    n: int = 120,
+) -> dict[str, Any] | None:
+    """Data-space payoff series for the SPA (no pixel geometry).
+
+    ~n uniform samples over the same x-range rule as ``build_payoff_chart``
+    with the kinks and the breakeven forced in EXACTLY (replacing the
+    nearest grid point), so client-side linear interpolation between
+    adjacent points is exact everywhere. All pnl values come from
+    ``expiry_pnl`` — Python stays the single source of the math.
+    """
+    if qty <= 0 or entry < 0 or long_strike <= short_strike or n < 4:
+        return None
+
+    width = long_strike - short_strike
+    breakeven = long_strike - entry
+    max_gain = (width - entry) * qty * MULT
+    max_loss = -entry * qty * MULT
+
+    x_lo = short_strike - 30.0
+    x_hi = max(long_strike + 25.0, (spot + 15.0) if spot is not None else 0.0)
+    # Uniform grid sized to leave room for the kinks, UNIONED with the
+    # kinks (replacing the nearest grid point breaks when two kinks —
+    # long strike and breakeven — share a grid slot).
+    xs = [x_lo + i * (x_hi - x_lo) / (n - 4) for i in range(n - 3)]
+    xs.extend(k for k in (short_strike, long_strike, breakeven) if x_lo <= k <= x_hi)
+    ordered = sorted({round(x, 6) for x in xs})
+
+    points = [
+        [x, round(expiry_pnl(long_strike, short_strike, entry, qty, x), 4)]
+        for x in ordered
+    ]
+    return {
+        "view": {"x_lo": x_lo, "x_hi": x_hi},
+        "points": points,
+        "levels": {
+            "long_strike": long_strike,
+            "short_strike": short_strike,
+            "entry": entry,
+            "qty": qty,
+            "width": width,
+            "breakeven": round(breakeven, 6),
+            "max_gain": max_gain,
+            "max_loss": max_loss,
+            "spot": spot,
+        },
+        "labels": {"max_gain": _usd(max_gain), "max_loss": _usd(max_loss)},
+    }
+
+
+def pnl_history_series(
+    samples: list[dict[str, str]], max_points: int = 600
+) -> dict[str, Any] | None:
+    """Data-space P&L-over-time series for the SPA.
+
+    Same parsing/validity rules as ``build_pnl_history_chart``; emits
+    epoch-milliseconds + floats, and stride-decimates to ``max_points``
+    (first and last preserved exactly) so a multi-week marks history
+    cannot blow the 15s-poll budget through the no-compression portal.
+    """
+    pts: list[tuple[int, float]] = []
+    for s in samples:
+        try:
+            ts = datetime.fromisoformat(str(s["ts"]))
+            val = float(s["total"])
+        except (KeyError, ValueError):
+            continue
+        pts.append((int(ts.timestamp() * 1000), val))
+    if len(pts) < 2 or pts[-1][0] - pts[0][0] < 1000:
+        return None
+
+    if len(pts) > max_points:
+        stride = len(pts) / max_points
+        keep = sorted(
+            {0, len(pts) - 1} | {int(i * stride) for i in range(max_points - 1)}
+        )
+        pts = [pts[i] for i in keep]
+
+    y_lo = min(0.0, *(v for _, v in pts))
+    y_hi = max(0.0, *(v for _, v in pts))
+    if y_hi - y_lo < 1.0:
+        y_hi = y_lo + 1.0
+    return {
+        "points": [[t, v] for t, v in pts],
+        "y_lo": y_lo,
+        "y_hi": y_hi,
+        "last": {"ts_ms": pts[-1][0], "pnl": pts[-1][1], "pos": pts[-1][1] >= 0},
+    }
