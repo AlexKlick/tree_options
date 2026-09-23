@@ -25,6 +25,7 @@ from tree_options.trex.plan import (
     load_plan,
     margin_within_max_loss,
     parse_structure,
+    validate_package_order,
 )
 
 ENTRY = date(2026, 9, 24)
@@ -777,3 +778,66 @@ class TestWhatIfMargin:
         # one package: 3.50 * 100 * 1.1 = 385
         assert margin_within_max_loss(self.SPEC, 1, Decimal("385")) is True
         assert margin_within_max_loss(self.SPEC, 1, Decimal("385.01")) is False
+
+
+class TestPackageOrderBounds:
+    """validate_package_order: no order the adapter sends can realize a loss
+    beyond max_loss(). Opening pays at most the cap (debit) / receives at
+    least the floor (credit); a credit BUY-to-close pays at most the width;
+    quantities never exceed the structure's; prices are finite and positive."""
+
+    DEBIT = _spec("debit_vertical", PUT_DEBIT, "0.50", quantity=2)  # cap 0.50
+    CREDIT = _spec("credit_vertical", PUT_CREDIT, "1.50", quantity=2)  # floor 1.50, width 5
+    CONDOR_ = _spec("iron_condor", CONDOR, "2.00", quantity=1)  # floor 2.00, width 10
+    SINGLE = _spec("long_single", [_leg("C", "BUY", "100", BACK)], "3.20", quantity=1)
+    CAL = _spec("calendar", CALENDAR, "1.10", quantity=3)
+
+    @pytest.mark.parametrize(
+        ("spec", "side", "qty", "limit"),
+        [
+            (DEBIT, "BUY", 2, "0.50"),  # at the cap
+            (DEBIT, "BUY", 1, "0.01"),
+            (DEBIT, "SELL", 2, "40.00"),  # closing a debit: any positive price
+            (DEBIT, "SELL", 2, "0.01"),
+            (CREDIT, "SELL", 2, "1.50"),  # at the floor
+            (CREDIT, "SELL", 2, "4.99"),
+            (CREDIT, "BUY", 2, "5.00"),  # closing a credit at the width
+            (CREDIT, "BUY", 1, "0.05"),
+            (CONDOR_, "BUY", 1, "10.00"),  # the wider wing
+            (SINGLE, "BUY", 1, "3.20"),
+            (SINGLE, "SELL", 1, "99.00"),
+            (CAL, "BUY", 3, "1.10"),
+            (CAL, "SELL", 3, "2.40"),
+        ],
+    )
+    def test_accepted(self, spec: LegStructure, side: str, qty: int, limit: str) -> None:
+        validate_package_order(spec, side, qty, Decimal(limit))
+
+    @pytest.mark.parametrize(
+        ("spec", "side", "qty", "limit", "needle"),
+        [
+            (DEBIT, "BUY", 2, "0.51", "cap"),
+            (CREDIT, "SELL", 2, "1.49", "floor"),
+            # a floor-4 five-wide credit sold at 0.10 would risk 4.90, not 1.00
+            (CREDIT, "SELL", 2, "0.10", "floor"),
+            (CREDIT, "BUY", 2, "5.01", "width"),
+            (CONDOR_, "BUY", 1, "10.01", "width"),
+            (SINGLE, "BUY", 1, "3.21", "cap"),
+            (CAL, "BUY", 1, "1.11", "cap"),
+            (DEBIT, "BUY", 3, "0.40", "quantity"),
+            (CREDIT, "BUY", 3, "1.00", "quantity"),
+            (DEBIT, "BUY", 0, "0.40", "quantity"),
+            (DEBIT, "BUY", 1, "0", "positive"),
+            (DEBIT, "SELL", 1, "-0.10", "positive"),
+            (DEBIT, "BUY", 1, "Infinity", "finite"),
+            (DEBIT, "SELL", 1, "Infinity", "finite"),
+            (DEBIT, "BUY", 1, "NaN", "finite"),
+            (CREDIT, "SELL", 1, "sNaN", "finite"),
+            (DEBIT, "HOLD", 1, "0.40", "side"),
+        ],
+    )
+    def test_refused(
+        self, spec: LegStructure, side: str, qty: int, limit: str, needle: str
+    ) -> None:
+        with pytest.raises(ValueError, match=needle):
+            validate_package_order(spec, side, qty, Decimal(limit))

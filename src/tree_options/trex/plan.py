@@ -505,6 +505,41 @@ _SHAPES = {
 }
 
 
+def validate_package_order(struct: LegStructure, side: str, qty: int, limit: Decimal) -> None:
+    """Refuse (ValueError) any order on ``struct`` whose fill could realize a
+    loss beyond ``struct.max_loss()``. ``limit`` is a debit-orientation
+    package price.
+
+    - side BUY or SELL; 0 < qty <= struct.quantity;
+    - limit finite and positive;
+    - opening (``struct.open_side``): a debit kind pays at most the cap
+      (limit <= struct.limit), a credit kind receives at least the floor
+      (limit >= struct.limit);
+    - closing a credit kind (BUY-to-close) pays at most the width, the
+      package's maximum value: loss <= width - floor = max loss per package.
+    Closing a debit kind (SELL) at any positive price loses at most the
+    debit paid, which the cap already bounds."""
+    where = f"{struct.id}: {side} {qty} @ {limit}"
+    if side not in ("BUY", "SELL"):
+        raise ValueError(f"{where}: side must be BUY or SELL")
+    if not 0 < qty <= struct.quantity:
+        raise ValueError(f"{where}: quantity must be 1..{struct.quantity} (the structure's)")
+    if not limit.is_finite():
+        raise ValueError(f"{where}: limit must be finite")
+    if not limit > 0:
+        raise ValueError(f"{where}: limit must be positive (debit-orientation prices only)")
+    if side == struct.open_side:
+        if struct.is_credit and limit < struct.limit:
+            raise ValueError(f"{where}: below the credit floor {struct.limit}")
+        if not struct.is_credit and limit > struct.limit:
+            raise ValueError(f"{where}: above the debit cap {struct.limit}")
+    elif struct.is_credit:
+        width = struct.width
+        assert width is not None  # credit kinds are verticals and condors
+        if limit > width:
+            raise ValueError(f"{where}: BUY-to-close above the width {width}")
+
+
 def margin_within_max_loss(
     struct: LegStructure,
     qty: int,

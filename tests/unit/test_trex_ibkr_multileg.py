@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import dataclasses
 import inspect
+from dataclasses import dataclass
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -19,8 +20,14 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.unit.trex_fakes import FakeDeskBroker, FakeGateway, fill_row, position_row
-from tree_options.trex.ibkr import BrokerPosition, IbkrTrex
+from tests.unit.trex_fakes import (
+    SDK_DONE_STATES,
+    FakeDeskBroker,
+    FakeGateway,
+    fill_row,
+    position_row,
+)
+from tree_options.trex.ibkr import DONE_STATES, BrokerPosition, IbkrTrex
 from tree_options.trex.plan import LegStructure, PutSpread
 
 ib_async = pytest.importorskip("ib_async")
@@ -114,7 +121,7 @@ def _wire_legs(contract: Any) -> list[tuple[Any, ...]]:
 class TestBags:
     def test_condor_bag_is_debit_oriented(self) -> None:
         ib, gw = _adapter(CONDOR)
-        ref = ib.place(CONDOR, "SELL", 2, Decimal("1.85"))
+        ref = ib.place(CONDOR, "SELL", 2, Decimal("2.15"))
         bag = gw.trades[-1].contract
         assert (bag.symbol, bag.secType, bag.exchange, bag.currency, bag.tradingClass) == (
             "SPY",
@@ -129,7 +136,7 @@ class TestBags:
             "ic",
             "SELL",
             2,
-            Decimal("1.85"),
+            Decimal("2.15"),
         )
 
     def test_credit_vertical_opens_as_a_positive_sell(self) -> None:
@@ -149,7 +156,7 @@ class TestBags:
             (F, 100.0, "C"),
             (B, 100.0, "C"),
         ]
-        ib.place(CALENDAR, "BUY", 1, Decimal("1.10"))
+        ib.place(CALENDAR, "BUY", 1, Decimal("0.95"))
         assert _wire_legs(gw.trades[-1].contract) == _combo([(200, "SELL"), (300, "BUY")])
 
     def test_long_single_is_a_plain_opt_order(self) -> None:
@@ -191,11 +198,19 @@ class TestBags:
 
     @pytest.mark.parametrize(
         ("side", "qty", "limit"),
-        [("BUY", 1, "0"), ("SELL", 1, "-0.25"), ("HOLD", 1, "1"), ("BUY", 0, "1")],
+        [
+            ("BUY", 1, "0"),
+            ("SELL", 1, "-0.25"),
+            ("HOLD", 1, "1"),
+            ("BUY", 0, "1"),
+            ("SELL", 1, "Infinity"),  # positive, not finite
+            ("SELL", 1, "NaN"),
+            ("SELL", 2, "0.10"),  # below the 1.00 credit floor
+            ("BUY", 1, "5.01"),  # BUY-to-close above the 5-wide width
+            ("SELL", 3, "1.20"),  # more packages than the structure's 2
+        ],
     )
-    def test_refuses_nonpositive_limits_and_bad_orders(
-        self, side: str, qty: int, limit: str
-    ) -> None:
+    def test_refuses_out_of_bound_and_bad_orders(self, side: str, qty: int, limit: str) -> None:
         ib, gw = _adapter(CREDIT_PUT)
         with pytest.raises(ValueError):
             ib.place(CREDIT_PUT, side, qty, Decimal(limit))
@@ -230,7 +245,7 @@ class TestPrepare:
         assert ib.package_quote("ic") is None
         assert gw.subscribed == []
         with pytest.raises(ValueError, match="not prepared"):
-            ib.place(CONDOR, "SELL", 1, Decimal("1"))
+            ib.place(CONDOR, "SELL", 1, Decimal("2.10"))
 
     def test_incremental_prepare(self) -> None:
         ib, gw = _adapter(CONDOR)
@@ -288,7 +303,7 @@ class TestPackageQuote:
 class TestAdoption:
     def test_working_trades_are_bag_and_opt_only(self) -> None:
         ib, gw = _adapter(CONDOR, LONG_CALL)
-        ib.place(CONDOR, "SELL", 1, Decimal("1.90"))
+        ib.place(CONDOR, "SELL", 1, Decimal("2.10"))
         ib.place(LONG_CALL, "BUY", 1, Decimal("3.00"))
         gw.placeOrder(ib_async.Stock("SPY", "SMART", "USD"), ib_async.LimitOrder("BUY", 1, 1.0))
         done = ib.place(LONG_CALL, "SELL", 1, Decimal("3.50"))
@@ -297,7 +312,7 @@ class TestAdoption:
 
     def test_structure_for_contract(self) -> None:
         ib, gw = _adapter(CONDOR, LONG_CALL, DEBIT_PUT)
-        ib.place(CONDOR, "SELL", 1, Decimal("1.90"))
+        ib.place(CONDOR, "SELL", 1, Decimal("2.10"))
         ib.place(LONG_CALL, "BUY", 1, Decimal("3.00"))
         bag, opt = gw.trades[0].contract, gw.trades[1].contract
         assert ib.structure_for_contract(bag) == "ic"
@@ -336,14 +351,30 @@ class TestAdoption:
 
     def test_structure_for_trade_checks_the_tag_against_the_contract(self) -> None:
         ib, gw = _adapter(CONDOR, LONG_CALL)
-        ib.place(CONDOR, "SELL", 1, Decimal("1.90"))
+        ib.place(CONDOR, "SELL", 1, Decimal("2.10"))
         trade = gw.trades[0]
         trade.order.orderRef = "trex:lc"  # tag names a structure the contract isn't
         assert ib.structure_for_trade(trade) is None
         trade.order.orderRef = "trex:elsewhere"  # another runner's structure
         assert ib.structure_for_trade(trade) is None
-        trade.order.orderRef = ""  # untagged (placed by hand): by contract
+        trade.order.orderRef = ""  # untagged: never adopted on contract alone
+        assert ib.structure_for_trade(trade) is None
+        trade.order.orderRef = "manual-7"  # someone else's reference
+        assert ib.structure_for_trade(trade) is None
+        trade.order.orderRef = "trex:ic"
         assert ib.structure_for_trade(trade) == "ic"
+
+    def test_legacy_untagged_adoption_stays_on_the_legacy_path(self) -> None:
+        # Codex P1-3: only a credit vertical is prepared; an old untagged
+        # SELL closing a DEBIT vertical on the same strikes carries the same
+        # debit-oriented BAG. The contract alone must not make it ours.
+        ib, gw = _adapter(CREDIT_PUT)
+        ib.place(CREDIT_PUT, "SELL", 1, Decimal("1.20"))
+        foreign = gw.trades[0]
+        foreign.order.orderRef = ""
+        assert ib.structure_for_trade(foreign) is None
+        # the legacy lookup (structure_for_bag, conId set) is unchanged
+        assert ib.structure_for_bag(foreign.contract) == "cv"
 
 
 class TestPositionsAndRelease:
@@ -363,6 +394,7 @@ class TestPositionsAndRelease:
         ]
         assert ib.positions() == [
             BrokerPosition(
+                account="DU0000000",
                 con_id=95,
                 sec_type="OPT",
                 symbol="SPY",
@@ -373,6 +405,7 @@ class TestPositionsAndRelease:
                 avg_cost=Decimal("55.5"),
             ),
             BrokerPosition(
+                account="DU0000000",
                 con_id=1,
                 sec_type="STK",
                 symbol="SPY",
@@ -386,13 +419,26 @@ class TestPositionsAndRelease:
         assert ib.leg_con_ids("ic") == (90, 95, 105, 115)
         assert ib.leg_con_ids("nope") == ()
 
+    def test_positions_across_accounts_need_a_selected_account(self) -> None:
+        # Codex P2-5: a long leg in one account and its short in another is
+        # two naked exposures, not one covered package
+        ib, gw = _adapter(CONDOR)
+        gw.position_rows = [
+            position_row(90, 1.0, account="DU0000001"),
+            position_row(95, -1.0, account="DU0000002"),
+        ]
+        with pytest.raises(ValueError, match="accounts"):
+            ib.positions()
+        assert [(p.account, p.con_id) for p in ib.positions("DU0000002")] == [("DU0000002", 95)]
+        assert ib.positions("DU0000009") == []
+
     def test_release_cancels_only_unshared_market_data(self) -> None:
         ib, gw = _adapter(CONDOR, LONG_CALL)  # both use the 105 call
         ib.release("ic")
         assert sorted(gw.mkt_cancelled) == [90, 95, 115]  # 105 still quotes "lc"
         assert ib.package_quote("ic") is None
         with pytest.raises(ValueError, match="not prepared"):
-            ib.place(CONDOR, "SELL", 1, Decimal("1"))
+            ib.place(CONDOR, "SELL", 1, Decimal("2.10"))
         ib.release("lc")  # the last SPY structure: its leg and the spot go too
         assert sorted(gw.mkt_cancelled) == [1, 90, 95, 105, 115]
         ib.release("lc")  # idempotent
@@ -400,18 +446,51 @@ class TestPositionsAndRelease:
         assert sorted(gw.mkt_cancelled) == [1, 90, 95, 105, 115]
 
 
+class TestMarketDataSubscriptions:
+    """Codex P2-4: ib_async keeps ONE reqId per ticker, so a second
+    reqMktData for a shared leg orphans the first request (cancelMktData
+    cancels only the latest). One subscription per conId, counted."""
+
+    def test_a_shared_leg_is_subscribed_once(self) -> None:
+        ib, gw = _adapter(CONDOR, LONG_CALL, LONG_CALL_TWIN)
+        counts: dict[int, int] = {}
+        for c in gw.subscribed:
+            counts[c.conId] = counts.get(c.conId, 0) + 1
+        assert counts == {90: 1, 95: 1, 105: 1, 115: 1, 1: 1}
+        gw.quote(105, 2.95, 3.05)  # the one ticker quotes all three owners
+        assert ib.package_quote("lc") == ib.package_quote("lc2")
+
+    def test_releasing_every_owner_leaves_no_stream(self) -> None:
+        ib, gw = _adapter(CONDOR, LONG_CALL)
+        ib.prepare([LONG_CALL_TWIN])  # a later owner of the same call
+        for sid in ("lc", "ic", "lc2"):
+            ib.release(sid)
+        assert gw.md_live == set()
+
+    def test_prepare_release_cycles_do_not_accumulate(self) -> None:
+        ib, gw = _adapter(CONDOR)
+        for _ in range(3):
+            ib.prepare([LONG_CALL])
+            ib.release("lc")
+        assert len(gw.md_live) == 5  # the condor's 4 legs + the SPY spot
+        ib.release("ic")
+        assert gw.md_live == set()
+
+
 class TestWhatIf:
     def test_returns_the_initial_margin_change_without_placing(self) -> None:
         ib, gw = _adapter(CONDOR)
         gw.whatif_margin = "812.40"
-        margin = ib.whatif(CONDOR, "SELL", 2, Decimal("1.85"))
+        margin = ib.whatif(CONDOR, "SELL", 2, Decimal("2.15"))
         assert margin == Decimal("812.40")
         assert gw.trades == []
         contract, order = gw.whatif_calls[0]
         assert _wire_legs(contract) == _combo(
             [(90, "SELL"), (95, "BUY"), (105, "BUY"), (115, "SELL")]
         )
-        assert (order.action, order.totalQuantity, order.lmtPrice) == ("SELL", 2, 1.85)
+        assert (order.action, order.totalQuantity, order.lmtPrice) == ("SELL", 2, 2.15)
+        # bounded: the gateway's reply may never come
+        assert gw.run_timeouts == [ib.whatif_timeout] and 0 < ib.whatif_timeout <= 30
 
     def test_long_single_whatif_uses_the_option(self) -> None:
         ib, gw = _adapter(LONG_CALL)
@@ -423,12 +502,26 @@ class TestWhatIf:
     def test_no_number_is_none(self, raw: Any) -> None:
         ib, gw = _adapter(CONDOR)
         gw.whatif_margin = raw
-        assert ib.whatif(CONDOR, "SELL", 2, Decimal("1.85")) is None
+        assert ib.whatif(CONDOR, "SELL", 2, Decimal("2.15")) is None
 
-    def test_an_error_reply_is_none(self) -> None:
+    def test_an_unanswered_request_times_out_to_none(self) -> None:
+        # Codex P1-1: ib_async 2.1.0 ends a what-if request only when
+        # initMarginChange != UNSET_DOUBLE, and RequestTimeout defaults to 0
         ib, gw = _adapter(CONDOR)
-        gw.whatIfOrder = lambda contract, order: []  # type: ignore[method-assign]
-        assert ib.whatif(CONDOR, "SELL", 2, Decimal("1.85")) is None
+        ib.whatif_timeout = 0.05
+        gw.whatif_pending = True
+        assert ib.whatif(CONDOR, "SELL", 2, Decimal("2.15")) is None
+        assert gw.run_timeouts == [0.05]
+
+    def test_a_failed_request_is_none(self) -> None:
+        ib, gw = _adapter(CONDOR)
+        gw.whatif_reply = []  # RaiseRequestErrors off: the request ends with []
+        assert ib.whatif(CONDOR, "SELL", 2, Decimal("2.15")) is None
+        gw.whatif_reply = None
+        gw.whatif_error = ConnectionError("gateway went away")
+        assert ib.whatif(CONDOR, "SELL", 2, Decimal("2.15")) is None
+        gw.whatif_error = ib_async.RequestError(7, 201, "Order rejected")
+        assert ib.whatif(CONDOR, "SELL", 2, Decimal("2.15")) is None
 
 
 class TestFillEvidence:
@@ -490,3 +583,163 @@ class TestFakeDeskBrokerConformance:
         real = inspect.signature(getattr(IbkrTrex, name))
         fake = inspect.signature(getattr(FakeDeskBroker, name))
         assert list(real.parameters) == list(fake.parameters)
+
+    def test_done_states_match_the_sdk(self) -> None:
+        assert DONE_STATES == SDK_DONE_STATES == ib_async.OrderStatus.DoneStates
+
+
+@dataclass
+class _Harness:
+    """One broker implementation plus how to drive its market data."""
+
+    broker: Any
+    quote: Any  # (sid, leg index, bid, ask) -> None
+    set_positions: Any  # [(account, conId, qty)] -> None
+
+
+def _adapter_harness() -> _Harness:
+    gw = FakeGateway(con_ids=CON)
+    ib = IbkrTrex(client_id=81)
+    ib._ib = gw
+
+    def quote(sid: str, index: int, bid: str, ask: str) -> None:
+        gw.quote(ib.leg_con_ids(sid)[index], float(bid), float(ask))
+
+    def set_positions(rows: list[tuple[str, int, float]]) -> None:
+        gw.position_rows = [position_row(con, qty, account=acct) for acct, con, qty in rows]
+
+    return _Harness(ib, quote, set_positions)
+
+
+def _fake_harness() -> _Harness:
+    fake = FakeDeskBroker()
+
+    def set_positions(rows: list[tuple[str, int, float]]) -> None:
+        fake.position_rows = [
+            BrokerPosition(
+                account=acct,
+                con_id=con,
+                sec_type="OPT",
+                symbol="SPY",
+                right="",
+                strike=Decimal(0),
+                expiry="",
+                qty=Decimal(str(qty)),
+                avg_cost=Decimal(0),
+            )
+            for acct, con, qty in rows
+        ]
+
+    return _Harness(fake, fake.set_leg_quote, set_positions)
+
+
+@pytest.fixture(params=["adapter", "fake"])
+def harness(request: pytest.FixtureRequest) -> _Harness:
+    return _adapter_harness() if request.param == "adapter" else _fake_harness()
+
+
+class TestSharedBehaviour:
+    """Codex P2-6: the same behavioural cases against IbkrTrex (over
+    FakeGateway) and FakeDeskBroker, so the runner-level double cannot
+    drift from the adapter's ownership, bounds and release rules."""
+
+    def test_identical_contracts_resolve_only_by_tag(self, harness: _Harness) -> None:
+        b = harness.broker
+        b.prepare([DEBIT_PUT, CREDIT_PUT])  # one debit-oriented BAG for both
+        dv = b.place(DEBIT_PUT, "BUY", 1, Decimal("1.00"))
+        cv = b.place(CREDIT_PUT, "SELL", 1, Decimal("1.20"))
+        assert b.structure_for_contract(dv.trade.contract) is None
+        assert b.structure_for_contract(cv.trade.contract) is None
+        assert b.structure_for_trade(dv.trade) == "dv"
+        assert b.structure_for_trade(cv.trade) == "cv"
+
+    @pytest.mark.parametrize("tag", ["", "manual-7", "trex:", "trex:dv", "trex:lc", "TREX:cv"])
+    def test_missing_foreign_or_wrong_tags_are_not_adopted(
+        self, harness: _Harness, tag: str
+    ) -> None:
+        b = harness.broker
+        b.prepare([CREDIT_PUT, LONG_CALL])
+        trade = b.place(CREDIT_PUT, "SELL", 1, Decimal("1.20")).trade
+        trade.order.orderRef = tag
+        assert b.structure_for_trade(trade) is None
+
+    def test_released_structures_are_gone(self, harness: _Harness) -> None:
+        b = harness.broker
+        b.prepare([CONDOR])
+        trade = b.place(CONDOR, "SELL", 1, Decimal("2.10")).trade
+        for i in range(4):
+            harness.quote("ic", i, "0.50", "0.60")
+        assert b.package_quote("ic") is not None
+        b.release("ic")
+        assert b.structure_for_trade(trade) is None
+        assert b.package_quote("ic") is None
+        with pytest.raises(ValueError, match="not prepared"):
+            b.place(CONDOR, "SELL", 1, Decimal("2.10"))
+        with pytest.raises(ValueError, match="not prepared"):
+            b.whatif(CONDOR, "SELL", 1, Decimal("2.10"))
+
+    def test_pending_orders_are_working_until_done(self, harness: _Harness) -> None:
+        b = harness.broker
+        b.prepare([CONDOR, LONG_CALL])
+        refs = [b.place(LONG_CALL, "BUY", 1, Decimal("3.00")) for _ in range(6)]
+        states = ["PendingSubmit", "PreSubmitted", "Submitted", "Filled", "Cancelled", "Inactive"]
+        for ref, state in zip(refs, states, strict=True):
+            ref.trade.orderStatus.status = state
+        working = [t.orderStatus.status for t in b.working_trades()]
+        assert working == ["PendingSubmit", "PreSubmitted", "Submitted"]
+        partial = refs[2]
+        partial.trade.orderStatus.filled = 1
+        partial.trade.orderStatus.avgFillPrice = 2.95
+        assert b.order_status(partial).filled == 1
+        assert b.order_status(partial).avg_fill_price == Decimal("2.95")
+
+    @pytest.mark.parametrize(
+        ("spec", "side", "qty", "limit"),
+        [
+            (CREDIT_PUT, "SELL", 1, "0.99"),  # below the credit floor
+            (CREDIT_PUT, "BUY", 1, "5.01"),  # BUY-to-close above the width
+            (DEBIT_PUT, "BUY", 1, "1.01"),  # above the debit cap
+            (DEBIT_PUT, "BUY", 3, "0.90"),  # more than the structure's 2
+            (LONG_CALL, "BUY", 1, "Infinity"),
+            (LONG_CALL, "SELL", 1, "0"),
+        ],
+    )
+    def test_the_same_orders_are_refused(
+        self, harness: _Harness, spec: LegStructure, side: str, qty: int, limit: str
+    ) -> None:
+        b = harness.broker
+        b.prepare([CREDIT_PUT, DEBIT_PUT, LONG_CALL])
+        with pytest.raises(ValueError):
+            b.place(spec, side, qty, Decimal(limit))
+        with pytest.raises(ValueError):
+            b.whatif(spec, side, qty, Decimal(limit))
+        assert b.working_trades() == []
+
+    def test_the_same_package_quote(self, harness: _Harness) -> None:
+        b = harness.broker
+        b.prepare([CONDOR, LONG_CALL])
+        for i, (bid, ask) in enumerate(
+            [("0.20", "0.25"), ("0.50", "0.60"), ("0.70", "0.80"), ("0.10", "0.15")]
+        ):
+            harness.quote("ic", i, bid, ask)
+        q = b.package_quote("ic")
+        assert (q.bid, q.ask) == (Decimal("0.80"), Decimal("1.10"))
+        # the 105 call is shared: the single sees the condor's quote of it
+        single = b.package_quote("lc")
+        assert (single.bid, single.ask) == (Decimal("0.70"), Decimal("0.80"))
+
+    def test_positions_need_one_account(self, harness: _Harness) -> None:
+        b = harness.broker
+        harness.set_positions([("DU0000001", 90, 1.0), ("DU0000002", 95, -1.0)])
+        with pytest.raises(ValueError, match="accounts"):
+            b.positions()
+        assert [(p.account, p.con_id) for p in b.positions("DU0000001")] == [("DU0000001", 90)]
+        harness.set_positions([("DU0000001", 90, 1.0), ("DU0000001", 95, -1.0)])
+        assert len(b.positions()) == 2
+
+    def test_a_changed_spec_is_refused(self, harness: _Harness) -> None:
+        b = harness.broker
+        b.prepare([CONDOR])
+        with pytest.raises(ValueError, match="already prepared"):
+            b.prepare([CONDOR.model_copy(update={"legs": CONDOR.legs[:1]})])
+        b.prepare([CONDOR])  # the same spec again is a no-op

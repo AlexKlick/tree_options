@@ -28,7 +28,7 @@ from hypothesis import given, settings
 from hypothesis import strategies as st
 from pydantic import ValidationError
 
-from tree_options.trex.plan import LegStructure
+from tree_options.trex.plan import LegStructure, validate_package_order
 
 ENTRY = date(2026, 9, 24)
 DEADLINE = date(2026, 10, 9)
@@ -222,3 +222,31 @@ def test_whatever_validates_is_defined_risk(
     _check_package_non_negative(s)
     if kind in SAME_EXPIRY_KINDS:
         _check_same_expiry_max_loss(s, kind, limit)
+
+
+@settings(max_examples=400, deadline=None)
+@given(st.one_of(same_expiry_structures(), two_expiry_structures()), st.data())
+def test_accepted_orders_never_lose_more_than_the_worst_case(
+    case: tuple[str, list[dict[str, Any]], Decimal], data: st.DataObject
+) -> None:
+    """Any open price and close price validate_package_order accepts realize
+    at most the worst-case loss: the worst expiry loss at the limit (from the
+    intrinsic oracle) for same-expiry kinds, the debit cap otherwise."""
+    kind, legs, limit = case
+    s = _build(kind, legs, limit)
+    authored = _authored(s)
+    top = 2 * max(k for _, _, k in authored) + 10
+    p_open = Decimal(data.draw(st.integers(1, int(limit * 200)))) / 100
+    p_close = Decimal(data.draw(st.integers(1, int(top * 100)))) / 100
+    try:
+        validate_package_order(s, s.open_side, 1, p_open)
+        validate_package_order(s, s.close_side, 1, p_close)
+    except ValueError:
+        return
+    credit = kind in CREDIT_KINDS
+    realized_loss = p_close - p_open if credit else p_open - p_close
+    if kind in SAME_EXPIRY_KINDS:
+        bound = max(-(_value(authored, x) + (limit if credit else -limit)) for x in _grid(authored))
+    else:
+        bound = limit
+    assert realized_loss <= bound

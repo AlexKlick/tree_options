@@ -41,18 +41,58 @@ from typing import Any
 
 from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.engine import ComboQuote, Snapshot
-from tree_options.trex.plan import Leg, LegStructure, PutSpread
+from tree_options.trex.plan import Leg, LegStructure, PutSpread, validate_package_order
 
 log = logging.getLogger("trex.ibkr")
 
 GATEWAY_PAPER_PORT = 4002
 GATEWAY_LIVE_PORT = 4001
 # orders placed through place() carry this tag + the structure id in
-# Order.orderRef, which IBKR keeps with the order across sessions: it tells
-# apart structures whose contracts coincide (structure_for_trade)
+# Order.orderRef, which IBKR keeps with the order across sessions. It is
+# the ONLY proof that a working order belongs to a multi-leg structure
+# (structure_for_trade): contracts coincide across structures and books.
 ORDER_REF_PREFIX = "trex:"
 # ib_async marks "no value" with UNSET_DOUBLE (sys.float_info.max)
 _UNSET_MARGIN = Decimal("1e300")
+# IBKR answers a what-if within seconds when it answers at all; ib_async
+# 2.1.0 ends the request only on a reply whose initMarginChange is set
+# (an UNSET-only reply leaves it pending) and its RequestTimeout is 0
+WHATIF_TIMEOUT_S = 10.0
+# ib_async.OrderStatus.DoneStates: statuses after which an order never works again
+DONE_STATES: frozenset[str] = frozenset({"Filled", "Cancelled", "ApiCancelled", "Inactive"})
+
+
+def order_tag(structure_id: str) -> str:
+    """The Order.orderRef that marks an order as this structure's."""
+    return ORDER_REF_PREFIX + structure_id
+
+
+def tagged_structure(order_ref: object) -> str | None:
+    """The structure id a trex order tag names; None for an untagged or
+    foreign reference (an order no trex desk runner placed)."""
+    ref = str(order_ref or "")
+    if not ref.startswith(ORDER_REF_PREFIX):
+        return None
+    return ref[len(ORDER_REF_PREFIX) :] or None
+
+
+def bag_signature(combo_legs: Any) -> tuple[tuple[int, str, int], ...]:
+    """Order-free identity of a BAG: (conId, action, ratio) per leg."""
+    return tuple(sorted((int(g.conId), str(g.action), int(g.ratio)) for g in combo_legs))
+
+
+def select_account(rows: list[BrokerPosition], account: str | None) -> list[BrokerPosition]:
+    """Positions of ONE account: the named one, else the only one present.
+    Positions spanning several accounts without a selection are refused: a
+    long leg in one account and its short in another are two exposures,
+    not one covered package."""
+    if account is not None:
+        return [r for r in rows if r.account == account]
+    if len({r.account for r in rows}) > 1:
+        raise ValueError(
+            f"positions span {len({r.account for r in rows})} accounts; select one"
+        )
+    return rows
 
 
 @dataclass(frozen=True)
@@ -77,6 +117,7 @@ class OrderStatusInfo:
 class BrokerPosition:
     """One account position as the gateway reports it (any secType)."""
 
+    account: str
     con_id: int
     sec_type: str
     symbol: str
@@ -101,15 +142,23 @@ class _Package:
         return self.kind == "long_single"
 
 
+@dataclass
+class _Subscription:
+    """One market-data stream per conId, shared by every structure (leg or
+    spot) that needs it. ib_async keeps a single reqId per ticker, so a
+    second reqMktData for the same contract would orphan the first request
+    (cancelMktData cancels only the latest): subscribe once, count owners,
+    cancel when the last one releases."""
+
+    contract: Any
+    ticker: Any
+    owners: int = 0
+
+
 def _package(struct: PutSpread | LegStructure) -> _Package:
     if isinstance(struct, PutSpread):
         return _Package(struct.id, struct.underlying, "debit_vertical", struct.package_legs())
     return _Package(struct.id, struct.underlying, struct.kind, struct.package_legs())
-
-
-def _bag_signature(combo_legs: Any) -> tuple[tuple[int, str, int], ...]:
-    """Order-free identity of a BAG: (conId, action, ratio) per leg."""
-    return tuple(sorted((int(g.conId), str(g.action), int(g.ratio)) for g in combo_legs))
 
 
 def _d(value: float | int | None) -> Decimal:
@@ -149,7 +198,9 @@ class IbkrTrex:
         self._packages: dict[str, _Package] = {}  # structure_id -> debit-oriented legs
         self._bags: dict[str, Any] = {}  # structure_id -> BAG contract (multi-leg only)
         self._spots: dict[str, Any] = {}  # underlying -> Stock contract
-        self._tickers: dict[Any, Any] = {}
+        self._md: dict[int, _Subscription] = {}  # conId -> the one market-data stream
+        # IB.run bound for what-if (seconds): an unanswered request is a refusal
+        self.whatif_timeout = WHATIF_TIMEOUT_S
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -215,7 +266,7 @@ class IbkrTrex:
                 spot_contracts.setdefault(pkg.underlying, Stock(pkg.underlying, "SMART", "USD"))
 
         # Spot stocks are qualified alongside the option legs, not separately:
-        # they are used as ``_tickers`` / ``_spots`` dict keys below, and
+        # market data is requested for them below, keyed by conId, and
         # ib_async refuses to hash a Contract whose conId is still unset.
         to_qualify = [*option_legs, *spot_contracts.values()]
         self._ib.qualifyContracts(*to_qualify)
@@ -247,33 +298,45 @@ class IbkrTrex:
                     ],
                 )
             for option in options:
-                self._tickers[option] = self._ib.reqMktData(option, "", False, False)
-        for symbol, stock in spot_contracts.items():
-            self._spots[symbol] = stock
-            self._tickers[stock] = self._ib.reqMktData(stock, "", False, False)
+                self._subscribe(option)
+        self._spots.update(spot_contracts)
+        for pkg in packages:  # one spot owner per structure on the underlying
+            self._subscribe(self._spots[pkg.underlying])
         # let first quotes arrive
         self._ib.sleep(4)
 
+    def _subscribe(self, contract: Any) -> None:
+        sub = self._md.get(contract.conId)
+        if sub is None:
+            sub = _Subscription(contract, self._ib.reqMktData(contract, "", False, False))
+            self._md[contract.conId] = sub
+        sub.owners += 1
+
+    def _unsubscribe(self, con_id: int) -> None:
+        sub = self._md.get(con_id)
+        if sub is None:
+            return
+        sub.owners -= 1
+        if sub.owners <= 0:
+            del self._md[con_id]
+            self._ib.cancelMktData(sub.contract)
+
     def release(self, structure_id: str) -> None:
-        """Forget a CLOSED structure: cancel market data for its legs (and
-        its underlying's spot) unless another prepared structure still
-        quotes the same contract. Unknown ids are a no-op."""
+        """Forget a CLOSED structure: drop its claim on each leg's market
+        data (and its underlying's spot); a stream is cancelled when its
+        last owning structure releases it. Unknown ids are a no-op."""
         pkg = self._packages.pop(structure_id, None)
         if pkg is None:
             return
         assert self._ib is not None
         self._bags.pop(structure_id, None)
-        options = [self._legs.pop((structure_id, i)) for i in range(len(pkg.legs))]
-        still_quoted = {option.conId for option in self._legs.values()}
-        for option in options:
-            if option.conId in still_quoted:
-                continue
-            if self._tickers.pop(option, None) is not None:
-                self._ib.cancelMktData(option)
-        if not any(p.underlying == pkg.underlying for p in self._packages.values()):
-            stock = self._spots.pop(pkg.underlying, None)
-            if stock is not None and self._tickers.pop(stock, None) is not None:
-                self._ib.cancelMktData(stock)
+        for i in range(len(pkg.legs)):
+            self._unsubscribe(self._legs.pop((structure_id, i)).conId)
+        stock = self._spots.get(pkg.underlying)
+        if stock is not None:
+            self._unsubscribe(stock.conId)
+            if stock.conId not in self._md:
+                del self._spots[pkg.underlying]
 
     def leg_con_ids(self, structure_id: str) -> tuple[int, ...]:
         """conIds of a prepared structure's legs, by leg index (empty if unknown)."""
@@ -288,10 +351,10 @@ class IbkrTrex:
         leg = self._legs.get((structure_id, index))
         if leg is None:
             return None
-        ticker = self._tickers.get(leg)
-        if ticker is None:
+        sub = self._md.get(leg.conId)
+        if sub is None:
             return None
-        bid, ask = ticker.bid, ticker.ask
+        bid, ask = sub.ticker.bid, sub.ticker.ask
         if bid is None or ask is None or bid != bid or ask != ask:  # NaN guard
             return None
         return _d(bid), _d(ask)
@@ -390,19 +453,17 @@ class IbkrTrex:
         return OrderRef(spread.id, side, qty, limit, trade)
 
     def _order(self, struct: LegStructure, side: str, qty: int, limit: Decimal) -> tuple[Any, Any]:
-        """(contract, DAY limit order) for ``qty`` packages at a POSITIVE
-        debit-orientation ``limit``: the BAG, or the option of a long single."""
+        """(contract, tagged DAY limit order) for ``qty`` packages at a
+        debit-orientation ``limit``: the BAG, or the option of a long single.
+        Refuses (ValueError) before anything is sent: any order
+        plan.validate_package_order rejects (non-finite or non-positive
+        prices, an entry past the cap / below the floor, a credit
+        BUY-to-close above the width, more packages than the structure), a
+        structure not prepared here, or one whose legs differ from it."""
         from ib_async import LimitOrder
 
         assert self._ib is not None
-        if side not in ("BUY", "SELL"):
-            raise ValueError(f"{struct.id}: side {side!r} is not BUY or SELL")
-        if qty <= 0:
-            raise ValueError(f"{struct.id}: quantity {qty} must be positive")
-        if not limit > 0:
-            raise ValueError(
-                f"{struct.id}: limit {limit} must be positive (debit-orientation prices only)"
-            )
+        validate_package_order(struct, side, qty, limit)
         pkg = self._packages.get(struct.id)
         if pkg is None:
             raise ValueError(f"{struct.id}: not prepared")
@@ -415,25 +476,36 @@ class IbkrTrex:
             float(limit),
             tif="DAY",
             transmit=True,
-            orderRef=ORDER_REF_PREFIX + struct.id,
+            orderRef=order_tag(struct.id),
         )
         return contract, order
 
     def place(self, struct: LegStructure, side: str, qty: int, limit: Decimal) -> OrderRef:
         """Place a DAY limit order for ``qty`` packages: BUY or SELL the
-        debit-orientation package at a positive ``limit`` (open with
-        ``struct.open_side``, close with ``struct.close_side``)."""
+        debit-orientation package at ``limit`` (open with
+        ``struct.open_side``, close with ``struct.close_side``), within the
+        bounds of :meth:`_order`."""
         contract, order = self._order(struct, side, qty, limit)
         trade = self._ib.placeOrder(contract, order)
         return OrderRef(struct.id, side, qty, limit, trade)
 
     def whatif(self, struct: LegStructure, side: str, qty: int, limit: Decimal) -> Decimal | None:
         """IBKR's what-if initial-margin change for the order :meth:`place`
-        would send (nothing is placed); None when IBKR gives no number.
-        Callers refuse packages IBKR margins above their max loss
-        (plan.margin_within_max_loss)."""
+        would send (nothing is placed); None, a refusal, when IBKR gives no
+        number: an empty, junk or UNSET margin, a failed request, a lost
+        connection, or no answer within ``whatif_timeout`` seconds (ib_async
+        2.1.0 leaves a request pending on an UNSET-only reply, and its
+        RequestTimeout is 0: without the bound this call could block the
+        runner forever). Callers refuse packages IBKR margins above their
+        max loss (plan.margin_within_max_loss)."""
         contract, order = self._order(struct, side, qty, limit)
-        state = self._ib.whatIfOrder(contract, order)
+        try:
+            state = self._ib.run(
+                self._ib.whatIfOrderAsync(contract, order), timeout=self.whatif_timeout
+            )
+        except Exception as exc:  # timeout, request error, disconnect: fail closed
+            log.warning("what-if for %s refused: %s", struct.id, type(exc).__name__)
+            return None
         return _margin(getattr(state, "initMarginChange", None))
 
     def open_combo_trades(self) -> list[Any]:
@@ -467,29 +539,32 @@ class IbkrTrex:
         if sec_type != "BAG":
             return False
         try:
-            return _bag_signature(contract.comboLegs) == _bag_signature(self._bags[sid].comboLegs)
+            return bag_signature(contract.comboLegs) == bag_signature(self._bags[sid].comboLegs)
         except (AttributeError, TypeError, ValueError):
             return False
 
     def structure_for_contract(self, contract: Any) -> str | None:
-        """The prepared structure a BAG (legs, actions and ratios) or OPT (a
-        long single's option) contract belongs to; None when none or MORE
-        than one match (e.g. a debit and a credit vertical on the same
-        strikes share one debit-oriented BAG): never guessed."""
+        """The prepared structure whose package a BAG (legs, actions and
+        ratios) or OPT (a long single's option) contract is; None when none
+        or MORE than one match (e.g. a debit and a credit vertical on the
+        same strikes share one debit-oriented BAG). A description, not
+        ownership: working orders are attributed by structure_for_trade."""
         matches = [sid for sid in self._packages if self._matches(sid, contract)]
         return matches[0] if len(matches) == 1 else None
 
     def structure_for_trade(self, trade: Any) -> str | None:
-        """A working trade's structure: by its trex order tag when it has
-        one (the tagged structure must be prepared here and match the
-        contract, else None), by contract otherwise."""
-        ref = str(getattr(trade.order, "orderRef", "") or "")
-        if ref.startswith(ORDER_REF_PREFIX):
-            sid = ref[len(ORDER_REF_PREFIX) :]
-            if sid in self._packages and self._matches(sid, trade.contract):
-                return sid
-            return None
-        return self.structure_for_contract(trade.contract)
+        """The multi-leg structure a working trade belongs to: ONLY through
+        its trex order tag, and only when the tagged structure is prepared
+        here and the trade's contract is its package. Untagged or foreign
+        references are never adopted on contract alone (an old untagged
+        order closing a debit vertical carries the same BAG as a credit
+        vertical on those strikes). Legacy put-spread orders are untagged:
+        they are adopted only on the legacy path (open_combo_trades +
+        structure_for_bag)."""
+        sid = tagged_structure(getattr(trade.order, "orderRef", ""))
+        if sid is not None and sid in self._packages and self._matches(sid, trade.contract):
+            return sid
+        return None
 
     def order_status(self, ref: OrderRef) -> OrderStatusInfo:
         os = ref.trade.orderStatus
@@ -513,14 +588,18 @@ class IbkrTrex:
 
     # -- account -----------------------------------------------------------
 
-    def positions(self) -> list[BrokerPosition]:
-        """Every position the gateway session reports (all accounts)."""
+    def positions(self, account: str | None = None) -> list[BrokerPosition]:
+        """The positions of ONE account (select_account): ``account``'s, or,
+        when None, the session's only account; positions spanning several
+        accounts without a selection raise ValueError (a long leg in one and
+        its short in another are two exposures, not a covered package)."""
         assert self._ib is not None
         out: list[BrokerPosition] = []
         for p in self._ib.positions():
             c = p.contract
             out.append(
                 BrokerPosition(
+                    account=str(getattr(p, "account", "") or ""),
                     con_id=int(getattr(c, "conId", 0) or 0),
                     sec_type=str(getattr(c, "secType", "") or ""),
                     symbol=str(getattr(c, "symbol", "") or ""),
@@ -531,7 +610,7 @@ class IbkrTrex:
                     avg_cost=_d(p.avgCost),
                 )
             )
-        return out
+        return select_account(out, account)
 
     def account_snapshot(self) -> AccountSnapshot | None:
         """Net liq / cash / buying power from the gateway session.
