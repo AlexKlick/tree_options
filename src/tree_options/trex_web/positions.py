@@ -14,6 +14,38 @@ from typing import Any
 MULT = 100
 
 
+def _num(raw: Any) -> float | None:
+    if raw is None:
+        return None
+    try:
+        return float(str(raw))
+    except ValueError:
+        return None
+
+
+def open_unrealized(
+    row: dict[str, Any] | None, entry: float, open_qty: int, filled_qty: int
+) -> float | None:
+    """Unrealized on the contracts still OPEN, from the exact quote mid.
+
+    The one calculation behind the portfolio tile, the plan card and the
+    net-positions table (they disagreed live on 2026-09-22: +$1 vs -$3).
+    Order: the unrounded bid/ask mid; else the stored ``mark`` (rounded to
+    the cent by the monitor); else the monitor's FILLED-basis
+    ``unrealized`` rescaled to open_qty. None when the row has no quote.
+    """
+    if not row or open_qty <= 0:
+        return None
+    bid, ask = _num(row.get("bid")), _num(row.get("ask"))
+    mid = (bid + ask) / 2 if bid is not None and ask is not None else _num(row.get("mark"))
+    if mid is not None:
+        return (mid - entry) * open_qty * MULT
+    filled_basis = _num(row.get("unrealized"))
+    if filled_basis is None or filled_qty <= 0:
+        return None
+    return filled_basis * open_qty / filled_qty
+
+
 def net_positions(
     specs: list[dict[str, Any]],
     states: dict[str, dict[str, Any]],
@@ -23,7 +55,7 @@ def net_positions(
 
     ``specs`` are the plan's structure dicts (id, underlying, strikes,
     expiry), ``states`` the per-structure state views, ``marks`` the
-    per-structure mark rows (only ``unrealized`` is read here).
+    per-structure mark rows (valued by ``open_unrealized``).
     """
     groups: dict[str, dict[str, Any]] = {}
     for s in specs:
@@ -67,9 +99,14 @@ def net_positions(
                 "entry": entry_f,
             }
         )
-        unrealized = (marks or {}).get(str(s["id"]), {}).get("unrealized")
+        unrealized = open_unrealized(
+            (marks or {}).get(str(s["id"])),
+            entry_f,
+            open_qty,
+            int(st.get("filled_qty") or 0),
+        )
         if unrealized is not None:
-            row["unrealized_vals"].append(float(unrealized))
+            row["unrealized_vals"].append(unrealized)
 
     rows: list[dict[str, Any]] = []
     for row in groups.values():

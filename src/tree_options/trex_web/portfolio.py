@@ -3,7 +3,8 @@
 Unrealized is computed on TWO bases and both are served, distinctly
 named (codex-review trap #6/#18):
 
-- ``unrealized_open``   remaining contracts: (mark - entry) * open_qty * 100
+- ``unrealized_open``   remaining contracts: (mid - entry) * open_qty * 100,
+                        mid = the unrounded bid/ask mid (``open_unrealized``)
 - ``unrealized_filled`` the monitor's marks.json total (filled basis)
 
 A partially exited structure values only what is still held in the open
@@ -14,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Any
+
+from tree_options.trex_web.positions import open_unrealized
 
 MULT = 100
 DEFAULT_MARKS_STALE_AFTER = 120  # seconds
@@ -43,14 +46,13 @@ def plan_unrealized(
             st = view.structures.get(sid)
             if st is None:
                 continue
-            open_qty = st.open_qty
-            if open_qty <= 0:
-                continue
-            mark = _f(row.get("mark"))
             entry = _f(row.get("entry"))
-            if mark is None or entry is None:
+            if entry is None:
                 continue
-            open_total += (mark - entry) * open_qty * MULT
+            value = open_unrealized(row, entry, st.open_qty, int(st.filled_qty or 0))
+            if value is None:
+                continue
+            open_total += value
             any_row = True
     return (open_total if any_row else None), filled_total
 

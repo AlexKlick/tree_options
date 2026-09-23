@@ -569,6 +569,15 @@ class TestNetPositions:
         assert rows[0]["unrealized"] == pytest.approx(-5.0)
         assert net_positions(self._specs(), states, {})[0]["unrealized"] is None
 
+    def test_partial_exit_values_open_contracts_not_the_fill(self) -> None:
+        """M8/Codex S3: the monitor's `unrealized` is FILLED-basis; the row
+        must value the 3 contracts still open, from the exact quote mid."""
+        states = {"nvda-oct": {"entry_fill": 0.21, "filled_qty": 5, "open_qty": 3}}
+        marks = {"nvda-oct": {"qty": 5, "entry": "0.21", "bid": "0.18", "ask": "0.21",
+                              "mark": "0.20", "unrealized": "-7.50"}}
+        rows = net_positions(self._specs()[:1], states, marks)
+        assert rows[0]["unrealized"] == pytest.approx((0.195 - 0.21) * 3 * 100)
+
     def test_missing_state_or_fill_is_skipped(self) -> None:
         assert net_positions(self._specs(), {}, {}) == []
         working = {"nvda-oct": {"entry_fill": None, "filled_qty": 0, "open_qty": 0}}
@@ -727,6 +736,22 @@ class TestPortfolioPayload:
         # filled basis (marks.json total) stays -5.0
         assert pf["unrealized_filled"] == pytest.approx(-5.0)
         assert pf["realized"] == pytest.approx((0.35 - 0.21) * 2 * 100)
+
+    def test_tile_uses_exact_mid_and_agrees_with_the_table(self, tmp_path: Path) -> None:
+        """M8/Codex S3 (live 09-22: tile +$1 vs table -$3): the tile valued
+        the CENT-ROUNDED mark. 0.18/0.21 -> mid 0.195, stored mark "0.20"."""
+        run = self._seed_open_book(tmp_path)
+        marks = json.loads((run / "marks.json").read_text())
+        marks["structures"]["nvda-oct"].update(bid="0.18", ask="0.21", mark="0.20",
+                                               unrealized="-7.50")
+        marks["total_unrealized"] = "-7.50"
+        (run / "marks.json").write_text(json.dumps(marks))
+        client = _client(tmp_path / "state", tmp_path / "plans")
+        payload = client.get("/api/plans").json()
+        exact = (0.195 - 0.21) * 5 * 100
+        assert payload["portfolio"]["unrealized_open"] == pytest.approx(exact)
+        assert payload["plans"][0]["unrealized_open"] == pytest.approx(exact)
+        assert payload["net_positions"][0]["unrealized"] == pytest.approx(exact)
 
     def test_freshest_account_wins_and_seen_listed(self, tmp_path: Path) -> None:
         from tree_options.trex.account import AccountSnapshot, write_account
