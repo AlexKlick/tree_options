@@ -1,0 +1,25 @@
+[Unit]
+Description=Options desk: earnings timing (Nasdaq estimates, EDGAR 8-K 2.02) + macro seal check
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# The shared .venv's editable install is the main checkout (never re-synced here).
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk update-events
+# exit 3 = a partial vendor failure (some Nasdaq days, some EDGAR names, or
+# the Fed page unreachable): benign, next Saturday retries.
+# 1 = the sealed macro file's hash broke, the Fed page drifted from it
+# (<state>/events/macro-drift.json), or no Nasdaq day answered.
+SuccessExitStatus=3
+# ~65 Nasdaq days at 1 request/s; EDGAR ~31 companies (+ older pages) at 4/s
+TimeoutStartSec=3600
+# SEC EDGAR requires a contact User-Agent. It lives OUTSIDE the repo in an
+# operator-owned env file holding one line, DESK_SEC_UA=<name> <contact>;
+# without it the job skips EDGAR (sec_ua_missing) and still runs Nasdaq.
+EnvironmentFile=-%h/.config/trex/desk-sec.env

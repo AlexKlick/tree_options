@@ -2,7 +2,8 @@
 
     record-chains [--session D] [--symbols A,B] [--dry-run] [--recheck]
         CBOE delayed chains for session D (default: the latest session
-        whose 16:15 ET cutoff has passed) into the chain store.
+        whose 16:15 ET cutoff has passed) into the chain store; each
+        symbol is held to its own options close (store.validate).
         Exit 0 if >= 90% recorded, 3 if the rest is not published yet
         (the timer retries), 1 otherwise, 2 on bad arguments.
 
@@ -10,10 +11,29 @@
         Panel refresh (fetch_ohlc.py), XSMOM/PEAD signals, draft cards and
         an ntfy push. Exit 0 done/no-op, 3 vendor lag or too early, 1 failure.
 
+    record-indices [--sources VIX,DTB3] [--dry-run] [--force]
+        CBOE index histories + FRED DTB3 into <store>/indices/. Sources
+        already stored through the latest session are skipped (no request)
+        unless --force. Exit 0 all current, 3 a vendor lags or a transport
+        error left a soft gap, 1 a vendor file gone/bad, 2 bad arguments.
+
+    update-events [--horizon N] [--dry-run]
+        Earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 only when
+        DESK_SEC_UA is set) and the macro seal/Fed-page check. Exit 0,
+        3 partial vendor failure, 1 drift/broken seal/total failure.
+
+    seal-macro --from D --to D [--fomc-html FILE --fetched-on D]
+               [--gap-note TEXT] [--basis T]
+        Operator/agent tool (never a timer): rebuild and reseal
+        macro-<Y1>-<Y2>.json in the events dir, carrying hand-entered
+        CPI/NFP items; --gap-note words the todo for years without them.
+        Exit 0 sealed, 1 source unreadable/incomplete, 2 bad arguments.
+
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
-while it writes; a second concurrent run exits 3. No secrets are needed or
-printed (the chain feed is keyless; fetch_ohlc.py reads its own key file
-and redacts it).
+while it writes; a second concurrent run exits 3. No secrets are printed
+(the chain, index and calendar feeds are keyless; fetch_ohlc.py reads its
+own key file and redacts it; the SEC contact User-Agent is read from
+DESK_SEC_UA and never echoed).
 """
 
 from __future__ import annotations
@@ -21,17 +41,25 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import json
+import os
 import re
 import sys
 import time
 from collections.abc import Iterator
 from datetime import date, datetime
+from pathlib import Path
 
-from tree_options.desk import eod_equity, paths, store
+from tree_options.desk import eod_equity, events, http, indices, paths, store
 from tree_options.desk.chains import urllib_transport
-from tree_options.desk.sessions import Calendar, cutoff_instant, latest_completed_session
+from tree_options.desk.sessions import (
+    Calendar,
+    ClosingCalendar,
+    cutoff_instant,
+    latest_completed_session,
+)
 from tree_options.desk.universe import CHAIN_UNIVERSE
-from tree_options.trex.clock import now_et, session_calendar
+from tree_options.trex.clock import ET, now_et, session_calendar
 from tree_options.trex.discovery.market import Transport
 
 _SYMBOL = re.compile(r"^[A-Z][A-Z0-9.]{0,9}$")
@@ -52,7 +80,146 @@ def _parser() -> argparse.ArgumentParser:
     eq = sub.add_parser("eod-equity", help="panel refresh + XSMOM/PEAD signals + draft cards")
     eq.add_argument("--session", type=date.fromisoformat)
     eq.add_argument("--dry-run", action="store_true", help="plan only: no fetch, no files, no push")
+    ri = sub.add_parser("record-indices", help="CBOE index histories + FRED DTB3")
+    ri.add_argument("--sources", help="comma-separated names (default: all 15)")
+    ri.add_argument("--dry-run", action="store_true", help="fetch and compare; write nothing")
+    ri.add_argument(
+        "--force",
+        action="store_true",
+        help="fetch even sources already stored through the latest session",
+    )
+    ue = sub.add_parser("update-events", help="earnings timing + macro seal check (weekly)")
+    ue.add_argument("--horizon", type=int, default=events.HORIZON, help="sessions of estimates")
+    ue.add_argument("--dry-run", action="store_true", help="fetch and merge; write nothing")
+    sm = sub.add_parser("seal-macro", help="rebuild + reseal the macro calendar (operator)")
+    sm.add_argument("--from", dest="start", type=date.fromisoformat, required=True)
+    sm.add_argument("--to", dest="end", type=date.fromisoformat, required=True)
+    sm.add_argument("--fomc-html", help="a saved copy of the Fed calendar page (else fetched)")
+    sm.add_argument("--fetched-on", type=date.fromisoformat, help="when --fomc-html was fetched")
+    sm.add_argument("--basis", default="", help="extra provenance for the seal row")
+    sm.add_argument(
+        "--gap-note",
+        default=events.DEFAULT_GAP_NOTE,
+        help="todo wording for a CPI/NFP year without items (e.g. 'not yet published by BLS')",
+    )
     return ap
+
+
+def _update_events(
+    args: argparse.Namespace,
+    *,
+    get: http.Get,
+    sleep: store.Sleep,
+    clock: store.Clock,
+    cal: ClosingCalendar,
+) -> int:
+    if args.horizon < 1:
+        print("update-events: --horizon must be >= 1", file=sys.stderr)
+        return 2
+    ua = os.environ.get(events.SEC_UA_ENV, "").strip() or None
+    res = events.update_events(
+        get=get,
+        clock=clock,
+        sleep=sleep,
+        cal=cal,
+        paper=paths.paper_dir(),
+        events_dir=paths.events_dir(),
+        state=paths.state_root(),
+        sec_ua=ua,
+        horizon=args.horizon,
+        dry_run=args.dry_run,
+    )
+    print(res.line() + (" (dry run)" if args.dry_run else ""))
+    return res.exit_code
+
+
+def _seal_macro(
+    args: argparse.Namespace, *, get: http.Get, clock: store.Clock, cal: Calendar
+) -> int:
+    if args.end < args.start:
+        print("seal-macro: --to is before --from", file=sys.stderr)
+        return 2
+    if args.fomc_html:
+        if args.fetched_on is None:
+            print("seal-macro: --fomc-html needs --fetched-on (provenance)", file=sys.stderr)
+            return 2
+        html = Path(args.fomc_html).read_text(encoding="utf-8", errors="replace")
+        fetched_on, how = args.fetched_on, f"saved page {Path(args.fomc_html).name}"
+    else:
+        status, body = get(events.FOMC_URL, headers=events.FED_HEADERS, timeout=events.TIMEOUT_S)
+        if status != 200:
+            print(f"seal-macro: Fed calendar page HTTP {status}", file=sys.stderr)
+            return 1
+        html = body.decode("utf-8", "replace")
+        fetched_on, how = clock().astimezone(ET).date(), "live GET"
+    out = paths.events_dir() / f"macro-{args.start.year}-{args.end.year}.json"
+    carried: dict[str, list[dict[str, str]]] = {"cpi": [], "nfp": []}
+    try:
+        if out.exists():  # hand-entered items survive a reseal (even a hand-edited file)
+            prior = json.loads(out.read_text())
+            carried = {k: list(prior.get(k) or []) for k in events.HAND_KINDS}
+        doc = events.build_macro(
+            events.parse_fomc(html),
+            cal,
+            args.start,
+            args.end,
+            fetched_on=fetched_on,
+            cpi=carried["cpi"],
+            nfp=carried["nfp"],
+            gap_note=args.gap_note,
+        )
+    except (events.EventsError, TypeError, ValueError, AttributeError) as exc:
+        print(f"seal-macro: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    basis = (
+        f"FOMC parsed by events.parse_fomc from {events.FOMC_URL} ({how}, fetched {fetched_on}); "
+        f"cpi {len(doc['cpi'])} / nfp {len(doc['nfp'])} items carried as hand-entered "
+        "(entered_by per item); opex + vix_expiry computed on the NYSE session calendar"
+        + (f"; {args.basis}" if args.basis else "")
+    )
+    sha = events.seal_macro(doc, out, basis=basis, sealed_at=clock())
+    counts = " ".join(f"{k}={len(doc[k])}" for k in ("fomc", "cpi", "nfp", "opex", "vix_expiry"))
+    print(f"seal-macro {out.name} sha256={sha} {counts}")
+    for todo in doc["todo"]:
+        print(f"  todo: {todo}")
+    return 0
+
+
+def _record_indices(
+    args: argparse.Namespace,
+    *,
+    get: http.Get,
+    sleep: store.Sleep,
+    clock: store.Clock,
+    cal: Calendar,
+) -> int:
+    by_name = {s.name: s for s in indices.SOURCES}
+    if args.sources is not None:
+        names = [s.strip() for s in args.sources.split(",") if s.strip()]
+        bad = [n for n in names if n not in by_name]
+        if bad or not names:
+            print(f"record-indices: bad --sources {args.sources!r}", file=sys.stderr)
+            return 2
+        sources = [by_name[n] for n in names]
+    else:
+        sources = list(indices.SOURCES)
+    summary = indices.record_indices(
+        sources,
+        root=paths.store_root(),
+        get=get,
+        clock=clock,
+        sleep=sleep,
+        cal=cal,
+        dry_run=args.dry_run,
+        skip_current=not args.force,
+    )
+    rc = indices.exit_code(summary)
+    for name, r in summary.results.items():
+        if r.status not in ("new", "updated", "unchanged", "current") or r.lagging:
+            lag = " (lagging)" if r.lagging else ""
+            print(f"  {name}: {r.status}{lag} last={r.last_date} {r.detail}")
+    print(summary.line(rc) + (" (dry run)" if args.dry_run else ""))
+    return rc
 
 
 def _record_chains(
@@ -61,7 +228,7 @@ def _record_chains(
     transport: Transport,
     sleep: store.Sleep,
     clock: store.Clock,
-    cal: Calendar,
+    cal: ClosingCalendar,
 ) -> int:
     now = clock()
     if args.session is None:
@@ -152,9 +319,10 @@ def run_cli(
     transport: Transport | None = None,
     sleep: store.Sleep | None = None,
     now: datetime | None = None,
-    cal: Calendar | None = None,
+    cal: ClosingCalendar | None = None,
     fetch: eod_equity.FetchRunner | None = None,
     notify: eod_equity.Notify | None = None,
+    get: http.Get | None = None,
 ) -> int:
     """The CLI with injectable I/O (tests); :func:`main` wires the real ones."""
     try:
@@ -164,7 +332,7 @@ def run_cli(
     fixed = now
     clock: store.Clock = (lambda: fixed) if fixed is not None else now_et
     cal = cal or session_calendar()
-    with _single_run(args.command, enabled=not args.dry_run) as owned:
+    with _single_run(args.command, enabled=not getattr(args, "dry_run", False)) as owned:
         if not owned:
             print(f"{args.command}: another run holds the lock; retry later", file=sys.stderr)
             return 3
@@ -176,6 +344,24 @@ def run_cli(
                 clock=clock,
                 cal=cal,
             )
+        if args.command == "record-indices":
+            return _record_indices(
+                args,
+                get=get or http.urllib_get,
+                sleep=sleep or time.sleep,
+                clock=clock,
+                cal=cal,
+            )
+        if args.command == "update-events":
+            return _update_events(
+                args,
+                get=get or http.urllib_get,
+                sleep=sleep or time.sleep,
+                clock=clock,
+                cal=cal,
+            )
+        if args.command == "seal-macro":
+            return _seal_macro(args, get=get or http.urllib_get, clock=clock, cal=cal)
         return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 

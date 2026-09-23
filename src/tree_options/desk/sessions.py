@@ -11,12 +11,17 @@ import bisect
 from datetime import UTC, date, datetime, time
 from typing import Protocol
 
+from tree_options.time.sessions import shift_instant
 from tree_options.trex.clock import ET
 
 # A session's data counts as published once its close has settled: the
-# trex monitor's session end, 15 minutes after the regular close.
+# trex monitor's session end, 15 minutes after the regular close. This is
+# the job-level cutoff (which session a run targets); the chain store holds
+# each symbol to its own options close (options_close).
 CUTOFF = time(16, 15)
 DAY_S = 86_400
+# Late-close option classes trade this long past the equity close.
+LATE_CLOSE_S = 15 * 60
 
 
 class Calendar(Protocol):
@@ -26,9 +31,27 @@ class Calendar(Protocol):
     def nth_after(self, d: date, n: int) -> date: ...
 
 
+class ClosingCalendar(Calendar, Protocol):
+    """A calendar that also knows each session's actual close (early closes)."""
+
+    def session_close(self, d: date) -> datetime: ...
+
+
 def cutoff_instant(d: date) -> datetime:
     """16:15 America/New_York on ``d`` (aware; DST-correct via zoneinfo)."""
     return datetime.combine(d, CUTOFF, tzinfo=ET)
+
+
+def equity_close(d: date, cal: ClosingCalendar) -> datetime:
+    """The session's equity close in ET: 16:00, or 13:00 on early-close days."""
+    return cal.session_close(d).astimezone(ET)
+
+
+def options_close(d: date, cal: ClosingCalendar, *, late: bool) -> datetime:
+    """When ``d``'s options stop trading, in ET: the equity close, or 15
+    minutes after it for a late-close class (16:15; 13:15 on early closes)."""
+    close = equity_close(d, cal)
+    return shift_instant(close, LATE_CLOSE_S).astimezone(ET) if late else close
 
 
 def latest_completed_session(now: datetime, cal: Calendar) -> date:

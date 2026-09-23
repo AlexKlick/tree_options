@@ -17,8 +17,15 @@ numbers, OCC symbols strings.
 
 Session validation (all must hold, else nothing is written): the
 underlying's last trade is dated D; no option row traded after D; the
-modal option last-trade date is D; ``source_as_of`` is at or after D
-16:15 ET. An older payload is ``stale`` (not published yet: retry), a
+modal option last-trade date is D; ``source_as_of`` is at or after the
+symbol's options close on D (the equity close only for a class listed in
+``universe.REGULAR_CLOSE_OPTIONS`` whose options printed nothing after
+it; 16:15 ET for everything else, listed late-close or unclassified;
+early-close sessions use the calendar's close, 13:00 / 13:15); and the
+underlying last traded within
+5 minutes of the equity close (a snapshot stamped after the close can
+still hold intraday content). An older payload is ``stale`` (not
+published yet: retry), a
 newer one ``missing`` (the feed moved past D). Completeness (both rights
 with >= MIN_PER_RIGHT contracts, >= 50% of rows and of expiries with a
 bid) must also hold, else ``incomplete`` (a partial publication: retry).
@@ -48,7 +55,16 @@ from tree_options.desk.chains import (
     fetch_raw,
     parse_chain,
 )
-from tree_options.desk.sessions import Calendar, cutoff_instant, sessions_after
+from tree_options.desk.sessions import (
+    Calendar,
+    ClosingCalendar,
+    equity_close,
+    options_close,
+    sessions_after,
+)
+from tree_options.desk.universe import REGULAR_CLOSE_OPTIONS
+from tree_options.time.sessions import shift_instant
+from tree_options.trex.clock import ET
 from tree_options.trex.discovery.market import Transport
 
 SCHEMA = "desk-chain/1"
@@ -61,6 +77,9 @@ MIN_BID_FRACTION = 0.5
 MIN_EXPIRY_BID_FRACTION = 0.5
 OK_FRACTION = 0.9  # the run succeeds when this share is recorded (ok/exists/conflict)
 PACE_S = 1.0  # one request per second
+# the underlying's last trade must be this close to the equity close (every
+# recorded 2026-09-22 name last traded at 15:59:59 or 16:00:00 ET)
+CLOSE_TOLERANCE_S = 5 * 60
 
 RECORDED = frozenset({"ok", "exists", "conflict"})
 RETRYABLE = frozenset({"stale", "incomplete"})  # not published (whole) yet
@@ -217,7 +236,17 @@ def _completeness(parsed: ParsedChain) -> str:
     return ""
 
 
-def validate(parsed: ParsedChain, session: date) -> Verdict:
+def _late_close(parsed: ParsedChain, close: datetime) -> bool:
+    """Only an explicitly regular-close class, with no option printed after
+    the equity close, gets the equity-close cutoff. Everything else (the
+    late list, any unclassified symbol, a listed name whose options printed
+    late) waits for the late close: absent late prints prove nothing."""
+    if parsed.underlying not in REGULAR_CLOSE_OPTIONS:
+        return True
+    return any(t and datetime.fromisoformat(t) > close for t in parsed.columns["last_time"])
+
+
+def validate(parsed: ParsedChain, session: date, cal: ClosingCalendar) -> Verdict:
     """Every piece of session evidence must point at D, and the chain must
     look complete, before a snapshot may become D's immutable record."""
     us = underlying_session(parsed)
@@ -233,9 +262,25 @@ def validate(parsed: ParsedChain, session: date) -> Verdict:
     ps = payload_session(parsed)
     if ps is not None and ps < session:
         return Verdict("stale", f"options mostly last traded {ps}, not {session} yet", ps)
-    if parsed.source_as_of < cutoff_instant(session):
+    close = equity_close(session, cal)
+    cutoff = options_close(session, cal, late=_late_close(parsed, close))
+    if parsed.source_as_of < cutoff:
         return Verdict(
-            "stale", f"source_as_of {parsed.source_as_of.isoformat()} before {session} 16:15 ET", us
+            "stale",
+            f"source_as_of {parsed.source_as_of.isoformat()} before the "
+            f"{session} {cutoff:%H:%M} ET options close",
+            us,
+        )
+    # a snapshot stamped after the close may still hold intraday content
+    # (XLV 2026-09-22: stamped 16:01:18 ET, frozen at 15:46): the underlying
+    # must have traded within CLOSE_TOLERANCE_S of the equity close
+    ltt = datetime.fromisoformat(str(parsed.underlying_quote["last_trade_time"]))
+    if ltt < shift_instant(close, -CLOSE_TOLERANCE_S):
+        return Verdict(
+            "stale",
+            f"underlying last traded {ltt.astimezone(ET):%H:%M:%S} ET, before the "
+            f"{close:%H:%M} ET close: the snapshot predates the settle",
+            us,
         )
     if parsed.n == 0:
         return Verdict("incomplete", "no parseable option rows", us)
@@ -322,6 +367,7 @@ def record_symbol(
     *,
     transport: Transport,
     clock: Clock,
+    cal: ClosingCalendar,
     dry_run: bool = False,
     recheck: bool = False,
     before_fetch: Callable[[], None] = lambda: None,
@@ -333,6 +379,7 @@ def record_symbol(
             sym,
             transport=transport,
             clock=clock,
+            cal=cal,
             dry_run=dry_run,
             recheck=recheck,
             before_fetch=before_fetch,
@@ -348,6 +395,7 @@ def _record_symbol(
     *,
     transport: Transport,
     clock: Clock,
+    cal: ClosingCalendar,
     dry_run: bool,
     recheck: bool,
     before_fetch: Callable[[], None],
@@ -386,7 +434,7 @@ def _record_symbol(
         parsed = parse_chain(raw, sym)
     except ChainParseError as exc:
         return SymbolResult("invalid", 0, raw_sha, str(exc))
-    verdict = validate(parsed, session)
+    verdict = validate(parsed, session, cal)
 
     if existing is None and verdict.status == "ok" and not dry_run:
         # evidence first: the hash-addressed raw bytes, then the immutable chain
@@ -534,7 +582,7 @@ def record_session(
     transport: Transport,
     clock: Clock,
     sleep: Sleep,
-    cal: Calendar,
+    cal: ClosingCalendar,
     dry_run: bool = False,
     recheck: bool = False,
     pace_s: float = PACE_S,
@@ -556,6 +604,7 @@ def record_session(
             sym,
             transport=transport,
             clock=clock,
+            cal=cal,
             dry_run=dry_run,
             recheck=recheck,
             before_fetch=pace,
