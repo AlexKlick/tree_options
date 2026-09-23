@@ -1,0 +1,20 @@
+[Unit]
+Description=Record the desk option chains (evening retries, early-morning catch)
+
+[Timer]
+# CBOE writes the end-of-day snapshot overnight (03:49 UTC observed on
+# 2026-09-23 = 23:49 EDT) and serves it all the next day, so the evening
+# slots usually exit 3 and the 06:30 slot records the prior session
+# (Saturday 06:30 catches Friday). The 12:30 slot is a catch-up for a late
+# publication: until 16:15 ET the target is still the prior session. Every
+# slot is idempotent: a recorded (session, symbol) is never refetched.
+OnCalendar=Mon..Fri *-*-* 17:45:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 20:45:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 23:45:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 06:30:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 12:30:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

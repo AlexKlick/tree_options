@@ -1,0 +1,27 @@
+[Unit]
+Description=Options desk: research panel refresh, XSMOM/PEAD signals, draft cards
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# The shared .venv's editable install is the main checkout (never re-synced here).
+# Runs artifacts/paper-trades/fetch_ohlc.py <S> for every session missing
+# from the panel (it reads its own Polygon key file and redacts it).
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk eod-equity
+# exit 3 = vendor lag (daily bars not served yet) or too early: benign, the
+# timer's later slots retry; the stage marker makes every slot idempotent.
+SuccessExitStatus=3
+# fetch_ohlc.py keeps the vendor client's default 5 requests/min: one
+# session (37 names) takes ~7.5 min; the first run's 8-session gap fill
+# (panel ends 2026-09-14) ~1 h; the 25-session cap ~3 h.
+TimeoutStartSec=14400
+# ntfy: the job reads %h/.config/trex/notify.env itself (NTFY_URL,
+# QUIET_HOURS, OPERATOR_TZ); loading it here too keeps the unit
+# self-describing. Pushes carry no money, URLs or ids.
+EnvironmentFile=-%h/.config/trex/notify.env

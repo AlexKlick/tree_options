@@ -21,7 +21,8 @@ import logging
 import os
 import urllib.request
 import xml.etree.ElementTree as ET
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -181,27 +182,46 @@ def fetch_equity_quote(sym: str, transport: Transport) -> dict[str, Any]:
     }
 
 
+def parse_occ(symbol: str) -> tuple[date, str, Decimal]:
+    """OCC option symbol -> (expiry, right "C"|"P", strike), both rights.
+
+    Format: ROOT + YYMMDD(6) + C/P(1) + strike*1000 zero-padded to 8.
+    Tail-based slicing (a fixed root width is wrong for 3-char roots and
+    for adjusted roots like ``KO1``). The strike is an exact Decimal
+    (``SPY261218P00587500`` -> ``Decimal("587.5")``). Anything malformed
+    (short, unknown right, non-ASCII-digit date or strike, impossible
+    calendar date) raises ValueError.
+    """
+    if len(symbol) < 16:
+        raise ValueError(f"OCC symbol too short: {symbol!r}")
+    strike_raw = symbol[-8:]
+    right = symbol[-9]
+    yymmdd = symbol[-15:-9]
+    if right not in ("C", "P"):
+        raise ValueError(f"OCC right must be C or P: {symbol!r}")
+    for part in (strike_raw, yymmdd):
+        if not (part.isascii() and part.isdigit()):
+            raise ValueError(f"OCC date/strike not digits: {symbol!r}")
+    expiry = date(2000 + int(yymmdd[:2]), int(yymmdd[2:4]), int(yymmdd[4:]))
+    return expiry, right, Decimal(int(strike_raw)) / Decimal(1000)
+
+
 def _parse_occ(option: str) -> tuple[str, float] | None:
     """OCC symbol -> ('20261218', 575.0); calls/non-options -> None.
 
-    Format: ROOT(1-6) + YYMMDD(6) + C/P(1) + strike*1000 zero-padded to
-    8. Tail-based slicing (a fixed root width is wrong for 3-char roots).
+    The puts-only view the discovery chain cache has always used, now a
+    thin wrapper over :func:`parse_occ`. The float strike equals the old
+    ``int(strike_raw) / 1000.0`` bit for bit (both are the correctly
+    rounded value of the same rational); malformed symbols, which used to
+    yield a garbage expiry string, are now None.
     """
-    if len(option) < 16:
-        return None
-    strike_raw = option[-8:]
-    right = option[-9]
-    yymmdd = option[-15:-9]
-    if right != "P":
-        return None
     try:
-        strike = int(strike_raw) / 1000.0
-        expiry = "20" + yymmdd
+        expiry, right, strike = parse_occ(option)
     except ValueError:
         return None
-    if len(yymmdd) != 6:
+    if right != "P":
         return None
-    return expiry, strike
+    return expiry.strftime("%Y%m%d"), float(strike)
 
 
 def fetch_chain_puts(sym: str, transport: Transport) -> dict[str, dict[float, dict[str, Any]]]:

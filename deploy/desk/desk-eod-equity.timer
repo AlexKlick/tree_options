@@ -1,0 +1,15 @@
+[Unit]
+Description=Desk end-of-day equity job (panel, signals, draft cards)
+
+[Timer]
+# 16:40 ET: the paid bar feed serves the session ~15 min after the close.
+# 20:40 ET and the next morning's 08:40 ET retry a vendor lag (exit 3);
+# once a session's stage marker exists every later slot is a no-op.
+OnCalendar=Mon..Fri *-*-* 16:40:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 20:40:00 America/New_York
+OnCalendar=Tue..Sat *-*-* 08:40:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
