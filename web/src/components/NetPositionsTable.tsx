@@ -1,5 +1,6 @@
 import type { NetPosition } from '../lib/types'
 import { usd, usd2, usdSigned } from '../lib/format'
+import { TableScroll } from './TableScroll'
 
 const pnlClass = (v: number | null): string =>
   v === null ? '' : v >= 0 ? 'pnl-pos' : 'pnl-neg'
@@ -9,7 +10,7 @@ export function NetPositionsTable({ rows }: { rows: NetPosition[] }) {
   if (rows.length === 0) return null
   return (
     <div className="card table-card">
-      <div className="table-scroll">
+      <TableScroll>
         <table>
           <thead>
             <tr>
@@ -57,7 +58,7 @@ export function NetPositionsTable({ rows }: { rows: NetPosition[] }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
     </div>
   )
 }

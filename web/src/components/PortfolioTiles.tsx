@@ -1,13 +1,12 @@
 import { useTween } from '../hooks/useTween'
-import { usd, usdSigned } from '../lib/format'
+import { ago, usd, usdSigned } from '../lib/format'
 import type { AccountBlock, PortfolioBlock } from '../lib/types'
 import { Pill } from './Pill'
 import { Tile } from './StatTiles'
 
-function freshness(seconds: number | null, stale: boolean): string {
+function freshness(seconds: number | null): string {
   if (seconds === null) return '○ no marks'
-  if (stale) return `● marks ${Math.round(seconds / 60)}m ago`
-  return `● marks ${seconds}s ago`
+  return `● marks ${ago(seconds)} ago`
 }
 
 /** Portfolio-level tiles: the whole paper book + the account equity.
@@ -26,12 +25,12 @@ export function PortfolioTiles({
     <>
       <div className="pill-row" style={{ marginBottom: 10 }}>
         <Pill variant={portfolio.marks_stale ? 'empty' : 'armed'}>
-          {freshness(portfolio.marks_age_seconds, portfolio.marks_stale)}
+          {freshness(portfolio.marks_age_seconds)}
         </Pill>
         {account && (
           <Pill variant={account.age_seconds !== null && account.age_seconds > 180 ? 'empty' : 'armed'}>
             ● account{' '}
-            {account.age_seconds !== null ? `${account.age_seconds}s ago` : 'fresh'}
+            {account.age_seconds !== null ? `${ago(account.age_seconds)} ago` : 'fresh'}
           </Pill>
         )}
       </div>

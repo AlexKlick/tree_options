@@ -1,5 +1,22 @@
 import { describe, expect, it } from 'vitest'
-import { ageSeconds, etTime, usd, usdSigned } from './format'
+import { ageSeconds, ago, etTime, usd, usdSigned } from './format'
+
+// M8 flash review: "account 16608s ago" next to "marks 487m ago" - five
+// ad-hoc age formatters, two of them seconds-only. One formatter now.
+describe('ago', () => {
+  it('picks the unit a person reads at a glance', () => {
+    expect(ago(0)).toBe('0s')
+    expect(ago(42)).toBe('42s')
+    expect(ago(89)).toBe('89s')
+    expect(ago(90)).toBe('2m')
+    expect(ago(487 * 60)).toBe('8h 7m')
+    expect(ago(16608)).toBe('4h 37m')
+    expect(ago(3 * 3600)).toBe('3h')
+    expect(ago(33243)).toBe('9h 14m')
+    expect(ago(50 * 3600)).toBe('2d 2h')
+    expect(ago(4 * 86400)).toBe('4d')
+  })
+})
 
 describe('format', () => {
   it('mirrors the server _usd pins', () => {

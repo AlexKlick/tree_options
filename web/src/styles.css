@@ -383,8 +383,14 @@ footer {
 }
 
 /* Scrollable tables on narrow screens (the scroll wrapper stays inert
-   where the table already fits). */
+   where the table already fits). TableScroll adds .has-more while columns
+   are hidden: the cut edge fades so a clipped value reads as continuing. */
 .table-scroll { overflow-x: auto; }
+.table-scroll.has-more {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
+}
+.scroll-hint { margin: 0 0 6px; text-align: right; font-size: 0.75rem; }
 
 @media (max-width: 720px) {
   .shell { padding: 14px 12px 20px; }
@@ -401,6 +407,8 @@ footer {
   .density-toggle button { padding: 9px 13px; min-height: 40px; }
   .nav a { display: inline-block; padding: 10px 2px; }
   .chip-input { min-height: 40px; }
+  /* standalone links (back links, raw files, proposal tickers) */
+  .tap-link { display: inline-flex; align-items: center; min-height: 40px; }
   .ledger-head { flex-wrap: wrap; gap: 6px 10px; }
   .chart-tip { font-size: 0.78rem; }
   .kv { grid-template-columns: max-content 1fr; }

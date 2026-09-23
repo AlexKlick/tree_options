@@ -1,5 +1,6 @@
-import { ageSeconds, etDateTime, usd2, usdSigned } from '../lib/format'
+import { ageSeconds, ago, etDateTime, usd2, usdSigned } from '../lib/format'
 import type { Marks, PlanStructureSpec } from '../lib/types'
+import { TableScroll } from './TableScroll'
 
 const pnlClass = (v: number | null): string =>
   v === null ? '' : v >= 0 ? 'pnl-pos' : 'pnl-neg'
@@ -26,7 +27,7 @@ export function MarksTable({
   const rows = specs.filter((s) => marks.structures[s.id] !== undefined)
   return (
     <div className="card table-card">
-      <div className="table-scroll">
+      <TableScroll>
         <table>
           <thead>
             <tr>
@@ -82,11 +83,11 @@ export function MarksTable({
             </tr>
           </tbody>
         </table>
-      </div>
+      </TableScroll>
       <p className="muted table-note">
         as of <code>{marks.ts ? etDateTime(marks.ts) : '?'}</code>
         {age !== null
-          ? ` · ${age}s ago${age > 120 ? ' — stale, monitor not refreshing' : ''}`
+          ? ` · ${ago(age)} ago${age > 120 ? ' — stale, monitor not refreshing' : ''}`
           : ''}{' '}
         · delayed data, mark-to-mid
       </p>

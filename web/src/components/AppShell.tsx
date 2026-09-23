@@ -3,6 +3,9 @@ import type { PollState } from '../hooks/usePoll'
 import { DensityToggle } from './DensityToggle'
 import { Pill } from './Pill'
 
+// Transport health of the cockpit API only. Data freshness (marks,
+// account, quotes) has its own age pills; "live" used to sit beside
+// hours-old data and read as a freshness claim (M8 flash review).
 function PollBadges({ poll }: { poll?: PollState<unknown> }) {
   if (!poll) return null
   if (poll.error && poll.data === null) {
@@ -11,10 +14,13 @@ function PollBadges({ poll }: { poll?: PollState<unknown> }) {
   if (poll.error) {
     return <Pill variant="disarmed">● reconnecting</Pill>
   }
-  if (poll.isStale) {
-    return <Pill variant="empty">○ stale</Pill>
+  if (poll.lastSuccessAt === null) {
+    return <Pill variant="empty">○ loading</Pill>
   }
-  return <Pill variant="armed">● live</Pill>
+  if (poll.isStale) {
+    return <Pill variant="empty">○ API slow</Pill>
+  }
+  return <Pill variant="armed">● API connected</Pill>
 }
 
 export function AppShell({

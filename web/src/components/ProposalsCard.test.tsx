@@ -39,6 +39,11 @@ describe('ProposalsCard', () => {
     expect(onChanged).toHaveBeenCalled()
   })
 
+  it('opts the ticker link into the 40px mobile tap target (M8 flash review: 22px)', () => {
+    render(<ProposalsCard proposals={[prop]} lastRun={null} onChanged={vi.fn()} />)
+    expect(screen.getByRole('link', { name: 'TSM' }).className).toContain('tap-link')
+  })
+
   it('asks for ideas and reports a failed last run honestly', async () => {
     mockedAsk.mockResolvedValue({ accepted: true, request_id: 'r' })
     render(

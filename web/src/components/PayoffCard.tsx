@@ -16,7 +16,8 @@ export function PayoffCard({
     <div className="card chart-card">
       <div className="card-head">
         <h3>
-          {payoff.underlying} {l.long_strike}/{l.short_strike} put spread
+          {payoff.underlying} {l.long_strike}/{l.short_strike} put spread{' '}
+          <span className="muted">· {payoff.structure_id}</span>
         </h3>
         <span className="muted num">
           {mark?.unrealized != null && (

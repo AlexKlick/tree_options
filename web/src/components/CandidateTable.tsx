@@ -1,5 +1,6 @@
 import type { CandidateRow } from '../lib/types'
 import { num2, usdSigned } from '../lib/format'
+import { TableScroll } from './TableScroll'
 
 const ratio = (v: number | null): string => (v === null ? '—' : `${v.toFixed(1)}:1`)
 
@@ -32,7 +33,7 @@ export function CandidateTable({
   if (rows.length === 0) return null
   return (
     <div className="card table-card">
-      <div className="table-scroll">
+      <TableScroll>
         <table>
           <thead>
             <tr>
@@ -87,7 +88,7 @@ export function CandidateTable({
             ))}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
     </div>
   )
 }

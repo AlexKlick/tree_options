@@ -58,6 +58,17 @@ describe('PortfolioTiles', () => {
     expect(screen.getByText('● marks 15m ago')).toBeTruthy()
   })
 
+  it('shows multi-hour ages in hours, never raw seconds (M8 flash review)', () => {
+    render(
+      <PortfolioTiles
+        portfolio={{ ...portfolio, marks_stale: true, marks_age_seconds: 487 * 60 }}
+        account={{ ...account, age_seconds: 16608 }}
+      />,
+    )
+    expect(screen.getByText('● marks 8h 7m ago')).toBeTruthy()
+    expect(screen.getByText('● account 4h 37m ago')).toBeTruthy()
+  })
+
   it('em dash when nothing has filled yet', () => {
     render(
       <PortfolioTiles portfolio={{ ...portfolio, unrealized_open: null }} account={null} />,

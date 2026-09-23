@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { getDiscovery, requestScan } from '../lib/api'
 import { usePoll } from '../hooks/usePoll'
 import { useDensity } from '../density'
-import { etTime } from '../lib/format'
+import { ago, etTime } from '../lib/format'
 import { scenarioKey } from '../lib/scenario'
 import type { CandidateRow } from '../lib/types'
 import { AppShell } from './AppShell'
@@ -13,10 +13,9 @@ import { Pill } from './Pill'
 
 function agePill(seconds: number | null): JSX.Element {
   if (seconds === null) return <Pill variant="empty">○ never scanned</Pill>
-  if (seconds > 3600)
-    return <Pill variant="disarmed">● scan {Math.round(seconds / 3600)}h ago</Pill>
-  if (seconds > 600) return <Pill variant="empty">○ scan {Math.round(seconds / 60)}m ago</Pill>
-  return <Pill variant="armed">● scan {seconds}s ago</Pill>
+  if (seconds > 3600) return <Pill variant="disarmed">● scan {ago(seconds)} ago</Pill>
+  if (seconds > 600) return <Pill variant="empty">○ scan {ago(seconds)} ago</Pill>
+  return <Pill variant="armed">● scan {ago(seconds)} ago</Pill>
 }
 
 function SimpleCards({

@@ -57,6 +57,19 @@ describe('SymbolPage', () => {
     expect(screen.getByRole('link', { name: 'Nvidia chips surge' })).toBeTruthy()
   })
 
+  it('opts the back link into the 40px mobile tap target (M8 flash review: 25px)', async () => {
+    mocked.mockResolvedValue(detail)
+    render(<SymbolPage sym="SPY" />)
+    await waitFor(() => expect(screen.getByText('Quote (mid)')).toBeTruthy())
+    expect(screen.getByRole('link', { name: '← Market' }).className).toContain('tap-link')
+  })
+
+  it('gives IV30 its percent unit (M8 flash review: bare "11.4")', async () => {
+    mocked.mockResolvedValue(detail)
+    render(<SymbolPage sym="SPY" />)
+    await waitFor(() => expect(screen.getByText('11.4%')).toBeTruthy())
+  })
+
   it('shows honest placeholders when caches are cold', async () => {
     mocked.mockResolvedValue({ ...detail, bars: null, news: [], quote: null })
     render(<SymbolPage sym="SPY" />)

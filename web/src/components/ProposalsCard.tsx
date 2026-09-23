@@ -4,13 +4,13 @@
 
 import { useState } from 'react'
 import { decideProposal, requestProposals } from '../lib/api'
+import { ago } from '../lib/format'
 import type { ProposalRun, WatchProposal } from '../lib/types'
 import { Pill } from './Pill'
 
 function runLine(run: ProposalRun | null | undefined, now: number): string {
   if (!run) return 'never asked yet'
-  const mins = Math.max(0, Math.round((now - Date.parse(run.at)) / 60_000))
-  const when = mins < 90 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`
+  const when = `${ago((now - Date.parse(run.at)) / 1000)} ago`
   if (run.status !== 'ok') return `last attempt ${when} failed — ${run.notes.slice(0, 2).join('; ')}`
   return `last asked ${when} via ${run.provider} · ${run.model} · ${run.added} new`
 }
@@ -75,7 +75,7 @@ export function ProposalsCard({
                 <span className={`badge ${p.action === 'add' ? 'badge-open' : 'badge-exit_working'}`}>
                   {p.action}
                 </span>{' '}
-                <a href={`#/market/${p.symbol}`}>
+                <a className="tap-link" href={`#/market/${p.symbol}`}>
                   <strong>{p.symbol}</strong>
                 </a>
                 {p.confidence != null && (

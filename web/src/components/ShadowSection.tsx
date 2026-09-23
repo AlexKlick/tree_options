@@ -5,6 +5,7 @@
 import type { ShadowBlock, ShadowPosition } from '../lib/types'
 import { usd2, usdSigned } from '../lib/format'
 import { Pill } from './Pill'
+import { TableScroll } from './TableScroll'
 
 const pnlClass = (v: number | null): string =>
   v === null ? '' : v >= 0 ? 'pnl-pos' : 'pnl-neg'
@@ -37,7 +38,7 @@ export function ShadowSection({
         <Pill variant="empty">paper observation only</Pill>
       </h2>
       <div className="card table-card">
-        <div className="table-scroll">
+        <TableScroll>
           <table>
             <thead>
               <tr>
@@ -95,7 +96,7 @@ export function ShadowSection({
               ))}
             </tbody>
           </table>
-        </div>
+        </TableScroll>
         <p className="muted" style={{ marginBottom: 0 }}>
           {shadow.stats.open} open · {shadow.stats.expired} expired
           {shadow.stats.mean_pnl != null &&

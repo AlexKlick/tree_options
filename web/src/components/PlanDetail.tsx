@@ -80,8 +80,13 @@ export function PlanDetail({ id }: { id: string }) {
   const footer = d ? (
     <span>
       raw{' '}
-      <a href={`plan/${encodeURIComponent(id)}/book.json`}>book.json</a> ·{' '}
-      <a href={`plan/${encodeURIComponent(id)}/events.jsonl`}>events.jsonl</a>
+      <a className="tap-link" href={`plan/${encodeURIComponent(id)}/book.json`}>
+        book.json
+      </a>{' '}
+      ·{' '}
+      <a className="tap-link" href={`plan/${encodeURIComponent(id)}/events.jsonl`}>
+        events.jsonl
+      </a>
     </span>
   ) : undefined
 
@@ -93,7 +98,9 @@ export function PlanDetail({ id }: { id: string }) {
           <h2>{poll.error.includes('404') ? 'Plan not found' : 'Cannot reach the cockpit API'}</h2>
           <p className="muted">{poll.error}</p>
           <p>
-            <a href="#/">← All plans</a>
+            <a className="tap-link" href="#/">
+              ← All plans
+            </a>
           </p>
         </div>
       ) : d === null ? (
@@ -146,7 +153,7 @@ export function PlanDetail({ id }: { id: string }) {
         </>
       ) : (
         <>
-          <a className="back" href="#/">
+          <a className="back tap-link" href="#/">
             ← All plans
           </a>
           <RunbookBanner d={d} />
@@ -154,9 +161,9 @@ export function PlanDetail({ id }: { id: string }) {
           <div className="duo">
             <section>
               <h2 className="section-title">
-                Live marks{' '}
+                Latest marks{' '}
                 <span className="muted section-sub">
-                  (delayed quotes · mark-to-mid · refresh ~20s)
+                  (delayed quotes · mark-to-mid · the monitor targets ~20s; age below)
                 </span>
               </h2>
               <MarksTable marks={d.marks} specs={d.plan.structures} />

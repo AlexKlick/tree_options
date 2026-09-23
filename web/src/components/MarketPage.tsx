@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { getMarket, watchOp } from '../lib/api'
-import { etTime, num2 } from '../lib/format'
+import { ago, etTime, num2 } from '../lib/format'
 import { usePoll } from '../hooks/usePoll'
 import type { MarketQuote } from '../lib/types'
 import { AppShell } from './AppShell'
@@ -13,8 +13,9 @@ import { ProposalsCard } from './ProposalsCard'
 
 function agePill(seconds: number | null): JSX.Element {
   if (seconds === null) return <Pill variant="empty">○ no snapshot yet</Pill>
-  if (seconds > 300) return <Pill variant="disarmed">● {Math.round(seconds / 60)}m old</Pill>
-  return <Pill variant="armed">● {seconds}s old</Pill>
+  return (
+    <Pill variant={seconds > 300 ? 'disarmed' : 'armed'}>● {ago(seconds)} old</Pill>
+  )
 }
 
 function QuoteCard({ sym, q }: { sym: string; q: MarketQuote }) {
@@ -34,7 +35,7 @@ function QuoteCard({ sym, q }: { sym: string; q: MarketQuote }) {
         {q.iv30 !== null && (
           <>
             {' · '}
-            <span className="nowrap">iv30 {q.iv30.toFixed(1)}</span>
+            <span className="nowrap">iv30 {q.iv30.toFixed(1)}%</span>
           </>
         )}
       </p>

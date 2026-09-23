@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { getSymbol, requestMarketRefresh } from '../lib/api'
-import { etTime, num2 } from '../lib/format'
+import { ago, etTime, num2 } from '../lib/format'
 import { usePoll } from '../hooks/usePoll'
 import type { SymbolDetail } from '../lib/types'
 import { AppShell } from './AppShell'
@@ -17,11 +17,12 @@ const dateFmt = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
 })
 
-const ageNote = (seconds: number | null | undefined): string => {
-  if (seconds === null || seconds === undefined) return ''
-  const mins = Math.round(seconds / 60)
-  return mins >= 90 ? ` · data ${Math.round(mins / 60)}h old` : ` · data ${mins || '<1'}m old`
-}
+const ageNote = (seconds: number | null | undefined): string =>
+  seconds === null || seconds === undefined ? '' : ` · data ${ago(seconds)} old`
+
+// the price axis now fits the data (level extent), so cheap stocks need cents
+const priceLabel = (v: number): string =>
+  v >= 100 ? `$${Math.round(v).toLocaleString('en-US')}` : `$${v.toFixed(2)}`
 
 export function SymbolPage({ sym }: { sym: string }) {
   const poll = usePoll(() => getSymbol(sym))
@@ -50,7 +51,7 @@ export function SymbolPage({ sym }: { sym: string }) {
   return (
     <AppShell title={sym} poll={poll}>
       <div className="pill-row" style={{ marginBottom: 16 }}>
-        <a href="#/market" className="muted">
+        <a href="#/market" className="muted tap-link">
           ← Market
         </a>
         {q?.source_as_of && <Pill variant="empty">source {etTime(q.source_as_of)} ET</Pill>}
@@ -83,7 +84,7 @@ export function SymbolPage({ sym }: { sym: string }) {
             </div>
             <div className="tile">
               <p>IV30</p>
-              <div className="num tile-value">{q?.iv30 != null ? q.iv30.toFixed(1) : '—'}</div>
+              <div className="num tile-value">{q?.iv30 != null ? `${q.iv30.toFixed(1)}%` : '—'}</div>
             </div>
           </div>
 
@@ -98,7 +99,7 @@ export function SymbolPage({ sym }: { sym: string }) {
               <TimeSeriesChart
                 series={d.bars}
                 ariaLabel={`Daily closes for ${sym}`}
-                valueFormat={(v) => `$${Math.round(v).toLocaleString('en-US')}`}
+                valueFormat={priceLabel}
                 timeFormat={(ts) => dateFmt.format(new Date(ts))}
               />
             </div>

@@ -34,6 +34,13 @@ const pinWith = (want: string) =>
     (_, el) => el?.classList.contains('chart-pin') === true && el.textContent === want,
   )
 
+describe('PayoffChart accessible name (M8 flash review)', () => {
+  it('names the structure, so oct and nov 185/150 sliders differ', () => {
+    render(<PayoffChart payoff={payoff} />)
+    expect(screen.getByRole('slider', { name: /185\/150 put spread \(nvda-oct\)/ })).toBeTruthy()
+  })
+})
+
 describe('PayoffChart what-if slider', () => {
   it('nudges by $0.50 with arrow keys and pins the interpolated pnl', () => {
     render(<PayoffChart payoff={payoff} />)

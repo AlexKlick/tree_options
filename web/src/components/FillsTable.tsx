@@ -1,5 +1,6 @@
 import type { FillRow } from '../lib/fills'
 import { etTime, usd2, usdSigned } from '../lib/format'
+import { TableScroll } from './TableScroll'
 
 /** Execution record: every fill with its signed cash flow (newest first). */
 export function FillsTable({ fills }: { fills: FillRow[] }) {
@@ -14,7 +15,7 @@ export function FillsTable({ fills }: { fills: FillRow[] }) {
   }
   return (
     <div className="card table-card">
-      <div className="table-scroll">
+      <TableScroll>
         <table>
           <thead>
             <tr>
@@ -45,7 +46,7 @@ export function FillsTable({ fills }: { fills: FillRow[] }) {
             ))}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
     </div>
   )
 }

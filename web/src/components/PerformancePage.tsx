@@ -1,4 +1,4 @@
-// Paper-money performance: equity curve (net liquidization - account
+// Paper-money performance: equity curve (net liquidation - account
 // truth), trading P&L by day, and per-plan/per-structure breakdowns.
 // Two separately-labeled bases by design: equity may include non-trading
 // activity; the P&L table is book-derived. Missing marks are gaps ("—"),
@@ -10,6 +10,7 @@ import { usePoll } from '../hooks/usePoll'
 import type { StatsResponse } from '../lib/types'
 import { AppShell } from './AppShell'
 import { Pill } from './Pill'
+import { TableScroll } from './TableScroll'
 import { TimeSeriesChart } from './TimeSeriesChart'
 
 const pnlClass = (v: number | null): string =>
@@ -47,7 +48,7 @@ export function PerformancePage() {
           <div className="pill-row" style={{ marginBottom: 14 }}>
             <TrackingPill since={d?.tracking_since ?? null} />
             {d?.equity_account && <Pill variant="empty">account {d.equity_account}</Pill>}
-            <Pill variant="empty">equity = net liquidization · P&L = book-derived</Pill>
+            <Pill variant="empty">equity = net liquidation · P&L = book-derived</Pill>
           </div>
 
           <div className="grid tiles-grid">
@@ -94,7 +95,7 @@ export function PerformancePage() {
           </h2>
           {d?.days.length ? (
             <div className="card table-card">
-              <div className="table-scroll">
+              <TableScroll>
                 <table>
                   <thead>
                     <tr>
@@ -121,7 +122,7 @@ export function PerformancePage() {
                     ))}
                   </tbody>
                 </table>
-              </div>
+              </TableScroll>
             </div>
           ) : (
             <div className="card empty-state">
@@ -131,7 +132,7 @@ export function PerformancePage() {
 
           <h2 className="section-title">Plans</h2>
           <div className="card table-card">
-            <div className="table-scroll">
+            <TableScroll>
               <table>
                 <thead>
                   <tr>
@@ -154,12 +155,12 @@ export function PerformancePage() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </TableScroll>
           </div>
 
           <h2 className="section-title">Structures</h2>
           <div className="card table-card">
-            <div className="table-scroll">
+            <TableScroll>
               <table>
                 <thead>
                   <tr>
@@ -192,7 +193,7 @@ export function PerformancePage() {
                   ))}
                 </tbody>
               </table>
-            </div>
+            </TableScroll>
           </div>
         </>
       )}

@@ -1,5 +1,6 @@
 import { usd2, usdSigned } from '../lib/format'
 import type { PlanStructureSpec, StructureStateView } from '../lib/types'
+import { TableScroll } from './TableScroll'
 
 const pnlClass = (v: number | null): string =>
   v === null ? '' : v >= 0 ? 'pnl-pos' : 'pnl-neg'
@@ -14,7 +15,7 @@ export function PositionsTable({
 }) {
   return (
     <div className="card table-card">
-      <div className="table-scroll">
+      <TableScroll>
         <table>
           <thead>
             <tr>
@@ -65,7 +66,7 @@ export function PositionsTable({
             })}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
     </div>
   )
 }

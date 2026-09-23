@@ -149,7 +149,7 @@ export function PayoffChart({ payoff }: { payoff: Payoff }) {
       className="chart-wrap"
       role="slider"
       tabIndex={0}
-      aria-label={`${payoff.underlying} price what-if for the ${levels.long_strike}/${levels.short_strike} put spread`}
+      aria-label={`${payoff.underlying} price what-if for the ${levels.long_strike}/${levels.short_strike} put spread (${payoff.structure_id})`}
       aria-valuemin={view.x_lo}
       aria-valuemax={view.x_hi}
       aria-valuenow={value}

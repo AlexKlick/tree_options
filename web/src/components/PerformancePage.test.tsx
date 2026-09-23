@@ -80,7 +80,7 @@ describe('PerformancePage', () => {
     mocked.mockResolvedValue(payload)
     render(<PerformancePage />)
     await waitFor(() => expect(screen.getByText(/tracking began 2026-09-22/)).toBeTruthy())
-    expect(screen.getByText(/equity = net liquidization/)).toBeTruthy()
+    expect(screen.getByText(/equity = net liquidation/)).toBeTruthy()
   })
 
   it('renders honest empty state before history exists', async () => {

@@ -46,6 +46,19 @@ export const usdLevel = (v: number): string =>
 
 export const num2 = (v: number): string => v.toFixed(2)
 
+/** Elapsed age in the unit read at a glance: 42s · 8m · 4h 37m · 2d 2h.
+ * The one formatter for every "… ago" / "… old" label. */
+export function ago(seconds: number): string {
+  const s = Math.max(0, Math.round(seconds))
+  if (s < 90) return `${s}s`
+  const m = Math.round(s / 60)
+  if (m < 90) return `${m}m`
+  const h = Math.floor(m / 60)
+  if (h < 48) return m % 60 ? `${h}h ${m % 60}m` : `${h}h`
+  const d = Math.floor(h / 24)
+  return h % 24 ? `${d}d ${h % 24}h` : `${d}d`
+}
+
 export function ageSeconds(iso: string | null, now: number = Date.now()): number | null {
   if (!iso) return null
   const t = Date.parse(iso)

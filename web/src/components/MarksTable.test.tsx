@@ -61,6 +61,21 @@ describe('MarksTable', () => {
     expect(screen.getByText('no quote this cycle')).toBeTruthy()
   })
 
+  it('states a multi-hour staleness in hours (M8 flash review: "33243s ago")', () => {
+    const marks: Marks = {
+      ts: new Date(Date.now() - 33243 * 1000).toISOString(),
+      age_seconds: 33243,
+      total_unrealized: -3,
+      spots: {},
+      structures: {
+        'nvda-oct': { qty: 5, entry: 0.21, bid: 0.18, ask: 0.21, mark: 0.2, unrealized: -7.5 },
+      },
+    }
+    render(<MarksTable marks={marks} specs={specs} />)
+    expect(screen.getByText(/9h 14m ago — stale, monitor not refreshing/)).toBeTruthy()
+    expect(screen.queryByText(/\d{4,}s ago/)).toBeNull()
+  })
+
   it('shows the not-yet note without marks', () => {
     render(<MarksTable marks={null} specs={specs} />)
     expect(screen.getByText(/No marks yet/)).toBeTruthy()
