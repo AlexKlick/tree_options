@@ -399,3 +399,27 @@ class TestBrokerDown:
         assert _broker_ready(FakeChainSource()) is True  # no probe attr = ready
         assert _broker_ready(DeadGateway()) is False
         assert _broker_ready(Revives()) is True
+
+    def test_backoff_spaces_dead_gateway_retries(self) -> None:
+        from tree_options.trex.discovery.runner import ConnectBackoff, _broker_ready
+
+        attempts: list[int] = []
+
+        class DeadGateway(FakeChainSource):
+            def connected(self) -> bool:
+                return False
+
+            def connect(self) -> None:
+                attempts.append(1)
+                raise TimeoutError("gateway down")
+
+        clock = [1000.0]
+        backoff = ConnectBackoff(seconds=120, clock=lambda: clock[0])
+        gw = DeadGateway()
+        assert _broker_ready(gw, backoff) is False
+        clock[0] += 5  # next serve tick: inside the window, no connect
+        assert _broker_ready(gw, backoff) is False
+        assert len(attempts) == 1
+        clock[0] += 120  # window passed: one more attempt
+        assert _broker_ready(gw, backoff) is False
+        assert len(attempts) == 2

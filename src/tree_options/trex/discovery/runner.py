@@ -12,6 +12,8 @@ from __future__ import annotations
 import fcntl
 import json
 import logging
+import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
@@ -31,6 +33,10 @@ from tree_options.trex.discovery.engine import ScanInput, scan, select_top
 log = logging.getLogger("trex.discovery.runner")
 
 POLL_SECONDS = 5
+# A failed connect blocks for ib_async's 20s handshake timeout; retrying
+# on every 5s tick starved the market/watch work the lazy connect exists
+# to protect. Dead-gateway retries are spaced out instead.
+RECONNECT_BACKOFF_SECONDS = 120
 ACCOUNT_HISTORY_TTL_SECONDS = 60  # equity curve cadence; discovery owns it
 ACCOUNT_HISTORY_MAX_LINES = 60_000
 
@@ -404,22 +410,55 @@ def _market_tick(
         log.exception("market tick failed (scan handling unaffected)")
 
 
-def _broker_ready(source: ChainSource) -> bool:
+class ConnectBackoff:
+    """Spaces out reconnect attempts to a dead gateway."""
+
+    def __init__(
+        self,
+        seconds: float = RECONNECT_BACKOFF_SECONDS,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self.seconds = seconds
+        self.clock = clock
+        self.next_try = 0.0
+
+    def allow(self) -> bool:
+        return self.clock() >= self.next_try
+
+    def failed(self) -> None:
+        self.next_try = self.clock() + self.seconds
+
+    def succeeded(self) -> None:
+        self.next_try = 0.0
+
+
+def _broker_ready(source: ChainSource, backoff: ConnectBackoff | None = None) -> bool:
     """Lazy broker connect (Codex-arch #2): True when scans may run.
 
     A down gateway must degrade the loop to market/watch work, never
     crash it at startup or mid-serve. Sources without a ``connected``
-    (tests' fakes) count as ready.
+    (tests' fakes) count as ready. With a backoff, a failed connect is
+    not retried until the backoff window passes.
     """
     connected = getattr(source, "connected", None)
     if connected is None or connected():
         return True
+    if backoff is not None and not backoff.allow():
+        return False
     try:
         source.connect()  # type: ignore[attr-defined]
-        return True
     except Exception as exc:
-        log.warning("gateway connect failed (scans paused, market/watch continue): %s", exc)
+        if backoff is not None:
+            backoff.failed()
+        log.warning(
+            "gateway connect failed (scans paused, market/watch continue; retry in %ss): %s",
+            backoff.seconds if backoff is not None else 0,
+            exc,
+        )
         return False
+    if backoff is not None:
+        backoff.succeeded()
+    return True
 
 
 def serve_tick(
@@ -515,8 +554,6 @@ def serve(
     state_dir: Path,
     repo: Path | None = None,
 ) -> None:
-    import time
-
     lock = ensure_lock(state_dir / "discovery.lock")
     try:
         log.info("discovery serve loop up (auto_scan_et %s)", cfg.auto_scan_et)
@@ -526,6 +563,7 @@ def serve(
         sleeper = getattr(source, "sleep", None) or time.sleep
         from tree_options.trex.discovery.market import urllib_transport
 
+        backoff = ConnectBackoff()
         while True:
             try:
                 serve_tick(
@@ -534,7 +572,7 @@ def serve(
                     state_dir,
                     repo=repo,
                     market_transport=urllib_transport,
-                    broker_ready=_broker_ready(source),
+                    broker_ready=_broker_ready(source, backoff),
                 )
             except Exception:
                 log.exception("serve tick failed")
