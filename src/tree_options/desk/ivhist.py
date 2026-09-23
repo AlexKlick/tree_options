@@ -234,18 +234,23 @@ class CacheScan:
     stats: Counter[str] = field(default_factory=Counter)
 
 
-def _bar_key(bar: MassiveDailyBar) -> tuple[Decimal, ...]:
-    return (bar.open, bar.high, bar.low, bar.close, bar.vwap, Decimal(bar.volume))
+def _bar_key(bar: MassiveDailyBar) -> int:
+    """A compact identity of the whole bar (the exact Decimals hash
+    deterministically): duplicates that disagree in any field conflict."""
+    return hash((bar.open, bar.high, bar.low, bar.close, bar.vwap, Decimal(bar.volume)))
 
 
-def _merge(
-    cell: dict[date, MassiveDailyBar], bad: set[date], bars: Iterable[MassiveDailyBar]
-) -> None:
+# session -> (vwap, bar identity); the full bars are not retained (memory)
+_Cell = dict[date, tuple[Decimal, int]]
+
+
+def _merge(cell: _Cell, bad: set[date], bars: Iterable[MassiveDailyBar]) -> None:
     for bar in bars:
         prev = cell.get(bar.session)
+        key = _bar_key(bar)
         if prev is None:
-            cell[bar.session] = bar
-        elif _bar_key(prev) != _bar_key(bar):
+            cell[bar.session] = (bar.vwap, key)
+        elif prev[1] != key:
             bad.add(bar.session)
 
 
@@ -256,9 +261,9 @@ def scan_cache(
     bars of ``names`` for sessions in [start, end], merged across files."""
     wanted = set(names)
     scan = CacheScan(source=str(cache_dir))
-    opt: dict[str, dict[date, MassiveDailyBar]] = {}
+    opt: dict[str, _Cell] = {}
     opt_bad: dict[str, set[date]] = {}
-    spot: dict[str, dict[date, MassiveDailyBar]] = {}
+    spot: dict[str, _Cell] = {}
     spot_bad: dict[str, set[date]] = {}
     for path in sorted(cache_dir.glob("*.json")):
         if path.name.startswith("."):
@@ -297,6 +302,9 @@ def scan_cache(
         except (MassiveSchemaError, ValueError, UnicodeDecodeError):
             scan.stats["refused_bodies"] += 1
             continue
+        if is_option and key is not None:
+            # only the bars the method can read (8..90 calendar days out)
+            bars = [b for b in bars if TAU_MIN <= days_between(b.session, key[1]) <= TAU_MAX]
         if is_option:
             scan.stats["option_bodies"] += 1
             _merge(opt.setdefault(ticker, {}), opt_bad.setdefault(ticker, set()), bars)
@@ -306,25 +314,25 @@ def scan_cache(
         else:
             scan.stats["adjusted_spot_bodies_skipped"] += 1
     for ticker, cell in sorted(opt.items()):
-        key = parse_option_ticker(ticker)
-        assert key is not None
-        root, expiry, right, strike = key
-        for session, bar in sorted(cell.items()):
+        parsed = parse_option_ticker(ticker)
+        assert parsed is not None
+        root, expiry, right, strike = parsed
+        for session, (vwap, _key) in sorted(cell.items()):
             if session in opt_bad[ticker]:
                 scan.stats["conflicting_bars_dropped"] += 1
                 continue
-            if bar.vwap <= 0:
+            if vwap <= 0:
                 scan.stats["nonpositive_vwap_dropped"] += 1
                 continue
             scan.options.setdefault(root, {}).setdefault(session, []).append(
-                OptionBar(expiry=expiry, right=right, strike=strike, vwap=float(bar.vwap))
+                OptionBar(expiry=expiry, right=right, strike=strike, vwap=float(vwap))
             )
             scan.stats["option_bars"] += 1
     for ticker, cell in sorted(spot.items()):
         bad = spot_bad[ticker]
         scan.spot_conflicts[ticker] = set(bad)
         scan.spot[ticker] = {
-            s: float(b.vwap) for s, b in cell.items() if s not in bad and b.vwap > 0
+            s: float(vwap) for s, (vwap, _key) in cell.items() if s not in bad and vwap > 0
         }
         scan.stats["spot_conflicts"] += len(bad)
     return scan
