@@ -665,7 +665,12 @@ def create_app(
     def spa_shell() -> Response:
         index = static_root / "index.html"
         if index.is_file():
-            return FileResponse(index, media_type="text/html")
+            # no-cache = always revalidate (ETag keeps it cheap): a
+            # heuristically cached shell keeps pointing at the previous
+            # deploy's hashed bundle long after a rebuild
+            return FileResponse(
+                index, media_type="text/html", headers={"Cache-Control": "no-cache"}
+            )
         return HTMLResponse(_FALLBACK_SHELL, status_code=503)
 
     @app.get("/plan/{plan_id}", response_class=HTMLResponse, include_in_schema=False)

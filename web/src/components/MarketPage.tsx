@@ -30,8 +30,13 @@ function QuoteCard({ sym, q }: { sym: string; q: MarketQuote }) {
       </div>
       <div className="num tile-value">{mid !== null ? num2(mid) : '—'}</div>
       <p className="muted" style={{ margin: 0 }}>
-        {q.close !== null ? `close ${num2(q.close)}` : 'no close'}
-        {q.iv30 !== null && ` · iv30 ${q.iv30.toFixed(1)}`}
+        <span className="nowrap">{q.close !== null ? `close ${num2(q.close)}` : 'no close'}</span>
+        {q.iv30 !== null && (
+          <>
+            {' · '}
+            <span className="nowrap">iv30 {q.iv30.toFixed(1)}</span>
+          </>
+        )}
       </p>
       <p className="muted" style={{ margin: 0, fontSize: '0.78rem' }}>
         {q.source_as_of ? `source ${etTime(q.source_as_of)} ET` : 'source time unknown'}
@@ -108,7 +113,7 @@ export function MarketPage() {
           </p>
         </div>
       ) : (
-        <div className="grid">
+        <div className="quote-grid">
           {symbols.map(([sym, q]) => (
             <div key={sym} className="quote-card-wrap">
               <QuoteCard sym={sym} q={q} />

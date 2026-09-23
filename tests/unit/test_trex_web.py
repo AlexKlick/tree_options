@@ -152,6 +152,8 @@ class TestStaticShell:
         assert r.status_code == 200
         assert "text/html" in r.headers["content-type"]
         assert "SHELL-MARKER" in r.text
+        # the shell must revalidate so a rebuild is never masked by a cache
+        assert r.headers["cache-control"] == "no-cache"
         a = client.get("/assets/app.js")
         assert a.status_code == 200
         assert "javascript" in a.headers["content-type"]
