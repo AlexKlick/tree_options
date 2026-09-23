@@ -173,14 +173,32 @@ the vendor (probed: a 2024-09-13 start returned its first bar on
   its manifest only at the end of each stage, so between stages count
   `artifacts/massive-cache-desk/*.json` (2,694 seeded at launch).
 - Resume after any interruption (reboot, host-work pressure kill rc 143,
-  timeout): re-run the same `detach.sh start ...` command (the name is free
-  once the job has ended; it refuses a double start). Every page already
-  fetched is a cache hit and costs nothing; stage 0 re-seeds as a no-op.
-  Cache writes are atomic (staging file + rename), so a kill never leaves a
-  half-written entry.
-- A SIGTERM skips the manifest's `finally`: until a re-run finishes,
-  `capture_manifest.json` and `bars/` describe the last completed stage,
-  not the cache. Stage 3 writes `bars/` only at its end.
+  timeout) FROM THE CURRENT CODE, not the `c03ab2f` copy. The launched copy
+  predates the Codex review fixes: the resolved-path write guard, stopping
+  when the seeder refuses, and the 13 s cooldown before every wire stage.
+  Its dirs are not symlinks, and a 429 at a stage transition is retried
+  (4 attempts, each at least 12 s after the last). Freeze the fixed commit
+  and start it under the same name (free once the job has ended; it
+  refuses a double start):
+
+      SHA=$(git -C /home/alexk/documents/tree_options rev-parse --short HEAD)  # once merged
+      SNAP=/home/alexk/documents/tree_options/artifacts/desk-longdated-capture-code/$SHA
+      mkdir -p "$SNAP" && git -C /home/alexk/documents/tree_options archive "$SHA" | tar -x -C "$SNAP"
+      /home/alexk/.claude/scripts/detach.sh start desk-longdated-capture --cwd "$SNAP" \
+        --timeout 345600 -- /home/alexk/.local/bin/host-work run --profile build --wait 14400 -- \
+        nice -n 10 bash "$SNAP/scripts/desk_longdated_capture.sh"
+
+  (Before the merge, archive the branch commit from the worktree the same
+  way.) Every page already fetched is a cache hit and costs nothing; stage 0
+  re-seeds as a no-op. Cache writes are atomic (staging file + rename), so
+  a kill never leaves a half-written cache entry. The trex calendar fix
+  (2025-01-09 closure override) does not touch the capture: its only
+  calendar use is the monthly-traded third-Friday check.
+- The CACHE is the durable truth. The exported `masters/`, `bars/`,
+  `spot_proxy.json` and `capture_manifest.json` are plain (non-atomic)
+  writes: after a kill they can be stale or torn until a re-run rebuilds
+  them from the cache. A SIGTERM also skips the manifest's `finally`, and
+  stage 3 writes `bars/` only at its end.
 - Done: `desk-longdated-capture.done` carries rc; the log ends
   `== done ... seed=0 sizing=0 oldest=0 full=0`. `PARTIAL: x/y masters
   complete` on stderr means some masters errored; read the manifest notes.

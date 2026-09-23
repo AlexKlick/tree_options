@@ -460,6 +460,45 @@ class ProtocolCheck:
     diffs: list[str]
 
 
+EXPECTED_ROW_LABELS = frozenset(
+    f"252-skip21-{form} h{hold} {era}" for form in FORMS for hold in HOLDS for era in ERAS
+)
+EXPECTED_SOURCES = ("XSMOM-LONGLEG", "XU-XSMOM")
+EXPECTED_PROTOCOL_MONTHS = 46
+
+
+def validation_failures(checks: Sequence[RowCheck], proto: ProtocolCheck) -> list[str]:
+    """Why the reproduction does not license scoring (empty: it does).
+
+    Codex P2-2: every expected published row must be present and exact (a
+    missing row must not silently shrink the comparison), for both sources,
+    and all 46 PROTOCOL-XSMOM months must match with no extra month."""
+    failures: list[str] = []
+    for source in EXPECTED_SOURCES:
+        labels = [c.label for c in checks if c.source == source]
+        if sorted(labels) != sorted(EXPECTED_ROW_LABELS):
+            failures.append(
+                f"{source}: compared {len(labels)} rows {sorted(labels)}, expected the "
+                f"{len(EXPECTED_ROW_LABELS)} 252-skip21 rows"
+            )
+    extra = sorted({c.source for c in checks} - set(EXPECTED_SOURCES))
+    if extra:
+        failures.append(f"unexpected validation sources {extra}")
+    failures += [f"{c.source} {c.label}: DIFF" for c in checks if not c.exact]
+    want = EXPECTED_PROTOCOL_MONTHS
+    if (proto.months_published, proto.months_ours, proto.exact) != (
+        want,
+        want,
+        want,
+    ) or proto.diffs:
+        failures.append(
+            f"PROTOCOL-XSMOM: {proto.exact} exact of {proto.months_published} published, "
+            f"ours {proto.months_ours}, {len(proto.diffs)} differing (expected {want}/{want}/"
+            f"{want}, 0)"
+        )
+    return failures
+
+
 def validate_protocol(md: Path, panel: Panel, names: Sequence[str], cal: Calendar) -> ProtocolCheck:
     first, last = panel_range(panel)
     cells = run_walk(
@@ -644,10 +683,15 @@ def render_report(
             f"- **{uni.name}**: `{uni.source}` sha256 `{uni.sha256}`, {len(uni.names)} names, "
             f"{first}..{last}."
         )
+    removal = (
+        f"minus {', '.join(d.isoformat() for d in cal.removed)}"
+        if cal.removed
+        else "which declares the 2025-01-09 closure itself (closure override), so the "
+        "study's own removal was a no-op"
+    )
     lines += [
         f"- Calendar: the trex static NYSE calendar (`data/calendar/trex/`, "
-        f"exchange-calendars 4.5.2) minus {', '.join(d.isoformat() for d in cal.removed)} "
-        "(see the calendar correction).",
+        f"exchange-calendars 4.5.2) {removal} (see the calendar correction).",
         "",
         "Construction: on the first NYSE session t of each month, rank by",
         "`close(t-21)/close(t-273)-1` (**12-1**) or `close(t)/close(t-273)-1` (**no-skip**,",
@@ -832,6 +876,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     for d in proto.diffs:
         print(f"  {d}")
+    failures = validation_failures(checks, proto)
+    if failures:
+        print("VALIDATION FAILED (nothing scored, nothing written):", file=sys.stderr)
+        for line in failures:
+            print(f"  {line}", file=sys.stderr)
+        return 4
+    print("validation: complete and exact")
     if args.validate_only:
         return 0
 

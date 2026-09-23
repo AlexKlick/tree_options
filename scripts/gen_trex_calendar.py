@@ -16,6 +16,16 @@ and range reproduces the same checksum. Holidays past today are rule-based
 (unscheduled closures such as a national day of mourning can't be
 known): regenerate when the exchange announces one, or when the monitor's
 health reports ``calendar_horizon_warn``.
+
+CLOSURE_OVERRIDES declares the unscheduled closures the pinned library does
+not know about (4.5.2 predates 2025-01-09). They are applied AFTER the
+pinned build, to this trex calendar only, and recorded in the payload
+(``closure_overrides``), so pin + this table still reproduce the checksum.
+The protocol calendar and ``scripts/gen_calendar.py`` are untouched: sealed
+research that walks the protocol calendar must treat these days as
+non-sessions itself. An in-range override the pinned build does not list
+as a session fails the build loudly (a newer pin that knows the closure
+makes the entry redundant: remove it then).
 """
 
 from __future__ import annotations
@@ -34,6 +44,14 @@ PROTOCOL_DIR = REPO / "data" / "calendar"
 DEFAULT_OUT_DIR = PROTOCOL_DIR / "trex"
 MAX_END = date(2028, 12, 31)
 SCOPE = "trex-execution"
+
+# Unscheduled NYSE closures the pinned exchange-calendars does not know.
+# 2025-01-09: NYSE/Nasdaq closed for the national day of mourning declared
+# after President Carter's death (NYSE notice of 2024-12-30); every name in
+# the research panels (ohlc-panel.json, ohlc-panel-xu.json) has no bar that day.
+CLOSURE_OVERRIDES: dict[str, str] = {
+    "2025-01-09": "NYSE closed: national day of mourning for former President Jimmy Carter",
+}
 
 
 def _protocol_generator() -> ModuleType:
@@ -73,6 +91,41 @@ def build_payload(calendar: object, start: date, end: date, pin: str) -> dict[st
     }
 
 
+def apply_closure_overrides(
+    payload: dict[str, object],
+    overrides: dict[str, str],
+    *,
+    start: date | None = None,
+    end: date | None = None,
+) -> dict[str, object]:
+    """A new payload with the in-range overrides removed from the sessions
+    and early closes and declared under ``closure_overrides`` (placed right
+    after ``source``). The input payload is not mutated."""
+    sessions = payload["sessions"]
+    early = payload["early_close_sessions"]
+    assert isinstance(sessions, list) and isinstance(early, list)
+    lo = start.isoformat() if start else ""
+    hi = end.isoformat() if end else "9999-12-31"
+    applied = {day: why for day, why in sorted(overrides.items()) if lo <= day <= hi}
+    stale = sorted(day for day in applied if day not in sessions)
+    if stale:
+        raise ValueError(
+            f"closure override(s) {stale} are not sessions in the pinned build: "
+            "remove the entry if the pin now knows the closure"
+        )
+    out: dict[str, object] = {}
+    for key, value in payload.items():
+        if key == "sessions":
+            out[key] = [s for s in sessions if s not in applied]
+        elif key == "early_close_sessions":
+            out[key] = [s for s in early if s not in applied]
+        else:
+            out[key] = value
+        if key == "source":
+            out["closure_overrides"] = applied
+    return out
+
+
 def main() -> int:
     gen = _protocol_generator()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -107,7 +160,12 @@ def main() -> int:
         return 3
 
     cal = exchange_calendars.get_calendar("XNYS", start=args.start, end=args.end)
-    payload = build_payload(cal, args.start, args.end, gen.PINNED_EXCHANGE_CALENDARS)
+    payload = apply_closure_overrides(
+        build_payload(cal, args.start, args.end, gen.PINNED_EXCHANGE_CALENDARS),
+        CLOSURE_OVERRIDES,
+        start=args.start,
+        end=args.end,
+    )
     sessions = payload["sessions"]
     assert isinstance(sessions, list) and sessions
     first, last = sessions[0], sessions[-1]
@@ -124,6 +182,7 @@ def main() -> int:
     print(f"exchange_calendars=={used_version}")
     print(f"sessions: {len(sessions)}  ({first} .. {last})")
     print(f"early closes: {len(early)}")
+    print(f"closure overrides: {payload['closure_overrides']}")
     print(f"wrote {out}")
     print(f"sha256 {digest}")
     return 0

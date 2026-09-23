@@ -21,9 +21,30 @@ PY="${DESK_CAPTURE_PYTHON:-/home/alexk/documents/tree_options/.venv/bin/python}"
 CACHE="$ARTIFACTS/massive-cache-desk"
 OUT="$ARTIFACTS/desk-longdated-capture"
 SEED_FROM="$ARTIFACTS/massive-cache"
+# Each stage is a new process with a fresh 5/min governor whose first request
+# is immediate: wait one full spacing interval (12 s) plus margin before every
+# wire stage, so a stage transition or a quick restart never lands a request
+# inside the previous process's spacing (Codex P2-3).
+COOLDOWN_S=13
 export PYTHONPATH="$REPO/src"
 
-case "$CACHE" in */massive-cache) echo "refusing the load-bearing cache" >&2; exit 64;; esac
+# ---- write-path guard (Codex P1), before anything runs ----------------------
+# Compare RESOLVED paths (symlinks followed), so an aliased cache or output
+# directory can never write into the load-bearing research data.
+real() { realpath -m -- "$1"; }
+PROTECTED=("$(real "$SEED_FROM")" "$(real "$(dirname "$ARTIFACTS")/data/bars")")
+for p in "$ARTIFACTS"/m4b-* "$ARTIFACTS"/bars*; do
+  [ -e "$p" ] && PROTECTED+=("$(real "$p")")
+done
+for target in "$CACHE" "$OUT" "$OUT/masters" "$OUT/bars" "$OUT/spot_proxy.json" \
+  "$OUT/capture_manifest.json"; do
+  resolved="$(real "$target")"
+  for p in "${PROTECTED[@]}"; do
+    case "$resolved/" in
+      "$p"/*) echo "REFUSED: $target resolves to $resolved, inside the protected $p" >&2; exit 64;;
+    esac
+  done
+done
 
 NAMES="$("$PY" -c 'from tree_options.desk.universe import CHAIN_UNIVERSE; print(",".join(CHAIN_UNIVERSE))')" \
   || { echo "cannot resolve the desk universe" >&2; exit 65; }
@@ -48,21 +69,29 @@ COMMON=(
   --dte-min 90 --dte-max 270 --cache-dir "$CACHE" --out-dir "$OUT"
 )
 capture() { "$PY" "$REPO/scripts/capture_massive_structural.py" "${COMMON[@]}" "$@"; }
+cooldown() { echo "== cooldown ${COOLDOWN_S}s (rate spacing across processes)"; sleep "$COOLDOWN_S"; }
 
 echo "== code $REPO ($IMPORTED) names=$NAMES"
 echo "== stage 0: seed masters from the coverage-era cache (read-only) $(date -Is)"
 "$PY" "$REPO/scripts/seed_massive_cache.py" --from-cache "$SEED_FROM" --to-cache "$CACHE" \
   --underlyings "$NAMES" "${AS_OF_FLAGS[@]}"
 rc0=$?
+if [ "$rc0" -ne 0 ]; then
+  echo "== seed refused or conflicted (rc=$rc0): stopping before any capture stage" >&2
+  exit "$rc0"
+fi
 
+cooldown
 echo "== stage 1: masters + spot for every as_of; --bars 0 logs the exact series count $(date -Is)"
 capture "${AS_OF_FLAGS[@]}" --bars 0 --budget 4000
 rc1=$?
 
+cooldown
 echo "== stage 2: the oldest as_of's bars first (its first bars sit nearest the 2-year edge) $(date -Is)"
 capture --as-of "${AS_OFS[0]}" --bars 5000 --budget 6000
 rc2=$?
 
+cooldown
 echo "== stage 3: everything (stage 1-2 pages are cache hits) $(date -Is)"
 capture "${AS_OF_FLAGS[@]}" --bars 40000 --budget 44000
 rc3=$?

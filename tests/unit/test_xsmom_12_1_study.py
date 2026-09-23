@@ -98,13 +98,36 @@ def _oracle_stats(trades: list[tuple[str, float]]) -> tuple[int, int, float, flo
 # ---- calendar -------------------------------------------------------------
 
 
-def test_the_corrected_calendar_drops_only_the_carter_closure(cal: Any) -> None:
+class _ListCalendar:
+    """A base calendar as the pinned build left it (2025-01-09 listed)."""
+
+    def __init__(self, days: list[date]) -> None:
+        self._days = tuple(days)
+
+    def sessions(self) -> tuple[date, ...]:
+        return self._days
+
+    def is_session(self, d: date) -> bool:
+        return d in self._days
+
+
+def test_a_base_that_lists_the_carter_closure_loses_exactly_that_day() -> None:
+    base = _ListCalendar([date(2025, 1, 8), date(2025, 1, 9), date(2025, 1, 10)])
+    fixed = study.ClosureCorrectedCalendar(base, study.STATIC_CALENDAR_MISSING_CLOSURES)
+    assert fixed.sessions() == (date(2025, 1, 8), date(2025, 1, 10))
+    assert fixed.removed == (date(2025, 1, 9),)
+    assert fixed.nth_after(date(2025, 1, 8), 1) == date(2025, 1, 10)
+
+
+def test_on_the_corrected_trex_calendar_the_removal_is_a_no_op(cal: Any) -> None:
+    """The trex calendar now declares the closure itself: no double removal,
+    no ordinal shift."""
     raw = StaticSessionCalendar(TREX, TREX.with_suffix(".sha256"))
-    assert raw.is_session(date(2025, 1, 9)), "the pinned generator predates the closure"
-    assert not cal.is_session(date(2025, 1, 9))
-    assert tuple(s for s in raw.sessions() if s != date(2025, 1, 9)) == cal.sessions()
+    assert not raw.is_session(date(2025, 1, 9)), "declared closure override"
+    assert cal.sessions() == raw.sessions()
+    assert cal.removed == ()
+    assert cal.ordinal(date(2025, 1, 10)) == raw.ordinal(date(2025, 1, 10))
     assert cal.nth_after(date(2025, 1, 8), 1) == date(2025, 1, 10)
-    assert cal.ordinal(date(2025, 1, 10)) == cal.ordinal(date(2025, 1, 8)) + 1
 
 
 # ---- stats (legacy iter003 / xu_xsmom conventions) --------------------------
@@ -391,3 +414,76 @@ def test_protocol_rows_parse_legs_and_month_pnl(tmp_path: Path) -> None:
         "2022-11": ("XOM: -14, XLE: +6, LLY: +130", "+122"),
         "2022-12": ("XOM: -13, XLE: -94, LLY: -32", "-138"),
     }
+
+
+# ---- the reproduction gate (Codex P2-2) ------------------------------------
+
+FIELDS = ["1", "2", "3%", "+4%", "5", "base +6%", "cond +7%", "-"]
+LABELS = [
+    f"252-skip21-{form} h{hold} {era}"
+    for form in ("tercile", "top3")
+    for hold in (20, 60)
+    for era in ("holdout", "full")
+]
+
+
+def _checks(source: str, n: int = 8, bad: int = -1) -> list[Any]:
+    return [
+        study.RowCheck(source, label, FIELDS, FIELDS if i != bad else [*FIELDS[:-1], "x"])
+        for i, label in enumerate(LABELS[:n])
+    ]
+
+
+def _proto(exact: int = 46, published: int = 46, ours: int = 46) -> Any:
+    diffs = [] if exact == published == ours else ["2023-01: published ... | ours ..."]
+    return study.ProtocolCheck(published, ours, exact, diffs)
+
+
+def test_the_gate_passes_only_a_complete_exact_reproduction() -> None:
+    good = _checks("XSMOM-LONGLEG") + _checks("XU-XSMOM")
+    assert study.validation_failures(good, _proto()) == []
+    cases = {
+        "a DIFF row": (_checks("XSMOM-LONGLEG", bad=3) + _checks("XU-XSMOM"), _proto()),
+        "a missing row": (_checks("XSMOM-LONGLEG", n=7) + _checks("XU-XSMOM"), _proto()),
+        "a missing source": (_checks("XSMOM-LONGLEG"), _proto()),
+        "an empty ours": (
+            [
+                study.RowCheck("XU-XSMOM", LABELS[0], FIELDS, None),
+                *_checks("XU-XSMOM")[1:],
+                *_checks("XSMOM-LONGLEG"),
+            ],
+            _proto(),
+        ),
+        "a protocol diff": (good, _proto(exact=45)),
+        "a short protocol": (good, _proto(exact=45, published=45, ours=45)),
+        "an extra protocol month": (good, _proto(ours=47)),
+    }
+    for name, (checks, proto) in cases.items():
+        assert study.validation_failures(checks, proto), name
+
+
+def test_a_failed_reproduction_exits_nonzero_before_scoring(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    names36 = {f"N{i:02d}": {"2024-01-02": {"close": "1"}} for i in range(36)}
+    names36["SPY"] = {"2024-01-02": {"close": "1"}}
+    names62 = {f"X{i:02d}": {"2024-01-02": {"close": "1"}} for i in range(62)}
+    monkeypatch.setattr(study, "verify_prereg", lambda path: "f" * 64)
+    monkeypatch.setattr(
+        study, "read_panel", lambda path, lock=None: (names36 if lock else names62, "s" * 64)
+    )
+    monkeypatch.setattr(study, "study_calendar", lambda: None)
+    monkeypatch.setattr(
+        study, "validate_daily", lambda source, md, panel, names, cal: _checks(source, bad=0)
+    )
+    monkeypatch.setattr(study, "validate_protocol", lambda md, panel, names, cal: _proto())
+
+    def never(*_a: Any, **_k: Any) -> Any:
+        raise AssertionError("scoring must not run after a failed reproduction")
+
+    monkeypatch.setattr(study, "run_study", never)
+    out = tmp_path / "report.md"
+    for argv in (["--validate-only"], ["--out", str(out)]):
+        assert study.main(["--paper-trades", str(tmp_path), *argv]) == 4
+    assert not out.exists()
+    assert "VALIDATION FAILED" in capsys.readouterr().err
