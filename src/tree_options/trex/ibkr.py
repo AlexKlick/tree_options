@@ -4,11 +4,27 @@ Kept as pure I/O: no decisions live here. ``ib_async`` is imported lazily
 so the research/test environment never needs it; the decision core stays
 importable without a broker.
 
-Combo pricing is derived from leg NBBOs rather than a combo ticker — on
+Every structure is a PACKAGE of option legs, priced and traded in its
+DEBIT ORIENTATION (``plan.LegStructure.package_legs``): the direction whose
+value is never negative, so every limit sent is positive. Debit kinds open
+by BUYING the package; credit kinds open by SELLING it at a positive price.
+(IBKR also takes a credit combo as a BUY at a negative price, but a SELL at
+a negative price silently becomes a debit: positive prices only remove that
+trap.) Long singles trade as plain OPT orders, never a one-leg BAG. Legs
+are keyed by (structure id, leg index); the index is the authored order,
+which debit orientation keeps.
+
+Package pricing is derived from leg NBBOs rather than a combo ticker — on
 125-wide wings the combo book is empty and its "mid" is fiction:
 
-    combo_bid = long_bid - short_ask   (best executable sale of the spread)
-    combo_ask = long_ask - short_bid   (best executable purchase)
+    package_bid = sum(BUY-leg bids) - sum(SELL-leg asks)  (best executable sale)
+    package_ask = sum(BUY-leg asks) - sum(SELL-leg bids)  (best executable purchase)
+
+For the legacy put vertical that is long_bid - short_ask / long_ask -
+short_bid, exactly as before. The legacy PutSpread methods (prepare,
+combo_quote, snapshot, place_combo, open_combo_trades, structure_for_bag)
+keep their behavior and wire content byte for byte
+(tests/unit/test_trex_legacy_characterization.py).
 
 Connection defaults target IB Gateway in paper mode (docker, port 4002).
 """
@@ -17,19 +33,26 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.engine import ComboQuote, Snapshot
-from tree_options.trex.plan import PutSpread
+from tree_options.trex.plan import Leg, LegStructure, PutSpread
 
 log = logging.getLogger("trex.ibkr")
 
 GATEWAY_PAPER_PORT = 4002
 GATEWAY_LIVE_PORT = 4001
+# orders placed through place() carry this tag + the structure id in
+# Order.orderRef, which IBKR keeps with the order across sessions: it tells
+# apart structures whose contracts coincide (structure_for_trade)
+ORDER_REF_PREFIX = "trex:"
+# ib_async marks "no value" with UNSET_DOUBLE (sys.float_info.max)
+_UNSET_MARGIN = Decimal("1e300")
 
 
 @dataclass(frozen=True)
@@ -50,8 +73,61 @@ class OrderStatusInfo:
     avg_fill_price: Decimal
 
 
+@dataclass(frozen=True)
+class BrokerPosition:
+    """One account position as the gateway reports it (any secType)."""
+
+    con_id: int
+    sec_type: str
+    symbol: str
+    right: str  # "" for non-options
+    strike: Decimal
+    expiry: str  # lastTradeDateOrContractMonth, YYYYMMDD for options
+    qty: Decimal  # signed: + long, - short
+    avg_cost: Decimal  # IBKR avgCost: per contract, multiplier included
+
+
+@dataclass(frozen=True)
+class _Package:
+    """What the adapter holds for a structure: its legs in debit orientation."""
+
+    sid: str
+    underlying: str
+    kind: str
+    legs: tuple[Leg, ...]
+
+    @property
+    def single(self) -> bool:
+        return self.kind == "long_single"
+
+
+def _package(struct: PutSpread | LegStructure) -> _Package:
+    if isinstance(struct, PutSpread):
+        return _Package(struct.id, struct.underlying, "debit_vertical", struct.package_legs())
+    return _Package(struct.id, struct.underlying, struct.kind, struct.package_legs())
+
+
+def _bag_signature(combo_legs: Any) -> tuple[tuple[int, str, int], ...]:
+    """Order-free identity of a BAG: (conId, action, ratio) per leg."""
+    return tuple(sorted((int(g.conId), str(g.action), int(g.ratio)) for g in combo_legs))
+
+
 def _d(value: float | int | None) -> Decimal:
     return Decimal(str(value)) if value is not None else Decimal(0)
+
+
+def _margin(raw: Any) -> Decimal | None:
+    """A what-if margin string as a Decimal; None for no number (empty,
+    junk, NaN, infinite, or ib_async's UNSET sentinel)."""
+    if raw is None:
+        return None
+    try:
+        value = Decimal(str(raw).strip())
+    except InvalidOperation:
+        return None
+    if not value.is_finite() or abs(value) >= _UNSET_MARGIN:
+        return None
+    return value
 
 
 class IbkrTrex:
@@ -69,8 +145,9 @@ class IbkrTrex:
         self.client_id = client_id
         self.delayed_ok = delayed_ok
         self._ib: Any = None
-        self._legs: dict[tuple[str, str], Any] = {}  # (structure_id, "long"|"short")
-        self._bags: dict[str, Any] = {}  # structure_id -> BAG contract
+        self._legs: dict[tuple[str, int], Any] = {}  # (structure_id, leg index) -> Option
+        self._packages: dict[str, _Package] = {}  # structure_id -> debit-oriented legs
+        self._bags: dict[str, Any] = {}  # structure_id -> BAG contract (multi-leg only)
         self._spots: dict[str, Any] = {}  # underlying -> Stock contract
         self._tickers: dict[Any, Any] = {}
 
@@ -96,36 +173,46 @@ class IbkrTrex:
 
     # -- contracts ---------------------------------------------------------
 
-    def prepare(self, spreads: list[PutSpread]) -> None:
-        """Qualify all option legs, build the BAG contracts, subscribe spots."""
+    def prepare(self, structures: Sequence[PutSpread | LegStructure]) -> None:
+        """Qualify all option legs, build the BAG contracts, subscribe spots.
+
+        Incremental: a structure already prepared with the same legs is
+        skipped; one whose legs changed is refused (ValueError). Nothing is
+        registered unless every contract qualifies."""
         from ib_async import ComboLeg, Contract, Option, Stock
 
         assert self._ib is not None
+        packages: list[_Package] = []
+        for struct in structures:
+            pkg = _package(struct)
+            held = self._packages.get(pkg.sid)
+            if held is not None:
+                if held != pkg:
+                    raise ValueError(f"{pkg.sid}: already prepared with different legs")
+                continue
+            if any(p.sid == pkg.sid for p in packages):
+                raise ValueError(f"{pkg.sid}: listed twice")
+            packages.append(pkg)
+        if not packages:
+            return
+
         spot_contracts: dict[str, Any] = {}
         option_legs: list[Any] = []
-        for spread in spreads:
-            long_leg = Option(
-                symbol=spread.underlying,
-                lastTradeDateOrContractMonth=spread.expiry.strftime("%Y%m%d"),
-                strike=float(spread.long_strike),
-                right="P",
-                exchange="SMART",
-                tradingClass=spread.underlying,
-            )
-            short_leg = Option(
-                symbol=spread.underlying,
-                lastTradeDateOrContractMonth=spread.expiry.strftime("%Y%m%d"),
-                strike=float(spread.short_strike),
-                right="P",
-                exchange="SMART",
-                tradingClass=spread.underlying,
-            )
-            option_legs += [long_leg, short_leg]
-            self._legs[(spread.id, "long")] = long_leg
-            self._legs[(spread.id, "short")] = short_leg
-            spot_contracts.setdefault(
-                spread.underlying, Stock(spread.underlying, "SMART", "USD")
-            )
+        legs: dict[tuple[str, int], Any] = {}
+        for pkg in packages:
+            for i, leg in enumerate(pkg.legs):
+                option = Option(
+                    symbol=pkg.underlying,
+                    lastTradeDateOrContractMonth=leg.expiry.strftime("%Y%m%d"),
+                    strike=float(leg.strike),
+                    right=leg.right,
+                    exchange="SMART",
+                    tradingClass=pkg.underlying,
+                )
+                option_legs.append(option)
+                legs[(pkg.sid, i)] = option
+            if pkg.underlying not in self._spots:
+                spot_contracts.setdefault(pkg.underlying, Stock(pkg.underlying, "SMART", "USD"))
 
         # Spot stocks are qualified alongside the option legs, not separately:
         # they are used as ``_tickers`` / ``_spots`` dict keys below, and
@@ -138,42 +225,67 @@ class IbkrTrex:
         if unqualified:
             raise RuntimeError(f"unqualified contracts: {unqualified}")
 
-        for spread in spreads:
-            long_leg = self._legs[(spread.id, "long")]
-            short_leg = self._legs[(spread.id, "short")]
-            self._bags[spread.id] = Contract(
-                symbol=spread.underlying,
-                secType="BAG",
-                exchange="SMART",
-                currency="USD",
-                tradingClass=spread.underlying,
-                comboLegs=[
-                    ComboLeg(
-                        conId=long_leg.conId,
-                        ratio=1,
-                        action="BUY",
-                        exchange="SMART",
-                    ),
-                    ComboLeg(
-                        conId=short_leg.conId,
-                        ratio=1,
-                        action="SELL",
-                        exchange="SMART",
-                    ),
-                ],
-            )
-            self._tickers[long_leg] = self._ib.reqMktData(long_leg, "", False, False)
-            self._tickers[short_leg] = self._ib.reqMktData(short_leg, "", False, False)
+        self._legs.update(legs)
+        for pkg in packages:
+            self._packages[pkg.sid] = pkg
+            options = [legs[(pkg.sid, i)] for i in range(len(pkg.legs))]
+            if not pkg.single:
+                self._bags[pkg.sid] = Contract(
+                    symbol=pkg.underlying,
+                    secType="BAG",
+                    exchange="SMART",
+                    currency="USD",
+                    tradingClass=pkg.underlying,
+                    comboLegs=[
+                        ComboLeg(
+                            conId=option.conId,
+                            ratio=leg.ratio,
+                            action=leg.action,
+                            exchange="SMART",
+                        )
+                        for option, leg in zip(options, pkg.legs, strict=True)
+                    ],
+                )
+            for option in options:
+                self._tickers[option] = self._ib.reqMktData(option, "", False, False)
         for symbol, stock in spot_contracts.items():
             self._spots[symbol] = stock
             self._tickers[stock] = self._ib.reqMktData(stock, "", False, False)
         # let first quotes arrive
         self._ib.sleep(4)
 
+    def release(self, structure_id: str) -> None:
+        """Forget a CLOSED structure: cancel market data for its legs (and
+        its underlying's spot) unless another prepared structure still
+        quotes the same contract. Unknown ids are a no-op."""
+        pkg = self._packages.pop(structure_id, None)
+        if pkg is None:
+            return
+        assert self._ib is not None
+        self._bags.pop(structure_id, None)
+        options = [self._legs.pop((structure_id, i)) for i in range(len(pkg.legs))]
+        still_quoted = {option.conId for option in self._legs.values()}
+        for option in options:
+            if option.conId in still_quoted:
+                continue
+            if self._tickers.pop(option, None) is not None:
+                self._ib.cancelMktData(option)
+        if not any(p.underlying == pkg.underlying for p in self._packages.values()):
+            stock = self._spots.pop(pkg.underlying, None)
+            if stock is not None and self._tickers.pop(stock, None) is not None:
+                self._ib.cancelMktData(stock)
+
+    def leg_con_ids(self, structure_id: str) -> tuple[int, ...]:
+        """conIds of a prepared structure's legs, by leg index (empty if unknown)."""
+        pkg = self._packages.get(structure_id)
+        if pkg is None:
+            return ()
+        return tuple(int(self._legs[(structure_id, i)].conId) for i in range(len(pkg.legs)))
+
     # -- market data -------------------------------------------------------
 
-    def leg_quote(self, structure_id: str, which: str) -> tuple[Decimal, Decimal] | None:
-        leg = self._legs.get((structure_id, which))
+    def leg_quote(self, structure_id: str, index: int) -> tuple[Decimal, Decimal] | None:
+        leg = self._legs.get((structure_id, index))
         if leg is None:
             return None
         ticker = self._tickers.get(leg)
@@ -184,15 +296,31 @@ class IbkrTrex:
             return None
         return _d(bid), _d(ask)
 
-    def combo_quote(self, structure_id: str) -> ComboQuote | None:
-        long_q = self.leg_quote(structure_id, "long")
-        short_q = self.leg_quote(structure_id, "short")
-        if long_q is None or short_q is None:
+    def package_quote(self, structure_id: str) -> ComboQuote | None:
+        """NBBO of the package in debit orientation, from its legs; None if
+        any leg lacks a two-sided quote."""
+        pkg = self._packages.get(structure_id)
+        if pkg is None:
             return None
-        return ComboQuote(bid=long_q[0] - short_q[1], ask=long_q[1] - short_q[0])
+        buy_bid = buy_ask = sell_bid = sell_ask = Decimal(0)
+        for i, leg in enumerate(pkg.legs):
+            quote = self.leg_quote(structure_id, i)
+            if quote is None:
+                return None
+            if leg.action == "BUY":
+                buy_bid += quote[0]
+                buy_ask += quote[1]
+            else:
+                sell_bid += quote[0]
+                sell_ask += quote[1]
+        return ComboQuote(bid=buy_bid - sell_ask, ask=buy_ask - sell_bid)
 
-    def snapshot(self, spreads: list[PutSpread], ts: datetime) -> Snapshot:
-        """Combo quotes only. IBKR stock prices are NOT a touch source:
+    def combo_quote(self, structure_id: str) -> ComboQuote | None:
+        """The legacy name of :meth:`package_quote`."""
+        return self.package_quote(structure_id)
+
+    def snapshot(self, structures: Sequence[PutSpread | LegStructure], ts: datetime) -> Snapshot:
+        """Package quotes only. IBKR stock prices are NOT a touch source:
         ``ticker.time`` moves on every bid/ask/size tick, so a fresh ticker
         can carry an old ``last`` (a false touch, or a hidden one), bid/ask
         carry no timestamp at all, and ``close`` is the prior session's.
@@ -200,7 +328,9 @@ class IbkrTrex:
         adds spots from trex.spot (Polygon, session-bounded); re-evaluate
         once live quotes arrive and ``lastTimestamp`` (tick 45) is verified.
         """
-        return Snapshot(ts=ts, spots={}, quotes={s.id: self.combo_quote(s.id) for s in spreads})
+        return Snapshot(
+            ts=ts, spots={}, quotes={s.id: self.package_quote(s.id) for s in structures}
+        )
 
     def entry_fill_evidence(
         self, structure_id: str, order_id: str | None
@@ -208,18 +338,19 @@ class IbkrTrex:
         """What the broker can PROVE was filled of an entry order that is no
         longer working (it filled or died while the entry runner was down):
 
-        * (spreads, avg debit) from today's executions of ``order_id`` by
-          this client on the structure's two legs (ib_async fetches the
-          day's executions at connect);
-        * (0, None) when there are none and the account holds neither leg;
+        * (packages, avg price) from today's executions of ``order_id`` by
+          this client on the structure's legs (ib_async fetches the day's
+          executions at connect); the price is in debit orientation (BUY
+          legs +, SELL legs -), i.e. the debit paid or the credit received;
+        * (0, None) when there are none and the account holds none of the legs;
         * None, inconclusive, otherwise (legs disagree, or legs are held
           with no execution of this order today): never guessed.
         """
         assert self._ib is not None
-        long_leg = self._legs.get((structure_id, "long"))
-        short_leg = self._legs.get((structure_id, "short"))
-        if long_leg is None or short_leg is None:
+        pkg = self._packages.get(structure_id)
+        if pkg is None:
             return None
+        options = [self._legs[(structure_id, i)] for i in range(len(pkg.legs))]
         if order_id is not None and order_id.isdigit():
             oid = int(order_id)
             mine = [
@@ -227,20 +358,21 @@ class IbkrTrex:
                 for f in self._ib.fills()
                 if f.execution.orderId == oid and f.execution.clientId == self.client_id
             ]
-            longs = [f for f in mine if f.contract.conId == long_leg.conId]
-            shorts = [f for f in mine if f.contract.conId == short_leg.conId]
-            if longs or shorts:
-                qty_long = sum((_d(f.execution.shares) for f in longs), Decimal(0))
-                qty_short = sum((_d(f.execution.shares) for f in shorts), Decimal(0))
-                if qty_long != qty_short or qty_long != qty_long.to_integral_value():
+            per_leg = [[f for f in mine if f.contract.conId == o.conId] for o in options]
+            if any(per_leg):
+                qtys = [sum((_d(f.execution.shares) for f in fills), Decimal(0)) for fills in per_leg]
+                if any(q != qtys[0] for q in qtys) or qtys[0] != qtys[0].to_integral_value():
                     return None
-                qty = int(qty_long)
-                notional = sum(
-                    (_d(f.execution.price) * _d(f.execution.shares) for f in longs), Decimal(0)
-                ) - sum((_d(f.execution.price) * _d(f.execution.shares) for f in shorts), Decimal(0))
+                qty = int(qtys[0])
+                notional = Decimal(0)
+                for leg, fills in zip(pkg.legs, per_leg, strict=True):
+                    leg_notional = sum(
+                        (_d(f.execution.price) * _d(f.execution.shares) for f in fills), Decimal(0)
+                    )
+                    notional += leg_notional if leg.action == "BUY" else -leg_notional
                 return qty, (notional / qty if qty else None)
         held = {getattr(p.contract, "conId", 0): p.position for p in self._ib.positions()}
-        if not held.get(long_leg.conId) and not held.get(short_leg.conId):
+        if not any(held.get(o.conId) for o in options):
             return 0, None
         return None
 
@@ -249,6 +381,7 @@ class IbkrTrex:
     def place_combo(
         self, spread: PutSpread, side: str, qty: int, limit: Decimal
     ) -> OrderRef:
+        """The legacy put-spread order (untagged), unchanged."""
         from ib_async import LimitOrder
 
         assert self._ib is not None
@@ -256,9 +389,64 @@ class IbkrTrex:
         trade = self._ib.placeOrder(self._bags[spread.id], order)
         return OrderRef(spread.id, side, qty, limit, trade)
 
+    def _order(self, struct: LegStructure, side: str, qty: int, limit: Decimal) -> tuple[Any, Any]:
+        """(contract, DAY limit order) for ``qty`` packages at a POSITIVE
+        debit-orientation ``limit``: the BAG, or the option of a long single."""
+        from ib_async import LimitOrder
+
+        assert self._ib is not None
+        if side not in ("BUY", "SELL"):
+            raise ValueError(f"{struct.id}: side {side!r} is not BUY or SELL")
+        if qty <= 0:
+            raise ValueError(f"{struct.id}: quantity {qty} must be positive")
+        if not limit > 0:
+            raise ValueError(
+                f"{struct.id}: limit {limit} must be positive (debit-orientation prices only)"
+            )
+        pkg = self._packages.get(struct.id)
+        if pkg is None:
+            raise ValueError(f"{struct.id}: not prepared")
+        if pkg != _package(struct):
+            raise ValueError(f"{struct.id}: differs from the prepared structure")
+        contract = self._legs[(struct.id, 0)] if pkg.single else self._bags[struct.id]
+        order = LimitOrder(
+            side,
+            qty,
+            float(limit),
+            tif="DAY",
+            transmit=True,
+            orderRef=ORDER_REF_PREFIX + struct.id,
+        )
+        return contract, order
+
+    def place(self, struct: LegStructure, side: str, qty: int, limit: Decimal) -> OrderRef:
+        """Place a DAY limit order for ``qty`` packages: BUY or SELL the
+        debit-orientation package at a positive ``limit`` (open with
+        ``struct.open_side``, close with ``struct.close_side``)."""
+        contract, order = self._order(struct, side, qty, limit)
+        trade = self._ib.placeOrder(contract, order)
+        return OrderRef(struct.id, side, qty, limit, trade)
+
+    def whatif(self, struct: LegStructure, side: str, qty: int, limit: Decimal) -> Decimal | None:
+        """IBKR's what-if initial-margin change for the order :meth:`place`
+        would send (nothing is placed); None when IBKR gives no number.
+        Callers refuse packages IBKR margins above their max loss
+        (plan.margin_within_max_loss)."""
+        contract, order = self._order(struct, side, qty, limit)
+        state = self._ib.whatIfOrder(contract, order)
+        return _margin(getattr(state, "initMarginChange", None))
+
     def open_combo_trades(self) -> list[Any]:
         """Working BAG orders at the broker (ours or anyone's session)."""
         return [t for t in self._ib.openTrades() if getattr(t.contract, "secType", "") == "BAG"]
+
+    def working_trades(self) -> list[Any]:
+        """Working BAG and OPT orders at the broker (ours or anyone's session)."""
+        return [
+            t
+            for t in self._ib.openTrades()
+            if getattr(t.contract, "secType", "") in ("BAG", "OPT")
+        ]
 
     def structure_for_bag(self, contract: Any) -> str | None:
         """Which plan structure (if any) a BAG contract belongs to."""
@@ -270,6 +458,38 @@ class IbkrTrex:
             if {leg.conId for leg in bag.comboLegs} == conids:
                 return sid
         return None
+
+    def _matches(self, sid: str, contract: Any) -> bool:
+        pkg = self._packages[sid]
+        sec_type = getattr(contract, "secType", "")
+        if pkg.single:
+            return sec_type == "OPT" and getattr(contract, "conId", 0) == self._legs[(sid, 0)].conId
+        if sec_type != "BAG":
+            return False
+        try:
+            return _bag_signature(contract.comboLegs) == _bag_signature(self._bags[sid].comboLegs)
+        except (AttributeError, TypeError, ValueError):
+            return False
+
+    def structure_for_contract(self, contract: Any) -> str | None:
+        """The prepared structure a BAG (legs, actions and ratios) or OPT (a
+        long single's option) contract belongs to; None when none or MORE
+        than one match (e.g. a debit and a credit vertical on the same
+        strikes share one debit-oriented BAG): never guessed."""
+        matches = [sid for sid in self._packages if self._matches(sid, contract)]
+        return matches[0] if len(matches) == 1 else None
+
+    def structure_for_trade(self, trade: Any) -> str | None:
+        """A working trade's structure: by its trex order tag when it has
+        one (the tagged structure must be prepared here and match the
+        contract, else None), by contract otherwise."""
+        ref = str(getattr(trade.order, "orderRef", "") or "")
+        if ref.startswith(ORDER_REF_PREFIX):
+            sid = ref[len(ORDER_REF_PREFIX) :]
+            if sid in self._packages and self._matches(sid, trade.contract):
+                return sid
+            return None
+        return self.structure_for_contract(trade.contract)
 
     def order_status(self, ref: OrderRef) -> OrderStatusInfo:
         os = ref.trade.orderStatus
@@ -292,6 +512,26 @@ class IbkrTrex:
         self._ib.sleep(seconds)
 
     # -- account -----------------------------------------------------------
+
+    def positions(self) -> list[BrokerPosition]:
+        """Every position the gateway session reports (all accounts)."""
+        assert self._ib is not None
+        out: list[BrokerPosition] = []
+        for p in self._ib.positions():
+            c = p.contract
+            out.append(
+                BrokerPosition(
+                    con_id=int(getattr(c, "conId", 0) or 0),
+                    sec_type=str(getattr(c, "secType", "") or ""),
+                    symbol=str(getattr(c, "symbol", "") or ""),
+                    right=str(getattr(c, "right", "") or ""),
+                    strike=_d(getattr(c, "strike", None)),
+                    expiry=str(getattr(c, "lastTradeDateOrContractMonth", "") or ""),
+                    qty=_d(p.position),
+                    avg_cost=_d(p.avgCost),
+                )
+            )
+        return out
 
     def account_snapshot(self) -> AccountSnapshot | None:
         """Net liq / cash / buying power from the gateway session.

@@ -465,14 +465,20 @@ class TestBrokerEvidence:
     order on the structure's legs, else a flat account in both legs)."""
 
     def _ib(self, fills: list[Any], positions: list[Any]) -> Any:
-        from types import SimpleNamespace
-
+        from tests.unit.trex_fakes import FakeGateway
         from tree_options.trex.ibkr import IbkrTrex
 
+        pytest.importorskip("ib_async")  # prepare() builds real contracts
+        gw = FakeGateway(
+            con_ids={
+                ("OPT", "NVDA", "20261016", 185.0, "P"): 11,
+                ("OPT", "NVDA", "20261016", 150.0, "P"): 12,
+            }
+        )
+        gw.fill_rows, gw.position_rows = fills, positions
         ib = IbkrTrex(client_id=72)
-        ib._ib = SimpleNamespace(fills=lambda: fills, positions=lambda: positions)
-        ib._legs[("nvda-oct", "long")] = SimpleNamespace(conId=11)
-        ib._legs[("nvda-oct", "short")] = SimpleNamespace(conId=12)
+        ib._ib = gw
+        ib.prepare(_plan().structures)  # legs by index: 0 = 185 long, 1 = 150 short
         return ib
 
     @staticmethod
