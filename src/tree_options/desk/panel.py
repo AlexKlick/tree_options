@@ -12,6 +12,7 @@ runs (that would deadlock the child).
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import time
 from collections.abc import Callable
@@ -39,6 +40,18 @@ def read_panel(
 ) -> dict[str, Any]:
     """The parsed panel, read under a shared lock (OSError/ValueError pass
     through for a missing or torn file; PanelLocked on timeout)."""
+    return read_panel_with_sha256(panel, timeout_s=timeout_s, sleep=sleep, monotonic=monotonic)[0]
+
+
+def read_panel_with_sha256(
+    panel: Path,
+    *,
+    timeout_s: float = 300.0,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+) -> tuple[dict[str, Any], str]:
+    """:func:`read_panel` plus the sha256 of the exact bytes parsed (so a
+    scored study can name the panel it read)."""
     if not panel.exists():
         raise FileNotFoundError(str(panel))
     deadline = monotonic() + timeout_s
@@ -51,7 +64,8 @@ def read_panel(
                 if monotonic() >= deadline:
                     raise PanelLocked(f"{panel.name}: a writer holds the lock") from None
                 sleep(POLL_S)
-        doc = json.loads(panel.read_text())
+        raw = panel.read_bytes()
+    doc = json.loads(raw)
     if not isinstance(doc, dict):
         raise ValueError(f"{panel.name}: not a panel object")
-    return doc
+    return doc, hashlib.sha256(raw).hexdigest()

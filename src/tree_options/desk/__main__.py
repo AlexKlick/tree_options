@@ -10,6 +10,24 @@
         Panel refresh (fetch_ohlc.py), XSMOM/PEAD signals, draft cards and
         an ntfy push. Exit 0 done/no-op, 3 vendor lag or too early, 1 failure.
 
+    features --session D
+        Vol-surface features (ATM term, constant maturity, 25d skew, term
+        slope, implied earnings move, liquidity, IV rank, VRP) from the
+        recorded chains of D into DESK_STORE/features/<D>.json. Exit 0
+        written, 1 no chains for D, 2 bad arguments.
+
+    ivhist-build [--massive-cache P] [--start D] [--end D] [--names A,B]
+        IVHIST-001's VWAP 30-day ATM IV history from the on-disk Polygon
+        bars into DESK_STORE/iv-history/vwap_atm.json (read-only cache).
+
+    ivhist-001 [--indices-dir P]
+        The pre-registered benchmark of that history against the CBOE vol
+        indices (<X>_History.csv) into IVHIST-001-verdict.json.
+
+    forecast-001 [--out P]
+        The pre-registered FORECAST-001 scoring of the pooled log-HAR into
+        DESK_STORE/evaluations/FORECAST-001.{json,md}.
+
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes; a second concurrent run exits 3. No secrets are needed or
 printed (the chain feed is keyless; fetch_ohlc.py reads its own key file
@@ -26,13 +44,25 @@ import sys
 import time
 from collections.abc import Iterator
 from datetime import date, datetime
+from pathlib import Path
 
-from tree_options.desk import eod_equity, paths, store
-from tree_options.desk.chains import urllib_transport
-from tree_options.desk.sessions import Calendar, cutoff_instant, latest_completed_session
-from tree_options.desk.universe import CHAIN_UNIVERSE
-from tree_options.trex.clock import now_et, session_calendar
-from tree_options.trex.discovery.market import Transport
+# BLAS thread pins BEFORE the first numpy import (the econometrics commands
+# fit with lstsq; byte-identical re-runs need a fixed reduction order)
+from tree_options.models.determinism import force_single_threaded_blas
+
+force_single_threaded_blas()
+
+from tree_options.data.massive_client import default_cache_dir  # noqa: E402
+from tree_options.desk import econ_jobs, eod_equity, ivhist, paths, store  # noqa: E402
+from tree_options.desk.chains import urllib_transport  # noqa: E402
+from tree_options.desk.sessions import (  # noqa: E402
+    Calendar,
+    cutoff_instant,
+    latest_completed_session,
+)
+from tree_options.desk.universe import CHAIN_UNIVERSE  # noqa: E402
+from tree_options.trex.clock import now_et, session_calendar  # noqa: E402
+from tree_options.trex.discovery.market import Transport  # noqa: E402
 
 _SYMBOL = re.compile(r"^[A-Z][A-Z0-9.]{0,9}$")
 
@@ -52,6 +82,17 @@ def _parser() -> argparse.ArgumentParser:
     eq = sub.add_parser("eod-equity", help="panel refresh + XSMOM/PEAD signals + draft cards")
     eq.add_argument("--session", type=date.fromisoformat)
     eq.add_argument("--dry-run", action="store_true", help="plan only: no fetch, no files, no push")
+    fe = sub.add_parser("features", help="vol-surface features of a recorded session")
+    fe.add_argument("--session", type=date.fromisoformat, required=True)
+    ib = sub.add_parser("ivhist-build", help="IVHIST-001 VWAP IV history from the Polygon cache")
+    ib.add_argument("--massive-cache", type=Path)
+    ib.add_argument("--start", type=date.fromisoformat, default=ivhist.WINDOW[0])
+    ib.add_argument("--end", type=date.fromisoformat, default=ivhist.WINDOW[1])
+    ib.add_argument("--names", help="comma-separated (default: the 35-name chain universe)")
+    ie = sub.add_parser("ivhist-001", help="IVHIST-001 benchmark vs the CBOE vol indices")
+    ie.add_argument("--indices-dir", type=Path)
+    fc = sub.add_parser("forecast-001", help="FORECAST-001 out-of-sample HAR scoring")
+    fc.add_argument("--out", type=Path, help="output directory (default DESK_STORE/evaluations)")
     return ap
 
 
@@ -164,7 +205,7 @@ def run_cli(
     fixed = now
     clock: store.Clock = (lambda: fixed) if fixed is not None else now_et
     cal = cal or session_calendar()
-    with _single_run(args.command, enabled=not args.dry_run) as owned:
+    with _single_run(args.command, enabled=not getattr(args, "dry_run", False)) as owned:
         if not owned:
             print(f"{args.command}: another run holds the lock; retry later", file=sys.stderr)
             return 3
@@ -176,6 +217,23 @@ def run_cli(
                 clock=clock,
                 cal=cal,
             )
+        if args.command == "features":
+            return econ_jobs.run_features(args.session, cal)
+        if args.command == "ivhist-build":
+            names = (
+                [s.strip() for s in args.names.split(",") if s.strip()]
+                if args.names
+                else list(CHAIN_UNIVERSE)
+            )
+            if not names or any(not _SYMBOL.match(n) for n in names):
+                print(f"ivhist-build: bad --names {args.names!r}", file=sys.stderr)
+                return 2
+            cache = args.massive_cache or default_cache_dir()
+            return econ_jobs.run_ivhist_build(cache, args.start, args.end, names, cal)
+        if args.command == "ivhist-001":
+            return econ_jobs.run_ivhist_001(args.indices_dir or paths.store_root() / "indices")
+        if args.command == "forecast-001":
+            return econ_jobs.run_forecast_001(args.out, cal)
         return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 

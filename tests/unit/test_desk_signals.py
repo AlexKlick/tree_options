@@ -322,8 +322,11 @@ class TestBannedByConstruction:
             signals.require_direction_signal("made_up")
 
     def test_desk_never_imports_research_rule_code(self) -> None:
-        """desk/ imports only the stdlib and tree_options (the paper-trades
-        scripts run as subprocesses, never as imports)."""
+        """desk/ imports only the stdlib, tree_options and numpy (a declared
+        base dependency in pyproject.toml, used by the HAR fit; Wave 1
+        econometrics). The paper-trades scripts run as subprocesses, never
+        as imports."""
+        allowed_third_party = {"numpy"}
         offenders = []
         for py in sorted(DESK_SRC.rglob("*.py")):
             for node in ast.walk(ast.parse(py.read_text())):
@@ -334,6 +337,10 @@ class TestBannedByConstruction:
                     mods = [node.module]
                 for mod in mods:
                     top = mod.split(".")[0]
-                    if top != "tree_options" and top not in sys.stdlib_module_names:
+                    if (
+                        top != "tree_options"
+                        and top not in sys.stdlib_module_names
+                        and top not in allowed_third_party
+                    ):
                         offenders.append(f"{py.name}: {mod}")
         assert DESK_SRC.is_dir() and not offenders, offenders
