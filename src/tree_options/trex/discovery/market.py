@@ -42,7 +42,7 @@ REQUEST_TIMEOUT = 10.0
 CHAIN_MAX_BYTES = 16_000_000  # SPY's full chain is ~5.5MB
 RSS_MAX_BYTES = 2_000_000
 NEWS_ITEM_CAP = 12
-BARS_WINDOW_DAYS = 200
+BARS_WINDOW_DAYS = 365  # ~250 sessions: symbol chart + scenario analogs
 
 KIND_TTL_SECONDS = {
     "quote": 60,

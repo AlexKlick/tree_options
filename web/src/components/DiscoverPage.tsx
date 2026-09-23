@@ -1,10 +1,13 @@
+import { useState } from 'react'
 import { getDiscovery, requestScan } from '../lib/api'
 import { usePoll } from '../hooks/usePoll'
 import { useDensity } from '../density'
 import { etTime } from '../lib/format'
+import { scenarioKey } from '../lib/scenario'
 import type { CandidateRow } from '../lib/types'
 import { AppShell } from './AppShell'
 import { CandidateTable } from './CandidateTable'
+import { ScenarioPanel } from './ScenarioPanel'
 import { ShadowSection } from './ShadowSection'
 import { Pill } from './Pill'
 
@@ -16,7 +19,13 @@ function agePill(seconds: number | null): JSX.Element {
   return <Pill variant="armed">● scan {seconds}s ago</Pill>
 }
 
-function SimpleCards({ rows }: { rows: CandidateRow[] }) {
+function SimpleCards({
+  rows,
+  onScenario,
+}: {
+  rows: CandidateRow[]
+  onScenario: (c: CandidateRow) => void
+}) {
   return (
     <div className="grid">
       {rows.slice(0, 4).map((c, i) => (
@@ -43,6 +52,15 @@ function SimpleCards({ rows }: { rows: CandidateRow[] }) {
               {c.expiry} ({c.dte}d)
             </dd>
           </dl>
+          <button
+            type="button"
+            className="chip"
+            style={{ marginTop: 10 }}
+            onClick={() => onScenario(c)}
+            aria-label={`Valuation scenario for ${c.underlying} ${c.long_strike}/${c.short_strike}`}
+          >
+            scenario
+          </button>
         </div>
       ))}
     </div>
@@ -54,6 +72,22 @@ export function DiscoverPage() {
   const { mode: density } = useDensity()
   const d = poll.data
   const latest = d?.latest ?? null
+  const [scenario, setScenario] = useState<{ key: string; title: string } | null>(null)
+  const openScenario = (u: string, expiry: string, shortK: number, longK: number) =>
+    setScenario({
+      key: scenarioKey(u, expiry, shortK, longK),
+      title: `${u} ${longK}/${shortK} ${expiry}`,
+    })
+  const onCandidate = (c: CandidateRow) =>
+    openScenario(c.underlying, c.expiry, c.short_strike, c.long_strike)
+  const panel = scenario && (
+    <ScenarioPanel
+      key={scenario.key}
+      scenarioKey={scenario.key}
+      title={scenario.title}
+      onClose={() => setScenario(null)}
+    />
+  )
 
   const runScan = async () => {
     try {
@@ -109,10 +143,11 @@ export function DiscoverPage() {
               </p>
             </div>
           ) : density === 'simple' ? (
-            <SimpleCards rows={latest.candidates} />
+            <SimpleCards rows={latest.candidates} onScenario={onCandidate} />
           ) : (
-            <CandidateTable rows={latest.candidates} />
+            <CandidateTable rows={latest.candidates} onScenario={onCandidate} />
           )}
+          {panel}
           {latest.rejected.length > 0 && density !== 'simple' && (
             <>
               <h2 className="section-title">
@@ -121,10 +156,25 @@ export function DiscoverPage() {
               <CandidateTable rows={latest.rejected} />
             </>
           )}
-          <ShadowSection shadow={d?.shadow ?? null} />
+          <ShadowSection
+            shadow={d?.shadow ?? null}
+            onScenario={(p) =>
+              openScenario(p.underlying, p.expiry, p.short_strike, p.long_strike)
+            }
+          />
         </>
       )}
-      {!latest && <ShadowSection shadow={d?.shadow ?? null} />}
+      {!latest && (
+        <>
+          <ShadowSection
+            shadow={d?.shadow ?? null}
+            onScenario={(p) =>
+                openScenario(p.underlying, p.expiry, p.short_strike, p.long_strike)
+              }
+          />
+          {panel}
+        </>
+      )}
     </AppShell>
   )
 }

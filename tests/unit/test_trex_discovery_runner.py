@@ -423,3 +423,87 @@ class TestBrokerDown:
         clock[0] += 120  # window passed: one more attempt
         assert _broker_ready(gw, backoff) is False
         assert len(attempts) == 2
+
+
+class TestBacktestTick:
+    """M4: the runner materializes spooled valuation scenarios from its
+    OWN artifacts (cache-only when no transport is wired)."""
+
+    KEY = "QQQ|20261016|642|657"
+
+    def _seed(self, state: Path, *, quote: bool = True, bars: bool = True) -> None:
+        import json as _json
+
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "latest.json").write_text(_json.dumps({"payload": {
+            "candidates": [{"underlying": "QQQ", "expiry": "20261016", "dte": 24,
+                            "short_strike": 642.0, "long_strike": 657.0,
+                            "debit_mid": 0.195, "debit_ask": 0.23}],
+            "rejected": [],
+        }}))
+        if quote:
+            (state / "market.json").write_text(_json.dumps({
+                "last_refresh": NOW.isoformat(),
+                "symbols": {"QQQ": {"bid": 747.97, "ask": 748.0, "iv30": 17.5}},
+                "errors": {},
+            }))
+        if bars:
+            base = 1_760_000_000_000
+            rows = [{"t": base + i * 86_400_000, "c": 700.0 + i * 0.2} for i in range(120)]
+            cache = state / "market" / "cache" / "bars"
+            cache.mkdir(parents=True, exist_ok=True)
+            (cache / "QQQ.json").write_text(_json.dumps(
+                {"fetched_at": NOW.isoformat(), "ttl_seconds": 86400,
+                 "payload": {"bars": rows}}
+            ))
+
+    def test_materializes_labeled_artifact(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.artifact import read_result, write_request
+        from tree_options.trex.discovery.backtest import LABEL, read_artifact
+
+        state = tmp_path / "state"
+        self._seed(state)
+        write_request(state / "spool", "backtest", "bt-1",
+                      {"request_ts": NOW.isoformat(), "key": self.KEY})
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW, broker_ready=False)
+        doc = read_artifact(state, self.KEY)
+        assert doc is not None and doc["error"] is None
+        assert doc["label"] == LABEL
+        assert doc["structure"]["dte"] == 24  # recomputed from expiry vs now
+        assert doc["assumptions"]["exits_modeled"].startswith("none")
+        assert doc["analogs"]["count"] > 50
+        result = read_result(state / "spool", "backtest")
+        assert result is not None and result["status"] == "ok"
+        assert not list((state / "spool").glob("backtest.request.*"))
+
+    def test_missing_quote_completes_with_error_artifact(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.artifact import read_result, write_request
+        from tree_options.trex.discovery.backtest import read_artifact
+
+        state = tmp_path / "state"
+        self._seed(state, quote=False)
+        write_request(state / "spool", "backtest", "bt-2",
+                      {"request_ts": NOW.isoformat(), "key": self.KEY})
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        doc = read_artifact(state, self.KEY)
+        assert doc is not None and "quote" in doc["error"]
+        result = read_result(state / "spool", "backtest")
+        assert result is not None and result["status"] == "error"
+
+    def test_unknown_key_errors_not_spins(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.artifact import write_request
+        from tree_options.trex.discovery.backtest import read_artifact
+
+        state = tmp_path / "state"
+        self._seed(state)
+        write_request(state / "spool", "backtest", "bt-3",
+                      {"request_ts": NOW.isoformat(), "key": "SPY|20261016|500|510"})
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        doc = read_artifact(state, "SPY|20261016|500|510")
+        assert doc is not None and "not found" in doc["error"]
+
+    def test_calendar_dte(self) -> None:
+        from tree_options.trex.discovery.runner import _calendar_dte
+
+        assert _calendar_dte("20261016", NOW) == 24
+        assert _calendar_dte("20260901", NOW) == 0  # past expiry floors at 0

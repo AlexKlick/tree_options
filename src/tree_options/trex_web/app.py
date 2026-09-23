@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import uuid
 from pathlib import Path
@@ -49,6 +50,9 @@ GATEWAY_PROBE_TIMEOUT_SECONDS = 1.0
 # directory the systemd unit's ReadWritePaths allows).
 DEFAULT_DISCOVERY_ROOT = Path("~/.local/state/trex-discovery").expanduser()
 DEFAULT_DISCOVERY_CONFIG = Path("~/.config/trex/discovery.toml").expanduser()
+
+# shadow_key format: "QQQ|20261016|642|657" (strikes via {:g})
+_SCENARIO_KEY_RE = re.compile(r"^[A-Z.]{1,6}\|\d{8}\|\d+(\.\d+)?\|\d+(\.\d+)?$")
 
 # Served at / when the built SPA is missing (fresh clone, interrupted
 # build): tell the operator exactly what to run instead of crashing.
@@ -568,6 +572,43 @@ def create_app(
                 detail=f"spool unwritable ({exc}); trex-web ReadWritePaths missing?",
             ) from exc
         return {"accepted": True, "request_id": request_id, "symbols": symbols}
+
+    @app.post("/api/discovery/backtest", status_code=202)
+    def api_discovery_backtest(body: dict[str, Any]) -> dict[str, object]:
+        """Spool a valuation-scenario request for one structure key. Only
+        the key crosses the wire; the runner resolves prices from its own
+        scan/shadow artifacts."""
+        key = str(body.get("key", ""))
+        if not _SCENARIO_KEY_RE.match(key):
+            raise HTTPException(status_code=422, detail="key must be SYM|yyyymmdd|short|long")
+        request_id = uuid.uuid4().hex[:12]
+        try:
+            write_request(
+                discovery_root / "spool",
+                "backtest",
+                request_id,
+                {"request_ts": now_et().isoformat(), "key": key},
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"spool unwritable ({exc}); trex-web ReadWritePaths missing?",
+            ) from exc
+        return {"accepted": True, "request_id": request_id, "key": key}
+
+    @app.get("/api/discovery/backtest")
+    def api_discovery_backtest_get(key: str) -> dict[str, object]:
+        """The materialized scenario (404 until the runner writes it)."""
+        from tree_options.trex.discovery.backtest import read_artifact
+        from tree_options.trex_web.discovery_view import _age
+
+        if not _SCENARIO_KEY_RE.match(key):
+            raise HTTPException(status_code=422, detail="key must be SYM|yyyymmdd|short|long")
+        doc = read_artifact(discovery_root, key)
+        if doc is None:
+            raise HTTPException(status_code=404, detail="scenario not materialized yet")
+        doc["age_seconds"] = _age(doc.get("generated_at"), now_et())
+        return doc
 
     @app.post("/api/discovery/scan", status_code=202)
     def api_discovery_scan() -> dict[str, object]:

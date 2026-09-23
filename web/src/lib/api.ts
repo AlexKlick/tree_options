@@ -3,6 +3,7 @@ import type {
   PlanDetailResponse,
   PlansResponse,
   ScanRequestResponse,
+  ScenarioDoc,
   MarketResponse,
   StatsResponse,
   SymbolDetail,
@@ -60,3 +61,17 @@ export const watchOp = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ op, symbol }),
   })
+
+// Valuation scenario (M4): only the structure KEY crosses the wire; the
+// runner resolves prices from its own artifacts.
+export const requestScenario = (
+  key: string,
+): Promise<{ accepted: boolean; request_id: string; key: string }> =>
+  fetchJson('api/discovery/backtest', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ key }),
+  })
+
+export const getScenario = (key: string): Promise<ScenarioDoc> =>
+  fetchJson(`api/discovery/backtest?key=${encodeURIComponent(key)}`)

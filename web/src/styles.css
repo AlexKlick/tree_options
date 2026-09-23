@@ -427,3 +427,7 @@ footer {
 .news-list { margin: 0; padding-left: 18px; }
 .news-list li { margin-bottom: 10px; }
 .news-list a { color: inherit; }
+
+/* valuation scenario (M4) */
+.scenario-panel { margin-top: 18px; }
+.scenario-panel .kv dd { overflow-wrap: anywhere; }

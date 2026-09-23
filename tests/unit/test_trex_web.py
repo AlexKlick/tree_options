@@ -1213,3 +1213,45 @@ class TestMarketWatchAndSymbol:
         assert payload["bars_age_seconds"] is None
         assert payload["news_age_seconds"] is None
         assert client.get("/api/market/not%20a%20symbol").status_code == 404
+
+
+class TestBacktestApi:
+    """M4: scenario requests cross the wire as a KEY only; the GET serves
+    the runner's labeled artifact (404 until materialized)."""
+
+    KEY = "QQQ|20261016|642|657"
+
+    def test_post_spools_key_only(self, tmp_path: Path) -> None:
+        import json as _json
+
+        disc = tmp_path / "discovery"
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        resp = client.post("/api/discovery/backtest", json={"key": self.KEY, "debit": 99})
+        assert resp.status_code == 202
+        files = list((disc / "spool").glob("backtest.request.*"))
+        assert len(files) == 1
+        body = _json.loads(files[0].read_text())
+        assert body["key"] == self.KEY
+        assert "debit" not in body  # client-supplied prices never reach the runner
+
+    @pytest.mark.parametrize(
+        "bad", ["", "qqq|20261016|642|657", "QQQ|2026-10-16|642|657", "QQQ|20261016|x|657",
+                "../etc|20261016|1|2"],
+    )
+    def test_post_rejects_malformed_keys(self, tmp_path: Path, bad: str) -> None:
+        client = _client(tmp_path / "state", tmp_path / "plans", tmp_path / "discovery")
+        assert client.post("/api/discovery/backtest", json={"key": bad}).status_code == 422
+
+    def test_get_404_then_artifact_with_age(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.backtest import LABEL, write_artifact
+
+        disc = tmp_path / "discovery"
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        assert client.get("/api/discovery/backtest", params={"key": self.KEY}).status_code == 404
+        write_artifact(disc, self.KEY, {"key": self.KEY, "label": LABEL, "error": None,
+                                        "generated_at": datetime.now(ET).isoformat()})
+        resp = client.get("/api/discovery/backtest", params={"key": self.KEY})
+        assert resp.status_code == 200
+        doc = resp.json()
+        assert doc["label"] == LABEL
+        assert isinstance(doc["age_seconds"], int)

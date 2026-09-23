@@ -22,7 +22,13 @@ function Rules({ c }: { c: CandidateRow }) {
 
 /** Ranked candidate table (operator) — the tri-state rule audit rides
  * inside a collapsible per row so the main grid stays scannable. */
-export function CandidateTable({ rows }: { rows: CandidateRow[] }) {
+export function CandidateTable({
+  rows,
+  onScenario,
+}: {
+  rows: CandidateRow[]
+  onScenario?: (c: CandidateRow) => void
+}) {
   if (rows.length === 0) return null
   return (
     <div className="card table-card">
@@ -39,6 +45,7 @@ export function CandidateTable({ rows }: { rows: CandidateRow[] }) {
               <th className="num">Max loss</th>
               <th className="num">Yield</th>
               <th>Rules</th>
+              {onScenario && <th>Scenario</th>}
             </tr>
           </thead>
           <tbody>
@@ -64,6 +71,18 @@ export function CandidateTable({ rows }: { rows: CandidateRow[] }) {
                 <td>
                   <Rules c={c} />
                 </td>
+                {onScenario && (
+                  <td>
+                    <button
+                      type="button"
+                      className="chip"
+                      onClick={() => onScenario(c)}
+                      aria-label={`Valuation scenario for ${c.underlying} ${c.long_strike}/${c.short_strike}`}
+                    >
+                      scenario
+                    </button>
+                  </td>
+                )}
               </tr>
             ))}
           </tbody>

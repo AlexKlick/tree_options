@@ -90,7 +90,7 @@ export function SymbolPage({ sym }: { sym: string }) {
           <h2 className="section-title">
             Daily closes{' '}
             <span className="muted section-sub">
-              (~200 sessions · Polygon delayed{ageNote(d?.bars_age_seconds)})
+              (~1 year · Polygon delayed{ageNote(d?.bars_age_seconds)})
             </span>
           </h2>
           {d?.bars ? (

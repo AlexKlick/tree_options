@@ -450,3 +450,48 @@ export interface SymbolDetail {
   news: NewsItem[]
   news_age_seconds?: number | null
 }
+
+export interface ScenarioStats {
+  count: number
+  wins: number
+  win_rate: number
+  mean_pnl: number
+  median_pnl: number
+  p10_pnl: number
+  worst_pnl: number
+  best_pnl: number
+}
+
+/** M4 valuation scenario — simulated, never counted in real stats. */
+export interface ScenarioDoc {
+  key: string
+  generated_at: string
+  label: string
+  age_seconds: number | null
+  error: string | null
+  structure?: {
+    underlying: string
+    expiry: string
+    short: number
+    long: number
+    dte: number
+    debit_mid: number
+    debit_ask: number | null
+    spot_now: number
+    found_in: string
+  }
+  assumptions?: Record<string, string | number | null>
+  iv?: number
+  iv_source?: string
+  analogs?: ScenarioStats
+  pessimistic?: ScenarioStats | null
+  iv_band_mean_pnl?: { lo: number | null; hi: number | null }
+  recent?: {
+    entry_ms: number
+    entry_spot: number
+    entry_debit: number
+    final_pnl: number
+    series: HistorySeries
+  }
+  sessions?: number
+}

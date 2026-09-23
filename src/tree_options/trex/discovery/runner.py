@@ -410,6 +410,109 @@ def _market_tick(
         log.exception("market tick failed (scan handling unaffected)")
 
 
+def _calendar_dte(expiry_yyyymmdd: str, now: datetime) -> int:
+    """Calendar days from now to the expiry session's close (instant
+    arithmetic via time/sessions - never naive date subtraction)."""
+    from tree_options.time.sessions import session_close_instant
+
+    expiry = datetime.strptime(expiry_yyyymmdd, "%Y%m%d").date()
+    seconds = (session_close_instant(expiry) - now).total_seconds()
+    return max(0, round(seconds / 86_400))
+
+
+def _backtest_tick(
+    state_dir: Path,
+    now: datetime,
+    allow_fetch: bool,
+    bars_client: object | None = None,
+) -> None:
+    """Materialize one requested valuation scenario (M4).
+
+    Broker-independent. Inputs come from the runner's own artifacts
+    (latest scan / shadow book, market cache) - never from the request.
+    Every claim completes, with an error receipt AND an error artifact
+    when inputs are missing, so the UI never polls forever.
+    """
+    from tree_options.trex.discovery import backtest
+    from tree_options.trex.discovery.artifact import claim_request, complete_request
+    from tree_options.trex.discovery.market import (
+        MarketCache,
+        fetch_daily_bars,
+        fetch_equity_quote,
+        urllib_transport,
+    )
+
+    spool = state_dir / "spool"
+    claim = claim_request(spool, ["backtest"], now=now)
+    if claim is None:
+        return
+    _kind, req_id, payload = claim
+    key = str(payload.get("key", ""))
+
+    def _fail(detail: str) -> None:
+        backtest.write_artifact(
+            state_dir,
+            key,
+            {"key": key, "generated_at": now.isoformat(), "label": backtest.LABEL,
+             "error": detail},
+        )
+        complete_request(
+            spool, "backtest", req_id,
+            {"request_id": req_id, "key": key, "status": "error", "detail": detail,
+             "finished_at": now_et().isoformat()},
+        )
+
+    try:
+        structure = backtest.find_structure(state_dir, key)
+        if structure is None:
+            _fail("structure not found in the latest scan or the shadow book")
+            return
+        structure["dte"] = _calendar_dte(structure["expiry"], now)
+        sym = structure["underlying"]
+        cache = MarketCache(state_dir / "market" / "cache")
+
+        quote: dict[str, Any] | None = None
+        try:
+            quote = json.loads((state_dir / "market.json").read_text())["symbols"].get(sym)
+        except (OSError, KeyError, ValueError):
+            quote = None
+        if quote is None:
+            env = cache.get_envelope("quote", sym)
+            quote = env.get("payload") if env else None
+        if quote is None and allow_fetch:
+            quote = fetch_equity_quote(sym, urllib_transport)
+        bid, ask = (quote or {}).get("bid"), (quote or {}).get("ask")
+        if bid is None or ask is None:
+            _fail(f"no {sym} quote cached (refresh the market desk first)")
+            return
+        spot_now = (float(bid) + float(ask)) / 2
+
+        bars_env = cache.get_envelope("bars", sym)
+        if (bars_env is None or cache.get("bars", sym, now) is None) and allow_fetch:
+            fresh = fetch_daily_bars(sym, bars_client)  # type: ignore[arg-type]
+            if fresh:
+                cache.put("bars", sym, {"bars": fresh}, now)
+                bars_env = cache.get_envelope("bars", sym)
+        raw_bars = ((bars_env or {}).get("payload") or {}).get("bars") or []
+        bars = [(int(b["t"]), float(b["c"])) for b in raw_bars if b.get("c") is not None]
+        if not bars:
+            _fail(f"no {sym} daily bars cached")
+            return
+
+        doc = backtest.materialize(
+            state_dir, key, now, structure, spot_now, bars, (quote or {}).get("iv30")
+        )
+        complete_request(
+            spool, "backtest", req_id,
+            {"request_id": req_id, "key": key,
+             "status": "error" if doc.get("error") else "ok",
+             "detail": doc.get("error"), "finished_at": now_et().isoformat()},
+        )
+    except Exception as exc:
+        log.exception("backtest %s failed", key)
+        _fail(f"{type(exc).__name__}: {exc}")
+
+
 class ConnectBackoff:
     """Spaces out reconnect attempts to a dead gateway."""
 
@@ -480,6 +583,10 @@ def serve_tick(
     if broker_ready:
         _maybe_account_history(source, state_dir, now)
     _market_tick(state_dir, cfg, now, market_transport, repo=repo)
+    try:
+        _backtest_tick(state_dir, now, allow_fetch=market_transport is not None)
+    except Exception:
+        log.exception("backtest tick failed (scan handling unaffected)")
     spool = state_dir / "spool"
     claim = claim_scan_request(spool, now=now)
     if claim is not None:

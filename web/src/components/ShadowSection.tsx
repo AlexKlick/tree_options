@@ -2,7 +2,7 @@
 // Every row carries the "forward-shadow · not executed" label — these are
 // observation positions opened at scan-time mids, never orders.
 
-import type { ShadowBlock } from '../lib/types'
+import type { ShadowBlock, ShadowPosition } from '../lib/types'
 import { usd2, usdSigned } from '../lib/format'
 import { Pill } from './Pill'
 
@@ -17,7 +17,13 @@ const MARK_SOURCE_LABEL: Record<string, string> = {
   none: 'no mark yet',
 }
 
-export function ShadowSection({ shadow }: { shadow: ShadowBlock | null }) {
+export function ShadowSection({
+  shadow,
+  onScenario,
+}: {
+  shadow: ShadowBlock | null
+  onScenario?: (p: ShadowPosition) => void
+}) {
   if (!shadow || shadow.positions.length === 0) return null
   const open = shadow.positions.filter((p) => p.status === 'open')
   const expired = shadow.positions.filter((p) => p.status !== 'open')
@@ -44,6 +50,7 @@ export function ShadowSection({ shadow }: { shadow: ShadowBlock | null }) {
                 <th className="num">P&amp;L</th>
                 <th className="num">Best</th>
                 <th>Status</th>
+                {onScenario && <th>Scenario</th>}
               </tr>
             </thead>
             <tbody>
@@ -72,6 +79,18 @@ export function ShadowSection({ shadow }: { shadow: ShadowBlock | null }) {
                       {p.status}
                     </span>
                   </td>
+                  {onScenario && (
+                    <td>
+                      <button
+                        type="button"
+                        className="chip"
+                        onClick={() => onScenario(p)}
+                        aria-label={`Valuation scenario for shadow ${p.underlying} ${p.long_strike}/${p.short_strike}`}
+                      >
+                        scenario
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
