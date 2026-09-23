@@ -43,7 +43,11 @@ class TestEquitySeries:
         eq = equity_series(records)
         assert pnl is not None and eq is not None
         assert [p[0] for p in eq["points"]] == [p[0] for p in pnl["points"]]
-        assert eq["y_lo"] == pytest.approx(0.0)  # NLV far above zero floors at 0
+        # M8 flash review F2: equity is a LEVEL series; its axis fits the
+        # data (level_extent) instead of flooring at 0, which drew a $12
+        # move on $1M as a flat line
+        lowest = min(v for _, v in eq["points"])
+        assert 0 < eq["y_lo"] < lowest
         assert eq["last"]["value"] == pytest.approx(10000049.0)
         assert eq["last"]["pos"] is True
 

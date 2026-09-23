@@ -106,6 +106,30 @@ def _fnum(raw: object) -> float | None:
         return None
 
 
+def _bars_series(bars_list: object) -> dict[str, object] | None:
+    """Daily closes -> chart series; a PRICE axis fits the data (level
+    extent), never anchored at $0."""
+    from tree_options.trex.series import decimate_pairs, level_extent
+
+    if not isinstance(bars_list, list):
+        return None
+    pts = [
+        (int(b["t"]), float(b["c"]))
+        for b in bars_list
+        if isinstance(b, dict) and b.get("t") is not None and b.get("c") is not None
+    ]
+    pts = decimate_pairs(pts, 600)
+    if not pts:
+        return None
+    y_lo, y_hi = level_extent(pts)
+    return {
+        "points": [[t, v] for t, v in pts],
+        "y_lo": y_lo,
+        "y_hi": y_hi,
+        "last": {"ts_ms": pts[-1][0], "value": pts[-1][1], "pos": True},
+    }
+
+
 def _marks_payload(marks: dict[str, Any] | None) -> dict[str, Any] | None:
     """JSON view of marks.json: Decimals-as-strings coerced to numbers."""
     if not marks:
@@ -500,7 +524,6 @@ def create_app(
         import re as _re
 
         from tree_options.trex.discovery.market import MarketCache
-        from tree_options.trex.series import decimate_pairs, y_extent
         from tree_options.trex_web.discovery_view import _age
 
         sym_up = sym.upper()
@@ -522,22 +545,7 @@ def create_app(
         news_env = cache.get_envelope("news", sym_up)
         bars_payload = bars_env.get("payload") if bars_env else None
         bars_list = bars_payload.get("bars") if isinstance(bars_payload, dict) else None
-        bars_series: dict[str, object] | None = None
-        if isinstance(bars_list, list):
-            pts = [
-                (int(b["t"]), float(b["c"]))
-                for b in bars_list
-                if isinstance(b, dict) and b.get("t") is not None and b.get("c") is not None
-            ]
-            pts = decimate_pairs(pts, 600)
-            if pts:
-                y_lo, y_hi = y_extent(pts)
-                bars_series = {
-                    "points": [[t, v] for t, v in pts],
-                    "y_lo": y_lo,
-                    "y_hi": y_hi,
-                    "last": {"ts_ms": pts[-1][0], "value": pts[-1][1], "pos": True},
-                }
+        bars_series = _bars_series(bars_list)
         news_payload = news_env.get("payload") if news_env else None
         news = (
             news_payload.get("items", [])

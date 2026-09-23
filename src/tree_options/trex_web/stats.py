@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from tree_options.trex.history import read_tail
-from tree_options.trex.series import decimate_pairs, y_extent
+from tree_options.trex.series import decimate_pairs, level_extent
 from tree_options.trex_web.reader import list_plans, read_marks_history
 
 
@@ -33,7 +33,7 @@ def equity_series(
     if len(pts) < 2 or pts[-1][0] - pts[0][0] < 1000:
         return None
     pts = decimate_pairs(pts, max_points)
-    y_lo, y_hi = y_extent(pts)
+    y_lo, y_hi = level_extent(pts)  # a $12 move on $1M must be visible
     last_v = pts[-1][1]
     return {
         "points": [[t, v] for t, v in pts],
