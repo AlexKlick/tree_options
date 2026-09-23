@@ -191,17 +191,94 @@ class TestParseChain:
 
 
 class TestValidate:
-    def _v(self, **kw) -> store.Verdict:
-        return store.validate(chains.parse_chain(encode(chain_payload(**kw)), "KO"), D)
+    @pytest.fixture(autouse=True)
+    def _cal(self, static_calendar) -> None:
+        self.cal = static_calendar
+
+    def _v(self, sym: str = "KO", **kw) -> store.Verdict:
+        return store.validate(
+            chains.parse_chain(encode(chain_payload(sym, **kw)), sym), D, self.cal
+        )
 
     def test_ok(self) -> None:
         v = self._v()
         assert v.status == "ok" and v.payload_session == D
 
-    def test_publish_cutoff_is_1615_et_inclusive(self) -> None:
-        # 20:15:00Z = 16:15:00 EDT on D
-        assert self._v(timestamp="2026-09-22 20:15:00").status == "ok"
-        assert self._v(timestamp="2026-09-22 20:14:59").status == "stale"
+    # --- per-symbol publication cutoff (live 2026-09-22: XLV's snapshot
+    # stamped 16:01:18 ET was refused by the old global 16:15 ET cutoff)
+
+    def test_regular_close_symbol_cutoff_is_1600_et_inclusive(self) -> None:
+        # KO options stop with the equity session: 16:00 EDT = 20:00Z
+        assert self._v(timestamp="2026-09-22 20:00:00").status == "ok"
+        v = self._v(timestamp="2026-09-22 19:59:59")
+        assert v.status == "stale" and "16:00" in v.detail
+
+    def test_late_close_symbol_cutoff_is_1615_et_inclusive(self) -> None:
+        assert self._v("SPY", timestamp="2026-09-22 20:15:00").status == "ok"
+        v = self._v("SPY", timestamp="2026-09-22 20:14:59")
+        assert v.status == "stale" and "16:15" in v.detail
+        for sym in ("QQQ", "IWM", "XLE", "XLF", "XLV", "SMH", "SOXX", "GLD"):
+            assert self._v(sym, timestamp="2026-09-22 20:14:59").status == "stale", sym
+            assert self._v(sym, timestamp="2026-09-22 20:15:00").status == "ok", sym
+
+    def test_the_live_xlv_snapshot_stays_refused(self) -> None:
+        """The XLV payload CBOE still served on 2026-09-23 16:55 ET: stamped
+        16:01:18 ET, underlying last trade 15:46:14, newest option trade
+        15:46:13. XLV options trade until 16:15 (exchange list), so the
+        stamp is before its close; and the content predates the close."""
+        rows = default_rows(root="XLV")
+        for r in rows:
+            r["last_trade_time"] = "2026-09-22T15:46:13"
+        v = self._v(
+            "XLV",
+            rows=rows,
+            timestamp="2026-09-22 20:01:18",
+            underlying_last="2026-09-22T15:46:14",
+        )
+        assert v.status == "stale" and "16:15" in v.detail
+
+    def test_content_frozen_before_the_close_is_stale_for_any_symbol(self) -> None:
+        # the same frozen content on a 16:00-close name passes the cutoff,
+        # not the close check: the underlying must have traded near the close
+        rows = default_rows()
+        for r in rows:
+            r["last_trade_time"] = "2026-09-22T15:46:13"
+        kw = {"rows": rows, "timestamp": "2026-09-22 20:01:18"}
+        v = self._v(underlying_last="2026-09-22T15:46:14", **kw)
+        assert v.status == "stale" and "15:46:14" in v.detail
+        assert self._v(underlying_last="2026-09-22T15:55:00", **kw).status == "ok"
+        assert self._v(underlying_last="2026-09-22T15:54:59", **kw).status == "stale"
+        assert self._v(underlying_last="2026-09-22T16:00:00", **kw).status == "ok"
+
+    def test_option_trades_after_the_close_demand_the_late_cutoff(self) -> None:
+        # a 16:00-list name whose options printed after 16:00 is a late-close
+        # class after all (e.g. Cboe's single-stock 16:15 curb session)
+        rows = default_rows()
+        rows[0]["last_trade_time"] = "2026-09-22T16:05:00"
+        v = self._v(rows=rows, timestamp="2026-09-22 20:10:00")
+        assert v.status == "stale" and "16:15" in v.detail
+        assert self._v(rows=rows, timestamp="2026-09-22 20:15:00").status == "ok"
+        rows[0]["last_trade_time"] = "2026-09-22T16:00:00"  # at the close is not after it
+        assert self._v(rows=rows, timestamp="2026-09-22 20:00:00").status == "ok"
+
+    def test_early_close_session_uses_the_calendar_close(self) -> None:
+        # 2026-11-27, the day after Thanksgiving: equity close 13:00 EST = 18:00Z
+        s = date(2026, 11, 27)
+
+        def v(sym: str, ts: str, ulast: str = "2026-11-27T12:59:59") -> str:
+            rows = default_rows("2026-11-27", sym)
+            for r in rows:
+                r["last_trade_time"] = "2026-11-27T12:30:00"
+            p = chain_payload(
+                sym, session="2026-11-27", rows=rows, timestamp=ts, underlying_last=ulast
+            )
+            return store.validate(chains.parse_chain(encode(p), sym), s, self.cal).status
+
+        assert v("KO", "2026-11-27 18:00:00") == "ok"
+        assert v("KO", "2026-11-27 17:59:59") == "stale"
+        assert v("SPY", "2026-11-27 18:14:59") == "stale"
+        assert v("SPY", "2026-11-27 18:15:00") == "ok"
+        assert v("KO", "2026-11-27 18:00:00", ulast="2026-11-27T12:54:59") == "stale"
 
     def test_prior_session_payload_is_stale(self) -> None:
         v = self._v(session="2026-09-21", timestamp="2026-09-22 03:40:00")
@@ -259,7 +336,7 @@ class TestValidate:
     def test_underlying_without_a_trade_time_is_invalid(self) -> None:
         payload = chain_payload()
         payload["data"]["last_trade_time"] = None
-        v = store.validate(chains.parse_chain(encode(payload), "KO"), D)
+        v = store.validate(chains.parse_chain(encode(payload), "KO"), D, self.cal)
         assert v.status == "invalid"
 
     # --- P2 (Codex): a partial publication must stay retryable
@@ -327,6 +404,20 @@ class TestStore:
         assert manifest["symbols"]["KO"]["n"] == 20
         assert not (root / "gaps.jsonl").exists()
         assert not list(root.rglob("*.tmp"))
+
+    def test_publication_cutoff_is_per_symbol_in_a_run(
+        self, tmp_path: Path, static_calendar
+    ) -> None:
+        # both snapshots stamped 16:01:18 ET: KO's options had closed, SPY's had not
+        bodies: dict[str, bytes | Exception] = {
+            "KO": encode(chain_payload("KO", timestamp="2026-09-22 20:01:18")),
+            "SPY": encode(chain_payload("SPY", timestamp="2026-09-22 20:01:18")),
+        }
+        s = _record(tmp_path, bodies, static_calendar=static_calendar)
+        assert s.results["KO"].status == "ok"
+        assert s.results["SPY"].status == "stale" and "16:15" in s.results["SPY"].detail
+        assert (tmp_path / "store/chains/2026-09-22/KO.json.gz").exists()
+        assert not (tmp_path / "store/chains/2026-09-22/SPY.json.gz").exists()
 
     def test_existing_is_never_refetched_or_rewritten(
         self, tmp_path: Path, static_calendar
@@ -567,6 +658,27 @@ class TestSessionsAndUniverse:
         assert not sessions.is_first_session_of_month(date(2026, 9, 22), cal)
         assert sessions.calendar_days_between("2026-09-18", "2026-09-28") == 10
         assert sessions.cutoff_instant(D) == datetime(2026, 9, 22, 16, 15, tzinfo=ET)
+
+    def test_options_close_per_class_and_early_close(self, static_calendar) -> None:
+        cal = static_calendar
+        assert sessions.options_close(D, cal, late=False) == datetime(2026, 9, 22, 16, 0, tzinfo=ET)
+        assert sessions.options_close(D, cal, late=True) == datetime(2026, 9, 22, 16, 15, tzinfo=ET)
+        early = date(2026, 11, 27)
+        assert sessions.options_close(early, cal, late=False) == datetime(
+            2026, 11, 27, 13, 0, tzinfo=ET
+        )
+        assert sessions.options_close(early, cal, late=True) == datetime(
+            2026, 11, 27, 13, 15, tzinfo=ET
+        )
+        assert sessions.options_close(D, cal, late=True).tzinfo is not None
+
+    def test_late_close_classes(self) -> None:
+        # Nasdaq "Options Market Hours" 9:30-16:15 list (fetched 2026-09-23)
+        # intersected with the chain universe; single stocks close at 16:00
+        assert universe.LATE_CLOSE_OPTIONS == frozenset(
+            {"SPY", "QQQ", "IWM", "SMH", "SOXX", "XLE", "XLF", "XLV", "GLD"}
+        )
+        assert universe.LATE_CLOSE_OPTIONS <= set(universe.CHAIN_UNIVERSE)
 
     def test_universe(self) -> None:
         assert len(universe.PANEL_NAMES) == 37 == len(set(universe.PANEL_NAMES))

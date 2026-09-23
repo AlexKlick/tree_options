@@ -1,0 +1,15 @@
+[Unit]
+Description=Record the desk index histories (CBOE indices + FRED DTB3)
+
+[Timer]
+# 19:00 ET after each session (the plan's slot). CBOE's index CSVs were
+# last modified at 21:51 ET for the 2026-09-22 row, so this slot usually
+# stores the history through the prior session and exits 3 (lagging); the
+# next evening's run catches up. Every run is idempotent: identical
+# content is never rewritten, a vendor revision keeps a .bak.
+OnCalendar=Mon..Fri *-*-* 19:00:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

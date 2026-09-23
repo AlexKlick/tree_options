@@ -1,0 +1,172 @@
+{
+ "computed": {
+  "opex": "third Friday (time.monthlies.is_monthly_expiry), else the session before",
+  "vix_expiry": "30 calendar days before the next month's opex date (time.expiries.minus_calendar_days), else the session before"
+ },
+ "cpi": [],
+ "fomc": [
+  {
+   "date": "2026-01-28",
+   "kind": "scheduled",
+   "sep": false,
+   "start": "2026-01-27"
+  },
+  {
+   "date": "2026-03-18",
+   "kind": "scheduled",
+   "sep": true,
+   "start": "2026-03-17"
+  },
+  {
+   "date": "2026-04-29",
+   "kind": "scheduled",
+   "sep": false,
+   "start": "2026-04-28"
+  },
+  {
+   "date": "2026-06-17",
+   "kind": "scheduled",
+   "sep": true,
+   "start": "2026-06-16"
+  },
+  {
+   "date": "2026-07-29",
+   "kind": "scheduled",
+   "sep": false,
+   "start": "2026-07-28"
+  },
+  {
+   "date": "2026-09-16",
+   "kind": "scheduled",
+   "sep": true,
+   "start": "2026-09-15"
+  },
+  {
+   "date": "2026-10-28",
+   "kind": "scheduled",
+   "sep": false,
+   "start": "2026-10-27"
+  },
+  {
+   "date": "2026-12-09",
+   "kind": "scheduled",
+   "sep": true,
+   "start": "2026-12-08"
+  },
+  {
+   "date": "2027-01-27",
+   "kind": "scheduled",
+   "sep": false,
+   "start": "2027-01-26"
+  },
+  {
+   "date": "2027-03-17",
+   "kind": "scheduled",
+   "sep": true,
+   "start": "2027-03-16"
+  },
+  {
+   "date": "2027-04-28",
+   "kind": "scheduled",
+   "sep": false,
+   "start": "2027-04-27"
+  },
+  {
+   "date": "2027-06-09",
+   "kind": "scheduled",
+   "sep": true,
+   "start": "2027-06-08"
+  },
+  {
+   "date": "2027-07-28",
+   "kind": "scheduled",
+   "sep": false,
+   "start": "2027-07-27"
+  },
+  {
+   "date": "2027-09-15",
+   "kind": "scheduled",
+   "sep": true,
+   "start": "2027-09-14"
+  },
+  {
+   "date": "2027-10-27",
+   "kind": "scheduled",
+   "sep": false,
+   "start": "2027-10-26"
+  },
+  {
+   "date": "2027-12-08",
+   "kind": "scheduled",
+   "sep": true,
+   "start": "2027-12-07"
+  }
+ ],
+ "fomc_source": {
+  "fetched": "2026-09-23",
+  "parser": "tree_options.desk.events.parse_fomc",
+  "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
+ },
+ "nfp": [],
+ "opex": [
+  "2026-01-16",
+  "2026-02-20",
+  "2026-03-20",
+  "2026-04-17",
+  "2026-05-15",
+  "2026-06-18",
+  "2026-07-17",
+  "2026-08-21",
+  "2026-09-18",
+  "2026-10-16",
+  "2026-11-20",
+  "2026-12-18",
+  "2027-01-15",
+  "2027-02-19",
+  "2027-03-19",
+  "2027-04-16",
+  "2027-05-21",
+  "2027-06-17",
+  "2027-07-16",
+  "2027-08-20",
+  "2027-09-17",
+  "2027-10-15",
+  "2027-11-19",
+  "2027-12-17"
+ ],
+ "range": {
+  "from": "2026-01-01",
+  "to": "2027-12-31"
+ },
+ "schema": "desk-macro/1",
+ "todo": [
+  "cpi: operator/agent entry required (bls.gov refuses scripted requests, HTTP 403); add {date, source, entered_by} items, then run seal-macro",
+  "nfp: operator/agent entry required (bls.gov refuses scripted requests, HTTP 403); add {date, source, entered_by} items, then run seal-macro"
+ ],
+ "vix_expiry": [
+  "2026-01-21",
+  "2026-02-18",
+  "2026-03-18",
+  "2026-04-15",
+  "2026-05-19",
+  "2026-06-17",
+  "2026-07-22",
+  "2026-08-19",
+  "2026-09-16",
+  "2026-10-21",
+  "2026-11-18",
+  "2026-12-16",
+  "2027-01-20",
+  "2027-02-17",
+  "2027-03-17",
+  "2027-04-21",
+  "2027-05-18",
+  "2027-06-16",
+  "2027-07-21",
+  "2027-08-18",
+  "2027-09-15",
+  "2027-10-20",
+  "2027-11-17",
+  "2027-12-22"
+ ]
+}

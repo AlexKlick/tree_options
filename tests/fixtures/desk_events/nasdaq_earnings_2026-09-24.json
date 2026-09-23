@@ -1,0 +1,57 @@
+{
+ "data": {
+  "asOf": "Thu, Sep 24, 2026",
+  "headers": {
+   "time": "Time",
+   "symbol": "Symbol",
+   "name": "Company Name",
+   "marketCap": "Market Cap",
+   "fiscalQuarterEnding": "Fiscal Quarter Ending",
+   "epsForecast": "Consensus EPS* Forecast",
+   "noOfEsts": "# of Ests",
+   "lastYearRptDt": "Last Year's Report Date",
+   "lastYearEPS": "Last year's EPS*"
+  },
+  "rows": [
+   {
+    "lastYearRptDt": "9/25/2025",
+    "lastYearEPS": "$5.87",
+    "time": "time-after-hours",
+    "symbol": "COST",
+    "name": "Costco Wholesale Corporation",
+    "marketCap": "$398,869,266,000",
+    "fiscalQuarterEnding": "Aug/2026",
+    "epsForecast": "$6.48",
+    "noOfEsts": "11"
+   },
+   {
+    "lastYearRptDt": "9/18/2025",
+    "lastYearEPS": "$1.97",
+    "time": "time-pre-market",
+    "symbol": "DRI",
+    "name": "Darden Restaurants, Inc.",
+    "marketCap": "$24,360,210,400",
+    "fiscalQuarterEnding": "Aug/2026",
+    "epsForecast": "$2.06",
+    "noOfEsts": "11"
+   },
+   {
+    "lastYearRptDt": "9/04/2025",
+    "lastYearEPS": "($0.35)",
+    "time": "time-not-supplied",
+    "symbol": "VFS",
+    "name": "VinFast Auto Ltd.",
+    "marketCap": "$7,556,701,200",
+    "fiscalQuarterEnding": "Jun/2026",
+    "epsForecast": "",
+    "noOfEsts": "N/A"
+   }
+  ]
+ },
+ "message": null,
+ "status": {
+  "rCode": 200,
+  "bCodeMessage": null,
+  "developerMessage": null
+ }
+}

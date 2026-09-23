@@ -1,0 +1,12 @@
+[Unit]
+Description=Refresh the desk earnings timing and check the macro seal (weekly)
+
+[Timer]
+# Saturday 10:00 ET: markets closed, the week's releases are in EDGAR, and
+# Nasdaq has posted the coming weeks' estimates.
+OnCalendar=Sat *-*-* 10:00:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
