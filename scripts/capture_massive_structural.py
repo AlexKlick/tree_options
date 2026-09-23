@@ -59,7 +59,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from decimal import Decimal
@@ -89,7 +89,10 @@ from tree_options.data.massive_options import (  # noqa: E402
     MASSIVE_PROVIDER,
     session_of_epoch_ms,
 )
-from tree_options.time.monthlies import is_monthly_expiry  # noqa: E402
+from tree_options.time.monthlies import (  # noqa: E402
+    is_monthly_expiry,
+    is_traded_monthly_expiry,
+)
 
 CAPTURE_VERSION = "m4b-capture/1"
 
@@ -113,6 +116,7 @@ DTE_MAX = 60
 BARS_MODE = "representative"
 BARS_STRIKE_BAND = 3
 BARS_EXPIRIES = "all"
+BARS_EXPIRIES_CHOICES = ("all", "monthly", "monthly-traded")
 BARS_SIDES = "both"
 
 
@@ -517,6 +521,15 @@ def choose_bar_contracts(
     return picks[:wanted], notes
 
 
+def _default_is_session() -> Callable[[date], bool]:
+    """The trex NYSE session calendar (checked in through 2028-12-29, so it
+    covers every long-dated expiry the free tier can list; `TREX_CALENDAR`
+    overrides). Imported lazily: only `monthly-traded` needs a calendar."""
+    from tree_options.trex.clock import session_calendar
+
+    return session_calendar().is_session
+
+
 def select_atm_grid_bars(
     captures: Sequence[MasterCapture],
     spot: Mapping[str, Mapping[str, str]],
@@ -527,13 +540,18 @@ def select_atm_grid_bars(
     strike_band: int | None = None,
     expiries: str | None = None,
     sides: str | None = None,
+    is_session: Callable[[date], bool] | None = None,
 ) -> tuple[list[tuple[str, date, date]], list[str]]:
     """Deterministically pick an ATM strike GRID per (underlying, as_of) master.
 
     Unlike `choose_bar_contracts` (three representative contracts per
     underlying, from the FIRST capture that has pages), the grid covers EVERY
     master: expiries inside the DTE band, optionally only third-Friday
-    monthlies (`expiries="monthly"`, via `tree_options.time.monthlies`), and
+    monthlies (`expiries="monthly"`, via `tree_options.time.monthlies`, a
+    calendar-only rule) or only the monthlies that actually TRADED
+    (`expiries="monthly-traded"`: the third Friday, or the session before it
+    when the exchange was closed that Friday -- `is_session`, default the
+    trex NYSE calendar), and
     per expiry the `strike_band` distinct strikes above and below spot plus
     spot itself — RANKED by |strike - spot| ascending with ties broken by
     strike then ticker, which is a rank in the ladder, never an absolute
@@ -559,13 +577,25 @@ def select_atm_grid_bars(
     strike_band = BARS_STRIKE_BAND if strike_band is None else strike_band
     expiries = BARS_EXPIRIES if expiries is None else expiries
     sides = BARS_SIDES if sides is None else sides
-    if expiries not in ("all", "monthly"):
-        raise ValueError(f"unknown expiries filter {expiries!r} (want 'all' or 'monthly')")
+    if expiries not in BARS_EXPIRIES_CHOICES:
+        raise ValueError(
+            f"unknown expiries filter {expiries!r} (want one of {', '.join(BARS_EXPIRIES_CHOICES)})"
+        )
     if sides not in ("call", "both"):
         raise ValueError(f"unknown sides filter {sides!r} (want 'call' or 'both')")
     if strike_band < 0:
         raise ValueError(f"strike_band must be >= 0, got {strike_band}")
     kinds = ("call",) if sides == "call" else ("call", "put")
+    wanted_expiry: Callable[[date], bool] | None = None
+    if expiries == "monthly":
+        wanted_expiry = is_monthly_expiry
+    elif expiries == "monthly-traded":
+        session = _default_is_session() if is_session is None else is_session
+
+        def _traded(e: date) -> bool:
+            return is_traded_monthly_expiry(e, session)
+
+        wanted_expiry = _traded
 
     picks: list[tuple[str, date, date]] = []
     notes: list[str] = []
@@ -584,8 +614,8 @@ def select_atm_grid_bars(
                 f"{underlying}: no {dte_min}-{dte_max} DTE expiry in the {capture.as_of} master"
             )
             continue
-        if expiries == "monthly":
-            band = [e for e in band if is_monthly_expiry(e)]
+        if wanted_expiry is not None:
+            band = [e for e in band if wanted_expiry(e)]
             if not band:
                 notes.append(
                     f"{underlying} {capture.as_of}: no monthly expiry in the "
@@ -1084,10 +1114,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--bars-expiries",
-        choices=("all", "monthly"),
+        choices=BARS_EXPIRIES_CHOICES,
         help=(
-            "atm-grid only: keep every in-band expiry or only third-Friday monthlies "
-            "(default: all). Each expiry multiplies the grid, one series per contract life"
+            "atm-grid only: keep every in-band expiry, only third-Friday monthlies "
+            "(monthly: a calendar-only rule), or only the monthlies that actually traded "
+            "(monthly-traded: the third Friday, or the session before it when the exchange "
+            "was closed that Friday, per the trex NYSE calendar) (default: all). Each "
+            "expiry multiplies the grid, one series per contract life"
         ),
     )
     parser.add_argument(
