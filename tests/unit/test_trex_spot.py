@@ -2,11 +2,12 @@
 
 The paper account delivers no equity quotes, and the old fallback read the
 ticker's ``close``, the PRIOR session's close, which can fake or hide a
-touch. A spot is accepted only when its data age is known and small: an
-IBKR ``last``/mid whose ticker updated within 120 s, else the Polygon
-snapshot (15 min delayed) when its minute bar is at most 20 min old. The
-Polygon lookup is bounded (TTL, per-call timeout, per-tick budget) and a
-failure costs one symbol one tick, never the exit loop. No network here.
+touch. IBKR stock prices are not a touch source at all (a fresh
+``ticker.time`` says nothing about the age of ``last``): the spot is the
+Polygon snapshot's latest REGULAR-SESSION minute bar of the current
+session, at most 20 min old. Fetches run off the exit loop, one in flight
+per symbol, each with a total deadline; the tick only reads what has
+arrived. No network here.
 """
 
 from __future__ import annotations
@@ -15,103 +16,51 @@ import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from tree_options.trex.spot import (
-    IBKR_MAX_AGE_S,
+    FEED_LAG_S,
+    MAX_INFLIGHT,
     POLYGON_MAX_AGE_S,
     POLYGON_TIMEOUT_S,
     POLYGON_TTL_S,
-    TICK_BUDGET_S,
+    SpotFeed,
     SpotReading,
-    SpotResolver,
-    ibkr_reading,
+    deadline_transport,
+    in_touch_window,
     polygon_fetcher,
     polygon_reading,
 )
 
 ET = ZoneInfo("America/New_York")
-NOW = datetime(2026, 9, 23, 14, 59, tzinfo=ET)
+NOW = datetime(2026, 9, 23, 14, 59, tzinfo=ET)  # a Wednesday session
 NOW_S = NOW.timestamp()
 
 
-@dataclass
-class FakeTicker:
-    time: datetime | None = None
-    last: float = math.nan
-    bid: float = math.nan
-    ask: float = math.nan
-    close: float = math.nan
-    marketDataType: int = 1
-
-
-def _utc_ago(seconds: float) -> datetime:
-    return datetime.fromtimestamp(NOW_S - seconds, UTC)
+def _et(h: int, m: int, day: tuple[int, int, int] = (2026, 9, 23)) -> datetime:
+    return datetime(*day, h, m, tzinfo=ET)
 
 
 def _snapshot(
     symbol: str = "NVDA",
     *,
+    now: datetime = NOW,
     min_c: Any = Decimal("181.25"),
     min_age_s: float | None = 16 * 60,
     day_c: Any = Decimal("181.40"),
     updated_age_s: float | None = 15 * 60,
 ) -> dict[str, Any]:
     """A Polygon stock snapshot body as loads_exact parses it."""
+    base = now.timestamp()
     ticker: dict[str, Any] = {"ticker": symbol, "lastTrade": None, "day": {"c": day_c}}
     if min_age_s is not None:
-        ticker["min"] = {"t": int((NOW_S - min_age_s) * 1000), "c": min_c}
+        ticker["min"] = {"t": int((base - min_age_s) * 1000), "c": min_c}
     if updated_age_s is not None:
-        ticker["updated"] = int((NOW_S - updated_age_s) * 1_000_000_000)
+        ticker["updated"] = int((base - updated_age_s) * 1_000_000_000)
     return {"status": "DELAYED", "request_id": "r", "ticker": ticker}
-
-
-class TestIbkrReading:
-    def test_fresh_last_is_accepted(self) -> None:
-        r = ibkr_reading(FakeTicker(time=_utc_ago(30), last=181.5), NOW)
-        assert r is not None
-        assert r.px == Decimal("181.5") and r.source == "ibkr"
-        assert r.age_s == pytest.approx(30)
-        assert r.as_of.tzinfo is not None
-
-    def test_mid_when_no_last(self) -> None:
-        r = ibkr_reading(FakeTicker(time=_utc_ago(5), bid=181.0, ask=181.5), NOW)
-        assert r is not None and r.px == Decimal("181.25")
-
-    def test_close_is_never_a_spot(self) -> None:
-        """The prior session's close can fake or hide a touch."""
-        assert ibkr_reading(FakeTicker(time=_utc_ago(5), close=150.0), NOW) is None
-
-    def test_stale_ticker_is_rejected(self) -> None:
-        stale = FakeTicker(time=_utc_ago(IBKR_MAX_AGE_S + 1), last=181.5)
-        assert ibkr_reading(stale, NOW) is None
-
-    def test_no_timestamp_is_rejected(self) -> None:
-        assert ibkr_reading(FakeTicker(time=None, last=181.5), NOW) is None
-
-    def test_junk_quotes_are_rejected(self) -> None:
-        # IB sends -1 for an absent side; a crossed book is not a price
-        assert ibkr_reading(FakeTicker(time=_utc_ago(5), bid=-1.0, ask=181.0), NOW) is None
-        assert ibkr_reading(FakeTicker(time=_utc_ago(5), bid=182.0, ask=181.0), NOW) is None
-        assert ibkr_reading(FakeTicker(time=_utc_ago(5), last=0.0), NOW) is None
-
-    @pytest.mark.parametrize("frozen", [2, 4])
-    def test_frozen_data_is_rejected(self, frozen: int) -> None:
-        """Frozen = the last value from when the market closed."""
-        t = FakeTicker(time=_utc_ago(5), last=181.5, marketDataType=frozen)
-        assert ibkr_reading(t, NOW) is None
-
-    def test_delayed_data_reports_its_true_age(self) -> None:
-        t = FakeTicker(time=_utc_ago(10), last=181.5, marketDataType=3)
-        r = ibkr_reading(t, NOW)
-        assert r is not None and r.age_s == pytest.approx(10 + 15 * 60)
-
-    def test_missing_ticker(self) -> None:
-        assert ibkr_reading(None, NOW) is None
 
 
 class TestPolygonReading:
@@ -155,6 +104,46 @@ class TestPolygonReading:
         assert polygon_reading(body, "NVDA", NOW) is None
 
 
+class TestSessionWindow:
+    """Codex P1: snapshot data includes premarket prints. At 09:30 a 09:14
+    bar below the strike passed the age check and fired a touch exit."""
+
+    def test_a_premarket_bar_is_not_a_touch_input(self) -> None:
+        at = _et(9, 30)
+        body = _snapshot(now=at, min_age_s=16 * 60, updated_age_s=None)  # the 09:14 bar
+        assert polygon_reading(body, "NVDA", at) is None
+
+    def test_the_opening_bar_counts(self) -> None:
+        at = _et(9, 46)
+        body = _snapshot(now=at, min_age_s=16 * 60, updated_age_s=None)  # the 09:30 bar
+        assert polygon_reading(body, "NVDA", at) is not None
+
+    def test_a_post_close_bar_is_not_a_touch_input(self) -> None:
+        at = _et(16, 14)
+        body = _snapshot(now=at, min_age_s=14 * 60, updated_age_s=None)  # the 16:00 bar
+        assert polygon_reading(body, "NVDA", at) is None
+        last = _snapshot(now=at, min_age_s=15 * 60, updated_age_s=None)  # the 15:59 bar
+        assert polygon_reading(last, "NVDA", at) is not None
+
+    def test_early_close_is_respected(self) -> None:
+        at = _et(13, 10, (2026, 11, 27))  # 13:00 close
+        body = _snapshot(now=at, min_age_s=5 * 60, updated_age_s=None)  # the 13:05 bar
+        assert polygon_reading(body, "NVDA", at) is None
+
+    def test_no_session_no_spot(self) -> None:
+        at = _et(12, 0, (2026, 9, 26))  # a Saturday
+        body = _snapshot(now=at, min_age_s=60, updated_age_s=None)
+        assert polygon_reading(body, "NVDA", at) is None
+
+    def test_touch_window_follows_the_calendar(self) -> None:
+        assert not in_touch_window(_et(9, 40))  # the delayed feed can't deliver yet
+        assert in_touch_window(datetime.fromtimestamp(_et(9, 30).timestamp() + FEED_LAG_S, ET))
+        assert in_touch_window(_et(15, 59))
+        assert not in_touch_window(_et(16, 1))
+        assert not in_touch_window(_et(13, 30, (2026, 11, 27)))  # early close
+        assert not in_touch_window(_et(12, 0, (2026, 9, 26)))  # Saturday
+
+
 class FakeClock:
     def __init__(self) -> None:
         self.t = 1000.0
@@ -164,104 +153,185 @@ class FakeClock:
 
 
 class FakePolygon:
-    """Injectable fetcher: records (symbol, timeout); may cost time or raise."""
+    """Injectable fetcher: records (symbol, timeout); may raise."""
 
-    def __init__(self, clock: FakeClock, cost_s: float = 0.2, *, overrun: bool = False) -> None:
-        self.clock = clock
-        self.cost_s = cost_s
-        self.overrun = overrun  # urllib's timeout is per socket op: a call can overrun it
+    def __init__(self) -> None:
         self.calls: list[tuple[str, float]] = []
         self.raises: dict[str, Exception] = {}
-        self.bodies: dict[str, dict[str, Any]] = {}
 
     def __call__(self, symbol: str, timeout: float) -> dict[str, Any]:
         self.calls.append((symbol, timeout))
-        self.clock.t += self.cost_s if self.overrun else min(self.cost_s, timeout)
         if symbol in self.raises:
             raise self.raises[symbol]
-        return self.bodies.get(symbol) or _snapshot(symbol)
+        return _snapshot(symbol)
 
 
-def _ibkr(px: str = "181.50", age: float = 5) -> SpotReading:
-    return SpotReading(Decimal(px), "ibkr", NOW, age)
+class Deferred:
+    """spawn() that queues jobs instead of running them (a worker pool that
+    has not got to them yet): proves the tick never waits for a fetch."""
+
+    def __init__(self) -> None:
+        self.jobs: list[Any] = []
+
+    def __call__(self, job: Any) -> None:
+        self.jobs.append(job)
+
+    def run(self) -> None:
+        jobs, self.jobs = self.jobs, []
+        for job in jobs:
+            job()
 
 
-class TestResolver:
-    def test_fresh_ibkr_wins_and_polygon_is_not_called(self) -> None:
-        clock = FakeClock()
-        poly = FakePolygon(clock)
-        res = SpotResolver(poly, monotonic=clock)
-        out = res.resolve(["NVDA"], {"NVDA": _ibkr()}, NOW)
-        assert out["NVDA"].source == "ibkr" and poly.calls == []
+def _feed(
+    poly: FakePolygon | None = None, clock: FakeClock | None = None
+) -> tuple[SpotFeed, FakePolygon, FakeClock, Deferred]:
+    poly = poly or FakePolygon()
+    clock = clock or FakeClock()
+    spawn = Deferred()
+    return SpotFeed(poly, spawn=spawn, monotonic=clock), poly, clock, spawn
 
-    def test_polygon_fills_in_when_ibkr_is_blind(self) -> None:
-        clock = FakeClock()
-        poly = FakePolygon(clock)
-        out = SpotResolver(poly, monotonic=clock).resolve(["NVDA"], {"NVDA": None}, NOW)
-        assert out["NVDA"].source == "polygon" and out["NVDA"].px == Decimal("181.25")
+
+class TestSpotFeed:
+    def test_the_tick_never_waits_for_the_network(self) -> None:
+        """Codex P1: a socket timeout bounds each blocking op, not a request;
+        a trickling response held the exit loop. Fetches now run elsewhere."""
+        feed, poly, _, spawn = _feed()
+        assert feed.readings(["NVDA"], NOW) == {}  # dispatched, not awaited
+        assert poly.calls == [] and len(spawn.jobs) == 1
+        spawn.run()
+        out = feed.readings(["NVDA"], NOW)
+        assert out["NVDA"].px == Decimal("181.25")
         assert poly.calls == [("NVDA", POLYGON_TIMEOUT_S)]
 
-    def test_no_fetcher_means_ibkr_only(self) -> None:
-        assert SpotResolver(None).resolve(["NVDA"], {}, NOW) == {}
+    def test_one_request_in_flight_per_symbol(self) -> None:
+        feed, _, clock, spawn = _feed()
+        feed.readings(["NVDA"], NOW)
+        clock.t += POLYGON_TTL_S * 5  # long overdue, but the first is still out
+        feed.readings(["NVDA"], NOW)
+        assert len(spawn.jobs) == 1
 
-    def test_ttl_caches_per_symbol(self) -> None:
-        clock = FakeClock()
-        poly = FakePolygon(clock)
-        res = SpotResolver(poly, monotonic=clock)
-        res.resolve(["NVDA"], {}, NOW)
+    def test_ttl_between_requests(self) -> None:
+        feed, poly, clock, spawn = _feed()
+        feed.readings(["NVDA"], NOW)
+        spawn.run()
         clock.t += POLYGON_TTL_S - 5
-        again = res.resolve(["NVDA"], {}, NOW)
-        assert len(poly.calls) == 1 and again["NVDA"].source == "polygon"
+        feed.readings(["NVDA"], NOW)
+        assert spawn.jobs == []
         clock.t += 10
-        res.resolve(["NVDA"], {}, NOW)
+        feed.readings(["NVDA"], NOW)
+        spawn.run()
         assert len(poly.calls) == 2
 
+    def test_no_symbol_starves(self) -> None:
+        """Codex P2: a fixed order behind failing symbols never reached G."""
+        poly = FakePolygon()
+        for s in "ABCDEF":
+            poly.raises[s] = TimeoutError("slow")
+        feed, _, _, spawn = _feed(poly)
+        feed.readings(list("ABCDEFG"), NOW)
+        spawn.run()
+        assert {s for s, _ in poly.calls} == set("ABCDEFG")
+
+    def test_in_flight_cap_rotates_oldest_first(self) -> None:
+        poly = FakePolygon()
+        feed, _, clock, spawn = _feed(poly)
+        symbols = [f"S{i}" for i in range(MAX_INFLIGHT + 3)]
+        feed.readings(symbols, NOW)
+        assert len(spawn.jobs) == MAX_INFLIGHT
+        spawn.run()
+        clock.t += POLYGON_TTL_S + 1
+        feed.readings(symbols, NOW)
+        first = {s for s, _ in poly.calls}
+        spawn.run()
+        later = [s for s, _ in poly.calls][len(first) :]
+        assert set(symbols) - first <= set(later[:3])  # never-tried go first
+
     def test_cached_reading_ages_out(self) -> None:
-        """A cached bar is judged by its DATA age at each tick, not fetch time."""
-        clock = FakeClock()
-        poly = FakePolygon(clock)
-        res = SpotResolver(poly, monotonic=clock)
-        res.resolve(["NVDA"], {}, NOW)
+        feed, _, _, spawn = _feed()
+        feed.readings(["NVDA"], NOW)
+        spawn.run()
         later = datetime.fromtimestamp(NOW_S + POLYGON_MAX_AGE_S, ET)
-        assert res.resolve(["NVDA"], {}, later) == {}
+        assert feed.readings(["NVDA"], later) == {}
 
     def test_a_failing_symbol_never_costs_the_others(self) -> None:
-        clock = FakeClock()
-        poly = FakePolygon(clock)
+        poly = FakePolygon()
         poly.raises["AMD"] = TimeoutError("read timed out")
-        out = SpotResolver(poly, monotonic=clock).resolve(["AMD", "NVDA"], {}, NOW)
-        assert set(out) == {"NVDA"}
+        feed, _, _, spawn = _feed(poly)
+        feed.readings(["AMD", "NVDA"], NOW)
+        spawn.run()
+        assert set(feed.readings(["AMD", "NVDA"], NOW)) == {"NVDA"}
 
     def test_a_failed_refresh_keeps_the_last_good_bar(self) -> None:
-        clock = FakeClock()
-        poly = FakePolygon(clock)
-        res = SpotResolver(poly, monotonic=clock)
-        res.resolve(["NVDA"], {}, NOW)
+        poly = FakePolygon()
+        feed, _, clock, spawn = _feed(poly)
+        feed.readings(["NVDA"], NOW)
+        spawn.run()
         clock.t += POLYGON_TTL_S + 1
         poly.raises["NVDA"] = OSError("connection reset")
-        out = res.resolve(["NVDA"], {}, NOW)
-        assert out["NVDA"].px == Decimal("181.25")
+        feed.readings(["NVDA"], NOW)
+        spawn.run()
+        assert feed.readings(["NVDA"], NOW)["NVDA"].px == Decimal("181.25")
 
-    def test_budget_bounds_the_tick(self) -> None:
-        """Slow fetches can't stall the exit loop: the per-tick budget caps
-        the total and each call's timeout shrinks to what is left."""
-        clock = FakeClock()
-        poly = FakePolygon(clock, cost_s=POLYGON_TIMEOUT_S)  # every call times out
-        syms = ["A", "B", "C", "D"]
-        SpotResolver(poly, monotonic=clock).resolve(syms, {}, NOW)
-        assert [s for s, _ in poly.calls] == ["A", "B"]
-        assert sum(t for _, t in poly.calls) <= TICK_BUDGET_S
+    def test_only_asked_symbols_are_served(self) -> None:
+        feed, _, _, spawn = _feed()
+        feed.readings(["NVDA", "AMD"], NOW)
+        spawn.run()
+        assert set(feed.readings(["NVDA"], NOW)) == {"NVDA"}
 
-    def test_partial_budget_shrinks_the_timeout(self) -> None:
+    def test_no_fetcher_no_spots(self) -> None:
+        assert SpotFeed(None).readings(["NVDA"], NOW) == {}
+
+
+class TrickleResponse:
+    """urlopen() result that sends one byte per read, forever."""
+
+    status = 200
+
+    def __init__(self, clock: FakeClock) -> None:
+        self.clock = clock
+        self.closed = False
+        self.headers: dict[str, str] = {}
+
+    def read(self, amt: int = -1) -> bytes:
+        self.clock.t += 0.5  # each read just under the socket timeout
+        return b"{"
+
+    def __enter__(self) -> TrickleResponse:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.closed = True
+
+
+class TestDeadlineTransport:
+    def test_a_trickling_response_hits_the_total_deadline(self) -> None:
+        from tree_options.data.massive_client import MassiveTransportError
+
         clock = FakeClock()
-        poly = FakePolygon(clock, cost_s=4.5, overrun=True)
-        SpotResolver(poly, monotonic=clock).resolve(["A", "B", "C"], {}, NOW)
-        assert poly.calls[1][1] == pytest.approx(TICK_BUDGET_S - 4.5)
-        assert [s for s, _ in poly.calls] == ["A", "B"]  # budget spent: C waits a tick
+        resp = TrickleResponse(clock)
+        transport = deadline_transport(5.0, opener=lambda *a, **k: resp, monotonic=clock)
+        with pytest.raises(MassiveTransportError, match="deadline"):
+            transport("https://api.polygon.io/x?apiKey=SECRETKEY", timeout=3.0)
+        assert clock.t - 1000.0 <= 5.5 and resp.closed
+
+    def test_a_normal_response_is_returned(self) -> None:
+        clock = FakeClock()
+
+        class Once(TrickleResponse):
+            def __init__(self) -> None:
+                super().__init__(clock)
+                self.parts = [b'{"status":', b'"OK"}', b""]
+
+            def read(self, amt: int = -1) -> bytes:
+                return self.parts.pop(0)
+
+        transport = deadline_transport(5.0, opener=lambda *a, **k: Once(), monotonic=clock)
+        resp = transport("https://api.polygon.io/x", timeout=3.0)
+        assert resp.status == 200 and resp.body == b'{"status":"OK"}'
 
 
 class TestPolygonFetcher:
-    def test_uncached_single_attempt_snapshot_request(self, tmp_path: Path) -> None:
+    def test_uncached_single_attempt_snapshot_request(self) -> None:
         from tree_options.data.massive_client import HttpResponse, loads_exact
 
         seen: list[tuple[str, float]] = []
@@ -299,52 +369,46 @@ class TestPolygonFetcher:
             fetch("../v3/reference", 1.0)
 
 
-class TestIbkrSnapshot:
-    """IbkrTrex.snapshot puts only ACCEPTED readings into Snapshot.spots."""
+@dataclass
+class FakeTicker:
+    time: datetime | None = None
+    last: float = math.nan
+    bid: float = math.nan
+    ask: float = math.nan
+    close: float = math.nan
+    marketDataType: int = 1
 
-    def _ib(self, ticker: FakeTicker, resolver: SpotResolver | None = None) -> Any:
-        from tree_options.trex.ibkr import IbkrTrex
 
-        ib = IbkrTrex(spot_resolver=resolver)
-        key = object()
-        ib._spots["NVDA"] = key
-        ib._tickers[key] = ticker
-        return ib
+class TestIbkrIsNotATouchSource:
+    """Codex P1: ``ticker.time`` moves on every bid/ask/size tick, so a fresh
+    ticker can carry an old ``last``. The paper account has no equity
+    quotes anyway: IBKR stock prices never reach the engine."""
 
-    def _spreads(self) -> list[Any]:
+    def test_even_a_fresh_looking_last_yields_no_spot(self) -> None:
         from datetime import date
 
+        from tree_options.trex.ibkr import IbkrTrex
         from tree_options.trex.plan import PutSpread
 
-        return [
-            PutSpread(
-                id="nvda-oct",
-                underlying="NVDA",
-                entry_date=date(2026, 9, 18),
-                expiry=date(2026, 10, 16),
-                long_strike="185",
-                short_strike="150",
-                quantity=5,
-                limit_cap="0.50",
-                exit_deadline=date(2026, 10, 9),
-            )
-        ]
-
-    def test_prior_close_never_reaches_the_engine(self) -> None:
-        snap = self._ib(FakeTicker(time=_utc_ago(5), close=150.0)).snapshot(self._spreads(), NOW)
+        ib = IbkrTrex()
+        key = object()
+        ib._spots["NVDA"] = key
+        ib._tickers[key] = FakeTicker(
+            time=datetime.fromtimestamp(NOW_S - 1, UTC), last=150.0, close=150.0
+        )
+        spread = PutSpread(
+            id="nvda-oct",
+            underlying="NVDA",
+            entry_date=date(2026, 9, 18),
+            expiry=date(2026, 10, 16),
+            long_strike="185",
+            short_strike="150",
+            quantity=5,
+            limit_cap="0.50",
+            exit_deadline=date(2026, 10, 9),
+        )
+        snap = ib.snapshot([spread], NOW)
         assert dict(snap.spots) == {} and dict(snap.spot_sources) == {}
-
-    def test_fresh_ibkr_last(self) -> None:
-        snap = self._ib(FakeTicker(time=_utc_ago(5), last=184.0)).snapshot(self._spreads(), NOW)
-        assert snap.spots == {"NVDA": Decimal("184.0")}
-        assert snap.spot_sources["NVDA"].source == "ibkr"
-
-    def test_polygon_fallback_through_the_resolver(self) -> None:
-        clock = FakeClock()
-        res = SpotResolver(FakePolygon(clock), monotonic=clock)
-        snap = self._ib(FakeTicker(close=150.0), res).snapshot(self._spreads(), NOW)
-        assert snap.spots == {"NVDA": Decimal("181.25")}
-        assert snap.spot_sources["NVDA"].source == "polygon"
 
 
 def test_reading_serializes_without_floats_for_money() -> None:

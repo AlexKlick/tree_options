@@ -103,8 +103,18 @@ class FakeEntryIbkr:
         self.cancelled: list[int] = []
         self.confirm_cancels = True
         self.connected = True
+        # broker evidence for an entry with no working order (restart):
+        # (order's filled qty, avg) or None = inconclusive
+        self.evidence: tuple[int, Decimal | None] | None = (0, None)
+        self.evidence_asked: list[tuple[str, str | None]] = []
         self._next_oid = 200
         self.open_trades: list[Any] = []
+
+    def entry_fill_evidence(
+        self, structure_id: str, order_id: str | None
+    ) -> tuple[int, Decimal | None] | None:
+        self.evidence_asked.append((structure_id, order_id))
+        return self.evidence
 
     def snapshot(self, spreads: list[PutSpread], ts: datetime) -> Any:
         from tree_options.trex.engine import Snapshot
@@ -319,6 +329,191 @@ class TestKillFiles:
         ent._tick()
         assert fake.placed == []
         assert ent.book.structures["nvda-oct"].status is Status.PLANNED
+
+
+def _restart(ent: Enterer, fake: FakeEntryIbkr, clock_dt: datetime) -> Enterer:
+    """A fresh entry runner on the same run dir and broker session state."""
+    book = BookState.load(ent.run_dir / "book.json", ["nvda-oct"])
+    again = Enterer(_plan(), fake, book, ent.run_dir, clock=lambda: clock_dt)
+    again.adopt_open_entries()
+    return again
+
+
+class TestRestartReconciliation:
+    """Codex P1s: a restarted entry runner must neither lose fills that
+    happened while it was down nor count recorded fills twice."""
+
+    def _filled_while_down(self, tmp_path: Path) -> tuple[Enterer, FakeEntryIbkr]:
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()  # BUY 5 (oid 201) working, then the runner dies
+        fake.fill(ent.orders["nvda-oct"], 5, "0.44")  # fills: gone from openTrades
+        return ent, fake
+
+    def test_flatten_after_a_downtime_fill_goes_open_not_closed(self, tmp_path: Path) -> None:
+        ent, fake = self._filled_while_down(tmp_path)
+        fake.evidence = (5, Decimal("0.44"))
+        again = _restart(ent, fake, _at(10, 5))
+        (ent.run_dir / "FLATTEN").touch()
+        again._tick()
+        st = again.book.structures["nvda-oct"]
+        assert fake.evidence_asked == [("nvda-oct", "201")]
+        assert st.status is Status.OPEN and st.filled_qty == 5  # the monitor sells it
+        assert st.entry_fill == Decimal("0.44")
+
+    def test_inconclusive_evidence_keeps_the_entry_working(self, tmp_path: Path) -> None:
+        ent, fake = self._filled_while_down(tmp_path)
+        fake.evidence = None
+        again = _restart(ent, fake, _at(10, 5))
+        (ent.run_dir / "FLATTEN").touch()
+        again._tick()
+        again._tick()
+        assert again.book.structures["nvda-oct"].status is Status.ENTER_WORKING
+        events = (ent.run_dir / "events.jsonl").read_text()
+        assert events.count('"entry_unresolved"') == 1  # noted once, not every cycle
+
+    def test_proven_unfilled_closes(self, tmp_path: Path) -> None:
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()
+        ent.orders["nvda-oct"].trade.orderStatus.status = "Cancelled"  # cancelled while down
+        fake.evidence = (0, None)
+        again = _restart(ent, fake, _at(10, 5))
+        (ent.run_dir / "FLATTEN").touch()
+        again._tick()
+        assert again.book.structures["nvda-oct"].status is Status.CLOSED
+
+    def test_window_end_abort_also_reconciles(self, tmp_path: Path) -> None:
+        ent, fake = self._filled_while_down(tmp_path)
+        fake.evidence = (5, Decimal("0.44"))
+        again = _restart(ent, fake, _at(12, 30))  # entry window over: AbortEntry
+        again._tick()
+        assert again.book.structures["nvda-oct"].status is Status.OPEN
+
+    def test_a_never_placed_entry_needs_no_evidence(self, tmp_path: Path) -> None:
+        fake = FakeEntryIbkr()
+        fake.evidence = None
+        ent = _enterer(tmp_path, fake, _at(12, 30))  # PLANNED past the window
+        ent._tick()
+        assert ent.book.structures["nvda-oct"].status is Status.CLOSED
+        assert fake.evidence_asked == []
+
+    def test_restart_mid_flatten_never_recounts_fills(self, tmp_path: Path) -> None:
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()
+        ref = ent.orders["nvda-oct"]
+        fake.fill_partial(ref, 2, "0.44")
+        fake.confirm_cancels = False
+        (ent.run_dir / "FLATTEN").touch()
+        ent._tick()  # merges 2; cancel pending; saved
+        assert ent.book.structures["nvda-oct"].filled_qty == 2
+        again = _restart(ent, fake, _at(10, 5))  # adopts the still-working BUY
+        ref.trade.orderStatus.status = "Cancelled"  # the cancel lands
+        again._tick()
+        st = again.book.structures["nvda-oct"]
+        assert st.status is Status.OPEN and st.filled_qty == 2  # NOT 4
+        assert st.entry_fill == Decimal("0.44")
+
+
+class TestAbort:
+    """The window-end abort shares FLATTEN's cancel-and-settle discipline."""
+
+    def test_an_unconfirmed_cancel_keeps_the_entry_working(self, tmp_path: Path) -> None:
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()
+        fake.confirm_cancels = False
+        ent._clock = lambda: _at(12, 30)
+        ent._tick()
+        assert ent.book.structures["nvda-oct"].status is Status.ENTER_WORKING
+        assert "nvda-oct" in ent.orders  # retried next cycle, never closed on paper
+
+    def test_abort_after_a_reprice_counts_cumulative_fills(self, tmp_path: Path) -> None:
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()
+        fake.fill_partial(ent.orders["nvda-oct"], 2, "0.44")
+        ent._tick()
+        ent._reprice(ent.plan.structures[0], Decimal("0.32"))
+        fake.fill_partial(ent.orders["nvda-oct"], 1, "0.32")  # order-local 1
+        ent._clock = lambda: _at(12, 30)
+        ent._tick()
+        st = ent.book.structures["nvda-oct"]
+        assert st.status is Status.OPEN and st.filled_qty == 3
+
+
+def test_a_reprice_merges_the_cancelled_orders_last_fills_first(tmp_path: Path) -> None:
+    """A fill landing between the last drain and the reprice cancel was
+    dropped (the replacement reset the order-local count), so the
+    replacement bought the full remainder again: 6 spreads on a 5 plan."""
+    fake = FakeEntryIbkr()
+    ent = _enterer(tmp_path, fake, _at(10, 0))
+    ent._tick()
+    a = ent.orders["nvda-oct"]
+    fake.fill_partial(a, 2, "0.44")
+    ent._tick()  # drains 2
+    fake.fill_partial(a, 3, "0.44")  # one more before the cancel lands
+    ent._reprice(ent.plan.structures[0], Decimal("0.32"))
+    assert fake.placed[-1] == ("nvda-oct", "BUY", 2, Decimal("0.32"))
+    assert ent.book.structures["nvda-oct"].filled_qty == 3
+
+
+class TestBrokerEvidence:
+    """IbkrTrex.entry_fill_evidence: what the broker can PROVE was filled of
+    an entry order that is no longer working (today's executions of that
+    order on the structure's legs, else a flat account in both legs)."""
+
+    def _ib(self, fills: list[Any], positions: list[Any]) -> Any:
+        from types import SimpleNamespace
+
+        from tree_options.trex.ibkr import IbkrTrex
+
+        ib = IbkrTrex(client_id=72)
+        ib._ib = SimpleNamespace(fills=lambda: fills, positions=lambda: positions)
+        ib._legs[("nvda-oct", "long")] = SimpleNamespace(conId=11)
+        ib._legs[("nvda-oct", "short")] = SimpleNamespace(conId=12)
+        return ib
+
+    @staticmethod
+    def _fill(con: int, shares: float, price: float, oid: int = 201, client: int = 72) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            contract=SimpleNamespace(conId=con, secType="OPT"),
+            execution=SimpleNamespace(orderId=oid, clientId=client, shares=shares, price=price),
+        )
+
+    @staticmethod
+    def _pos(con: int, qty: float) -> Any:
+        from types import SimpleNamespace
+
+        return SimpleNamespace(contract=SimpleNamespace(conId=con), position=qty)
+
+    def test_executions_of_our_order(self) -> None:
+        fills = [self._fill(11, 3, 1.00), self._fill(11, 2, 1.10), self._fill(12, 5, 0.60)]
+        got = self._ib(fills, []).entry_fill_evidence("nvda-oct", "201")
+        assert got == (5, (Decimal("1.00") * 3 + Decimal("1.10") * 2 - Decimal("3.00")) / 5)
+
+    def test_another_clients_order_id_is_not_ours(self) -> None:
+        fills = [self._fill(11, 5, 1.00, client=71), self._fill(12, 5, 0.6, client=71)]
+        ib = self._ib(fills, [self._pos(11, 5), self._pos(12, -5)])
+        assert ib.entry_fill_evidence("nvda-oct", "201") is None
+
+    def test_flat_account_proves_no_fill(self) -> None:
+        ib = self._ib([], [self._pos(99, 4)])
+        assert ib.entry_fill_evidence("nvda-oct", "201") == (0, None)
+
+    def test_held_legs_without_executions_are_inconclusive(self) -> None:
+        ib = self._ib([], [self._pos(11, 5), self._pos(12, -5)])
+        assert ib.entry_fill_evidence("nvda-oct", "201") is None
+
+    def test_legs_that_disagree_are_inconclusive(self) -> None:
+        fills = [self._fill(11, 5, 1.00), self._fill(12, 3, 0.6)]
+        assert self._ib(fills, []).entry_fill_evidence("nvda-oct", "201") is None
+
+    def test_unknown_structure_is_inconclusive(self) -> None:
+        assert self._ib([], []).entry_fill_evidence("other", "201") is None
 
 
 class TestFlattenAcrossClients:

@@ -57,6 +57,16 @@ describe('ExitMachineBanner', () => {
     expect(text).toMatch(/putspread-20260922/)
   })
 
+  it('notes a blind touch exit held over the close without alarming', async () => {
+    mocked.mockResolvedValue({ ...base, status: 'touch_suspended' })
+    render(<ExitMachineBanner />)
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/waiting for a fresh price/),
+    )
+    expect(screen.queryByRole('alert')).toBeNull()
+    expect(screen.getByRole('status').textContent).not.toMatch(/health unknown/)
+  })
+
   it('defers to the gateway banner while it waits for the gateway', async () => {
     mocked.mockResolvedValue({ ...base, status: 'waiting_for_gateway' })
     render(<ExitMachineBanner />)

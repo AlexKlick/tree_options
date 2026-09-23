@@ -57,28 +57,34 @@ unreadable, and the gateway not to blame; a silent gateway watchdog never
 takes the blame) · `monitor_failing` (beating but `monitor.json` absent or
 older than 3 min, any hour; or in market hours 3 failed ticks in a row or
 none good for 3 min; the last good tick survives monitor restarts) ·
-`touch_blind` (the monitor is healthy, but in market hours an open
+`touch_blind` (the monitor is healthy, but inside the touch window, from
+the open + 16 min to the calendar close, early closes included, an open
 position's underlying has had no accepted spot for ≥ 10 min: its touch
 exit can't fire; time-stop and expiry exits still work. Push: "trex: touch
-exit blind", ticker symbols only; recovery "trex: touch exit back").
-Detection only: the monitor's restarts are systemd's
+exit blind", ticker symbols only) · `touch_suspended` (a blind incident
+the session ended without a price: held silently, never a recovery; "trex:
+touch exit back" goes out only once a price arrives or the blind position
+closes). Detection only: the monitor's restarts are systemd's
 (`Restart=on-failure`). Banner: `GET /api/exit-machine`.
 
 Deploy after the monitor runs code that writes `monitor.json`, or a
 monitor without it alarms as `monitor_failing` after 3 minutes.
 
-**Touch-exit spot (`trex/spot.py`).** The paper account delivers no equity
-quotes, and a ticker's `close` (the prior session's) is never used: it can
-fake or hide a touch. The monitor accepts IBKR `last`/mid only when the
-ticker updated ≤ 120 s ago (frozen data refused, delayed data aged +15 min),
-else the Polygon stock snapshot (`~/.config/tree_options/polygon.key`, 15 min
-delayed intraday) when its latest minute bar is ≤ 20 min old. One uncached
-request per symbol per 60 s, 3 s timeout, 6 s per tick for all symbols; a
-failure costs that symbol that tick. No accepted spot = no touch decision.
-`marks.json` carries `spot_sources` (`px`, `source`, `as_of`, `age_s`) next
-to `spots`; `monitor.json` carries `spot_blind` (`{symbol: since}`, OPEN
-positions only, reset outside the session, kept across restarts but never
-older than today's 09:30).
+**Touch-exit spot (`trex/spot.py`).** The only source is the Polygon stock
+snapshot (`~/.config/tree_options/polygon.key`, 15 min delayed intraday).
+IBKR stock prices are never used: the paper account has no equity quotes,
+`close` is the prior session's, and `ticker.time` moves on every bid/ask
+tick so it can't date `last` (revisit once live quotes arrive and
+`lastTimestamp`, tick 45, is verified). A bar counts only if it is dated
+inside the current session's regular hours (premarket and after-hours
+prints never fire a touch) and is ≤ 20 min old, so each day's first price
+arrives about 16 min after the open. Fetches run in background workers,
+never in the exit loop: one request in flight per symbol, 60 s between
+attempts, 10 s total per request, OPEN positions' underlyings only. No
+accepted spot = no touch decision. `marks.json` carries `spot_sources`
+(`px`, `source`, `as_of`, `age_s`) next to `spots`; `monitor.json` carries
+`touch_guarded`, `spot_ok` and `spot_blind` (`{symbol: since}`, counted
+only inside the touch window, kept across restarts).
 
 **Calendar horizon.** trex reads its own session calendar,
 `data/calendar/trex/nyse_sessions_2018_01_02_2028_12_29.json` (the sealed
@@ -96,7 +102,16 @@ nothing new; a partly filled entry goes OPEN and the monitor sells it. The
 monitor leaves `enter_working` structures alone (event
 `flatten_waits_for_entry_runner`). If the entry runner is not running,
 start it: it adopts its working BUYs and cancels them on its first cycle.
-HALT also stops the entry runner placing or repricing.
+An entry whose order filled or died while the runner was down is settled
+from broker evidence (today's executions of that order, or a flat
+account); if that is inconclusive it stays `enter_working` with the event
+`entry_unresolved`: check the account by hand. HALT also stops the entry
+runner placing or repricing.
+
+**Shared book.** Both runners write `book.json` under an exclusive lock
+(`book.json.lock`), each keeping the other's structures (entry lane vs
+exit lane), never moving a structure backwards (CLOSED stays closed), and
+never overwriting an unreadable book.
 
 ## Phone push (ntfy)
 

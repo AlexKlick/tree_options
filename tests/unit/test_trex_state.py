@@ -36,11 +36,102 @@ class TestSaveOwned:
         assert saved.structures["b"].status is Status.CLOSED  # mine, kept
         assert saved.heartbeat == datetime(2026, 9, 23, 10, 0, 30, tzinfo=ET)
 
-    def test_an_unreadable_disk_book_still_saves(self, tmp_path: Path) -> None:
+    def test_refuses_to_overwrite_an_unreadable_book(self, tmp_path: Path) -> None:
+        """Codex P1: exposure can't be ruled out from a torn book, and a
+        blind overwrite would erase whatever the other runner recorded."""
+        from tree_options.trex.state import BookUnreadableError
+
         path = tmp_path / "book.json"
         path.write_text("{torn")
-        BookState(["a"]).save_owned(path, lambda *_: True)
+        with pytest.raises(BookUnreadableError):
+            BookState(["a"]).save_owned(path, lambda *_: True)
+        assert path.read_text() == "{torn"
+
+    def test_writers_serialize_on_the_book_lock(self, tmp_path: Path) -> None:
+        """Codex P1: load + merge + write + replace must be one critical
+        section shared by both runners, or a stale copy lands last."""
+        import fcntl
+        import threading
+
+        path = tmp_path / "book.json"
+        BookState(["a"]).save(path)
+        done = threading.Event()
+        with open(tmp_path / "book.json.lock", "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX)
+            writer = threading.Thread(
+                target=lambda: (BookState(["a"]).save_owned(path, lambda *_: False), done.set())
+            )
+            writer.start()
+            assert not done.wait(0.3)  # blocked behind the other runner's lock
+            fcntl.flock(held, fcntl.LOCK_UN)
+        writer.join(5)
+        assert done.is_set()
+
+    def test_temp_files_are_per_writer(self, tmp_path: Path) -> None:
+        """Codex P1: both runners renamed the same ``book.tmp``."""
+        path = tmp_path / "book.json"
+        (tmp_path / "book.tmp").mkdir()  # the old shared name, occupied
+        BookState(["a"]).save(path)
+        BookState(["a"]).save_owned(path, lambda *_: False)
         assert BookState.load(path, ["a"]).structures["a"].status is Status.PLANNED
+        assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp") and p.is_file()]
+
+
+_ORDER = [Status.PLANNED, Status.ENTER_WORKING, Status.OPEN, Status.EXIT_WORKING, Status.CLOSED]
+
+
+@pytest.mark.parametrize("on_disk", _ORDER)
+@pytest.mark.parametrize("mine", _ORDER)
+def test_merge_never_moves_a_structure_backwards(
+    tmp_path: Path, on_disk: Status, mine: Status
+) -> None:
+    """Even when this writer owns the structure, its copy only wins if the
+    state machine can get there from what is on disk: CLOSED never comes
+    back, OPEN never returns to the entry lane. The machine's own back
+    edges (a cancelled reprice to PLANNED, a cancelled exit to OPEN) stay
+    possible."""
+    from tree_options.trex.state import status_reachable
+
+    path = tmp_path / "book.json"
+    disk = BookState(["a"])
+    disk.structures["a"] = StructureState(status=on_disk)
+    disk.save(path)
+    book = BookState(["a"])
+    book.structures["a"] = StructureState(status=mine)
+    book.save_owned(path, lambda *_: False)  # "mine" by ownership
+    saved = BookState.load(path, ["a"]).structures["a"].status
+    assert saved is (mine if status_reachable(on_disk, mine) else on_disk)
+    if on_disk is Status.CLOSED:
+        assert saved is Status.CLOSED
+    if on_disk in (Status.OPEN, Status.EXIT_WORKING):
+        assert saved not in (Status.PLANNED, Status.ENTER_WORKING)
+
+
+def test_reachability_table() -> None:
+    from tree_options.trex.state import status_reachable
+
+    assert status_reachable(Status.PLANNED, Status.OPEN)  # placed and filled in one save
+    assert status_reachable(Status.EXIT_WORKING, Status.OPEN)  # cancelled exit
+    assert status_reachable(Status.ENTER_WORKING, Status.PLANNED)  # cancelled reprice
+    assert not status_reachable(Status.CLOSED, Status.OPEN)
+    assert not status_reachable(Status.OPEN, Status.ENTER_WORKING)
+    assert all(status_reachable(s, s) for s in Status)
+
+
+def test_entry_order_checkpoint_round_trips() -> None:
+    """Codex P1: the entry order's recorded fills persist with the book, so
+    a restarted entry runner never re-adds them."""
+    st = StructureState(
+        status=Status.ENTER_WORKING,
+        entry_order="201",
+        filled_qty=2,
+        entry_order_seen=2,
+        entry_order_notional=Decimal("0.88"),
+    )
+    back = StructureState.from_dict(json.loads(json.dumps(st.to_dict())))
+    assert back.entry_order_seen == 2 and back.entry_order_notional == Decimal("0.88")
+    legacy = StructureState.from_dict({"status": "enter_working"})
+    assert legacy.entry_order_seen == 0 and legacy.entry_order_notional is None
 
 
 class TestTransitions:

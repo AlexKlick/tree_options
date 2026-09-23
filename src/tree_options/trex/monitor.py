@@ -17,9 +17,11 @@ Kill files in the run directory:
            entries and enters nothing new
   HALT     place no new orders (existing exits continue to completion)
 
-Spots come from trex.spot (IBKR if fresh, else the Polygon snapshot);
-``monitor.json`` names each touch-guarded underlying without an accepted
-spot (``spot_blind``) for the exit watchdog's touch_blind alarm.
+Spots come from trex.spot's SpotFeed (the Polygon snapshot, fetched off
+this loop, session-bounded), for touch-guarded (OPEN) underlyings only.
+``monitor.json`` reports them for the exit watchdog: ``touch_guarded``,
+``spot_ok`` (accepted this tick) and ``spot_blind`` (none accepted, and
+since when, counted only inside trex.spot.touch_window).
 
 Usage: python -m tree_options.trex.monitor --plan plans/2026-09-18.toml
 """
@@ -33,6 +35,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime
 from datetime import time as dtime
 from decimal import Decimal
@@ -63,7 +66,7 @@ from tree_options.trex.engine import (
 )
 from tree_options.trex.ibkr import IbkrTrex, OrderRef, Snapshot
 from tree_options.trex.plan import PutSpread, TradePlan, cents, load_plan
-from tree_options.trex.spot import SpotResolver, polygon_fetcher
+from tree_options.trex.spot import SpotFeed, polygon_fetcher, touch_window
 from tree_options.trex.state import ENTRY_LANE, BookState, Status
 
 log = logging.getLogger("trex.monitor")
@@ -138,12 +141,16 @@ class Monitor:
         book: BookState,
         run_dir: Path,
         clock: Callable[[], datetime] | None = None,
+        spots: SpotFeed | None = None,
     ) -> None:
         self.plan = plan
         self.ib = ib
         self.book = book
         self.run_dir = run_dir
         self._clock = clock or now_et
+        # None: the snapshot's own spots stand (test doubles); main() wires
+        # the Polygon feed, the only touch source (see trex.spot)
+        self.spots = spots
         self.orders: dict[str, OrderRef] = {}  # structure_id -> working exit OrderRef
         # Order-local fill counts RESTART on every replacement, so the drain
         # merges increments (seen -> now) into the book's cumulative totals.
@@ -164,6 +171,8 @@ class Monitor:
         self._started_at: float | None = None
         # touch-guarded underlyings with no accepted spot -> since when
         self._spot_blind_since: dict[str, datetime] = {}
+        # ... and those with one this tick -> its as_of
+        self._spot_ok: dict[str, datetime] = {}
         self._flatten_wait_noted: set[str] = set()
 
     def _now(self) -> datetime:
@@ -389,6 +398,8 @@ class Monitor:
                 "tick_failures": self._tick_failures,
                 "last_tick_ok_at": self._last_tick_ok_at,
                 "last_error": tick_error,
+                "touch_guarded": sorted(self._touch_guarded()),
+                "spot_ok": {sym: at.isoformat() for sym, at in sorted(self._spot_ok.items())},
                 "spot_blind": {
                     sym: since.isoformat() for sym, since in sorted(self._spot_blind_since.items())
                 },
@@ -422,17 +433,40 @@ class Monitor:
             if self.book.structures[s.id].status is Status.OPEN
         }
 
+    def _with_spots(self, snap: Snapshot, now: datetime) -> Snapshot:
+        """The feed's accepted spots for touch-guarded underlyings only (no
+        spot for anything else is ever needed). Non-blocking: the feed
+        fetches in the background and returns what has arrived."""
+        if self.spots is None:
+            return snap
+        readings = self.spots.readings(sorted(self._touch_guarded()), now)
+        return replace(
+            snap, spots={sym: r.px for sym, r in readings.items()}, spot_sources=readings
+        )
+
     def _track_spot_blind(self, snap: Snapshot, now: datetime) -> None:
-        """Since when each touch-guarded underlying has had no accepted
-        spot. A since carried from an earlier session (restart) counts
-        from today's open, never from yesterday."""
-        opened = datetime.combine(now.date(), SESSION_OPEN, tzinfo=ET)
+        """Which touch-guarded underlyings have an accepted spot, and since
+        when each has not. Blindness counts only inside the touch window
+        (the delayed feed's first bar after the open, to the calendar
+        close, early closes included); a since carried from an earlier
+        session (restart) counts from today's window start, never before."""
+        guarded = sorted(self._touch_guarded())
+        self._spot_ok = {
+            sym: snap.spot_sources[sym].as_of if sym in snap.spot_sources else now
+            for sym in guarded
+            if sym in snap.spots
+        }
+        window = touch_window(now)
+        if window is None or not window[0] <= now.timestamp() <= window[1]:
+            self._spot_blind_since = {}
+            return
+        floor = datetime.fromtimestamp(window[0], ET)
         blind: dict[str, datetime] = {}
-        for sym in sorted(self._touch_guarded()):
+        for sym in guarded:
             if sym in snap.spots:
                 continue
             prior = self._spot_blind_since.get(sym)
-            blind[sym] = max(prior, opened) if prior is not None else now
+            blind[sym] = max(prior, floor) if prior is not None else now
         self._spot_blind_since = blind
 
     def _account_cycle(self) -> None:
@@ -504,6 +538,7 @@ class Monitor:
         if not is_session(now) or now.time() < SESSION_OPEN or now.time() > SESSION_END:
             # no touch decisions off-session, so nothing is blind either
             self._spot_blind_since = {}
+            self._spot_ok = {}
             # still absorb fills outside the session; a book-changing fill
             # writes a quote-less terminal history line (marks need quotes,
             # the position change must not be lost to a stale last sample)
@@ -516,7 +551,7 @@ class Monitor:
         # position that no longer exist (double sell = naked short).
         self._drain_orders()
 
-        snap = self.ib.snapshot(self.plan.structures, now)
+        snap = self._with_spots(self.ib.snapshot(self.plan.structures, now), now)
         self._track_spot_blind(snap, now)
         marks_payload = self._write_marks(snap)
         flatten = self._flatten_requested()
@@ -741,14 +776,7 @@ def main(argv: list[str] | None = None) -> int:
     configure(_engine_config(plan))
     book = BookState.load(run_dir / "book.json", [s.id for s in plan.structures])
 
-    # the paper account has no equity quotes: the touch exit's spot falls
-    # back to the (15 min delayed) Polygon snapshot, see trex.spot
-    ib = IbkrTrex(
-        host=args.host,
-        port=args.port,
-        client_id=args.client_id,
-        spot_resolver=SpotResolver(polygon_fetcher()),
-    )
+    ib = IbkrTrex(host=args.host, port=args.port, client_id=args.client_id)
     try:
         ib.connect()
     except Exception as exc:
@@ -764,9 +792,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         log.error("contract qualification failed: %s", exc)
         return 5
-    monitor = Monitor(plan, ib, book, run_dir)
+    # the touch exit's spot: the (15 min delayed) Polygon snapshot, fetched
+    # off the exit loop (trex.spot); IBKR stock prices are not a source
+    monitor = Monitor(plan, ib, book, run_dir, spots=SpotFeed(polygon_fetcher()))
     if args.dry_run:
-        log.info("dry-run: decisions only")
+        log.info("dry-run: decisions only (no spot yet: the feed fetches in the background)")
         # one decision sweep, no orders
         snap = ib.snapshot(plan.structures, now_et())
         for spread in plan.structures:

@@ -25,7 +25,6 @@ from typing import Any
 from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.engine import ComboQuote, Snapshot
 from tree_options.trex.plan import PutSpread
-from tree_options.trex.spot import SpotReading, SpotResolver, ibkr_reading
 
 log = logging.getLogger("trex.ibkr")
 
@@ -64,15 +63,11 @@ class IbkrTrex:
         port: int = GATEWAY_PAPER_PORT,
         client_id: int = 77,
         delayed_ok: bool = True,
-        spot_resolver: SpotResolver | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.client_id = client_id
         self.delayed_ok = delayed_ok
-        # no resolver: IBKR spots only (fresh-gated); the monitor injects
-        # one with the Polygon fallback
-        self.spot_resolver = spot_resolver or SpotResolver(None)
         self._ib: Any = None
         self._legs: dict[tuple[str, str], Any] = {}  # (structure_id, "long"|"short")
         self._bags: dict[str, Any] = {}  # structure_id -> BAG contract
@@ -177,13 +172,6 @@ class IbkrTrex:
 
     # -- market data -------------------------------------------------------
 
-    def spot_reading(self, underlying: str, now: datetime) -> SpotReading | None:
-        """The IBKR spot if its ticker is fresh (trex.spot.ibkr_reading).
-        Never ``close``: the prior session's close can fake or hide a touch."""
-        stock = self._spots.get(underlying)
-        ticker = self._tickers.get(stock) if stock is not None else None
-        return ibkr_reading(ticker, now)
-
     def leg_quote(self, structure_id: str, which: str) -> tuple[Decimal, Decimal] | None:
         leg = self._legs.get((structure_id, which))
         if leg is None:
@@ -204,18 +192,57 @@ class IbkrTrex:
         return ComboQuote(bid=long_q[0] - short_q[1], ask=long_q[1] - short_q[0])
 
     def snapshot(self, spreads: list[PutSpread], ts: datetime) -> Snapshot:
-        """Quotes plus ACCEPTED spots only (IBKR if fresh, else the
-        resolver's Polygon fallback); an underlying without one is absent."""
-        underlyings = list(dict.fromkeys(s.underlying for s in spreads))
-        readings = self.spot_resolver.resolve(
-            underlyings, {u: self.spot_reading(u, ts) for u in underlyings}, ts
-        )
-        return Snapshot(
-            ts=ts,
-            spots={sym: r.px for sym, r in readings.items()},
-            quotes={s.id: self.combo_quote(s.id) for s in spreads},
-            spot_sources=readings,
-        )
+        """Combo quotes only. IBKR stock prices are NOT a touch source:
+        ``ticker.time`` moves on every bid/ask/size tick, so a fresh ticker
+        can carry an old ``last`` (a false touch, or a hidden one), bid/ask
+        carry no timestamp at all, and ``close`` is the prior session's.
+        The paper account delivers no equity quotes anyway. The monitor
+        adds spots from trex.spot (Polygon, session-bounded); re-evaluate
+        once live quotes arrive and ``lastTimestamp`` (tick 45) is verified.
+        """
+        return Snapshot(ts=ts, spots={}, quotes={s.id: self.combo_quote(s.id) for s in spreads})
+
+    def entry_fill_evidence(
+        self, structure_id: str, order_id: str | None
+    ) -> tuple[int, Decimal | None] | None:
+        """What the broker can PROVE was filled of an entry order that is no
+        longer working (it filled or died while the entry runner was down):
+
+        * (spreads, avg debit) from today's executions of ``order_id`` by
+          this client on the structure's two legs (ib_async fetches the
+          day's executions at connect);
+        * (0, None) when there are none and the account holds neither leg;
+        * None, inconclusive, otherwise (legs disagree, or legs are held
+          with no execution of this order today): never guessed.
+        """
+        assert self._ib is not None
+        long_leg = self._legs.get((structure_id, "long"))
+        short_leg = self._legs.get((structure_id, "short"))
+        if long_leg is None or short_leg is None:
+            return None
+        if order_id is not None and order_id.isdigit():
+            oid = int(order_id)
+            mine = [
+                f
+                for f in self._ib.fills()
+                if f.execution.orderId == oid and f.execution.clientId == self.client_id
+            ]
+            longs = [f for f in mine if f.contract.conId == long_leg.conId]
+            shorts = [f for f in mine if f.contract.conId == short_leg.conId]
+            if longs or shorts:
+                qty_long = sum((_d(f.execution.shares) for f in longs), Decimal(0))
+                qty_short = sum((_d(f.execution.shares) for f in shorts), Decimal(0))
+                if qty_long != qty_short or qty_long != qty_long.to_integral_value():
+                    return None
+                qty = int(qty_long)
+                notional = sum(
+                    (_d(f.execution.price) * _d(f.execution.shares) for f in longs), Decimal(0)
+                ) - sum((_d(f.execution.price) * _d(f.execution.shares) for f in shorts), Decimal(0))
+                return qty, (notional / qty if qty else None)
+        held = {getattr(p.contract, "conId", 0): p.position for p in self._ib.positions()}
+        if not held.get(long_leg.conId) and not held.get(short_leg.conId):
+            return 0, None
+        return None
 
     # -- orders ------------------------------------------------------------
 

@@ -78,6 +78,14 @@ export function ExitMachineBanner() {
       </div>
     )
   }
+  if (e.status === 'touch_suspended') {
+    // a blind incident the session ended without a price: not a recovery
+    return (
+      <div className="gateway-banner gateway-banner-muted" role="status">
+        ○ Touch exit was blind at the close; waiting for a fresh price next session
+      </div>
+    )
+  }
   if (e.status === 'waiting_for_gateway') {
     return (
       <div className="gateway-banner gateway-banner-muted" role="status">

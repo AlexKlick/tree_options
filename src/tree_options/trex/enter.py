@@ -76,6 +76,8 @@ class Enterer:
         self._order_seen: dict[str, int] = {}
         # per-order cumulative notional (avg * filled) for notional blends
         self._order_notional: dict[str, Decimal] = {}
+        # (both mirrored into the book's entry_order_seen/_notional checkpoint)
+        self._unresolved_noted: set[str] = set()
 
     @property
     def events_path(self) -> Path:
@@ -117,8 +119,19 @@ class Enterer:
             st = self.book.structures[sid]
             if st.status is Status.PLANNED:
                 st.to(Status.ENTER_WORKING, now_et())
-            st.entry_order = str(trade.order.orderId)
-            log.info("adopted working entry order for %s (oid %s)", sid, trade.order.orderId)
+            oid = str(trade.order.orderId)
+            if st.entry_order == oid:
+                # known order: resume from the persisted checkpoint, so the
+                # fills the book already holds are not added again
+                self._order_seen[sid] = st.entry_order_seen
+                self._order_notional[sid] = st.entry_order_notional or Decimal(0)
+            else:
+                # an order the book never recorded: none of its fills are in it
+                self._order_seen[sid] = 0
+                self._order_notional[sid] = Decimal(0)
+                st.entry_order_seen, st.entry_order_notional = 0, None
+            st.entry_order = oid
+            log.info("adopted working entry order for %s (oid %s)", sid, oid)
         self._save_book()
 
     def run(self) -> int:
@@ -188,54 +201,78 @@ class Enterer:
     def _flatten_entries(self) -> None:
         """FLATTEN: cancel our working entries, enter nothing new."""
         for spread in self.plan.structures:
-            st = self.book.structures[spread.id]
-            if st.status is Status.PLANNED:
-                st.to(Status.CLOSED, now_et())
-                st.close_reason = FLATTEN_REASON
-                self.book.event(
-                    self.events_path, "entry_cancelled", structure=spread.id, reason=FLATTEN_REASON
+            if self.book.structures[spread.id].status in ENTRY_LANE:
+                self._cancel_and_settle(
+                    spread, close_reason=FLATTEN_REASON, event="entry_cancelled",
+                    reason=FLATTEN_REASON,
                 )
-            elif st.status is Status.ENTER_WORKING:
-                self._kill_entry(spread)
         self._save_book()
 
-    def _kill_entry(self, spread: PutSpread) -> None:
-        """Cancel the working BUY at the broker, then settle from the final
-        fills: OPEN (the monitor's FLATTEN sells it) or CLOSED. An
-        unconfirmed cancel keeps the structure ENTER_WORKING and retries
-        next cycle: a live BUY is never closed on paper."""
-        st = self.book.structures[spread.id]
-        ref = self.orders.get(spread.id)
-        if ref is not None:
-            if self.ib.order_status(ref).status not in _TERMINAL:
-                self.ib.cancel(ref)
-                for _ in range(6):
-                    self.ib.sleep(0.5)
-                    if self.ib.order_status(ref).status in _TERMINAL:
-                        break
-            self._merge_fills(spread.id, ref)
-            if self.ib.order_status(ref).status not in _TERMINAL:
-                log.warning("%s: FLATTEN cancel not confirmed; retrying next cycle", spread.id)
-                return
-            self.orders.pop(spread.id, None)
-        # no ref: nothing of ours is working (a restart adopts live BUYs first)
+    def _cancel_and_settle(
+        self, spread: PutSpread, *, close_reason: str, event: str, reason: str
+    ) -> bool:
+        """Stop an entry and settle it from what the BROKER says was filled:
+        OPEN (the monitor's discipline, or its FLATTEN, sells it) or CLOSED.
+
+        Returns False, leaving the structure ENTER_WORKING to retry next
+        cycle, when that can't be known yet: a cancel not confirmed (a live
+        BUY is never closed on paper), or, with no working order left to
+        ask (a restart after it filled or died), broker evidence that is
+        inconclusive. Fills merge cumulatively through the order checkpoint.
+        """
+        sid = spread.id
+        st = self.book.structures[sid]
+        if st.status is Status.ENTER_WORKING:
+            ref = self.orders.get(sid)
+            if ref is not None:
+                if self.ib.order_status(ref).status not in _TERMINAL:
+                    self.ib.cancel(ref)
+                    for _ in range(6):
+                        self.ib.sleep(0.5)
+                        if self.ib.order_status(ref).status in _TERMINAL:
+                            break
+                info = self._merge_fills(sid, ref)
+                if info.status not in _TERMINAL:
+                    log.warning("%s: entry cancel not confirmed; retrying next cycle", sid)
+                    return False
+                self.orders.pop(sid, None)
+            elif not self._reconcile(spread):
+                return False
+        # PLANNED: nothing working (never placed, or a confirmed cancel)
         if st.filled_qty > 0:
             st.to(Status.OPEN, now_et())
-            log.warning(
-                "%s: FLATTEN cancelled the entry with %d filled; OPEN for the monitor",
-                spread.id,
-                st.filled_qty,
-            )
+            log.warning("%s: entry stopped with %d filled; OPEN for the monitor", sid, st.filled_qty)
         else:
             st.to(Status.CLOSED, now_et())
-            st.close_reason = FLATTEN_REASON
+            st.close_reason = close_reason
         self.book.event(
-            self.events_path,
-            "entry_cancelled",
-            structure=spread.id,
-            reason=FLATTEN_REASON,
-            filled=st.filled_qty,
+            self.events_path, event, structure=sid, reason=reason, filled=st.filled_qty
         )
+        return True
+
+    def _reconcile(self, spread: PutSpread) -> bool:
+        """An ENTER_WORKING structure with no working order: its order
+        filled or died while this runner was down (adoption only sees
+        working orders). Merge what the broker can prove; if it can't,
+        keep the entry working and say so once."""
+        st = self.book.structures[spread.id]
+        evidence = self.ib.entry_fill_evidence(spread.id, st.entry_order)
+        if evidence is None:
+            if spread.id not in self._unresolved_noted:
+                self._unresolved_noted.add(spread.id)
+                log.error(
+                    "%s: no working entry order and its fills can't be proven; "
+                    "keeping ENTER_WORKING (check the account by hand)",
+                    spread.id,
+                )
+                self.book.event(
+                    self.events_path, "entry_unresolved", structure=spread.id,
+                    order=st.entry_order,
+                )
+            return False
+        filled, avg = evidence
+        self._merge_order_total(spread.id, filled, avg or Decimal(0), "reconciled")
+        return True
 
     def _apply(self, spread: PutSpread, action: Action) -> None:
         st = self.book.structures[spread.id]
@@ -268,6 +305,7 @@ class Enterer:
         self._order_seen[spread.id] = 0  # new order: local count starts over
         self._order_notional[spread.id] = Decimal(0)
         st.entry_order = str(ref.trade.order.orderId)
+        st.entry_order_seen, st.entry_order_notional = 0, None
         self.book.event(
             self.events_path,
             "entry_order",
@@ -318,70 +356,63 @@ class Enterer:
         ):
             log.warning("%s: cancel not confirmed; keeping old order this cycle", spread.id)
             return
+        if ref is not None:
+            # the cancelled order's last fills first: the replacement buys
+            # only what is still missing (and resets the order-local count)
+            self._merge_fills(spread.id, ref)
         self._place(spread, limit)
 
     def _abort(self, spread: PutSpread, reason: str) -> None:
-        st = self.book.structures[spread.id]
-        ref = self.orders.pop(spread.id, None)
-        if ref is not None:
-            self.ib.cancel(ref)
-            # IBKR cancels are async; a fill can land right up to the
-            # confirmation. Decide OPEN vs CLOSED from the final fill count.
-            info = None
-            for _ in range(6):
-                self.ib.sleep(0.5)
-                info = self.ib.order_status(ref)
-                if info.status in ("Filled", "Cancelled", "ApiCancelled"):
-                    break
-            if info is not None and info.filled > st.filled_qty:
-                st.filled_qty = info.filled
-                st.entry_fill = info.avg_fill_price
-        if st.filled_qty > 0:
-            st.to(Status.OPEN, now_et())  # partial/late fill: monitor's lane now
-            log.warning(
-                "%s: aborted entry but %d filled — OPEN, monitor will flatten on discipline",
-                spread.id,
-                st.filled_qty,
-            )
-        else:
-            st.to(Status.CLOSED, now_et())
-            st.close_reason = f"aborted: {reason}"
-        self.book.event(self.events_path, "entry_abort", structure=spread.id, reason=reason)
+        """Window end / date passed: the same cancel-and-settle discipline as
+        FLATTEN (confirmed cancel, cumulative fills, broker evidence)."""
+        settled = self._cancel_and_settle(
+            spread, close_reason=f"aborted: {reason}", event="entry_abort", reason=reason
+        )
         self._save_book()
-        log.info("%s: entry aborted (%s) filled_qty=%d", spread.id, reason, st.filled_qty)
+        if settled:
+            st = self.book.structures[spread.id]
+            log.info("%s: entry aborted (%s) filled_qty=%d", spread.id, reason, st.filled_qty)
 
     def _merge_fills(self, sid: str, ref: OrderRef) -> OrderStatusInfo:
+        """Merge this order's latest cumulative fills into the book."""
+        info = self.ib.order_status(ref)
+        self._merge_order_total(sid, info.filled, info.avg_fill_price, info.status)
+        return info
+
+    def _merge_order_total(self, sid: str, filled: int, avg: Decimal, status: str) -> None:
         """Merge the order-local fill increment into the book's cumulative
         entry, blending by NOTIONAL: the order's cumulative average times
-        only its new fills would re-price the earlier fills (Codex-M2 #2)."""
+        only its new fills would re-price the earlier fills (Codex-M2 #2).
+        The increment is measured against the order checkpoint (in memory,
+        else the one persisted with the book) and the checkpoint moves with
+        it, so a restart never adds recorded fills twice."""
         st = self.book.structures[sid]
-        info = self.ib.order_status(ref)
-        seen = self._order_seen.get(sid, 0)
-        if info.filled > seen:
-            new_fills = info.filled - seen
+        seen = self._order_seen.get(sid, st.entry_order_seen)
+        prev_notional = self._order_notional.get(sid, st.entry_order_notional or Decimal(0))
+        if filled > seen:
+            new_fills = filled - seen
             new_cum = st.filled_qty + new_fills
-            prev_notional = self._order_notional.get(sid, Decimal(0))
-            if info.avg_fill_price:
-                inc_notional = info.avg_fill_price * info.filled - prev_notional
+            if avg:
+                inc_notional = avg * filled - prev_notional
                 if st.entry_fill is not None and st.filled_qty > 0:
                     st.entry_fill = (st.entry_fill * st.filled_qty + inc_notional) / new_cum
                 else:
-                    st.entry_fill = (
-                        inc_notional / new_fills if new_fills else info.avg_fill_price
-                    )
-                self._order_notional[sid] = info.avg_fill_price * info.filled
+                    st.entry_fill = inc_notional / new_fills if new_fills else avg
+                prev_notional = avg * filled
             st.filled_qty = new_cum
-            self._order_seen[sid] = info.filled
+            seen = filled
             self.book.event(
                 self.events_path,
                 "entry_fill",
                 structure=sid,
                 filled=st.filled_qty,
-                order_filled=info.filled,
+                order_filled=filled,
                 avg=str(st.entry_fill),
-                status=info.status,
+                status=status,
             )
-        return info
+        self._order_seen[sid] = seen
+        self._order_notional[sid] = prev_notional
+        st.entry_order_seen, st.entry_order_notional = seen, prev_notional
 
     def _drain_fills(self) -> None:
         for spread in self.plan.structures:

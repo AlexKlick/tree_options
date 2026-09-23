@@ -1032,7 +1032,8 @@ class TestSpotProvenance:
 
     def test_restart_keeps_blindness_but_never_before_todays_open(self, tmp_path: Path) -> None:
         """A crash-looping monitor must not reset the clock on each start;
-        a since from an earlier session is clamped to today's open."""
+        a since from an earlier session is clamped to the earliest moment
+        today's delayed feed can deliver (the open + FEED_LAG_S)."""
         monday = date(2026, 9, 21)
         run = tmp_path / "run"
         run.mkdir()
@@ -1043,7 +1044,7 @@ class TestSpotProvenance:
         _open_book(mon)
         mon._start_health()
         mon._tick()
-        assert _health_now(mon)["spot_blind"] == {"NVDA": _at(9, 30, monday).isoformat()}
+        assert _health_now(mon)["spot_blind"] == {"NVDA": _at(9, 46, monday).isoformat()}
 
         (run / "monitor.json").write_text(json.dumps({"spot_blind": {
             "NVDA": _at(9, 50, monday).isoformat(), "junk": 5,
@@ -1053,6 +1054,88 @@ class TestSpotProvenance:
         mon2._start_health()
         mon2._tick()
         assert _health_now(mon2)["spot_blind"] == {"NVDA": _at(9, 50, monday).isoformat()}
+
+    def test_no_blindness_before_the_delayed_feed_can_deliver(self, tmp_path: Path) -> None:
+        """The first regular-session bar of a 15-minute-delayed feed arrives
+        ~16 minutes after the open: that gap is structural, not an outage."""
+        mon = _monitor(tmp_path, SourcedFakeIbkr(None), _at(9, 40))
+        _open_book(mon)
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {}
+
+    def test_the_calendar_close_ends_blind_tracking(self, tmp_path: Path) -> None:
+        """Codex P2: 2026-11-27 closes at 13:00; no touch can happen after."""
+        early = date(2026, 11, 27)
+        clock = {"now": _at(12, 0, early)}
+        mon = _monitor(tmp_path, SourcedFakeIbkr(None), _at(12, 0, early))
+        mon._clock = lambda: clock["now"]
+        _open_book(mon)
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {"NVDA": _at(12, 0, early).isoformat()}
+        clock["now"] = _at(13, 30, early)
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {}
+
+    def test_health_names_guarded_and_fresh_underlyings(self, tmp_path: Path) -> None:
+        """What the watchdog needs to tell a recovery (a price arrived, or
+        the exposure closed) from a session that merely ended."""
+        fake = SourcedFakeIbkr("200.00")
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        _open_book(mon)
+        mon._tick()
+        health = _health_now(mon)
+        assert health["touch_guarded"] == ["NVDA"]
+        assert health["spot_ok"] == {"NVDA": _at(13, 0).isoformat()}
+        fake.blind = True
+        mon._tick()
+        assert _health_now(mon)["spot_ok"] == {}
+
+
+class FakeFeed:
+    """Stands in for trex.spot.SpotFeed: records what the tick asked for."""
+
+    def __init__(self, px: str | None) -> None:
+        self.px = px
+        self.asked: list[list[str]] = []
+
+    def readings(self, symbols: Any, now: datetime) -> dict[str, Any]:
+        from tree_options.trex.spot import SpotReading
+
+        wanted = list(symbols)
+        self.asked.append(wanted)
+        if self.px is None:
+            return {}
+        return {s: SpotReading(Decimal(self.px), "polygon", now, 960.0) for s in wanted}
+
+
+class TestSpotFeedWiring:
+    def _monitor(self, tmp_path: Path, feed: FakeFeed) -> Monitor:
+        run = tmp_path / "run"
+        run.mkdir(exist_ok=True)
+        return Monitor(_plan(), FakeIbkr(spot="200.00"), BookState(["nvda-oct"]), run,
+                       clock=lambda: _at(13, 0), spots=feed)
+
+    def test_the_feed_decides_the_touch(self, tmp_path: Path) -> None:
+        feed = FakeFeed("184.50")  # the broker snapshot's 200.00 is not a touch source
+        mon = self._monitor(tmp_path, feed)
+        _open_book(mon)
+        mon._tick()
+        assert feed.asked == [["NVDA"]]
+        assert mon.book.structures["nvda-oct"].status is Status.EXIT_WORKING
+
+    def test_only_touch_guarded_underlyings_are_fetched(self, tmp_path: Path) -> None:
+        """Codex P2: closed and planned structures spent the fetch budget."""
+        feed = FakeFeed("184.50")
+        mon = self._monitor(tmp_path, feed)  # PLANNED: nothing to guard
+        mon._tick()
+        assert feed.asked == [[]]
+        assert mon.book.structures["nvda-oct"].status is Status.PLANNED
+
+    def test_a_blind_feed_means_no_touch(self, tmp_path: Path) -> None:
+        mon = self._monitor(tmp_path, FakeFeed(None))
+        _open_book(mon)
+        mon._tick()
+        assert mon.book.structures["nvda-oct"].status is Status.OPEN
 
 
 class TestCalendarHorizonHealth:
