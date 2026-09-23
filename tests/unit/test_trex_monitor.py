@@ -269,6 +269,60 @@ class TestKillFiles:
         assert st.status is Status.EXIT_WORKING
         assert fake.placed and fake.placed[0][1] == "SELL"
 
+    def test_flatten_leaves_a_working_entry_to_the_entry_runner(self, tmp_path: Path) -> None:
+        """IBKR lets only the placing clientId cancel an order (error
+        10147): the monitor (71) can't cancel enter.py's (72) BUY, and it
+        can't even see it. The old path "cancelled" nothing and closed the
+        structure on paper, so enter.py abandoned a live BUY. The monitor
+        now leaves ENTER_WORKING to the entry runner, which honors FLATTEN."""
+        fake = FakeIbkr(spot="300.00")
+        mon = _monitor(tmp_path, fake, _at(10, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(9, 50))
+        foreign = FakeTrade(
+            contract=FakeBag(comboLegs=[FakeLeg(1), FakeLeg(2)]),
+            order=FakeOrder(orderId=7, action="BUY", totalQuantity=5, lmtPrice=0.44),
+        )
+        fake.open_trades.append(foreign)
+        (mon.run_dir / "FLATTEN").touch()
+
+        mon._tick()
+
+        assert fake.cancelled == [] and fake.placed == []
+        assert st.status is Status.ENTER_WORKING  # not closed on paper
+        assert foreign.orderStatus.status == "Submitted"
+
+    def test_an_entry_runner_write_mid_tick_survives_the_monitor_save(
+        self, tmp_path: Path
+    ) -> None:
+        """Both processes save the whole book.json. enter.py settling a
+        FLATTEN (ENTER_WORKING -> OPEN with 2 filled) while the monitor is
+        mid-tick (the spot fetch can take seconds) must not be reverted by
+        the monitor's end-of-tick save: that would hide 2 held spreads from
+        every exit. The monitor never writes entry-lane structures."""
+        fake = FakeIbkr(spot="300.00")
+        mon = _monitor(tmp_path, fake, _at(10, 0))
+        mon.book.structures["nvda-oct"].to(Status.ENTER_WORKING, _at(9, 50))
+        mon.book.save(mon.run_dir / "book.json")
+        (mon.run_dir / "FLATTEN").touch()
+        real = fake.snapshot
+
+        def slow_snapshot(spreads: list[PutSpread], ts: datetime) -> Any:
+            disk = BookState.load(mon.run_dir / "book.json", ["nvda-oct"])
+            st = disk.structures["nvda-oct"]
+            st.filled_qty, st.entry_fill = 2, Decimal("0.44")
+            st.to(Status.OPEN, ts)  # enter.py's write lands during the fetch
+            disk.save(mon.run_dir / "book.json")
+            return real(spreads, ts)
+
+        fake.snapshot = slow_snapshot  # type: ignore[method-assign]
+        mon._tick()
+        disk = BookState.load(mon.run_dir / "book.json", ["nvda-oct"]).structures["nvda-oct"]
+        assert disk.status is Status.OPEN and disk.filled_qty == 2
+        fake.snapshot = real  # type: ignore[method-assign]
+        mon._tick()  # and the next tick flattens it
+        assert fake.placed == [("nvda-oct", "SELL", 2, Decimal("0.40"))]
+
     def test_halt_blocks_new_exit_orders(self, tmp_path: Path) -> None:
         fake = FakeIbkr(spot="184.50")
         mon = _monitor(tmp_path, fake, _at(13, 0))
@@ -885,3 +939,129 @@ class TestHealthAcrossRestarts:
         assert started["last_tick_ok_at"] == old_ok and started["started_at"] == _at(13, 0).timestamp()
         assert started["tick_failures"] == 0
         assert after_tick["last_tick_ok_at"] == old_ok and after_tick["tick_failures"] == 1
+
+
+class SourcedFakeIbkr(FakeIbkr):
+    """Snapshot with the resolver's provenance; ``spot_price=None`` = blind."""
+
+    def __init__(self, spot: str | None = "200.00") -> None:
+        super().__init__(spot=spot or "0")
+        self.blind = spot is None
+
+    def snapshot(self, spreads: list[PutSpread], ts: datetime) -> Any:
+        from tree_options.trex.engine import Snapshot
+        from tree_options.trex.spot import SpotReading
+
+        sources = {} if self.blind else {
+            s.underlying: SpotReading(self.spot_price, "polygon", ts, 900.0) for s in spreads
+        }
+        return Snapshot(
+            ts=ts,
+            spots={sym: r.px for sym, r in sources.items()},
+            quotes={s.id: self.quote for s in spreads},
+            spot_sources=sources,
+        )
+
+
+def _open_book(mon: Monitor) -> None:
+    st = mon.book.structures["nvda-oct"]
+    st.to(Status.ENTER_WORKING, _at(9, 50))
+    st.to(Status.OPEN, _at(9, 55))
+    st.filled_qty = 5
+    st.entry_fill = Decimal("0.21")
+
+
+def _health_now(mon: Monitor) -> dict[str, Any]:
+    mon._write_health(None)
+    return json.loads((mon.run_dir / "monitor.json").read_text())
+
+
+class TestSpotProvenance:
+    """E0: marks.json says where each accepted spot came from, and
+    monitor.json names every touch-guarded underlying with no accepted
+    spot (and since when) for the exit watchdog's touch_blind alarm."""
+
+    def test_marks_carry_spot_sources(self, tmp_path: Path) -> None:
+        mon = _monitor(tmp_path, SourcedFakeIbkr("200.00"), _at(13, 0))
+        _open_book(mon)
+        mon._tick()
+        marks = json.loads((mon.run_dir / "marks.json").read_text())
+        assert marks["spots"] == {"NVDA": "200.00"}
+        assert marks["spot_sources"] == {
+            "NVDA": {"px": "200.00", "source": "polygon", "as_of": _at(13, 0).isoformat(),
+                     "age_s": 900.0}
+        }
+
+    def test_no_spot_means_no_touch_decision(self, tmp_path: Path) -> None:
+        fake = SourcedFakeIbkr(None)
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        _open_book(mon)
+        mon._tick()
+        assert mon.book.structures["nvda-oct"].status is Status.OPEN and fake.placed == []
+        assert json.loads((mon.run_dir / "marks.json").read_text())["spots"] == {}
+
+    def test_blind_underlying_is_timed_from_the_first_blind_tick(self, tmp_path: Path) -> None:
+        fake = SourcedFakeIbkr(None)
+        clock = {"now": _at(10, 0)}
+        mon = _monitor(tmp_path, fake, _at(10, 0))
+        mon._clock = lambda: clock["now"]
+        _open_book(mon)
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {"NVDA": _at(10, 0).isoformat()}
+        clock["now"] = _at(10, 5)
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {"NVDA": _at(10, 0).isoformat()}
+        fake.blind = False  # a fresh reading clears it
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {}
+
+    def test_only_touch_guarded_underlyings_count(self, tmp_path: Path) -> None:
+        mon = _monitor(tmp_path, SourcedFakeIbkr(None), _at(10, 0))  # book still PLANNED
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {}
+
+    def test_off_session_clears_blindness(self, tmp_path: Path) -> None:
+        clock = {"now": _at(15, 0)}
+        mon = _monitor(tmp_path, SourcedFakeIbkr(None), _at(15, 0))
+        mon._clock = lambda: clock["now"]
+        _open_book(mon)
+        mon._tick()
+        clock["now"] = _at(17, 0)
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {}
+
+    def test_restart_keeps_blindness_but_never_before_todays_open(self, tmp_path: Path) -> None:
+        """A crash-looping monitor must not reset the clock on each start;
+        a since from an earlier session is clamped to today's open."""
+        monday = date(2026, 9, 21)
+        run = tmp_path / "run"
+        run.mkdir()
+        (run / "monitor.json").write_text(json.dumps({"spot_blind": {
+            "NVDA": _at(15, 0).isoformat(),  # Friday
+        }}))
+        mon = _monitor(tmp_path, SourcedFakeIbkr(None), _at(10, 0, monday))
+        _open_book(mon)
+        mon._start_health()
+        mon._tick()
+        assert _health_now(mon)["spot_blind"] == {"NVDA": _at(9, 30, monday).isoformat()}
+
+        (run / "monitor.json").write_text(json.dumps({"spot_blind": {
+            "NVDA": _at(9, 50, monday).isoformat(), "junk": 5,
+        }}))
+        mon2 = _monitor(tmp_path, SourcedFakeIbkr(None), _at(10, 0, monday))
+        _open_book(mon2)
+        mon2._start_health()
+        mon2._tick()
+        assert _health_now(mon2)["spot_blind"] == {"NVDA": _at(9, 50, monday).isoformat()}
+
+
+class TestCalendarHorizonHealth:
+    def test_far_horizon_does_not_warn(self, tmp_path: Path) -> None:
+        mon = _monitor(tmp_path, FakeIbkr(), _at(13, 0))
+        health = _health_now(mon)
+        assert health["calendar_last_session"] == "2028-12-29"
+        assert health["calendar_horizon_warn"] is False
+
+    def test_fewer_than_60_sessions_left_warns(self, tmp_path: Path) -> None:
+        mon = _monitor(tmp_path, FakeIbkr(), _at(13, 0, date(2028, 11, 1)))
+        assert _health_now(mon)["calendar_horizon_warn"] is True

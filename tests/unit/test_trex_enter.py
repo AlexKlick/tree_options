@@ -100,6 +100,9 @@ class FakeEntryIbkr:
     def __init__(self, quote: ComboQuote | None = None) -> None:
         self.quote = quote or ComboQuote(Decimal("0.40"), Decimal("0.48"))
         self.placed: list[tuple[str, str, int, Decimal]] = []
+        self.cancelled: list[int] = []
+        self.confirm_cancels = True
+        self.connected = True
         self._next_oid = 200
         self.open_trades: list[Any] = []
 
@@ -137,8 +140,10 @@ class FakeEntryIbkr:
         return OrderStatusInfo(status=os.status, filled=os.filled, avg_fill_price=avg)
 
     def cancel(self, ref: Any) -> None:
+        self.cancelled.append(ref.trade.order.orderId)
         # fakes confirm instantly (ib_async cancel is async; runner waits)
-        ref.trade.orderStatus.status = "Cancelled"
+        if self.confirm_cancels:
+            ref.trade.orderStatus.status = "Cancelled"
 
     def open_combo_trades(self) -> list[Any]:
         return [t for t in self.open_trades if t.orderStatus.status == "Submitted"]
@@ -225,3 +230,133 @@ class TestCumulativeEntryAccounting:
         assert st.filled_qty == 5
         assert st.entry_fill == Decimal("0.44")
         assert st.status is Status.OPEN
+
+
+class TestKillFiles:
+    """FLATTEN cancels unfilled entries, and only enter.py can: IBKR lets
+    only the placing clientId cancel an order (error 10147), and the
+    monitor (clientId 71) never even sees enter.py's (72) BUYs."""
+
+    def _working(self, tmp_path: Path) -> tuple[Enterer, FakeEntryIbkr]:
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()  # BUY 5 working
+        assert ent.book.structures["nvda-oct"].status is Status.ENTER_WORKING
+        return ent, fake
+
+    def test_flatten_cancels_the_working_entry_and_closes(self, tmp_path: Path) -> None:
+        ent, fake = self._working(tmp_path)
+        (ent.run_dir / "FLATTEN").touch()
+        ent._tick()
+        st = ent.book.structures["nvda-oct"]
+        assert fake.cancelled == [201] and len(fake.placed) == 1
+        assert st.status is Status.CLOSED and st.close_reason == "kill: FLATTEN"
+        assert not ent._entry_pending()
+        saved = BookState.load(ent.run_dir / "book.json", ["nvda-oct"])
+        assert saved.structures["nvda-oct"].status is Status.CLOSED
+
+    def test_flatten_after_a_partial_fill_hands_the_rest_to_the_monitor(
+        self, tmp_path: Path
+    ) -> None:
+        ent, fake = self._working(tmp_path)
+        a = ent.orders["nvda-oct"]
+        fake.fill_partial(a, 2, "0.44")
+        ent._tick()  # drain records 2
+        ent._reprice(ent.plan.structures[0], Decimal("0.32"))  # order B for 3
+        b = ent.orders["nvda-oct"]
+        fake.fill_partial(b, 1, "0.32")  # B fills 1 more before the kill
+        (ent.run_dir / "FLATTEN").touch()
+        ent._tick()
+        st = ent.book.structures["nvda-oct"]
+        assert fake.cancelled[-1] == b.trade.order.orderId
+        assert st.status is Status.OPEN and st.filled_qty == 3  # cumulative, not order-local
+        assert st.entry_fill == (Decimal("0.44") * 2 + Decimal("0.32")) / 3
+
+    def test_an_unconfirmed_cancel_keeps_the_entry_working(self, tmp_path: Path) -> None:
+        ent, fake = self._working(tmp_path)
+        fake.confirm_cancels = False
+        (ent.run_dir / "FLATTEN").touch()
+        ent._tick()
+        st = ent.book.structures["nvda-oct"]
+        assert st.status is Status.ENTER_WORKING  # a live BUY is never closed on paper
+        assert "nvda-oct" in ent.orders
+        ent.orders["nvda-oct"].trade.orderStatus.status = "Cancelled"  # confirms late
+        ent._tick()
+        assert st.status is Status.CLOSED and len(fake.placed) == 1
+
+    def test_flatten_enters_nothing_new(self, tmp_path: Path) -> None:
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        (ent.run_dir / "FLATTEN").touch()
+        ent._tick()
+        st = ent.book.structures["nvda-oct"]
+        assert fake.placed == []
+        assert st.status is Status.CLOSED and st.close_reason == "kill: FLATTEN"
+
+    def test_a_monitor_exit_write_survives_the_entry_runner_save(self, tmp_path: Path) -> None:
+        """The reverse race: enter.py's whole-book save must not revert a
+        structure the monitor already moved to EXIT_WORKING back to OPEN
+        (the monitor would then place a SECOND sell: naked short)."""
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()
+        fake.fill(ent.orders["nvda-oct"], 5, "0.44")
+        ent._tick()  # OPEN, saved
+        disk = BookState.load(ent.run_dir / "book.json", ["nvda-oct"])
+        mon_st = disk.structures["nvda-oct"]
+        mon_st.to(Status.EXIT_WORKING, _at(10, 1))  # the monitor's touch exit
+        mon_st.exit_reason, mon_st.exit_order = "touch", "999"
+        disk.save(ent.run_dir / "book.json")
+        (ent.run_dir / "FLATTEN").touch()
+        ent._tick()  # saves its (stale) whole book
+        after = BookState.load(ent.run_dir / "book.json", ["nvda-oct"]).structures["nvda-oct"]
+        assert after.status is Status.EXIT_WORKING and after.exit_order == "999"
+
+    def test_halt_places_no_new_entry(self, tmp_path: Path) -> None:
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        (ent.run_dir / "HALT").touch()
+        ent._tick()
+        assert fake.placed == []
+        assert ent.book.structures["nvda-oct"].status is Status.PLANNED
+
+
+class TestFlattenAcrossClients:
+    """Monitor and entry runner share book.json but NOT their orders: each
+    fake broker session sees only its own trades, like IBKR clientIds."""
+
+    def _pair(self, tmp_path: Path) -> tuple[Any, Enterer, FakeEntryIbkr, FakeEntryIbkr]:
+        from tree_options.trex.monitor import Monitor
+
+        enter_ib, monitor_ib = FakeEntryIbkr(), FakeEntryIbkr()
+        ent = _enterer(tmp_path, enter_ib, _at(10, 0))
+        mon = Monitor(_plan(), monitor_ib, BookState(["nvda-oct"]), ent.run_dir,
+                      clock=lambda: _at(10, 1))
+        ent._tick()  # enter.py's BUY is working at the broker
+        return mon, ent, enter_ib, monitor_ib
+
+    def _cycle(self, mon: Any, ent: Enterer) -> None:
+        mon._sync_book_from_disk()
+        mon._tick()
+        ent._sync_book_from_disk()
+        ent._tick()
+        mon._sync_book_from_disk()
+        mon._tick()
+
+    def test_the_working_buy_is_cancelled_by_its_owner(self, tmp_path: Path) -> None:
+        mon, ent, enter_ib, monitor_ib = self._pair(tmp_path)
+        (ent.run_dir / "FLATTEN").touch()
+        self._cycle(mon, ent)
+        buy = enter_ib.open_trades[0]
+        assert buy.orderStatus.status == "Cancelled"  # no live BUY left behind
+        assert monitor_ib.cancelled == []
+        assert mon.book.structures["nvda-oct"].status is Status.CLOSED
+
+    def test_a_partial_fill_is_flattened_by_the_monitor(self, tmp_path: Path) -> None:
+        mon, ent, enter_ib, monitor_ib = self._pair(tmp_path)
+        enter_ib.fill_partial(ent.orders["nvda-oct"], 2, "0.44")
+        (ent.run_dir / "FLATTEN").touch()
+        self._cycle(mon, ent)
+        assert enter_ib.open_trades[0].orderStatus.status == "Cancelled"
+        assert monitor_ib.placed == [("nvda-oct", "SELL", 2, Decimal("0.40"))]
+        assert mon.book.structures["nvda-oct"].status is Status.EXIT_WORKING

@@ -25,6 +25,7 @@ from typing import Any
 from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.engine import ComboQuote, Snapshot
 from tree_options.trex.plan import PutSpread
+from tree_options.trex.spot import SpotReading, SpotResolver, ibkr_reading
 
 log = logging.getLogger("trex.ibkr")
 
@@ -63,11 +64,15 @@ class IbkrTrex:
         port: int = GATEWAY_PAPER_PORT,
         client_id: int = 77,
         delayed_ok: bool = True,
+        spot_resolver: SpotResolver | None = None,
     ) -> None:
         self.host = host
         self.port = port
         self.client_id = client_id
         self.delayed_ok = delayed_ok
+        # no resolver: IBKR spots only (fresh-gated); the monitor injects
+        # one with the Polygon fallback
+        self.spot_resolver = spot_resolver or SpotResolver(None)
         self._ib: Any = None
         self._legs: dict[tuple[str, str], Any] = {}  # (structure_id, "long"|"short")
         self._bags: dict[str, Any] = {}  # structure_id -> BAG contract
@@ -172,15 +177,12 @@ class IbkrTrex:
 
     # -- market data -------------------------------------------------------
 
-    def spot(self, underlying: str) -> Decimal | None:
-        ticker = self._tickers.get(self._spots.get(underlying))
-        if ticker is None:
-            return None
-        for attr in ("last", "close"):
-            value = getattr(ticker, attr, None)
-            if value is not None and value == value:  # NaN guard
-                return _d(value)
-        return None
+    def spot_reading(self, underlying: str, now: datetime) -> SpotReading | None:
+        """The IBKR spot if its ticker is fresh (trex.spot.ibkr_reading).
+        Never ``close``: the prior session's close can fake or hide a touch."""
+        stock = self._spots.get(underlying)
+        ticker = self._tickers.get(stock) if stock is not None else None
+        return ibkr_reading(ticker, now)
 
     def leg_quote(self, structure_id: str, which: str) -> tuple[Decimal, Decimal] | None:
         leg = self._legs.get((structure_id, which))
@@ -202,16 +204,17 @@ class IbkrTrex:
         return ComboQuote(bid=long_q[0] - short_q[1], ask=long_q[1] - short_q[0])
 
     def snapshot(self, spreads: list[PutSpread], ts: datetime) -> Snapshot:
-        spots: dict[str, Decimal] = {}
-        for spread in spreads:
-            if spread.underlying not in spots:
-                spot = self.spot(spread.underlying)
-                if spot is not None:
-                    spots[spread.underlying] = spot
+        """Quotes plus ACCEPTED spots only (IBKR if fresh, else the
+        resolver's Polygon fallback); an underlying without one is absent."""
+        underlyings = list(dict.fromkeys(s.underlying for s in spreads))
+        readings = self.spot_resolver.resolve(
+            underlyings, {u: self.spot_reading(u, ts) for u in underlyings}, ts
+        )
         return Snapshot(
             ts=ts,
-            spots=spots,
+            spots={sym: r.px for sym, r in readings.items()},
             quotes={s.id: self.combo_quote(s.id) for s in spreads},
+            spot_sources=readings,
         )
 
     # -- orders ------------------------------------------------------------

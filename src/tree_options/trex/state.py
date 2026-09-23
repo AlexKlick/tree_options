@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -50,6 +51,12 @@ _VALID: dict[Status, frozenset[Status]] = {
 
 def transition_allowed(current: Status, target: Status) -> bool:
     return target in _VALID[current]
+
+
+# Lane ownership of a shared book.json: a structure is the entry runner's
+# while it is in ENTRY_LANE; only the entry runner moves it out (to OPEN or
+# CLOSED), and from then on only the monitor writes it.
+ENTRY_LANE = frozenset({Status.PLANNED, Status.ENTER_WORKING})
 
 
 def _iso(dt: datetime | None) -> str | None:
@@ -196,6 +203,32 @@ class BookState:
         tmp = path.with_suffix(".tmp")
         tmp.write_text(json.dumps(payload, indent=2) + "\n")
         os.replace(tmp, path)
+
+    def save_owned(
+        self, path: Path, theirs: Callable[[StructureState, StructureState], bool]
+    ) -> None:
+        """Save, first adopting from disk every structure the OTHER process
+        owns (``theirs(mine, on_disk)``). Both runners save the whole book,
+        so a plain save reverts whatever the other one wrote since this
+        process last read it: the monitor could hide a FLATTEN-settled
+        entry, the entry runner could undo an exit (then a second sell).
+        An unreadable disk book adopts nothing (the save still happens)."""
+        if path.exists():
+            try:
+                disk = BookState.load(path, list(self.structures))
+            except (OSError, ValueError, KeyError, TypeError):
+                disk = None
+            if disk is not None:
+                # only the monitor beats: the fresher beat is the truth
+                if disk.heartbeat is not None and (
+                    self.heartbeat is None or disk.heartbeat > self.heartbeat
+                ):
+                    self.heartbeat = disk.heartbeat
+                for sid, mine in list(self.structures.items()):
+                    on_disk = disk.structures.get(sid)
+                    if on_disk is not None and theirs(mine, on_disk):
+                        self.structures[sid] = on_disk
+        self.save(path)
 
     @classmethod
     def load(cls, path: Path, structure_ids: list[str]) -> BookState:

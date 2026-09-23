@@ -56,12 +56,47 @@ no second push) · `monitor_down` (heartbeat > 2 min old or book.json
 unreadable, and the gateway not to blame; a silent gateway watchdog never
 takes the blame) · `monitor_failing` (beating but `monitor.json` absent or
 older than 3 min, any hour; or in market hours 3 failed ticks in a row or
-none good for 3 min; the last good tick survives monitor restarts).
+none good for 3 min; the last good tick survives monitor restarts) ·
+`touch_blind` (the monitor is healthy, but in market hours an open
+position's underlying has had no accepted spot for ≥ 10 min: its touch
+exit can't fire; time-stop and expiry exits still work. Push: "trex: touch
+exit blind", ticker symbols only; recovery "trex: touch exit back").
 Detection only: the monitor's restarts are systemd's
 (`Restart=on-failure`). Banner: `GET /api/exit-machine`.
 
 Deploy after the monitor runs code that writes `monitor.json`, or a
 monitor without it alarms as `monitor_failing` after 3 minutes.
+
+**Touch-exit spot (`trex/spot.py`).** The paper account delivers no equity
+quotes, and a ticker's `close` (the prior session's) is never used: it can
+fake or hide a touch. The monitor accepts IBKR `last`/mid only when the
+ticker updated ≤ 120 s ago (frozen data refused, delayed data aged +15 min),
+else the Polygon stock snapshot (`~/.config/tree_options/polygon.key`, 15 min
+delayed intraday) when its latest minute bar is ≤ 20 min old. One uncached
+request per symbol per 60 s, 3 s timeout, 6 s per tick for all symbols; a
+failure costs that symbol that tick. No accepted spot = no touch decision.
+`marks.json` carries `spot_sources` (`px`, `source`, `as_of`, `age_s`) next
+to `spots`; `monitor.json` carries `spot_blind` (`{symbol: since}`, OPEN
+positions only, reset outside the session, kept across restarts but never
+older than today's 09:30).
+
+**Calendar horizon.** trex reads its own session calendar,
+`data/calendar/trex/nyse_sessions_2018_01_02_2028_12_29.json` (the sealed
+protocol calendar ends 2026-12-31; past a calendar's last session the
+monitor sees no sessions and places no exits). `monitor.json` carries
+`calendar_last_session` and `calendar_horizon_warn` (true inside the last 60
+sessions; the watchdog copies it onto the book row). Regenerate with
+`scripts/gen_trex_calendar.py` (see its docstring for the pinned build env).
+
+**FLATTEN and working entries.** IBKR lets only the placing clientId cancel
+an order (error 10147), and the monitor (clientId 71) never sees the entry
+runner's (72) BUYs. So under FLATTEN, `trex.enter` cancels its own working
+entries on its next cycle (15 s), closes PLANNED structures and enters
+nothing new; a partly filled entry goes OPEN and the monitor sells it. The
+monitor leaves `enter_working` structures alone (event
+`flatten_waits_for_entry_runner`). If the entry runner is not running,
+start it: it adopts its working BUYs and cancels them on its first cycle.
+HALT also stops the entry runner placing or repricing.
 
 ## Phone push (ntfy)
 

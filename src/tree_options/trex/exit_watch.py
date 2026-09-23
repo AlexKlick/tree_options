@@ -23,7 +23,11 @@ counts, since exposure can't be ruled out) and classifies:
 * ``monitor_failing``: the monitor beats but its ``monitor.json`` is absent
   or older than HEALTH_STALE_S (the loop never finishes); or, in market
   hours, TICK_FAILURES_BAD ticks failed in a row or none succeeded for
-  TICK_SILENT_S (the last good tick survives monitor restarts).
+  TICK_SILENT_S (the last good tick survives monitor restarts);
+* ``touch_blind``: the monitor is healthy but, in market hours, an open
+  position's underlying has had no accepted spot (``monitor.json``
+  ``spot_blind``, see trex.spot) for TOUCH_BLIND_S: its touch exit can't
+  fire (time-stop and expiry exits still work).
 
 Pushes follow trex.alert_policy; the verdict goes to
 ``~/.local/state/trex/exit_watch.json`` for the cockpit banner. Detection
@@ -68,13 +72,16 @@ GATEWAY_WATCH_STALE_S = 300  # an older gateway.json says nothing
 ATTRIBUTION_MAX_S = 900  # a non-alarming gateway can excuse an outage this long
 TICK_FAILURES_BAD = 3
 TICK_SILENT_S = 180
+TOUCH_BLIND_S = 600  # the Polygon fallback alone is 15 min delayed; 10 blind min is an outage
 MAX_EVENTS = 30
 
 EXPOSED = frozenset({"enter_working", "open", "exit_working"})
-BAD = frozenset({"monitor_down", "monitor_failing"})
+BAD = frozenset({"monitor_down", "monitor_failing", "touch_blind"})
 HEALTHY = frozenset({"ok", "idle"})
 GATEWAY_ALARMS = gateway_watch.BAD  # states the gateway watchdog pushes for
-_SEVERITY = ("idle", "ok", "waiting_for_gateway", "monitor_failing", "monitor_down")
+_SEVERITY = (
+    "idle", "ok", "waiting_for_gateway", "touch_blind", "monitor_failing", "monitor_down",
+)
 
 
 @dataclass(frozen=True)
@@ -206,7 +213,29 @@ def _book_verdict(
         return "monitor_failing", ok_at, (
             f"{b.plan}: {failures} checks failed in a row (last: {h.get('last_error')})"
         )
+    blind = _long_blind(h, obs)
+    if blind:
+        first = min(blind.values())
+        return "touch_blind", first, (
+            f"{b.plan}: no fresh {', '.join(sorted(blind))} price for "
+            f"{span_label(obs.now - first)}; the touch exit can't fire"
+        )
     return "ok", None, f"{b.plan}: heartbeat {int(age)}s ago"
+
+
+def _long_blind(health: dict[str, Any] | None, obs: ExitObs) -> dict[str, float]:
+    """Underlyings blind for at least TOUCH_BLIND_S, in market hours only
+    (the monitor makes no touch decisions off-session). Unparseable
+    entries are ignored: this alarm adds to, never replaces, the others."""
+    raw = health.get("spot_blind") if health else None
+    if not obs.market or not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for sym, since in raw.items():
+        at = _epoch(since)
+        if isinstance(sym, str) and at is not None and obs.now - at >= TOUCH_BLIND_S:
+            out[sym] = at
+    return out
 
 
 def _assess(
@@ -222,8 +251,13 @@ def _assess(
             missing[b.plan] = health_missing_since.get(b.plan, obs.now)
         status, since, detail = _book_verdict(b, obs, missing.get(b.plan))
         age = round(obs.now - b.heartbeat) if b.heartbeat is not None else None
-        rows.append({"plan": b.plan, "status": status, "since": since, "detail": detail,
-                     "heartbeat_age": age})
+        row: dict[str, Any] = {"plan": b.plan, "status": status, "since": since,
+                               "detail": detail, "heartbeat_age": age}
+        if status == "touch_blind":
+            row["blind"] = sorted(_long_blind(b.health, obs))
+        if b.health and b.health.get("calendar_horizon_warn") is True:
+            row["calendar_horizon_warn"] = True  # regenerate the trex calendar
+        rows.append(row)
     return rows, missing
 
 
@@ -247,8 +281,16 @@ def classify(
     return _verdict(_assess(obs, health_missing_since or {})[0])
 
 
-def _message(status: str, since: float, now: float) -> tuple[str, str]:
+def _message(
+    status: str, since: float, now: float, blind: list[str] | None = None
+) -> tuple[str, str]:
     lasting = f"since {et_label(since)} ({span_label(now - since)})"
+    if status == "touch_blind":
+        # ticker symbols only: no plan names, amounts, hosts or accounts
+        return "trex: touch exit blind", (
+            f"No fresh price for {', '.join(blind or ['an underlying'])} {lasting}. "
+            f"Open positions have no touch exit; time-stop and expiry exits still work."
+        )
     if status == "monitor_down":
         return "trex: exit machine down", (
             f"The trex monitor has not run {lasting}. Open positions have no touch or "
@@ -274,15 +316,20 @@ def decide(
         since = since_hint if since_hint is not None else obs.now
 
     def recovery() -> tuple[str, str]:
+        touch = prior.get("last_notified_status") == "touch_blind"
+        title = "trex: touch exit back" if touch else "trex: exit machine back"
         if status == "idle":
-            return "trex: exit machine back", "No open positions left to guard."
+            return title, "No open positions left to guard."
         was = prior.get("since")
         outage = f" after {span_label(obs.now - was)}" if isinstance(was, (int, float)) else ""
-        return "trex: exit machine back", f"The monitor is guarding the book again{outage}."
+        if touch:
+            return title, f"Fresh prices again; the touch exit is guarding the book{outage}."
+        return title, f"The monitor is guarding the book again{outage}."
 
+    blind = sorted({s for r in rows if r["status"] == status for s in r.get("blind", [])})
     push, notified = next_push(
         status=status, now=obs.now, prior=prior, urgency=urgency, bad=BAD, healthy=HEALTHY,
-        alarm=lambda: _message(status, since, obs.now), recovery=recovery,
+        alarm=lambda: _message(status, since, obs.now, blind), recovery=recovery,
     )
     actions = (
         [Action("notify", push.status, push.title, push.message, push.priority)] if push else []

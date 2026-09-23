@@ -18,6 +18,31 @@ from tree_options.trex.state import (
 )
 
 
+class TestSaveOwned:
+    """Both runners save the whole book; each adopts the other's lane."""
+
+    def test_adopts_their_structures_and_the_fresher_heartbeat(self, tmp_path: Path) -> None:
+        path = tmp_path / "book.json"
+        disk = BookState(["a", "b"])
+        disk.structures["a"].to(Status.ENTER_WORKING, datetime.now(ET))
+        disk.heartbeat = datetime(2026, 9, 23, 10, 0, 30, tzinfo=ET)
+        disk.save(path)
+        mine = BookState(["a", "b"])  # stale: both PLANNED, older beat
+        mine.heartbeat = datetime(2026, 9, 23, 10, 0, 0, tzinfo=ET)
+        mine.structures["b"].to(Status.CLOSED, datetime.now(ET))
+        mine.save_owned(path, lambda _mine, on_disk: on_disk.status is Status.ENTER_WORKING)
+        saved = BookState.load(path, ["a", "b"])
+        assert saved.structures["a"].status is Status.ENTER_WORKING  # theirs, adopted
+        assert saved.structures["b"].status is Status.CLOSED  # mine, kept
+        assert saved.heartbeat == datetime(2026, 9, 23, 10, 0, 30, tzinfo=ET)
+
+    def test_an_unreadable_disk_book_still_saves(self, tmp_path: Path) -> None:
+        path = tmp_path / "book.json"
+        path.write_text("{torn")
+        BookState(["a"]).save_owned(path, lambda *_: True)
+        assert BookState.load(path, ["a"]).structures["a"].status is Status.PLANNED
+
+
 class TestTransitions:
     def test_closed_is_terminal(self) -> None:
         for target in Status:

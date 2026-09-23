@@ -11,6 +11,13 @@ Entry mechanics per structure: place at mid (capped), reprice every
 after the engine's escalation cycles, stop at the window end. Never
 above the cap; no chase beyond the window.
 
+Kill files (the monitor's run dir, same names):
+  FLATTEN  cancel every working entry and enter nothing new. Only this
+           runner CAN cancel its BUYs: IBKR lets only the placing
+           clientId cancel an order (error 10147), and the monitor never
+           sees them. A filled part goes OPEN for the monitor to flatten.
+  HALT     place and reprice nothing (aborts at the window end still cancel)
+
 Usage: python -m tree_options.trex.enter --plan plans/2026-09-18.toml
 """
 
@@ -32,19 +39,21 @@ from tree_options.trex.engine import (
     configure,
     decide,
 )
-from tree_options.trex.ibkr import IbkrTrex, OrderRef
+from tree_options.trex.ibkr import IbkrTrex, OrderRef, OrderStatusInfo
 from tree_options.trex.monitor import (
     HEARTBEAT_FRESH_SECONDS,
     _engine_config,
     _run_dir,
 )
 from tree_options.trex.plan import PutSpread, load_plan
-from tree_options.trex.state import BookState, Status
+from tree_options.trex.state import ENTRY_LANE, BookState, Status
 
 log = logging.getLogger("trex.enter")
 
 ENTRY_REPRICE_SECONDS = 90
 POLL_SECONDS = 15
+_TERMINAL = ("Filled", "Cancelled", "ApiCancelled")
+FLATTEN_REASON = "kill: FLATTEN"
 
 
 class Enterer:
@@ -110,7 +119,7 @@ class Enterer:
                 st.to(Status.ENTER_WORKING, now_et())
             st.entry_order = str(trade.order.orderId)
             log.info("adopted working entry order for %s (oid %s)", sid, trade.order.orderId)
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
 
     def run(self) -> int:
         self.adopt_open_entries()
@@ -128,13 +137,21 @@ class Enterer:
         """Adopt the monitor's book writes each cycle.
 
         The monitor and the entry runner share ``book.json``; without this
-        reload a whole-book save here could revert a monitor's FLATTEN
-        cancel (re-placing a killed BUY = double book) or its exit states
-        with a stale in-memory copy. Monitor-owned exit-side fields ride
-        along untouched: this runner never writes them.
+        reload a whole-book save here could revert the monitor's exit
+        states with a stale in-memory copy (and ``_save_book`` re-adopts
+        them at every save, closing the gap between this read and a save).
         """
         disk = BookState.load(self.run_dir / "book.json", list(self.book.structures))
         self.book.structures = disk.structures
+
+    def _save_book(self) -> None:
+        """Whole-book save that never reverts the monitor's writes: any
+        structure already past the entry lane ON DISK is the monitor's
+        (only this runner moves one out, and its own not-yet-saved move
+        still shows the entry lane on disk, so it is kept)."""
+        self.book.save_owned(
+            self.run_dir / "book.json", lambda _mine, disk: disk.status not in ENTRY_LANE
+        )
 
     def _entry_pending(self) -> bool:
         return any(
@@ -142,7 +159,17 @@ class Enterer:
             for st in self.book.structures.values()
         )
 
+    def _flatten_requested(self) -> bool:
+        return (self.run_dir / "FLATTEN").exists()
+
+    def _halt_requested(self) -> bool:
+        return (self.run_dir / "HALT").exists()
+
     def _tick(self) -> None:
+        if self._flatten_requested():
+            # any hour: a kill must not wait for a session day
+            self._flatten_entries()
+            return
         now = self._clock()
         if not is_session(now):
             log.info("non-session day — nothing to enter")
@@ -158,11 +185,65 @@ class Enterer:
 
         self._drain_fills()
 
+    def _flatten_entries(self) -> None:
+        """FLATTEN: cancel our working entries, enter nothing new."""
+        for spread in self.plan.structures:
+            st = self.book.structures[spread.id]
+            if st.status is Status.PLANNED:
+                st.to(Status.CLOSED, now_et())
+                st.close_reason = FLATTEN_REASON
+                self.book.event(
+                    self.events_path, "entry_cancelled", structure=spread.id, reason=FLATTEN_REASON
+                )
+            elif st.status is Status.ENTER_WORKING:
+                self._kill_entry(spread)
+        self._save_book()
+
+    def _kill_entry(self, spread: PutSpread) -> None:
+        """Cancel the working BUY at the broker, then settle from the final
+        fills: OPEN (the monitor's FLATTEN sells it) or CLOSED. An
+        unconfirmed cancel keeps the structure ENTER_WORKING and retries
+        next cycle: a live BUY is never closed on paper."""
+        st = self.book.structures[spread.id]
+        ref = self.orders.get(spread.id)
+        if ref is not None:
+            if self.ib.order_status(ref).status not in _TERMINAL:
+                self.ib.cancel(ref)
+                for _ in range(6):
+                    self.ib.sleep(0.5)
+                    if self.ib.order_status(ref).status in _TERMINAL:
+                        break
+            self._merge_fills(spread.id, ref)
+            if self.ib.order_status(ref).status not in _TERMINAL:
+                log.warning("%s: FLATTEN cancel not confirmed; retrying next cycle", spread.id)
+                return
+            self.orders.pop(spread.id, None)
+        # no ref: nothing of ours is working (a restart adopts live BUYs first)
+        if st.filled_qty > 0:
+            st.to(Status.OPEN, now_et())
+            log.warning(
+                "%s: FLATTEN cancelled the entry with %d filled; OPEN for the monitor",
+                spread.id,
+                st.filled_qty,
+            )
+        else:
+            st.to(Status.CLOSED, now_et())
+            st.close_reason = FLATTEN_REASON
+        self.book.event(
+            self.events_path,
+            "entry_cancelled",
+            structure=spread.id,
+            reason=FLATTEN_REASON,
+            filled=st.filled_qty,
+        )
+
     def _apply(self, spread: PutSpread, action: Action) -> None:
         st = self.book.structures[spread.id]
         match action:
             case NoAction(reason):
                 log.debug("%s: %s", spread.id, reason)
+            case PlaceEntry() if self._halt_requested():
+                log.warning("%s: HALT active — placing no entry order", spread.id)
             case PlaceEntry(limit=limit) if st.status is Status.PLANNED:
                 self._place(spread, limit)
             case PlaceEntry(limit=limit):
@@ -179,9 +260,9 @@ class Enterer:
         remaining = spread.quantity - st.filled_qty
         if remaining <= 0:
             st.to(Status.OPEN, now_et())  # fully filled already
-            self.book.save(self.run_dir / "book.json")
+            self._save_book()
             return
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
         ref = self.ib.place_combo(spread, "BUY", remaining, limit)
         self.orders[spread.id] = ref
         self._order_seen[spread.id] = 0  # new order: local count starts over
@@ -196,7 +277,7 @@ class Enterer:
             order=st.entry_order,
         )
         log.info("%s: BUY %d @ %s", spread.id, remaining, limit)
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
 
     def _reprice(self, spread: PutSpread, limit: Decimal) -> None:
         ref = self.orders.get(spread.id)
@@ -266,8 +347,41 @@ class Enterer:
             st.to(Status.CLOSED, now_et())
             st.close_reason = f"aborted: {reason}"
         self.book.event(self.events_path, "entry_abort", structure=spread.id, reason=reason)
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
         log.info("%s: entry aborted (%s) filled_qty=%d", spread.id, reason, st.filled_qty)
+
+    def _merge_fills(self, sid: str, ref: OrderRef) -> OrderStatusInfo:
+        """Merge the order-local fill increment into the book's cumulative
+        entry, blending by NOTIONAL: the order's cumulative average times
+        only its new fills would re-price the earlier fills (Codex-M2 #2)."""
+        st = self.book.structures[sid]
+        info = self.ib.order_status(ref)
+        seen = self._order_seen.get(sid, 0)
+        if info.filled > seen:
+            new_fills = info.filled - seen
+            new_cum = st.filled_qty + new_fills
+            prev_notional = self._order_notional.get(sid, Decimal(0))
+            if info.avg_fill_price:
+                inc_notional = info.avg_fill_price * info.filled - prev_notional
+                if st.entry_fill is not None and st.filled_qty > 0:
+                    st.entry_fill = (st.entry_fill * st.filled_qty + inc_notional) / new_cum
+                else:
+                    st.entry_fill = (
+                        inc_notional / new_fills if new_fills else info.avg_fill_price
+                    )
+                self._order_notional[sid] = info.avg_fill_price * info.filled
+            st.filled_qty = new_cum
+            self._order_seen[sid] = info.filled
+            self.book.event(
+                self.events_path,
+                "entry_fill",
+                structure=sid,
+                filled=st.filled_qty,
+                order_filled=info.filled,
+                avg=str(st.entry_fill),
+                status=info.status,
+            )
+        return info
 
     def _drain_fills(self) -> None:
         for spread in self.plan.structures:
@@ -276,38 +390,8 @@ class Enterer:
             ref = self.orders.get(sid)
             if ref is None or st.status is not Status.ENTER_WORKING:
                 continue
-            info = self.ib.order_status(ref)
-            seen = self._order_seen.get(sid, 0)
-            if info.filled > seen:
-                # merge the order-local increment, blending by NOTIONAL:
-                # the order's cumulative average times only its new fills
-                # would re-price the earlier fills (Codex-M2 #2)
-                new_fills = info.filled - seen
-                new_cum = st.filled_qty + new_fills
-                prev_notional = self._order_notional.get(sid, Decimal(0))
-                if info.avg_fill_price:
-                    inc_notional = info.avg_fill_price * info.filled - prev_notional
-                    if st.entry_fill is not None and st.filled_qty > 0:
-                        st.entry_fill = (
-                            st.entry_fill * st.filled_qty + inc_notional
-                        ) / new_cum
-                    else:
-                        st.entry_fill = (
-                            inc_notional / new_fills if new_fills else info.avg_fill_price
-                        )
-                    self._order_notional[sid] = info.avg_fill_price * info.filled
-                st.filled_qty = new_cum
-                self._order_seen[sid] = info.filled
-                self.book.event(
-                    self.events_path,
-                    "entry_fill",
-                    structure=sid,
-                    filled=st.filled_qty,
-                    order_filled=info.filled,
-                    avg=str(st.entry_fill),
-                    status=info.status,
-                )
-            if info.status in ("Filled", "Cancelled", "ApiCancelled"):
+            info = self._merge_fills(sid, ref)
+            if info.status in _TERMINAL:
                 if st.filled_qty > 0:
                     st.to(Status.OPEN, now_et())
                     log.info("%s: OPEN with %d spreads @ %s", sid, st.filled_qty, st.entry_fill)
@@ -316,7 +400,7 @@ class Enterer:
                     # our own reprice cancel — back to PLANNED for the next cycle
                     st.to(Status.PLANNED, now_et())
                     self.orders.pop(sid, None)
-                self.book.save(self.run_dir / "book.json")
+                self._save_book()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -25,6 +25,7 @@ from tree_options.trex.exit_watch import (
     HEALTH_STALE_S,
     HEARTBEAT_STALE_S,
     TICK_FAILURES_BAD,
+    TOUCH_BLIND_S,
     BookObs,
     ExitObs,
     classify,
@@ -285,3 +286,74 @@ def test_missing_health_is_timed_across_runs(tmp_path: Path) -> None:
     later = watch_once(path, root=root, gateway_state=gw, notify=lambda *a: True,
                        now=NOON + HEALTH_STALE_S + 1, urgency=LOUD, unit_state=None)
     assert later["status"] == "monitor_failing"
+
+
+def _blind_book(since: float, plan: str = "p", **health: Any) -> BookObs:
+    """A healthy monitor whose touch-guarded NVDA has had no accepted spot."""
+    blind = {"NVDA": datetime.fromtimestamp(since, ET).isoformat()}
+    return BookObs(plan, NOON - 20, {**_health(NOON, **health), "spot_blind": blind})
+
+
+class TestTouchBlind:
+    """E0: the paper account has no equity quotes, so a monitor can tick
+    fine while its touch exit has no price to act on. Ten blind minutes in
+    market hours is an alarm, routed like the others (quiet hours hold)."""
+
+    def test_blind_for_ten_minutes_in_market_hours(self) -> None:
+        status, since, detail = classify(_obs([_blind_book(NOON - TOUCH_BLIND_S)]))
+        assert status == "touch_blind"
+        assert since == pytest.approx(NOON - TOUCH_BLIND_S)
+        assert "NVDA" in detail
+
+    def test_a_short_gap_is_not_an_alarm(self) -> None:
+        assert classify(_obs([_blind_book(NOON - TOUCH_BLIND_S + 30)]))[0] == "ok"
+
+    def test_off_hours_blindness_is_not_an_alarm(self) -> None:
+        assert classify(_obs([_blind_book(NOON - 3600)], market=False))[0] == "ok"
+
+    def test_a_down_monitor_outranks_a_blind_one(self) -> None:
+        status, _, detail = classify(_obs([_blind_book(NOON - 3600, "a"), _dead("b")]))
+        assert status == "monitor_down" and "b" in detail
+
+    def test_failing_ticks_outrank_blindness(self) -> None:
+        book = _blind_book(NOON - 3600, failures=TICK_FAILURES_BAD, ok_at=NOON - 70,
+                           error="TimeoutError")
+        assert classify(_obs([book]))[0] == "monitor_failing"
+
+    def test_blind_outranks_a_book_waiting_on_the_gateway(self) -> None:
+        obs = _obs([_blind_book(NOON - 3600, "a"), _dead("b")], gateway="needs_login")
+        assert classify(obs)[0] == "touch_blind"
+
+    def test_garbage_entries_are_ignored(self) -> None:
+        health = {**_health(NOON), "spot_blind": {"NVDA": 12, "AMD": "not a time", "X": None}}
+        assert classify(_obs([BookObs("p", NOON - 20, health)]))[0] == "ok"
+        weird = {**_health(NOON), "spot_blind": ["NVDA"]}
+        assert classify(_obs([BookObs("p", NOON - 20, weird)]))[0] == "ok"
+
+    def test_alarm_names_the_symbol_and_nothing_sensitive(self) -> None:
+        state, actions = decide(_obs([_blind_book(NOON - 900)]), {}, urgency=LOUD)
+        assert state["status"] == "touch_blind"
+        assert state["books"][0]["status"] == "touch_blind"
+        (note,) = actions
+        assert note.title == "trex: touch exit blind" and note.priority == "high"
+        assert "NVDA" in note.message and "15m" in note.message
+        for banned in ("http", "$", ".ts.net", "DU", "p:"):
+            assert banned not in note.message
+
+    def test_quiet_hours_hold_the_alarm(self) -> None:
+        quiet = Urgency("high", REMIND_MARKET_S, quiet=True)
+        state, actions = decide(_obs([_blind_book(NOON - 900)]), {}, urgency=quiet)
+        assert actions == [] and state["notify_held"] is True
+
+    def test_recovery_says_the_touch_exit_is_back(self) -> None:
+        prior = {"status": "touch_blind", "since": NOON - 1800,
+                 "last_notified_status": "touch_blind", "last_notified_at": NOON - 900}
+        state, actions = decide(_obs([_fresh()]), prior, urgency=DAY)
+        assert state["status"] == "ok"
+        (note,) = actions
+        assert note.title == "trex: touch exit back" and "30m" in note.message
+
+    def test_calendar_horizon_warning_reaches_the_book_row(self) -> None:
+        book = BookObs("p", NOON - 20, {**_health(NOON), "calendar_horizon_warn": True})
+        state, _ = decide(_obs([book]), {}, urgency=LOUD)
+        assert state["books"][0]["calendar_horizon_warn"] is True

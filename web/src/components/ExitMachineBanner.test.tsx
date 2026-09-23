@@ -42,6 +42,21 @@ describe('ExitMachineBanner', () => {
     )
   })
 
+  it('says the touch exit is blind without claiming every exit is gone', async () => {
+    mocked.mockResolvedValue({
+      ...base,
+      status: 'touch_blind',
+      books: [{ plan: 'putspread-20260922', status: 'touch_blind', detail: 'x', heartbeat_age: 20 }],
+    })
+    render(<ExitMachineBanner />)
+    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
+    const text = screen.getByRole('alert').textContent ?? ''
+    expect(text).toMatch(/Touch exit is blind/)
+    expect(text).toMatch(/time-stop and expiry exits still work/)
+    expect(text).not.toMatch(/no touch or time-stop exits/)
+    expect(text).toMatch(/putspread-20260922/)
+  })
+
   it('defers to the gateway banner while it waits for the gateway', async () => {
     mocked.mockResolvedValue({ ...base, status: 'waiting_for_gateway' })
     render(<ExitMachineBanner />)
