@@ -91,3 +91,32 @@ class TestConfigEcho:
         assert echo["underlyings"] == ["NVDA", "QQQ"]
         assert echo["target_mode"] == "auto"
         assert "client_id" not in echo  # operational detail, not page data
+
+
+class TestLlmKeys:
+    def _load(self, tmp_path: Path, extra: str):
+        path = tmp_path / "discovery.toml"
+        path.write_text(GOOD + extra)
+        return load_scan_config(path)
+
+    def test_defaults_chain_local_then_zai(self, tmp_path: Path) -> None:
+        cfg = self._load(tmp_path, "")
+        assert cfg.llm_provider == "local,zai" and cfg.llm_max_proposals == 5
+
+    def test_valid_overrides(self, tmp_path: Path) -> None:
+        cfg = self._load(tmp_path, 'llm_provider = "minimax"\nllm_model = "MiniMax-M3"\n')
+        assert cfg.llm_provider == "minimax" and cfg.llm_model == "MiniMax-M3"
+
+    @pytest.mark.parametrize(
+        "extra",
+        ['llm_provider = "openai"\n', 'llm_provider = "none,zai"\n', 'llm_provider = ""\n',
+         "llm_max_proposals = 0\n", "llm_max_proposals = 11\n"],
+    )
+    def test_invalid_rejected(self, tmp_path: Path, extra: str) -> None:
+        with pytest.raises(ValueError):
+            self._load(tmp_path, extra)
+
+    def test_echo_carries_provider_and_model_only(self, tmp_path: Path) -> None:
+        echo = config_echo(self._load(tmp_path, ""))
+        assert echo["llm_provider"] == "local,zai"
+        assert not any("key" in k for k in echo)

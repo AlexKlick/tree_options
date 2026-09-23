@@ -507,3 +507,80 @@ class TestBacktestTick:
 
         assert _calendar_dte("20261016", NOW) == 24
         assert _calendar_dte("20260901", NOW) == 0  # past expiry floors at 0
+
+
+class TestProposals:
+    """M6: proposals are broker-independent, verified against a real CBOE
+    quote, recorded PENDING, and can never fail a scan."""
+
+    def _llm(self, content: str, calls: list | None = None):
+        def t(url: str, body: bytes, headers: dict, timeout: float):
+            if calls is not None:
+                calls.append(url)
+            return 200, json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+
+        return t
+
+    def _market(self):
+        def t(url: str, *, timeout: float = 10.0):
+            if "FAKEX" in url:
+                return 404, b""
+            return 200, json.dumps({"timestamp": "2026-09-22 20:00:00",
+                                    "data": {"bid": 1.0, "ask": 1.1, "close": 1.0}}).encode()
+
+        return t
+
+    def test_on_demand_records_verified_pending(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.artifact import read_result, write_request
+        from tree_options.trex.discovery.watchlist import load_watchlist
+
+        state = tmp_path / "state"
+        load_watchlist(state, seed=["NVDA", "QQQ"], now=NOW)
+        write_request(state / "spool", "propose", "p-1", {"request_ts": NOW.isoformat()})
+        reply = json.dumps({"proposals": [
+            {"symbol": "TSM", "action": "add", "rationale": "semis breadth", "confidence": 0.6},
+            {"symbol": "FAKEX", "action": "add", "rationale": "hallucinated"},
+        ]})
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW, broker_ready=False,
+                   market_transport=self._market(), llm_transport=self._llm(reply))
+        doc = load_watchlist(state)
+        pending = [p for p in doc["proposals"] if p["status"] == "pending"]
+        assert [p["symbol"] for p in pending] == ["TSM"]
+        assert pending[0]["provenance"]["provider"] == "local"
+        run = doc["last_proposal_run"]
+        assert run["status"] == "ok" and any("FAKEX" in n for n in run["notes"])
+        result = read_result(state / "spool", "propose")
+        assert result is not None and result["status"] == "ok" and result["count"] == 2
+
+    def test_llm_failure_never_fails_the_scan(self, tmp_path: Path) -> None:
+        def boom(url: str, body: bytes, headers: dict, timeout: float):
+            raise OSError("llm lane down")
+
+        state = tmp_path / "state"
+        write_scan_request(state / "spool", "req-llm", NOW)
+        ran = serve_tick(FakeChainSource(), _cfg(), state, now=NOW, llm_transport=boom)
+        assert ran is True
+        result = read_scan_result(state / "spool")
+        assert result is not None and result["status"] == "ok"
+        from tree_options.trex.discovery.watchlist import load_watchlist
+
+        assert load_watchlist(state)["last_proposal_run"]["status"] == "failed"
+
+    def test_post_scan_hook_is_rate_limited(self, tmp_path: Path) -> None:
+        calls: list[str] = []
+        state = tmp_path / "state"
+        llm = self._llm('{"proposals": []}', calls)
+        write_scan_request(state / "spool", "req-a", NOW)
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW, llm_transport=llm)
+        later = datetime(2026, 9, 22, 18, 0, tzinfo=ET)  # < 6h later
+        write_scan_request(state / "spool", "req-b", later)
+        serve_tick(FakeChainSource(), _cfg(), state, now=later, llm_transport=llm)
+        assert len(calls) == 1
+
+    def test_no_llm_transport_means_no_llm_work(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.artifact import write_request
+
+        state = tmp_path / "state"
+        write_request(state / "spool", "propose", "p-2", {"request_ts": NOW.isoformat()})
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        assert list((state / "spool").glob("propose.request.*"))  # left for a real runner

@@ -23,6 +23,7 @@ RESERVED_CLIENT_IDS = frozenset({71, 72, 73, 77})
 DISCOVERY_CLIENT_ID = 74
 
 TARGET_MODES = ("auto", "delta", "otm", "premium")
+LLM_PROVIDERS = ("local", "zai", "minimax", "none")
 
 
 @dataclass(frozen=True)
@@ -43,6 +44,11 @@ class ScanConfig:
     client_id: int = DISCOVERY_CLIENT_ID
     auto_scan_et: str = "16:11"  # serve-loop daily rescan (just after close)
     market_refresh_seconds: int = 60  # quote refresh cadence in serve loop
+    # watchlist proposals (M6): provider chain tried in order; "none" = off.
+    # Keys come from env vars owned by llm.py - never from this file.
+    llm_provider: str = "local,zai"
+    llm_model: str = ""  # override for the FIRST provider ("" = its default)
+    llm_max_proposals: int = 5
 
     @property
     def reserved_client_ids(self) -> frozenset[int]:
@@ -73,8 +79,20 @@ def _check(cfg: ScanConfig) -> None:
         raise ValueError("min_debit must be >= 0")
     if not 0 < cfg.max_leg_spread_frac < 1:
         raise ValueError("max_leg_spread_frac must be in (0,1)")
+    chain = llm_chain(cfg.llm_provider)
+    if not chain or any(name not in LLM_PROVIDERS for name in chain):
+        raise ValueError(f"llm_provider must be a comma chain of {LLM_PROVIDERS}")
+    if "none" in chain and len(chain) > 1:
+        raise ValueError("llm_provider 'none' cannot be chained")
+    if not 1 <= cfg.llm_max_proposals <= 10:
+        raise ValueError("llm_max_proposals must be in [1, 10]")
     if cfg.client_id in RESERVED_CLIENT_IDS:
         raise ValueError(f"reserved clientId {cfg.client_id} (monitor/enter/library)")
+
+
+def llm_chain(raw: str) -> list[str]:
+    """"local,zai" -> ["local", "zai"] (whitespace/case tolerant)."""
+    return [part.strip().lower() for part in raw.split(",") if part.strip()]
 
 
 def load_scan_config(path: Path) -> ScanConfig:
@@ -101,6 +119,9 @@ def load_scan_config(path: Path) -> ScanConfig:
         client_id=int(raw.get("client_id", DISCOVERY_CLIENT_ID)),
         auto_scan_et=str(raw.get("auto_scan_et", "16:11")),
         market_refresh_seconds=int(raw.get("market_refresh_seconds", 60)),
+        llm_provider=str(raw.get("llm_provider", "local,zai")),
+        llm_model=str(raw.get("llm_model", "")),
+        llm_max_proposals=int(raw.get("llm_max_proposals", 5)),
     )
     _check(cfg)
     return cfg
@@ -122,4 +143,6 @@ def config_echo(cfg: ScanConfig) -> dict[str, Any]:
         "market_refresh_seconds": cfg.market_refresh_seconds,
         "max_candidates_per_underlying": cfg.max_candidates_per_underlying,
         "max_candidates_total": cfg.max_candidates_total,
+        "llm_provider": cfg.llm_provider,
+        "llm_model": cfg.llm_model,
     }

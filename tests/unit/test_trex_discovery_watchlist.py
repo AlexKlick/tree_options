@@ -78,3 +78,82 @@ class TestApplyOps:
     def test_unknown_op_rejected(self, tmp_path: Path) -> None:
         result = apply_watch_op(tmp_path, "explode", symbol="SPY", now=NOW)
         assert result["status"] == "invalid"
+
+
+class TestProposalLifecycle:
+    """M6 (Codex-arch #12): durable ids + provenance, no regenerate-over-
+    pending, no reviving dismissals for a week, idempotent decisions."""
+
+    PROV: ClassVar[dict] = {"provider": "local", "model": "Qwen/Qwen3.8-27B",
+                            "trigger": "operator", "source_id": "r1"}
+
+    def _wl(self, tmp_path: Path) -> None:
+        load_watchlist(tmp_path, seed=["SPY", "QQQ"], now=NOW)
+
+    def test_record_pending_and_block_duplicates(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.watchlist import blocked_symbols, record_proposals
+
+        self._wl(tmp_path)
+        ids = record_proposals(
+            tmp_path, [{"symbol": "TSM", "action": "add", "rationale": "r", "confidence": 0.7}],
+            self.PROV, NOW, run_note={"status": "ok"},
+        )
+        assert len(ids) == 1
+        doc = load_watchlist(tmp_path)
+        prop = doc["proposals"][0]
+        assert prop["status"] == "pending" and prop["provenance"]["model"] == "Qwen/Qwen3.8-27B"
+        assert doc["last_proposal_run"]["added"] == 1
+        assert "TSM" in blocked_symbols(doc, NOW)
+        again = record_proposals(tmp_path, [{"symbol": "TSM", "action": "add"}], self.PROV, NOW)
+        assert again == []  # never regenerate over a pending proposal
+
+    def test_approve_add_is_idempotent(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.watchlist import record_proposals
+
+        self._wl(tmp_path)
+        (pid,) = record_proposals(tmp_path, [{"symbol": "TSM", "action": "add"}], self.PROV, NOW)
+        first = apply_watch_op(tmp_path, "approve", proposal_id=pid, now=NOW)
+        assert first["status"] == "approved"
+        row = next(r for r in load_watchlist(tmp_path)["symbols"] if r["symbol"] == "TSM")
+        assert row["origin"] == "llm" and row["proposal_id"] == pid
+        assert apply_watch_op(tmp_path, "approve", proposal_id=pid, now=NOW)["status"] == "noop"
+        assert apply_watch_op(tmp_path, "dismiss", proposal_id=pid, now=NOW)["status"] == "noop"
+        syms = [r["symbol"] for r in load_watchlist(tmp_path)["symbols"]]
+        assert syms.count("TSM") == 1
+
+    def test_approve_remove(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.watchlist import record_proposals
+
+        self._wl(tmp_path)
+        (pid,) = record_proposals(tmp_path, [{"symbol": "QQQ", "action": "remove"}], self.PROV, NOW)
+        apply_watch_op(tmp_path, "approve", proposal_id=pid, now=NOW)
+        assert [r["symbol"] for r in load_watchlist(tmp_path)["symbols"]] == ["SPY"]
+
+    def test_dismissal_suppresses_for_a_week(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.watchlist import blocked_symbols, record_proposals
+
+        self._wl(tmp_path)
+        (pid,) = record_proposals(tmp_path, [{"symbol": "TSM", "action": "add"}], self.PROV, NOW)
+        assert apply_watch_op(tmp_path, "dismiss", proposal_id=pid, now=NOW)["status"] == "dismissed"
+        doc = load_watchlist(tmp_path)
+        assert "TSM" not in [r["symbol"] for r in doc["symbols"]]
+        six_days = datetime(2026, 9, 28, 19, 0, tzinfo=ET)
+        eight_days = datetime(2026, 9, 30, 19, 0, tzinfo=ET)
+        assert "TSM" in blocked_symbols(doc, six_days)
+        assert "TSM" not in blocked_symbols(doc, eight_days)
+
+    def test_unknown_proposal_is_invalid(self, tmp_path: Path) -> None:
+        self._wl(tmp_path)
+        assert apply_watch_op(tmp_path, "approve", proposal_id="nope", now=NOW)["status"] == "invalid"
+
+    def test_long_decided_proposals_are_pruned_pending_kept(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.watchlist import record_proposals
+
+        self._wl(tmp_path)
+        (old,) = record_proposals(tmp_path, [{"symbol": "TSM", "action": "add"}], self.PROV, NOW)
+        apply_watch_op(tmp_path, "dismiss", proposal_id=old, now=NOW)
+        record_proposals(tmp_path, [{"symbol": "SMH", "action": "add"}], self.PROV, NOW)
+        later = datetime(2026, 11, 1, 19, 0, tzinfo=ET)  # > 30 days
+        record_proposals(tmp_path, [], self.PROV, later)
+        props = load_watchlist(tmp_path)["proposals"]
+        assert [p["symbol"] for p in props] == ["SMH"]  # pending survives, decided pruned

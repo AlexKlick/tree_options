@@ -431,6 +431,32 @@ export interface MarketResponse {
   watchlist: string[]
   symbols: Record<string, MarketQuote>
   errors: Record<string, string>
+  watch_origins?: Record<string, string>
+  proposals?: WatchProposal[]
+  last_proposal_run?: ProposalRun | null
+}
+
+/** M6: an LLM watchlist suggestion awaiting the operator's decision. */
+export interface WatchProposal {
+  id: string
+  symbol: string
+  action: 'add' | 'remove'
+  rationale: string
+  confidence: number | null
+  status: 'pending' | 'approved' | 'dismissed'
+  created_at: string
+  provenance?: { provider: string | null; model: string | null; trigger?: string }
+}
+
+export interface ProposalRun {
+  at: string
+  status: 'ok' | 'failed'
+  provider: string | null
+  model: string | null
+  elapsed_s: number | null
+  trigger: string
+  notes: string[]
+  added: number
 }
 
 export interface NewsItem {

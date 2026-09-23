@@ -62,6 +62,20 @@ export const watchOp = (
     body: JSON.stringify({ op, symbol }),
   })
 
+/** Operator decision on an LLM proposal (idempotent runner-side). */
+export const decideProposal = (
+  op: 'approve' | 'dismiss',
+  proposalId: string,
+): Promise<{ accepted: boolean; request_id: string }> =>
+  fetchJson('api/market/watch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ op, proposal_id: proposalId }),
+  })
+
+export const requestProposals = (): Promise<{ accepted: boolean; request_id: string }> =>
+  fetchJson('api/market/propose', { method: 'POST' })
+
 // Valuation scenario (M4): only the structure KEY crosses the wire; the
 // runner resolves prices from its own artifacts.
 export const requestScenario = (

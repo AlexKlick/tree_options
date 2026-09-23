@@ -461,8 +461,34 @@ def create_app(
                 "age_seconds": _age(doc.get("last_refresh"), now_et()),
             }
         base["watchlist"] = [row.get("symbol") for row in wl.get("symbols", [])]
+        base["watch_origins"] = {
+            row.get("symbol"): row.get("origin") for row in wl.get("symbols", [])
+        }
+        base["proposals"] = [
+            p for p in wl.get("proposals", []) if p.get("status") == "pending"
+        ]
+        base["last_proposal_run"] = wl.get("last_proposal_run")
         base["now"] = now_et().isoformat()
         return base
+
+    @app.post("/api/market/propose", status_code=202)
+    def api_market_propose() -> dict[str, object]:
+        """Ask the discovery runner's LLM chain for watchlist ideas. The
+        result lands as PENDING proposals the operator approves/dismisses."""
+        request_id = uuid.uuid4().hex[:12]
+        try:
+            write_request(
+                discovery_root / "spool",
+                "propose",
+                request_id,
+                {"request_ts": now_et().isoformat()},
+            )
+        except OSError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"spool unwritable ({exc}); trex-web ReadWritePaths missing?",
+            ) from exc
+        return {"accepted": True, "request_id": request_id}
 
     @app.get("/api/market/{sym}")
     def api_market_symbol(sym: str) -> dict[str, object]:

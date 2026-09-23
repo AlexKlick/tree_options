@@ -1255,3 +1255,31 @@ class TestBacktestApi:
         doc = resp.json()
         assert doc["label"] == LABEL
         assert isinstance(doc["age_seconds"], int)
+
+
+class TestProposalsApi:
+    def test_market_carries_pending_proposals_and_last_run(self, tmp_path: Path) -> None:
+        disc = tmp_path / "discovery"
+        disc.mkdir(parents=True)
+        (disc / "watchlist.json").write_text(json.dumps({
+            "version": 1,
+            "symbols": [{"symbol": "SPY", "origin": "seed", "added_at": "x"}],
+            "proposals": [
+                {"id": "a1", "symbol": "TSM", "action": "add", "status": "pending",
+                 "rationale": "r", "confidence": 0.6, "created_at": "x",
+                 "provenance": {"provider": "local", "model": "Qwen/Qwen3.8-27B"}},
+                {"id": "a2", "symbol": "SMH", "action": "add", "status": "dismissed"},
+            ],
+            "last_proposal_run": {"status": "ok", "provider": "local", "added": 1},
+        }))
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        body = client.get("/api/market").json()
+        assert [p["id"] for p in body["proposals"]] == ["a1"]
+        assert body["last_proposal_run"]["provider"] == "local"
+        assert body["watch_origins"] == {"SPY": "seed"}
+
+    def test_propose_post_spools(self, tmp_path: Path) -> None:
+        disc = tmp_path / "discovery"
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        assert client.post("/api/market/propose").status_code == 202
+        assert len(list((disc / "spool").glob("propose.request.*"))) == 1

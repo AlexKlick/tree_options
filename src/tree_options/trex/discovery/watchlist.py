@@ -11,11 +11,15 @@ from __future__ import annotations
 
 import json
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 SYMBOL_RE = re.compile(r"^[A-Z.]{1,6}$")
+DISMISS_SUPPRESS_SECONDS = 7 * 86_400  # no reviving a dismissal for a week
+DECIDED_RETAIN_SECONDS = 30 * 86_400
+MAX_PROPOSALS_KEPT = 200
 
 
 def seed_symbols(cfg: Any, plans_dir: Path | None) -> list[str]:
@@ -100,9 +104,7 @@ def apply_watch_op(
         _save(state_dir, doc)
         return {"status": "removed", "symbol": sym}
     elif op in ("approve", "dismiss"):
-        # proposal lifecycle lands with M6; the op must still be valid here
-        # so the spool can drain without erroring
-        return {"status": "noop", "detail": "proposals not live yet"}
+        return _decide(state_dir, doc, op, proposal_id, stamp)
     else:
         return {"status": "invalid", "detail": f"unknown op {op!r}"}
     _save(state_dir, doc)
@@ -114,3 +116,110 @@ def _save(state_dir: Path, doc: dict[str, Any]) -> None:
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(doc, indent=2) + "\n")
     tmp.replace(path)
+
+
+# -- LLM proposal lifecycle (M6, Codex-arch #12) ----------------------------
+#
+# Proposals live HERE (never in the 30-run pruned scan store). Each has a
+# durable id + provenance; pending proposals are never regenerated over,
+# dismissed ones are not revived for DISMISS_SUPPRESS_SECONDS, and every
+# decision is idempotent (the spool may redeliver).
+
+
+def _age_seconds(stamp: object, now: datetime) -> float | None:
+    if not isinstance(stamp, str):
+        return None
+    try:
+        return (now - datetime.fromisoformat(stamp)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def blocked_symbols(doc: dict[str, Any], now: datetime) -> set[str]:
+    """Symbols the model must not propose: pending, or dismissed recently."""
+    out: set[str] = set()
+    for prop in doc.get("proposals", []):
+        status = prop.get("status")
+        if status == "pending":
+            out.add(prop["symbol"])
+        elif status == "dismissed":
+            age = _age_seconds(prop.get("decided_at"), now)
+            if age is None or age < DISMISS_SUPPRESS_SECONDS:
+                out.add(prop["symbol"])
+    return out
+
+
+def record_proposals(
+    state_dir: Path,
+    proposals: list[dict[str, Any]],
+    provenance: dict[str, Any],
+    now: datetime,
+    run_note: dict[str, Any] | None = None,
+) -> list[str]:
+    """Append vetted proposals as pending; returns the new ids. Re-checks
+    the blocked set at write time (a concurrent approve may have landed)."""
+    doc = load_watchlist(state_dir)
+    blocked = blocked_symbols(doc, now)
+    props: list[dict[str, Any]] = doc.setdefault("proposals", [])
+    added: list[str] = []
+    for item in proposals:
+        if item["symbol"] in blocked:
+            continue
+        pid = uuid.uuid4().hex[:10]
+        props.append(
+            {
+                "id": pid,
+                "symbol": item["symbol"],
+                "action": item["action"],
+                "rationale": item.get("rationale", ""),
+                "confidence": item.get("confidence"),
+                "status": "pending",
+                "created_at": now.isoformat(),
+                "decided_at": None,
+                "provenance": provenance,
+            }
+        )
+        blocked.add(item["symbol"])
+        added.append(pid)
+    # prune long-decided entries; pending ones are never pruned
+    kept = [
+        p
+        for p in props
+        if p.get("status") == "pending"
+        or (_age_seconds(p.get("decided_at"), now) or 0) < DECIDED_RETAIN_SECONDS
+    ]
+    doc["proposals"] = kept[-MAX_PROPOSALS_KEPT:]
+    if run_note is not None:
+        doc["last_proposal_run"] = {**run_note, "at": now.isoformat(), "added": len(added)}
+    _save(state_dir, doc)
+    return added
+
+
+def _decide(
+    state_dir: Path,
+    doc: dict[str, Any],
+    op: str,
+    proposal_id: str | None,
+    stamp: str,
+) -> dict[str, Any]:
+    prop = next(
+        (p for p in doc.get("proposals", []) if p.get("id") == proposal_id), None
+    )
+    if prop is None:
+        return {"status": "invalid", "detail": f"unknown proposal {proposal_id!r}"}
+    if prop.get("status") != "pending":
+        return {"status": "noop", "detail": f"proposal already {prop.get('status')}"}
+    prop["status"] = "approved" if op == "approve" else "dismissed"
+    prop["decided_at"] = stamp
+    sym = prop["symbol"]
+    if op == "approve":
+        have = {row["symbol"] for row in doc["symbols"]}
+        if prop["action"] == "add" and sym not in have:
+            doc["symbols"].append(
+                {"symbol": sym, "origin": "llm", "added_at": stamp, "proposal_id": prop["id"]}
+            )
+        elif prop["action"] == "remove":
+            doc["symbols"] = [row for row in doc["symbols"] if row["symbol"] != sym]
+    _save(state_dir, doc)
+    return {"status": prop["status"], "symbol": sym, "proposal_id": prop["id"]}
+

@@ -513,6 +513,168 @@ def _backtest_tick(
         _fail(f"{type(exc).__name__}: {exc}")
 
 
+PROPOSE_MIN_INTERVAL_SECONDS = 6 * 3600  # post-scan hook cadence cap
+
+
+def _proposal_context(state_dir: Path, symbols: list[str], now: datetime) -> dict[str, Any]:
+    """Compact, runner-owned facts for the model (no prices invented)."""
+    from tree_options.trex.discovery.market import MarketCache
+
+    quotes: dict[str, Any] = {}
+    try:
+        quotes = json.loads((state_dir / "market.json").read_text()).get("symbols", {})
+    except (OSError, ValueError):
+        quotes = {}
+    cache = MarketCache(state_dir / "market" / "cache")
+    watch: list[dict[str, Any]] = []
+    for sym in symbols:
+        q = quotes.get(sym) or {}
+        env = cache.get_envelope("news", sym)
+        items = ((env or {}).get("payload") or {}).get("items") or []
+        watch.append(
+            {
+                "symbol": sym,
+                "change_pct": q.get("change_pct"),
+                "iv30": q.get("iv30"),
+                "headlines": [str(i.get("title", ""))[:100] for i in items[:3]],
+            }
+        )
+    top: list[dict[str, Any]] = []
+    try:
+        payload = json.loads((state_dir / "latest.json").read_text()).get("payload", {})
+        for row in payload.get("candidates", [])[:8]:
+            top.append(
+                {k: row.get(k) for k in (
+                    "underlying", "expiry", "dte", "long_strike", "short_strike",
+                    "debit_mid", "yield_ratio",
+                )}
+            )
+    except (OSError, ValueError):
+        pass
+    return {"today": now.date().isoformat(), "watchlist": watch, "latest_scan_top": top}
+
+
+def _run_proposals(
+    state_dir: Path,
+    cfg: ScanConfig,
+    now: datetime,
+    trigger: str,
+    source_id: str,
+    llm_transport: object,
+    market_transport: object | None,
+) -> dict[str, Any]:
+    """One propose pass: context -> provider chain -> vet -> verify ->
+    record as PENDING (the operator approves or dismisses). Never raises
+    into the caller's scan handling; a failed pass records its notes."""
+    from tree_options.trex.discovery import llm
+    from tree_options.trex.discovery.config import llm_chain
+    from tree_options.trex.discovery.market import fetch_equity_quote
+    from tree_options.trex.discovery.watchlist import (
+        blocked_symbols,
+        load_watchlist,
+        record_proposals,
+    )
+
+    doc = load_watchlist(state_dir)
+    watched = {row["symbol"] for row in doc.get("symbols", [])}
+    blocked = blocked_symbols(doc, now)
+    run = llm.propose(
+        llm_chain(cfg.llm_provider),
+        _proposal_context(state_dir, sorted(watched), now),
+        watched=watched,
+        blocked=blocked,
+        max_n=cfg.llm_max_proposals,
+        model_override=cfg.llm_model,
+        transport=llm_transport,  # type: ignore[arg-type]
+    )
+    vetted: list[dict[str, Any]] = []
+    for prop in run["proposals"]:
+        if prop["action"] == "add" and market_transport is not None:
+            try:
+                quote = fetch_equity_quote(prop["symbol"], market_transport)  # type: ignore[arg-type]
+                real = quote.get("bid") is not None and quote.get("ask") is not None
+            except Exception:
+                real = False
+            if not real:
+                run["notes"].append(f"{prop['symbol']}: no CBOE quote - unverified ticker dropped")
+                continue
+        vetted.append(prop)
+    record_proposals(
+        state_dir,
+        vetted,
+        provenance={
+            "provider": run["provider"],
+            "model": run["model"],
+            "trigger": trigger,
+            "source_id": source_id,
+        },
+        now=now,
+        run_note={
+            "status": run["status"],
+            "provider": run["provider"],
+            "model": run["model"],
+            "elapsed_s": run["elapsed_s"],
+            "trigger": trigger,
+            "notes": run["notes"][:8],
+        },
+    )
+    return run
+
+
+def _propose_tick(
+    state_dir: Path,
+    cfg: ScanConfig,
+    now: datetime,
+    llm_transport: object | None,
+    market_transport: object | None,
+) -> None:
+    """On-demand proposals from the spool (MarketPage button)."""
+    from tree_options.trex.discovery.artifact import claim_request, complete_request
+
+    if llm_transport is None:
+        return
+    claim = claim_request(state_dir / "spool", ["propose"], now=now)
+    if claim is None:
+        return
+    _kind, req_id, _payload = claim
+    try:
+        run = _run_proposals(
+            state_dir, cfg, now, "operator", req_id, llm_transport, market_transport
+        )
+        result = {"status": run["status"], "provider": run["provider"],
+                  "count": len(run["proposals"])}
+    except Exception as exc:
+        log.exception("proposal pass failed")
+        result = {"status": "error", "detail": f"{type(exc).__name__}"}
+    complete_request(
+        state_dir / "spool", "propose", req_id,
+        {"request_id": req_id, **result, "finished_at": now_et().isoformat()},
+    )
+
+
+def _post_scan_proposals(
+    state_dir: Path,
+    cfg: ScanConfig,
+    now: datetime,
+    run_id: str,
+    llm_transport: object | None,
+    market_transport: object | None,
+) -> None:
+    """Post-scan hook: at most one pass per PROPOSE_MIN_INTERVAL_SECONDS."""
+    from tree_options.trex.discovery.watchlist import load_watchlist
+
+    if llm_transport is None:
+        return
+    last = (load_watchlist(state_dir).get("last_proposal_run") or {}).get("at")
+    if isinstance(last, str):
+        try:
+            if (now - datetime.fromisoformat(last)).total_seconds() < PROPOSE_MIN_INTERVAL_SECONDS:
+                return
+        except ValueError:
+            pass
+    _run_proposals(state_dir, cfg, now, "post-scan", run_id, llm_transport, market_transport)
+
+
 class ConnectBackoff:
     """Spaces out reconnect attempts to a dead gateway."""
 
@@ -572,6 +734,7 @@ def serve_tick(
     repo: Path | None = None,
     market_transport: object | None = None,
     broker_ready: bool = True,
+    llm_transport: object | None = None,
 ) -> bool:
     """One serve-loop cycle: manual request first, then the auto rescan.
 
@@ -587,6 +750,10 @@ def serve_tick(
         _backtest_tick(state_dir, now, allow_fetch=market_transport is not None)
     except Exception:
         log.exception("backtest tick failed (scan handling unaffected)")
+    try:
+        _propose_tick(state_dir, cfg, now, llm_transport, market_transport)
+    except Exception:
+        log.exception("propose tick failed (scan handling unaffected)")
     spool = state_dir / "spool"
     claim = claim_scan_request(spool, now=now)
     if claim is not None:
@@ -619,6 +786,12 @@ def serve_tick(
                 _post_scan_shadow(state_dir, repo, now)
             except Exception:
                 log.exception("post-scan shadow hook failed (scan unaffected)")
+            try:
+                _post_scan_proposals(
+                    state_dir, cfg, now, request_id, llm_transport, market_transport
+                )
+            except Exception:
+                log.exception("post-scan proposals failed (scan unaffected)")
             return True
         except Exception as exc:
             log.exception("scan for request %s failed", request_id)
@@ -651,6 +824,10 @@ def serve_tick(
             _post_scan_shadow(state_dir, repo, now)
         except Exception:
             log.exception("post-scan shadow hook failed (scan unaffected)")
+        try:
+            _post_scan_proposals(state_dir, cfg, now, "auto", llm_transport, market_transport)
+        except Exception:
+            log.exception("post-scan proposals failed (scan unaffected)")
         return True
     return False
 
@@ -668,6 +845,7 @@ def serve(
         # account values would go stale between scans; prefer the source's
         # pumping sleep when it has one (tests use plain sources without).
         sleeper = getattr(source, "sleep", None) or time.sleep
+        from tree_options.trex.discovery.llm import urllib_post
         from tree_options.trex.discovery.market import urllib_transport
 
         backoff = ConnectBackoff()
@@ -680,6 +858,7 @@ def serve(
                     repo=repo,
                     market_transport=urllib_transport,
                     broker_ready=_broker_ready(source, backoff),
+                    llm_transport=urllib_post,
                 )
             except Exception:
                 log.exception("serve tick failed")

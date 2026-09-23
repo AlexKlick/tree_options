@@ -9,6 +9,7 @@ import { usePoll } from '../hooks/usePoll'
 import type { MarketQuote } from '../lib/types'
 import { AppShell } from './AppShell'
 import { Pill } from './Pill'
+import { ProposalsCard } from './ProposalsCard'
 
 function agePill(seconds: number | null): JSX.Element {
   if (seconds === null) return <Pill variant="empty">○ no snapshot yet</Pill>
@@ -122,6 +123,15 @@ export function MarketPage() {
               )}
             </div>
           ))}
+        </div>
+      )}
+      {d && (
+        <div style={{ marginTop: 18 }}>
+          <ProposalsCard
+            proposals={d.proposals ?? []}
+            lastRun={d.last_proposal_run}
+            onChanged={poll.refresh}
+          />
         </div>
       )}
       {d?.errors && Object.keys(d.errors).length > 0 && (

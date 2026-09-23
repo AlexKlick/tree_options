@@ -431,3 +431,21 @@ footer {
 /* valuation scenario (M4) */
 .scenario-panel { margin-top: 18px; }
 .scenario-panel .kv dd { overflow-wrap: anywhere; }
+
+/* LLM proposals (M6) */
+.proposal-list { list-style: none; margin: 8px 0 0; padding: 0; }
+.proposal-row {
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-top: 1px solid var(--border-soft);
+}
+.proposal-main { min-width: 0; }
+.proposal-why { font-size: 0.86rem; margin-top: 2px; }
+.proposal-prov { font-size: 0.74rem; margin-top: 2px; }
+.proposal-actions { display: flex; gap: 6px; flex-shrink: 0; }
+@media (max-width: 720px) {
+  .proposal-row { flex-direction: column; }
+}
