@@ -38,7 +38,7 @@ from typing import Any
 import numpy as np
 
 from tree_options.desk import rv, stats
-from tree_options.desk.sessions import Calendar
+from tree_options.desk.sessions import Calendar, without_phantoms
 
 HORIZONS: tuple[int, ...] = (5, 20, 63, 126)
 WEEK = 5
@@ -222,7 +222,14 @@ def build_har_data(
     through: date | None = None,
 ) -> HarData:
     """Per-name proxies on the NYSE grid spanning the names' panel bars
-    (only bars dated <= ``through`` when given: point-in-time truncation)."""
+    (only bars dated <= ``through`` when given: point-in-time truncation).
+
+    A calendar session on which none of ``names`` has a bar (2025-01-09:
+    listed by both static calendars, the NYSE was closed) is a phantom and
+    is dropped from the grid and from the event-pair session count, so it
+    never voids a window or shifts a lag, and the grid is the same whether
+    or not the calendar lists it (whether a day is a phantom depends only
+    on bars dated that day: point in time)."""
     cut = through.isoformat() if through is not None else None
     bars: dict[str, dict[str, Mapping[str, Any]]] = {}
     for name in names:
@@ -232,6 +239,7 @@ def build_har_data(
     if not dated:
         raise ValueError("no panel bars for the requested names")
     first, last = date.fromisoformat(min(dated)), date.fromisoformat(max(dated))
+    cal = without_phantoms(cal, bars.values())
     all_sessions = cal.sessions()
     lo = bisect.bisect_left(all_sessions, first)
     hi = bisect.bisect_right(all_sessions, last)

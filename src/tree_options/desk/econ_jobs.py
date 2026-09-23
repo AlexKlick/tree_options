@@ -18,7 +18,7 @@ from typing import Any
 
 from tree_options.desk import evaluate, ivhist, paths, surface
 from tree_options.desk.panel import PanelLocked, read_panel_with_sha256
-from tree_options.desk.sessions import Calendar
+from tree_options.desk.sessions import Calendar, without_phantoms
 from tree_options.desk.store import atomic_write_bytes, atomic_write_json
 from tree_options.desk.universe import CHAIN_UNIVERSE
 
@@ -110,13 +110,20 @@ def run_features(session: date, cal: Calendar) -> int:
         rate_label = f"declared-constant {rate} (no DTB3 observation on or before {session})"
         warnings.append(rate_label)
     panel, panel_sha = load_panel(warnings)
+    eff: Calendar = cal
+    if panel is not None:
+        # sessions no panel name has a bar for (2025-01-09) are not sessions
+        eff = without_phantoms(cal, panel.values())
+        if not eff.is_session(session):
+            print(f"features: {session} has no bar for any panel name", file=sys.stderr)
+            return 2
     earnings, earnings_sha = load_earnings(warnings)
     history, history_sha = load_history(store, warnings)
     har_names = [n for n in CHAIN_UNIVERSE if panel is not None and n in panel]
     doc = surface.build_features(
         session,
         chains=chains,
-        cal=cal,
+        cal=eff,
         rate=rate,
         rate_label=rate_label,
         panel=panel,

@@ -434,9 +434,31 @@ def iv30_record(
     return {"iv30": iv, "method": how, "spot": spot, "rate": rate, "expiries": used}
 
 
+def observed_sessions(scan: CacheScan) -> set[date]:
+    out: set[date] = set()
+    for by_session in scan.options.values():
+        out.update(by_session)
+    for spots in scan.spot.values():
+        out.update(spots)
+    for bad in scan.spot_conflicts.values():
+        out.update(bad)
+    return out
+
+
+def drop_phantoms(sessions: Sequence[date], observed: set[date]) -> list[date]:
+    """Drop sessions inside the observed span that no name has any bar for
+    (2025-01-09: calendar-listed, the market was closed); the history is
+    then identical whether or not the calendar lists such a day."""
+    if not observed:
+        return list(sessions)
+    lo, hi = min(observed), max(observed)
+    return [d for d in sessions if d in observed or not lo <= d <= hi]
+
+
 def build_history(
     scan: CacheScan, names: Sequence[str], sessions: Sequence[date], rates: RateSource
 ) -> dict[str, Any]:
+    sessions = drop_phantoms(sessions, observed_sessions(scan))
     out: dict[str, Any] = {}
     for name in names:
         opts = scan.options.get(name, {})
