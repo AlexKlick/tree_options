@@ -11,6 +11,7 @@ import { getExitMachine } from '../lib/api'
 import { ago, etDateTime } from '../lib/format'
 import { usePoll } from '../hooks/usePoll'
 import type { ExitMachineStatus } from '../lib/types'
+import { WATCH_STALE_S, watchAge } from '../lib/watch'
 
 const HEADLINE: Record<string, string> = {
   monitor_down: 'Exit machine is not running',
@@ -42,16 +43,17 @@ function Unknown({ why, last }: { why: string; last: ExitMachineStatus | null })
 }
 
 export function ExitMachineBanner() {
-  const poll = usePoll(getExitMachine, 30_000)
+  const poll = usePoll(getExitMachine, 30_000, 95_000)
   const e = poll.data
   const nowS = Date.now() / 1000
 
   if (poll.error) return <Unknown why="couldn't read the exit-machine watchdog" last={e} />
   if (!e) return null
-  if (e.watch_stale) {
+  const age = watchAge(e, nowS)
+  if (e.watch_stale || poll.isStale || age === null || age > WATCH_STALE_S) {
     const why =
-      e.age_seconds !== null
-        ? `exit-machine watchdog last reported ${ago(e.age_seconds)} ago`
+      age !== null
+        ? `exit-machine watchdog last reported ${ago(age)} ago`
         : 'exit-machine watchdog not reporting'
     return <Unknown why={why} last={e} />
   }
@@ -74,6 +76,9 @@ export function ExitMachineBanner() {
         ○ Exit machine waiting for the IB Gateway
       </div>
     )
+  }
+  if (e.status !== 'ok' && e.status !== 'idle') {
+    return <Unknown why="exit-machine watchdog has no verdict" last={e} />
   }
   return null
 }

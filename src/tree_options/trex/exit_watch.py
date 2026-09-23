@@ -7,17 +7,23 @@ systemd and the heartbeat both look fine). Either way open positions have
 no touch or time-stop exits, and until 2026-09-23 nothing said so.
 
 Each run scans the run dirs under ``~/.local/state/trex`` for books with
-exposure (a structure entering, open or exiting) and classifies:
+exposure (a structure entering, open or exiting; an unreadable book.json
+counts, since exposure can't be ruled out) and classifies:
 
 * ``idle``: no exposure, nothing to guard;
 * ``ok``;
-* ``waiting_for_gateway``: the monitor is down or failing while the
-  gateway is not settled-healthy. That alarm is the gateway watchdog's;
-* ``monitor_down``: heartbeat older than HEARTBEAT_STALE_S with the gateway
-  ok for GATEWAY_SETTLE_S (or its watchdog silent: no one to blame);
-* ``monitor_failing``: in market hours, TICK_FAILURES_BAD ticks failed in a
-  row, or none succeeded for TICK_SILENT_S (from the monitor's
-  ``monitor.json``).
+* ``waiting_for_gateway``: the monitor is down or failing because of the
+  gateway: the gateway watchdog is alarming (its push covers it), or the
+  gateway is not settled-healthy and the outage is under
+  ATTRIBUTION_MAX_S (a gateway that flaps without ever alarming can't
+  hide a monitor outage for longer);
+* ``monitor_down``: heartbeat older than HEARTBEAT_STALE_S (or the book is
+  unreadable) and the gateway not to blame (a silent gateway watchdog
+  never takes the blame);
+* ``monitor_failing``: the monitor beats but its ``monitor.json`` is absent
+  or older than HEALTH_STALE_S (the loop never finishes); or, in market
+  hours, TICK_FAILURES_BAD ticks failed in a row or none succeeded for
+  TICK_SILENT_S (the last good tick survives monitor restarts).
 
 Pushes follow trex.alert_policy; the verdict goes to
 ``~/.local/state/trex/exit_watch.json`` for the cockpit banner. Detection
@@ -38,6 +44,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from tree_options.trex import gateway_watch
 from tree_options.trex.alert_policy import (
     Urgency,
     et_label,
@@ -55,8 +62,10 @@ DEFAULT_GATEWAY_STATE = STATE_ROOT / "gateway.json"
 UNIT = "trex-monitor.service"
 
 HEARTBEAT_STALE_S = 120  # the loop beats every ~20 s
+HEALTH_STALE_S = 180  # monitor.json is written at start and after every loop
 GATEWAY_SETTLE_S = 120  # a recovered gateway: ExecStartPre + connect + qualify
 GATEWAY_WATCH_STALE_S = 300  # an older gateway.json says nothing
+ATTRIBUTION_MAX_S = 900  # a non-alarming gateway can excuse an outage this long
 TICK_FAILURES_BAD = 3
 TICK_SILENT_S = 180
 MAX_EVENTS = 30
@@ -64,6 +73,7 @@ MAX_EVENTS = 30
 EXPOSED = frozenset({"enter_working", "open", "exit_working"})
 BAD = frozenset({"monitor_down", "monitor_failing"})
 HEALTHY = frozenset({"ok", "idle"})
+GATEWAY_ALARMS = gateway_watch.BAD  # states the gateway watchdog pushes for
 _SEVERITY = ("idle", "ok", "waiting_for_gateway", "monitor_failing", "monitor_down")
 
 
@@ -72,6 +82,7 @@ class BookObs:
     plan: str  # run dir name
     heartbeat: float | None
     health: dict[str, Any] | None  # monitor.json, None if absent/unreadable
+    unreadable: bool = False  # book.json exists but can't be read: exposure unknown
 
 
 @dataclass(frozen=True)
@@ -115,34 +126,57 @@ def _read_json(path: Path) -> dict[str, Any] | None:
 
 
 def scan_books(root: Path) -> list[BookObs]:
-    """Books with exposure under ``root`` (one run dir per plan)."""
+    """Books with exposure under ``root`` (one run dir per plan). A book.json
+    that exists but can't be read is included (exposure can't be ruled
+    out); a root that can't be listed raises, so the run fails and the
+    banner goes stale rather than reading "idle"."""
     try:
-        dirs = sorted(p for p in root.iterdir() if p.is_dir())
-    except OSError:
-        return []
+        entries = list(root.iterdir())
+    except FileNotFoundError:
+        return []  # nothing has ever run here
     books: list[BookObs] = []
-    for d in dirs:
-        raw = _read_json(d / "book.json")
-        structures = raw.get("structures") if raw else None
-        if not isinstance(structures, dict) or not any(
-            isinstance(s, dict) and s.get("status") in EXPOSED for s in structures.values()
-        ):
+    for d in sorted(p for p in entries if p.is_dir()):
+        path = d / "book.json"
+        if not path.exists():
             continue
-        assert raw is not None
-        books.append(BookObs(d.name, _epoch(raw.get("heartbeat")), _read_json(d / "monitor.json")))
+        raw = _read_json(path)
+        structures = raw.get("structures") if raw else None
+        if raw is None or not isinstance(structures, dict):
+            books.append(BookObs(d.name, None, _read_json(d / "monitor.json"), unreadable=True))
+            continue
+        if any(isinstance(s, dict) and s.get("status") in EXPOSED for s in structures.values()):
+            books.append(
+                BookObs(d.name, _epoch(raw.get("heartbeat")), _read_json(d / "monitor.json"))
+            )
     return books
 
 
-def _book_verdict(b: BookObs, obs: ExitObs) -> tuple[str, float | None, str]:
-    gateway_to_blame = obs.gateway_status is not None and not (
-        obs.gateway_status == "ok"
-        and obs.gateway_since is not None
+def _book_verdict(
+    b: BookObs, obs: ExitObs, missing_since: float | None
+) -> tuple[str, float | None, str]:
+    """(status, since, detail) for one book. ``missing_since``: when this
+    watchdog first saw a beating monitor with no tick health."""
+    if b.unreadable:
+        return "monitor_down", None, f"{b.plan}: book.json unreadable (exposure unknown)"
+    gw = obs.gateway_status
+    gateway_unsettled = gw is not None and not (
+        gw == "ok" and obs.gateway_since is not None
         and obs.now - obs.gateway_since >= GATEWAY_SETTLE_S
     )
-    waiting = f"{b.plan}: monitor waiting for the IB Gateway ({obs.gateway_status})"
+
+    def blame_gateway(outage_since: float | None) -> bool:
+        if gw in GATEWAY_ALARMS:
+            return True  # its push covers this outage
+        return (
+            gateway_unsettled
+            and outage_since is not None
+            and obs.now - outage_since < ATTRIBUTION_MAX_S
+        )
+
+    waiting = f"{b.plan}: monitor waiting for the IB Gateway ({gw})"
     age = obs.now - b.heartbeat if b.heartbeat is not None else None
     if age is None or age > HEARTBEAT_STALE_S:
-        if gateway_to_blame:
+        if blame_gateway(b.heartbeat):
             return "waiting_for_gateway", b.heartbeat, waiting
         what = f"no heartbeat for {span_label(age)}" if age is not None else "no heartbeat yet"
         unit = f" (unit {obs.unit_state})" if obs.unit_state else ""
@@ -150,15 +184,24 @@ def _book_verdict(b: BookObs, obs: ExitObs) -> tuple[str, float | None, str]:
 
     h = b.health
     at = _num(h.get("at")) if h else None
-    if h is None or at is None or obs.now - at > HEARTBEAT_STALE_S:
-        return "ok", None, f"{b.plan}: heartbeat {int(age)}s ago; tick health not reported"
+    if h is None or at is None:
+        since = missing_since if missing_since is not None else obs.now
+        if obs.now - since > HEALTH_STALE_S:
+            return "monitor_failing", since, (
+                f"{b.plan}: tick health not reported for {span_label(obs.now - since)}"
+            )
+        return "ok", None, f"{b.plan}: heartbeat {int(age)}s ago; tick health not reported yet"
+    if obs.now - at > HEALTH_STALE_S:
+        return "monitor_failing", at, (
+            f"{b.plan}: tick health last reported {span_label(obs.now - at)} ago"
+        )
     failures = int(h.get("tick_failures") or 0)
     ok_at = _num(h.get("last_tick_ok_at"))
     failing = failures >= TICK_FAILURES_BAD or (
         ok_at is not None and obs.now - ok_at > TICK_SILENT_S
     )
     if failing and obs.market:
-        if gateway_to_blame:
+        if blame_gateway(ok_at):
             return "waiting_for_gateway", ok_at, waiting
         return "monitor_failing", ok_at, (
             f"{b.plan}: {failures} checks failed in a row (last: {h.get('last_error')})"
@@ -166,25 +209,42 @@ def _book_verdict(b: BookObs, obs: ExitObs) -> tuple[str, float | None, str]:
     return "ok", None, f"{b.plan}: heartbeat {int(age)}s ago"
 
 
-def book_rows(obs: ExitObs) -> list[dict[str, Any]]:
-    rows = []
+def _assess(
+    obs: ExitObs, health_missing_since: dict[str, float]
+) -> tuple[list[dict[str, Any]], dict[str, float]]:
+    """Per-book rows, plus when each beating-but-silent monitor was first
+    seen without tick health (timed here: the heartbeat can't say)."""
+    rows: list[dict[str, Any]] = []
+    missing: dict[str, float] = {}
     for b in obs.books:
-        status, since, detail = _book_verdict(b, obs)
+        beating = b.heartbeat is not None and obs.now - b.heartbeat <= HEARTBEAT_STALE_S
+        if beating and not b.unreadable and (b.health is None or _num(b.health.get("at")) is None):
+            missing[b.plan] = health_missing_since.get(b.plan, obs.now)
+        status, since, detail = _book_verdict(b, obs, missing.get(b.plan))
         age = round(obs.now - b.heartbeat) if b.heartbeat is not None else None
         rows.append({"plan": b.plan, "status": status, "since": since, "detail": detail,
                      "heartbeat_age": age})
-    return rows
+    return rows, missing
 
 
-def classify(obs: ExitObs) -> tuple[str, float | None, str]:
-    """(status, since-hint, detail): the worst book decides."""
-    rows = book_rows(obs)
+def book_rows(obs: ExitObs) -> list[dict[str, Any]]:
+    return _assess(obs, {})[0]
+
+
+def _verdict(rows: list[dict[str, Any]]) -> tuple[str, float | None, str]:
     if not rows:
         return "idle", None, "no open positions"
     status = max((r["status"] for r in rows), key=_SEVERITY.index)
     worst = [r for r in rows if r["status"] == status]
     since = min((r["since"] for r in worst if r["since"] is not None), default=None)
     return status, since, "; ".join(r["detail"] for r in worst)
+
+
+def classify(
+    obs: ExitObs, health_missing_since: dict[str, float] | None = None
+) -> tuple[str, float | None, str]:
+    """(status, since-hint, detail): the worst book decides."""
+    return _verdict(_assess(obs, health_missing_since or {})[0])
 
 
 def _message(status: str, since: float, now: float) -> tuple[str, str]:
@@ -204,7 +264,9 @@ def decide(
     obs: ExitObs, prior: dict[str, Any], *, urgency: Urgency
 ) -> tuple[dict[str, Any], list[Action]]:
     """Pure policy: next persisted state + pushes to send."""
-    status, since_hint, detail = classify(obs)
+    prior_missing = prior.get("health_missing_since")
+    rows, missing = _assess(obs, prior_missing if isinstance(prior_missing, dict) else {})
+    status, since_hint, detail = _verdict(rows)
     prev = prior.get("status")
     if prev == status and isinstance(prior.get("since"), (int, float)):
         since = float(prior["since"])
@@ -236,7 +298,8 @@ def decide(
         "market": obs.market,
         "gateway_status": obs.gateway_status,
         "unit_state": obs.unit_state,
-        "books": book_rows(obs),
+        "books": rows,
+        "health_missing_since": missing,
         **notified,
         "events": events,
     }

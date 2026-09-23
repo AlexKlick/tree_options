@@ -50,12 +50,18 @@ entering, open or exiting) and reads `book.json` (heartbeat) plus the
 monitor's `monitor.json` (tick outcome, error class only).
 
 States: `idle` (no open positions) · `ok` · `waiting_for_gateway` (the
-monitor is down or failing while the gateway is not ok for ≥ 2 min: the
-gateway alarm covers it, no second push) · `monitor_down` (heartbeat
-> 2 min old, gateway fine or its watchdog silent) · `monitor_failing`
-(market hours: 3 failed ticks in a row or none good for 3 min). Detection
-only: the monitor's restarts are systemd's (`Restart=on-failure`). Banner:
-`GET /api/exit-machine`.
+monitor is down or failing because of the gateway: the gateway watchdog is
+alarming, or the gateway isn't ok for ≥ 2 min and the outage is < 15 min;
+no second push) · `monitor_down` (heartbeat > 2 min old or book.json
+unreadable, and the gateway not to blame; a silent gateway watchdog never
+takes the blame) · `monitor_failing` (beating but `monitor.json` absent or
+older than 3 min, any hour; or in market hours 3 failed ticks in a row or
+none good for 3 min; the last good tick survives monitor restarts).
+Detection only: the monitor's restarts are systemd's
+(`Restart=on-failure`). Banner: `GET /api/exit-machine`.
+
+Deploy after the monitor runs code that writes `monitor.json`, or a
+monitor without it alarms as `monitor_failing` after 3 minutes.
 
 ## Phone push (ntfy)
 

@@ -152,3 +152,32 @@ class TestNextPush:
         assert _push("down", prior, LOUD)[0] is None
         prior = {"notify_failed_at": NOW - 301}
         assert _push("down", prior, LOUD)[0] is not None
+
+
+class TestCodexFixes:
+    """Codex review of the exit-watch commit (2026-09-23)."""
+
+    def test_configured_quiet_hours_hold_even_market_alarms(self) -> None:
+        """P2: market urgency hard-coded quiet=False, so QUIET_HOURS ending
+        08:00 still buzzed at 07:15 (09:15 ET)."""
+        late = QuietHours(time(22, 0), time(8, 0), MT)
+        got = urgency(_at(MT, *WED, 7, 15), exposed=True, quiet=late)
+        assert got == Urgency("high", REMIND_MARKET_S, quiet=True)
+
+    def test_a_failed_reminder_still_retries_when_the_cadence_lengthens(self) -> None:
+        """P2: a reminder failing at 16:11 lost its 5-min retry once the
+        cadence went from 1 h to 4 h at 16:15."""
+        normal = Urgency("default", REMIND_EVERY_S, quiet=False)
+        prior = {"last_notified_status": "down", "last_notified_at": NOW - REMIND_MARKET_S - 300,
+                 "notify_failed_at": NOW - 301}
+        push, book = _push("down", prior, normal)
+        assert push is not None and book["last_notified_at"] == NOW
+
+    def test_a_stale_failure_marker_clears_once_nothing_is_pending(self) -> None:
+        _, book = _push("ok", {"last_notified_status": "ok", "notify_failed_at": NOW - 999}, LOUD)
+        assert book["notify_failed_at"] is None
+
+    def test_a_held_recovery_reports_held(self) -> None:
+        """P2: a recovery deferred by quiet hours said notify_held=false."""
+        _, book = _push("ok", {"last_notified_status": "down", "last_notified_at": NOW}, HUSH)
+        assert book["notify_held"] is True and book["last_notified_status"] == "down"

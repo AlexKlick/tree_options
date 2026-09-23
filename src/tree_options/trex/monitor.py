@@ -145,6 +145,7 @@ class Monitor:
         self._marks_history_repaired = False
         self._tick_failures = 0  # consecutive, for monitor.json
         self._last_tick_ok_at: float | None = None
+        self._started_at: float | None = None
 
     def _now(self) -> datetime:
         return self._clock()
@@ -284,6 +285,7 @@ class Monitor:
 
     def run(self) -> int:
         log.info("monitor armed for plan %s (%d structures)", self.plan.id, len(self.plan.structures))
+        self._start_health()
         self.adopt_open_exits()
         while not self._all_closed():
             self._sync_book_from_disk()
@@ -314,20 +316,35 @@ class Monitor:
         log.info("book fully closed; monitor exiting")
         return 0
 
-    def _write_health(self, tick_error: str | None) -> None:
+    def _start_health(self) -> None:
+        """Mark this run and carry the last good tick across restarts: a
+        monitor killed mid-tick and restarted by systemd must not look
+        freshly healthy, and its loop may never reach its own write."""
+        try:
+            prior = json.loads((self.run_dir / "monitor.json").read_text())
+            ok_at = prior.get("last_tick_ok_at")
+            if isinstance(ok_at, (int, float)):
+                self._last_tick_ok_at = float(ok_at)
+        except (OSError, ValueError, AttributeError):
+            pass  # no (readable) prior health: nothing to carry
+        self._started_at = self._now().timestamp()
+        self._write_health(None, tick_ran=False)
+
+    def _write_health(self, tick_error: str | None, *, tick_ran: bool = True) -> None:
         """``monitor.json`` for the exit-machine watchdog (trex.exit_watch):
         the tick outcome, which the heartbeat can't show (a monitor whose
         every tick fails still beats). Error class only, never the message:
         broker errors can carry account details. Failure-isolated."""
         now = self._now().timestamp()
-        if tick_error is None:
+        if tick_ran and tick_error is None:
             self._tick_failures = 0
             self._last_tick_ok_at = now
-        else:
+        elif tick_ran:
             self._tick_failures += 1
         try:
             payload = {
                 "at": now,
+                "started_at": self._started_at,
                 "pid": os.getpid(),
                 "connected": bool(self.ib.connected),
                 "tick_failures": self._tick_failures,

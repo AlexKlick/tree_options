@@ -20,7 +20,9 @@ import pytest
 
 from tree_options.trex.alert_policy import REMIND_EVERY_S, REMIND_MARKET_S, Urgency
 from tree_options.trex.exit_watch import (
+    ATTRIBUTION_MAX_S,
     GATEWAY_SETTLE_S,
+    HEALTH_STALE_S,
     HEARTBEAT_STALE_S,
     TICK_FAILURES_BAD,
     BookObs,
@@ -105,9 +107,38 @@ class TestClassify:
         book = _fresh(failures=TICK_FAILURES_BAD, ok_at=NOON - 70, error="ConnectionError")
         assert classify(_obs([book], gateway="checking"))[0] == "waiting_for_gateway"
 
-    def test_monitor_without_health_reporting_is_judged_by_heartbeat_only(self) -> None:
-        status, _, detail = classify(_obs([BookObs("p", NOON - 20, None)]))
+    def test_missing_tick_health_gets_a_grace_then_alarms(self) -> None:
+        """Codex P1: a monitor beating but never finishing a loop (killed
+        mid-tick, or health writes failing) read as ok forever."""
+        book = BookObs("p", NOON - 20, None)
+        status, _, detail = classify(_obs([book]), health_missing_since={"p": NOON - 60})
         assert status == "ok" and "not reported" in detail
+        status, since, _ = classify(_obs([book]),
+                                    health_missing_since={"p": NOON - HEALTH_STALE_S - 1})
+        assert status == "monitor_failing" and since == NOON - HEALTH_STALE_S - 1
+
+    def test_stale_tick_health_alarms_at_any_hour(self) -> None:
+        stale = BookObs("p", NOON - 20, _health(NOON - HEALTH_STALE_S - 60))
+        status, _, detail = classify(_obs([stale], market=False))
+        assert status == "monitor_failing" and "last reported" in detail
+
+    def test_unreadable_book_is_never_idle(self) -> None:
+        """Codex P1: a corrupt book.json was dropped, so the only exposed
+        book vanished and the verdict became "idle" (and "back")."""
+        status, _, detail = classify(_obs([BookObs("p", None, None, unreadable=True)]))
+        assert status == "monitor_down" and "unreadable" in detail
+
+    @pytest.mark.parametrize("gateway", ["starting", "checking", "ok"])
+    def test_a_quiet_gateway_cannot_cover_a_long_monitor_outage(self, gateway: str) -> None:
+        """Codex P1: a gateway flapping checking/ok never reaches an alarm, and
+        its "ok" never settles, so both watchdogs stayed silent forever."""
+        dead = _dead(age=ATTRIBUTION_MAX_S + 60)
+        status, _, _ = classify(_obs([dead], gateway=gateway, gateway_since=NOON - 30))
+        assert status == "monitor_down"
+
+    def test_a_gateway_alarm_covers_a_long_outage(self) -> None:
+        dead = _dead(age=3 * 3600)
+        assert classify(_obs([dead], gateway="needs_login"))[0] == "waiting_for_gateway"
 
     def test_worst_book_wins(self) -> None:
         status, _, detail = classify(_obs([_fresh("a"), _dead("b")]))
@@ -160,9 +191,19 @@ class TestScanBooks:
         (tmp_path / "junk").mkdir()
         (tmp_path / "junk" / "book.json").write_text("{nope")
         books = {b.plan: b for b in scan_books(tmp_path)}
-        assert set(books) == {"live", "entering"}
+        assert set(books) == {"live", "entering", "junk"}  # unreadable = can't rule it out
+        assert books["junk"].unreadable and not books["live"].unreadable
         assert books["live"].heartbeat == pytest.approx(NOON - 20)
         assert books["live"].health is not None and books["entering"].health is None
+
+    def test_no_state_dir_yet_is_no_books(self, tmp_path: Path) -> None:
+        assert scan_books(tmp_path / "absent") == []
+
+    def test_an_unlistable_state_dir_fails_loudly(self, tmp_path: Path) -> None:
+        not_a_dir = tmp_path / "file"
+        not_a_dir.write_text("")
+        with pytest.raises(OSError):
+            scan_books(not_a_dir)  # the run fails; the banner goes stale, never "idle"
 
 
 class TestWatchOnce:
@@ -222,3 +263,25 @@ def test_units_run_the_exit_watch_every_minute() -> None:
     assert "tree_options.trex.exit_watch" in service and "TimeoutStartSec=" in service
     timer = (DEPLOY / "trex-exit-watch.timer").read_text()
     assert "OnUnitActiveSec=60s" in timer and "WantedBy=timers.target" in timer
+
+
+def test_missing_health_is_timed_across_runs(tmp_path: Path) -> None:
+    """The grace for an absent monitor.json is measured by the watchdog
+    itself (persisted per plan), since the heartbeat can't say when the
+    monitor started."""
+    root = tmp_path / "state"
+    _write_book(root, "p", ("open",), NOON - 20)
+    path = tmp_path / "exit_watch.json"
+    gw = tmp_path / "gateway.json"
+    gw.write_text(json.dumps({"status": "ok", "since": NOON - 3600, "checked_at": NOON}))
+    first = watch_once(path, root=root, gateway_state=gw, notify=lambda *a: True, now=NOON,
+                       urgency=LOUD, unit_state=None)
+    assert first["status"] == "ok" and first["health_missing_since"] == {"p": NOON}
+    (root / "p" / "book.json").write_text(json.dumps({
+        "heartbeat": datetime.fromtimestamp(NOON + HEALTH_STALE_S, ET).isoformat(),
+        "structures": {"s0": {"status": "open"}}}))
+    gw.write_text(json.dumps({"status": "ok", "since": NOON - 3600,
+                              "checked_at": NOON + HEALTH_STALE_S + 1}))
+    later = watch_once(path, root=root, gateway_state=gw, notify=lambda *a: True,
+                       now=NOON + HEALTH_STALE_S + 1, urgency=LOUD, unit_state=None)
+    assert later["status"] == "monitor_failing"

@@ -11,6 +11,7 @@ import { getGateway } from '../lib/api'
 import { ago, etDateTime } from '../lib/format'
 import { usePoll } from '../hooks/usePoll'
 import type { GatewayStatus } from '../lib/types'
+import { WATCH_STALE_S, watchAge } from '../lib/watch'
 
 const HEADLINE: Record<string, string> = {
   needs_login: 'IB Gateway needs a login',
@@ -61,16 +62,17 @@ function Unknown({ why, last }: { why: string; last: GatewayStatus | null }) {
 }
 
 export function GatewayBanner() {
-  const poll = usePoll(getGateway, 30_000)
+  const poll = usePoll(getGateway, 30_000, 95_000)
   const g = poll.data
   const nowS = Date.now() / 1000
 
   if (poll.error) return <Unknown why="couldn't read the gateway watchdog's status" last={g} />
   if (!g) return null
-  if (g.watch_stale) {
+  const age = watchAge(g, nowS)
+  if (g.watch_stale || poll.isStale || age === null || age > WATCH_STALE_S) {
     const why =
-      g.age_seconds !== null
-        ? `gateway watchdog last reported ${ago(g.age_seconds)} ago`
+      age !== null
+        ? `gateway watchdog last reported ${ago(age)} ago`
         : 'gateway watchdog not reporting'
     return <Unknown why={why} last={g} />
   }
@@ -104,5 +106,6 @@ export function GatewayBanner() {
       </div>
     )
   }
+  if (g.status !== 'ok') return <Unknown why="gateway watchdog has no verdict" last={g} />
   return null
 }

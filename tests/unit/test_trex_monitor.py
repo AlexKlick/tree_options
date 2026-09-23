@@ -849,3 +849,39 @@ class TestHealthFile:
         with pytest.raises(_StopLoop):
             mon.run()
         assert sleeps  # the loop went on to its poll sleep
+
+
+class TestHealthAcrossRestarts:
+    def test_startup_carries_the_last_good_tick_forward(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Codex P1: every restart reset last_tick_ok_at, so a monitor killed
+        mid-tick and restarted by systemd looked freshly healthy each time.
+        The last good tick survives restarts; the startup write marks the
+        run (the loop may never reach its own write)."""
+        fake = FakeIbkr()
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        old_ok = _at(12, 0).timestamp()
+        (mon.run_dir / "monitor.json").write_text(json.dumps({"last_tick_ok_at": old_ok}))
+
+        def boom(*_a: Any) -> Any:
+            raise RuntimeError("tick")
+
+        def adopt() -> None:  # the startup write lands before the loop
+            seen.append(json.loads((mon.run_dir / "monitor.json").read_text()))
+
+        seen: list[dict[str, Any]] = []
+
+        def sleep(seconds: float) -> None:
+            seen.append(json.loads((mon.run_dir / "monitor.json").read_text()))
+            raise _StopLoop
+
+        monkeypatch.setattr(fake, "snapshot", boom)
+        monkeypatch.setattr(fake, "sleep", sleep)
+        monkeypatch.setattr(mon, "_sync_book_from_disk", adopt)
+        with pytest.raises(_StopLoop):
+            mon.run()
+        started, after_tick = seen
+        assert started["last_tick_ok_at"] == old_ok and started["started_at"] == _at(13, 0).timestamp()
+        assert started["tick_failures"] == 0
+        assert after_tick["last_tick_ok_at"] == old_ok and after_tick["tick_failures"] == 1

@@ -102,4 +102,22 @@ describe('GatewayBanner', () => {
     await waitFor(() => expect(screen.getByRole('status').textContent).toMatch(/rechecking/))
     expect(screen.queryByRole('alert')).toBeNull()
   })
+
+  // Codex P2 (exit-watch review): a cached "ok" whose later polls never
+  // settle kept rendering nothing; so did a fresh "unknown".
+  it('ages a cached verdict locally, so a hung poll cannot keep it healthy', async () => {
+    mocked.mockResolvedValue({ ...base, status: 'ok', checked_at: now - 900, age_seconds: 5 })
+    render(<GatewayBanner />)
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/gateway health unknown/),
+    )
+  })
+
+  it('never renders an unrecognized status as healthy', async () => {
+    mocked.mockResolvedValue({ ...base, status: 'unknown' })
+    render(<GatewayBanner />)
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/gateway health unknown/),
+    )
+  })
 })

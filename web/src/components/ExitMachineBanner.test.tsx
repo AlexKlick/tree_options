@@ -78,3 +78,25 @@ describe('ExitMachineBanner', () => {
     )
   })
 })
+
+// Codex P2 (2026-09-23): a cached "ok" whose later polls never settle kept
+// rendering nothing; so did a fresh "unknown".
+describe('ExitMachineBanner freshness', () => {
+  afterEach(() => vi.clearAllMocks())
+
+  it('ages a cached verdict locally, so a hung poll cannot keep it healthy', async () => {
+    mocked.mockResolvedValue({ ...base, status: 'ok', checked_at: now - 900, age_seconds: 5 })
+    render(<ExitMachineBanner />)
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/exit machine health unknown/),
+    )
+  })
+
+  it('never renders an unrecognized status as healthy', async () => {
+    mocked.mockResolvedValue({ ...base, status: 'unknown' })
+    render(<ExitMachineBanner />)
+    await waitFor(() =>
+      expect(screen.getByRole('status').textContent).toMatch(/exit machine health unknown/),
+    )
+  })
+})

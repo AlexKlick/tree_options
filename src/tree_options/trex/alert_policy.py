@@ -96,9 +96,12 @@ def market_hours(now: float) -> bool:
 
 
 def urgency(now: float, *, exposed: bool, quiet: QuietHours | None) -> Urgency:
+    """Quiet hours hold every push, market alarms included: a configured
+    window wins (the default one ends before the 09:00 ET watch opens)."""
+    hush = quiet is not None and quiet.contains(now)
     if exposed and market_hours(now):
-        return Urgency("high", REMIND_MARKET_S, quiet=False)
-    return Urgency("default", REMIND_EVERY_S, quiet=quiet is not None and quiet.contains(now))
+        return Urgency("high", REMIND_MARKET_S, quiet=hush)
+    return Urgency("default", REMIND_EVERY_S, quiet=hush)
 
 
 def et_label(epoch: float) -> str:
@@ -142,8 +145,14 @@ def next_push(
     }
     if failed_at is not None and now - failed_at < NOTIFY_RETRY_S:
         return None, book
+    retry = failed_at is not None  # a failed push is still owed, whatever the cadence
     if status in bad:
-        due = last_status != status or last_at is None or now - last_at >= urgency.remind_every_s
+        due = (
+            retry
+            or last_status != status
+            or last_at is None
+            or now - last_at >= urgency.remind_every_s
+        )
         if not due:
             return None, book
         if urgency.quiet:
@@ -152,10 +161,14 @@ def next_push(
         title, message = alarm()
         book.update(last_notified_status=status, last_notified_at=now)
         return Push(status, title, message, urgency.priority), book
-    if status in healthy and last_status in bad and not urgency.quiet:
+    if status in healthy and last_status in bad:
+        if urgency.quiet:
+            book["notify_held"] = True
+            return None, book
         title, message = recovery()
         book.update(last_notified_status=status, last_notified_at=now)
         return Push("recovered", title, message, "default"), book
+    book["notify_failed_at"] = None  # nothing owed any more
     return None, book
 
 
