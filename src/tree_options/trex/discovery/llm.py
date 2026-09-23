@@ -57,6 +57,12 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "base_url": "https://api.minimax.io/v1",
         "model": "MiniMax-M3",
         "key_env": ("ANTHROPIC_AUTH_TOKEN_MINIMAX2", "MINIMAX_API_KEY"),
+        # M3 always reasons inline (<think>) before the JSON; 900 tokens
+        # cut the list off mid-proposal, and replies took 6-20s+ (live
+        # 2026-09-23). Worst chain local 20 + minimax 45 + zai 20 = 85s,
+        # at most every few hours: one serve-loop market tick slips.
+        "max_tokens": 4000,
+        "timeout": 45.0,
         "extra": {},
     },
 }
@@ -131,12 +137,14 @@ def chat_json(
     *,
     model: str | None = None,
     transport: PostTransport = urllib_post,
-    timeout: float = REQUEST_TIMEOUT,
+    timeout: float | None = None,
 ) -> tuple[dict[str, Any], str]:
     """One chat completion parsed to a JSON object -> (object, model used)."""
     spec = PROVIDERS.get(provider)
     if spec is None:
         raise LlmError(f"unknown provider {provider!r}")
+    if timeout is None:
+        timeout = float(spec.get("timeout", REQUEST_TIMEOUT))
     headers = {"Content-Type": "application/json"}
     key_envs: tuple[str, ...] = spec["key_env"] or ()
     if key_envs:
@@ -157,7 +165,7 @@ def chat_json(
             "model": used_model,
             "messages": messages,
             "temperature": 0.2,
-            "max_tokens": MAX_TOKENS,
+            "max_tokens": spec.get("max_tokens", MAX_TOKENS),
             **spec["extra"],
         }
     ).encode()
@@ -170,10 +178,17 @@ def chat_json(
     if status != 200:
         raise LlmError(f"{provider}: HTTP {status}")
     try:
-        content = json.loads(raw)["choices"][0]["message"].get("content") or ""
+        choice = json.loads(raw)["choices"][0]
+        content = choice["message"].get("content") or ""
+        finish = choice.get("finish_reason")
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise LlmError(f"{provider}: malformed completion envelope") from None
-    return _extract_json_object(str(content)), used_model
+    if finish == "length":  # a cut-off list can still hold a parseable inner object
+        raise LlmError(f"{provider}: reply truncated at max_tokens")
+    try:
+        return _extract_json_object(str(content)), used_model
+    except LlmError as exc:
+        raise LlmError(f"{provider}: {exc}") from None
 
 
 SYSTEM_PROMPT = (

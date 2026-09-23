@@ -39,9 +39,11 @@ class FakeTransport:
     def __init__(self, replies: list[tuple[int, bytes] | Exception]) -> None:
         self.replies = list(replies)
         self.calls: list[tuple[str, dict, dict]] = []
+        self.timeouts: list[float] = []
 
     def __call__(self, url: str, body: bytes, headers: dict, timeout: float):
         self.calls.append((url, json.loads(body), dict(headers)))
+        self.timeouts.append(timeout)
         reply = self.replies.pop(0)
         if isinstance(reply, Exception):
             raise reply
@@ -179,6 +181,48 @@ class TestLauncherKeys:
         assert headers["Authorization"] == f"Bearer {SECRET}"
         assert model == "MiniMax-M3" and body["model"] == "MiniMax-M3"
         assert url == "https://api.minimax.io/v1/chat/completions"
+
+    def test_minimax_has_room_to_think(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # live 2026-09-23: M3's inline <think> plus the JSON hit 900 tokens
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
+        t = FakeTransport([(200, _completion("{}")), (200, _completion("{}"))])
+        chat_json("minimax", [], transport=t)
+        chat_json("local", [], transport=t)
+        assert t.calls[0][1]["max_tokens"] >= 3000
+        assert t.calls[1][1]["max_tokens"] == 900
+        # reasoning takes 6-20s+ live; the others keep the 20s bound
+        assert t.timeouts == [45.0, 20.0]
+
+    def test_explicit_timeout_still_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
+        t = FakeTransport([(200, _completion("{}"))])
+        chat_json("minimax", [], transport=t, timeout=5.0)
+        assert t.timeouts == [5.0]
+
+    def test_truncated_reply_falls_through_to_the_next_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # a cut-off list still holds a parseable INNER object; it must
+        # never pass as an "ok" run with zero proposals
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_ZAI", SECRET)
+        cut = '<think>x</think>{"proposals":[{"symbol":"TSM","action":"add"},{"symbol":"AA'
+        truncated = json.dumps(
+            {"choices": [{"message": {"content": cut}, "finish_reason": "length"}]}
+        ).encode()
+        good = '{"proposals": [{"symbol": "XLF", "action": "add", "rationale": "banks"}]}'
+        t = FakeTransport([(200, truncated), (200, _completion(good))])
+        run = propose(
+            ["minimax", "zai"], {}, watched=set(), blocked=set(), max_n=3, transport=t
+        )
+        assert run["status"] == "ok" and run["provider"] == "zai"
+        assert [p["symbol"] for p in run["proposals"]] == ["XLF"]
+        assert any(n.startswith("minimax:") and "truncated" in n for n in run["notes"])
+
+    def test_no_json_note_names_the_provider(self) -> None:
+        t = FakeTransport([(200, _completion("I cannot help with that."))])
+        run = propose(["local"], {}, watched=set(), blocked=set(), max_n=3, transport=t)
+        assert run["notes"] == ["local: no JSON object in model output"]
 
     def test_missing_key_lists_every_accepted_name(self) -> None:
         with pytest.raises(LlmError) as exc:
