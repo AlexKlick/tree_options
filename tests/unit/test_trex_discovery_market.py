@@ -92,6 +92,17 @@ class TestMarketCache:
         d.mkdir(parents=True)
         (d / "SPY.json").write_text("{torn")
         assert MarketCache(tmp_path / "cache").get("quote", "SPY", now=NOW) is None
+        assert MarketCache(tmp_path / "cache").get_envelope("quote", "SPY") is None
+
+    def test_envelope_ignores_ttl(self, tmp_path: Path) -> None:
+        cache = MarketCache(tmp_path / "cache")
+        cache.put("news", "SPY", {"items": [1]}, now=NOW)
+        much_later = datetime(2026, 12, 1, 9, 0, tzinfo=ET)
+        assert cache.get("news", "SPY", now=much_later) is None
+        env = cache.get_envelope("news", "SPY")
+        assert env is not None
+        assert env["payload"] == {"items": [1]}
+        assert env["fetched_at"] == NOW.isoformat()
 
 
 class TestFetchers:
@@ -212,3 +223,55 @@ class TestMarketCycle:
         doc = json.loads((state / "market.json").read_text())
         assert doc["symbols"]["SPY"]["bid"] is not None
         assert "QQQ" in doc["errors"]
+
+    def test_expired_news_rewarms_cold_stays_cold(self, tmp_path: Path) -> None:
+        """A warmed symbol's news refreshes after its TTL on ordinary
+        cycles; never-warmed symbols cause no ambient RSS traffic."""
+        state = self._state(tmp_path)
+        cache = MarketCache(state / "market" / "cache")
+        cache.put("news", "SPY", {"items": [{"title": "stale"}]}, now=NOW)
+
+        def t(url: str, *, timeout: float = 10.0) -> tuple[int, bytes]:
+            t.calls.append(url)  # type: ignore[attr-defined]
+            if "news.google.com" in url:
+                return 200, NEWS_RSS.encode()
+            return 200, json.dumps(CBOE_QUOTE_BODY).encode()
+
+        t.calls = []  # type: ignore[attr-defined]
+
+        class Cfg:
+            underlyings: ClassVar[list[str]] = ["SPY", "QQQ"]
+            market_refresh_seconds = 60
+
+        later = datetime(2026, 9, 22, 19, 5, tzinfo=ET)  # > 1800s news ttl
+        market_cycle(state, Cfg(), now=later, transport=t)
+        news_calls = [u for u in t.calls if "news.google.com" in u]  # type: ignore[attr-defined]
+        assert len(news_calls) == 1 and "SPY" in news_calls[0]
+        fresh = cache.get("news", "SPY", now=later)
+        assert fresh is not None and fresh["items"][0]["title"] == "Nvidia chips surge"
+
+    def test_empty_news_fetch_never_overwrites_cache(self, tmp_path: Path) -> None:
+        state = self._state(tmp_path)
+        cache = MarketCache(state / "market" / "cache")
+        cache.put("news", "SPY", {"items": [{"title": "keep me"}]}, now=NOW)
+
+        def t(url: str, *, timeout: float = 10.0) -> tuple[int, bytes]:
+            if "news.google.com" in url:
+                return 200, b"<not-rss>"  # degraded feed -> []
+            return 200, json.dumps(CBOE_QUOTE_BODY).encode()
+
+        class Cfg:
+            underlyings: ClassVar[list[str]] = ["SPY"]
+            market_refresh_seconds = 60
+
+        later = datetime(2026, 9, 22, 19, 5, tzinfo=ET)
+        market_cycle(state, Cfg(), now=later, transport=t, force=True,
+                     bars_client=_EmptyBars())
+        env = cache.get_envelope("news", "SPY")
+        assert env is not None and env["payload"]["items"][0]["title"] == "keep me"
+        assert cache.get_envelope("bars", "SPY") is None  # empty bars not cached
+
+
+class _EmptyBars:
+    def get_json(self, path: str, params: dict, *, use_cache: bool = True) -> dict:
+        return {"results": []}

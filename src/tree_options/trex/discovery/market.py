@@ -96,6 +96,18 @@ class MarketCache:
         payload = doc.get("payload")
         return payload if isinstance(payload, dict) else None
 
+    def get_envelope(self, kind: str, key: str) -> dict[str, Any] | None:
+        """Raw envelope regardless of TTL age. For sources where staleness
+        is tolerable and disclosed (news, daily bars) - never quotes."""
+        path = self._path(kind, key)
+        if not path.exists():
+            return None
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            return None
+        return doc if isinstance(doc, dict) else None
+
     def put(self, kind: str, key: str, payload: dict[str, Any], now: datetime) -> None:
         path = self._path(kind, key)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,16 +304,32 @@ def market_cycle(
             if cache.get("bars", sym, now) is None:
                 try:
                     bars = fetch_daily_bars(sym, bars_client)
-                    cache.put("bars", sym, {"bars": bars}, now)
+                    if bars:  # empty fetch never poisons the cache
+                        cache.put("bars", sym, {"bars": bars}, now)
                 except Exception as exc:  # per-symbol isolation
                     errors[f"{sym}:bars"] = f"{type(exc).__name__}: {exc}"
             if cache.get("news", sym, now) is None:
                 try:
                     news = fetch_news(sym, transport)
-                    cache.put("news", sym, {"items": news}, now)
+                    if news:  # degraded (empty) fetches stay uncached
+                        cache.put("news", sym, {"items": news}, now)
                 except Exception as exc:  # per-symbol isolation
                     errors[f"{sym}:news"] = f"{type(exc).__name__}: {exc}"
         changed = True
+    else:
+        # keep already-warmed news envelopes fresh (expired -> refetch);
+        # cold symbols wait for an explicit refresh - no ambient RSS churn
+        for sym in symbols:
+            if cache.get_envelope("news", sym) is None:
+                continue
+            if cache.get("news", sym, now) is not None:
+                continue
+            try:
+                news = fetch_news(sym, transport)
+                if news:
+                    cache.put("news", sym, {"items": news}, now)
+            except Exception as exc:  # per-symbol isolation
+                errors[f"{sym}:news"] = f"{type(exc).__name__}: {exc}"
     if not changed and (state_dir / "market.json").exists() and not force:
         return False
     doc = {"last_refresh": now.isoformat(), "symbols": out, "errors": errors}

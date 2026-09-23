@@ -1181,10 +1181,35 @@ class TestMarketWatchAndSymbol:
         assert payload["bars"]["points"][0][1] == pytest.approx(750.1)
         assert payload["news"][0]["title"] == "t"
 
+    def test_symbol_serves_expired_envelopes_with_age(self, tmp_path: Path) -> None:
+        """Expired bars/news stay visible with a disclosed age (the TTL
+        governs refetching, not display) - they used to vanish at TTL."""
+        import json as _json
+
+        disc = self._disc(tmp_path)
+        old = "2026-01-02T10:00:00-05:00"  # far past every TTL
+        for kind, payload in (
+            ("bars", {"bars": [{"t": 1789992000000, "c": 750.1, "v": 1}]}),
+            ("news", {"items": [{"title": "old", "link": "https://x", "pub": None,
+                                  "source": "s"}]}),
+        ):
+            (disc / "market" / "cache" / kind).mkdir(parents=True, exist_ok=True)
+            (disc / "market" / "cache" / kind / "SPY.json").write_text(
+                _json.dumps({"fetched_at": old, "ttl_seconds": 60, "payload": payload})
+            )
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        payload = client.get("/api/market/SPY").json()
+        assert payload["bars"]["points"][0][1] == pytest.approx(750.1)
+        assert payload["news"][0]["title"] == "old"
+        assert payload["bars_age_seconds"] > 86400
+        assert payload["news_age_seconds"] > 86400
+
     def test_symbol_cold_cache_is_none_not_error(self, tmp_path: Path) -> None:
         disc = self._disc(tmp_path)
         client = _client(tmp_path / "state", tmp_path / "plans", disc)
         payload = client.get("/api/market/SPY").json()
         assert payload["bars"] is None
         assert payload["news"] == []
+        assert payload["bars_age_seconds"] is None
+        assert payload["news_age_seconds"] is None
         assert client.get("/api/market/not%20a%20symbol").status_code == 404

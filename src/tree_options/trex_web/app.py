@@ -486,13 +486,15 @@ def create_app(
         quote = (quote_doc or {}).get("symbols", {}).get(sym_up)
         if quote is None:
             quote = cache.get("quote", sym_up, now)
-        bars_env = cache.get("bars", sym_up, now)
-        news_env = cache.get("news", sym_up, now)
+        bars_env = cache.get_envelope("bars", sym_up)
+        news_env = cache.get_envelope("news", sym_up)
+        bars_payload = bars_env.get("payload") if bars_env else None
+        bars_list = bars_payload.get("bars") if isinstance(bars_payload, dict) else None
         bars_series: dict[str, object] | None = None
-        if bars_env and isinstance(bars_env.get("bars"), list):
+        if isinstance(bars_list, list):
             pts = [
                 (int(b["t"]), float(b["c"]))
-                for b in bars_env["bars"]
+                for b in bars_list
                 if isinstance(b, dict) and b.get("t") is not None and b.get("c") is not None
             ]
             pts = decimate_pairs(pts, 600)
@@ -504,14 +506,21 @@ def create_app(
                     "y_hi": y_hi,
                     "last": {"ts_ms": pts[-1][0], "value": pts[-1][1], "pos": True},
                 }
-        news = news_env.get("items", []) if news_env else []
+        news_payload = news_env.get("payload") if news_env else None
+        news = (
+            news_payload.get("items", [])
+            if isinstance(news_payload, dict)
+            else []
+        )
         return {
             "now": now.isoformat(),
             "symbol": sym_up,
             "quote": quote,
             "quote_age_seconds": _age((quote or {}).get("source_as_of"), now),
             "bars": bars_series,
-            "news": news[:12],
+            "bars_age_seconds": _age(bars_env.get("fetched_at"), now) if bars_env else None,
+            "news": news[:12] if isinstance(news, list) else [],
+            "news_age_seconds": _age(news_env.get("fetched_at"), now) if news_env else None,
         }
 
     @app.post("/api/market/watch", status_code=202)

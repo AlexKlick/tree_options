@@ -446,5 +446,7 @@ export interface SymbolDetail {
   quote: MarketQuote | null
   quote_age_seconds: number | null
   bars: HistorySeries | null
+  bars_age_seconds?: number | null
   news: NewsItem[]
+  news_age_seconds?: number | null
 }

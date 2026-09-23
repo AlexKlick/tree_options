@@ -17,6 +17,12 @@ const dateFmt = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
 })
 
+const ageNote = (seconds: number | null | undefined): string => {
+  if (seconds === null || seconds === undefined) return ''
+  const mins = Math.round(seconds / 60)
+  return mins >= 90 ? ` · data ${Math.round(mins / 60)}h old` : ` · data ${mins || '<1'}m old`
+}
+
 export function SymbolPage({ sym }: { sym: string }) {
   const poll = usePoll(() => getSymbol(sym))
   const d: SymbolDetail | null = poll.data
@@ -82,7 +88,10 @@ export function SymbolPage({ sym }: { sym: string }) {
           </div>
 
           <h2 className="section-title">
-            Daily closes <span className="muted section-sub">(~200 sessions · Polygon delayed)</span>
+            Daily closes{' '}
+            <span className="muted section-sub">
+              (~200 sessions · Polygon delayed{ageNote(d?.bars_age_seconds)})
+            </span>
           </h2>
           {d?.bars ? (
             <div className="card chart-card">
@@ -100,7 +109,10 @@ export function SymbolPage({ sym }: { sym: string }) {
           )}
 
           <h2 className="section-title">
-            News <span className="muted section-sub">(Google News RSS · ≤12 items)</span>
+            News{' '}
+            <span className="muted section-sub">
+              (Google News RSS · ≤12 items{ageNote(d?.news_age_seconds)})
+            </span>
           </h2>
           {d?.news && d.news.length > 0 ? (
             <div className="card">

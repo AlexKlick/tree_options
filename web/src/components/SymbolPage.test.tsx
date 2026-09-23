@@ -43,9 +43,18 @@ describe('SymbolPage', () => {
     await waitFor(() => expect(screen.getByText('Quote (mid)')).toBeTruthy())
     expect(screen.getByRole('img', { name: /Daily closes for SPY/ })).toBeTruthy()
     expect(screen.getByText(/source 18:08 ET/)).toBeTruthy()
+    expect(screen.queryByText(/data .* old/)).toBeNull() // no ages -> no note
     expect(screen.getByText(((773.25 + 773.3) / 2).toFixed(2))).toBeTruthy()
     expect(screen.getByRole('link', { name: 'Nvidia chips surge' })).toBeTruthy()
     expect(screen.getByText(/Reuters · Mon, 21 Sep 2026/)).toBeTruthy()
+  })
+
+  it('discloses stale cache ages instead of hiding the data', async () => {
+    mocked.mockResolvedValue({ ...detail, bars_age_seconds: 3 * 3600, news_age_seconds: 2400 })
+    render(<SymbolPage sym="SPY" />)
+    await waitFor(() => expect(screen.getByText(/data 3h old/)).toBeTruthy())
+    expect(screen.getByText(/data 40m old/)).toBeTruthy()
+    expect(screen.getByRole('link', { name: 'Nvidia chips surge' })).toBeTruthy()
   })
 
   it('shows honest placeholders when caches are cold', async () => {
