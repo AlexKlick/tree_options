@@ -37,6 +37,20 @@ and every artifact stamps `effective_target_mode` + the delta rule as
 NOT_APPLICABLE. Explicit `delta` mode with no greeks refuses (NOT_
 EVALUABLE rows), never silently degrades.
 
+## Watchlist proposals (LLM)
+
+`llm_provider` is a chain tried in order, default `local,minimax,zai`:
+the loopback Qwen 27B (no key, no quota), then MiniMax-M3, then Z.AI
+glm-5.3-flash last (its coding plan is shared with every claude-zai
+session and Study Forge, and hits the 5-hour wall). Hosted keys come
+from the env var NAMES in `discovery/llm.py`: the launcher names
+`ANTHROPIC_AUTH_TOKEN_ZAI` / `ANTHROPIC_AUTH_TOKEN_MINIMAX2` first, then
+`ZAI_CODING_API_KEY` / `MINIMAX_API_KEY`. The unit loads them from
+`~/.claude/.env` (`EnvironmentFile=-`), so rotating a launcher key
+rotates this lane too. A missing key only adds a "not set" note to the
+run; the chain moves on. Keys never appear in config, logs, notes or
+artifacts.
+
 ## Commands
 
 ```sh

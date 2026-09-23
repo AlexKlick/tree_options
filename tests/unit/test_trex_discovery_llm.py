@@ -16,6 +16,19 @@ from tree_options.trex.discovery.llm import (
 )
 
 SECRET = "sk-test-SECRET-value-123"
+KEY_ENVS = (
+    "ANTHROPIC_AUTH_TOKEN_ZAI",
+    "ZAI_CODING_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN_MINIMAX2",
+    "MINIMAX_API_KEY",
+)
+
+
+@pytest.fixture(autouse=True)
+def _no_host_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The operator's shell exports the real keys; none may reach a test."""
+    for name in KEY_ENVS:
+        monkeypatch.delenv(name, raising=False)
 
 
 def _completion(content: str) -> bytes:
@@ -127,6 +140,44 @@ class TestChatJson:
         t = FakeTransport([(200, _completion("{}"))])
         _, model = chat_json("local", [], model="other/model", transport=t)
         assert model == "other/model" and t.calls[0][1]["model"] == "other/model"
+
+
+class TestLauncherKeys:
+    """Hosted lanes reuse the claude-zai / claude-minimax2 launcher keys
+    (the ~/.claude/.env names); the older names stay as fallbacks."""
+
+    def test_zai_prefers_the_claude_zai_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_ZAI", SECRET)
+        monkeypatch.setenv("ZAI_CODING_API_KEY", "sk-older-key")
+        t = FakeTransport([(200, _completion("{}"))])
+        chat_json("zai", [], transport=t)
+        assert t.calls[0][2]["Authorization"] == f"Bearer {SECRET}"
+
+    def test_zai_falls_back_to_the_coding_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_ZAI", "  ")
+        monkeypatch.setenv("ZAI_CODING_API_KEY", SECRET)
+        t = FakeTransport([(200, _completion("{}"))])
+        chat_json("zai", [], transport=t)
+        assert t.calls[0][2]["Authorization"] == f"Bearer {SECRET}"
+
+    def test_minimax_uses_the_claude_minimax2_key_and_m3(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
+        monkeypatch.setenv("MINIMAX_API_KEY", "sk-alias-key")
+        t = FakeTransport([(200, _completion('<think>plan</think>{"proposals": []}'))])
+        obj, model = chat_json("minimax", [], transport=t)
+        url, body, headers = t.calls[0]
+        assert obj == {"proposals": []}
+        assert headers["Authorization"] == f"Bearer {SECRET}"
+        assert model == "MiniMax-M3" and body["model"] == "MiniMax-M3"
+        assert url == "https://api.minimax.io/v1/chat/completions"
+
+    def test_missing_key_lists_every_accepted_name(self) -> None:
+        with pytest.raises(LlmError) as exc:
+            chat_json("zai", [], transport=FakeTransport([]))
+        assert "ANTHROPIC_AUTH_TOKEN_ZAI" in str(exc.value)
+        assert "ZAI_CODING_API_KEY" in str(exc.value)
 
 
 class TestProposeChain:

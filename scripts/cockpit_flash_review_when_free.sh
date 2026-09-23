@@ -10,12 +10,15 @@ DEADLINE=$(( $(date +%s) + 24 * 3600 ))
 probe() {
   python3 - <<'PY'
 import json, os, sys, urllib.request, urllib.error
+# probe the key the review spends (claude-zai's), older name as fallback
+key = (os.environ.get("ANTHROPIC_AUTH_TOKEN_ZAI", "").strip()
+       or os.environ.get("ZAI_CODING_API_KEY", "").strip())
 req = urllib.request.Request(
     os.environ.get("ZAI_OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4") + "/chat/completions",
     data=json.dumps({"model": "glm-5.3-flash", "max_tokens": 5,
                      "messages": [{"role": "user", "content": "ok"}]}).encode(),
     headers={"Content-Type": "application/json",
-             "Authorization": "Bearer " + os.environ.get("ZAI_CODING_API_KEY", "")})
+             "Authorization": "Bearer " + key})
 try:
     urllib.request.urlopen(req, timeout=20); sys.exit(0)
 except urllib.error.HTTPError as e:

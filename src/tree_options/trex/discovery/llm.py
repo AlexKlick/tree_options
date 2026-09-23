@@ -1,8 +1,9 @@
 """LLM watchlist proposals (M6): the model PROPOSES, the operator decides.
 
 OpenAI-compatible chat over stdlib urllib against a provider CHAIN tried
-in order (config ``llm_provider = "local,zai"``): the loopback Qwen
-text-main lane first (no quota, no key), hosted providers as fallback.
+in order (config ``llm_provider = "local,minimax,zai"``): the loopback
+Qwen text-main lane first (no quota, no key), hosted providers as
+fallback, the contended Z.AI coding plan last.
 
 Key discipline: keys are read from environment variables named HERE and
 nowhere else; they never appear in config, exceptions, logs, or
@@ -40,18 +41,20 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         # llama.cpp: skip the reasoning pass for a short structured reply
         "extra": {"chat_template_kwargs": {"enable_thinking": False}},
     },
+    # Hosted keys: the claude-zai / claude-minimax2 launcher names in
+    # ~/.claude/.env first (the unit loads that file), older names after.
     "zai": {
         "base_url": os.environ.get(
             "ZAI_OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4"
         ),
         "model": "glm-5.3-flash",
-        "key_env": "ZAI_CODING_API_KEY",
+        "key_env": ("ANTHROPIC_AUTH_TOKEN_ZAI", "ZAI_CODING_API_KEY"),
         "extra": {},
     },
     "minimax": {
         "base_url": "https://api.minimax.io/v1",
-        "model": "MiniMax-M2.7-highspeed",
-        "key_env": "MINIMAX_API_KEY",
+        "model": "MiniMax-M3",
+        "key_env": ("ANTHROPIC_AUTH_TOKEN_MINIMAX2", "MINIMAX_API_KEY"),
         "extra": {},
     },
 }
@@ -133,11 +136,16 @@ def chat_json(
     if spec is None:
         raise LlmError(f"unknown provider {provider!r}")
     headers = {"Content-Type": "application/json"}
-    key_env = spec["key_env"]
-    if key_env:
-        key = os.environ.get(key_env, "").strip()
-        if not key:
-            raise LlmError(f"{provider}: {key_env} not set")
+    key_envs: tuple[str, ...] = spec["key_env"] or ()
+    if key_envs:
+        found = next(
+            ((name, os.environ[name].strip()) for name in key_envs
+             if os.environ.get(name, "").strip()),
+            None,
+        )
+        if found is None:
+            raise LlmError(f"{provider}: {' or '.join(key_envs)} not set")
+        key_env, key = found
         if any(c.isspace() or ord(c) < 32 or ord(c) > 126 for c in key):
             raise LlmError(f"{provider}: {key_env} is malformed (whitespace/control chars)")
         headers["Authorization"] = f"Bearer {key}"

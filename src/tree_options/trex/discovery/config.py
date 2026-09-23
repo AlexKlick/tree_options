@@ -46,7 +46,8 @@ class ScanConfig:
     market_refresh_seconds: int = 60  # quote refresh cadence in serve loop
     # watchlist proposals (M6): provider chain tried in order; "none" = off.
     # Keys come from env vars owned by llm.py - never from this file.
-    llm_provider: str = "local,zai"
+    # MiniMax before Z.AI: the Z.AI coding plan is shared and hits its wall.
+    llm_provider: str = "local,minimax,zai"
     llm_model: str = ""  # override for the FIRST provider ("" = its default)
     llm_max_proposals: int = 5
 
@@ -119,7 +120,7 @@ def load_scan_config(path: Path) -> ScanConfig:
         client_id=int(raw.get("client_id", DISCOVERY_CLIENT_ID)),
         auto_scan_et=str(raw.get("auto_scan_et", "16:11")),
         market_refresh_seconds=int(raw.get("market_refresh_seconds", 60)),
-        llm_provider=str(raw.get("llm_provider", "local,zai")),
+        llm_provider=str(raw.get("llm_provider", ScanConfig.llm_provider)),
         llm_model=str(raw.get("llm_model", "")),
         llm_max_proposals=int(raw.get("llm_max_proposals", 5)),
     )

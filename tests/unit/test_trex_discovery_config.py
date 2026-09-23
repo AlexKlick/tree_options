@@ -99,9 +99,10 @@ class TestLlmKeys:
         path.write_text(GOOD + extra)
         return load_scan_config(path)
 
-    def test_defaults_chain_local_then_zai(self, tmp_path: Path) -> None:
+    def test_defaults_chain_local_then_minimax_then_zai(self, tmp_path: Path) -> None:
+        # MiniMax runs well under quota; the Z.AI coding plan is the contended one
         cfg = self._load(tmp_path, "")
-        assert cfg.llm_provider == "local,zai" and cfg.llm_max_proposals == 5
+        assert cfg.llm_provider == "local,minimax,zai" and cfg.llm_max_proposals == 5
 
     def test_valid_overrides(self, tmp_path: Path) -> None:
         cfg = self._load(tmp_path, 'llm_provider = "minimax"\nllm_model = "MiniMax-M3"\n')
@@ -118,5 +119,5 @@ class TestLlmKeys:
 
     def test_echo_carries_provider_and_model_only(self, tmp_path: Path) -> None:
         echo = config_echo(self._load(tmp_path, ""))
-        assert echo["llm_provider"] == "local,zai"
+        assert echo["llm_provider"] == "local,minimax,zai"
         assert not any("key" in k for k in echo)

@@ -10,6 +10,10 @@ WorkingDirectory=/home/alexk/documents/tree_options
 ExecStart=/home/alexk/.local/bin/uv run --group trex python -m tree_options.trex.discovery --serve
 Restart=on-failure
 RestartSec=30
+# Hosted LLM fallback keys for watchlist proposals: the same file the
+# claude-zai / claude-minimax2 launchers source (one copy, rotation-safe).
+# Optional: without it the chain degrades to the local lane.
+EnvironmentFile=-%h/.claude/.env
 # Broker-side lane (owns gateway clientId 74; never places orders). NOT
 # sandboxed: uv must write .venv/cache on group switches and the runner
 # writes scans/account under %h/.local/state/trex-discovery.
