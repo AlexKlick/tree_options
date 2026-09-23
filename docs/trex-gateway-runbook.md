@@ -40,26 +40,61 @@ missed, < 5 min: no action) · `needs_login` · `needs_2fa` · `api_down`
 (API silent ≥ 5 min) · `down` (container stopped: never auto-started, it
 may be deliberate) · `unknown`.
 
+## Exit machine (trex-monitor) watch
+
+The gateway can be fine while the book is unguarded: the monitor dead, or
+alive with every tick failing (caught each 20 s poll; systemd and the
+heartbeat still look healthy). `trex-exit-watch.timer` (every 60 s,
+`trex/exit_watch.py`) looks only at run dirs with exposure (a structure
+entering, open or exiting) and reads `book.json` (heartbeat) plus the
+monitor's `monitor.json` (tick outcome, error class only).
+
+States: `idle` (no open positions) · `ok` · `waiting_for_gateway` (the
+monitor is down or failing while the gateway is not ok for ≥ 2 min: the
+gateway alarm covers it, no second push) · `monitor_down` (heartbeat
+> 2 min old, gateway fine or its watchdog silent) · `monitor_failing`
+(market hours: 3 failed ticks in a row or none good for 3 min). Detection
+only: the monitor's restarts are systemd's (`Restart=on-failure`). Banner:
+`GET /api/exit-machine`.
+
 ## Phone push (ntfy)
 
 `~/.config/trex/notify.env` (chmod 600, never committed):
 
 ```
 NTFY_URL=https://ntfy.sh/<random topic>
+# optional; the defaults shown
+QUIET_HOURS=22:00-07:00
+OPERATOR_TZ=America/Denver
 ```
 
 Subscribe to that topic in the ntfy app. The topic is a capability:
 anyone with it can read and post. Push text carries no URLs, hostnames,
-account ids or amounts. Without the file the watchdog is banner-only.
+account ids or amounts. Without the file the watchdogs are banner-only.
+Comments go on their own lines (values are taken verbatim).
+
+When a push goes out (`trex/alert_policy.py`, both watchdogs):
+
+| When | Priority | Reminders |
+|---|---|---|
+| market hours (NYSE session, 09:00-16:15 ET) with open positions | high | hourly |
+| quiet hours (`QUIET_HOURS`, operator time; `off` disables) | held: sent when they end if still bad (07:00 MDT = 09:00 ET) | held |
+| any other time | default | every 4 h |
+
+A recovery ("… back") is sent only for an alarm that was delivered, and
+waits out quiet hours too. A failed push retries every 5 min. Self-heal
+(x11vnc, capped container restarts) never waits for daylight.
 
 ## Commands
 
 ```sh
 # what the watchdog sees right now (changes nothing, sends nothing)
 uv run --group trex --no-sync python -m tree_options.trex.gateway_watch --dry-run
+uv run --group trex --no-sync python -m tree_options.trex.exit_watch --dry-run
 cat ~/.local/state/trex/gateway.json | jq '{status, since, detail, restarts_left}'
-systemctl --user list-timers trex-gateway-watch.timer
-journalctl --user -u trex-gateway-watch --since -1h
+cat ~/.local/state/trex/exit_watch.json | jq '{status, since, detail, books}'
+systemctl --user list-timers 'trex-*-watch.timer'
+journalctl --user -u trex-gateway-watch -u trex-exit-watch --since -1h
 # apply compose/env changes (logs the gateway out; IBC logs back in)
 docker compose -f deploy/trex/docker-compose.yml up -d
 ```

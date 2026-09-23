@@ -23,9 +23,10 @@ Each run:
    The attempt is written to the ledger before docker acts, the API is
    re-probed first, and nothing restarts on an uncertain observation (log
    read failed, ledger unreadable); a stopped container is never touched;
-4. notifies on entering a bad state, every 4 hours while it lasts, and on
-   recovery; a failed push is retried every 5 minutes. Push text carries
-   no URLs, hostnames, account ids or money;
+4. notifies on entering a bad state, with reminders while it lasts, and on
+   recovery; priority, reminder cadence and quiet hours follow
+   trex.alert_policy; a failed push is retried every 5 minutes. Push text
+   carries no URLs, hostnames, account ids or money;
 5. writes ``~/.local/state/trex/gateway.json`` for the cockpit banner.
 
 Raw log lines are parsed in memory and never persisted.
@@ -48,7 +49,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from tree_options.trex.clock import ET
+from tree_options.trex.alert_policy import REMIND_EVERY_S, Urgency, next_push, settle_push
+from tree_options.trex.alert_policy import et_label as _et
+from tree_options.trex.alert_policy import span_label as _span
 
 CONTAINER = "trex-ib-gateway"
 API_HOST = "127.0.0.1"
@@ -62,8 +65,6 @@ NEEDS_LOGIN_AFTER_S = 600  # a login dialog open this long is stuck
 RESTART_COOLDOWN_S = 2 * 3600
 RESTARTS_PER_DAY = 4
 VNC_RETRY_S = 300
-NOTIFY_RETRY_S = 300  # a failed push is retried this often
-REMIND_EVERY_S = 4 * 3600
 DAY_S = 86_400
 LOG_WINDOW_S = 26 * 3600
 MAX_EVENTS = 30
@@ -218,15 +219,6 @@ class Action:
     priority: str = "default"
 
 
-def _et(epoch: float) -> str:
-    return datetime.fromtimestamp(epoch, ET).strftime("%a %H:%M ET")
-
-
-def _span(seconds: float) -> str:
-    m = int(seconds // 60)
-    return f"{m // 60}h {m % 60}m" if m >= 60 else f"{m}m"
-
-
 def _num(value: Any) -> float | None:
     return float(value) if isinstance(value, (int, float)) else None
 
@@ -299,8 +291,15 @@ def _budget(restarts: list[float]) -> tuple[int, float | None]:
     return left, (restarts[-1] + RESTART_COOLDOWN_S if left > 0 and restarts else None)
 
 
-def decide(obs: Observation, prior: dict[str, Any]) -> tuple[dict[str, Any], list[Action]]:
-    """Pure policy: next persisted state + actions to execute."""
+# without a computed urgency (tests, --dry-run callers): loud, 4 h reminders
+LOUD = Urgency("high", REMIND_EVERY_S, quiet=False)
+
+
+def decide(
+    obs: Observation, prior: dict[str, Any], *, urgency: Urgency = LOUD
+) -> tuple[dict[str, Any], list[Action]]:
+    """Pure policy: next persisted state + actions to execute. ``urgency``
+    (alert_policy) sets push priority, reminder cadence and quiet hours."""
     same_container = (
         obs.container_started is not None
         and prior.get("container_started") == obs.container_started
@@ -345,29 +344,18 @@ def decide(obs: Observation, prior: dict[str, Any]) -> tuple[dict[str, Any], lis
         restarts.append(obs.now)
     restarts_left, next_restart = _budget(restarts)
 
-    last_status = prior.get("last_notified_status")
-    last_at = prior.get("last_notified_at")
-    failed_at = _num(prior.get("notify_failed_at"))
-    backing_off = failed_at is not None and obs.now - failed_at < NOTIFY_RETRY_S
-    notified_status, notified_at = last_status, last_at
-    if status in BAD and not backing_off:
-        due = (
-            last_status != status
-            or not isinstance(last_at, (int, float))
-            or obs.now - last_at >= REMIND_EVERY_S
-        )
-        if due:
-            title, message = _message(status, since, obs.now, restarts_left)
-            actions.append(Action("notify", status, title, message, "high"))
-            notified_status, notified_at = status, obs.now
-    elif status == "ok" and last_status in BAD and not backing_off:
+    def recovery() -> tuple[str, str]:
         was = prior.get("since")
         outage = f" after {_span(obs.now - was)}" if isinstance(was, (int, float)) else ""
-        actions.append(
-            Action("notify", "recovered", "trex: IB Gateway back",
-                   f"API answering again{outage}.", "default")
-        )
-        notified_status, notified_at = "ok", obs.now
+        return "trex: IB Gateway back", f"API answering again{outage}."
+
+    push, notified = next_push(
+        status=status, now=obs.now, prior=prior, urgency=urgency, bad=BAD,
+        healthy=frozenset({"ok"}),
+        alarm=lambda: _message(status, since, obs.now, restarts_left), recovery=recovery,
+    )
+    if push is not None:
+        actions.append(Action("notify", push.status, push.title, push.message, push.priority))
 
     events: list[dict[str, Any]] = list(prior.get("events", []))[-MAX_EVENTS:]
     if prev != status:
@@ -391,9 +379,7 @@ def decide(obs: Observation, prior: dict[str, Any]) -> tuple[dict[str, Any], lis
         "next_restart_at": next_restart,
         "restart_hold_until": hold if held else None,
         "vnc_restarts": vnc_restarts,
-        "last_notified_status": notified_status,
-        "last_notified_at": notified_at,
-        "notify_failed_at": failed_at,
+        **notified,
         "events": events,
     }
     return state, actions
@@ -496,6 +482,7 @@ def watch_once(
     notify: Callable[[str, str, str], bool],
     now: float,
     login_url: str,
+    urgency: Urgency = LOUD,
     dry_run: bool = False,
     write_state: Callable[[Path, dict[str, Any]], None] = _write_state,
 ) -> dict[str, Any]:
@@ -517,7 +504,7 @@ def watch_once(
     else:
         api_ok, api_detail, ibc, vnc = False, "container down", IbcState("unknown", None), None
     obs = Observation(now, running, started, api_ok, api_detail, ibc, vnc, observed)
-    state, actions = decide(obs, prior)
+    state, actions = decide(obs, prior, urgency=urgency)
     state["login_url"] = login_url
 
     if not dry_run and any(a.kind == "restart_gateway" for a in actions):
@@ -548,12 +535,7 @@ def watch_once(
                 state["last_notified_at"] = prior.get("last_notified_at")
             elif kind == "notify":
                 ok = notify(action.title, action.message, action.priority)
-                if ok:
-                    state["notify_failed_at"] = None
-                else:  # not delivered: retry after NOTIFY_RETRY_S, not in 4 h
-                    state["last_notified_status"] = prior.get("last_notified_status")
-                    state["last_notified_at"] = prior.get("last_notified_at")
-                    state["notify_failed_at"] = now
+                settle_push(state, prior, ok, now)
         state["events"].append(
             {"at": now, "kind": kind, "detail": detail, "ok": ok, "dry_run": dry_run}
         )
@@ -580,20 +562,27 @@ def main(argv: list[str] | None = None) -> int:
         print(f"gateway API not answering after {args.wait_api:.0f}s", file=sys.stderr)
         return 1
 
-    from tree_options.trex.notify import load_config, send
+    from tree_options.trex.alert_policy import load_quiet_hours
+    from tree_options.trex.alert_policy import urgency as urgency_at
+    from tree_options.trex.exit_watch import scan_books
+    from tree_options.trex.notify import DEFAULT_CONFIG, load_config, read_env, send
 
     cfg = load_config()
+    now = time.time()
+    urgency = urgency_at(now, exposed=bool(scan_books(args.state.parent)),
+                         quiet=load_quiet_hours(read_env(DEFAULT_CONFIG)))
     state = watch_once(
         args.state,
         Docker(args.container),
         probe=probe_api,
         notify=lambda title, message, priority: send(cfg, title, message, priority),
-        now=time.time(),
+        now=now,
         login_url=args.login_url,
+        urgency=urgency,
         dry_run=args.dry_run,
     )
     summary = {k: state[k] for k in ("status", "detail", "ibc_phase", "vnc_running",
-                                     "restarts_left")}
+                                     "restarts_left", "notify_held")}
     summary["since"] = _et(state["since"])
     summary["actions"] = [e["kind"] for e in state["events"] if e["at"] == state["checked_at"]
                           and e["kind"] != "status"]

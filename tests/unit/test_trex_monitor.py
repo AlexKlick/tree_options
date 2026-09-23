@@ -790,3 +790,62 @@ class TestConnectionLoss:
         monkeypatch.setattr(fake, "sleep", sleep)
         assert mon.run() != 0
         assert sleeps == []  # exits before sleeping on a dead connection
+
+
+class _StopLoop(Exception):
+    pass
+
+
+class TestHealthFile:
+    """monitor.json feeds the exit-machine watchdog: a monitor whose every
+    tick fails is alive to systemd and to the heartbeat, so the tick
+    outcome itself must be on disk (error class only, never the text)."""
+
+    def test_tick_outcomes_are_persisted(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = FakeIbkr()
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        real = fake.snapshot
+        calls = {"n": 0}
+
+        def flaky(spreads: list[PutSpread], ts: datetime) -> Any:
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                raise TimeoutError("no quotes for acct DU123")
+            return real(spreads, ts)
+
+        seen: list[dict[str, Any]] = []
+
+        def sleep(seconds: float) -> None:
+            seen.append(json.loads((mon.run_dir / "monitor.json").read_text()))
+            if len(seen) == 3:
+                raise _StopLoop
+
+        monkeypatch.setattr(fake, "snapshot", flaky)
+        monkeypatch.setattr(fake, "sleep", sleep)
+        with pytest.raises(_StopLoop):
+            mon.run()
+        assert [h["tick_failures"] for h in seen] == [1, 2, 0]
+        assert seen[1]["last_error"] == "TimeoutError"
+        assert "DU123" not in json.dumps(seen)
+        assert seen[0]["last_tick_ok_at"] is None
+        assert seen[2]["last_tick_ok_at"] == _at(13, 0).timestamp()
+        assert seen[2]["connected"] is True and seen[2]["at"] == _at(13, 0).timestamp()
+
+    def test_a_health_write_failure_never_stops_the_exit_machine(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fake = FakeIbkr()
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        (mon.run_dir / "monitor.json").mkdir()  # unwritable target
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            raise _StopLoop
+
+        monkeypatch.setattr(fake, "sleep", sleep)
+        with pytest.raises(_StopLoop):
+            mon.run()
+        assert sleeps  # the loop went on to its poll sleep

@@ -27,6 +27,30 @@ export interface GatewayStatus {
   last_restart_at: number | null
 }
 
+// GET /api/exit-machine: the exit-machine (trex-monitor) watchdog's verdict.
+export type ExitMachineState =
+  | 'idle'
+  | 'ok'
+  | 'waiting_for_gateway'
+  | 'monitor_failing'
+  | 'monitor_down'
+  | 'unknown'
+export interface ExitMachineBook {
+  plan: string
+  status: ExitMachineState
+  detail: string
+  heartbeat_age: number | null
+}
+export interface ExitMachineStatus {
+  status: ExitMachineState
+  since: number | null
+  detail: string | null
+  checked_at: number | null
+  books: ExitMachineBook[]
+  age_seconds: number | null
+  watch_stale: boolean
+}
+
 export type WindowState = 'before' | 'during' | 'after' | 'wrong_day'
 export type StructureStatus =
   | 'planned'

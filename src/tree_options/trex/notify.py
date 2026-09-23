@@ -3,7 +3,14 @@
 Configured by ``~/.config/trex/notify.env`` (chmod 600, never in the repo):
 
     NTFY_URL=https://ntfy.sh/<random-unguessable-topic>
-    NTFY_TOKEN=            # optional, for access-controlled servers
+    # optional: a token for access-controlled servers
+    NTFY_TOKEN=
+    # optional (alert_policy): no pushes in this window, operator time;
+    # "off" disables. Defaults 22:00-07:00, America/Denver.
+    QUIET_HOURS=22:00-07:00
+    OPERATOR_TZ=America/Denver
+
+(Comments on their own lines only: values are taken verbatim.)
 
 The topic URL is a capability (anyone holding it can read and post), so it
 never appears in logs or exceptions. Messages are minimal by contract: the
@@ -35,11 +42,13 @@ def urllib_transport(url: str, body: bytes, headers: dict[str, str], timeout: fl
         return int(exc.code)
 
 
-def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, str] | None:
+def read_env(path: Path = DEFAULT_CONFIG) -> dict[str, str]:
+    """KEY=value lines (also QUIET_HOURS / OPERATOR_TZ for alert_policy);
+    a missing file is empty."""
     try:
         text = path.read_text()
     except OSError:
-        return None
+        return {}
     values: dict[str, str] = {}
     for line in text.splitlines():
         line = line.strip()
@@ -47,6 +56,11 @@ def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, str] | None:
             continue
         key, _, value = line.partition("=")
         values[key.strip()] = value.strip().strip("'\"")
+    return values
+
+
+def load_config(path: Path = DEFAULT_CONFIG) -> dict[str, str] | None:
+    values = read_env(path)
     url = values.get("NTFY_URL", "")
     if not url.startswith("https://"):
         return None

@@ -1,0 +1,15 @@
+[Unit]
+Description=trex exit-machine watchdog (is trex-monitor guarding the open positions?)
+Documentation=file:///home/alexk/documents/tree_options/docs/trex-gateway-runbook.md
+# reads the gateway watchdog's verdict to tell a gateway outage from a monitor one
+After=trex-gateway-watch.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/alexk/documents/tree_options
+# --no-sync: a once-a-minute job must never re-sync the shared .venv.
+ExecStart=/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.exit_watch
+# file reads, one systemctl query (10s), one push (10s)
+TimeoutStartSec=60
+# State: %h/.local/state/trex/exit_watch.json (read by trex-web's /api/exit-machine).
+# Push: %h/.config/trex/notify.env (NTFY_URL, QUIET_HOURS, OPERATOR_TZ).

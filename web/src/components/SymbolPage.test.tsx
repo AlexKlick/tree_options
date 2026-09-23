@@ -4,11 +4,12 @@ import type { SymbolDetail } from '../lib/types'
 import { getSymbol } from '../lib/api'
 import { SymbolPage } from './SymbolPage'
 
-// getGateway feeds AppShell's GatewayBanner (tested on its own); never settles here
+// getGateway/getExitMachine feed AppShell's health banners (tested on its own); never settles here
 vi.mock('../lib/api', () => ({
   getSymbol: vi.fn(),
   requestMarketRefresh: vi.fn(),
   getGateway: () => new Promise(() => {}),
+  getExitMachine: () => new Promise(() => {}),
 }))
 const mocked = vi.mocked(getSymbol)
 

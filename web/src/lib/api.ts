@@ -1,5 +1,6 @@
 import type {
   DiscoveryResponse,
+  ExitMachineStatus,
   GatewayStatus,
   PlanDetailResponse,
   PlansResponse,
@@ -37,6 +38,8 @@ export const getDiscovery = (): Promise<DiscoveryResponse> => fetchJson('api/dis
 export const getStats = (): Promise<StatsResponse> => fetchJson('api/stats')
 
 export const getGateway = (): Promise<GatewayStatus> => fetchJson('api/gateway')
+
+export const getExitMachine = (): Promise<ExitMachineStatus> => fetchJson('api/exit-machine')
 
 export const requestScan = (): Promise<ScanRequestResponse> =>
   fetchJson('api/discovery/scan', { method: 'POST' })

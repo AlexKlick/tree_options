@@ -143,6 +143,8 @@ class Monitor:
         self._history: list[dict[str, str]] | None = None  # marks history, lazy-loaded
         self._marks_history_lines: int | None = None  # jsonl line count, lazy
         self._marks_history_repaired = False
+        self._tick_failures = 0  # consecutive, for monitor.json
+        self._last_tick_ok_at: float | None = None
 
     def _now(self) -> datetime:
         return self._clock()
@@ -287,9 +289,11 @@ class Monitor:
             self._sync_book_from_disk()
             self.book.beat()
             self.book.save(self.run_dir / "book.json")
+            tick_error: str | None = None
             try:
                 self._tick()
-            except Exception:
+            except Exception as exc:
+                tick_error = type(exc).__name__
                 log.exception("tick failed — retrying next poll")
             # in run(), NOT in _tick: the tick exits early outside session
             # hours and account.json would freeze overnight (C9)
@@ -297,6 +301,7 @@ class Monitor:
                 self._account_cycle()
             except Exception:
                 log.exception("account cycle failed — retrying next poll")
+            self._write_health(tick_error)
             # a drop inside the tick is caught above; ib_async never raises
             # it again, so exit and let systemd restart us behind
             # ExecStartPre --wait-api (Codex 2026-09-23)
@@ -308,6 +313,33 @@ class Monitor:
         self.book.save(self.run_dir / "book.json")
         log.info("book fully closed; monitor exiting")
         return 0
+
+    def _write_health(self, tick_error: str | None) -> None:
+        """``monitor.json`` for the exit-machine watchdog (trex.exit_watch):
+        the tick outcome, which the heartbeat can't show (a monitor whose
+        every tick fails still beats). Error class only, never the message:
+        broker errors can carry account details. Failure-isolated."""
+        now = self._now().timestamp()
+        if tick_error is None:
+            self._tick_failures = 0
+            self._last_tick_ok_at = now
+        else:
+            self._tick_failures += 1
+        try:
+            payload = {
+                "at": now,
+                "pid": os.getpid(),
+                "connected": bool(self.ib.connected),
+                "tick_failures": self._tick_failures,
+                "last_tick_ok_at": self._last_tick_ok_at,
+                "last_error": tick_error,
+            }
+            path = self.run_dir / "monitor.json"
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(payload))
+            os.replace(tmp, path)
+        except Exception:
+            log.exception("monitor health write failed (exit machine unaffected)")
 
     def _account_cycle(self) -> None:
         """Persist account equity every ACCOUNT_EVERY cycles, failure-isolated.

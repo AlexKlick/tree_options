@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { PollState } from '../hooks/usePoll'
 import { DensityToggle } from './DensityToggle'
+import { ExitMachineBanner } from './ExitMachineBanner'
 import { GatewayBanner } from './GatewayBanner'
 import { Pill } from './Pill'
 
@@ -72,6 +73,7 @@ export function AppShell({
       </header>
       <main>
         <GatewayBanner />
+        <ExitMachineBanner />
         {children}
       </main>
       <footer>

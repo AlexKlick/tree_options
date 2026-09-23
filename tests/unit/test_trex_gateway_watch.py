@@ -20,10 +20,10 @@ from typing import Any
 
 import pytest
 
+from tree_options.trex.alert_policy import NOTIFY_RETRY_S, REMIND_EVERY_S, REMIND_MARKET_S, Urgency
 from tree_options.trex.gateway_watch import (
     API_DOWN_AFTER_S,
     NEEDS_LOGIN_AFTER_S,
-    NOTIFY_RETRY_S,
     RESTART_COOLDOWN_S,
     RESTARTS_PER_DAY,
     STARTUP_GRACE_S,
@@ -552,3 +552,43 @@ def test_env_example_uses_the_image_variable_names() -> None:
 @pytest.mark.parametrize("stamp", ["2026-09-23T16:18:04.572123456Z", "2026-09-23T16:18:04Z"])
 def test_parse_ts_accepts_docker_stamps(stamp: str) -> None:
     assert parse_ts(stamp) == parse_ts("2026-09-23T16:18:04Z")
+
+
+class TestUrgency:
+    """Operator 2026-09-23: nothing buzzes at night; market hours with open
+    positions are loud and remind hourly. Self-heal is never quiet."""
+
+    HUSH = Urgency("default", REMIND_EVERY_S, quiet=True)
+    DAY = Urgency("default", REMIND_EVERY_S, quiet=False)
+    LOUD = Urgency("high", REMIND_MARKET_S, quiet=False)
+
+    def _stuck_at(self) -> float:
+        since = parse_ts("2026-09-22T23:45:09Z")
+        assert since is not None
+        return since + NEEDS_LOGIN_AFTER_S + 1
+
+    def test_quiet_hours_hold_the_push_but_still_self_heal(self) -> None:
+        now = self._stuck_at()
+        state, actions = decide(_obs(now=now), {}, urgency=self.HUSH)
+        kinds = [a.kind for a in actions]
+        assert state["status"] == "needs_login" and state["notify_held"] is True
+        assert "notify" not in kinds and "restart_gateway" in kinds
+        _, morning = decide(_obs(now=now + 3600), state, urgency=self.DAY)
+        note = next(a for a in morning if a.kind == "notify")
+        assert note.priority == "default"
+
+    def test_market_hours_with_positions_is_high_and_hourly(self) -> None:
+        now = self._stuck_at() + 5 * 3600
+        prior = {"status": "needs_login", "since": T0, "restarts": [now - 60],
+                 "last_notified_status": "needs_login", "last_notified_at": now - REMIND_MARKET_S}
+        _, actions = decide(_obs(now=now), prior, urgency=self.LOUD)
+        assert [a.priority for a in actions if a.kind == "notify"] == ["high"]
+        _, actions = decide(_obs(now=now), prior, urgency=self.DAY)
+        assert "notify" not in [a.kind for a in actions]  # 4 h cadence off-market
+
+    def test_recovery_after_a_held_alarm_is_silent(self) -> None:
+        prior = {"status": "needs_login", "since": T0, "last_notified_status": None,
+                 "notify_held": True}
+        _, actions = decide(_obs(api_ok=True, ibc=parse_ibc_log(COMPLETED)), prior,
+                            urgency=self.DAY)
+        assert actions == []
