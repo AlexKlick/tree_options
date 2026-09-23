@@ -386,16 +386,16 @@ class TestIbkrIsNotATouchSource:
 
     def test_even_a_fresh_looking_last_yields_no_spot(self) -> None:
         from datetime import date
+        from types import SimpleNamespace
 
-        from tree_options.trex.ibkr import IbkrTrex
+        from tree_options.trex.ibkr import IbkrTrex, _Subscription
         from tree_options.trex.plan import PutSpread
 
         ib = IbkrTrex()
-        key = object()
-        ib._spots["NVDA"] = key
-        ib._tickers[key] = FakeTicker(
-            time=datetime.fromtimestamp(NOW_S - 1, UTC), last=150.0, close=150.0
-        )
+        stock = SimpleNamespace(conId=1)
+        ib._spots["NVDA"] = stock
+        ticker = FakeTicker(time=datetime.fromtimestamp(NOW_S - 1, UTC), last=150.0, close=150.0)
+        ib._md[1] = _Subscription(stock, ticker, owners=1)
         spread = PutSpread(
             id="nvda-oct",
             underlying="NVDA",

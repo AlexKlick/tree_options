@@ -45,7 +45,7 @@ from tree_options.trex.monitor import (
     _engine_config,
     _run_dir,
 )
-from tree_options.trex.plan import PutSpread, load_plan
+from tree_options.trex.plan import PutSpread, load_legacy_plan
 from tree_options.trex.state import ENTRY_LANE, BookState, Status
 
 log = logging.getLogger("trex.enter")
@@ -448,7 +448,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
 
-    plan = load_plan(args.plan)
+    plan = load_legacy_plan(args.plan)  # put spreads only: multi-leg is the desk's
     run_dir = _run_dir(plan, args.state_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     configure(_engine_config(plan))
