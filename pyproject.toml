@@ -80,6 +80,7 @@ files = [
     "src/tree_options",
     "scripts/capture_massive_structural.py",
     "scripts/seed_massive_cache.py",
+    "scripts/xsmom_12_1_study.py",
     "scripts/inspect_structural_coverage.py",
     "scripts/runstate_mark.py",
     "scripts/era_status.py",
