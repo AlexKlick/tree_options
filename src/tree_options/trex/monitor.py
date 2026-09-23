@@ -57,6 +57,7 @@ MAX_MARKS_HISTORY = 2000  # ~11h of 20s ticks; older samples drop off
 MAX_MARKS_HISTORY_LINES = 25_000  # marks_history.jsonl cap (~21 session-days)
 ACCOUNT_EVERY = 3  # account.json cadence (polls)
 HEARTBEAT_FRESH_SECONDS = 30
+EXIT_BROKER_LOST = 6  # main()'s exit codes: 2 lock, 4 connect, 5 qualify
 SESSION_OPEN = dtime(9, 30)
 SESSION_END = dtime(16, 15)
 
@@ -296,6 +297,12 @@ class Monitor:
                 self._account_cycle()
             except Exception:
                 log.exception("account cycle failed — retrying next poll")
+            # a drop inside the tick is caught above; ib_async never raises
+            # it again, so exit and let systemd restart us behind
+            # ExecStartPre --wait-api (Codex 2026-09-23)
+            if not self.ib.connected:
+                log.error("lost the IB Gateway connection — exiting for a clean restart")
+                return EXIT_BROKER_LOST
             self.ib.sleep(POLL_SECONDS)
         self.book.beat()
         self.book.save(self.run_dir / "book.json")

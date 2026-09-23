@@ -8,6 +8,11 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/alexk/documents/tree_options
+# Start the moment the gateway API answers (real IB handshake, polled every
+# 5s) instead of crash-looping against a logged-out gateway (1,276 restarts
+# on 2026-09-23). While it stays down, one attempt per ~5 min.
+ExecStartPre=/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.gateway_watch --wait-api 300
+TimeoutStartSec=360
 ExecStart=/home/alexk/.local/bin/uv run --group trex python -m tree_options.trex.monitor --plan plans/2026-09-22.toml
 Restart=on-failure
 RestartSec=15

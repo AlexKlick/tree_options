@@ -1,0 +1,13 @@
+[Unit]
+Description=trex IB Gateway watchdog (API handshake, IBC login state, x11vnc; alerts + capped self-heal)
+Documentation=file:///home/alexk/documents/tree_options/docs/trex-gateway-runbook.md
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/alexk/documents/tree_options
+# --no-sync: a once-a-minute job must never re-sync the shared .venv.
+ExecStart=/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.gateway_watch
+# Covers a capped `docker restart` (up to 120s) plus probes and a push.
+TimeoutStartSec=240
+# State: %h/.local/state/trex/gateway.json (read by trex-web's /api/gateway).
+# Push: %h/.config/trex/notify.env (NTFY_URL); absent = banner only.

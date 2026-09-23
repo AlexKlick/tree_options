@@ -109,6 +109,7 @@ class FakeIbkr:
         self._next_oid = 100
         self.account: Any = None  # AccountSnapshot | None (C9)
         self.account_raises = False
+        self.connected = True
 
     def account_snapshot(self) -> Any:
         if self.account_raises:
@@ -760,3 +761,32 @@ class TestHistoryFailureResetsRepair:
         parsed = [json.loads(ln) for ln in lines]
         assert len(parsed) == 2  # nothing lost to concatenation
         assert lines[0] == first_line
+
+
+class TestConnectionLoss:
+    def test_disconnect_inside_a_tick_exits_for_systemd(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Codex P1 (2026-09-23): a ConnectionError raised inside _tick (e.g.
+        the gateway restarting during the reprice cancel wait) was swallowed
+        by the tick handler and the monitor ran on with no broker; only a drop
+        during the outer sleep escaped. Any lost connection now exits nonzero
+        so systemd restarts it behind ExecStartPre --wait-api."""
+        fake = FakeIbkr()
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+
+        def dropped(*_a: Any) -> Any:
+            fake.connected = False
+            raise ConnectionError("Socket disconnect")
+
+        sleeps: list[float] = []
+
+        def sleep(seconds: float) -> None:
+            sleeps.append(seconds)
+            if len(sleeps) > 2:
+                raise AssertionError("monitor kept polling a dead connection")
+
+        monkeypatch.setattr(fake, "snapshot", dropped)
+        monkeypatch.setattr(fake, "sleep", sleep)
+        assert mon.run() != 0
+        assert sleeps == []  # exits before sleeping on a dead connection
