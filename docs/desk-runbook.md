@@ -40,17 +40,22 @@ from 2026-09-15 (it stopped on 09-14). fetch_ohlc.py paces the vendor at
   rewritten.
 - `chains/<D>/<SYM>.conflict.json.gz`: a later payload for the same
   session whose raw hash differs (only fetched with `--recheck`).
-- `raw/<D>/<SYM>.json.gz`: vendor bytes, newest 20 sessions kept.
-- `manifest/<D>.json`: per-symbol `ok|exists|conflict|stale|missing|invalid|error`.
+- `raw/<D>/<SYM>-<sha256>.json.gz`: vendor bytes, hash-addressed, written
+  before the chain is published; newest 20 sessions kept. A recorded
+  chain whose raw file vanished inside that window is re-fetched once and
+  repaired (identical payload) or reported as a conflict (changed payload).
+- `manifest/<D>.json`: per-symbol `ok|exists|conflict|stale|incomplete|missing|invalid|error`.
 - `gaps.jsonl`: append-only; a session no run attempted (`sym "*"`), or a
   symbol never recorded before the next session's run (`missing`),
   `invalid`, `error`, `conflict`.
 
-Validation: the modal option last-trade date (underlying's if none) must
-equal D, `source_as_of` (the payload's naive-UTC `timestamp`) must be at or
-after D 16:15 ET, and >= 50% of rows must have bid > 0. The feed is an
-overnight EOD snapshot (03:49 UTC observed), so evening slots are usually
-`stale` and the 06:30 slot records.
+Validation (all must hold): the underlying's last trade is dated D, no
+option traded after D, the modal option last-trade date is D, and
+`source_as_of` (the payload's naive-UTC `timestamp`) is at or after D 16:15
+ET. Completeness: both rights with >= 10 contracts each, >= 50% of rows
+and >= 50% of expiries with a bid, else `incomplete` (retryable). The feed
+is an overnight EOD snapshot (03:49 UTC observed), so evening slots are
+usually `stale` and the 06:30 slot records.
 
 ## eod-equity state (`~/.local/state/trex-desk/`, `TREX_DESK_STATE` overrides)
 
@@ -62,25 +67,38 @@ overnight EOD snapshot (03:49 UTC observed), so evening slots are usually
   DRAFTS in the card template. Sealing stays manual
   (CRON-paper-engine.md step 6): number, seal time, move into
   `artifacts/paper-trades/`, LEDGER.md row + sha256.
-- `push-owed/*.json`: a push held by quiet hours or a failed delivery;
-  the next run delivers it (dropped after 4 days).
+- `outbox/<D>-eod-equity.{json,sending,sent,ambiguous,expired}`: the push
+  outbox. `.json` = owed (quiet hours, judged at send time, or a failed
+  send; dropped after 4 days); `.sending` is written before ntfy is called;
+  `.sent` is the receipt (a rerun never resends). A `.sending` left by a
+  crash becomes `.ambiguous`, is logged in `push-ambiguous.jsonl`, shows as
+  `ambiguous_pushes=N` in that run's summary line, and is NEVER reposted.
 - `logs/eod-equity-<date>.log`: fetch_ohlc.py output.
 - `locks/<command>.lock`: one writer per command (both jobs).
+
+The research panel is shared with manual `fetch_ohlc.py` runs: that script
+merges under an exclusive flock on `artifacts/paper-trades/ohlc-panel.json.lock`
+(unique temp files), and eod-equity reads under the same lock, shared
+(exit 3 `panel_locked` after 300 s). Each daily extend re-fetches the last
+5 stored sessions in the same request; a stored close off by > 0.5% means
+the vendor's split adjustment moved, and that name's full history is
+re-fetched and replaced (a `rebase <NAME>` provenance line).
 
 XSMOM ranking convention: `top3` uses close(t)/close(t-273)-1, the
 computation behind every PROTOCOL-XSMOM.md row (the research code never
 applied the documented 21-session skip). The rule text's
 close(t-21)/close(t-273)-1 reading is reported as `top3_skip21`; the
 draft card flags it when the two disagree. The operator decides which one
-seals.
+seals. Offsets are fixed NYSE sessions; a name missing any session of the
+window is excluded (`data_gaps`, flagged in the draft).
 
 ## Exit codes
 
 | code | record-chains | eod-equity |
 |---|---|---|
 | 0 | >= 90% of symbols recorded (ok/exists/conflict) | done, already done, or not a session |
-| 3 | not published yet (stale), or another run holds the lock: timer retries | vendor lag, `--session` before its 16:15 ET cutoff, or the lock is held |
-| 1 | < 90% recorded and nothing stale | fetch failure, panel missing/incomplete, gap > 25 sessions |
+| 3 | not published (whole) yet (stale/incomplete), or another run holds the lock: timer retries | vendor lag, `--session` before its 16:15 ET cutoff, a held lock, or the panel lock busy |
+| 1 | < 90% recorded and nothing retryable | fetch failure, panel missing/incomplete, earnings calendar unreadable, gap > 25 sessions |
 | 2 | bad arguments (non-session, unclosed session, bad symbols) | bad arguments |
 
 Units set `SuccessExitStatus=3`, so a retryable run is not a failed unit.

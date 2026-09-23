@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from tests.fixtures.desk_cboe import chain_payload, default_rows, encode, option_row
+from tests.fixtures.desk_cboe import N_NAMED, chain_payload, default_rows, encode, option_row
 from tree_options.desk import chains, paths, sessions, store, universe
 from tree_options.desk.__main__ import run_cli
 from tree_options.trex.discovery.market import _parse_occ, parse_occ
@@ -136,19 +136,20 @@ class TestParseChain:
         assert uq["last_trade_time"] == "2026-09-22T15:59:59-04:00"
         assert set(parsed.columns) == set(chains.COLUMNS)
         n = parsed.n
-        assert n == 4 and all(len(v) == n for v in parsed.columns.values())
+        assert n == 20 and all(len(v) == n for v in parsed.columns.values())
         # sorted by (exp, right, strike, occ); both rights kept
-        assert parsed.columns["occ"] == [
+        assert parsed.columns["occ"][:5] == [
             "KO261016C00060000",
             "KO261016P00060000",
             "KO261120C00062500",
             "KO261120P00062500",
+            "KO270115C00050000",
         ]
         assert parsed.columns["exp"][0] == "2026-10-16"
-        assert parsed.columns["right"] == ["C", "P", "C", "P"]
-        assert parsed.columns["strike"] == [60.0, 60.0, 62.5, 62.5]
-        assert parsed.columns["bid_size"] == [12, 12, 12, 12]  # float sizes -> int
-        assert parsed.columns["oi"] == [120, 120, 120, 120]
+        assert parsed.columns["right"][:4] == ["C", "P", "C", "P"]
+        assert parsed.columns["strike"][:4] == [60.0, 60.0, 62.5, 62.5]
+        assert set(parsed.columns["bid_size"]) == {12}  # float sizes -> int
+        assert set(parsed.columns["oi"]) == {120}
         assert parsed.columns["last_time"][0] == "2026-09-22T15:30:00-04:00"
         assert parsed.n_skipped == 0
 
@@ -161,7 +162,7 @@ class TestParseChain:
         payload = chain_payload(rows=rows)
         payload["data"]["options"][0]["delta"] = None  # missing greek stays None
         parsed = chains.parse_chain(encode(payload), "KO")
-        assert parsed.n == 5 and parsed.n_skipped == 1
+        assert parsed.n == 21 and parsed.n_skipped == 1
         i = parsed.columns["occ"].index("KO261016P00055000")
         assert parsed.columns["last_time"][i] is None
         assert parsed.columns["last"][i] == 0.0
@@ -210,24 +211,91 @@ class TestValidate:
         v = self._v(session="2026-09-23", timestamp="2026-09-24 03:40:00")
         assert v.status == "missing"
 
-    def test_bid_coverage_floor(self) -> None:
-        rows = default_rows()
-        for r in rows[:2]:
+    def test_bid_coverage_floor_is_retryable(self) -> None:
+        rows = default_rows()  # 20 rows; zero bids only in the filler expiry
+        filler = rows[N_NAMED:]
+        for r in filler[:10]:
             r["bid"] = 0.0
         assert self._v(rows=rows).status == "ok"  # exactly 50% passes
-        rows[2]["bid"] = 0.0
-        assert self._v(rows=rows).status == "invalid"
-        assert self._v(rows=[]).status == "invalid"
+        filler[10]["bid"] = 0.0
+        v = self._v(rows=rows)
+        assert v.status == "incomplete" and "bid" in v.detail
+        assert self._v(rows=[]).status == "incomplete"
 
-    def test_modal_date_wins_and_underlying_fallback(self) -> None:
+    def test_modal_date_wins_and_underlying_decides_untraded(self) -> None:
         rows = default_rows()
-        rows[0]["last_trade_time"] = "2026-09-18T11:00:00"  # 1 stale vs 3 on D
+        rows[0]["last_trade_time"] = "2026-09-18T11:00:00"  # 1 stale vs 19 on D
         assert self._v(rows=rows).status == "ok"
         for r in rows:
             r["last_trade_time"] = None
         # no traded rows: the underlying's last trade decides
         assert self._v(rows=rows).status == "ok"
         assert self._v(rows=rows, underlying_last="2026-09-21T15:59:59").status == "stale"
+
+    # --- P1 (Codex): a newer snapshot must never be recorded under an older D
+
+    def test_newer_snapshot_with_thin_option_trades_is_refused(self) -> None:
+        """--session 2026-09-22 against the 09-23 snapshot: most options last
+        traded 09-22, but the underlying traded 09-23."""
+        rows = default_rows()  # every option last traded 09-22 (thin)
+        v = self._v(
+            rows=rows, underlying_last="2026-09-23T15:59:59", timestamp="2026-09-24 03:40:00"
+        )
+        assert v.status == "missing" and v.payload_session == date(2026, 9, 23)
+        rows[0]["last_trade_time"] = "2026-09-23T10:00:00"  # plus one newer option trade
+        assert (
+            self._v(
+                rows=rows, underlying_last="2026-09-23T15:59:59", timestamp="2026-09-24 03:40:00"
+            ).status
+            == "missing"
+        )
+
+    def test_any_option_trade_after_the_session_is_refused(self) -> None:
+        rows = default_rows()
+        rows[-1]["last_trade_time"] = "2026-09-23T09:31:00"
+        v = self._v(rows=rows)
+        assert v.status == "missing" and "after" in v.detail
+
+    def test_underlying_without_a_trade_time_is_invalid(self) -> None:
+        payload = chain_payload()
+        payload["data"]["last_trade_time"] = None
+        v = store.validate(chains.parse_chain(encode(payload), "KO"), D)
+        assert v.status == "invalid"
+
+    # --- P2 (Codex): a partial publication must stay retryable
+
+    def test_calls_only_payload_is_incomplete(self) -> None:
+        rows = [r for r in default_rows() if r["option"][-9] == "C"]
+        v = self._v(rows=rows)
+        assert v.status == "incomplete" and "P" in v.detail
+
+    def test_too_few_contracts_per_right_is_incomplete(self) -> None:
+        rows = default_rows()
+        puts = [r for r in rows if r["option"][-9] == "P"]
+        rows = [r for r in rows if r not in puts[: len(puts) - store.MIN_PER_RIGHT + 1]]
+        assert self._v(rows=rows).status == "incomplete"
+
+    def test_one_bid_contract_is_incomplete(self) -> None:
+        rows = default_rows()
+        for r in rows[1:]:
+            r["bid"] = 0.0
+        assert self._v(rows=rows).status == "incomplete"
+
+    def test_expiries_without_bids_are_incomplete(self) -> None:
+        rows = default_rows()
+        extra = []
+        for exp in ("261218", "270219", "270319", "270416"):  # four bidless expiries
+            for right in "CP":
+                extra.append(
+                    option_row(
+                        f"KO{exp}{right}00060000",
+                        bid=0.0,
+                        ask=0.05,
+                        last_time="2026-09-22T12:00:00",
+                    )
+                )
+        v = self._v(rows=rows + extra)  # bids 20/28 >= 50%, but expiries 3/7 < 50%
+        assert v.status == "incomplete" and "expir" in v.detail
 
 
 # -------------------------------------------------------------------- store
@@ -247,14 +315,16 @@ class TestStore:
         assert h["source_as_of"] == "2026-09-23T03:49:33+00:00"
         assert h["fetched_at"] == NOW.isoformat()
         assert h["raw_sha256"] == hashlib.sha256(raw).hexdigest()
-        assert h["n"] == 4 and h["underlying_quote"]["close"] == 61.25
-        assert all(len(col) == 4 for col in doc["columns"].values())
+        assert h["n"] == 20 and h["underlying_quote"]["close"] == 61.25
+        assert all(len(col) == 20 for col in doc["columns"].values())
         text = gzip.decompress((root / "chains/2026-09-22/KO.json.gz").read_bytes()).decode()
         assert '"bid":[2.1,' in text.replace(" ", "")  # JSON numbers, not strings
-        assert gzip.decompress((root / "raw/2026-09-22/KO.json.gz").read_bytes()) == raw
+        sha = hashlib.sha256(raw).hexdigest()
+        raw_file = root / f"raw/2026-09-22/KO-{sha}.json.gz"  # hash-addressed evidence
+        assert gzip.decompress(raw_file.read_bytes()) == raw
         manifest = json.loads((root / "manifest" / "2026-09-22.json").read_text())
         assert manifest["symbols"]["KO"]["status"] == "ok"
-        assert manifest["symbols"]["KO"]["n"] == 4
+        assert manifest["symbols"]["KO"]["n"] == 20
         assert not (root / "gaps.jsonl").exists()
         assert not list(root.rglob("*.tmp"))
 
@@ -296,6 +366,81 @@ class TestStore:
         assert [(g["session"], g["sym"], g["status"]) for g in gaps] == [
             ("2026-09-22", "KO", "conflict")
         ]
+
+    # --- P2 (Codex): raw evidence is persisted before the chain is published
+
+    def test_crash_between_raw_and_publish_leaves_no_orphan_chain(
+        self, tmp_path: Path, static_calendar, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        raw = encode(chain_payload())
+        sha = hashlib.sha256(raw).hexdigest()
+
+        def boom(path: Path, data: bytes) -> bool:
+            raise OSError("disk full")
+
+        with monkeypatch.context() as m:
+            m.setattr(store, "atomic_create_bytes", boom)
+            s = _record(tmp_path, {"KO": raw}, static_calendar=static_calendar)
+        assert s.results["KO"].status == "error" and "OSError" in s.results["KO"].detail
+        root = tmp_path / "store"
+        assert (root / f"raw/2026-09-22/KO-{sha}.json.gz").exists()
+        assert not (root / "chains/2026-09-22/KO.json.gz").exists()
+        s = _record(tmp_path, {"KO": raw}, static_calendar=static_calendar)
+        assert s.results["KO"].status == "ok"
+
+    def test_missing_raw_evidence_is_repaired_on_exists(
+        self, tmp_path: Path, static_calendar
+    ) -> None:
+        raw = encode(chain_payload())
+        sha = hashlib.sha256(raw).hexdigest()
+        _record(tmp_path, {"KO": raw}, static_calendar=static_calendar)
+        raw_file = tmp_path / f"store/raw/2026-09-22/KO-{sha}.json.gz"
+        raw_file.unlink()  # a crash, or a disk error, lost the evidence
+        calls: list[str] = []
+        s = _record(tmp_path, {"KO": raw}, static_calendar=static_calendar, calls=calls)
+        assert len(calls) == 1 and s.results["KO"].status == "exists"
+        assert "repaired" in s.results["KO"].detail
+        assert gzip.decompress(raw_file.read_bytes()) == raw
+        calls.clear()  # repaired: the next run needs no fetch
+        _record(tmp_path, {"KO": raw}, static_calendar=static_calendar, calls=calls)
+        assert calls == []
+
+    def test_lost_raw_with_a_changed_payload_is_a_conflict(
+        self, tmp_path: Path, static_calendar
+    ) -> None:
+        raw = encode(chain_payload())
+        _record(tmp_path, {"KO": raw}, static_calendar=static_calendar)
+        for p in (tmp_path / "store/raw/2026-09-22").iterdir():
+            p.unlink()
+        changed = chain_payload()
+        changed["data"]["options"][0]["bid"] = 0.51
+        s = _record(tmp_path, {"KO": encode(changed)}, static_calendar=static_calendar)
+        assert s.results["KO"].status == "conflict"
+        assert "raw evidence" in s.results["KO"].detail
+        new_sha = hashlib.sha256(encode(changed)).hexdigest()
+        assert (tmp_path / f"store/raw/2026-09-22/KO-{new_sha}.json.gz").exists()
+
+    def test_raw_outside_retention_is_not_refetched(self, tmp_path: Path, static_calendar) -> None:
+        raw = encode(chain_payload())
+        _record(tmp_path, {"KO": raw}, static_calendar=static_calendar)
+        raw_root = tmp_path / "store/raw"
+        i = static_calendar.ordinal(D)
+        for s in static_calendar.sessions()[i + 1 : i + 1 + store.RAW_KEEP_SESSIONS]:
+            (raw_root / s.isoformat()).mkdir(parents=True)
+        for p in (raw_root / "2026-09-22").iterdir():
+            p.unlink()
+        calls: list[str] = []
+        s = _record(tmp_path, {"KO": raw}, static_calendar=static_calendar, calls=calls)
+        assert calls == [] and s.results["KO"].status == "exists"
+
+    def test_incomplete_is_retryable_not_a_gap(self, tmp_path: Path, static_calendar) -> None:
+        calls_only = chain_payload(rows=[r for r in default_rows() if r["option"][-9] == "C"])
+        s = _record(tmp_path, {"KO": encode(calls_only)}, static_calendar=static_calendar)
+        assert s.results["KO"].status == "incomplete" and store.exit_code(s) == 3
+        assert not (tmp_path / "store/chains").exists()
+        assert not (tmp_path / "store/gaps.jsonl").exists()
+        s = _record(tmp_path, {"KO": encode(chain_payload())}, static_calendar=static_calendar)
+        assert s.results["KO"].status == "ok"  # the completed chain records on retry
 
     def test_stale_writes_nothing_but_the_manifest(self, tmp_path: Path, static_calendar) -> None:
         stale = encode(chain_payload(session="2026-09-21", timestamp="2026-09-22 03:40:00"))
@@ -384,6 +529,7 @@ class TestStore:
         assert store.exit_code(summary(ok=34, error=1)) == 0
         assert store.exit_code(summary(ok=30, exists=2, conflict=1, error=2)) == 0
         assert store.exit_code(summary(ok=30, stale=5)) == 3
+        assert store.exit_code(summary(ok=30, incomplete=5)) == 3
         assert store.exit_code(summary(ok=30, error=5)) == 1
         assert store.exit_code(summary()) == 1
 

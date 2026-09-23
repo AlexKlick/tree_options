@@ -4,7 +4,9 @@ Layout under the store root (:func:`tree_options.desk.paths.store_root`)::
 
     chains/<D>/<SYM>.json.gz            schema desk-chain/1 (never rewritten)
     chains/<D>/<SYM>.conflict.json.gz   a later, different payload for <D>
-    raw/<D>/<SYM>.json.gz               the vendor bytes, newest 20 sessions
+    raw/<D>/<SYM>-<sha256>.json.gz      the vendor bytes (hash-addressed),
+                                        newest 20 sessions; written BEFORE
+                                        the chain is published
     manifest/<D>.json                   per-symbol status of every run for <D>
     gaps.jsonl                          append-only: sessions/symbols lost
 
@@ -13,11 +15,15 @@ header carries schema, session, underlying, source, source_as_of,
 fetched_at, underlying_quote, raw_sha256 and n. Numbers stay JSON
 numbers, OCC symbols strings.
 
-Session validation (all must hold, else nothing is written): the modal
-option last-trade date (the underlying's when no row traded) equals D;
-``source_as_of`` is at or after D 16:15 ET; at least half the rows have a
-bid. An older payload is ``stale`` (not published yet: retry), a newer
-one ``missing`` (the feed moved past D).
+Session validation (all must hold, else nothing is written): the
+underlying's last trade is dated D; no option row traded after D; the
+modal option last-trade date is D; ``source_as_of`` is at or after D
+16:15 ET. An older payload is ``stale`` (not published yet: retry), a
+newer one ``missing`` (the feed moved past D). Completeness (both rights
+with >= MIN_PER_RIGHT contracts, >= 50% of rows and of expiries with a
+bid) must also hold, else ``incomplete`` (a partial publication: retry).
+A recorded (D, SYM) whose raw evidence vanished inside the retention
+window is re-fetched once and repaired when the payload is identical.
 """
 
 from __future__ import annotations
@@ -48,13 +54,18 @@ from tree_options.trex.discovery.market import Transport
 SCHEMA = "desk-chain/1"
 MANIFEST_SCHEMA = "desk-chain-manifest/1"
 RAW_KEEP_SESSIONS = 20
+# completeness floors: a partially published payload must stay retryable
+# (KO's real chain on 2026-09-22: 1038 rows over 18 expiries, 89% bid)
+MIN_PER_RIGHT = 10
 MIN_BID_FRACTION = 0.5
+MIN_EXPIRY_BID_FRACTION = 0.5
 OK_FRACTION = 0.9  # the run succeeds when this share is recorded (ok/exists/conflict)
 PACE_S = 1.0  # one request per second
 
 RECORDED = frozenset({"ok", "exists", "conflict"})
+RETRYABLE = frozenset({"stale", "incomplete"})  # not published (whole) yet
 GAP_STATUSES = frozenset({"missing", "invalid", "error", "conflict"})
-STATUSES = ("ok", "exists", "conflict", "stale", "missing", "invalid", "error")
+STATUSES = ("ok", "exists", "conflict", "stale", "incomplete", "missing", "invalid", "error")
 
 Clock = Callable[[], datetime]
 Sleep = Callable[[float], None]
@@ -125,8 +136,22 @@ class ChainStore:
     def conflict_path(self, session: date, sym: str) -> Path:
         return self.root / "chains" / session.isoformat() / f"{sym}.conflict.json.gz"
 
-    def raw_path(self, session: date, sym: str) -> Path:
-        return self.root / "raw" / session.isoformat() / f"{sym}.json.gz"
+    def raw_path(self, session: date, sym: str, sha256: str) -> Path:
+        """Hash-addressed: a conflict's bytes never overwrite the original's."""
+        return self.root / "raw" / session.isoformat() / f"{sym}-{sha256}.json.gz"
+
+    def raw_retained(self, session: date) -> bool:
+        """Whether ``session`` is still inside the raw retention window (fewer
+        than RAW_KEEP_SESSIONS newer raw session directories)."""
+        root = self.root / "raw"
+        if not root.is_dir():
+            return True
+        newer = 0
+        for p in root.iterdir():
+            with contextlib.suppress(ValueError):
+                if p.is_dir() and date.fromisoformat(p.name) > session:
+                    newer += 1
+        return newer < RAW_KEEP_SESSIONS
 
     def manifest_path(self, session: date) -> Path:
         return self.root / "manifest" / f"{session.isoformat()}.json"
@@ -155,40 +180,69 @@ class ChainStore:
 
 @dataclass(frozen=True)
 class Verdict:
-    status: str  # ok | stale | missing | invalid
+    status: str  # ok | stale | incomplete | missing | invalid
     detail: str
     payload_session: date | None
 
 
 def payload_session(parsed: ParsedChain) -> date | None:
-    """The session the snapshot describes: the modal ET date of the option
-    rows' last trades (ties go to the later date), else the underlying's."""
+    """The modal ET date of the option rows' last trades (ties go to the
+    later date), else the underlying's last-trade date."""
     days = Counter(t[:10] for t in parsed.columns["last_time"] if t)
     if days:
         best = max(days.items(), key=lambda kv: (kv[1], kv[0]))[0]
         return date.fromisoformat(best)
+    return underlying_session(parsed)
+
+
+def underlying_session(parsed: ParsedChain) -> date | None:
     ltt = parsed.underlying_quote.get("last_trade_time")
     return date.fromisoformat(ltt[:10]) if isinstance(ltt, str) else None
 
 
+def _completeness(parsed: ParsedChain) -> str:
+    """'' when the chain looks whole; else why it may be a partial publish."""
+    cols = parsed.columns
+    for right in ("C", "P"):
+        count = sum(1 for r in cols["right"] if r == right)
+        if count < MIN_PER_RIGHT:
+            return f"{right}: {count} contracts < {MIN_PER_RIGHT}"
+    bids = [isinstance(b, (int, float)) and b > 0 for b in cols["bid"]]
+    if sum(bids) / parsed.n < MIN_BID_FRACTION:
+        return f"only {sum(bids)}/{parsed.n} rows have bid > 0"
+    expiries = set(cols["exp"])
+    with_bid = {e for e, has in zip(cols["exp"], bids, strict=True) if has}
+    if len(with_bid) / len(expiries) < MIN_EXPIRY_BID_FRACTION:
+        return f"only {len(with_bid)}/{len(expiries)} expiries have a bid"
+    return ""
+
+
 def validate(parsed: ParsedChain, session: date) -> Verdict:
-    if parsed.n == 0:
-        return Verdict("invalid", "no parseable option rows", None)
+    """Every piece of session evidence must point at D, and the chain must
+    look complete, before a snapshot may become D's immutable record."""
+    us = underlying_session(parsed)
+    if us is None:
+        return Verdict("invalid", "underlying has no last-trade time to date the payload", None)
+    if us < session:
+        return Verdict("stale", f"underlying last traded {us}, not {session} yet", us)
+    if us > session:
+        return Verdict("missing", f"feed already moved past {session} to {us}", us)
+    later = sorted({t[:10] for t in parsed.columns["last_time"] if t and t[:10] > us.isoformat()})
+    if later:
+        return Verdict("missing", f"option trades dated after {session} ({later[-1]})", us)
     ps = payload_session(parsed)
-    if ps is None:
-        return Verdict("invalid", "no trade timestamps to date the payload", None)
-    if ps < session:
-        return Verdict("stale", f"payload describes {ps}, not {session} yet", ps)
-    if ps > session:
-        return Verdict("missing", f"feed already moved past {session} to {ps}", ps)
+    if ps is not None and ps < session:
+        return Verdict("stale", f"options mostly last traded {ps}, not {session} yet", ps)
     if parsed.source_as_of < cutoff_instant(session):
         return Verdict(
-            "stale", f"source_as_of {parsed.source_as_of.isoformat()} before {session} 16:15 ET", ps
+            "stale", f"source_as_of {parsed.source_as_of.isoformat()} before {session} 16:15 ET", us
         )
-    bids = sum(1 for b in parsed.columns["bid"] if isinstance(b, (int, float)) and b > 0)
-    if bids / parsed.n < MIN_BID_FRACTION:
-        return Verdict("invalid", f"only {bids}/{parsed.n} rows have bid > 0", ps)
-    return Verdict("ok", "", ps)
+    if parsed.n == 0:
+        return Verdict("incomplete", "no parseable option rows", us)
+    why = _completeness(parsed)
+    if why:
+        return Verdict("incomplete", why, us)
+    return Verdict("ok", "", us)
 
 
 def build_document(
@@ -248,13 +302,17 @@ def exit_code(summary: RunSummary) -> int:
     recorded = sum(1 for r in summary.results.values() if r.status in RECORDED)
     if recorded / total >= OK_FRACTION:
         return 0
-    if any(r.status == "stale" for r in summary.results.values()):
+    if any(r.status in RETRYABLE for r in summary.results.values()):
         return 3
     return 1
 
 
 def _existing(store: ChainStore, session: date, sym: str) -> dict[str, Any]:
     return read_chain(store.chain_path(session, sym))["header"]
+
+
+def _write_raw(store: ChainStore, session: date, sym: str, raw: bytes, sha: str) -> None:
+    atomic_write_bytes(store.raw_path(session, sym, sha), gzip.compress(raw, mtime=0))
 
 
 def record_symbol(
@@ -266,9 +324,37 @@ def record_symbol(
     clock: Clock,
     dry_run: bool = False,
     recheck: bool = False,
+    before_fetch: Callable[[], None] = lambda: None,
+) -> SymbolResult:
+    try:
+        return _record_symbol(
+            store,
+            session,
+            sym,
+            transport=transport,
+            clock=clock,
+            dry_run=dry_run,
+            recheck=recheck,
+            before_fetch=before_fetch,
+        )
+    except OSError as exc:  # a write failure stays per-symbol (and retryable next run)
+        return SymbolResult("error", 0, None, f"{type(exc).__name__}: {exc}")
+
+
+def _record_symbol(
+    store: ChainStore,
+    session: date,
+    sym: str,
+    *,
+    transport: Transport,
+    clock: Clock,
+    dry_run: bool,
+    recheck: bool,
+    before_fetch: Callable[[], None],
 ) -> SymbolResult:
     path = store.chain_path(session, sym)
     existing: dict[str, Any] | None = None
+    repair = False
     if path.exists():
         try:
             existing = _existing(store, session, sym)
@@ -276,11 +362,23 @@ def record_symbol(
             return SymbolResult(
                 "error", 0, None, f"recorded file unreadable ({type(exc).__name__}); left as is"
             )
-        if not recheck:
-            return SymbolResult("exists", int(existing.get("n", 0)), existing.get("raw_sha256"), "")
+        known = str(existing.get("raw_sha256"))
+        repair = store.raw_retained(session) and not store.raw_path(session, sym, known).exists()
+        if not recheck and not repair:
+            return SymbolResult("exists", int(existing.get("n", 0)), known, "")
+    before_fetch()
     try:
         raw = fetch_raw(sym, transport)
     except Exception as exc:  # per-symbol isolation
+        if existing is not None:
+            return SymbolResult(
+                "exists",
+                int(existing.get("n", 0)),
+                existing.get("raw_sha256"),
+                f"raw evidence missing; repair fetch failed ({type(exc).__name__})"
+                if repair
+                else f"recheck fetch failed ({type(exc).__name__})",
+            )
         return SymbolResult("error", 0, None, f"{type(exc).__name__}: {exc}")
     raw_sha = hashlib.sha256(raw).hexdigest()
     fetched_at = clock()
@@ -291,26 +389,34 @@ def record_symbol(
     verdict = validate(parsed, session)
 
     if existing is None and verdict.status == "ok" and not dry_run:
+        # evidence first: the hash-addressed raw bytes, then the immutable chain
+        _write_raw(store, session, sym, raw, raw_sha)
         doc = encode_document(build_document(parsed, session, raw_sha, fetched_at))
         if atomic_create_bytes(path, doc):
-            atomic_write_bytes(store.raw_path(session, sym), gzip.compress(raw, mtime=0))
             return SymbolResult("ok", parsed.n, raw_sha, "")
         existing = _existing(store, session, sym)  # lost a race: compare like a recheck
     if existing is None:
         detail = verdict.detail or ("dry run: not written" if dry_run else "")
         return SymbolResult(verdict.status, parsed.n, raw_sha, detail)
 
-    known = existing.get("raw_sha256")
+    known = str(existing.get("raw_sha256"))
     n_known = int(existing.get("n", 0))
-    if verdict.status != "ok":
-        return SymbolResult("exists", n_known, known, f"recheck: payload {verdict.status}")
+    lost = repair and raw_sha != known
     if raw_sha == known:
+        if repair and not dry_run:
+            _write_raw(store, session, sym, raw, raw_sha)
+            return SymbolResult("exists", n_known, known, "raw evidence repaired")
         return SymbolResult("exists", n_known, known, "recheck: identical payload")
+    if verdict.status != "ok":
+        note = "raw evidence missing; " if lost else ""
+        return SymbolResult("exists", n_known, known, f"{note}recheck: payload {verdict.status}")
     if not dry_run:
+        _write_raw(store, session, sym, raw, raw_sha)
         doc = encode_document(build_document(parsed, session, raw_sha, fetched_at))
         atomic_write_bytes(store.conflict_path(session, sym), doc)
+    note = "; raw evidence for the recorded payload is lost" if lost else ""
     return SymbolResult(
-        "conflict", parsed.n, raw_sha, f"payload differs from the recorded {str(known)[:12]}"
+        "conflict", parsed.n, raw_sha, f"payload differs from the recorded {known[:12]}{note}"
     )
 
 
@@ -436,11 +542,14 @@ def record_session(
     """Record every symbol for ``session`` (per-symbol isolation, paced),
     then (unless dry-run) the manifest, gaps and raw retention."""
     results: dict[str, SymbolResult] = {}
-    fetched = False
-    for sym in symbols:
-        will_fetch = recheck or not store.chain_path(session, sym).exists()
-        if will_fetch and fetched:
+    fetched = [False]
+
+    def pace() -> None:  # called right before every real request
+        if fetched[0]:
             sleep(pace_s)
+        fetched[0] = True
+
+    for sym in symbols:
         results[sym] = record_symbol(
             store,
             session,
@@ -449,8 +558,8 @@ def record_session(
             clock=clock,
             dry_run=dry_run,
             recheck=recheck,
+            before_fetch=pace,
         )
-        fetched = fetched or will_fetch
     summary = RunSummary(session, results)
     if dry_run:
         return summary

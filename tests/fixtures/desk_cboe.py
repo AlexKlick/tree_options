@@ -62,8 +62,25 @@ def option_row(
     }
 
 
+N_NAMED = 4
+FILLER_PER_RIGHT = 8  # named rows + filler = 10 per right, the store's completeness floor
+
+
+def filler_rows(session: str = "2026-09-22", root: str = "KO") -> list[dict[str, Any]]:
+    """A far (2027-01-15) expiry, FILLER_PER_RIGHT strikes of each right."""
+    t = f"{session}T14:00:00"
+    rows = []
+    for k in range(FILLER_PER_RIGHT):
+        strike = f"{(50 + k) * 1000:08d}"
+        rows.append(option_row(f"{root}270115C{strike}", bid=5.0, ask=5.2, delta=0.6, last_time=t))
+        rows.append(option_row(f"{root}270115P{strike}", bid=1.0, ask=1.1, delta=-0.3, last_time=t))
+    return rows
+
+
 def default_rows(session: str = "2026-09-22", root: str = "KO") -> list[dict[str, Any]]:
-    """Four contracts, both rights, all traded on ``session``."""
+    """Four named contracts (both rights, two near expiries) then the
+    filler expiry: 20 rows, all traded on ``session``. Sorted, the named
+    rows come first."""
     yymmdd = "261016"
     t = f"{session}T15:30:00"
     return [
@@ -71,6 +88,7 @@ def default_rows(session: str = "2026-09-22", root: str = "KO") -> list[dict[str
         option_row(f"{root}{yymmdd}C00060000", bid=2.1, ask=2.2, delta=0.8, last_time=t),
         option_row(f"{root}261120C00062500", bid=1.3, ask=1.35, delta=0.55, last_time=t),
         option_row(f"{root}261120P00062500", bid=0.9, ask=0.95, delta=-0.45, last_time=t),
+        *filler_rows(session, root),
     ]
 
 

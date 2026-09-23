@@ -20,11 +20,14 @@ reproduces only under that reading (46/46 months; the skip-21 reading
 picks a different set in 19/46). ``top3`` follows the evidence; the prose
 reading is reported beside it (``top3_skip21``) until the operator rules.
 
-Conventions copied from iter004.py: each name is indexed on its own panel
-sessions; a name is dropped if two consecutive panel dates inside the
-look-back are more than 10 calendar days apart (the vendor-hole guard);
-fewer than 30 ranked names means no signal; ties keep name order. Nothing
-here imports the research scripts (a test enforces it).
+Offsets (Codex review 2026-09-23): iter004.py indexed each name on its own
+panel rows with a 10-calendar-day hole guard, so one missing bar silently
+stretched the look-back to 274 exchange sessions. Here t-273 and t-21 are
+fixed NYSE sessions from the calendar, and a name missing any session of
+the window is excluded (``gap``). On a gap-free panel the two agree (the
+golden protocol months prove it). Kept from iter004.py: fewer than 30
+ranked names means no signal; ties keep name order. Nothing here imports
+the research scripts (a test enforces it).
 """
 
 from __future__ import annotations
@@ -146,14 +149,29 @@ class XsmomResult:
     excluded: dict[str, str]
     n_ranked: int
     no_options_expression: tuple[str, ...]
+    data_gaps: tuple[str, ...]  # excluded for a missing session inside the window
 
 
 def xsmom_rank(
-    panel: Panel, session: date, *, skip: int, names: Iterable[str] = XSMOM_TRADABLES
+    panel: Panel,
+    session: date,
+    cal: Calendar,
+    *,
+    skip: int,
+    names: Iterable[str] = XSMOM_TRADABLES,
 ) -> tuple[list[tuple[str, Decimal]], dict[str, str]]:
     """Names ranked by close(t-skip)/close(t-273)-1, best first, plus the
-    excluded names with a reason."""
+    excluded names with a reason. Offsets are fixed NYSE sessions from the
+    calendar; a name missing any session of the 274-session window is
+    excluded (``gap``, or ``insufficient_history`` when its panel starts
+    inside the window) instead of silently reaching further back."""
     d = session.isoformat()
+    sessions = cal.sessions()
+    i = cal.ordinal(session)
+    if i < XSMOM_LOOKBACK:
+        return [], {n: "calendar_too_short" for n in sorted(names)}
+    window = [s.isoformat() for s in sessions[i - XSMOM_LOOKBACK : i + 1]]
+    start, lagged = window[0], window[-1 - skip]
     scored: list[tuple[str, Decimal]] = []
     excluded: dict[str, str] = {}
     for name in sorted(names):
@@ -164,15 +182,10 @@ def xsmom_rank(
         if d not in bars:
             excluded[name] = "no_session_bar"
             continue
-        ds = sorted(bars)
-        p = _index(ds, d)
-        if p < XSMOM_LOOKBACK:
-            excluded[name] = "insufficient_history"
+        if any(w not in bars for w in window):
+            excluded[name] = "insufficient_history" if min(bars) > start else "gap"
             continue
-        if not _clean(ds, p - XSMOM_LOOKBACK, p):
-            excluded[name] = "hole"
-            continue
-        scored.append((name, _close(bars, ds[p - skip]) / _close(bars, ds[p - XSMOM_LOOKBACK]) - 1))
+        scored.append((name, _close(bars, lagged) / _close(bars, start) - 1))
     scored.sort(key=lambda x: -x[1])  # stable: ties keep name order
     return scored, excluded
 
@@ -181,8 +194,8 @@ def xsmom_top3(
     panel: Panel, session: date, cal: Calendar, *, names: Iterable[str] = XSMOM_TRADABLES
 ) -> XsmomResult:
     names = list(names)
-    ranked, excluded = xsmom_rank(panel, session, skip=0, names=names)
-    prose, _ = xsmom_rank(panel, session, skip=XSMOM_SKIP_PROSE, names=names)
+    ranked, excluded = xsmom_rank(panel, session, cal, skip=0, names=names)
+    prose, _ = xsmom_rank(panel, session, cal, skip=XSMOM_SKIP_PROSE, names=names)
     rebalance = is_first_session_of_month(session, cal)
     top3 = tuple(n for n, _ in ranked[:XSMOM_TOPK])
     top21 = tuple(n for n, _ in prose[:XSMOM_TOPK])
@@ -199,6 +212,7 @@ def xsmom_top3(
         excluded=excluded,
         n_ranked=len(ranked),
         no_options_expression=tuple(sorted(set(top3) & NO_OPTIONS_EXPRESSION)),
+        data_gaps=tuple(sorted(n for n, why in excluded.items() if why == "gap")),
     )
 
 
@@ -212,6 +226,7 @@ def xsmom_doc(res: XsmomResult) -> dict[str, Any]:
         "top3_skip21": list(res.top3_skip21),
         "conventions_agree": res.conventions_agree,
         "excluded": dict(sorted(res.excluded.items())),
+        "data_gaps": list(res.data_gaps),
         "n_ranked": res.n_ranked,
         "no_options_expression": list(res.no_options_expression),
     }

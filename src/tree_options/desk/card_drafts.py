@@ -103,6 +103,15 @@ def xsmom_draft(
         "## Draft checks (delete before sealing)",
         f"- ranked {res.n_ranked}/36; excluded: "
         + (", ".join(f"{n} ({why})" for n, why in sorted(res.excluded.items())) or "none"),
+        *(
+            [
+                f"- DATA GAP: {', '.join(res.data_gaps)} excluded for a missing session inside the"
+                " 273-session window; repair the panel and re-rank before sealing if one of them"
+                " could have made the top 3"
+            ]
+            if res.data_gaps
+            else []
+        ),
         "- no options expression on the desk: "
         + (", ".join(n for n in names if n in NO_OPTIONS_EXPRESSION) or "none")
         + " (the equity card is unaffected)",

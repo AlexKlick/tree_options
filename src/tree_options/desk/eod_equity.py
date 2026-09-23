@@ -7,17 +7,22 @@ signal half of step 6. For one session D (default: the latest session
 whose 16:15 ET cutoff has passed) it:
 
 1. no-ops on a non-session or when ``stages/<D>/eod-equity.done.json``
-   exists (flushing any push still owed from quiet hours first);
+   exists (first parking any delivery a crash interrupted and flushing any
+   push still owed from quiet hours or a failed send);
 2. extends the research panel through D by running the lane's own
    ``fetch_ohlc.py <S>`` for every session S after the panel's last one
-   (a gapless full-tail extend; exit 3 = vendor lag, retried by the timer);
+   (a gapless full-tail extend; exit 3 = vendor lag, retried by the timer;
+   fetch_ohlc.py also re-bases a name whose split adjustment moved). The
+   panel is read under fetch_ohlc.py's own lock (:mod:`.panel`);
 3. computes XSMOM-TOP3 and PEAD beats (:mod:`tree_options.desk.signals`)
-   and writes ``signals/<D>.json``;
+   and writes ``signals/<D>.json`` (an unreadable earnings calendar is an
+   error, never an empty PEAD evaluation);
 4. writes DRAFT cards into ``card-drafts/`` for whatever fired (sealing
    stays a human/agent step: nothing here touches the paper-trades cards
    or LEDGER.md);
-5. pushes one ntfy line when a rule fires (no money, URLs or ids; quiet
-   hours hold it for the next run), then marks the stage done.
+5. pushes one ntfy line when a rule fires (no money, URLs or ids) through
+   a crash-safe outbox: quiet hours (judged at send time) hold it, an
+   interrupted send is never reposted; then marks the stage done.
 
 State lives under :func:`tree_options.desk.paths.state_root`.
 """
@@ -35,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 from tree_options.desk import card_drafts, signals
+from tree_options.desk.panel import PanelLocked, read_panel
 from tree_options.desk.sessions import (
     Calendar,
     cutoff_instant,
@@ -49,12 +55,14 @@ STAGE = "eod-equity"
 SCHEMA = "desk-signals/1"
 MAX_GAP_FILL = 25  # sessions; a longer gap needs a deliberate backfill
 FETCH_TIMEOUT_S = 1200
+PANEL_LOCK_TIMEOUT_S = 300.0  # fetch_ohlc.py holds it only for its merge+write
 OWED_TTL_S = 4 * 86_400  # an owed push older than this is dropped (covers a weekend)
 PUSH_TITLE = "trex desk"
 REFERENCE = "SPY"  # the panel's session clock (fetch_ohlc.py merges all names at once)
 
 FetchRunner = Callable[[date], tuple[int, str]]
 Notify = Callable[[str, str, str], bool]
+Clock = Callable[[], datetime]
 
 
 @dataclass(frozen=True)
@@ -64,14 +72,21 @@ class EodResult:
     detail: str = ""
     session: date | None = None
     signals_path: Path | None = None
-    push: str = "none"  # none | sent | held_quiet | failed | unconfigured
+    # none | sent | held_quiet | failed | unconfigured | ambiguous_not_resent
+    push: str = "none"
+    ambiguous: tuple[str, ...] = ()  # interrupted deliveries found by this run
 
     def line(self) -> str:
         d = self.session.isoformat() if self.session else "-"
         tail = f" ({self.detail})" if self.detail else ""
+        amb = (
+            f" ambiguous_pushes={len(self.ambiguous)} ({', '.join(self.ambiguous)}: not reposted)"
+            if self.ambiguous
+            else ""
+        )
         return (
             f"eod-equity session={d} status={self.status} push={self.push} "
-            f"exit={self.exit_code}{tail}"
+            f"exit={self.exit_code}{amb}{tail}"
         )
 
 
@@ -125,31 +140,83 @@ def _panel_holes(panel: dict[str, Any], d: date, cal: Calendar) -> list[date]:
     return [s for s in window if s.isoformat() not in bars]
 
 
-def _owed_dir(state: Path) -> Path:
-    return state / "push-owed"
+# ------------------------------------------------------------ push outbox
+#
+# outbox/<key>.json       pending (held by quiet hours, or a failed delivery)
+# outbox/<key>.sending    claimed: persisted BEFORE ntfy is called
+# outbox/<key>.sent       delivery receipt (a rerun never sends <key> again)
+# outbox/<key>.ambiguous  a .sending left by a crash: ntfy may or may not
+#                         have accepted it, so it is NEVER reposted
+#                         automatically; push-ambiguous.jsonl logs it and
+#                         the run that finds it reports it in its summary
+# outbox/<key>.expired    pending past OWED_TTL_S, dropped unsent
 
 
-def flush_owed(state: Path, now: datetime, notify: Notify | None, quiet: QuietHours | None) -> None:
+def _outbox(state: Path) -> Path:
+    return state / "outbox"
+
+
+def _key(session: date) -> str:
+    return f"{session.isoformat()}-{STAGE}"
+
+
+def recover_ambiguous(state: Path, now: datetime) -> tuple[str, ...]:
+    """Park every crash-interrupted delivery; returns their keys."""
+    box = _outbox(state)
+    if not box.is_dir():
+        return ()
+    keys = []
+    for claimed in sorted(box.glob("*.sending")):
+        key = claimed.name.removesuffix(".sending")
+        claimed.rename(box / f"{key}.ambiguous")
+        log = state / "push-ambiguous.jsonl"
+        with open(log, "a") as fh:
+            fh.write(
+                json.dumps(
+                    {
+                        "at": now.isoformat(),
+                        "key": key,
+                        "note": "delivery outcome unknown (interrupted mid-send); not reposted",
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+        keys.append(key)
+    return tuple(keys)
+
+
+def _send_claimed(box: Path, key: str, notify: Notify) -> bool:
+    """Claim, send, receipt. A crash inside ``notify`` leaves ``.sending``."""
+    pending, claimed = box / f"{key}.json", box / f"{key}.sending"
+    owed = _load_json(pending)
+    pending.rename(claimed)
+    if notify(str(owed["title"]), str(owed["message"]), str(owed.get("priority", "default"))):
+        claimed.rename(box / f"{key}.sent")
+        return True
+    claimed.rename(pending)  # a clean failure stays owed
+    return False
+
+
+def flush_owed(state: Path, clock: Clock, notify: Notify | None, quiet: QuietHours | None) -> None:
     """Deliver pushes held by quiet hours or failed delivery (oldest first)."""
-    folder = _owed_dir(state)
-    if not folder.is_dir():
+    box = _outbox(state)
+    if not box.is_dir() or notify is None:
         return
-    t = now.timestamp()
-    for path in sorted(folder.glob("*.json")):
+    for pending in sorted(box.glob("*.json")):
+        key = pending.name.removesuffix(".json")
         try:
-            owed = _load_json(path)
-            age = t - float(owed["created_at"])
-            title, message = str(owed["title"]), str(owed["message"])
+            created = float(_load_json(pending)["created_at"])
         except (OSError, ValueError, KeyError, TypeError):
-            path.unlink(missing_ok=True)
+            pending.rename(box / f"{key}.expired")
             continue
-        if age > OWED_TTL_S:
-            path.unlink(missing_ok=True)
+        now = clock().timestamp()  # re-read: quiet hours are judged at send time
+        if now - created > OWED_TTL_S:
+            pending.rename(box / f"{key}.expired")
             continue
-        if notify is None or (quiet is not None and quiet.contains(t)):
+        if quiet is not None and quiet.contains(now):
             continue
-        if notify(title, message, str(owed.get("priority", "default"))):
-            path.unlink(missing_ok=True)
+        _send_claimed(box, key, notify)
 
 
 def _push_message(xsmom_fires: bool, n_beats: int, session: date) -> str | None:
@@ -167,30 +234,32 @@ def _deliver(
     state: Path,
     session: date,
     message: str,
-    now: datetime,
+    clock: Clock,
     notify: Notify | None,
     quiet: QuietHours | None,
 ) -> str:
+    box, key = _outbox(state), _key(session)
+    if (box / f"{key}.sent").exists():
+        return "sent"  # delivered by an earlier, interrupted run
+    if (box / f"{key}.ambiguous").exists():
+        return "ambiguous_not_resent"
     if notify is None:
         return "unconfigured"
+    now = clock()  # re-read right before delivery (a gap fill can take hours)
+    if not (box / f"{key}.json").exists():
+        atomic_write_json(
+            box / f"{key}.json",
+            {
+                "session": session.isoformat(),
+                "title": PUSH_TITLE,
+                "message": message,
+                "priority": "default",
+                "created_at": now.timestamp(),
+            },
+        )
     if quiet is not None and quiet.contains(now.timestamp()):
-        status = "held_quiet"
-    elif notify(PUSH_TITLE, message, "default"):
-        return "sent"
-    else:
-        status = "failed"
-    atomic_write_json(
-        _owed_dir(state) / f"{session.isoformat()}-{STAGE}.json",
-        {
-            "session": session.isoformat(),
-            "title": PUSH_TITLE,
-            "message": message,
-            "priority": "default",
-            "created_at": now.timestamp(),
-            "reason": status,
-        },
-    )
-    return status
+        return "held_quiet"
+    return "sent" if _send_claimed(box, key, notify) else "failed"
 
 
 def _exit_session(session: date, cal: Calendar) -> date | None:
@@ -211,7 +280,12 @@ def run_eod_equity(
     notify: Notify | None,
     quiet: QuietHours | None,
     dry_run: bool = False,
+    clock: Clock | None = None,
+    lock_timeout_s: float = PANEL_LOCK_TIMEOUT_S,
 ) -> EodResult:
+    """``now`` picks the session; ``clock`` (default: ``now``) is re-read
+    right before every push, so quiet hours are judged at delivery time."""
+    tick: Clock = clock or (lambda: now)
     if session is None:
         d = latest_completed_session(now, cal)
     elif not cal.is_session(session):
@@ -221,27 +295,34 @@ def run_eod_equity(
     else:
         d = session
 
+    ambiguous: tuple[str, ...] = ()
     if not dry_run:
-        flush_owed(state, now, notify, quiet)
+        ambiguous = recover_ambiguous(state, now)
+        flush_owed(state, tick, notify, quiet)
+
+    def result(code: int, status: str, detail: str = "", **kw: Any) -> EodResult:
+        return EodResult(code, status, detail, d, ambiguous=ambiguous, **kw)
+
     marker = state / "stages" / d.isoformat() / f"{STAGE}.done.json"
     if marker.exists():
-        return EodResult(0, "already_done", "", d)
+        return result(0, "already_done")
 
     panel_path = paper / "ohlc-panel.json"
     try:
-        panel = _load_json(panel_path)
+        panel = read_panel(panel_path, timeout_s=lock_timeout_s)
+    except PanelLocked as exc:
+        return result(3, "panel_locked", str(exc))
     except (OSError, ValueError) as exc:
-        return EodResult(1, "panel_missing", f"{panel_path.name}: {type(exc).__name__}", d)
+        return result(1, "panel_missing", f"{panel_path.name}: {type(exc).__name__}")
     last = _last_session(panel)
     if last is None:
-        return EodResult(1, "panel_missing", f"no {REFERENCE} bars in the panel", d)
+        return result(1, "panel_missing", f"no {REFERENCE} bars in the panel")
     todo = sessions_after(last, d, cal)
     if len(todo) > MAX_GAP_FILL:
-        return EodResult(
+        return result(
             1,
             "gap_too_large",
             f"panel ends {last}; {len(todo)} sessions to {d} (max {MAX_GAP_FILL}): backfill first",
-            d,
         )
     if dry_run:
         plan = (
@@ -249,31 +330,35 @@ def run_eod_equity(
             if todo
             else "panel already has the session"
         )
-        return EodResult(0, "dry_run", f"panel ends {last}; {plan}", d)
+        return result(0, "dry_run", f"panel ends {last}; {plan}")
 
     for s in todo:
         rc, tail = fetch(s)
         if rc == 3:
-            return EodResult(3, "vendor_lag", f"fetch_ohlc.py {s}: {tail}", d)
+            return result(3, "vendor_lag", f"fetch_ohlc.py {s}: {tail}")
         if rc != 0:
-            return EodResult(1, "fetch_failed", f"fetch_ohlc.py {s} rc={rc}: {tail}", d)
+            return result(1, "fetch_failed", f"fetch_ohlc.py {s} rc={rc}: {tail}")
 
     try:
-        panel = _load_json(panel_path)
+        panel = read_panel(panel_path, timeout_s=lock_timeout_s)
+    except PanelLocked as exc:
+        return result(3, "panel_locked", str(exc))
     except (OSError, ValueError) as exc:
-        return EodResult(1, "panel_missing", f"after fetch: {type(exc).__name__}", d)
+        return result(1, "panel_missing", f"after fetch: {type(exc).__name__}")
     short = [n for n in PANEL_NAMES if d.isoformat() not in (panel.get(n) or {})]
     if short:
-        return EodResult(
-            1, "panel_incomplete", f"no {d} bar for {len(short)} names ({', '.join(short[:5])})", d
+        return result(
+            1, "panel_incomplete", f"no {d} bar for {len(short)} names ({', '.join(short[:5])})"
         )
 
     cal_path = paper / "earnings-calendar.json"
     try:
-        earnings: dict[str, list[str]] = _load_json(cal_path)
-        pead_note = ""
+        earnings = _load_json(cal_path)
+        if not isinstance(earnings, dict):
+            raise ValueError("not an object")
     except (OSError, ValueError) as exc:
-        earnings, pead_note = {}, f"earnings calendar unreadable ({type(exc).__name__})"
+        # a required input: never seal the stage without the PEAD evaluation
+        return result(1, "earnings_calendar_unreadable", f"{cal_path.name}: {type(exc).__name__}")
 
     xs = signals.xsmom_top3(panel, d, cal)
     pe = signals.pead_beats(panel, earnings, d, cal)
@@ -323,7 +408,6 @@ def run_eod_equity(
                 "panel_holes_n": len(holes),
                 "earnings_calendar": str(cal_path),
                 "earnings_calendar_sha256": _sha256(cal_path),
-                "earnings_note": pead_note,
                 "exit_session": exit_s.isoformat() if exit_s else None,
                 "allowed_direction": sorted(signals.ALLOWED_DIRECTION),
             },
@@ -331,7 +415,7 @@ def run_eod_equity(
     )
 
     message = _push_message(xs.fires, len(pe.beats), d)
-    push = _deliver(state, d, message, now, notify, quiet) if message else "none"
+    push = _deliver(state, d, message, tick, notify, quiet) if message else "none"
     atomic_write_json(
         marker,
         {
@@ -342,6 +426,7 @@ def run_eod_equity(
             "fired": {"xsmom": xs.fires, "pead_beats": [e.name for e in pe.beats]},
             "drafts": drafts,
             "push": push,
+            "ambiguous_pushes_recovered": list(ambiguous),
         },
     )
-    return EodResult(0, "ok", "", d, signals_path, push)
+    return result(0, "ok", signals_path=signals_path, push=push)

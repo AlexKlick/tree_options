@@ -185,12 +185,14 @@ def _synthetic(static_calendar, n_sessions: int = 300, end: date = date(2026, 6,
 
 
 class TestSyntheticEdges:
-    def test_hole_guard_and_short_history(self, static_calendar) -> None:
+    def test_gaps_and_short_history_are_excluded(self, static_calendar) -> None:
         panel, days, _ = _synthetic(static_calendar)
-        # N35 (the would-be leader) gets a hole: drop 8 sessions (> 10 calendar days)
+        # N35 (the would-be leader): a long hole (8 sessions)
         for d in days[100:108]:
             del panel["N35"][d]
-        # N34 gets a short gap: 5 sessions (7 calendar days) stays clean
+        # N34: a short gap (5 sessions, 7 calendar days) now also excludes it
+        # (fixed NYSE offsets; the old 10-day guard let it rank on a
+        # silently lengthened window)
         for d in days[150:155]:
             del panel["N34"][d]
         # N33 has too little history
@@ -199,8 +201,36 @@ class TestSyntheticEdges:
         res = signals.xsmom_top3(
             panel, date(2026, 6, 1), static_calendar, names=[n for n in panel if n != "SPY"]
         )
-        assert res.excluded == {"N35": "hole", "N33": "insufficient_history"}
-        assert list(res.top3) == ["N34", "N32", "N31"]
+        assert res.excluded == {"N35": "gap", "N34": "gap", "N33": "insufficient_history"}
+        assert list(res.top3) == ["N32", "N31", "N30"]
+        assert res.data_gaps == ("N34", "N35")
+
+    def test_one_missing_session_in_the_window_excludes_the_name(self, static_calendar) -> None:
+        """Codex P2: before, one dropped bar made close[p-273] reach 274
+        exchange sessions back and the name still ranked."""
+        panel, days, _ = _synthetic(static_calendar)
+        del panel["N35"][days[200]]
+        res = signals.xsmom_top3(
+            panel, date(2026, 6, 1), static_calendar, names=[n for n in panel if n != "SPY"]
+        )
+        assert res.excluded == {"N35": "gap"}
+        assert list(res.top3) == ["N34", "N33", "N32"]
+
+    def test_offsets_are_nyse_sessions_and_old_holes_do_not_matter(self, static_calendar) -> None:
+        panel, days, _ = _synthetic(static_calendar)
+        i = static_calendar.ordinal(date(2026, 6, 1))
+        start = static_calendar.sessions()[i - 273].isoformat()
+        skip = static_calendar.sessions()[i - 21].isoformat()
+        del panel["N35"][days[5]]  # older than the 273-session window: irrelevant
+        res = signals.xsmom_top3(
+            panel, date(2026, 6, 1), static_calendar, names=[n for n in panel if n != "SPY"]
+        )
+        assert not res.excluded and res.top3[0] == "N35"
+        bars = panel["N35"]
+        want = Decimal(bars["2026-06-01"]["close"]) / Decimal(bars[start]["close"]) - 1
+        assert res.scores["N35"] == want
+        want21 = Decimal(bars[skip]["close"]) / Decimal(bars[start]["close"]) - 1
+        assert res.scores_skip21["N35"] == want21
 
     def test_too_few_ranked_never_fires(self, static_calendar) -> None:
         panel, _days, names = _synthetic(static_calendar)

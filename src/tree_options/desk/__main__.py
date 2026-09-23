@@ -104,11 +104,12 @@ def _record_chains(
 def _eod_equity(
     args: argparse.Namespace,
     *,
-    now: datetime,
+    clock: store.Clock,
     cal: Calendar,
     fetch: eod_equity.FetchRunner | None,
     notify: eod_equity.Notify | None,
 ) -> int:
+    now = clock()
     from tree_options.trex.alert_policy import load_quiet_hours
     from tree_options.trex.notify import load_config, read_env, send
 
@@ -139,6 +140,7 @@ def _eod_equity(
         notify=notify,
         quiet=quiet,
         dry_run=args.dry_run,
+        clock=clock,
     )
     print(res.line())
     return res.exit_code
@@ -174,7 +176,7 @@ def run_cli(
                 clock=clock,
                 cal=cal,
             )
-        return _eod_equity(args, now=clock(), cal=cal, fetch=fetch, notify=notify)
+        return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 
 @contextlib.contextmanager

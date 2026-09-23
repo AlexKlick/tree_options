@@ -98,12 +98,15 @@ class FakeFetch:
 
 
 class FakeNotify:
-    def __init__(self, ok: bool = True) -> None:
+    def __init__(self, ok: bool = True, crash: bool = False) -> None:
         self.ok = ok
+        self.crash = crash  # accepted by ntfy, then the process dies
         self.sent: list[tuple[str, str, str]] = []
 
     def __call__(self, title: str, message: str, priority: str) -> bool:
         self.sent.append((title, message, priority))
+        if self.crash:
+            raise KeyboardInterrupt("killed right after ntfy accepted the push")
         return self.ok
 
 
@@ -117,6 +120,8 @@ def _run(
     notify=None,
     quiet=None,
     dry_run: bool = False,
+    clock=None,
+    lock_timeout_s: float = 5.0,
 ) -> eod_equity.EodResult:
     return eod_equity.run_eod_equity(
         session=session,
@@ -128,7 +133,13 @@ def _run(
         notify=notify,
         quiet=quiet,
         dry_run=dry_run,
+        clock=clock,
+        lock_timeout_s=lock_timeout_s,
     )
+
+
+def _outbox(tmp_path: Path, pattern: str) -> list[Path]:
+    return sorted((tmp_path / "state" / "outbox").glob(pattern))
 
 
 class TestRebalanceDay:
@@ -351,8 +362,7 @@ class TestPushDelivery:
         )
         assert res.session == date(2026, 10, 1) and res.push == "held_quiet"
         assert notify.sent == []
-        owed = list((tmp_path / "state/push-owed").glob("*.json"))
-        assert len(owed) == 1
+        assert len(_outbox(tmp_path, "*.json")) == 1
         # next run, outside quiet hours: the owed push goes out first
         res = _run(
             tmp_path,
@@ -367,7 +377,8 @@ class TestPushDelivery:
         assert [m for _t, m, _p in notify.sent] == [
             "XSMOM rebalance for session 2026-10-01. Draft card(s) ready for review."
         ]
-        assert not list((tmp_path / "state/push-owed").glob("*.json"))
+        assert not _outbox(tmp_path, "*.json")
+        assert [p.name for p in _outbox(tmp_path, "*.sent")] == ["2026-10-01-eod-equity.sent"]
 
     def test_failed_push_is_owed_and_unconfigured_is_not(
         self, tmp_path: Path, static_calendar
@@ -383,7 +394,7 @@ class TestPushDelivery:
             notify=FakeNotify(ok=False),
         )
         assert res.push == "failed"
-        assert len(list((tmp_path / "state/push-owed").glob("*.json"))) == 1
+        assert len(_outbox(tmp_path, "*.json")) == 1
 
         other = tmp_path / "other"
         _write_panel(other / "paper", static_calendar)
@@ -396,7 +407,7 @@ class TestPushDelivery:
             notify=None,
         )
         assert res.push == "unconfigured"
-        assert not (other / "state/push-owed").exists()
+        assert not (other / "state/outbox").exists()
 
     def test_nothing_fires_nothing_pushed(self, tmp_path: Path, static_calendar) -> None:
         _write_panel(tmp_path / "paper", static_calendar)
@@ -411,6 +422,201 @@ class TestPushDelivery:
         )
         assert (res.status, res.push) == ("ok", "none") and notify.sent == []
         assert not (tmp_path / "state/card-drafts").exists()
+
+    # --- P2 (Codex): delivery is crash-idempotent
+
+    def test_crash_after_send_is_never_reposted(self, tmp_path: Path, static_calendar) -> None:
+        _write_panel(tmp_path / "paper", static_calendar)
+        fetch = FakeFetch(tmp_path / "paper")
+        d, at = date(2026, 10, 1), datetime(2026, 10, 1, 16, 40, tzinfo=ET)
+        crashing = FakeNotify(crash=True)
+        with pytest.raises(KeyboardInterrupt):
+            _run(tmp_path, static_calendar, session=d, now=at, fetch=fetch, notify=crashing)
+        assert len(crashing.sent) == 1
+        assert _outbox(tmp_path, "*.sending")  # the attempt was persisted before sending
+        assert not (tmp_path / "state/stages/2026-10-01/eod-equity.done.json").exists()
+
+        notify = FakeNotify()
+        res = _run(
+            tmp_path,
+            static_calendar,
+            session=d,
+            now=datetime(2026, 10, 1, 20, 40, tzinfo=ET),
+            fetch=fetch,
+            notify=notify,
+        )
+        assert (res.status, res.push) == ("ok", "ambiguous_not_resent")
+        assert notify.sent == []  # never reposted automatically
+        assert res.ambiguous == ("2026-10-01-eod-equity",)
+        assert "ambiguous_pushes=1" in res.line()
+        log = (tmp_path / "state/push-ambiguous.jsonl").read_text().splitlines()
+        assert len(log) == 1 and json.loads(log[0])["key"] == "2026-10-01-eod-equity"
+        marker = json.loads((tmp_path / "state/stages/2026-10-01/eod-equity.done.json").read_text())
+        assert marker["push"] == "ambiguous_not_resent"
+
+    def test_rerun_after_a_delivered_push_does_not_resend(
+        self, tmp_path: Path, static_calendar
+    ) -> None:
+        _write_panel(tmp_path / "paper", static_calendar)
+        fetch = FakeFetch(tmp_path / "paper")
+        d = date(2026, 10, 1)
+        _run(
+            tmp_path,
+            static_calendar,
+            session=d,
+            now=datetime(2026, 10, 1, 16, 40, tzinfo=ET),
+            fetch=fetch,
+            notify=FakeNotify(),
+        )
+        # the process died after the receipt but before the stage marker
+        (tmp_path / "state/stages/2026-10-01/eod-equity.done.json").unlink()
+        notify = FakeNotify()
+        res = _run(
+            tmp_path,
+            static_calendar,
+            session=d,
+            now=datetime(2026, 10, 1, 20, 40, tzinfo=ET),
+            fetch=fetch,
+            notify=notify,
+        )
+        assert (res.status, res.push) == ("ok", "sent") and notify.sent == []
+
+    def test_crash_while_flushing_an_owed_push_is_not_reposted(
+        self, tmp_path: Path, static_calendar
+    ) -> None:
+        _write_panel(tmp_path / "paper", static_calendar)
+        fetch = FakeFetch(tmp_path / "paper")
+        _run(
+            tmp_path,
+            static_calendar,
+            session=None,
+            now=datetime(2026, 10, 2, 8, 40, tzinfo=ET),
+            fetch=fetch,
+            notify=FakeNotify(),
+            quiet=QUIET,
+        )  # held (quiet)
+        with pytest.raises(KeyboardInterrupt):
+            _run(
+                tmp_path,
+                static_calendar,
+                session=None,
+                now=datetime(2026, 10, 2, 16, 40, tzinfo=ET),
+                fetch=fetch,
+                notify=FakeNotify(crash=True),
+                quiet=QUIET,
+            )
+        notify = FakeNotify()
+        res = _run(
+            tmp_path,
+            static_calendar,
+            session=None,
+            now=datetime(2026, 10, 2, 20, 40, tzinfo=ET),
+            fetch=fetch,
+            notify=notify,
+            quiet=QUIET,
+        )
+        assert notify.sent == [] and res.ambiguous == ("2026-10-01-eod-equity",)
+
+    # --- P2 (Codex): quiet hours are judged at delivery time, not job start
+
+    def test_quiet_hours_use_the_clock_at_delivery(self, tmp_path: Path, static_calendar) -> None:
+        _write_panel(tmp_path / "paper", static_calendar)
+        notify = FakeNotify()
+        # the job starts 16:40 ET, but the gap fill runs until 02:10 ET (00:10 MDT: quiet)
+        res = _run(
+            tmp_path,
+            static_calendar,
+            session=date(2026, 10, 1),
+            now=datetime(2026, 10, 1, 16, 40, tzinfo=ET),
+            fetch=FakeFetch(tmp_path / "paper"),
+            notify=notify,
+            quiet=QUIET,
+            clock=lambda: datetime(2026, 10, 2, 2, 10, tzinfo=ET),
+        )
+        assert res.push == "held_quiet" and notify.sent == []
+
+        other = tmp_path / "other"
+        _write_panel(other / "paper", static_calendar)
+        notify = FakeNotify()
+        # starts 08:40 ET (06:40 MDT: quiet), delivers 09:05 ET (07:05 MDT: not quiet)
+        res = _run(
+            other,
+            static_calendar,
+            session=None,
+            now=datetime(2026, 10, 2, 8, 40, tzinfo=ET),
+            fetch=FakeFetch(other / "paper"),
+            notify=notify,
+            quiet=QUIET,
+            clock=lambda: datetime(2026, 10, 2, 9, 5, tzinfo=ET),
+        )
+        assert res.push == "sent" and len(notify.sent) == 1
+
+
+class TestInputsAndLocks:
+    def test_data_gap_exclusion_is_flagged_in_the_draft(
+        self, tmp_path: Path, static_calendar
+    ) -> None:
+        _write_panel(tmp_path / "paper", static_calendar)
+        path = tmp_path / "paper/ohlc-panel.json"
+        panel = json.loads(path.read_text())
+        del panel["GLD"]["2026-06-01"]  # inside 10-01's 273-session window
+        path.write_text(json.dumps(panel, indent=1, sort_keys=True))
+        res = _run(
+            tmp_path,
+            static_calendar,
+            session=date(2026, 10, 1),
+            now=datetime(2026, 10, 1, 16, 40, tzinfo=ET),
+            fetch=FakeFetch(tmp_path / "paper"),
+            notify=FakeNotify(),
+        )
+        assert res.status == "ok"
+        doc = json.loads((tmp_path / "state/signals/2026-10-01.json").read_text())
+        assert doc["xsmom"]["data_gaps"] == ["GLD"]
+        assert doc["xsmom"]["top3"] == ["SQQQ", "TQQQ", "XLF"]
+        draft = (tmp_path / "state/card-drafts/2026-10-01-xsmom-top3.md").read_text()
+        assert "DATA GAP: GLD" in draft
+
+    # --- P2 (Codex): an unreadable earnings calendar must not seal the stage
+
+    def test_unreadable_earnings_calendar_is_an_error_without_marker(
+        self, tmp_path: Path, static_calendar
+    ) -> None:
+        _write_panel(tmp_path / "paper", static_calendar)
+        good = (tmp_path / "paper/earnings-calendar.json").read_text()
+        (tmp_path / "paper/earnings-calendar.json").write_text("{torn")
+        fetch = FakeFetch(tmp_path / "paper")
+        at = datetime(2026, 9, 25, 16, 40, tzinfo=ET)
+        res = _run(tmp_path, static_calendar, session=date(2026, 9, 25), now=at, fetch=fetch)
+        assert (res.exit_code, res.status) == (1, "earnings_calendar_unreadable")
+        assert not (tmp_path / "state/stages/2026-09-25/eod-equity.done.json").exists()
+        assert not (tmp_path / "state/signals/2026-09-25.json").exists()
+        (tmp_path / "paper/earnings-calendar.json").write_text(good)
+        res = _run(tmp_path, static_calendar, session=date(2026, 9, 25), now=at, fetch=fetch)
+        assert (res.exit_code, res.status) == (0, "ok")
+        assert len(fetch.calls) == 9  # the repaired rerun did not refetch
+
+    # --- P1 (Codex): the desk reads the panel under the writers' lock
+
+    def test_panel_lock_is_shared_with_fetch_ohlc(self, tmp_path: Path, static_calendar) -> None:
+        import fcntl
+
+        from tree_options.desk import panel as panel_mod
+
+        assert panel_mod.lock_path(tmp_path / "ohlc-panel.json").name == "ohlc-panel.json.lock"
+        _write_panel(tmp_path / "paper", static_calendar)
+        lock = tmp_path / "paper" / "ohlc-panel.json.lock"
+        with open(lock, "a") as held:
+            fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)  # a fetch_ohlc.py merge in flight
+            res = _run(
+                tmp_path,
+                static_calendar,
+                session=date(2026, 9, 16),
+                now=datetime(2026, 9, 16, 16, 40, tzinfo=ET),
+                fetch=FakeFetch(tmp_path / "paper"),
+                lock_timeout_s=0.2,
+            )
+        assert (res.exit_code, res.status) == (3, "panel_locked")
+        assert not (tmp_path / "state/stages").exists()
 
 
 FAKE_SCRIPT = """\
