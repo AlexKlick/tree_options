@@ -56,12 +56,62 @@ no second push) · `monitor_down` (heartbeat > 2 min old or book.json
 unreadable, and the gateway not to blame; a silent gateway watchdog never
 takes the blame) · `monitor_failing` (beating but `monitor.json` absent or
 older than 3 min, any hour; or in market hours 3 failed ticks in a row or
-none good for 3 min; the last good tick survives monitor restarts).
-Detection only: the monitor's restarts are systemd's
+none good for 3 min; the last good tick survives monitor restarts) ·
+`touch_blind` (the monitor is healthy, but inside the touch window, from
+the open + 16 min to the calendar close, early closes included, an open
+position's underlying has had no accepted spot for ≥ 10 min: its touch
+exit can't fire; time-stop and expiry exits still work. Push: "trex: touch
+exit blind", ticker symbols only) · `touch_suspended` (a blind incident
+the session ended without a price: held silently, never a recovery; "trex:
+touch exit back" goes out only once a price arrives or the blind position
+closes). Detection only: the monitor's restarts are systemd's
 (`Restart=on-failure`). Banner: `GET /api/exit-machine`.
 
 Deploy after the monitor runs code that writes `monitor.json`, or a
 monitor without it alarms as `monitor_failing` after 3 minutes.
+
+**Touch-exit spot (`trex/spot.py`).** The only source is the Polygon stock
+snapshot (`~/.config/tree_options/polygon.key`, 15 min delayed intraday).
+IBKR stock prices are never used: the paper account has no equity quotes,
+`close` is the prior session's, and `ticker.time` moves on every bid/ask
+tick so it can't date `last` (revisit once live quotes arrive and
+`lastTimestamp`, tick 45, is verified). A bar counts only if it is dated
+inside the current session's regular hours (premarket and after-hours
+prints never fire a touch) and is ≤ 20 min old, so each day's first price
+arrives about 16 min after the open. Fetches run in background workers,
+never in the exit loop: one request in flight per symbol, 60 s between
+attempts, 10 s total per request, OPEN positions' underlyings only. No
+accepted spot = no touch decision. `marks.json` carries `spot_sources`
+(`px`, `source`, `as_of`, `age_s`) next to `spots`; `monitor.json` carries
+`touch_guarded`, `spot_ok` and `spot_blind` (`{symbol: since}`, counted
+only inside the touch window, kept across restarts).
+
+**Calendar horizon.** trex reads its own session calendar,
+`data/calendar/trex/nyse_sessions_2018_01_02_2028_12_29.json` (the sealed
+protocol calendar ends 2026-12-31; past a calendar's last session the
+monitor sees no sessions and places no exits). `monitor.json` carries
+`calendar_last_session` and `calendar_horizon_warn` (true inside the last 60
+sessions; the watchdog copies it onto the book row). Regenerate with
+`scripts/gen_trex_calendar.py` (see its docstring for the pinned build env).
+
+**FLATTEN and working entries.** IBKR lets only the placing clientId cancel
+an order (error 10147), and the monitor (clientId 71) never sees the entry
+runner's (72) BUYs. So under FLATTEN, `trex.enter` cancels its own working
+entries on its next cycle (15 s), closes PLANNED structures and enters
+nothing new; a partly filled entry goes OPEN and the monitor sells it. The
+monitor leaves `enter_working` structures alone (event
+`flatten_waits_for_entry_runner`). If the entry runner is not running,
+start it: it adopts its working BUYs and cancels them on its first cycle.
+An entry whose order filled or died while the runner was down is settled
+from broker evidence (today's executions of that order, or a flat
+account); if that is inconclusive it stays `enter_working` with the event
+`entry_unresolved`: check the account by hand. HALT also stops the entry
+runner placing or repricing.
+
+**Shared book.** Both runners write `book.json` under an exclusive lock
+(`book.json.lock`), each keeping the other's structures (entry lane vs
+exit lane), never moving a structure backwards (CLOSED stays closed), and
+never overwriting an unreadable book.
 
 ## Phone push (ntfy)
 

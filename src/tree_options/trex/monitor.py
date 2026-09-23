@@ -7,11 +7,21 @@ plan's EV lives in the exit discipline, so the book is never owned without
 its exit machine).
 
 Scope: structures at/after OPEN. Entry states are the entry runner's
-business; the monitor only cancels stale entries under the FLATTEN kill.
+business, under FLATTEN too: IBKR lets only the placing clientId cancel an
+order (error 10147) and the monitor (71) never even sees the entry
+runner's (72) BUYs, so enter.py cancels its own working entries and hands
+any filled part over as OPEN, which the monitor then flattens.
 
 Kill files in the run directory:
-  FLATTEN  exit every position now, marketable; cancel unfilled entries
+  FLATTEN  exit every position now, marketable; enter.py cancels unfilled
+           entries and enters nothing new
   HALT     place no new orders (existing exits continue to completion)
+
+Spots come from trex.spot's SpotFeed (the Polygon snapshot, fetched off
+this loop, session-bounded), for touch-guarded (OPEN) underlyings only.
+``monitor.json`` reports them for the exit watchdog: ``touch_guarded``,
+``spot_ok`` (accepted this tick) and ``spot_blind`` (none accepted, and
+since when, counted only inside trex.spot.touch_window).
 
 Usage: python -m tree_options.trex.monitor --plan plans/2026-09-18.toml
 """
@@ -25,6 +35,7 @@ import logging
 import os
 import sys
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from datetime import datetime
 from datetime import time as dtime
 from decimal import Decimal
@@ -33,7 +44,14 @@ from typing import Any
 
 from tree_options.trex import history
 from tree_options.trex.account import write_account
-from tree_options.trex.clock import EntryWindow, is_session, now_et
+from tree_options.trex.clock import (
+    ET,
+    EntryWindow,
+    calendar_horizon_warn,
+    calendar_last_session,
+    is_session,
+    now_et,
+)
 from tree_options.trex.engine import (
     AbortEntry,
     Action,
@@ -48,7 +66,8 @@ from tree_options.trex.engine import (
 )
 from tree_options.trex.ibkr import IbkrTrex, OrderRef, Snapshot
 from tree_options.trex.plan import PutSpread, TradePlan, cents, load_plan
-from tree_options.trex.state import BookState, Status
+from tree_options.trex.spot import SpotFeed, polygon_fetcher, touch_window
+from tree_options.trex.state import ENTRY_LANE, BookState, Status
 
 log = logging.getLogger("trex.monitor")
 
@@ -122,12 +141,16 @@ class Monitor:
         book: BookState,
         run_dir: Path,
         clock: Callable[[], datetime] | None = None,
+        spots: SpotFeed | None = None,
     ) -> None:
         self.plan = plan
         self.ib = ib
         self.book = book
         self.run_dir = run_dir
         self._clock = clock or now_et
+        # None: the snapshot's own spots stand (test doubles); main() wires
+        # the Polygon feed, the only touch source (see trex.spot)
+        self.spots = spots
         self.orders: dict[str, OrderRef] = {}  # structure_id -> working exit OrderRef
         # Order-local fill counts RESTART on every replacement, so the drain
         # merges increments (seen -> now) into the book's cumulative totals.
@@ -146,6 +169,11 @@ class Monitor:
         self._tick_failures = 0  # consecutive, for monitor.json
         self._last_tick_ok_at: float | None = None
         self._started_at: float | None = None
+        # touch-guarded underlyings with no accepted spot -> since when
+        self._spot_blind_since: dict[str, datetime] = {}
+        # ... and those with one this tick -> its as_of
+        self._spot_ok: dict[str, datetime] = {}
+        self._flatten_wait_noted: set[str] = set()
 
     def _now(self) -> datetime:
         return self._clock()
@@ -170,10 +198,20 @@ class Monitor:
         disk = BookState.load(self.run_dir / "book.json", list(self.book.structures))
         self.book.structures = disk.structures
 
+    def _save_book(self) -> None:
+        """Whole-book save that never reverts the entry runner's writes:
+        entry-lane structures (state.ENTRY_LANE) are taken from disk, since
+        the monitor never writes them and enter.py may have settled one
+        (e.g. a FLATTEN cancel) since this loop's sync."""
+        self.book.save_owned(
+            self.run_dir / "book.json", lambda mine, _disk: mine.status in ENTRY_LANE
+        )
+
     def _write_marks(self, snap: Snapshot) -> dict[str, Any]:
         """Persist the observation-only marks payload for the status panel."""
         payload = compute_marks(self.plan.structures, self.book, snap.quotes)
         payload["spots"] = {sym: str(px) for sym, px in snap.spots.items()}
+        payload["spot_sources"] = {sym: r.to_json() for sym, r in snap.spot_sources.items()}
         payload["ts"] = now_et().isoformat()
         payload["history"] = self._marks_history(payload["ts"], payload["total_unrealized"])
         tmp = self.run_dir / "marks.json.tmp"
@@ -290,7 +328,7 @@ class Monitor:
         while not self._all_closed():
             self._sync_book_from_disk()
             self.book.beat()
-            self.book.save(self.run_dir / "book.json")
+            self._save_book()
             tick_error: str | None = None
             try:
                 self._tick()
@@ -312,7 +350,7 @@ class Monitor:
                 return EXIT_BROKER_LOST
             self.ib.sleep(POLL_SECONDS)
         self.book.beat()
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
         log.info("book fully closed; monitor exiting")
         return 0
 
@@ -325,6 +363,16 @@ class Monitor:
             ok_at = prior.get("last_tick_ok_at")
             if isinstance(ok_at, (int, float)):
                 self._last_tick_ok_at = float(ok_at)
+            # a crash-looping monitor must not restart the blind clock
+            # (clamped to today's open on the next session tick)
+            blind = prior.get("spot_blind")
+            for sym, since in (blind.items() if isinstance(blind, dict) else ()):
+                try:
+                    parsed = datetime.fromisoformat(since)
+                except (TypeError, ValueError):
+                    continue
+                if parsed.tzinfo is not None:
+                    self._spot_blind_since[str(sym)] = parsed
         except (OSError, ValueError, AttributeError):
             pass  # no (readable) prior health: nothing to carry
         self._started_at = self._now().timestamp()
@@ -350,6 +398,12 @@ class Monitor:
                 "tick_failures": self._tick_failures,
                 "last_tick_ok_at": self._last_tick_ok_at,
                 "last_error": tick_error,
+                "touch_guarded": sorted(self._touch_guarded()),
+                "spot_ok": {sym: at.isoformat() for sym, at in sorted(self._spot_ok.items())},
+                "spot_blind": {
+                    sym: since.isoformat() for sym, since in sorted(self._spot_blind_since.items())
+                },
+                **self._calendar_health(),
             }
             path = self.run_dir / "monitor.json"
             tmp = path.with_name(path.name + ".tmp")
@@ -357,6 +411,63 @@ class Monitor:
             os.replace(tmp, path)
         except Exception:
             log.exception("monitor health write failed (exit machine unaffected)")
+
+    def _calendar_health(self) -> dict[str, Any]:
+        """How far the session calendar reaches: past its last session
+        every tick is a non-session (no exits). Own failure boundary."""
+        try:
+            return {
+                "calendar_last_session": calendar_last_session().isoformat(),
+                "calendar_horizon_warn": calendar_horizon_warn(self._now().date()),
+            }
+        except Exception:
+            log.exception("calendar horizon check failed")
+            return {"calendar_last_session": None, "calendar_horizon_warn": True}
+
+    def _touch_guarded(self) -> set[str]:
+        """Underlyings whose exit relies on the touch: OPEN structures (an
+        exiting one is already being sold; entries are enter.py's)."""
+        return {
+            s.underlying
+            for s in self.plan.structures
+            if self.book.structures[s.id].status is Status.OPEN
+        }
+
+    def _with_spots(self, snap: Snapshot, now: datetime) -> Snapshot:
+        """The feed's accepted spots for touch-guarded underlyings only (no
+        spot for anything else is ever needed). Non-blocking: the feed
+        fetches in the background and returns what has arrived."""
+        if self.spots is None:
+            return snap
+        readings = self.spots.readings(sorted(self._touch_guarded()), now)
+        return replace(
+            snap, spots={sym: r.px for sym, r in readings.items()}, spot_sources=readings
+        )
+
+    def _track_spot_blind(self, snap: Snapshot, now: datetime) -> None:
+        """Which touch-guarded underlyings have an accepted spot, and since
+        when each has not. Blindness counts only inside the touch window
+        (the delayed feed's first bar after the open, to the calendar
+        close, early closes included); a since carried from an earlier
+        session (restart) counts from today's window start, never before."""
+        guarded = sorted(self._touch_guarded())
+        self._spot_ok = {
+            sym: snap.spot_sources[sym].as_of if sym in snap.spot_sources else now
+            for sym in guarded
+            if sym in snap.spots
+        }
+        window = touch_window(now)
+        if window is None or not window[0] <= now.timestamp() <= window[1]:
+            self._spot_blind_since = {}
+            return
+        floor = datetime.fromtimestamp(window[0], ET)
+        blind: dict[str, datetime] = {}
+        for sym in guarded:
+            if sym in snap.spots:
+                continue
+            prior = self._spot_blind_since.get(sym)
+            blind[sym] = max(prior, floor) if prior is not None else now
+        self._spot_blind_since = blind
 
     def _account_cycle(self) -> None:
         """Persist account equity every ACCOUNT_EVERY cycles, failure-isolated.
@@ -417,7 +528,7 @@ class Monitor:
                 )
             st.exit_order = order_id
             log.info("adopted working exit order for %s (oid %s)", sid, order_id)
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
 
     def _all_closed(self) -> bool:
         return all(st.status is Status.CLOSED for st in self.book.structures.values())
@@ -425,6 +536,9 @@ class Monitor:
     def _tick(self) -> None:
         now = self._now()
         if not is_session(now) or now.time() < SESSION_OPEN or now.time() > SESSION_END:
+            # no touch decisions off-session, so nothing is blind either
+            self._spot_blind_since = {}
+            self._spot_ok = {}
             # still absorb fills outside the session; a book-changing fill
             # writes a quote-less terminal history line (marks need quotes,
             # the position change must not be lost to a stale last sample)
@@ -437,7 +551,8 @@ class Monitor:
         # position that no longer exist (double sell = naked short).
         self._drain_orders()
 
-        snap = self.ib.snapshot(self.plan.structures, now)
+        snap = self._with_spots(self.ib.snapshot(self.plan.structures, now), now)
+        self._track_spot_blind(snap, now)
         marks_payload = self._write_marks(snap)
         flatten = self._flatten_requested()
 
@@ -448,7 +563,7 @@ class Monitor:
 
             if flatten and st.status is not Status.EXIT_WORKING:
                 if st.status is Status.ENTER_WORKING:
-                    self._cancel_entry(spread, "kill: FLATTEN")
+                    self._flatten_waits_for_entry_runner(spread)
                 elif st.filled_qty > st.exit_filled_qty:
                     quote = snap.quotes.get(spread.id)
                     if quote is not None:  # no quote: retry next tick
@@ -492,7 +607,7 @@ class Monitor:
         st.to(Status.EXIT_WORKING, self._now())
         st.exit_reason = reason.value
         st.touch_ts = st.touch_ts or self._now()
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
         self.book.event(
             self.events_path, "exit_begin", structure=spread.id, reason=reason.value, qty=qty
         )
@@ -507,7 +622,7 @@ class Monitor:
         self._order_seen[spread.id] = 0  # new order: local count starts over
         self._order_notional[spread.id] = Decimal(0)  # and its notional too
         self.book.structures[spread.id].exit_order = f"{ref.trade.order.orderId}"
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
         self.book.event(
             self.events_path,
             "exit_order",
@@ -555,45 +670,23 @@ class Monitor:
                 st.exit_cycles += 1
                 self._place_exit(spread, st.open_qty, limit)
 
-    def _cancel_entry(self, spread: PutSpread, reason: str) -> None:
-        """Kill-file entry cancel: cancel at the BROKER, not just on paper.
+    def _flatten_waits_for_entry_runner(self, spread: PutSpread) -> None:
+        """FLATTEN on a working entry: enter.py's to cancel, not ours.
 
-        A state-only close would leave a live BUY able to fill into a book
-        nobody is watching; a late partial fill flips us to OPEN so the
-        normal discipline still flattens it.
+        IBKR lets only the placing clientId cancel an order (error 10147),
+        and this session never even sees enter.py's BUYs. The old path
+        cancelled nothing and closed the structure on paper, so enter.py
+        then abandoned a live BUY. The structure stays ENTER_WORKING (the
+        exit watchdog keeps counting it as exposure) until enter.py cancels
+        it: CLOSED, or OPEN with any filled part, which the FLATTEN branch
+        then sells. If enter.py is not running, restart it: it adopts its
+        working BUYs on start and cancels them on its first cycle.
         """
-        st = self.book.structures[spread.id]
-        for trade in self.ib.open_combo_trades():
-            sid = self.ib.structure_for_bag(trade.contract)
-            if sid != spread.id or trade.order.action != "BUY":
-                continue
-            ref = OrderRef(
-                sid,
-                "BUY",
-                int(trade.order.totalQuantity),
-                Decimal(str(trade.order.lmtPrice)),
-                trade,
-            )
-            self.ib.cancel(ref)
-            for _ in range(6):
-                self.ib.sleep(0.5)
-                if trade.orderStatus.status in ("Cancelled", "ApiCancelled", "Filled"):
-                    break
-            if trade.orderStatus.filled > st.filled_qty:
-                st.filled_qty = int(trade.orderStatus.filled)
-                st.entry_fill = Decimal(str(trade.orderStatus.avgFillPrice))
-        if st.filled_qty > 0:
-            st.to(Status.OPEN, self._now())
-            log.warning(
-                "%s: kill-file cancel but %d filled — OPEN, flatten follows",
-                spread.id,
-                st.filled_qty,
-            )
+        if spread.id in self._flatten_wait_noted:
             return
-        st.to(Status.CLOSED, self._now())
-        st.close_reason = reason
-        self.book.save(self.run_dir / "book.json")
-        self.book.event(self.events_path, "entry_cancelled", structure=spread.id, reason=reason)
+        self._flatten_wait_noted.add(spread.id)
+        log.warning("%s: FLATTEN - waiting for the entry runner to cancel its BUY", spread.id)
+        self.book.event(self.events_path, "flatten_waits_for_entry_runner", structure=spread.id)
 
     def _drain_orders(self) -> bool:
         """Merge order-local fill increments into the book. Returns True
@@ -644,13 +737,13 @@ class Monitor:
             if st.open_qty <= 0 and info.status in ("Filled", "Cancelled", "ApiCancelled"):
                 st.to(Status.CLOSED, self._now())
                 st.close_reason = st.exit_reason or "flat"
-                self.book.save(self.run_dir / "book.json")
+                self._save_book()
                 self.book.event(
                     self.events_path, "closed", structure=sid, reason=st.close_reason
                 )
                 del self.orders[sid]
                 changed = True
-        self.book.save(self.run_dir / "book.json")
+        self._save_book()
         return changed
 
 
@@ -699,9 +792,11 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         log.error("contract qualification failed: %s", exc)
         return 5
-    monitor = Monitor(plan, ib, book, run_dir)
+    # the touch exit's spot: the (15 min delayed) Polygon snapshot, fetched
+    # off the exit loop (trex.spot); IBKR stock prices are not a source
+    monitor = Monitor(plan, ib, book, run_dir, spots=SpotFeed(polygon_fetcher()))
     if args.dry_run:
-        log.info("dry-run: decisions only")
+        log.info("dry-run: decisions only (no spot yet: the feed fetches in the background)")
         # one decision sweep, no orders
         snap = ib.snapshot(plan.structures, now_et())
         for spread in plan.structures:

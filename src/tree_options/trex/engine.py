@@ -19,13 +19,14 @@ not as a policy comment, as an absence of representable actions.
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, time
 from decimal import Decimal
 from enum import StrEnum
 
 from tree_options.trex.clock import EntryWindow
 from tree_options.trex.plan import PutSpread, cents
+from tree_options.trex.spot import SpotReading
 from tree_options.trex.state import Status, StructureState
 
 
@@ -43,11 +44,16 @@ class ComboQuote:
 
 @dataclass(frozen=True)
 class Snapshot:
-    """One poll of the market: spots by underlying, combo quotes by structure."""
+    """One poll of the market: spots by underlying, combo quotes by structure.
+
+    ``spots`` holds only ACCEPTED readings (trex.spot): an underlying with
+    no fresh price is absent, and absent means no touch decision.
+    ``spot_sources`` is their provenance, for observation only."""
 
     ts: datetime  # aware, ET
     spots: Mapping[str, Decimal]
     quotes: Mapping[str, ComboQuote | None]
+    spot_sources: Mapping[str, SpotReading] = field(default_factory=dict)
 
 
 class ExitReason(StrEnum):

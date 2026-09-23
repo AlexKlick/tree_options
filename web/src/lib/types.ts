@@ -32,6 +32,8 @@ export type ExitMachineState =
   | 'idle'
   | 'ok'
   | 'waiting_for_gateway'
+  | 'touch_blind'
+  | 'touch_suspended'
   | 'monitor_failing'
   | 'monitor_down'
   | 'unknown'

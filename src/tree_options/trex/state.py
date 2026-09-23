@@ -17,8 +17,11 @@ notably, no path returns from CLOSED, and no path exists from any state to
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
+import threading
+from collections.abc import Callable
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
@@ -52,6 +55,39 @@ def transition_allowed(current: Status, target: Status) -> bool:
     return target in _VALID[current]
 
 
+def _closure(start: Status) -> frozenset[Status]:
+    seen = {start}
+    frontier = [start]
+    while frontier:
+        for nxt in _VALID[frontier.pop()]:
+            if nxt not in seen:
+                seen.add(nxt)
+                frontier.append(nxt)
+    return frozenset(seen)
+
+
+_REACHABLE: dict[Status, frozenset[Status]] = {s: _closure(s) for s in Status}
+
+
+def status_reachable(current: Status, target: Status) -> bool:
+    """True if the state machine can get from ``current`` to ``target`` (in
+    any number of legal steps; a status reaches itself). A merge never
+    writes an unreachable status over the disk's: CLOSED never comes back
+    and nothing past the entry lane returns to it."""
+    return target in _REACHABLE[current]
+
+
+# Lane ownership of a shared book.json: a structure is the entry runner's
+# while it is in ENTRY_LANE; only the entry runner moves it out (to OPEN or
+# CLOSED), and from then on only the monitor writes it.
+ENTRY_LANE = frozenset({Status.PLANNED, Status.ENTER_WORKING})
+
+
+class BookUnreadableError(RuntimeError):
+    """The book on disk can't be read: never overwritten blind (exposure
+    can't be ruled out, and the other runner's writes would be lost)."""
+
+
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt is not None else None
 
@@ -68,6 +104,8 @@ class StructureState:
         "entry_cycles",
         "entry_fill",
         "entry_order",
+        "entry_order_notional",
+        "entry_order_seen",
         "exit_cycles",
         "exit_fill",
         "exit_filled_qty",
@@ -98,6 +136,8 @@ class StructureState:
         updated_at: datetime | None = None,
         exit_order_seen: int = 0,
         exit_order_notional: Decimal | None = None,
+        entry_order_seen: int = 0,
+        entry_order_notional: Decimal | None = None,
     ) -> None:
         self.status = status
         self.entry_order = entry_order
@@ -118,6 +158,11 @@ class StructureState:
         # absorbing fills that happened during downtime
         self.exit_order_seen = exit_order_seen
         self.exit_order_notional = exit_order_notional
+        # the same checkpoint for the working ENTRY order (entry_order):
+        # a restarted entry runner resumes from it instead of re-adding
+        # fills the book already holds
+        self.entry_order_seen = entry_order_seen
+        self.entry_order_notional = entry_order_notional
 
     @property
     def open_qty(self) -> int:
@@ -151,6 +196,10 @@ class StructureState:
                 if self.exit_order_notional is not None
                 else None
             ),
+            "entry_order_seen": self.entry_order_seen,
+            "entry_order_notional": (
+                str(self.entry_order_notional) if self.entry_order_notional is not None else None
+            ),
         }
 
     @classmethod
@@ -175,6 +224,10 @@ class StructureState:
                 if raw.get("exit_order_notional")
                 else None
             ),
+            entry_order_seen=int(raw.get("entry_order_seen", 0)),
+            entry_order_notional=(
+                Decimal(raw["entry_order_notional"]) if raw.get("entry_order_notional") else None
+            ),
         )
 
 
@@ -188,14 +241,66 @@ class BookState:
     # -- persistence ------------------------------------------------------
 
     def save(self, path: Path) -> None:
+        """Atomic write through a per-writer temp file (dot-prefixed, pid
+        and thread qualified: two runners never rename each other's)."""
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = {
             "heartbeat": _iso(self.heartbeat),
             "structures": {sid: st.to_dict() for sid, st in self.structures.items()},
         }
-        tmp = path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(payload, indent=2) + "\n")
-        os.replace(tmp, path)
+        tmp = path.with_name(f".{path.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+        try:
+            tmp.write_text(json.dumps(payload, indent=2) + "\n")
+            os.replace(tmp, path)
+        finally:
+            tmp.unlink(missing_ok=True)
+
+    def save_owned(
+        self, path: Path, theirs: Callable[[StructureState, StructureState], bool]
+    ) -> None:
+        """Save, first adopting from disk every structure the OTHER process
+        owns (``theirs(mine, on_disk)``). Both runners save the whole book,
+        so a plain save reverts whatever the other one wrote since this
+        process last read it: the monitor could hide a FLATTEN-settled
+        entry, the entry runner could undo an exit (then a second sell).
+
+        The read, merge and write are ONE critical section under an
+        exclusive flock on ``<book>.lock`` shared by both runners, so the
+        other's write can't land between them. Even an owned structure
+        keeps the disk's status when the state machine can't get from it
+        to ours (status_reachable): nothing is resurrected or moved back
+        into the entry lane. An unreadable book is never overwritten.
+        """
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with open(path.with_name(path.name + ".lock"), "a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                if path.exists():
+                    try:
+                        disk = BookState.load(path, list(self.structures))
+                    except (OSError, ValueError, KeyError, TypeError) as exc:
+                        raise BookUnreadableError(
+                            f"{path.name} unreadable ({type(exc).__name__}): not overwriting"
+                        ) from exc
+                    self._adopt(disk, theirs)
+                self.save(path)
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _adopt(
+        self, disk: BookState, theirs: Callable[[StructureState, StructureState], bool]
+    ) -> None:
+        # only the monitor beats: the fresher beat is the truth
+        if disk.heartbeat is not None and (
+            self.heartbeat is None or disk.heartbeat > self.heartbeat
+        ):
+            self.heartbeat = disk.heartbeat
+        for sid, mine in list(self.structures.items()):
+            on_disk = disk.structures.get(sid)
+            if on_disk is None:
+                continue
+            if theirs(mine, on_disk) or not status_reachable(on_disk.status, mine.status):
+                self.structures[sid] = on_disk
 
     @classmethod
     def load(cls, path: Path, structure_ids: list[str]) -> BookState:

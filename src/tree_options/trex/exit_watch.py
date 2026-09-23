@@ -23,7 +23,18 @@ counts, since exposure can't be ruled out) and classifies:
 * ``monitor_failing``: the monitor beats but its ``monitor.json`` is absent
   or older than HEALTH_STALE_S (the loop never finishes); or, in market
   hours, TICK_FAILURES_BAD ticks failed in a row or none succeeded for
-  TICK_SILENT_S (the last good tick survives monitor restarts).
+  TICK_SILENT_S (the last good tick survives monitor restarts);
+* ``touch_blind``: the monitor is healthy but, inside the touch window
+  (trex.spot.touch_window: the delayed feed's first bar after the open, to
+  the CALENDAR close, early closes included), an open position's
+  underlying has had no accepted spot (``monitor.json`` ``spot_blind``)
+  for TOUCH_BLIND_S: its touch exit can't fire (time-stop and expiry exits
+  still work);
+* ``touch_suspended``: a touch_blind incident that the session ended (or a
+  new one has not yet re-confirmed) without a price arriving: held
+  silently, never a recovery. It clears only when a blind underlying gets
+  an accepted spot (``spot_ok``) or stops being guarded (``touch_guarded``:
+  its exposure closed); only then does "touch exit back" go out.
 
 Pushes follow trex.alert_policy; the verdict goes to
 ``~/.local/state/trex/exit_watch.json`` for the cockpit banner. Detection
@@ -55,6 +66,8 @@ from tree_options.trex.alert_policy import (
     span_label,
     urgency,
 )
+from tree_options.trex.clock import ET
+from tree_options.trex.spot import in_touch_window
 
 STATE_ROOT = Path.home() / ".local" / "state" / "trex"
 DEFAULT_STATE = STATE_ROOT / "exit_watch.json"
@@ -68,13 +81,17 @@ GATEWAY_WATCH_STALE_S = 300  # an older gateway.json says nothing
 ATTRIBUTION_MAX_S = 900  # a non-alarming gateway can excuse an outage this long
 TICK_FAILURES_BAD = 3
 TICK_SILENT_S = 180
+TOUCH_BLIND_S = 600  # the Polygon fallback alone is 15 min delayed; 10 blind min is an outage
 MAX_EVENTS = 30
 
 EXPOSED = frozenset({"enter_working", "open", "exit_working"})
-BAD = frozenset({"monitor_down", "monitor_failing"})
+BAD = frozenset({"monitor_down", "monitor_failing", "touch_blind"})
 HEALTHY = frozenset({"ok", "idle"})
+TOUCH_INCIDENT = frozenset({"touch_blind", "touch_suspended"})  # neither bad nor healthy: held
 GATEWAY_ALARMS = gateway_watch.BAD  # states the gateway watchdog pushes for
-_SEVERITY = ("idle", "ok", "waiting_for_gateway", "monitor_failing", "monitor_down")
+_SEVERITY = (
+    "idle", "ok", "waiting_for_gateway", "touch_blind", "monitor_failing", "monitor_down",
+)
 
 
 @dataclass(frozen=True)
@@ -93,6 +110,8 @@ class ExitObs:
     gateway_since: float | None
     market: bool
     unit_state: str | None  # `systemctl --user is-active trex-monitor`
+    # inside trex.spot.touch_window (calendar close); None: same as market
+    touch_window: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -206,7 +225,31 @@ def _book_verdict(
         return "monitor_failing", ok_at, (
             f"{b.plan}: {failures} checks failed in a row (last: {h.get('last_error')})"
         )
+    blind = _long_blind(h, obs)
+    if blind:
+        first = min(blind.values())
+        return "touch_blind", first, (
+            f"{b.plan}: no fresh {', '.join(sorted(blind))} price for "
+            f"{span_label(obs.now - first)}; the touch exit can't fire"
+        )
     return "ok", None, f"{b.plan}: heartbeat {int(age)}s ago"
+
+
+def _long_blind(health: dict[str, Any] | None, obs: ExitObs) -> dict[str, float]:
+    """Underlyings blind for at least TOUCH_BLIND_S, inside the touch window
+    only (the calendar's close, early closes included: no touch can happen
+    in a closed market). Unparseable entries are ignored: this alarm adds
+    to, never replaces, the others."""
+    raw = health.get("spot_blind") if health else None
+    window = obs.market if obs.touch_window is None else obs.touch_window
+    if not window or not isinstance(raw, dict):
+        return {}
+    out: dict[str, float] = {}
+    for sym, since in raw.items():
+        at = _epoch(since)
+        if isinstance(sym, str) and at is not None and obs.now - at >= TOUCH_BLIND_S:
+            out[sym] = at
+    return out
 
 
 def _assess(
@@ -222,8 +265,13 @@ def _assess(
             missing[b.plan] = health_missing_since.get(b.plan, obs.now)
         status, since, detail = _book_verdict(b, obs, missing.get(b.plan))
         age = round(obs.now - b.heartbeat) if b.heartbeat is not None else None
-        rows.append({"plan": b.plan, "status": status, "since": since, "detail": detail,
-                     "heartbeat_age": age})
+        row: dict[str, Any] = {"plan": b.plan, "status": status, "since": since,
+                               "detail": detail, "heartbeat_age": age}
+        if status == "touch_blind":
+            row["blind"] = sorted(_long_blind(b.health, obs))
+        if b.health and b.health.get("calendar_horizon_warn") is True:
+            row["calendar_horizon_warn"] = True  # regenerate the trex calendar
+        rows.append(row)
     return rows, missing
 
 
@@ -247,8 +295,16 @@ def classify(
     return _verdict(_assess(obs, health_missing_since or {})[0])
 
 
-def _message(status: str, since: float, now: float) -> tuple[str, str]:
+def _message(
+    status: str, since: float, now: float, blind: list[str] | None = None
+) -> tuple[str, str]:
     lasting = f"since {et_label(since)} ({span_label(now - since)})"
+    if status == "touch_blind":
+        # ticker symbols only: no plan names, amounts, hosts or accounts
+        return "trex: touch exit blind", (
+            f"No fresh price for {', '.join(blind or ['an underlying'])} {lasting}. "
+            f"Open positions have no touch exit; time-stop and expiry exits still work."
+        )
     if status == "monitor_down":
         return "trex: exit machine down", (
             f"The trex monitor has not run {lasting}. Open positions have no touch or "
@@ -268,21 +324,42 @@ def decide(
     rows, missing = _assess(obs, prior_missing if isinstance(prior_missing, dict) else {})
     status, since_hint, detail = _verdict(rows)
     prev = prior.get("status")
+    raw_syms = prior.get("touch_symbols")
+    prior_syms = [s for s in raw_syms if isinstance(s, str)] if isinstance(raw_syms, list) else []
+    guarded, fresh = _touch_sets(obs)
+    touch_symbols: list[str] = []
+    if status == "touch_blind":
+        touch_symbols = sorted({s for r in rows if r["status"] == status for s in r.get("blind", [])})
+    elif status == "ok" and prev in TOUCH_INCIDENT:
+        # "ok" only because the window closed (or blindness is not yet
+        # re-confirmed) is not a recovery: that takes a price, or the
+        # blind exposure closing
+        still = sorted(s for s in prior_syms if s in guarded and s not in fresh)
+        if still:
+            status, since_hint, touch_symbols = "touch_suspended", None, still
+            detail = f"touch exit still without a price for {', '.join(still)}"
     if prev == status and isinstance(prior.get("since"), (int, float)):
         since = float(prior["since"])
     else:
         since = since_hint if since_hint is not None else obs.now
 
     def recovery() -> tuple[str, str]:
+        touch = prior.get("last_notified_status") == "touch_blind"
+        title = "trex: touch exit back" if touch else "trex: exit machine back"
         if status == "idle":
-            return "trex: exit machine back", "No open positions left to guard."
+            return title, "No open positions left to guard."
         was = prior.get("since")
         outage = f" after {span_label(obs.now - was)}" if isinstance(was, (int, float)) else ""
-        return "trex: exit machine back", f"The monitor is guarding the book again{outage}."
+        if touch and prior_syms and not any(s in fresh for s in prior_syms):
+            return title, f"The positions that had no price are closed{outage}."
+        if touch:
+            return title, f"Fresh prices again; the touch exit is guarding the book{outage}."
+        return title, f"The monitor is guarding the book again{outage}."
 
+    blind = touch_symbols if status == "touch_blind" else []
     push, notified = next_push(
         status=status, now=obs.now, prior=prior, urgency=urgency, bad=BAD, healthy=HEALTHY,
-        alarm=lambda: _message(status, since, obs.now), recovery=recovery,
+        alarm=lambda: _message(status, since, obs.now, blind), recovery=recovery,
     )
     actions = (
         [Action("notify", push.status, push.title, push.message, push.priority)] if push else []
@@ -300,10 +377,26 @@ def decide(
         "unit_state": obs.unit_state,
         "books": rows,
         "health_missing_since": missing,
+        "touch_symbols": touch_symbols,
         **notified,
         "events": events,
     }
     return state, actions
+
+
+def _touch_sets(obs: ExitObs) -> tuple[set[str], set[str]]:
+    """(touch-guarded underlyings, those with an accepted spot) across the
+    books' monitor.json (``touch_guarded`` / ``spot_ok``)."""
+    guarded: set[str] = set()
+    fresh: set[str] = set()
+    for b in obs.books:
+        h = b.health or {}
+        g, ok = h.get("touch_guarded"), h.get("spot_ok")
+        if isinstance(g, list):
+            guarded.update(s for s in g if isinstance(s, str))
+        if isinstance(ok, dict):
+            fresh.update(s for s in ok if isinstance(s, str))
+    return guarded, fresh
 
 
 def _gateway(path: Path, now: float) -> tuple[str | None, float | None]:
@@ -344,7 +437,8 @@ def watch_once(
 ) -> dict[str, Any]:
     prior = _read_json(state_path) or {}
     gw_status, gw_since = _gateway(gateway_state, now)
-    obs = ExitObs(now, scan_books(root), gw_status, gw_since, market_hours(now), unit_state)
+    obs = ExitObs(now, scan_books(root), gw_status, gw_since, market_hours(now), unit_state,
+                  touch_window=in_touch_window(datetime.fromtimestamp(now, ET)))
     state, actions = decide(obs, prior, urgency=urgency)
     for action in actions:
         ok = True

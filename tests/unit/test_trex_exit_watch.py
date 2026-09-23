@@ -25,6 +25,7 @@ from tree_options.trex.exit_watch import (
     HEALTH_STALE_S,
     HEARTBEAT_STALE_S,
     TICK_FAILURES_BAD,
+    TOUCH_BLIND_S,
     BookObs,
     ExitObs,
     classify,
@@ -54,9 +55,10 @@ def _health(now: float, failures: int = 0, ok_at: float | None = None,
 
 
 def _obs(books: list[BookObs], *, now: float = NOON, gateway: str | None = "ok",
-         gateway_since: float | None = NOON - 3600, market: bool = True) -> ExitObs:
+         gateway_since: float | None = NOON - 3600, market: bool = True,
+         touch_window: bool | None = None) -> ExitObs:
     return ExitObs(now=now, books=books, gateway_status=gateway, gateway_since=gateway_since,
-                   market=market, unit_state="active")
+                   market=market, unit_state="active", touch_window=touch_window)
 
 
 def _fresh(plan: str = "putspread-20260922", **health: Any) -> BookObs:
@@ -285,3 +287,157 @@ def test_missing_health_is_timed_across_runs(tmp_path: Path) -> None:
     later = watch_once(path, root=root, gateway_state=gw, notify=lambda *a: True,
                        now=NOON + HEALTH_STALE_S + 1, urgency=LOUD, unit_state=None)
     assert later["status"] == "monitor_failing"
+
+
+def _blind_book(since: float, plan: str = "p", **health: Any) -> BookObs:
+    """A healthy monitor whose touch-guarded NVDA has had no accepted spot."""
+    blind = {"NVDA": datetime.fromtimestamp(since, ET).isoformat()}
+    return BookObs(plan, NOON - 20, {**_health(NOON, **health), "spot_blind": blind})
+
+
+def _guarded(
+    guarded: list[str] | None = None, ok: list[str] | None = None, plan: str = "p"
+) -> BookObs:
+    """A healthy monitor guarding ``guarded`` with fresh prices for ``ok``."""
+    fresh = {s: datetime.fromtimestamp(NOON - 960, ET).isoformat() for s in ok or []}
+    health = {**_health(NOON), "spot_blind": {}, "touch_guarded": guarded or ["NVDA"],
+              "spot_ok": fresh}
+    return BookObs(plan, NOON - 20, health)
+
+
+class TestTouchBlind:
+    """E0: the paper account has no equity quotes, so a monitor can tick
+    fine while its touch exit has no price to act on. Ten blind minutes in
+    market hours is an alarm, routed like the others (quiet hours hold)."""
+
+    def test_blind_for_ten_minutes_in_market_hours(self) -> None:
+        status, since, detail = classify(_obs([_blind_book(NOON - TOUCH_BLIND_S)]))
+        assert status == "touch_blind"
+        assert since == pytest.approx(NOON - TOUCH_BLIND_S)
+        assert "NVDA" in detail
+
+    def test_a_short_gap_is_not_an_alarm(self) -> None:
+        assert classify(_obs([_blind_book(NOON - TOUCH_BLIND_S + 30)]))[0] == "ok"
+
+    def test_off_hours_blindness_is_not_an_alarm(self) -> None:
+        assert classify(_obs([_blind_book(NOON - 3600)], market=False))[0] == "ok"
+
+    def test_a_down_monitor_outranks_a_blind_one(self) -> None:
+        status, _, detail = classify(_obs([_blind_book(NOON - 3600, "a"), _dead("b")]))
+        assert status == "monitor_down" and "b" in detail
+
+    def test_failing_ticks_outrank_blindness(self) -> None:
+        book = _blind_book(NOON - 3600, failures=TICK_FAILURES_BAD, ok_at=NOON - 70,
+                           error="TimeoutError")
+        assert classify(_obs([book]))[0] == "monitor_failing"
+
+    def test_blind_outranks_a_book_waiting_on_the_gateway(self) -> None:
+        obs = _obs([_blind_book(NOON - 3600, "a"), _dead("b")], gateway="needs_login")
+        assert classify(obs)[0] == "touch_blind"
+
+    def test_garbage_entries_are_ignored(self) -> None:
+        health = {**_health(NOON), "spot_blind": {"NVDA": 12, "AMD": "not a time", "X": None}}
+        assert classify(_obs([BookObs("p", NOON - 20, health)]))[0] == "ok"
+        weird = {**_health(NOON), "spot_blind": ["NVDA"]}
+        assert classify(_obs([BookObs("p", NOON - 20, weird)]))[0] == "ok"
+
+    def test_alarm_names_the_symbol_and_nothing_sensitive(self) -> None:
+        state, actions = decide(_obs([_blind_book(NOON - 900)]), {}, urgency=LOUD)
+        assert state["status"] == "touch_blind"
+        assert state["books"][0]["status"] == "touch_blind"
+        (note,) = actions
+        assert note.title == "trex: touch exit blind" and note.priority == "high"
+        assert "NVDA" in note.message and "15m" in note.message
+        for banned in ("http", "$", ".ts.net", "DU", "p:"):
+            assert banned not in note.message
+
+    def test_quiet_hours_hold_the_alarm(self) -> None:
+        quiet = Urgency("high", REMIND_MARKET_S, quiet=True)
+        state, actions = decide(_obs([_blind_book(NOON - 900)]), {}, urgency=quiet)
+        assert actions == [] and state["notify_held"] is True
+
+    def test_recovery_says_the_touch_exit_is_back(self) -> None:
+        prior = {"status": "touch_blind", "since": NOON - 1800, "touch_symbols": ["NVDA"],
+                 "last_notified_status": "touch_blind", "last_notified_at": NOON - 900}
+        state, actions = decide(_obs([_guarded(ok=["NVDA"])]), prior, urgency=DAY)
+        assert state["status"] == "ok"
+        (note,) = actions
+        assert note.title == "trex: touch exit back" and "30m" in note.message
+        assert "Fresh prices" in note.message
+
+    def test_the_calendar_close_ends_detection(self) -> None:
+        """Codex P2: on a 13:00 early close the fixed 16:15 window alarmed
+        for a normal closed market."""
+        book = _blind_book(NOON - 3600)
+        assert classify(_obs([book], touch_window=False))[0] == "ok"
+
+    def test_session_end_suspends_the_incident_instead_of_recovering(self) -> None:
+        """Codex P2: at the close an unresolved blind incident read as ok
+        and pushed "fresh prices again" without any price."""
+        prior = {"status": "touch_blind", "since": NOON - 1800, "touch_symbols": ["NVDA"],
+                 "last_notified_status": "touch_blind", "last_notified_at": NOON - 900}
+        state, actions = decide(_obs([_guarded()], market=False, touch_window=False), prior,
+                                urgency=DAY)
+        assert state["status"] == "touch_suspended" and actions == []
+        assert state["touch_symbols"] == ["NVDA"]
+        assert state["last_notified_status"] == "touch_blind"  # still owed a recovery
+
+    def test_no_price_yet_at_the_next_open_stays_suspended(self) -> None:
+        prior = {"status": "touch_suspended", "since": NOON - 60_000, "touch_symbols": ["NVDA"],
+                 "last_notified_status": "touch_blind", "last_notified_at": NOON - 70_000}
+        state, actions = decide(_obs([_guarded()]), prior, urgency=LOUD)
+        assert state["status"] == "touch_suspended" and actions == []
+
+    def test_a_price_next_session_is_the_recovery(self) -> None:
+        prior = {"status": "touch_suspended", "since": NOON - 60_000, "touch_symbols": ["NVDA"],
+                 "last_notified_status": "touch_blind", "last_notified_at": NOON - 70_000}
+        state, actions = decide(_obs([_guarded(ok=["NVDA"])]), prior, urgency=LOUD)
+        assert state["status"] == "ok"
+        (note,) = actions
+        assert note.title == "trex: touch exit back" and "Fresh prices" in note.message
+
+    def test_still_blind_next_session_alarms_again(self) -> None:
+        prior = {"status": "touch_suspended", "since": NOON - 60_000, "touch_symbols": ["NVDA"],
+                 "last_notified_status": "touch_blind", "last_notified_at": NOON - 70_000}
+        state, actions = decide(_obs([_blind_book(NOON - 900)]), prior, urgency=LOUD)
+        assert state["status"] == "touch_blind"
+        assert [a.title for a in actions] == ["trex: touch exit blind"]
+
+    def test_closing_the_exposure_ends_the_incident(self) -> None:
+        prior = {"status": "touch_suspended", "since": NOON - 60_000, "touch_symbols": ["NVDA"],
+                 "last_notified_status": "touch_blind", "last_notified_at": NOON - 70_000}
+        state, actions = decide(_obs([]), prior, urgency=DAY)
+        assert state["status"] == "idle"
+        (note,) = actions
+        assert note.title == "trex: touch exit back"
+        assert note.message == "No open positions left to guard."
+
+    def test_the_blind_position_closing_ends_it_without_claiming_prices(self) -> None:
+        prior = {"status": "touch_suspended", "since": NOON - 60_000, "touch_symbols": ["NVDA"],
+                 "last_notified_status": "touch_blind", "last_notified_at": NOON - 70_000}
+        other = _guarded(["AMD"], ok=["AMD"])
+        state, actions = decide(_obs([other], market=False, touch_window=False), prior,
+                                urgency=DAY)
+        assert state["status"] == "ok"
+        (note,) = actions
+        assert "Fresh prices" not in note.message and "closed" in note.message
+
+    def test_watch_once_bounds_detection_by_the_session_calendar(self, tmp_path: Path) -> None:
+        """13:30 on the 13:00 early close of 2026-11-27: inside the watch's
+        09:00-16:15 window, outside the market's."""
+        now = datetime(2026, 11, 27, 13, 30, tzinfo=ET).timestamp()
+        root = tmp_path / "state"
+        health = {"at": now, "connected": True, "tick_failures": 0, "last_tick_ok_at": now,
+                  "spot_blind": {"NVDA": datetime.fromtimestamp(now - 3600, ET).isoformat()},
+                  "touch_guarded": ["NVDA"], "spot_ok": {}}
+        _write_book(root, "p", ("open",), now - 20, health)
+        gw = tmp_path / "gateway.json"
+        gw.write_text(json.dumps({"status": "ok", "since": now - 9999, "checked_at": now}))
+        state = watch_once(tmp_path / "exit_watch.json", root=root, gateway_state=gw,
+                           notify=lambda *a: True, now=now, urgency=LOUD, unit_state=None)
+        assert state["market"] is True and state["status"] == "ok"
+
+    def test_calendar_horizon_warning_reaches_the_book_row(self) -> None:
+        book = BookObs("p", NOON - 20, {**_health(NOON), "calendar_horizon_warn": True})
+        state, _ = decide(_obs([book]), {}, urgency=LOUD)
+        assert state["books"][0]["calendar_horizon_warn"] is True

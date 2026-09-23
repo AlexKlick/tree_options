@@ -16,6 +16,14 @@ import { WATCH_STALE_S, watchAge } from '../lib/watch'
 const HEADLINE: Record<string, string> = {
   monitor_down: 'Exit machine is not running',
   monitor_failing: 'Exit machine is running but its checks are failing',
+  touch_blind: 'Touch exit is blind: no fresh underlying price',
+}
+
+// What the alarm costs the open positions.
+function consequence(status: string): string {
+  return status === 'touch_blind'
+    ? "The touch exit can't fire until a price is back; time-stop and expiry exits still work"
+    : 'Open positions have no touch or time-stop exits until it is back'
 }
 
 function sinceText(e: ExitMachineStatus, nowS: number): string {
@@ -64,9 +72,17 @@ export function ExitMachineBanner() {
       <div className="gateway-banner" role="alert">
         <strong>⚠ {headline}</strong>
         <span>
-          {sinceText(e, nowS)}. Open positions have no touch or time-stop exits until it is
-          back{plans(e)}.
+          {sinceText(e, nowS)}. {consequence(e.status)}
+          {plans(e)}.
         </span>
+      </div>
+    )
+  }
+  if (e.status === 'touch_suspended') {
+    // a blind incident the session ended without a price: not a recovery
+    return (
+      <div className="gateway-banner gateway-banner-muted" role="status">
+        ○ Touch exit was blind at the close; waiting for a fresh price next session
       </div>
     )
   }
