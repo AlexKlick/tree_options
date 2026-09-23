@@ -153,6 +153,13 @@ class TestLauncherKeys:
         chat_json("zai", [], transport=t)
         assert t.calls[0][2]["Authorization"] == f"Bearer {SECRET}"
 
+    def test_zai_disables_thinking(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # live 2026-09-23: 16-20s+ with thinking (past REQUEST_TIMEOUT), 5.2s without
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_ZAI", SECRET)
+        t = FakeTransport([(200, _completion("{}"))])
+        chat_json("zai", [], transport=t)
+        assert t.calls[0][1]["thinking"] == {"type": "disabled"}
+
     def test_zai_falls_back_to_the_coding_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_ZAI", "  ")
         monkeypatch.setenv("ZAI_CODING_API_KEY", SECRET)

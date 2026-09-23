@@ -49,7 +49,9 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         ),
         "model": "glm-5.3-flash",
         "key_env": ("ANTHROPIC_AUTH_TOKEN_ZAI", "ZAI_CODING_API_KEY"),
-        "extra": {},
+        # same reason as local: with thinking the reply ran 16-20s+
+        # (past REQUEST_TIMEOUT); without it 5.2s (live 2026-09-23)
+        "extra": {"thinking": {"type": "disabled"}},
     },
     "minimax": {
         "base_url": "https://api.minimax.io/v1",
