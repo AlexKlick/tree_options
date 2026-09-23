@@ -380,8 +380,11 @@ def _market_tick(
         due = not marker.exists()
         if not due:
             try:
+                snap = json.loads(marker.read_text())
+                # cadence runs off the last ATTEMPT: last_refresh only moves
+                # on success, and a dead source must not be retried per tick
                 refreshed = datetime.fromisoformat(
-                    json.loads(marker.read_text()).get("last_refresh", "")
+                    snap.get("last_attempt") or snap.get("last_refresh", "")
                 )
                 due = (now - refreshed).total_seconds() >= cfg.market_refresh_seconds
             except (OSError, ValueError, json.JSONDecodeError):
@@ -450,12 +453,17 @@ def _backtest_tick(
     key = str(payload.get("key", ""))
 
     def _fail(detail: str) -> None:
-        backtest.write_artifact(
-            state_dir,
-            key,
-            {"key": key, "generated_at": now.isoformat(), "label": backtest.LABEL,
-             "error": detail},
-        )
+        # the receipt must land even when the artifact cannot be written
+        # (bad key, full disk): an unanswered claim is re-run forever
+        try:
+            backtest.write_artifact(
+                state_dir,
+                key,
+                {"key": key, "generated_at": now.isoformat(), "label": backtest.LABEL,
+                 "error": detail},
+            )
+        except OSError as exc:
+            detail = f"{detail} (artifact unwritable: {type(exc).__name__})"
         complete_request(
             spool, "backtest", req_id,
             {"request_id": req_id, "key": key, "status": "error", "detail": detail,
@@ -471,21 +479,34 @@ def _backtest_tick(
         sym = structure["underlying"]
         cache = MarketCache(state_dir / "market" / "cache")
 
+        # Spot must be CURRENT (Codex M456 #8): a stale quote mixed with a
+        # recomputed DTE is a silently wrong valuation. Snapshot only while
+        # fresh, then the TTL cache, then a live fetch; never an expired
+        # envelope. The source + as-of ride along in the artifact.
         quote: dict[str, Any] | None = None
+        spot_source = ""
         try:
-            quote = json.loads((state_dir / "market.json").read_text())["symbols"].get(sym)
-        except (OSError, KeyError, ValueError):
+            snap = json.loads((state_dir / "market.json").read_text())
+            snap_at = datetime.fromisoformat(snap.get("last_refresh", ""))
+            if (now - snap_at).total_seconds() <= SCENARIO_QUOTE_MAX_AGE_SECONDS:
+                quote = snap.get("symbols", {}).get(sym)
+                spot_source = "market snapshot"
+        except (OSError, KeyError, TypeError, ValueError):
             quote = None
         if quote is None:
-            env = cache.get_envelope("quote", sym)
-            quote = env.get("payload") if env else None
+            quote = cache.get("quote", sym, now)
+            spot_source = "quote cache (ttl)"
         if quote is None and allow_fetch:
             quote = fetch_equity_quote(sym, urllib_transport)
+            cache.put("quote", sym, quote, now)
+            spot_source = "live fetch"
         bid, ask = (quote or {}).get("bid"), (quote or {}).get("ask")
         if bid is None or ask is None:
-            _fail(f"no {sym} quote cached (refresh the market desk first)")
+            _fail(f"no fresh {sym} quote (refresh the market desk first)")
             return
         spot_now = (float(bid) + float(ask)) / 2
+        structure["spot_source"] = spot_source
+        structure["spot_as_of"] = (quote or {}).get("source_as_of")
 
         bars_env = cache.get_envelope("bars", sym)
         if (bars_env is None or cache.get("bars", sym, now) is None) and allow_fetch:
@@ -514,6 +535,7 @@ def _backtest_tick(
 
 
 PROPOSE_MIN_INTERVAL_SECONDS = 6 * 3600  # post-scan hook cadence cap
+SCENARIO_QUOTE_MAX_AGE_SECONDS = 900  # snapshot freshness for scenario spot
 
 
 def _proposal_context(state_dir: Path, symbols: list[str], now: datetime) -> dict[str, Any]:

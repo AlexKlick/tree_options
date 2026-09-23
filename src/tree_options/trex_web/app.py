@@ -52,7 +52,9 @@ DEFAULT_DISCOVERY_ROOT = Path("~/.local/state/trex-discovery").expanduser()
 DEFAULT_DISCOVERY_CONFIG = Path("~/.config/trex/discovery.toml").expanduser()
 
 # shadow_key format: "QQQ|20261016|642|657" (strikes via {:g})
-_SCENARIO_KEY_RE = re.compile(r"^[A-Z.]{1,6}\|\d{8}\|\d+(\.\d+)?\|\d+(\.\d+)?$")
+# strikes bounded (<= 6 integer + 3 decimal digits): the key becomes a
+# filename, and an unbounded one can exceed NAME_MAX and wedge the request
+_SCENARIO_KEY_RE = re.compile(r"^[A-Z.]{1,6}\|\d{8}\|\d{1,6}(\.\d{1,3})?\|\d{1,6}(\.\d{1,3})?$")
 
 # Served at / when the built SPA is missing (fresh clone, interrupted
 # build): tell the operator exactly what to run instead of crashing.
@@ -434,7 +436,7 @@ def create_app(
     def api_market() -> dict[str, object]:
         """Market snapshot written by the discovery lane's market cycle.
         Freshness = the snapshot's own last_refresh, never transport."""
-        from tree_options.trex.discovery.watchlist import load_watchlist
+        from tree_options.trex.discovery.watchlist import read_watchlist
         from tree_options.trex_web.discovery_view import _age
 
         path = discovery_root / "market.json"
@@ -444,7 +446,7 @@ def create_app(
                 doc = json.loads(path.read_text())
             except (OSError, json.JSONDecodeError):
                 doc = None
-        wl = load_watchlist(discovery_root)
+        wl = read_watchlist(discovery_root)  # never writes (GET)
         base: dict[str, Any]
         if doc is None:
             base = {

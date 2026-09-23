@@ -181,6 +181,8 @@ def claim_request(
     candidates: list[tuple[str, str, Path, dict[str, Any]]] = []
     for kind in kinds:
         for request in spool_dir.glob(f"{kind}.request.*"):
+            if request.name.endswith(".tmp"):
+                continue  # unpublished (writer mid-rename or interrupted)
             try:
                 payload = json.loads(request.read_text())
             except (OSError, json.JSONDecodeError):
@@ -194,6 +196,9 @@ def claim_request(
             os.link(request, claim)  # atomic: fails if the claim exists
         except FileExistsError:
             continue  # another runner won this one
+        # the link shares the request's inode (and its old mtime): restamp
+        # so stale-claim detection measures CLAIM age, not queue age
+        os.utime(claim, None)
         return str(payload.get("kind", "scan")), request_id, payload
     return None
 
@@ -201,9 +206,11 @@ def claim_request(
 def complete_request(
     spool_dir: Path, kind: str, request_id: str, result: dict[str, Any]
 ) -> None:
+    # receipt FIRST: a crash between the steps then leaves a retryable
+    # request (idempotent redo), never a request with no answer at all
+    _atomic_write(spool_dir / f"{kind}.result", result)
     (spool_dir / f"{kind}.claim.{request_id}").unlink(missing_ok=True)
     (spool_dir / f"{kind}.request.{request_id}").unlink(missing_ok=True)
-    _atomic_write(spool_dir / f"{kind}.result", result)
 
 
 def read_result(spool_dir: Path, kind: str) -> dict[str, Any] | None:
@@ -236,7 +243,9 @@ def write_scan_request(spool_dir: Path, request_id: str, request_ts: datetime) -
 
 
 def spool_pending(spool_dir: Path) -> bool:
-    return any(spool_dir.glob("scan.request.*")) if spool_dir.exists() else False
+    if not spool_dir.exists():
+        return False
+    return any(not p.name.endswith(".tmp") for p in spool_dir.glob("scan.request.*"))
 
 
 def claim_scan_request(

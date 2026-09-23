@@ -44,6 +44,20 @@ def seed_symbols(cfg: Any, plans_dir: Path | None) -> list[str]:
     return out
 
 
+def read_watchlist(state_dir: Path) -> dict[str, Any]:
+    """Read-only view for the web lane: NEVER creates or repairs the file
+    (a GET that wrote an unseeded document would pre-empt the runner's
+    seeding, and trex-web may not write here at all)."""
+    path = state_dir / "watchlist.json"
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {"version": 1, "symbols": [], "proposals": []}
+    if not isinstance(doc, dict) or "symbols" not in doc:
+        return {"version": 1, "symbols": [], "proposals": []}
+    return doc
+
+
 def load_watchlist(
     state_dir: Path,
     seed: list[str] | None = None,
@@ -181,14 +195,26 @@ def record_proposals(
         )
         blocked.add(item["symbol"])
         added.append(pid)
-    # prune long-decided entries; pending ones are never pruned
-    kept = [
+    # Prune long-decided entries. The size cap only ever evicts history:
+    # pending proposals and dismissals still inside their suppression
+    # window are load-bearing (approve-by-id, no-revival) and always kept.
+    def _protected(p: dict[str, Any]) -> bool:
+        if p.get("status") == "pending":
+            return True
+        age = _age_seconds(p.get("decided_at"), now)
+        return p.get("status") == "dismissed" and (age is None or age < DISMISS_SUPPRESS_SECONDS)
+
+    retained = [
         p
         for p in props
-        if p.get("status") == "pending"
+        if _protected(p)
         or (_age_seconds(p.get("decided_at"), now) or 0) < DECIDED_RETAIN_SECONDS
     ]
-    doc["proposals"] = kept[-MAX_PROPOSALS_KEPT:]
+    protected_n = sum(1 for p in retained if _protected(p))
+    history_budget = max(0, MAX_PROPOSALS_KEPT - protected_n)
+    history = [p for p in retained if not _protected(p)]
+    keep_history = {id(p) for p in history[len(history) - history_budget :]} if history_budget else set()
+    doc["proposals"] = [p for p in retained if _protected(p) or id(p) in keep_history]
     if run_note is not None:
         doc["last_proposal_run"] = {**run_note, "at": now.isoformat(), "added": len(added)}
     _save(state_dir, doc)

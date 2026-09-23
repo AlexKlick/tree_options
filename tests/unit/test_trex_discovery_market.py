@@ -275,3 +275,76 @@ class TestMarketCycle:
 class _EmptyBars:
     def get_json(self, path: str, params: dict, *, use_cache: bool = True) -> dict:
         return {"results": []}
+
+
+class TestCodexM456Market:
+    class Cfg:
+        underlyings: ClassVar[list[str]] = ["SPY", "QQQ"]
+        market_refresh_seconds = 60
+
+    def _quote_t(self, fail: set[str] | None = None, empty: set[str] | None = None):
+        def t(url: str, *, timeout: float = 10.0) -> tuple[int, bytes]:
+            t.calls.append(url)  # type: ignore[attr-defined]
+            if any(s in url for s in (fail or set())):
+                return 503, b""
+            if any(s in url for s in (empty or set())):
+                return 200, json.dumps({"timestamp": "2026-09-22 22:08:55", "data": {}}).encode()
+            if "news.google.com" in url:
+                return 504, b""
+            return 200, json.dumps(CBOE_QUOTE_BODY).encode()
+
+        t.calls = []  # type: ignore[attr-defined]
+        return t
+
+    def test_targeted_refresh_merges_into_snapshot(self, tmp_path: Path) -> None:
+        market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t())
+        market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t(),
+                     symbols=["SPY"], force=True, bars_client=_EmptyBars())
+        doc = json.loads((tmp_path / "market.json").read_text())
+        assert set(doc["symbols"]) == {"SPY", "QQQ"}
+
+    def test_explicit_empty_watchlist_stays_empty(self, tmp_path: Path) -> None:
+        market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t(), symbols=[])
+        doc = json.loads((tmp_path / "market.json").read_text())
+        assert doc["symbols"] == {}
+
+    def test_total_failure_persists_errors_and_carries_last_good(self, tmp_path: Path) -> None:
+        market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t())
+        later = datetime(2026, 9, 22, 18, 40, tzinfo=ET)  # quote TTL expired
+        market_cycle(tmp_path, self.Cfg(), now=later,
+                     transport=self._quote_t(fail={"SPY", "QQQ"}))
+        doc = json.loads((tmp_path / "market.json").read_text())
+        assert set(doc["errors"]) == {"SPY", "QQQ"}
+        assert doc["symbols"]["SPY"]["bid"] == pytest.approx(773.25)  # carried
+        assert doc["last_refresh"] == NOW.isoformat()  # success clock did not move
+        assert doc["last_attempt"] == later.isoformat()
+
+    def test_empty_quote_never_overwrites_cache(self, tmp_path: Path) -> None:
+        market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t())
+        market_cycle(tmp_path, self.Cfg(), now=NOW, transport=self._quote_t(empty={"SPY"}),
+                     force=True, symbols=["SPY"], bars_client=_EmptyBars())
+        cached = MarketCache(tmp_path / "market" / "cache").get("quote", "SPY", now=NOW)
+        assert cached is not None and cached["bid"] == pytest.approx(773.25)
+        doc = json.loads((tmp_path / "market.json").read_text())
+        assert "empty quote" in doc["errors"]["SPY"]
+
+    def test_news_rewarm_is_bounded_and_backs_off(self, tmp_path: Path) -> None:
+        syms = ["AAA", "BBB", "CCC", "DDD", "EEE"]
+        cache = MarketCache(tmp_path / "market" / "cache")
+        for s in syms:
+            cache.put("news", s, {"items": [{"title": "old"}]}, now=NOW)
+        later = datetime(2026, 9, 22, 19, 5, tzinfo=ET)  # every envelope expired
+
+        def news_calls(t: object) -> int:
+            return sum("news.google.com" in u for u in t.calls)  # type: ignore[attr-defined]
+
+        t1 = self._quote_t()
+        market_cycle(tmp_path, self.Cfg(), now=later, transport=t1, symbols=syms)
+        assert news_calls(t1) == 2  # bounded per cycle (feed is failing)
+        t2 = self._quote_t()
+        market_cycle(tmp_path, self.Cfg(), now=later, transport=t2, symbols=syms)
+        assert news_calls(t2) == 2
+        assert all("AAA" not in u and "BBB" not in u
+                   for u in t2.calls if "news.google.com" in u)  # failed ones back off
+        env = cache.get_envelope("news", "AAA")
+        assert env is not None and env["payload"]["items"][0]["title"] == "old"  # kept

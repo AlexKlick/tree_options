@@ -584,3 +584,53 @@ class TestProposals:
         write_request(state / "spool", "propose", "p-2", {"request_ts": NOW.isoformat()})
         serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
         assert list((state / "spool").glob("propose.request.*"))  # left for a real runner
+
+
+class TestCodexM456Runner:
+    KEY = "QQQ|20261016|642|657"
+
+    def test_stale_snapshot_is_not_a_scenario_spot(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.artifact import write_request
+        from tree_options.trex.discovery.backtest import read_artifact
+
+        state = tmp_path / "state"
+        TestBacktestTick()._seed(state)
+        snap = json.loads((state / "market.json").read_text())
+        snap["last_refresh"] = "2026-09-20T16:00:00-04:00"  # two days old
+        (state / "market.json").write_text(json.dumps(snap))
+        write_request(state / "spool", "backtest", "bt-s", {"request_ts": NOW.isoformat(),
+                                                             "key": self.KEY})
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        doc = read_artifact(state, self.KEY)
+        assert doc is not None and "no fresh QQQ quote" in doc["error"]
+
+    def test_fresh_spot_source_is_disclosed(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.artifact import write_request
+        from tree_options.trex.discovery.backtest import read_artifact
+
+        state = tmp_path / "state"
+        TestBacktestTick()._seed(state)
+        write_request(state / "spool", "backtest", "bt-f", {"request_ts": NOW.isoformat(),
+                                                             "key": self.KEY})
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        doc = read_artifact(state, self.KEY)
+        assert doc is not None and doc["structure"]["spot_source"] == "market snapshot"
+
+    def test_unwritable_artifact_still_completes_the_request(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tree_options.trex.discovery import backtest
+        from tree_options.trex.discovery.artifact import read_result, write_request
+
+        def boom(*_a: object, **_k: object) -> None:
+            raise OSError(36, "File name too long")
+
+        monkeypatch.setattr(backtest, "write_artifact", boom)
+        state = tmp_path / "state"
+        write_request(state / "spool", "backtest", "bt-x", {"request_ts": NOW.isoformat(),
+                                                             "key": "SPY|20261016|1|2"})
+        serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
+        result = read_result(state / "spool", "backtest")
+        assert result is not None and result["status"] == "error"
+        assert "unwritable" in result["detail"]
+        assert not list((state / "spool").glob("backtest.*.bt-x"))

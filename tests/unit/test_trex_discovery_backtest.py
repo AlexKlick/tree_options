@@ -191,3 +191,18 @@ class TestArtifacts:
         assert shadow is not None and shadow["found_in"] == "shadow book"
         assert shadow["debit_ask"] is None
         assert find_structure(tmp_path, "NVDA|20261016|100|110") is None
+
+
+class TestCodexM456Regressions:
+    def test_autumn_dst_settles_on_the_expiry_session(self) -> None:
+        """Codex #7: ET-midnight bars shift 04:00Z -> 05:00Z after the fall
+        DST change; Friday + 3 x 24h used to land before Monday's bar."""
+        from tree_options.trex.discovery.backtest import _analog
+
+        fri = 1_793_332_800_000  # 2026-10-30T04:00:00Z (ET midnight, EDT)
+        mon = 1_793_595_600_000  # 2026-11-02T05:00:00Z (ET midnight, EST)
+        run = _analog([(fri, 100.0), (mon, 80.0)], 0, 0.90, 0.95, 3, 0.30)
+        assert run is not None
+        debit, path = run
+        assert path[-1][0] == mon  # Monday's close settles the analog
+        assert path[-1][1] == pytest.approx((5.0 - debit) * 100)  # full width, not Friday's 0

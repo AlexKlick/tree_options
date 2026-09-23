@@ -1285,3 +1285,19 @@ class TestProposalsApi:
         client = _client(tmp_path / "state", tmp_path / "plans", disc)
         assert client.post("/api/market/propose").status_code == 202
         assert len(list((disc / "spool").glob("propose.request.*"))) == 1
+
+
+class TestCodexM456Web:
+    def test_market_get_never_creates_watchlist(self, tmp_path: Path) -> None:
+        disc = tmp_path / "discovery"
+        disc.mkdir()
+        client = _client(tmp_path / "state", tmp_path / "plans", disc)
+        assert client.get("/api/market").status_code == 200
+        assert not (disc / "watchlist.json").exists()
+
+    def test_scenario_key_length_bounded(self, tmp_path: Path) -> None:
+        client = _client(tmp_path / "state", tmp_path / "plans", tmp_path / "discovery")
+        long_key = "SPY|20261016|" + "1" * 300 + "|2"
+        assert client.post("/api/discovery/backtest", json={"key": long_key}).status_code == 422
+        ok = client.post("/api/discovery/backtest", json={"key": "SPY|20261016|702.5|712.5"})
+        assert ok.status_code == 202

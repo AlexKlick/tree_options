@@ -158,3 +158,46 @@ class TestSpool:
         raw = json.loads(next(tmp_path.glob("scan.request.*")).read_text())
         assert raw["request_id"] == "req-9"
         assert raw["request_ts"] == NOW.isoformat()
+
+
+class TestSpoolHardeningCodexM456:
+    """Codex M4-M6 review #1/#2/#16 regression pins."""
+
+    def test_receipt_lands_before_request_is_removed(self, tmp_path: Path) -> None:
+        from unittest import mock
+
+        from tree_options.trex.discovery import artifact
+
+        spool = tmp_path / "spool"
+        artifact.write_request(spool, "propose", "r1", {"request_ts": "2026-09-22T19:00:00"})
+        assert artifact.claim_request(spool, ["propose"]) is not None
+        with mock.patch.object(artifact, "_atomic_write", side_effect=OSError("disk full")):
+            try:
+                artifact.complete_request(spool, "propose", "r1", {"status": "ok"})
+            except OSError:
+                pass
+        # the receipt failed, so the request must survive to be retried
+        assert (spool / "propose.request.r1").exists()
+
+    def test_unpublished_tmp_request_is_never_claimed(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery import artifact
+
+        spool = tmp_path / "spool"
+        spool.mkdir()
+        (spool / "propose.request.r2.tmp").write_text(
+            json.dumps({"request_id": "r2", "kind": "propose", "request_ts": "x"})
+        )
+        assert artifact.claim_request(spool, ["propose"]) is None
+        assert artifact.spool_pending(spool) is False
+
+    def test_claim_age_is_claim_time_not_queue_time(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery import artifact
+
+        spool = tmp_path / "spool"
+        req = artifact.write_request(spool, "backtest", "r3", {"request_ts": "x"})
+        old = time.time() - 3 * 3600  # queued long before it was claimed
+        os.utime(req, (old, old))
+        assert artifact.claim_request(spool, ["backtest"]) is not None
+        # a second consumer's reclaim sweep must NOT treat the fresh claim as stale
+        assert artifact.claim_request(spool, ["backtest"]) is None
+        assert (spool / "backtest.claim.r3").exists()

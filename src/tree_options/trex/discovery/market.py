@@ -108,6 +108,28 @@ class MarketCache:
             return None
         return doc if isinstance(doc, dict) else None
 
+    def mark_attempt(self, kind: str, key: str, now: datetime) -> None:
+        """Stamp a failed/empty refresh on an existing envelope (payload and
+        fetched_at untouched) so retries can back off."""
+        env = self.get_envelope(kind, key)
+        if env is None:
+            return
+        env["attempted_at"] = now.isoformat()
+        path = self._path(kind, key)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(json.dumps(env))
+        os.replace(tmp, path)
+
+    def attempted_within(self, kind: str, key: str, now: datetime, seconds: float) -> bool:
+        env = self.get_envelope(kind, key)
+        stamp = (env or {}).get("attempted_at")
+        if not isinstance(stamp, str):
+            return False
+        try:
+            return (now - datetime.fromisoformat(stamp)).total_seconds() < seconds
+        except (TypeError, ValueError):
+            return False
+
     def put(self, kind: str, key: str, payload: dict[str, Any], now: datetime) -> None:
         path = self._path(kind, key)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -145,7 +167,10 @@ def _source_as_of(raw: object) -> str | None:
 def fetch_equity_quote(sym: str, transport: Transport) -> dict[str, Any]:
     """CBOE delayed quote with the payload timestamp as source_as_of."""
     doc = _get_json(CBOE_QUOTE_URL.format(sym=sym), transport)
-    d = doc.get("data", {})
+    d = doc.get("data") or {}
+    if all(d.get(k) is None for k in ("bid", "ask", "close")):
+        # a 200 with no prices must not overwrite a good cached quote
+        raise RuntimeError(f"{sym}: empty quote payload")
     return {
         "bid": d.get("bid"),
         "ask": d.get("ask"),
@@ -264,6 +289,18 @@ def fetch_daily_bars(sym: str, client: BarsClient | None = None) -> list[dict[st
     ]
 
 
+NEWS_REWARM_PER_CYCLE = 2  # bound ambient RSS work per serve tick
+REWARM_RETRY_SECONDS = 900  # back off a failed/empty re-warm
+
+
+def _read_snapshot(path: Path) -> dict[str, Any]:
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return {}
+    return doc if isinstance(doc, dict) else {}
+
+
 def market_cycle(
     state_dir: Path,
     cfg: Any,
@@ -275,18 +312,25 @@ def market_cycle(
 ) -> bool:
     """TTL-gated quote refresh across the symbol list -> market.json.
 
-    Per-symbol failure isolation: one dead source records an error entry,
-    never a failed cycle. The snapshot carries source_as_of per symbol so
-    the UI shows DATA age, not transport age. A forced cycle additionally
-    warms the bars + news caches for the forced symbols (symbol-detail
-    pages read those envelopes).
+    Per-symbol failure isolation: one dead source records an error entry
+    and CARRIES the symbol's last good quote (its source_as_of keeps the
+    age honest), never a failed cycle. ``symbols=None`` means the config
+    universe; an explicit empty list means an empty watchlist. A forced
+    refresh of a subset merges into the snapshot instead of replacing it,
+    and additionally warms bars + news for the forced symbols.
+    ``last_refresh`` moves only on a successful fetch; ``last_attempt``
+    (the runner's cadence clock) moves every cycle.
     """
     cache = MarketCache(state_dir / "market" / "cache")
-    symbols = symbols or list(getattr(cfg, "underlyings", []))
-    out: dict[str, Any] = {}
+    path = state_dir / "market.json"
+    prior = _read_snapshot(path)
+    raw_prior = prior.get("symbols")
+    prior_syms: dict[str, Any] = raw_prior if isinstance(raw_prior, dict) else {}
+    universe = list(symbols) if symbols is not None else list(getattr(cfg, "underlyings", []))
+    out: dict[str, Any] = dict(prior_syms) if (force and symbols is not None) else {}
     errors: dict[str, str] = {}
-    changed = False
-    for sym in symbols:
+    fetched_any = False
+    for sym in universe:
         cached = None if force else cache.get("quote", sym, now)
         if cached is not None:
             out[sym] = cached
@@ -295,12 +339,14 @@ def market_cycle(
             quote = fetch_equity_quote(sym, transport)
             cache.put("quote", sym, quote, now)
             out[sym] = quote
-            changed = True
+            fetched_any = True
         except Exception as exc:  # per-symbol isolation
             errors[sym] = f"{type(exc).__name__}: {exc}"
             log.warning("quote fetch failed for %s: %s", sym, exc)
-    if force and symbols:
-        for sym in symbols:
+            if sym in prior_syms:
+                out[sym] = prior_syms[sym]  # last good quote, age disclosed
+    if force and universe:
+        for sym in universe:
             if cache.get("bars", sym, now) is None:
                 try:
                     bars = fetch_daily_bars(sym, bars_client)
@@ -315,25 +361,38 @@ def market_cycle(
                         cache.put("news", sym, {"items": news}, now)
                 except Exception as exc:  # per-symbol isolation
                     errors[f"{sym}:news"] = f"{type(exc).__name__}: {exc}"
-        changed = True
     else:
-        # keep already-warmed news envelopes fresh (expired -> refetch);
-        # cold symbols wait for an explicit refresh - no ambient RSS churn
-        for sym in symbols:
-            if cache.get_envelope("news", sym) is None:
+        # keep already-warmed news fresh, bounded per cycle and backed off
+        # after a failed/empty attempt (a dead feed must not stall the loop)
+        attempts = 0
+        for sym in universe:
+            if attempts >= NEWS_REWARM_PER_CYCLE:
+                break
+            env = cache.get_envelope("news", sym)
+            if env is None or cache.get("news", sym, now) is not None:
                 continue
-            if cache.get("news", sym, now) is not None:
+            if cache.attempted_within("news", sym, now, REWARM_RETRY_SECONDS):
                 continue
+            attempts += 1
             try:
                 news = fetch_news(sym, transport)
-                if news:
-                    cache.put("news", sym, {"items": news}, now)
             except Exception as exc:  # per-symbol isolation
+                news = []
                 errors[f"{sym}:news"] = f"{type(exc).__name__}: {exc}"
-    if not changed and (state_dir / "market.json").exists() and not force:
+            if news:
+                cache.put("news", sym, {"items": news}, now)
+            else:
+                cache.mark_attempt("news", sym, now)
+    snapshot_same = set(out) == set(prior_syms) and not errors and not prior.get("errors")
+    if path.exists() and not force and not fetched_any and snapshot_same:
         return False
-    doc = {"last_refresh": now.isoformat(), "symbols": out, "errors": errors}
-    path = state_dir / "market.json"
+    last_ok = now.isoformat() if (fetched_any or not path.exists()) else prior.get("last_refresh")
+    doc = {
+        "last_refresh": last_ok,
+        "last_attempt": now.isoformat(),
+        "symbols": out,
+        "errors": errors,
+    }
     tmp = path.with_name(path.name + ".tmp")
     tmp.write_text(json.dumps(doc, indent=2) + "\n")
     os.replace(tmp, path)

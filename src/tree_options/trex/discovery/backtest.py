@@ -48,6 +48,10 @@ IV_BAND = 0.20  # sensitivity band: iv x (1 - band), iv x (1 + band)
 MULTIPLIER = 100
 MAX_ARTIFACTS = 30
 MIN_ANALOGS = 5
+# Session bars are stamped at ET midnight, so a UTC-ms span of N x 24h can
+# land an hour short of the Nth session across the autumn DST change; the
+# expiry cutoff tolerates that (well under a day, so no extra session).
+DST_SLACK_MS = 2 * 3_600_000
 
 
 def spread_value(
@@ -111,21 +115,22 @@ def _analog(
     session). None when the analog's expiry lies beyond the bar window."""
     t0, s0 = bars[start]
     expiry_ms = t0 + dte_days * DAY_MS
-    if bars[-1][0] < expiry_ms:
+    cutoff_ms = expiry_ms + DST_SLACK_MS
+    if bars[-1][0] < expiry_ms - DST_SLACK_MS:
         return None  # incomplete window: never extrapolate
     short = k_short * s0
     long_ = k_long * s0
     debit = spread_value(s0, short, long_, dte_days, iv)
     path: list[tuple[int, float]] = []
     for t, spot in bars[start:]:
-        if t > expiry_ms:
+        if t > cutoff_ms:
             break
-        remaining = round((expiry_ms - t) / DAY_MS)
+        remaining = max(0, round((expiry_ms - t) / DAY_MS))
         value = spread_value(spot, short, long_, remaining, iv)
         path.append((t, (value - debit) * MULTIPLIER))
     # the last observed session at/before expiry settles at intrinsic
     t_last, spot_last = next(
-        (t, s) for t, s in reversed(bars[start:]) if t <= expiry_ms
+        (t, s) for t, s in reversed(bars[start:]) if t <= cutoff_ms
     )
     final = (spread_value(spot_last, short, long_, 0, iv) - debit) * MULTIPLIER
     path[-1] = (t_last, final)

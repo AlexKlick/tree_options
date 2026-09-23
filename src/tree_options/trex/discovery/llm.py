@@ -90,6 +90,7 @@ def _extract_json_object(text: str) -> dict[str, Any]:
     start = cleaned.find("{")
     while start != -1:
         depth, in_str, escaped = 0, False, False
+        resume = start + 1  # unbalanced span: retry from the next brace
         for i in range(start, len(cleaned)):
             ch = cleaned[i]
             if in_str:
@@ -109,12 +110,13 @@ def _extract_json_object(text: str) -> dict[str, Any]:
                 if depth == 0:
                     try:
                         obj = json.loads(cleaned[start : i + 1])
-                    except json.JSONDecodeError:
-                        break
+                    except (json.JSONDecodeError, RecursionError):
+                        obj = None
                     if isinstance(obj, dict):
                         return obj
+                    resume = i + 1  # skip the whole rejected span
                     break
-        start = cleaned.find("{", start + 1)
+        start = cleaned.find("{", resume)
     raise LlmError("no JSON object in model output")
 
 
@@ -136,6 +138,8 @@ def chat_json(
         key = os.environ.get(key_env, "").strip()
         if not key:
             raise LlmError(f"{provider}: {key_env} not set")
+        if any(c.isspace() or ord(c) < 32 or ord(c) > 126 for c in key):
+            raise LlmError(f"{provider}: {key_env} is malformed (whitespace/control chars)")
         headers["Authorization"] = f"Bearer {key}"
     used_model = model or spec["model"]
     body = json.dumps(
@@ -151,13 +155,13 @@ def chat_json(
         status, raw = transport(
             f"{spec['base_url']}/chat/completions", body, headers, timeout
         )
-    except (TimeoutError, OSError) as exc:
+    except Exception as exc:  # never re-raise: messages can embed headers
         raise LlmError(f"{provider}: {type(exc).__name__}") from None
     if status != 200:
         raise LlmError(f"{provider}: HTTP {status}")
     try:
         content = json.loads(raw)["choices"][0]["message"].get("content") or ""
-    except (ValueError, KeyError, IndexError, TypeError):
+    except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise LlmError(f"{provider}: malformed completion envelope") from None
     return _extract_json_object(str(content)), used_model
 
@@ -211,7 +215,7 @@ def normalize(
             continue
         try:
             conf = float(item.get("confidence", 0.5))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             conf = 0.5
         conf = min(1.0, max(0.0, conf)) if conf == conf else 0.5  # NaN -> 0.5
         rationale = " ".join(str(item.get("rationale", "")).split())[:RATIONALE_MAX]
@@ -258,7 +262,13 @@ def propose(
         except LlmError as exc:
             notes.append(str(exc))
             continue
-        proposals, drop_notes = normalize(raw, watched=watched, blocked=blocked, max_n=max_n)
+        try:
+            proposals, drop_notes = normalize(
+                raw, watched=watched, blocked=blocked, max_n=max_n
+            )
+        except Exception as exc:  # untrusted shape: fall through to the next
+            notes.append(f"{provider}: unusable proposals ({type(exc).__name__})")
+            continue
         return {
             "status": "ok",
             "provider": provider,

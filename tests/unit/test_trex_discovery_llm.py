@@ -151,3 +151,42 @@ class TestProposeChain:
         t = FakeTransport([])
         run = propose(["none"], {}, watched=set(), blocked=set(), max_n=3, transport=t)
         assert run["status"] == "failed" and t.calls == []
+
+
+class TestCodexM456Regressions:
+    def test_malformed_key_rejected_without_echo(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ZAI_CODING_API_KEY", "sk-example\nsecond-line")
+        with pytest.raises(LlmError) as exc:
+            chat_json("zai", [], transport=FakeTransport([]))
+        assert "sk-example" not in str(exc.value) and "malformed" in str(exc.value)
+
+    def test_transport_exception_text_never_surfaces(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ZAI_CODING_API_KEY", SECRET)
+        t = FakeTransport([ValueError(f"Invalid header value b'Bearer {SECRET}'")])
+        with pytest.raises(LlmError) as exc:
+            chat_json("zai", [], transport=t)
+        assert SECRET not in str(exc.value)
+        assert exc.value.__cause__ is None and exc.value.__suppress_context__
+
+    def test_rejected_draft_span_is_skipped_whole(self) -> None:
+        text = (
+            "Draft: {'discarded': {\"proposals\":[{\"symbol\":\"TSM\",\"action\":\"add\"}]}} "
+            'Final: {"proposals":[]}'
+        )
+        assert _extract_json_object(text) == {"proposals": []}
+
+    def test_null_message_falls_back_to_next_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ZAI_CODING_API_KEY", SECRET)
+        null_msg = json.dumps({"choices": [{"message": None}]}).encode()
+        t = FakeTransport([(200, null_msg), (200, _completion('{"proposals": []}'))])
+        run = propose(["local", "zai"], {}, watched=set(), blocked=set(), max_n=3, transport=t)
+        assert run["status"] == "ok" and run["provider"] == "zai"
+
+    def test_huge_confidence_defaults_instead_of_crashing(self) -> None:
+        raw = {"proposals": [{"symbol": "TSM", "action": "add", "confidence": 10**400}]}
+        out, _ = normalize(raw, watched=set(), blocked=set(), max_n=3)
+        assert out[0]["confidence"] == 0.5

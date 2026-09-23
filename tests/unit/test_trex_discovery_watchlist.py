@@ -157,3 +157,39 @@ class TestProposalLifecycle:
         record_proposals(tmp_path, [], self.PROV, later)
         props = load_watchlist(tmp_path)["proposals"]
         assert [p["symbol"] for p in props] == ["SMH"]  # pending survives, decided pruned
+
+
+class TestCodexM456Watchlist:
+    PROV: ClassVar[dict] = {"provider": "local", "model": "m", "trigger": "t", "source_id": "s"}
+
+    def test_read_watchlist_never_creates_state(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.watchlist import read_watchlist
+
+        doc = read_watchlist(tmp_path)
+        assert doc["symbols"] == [] and not (tmp_path / "watchlist.json").exists()
+
+    def test_cap_never_evicts_pending_or_suppressing_dismissals(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.watchlist import (
+            MAX_PROPOSALS_KEPT,
+            blocked_symbols,
+            record_proposals,
+        )
+
+        load_watchlist(tmp_path, seed=[], now=NOW)
+        doc = load_watchlist(tmp_path)
+        doc["proposals"] = [
+            {"id": f"p{i}", "symbol": f"S{chr(65 + i % 26)}{chr(65 + i // 26)}",
+             "action": "add", "status": "pending", "created_at": NOW.isoformat(),
+             "decided_at": None}
+            for i in range(MAX_PROPOSALS_KEPT)
+        ]
+        doc["proposals"].insert(0, {"id": "old-dismissed", "symbol": "TSM", "action": "add",
+                                    "status": "dismissed", "created_at": "2026-01-01T00:00:00-05:00",
+                                    "decided_at": NOW.isoformat()})
+        (tmp_path / "watchlist.json").write_text(json.dumps(doc))
+        record_proposals(tmp_path, [{"symbol": "ZZ", "action": "add"}], self.PROV, NOW)
+        after = load_watchlist(tmp_path)
+        ids = {p["id"] for p in after["proposals"]}
+        assert {f"p{i}" for i in range(MAX_PROPOSALS_KEPT)} <= ids  # no pending evicted
+        assert "old-dismissed" in ids and "TSM" in blocked_symbols(after, NOW)
+        assert apply_watch_op(tmp_path, "approve", proposal_id="p0", now=NOW)["status"] == "approved"
