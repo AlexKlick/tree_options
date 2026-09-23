@@ -5,7 +5,9 @@
 # The gateway image ships **x11vnc** (raw VNC on 5900), not noVNC — and it
 # only starts x11vnc when VNC_SERVER_PASSWORD is set. The `novnc` sidecar
 # below bridges that VNC session to a browser UI on 127.0.0.1:6080 for the
-# rare manual login / 2FA look.
+# rare manual login / 2FA look: open /vnc.html?path=vnc (its socket is /vnc).
+# x11vnc can lose a boot race with Xvfb and exit; the trex-gateway-watch
+# timer restarts it (and alerts on a stuck login).
 #
 # Both host bindings stay on loopback. To reach the noVNC UI from another
 # machine, put it on the tailnet with `tailscale serve` (tailnet-only) —
@@ -23,6 +25,28 @@ services:
       # account. (Equivalent GUI path: Configure > Settings > API >
       # Settings > uncheck "Read-Only API".)
       READ_ONLY_API: "no"
+      # Session survival (2026-09-23 incident). Without AUTO_RESTART_TIME the
+      # gateway fell back to a daily LOG OFF at 11:45 PM container time (UTC =
+      # 19:45 ET) and needed a full re-login every evening. Auto-Restart keeps
+      # the session through the daily restart without re-authentication; IBKR
+      # still forces a full login weekly, done by the Sunday cold restart at a
+      # sociable hour for a 2FA prompt.
+      # Timezones: TZ sets the JVM zone, which IBC's ColdRestartTime uses
+      # (Sunday 12:00 ET). The Gateway's own zone is jts.ini TimeZone, seeded
+      # from TIME_ZONE only when jts.ini is first created; ours already exists
+      # in the ibgw-settings volume as Africa/Abidjan (GMT). So the daily
+      # restart lands at 23:45 GMT (19:45 EDT) or 23:45 ET, depending on which
+      # zone the Gateway applies: both after the close. Check the first one
+      # in the log.
+      TZ: America/New_York
+      AUTO_RESTART_TIME: "11:45 PM"
+      TWS_COLD_RESTART: "12:00"
+      # An unanswered 2FA prompt re-prompts instead of stalling forever.
+      TWOFA_TIMEOUT_ACTION: restart
+      RELOGIN_AFTER_TWOFA_TIMEOUT: "yes"
+      # The default ('manual') parks on an "existing session" dialog: another
+      # silent stall. 'primary' keeps this session and needs no human.
+      EXISTING_SESSION_DETECTED_ACTION: primary
     # The host's uplink DNS list leads with a stale LAN resolver, so Docker's
     # embedded resolver stalls and the gateway reports "No Internet connection"
     # while raw-IP egress still works. Pin public resolvers.
