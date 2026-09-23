@@ -4,7 +4,8 @@ import type { StatsResponse } from '../lib/types'
 import { getStats } from '../lib/api'
 import { PerformancePage } from './PerformancePage'
 
-vi.mock('../lib/api', () => ({ getStats: vi.fn() }))
+// getGateway feeds AppShell's GatewayBanner (tested on its own); never settles here
+vi.mock('../lib/api', () => ({ getStats: vi.fn(), getGateway: () => new Promise(() => {}) }))
 const mocked = vi.mocked(getStats)
 
 afterEach(() => {

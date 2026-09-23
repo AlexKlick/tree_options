@@ -1,6 +1,32 @@
 // Mirrors the Python API contract (src/tree_options/trex_web/app.py).
 // Plain numbers + ISO strings from the server; this app formats.
 
+// GET /api/gateway: the gateway watchdog's verdict (epoch seconds).
+export type GatewayState =
+  | 'ok'
+  | 'starting'
+  | 'checking'
+  | 'needs_login'
+  | 'needs_2fa'
+  | 'api_down'
+  | 'down'
+  | 'unknown'
+export interface GatewayStatus {
+  status: GatewayState
+  since: number | null
+  detail: string | null
+  checked_at: number | null
+  login_url: string | null
+  restarts_left: number | null
+  next_restart_at: number | null
+  ibc_phase: string | null
+  api_ok: boolean | null
+  vnc_running: boolean | null
+  age_seconds: number | null
+  watch_stale: boolean
+  last_restart_at: number | null
+}
+
 export type WindowState = 'before' | 'during' | 'after' | 'wrong_day'
 export type StructureStatus =
   | 'planned'

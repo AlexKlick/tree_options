@@ -1,5 +1,6 @@
 import type {
   DiscoveryResponse,
+  GatewayStatus,
   PlanDetailResponse,
   PlansResponse,
   ScanRequestResponse,
@@ -34,6 +35,8 @@ export const getPlan = (id: string): Promise<PlanDetailResponse> =>
 export const getDiscovery = (): Promise<DiscoveryResponse> => fetchJson('api/discovery')
 
 export const getStats = (): Promise<StatsResponse> => fetchJson('api/stats')
+
+export const getGateway = (): Promise<GatewayStatus> => fetchJson('api/gateway')
 
 export const requestScan = (): Promise<ScanRequestResponse> =>
   fetchJson('api/discovery/scan', { method: 'POST' })

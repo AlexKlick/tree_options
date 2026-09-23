@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import type { PollState } from '../hooks/usePoll'
 import { DensityToggle } from './DensityToggle'
+import { GatewayBanner } from './GatewayBanner'
 import { Pill } from './Pill'
 
 // Transport health of the cockpit API only. Data freshness (marks,
@@ -69,7 +70,10 @@ export function AppShell({
           <DensityToggle />
         </div>
       </header>
-      <main>{children}</main>
+      <main>
+        <GatewayBanner />
+        {children}
+      </main>
       <footer>
         <span>
           broker-free · reads <code>~/.local/state/trex/&lt;plan&gt;/</code> + plan TOML

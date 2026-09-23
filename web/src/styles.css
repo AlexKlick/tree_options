@@ -477,3 +477,26 @@ footer {
   .quote-card .tile-value { font-size: 1.15rem; }
 }
 .nowrap { white-space: nowrap; }
+
+/* IB Gateway health (GatewayBanner, every page) */
+.gateway-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 14px;
+  margin: 0 0 16px;
+  padding: 12px 16px;
+  border: 1px solid var(--neg);
+  border-radius: 10px;
+  background: #3a2418;
+  line-height: 1.4;
+}
+.gateway-banner strong { color: var(--neg); }
+.gateway-banner a { color: var(--accent); font-weight: 700; }
+.gateway-banner-muted {
+  border-color: var(--border);
+  background: var(--card);
+  color: var(--muted);
+  font-size: 0.85rem;
+  padding: 8px 14px;
+}

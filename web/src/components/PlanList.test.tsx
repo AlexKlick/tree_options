@@ -4,7 +4,8 @@ import type { PlansResponse } from '../lib/types'
 import { getPlans } from '../lib/api'
 import { PlanList } from './PlanList'
 
-vi.mock('../lib/api', () => ({ getPlans: vi.fn() }))
+// getGateway feeds AppShell's GatewayBanner (tested on its own); never settles here
+vi.mock('../lib/api', () => ({ getPlans: vi.fn(), getGateway: () => new Promise(() => {}) }))
 const mockedGetPlans = vi.mocked(getPlans)
 
 afterEach(() => {

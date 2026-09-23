@@ -6,6 +6,7 @@ import json
 import os
 import re
 import socket
+import time
 import uuid
 from pathlib import Path
 from typing import Any
@@ -396,6 +397,7 @@ def create_app(
     plans_dir: str | None = None,
     static_dir: str | None = None,
     discovery_dir: str | None = None,
+    gateway_state: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Public for tests; production wires ``__main__``.
 
@@ -416,6 +418,13 @@ def create_app(
     discovery_config = Path(
         os.environ.get("TREX_DISCOVERY_CONFIG", str(DEFAULT_DISCOVERY_CONFIG))
     )
+    from tree_options.trex_web.gateway_view import DEFAULT_GATEWAY_STATE, gateway_view
+
+    gateway_state_path = (
+        Path(gateway_state).expanduser()
+        if gateway_state
+        else Path(os.environ.get("TREX_GATEWAY_STATE", str(DEFAULT_GATEWAY_STATE)))
+    )
 
     app = FastAPI(
         title="trex options cockpit",
@@ -434,6 +443,11 @@ def create_app(
             "plans_root_exists": plans_root.exists(),
             "gateway_reachable": probe_gateway(),
         }
+
+    @app.get("/api/gateway")
+    def api_gateway() -> dict[str, object]:
+        """Gateway watchdog verdict for the cockpit banner (read-only)."""
+        return gateway_view(gateway_state_path, time.time())
 
     @app.get("/api/plans")
     def api_plans() -> dict[str, object]:

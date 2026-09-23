@@ -4,7 +4,8 @@ import type { MarketResponse } from '../lib/types'
 import { getMarket } from '../lib/api'
 import { MarketPage } from './MarketPage'
 
-vi.mock('../lib/api', () => ({ getMarket: vi.fn() }))
+// getGateway feeds AppShell's GatewayBanner (tested on its own); never settles here
+vi.mock('../lib/api', () => ({ getMarket: vi.fn(), getGateway: () => new Promise(() => {}) }))
 const mocked = vi.mocked(getMarket)
 
 afterEach(() => {
