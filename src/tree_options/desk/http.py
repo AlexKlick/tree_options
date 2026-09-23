@@ -38,6 +38,10 @@ class BodyTooLarge(RuntimeError):
     """The response exceeded the caller's byte cap."""
 
 
+class IncompleteBody(RuntimeError):
+    """The body did not match its Content-Length (a cut connection)."""
+
+
 class Get(Protocol):
     def __call__(
         self, url: str, *, headers: Mapping[str, str], timeout: float
@@ -47,12 +51,27 @@ class Get(Protocol):
 def urllib_get(
     url: str, *, headers: Mapping[str, str], timeout: float = TIMEOUT_S
 ) -> tuple[int, bytes]:
+    """GET ``url``. A bounded ``read(amt)`` returns SHORT data without raising
+    when the connection ends before Content-Length (CPython http.client), so
+    the advertised length is enforced here; without one (chunked), a cut
+    chunk raises inside http.client. Both paths keep the MAX_BYTES cap."""
     req = urllib.request.Request(url, headers=dict(headers))
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
+            advertised = resp.headers.get("Content-Length")
+            want: int | None = None
+            if advertised is not None:
+                try:
+                    want = int(advertised)
+                except ValueError:
+                    raise IncompleteBody(f"{url}: bad Content-Length {advertised!r}") from None
+                if want > MAX_BYTES:
+                    raise BodyTooLarge(f"{url}: Content-Length {want} over {MAX_BYTES} bytes")
             body = resp.read(MAX_BYTES + 1)
             if len(body) > MAX_BYTES:
                 raise BodyTooLarge(f"{url}: body over {MAX_BYTES} bytes")
+            if want is not None and len(body) != want:
+                raise IncompleteBody(f"{url}: {len(body)} of {want} advertised bytes")
             return int(resp.status), body
     except urllib.error.HTTPError as exc:
         return int(exc.code), b""

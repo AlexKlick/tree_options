@@ -124,16 +124,19 @@ def _paper(tmp_path: Path, calendar: dict[str, list[str]] | None = None) -> Path
 
 
 def _nasdaq(rows: list[tuple[str, str]] | None) -> bytes:
-    data = (
-        None
-        if rows is None
-        else {
-            "asOf": "x",
-            "headers": {},
-            "rows": [{"symbol": s, "time": t, "name": s} for s, t in rows],
-        }
-    )
+    """A successful Nasdaq day; ``None`` is the real empty-day shape
+    (``rows: null``, see nasdaq_earnings_2026-09-26_empty.json)."""
+    data = {
+        "asOf": "x",
+        "headers": None if rows is None else {},
+        "rows": None if rows is None else [{"symbol": s, "time": t, "name": s} for s, t in rows],
+    }
     return json.dumps({"data": data, "message": None, "status": {"rCode": 200}}).encode()
+
+
+FOOTER = (
+    '<div class="panel-footer">* Meeting associated with a Summary of Economic Projections.</div>'
+)
 
 
 class Web:
@@ -188,16 +191,28 @@ class TestFomc:
         [
             "",
             "<html><body>Service unavailable</body></html>",
-            '<h4><a id="1">2026 FOMC Meetings</a></h4>',  # a panel with no rows
+            '<h4><a id="1">2026 FOMC Meetings</a></h4>' + FOOTER,  # a panel with no rows
             '<h4><a id="1">2026 FOMC Meetings</a></h4><div class="fomc-meeting__month">'
-            '<strong>January</strong></div><div class="fomc-meeting__date">TBD</div>',
+            '<strong>January</strong></div><div class="fomc-meeting__date">TBD</div>' + FOOTER,
             '<h4><a id="1">2026 FOMC Meetings</a></h4><div class="fomc-meeting__month">'
-            '<strong>Smarch</strong></div><div class="fomc-meeting__date">1-2</div>',
+            '<strong>Smarch</strong></div><div class="fomc-meeting__date">1-2</div>' + FOOTER,
         ],
     )
     def test_unreadable_pages_raise_never_empty(self, html: str) -> None:
         with pytest.raises(events.FomcParseError):
             events.parse_fomc(html)
+
+    def test_a_truncated_page_is_refused(self) -> None:
+        """P1 (Codex, 51ed532): the page cut right after 2027's complete
+        January row used to parse (1 row == 1 month cell) and seal. Every
+        panel on the live page ends in its footer (7/7, 2026-09-23)."""
+        html = FOMC_HTML.decode()
+        i = html.index("2027 FOMC Meetings")
+        end_row = "</div>\n        </div>"
+        cut = html[: html.index(end_row, i) + len(end_row)]
+        assert cut.count("fomc-meeting__date") > 1  # earlier panels are whole
+        with pytest.raises(events.FomcParseError, match="2027"):
+            events.parse_fomc(cut)
 
 
 # -------------------------------------------------------- OpEx / VIX expiry
@@ -247,24 +262,55 @@ class TestMacro:
         assert doc["schema"] == "desk-macro/1"
         assert [f["date"] for f in doc["fomc"]] == FOMC_2026 + FOMC_2027
         assert doc["cpi"] == [] and doc["nfp"] == []
-        assert any("cpi" in t and "operator/agent entry required" in t for t in doc["todo"])
-        assert any("nfp" in t and "operator/agent entry required" in t for t in doc["todo"])
+        for kind in ("cpi", "nfp"):
+            for year in (2026, 2027):
+                assert any(
+                    t.startswith(f"{kind} {year}:") and "operator/agent entry required" in t
+                    for t in doc["todo"]
+                ), (kind, year)
         assert doc["opex"][:12] == OPEX_2026 and len(doc["opex"]) == 24
         assert len(doc["vix_expiry"]) == 24 and doc["vix_expiry"][4] == "2026-05-19"
         assert doc["fomc_source"]["url"] == events.FOMC_URL
 
     def test_hand_entered_items_are_carried_and_validated(self, trex_calendar) -> None:
         item = {"date": "2026-10-14", "source": "bls.gov schedule", "entered_by": "operator"}
-        doc = self._build(trex_calendar, cpi=[item])
+        doc = self._build(trex_calendar, cpi=[item], gap_note="not yet published by BLS")
         assert doc["cpi"] == [item]
-        assert not any("cpi" in t for t in doc["todo"])
-        with pytest.raises(events.EventsError):
-            self._build(
-                trex_calendar, cpi=[{"date": "2026-10-14", "source": "", "entered_by": "x"}]
+        assert not any(t.startswith("cpi 2026") for t in doc["todo"])
+        assert "cpi 2027: not yet published by BLS" in doc["todo"]
+        full = {**item, "period": "2026-09", "time_et": "08:30"}  # optional fields
+        assert self._build(trex_calendar, cpi=[full])["cpi"] == [full]
+        for bad in (
+            {"date": "2026-10-14", "source": "", "entered_by": "x"},
+            {"date": "10/02/2026", "source": "s", "entered_by": "x"},
+            {**item, "period": "Sep 2026"},
+            {**item, "time_et": "8:30am"},
+            {**item, "note": "extra key"},
+        ):
+            with pytest.raises(events.EventsError):
+                self._build(trex_calendar, nfp=[bad])
+
+    def test_a_full_year_needs_all_eight_scheduled_meetings(self, trex_calendar) -> None:
+        """P1 (Codex, 51ed532): one scheduled 2027 meeting used to satisfy
+        coverage, so a truncated page could reseal a 7-meeting-short year."""
+        ms = events.parse_fomc(FOMC_HTML.decode())
+        seven = [m for m in ms if m.end != date(2027, 4, 28)]
+        with pytest.raises(events.EventsError, match="2027"):
+            events.build_macro(
+                seven,
+                trex_calendar,
+                date(2026, 1, 1),
+                date(2027, 12, 31),
+                fetched_on=date(2026, 9, 23),
             )
-        with pytest.raises(events.EventsError):
-            self._build(
-                trex_calendar, nfp=[{"date": "10/02/2026", "source": "s", "entered_by": "x"}]
+        # a partial-year range still needs the whole year's panel to be complete
+        with pytest.raises(events.EventsError, match="2027"):
+            events.build_macro(
+                seven,
+                trex_calendar,
+                date(2027, 1, 1),
+                date(2027, 3, 31),
+                fetched_on=date(2026, 9, 23),
             )
 
     def test_seal_load_and_tamper(self, tmp_path: Path, trex_calendar) -> None:
@@ -295,7 +341,13 @@ class TestMacro:
         assert got[0].detail == "SEP"
         with pytest.raises(events.EventsError):
             events.macro_events(date(2027, 12, 1), date(2028, 1, 31), path=path)
-        assert events.macro_gaps(path=path) == ["cpi", "nfp"]
+        assert events.macro_gaps(path=path) == ["cpi 2026", "cpi 2027", "nfp 2026", "nfp 2027"]
+        item = {"date": "2026-09-11", "source": "s", "entered_by": "x"}
+        path2 = tmp_path / "events2" / "macro-2026-2027.json"
+        events.seal_macro(self._build(trex_calendar, cpi=[item]), path2, basis="test")
+        got = events.macro_events(date(2026, 9, 11), date(2026, 9, 11), path=path2)
+        assert [(e.kind, e.detail) for e in got] == [("cpi", "s")]
+        assert events.macro_gaps(path=path2) == ["cpi 2027", "nfp 2026", "nfp 2027"]
 
     def test_the_committed_macro_file(self, trex_calendar) -> None:
         path = REPO / "data" / "desk" / "events" / "macro-2026-2027.json"
@@ -303,11 +355,35 @@ class TestMacro:
         assert [f["date"] for f in doc["fomc"]] == FOMC_2026 + FOMC_2027
         assert all(f["sep"] == (int(f["date"][5:7]) in SEP_MONTHS) for f in doc["fomc"])
         assert doc["opex"][:12] == OPEX_2026
+        # CPI / NFP 2026 as read from two BLS pages (coordinator, 2026-09-23),
+        # by hand: (release date, reference month)
+        cpi = [
+            ("2026-01-13", "2025-12"), ("2026-02-13", "2026-01"), ("2026-03-11", "2026-02"),
+            ("2026-04-10", "2026-03"), ("2026-05-12", "2026-04"), ("2026-06-10", "2026-05"),
+            ("2026-07-14", "2026-06"), ("2026-08-12", "2026-07"), ("2026-09-11", "2026-08"),
+            ("2026-10-14", "2026-09"), ("2026-11-10", "2026-10"), ("2026-12-10", "2026-11"),
+        ]  # fmt: skip
+        nfp = [
+            ("2026-01-09", "2025-12"), ("2026-02-11", "2026-01"), ("2026-03-06", "2026-02"),
+            ("2026-04-03", "2026-03"), ("2026-05-08", "2026-04"), ("2026-06-05", "2026-05"),
+            ("2026-07-02", "2026-06"), ("2026-08-07", "2026-07"), ("2026-09-04", "2026-08"),
+            ("2026-10-02", "2026-09"), ("2026-11-06", "2026-10"), ("2026-12-04", "2026-11"),
+        ]  # fmt: skip
+        assert [(x["date"], x["period"]) for x in doc["cpi"]] == cpi
+        assert [(x["date"], x["period"]) for x in doc["nfp"]] == nfp
+        who = "claude-main 2026-09-23 (two BLS pages agree 24/24)"
         for item in doc["cpi"] + doc["nfp"]:  # hand entries carry provenance
-            assert item["source"] and item["entered_by"]
-        assert "MACRO-SEALS.md" in {p.name for p in path.parent.iterdir()}
+            assert item["entered_by"] == who and item["time_et"] == "08:30"
+            assert "www.bls.gov/schedule/2026/home.htm" in item["source"]
+        assert all("news_release/cpi.htm" in x["source"] for x in doc["cpi"])
+        assert all("news_release/empsit.htm" in x["source"] for x in doc["nfp"])
+        assert "cpi 2027: not yet published by BLS" in doc["todo"]
+        assert "nfp 2027: not yet published by BLS" in doc["todo"]
+        assert not any("2026" in t for t in doc["todo"])
         seals = (path.parent / "MACRO-SEALS.md").read_text()
         assert path.with_suffix(".sha256").read_text().split()[0] in seals
+        # append-only: the first seal row is still there
+        assert "2aef5baf0dbf1abadb8ef13b3c01c9ebc37dc43afe363204e947d785a2c6f13b" in seals
 
 
 # ------------------------------------------------------- vendor parsers
@@ -321,13 +397,31 @@ class TestVendorParsers:
             "VFS": ("unknown", "time-not-supplied"),
         }
 
-    def test_nasdaq_empty_or_null_is_empty_never_default(self) -> None:
+    def test_nasdaq_empty_day_is_empty_never_default(self) -> None:
+        # the real empty-day answer (one GET for Saturday 2026-09-26)
+        empty = (FIX / "nasdaq_earnings_2026-09-26_empty.json").read_bytes()
+        assert events.parse_nasdaq(empty) == {}
         assert events.parse_nasdaq(_nasdaq(None)) == {}
         assert events.parse_nasdaq(_nasdaq([])) == {}
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            b"<html>blocked</html>",
+            b'{"data": {"rows": "x"}, "status": {"rCode": 200}}',
+            # P2 (Codex, 51ed532): an application error or schema drift is
+            # not a successful empty calendar
+            b'{"data": null, "status": {"rCode": 500}}',
+            b'{"data": null, "status": {"rCode": 200}}',
+            b'{"data": {}, "status": {"rCode": 200}}',
+            b'{"data": {"rows": []}, "status": {"rCode": 400}}',
+            b'{"data": {"rows": []}}',
+            b'{"data": {"rows": []}, "status": null}',
+        ],
+    )
+    def test_nasdaq_errors_and_drift_raise(self, body: bytes) -> None:
         with pytest.raises(events.VendorParseError):
-            events.parse_nasdaq(b"<html>blocked</html>")
-        with pytest.raises(events.VendorParseError):
-            events.parse_nasdaq(b'{"data": {"rows": "x"}}')
+            events.parse_nasdaq(body)
 
     @pytest.mark.parametrize(
         ("raw", "want"),
@@ -341,6 +435,10 @@ class TestVendorParsers:
             ("2026-04-30T05:59:00.000Z", ("2026-04-30", "unknown")),  # EDGAR closed
             ("2026-04-30T23:10:00.000Z", ("2026-04-30", "unknown")),  # EDGAR closed
             ("2026-09-26T17:00:00.000Z", ("2026-09-26", "unknown")),  # a Saturday
+            # P2 (Codex, 51ed532): the early close (13:00 on 2026-11-27) is the close
+            ("2026-11-27T13:30:00.000Z", ("2026-11-27", "amc")),
+            ("2026-11-27T13:00:00.000Z", ("2026-11-27", "amc")),
+            ("2026-11-27T12:59:59.000Z", ("2026-11-27", "unknown")),
         ],
     )
     def test_acceptance_timing_reads_edgar_digits_as_eastern(
@@ -522,6 +620,84 @@ class TestUpdateEvents:
         assert res.edgar == "ok" and res.confirmed == 5
         assert UA not in (paper / "earnings-timing.json").read_text()
         assert UA not in res.line()
+
+    def _edgar(self, tmp_path: Path, cal, names: tuple[str, ...], **routes: bytes | int):
+        _paper(tmp_path)
+        _seal(tmp_path, cal)
+        return events.update_events(
+            get=Web(_routes(**routes)),
+            clock=lambda: SATURDAY,
+            sleep=lambda _s: None,
+            cal=cal,
+            paper=tmp_path / "paper",
+            events_dir=tmp_path / "events",
+            state=tmp_path / "state",
+            sec_ua=UA,
+            horizon=3,
+            names=names,
+        )
+
+    def test_one_stamp_outside_edgar_hours_in_a_small_batch_is_suspect(
+        self, tmp_path: Path, trex_calendar
+    ) -> None:
+        """P2 (Codex, 51ed532): 1 of 4 (25% > 10%) used to pass because the
+        rule only applied from 5 stamps on."""
+        filings = [
+            ("8-K", "2.02", "2026-07-30T16:30:00.000Z"),
+            ("8-K", "2.02", "2026-04-30T07:00:00.000Z"),
+            ("8-K", "2.02", "2026-01-29T16:05:00.000Z"),
+            ("8-K", "2.02", "2025-10-30T23:40:00.000Z"),  # outside 06:00-22:00
+        ]
+        res = self._edgar(
+            tmp_path,
+            trex_calendar,
+            ("AAPL",),
+            **{
+                "company_tickers.json": desk_sec.tickers_payload(),
+                "CIK0000320193.json": desk_sec.submissions_payload(filings),
+            },
+        )
+        assert res.edgar == "tz_suspect" and res.confirmed == 0 and res.exit_code == 1
+
+    def test_unresolved_or_skipped_coverage_is_not_ok(self, tmp_path: Path, trex_calendar) -> None:
+        """P2 (Codex, 51ed532): unresolved tickers, skipped older pages and
+        unreadable stamps only added notes; they now make edgar partial/error."""
+        aapl = {
+            "company_tickers.json": desk_sec.tickers_payload(),
+            "CIK0000320193.json": desk_sec.submissions_payload(desk_sec.AAPL_FILINGS[:1]),
+        }
+        # a tracked name SEC does not list
+        res = self._edgar(tmp_path / "a", trex_calendar, ("AAPL", "ZZZZ"), **aapl)
+        assert res.edgar == "partial" and res.exit_code == 3 and res.confirmed == 1
+        # none resolvable at all
+        res = self._edgar(
+            tmp_path / "b", trex_calendar, ("AAPL",), **{"company_tickers.json": b"{}"}
+        )
+        assert res.edgar == "error" and res.exit_code == 3
+        # more older pages than the cap
+        pages = [
+            {"name": f"CIK0000320193-submissions-{i:03d}.json", "filingTo": "2025-01-01"}
+            for i in range(1, events.SEC_MAX_PAGES + 2)
+        ]
+        many = {
+            **aapl,
+            "CIK0000320193.json": desk_sec.submissions_payload(
+                desk_sec.AAPL_FILINGS[:1], files=pages
+            ),
+            "submissions-0": desk_sec.page_payload([]),
+            "submissions-1": desk_sec.page_payload([]),
+        }
+        res = self._edgar(tmp_path / "c", trex_calendar, ("AAPL",), **many)
+        assert res.edgar == "partial"
+        # an unreadable acceptance stamp
+        bad = {
+            **aapl,
+            "CIK0000320193.json": desk_sec.submissions_payload(
+                [*desk_sec.AAPL_FILINGS[:1], ("8-K", "2.02", "2026-13-40T99:00:00Z")]
+            ),
+        }
+        res = self._edgar(tmp_path / "d", trex_calendar, ("AAPL",), **bad)
+        assert res.edgar == "partial" and res.confirmed == 1
 
     def test_confirmed_is_never_downgraded_by_an_estimate(
         self, tmp_path: Path, trex_calendar

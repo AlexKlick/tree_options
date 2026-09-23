@@ -28,11 +28,14 @@ Earnings timing (``<paper>/earnings-timing.json``, gitignored artifacts)::
   An estimate the vendor stops listing on a day it answered with rows is
   dropped; an empty answer is no evidence and drops nothing;
 * confirmed: SEC EDGAR 8-K item 2.02 filings since 2021, one per ET date
-  (the earliest), timed by ``acceptanceDateTime`` against 09:30 / 16:00 ET.
+  (the earliest), timed by ``acceptanceDateTime`` against 09:30 ET and the
+  session's actual close (16:00; 13:00 on early closes).
   EDGAR's digits are Eastern wall time despite the trailing "Z" (they
   match the filing index pages; EDGAR accepts filings 06:00-22:00 ET): a
   time outside those hours is ``unknown``, and a run where more than 10%
-  fall outside is dropped whole as ``tz_suspect``. SEC requires a contact
+  fall outside (any batch size) is dropped whole as ``tz_suspect``. A
+  tracked name without a CIK, a skipped or failed submissions page, or an
+  unreadable stamp makes the run ``partial``. SEC requires a contact
   User-Agent: it is read ONLY from ``DESK_SEC_UA``; unset, EDGAR is
   skipped (``sec_ua_missing``). A confirmed entry is never downgraded.
 
@@ -56,7 +59,12 @@ from typing import Any
 
 from tree_options.desk import paths
 from tree_options.desk.http import BROWSER_HEADERS, Get
-from tree_options.desk.sessions import Calendar, previous_session
+from tree_options.desk.sessions import (
+    Calendar,
+    ClosingCalendar,
+    equity_close,
+    previous_session,
+)
 from tree_options.desk.store import atomic_write_bytes
 from tree_options.desk.universe import PANEL_ETFS, PANEL_NAMES
 from tree_options.time.expiries import minus_calendar_days
@@ -76,6 +84,15 @@ MACRO_SEALS = "MACRO-SEALS.md"
 TIMING_FILE = "earnings-timing.json"
 SEALED_CALENDAR = "earnings-calendar.json"
 HAND_KINDS = ("cpi", "nfp")
+HAND_REQUIRED = frozenset({"date", "source", "entered_by"})
+HAND_OPTIONAL = frozenset({"period", "time_et"})  # reference month YYYY-MM; release HH:MM ET
+DEFAULT_GAP_NOTE = (
+    "operator/agent entry required (bls.gov refuses scripted requests, HTTP 403); "
+    "add {date, source, entered_by} items, then run seal-macro"
+)
+# the FOMC holds eight regularly scheduled meetings a year (2021-2027 on the
+# page: 8 each); fewer for a year the calendar covers means a cut page
+FOMC_MEETINGS_PER_YEAR = 8
 TIMINGS = frozenset({"bmo", "amc", "unknown"})
 TIMING_STATUSES = frozenset({"confirmed", "estimated"})
 
@@ -168,6 +185,9 @@ _ROW = re.compile(
 _TWO_DAY = re.compile(r"(\d{1,2})-(\d{1,2})(\*?)")
 _ONE_DAY = re.compile(r"(\d{1,2})(\*?)(?:\s*\((notation vote|unscheduled)\))?")
 _TAG = re.compile(r"<[^>]+>")
+_FOOTER = re.compile(r"<div class=\"panel-footer\">")
+_PERIOD = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
+_HHMM = re.compile(r"([01]\d|2[0-3]):[0-5]\d")
 
 
 @dataclass(frozen=True)
@@ -215,7 +235,10 @@ def _meeting(year: int, month_cell: str, date_cell: str) -> FomcMeeting:
 
 def parse_fomc(html: str) -> list[FomcMeeting]:
     """Every meeting on the Fed's calendar page, all year panels. Raises
-    rather than return a partial or empty list."""
+    rather than return a partial or empty list: each year panel must be
+    whole, i.e. end in its footer (every panel on the live page does, 7/7
+    on 2026-09-23) with every month cell paired to a readable date cell. A
+    page cut mid-panel therefore never parses."""
     heads = list(_PANEL.finditer(html))
     if not heads:
         raise FomcParseError("no FOMC year panels on the page")
@@ -223,8 +246,12 @@ def parse_fomc(html: str) -> list[FomcMeeting]:
     for k, head in enumerate(heads):
         year = int(head.group(1))
         seg = html[head.end() : heads[k + 1].start() if k + 1 < len(heads) else len(html)]
-        rows = _ROW.findall(seg)
-        if not rows or len(rows) != seg.count("fomc-meeting__month"):
+        footer = _FOOTER.search(seg)
+        if footer is None:
+            raise FomcParseError(f"{year}: panel has no footer (a truncated page)")
+        body = seg[: footer.start()]
+        rows = _ROW.findall(body)
+        if not rows or len(rows) != body.count("fomc-meeting__month"):
             raise FomcParseError(f"{year}: {len(rows)} readable meeting rows")
         out.extend(_meeting(year, _text(m), _text(d)) for m, d in rows)
     return sorted(out, key=lambda m: (m.end, m.kind))
@@ -287,8 +314,11 @@ def _check_items(kind: str, items: Any, lo: str, hi: str) -> list[dict[str, str]
         raise EventsError(f"{kind}: not a list")
     out = []
     for item in items:
-        if not isinstance(item, dict) or set(item) != {"date", "source", "entered_by"}:
-            raise EventsError(f"{kind}: items are exactly {{date, source, entered_by}}")
+        keys = set(item) if isinstance(item, dict) else set()
+        if not HAND_REQUIRED <= keys or keys - HAND_REQUIRED - HAND_OPTIONAL:
+            raise EventsError(
+                f"{kind}: items are {{date, source, entered_by}} (+ optional period, time_et)"
+            )
         try:
             d = date.fromisoformat(item["date"]).isoformat()
         except (TypeError, ValueError):
@@ -298,8 +328,21 @@ def _check_items(kind: str, items: Any, lo: str, hi: str) -> list[dict[str, str]
         for key in ("source", "entered_by"):
             if not isinstance(item[key], str) or not item[key].strip():
                 raise EventsError(f"{kind} {d}: {key} is required (provenance)")
+        for key, pattern in (("period", _PERIOD), ("time_et", _HHMM)):
+            if key in item and not (isinstance(item[key], str) and pattern.fullmatch(item[key])):
+                raise EventsError(f"{kind} {d}: bad {key} {item[key]!r}")
         out.append(dict(item))
     return sorted(out, key=lambda x: x["date"])
+
+
+def _hand_gaps(hand: Mapping[str, list[dict[str, str]]], start: date, end: date) -> list[str]:
+    """``"<kind> <year>"`` for every year of the range with no entered item."""
+    return [
+        f"{kind} {year}"
+        for kind in HAND_KINDS
+        for year in range(start.year, end.year + 1)
+        if not any(x["date"].startswith(f"{year}-") for x in hand[kind])
+    ]
 
 
 def build_macro(
@@ -311,17 +354,25 @@ def build_macro(
     fetched_on: date,
     cpi: Sequence[Mapping[str, str]] = (),
     nfp: Sequence[Mapping[str, str]] = (),
+    gap_note: str = DEFAULT_GAP_NOTE,
 ) -> dict[str, Any]:
-    """The macro document for ``[start, end]``. FOMC from the parsed page
-    (every year in range must have a scheduled meeting, else refuse),
-    CPI/NFP only as handed in (validated), OpEx/VIX computed."""
+    """The macro document for ``[start, end]``. FOMC from the parsed page:
+    every year the range touches must show all FOMC_MEETINGS_PER_YEAR
+    scheduled meetings on the page (a partial-year range still needs its
+    whole year's panel), else refuse. CPI/NFP only as handed in
+    (validated); each year without items becomes a ``todo`` line worded
+    by ``gap_note``. OpEx/VIX computed."""
     if end < start:
         raise EventsError("empty range")
     lo, hi = start.isoformat(), end.isoformat()
-    fomc = [m for m in meetings if start <= m.end <= end]
     for year in range(start.year, end.year + 1):
-        if not any(m.end.year == year and m.kind == "scheduled" for m in fomc):
-            raise EventsError(f"no scheduled FOMC meeting for {year}: refusing a partial calendar")
+        n = sum(1 for m in meetings if m.end.year == year and m.kind == "scheduled")
+        if n < FOMC_MEETINGS_PER_YEAR:
+            raise EventsError(
+                f"{n} scheduled FOMC meetings for {year} (< {FOMC_MEETINGS_PER_YEAR}): "
+                "refusing a partial calendar"
+            )
+    fomc = [m for m in meetings if start <= m.end <= end]
     hand = {
         "cpi": _check_items("cpi", [dict(x) for x in cpi], lo, hi),
         "nfp": _check_items("nfp", [dict(x) for x in nfp], lo, hi),
@@ -351,12 +402,7 @@ def build_macro(
                 "(time.expiries.minus_calendar_days), else the session before"
             ),
         },
-        "todo": [
-            f"{k}: operator/agent entry required (bls.gov refuses scripted requests, "
-            "HTTP 403); add {date, source, entered_by} items, then run seal-macro"
-            for k in HAND_KINDS
-            if not hand[k]
-        ],
+        "todo": [f"{gap}: {gap_note}" for gap in _hand_gaps(hand, start, end)],
     }
 
 
@@ -452,9 +498,13 @@ def macro_events(start: date, end: date, *, path: Path | None = None) -> list[Ma
 
 
 def macro_gaps(*, path: Path | None = None) -> list[str]:
-    """Hand-entered kinds that are still empty (declared gaps)."""
+    """``"<kind> <year>"`` for each hand-entered kind and sealed year with no
+    items (declared gaps: a window there has no CPI/NFP information)."""
     doc = load_macro(path or paths.events_dir() / MACRO_FILE)
-    return [k for k in HAND_KINDS if not doc[k]]
+    lo, hi = doc["range"]["from"], doc["range"]["to"]
+    return _hand_gaps(
+        {k: doc[k] for k in HAND_KINDS}, date.fromisoformat(lo), date.fromisoformat(hi)
+    )
 
 
 # -------------------------------------------------------- vendor parsers
@@ -467,18 +517,25 @@ NASDAQ_TIMING = {
 
 
 def parse_nasdaq(raw: bytes) -> dict[str, tuple[str, str]]:
-    """symbol -> (timing, vendor code) for one calendar day. A null or empty
-    ``rows`` is an empty answer (never a default); a wrong shape raises."""
+    """symbol -> (timing, vendor code) for one calendar day. Only an
+    explicitly successful answer counts: ``status.rCode`` 200 and a ``data``
+    object carrying ``rows``. ``rows: null`` (the real empty-day shape, e.g.
+    Saturday 2026-09-26) or ``[]`` is an empty answer, never a default; an
+    application error, a null ``data`` or a missing ``rows`` raises."""
     try:
         doc = json.loads(raw)
     except (ValueError, UnicodeDecodeError) as exc:
         raise VendorParseError("nasdaq: body is not JSON") from exc
-    if not isinstance(doc, dict) or "data" not in doc:
-        raise VendorParseError("nasdaq: no data key")
-    data = doc["data"]
-    if data is None:
-        return {}
-    rows = data.get("rows") if isinstance(data, dict) else "bad"
+    if not isinstance(doc, dict):
+        raise VendorParseError("nasdaq: not an object")
+    status = doc.get("status")
+    rcode = status.get("rCode") if isinstance(status, dict) else None
+    if rcode != 200:
+        raise VendorParseError(f"nasdaq: application status rCode={rcode!r}")
+    data = doc.get("data")
+    if not isinstance(data, dict) or "rows" not in data:
+        raise VendorParseError("nasdaq: no data.rows in a successful answer")
+    rows = data["rows"]
     if rows is None:
         return {}
     if not isinstance(rows, list):
@@ -573,9 +630,10 @@ def parse_company_tickers(raw: bytes, names: Iterable[str]) -> dict[str, str]:
     return out
 
 
-def acceptance_timing(raw: str, cal: Calendar) -> tuple[date, str, str]:
+def acceptance_timing(raw: str, cal: ClosingCalendar) -> tuple[date, str, str]:
     """(ET date, bmo|amc|unknown, note) from EDGAR's acceptanceDateTime.
-    The digits are read as Eastern wall time (see the module docstring)."""
+    The digits are read as Eastern wall time (see the module docstring).
+    amc is at or after the session's ACTUAL close (13:00 on early closes)."""
     m = _ACCEPTED.fullmatch(raw)
     if not m:
         raise VendorParseError(f"sec: unreadable acceptanceDateTime {raw!r}")
@@ -591,7 +649,7 @@ def acceptance_timing(raw: str, cal: Calendar) -> tuple[date, str, str]:
         return day, "unknown", "not a session"
     if t < time(9, 30):
         return day, "bmo", ""
-    if t >= time(16, 0):
+    if wall >= equity_close(day, cal):
         return day, "amc", ""
     return day, "unknown", "during the session"
 
@@ -841,8 +899,12 @@ def _nasdaq(
 
 
 def _edgar(
-    get: Get, sleep: Sleep, names: Sequence[str], ua: str, cal: Calendar, notes: list[str]
+    get: Get, sleep: Sleep, names: Sequence[str], ua: str, cal: ClosingCalendar, notes: list[str]
 ) -> tuple[str, dict[str, dict[str, tuple[str, str]]]]:
+    """(ok | partial | error | tz_suspect, confirmed). Every required input
+    counts: a tracked name without a CIK, a submissions page not fetched
+    (failed or past SEC_MAX_PAGES) and an unreadable acceptance stamp each
+    make the run ``partial``; no resolvable name at all is ``error``."""
     headers = {"User-Agent": ua}
     body, why = _fetch(get, SEC_TICKERS_URL, headers)
     try:
@@ -852,11 +914,14 @@ def _edgar(
     if ciks is None:
         notes.append(f"sec tickers: {why}")
         return "error", {}
+    if not ciks:
+        notes.append(f"sec: none of {len(names)} tracked names has a CIK")
+        return "error", {}
     missing = [n for n in names if n not in ciks]
+    failed = len(missing)
     if missing:
         notes.append(f"sec: no CIK for {','.join(missing)}")
     confirmed: dict[str, dict[str, tuple[str, str]]] = {}
-    failed = 0
     stamps: list[str] = []
     for name, cik in sorted(ciks.items()):
         sleep(SEC_PACE_S)
@@ -870,6 +935,7 @@ def _edgar(
             notes.append(f"sec {name}: {why}")
             continue
         if len(pages) > SEC_MAX_PAGES:
+            failed += 1  # history since EDGAR_FROM is not whole for this name
             notes.append(f"sec {name}: {len(pages) - SEC_MAX_PAGES} older pages skipped")
         for page in pages[:SEC_MAX_PAGES]:
             sleep(SEC_PACE_S)
@@ -886,6 +952,7 @@ def _edgar(
             try:
                 day, timing, note = acceptance_timing(f.accepted, cal)
             except VendorParseError as exc:
+                failed += 1
                 notes.append(f"sec {name}: {exc}")
                 continue
             stamps.append(note)
@@ -896,7 +963,7 @@ def _edgar(
         if per_day:
             confirmed[name] = per_day
     outside = sum(1 for s in stamps if s.startswith("outside"))
-    if len(stamps) >= 5 and outside / len(stamps) > TZ_SUSPECT_SHARE:
+    if stamps and outside / len(stamps) > TZ_SUSPECT_SHARE:  # any batch size
         notes.append(f"sec: {outside}/{len(stamps)} acceptance times outside EDGAR hours")
         return "tz_suspect", {}
     return ("ok" if failed == 0 else "partial"), confirmed
@@ -956,7 +1023,7 @@ def update_events(
     get: Get,
     clock: Clock,
     sleep: Sleep,
-    cal: Calendar,
+    cal: ClosingCalendar,
     paper: Path,
     events_dir: Path,
     state: Path,

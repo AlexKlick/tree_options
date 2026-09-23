@@ -7,7 +7,7 @@ idempotent. None places orders or seals cards.
 |---|---|---|
 | `desk-chain` | Mon-Fri 17:45, 20:45, 23:45; Mon-Sat 06:30 and 12:30 (catch-up) | records the CBOE delayed chain (calls + puts) for the 35 optionable panel names |
 | `desk-eod-equity` | Mon-Fri 16:40, 20:40; Tue-Sat 08:40 | extends the research panel (`fetch_ohlc.py`), computes XSMOM-TOP3 + PEAD beats, writes draft cards, pushes ntfy when a rule fires |
-| `desk-indices` | Mon-Fri 19:00 | CBOE index histories (VIX VIX9D VIX1D VIX3M VIX6M VIX1Y VVIX SKEW VXN RVX GVZ VXAPL VXAZN VXGOG) + FRED DTB3 |
+| `desk-indices` | Tue-Sat 06:40 | CBOE index histories (VIX VIX9D VIX1D VIX3M VIX6M VIX1Y VVIX SKEW VXN RVX GVZ VXAPL VXAZN VXGOG) + FRED DTB3 |
 | `desk-events` | Sat 10:00 | earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 with `DESK_SEC_UA`) + the sealed macro calendar's Fed-page check |
 
 All run `python -m tree_options.desk <command>` from the main checkout's
@@ -135,12 +135,18 @@ and `https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTB3`.
   day: close only, open/high/low empty. DTB3 keeps FRED's no-rate days as
   an empty close (e.g. 2026-09-07), never filled.
 - `<X>.<D>.bak` (`-2`, `-3`, ... on the same day): the prior file, kept
-  whenever a vendor **revision** (a changed or dropped past row) replaces
-  it; `changes.jsonl` logs every such row (`old`, `new`, `backup`).
-- `provenance.jsonl`: one line per source per run (`fetched_at`, `sha256`,
-  `rows`, `last_date`, `status`, `lagging`).
-- A payload that ends before the stored history, or drops more than 3
-  stored rows, is `invalid` and the store is kept (truncated body).
+  whenever a vendor **revision** (a changed past value) replaces it;
+  `changes.jsonl` logs every such row (`old`, `new`, `backup`).
+- `provenance.jsonl`: one line per fetched source per run (`fetched_at`,
+  `sha256`, `rows`, `last_date`, `status`, `lagging`).
+- Refused (`invalid`, exit 1, the stored file kept whole): a payload that
+  drops ANY stored date or ends before the stored history (a truncated
+  body), and one with a row dated after the fetch's ET date. To accept an
+  intentional vendor deletion, move the stored `<X>.csv` aside; the next
+  run records the history as `new`.
+- A body shorter than its `Content-Length` is refused before parsing
+  (`IncompleteBody`, a transport `error`): a cut connection never becomes
+  a "revision".
 - Every request is time-bounded (30 s) and isolated per source. A source
   a run could not refresh gets a `gaps.jsonl` line (`at`, `source`,
   `status`, `detail`). A transport failure (timeout, 5xx) is a soft
@@ -150,9 +156,11 @@ and `https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTB3`.
   fetched with a plain tool User-Agent plus `Accept: */*`.
 - Lag: CBOE sources must carry the latest completed session, DTB3 may
   trail it by one (FRED publishes a day late). CBOE rewrote its files at
-  ~21:50 ET for 09-22, so the 19:00 slot usually exits 3 (`lagging`) and
-  stores through the prior session; the next evening catches up. Add a
-  morning slot to the timer if same-night freshness ever matters.
+  ~21:50 ET for 09-22, so the timer runs at 06:40 ET, Tue-Sat (an evening
+  slot only ever saw the prior session). A source already stored through
+  the latest completed NYSE session (within its lag) is `current` and not
+  fetched, so the morning after an exchange holiday makes no request;
+  `--force` fetches anyway.
 
 ## Events (`update-events`, weekly; `seal-macro`, operator)
 
@@ -161,16 +169,26 @@ Macro calendar: `data/desk/events/macro-2026-2027.json` (tracked) +
 overrides). `events.load_macro` refuses a file whose hash does not match.
 
 - FOMC: parsed from the Fed's calendar page (16 meetings 2026-2027, `sep`
-  flags the projection meetings). `update-events` re-reads the page every
-  Saturday; a difference writes `~/.local/state/trex-desk/events/macro-drift.json`
-  and exits 1 (review, then reseal).
-- CPI, NFP: **empty; operator/agent entry required** (bls.gov answers
-  scripts with 403; nothing is entered from memory). Add
-  `{"date", "source", "entered_by"}` items to the arrays by hand, then
-  reseal in a worktree and commit:
+  flags the projection meetings). A year panel without its footer (a cut
+  page) does not parse, and every year the range touches must show all 8
+  scheduled meetings, so a truncated page can never be sealed.
+  `update-events` re-reads the page every Saturday; a difference writes
+  `~/.local/state/trex-desk/events/macro-drift.json` and exits 1 (review,
+  then reseal).
+- CPI, NFP 2026: 12 + 12 release dates (08:30 ET, with reference month),
+  hand-entered 2026-09-23 from bls.gov (`schedule/news_release/cpi.htm`,
+  `empsit.htm` and `schedule/2026/home.htm`: 24/24 agree; bls.gov answers
+  scripts with 403, so these are read by a person/agent, never fetched).
+  2027: **not yet published by BLS**; the file's `todo` says so and
+  `events.macro_gaps()` returns `cpi 2027`, `nfp 2027`. To add them: put
+  `{"date", "source", "entered_by"}` items (optional `period` YYYY-MM,
+  `time_et` HH:MM) into the arrays by hand, then reseal in a worktree and
+  commit:
   `python -m tree_options.desk seal-macro --from 2026-01-01 --to 2027-12-31`
   (fetches the Fed page; `--fomc-html FILE --fetched-on D` uses a saved
-  copy). Hand items are carried; a new MACRO-SEALS.md row is appended.
+  copy; `--gap-note TEXT` words the todo for years still missing). Hand
+  items are carried; a new MACRO-SEALS.md row is appended. NFP 2026-04-03
+  is Good Friday: a release on an exchange holiday.
 - OpEx (third Friday, else the session before; 2026-06-18 for Juneteenth)
   and VIX expiry (30 days before the next month's OpEx; 2026-05-19) are
   computed on the trex NYSE calendar.
@@ -182,17 +200,23 @@ written.
 
 - `estimated`: Nasdaq's calendar for the next 65 sessions
   (`time-pre-market` bmo, `time-after-hours` amc, `time-not-supplied`
-  unknown). An estimate the vendor stops listing on a day it answered with
-  rows is dropped; an empty answer drops nothing. Estimated dates only
-  ever BLOCK a trade (`upcoming_earnings(...).blocker_only`), never
-  trigger PEAD.
+  unknown). A day counts as answered only with `status.rCode` 200 and a
+  `data.rows` field (`null` is the real empty day); an application error
+  or schema drift is a failed day. An estimate the vendor stops listing on
+  a day it answered with rows is dropped; an empty answer drops nothing.
+  Estimated dates only ever BLOCK a trade
+  (`upcoming_earnings(...).blocker_only`), never trigger PEAD.
 - `confirmed`: EDGAR 8-K item 2.02 since 2021, timed by
   `acceptanceDateTime` (EDGAR's digits are Eastern despite the "Z"):
-  before 09:30 bmo, from 16:00 amc, else unknown. Needs `DESK_SEC_UA`
+  before 09:30 bmo, from the session's actual close (16:00, 13:00 on an
+  early close) amc, else unknown. Needs `DESK_SEC_UA`
   (`~/.config/trex/desk-sec.env`); unset, EDGAR is skipped and the line
   says `sec_ua_missing`. A run where > 10% of acceptance times fall outside
-  EDGAR's 06:00-22:00 ET hours is dropped whole (`edgar=tz_suspect`,
-  exit 1). A confirmed entry is never downgraded to an estimate.
+  EDGAR's 06:00-22:00 ET hours (any batch size) is dropped whole
+  (`edgar=tz_suspect`, exit 1). A tracked name without a CIK, a skipped or
+  failed submissions page, or an unreadable stamp makes the run `partial`
+  (exit 3); no resolvable name at all is `error`. A confirmed entry is
+  never downgraded to an estimate.
 - Readers: `events.upcoming_earnings(name, from, to)`,
   `events.macro_events(from, to)` (raises outside the sealed range),
   `events.etf_holding_reports(etf, from, to)` (SMH SOXX XLE XLV XLF QQQ;
@@ -209,9 +233,9 @@ written.
 
 | code | record-indices | update-events |
 |---|---|---|
-| 0 | every source stored and current | all fetched, macro seal and Fed page agree (`sec_ua_missing` alone is 0) |
-| 3 | a vendor lags the latest session, or a transport `error` (timeout/5xx) left a soft gap; or the lock is held | some Nasdaq days / EDGAR names failed, or the Fed page was unreachable |
-| 1 | a vendor file is gone (404, `missing`) or bad/shrunk (`invalid`), or nothing was stored | macro drift, broken seal, unreadable Fed page, `tz_suspect`, no Nasdaq day answered, timing file unwritable |
+| 0 | every source stored and current (incl. skipped as `current`) | all fetched, macro seal and Fed page agree (`sec_ua_missing` alone is 0) |
+| 3 | a vendor lags the latest session, or a transport `error` (timeout/5xx/short body) left a soft gap, even for every source; or the lock is held | some Nasdaq days failed, EDGAR `partial`/`error`, or the Fed page was unreachable |
+| 1 | a vendor file is gone (404, `missing`) or bad/shrunk/future-dated (`invalid`), or an empty invocation | macro drift, broken seal, unreadable Fed page, `tz_suspect`, no Nasdaq day answered, timing file unwritable |
 | 2 | bad `--sources` | bad `--horizon` |
 
 Units set `SuccessExitStatus=3`, so a retryable run is not a failed unit.

@@ -266,15 +266,39 @@ class TestRecord:
         assert "14.880000" in (root / "VIX.2026-09-23-2.bak").read_text()
         assert indices.exit_code(s) == 0
 
-    def test_a_dropped_past_row_is_a_logged_revision(self, tmp_path: Path, static_calendar) -> None:
+    def test_any_dropped_past_row_is_refused(self, tmp_path: Path, static_calendar) -> None:
+        """P2 (Codex, 51ed532): one vanished stored date (newest row intact)
+        used to replace the good CSV as a "revision"; an unexplained drop
+        is now refused and the stored history kept whole."""
         _run(tmp_path, {"VIX": VIX}, static_calendar)
+        root = tmp_path / "store" / "indices"
+        prior = (root / "VIX.csv").read_bytes()
         dropped = VIX.replace(b"09/17/2026,16.030000,16.290000,15.380000,15.440000\n", b"")
         s = _run(tmp_path, {"VIX": dropped}, static_calendar)
-        assert s.results["VIX"].status == "revised"
+        r = s.results["VIX"]
+        assert r.status == "invalid" and "2026-09-17" in r.detail
+        assert (root / "VIX.csv").read_bytes() == prior
+        assert not list(root.glob("*.bak")) and not (root / "changes.jsonl").exists()
+        assert indices.exit_code(s) == 1
+
+    def test_a_future_dated_row_is_refused(self, tmp_path: Path, static_calendar) -> None:
+        """P2 (Codex, 51ed532): a row dated after the fetch's ET date would
+        read as current and make every later correct history "shrunk"."""
+        _run(tmp_path, {"VIX": VIX}, static_calendar)
         root = tmp_path / "store" / "indices"
-        (change,) = [json.loads(x) for x in (root / "changes.jsonl").read_text().splitlines()]
-        assert change["date"] == "2026-09-17" and change["new"] is None
-        assert (root / "VIX.2026-09-23.bak").exists()
+        prior = (root / "VIX.csv").read_bytes()
+        future = VIX + b"09/24/2027,14.300000,14.900000,14.100000,14.500000\n"
+        s = _run(tmp_path, {"VIX": future}, static_calendar)  # fetched 2026-09-23 ET
+        r = s.results["VIX"]
+        assert r.status == "invalid" and "2027-09-24" in r.detail and "future" in r.detail
+        assert (root / "VIX.csv").read_bytes() == prior
+        # the fetch day itself is not the future (a same-day row is allowed)
+        today = VIX + b"09/23/2026,14.300000,14.900000,14.100000,14.500000\n"
+        assert _run(tmp_path, {"VIX": today}, static_calendar).results["VIX"].status == "updated"
+        # nor may a first fetch plant one
+        s = _run(tmp_path, {"VVIX": VVIX + b"01/04/2027,90.000000\n"}, static_calendar)
+        assert s.results["VVIX"].status == "invalid"
+        assert not (root / "VVIX.csv").exists()
 
     def test_a_shrunk_history_is_refused_and_the_store_kept(
         self, tmp_path: Path, static_calendar
@@ -288,7 +312,7 @@ class TestRecord:
         assert (root / "VIX.csv").read_bytes() == prior
         assert not list(root.glob("*.bak"))
         assert indices.exit_code(s) == 1
-        # more than MAX_DROPPED past rows vanishing is refused too
+        # many past rows vanishing is refused too
         lines = VIX.split(b"\n")
         head_and_tail = b"\n".join([lines[0], lines[-2]]) + b"\n"
         s = _run(tmp_path, {"VIX": head_and_tail}, static_calendar)
@@ -405,8 +429,51 @@ class TestRecord:
         assert indices.exit_code(summary(("error", False), ("missing", False))) == 1
         assert indices.exit_code(summary(("missing", False))) == 1
         assert indices.exit_code(summary(("invalid", False))) == 1
-        assert indices.exit_code(summary(("error", False), ("error", False))) == 1  # nothing stored
-        assert indices.exit_code(summary()) == 1
+        # P2 (Codex, 51ed532): hard failures first, then an all-transient run is 3
+        assert indices.exit_code(summary(("error", False), ("error", False))) == 3
+        assert indices.exit_code(summary(("error", False))) == 3
+        assert indices.exit_code(summary(("error", False), ("invalid", False))) == 1
+        assert indices.exit_code(summary(("current", False), ("current", False))) == 0
+        assert indices.exit_code(summary()) == 1  # an empty invocation
+
+    def test_a_lone_timeout_is_soft(self, tmp_path: Path, static_calendar) -> None:
+        # `record-indices --sources DTB3` timing out: a gap line, exit 3
+        s = _run(tmp_path, {"DTB3": TimeoutError("timed out")}, static_calendar)
+        assert s.results["DTB3"].status == "error" and indices.exit_code(s) == 3
+        assert (tmp_path / "store/indices/gaps.jsonl").exists()
+
+    def test_current_sources_are_skipped_without_a_request(
+        self, tmp_path: Path, static_calendar
+    ) -> None:
+        """The timer's morning slot on a day after a holiday (or a rerun):
+        nothing new can exist, so no request is made."""
+        _run(tmp_path, {"VIX": VIX, "DTB3": DTB3}, static_calendar)
+        calls: list[tuple[str, dict]] = []
+        s = indices.record_indices(
+            _src("VIX", "DTB3"),
+            root=tmp_path / "store",
+            get=_get({"VIX": VIX, "DTB3": DTB3}, calls),
+            clock=lambda: MORNING,
+            sleep=lambda _s: None,
+            cal=static_calendar,
+            skip_current=True,
+        )
+        assert calls == []
+        assert {k: r.status for k, r in s.results.items()} == {"VIX": "current", "DTB3": "current"}
+        assert indices.exit_code(s) == 0
+        # a session later, VIX is stale (fetched) while DTB3 (lag 1) still is current
+        s = indices.record_indices(
+            _src("VIX", "DTB3"),
+            root=tmp_path / "store",
+            get=_get({"VIX": VIX, "DTB3": DTB3}, calls),
+            clock=lambda: datetime(2026, 9, 24, 7, 0, tzinfo=ET),
+            sleep=lambda _s: None,
+            cal=static_calendar,
+            skip_current=True,
+        )
+        assert [_key(u) for u, _h in calls] == ["VIX"]
+        assert s.results["VIX"].status == "unchanged" and s.results["VIX"].lagging
+        assert s.results["DTB3"].status == "current"
 
 
 # ---------------------------------------------------------------------- CLI
@@ -434,6 +501,19 @@ class TestRecordIndicesCli:
         assert run_cli(["record-indices", "--sources", "VIX"], now=EVENING, **kw) == 3
         assert run_cli(["record-indices", "--sources", "VIX,NOPE"], now=MORNING, **kw) == 2
         assert run_cli(["record-indices", "--sources", ""], now=MORNING, **kw) == 2
+
+    def test_cli_skips_current_sources_unless_forced(
+        self, tmp_path: Path, static_calendar, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        calls: list[tuple[str, dict]] = []
+        kw = {"sleep": lambda _s: None, "cal": static_calendar, "now": MORNING}
+        get = _get({"VIX": VIX}, calls)
+        assert run_cli(["record-indices", "--sources", "VIX"], get=get, **kw) == 0
+        assert len(calls) == 1
+        assert run_cli(["record-indices", "--sources", "VIX"], get=get, **kw) == 0
+        assert len(calls) == 1 and "current=1" in capsys.readouterr().out
+        assert run_cli(["record-indices", "--sources", "VIX", "--force"], get=get, **kw) == 0
+        assert len(calls) == 2
 
     def test_dry_run_cli_writes_nothing(self, tmp_path: Path, static_calendar) -> None:
         rc = run_cli(

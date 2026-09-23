@@ -3,7 +3,92 @@
   "opex": "third Friday (time.monthlies.is_monthly_expiry), else the session before",
   "vix_expiry": "30 calendar days before the next month's opex date (time.expiries.minus_calendar_days), else the session before"
  },
- "cpi": [],
+ "cpi": [
+  {
+   "date": "2026-01-13",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2025-12",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-02-13",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-01",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-03-11",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-02",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-04-10",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-03",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-05-12",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-04",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-06-10",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-05",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-07-14",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-06",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-08-12",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-07",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-09-11",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-08",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-10-14",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-09",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-11-10",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-10",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-12-10",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-11",
+   "source": "https://www.bls.gov/schedule/news_release/cpi.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  }
+ ],
  "fomc": [
   {
    "date": "2026-01-28",
@@ -107,7 +192,92 @@
   "parser": "tree_options.desk.events.parse_fomc",
   "url": "https://www.federalreserve.gov/monetarypolicy/fomccalendars.htm"
  },
- "nfp": [],
+ "nfp": [
+  {
+   "date": "2026-01-09",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2025-12",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-02-11",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-01",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-03-06",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-02",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-04-03",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-03",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-05-08",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-04",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-06-05",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-05",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-07-02",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-06",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-08-07",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-07",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-09-04",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-08",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-10-02",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-09",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-11-06",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-10",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  },
+  {
+   "date": "2026-12-04",
+   "entered_by": "claude-main 2026-09-23 (two BLS pages agree 24/24)",
+   "period": "2026-11",
+   "source": "https://www.bls.gov/schedule/news_release/empsit.htm; https://www.bls.gov/schedule/2026/home.htm",
+   "time_et": "08:30"
+  }
+ ],
  "opex": [
   "2026-01-16",
   "2026-02-20",
@@ -140,8 +310,8 @@
  },
  "schema": "desk-macro/1",
  "todo": [
-  "cpi: operator/agent entry required (bls.gov refuses scripted requests, HTTP 403); add {date, source, entered_by} items, then run seal-macro",
-  "nfp: operator/agent entry required (bls.gov refuses scripted requests, HTTP 403); add {date, source, entered_by} items, then run seal-macro"
+  "cpi 2027: not yet published by BLS",
+  "nfp 2027: not yet published by BLS"
  ],
  "vix_expiry": [
   "2026-01-21",

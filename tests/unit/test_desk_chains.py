@@ -221,6 +221,17 @@ class TestValidate:
             assert self._v(sym, timestamp="2026-09-22 20:14:59").status == "stale", sym
             assert self._v(sym, timestamp="2026-09-22 20:15:00").status == "ok", sym
 
+    def test_an_unclassified_symbol_gets_the_late_cutoff(self) -> None:
+        """P1 (Codex, 51ed532): a 16:15 class missing from the late list,
+        stamped 16:02 with the underlying at 15:59:59 and no option print
+        after 16:00, must not publish: only an explicit regular-close
+        classification earns the 16:00 cutoff."""
+        kw = {"timestamp": "2026-09-22 20:02:00"}  # 16:02 EDT
+        v = self._v("ZZZ", **kw)
+        assert v.status == "stale" and "16:15" in v.detail
+        assert self._v("ZZZ", timestamp="2026-09-22 20:15:00").status == "ok"
+        assert self._v("KO", **kw).status == "ok"  # classified regular close
+
     def test_the_live_xlv_snapshot_stays_refused(self) -> None:
         """The XLV payload CBOE still served on 2026-09-23 16:55 ET: stamped
         16:01:18 ET, underlying last trade 15:46:14, newest option trade
@@ -679,6 +690,19 @@ class TestSessionsAndUniverse:
             {"SPY", "QQQ", "IWM", "SMH", "SOXX", "XLE", "XLF", "XLV", "GLD"}
         )
         assert universe.LATE_CLOSE_OPTIONS <= set(universe.CHAIN_UNIVERSE)
+
+    def test_regular_close_classes_are_explicit(self) -> None:
+        # the chain universe's single stocks, by hand; the two sets partition it
+        assert universe.REGULAR_CLOSE_OPTIONS == frozenset(
+            (
+                "AAPL MSFT NVDA GOOGL AMZN META TSLA AVGO LLY JPM V UNH XOM PG MA COST HD "
+                "ADBE NFLX CRM AMD PEP KO DIS INTC QCOM"
+            ).split()
+        )
+        assert not universe.REGULAR_CLOSE_OPTIONS & universe.LATE_CLOSE_OPTIONS
+        assert universe.REGULAR_CLOSE_OPTIONS | universe.LATE_CLOSE_OPTIONS == set(
+            universe.CHAIN_UNIVERSE
+        )
 
     def test_universe(self) -> None:
         assert len(universe.PANEL_NAMES) == 37 == len(set(universe.PANEL_NAMES))

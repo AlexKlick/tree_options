@@ -2,12 +2,15 @@
 Description=Record the desk index histories (CBOE indices + FRED DTB3)
 
 [Timer]
-# 19:00 ET after each session (the plan's slot). CBOE's index CSVs were
-# last modified at 21:51 ET for the 2026-09-22 row, so this slot usually
-# stores the history through the prior session and exits 3 (lagging); the
-# next evening's run catches up. Every run is idempotent: identical
-# content is never rewritten, a vendor revision keeps a .bak.
-OnCalendar=Mon..Fri *-*-* 19:00:00 America/New_York
+# 06:40 ET, Tuesday to Saturday: the morning after each session. CBOE
+# rewrote its index CSVs at ~21:50 ET for the 2026-09-22 row, so an evening
+# slot (the plan's 19:00) only ever saw the prior session and exited 3;
+# FRED's newest DTB3 row (the session before, published ~16:15 ET the next
+# day) is the same at 06:40 as it was at 19:00. The job targets the latest
+# completed NYSE session and skips every source already stored through it
+# without a request, so the morning after an exchange holiday is a no-op
+# (exit 0). Idempotent: identical content is never rewritten.
+OnCalendar=Tue..Sat *-*-* 06:40:00 America/New_York
 Persistent=true
 AccuracySec=1min
 

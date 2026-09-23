@@ -18,10 +18,11 @@ numbers, OCC symbols strings.
 Session validation (all must hold, else nothing is written): the
 underlying's last trade is dated D; no option row traded after D; the
 modal option last-trade date is D; ``source_as_of`` is at or after the
-symbol's options close on D (16:15 ET for a late-close class, see
-``universe.LATE_CLOSE_OPTIONS``, or any symbol whose options printed after
-the equity close; else the equity close itself; early-close sessions use
-the calendar's close, 13:00 / 13:15); and the underlying last traded within
+symbol's options close on D (the equity close only for a class listed in
+``universe.REGULAR_CLOSE_OPTIONS`` whose options printed nothing after
+it; 16:15 ET for everything else, listed late-close or unclassified;
+early-close sessions use the calendar's close, 13:00 / 13:15); and the
+underlying last traded within
 5 minutes of the equity close (a snapshot stamped after the close can
 still hold intraday content). An older payload is ``stale`` (not
 published yet: retry), a
@@ -61,7 +62,7 @@ from tree_options.desk.sessions import (
     options_close,
     sessions_after,
 )
-from tree_options.desk.universe import LATE_CLOSE_OPTIONS
+from tree_options.desk.universe import REGULAR_CLOSE_OPTIONS
 from tree_options.time.sessions import shift_instant
 from tree_options.trex.clock import ET
 from tree_options.trex.discovery.market import Transport
@@ -236,9 +237,11 @@ def _completeness(parsed: ParsedChain) -> str:
 
 
 def _late_close(parsed: ParsedChain, close: datetime) -> bool:
-    """A late-close class by list, or by evidence: an option printed after
-    the equity close (the list may lag the exchanges)."""
-    if parsed.underlying in LATE_CLOSE_OPTIONS:
+    """Only an explicitly regular-close class, with no option printed after
+    the equity close, gets the equity-close cutoff. Everything else (the
+    late list, any unclassified symbol, a listed name whose options printed
+    late) waits for the late close: absent late prints prove nothing."""
+    if parsed.underlying not in REGULAR_CLOSE_OPTIONS:
         return True
     return any(t and datetime.fromisoformat(t) > close for t in parsed.columns["last_time"])
 

@@ -9,8 +9,8 @@ files exist, HTTP 206)::
         six-decimal values), except VVIX, SKEW and GVZ, which serve
         "DATE,<X>" (one value per day). Last-Modified 2026-09-23 01:51 UTC
         (21:51 ET) carried the 09-22 row (VIX3M: 22:01 UTC): the files
-        update in the evening, so a 19:00 ET run usually sees the prior
-        session (``lagging``, exit 3) and the morning slot catches up.
+        update late in the evening, so the timer runs the next morning
+        (06:40 ET); an evening run sees the prior session (``lagging``).
     https://fred.stlouisfed.org/graph/fredgraph.csv?id=DTB3
         "observation_date,DTB3", ISO dates, an EMPTY value on days without
         a rate (800 of 18972 rows, e.g. Labor Day 2026-09-07). The 09-22
@@ -33,12 +33,20 @@ Every request is time-bounded (TIMEOUT_S) and isolated per source: a
 transport failure (timeout, 5xx) is a soft ``error`` gap, exit 3 (the next
 run re-fetches the whole history); a vanished or bad file is exit 1.
 
-A payload that only appends rows is ``updated``; one that changes or drops
-past rows is ``revised`` (backup and change log first, then the new file);
-one that ends before the stored history or drops more than MAX_DROPPED
-stored rows is ``invalid`` (a truncated or wrong body: the store is kept).
-Identical content is ``unchanged`` and nothing is rewritten. Values are
-checked to be finite decimals but never converted: no float round trip.
+A payload that only appends rows is ``updated``; one that changes past
+values is ``revised`` (backup and change log first, then the new file).
+One that drops ANY stored date, or carries a row dated after the fetch's ET
+date, is ``invalid`` and the store is kept whole (a truncated or wrong
+body; an intentional vendor deletion needs the operator: move the stored
+file aside and the next run records the history as ``new``). Identical
+content is ``unchanged`` and nothing is rewritten. Values are checked to be
+finite decimals but never converted: no float round trip.
+
+The morning timer slot passes ``skip_current``: a source whose stored
+history already reaches the latest completed session (within its
+``max_lag``) is ``current`` and not fetched. On the day after an exchange
+holiday nothing new can exist, so the slot makes no request (sessions come
+from the NYSE calendar; no date arithmetic).
 """
 
 from __future__ import annotations
@@ -80,13 +88,21 @@ CBOE_NAMES: tuple[str, ...] = (
 )
 STORE_HEADER = "date,open,high,low,close"
 MAX_BYTES = 8_000_000  # the longest file (VIX, from 1990) was 472,921 bytes
-MAX_DROPPED = 3  # more stored rows than this missing from a payload: refuse
 PACE_S = 1.0
 TIMEOUT_S = 30.0
 
-RECORDED = frozenset({"new", "updated", "revised", "unchanged"})
+RECORDED = frozenset({"new", "updated", "revised", "unchanged", "current"})
 HARD_FAILURES = frozenset({"missing", "invalid"})  # "error" (transport) is transient
-STATUSES = ("new", "updated", "revised", "unchanged", "missing", "invalid", "error")
+STATUSES = (
+    "new",
+    "updated",
+    "revised",
+    "unchanged",
+    "current",
+    "missing",
+    "invalid",
+    "error",
+)
 
 Row = tuple[str, str, str, str, str]
 Clock = Callable[[], datetime]
@@ -257,14 +273,13 @@ class IndicesSummary:
 
 
 def exit_code(summary: IndicesSummary) -> int:
-    """1 when a vendor file is gone or bad (missing/invalid), or nothing
-    was stored; 3 when the rest is transient (a transport ``error``: each
-    file carries the full history, so the next run closes the gap) or a
-    vendor has not published the latest session yet; else 0."""
+    """1 for an empty invocation or any hard failure (a vendor file gone or
+    bad: missing/invalid); then 3 when anything is transient (a transport
+    ``error``, even every source: each file carries the full history, so
+    the next run closes the gap) or a vendor has not published the latest
+    session yet; else 0."""
     results = summary.results.values()
-    if not any(r.status in RECORDED for r in results):
-        return 1
-    if any(r.status in HARD_FAILURES for r in results):
+    if not summary.results or any(r.status in HARD_FAILURES for r in results):
         return 1
     if any(r.status == "error" or r.lagging for r in results):
         return 3
@@ -368,6 +383,11 @@ def _record_source(
     except IndexParseError as exc:
         return SourceResult("invalid", 0, None, False, str(exc), sha)
     last = rows[-1][0]
+    fetch_day = clock().astimezone(ET).date().isoformat()
+    if last > fetch_day:  # rows are strictly increasing: the last is the latest
+        return SourceResult(
+            "invalid", 0, None, False, f"future-dated row {last} (fetched {fetch_day})", sha
+        )
     lagging = _lag(last, expected, cal) > src.max_lag
 
     def result(status: str, detail: str = "") -> SourceResult:
@@ -392,11 +412,12 @@ def _record_source(
     if old and last < old[-1][0]:
         return result("invalid", f"shrunk: history ends {last}, before the stored {old[-1][0]}")
     d = diff_rows(old, rows)
-    if len(d.dropped) > MAX_DROPPED:
-        return result("invalid", f"shrunk: {len(d.dropped)} stored rows missing from the payload")
-    if not (d.added or d.changed or d.dropped):
+    if d.dropped:  # never replace a history with one missing stored dates
+        shown = ", ".join(r[0] for r in d.dropped[:3]) + (" ..." if len(d.dropped) > 3 else "")
+        return result("invalid", f"shrunk: {len(d.dropped)} stored dates missing ({shown})")
+    if not (d.added or d.changed):
         return result("unchanged")
-    if not (d.changed or d.dropped):
+    if not d.changed:
         if not dry_run:
             atomic_write_bytes(path, render(rows).encode("ascii"))
         return result("updated", f"{len(d.added)} added")
@@ -412,19 +433,15 @@ def _record_source(
                     "source": src.name,
                     "date": o[0],
                     "old": list(o[1:]),
-                    "new": list(n[1:]) if n is not None else None,
+                    "new": list(n[1:]),
                     "backup": bak,
                     "sha256": sha,
                 }
-                for o, n in [*d.changed, *((r, None) for r in d.dropped)]
+                for o, n in d.changed
             ],
         )
         atomic_write_bytes(path, render(rows).encode("ascii"))
-    return result(
-        "revised",
-        f"{len(d.changed)} revised, {len(d.dropped)} dropped, {len(d.added)} added; "
-        f"prior kept as {bak}",
-    )
+    return result("revised", f"{len(d.changed)} revised, {len(d.added)} added; prior kept as {bak}")
 
 
 def record_indices(
@@ -437,14 +454,35 @@ def record_indices(
     cal: Calendar,
     dry_run: bool = False,
     pace_s: float = PACE_S,
+    skip_current: bool = False,
 ) -> IndicesSummary:
-    """Fetch and store every source (per-source isolation, paced)."""
+    """Fetch and store every source (per-source isolation, paced). With
+    ``skip_current``, a source already stored through the latest completed
+    session (within its max_lag) is ``current`` and makes no request."""
     expected = latest_completed_session(clock(), cal)
     results: dict[str, SourceResult] = {}
-    for i, src in enumerate(sources):
-        if i:
+    fetched = 0
+    for src in sources:
+        held = _stored_current(src, root, expected, cal) if skip_current else None
+        if held is not None:
+            results[src.name] = held
+            continue
+        if fetched:
             sleep(pace_s)
+        fetched += 1
         results[src.name] = record_source(
             src, root=root, get=get, clock=clock, expected=expected, cal=cal, dry_run=dry_run
         )
     return IndicesSummary(expected, results)
+
+
+def _stored_current(src: Source, root: Path, expected: date, cal: Calendar) -> SourceResult | None:
+    """A ``current`` result when the stored history is as fresh as the
+    vendor can be (lag within max_lag); None when a fetch is due."""
+    try:
+        rows = read_store(root / "indices" / f"{src.name}.csv")
+    except (OSError, ValueError):
+        return None
+    if not rows or _lag(rows[-1][0], expected, cal) > src.max_lag:
+        return None
+    return SourceResult("current", len(rows), rows[-1][0], False, "stored; no request", None)

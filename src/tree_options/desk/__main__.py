@@ -11,20 +11,23 @@
         Panel refresh (fetch_ohlc.py), XSMOM/PEAD signals, draft cards and
         an ntfy push. Exit 0 done/no-op, 3 vendor lag or too early, 1 failure.
 
-    record-indices [--sources VIX,DTB3] [--dry-run]
-        CBOE index histories + FRED DTB3 into <store>/indices/. Exit 0 all
-        stored and current, 3 all stored but a vendor lags, 1 a source
-        failed, 2 bad arguments.
+    record-indices [--sources VIX,DTB3] [--dry-run] [--force]
+        CBOE index histories + FRED DTB3 into <store>/indices/. Sources
+        already stored through the latest session are skipped (no request)
+        unless --force. Exit 0 all current, 3 a vendor lags or a transport
+        error left a soft gap, 1 a vendor file gone/bad, 2 bad arguments.
 
     update-events [--horizon N] [--dry-run]
         Earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 only when
         DESK_SEC_UA is set) and the macro seal/Fed-page check. Exit 0,
         3 partial vendor failure, 1 drift/broken seal/total failure.
 
-    seal-macro --from D --to D [--fomc-html FILE --fetched-on D] [--basis T]
+    seal-macro --from D --to D [--fomc-html FILE --fetched-on D]
+               [--gap-note TEXT] [--basis T]
         Operator/agent tool (never a timer): rebuild and reseal
         macro-<Y1>-<Y2>.json in the events dir, carrying hand-entered
-        CPI/NFP items. Exit 0 sealed, 1 source unreadable, 2 bad arguments.
+        CPI/NFP items; --gap-note words the todo for years without them.
+        Exit 0 sealed, 1 source unreadable/incomplete, 2 bad arguments.
 
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes; a second concurrent run exits 3. No secrets are printed
@@ -80,6 +83,11 @@ def _parser() -> argparse.ArgumentParser:
     ri = sub.add_parser("record-indices", help="CBOE index histories + FRED DTB3")
     ri.add_argument("--sources", help="comma-separated names (default: all 15)")
     ri.add_argument("--dry-run", action="store_true", help="fetch and compare; write nothing")
+    ri.add_argument(
+        "--force",
+        action="store_true",
+        help="fetch even sources already stored through the latest session",
+    )
     ue = sub.add_parser("update-events", help="earnings timing + macro seal check (weekly)")
     ue.add_argument("--horizon", type=int, default=events.HORIZON, help="sessions of estimates")
     ue.add_argument("--dry-run", action="store_true", help="fetch and merge; write nothing")
@@ -89,6 +97,11 @@ def _parser() -> argparse.ArgumentParser:
     sm.add_argument("--fomc-html", help="a saved copy of the Fed calendar page (else fetched)")
     sm.add_argument("--fetched-on", type=date.fromisoformat, help="when --fomc-html was fetched")
     sm.add_argument("--basis", default="", help="extra provenance for the seal row")
+    sm.add_argument(
+        "--gap-note",
+        default=events.DEFAULT_GAP_NOTE,
+        help="todo wording for a CPI/NFP year without items (e.g. 'not yet published by BLS')",
+    )
     return ap
 
 
@@ -98,7 +111,7 @@ def _update_events(
     get: http.Get,
     sleep: store.Sleep,
     clock: store.Clock,
-    cal: Calendar,
+    cal: ClosingCalendar,
 ) -> int:
     if args.horizon < 1:
         print("update-events: --horizon must be >= 1", file=sys.stderr)
@@ -153,6 +166,7 @@ def _seal_macro(
             fetched_on=fetched_on,
             cpi=carried["cpi"],
             nfp=carried["nfp"],
+            gap_note=args.gap_note,
         )
     except (events.EventsError, TypeError, ValueError, AttributeError) as exc:
         print(f"seal-macro: {type(exc).__name__}: {exc}", file=sys.stderr)
@@ -197,10 +211,11 @@ def _record_indices(
         sleep=sleep,
         cal=cal,
         dry_run=args.dry_run,
+        skip_current=not args.force,
     )
     rc = indices.exit_code(summary)
     for name, r in summary.results.items():
-        if r.status not in ("new", "updated", "unchanged") or r.lagging:
+        if r.status not in ("new", "updated", "unchanged", "current") or r.lagging:
             lag = " (lagging)" if r.lagging else ""
             print(f"  {name}: {r.status}{lag} last={r.last_date} {r.detail}")
     print(summary.line(rc) + (" (dry run)" if args.dry_run else ""))
