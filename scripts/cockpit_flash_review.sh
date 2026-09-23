@@ -5,6 +5,8 @@
 # promoted (flash output = leads, not facts - Codex re-verifies after).
 #
 # Usage: scripts/cockpit_flash_review.sh [outdir]   (default /tmp/flash-review)
+# Each run leaves <lane>-rN.md (findings), .json (CLI result), .models
+# (models the CLI billed; must be exactly ["glm-5.3-flash"]) and .err.
 # Sequential on purpose: one z.ai session at a time (shared account; the
 # Study Forge bench excludes samples that hit rate limits).
 set -uo pipefail
@@ -13,7 +15,12 @@ OUT="${1:-/tmp/flash-review}"
 BASE="${TREX_COCKPIT_URL:-http://127.0.0.1:8090/}"
 PLAN_ID="${TREX_REVIEW_PLAN:-$(curl -s "${BASE}api/plans" | python3 -c 'import json,sys; p=json.load(sys.stdin)["plans"]; print(p[-1]["id"] if p else "")')}"
 SYMBOL="${TREX_REVIEW_SYMBOL:-SPY}"
+# --model, never ZAI_MODEL=: the launcher re-sources ~/.claude/.env AFTER
+# the caller's env, so its ZAI_MODEL=glm-5.3[1m] silently won (09-23).
+MODEL="${TREX_REVIEW_MODEL:-glm-5.3-flash}"
 mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+cd "$OUT" || exit 1  # the Playwright MCP drops screenshots/.playwright-mcp in cwd
 
 declare -A LANES=(
   [plans]="#/"
@@ -58,12 +65,21 @@ for lane in plans discover performance market symbol plan; do
     dest="$OUT/${lane}-r${run}.md"
     [[ -s "$dest" ]] && { echo "skip $dest (exists)"; continue; }
     echo "=== $(date -Is) lane=$lane run=$run"
-    ZAI_MODEL=glm-5.3-flash timeout 900 /home/alexk/.local/bin/claude-zai -p "$(prompt_for "${LANES[$lane]}")" \
-      --allowedTools "mcp__plugin_playwright_playwright" \
-      > "$dest.tmp" 2> "$OUT/${lane}-r${run}.err"
+    timeout 900 /home/alexk/.local/bin/claude-zai --model "$MODEL" -p "$(prompt_for "${LANES[$lane]}")" \
+      --allowedTools "mcp__plugin_playwright_playwright" --output-format json \
+      > "$dest.json" 2> "$OUT/${lane}-r${run}.err"
     rc=$?
-    if [[ $rc -eq 0 && -s "$dest.tmp" ]]; then mv "$dest.tmp" "$dest"; else
-      echo "lane=$lane run=$run FAILED rc=$rc (see ${lane}-r${run}.err)"; fi
+    # evidence of the model that actually answered, from the CLI's own accounting
+    models="$(jq -c '.modelUsage // {} | keys' "$dest.json" 2>/dev/null)"
+    echo "$models" > "$OUT/${lane}-r${run}.models"
+    jq -r '.result // empty' "$dest.json" > "$dest.tmp" 2>/dev/null
+    if [[ $rc -ne 0 || ! -s "$dest.tmp" ]]; then
+      echo "lane=$lane run=$run FAILED rc=$rc (see ${lane}-r${run}.err)"
+    elif [[ "$models" != "[\"$MODEL\"]" ]]; then
+      echo "lane=$lane run=$run FAILED model mismatch: $models (wanted $MODEL)"
+    else
+      mv "$dest.tmp" "$dest"
+    fi
   done
 done
 echo "=== $(date -Is) done" | tee "$OUT/.done"
