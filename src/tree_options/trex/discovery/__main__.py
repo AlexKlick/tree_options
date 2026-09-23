@@ -79,7 +79,9 @@ def main(argv: list[str] | None = None) -> int:
     from tree_options.trex.discovery.gateway import IbkrDiscovery
 
     source = IbkrDiscovery(client_id=args.client_id)
-    source.connect()
+    # NO startup connect (Codex-arch #2): a down gateway used to kill the
+    # unit before the loop ever ran. serve() connects lazily per tick;
+    # market/watch work proceeds with the broker unreachable.
     try:
         serve(source, cfg, state_dir, repo=REPO_ROOT)
     finally:

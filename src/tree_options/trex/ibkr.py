@@ -16,6 +16,7 @@ Connection defaults target IB Gateway in paper mode (docker, port 4002).
 from __future__ import annotations
 
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
@@ -252,7 +253,12 @@ class IbkrTrex:
             self._ib.cancelOrder(ref.trade.order)
 
     def sleep(self, seconds: float) -> None:
-        """Pump the event loop (ib_async needs its own sleep, not time.sleep)."""
+        """Pump the event loop (ib_async needs its own sleep, not time.sleep).
+        Falls back to a plain sleep when never connected - the discovery
+        serve loop now connects lazily and runs with the gateway down."""
+        if self._ib is None:
+            time.sleep(seconds)
+            return
         self._ib.sleep(seconds)
 
     # -- account -----------------------------------------------------------

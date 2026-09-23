@@ -334,3 +334,68 @@ class TestMarketTick:
         )
         result = read_result(state / "spool", "market")
         assert result is not None and result["status"] == "ok"
+
+
+class TestBrokerDown:
+    """Codex-arch #2: a dead gateway degrades the loop to market/watch
+    work; pending scan claims complete with an error receipt instead of
+    hanging, and nothing broker-side runs."""
+
+    def _transport(self, body: bytes):
+        def t(url: str, *, timeout: float = 10.0):
+            return 200, body
+
+        return t
+
+    def test_scan_claim_errors_market_survives(self, tmp_path: Path) -> None:
+        import json as _json
+
+        from tree_options.trex.discovery.artifact import read_result
+
+        state = tmp_path / "state"
+        write_scan_request(state / "spool", "req-down", NOW)
+        body = _json.dumps(
+            {"timestamp": "t", "data": {"bid": 1.0, "ask": 1.1, "close": 1.0}}
+        ).encode()
+        ran = serve_tick(
+            FakeChainSource(),
+            _cfg(),
+            state,
+            now=NOW,
+            market_transport=self._transport(body),
+            broker_ready=False,
+        )
+        assert ran is False
+        result = read_result(state / "spool", "scan")
+        assert result is not None and result["status"] == "error"
+        assert "gateway" in result["detail"]
+        # market work never needed the broker
+        assert (state / "market.json").exists()
+        # and no scan run directory materialized
+        runs = state / "runs"
+        assert not runs.exists() or not list(runs.glob("*"))
+
+    def test_broker_ready_lazy_connect(self, tmp_path: Path) -> None:
+        from tree_options.trex.discovery.runner import _broker_ready
+
+        class DeadGateway(FakeChainSource):
+            def connected(self) -> bool:
+                return False
+
+            def connect(self) -> None:
+                raise TimeoutError("gateway down")
+
+        class Revives(FakeChainSource):
+            def __init__(self) -> None:
+                super().__init__()
+                self.calls = 0
+
+            def connected(self) -> bool:
+                return self.calls > 0
+
+            def connect(self) -> None:
+                self.calls += 1
+
+        assert _broker_ready(FakeChainSource()) is True  # no probe attr = ready
+        assert _broker_ready(DeadGateway()) is False
+        assert _broker_ready(Revives()) is True

@@ -404,6 +404,24 @@ def _market_tick(
         log.exception("market tick failed (scan handling unaffected)")
 
 
+def _broker_ready(source: ChainSource) -> bool:
+    """Lazy broker connect (Codex-arch #2): True when scans may run.
+
+    A down gateway must degrade the loop to market/watch work, never
+    crash it at startup or mid-serve. Sources without a ``connected``
+    (tests' fakes) count as ready.
+    """
+    connected = getattr(source, "connected", None)
+    if connected is None or connected():
+        return True
+    try:
+        source.connect()  # type: ignore[attr-defined]
+        return True
+    except Exception as exc:
+        log.warning("gateway connect failed (scans paused, market/watch continue): %s", exc)
+        return False
+
+
 def serve_tick(
     source: ChainSource,
     cfg: ScanConfig,
@@ -411,17 +429,34 @@ def serve_tick(
     now: datetime | None = None,
     repo: Path | None = None,
     market_transport: object | None = None,
+    broker_ready: bool = True,
 ) -> bool:
     """One serve-loop cycle: manual request first, then the auto rescan.
 
-    Returns True when a scan ran (either mode)."""
+    ``broker_ready=False`` (gateway down) skips broker work but still
+    runs the market tick and completes scan claims with an error receipt
+    so the UI never waits on a dead gateway. Returns True when a scan
+    ran (either mode)."""
     now = now or now_et()
-    _maybe_account_history(source, state_dir, now)
+    if broker_ready:
+        _maybe_account_history(source, state_dir, now)
     _market_tick(state_dir, cfg, now, market_transport, repo=repo)
     spool = state_dir / "spool"
     claim = claim_scan_request(spool, now=now)
     if claim is not None:
         request_id, _payload = claim
+        if not broker_ready:
+            complete_scan(
+                spool,
+                request_id,
+                {
+                    "request_id": request_id,
+                    "status": "error",
+                    "detail": "gateway unreachable (market/watch unaffected)",
+                    "finished_at": now_et().isoformat(),
+                },
+            )
+            return False
         try:
             run_once(source, cfg, state_dir, "manual", repo=repo, now=now, request_id=request_id)
             complete_scan(
@@ -463,7 +498,7 @@ def serve_tick(
             last = datetime.fromisoformat(state.read_text().strip())
         except ValueError:
             last = None
-    if now >= due and (last is None or last.date() != now.date()):
+    if broker_ready and now >= due and (last is None or last.date() != now.date()):
         run_once(source, cfg, state_dir, "auto", repo=repo, now=now)
         state.write_text(now.isoformat())
         try:
@@ -494,11 +529,22 @@ def serve(
         while True:
             try:
                 serve_tick(
-                    source, cfg, state_dir, repo=repo, market_transport=urllib_transport
+                    source,
+                    cfg,
+                    state_dir,
+                    repo=repo,
+                    market_transport=urllib_transport,
+                    broker_ready=_broker_ready(source),
                 )
             except Exception:
                 log.exception("serve tick failed")
-            sleeper(POLL_SECONDS)
+            try:
+                sleeper(POLL_SECONDS)
+            except Exception:
+                # a gateway that died mid-serve can take its event loop
+                # (and this sleeper) with it; keep the loop alive
+                log.exception("serve sleep failed (plain fallback)")
+                time.sleep(POLL_SECONDS)
     finally:
         fcntl.flock(lock, fcntl.LOCK_UN)
         lock.close()

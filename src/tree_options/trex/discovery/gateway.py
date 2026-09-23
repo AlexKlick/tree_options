@@ -34,6 +34,9 @@ class IbkrDiscovery:
     def disconnect(self) -> None:
         self._ibk.disconnect()
 
+    def connected(self) -> bool:
+        return self._ibk.connected
+
     def sleep(self, seconds: float) -> None:
         """Event-loop-pumping sleep: between scans this is what lets
         ib_async deliver account-value updates, so account_history rows
