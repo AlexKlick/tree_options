@@ -17,6 +17,15 @@
         unless --force. Exit 0 all current, 3 a vendor lags or a transport
         error left a soft gap, 1 a vendor file gone/bad, 2 bad arguments.
 
+    record-dividends [--session D] [--symbols A,B] [--dry-run]
+        Polygon /v3/reference/dividends histories into
+        DESK_STORE/dividends/<D>/<SYM>.json (default D: the latest
+        completed session; default symbols: the 35-name chain universe).
+        A symbol already stored for D is skipped without a request. Exit 0
+        all stored, 3 a retryable gap, 1 an entitlement/key refusal or
+        nothing stored, 2 bad arguments. The Polygon key is read from its
+        key file inside the client and never printed.
+
     update-events [--horizon N] [--dry-run]
         Earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 only when
         DESK_SEC_UA is set) and the macro seal/Fed-page check. Exit 0,
@@ -81,8 +90,15 @@ from tree_options.models.determinism import force_single_threaded_blas
 
 force_single_threaded_blas()
 
-from tree_options.data.massive_client import default_cache_dir  # noqa: E402
+from tree_options.data.massive_client import (  # noqa: E402
+    MassiveClient,
+    MassiveError,
+    RateGovernor,
+    default_cache_dir,
+    load_api_key,
+)
 from tree_options.desk import (  # noqa: E402
+    dividends,
     econ_jobs,
     eod_equity,
     events,
@@ -111,7 +127,10 @@ def _parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="command", required=True)
     rc = sub.add_parser("record-chains", help="record the CBOE delayed option chains")
     rc.add_argument("--session", type=date.fromisoformat)
-    rc.add_argument("--symbols", help="comma-separated (default: the 35-name chain universe)")
+    rc.add_argument(
+        "--symbols",
+        help=f"comma-separated (default: the {len(CHAIN_UNIVERSE)}-name chain universe)",
+    )
     rc.add_argument("--dry-run", action="store_true", help="fetch and validate; write nothing")
     rc.add_argument(
         "--recheck",
@@ -129,6 +148,10 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="fetch even sources already stored through the latest session",
     )
+    rd = sub.add_parser("record-dividends", help="Polygon dividend histories (ex-dividend rail)")
+    rd.add_argument("--session", type=date.fromisoformat)
+    rd.add_argument("--symbols", help="comma-separated (default: the 35-name chain universe)")
+    rd.add_argument("--dry-run", action="store_true", help="fetch; write nothing")
     ue = sub.add_parser("update-events", help="earnings timing + macro seal check (weekly)")
     ue.add_argument("--horizon", type=int, default=events.HORIZON, help="sessions of estimates")
     ue.add_argument("--dry-run", action="store_true", help="fetch and merge; write nothing")
@@ -149,7 +172,10 @@ def _parser() -> argparse.ArgumentParser:
     ib.add_argument("--massive-cache", type=Path)
     ib.add_argument("--start", type=date.fromisoformat, default=ivhist.WINDOW[0])
     ib.add_argument("--end", type=date.fromisoformat, default=ivhist.WINDOW[1])
-    ib.add_argument("--names", help="comma-separated (default: the 35-name chain universe)")
+    ib.add_argument(
+        "--names",
+        help=f"comma-separated (default: the {len(CHAIN_UNIVERSE)}-name chain universe)",
+    )
     raw_help = "read the raw vendor snapshots of the sealed run (adapter), not the stored format"
     ib.add_argument("--raw-snapshots", action="store_true", help=raw_help)
     ie = sub.add_parser("ivhist-001", help="IVHIST-001 benchmark vs the CBOE vol indices")
@@ -282,6 +308,48 @@ def _record_indices(
     return rc
 
 
+def _record_dividends(
+    args: argparse.Namespace,
+    *,
+    client: MassiveClient | None,
+    clock: store.Clock,
+    cal: Calendar,
+) -> int:
+    now = clock()
+    if args.session is None:
+        session = latest_completed_session(now, cal)
+    elif not cal.is_session(args.session) or args.session > now.astimezone(ET).date():
+        print(f"record-dividends: {args.session} is not a past NYSE session", file=sys.stderr)
+        return 2
+    else:
+        session = args.session
+    if args.symbols:
+        symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]
+        if not symbols or any(not _SYMBOL.match(s) for s in symbols):
+            print(f"record-dividends: bad --symbols {args.symbols!r}", file=sys.stderr)
+            return 2
+    else:
+        symbols = list(CHAIN_UNIVERSE)
+    if client is None:
+        try:  # the paid plan: no request spacing; the key stays in the client
+            client = MassiveClient(
+                api_key=load_api_key(), cache_dir=None, governor=RateGovernor(None), timeout=20.0
+            )
+        except MassiveError as exc:  # fixed text: no key material, no path
+            print(
+                f"record-dividends: no usable Polygon key ({type(exc).__name__})", file=sys.stderr
+            )
+            return 1
+    run = dividends.record_dividends(
+        session, symbols, client=client, clock=clock, dry_run=args.dry_run
+    )
+    for sym, r in run.results.items():
+        if r.status == "failed":
+            print(f"  {sym}: failed {r.detail}")
+    print(run.line() + (" (dry run)" if args.dry_run else ""))
+    return run.exit_code
+
+
 def _record_chains(
     args: argparse.Namespace,
     *,
@@ -383,6 +451,7 @@ def run_cli(
     fetch: eod_equity.FetchRunner | None = None,
     notify: eod_equity.Notify | None = None,
     get: http.Get | None = None,
+    dividend_client: MassiveClient | None = None,
 ) -> int:
     """The CLI with injectable I/O (tests); :func:`main` wires the real ones."""
     try:
@@ -435,6 +504,8 @@ def run_cli(
                 clock=clock,
                 cal=cal,
             )
+        if args.command == "record-dividends":
+            return _record_dividends(args, client=dividend_client, clock=clock, cal=cal)
         if args.command == "update-events":
             return _update_events(
                 args,

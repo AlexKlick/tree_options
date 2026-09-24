@@ -1,20 +1,32 @@
-# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events)
+# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events; Wave 2: dividends)
 
-Four systemd **user** timers, all `oneshot` in `host-work.slice`, all
+Five systemd **user** timers, all `oneshot` in `host-work.slice`, all
 idempotent. None places orders or seals cards.
 
 | job | when (America/New_York) | does |
 |---|---|---|
-| `desk-chain` | Mon-Fri 17:45, 20:45, 23:45; Mon-Sat 06:30 and 12:30 (catch-up) | records the CBOE delayed chain (calls + puts) for the 35 optionable panel names |
+| `desk-chain` | Mon-Fri 17:45, 20:45, 23:45; Mon-Sat 06:30 and 12:30 (catch-up) | records the CBOE delayed chain (calls + puts) for the 37 optionable panel names (2026-09-23: +PLTR, +SPCX) |
 | `desk-eod-equity` | Mon-Fri 16:40, 20:40; Tue-Sat 08:40 | extends the research panel (`fetch_ohlc.py`), computes XSMOM-TOP3 + PEAD beats, writes draft cards, pushes ntfy when a rule fires |
 | `desk-indices` | Tue-Sat 06:40 | CBOE index histories (VIX VIX9D VIX1D VIX3M VIX6M VIX1Y VVIX SKEW VXN RVX GVZ VXAPL VXAZN VXGOG) + FRED DTB3 |
 | `desk-events` | Sat 10:00 | earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 with `DESK_SEC_UA`) + the sealed macro calendar's Fed-page check |
+| `desk-dividends` | Mon-Fri 17:15; Tue-Sat 06:20 (catch-up) | Polygon `/v3/reference/dividends` histories for the 35 chain names into `desk-store/dividends/<D>/`, the ex-dividend rail's input (Wave 2; exit 3 = benign vendor gap) |
 
 All run `python -m tree_options.desk <command>` from the main checkout's
 `.venv`. Manual runs: add `--session YYYY-MM-DD` (a closed NYSE session;
 chains/eod-equity) and/or `--dry-run`.
 
 ## Install / verify (operator)
+
+Wave 2 unit (files only until the operator installs it at landing). Until
+its first run stores a snapshot, every candidate with a short call is
+NOT_EVALUABLE on the ex-dividend rail:
+
+```bash
+cp ~/documents/tree_options/deploy/desk/desk-dividends.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now desk-dividends.timer
+systemctl --user start desk-dividends.service; journalctl --user -u desk-dividends -n 20
+```
 
 Wave 1 units (files only until the operator installs them):
 
@@ -41,8 +53,8 @@ systemctl --user start desk-chain.service; journalctl --user -u desk-chain -n 20
 systemctl --user start desk-eod-equity.service; journalctl --user -u desk-eod-equity -n 20
 ```
 
-Checks: `artifacts/desk-store/manifest/<D>.json` shows `ok` for >= 33 of
-35 symbols; `~/.local/state/trex-desk/signals/<D>.json` exists with
+Checks: `artifacts/desk-store/manifest/<D>.json` shows `ok` for >= 35 of
+37 symbols; `~/.local/state/trex-desk/signals/<D>.json` exists with
 `panel_last_session == <D>`; the first eod-equity run gap-fills the panel
 from 2026-09-15 (it stopped on 09-14). fetch_ohlc.py paces the vendor at
 5 requests/min, so each session costs ~7.5 min (the first run ~1 h).
@@ -372,3 +384,36 @@ the vendor (probed: a 2024-09-13 start returned its first bar on
 - Known limit: a series for a contract still alive at fetch time ends at
   the fetch date and is cached as such; the chain recorder (D1) carries the
   forward data.
+
+## Playbook and conditions (Wave 2 D5; no timer yet)
+
+- `data/desk/playbook/v2.toml` is the ACTIVE version; `v1.toml` stays as
+  sealed history. Each has a `.sha256` sidecar and exactly one row in the
+  append-only `SEALS.md`, and its digest is pinned in
+  `desk.playbook.APPROVED`; `load_playbook()` refuses any mismatch (a
+  coordinated edit of TOML + sidecar + log still fails). Never edit a
+  version: write `v3.toml`, seal it once from a worktree with
+  `desk.playbook.seal_playbook(path, basis=...)` (it validates, refuses
+  other bytes under a sealed name, appends the row), then pin its digest in
+  `APPROVED` and move `ACTIVE_FILE` in the same reviewed change.
+  `DESK_PLAYBOOK_DIR` overrides the directory (tests pin it to tmp).
+- v2 vs v1: R1 (XSMOM call debit spread) may match while the vol state is
+  NOT_EVALUABLE (operator ruling 2026-09-23); PEAD incremental drift 0
+  (Codex P2-4); R6 declares the actual-strike protective rule
+  (`desk.playbook.require_protective`, Codex P2-5).
+- `desk.regime.conditions_at(...)` computes each name's conditions for a
+  session from the features files (`DESK_STORE/features/<D>.json`), the
+  signals file, the stored VIX/VIX3M, the report schedule and the sealed
+  macro calendar; `match_rows` / `regime_doc` give the rows each name meets
+  and why the others are unmet. It is pure: the pipeline wiring comes with
+  the miner.
+- Vol state warm-up: `NOT_EVALUABLE` until a name has 120 evaluable
+  chain-source sessions in the trailing 252 (2027-03-16 at the earliest
+  with no recorder gaps); R2 and R4 match nothing until then, R6 waits on
+  the same warm-up for its steep-contango percentile, and R1 matches with
+  a note (v2). A features document counts only when its own `session`,
+  chain provenance, forecast horizon (20) and `fit_through` (before the
+  session) check out.
+- `docs/desk/DESK-BT-001.md` + `DESK-BT-001-AMENDMENT-1.md` (entry on the
+  next session after the signal) are sealed and NOT run: earliest run
+  2026-10-20 (after 20 recorded chain sessions).

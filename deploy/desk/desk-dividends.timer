@@ -1,0 +1,18 @@
+[Unit]
+Description=Record the desk dividend histories (ex-dividend rail input)
+
+[Timer]
+# 17:15 ET on sessions: after the 16:15 cutoff (the job files the snapshot
+# under the latest completed NYSE session) and before the first desk-chain
+# slot (17:45), so the evening pipeline and the next morning's desk-enter
+# see a snapshot of the same session. The 06:20 slot (before the 06:30 chain
+# slot) catches a failed evening run. Idempotent: a (session, symbol)
+# already stored is skipped with no request, so the morning slot after a
+# good evening run, and a slot on an exchange holiday, are no-ops (exit 0).
+OnCalendar=Mon..Fri *-*-* 17:15:00 America/New_York
+OnCalendar=Tue..Sat *-*-* 06:20:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

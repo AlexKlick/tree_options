@@ -384,7 +384,16 @@ class TestIbkrIsNotATouchSource:
     ticker can carry an old ``last``. The paper account has no equity
     quotes anyway: IBKR stock prices never reach the engine."""
 
-    def test_even_a_fresh_looking_last_yields_no_spot(self) -> None:
+    @pytest.mark.parametrize(
+        "ticker",
+        [
+            FakeTicker(time=datetime.fromtimestamp(NOW_S - 1, UTC), last=150.0, close=150.0),
+            # the pre-E0 fallback: no last, so the PRIOR session's close
+            FakeTicker(time=datetime.fromtimestamp(NOW_S - 1, UTC), close=150.0),
+        ],
+        ids=["fresh-last", "close-only"],
+    )
+    def test_even_a_fresh_looking_last_yields_no_spot(self, ticker: FakeTicker) -> None:
         from datetime import date
         from types import SimpleNamespace
 
@@ -394,7 +403,6 @@ class TestIbkrIsNotATouchSource:
         ib = IbkrTrex()
         stock = SimpleNamespace(conId=1)
         ib._spots["NVDA"] = stock
-        ticker = FakeTicker(time=datetime.fromtimestamp(NOW_S - 1, UTC), last=150.0, close=150.0)
         ib._md[1] = _Subscription(stock, ticker, owners=1)
         spread = PutSpread(
             id="nvda-oct",

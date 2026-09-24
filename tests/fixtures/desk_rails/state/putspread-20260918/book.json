@@ -1,0 +1,50 @@
+{
+  "heartbeat": "2026-09-22T11:16:39.298448-04:00",
+  "structures": {
+    "nvda-oct": {
+      "status": "planned",
+      "entry_order": null,
+      "entry_fill": null,
+      "filled_qty": 0,
+      "entry_cycles": 0,
+      "exit_order": null,
+      "exit_fill": null,
+      "exit_filled_qty": 0,
+      "exit_cycles": 0,
+      "exit_reason": null,
+      "close_reason": null,
+      "touch_ts": null,
+      "updated_at": null
+    },
+    "qqq-nov": {
+      "status": "planned",
+      "entry_order": null,
+      "entry_fill": null,
+      "filled_qty": 0,
+      "entry_cycles": 0,
+      "exit_order": null,
+      "exit_fill": null,
+      "exit_filled_qty": 0,
+      "exit_cycles": 0,
+      "exit_reason": null,
+      "close_reason": null,
+      "touch_ts": null,
+      "updated_at": null
+    },
+    "nvda-nov": {
+      "status": "planned",
+      "entry_order": null,
+      "entry_fill": null,
+      "filled_qty": 0,
+      "entry_cycles": 0,
+      "exit_order": null,
+      "exit_fill": null,
+      "exit_filled_qty": 0,
+      "exit_cycles": 0,
+      "exit_reason": null,
+      "close_reason": null,
+      "touch_ts": null,
+      "updated_at": null
+    }
+  }
+}

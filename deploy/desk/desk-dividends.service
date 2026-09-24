@@ -1,0 +1,26 @@
+[Unit]
+Description=Options desk: Polygon dividend histories for the ex-dividend rail
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# The shared .venv's editable install is the main checkout (never re-synced here).
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk record-dividends
+# exit 3 = a retryable vendor gap (transport, 5xx, rate limit) for some
+# symbols: benign, the next slot fills it (a stored symbol is never
+# refetched). 1 = the plan refused the endpoint or the key (not_entitled /
+# auth), or nothing was stored: see the journal (fixed codes only, never
+# vendor text). Until a fresh snapshot exists (<= 5 sessions old) every
+# candidate with a short call is NOT_EVALUABLE on the ex-dividend rail.
+SuccessExitStatus=3
+# 35 symbols, no request spacing (paid plan), up to 4 attempts x 20 s each
+TimeoutStartSec=3600
+# Key: read by the client from ~/.config/tree_options/polygon.key (0600),
+# never printed. No pushes. Store: artifacts/desk-store/dividends/<D>/
+# (DESK_STORE overrides).

@@ -1,0 +1,62 @@
+{
+  "heartbeat": "2026-09-23T22:10:11.280928-04:00",
+  "structures": {
+    "nvda-oct": {
+      "status": "open",
+      "entry_order": "19",
+      "entry_fill": "0.21",
+      "filled_qty": 5,
+      "entry_cycles": 0,
+      "exit_order": null,
+      "exit_fill": null,
+      "exit_filled_qty": 0,
+      "exit_cycles": 0,
+      "exit_reason": null,
+      "close_reason": null,
+      "touch_ts": null,
+      "updated_at": "2026-09-22T11:39:58.279857-04:00",
+      "exit_order_seen": 0,
+      "exit_order_notional": null,
+      "entry_order_seen": 0,
+      "entry_order_notional": null
+    },
+    "qqq-nov": {
+      "status": "closed",
+      "entry_order": "20",
+      "entry_fill": null,
+      "filled_qty": 0,
+      "entry_cycles": 0,
+      "exit_order": null,
+      "exit_fill": null,
+      "exit_filled_qty": 0,
+      "exit_cycles": 0,
+      "exit_reason": null,
+      "close_reason": "aborted: entry window closed",
+      "touch_ts": null,
+      "updated_at": "2026-09-22T12:00:05.431654-04:00",
+      "exit_order_seen": 0,
+      "exit_order_notional": null,
+      "entry_order_seen": 0,
+      "entry_order_notional": null
+    },
+    "nvda-nov": {
+      "status": "open",
+      "entry_order": "21",
+      "entry_fill": "1.24",
+      "filled_qty": 3,
+      "entry_cycles": 0,
+      "exit_order": null,
+      "exit_fill": null,
+      "exit_filled_qty": 0,
+      "exit_cycles": 0,
+      "exit_reason": null,
+      "close_reason": null,
+      "touch_ts": null,
+      "updated_at": "2026-09-22T11:39:58.279864-04:00",
+      "exit_order_seen": 0,
+      "exit_order_notional": null,
+      "entry_order_seen": 0,
+      "entry_order_notional": null
+    }
+  }
+}
