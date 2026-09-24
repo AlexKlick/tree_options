@@ -9,6 +9,7 @@ import type {
   MarketResponse,
   StatsResponse,
   SymbolDetail,
+  SymbolHistory,
 } from './types'
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -48,6 +49,18 @@ export const getMarket = (): Promise<MarketResponse> => fetchJson('api/market')
 
 export const getSymbol = (sym: string): Promise<SymbolDetail> =>
   fetchJson(`api/market/${encodeURIComponent(sym)}`)
+
+/** Long-term panel history (ETag/304 keeps the 60 s re-poll free). Candles
+ * read a reduced point count, so maxPoints rides the query string. */
+export const getSymbolHistory = (
+  sym: string,
+  range: string,
+  maxPoints = 600,
+): Promise<SymbolHistory> =>
+  fetchJson(
+    `api/market/${encodeURIComponent(sym)}/history` +
+      `?range=${encodeURIComponent(range)}&max_points=${maxPoints}`,
+  )
 
 export const requestMarketRefresh = (
   symbols?: string[],

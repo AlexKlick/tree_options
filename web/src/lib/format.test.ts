@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { ageSeconds, ago, etTime, usd, usdSigned } from './format'
+import { ageSeconds, ago, compactCount, etTime, usd, usdSigned } from './format'
 
 // M8 flash review: "account 16608s ago" next to "marks 487m ago" - five
 // ad-hoc age formatters, two of them seconds-only. One formatter now.
@@ -36,5 +36,16 @@ describe('format', () => {
     expect(ageSeconds('2026-09-22T15:59:30Z', now)).toBe(30)
     expect(ageSeconds(null, now)).toBeNull()
     expect(ageSeconds('garbage', now)).toBeNull()
+  })
+
+  it('compacts volume-scale counts (1.2M / 940K / 1,234)', () => {
+    expect(compactCount(1_234_567)).toBe('1.2M')
+    expect(compactCount(2_000_000)).toBe('2M')
+    expect(compactCount(12_500_000)).toBe('12.5M')
+    expect(compactCount(940_000)).toBe('940K')
+    expect(compactCount(15_000)).toBe('15K')
+    expect(compactCount(1_234)).toBe('1,234')
+    expect(compactCount(9_999)).toBe('9,999')
+    expect(compactCount(0)).toBe('0')
   })
 })

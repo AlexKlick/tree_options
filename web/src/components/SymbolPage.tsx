@@ -1,6 +1,9 @@
-// Symbol detail: quote header, daily-close chart, and Google News items.
-// Cold caches show honest placeholders; the refresh button spools a forced
-// market refresh which warms bars + news within a serve tick.
+// Symbol detail: quote header, tabbed views (price history / options /
+// ideas), and Google News items. Cold caches show honest placeholders; the
+// refresh button spools a forced market refresh which warms bars + news
+// within a serve tick. The Price tab polls the desk panel history on its
+// own 60 s cadence (PriceHistoryPanel); the legacy Daily closes chart now
+// lives only in that tab's pre-backfill fallback path.
 
 import { useEffect, useState } from 'react'
 import { getSymbol, requestMarketRefresh } from '../lib/api'
@@ -9,20 +12,13 @@ import { usePoll } from '../hooks/usePoll'
 import type { SymbolDetail } from '../lib/types'
 import { AppShell } from './AppShell'
 import { Pill } from './Pill'
-import { TimeSeriesChart } from './TimeSeriesChart'
-
-const dateFmt = new Intl.DateTimeFormat('en-US', {
-  timeZone: 'America/New_York',
-  month: 'short',
-  day: 'numeric',
-})
+import { Tabs } from './Tabs'
+import { IdeasPanelStub } from './symbol/IdeasPanelStub'
+import { OptionsPanelStub } from './symbol/OptionsPanelStub'
+import { PriceHistoryPanel } from './symbol/PriceHistoryPanel'
 
 const ageNote = (seconds: number | null | undefined): string =>
   seconds === null || seconds === undefined ? '' : ` · data ${ago(seconds)} old`
-
-// the price axis now fits the data (level extent), so cheap stocks need cents
-const priceLabel = (v: number): string =>
-  v >= 100 ? `$${Math.round(v).toLocaleString('en-US')}` : `$${v.toFixed(2)}`
 
 export function SymbolPage({ sym }: { sym: string }) {
   const poll = usePoll(() => getSymbol(sym))
@@ -88,26 +84,23 @@ export function SymbolPage({ sym }: { sym: string }) {
             </div>
           </div>
 
-          <h2 className="section-title">
-            Daily closes{' '}
-            <span className="muted section-sub">
-              (~1 year · Polygon delayed{ageNote(d?.bars_age_seconds)})
-            </span>
-          </h2>
-          {d?.bars ? (
-            <div className="card chart-card">
-              <TimeSeriesChart
-                series={d.bars}
-                ariaLabel={`Daily closes for ${sym}`}
-                valueFormat={priceLabel}
-                timeFormat={(ts) => dateFmt.format(new Date(ts))}
-              />
-            </div>
-          ) : (
-            <div className="card empty-state">
-              <p className="muted">No bars cached yet — hit “Refresh data”.</p>
-            </div>
-          )}
+          <Tabs
+            tabs={[
+              {
+                id: 'price',
+                label: 'Price',
+                content: (
+                  <PriceHistoryPanel
+                    sym={sym}
+                    bars={d?.bars ?? null}
+                    barsAgeSeconds={d?.bars_age_seconds}
+                  />
+                ),
+              },
+              { id: 'options', label: 'Options', content: <OptionsPanelStub /> },
+              { id: 'ideas', label: 'Ideas', content: <IdeasPanelStub /> },
+            ]}
+          />
 
           <h2 className="section-title">
             News{' '}

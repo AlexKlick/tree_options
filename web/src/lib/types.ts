@@ -529,6 +529,36 @@ export interface SymbolDetail {
   news_age_seconds?: number | null
 }
 
+// GET /api/market/{sym}/history (symbol_history.py): long-term
+// split-adjusted OHLCV from the desk's ohlc-panel.json (since 2021,
+// extended nightly) — NOT the viewer's 365-day envelope. One row per
+// session: [ET-midnight epoch ms, open, high, low, close, volume].
+export type OhlcPoint = [number, number, number, number, number, number]
+
+export interface SymbolHistory {
+  now: string
+  symbol: string
+  source: string
+  in_panel: boolean
+  panel_last_session: string | null
+  panel_sha256_12: string | null
+  range: string
+  /** Set once a range window was applied (in-panel responses only). */
+  range_start?: string | null
+  range_sessions?: number | null
+  /** null + error = degrade (panel busy/unavailable); [] + in_panel=false
+   * = symbol not in the panel yet (legacy envelope fallback). */
+  points: OhlcPoint[] | null
+  y_lo: number | null
+  y_hi: number | null
+  vol_max: number | null
+  last: { date: string; ts_ms: number; close: number } | null
+  /** Attached by the route on 200s only (age of the newest session). */
+  history_age_seconds?: number | null
+  note: string
+  error: string | null
+}
+
 export interface ScenarioStats {
   count: number
   wins: number

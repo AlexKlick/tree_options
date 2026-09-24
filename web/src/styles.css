@@ -500,3 +500,26 @@ footer {
   font-size: 0.85rem;
   padding: 8px 14px;
 }
+
+/* symbol page price history (Phase 2: range chips + line/candles chart).
+   Range chips reuse .chip + its aria-pressed active state; the renderer
+   toggle reuses the .density-toggle segmented control. */
+.price-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.price-controls .chip-row { margin-bottom: 0; }
+
+/* volume band bars sit under the price band, muted so closes stay the ink */
+.vol-bar { fill: var(--muted); opacity: 0.35; }
+
+/* candles: wick high->low + open<->close body, colored by session direction */
+.candle-wick { stroke-width: 1; }
+.candle-up .candle-wick { stroke: var(--pos); }
+.candle-up .candle-body { fill: var(--pos); }
+.candle-down .candle-wick { stroke: var(--neg); }
+.candle-down .candle-body { fill: var(--neg); }

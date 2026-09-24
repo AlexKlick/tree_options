@@ -5,34 +5,12 @@
 // widescreen. Shared by equity curves, stock charts, P&L history, and
 // valuation scenarios.
 
-import {
-  useLayoutEffect,
-  useRef,
-  useState,
-  type PointerEvent as ReactPointerEvent,
-  type RefObject,
-} from 'react'
+import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { HistorySeries } from '../lib/types'
 import { clamp, nearestIndex } from '../lib/interp'
 import { chartGeometry, endLabel, tipTransform } from '../lib/chart'
 import { etTimeMs, usdSigned } from '../lib/format'
-
-const DEFAULT_WIDTH = 640
-
-function useMeasuredWidth(ref: RefObject<HTMLDivElement | null>): number {
-  const [width, setWidth] = useState(DEFAULT_WIDTH)
-  useLayoutEffect(() => {
-    const el = ref.current
-    if (!el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver((entries) => {
-      const w = entries[0]?.contentRect.width
-      if (w && w > 0) setWidth(w)
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [ref])
-  return width
-}
+import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 
 export interface TimeSeriesChartProps {
   series: HistorySeries

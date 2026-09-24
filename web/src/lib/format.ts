@@ -46,6 +46,20 @@ export const usdLevel = (v: number): string =>
 
 export const num2 = (v: number): string => v.toFixed(2)
 
+/** Compact count for volume scale: 1.2M · 940K · 1,234. Trailing ".0" is
+ * dropped so round millions read "2M", and only 5-digit-and-up counts
+ * compact to K (a 4-digit count still reads fine with its comma). */
+export const compactCount = (n: number): string => {
+  const sign = n < 0 ? '-' : ''
+  const abs = Math.abs(n)
+  if (abs >= 1_000_000) {
+    const m = (abs / 1_000_000).toFixed(1)
+    return `${sign}${m.endsWith('.0') ? m.slice(0, -2) : m}M`
+  }
+  if (abs >= 10_000) return `${sign}${Math.round(abs / 1_000)}K`
+  return sign + abs.toLocaleString('en-US')
+}
+
 /** Elapsed age in the unit read at a glance: 42s · 8m · 4h 37m · 2d 2h.
  * The one formatter for every "… ago" / "… old" label. */
 export function ago(seconds: number): string {
