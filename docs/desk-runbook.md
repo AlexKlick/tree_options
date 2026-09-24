@@ -240,6 +240,36 @@ written.
 
 Units set `SuccessExitStatus=3`, so a retryable run is not a failed unit.
 
+## Econometrics: IV history, forecasts, features (Wave 1 D2/D4; manual, no timer yet)
+
+These commands read inputs only; they write under `DESK_STORE`.
+
+- **Inputs:** the chain store, the panel (under its shared flock), the sealed earnings calendar, `earnings-timing.json`, `indices/<X>.csv` and `indices/DTB3.csv` in the stored format written by `record-indices`, and the read-only Polygon cache.
+- **Studies:** `docs/desk/IVHIST-001.md` and `docs/desk/FORECAST-001.md`, with their `-results.md` files.
+- **Resources:** run heavy passes under `host-work` (profile `test`). `ivhist-build` scans the cache in about 3 minutes with a peak of about 0.5 GB.
+
+```bash
+# the IV history (after record-indices has stored DTB3), then its benchmark
+python -m tree_options.desk ivhist-build          # -> iv-history/vwap_atm.json
+python -m tree_options.desk ivhist-001            # -> iv-history/IVHIST-001-verdict.json
+# a session's surface features (after record-chains; needs the panel through D)
+python -m tree_options.desk features --session 2026-09-22   # -> features/<D>.json
+# FORECAST-001 scoring (the forward monitoring re-uses it) and its disclosed
+# earnings-coverage sensitivity figure
+python -m tree_options.desk forecast-001 [--out DIR]
+python -m tree_options.desk forecast-001 --coverage-sensitivity [--out DIR]
+```
+
+**Features: what to read.**
+- `forecast.source` follows `har.FORECAST_001_VERDICT` (PASS, so `har`).
+- `forecast.schedule` is one of `complete`, `incomplete`, `unavailable` or `n/a`. A reporter whose known report dates, sealed plus `earnings-timing.json`, do not reach past the 20-session window is `degraded`: its HAR VRP is withheld (`vrp_withheld`), and `vrp_rv22` is still shown. Run `update-events` so the timing file carries the Nasdaq estimates.
+- `iv_rank.history_label` carries the IVHIST-001 label. It is `unvalidated` when the verdict file scored a different `vwap_atm.json` than the one loaded: a rebuilt history needs a fresh `ivhist-001`.
+- `earnings.implied_move` is null, with a reason, when the two-expiry split is infeasible or a second report falls before the second expiry.
+
+**Sessions** come from the trex calendar. Confirmed closures such as 2025-01-09 are dropped there, through `closure_overrides` in `scripts/gen_trex_calendar.py`. A missing bar is never read as a closure.
+
+**The sealed IVHIST-001 run** read raw vendor snapshots. To reproduce it, point `DESK_STORE/indices` at those files and add `--raw-snapshots` to `ivhist-build` and `ivhist-001`.
+
 ## Long-dated option capture (plan Step 0 item 8)
 
 Daily Polygon bars for the desk's longer-dated options before the free
