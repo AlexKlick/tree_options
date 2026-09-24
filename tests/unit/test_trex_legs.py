@@ -95,6 +95,9 @@ class TestKindsAndMaxLoss:
             ("credit_vertical", PUT_CREDIT, "1.50", 2, "3.50", "700"),  # (5 - 1.50)
             ("credit_vertical", CALL_CREDIT, "1.20", 1, "3.80", "380"),  # (5 - 1.20)
             ("iron_condor", CONDOR, "2.00", 1, "8.00", "800"),  # max(5, 10) - 2
+            # a floor past the narrower 5-wide wing is still below the wider
+            # one: legal, max loss 10 - 6 (the shape check uses the WIDER wing)
+            ("iron_condor", CONDOR, "6.00", 1, "4.00", "400"),
         ],
     )
     def test_max_loss(
