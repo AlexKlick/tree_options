@@ -329,8 +329,10 @@ def _record_dividends(
             client = MassiveClient(
                 api_key=load_api_key(), cache_dir=None, governor=RateGovernor(None), timeout=20.0
             )
-        except MassiveError as exc:
-            print(f"record-dividends: {exc}", file=sys.stderr)
+        except MassiveError as exc:  # fixed text: no key material, no path
+            print(
+                f"record-dividends: no usable Polygon key ({type(exc).__name__})", file=sys.stderr
+            )
             return 1
     run = dividends.record_dividends(
         session, symbols, client=client, clock=clock, dry_run=args.dry_run

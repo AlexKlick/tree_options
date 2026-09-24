@@ -11,7 +11,8 @@ NOT_EVALUABLE, never raised past the check. Money is Decimal: a float
 where money belongs is refused (NOT_EVALUABLE), never coerced.
 
 Rules (thresholds come from :class:`RailLimits`, the sealed playbook's
-``[limits]`` table):
+``[limits]`` table, which may only be equal to or STRICTER than the
+binding :data:`OPERATOR_LIMITS`, checked on every construction):
 
 - ``paper_only``: the account mode is "paper".
 - ``defined_risk``: the legs, kind, quantity and entry price form a valid
@@ -20,12 +21,17 @@ Rules (thresholds come from :class:`RailLimits`, the sealed playbook's
   max loss equals the candidate's stated one.
 - ``max_loss_per_trade``: stated max loss <= the per-trade cap.
 - ``max_book_loss``: the book's max loss (working entries at their cap,
-  as the book view states them) + this trade <= the book cap.
+  as the book view states them) + this trade <= the book cap. A negative
+  position loss is refused (it would manufacture headroom).
 - ``per_underlying``: positions on this underlying held ACCOUNT-WIDE (the
   legacy trex book included) + 1 <= the cap.
 - ``net_beta_delta``: net beta-weighted delta, in $ of P&L per 1% SPY move
   (sum of delta_shares x spot x beta x 0.01), after the trade within
   +/- the cap; a trade that strictly reduces |book delta| always passes.
+  Spot must be strictly positive everywhere (a zero spot would erase a
+  position's delta); beta and delta may be zero or negative. The beta the
+  caller supplies is the Blume-adjusted one (:mod:`tree_options.desk.beta`,
+  0.67 x raw + 0.33); ``beta_raw`` is shown beside it in the detail.
 - ``admissions_per_session``: admissions already made this session + 1
   <= the cap.
 - ``roundtrip_cost``: entry + exit half-spreads on every leg (the exit
@@ -37,35 +43,54 @@ Rules (thresholds come from :class:`RailLimits`, the sealed playbook's
   credit vertical, iron condor) holds no confirmed, sealed OR estimated
   earnings date in [entry session, planned exit], inclusive: a report on
   either end blocks whatever its bmo/amc label says. Debit kinds pass.
-- ``ex_dividend_short_call``: a structure with any short call holds no
-  declared or projected ex-dividend date in [entry session, planned exit],
-  inclusive (early assignment); no dividend data fails closed only for
-  structures with a short call.
-- ``long_single_delta``: a long single's |leg delta| >= the floor.
+- ``ex_dividend_short_call`` (main-session ruling (a), 2026-09-23): an
+  ex-dividend (declared: one day; projected: its uncertainty interval)
+  overlapping [entry session, planned exit] blocks a short call only when
+  that call is EXPOSED at entry: in the money or within
+  :data:`EXDIV_NEAR_MONEY_FRAC` of it (strike <= spot x 1.02) AND its
+  extrinsic value (mid - max(spot - strike, 0)) is below the dividend +
+  :data:`EXDIV_EXTRINSIC_BUFFER_USD`. A short call that is not exposed
+  passes, and the detail says why. This relaxed rail relies on the engine
+  exit rule (carry-forward) that closes any short call ITM with extrinsic
+  below the dividend on the session before the ex-date: it must not go
+  live without that rule. No dividend data fails closed only for
+  structures with a short call; an unknown dividend amount fails closed
+  for a near-the-money one.
+- ``long_single_delta``: a long single's |leg delta| >= the floor. The leg
+  delta must be a per-share delta of the right sign (a call's in [0, 1], a
+  put's in [-1, 0]) and reconcile with the position's delta_shares
+  (leg delta x 100 x quantity, within :data:`DELTA_RECONCILE_TOLERANCE`
+  per share): a unit error is NOT_EVALUABLE, never a pass.
 - ``fresh_chain``: the chain's session is at most
   ``max_chain_age_sessions`` NYSE sessions before the ENTRY session (with 1:
   the latest completed session, for the miner's evening run and for the
   runtime's morning re-check alike), and its as-of stamp is aware, not
   before its session's date and not after ``now``.
-- ``book_short_vega``: net book vega after the trade >= -cap ($ per vol
-  point); a trade that strictly reduces the net short always passes.
+- ``book_short_vega`` (main-session ruling (b)): NET book vega (long vega
+  on one name offsets short vega on another) after the trade >= -cap ($ per
+  vol point); a trade that strictly reduces the net short always passes.
 - ``news_veto``: None means no veto source is configured (PASS, said so);
-  a configured source that is unavailable is NOT_EVALUABLE; a veto FAILs.
+  a configured source must answer with real booleans: unavailable, or an
+  answer missing, is NOT_EVALUABLE; a veto FAILs.
 
-Units the greeks lane (``trex/greeks.py`` ``StructureGreeks``) supplies:
-``delta_shares`` and ``vega_usd_per_volpt`` are POSITION-level (quantity
-and the 100 multiplier included), signed. Spot and beta are per share.
+Units the greeks lane (``trex/greeks.py`` ``StructureGreeks``: floats
+``delta_shares``, ``gamma_shares_per_usd``, ``vega_usd_per_volpt``,
+``theta_usd_per_day``) supplies: WHOLE-POSITION, signed (x100 multiplier x
+quantity, each leg +1 BUY / -1 SELL). :meth:`PositionRisk.from_greeks`
+turns them into the rails' Decimals. Spot and beta are per share.
 """
 
 from __future__ import annotations
 
 import bisect
+import math
 import tomllib
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final, Literal, Protocol
 
 from tree_options.desk.events import EarningsEvent
@@ -113,35 +138,52 @@ _ONE_PCT = Decimal("0.01")
 _CENT = Decimal("0.01")
 _ZERO = Decimal(0)
 
+# Ex-dividend exposure (main-session ruling (a), 2026-09-23; the operator may
+# override): a short call is "near the money" when its strike is at most
+# 2% above spot, and exposed when, near the money, its extrinsic value is
+# below the dividend plus this per-share buffer.
+EXDIV_NEAR_MONEY_FRAC = Decimal("0.02")
+EXDIV_EXTRINSIC_BUFFER_USD = Decimal("0.05")
+# A long single's position delta must match leg delta x 100 x quantity to
+# within this per-share delta (vendor chain delta vs the engine's own
+# Black-Scholes delta differ a little; a unit error differs 100x).
+DELTA_RECONCILE_TOLERANCE = Decimal("0.05")
+
 
 # ------------------------------------------------------------------ limits
 
 
 class RailLimitsError(ValueError):
     """The ``[limits]`` table is missing, has an unknown or a missing key,
-    or a value of the wrong type or range."""
+    or a value of the wrong type or range, or one looser than the
+    operator's binding value."""
 
 
-@dataclass(frozen=True)
-class RailLimits:
-    """The rails' thresholds. Field names are EXACTLY the sealed playbook's
-    ``[limits]`` keys (the playbook lane writes the table with them)."""
+# The BINDING values: the operator's decisions of 2026-09-23 ($500 a trade,
+# $5,000 book, 2 per underlying account-wide, $250 per 1% SPY, 3 admissions a
+# session, 15% round-trip cost, leg OI >= 100, leg spread <= 10% of mid, long
+# single |delta| >= 0.30) plus the rails brief's chain age (1 session) and
+# short-vega cap ($100 per vol point). A configured ``max_*`` may be lower,
+# a ``min_*`` higher; never the other way.
+OPERATOR_LIMITS: Final[Mapping[str, Decimal]] = MappingProxyType(
+    {
+        "max_loss_per_trade_usd": Decimal("500"),
+        "max_book_loss_usd": Decimal("5000"),
+        "max_per_underlying": Decimal("2"),
+        "max_net_beta_delta_usd_per_1pct_spy": Decimal("250"),
+        "max_admissions_per_session": Decimal("3"),
+        "max_roundtrip_cost_frac_of_max_loss": Decimal("0.15"),
+        "min_leg_open_interest": Decimal("100"),
+        "max_leg_spread_frac_of_mid": Decimal("0.10"),
+        "min_long_single_abs_delta": Decimal("0.30"),
+        "max_chain_age_sessions": Decimal("1"),
+        "max_book_short_vega_usd_per_volpt": Decimal("100"),
+    }
+)
 
-    max_loss_per_trade_usd: Decimal
-    max_book_loss_usd: Decimal
-    max_per_underlying: int
-    max_net_beta_delta_usd_per_1pct_spy: Decimal
-    max_admissions_per_session: int
-    max_roundtrip_cost_frac_of_max_loss: Decimal
-    min_leg_open_interest: int
-    max_leg_spread_frac_of_mid: Decimal
-    min_long_single_abs_delta: Decimal
-    max_chain_age_sessions: int
-    max_book_short_vega_usd_per_volpt: Decimal
-
-
-# key -> (kind, lower bound, lower inclusive, upper bound or None). Money
-# and fractions are TOML strings (never floats); counts are TOML integers.
+# key -> (kind, lower bound, lower inclusive, upper bound or None): the
+# sanity range; the operator bound above is checked on top of it. Money
+# and fractions are Decimals (TOML strings); counts are ints (TOML integers).
 _LIMIT_SPEC: dict[str, tuple[str, Decimal, bool, Decimal | None]] = {
     "max_loss_per_trade_usd": ("decimal", _ZERO, False, None),
     "max_book_loss_usd": ("decimal", _ZERO, False, None),
@@ -156,33 +198,74 @@ _LIMIT_SPEC: dict[str, tuple[str, Decimal, bool, Decimal | None]] = {
     "max_book_short_vega_usd_per_volpt": ("decimal", _ZERO, True, None),
 }
 LIMIT_KEYS: frozenset[str] = frozenset(_LIMIT_SPEC)
+assert frozenset(OPERATOR_LIMITS) == LIMIT_KEYS
 
 
-def _limit_value(key: str, raw: object) -> Decimal | int:
+def _check_limit(key: str, value: object) -> None:
     kind, lo, lo_inclusive, hi = _LIMIT_SPEC[key]
     if kind == "int":
-        if not isinstance(raw, int) or isinstance(raw, bool):
-            raise RailLimitsError(f"[limits] {key}: expected a TOML integer, got {raw!r}")
-        value: Decimal | int = raw
-        num = Decimal(raw)
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise RailLimitsError(f"[limits] {key}: expected an integer, got {value!r}")
+        num = Decimal(value)
     else:
-        if not isinstance(raw, str):
-            raise RailLimitsError(
-                f'[limits] {key}: money and fractions are strings (e.g. "500"), got {raw!r}'
-            )
-        try:
-            num = Decimal(raw.strip())
-        except ArithmeticError:
-            raise RailLimitsError(f"[limits] {key}: {raw!r} is not a decimal") from None
-        if not num.is_finite():
-            raise RailLimitsError(f"[limits] {key}: {raw!r} is not finite")
-        value = num
+        if not isinstance(value, Decimal) or not value.is_finite():
+            raise RailLimitsError(f"[limits] {key}: expected a finite Decimal, got {value!r}")
+        num = value
     if num < lo or (num == lo and not lo_inclusive) or (hi is not None and num > hi):
         bound = f"{'>=' if lo_inclusive else '>'} {lo}" + (
             f" and <= {hi}" if hi is not None else ""
         )
-        raise RailLimitsError(f"[limits] {key}: {raw!r} out of range (must be {bound})")
-    return value
+        raise RailLimitsError(f"[limits] {key}: {value!r} out of range (must be {bound})")
+    binding = OPERATOR_LIMITS[key]
+    looser = num > binding if key.startswith("max_") else num < binding
+    if looser:
+        raise RailLimitsError(
+            f"[limits] {key}: {value} is looser than the operator's binding {binding}"
+        )
+
+
+@dataclass(frozen=True)
+class RailLimits:
+    """The rails' thresholds. Field names are EXACTLY the sealed playbook's
+    ``[limits]`` keys (the playbook lane writes the table with them). Every
+    construction is validated (types, ranges, and never looser than
+    :data:`OPERATOR_LIMITS`), direct or through the loader."""
+
+    max_loss_per_trade_usd: Decimal
+    max_book_loss_usd: Decimal
+    max_per_underlying: int
+    max_net_beta_delta_usd_per_1pct_spy: Decimal
+    max_admissions_per_session: int
+    max_roundtrip_cost_frac_of_max_loss: Decimal
+    min_leg_open_interest: int
+    max_leg_spread_frac_of_mid: Decimal
+    min_long_single_abs_delta: Decimal
+    max_chain_age_sessions: int
+    max_book_short_vega_usd_per_volpt: Decimal
+
+    def __post_init__(self) -> None:
+        for key in _LIMIT_SPEC:
+            _check_limit(key, getattr(self, key))
+
+
+def _limit_value(key: str, raw: object) -> Decimal | int:
+    """A TOML value parsed by type (ranges are RailLimits' to check):
+    counts are TOML integers, money and fractions TOML strings."""
+    if _LIMIT_SPEC[key][0] == "int":
+        if not isinstance(raw, int) or isinstance(raw, bool):
+            raise RailLimitsError(f"[limits] {key}: expected a TOML integer, got {raw!r}")
+        return raw
+    if not isinstance(raw, str):
+        raise RailLimitsError(
+            f'[limits] {key}: money and fractions are strings (e.g. "500"), got {raw!r}'
+        )
+    try:
+        num = Decimal(raw.strip())
+    except ArithmeticError:
+        raise RailLimitsError(f"[limits] {key}: {raw!r} is not a decimal") from None
+    if not num.is_finite():
+        raise RailLimitsError(f"[limits] {key}: {raw!r} is not finite")
+    return num
 
 
 def limits_from_table(table: Mapping[str, Any]) -> RailLimits:
@@ -231,23 +314,71 @@ class CandidateLeg:
     delta: Decimal | None
 
 
+class WholePositionGreeks(Protocol):
+    """The fields the rails read from the engine lane's ``StructureGreeks``."""
+
+    @property
+    def delta_shares(self) -> float: ...
+    @property
+    def vega_usd_per_volpt(self) -> float: ...
+
+
+def _greek(value: object) -> Decimal | None:
+    """A model float as an exact Decimal of its repr; non-finite -> None."""
+    if isinstance(value, float):
+        return Decimal(repr(value)) if math.isfinite(value) else None
+    if isinstance(value, Decimal):
+        return value if value.is_finite() else None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return Decimal(value)
+    return None
+
+
 @dataclass(frozen=True)
 class PositionRisk:
-    """Position-level risk inputs (see the module docstring for units)."""
+    """Position-level risk inputs (see the module docstring for units).
+    ``beta`` is the one the rail uses (Blume-adjusted); ``beta_raw`` is the
+    raw regression beta, shown in the detail only."""
 
     delta_shares: Decimal | None = None
     vega_usd_per_volpt: Decimal | None = None
     spot: Decimal | None = None
     beta: Decimal | None = None
+    beta_raw: Decimal | None = None
+
+    @classmethod
+    def from_greeks(
+        cls,
+        greeks: WholePositionGreeks | None,
+        *,
+        spot: Decimal | None,
+        beta: Decimal | None,
+        beta_raw: Decimal | None = None,
+    ) -> PositionRisk:
+        """From ``trex.greeks.StructureGreeks`` (whole-position floats); no
+        greeks (None: not evaluable) or a non-finite one stays missing."""
+        return cls(
+            delta_shares=_greek(greeks.delta_shares) if greeks is not None else None,
+            vega_usd_per_volpt=_greek(greeks.vega_usd_per_volpt) if greeks is not None else None,
+            spot=spot,
+            beta=beta,
+            beta_raw=beta_raw,
+        )
 
 
 @dataclass(frozen=True)
 class ExDividend:
-    """An ex-dividend date: ``declared`` by the issuer, or ``projected``
-    from the dividend schedule (see :mod:`tree_options.desk.dividends`)."""
+    """An ex-dividend: ``declared`` by the issuer (``earliest`` = ``latest``
+    = ``ex_date``), or ``projected`` from the regular schedule, with its
+    uncertainty interval [earliest, latest] around the expected ``ex_date``
+    (see :mod:`tree_options.desk.dividends`). ``cash_amount`` is per share
+    (the last regular amount for a projection); None when unknown."""
 
     ex_date: date
     status: str  # declared | projected
+    earliest: date | None = None  # None: ex_date
+    latest: date | None = None  # None: ex_date
+    cash_amount: Decimal | None = None
     detail: str = ""
 
 
@@ -386,6 +517,13 @@ def _money(value: object, what: str) -> Decimal:
     return value
 
 
+def _positive(value: object, what: str) -> Decimal:
+    num = _money(value, what)
+    if num <= 0:
+        raise _Missing(f"{what} {num} is not positive")
+    return num
+
+
 def _count(value: object, what: str) -> int:
     if value is None:
         raise _Missing(f"{what} missing")
@@ -431,13 +569,21 @@ def _book_positions(book: BookView | None) -> tuple[BookPosition, ...]:
 
 def _dollars_per_1pct_spy(risk: PositionRisk, who: str) -> Decimal:
     delta = _money(risk.delta_shares, f"{who} delta_shares")
-    spot = _money(risk.spot, f"{who} spot")
+    spot = _positive(risk.spot, f"{who} spot")
     beta = _money(risk.beta, f"{who} beta")
     return delta * spot * beta * _ONE_PCT
 
 
 def _in_window(d: date, start: date, end: date) -> bool:
     return start <= d <= end
+
+
+def _ex_interval(x: ExDividend) -> tuple[date, date]:
+    lo = x.earliest if x.earliest is not None else x.ex_date
+    hi = x.latest if x.latest is not None else x.ex_date
+    if not all(isinstance(d, date) for d in (lo, hi, x.ex_date)) or not lo <= x.ex_date <= hi:
+        raise _Missing(f"ex-dividend {x.ex_date}: incoherent interval [{lo}, {hi}]")
+    return lo, hi
 
 
 def _window(cand: Candidate, ctx: RailContext) -> tuple[date, date]:
@@ -519,7 +665,11 @@ def _max_book_loss(
 ) -> Outcome:
     positions = _book_positions(book)
     loss = _money(cand.max_loss_usd, "max loss")
-    held = sum((_money(p.max_loss_usd, f"{p.id} max loss") for p in positions), _ZERO)
+    losses = [(p.id, _money(p.max_loss_usd, f"{p.id} max loss")) for p in positions]
+    negative = [f"{pid} {x}" for pid, x in losses if x < 0]
+    if negative:
+        raise _Missing(f"negative position max loss (no headroom from it): {', '.join(negative)}")
+    held = sum((x for _pid, x in losses), _ZERO)
     total = held + loss
     cap = lim.max_book_loss_usd
     working = sum(1 for p in positions if p.status != "open")
@@ -556,9 +706,10 @@ def _net_beta_delta(
     mine = _dollars_per_1pct_spy(cand.risk, "candidate")
     after = before + mine
     cap = lim.max_net_beta_delta_usd_per_1pct_spy
+    raw = f", raw {cand.risk.beta_raw}" if cand.risk.beta_raw is not None else ""
     what = (
         f"net beta delta {_usd(before)} + {_usd(mine)} = {_usd(after)} per 1% SPY"
-        f" (cap +/-{_usd(cap)})"
+        f" (cap +/-{_usd(cap)}; candidate beta {cand.risk.beta}{raw})"
     )
     if abs(after) <= cap:
         return PASS, what
@@ -677,17 +828,48 @@ def _earnings(cand: Candidate, book: BookView | None, ctx: RailContext, lim: Rai
 def _ex_dividend(
     cand: Candidate, book: BookView | None, ctx: RailContext, lim: RailLimits
 ) -> Outcome:
-    short_calls = [g for g in cand.legs if g.right == "C" and g.action == "SELL"]
+    short_calls = [(i, g) for i, g in enumerate(cand.legs) if g.right == "C" and g.action == "SELL"]
     if not short_calls:
         return PASS, "no short call"
     start, end = _window(cand, ctx)
     if cand.ex_dividends is None:
         raise _Missing(f"no dividend data for {cand.underlying} (short call)")
-    hits = [x for x in cand.ex_dividends if _in_window(x.ex_date, start, end)]
-    if hits:
-        dates = ", ".join(f"{x.ex_date} ({x.status})" for x in hits)
-        return FAIL, f"short call held across ex-dividend in [{start}, {end}]: {dates}"
-    return PASS, f"no ex-dividend in [{start}, {end}]"
+    hits: list[ExDividend] = []
+    for x in cand.ex_dividends:
+        lo, hi = _ex_interval(x)
+        if lo <= end and hi >= start:  # the ex-date interval overlaps the hold
+            hits.append(x)
+    if not hits:
+        return PASS, f"no ex-dividend in [{start}, {end}]"
+    spot = _positive(cand.risk.spot, "candidate spot")
+    near_edge = spot * (1 + EXDIV_NEAR_MONEY_FRAC)
+    exposed: list[str] = []
+    safe: list[str] = []
+    for x in hits:
+        for i, g in short_calls:
+            where = f"leg {i} C{g.strike} over ex {x.ex_date} ({x.status})"
+            if g.strike > near_edge:
+                safe.append(
+                    f"{where}: strike above {near_edge.quantize(_CENT)}, not near the money"
+                )
+                continue
+            bid, ask = _quote(g, i)
+            extrinsic = (bid + ask) / 2 - max(spot - g.strike, _ZERO)
+            div = _money(x.cash_amount, f"dividend amount of ex {x.ex_date}")
+            if div < 0:
+                raise _Missing(f"dividend amount {div} of ex {x.ex_date} is negative")
+            need = div + EXDIV_EXTRINSIC_BUFFER_USD
+            if extrinsic < need:
+                exposed.append(f"{where}: extrinsic {extrinsic} < dividend {div} + {need - div}")
+            else:
+                safe.append(f"{where}: extrinsic {extrinsic} >= dividend {div} + {need - div}")
+    if exposed:
+        return FAIL, "short call exposed to early assignment: " + "; ".join(exposed)
+    return PASS, (
+        "short call not exposed at entry: "
+        + "; ".join(safe)
+        + " (relies on the engine's pre-ex-date short-call exit)"
+    )
 
 
 def _long_single_delta(
@@ -697,7 +879,23 @@ def _long_single_delta(
         return PASS, f"{cand.kind} is not a long single"
     if len(cand.legs) != 1:
         raise _Missing(f"long single with {len(cand.legs)} legs")
-    delta = _money(cand.legs[0].delta, "leg delta")
+    g = cand.legs[0]
+    delta = _money(g.delta, "leg delta")
+    lo, hi = (_ZERO, Decimal(1)) if g.right == "C" else (Decimal(-1), _ZERO)
+    if not lo <= delta <= hi:
+        raise _Missing(f"leg delta {delta} is impossible for a {g.right} (per share: [{lo}, {hi}])")
+    qty = _count(cand.quantity, "quantity")
+    if qty < 1:
+        raise _Missing("quantity below 1")
+    shares = _money(cand.risk.delta_shares, "position delta_shares")
+    sign = 1 if g.action == "BUY" else -1
+    expected = delta * MULTIPLIER * qty * sign
+    tolerance = DELTA_RECONCILE_TOLERANCE * MULTIPLIER * qty
+    if abs(shares - expected) > tolerance:
+        raise _Missing(
+            f"position delta_shares {shares} does not reconcile with leg delta {delta}"
+            f" x 100 x {qty} = {expected} (+/- {tolerance})"
+        )
     floor = lim.min_long_single_abs_delta
     if abs(delta) >= floor:
         return PASS, f"|delta| {abs(delta)} >= {floor}"
@@ -764,6 +962,11 @@ def _news_veto(
     v = cand.news_veto
     if v is None:
         return PASS, "no news veto source configured"
+    if type(v.available) is not bool or type(v.veto) is not bool:
+        raise _Missing(
+            f"news veto source {v.source!r} answered without booleans"
+            f" (available={v.available!r}, veto={v.veto!r})"
+        )
     if not v.available:
         raise _Missing(f"news veto source {v.source!r} unavailable")
     if v.veto:

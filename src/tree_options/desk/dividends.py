@@ -8,27 +8,37 @@ live request on 2026-09-23 (AAPL) confirmed the Starter plan serves it
 dividend_type).
 
 Store: ``DESK_STORE/dividends/<D>/<SYM>.json``, one snapshot per symbol and
-session, written atomically and NEVER rewritten: a re-run for the same
-session skips the symbol before any request (idempotent). A snapshot
-holds every record with an ex-date on or after :func:`history_start` (the
-first of the month two years back), money as strings. A payer with no
-records in that window is recorded with an empty list (a known
-non-payer), which is different from no snapshot at all.
+session, NEVER rewritten: a re-run for the same session skips the symbol
+before any request (idempotent), and a snapshot is published with a hard
+link from a private temp file, which fails if the name exists, so of two
+concurrent recorders the first to publish wins and the other reports
+"exists". A snapshot holds every record with an ex-date on or after
+:func:`history_start` (the first of the month two years back), money as
+strings. A payer with no records in that window is recorded with an empty
+list (a known non-payer), which is different from no snapshot at all.
+Failures are reported as fixed codes (``not_entitled``, ``auth``,
+``vendor_error``, ``transport``, ``rate_limited``, ``pagination``): the
+client keeps vendor text in its exceptions, and that text may echo the key.
 
 Reading (:func:`ex_dividends_for`), as of a session:
 
 * the newest snapshot dated on or before it, if at most
-  :data:`MAX_AGE_SESSIONS` sessions old; else None (unavailable: the rail
-  fails closed for structures with a short call);
+  :data:`MAX_AGE_SESSIONS` sessions old and its document is what its path
+  says (schema, source, symbol, session, and an aware ``fetched_at`` not
+  before that session); else None (unavailable: the rail fails closed for
+  structures with a short call);
 * DECLARED ex-dates: every record whose declaration date is on or before
-  as-of (a missing declaration date counts as known; it can only block);
-* PROJECTED ex-dates: from the latest regular cash dividend (type CD) with
-  a known schedule (frequency 1, 2, 4 or 12 a year: every 365, 182, 91 or
-  30 days), the k-th next ex-date is projected
-  :data:`PROJECTION_EARLY_DAYS` days EARLY (last + k x period - 7 days), so
-  an issuer that goes a week early is still caught; any other regular
-  frequency cannot be projected and makes the answer None (fail closed).
-  Special dividends are declared dates only, never projected.
+  as-of (a missing declaration date counts as known; it can only block),
+  special dividends included, each a one-day interval;
+* PROJECTED ex-dates: REGULAR records are every type except the special
+  and capital-gain ones (SC, LT, ST), an unknown or missing type included.
+  From the latest regular record, whose schedule must be known (frequency
+  1, 2, 4 or 12 a year: every 365, 182, 91 or 30 days; missing, 0 or any
+  other value makes the whole answer None, fail closed), the k-th next
+  ex-date is expected at last + k x period and carries the uncertainty
+  interval +/- :data:`PROJECTION_SLACK_DAYS` days; the rail blocks every
+  hold that overlaps the interval. Only a later regular payment moves the
+  schedule on: a special dividend never suppresses a projection.
 
 Calendar-day steps are epoch arithmetic (the repo bans timedelta outside
 ``time/``).
@@ -39,6 +49,7 @@ from __future__ import annotations
 import bisect
 import json
 import os
+import tempfile
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -47,25 +58,41 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from tree_options.data.massive_client import (
+    MassiveApiError,
     MassiveAuthError,
     MassiveAuthRejectedError,
     MassiveClient,
     MassiveError,
     MassiveNotEntitledError,
+    MassivePaginationError,
+    MassiveRateLimitError,
+    MassiveTransportError,
 )
 from tree_options.desk import paths
 from tree_options.desk.rails import ExDividend
+from tree_options.trex.clock import ET
 
 ENDPOINT = "/v3/reference/dividends"
 SOURCE = "polygon /v3/reference/dividends"
 SCHEMA = "desk.dividends/1"
 HISTORY_YEARS = 2
 MAX_AGE_SESSIONS = 5
-PROJECTION_EARLY_DAYS = 7
+PROJECTION_SLACK_DAYS = 7
 # Polygon ``frequency`` (payments a year) -> days between ex-dates
 PERIOD_DAYS: dict[int, int] = {1: 365, 2: 182, 4: 91, 12: 30}
-REGULAR_TYPE = "CD"
+# special cash and capital-gain distributions: never a schedule
+IRREGULAR_TYPES = frozenset({"SC", "LT", "ST"})
 PAGE_LIMIT = 1000
+# fixed failure codes (vendor text may echo the key: never reported)
+_FAILURE_CODES: tuple[tuple[type[MassiveError], str, bool], ...] = (
+    (MassiveNotEntitledError, "not_entitled", True),
+    (MassiveAuthRejectedError, "auth", True),
+    (MassiveAuthError, "auth", True),
+    (MassiveRateLimitError, "rate_limited", False),
+    (MassiveTransportError, "transport", False),
+    (MassivePaginationError, "pagination", False),
+    (MassiveApiError, "vendor_error", False),
+)
 _DAY_S = 86_400
 _FIELDS = ("declaration_date", "ex_dividend_date", "pay_date", "record_date")
 
@@ -144,14 +171,31 @@ class DividendRun:
         return f"record-dividends {self.session} {parts} rc={self.exit_code}"
 
 
-def _write_atomic(path: Path, doc: Mapping[str, Any]) -> None:
+def _publish_once(path: Path, doc: Mapping[str, Any]) -> bool:
+    """Write ``doc`` to a private temp file and hard-link it to ``path``:
+    atomic, and never replacing: False when ``path`` already exists (a
+    concurrent recorder published first; its snapshot stands)."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    tmp = Path(tmp_name)
     try:
-        tmp.write_text(json.dumps(doc, indent=1, sort_keys=True) + "\n")
-        os.replace(tmp, path)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(doc, indent=1, sort_keys=True) + "\n")
+        try:
+            os.link(tmp, path)
+        except FileExistsError:
+            return False
+        return True
     finally:
         tmp.unlink(missing_ok=True)
+
+
+def _failure(exc: MassiveError) -> SymbolResult:
+    """A fixed code per failure class: never the exception's text."""
+    for cls, code, hard in _FAILURE_CODES:
+        if isinstance(exc, cls):
+            return SymbolResult("failed", detail=code, hard=hard)
+    return SymbolResult("failed", detail="vendor_error")
 
 
 def record_dividends(
@@ -185,11 +229,8 @@ def record_dividends(
                 },
                 use_cache=False,
             )
-        except (MassiveNotEntitledError, MassiveAuthRejectedError, MassiveAuthError) as exc:
-            results[sym] = SymbolResult("failed", detail=f"{type(exc).__name__}: {exc}", hard=True)
-            continue
         except MassiveError as exc:
-            results[sym] = SymbolResult("failed", detail=f"{type(exc).__name__}: {exc}")
+            results[sym] = _failure(exc)
             continue
         records = sorted(
             (normalize_record(r) for r in page.results if r.get("ticker") == sym),
@@ -198,7 +239,7 @@ def record_dividends(
         if dry_run:
             results[sym] = SymbolResult("dry-run", len(records))
             continue
-        _write_atomic(
+        published = _publish_once(
             target,
             {
                 "schema": SCHEMA,
@@ -211,7 +252,7 @@ def record_dividends(
                 "records": records,
             },
         )
-        results[sym] = SymbolResult("ok", len(records))
+        results[sym] = SymbolResult("ok", len(records)) if published else SymbolResult("exists")
     return DividendRun(session, results)
 
 
@@ -241,6 +282,8 @@ def _date_or_none(raw: object) -> date | None:
 def snapshot_from_doc(doc: Mapping[str, Any]) -> DividendSnapshot:
     if doc.get("schema") != SCHEMA:
         raise ValueError(f"not a {SCHEMA} document")
+    if doc.get("source") != SOURCE:
+        raise ValueError(f"source {doc.get('source')!r} is not {SOURCE!r}")
     records = []
     for r in doc["records"]:
         ex = _date_or_none(r.get("ex_dividend_date"))
@@ -256,9 +299,15 @@ def snapshot_from_doc(doc: Mapping[str, Any]) -> DividendSnapshot:
                 dividend_type=r.get("dividend_type"),
             )
         )
+    session = date.fromisoformat(str(doc["session"]))
+    fetched = datetime.fromisoformat(str(doc["fetched_at"]))
+    if fetched.tzinfo is None:
+        raise ValueError("fetched_at carries no zone")
+    if fetched.astimezone(ET).date() < session:
+        raise ValueError(f"fetched {fetched.isoformat()} before its session {session}")
     return DividendSnapshot(
         symbol=str(doc["symbol"]),
-        session=date.fromisoformat(str(doc["session"])),
+        session=session,
         records=tuple(sorted(records, key=lambda r: r.ex_date)),
     )
 
@@ -294,42 +343,58 @@ def load_snapshot(
             return None
         try:
             doc = json.loads((root / day.isoformat() / f"{symbol}.json").read_text())
-            return snapshot_from_doc(doc)
-        except (OSError, ValueError, KeyError, TypeError, ArithmeticError):
+            snap = snapshot_from_doc(doc)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, ArithmeticError):
             return None
+        # the document must be what its path says: no other symbol's
+        # history, no older snapshot copied into a newer directory
+        if snap.symbol != symbol or snap.session != day:
+            return None
+        return snap
     return None
 
 
 def ex_dividends(
     snapshot: DividendSnapshot, *, as_of: date, start: date, end: date
 ) -> tuple[ExDividend, ...] | None:
-    """Declared and projected ex-dates in ``[start, end]`` known as of
-    ``as_of``; None when the regular schedule can't be projected."""
+    """Declared ex-dates in ``[start, end]`` and projected ex-dates whose
+    uncertainty interval overlaps it, known as of ``as_of``; None when the
+    latest regular record's schedule is unknown."""
     known = [r for r in snapshot.records if r.declared is None or r.declared <= as_of]
     out = [
-        ExDividend(r.ex_date, "declared", f"{r.dividend_type} {r.cash_amount}")
+        ExDividend(
+            ex_date=r.ex_date,
+            status="declared",
+            earliest=r.ex_date,
+            latest=r.ex_date,
+            cash_amount=r.cash_amount,
+            detail=f"{r.dividend_type} {r.cash_amount}",
+        )
         for r in known
         if start <= r.ex_date <= end
     ]
-    regular = [r for r in known if r.dividend_type == REGULAR_TYPE and r.frequency]
+    regular = [r for r in known if r.dividend_type not in IRREGULAR_TYPES]
     if regular:
         last = max(regular, key=lambda r: r.ex_date)
-        assert last.frequency is not None
-        period = PERIOD_DAYS.get(last.frequency)
+        period = PERIOD_DAYS.get(last.frequency) if isinstance(last.frequency, int) else None
         if period is None:
-            return None
-        latest_declared = max(r.ex_date for r in known)
+            return None  # a regular payer with an unknown schedule: fail closed
         k = 1
         while True:
-            when = _plus_days(last.ex_date, k * period - PROJECTION_EARLY_DAYS)
-            if when > end:
+            expected = _plus_days(last.ex_date, k * period)
+            earliest = _plus_days(expected, -PROJECTION_SLACK_DAYS)
+            latest = _plus_days(expected, PROJECTION_SLACK_DAYS)
+            if earliest > end:
                 break
-            if when > latest_declared and when >= start:
+            if latest >= start:
                 out.append(
                     ExDividend(
-                        when,
-                        "projected",
-                        f"{last.ex_date} + {k} x {period}d - {PROJECTION_EARLY_DAYS}d",
+                        ex_date=expected,
+                        status="projected",
+                        earliest=earliest,
+                        latest=latest,
+                        cash_amount=last.cash_amount,
+                        detail=f"{last.ex_date} + {k} x {period}d +/- {PROJECTION_SLACK_DAYS}d",
                     )
                 )
             k += 1

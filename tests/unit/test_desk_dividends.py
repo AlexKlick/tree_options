@@ -179,6 +179,59 @@ class TestRecord:
         assert run.results["AAPL"].status == "failed"
         assert run.exit_code == 1
 
+    def test_a_concurrent_recorder_s_snapshot_wins(self, store) -> None:
+        # P2-11: another recorder publishes while this one is fetching
+        target = store / "dividends" / "2026-09-23" / "AAPL.json"
+        theirs = b'{"published": "first"}\n'
+
+        class RacingWire(FakeWire):
+            def __call__(self, url: str, *, timeout: float) -> HttpResponse:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(theirs)
+                return super().__call__(url, timeout=timeout)
+
+        run = dividends.record_dividends(
+            SESSION,
+            ["AAPL"],
+            client=_client(RacingWire({"AAPL": _ok(AAPL)})),
+            clock=lambda: datetime(2026, 9, 23, 19, 0, tzinfo=ET),
+        )
+        assert run.results["AAPL"].status == "exists"
+        assert target.read_bytes() == theirs  # never replaced
+        assert [p.name for p in target.parent.iterdir()] == ["AAPL.json"]  # no temp left
+        assert run.exit_code == 0
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            {"status": "NOT_AUTHORIZED", "message": f"not entitled: /v3/x?apiKey={KEY}"},
+            {"status": "ERROR", "message": f"bad request for apiKey={KEY}"},
+        ],
+    )
+    def test_vendor_text_never_reaches_the_detail(
+        self, body, store, static_calendar, capsys
+    ) -> None:
+        # P2-12: the client passes application-status messages through
+        # unredacted; the recorder reports fixed codes only
+        run = dividends.record_dividends(
+            SESSION,
+            ["AAPL"],
+            client=_client(FakeWire({"AAPL": body})),
+            clock=lambda: datetime(2026, 9, 23, 19, 0, tzinfo=ET),
+        )
+        detail = run.results["AAPL"].detail
+        assert KEY not in detail and "apiKey" not in detail
+        assert detail in {"not_entitled", "vendor_error"}
+        rc = run_cli(
+            ["record-dividends", "--session", "2026-09-23", "--symbols", "KO"],
+            now=datetime(2026, 9, 23, 19, 0, tzinfo=ET),
+            cal=static_calendar,
+            dividend_client=_client(FakeWire({"KO": body})),
+        )
+        out = capsys.readouterr()
+        assert rc == 1
+        assert KEY not in out.out + out.err
+
     def test_dry_run_writes_nothing(self, store) -> None:
         wire = FakeWire({"AAPL": _ok(AAPL)})
         run = dividends.record_dividends(
@@ -207,92 +260,120 @@ def _snapshot(records: list[dict], session: str = "2026-09-23") -> dividends.Div
     )
 
 
+def _ex(recs: list[dict], as_of: date, start: date, end: date):
+    return dividends.ex_dividends(_snapshot(recs), as_of=as_of, start=start, end=end)
+
+
+A0924 = date(2026, 9, 24)
+
+
 class TestExDates:
-    def test_projects_the_next_quarterly_ex_date_early(self) -> None:
+    """A projection is the expected date last + k x period with the interval
+    [expected - 7, expected + 7] days; it is returned when that interval
+    overlaps the hold."""
+
+    def test_projects_the_next_quarterly_ex_date_as_an_interval(self) -> None:
         # last declared 2026-08-10, quarterly: + 91 days = 2026-11-09,
-        # projected 7 days early = 2026-11-02
-        got = dividends.ex_dividends(
-            _snapshot(AAPL),
-            as_of=date(2026, 9, 24),
-            start=date(2026, 9, 24),
-            end=date(2026, 11, 20),
+        # interval [2026-11-02, 2026-11-16], the last regular amount 0.27
+        got = _ex(AAPL, A0924, A0924, date(2026, 11, 20))
+        assert got == (
+            ExDividend(
+                ex_date=date(2026, 11, 9),
+                status="projected",
+                earliest=date(2026, 11, 2),
+                latest=date(2026, 11, 16),
+                cash_amount=Decimal("0.27"),
+                detail=got[0].detail,
+            ),
         )
-        assert got == (ExDividend(date(2026, 11, 2), "projected", got[0].detail),)
         assert "2026-08-10" in got[0].detail
 
-    def test_window_before_the_projection_is_clear(self) -> None:
-        got = dividends.ex_dividends(
-            _snapshot(AAPL), as_of=date(2026, 9, 24), start=date(2026, 9, 24), end=date(2026, 11, 1)
-        )
-        assert got == ()
+    @pytest.mark.parametrize(
+        ("start", "end", "hit"),
+        [
+            (A0924, date(2026, 11, 1), False),  # ends before the interval
+            (A0924, date(2026, 11, 2), True),  # ends on its early edge
+            (date(2026, 11, 3), date(2026, 11, 10), True),  # entered after the early edge
+            (date(2026, 11, 16), date(2026, 11, 30), True),  # entered on its late edge
+            (date(2026, 11, 17), date(2026, 11, 30), False),  # entered after it
+        ],
+    )
+    def test_the_whole_interval_blocks(self, start, end, hit) -> None:
+        got = _ex(AAPL, A0924, start, end)
+        assert [x.ex_date for x in got] == ([date(2026, 11, 9)] if hit else [])
 
     def test_projection_repeats_through_a_long_window(self) -> None:
-        # 2026-08-10 + 91k - 7: k=1 2026-11-02, k=2 2027-02-01, k=3 2027-05-03
-        got = dividends.ex_dividends(
-            _snapshot(AAPL), as_of=date(2026, 9, 24), start=date(2026, 9, 24), end=date(2027, 5, 3)
-        )
+        # 2026-08-10 + 91k: k=1 2026-11-09, k=2 2027-02-08, k=3 2027-05-10
+        # (interval from 2027-05-03, the window's last day)
+        got = _ex(AAPL, A0924, A0924, date(2027, 5, 3))
         assert [(x.ex_date, x.status) for x in got] == [
-            (date(2026, 11, 2), "projected"),
-            (date(2027, 2, 1), "projected"),
-            (date(2027, 5, 3), "projected"),
+            (date(2026, 11, 9), "projected"),
+            (date(2027, 2, 8), "projected"),
+            (date(2027, 5, 10), "projected"),
         ]
 
     def test_declared_future_date_is_used_and_projection_continues_from_it(self) -> None:
         recs = [*AAPL, _rec("AAPL", "2026-11-09", "2026-09-20")]
-        got = dividends.ex_dividends(
-            _snapshot(recs), as_of=date(2026, 9, 24), start=date(2026, 9, 24), end=date(2027, 2, 5)
-        )
-        # 2026-11-09 declared; next: 2026-11-09 + 91 - 7 = 2027-02-01
-        assert [(x.ex_date, x.status) for x in got] == [
-            (date(2026, 11, 9), "declared"),
-            (date(2027, 2, 1), "projected"),
+        got = _ex(recs, A0924, A0924, date(2027, 2, 5))
+        # 2026-11-09 declared (a one-day interval); next: + 91 = 2027-02-08,
+        # interval from 2027-02-01
+        assert [(x.ex_date, x.status, x.earliest, x.latest) for x in got] == [
+            (date(2026, 11, 9), "declared", date(2026, 11, 9), date(2026, 11, 9)),
+            (date(2027, 2, 8), "projected", date(2027, 2, 1), date(2027, 2, 15)),
         ]
 
     def test_a_declaration_after_as_of_is_not_known_yet(self) -> None:
         recs = [*AAPL, _rec("AAPL", "2026-11-09", "2026-10-30")]
-        got = dividends.ex_dividends(
-            _snapshot(recs),
-            as_of=date(2026, 9, 24),
-            start=date(2026, 9, 24),
-            end=date(2026, 11, 20),
-        )
-        assert [(x.ex_date, x.status) for x in got] == [(date(2026, 11, 2), "projected")]
+        got = _ex(recs, A0924, A0924, date(2026, 11, 20))
+        assert [(x.ex_date, x.status) for x in got] == [(date(2026, 11, 9), "projected")]
 
     def test_special_dividends_are_declared_dates_but_never_projected(self) -> None:
         recs = [_rec("COST", "2026-10-05", "2026-09-15", amt="15", freq=0, kind="SC")]
-        got = dividends.ex_dividends(
-            _snapshot(recs), as_of=date(2026, 9, 24), start=date(2026, 9, 24), end=date(2027, 6, 1)
-        )
+        got = _ex(recs, A0924, A0924, date(2027, 6, 1))
         assert [(x.ex_date, x.status) for x in got] == [(date(2026, 10, 5), "declared")]
+        assert got[0].cash_amount == Decimal("15")
+
+    def test_a_special_dividend_never_suppresses_the_regular_projection(self) -> None:
+        # P1-7: quarterly last 2026-08-10, a special declared for 2026-12-15:
+        # the 2026-11-09 regular projection still stands
+        recs = [*AAPL, _rec("AAPL", "2026-12-15", "2026-09-20", amt="1", freq=0, kind="SC")]
+        got = _ex(recs, A0924, A0924, date(2026, 12, 31))
+        assert [(x.ex_date, x.status) for x in got] == [
+            (date(2026, 11, 9), "projected"),
+            (date(2026, 12, 15), "declared"),
+        ]
 
     def test_monthly_payer(self) -> None:
-        # last 2026-09-01 monthly: + 30 - 7 -> 2026-09-24, then 2026-10-24
+        # last 2026-09-01 monthly: + 30 = 2026-10-01 [09-24, 10-08], then
+        # 2026-10-31 [10-24, 11-07]
         recs = [_rec("O", "2026-09-01", "2026-08-10", amt="0.26", freq=12)]
-        got = dividends.ex_dividends(
-            _snapshot(recs),
-            as_of=date(2026, 9, 20),
-            start=date(2026, 9, 20),
-            end=date(2026, 10, 24),
-        )
-        assert [x.ex_date for x in got] == [date(2026, 9, 24), date(2026, 10, 24)]
+        got = _ex(recs, date(2026, 9, 20), date(2026, 9, 20), date(2026, 10, 24))
+        assert [x.ex_date for x in got] == [date(2026, 10, 1), date(2026, 10, 31)]
 
     def test_non_payer_has_no_dates(self) -> None:
-        got = dividends.ex_dividends(
-            _snapshot([]), as_of=date(2026, 9, 24), start=date(2026, 9, 24), end=date(2027, 6, 1)
-        )
-        assert got == ()
+        assert _ex([], A0924, A0924, date(2027, 6, 1)) == ()
 
-    def test_unknown_schedule_fails_closed(self) -> None:
-        recs = [_rec("W", "2026-09-01", "2026-08-10", freq=52)]
-        assert (
-            dividends.ex_dividends(
-                _snapshot(recs),
-                as_of=date(2026, 9, 24),
-                start=date(2026, 9, 24),
-                end=date(2026, 12, 1),
-            )
-            is None
-        )
+    @pytest.mark.parametrize(
+        "recs",
+        [
+            [_rec("W", "2026-09-01", "2026-08-10", freq=52)],  # weekly: no period here
+            [_rec("W", "2026-09-01", "2026-08-10", freq=None)],  # P1-6: frequency missing
+            [_rec("W", "2026-09-01", "2026-08-10", freq=0)],  # a regular payment, no schedule
+            [_rec("W", "2026-09-01", "2026-08-10", freq=None, kind=None)],  # type unknown
+            # the latest regular record decides: an older quarterly doesn't vouch for it
+            [
+                _rec("W", "2026-06-01", "2026-05-10", freq=4),
+                _rec("W", "2026-09-01", "2026-08-10", freq=None),
+            ],
+        ],
+    )
+    def test_unknown_schedule_fails_closed(self, recs) -> None:
+        assert _ex(recs, A0924, A0924, date(2026, 12, 1)) is None
+
+    def test_untyped_record_with_a_schedule_projects(self) -> None:
+        recs = [_rec("W", "2026-08-10", "2026-07-30", freq=4, kind=None)]
+        got = _ex(recs, A0924, A0924, date(2026, 11, 20))
+        assert [x.ex_date for x in got] == [date(2026, 11, 9)]
 
 
 class TestLoad:
@@ -340,6 +421,28 @@ class TestLoad:
             is None
         )
 
+    # -- P2-10: the document must be what its path says it is ---------------
+
+    @pytest.mark.parametrize(
+        ("field", "value"),
+        [
+            ("symbol", "NFLX"),  # another symbol's (empty) history filed as AAPL
+            ("session", "2026-09-15"),  # an old snapshot copied into a newer dir
+            ("source", "somewhere else"),
+            ("schema", "desk.dividends/0"),
+            ("fetched_at", "2026-09-22T19:00:00-04:00"),  # fetched before its session
+            ("fetched_at", "2026-09-23T19:00:00"),  # no zone: provenance unknown
+            ("fetched_at", "yesterday"),
+        ],
+    )
+    def test_identity_mismatch_is_unavailable(self, field, value, store, static_calendar) -> None:
+        self._write(store, "2026-09-23", "AAPL", AAPL)
+        path = store / "dividends" / "2026-09-23" / "AAPL.json"
+        doc = json.loads(path.read_text())
+        doc[field] = value
+        path.write_text(json.dumps(doc))
+        assert dividends.load_snapshot("AAPL", date(2026, 9, 24), static_calendar) is None
+
     def test_corrupt_snapshot_is_unavailable(self, store, static_calendar) -> None:
         d = store / "dividends" / "2026-09-23"
         d.mkdir(parents=True)
@@ -352,7 +455,7 @@ class TestLoad:
         got = dividends.ex_dividends_for(
             "AAPL", date(2026, 9, 24), date(2026, 11, 20), static_calendar, as_of=date(2026, 9, 24)
         )
-        assert [(x.ex_date, x.status) for x in got or ()] == [(date(2026, 11, 2), "projected")]
+        assert [(x.ex_date, x.status) for x in got or ()] == [(date(2026, 11, 9), "projected")]
         assert (
             dividends.ex_dividends_for(
                 "NFLX",

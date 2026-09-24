@@ -72,23 +72,41 @@ class TestPointInTimeBeta:
         want, n = _oracle(panel, "ABC", _window(static_calendar, D_AS_OF))
         assert n == 252
         assert est.n_returns == 252
-        assert est.beta is not None and isinstance(est.beta, Decimal)
-        assert abs(float(est.beta) - want) < 1e-6
+        assert est.beta_raw is not None and isinstance(est.beta_raw, Decimal)
+        assert abs(float(est.beta_raw) - want) < 1e-6
         assert 1.1 < want < 1.5  # the synthetic loading is 1.3
+        # the rail's beta is Blume-adjusted: 0.67 x raw + 0.33
+        assert est.beta is not None and isinstance(est.beta, Decimal)
+        assert abs(float(est.beta) - (0.67 * want + 0.33)) < 1e-6
         w = _window(static_calendar, D_AS_OF)
         assert (est.window_first, est.session) == (w[1], D_AS_OF)
         assert est.reason == ""
 
-    def test_negative_loading(self, static_calendar) -> None:
+    def test_negative_loading_is_pulled_toward_one(self, static_calendar) -> None:
         panel = _panel(static_calendar)
         est = desk_beta.beta_from_panel(panel, "XYZ", D_AS_OF, static_calendar)
         want, _ = _oracle(panel, "XYZ", _window(static_calendar, D_AS_OF))
-        assert est.beta is not None and abs(float(est.beta) - want) < 1e-6
+        assert est.beta_raw is not None and abs(float(est.beta_raw) - want) < 1e-6
         assert want < 0
+        assert est.beta is not None and abs(float(est.beta) - (0.67 * want + 0.33)) < 1e-6
+
+    @pytest.mark.parametrize(
+        ("raw", "adjusted"),
+        [
+            ("1", "1.000000"),  # 0.67 + 0.33
+            ("-0.244922", "0.165902"),  # KO's raw trailing-year beta: 0.16590226
+            ("-0.312944", "0.120328"),  # XLE's: 0.12032752
+            ("1.419317", "1.280942"),  # QQQ's: 1.28094239
+            ("0", "0.330000"),
+        ],
+    )
+    def test_blume_adjustment(self, raw: str, adjusted: str) -> None:
+        assert desk_beta.blume(Decimal(raw)) == Decimal(adjusted)
 
     def test_spy_beta_is_one(self, static_calendar) -> None:
         est = desk_beta.beta_from_panel(_panel(static_calendar), "SPY", D_AS_OF, static_calendar)
         assert est.beta == Decimal("1.000000")
+        assert est.beta_raw == Decimal("1.000000")
 
     def test_no_look_ahead(self, static_calendar) -> None:
         panel = _panel(static_calendar)
@@ -119,7 +137,7 @@ class TestPointInTimeBeta:
         want, n = _oracle(gapped, "ABC", w)
         assert n == 252 - 12
         assert est.n_returns == n
-        assert est.beta is not None and abs(float(est.beta) - want) < 1e-6
+        assert est.beta_raw is not None and abs(float(est.beta_raw) - want) < 1e-6
         # the window still starts where a complete window would
         assert est.window_first == w[1]
 
@@ -137,7 +155,7 @@ class TestPointInTimeBeta:
             del panel["ABC"][d.isoformat()]
         est = desk_beta.beta_from_panel(panel, "ABC", D_AS_OF, static_calendar)
         assert est.n_returns == 199
-        assert est.beta is None
+        assert est.beta is None and est.beta_raw is None
         assert "199" in est.reason
 
     def test_exactly_min_returns_is_available(self, static_calendar) -> None:

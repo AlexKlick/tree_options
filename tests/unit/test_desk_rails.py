@@ -159,7 +159,8 @@ def _call_debit_spread(**over) -> Candidate:
 
 def _put_credit_spread(**over) -> Candidate:
     """XLF 48/45 bull put credit spread, 1 lot at a 1.00 credit floor: max
-    loss (3 - 1.00) x 100 x 1 = $200."""
+    loss (3 - 1.00) x 100 x 1 = $200. Position delta from its legs:
+    SELL P -0.30 -> +30, BUY P -0.15 -> -15: +15 shares; short vega."""
     base: dict[str, object] = {
         "kind": "credit_vertical",
         "legs": (
@@ -169,22 +170,49 @@ def _put_credit_spread(**over) -> Candidate:
         "quantity": 1,
         "max_loss_usd": D("200"),
         "entry_price": D("1.00"),
+        "risk": PositionRisk(
+            delta_shares=D("15"), vega_usd_per_volpt=D("-4"), spot=D("52"), beta=D("1.1")
+        ),
     }
     base.update(over)
     return _call_debit_spread(**base)
 
 
-def _long_call(delta: str, **over) -> Candidate:
-    """One long XLF 50 call at a 2.00 cap: max loss 2.00 x 100 = $200."""
+def _long_call(delta: str | None, **over) -> Candidate:
+    """One long XLF 50 call at a 2.00 cap: max loss 2.00 x 100 = $200.
+    Position delta = leg delta x 100 x 1 (the ``delta`` argument)."""
+    shares = D(delta) * 100 if delta is not None else D("40")
     base: dict[str, object] = {
         "kind": "long_single",
         "legs": (_leg("C", "BUY", "50", "1.98", "2.02", delta=delta),),
         "quantity": 1,
         "max_loss_usd": D("200"),
         "entry_price": D("2.00"),
+        "risk": PositionRisk(
+            delta_shares=shares, vega_usd_per_volpt=D("3"), spot=D("52"), beta=D("1.1")
+        ),
     }
     base.update(over)
     return _call_debit_spread(**base)
+
+
+def _itm_call_spread(short_bid: str = "7.05", short_ask: str = "7.15") -> Candidate:
+    """XLF 40/45 call debit spread, spot 52, both legs deep in the money:
+    1 lot at a 4.90 cap, max loss $490. The short 45 call's intrinsic is
+    52 - 45 = 7.00, so its extrinsic is its mid - 7.00 (0.10 by default).
+    Delta: BUY 0.95 -> +95, SELL 0.90 -> -90: +5 shares."""
+    return _call_debit_spread(
+        legs=(
+            _leg("C", "BUY", "40", "12.05", "12.15", delta="0.95"),
+            _leg("C", "SELL", "45", short_bid, short_ask, delta="0.90"),
+        ),
+        quantity=1,
+        entry_price=D("4.90"),
+        max_loss_usd=D("490"),
+        risk=PositionRisk(
+            delta_shares=D("5"), vega_usd_per_volpt=D("1"), spot=D("52"), beta=D("1.1")
+        ),
+    )
 
 
 def _pos(pid, underlying, max_loss, *, delta=None, spot=None, beta=None, vega=None) -> BookPosition:
@@ -328,20 +356,12 @@ class TestLimitsLoader:
                 True,
             ),
             ("max_chain_age_sessions = 1", "max_chain_age_sessions = 0", True),
-            ("min_leg_open_interest = 100", "min_leg_open_interest = 0", True),
+            ("min_leg_open_interest = 100", "min_leg_open_interest = 101", True),
             ("max_per_underlying = 2", "max_per_underlying = 1", True),
             ('max_loss_per_trade_usd = "500"', 'max_loss_per_trade_usd = "0"', False),
-            (
-                'max_roundtrip_cost_frac_of_max_loss = "0.15"',
-                'max_roundtrip_cost_frac_of_max_loss = "1"',
-                True,
-            ),
-            (
-                'max_roundtrip_cost_frac_of_max_loss = "0.15"',
-                'max_roundtrip_cost_frac_of_max_loss = "1.0001"',
-                False,
-            ),
+            ('max_loss_per_trade_usd = "500"', 'max_loss_per_trade_usd = "0.01"', True),
             ('min_long_single_abs_delta = "0.30"', 'min_long_single_abs_delta = "1"', True),
+            ('min_long_single_abs_delta = "0.30"', 'min_long_single_abs_delta = "1.01"', False),
         ],
     )
     def test_range_edges(self, line: str, edge: str, loads: bool, tmp_path: Path) -> None:
@@ -352,6 +372,98 @@ class TestLimitsLoader:
         else:
             with pytest.raises(rails.RailLimitsError):
                 rails.load_limits(p)
+
+    # The operator's binding values (2026-09-23) and the brief's chain-age and
+    # short-vega values: a configured value may be equal or STRICTER, never
+    # looser. One tick looser than each must fail the load.
+    @pytest.mark.parametrize(
+        ("line", "looser"),
+        [
+            ('max_loss_per_trade_usd = "500"', 'max_loss_per_trade_usd = "500.01"'),
+            ('max_book_loss_usd = "5000"', 'max_book_loss_usd = "5000.01"'),
+            ("max_per_underlying = 2", "max_per_underlying = 3"),
+            (
+                'max_net_beta_delta_usd_per_1pct_spy = "250"',
+                'max_net_beta_delta_usd_per_1pct_spy = "250.01"',
+            ),
+            ("max_admissions_per_session = 3", "max_admissions_per_session = 4"),
+            (
+                'max_roundtrip_cost_frac_of_max_loss = "0.15"',
+                'max_roundtrip_cost_frac_of_max_loss = "0.1501"',
+            ),
+            ("min_leg_open_interest = 100", "min_leg_open_interest = 99"),
+            ('max_leg_spread_frac_of_mid = "0.10"', 'max_leg_spread_frac_of_mid = "0.1001"'),
+            ('min_long_single_abs_delta = "0.30"', 'min_long_single_abs_delta = "0.2999"'),
+            ("max_chain_age_sessions = 1", "max_chain_age_sessions = 2"),
+            (
+                'max_book_short_vega_usd_per_volpt = "100"',
+                'max_book_short_vega_usd_per_volpt = "100.01"',
+            ),
+        ],
+    )
+    def test_a_looser_value_than_the_operator_s_fails(
+        self, line: str, looser: str, tmp_path: Path
+    ) -> None:
+        assert line in LIMITS_TOML
+        p = tmp_path / "p.toml"
+        p.write_text(LIMITS_TOML.replace(line, looser))
+        with pytest.raises(rails.RailLimitsError, match="operator"):
+            rails.load_limits(p)
+
+    @pytest.mark.parametrize(
+        ("line", "stricter"),
+        [
+            ('max_loss_per_trade_usd = "500"', 'max_loss_per_trade_usd = "499.99"'),
+            ('max_book_loss_usd = "5000"', 'max_book_loss_usd = "4999.99"'),
+            (
+                'max_net_beta_delta_usd_per_1pct_spy = "250"',
+                'max_net_beta_delta_usd_per_1pct_spy = "249.99"',
+            ),
+            ("max_admissions_per_session = 3", "max_admissions_per_session = 2"),
+            (
+                'max_roundtrip_cost_frac_of_max_loss = "0.15"',
+                'max_roundtrip_cost_frac_of_max_loss = "0.1499"',
+            ),
+            ('max_leg_spread_frac_of_mid = "0.10"', 'max_leg_spread_frac_of_mid = "0.0999"'),
+            ('min_long_single_abs_delta = "0.30"', 'min_long_single_abs_delta = "0.3001"'),
+            (
+                'max_book_short_vega_usd_per_volpt = "100"',
+                'max_book_short_vega_usd_per_volpt = "99.99"',
+            ),
+        ],
+    )
+    def test_a_stricter_value_loads(self, line: str, stricter: str, tmp_path: Path) -> None:
+        p = tmp_path / "p.toml"
+        p.write_text(LIMITS_TOML.replace(line, stricter))
+        rails.load_limits(p)
+
+    def test_direct_construction_is_validated_too(self, limits) -> None:
+        with pytest.raises(rails.RailLimitsError, match="operator"):
+            dataclasses.replace(limits, max_loss_per_trade_usd=D("1000"))
+        with pytest.raises(rails.RailLimitsError, match="operator"):
+            dataclasses.replace(limits, min_leg_open_interest=0)
+        with pytest.raises(rails.RailLimitsError):
+            dataclasses.replace(limits, max_book_loss_usd=5000.0)  # a float
+        with pytest.raises(rails.RailLimitsError):
+            dataclasses.replace(limits, max_per_underlying=True)  # a bool is no count
+        with pytest.raises(rails.RailLimitsError):
+            dataclasses.replace(limits, max_book_loss_usd=D("NaN"))
+        assert dataclasses.replace(limits, max_per_underlying=1).max_per_underlying == 1
+
+    def test_operator_ceilings_are_the_binding_values(self) -> None:
+        assert rails.OPERATOR_LIMITS == {
+            "max_loss_per_trade_usd": D("500"),
+            "max_book_loss_usd": D("5000"),
+            "max_per_underlying": D("2"),
+            "max_net_beta_delta_usd_per_1pct_spy": D("250"),
+            "max_admissions_per_session": D("3"),
+            "max_roundtrip_cost_frac_of_max_loss": D("0.15"),
+            "min_leg_open_interest": D("100"),
+            "max_leg_spread_frac_of_mid": D("0.10"),
+            "min_long_single_abs_delta": D("0.30"),
+            "max_chain_age_sessions": D("1"),
+            "max_book_short_vega_usd_per_volpt": D("100"),
+        }
 
     def test_limits_from_a_parsed_table(self) -> None:
         import tomllib
@@ -401,11 +513,15 @@ class TestDefinedRisk:
         assert "300" in _detail(report, "defined_risk")
 
     def test_uncovered_short_leg_fails(self, ctx, limits) -> None:
+        # two short 0.50-delta calls, 2 lots: -0.50 x 100 x 2 x 2 = -200 shares
         naked = _call_debit_spread(
             kind="credit_vertical",
             legs=(
                 _leg("C", "SELL", "50", "3.00", "3.10"),
                 _leg("C", "SELL", "53", "1.50", "1.55"),
+            ),
+            risk=PositionRisk(
+                delta_shares=D("-200"), vega_usd_per_volpt=D("-8"), spot=D("52"), beta=D("1.1")
             ),
         )
         report = rails.check(naked, BookView(positions=()), ctx, limits)
@@ -448,6 +564,18 @@ class TestBookMaxLoss:
         report = rails.check(_call_debit_spread(), book, ctx, limits)
         assert _status(report, "max_book_loss") == NOT_EVALUABLE
 
+    def test_a_negative_position_loss_never_buys_headroom(self, ctx, limits) -> None:
+        # 5000 + (-400) + 300 = 4900 would pass if the -400 were believed
+        book = BookView(positions=(_pos("a", "QQQ", "5000"), _pos("b", "IWM", "-400")))
+        report = rails.check(_call_debit_spread(), book, ctx, limits)
+        assert _status(report, "max_book_loss") == NOT_EVALUABLE
+        assert "b" in _detail(report, "max_book_loss")
+
+    def test_a_zero_loss_position_counts(self, ctx, limits) -> None:
+        book = BookView(positions=(_pos("a", "QQQ", "4700"), _pos("b", "IWM", "0")))
+        report = rails.check(_call_debit_spread(), book, ctx, limits)
+        assert _status(report, "max_book_loss") == PASS  # 4700 + 0 + 300
+
 
 class TestPerUnderlying:
     def test_one_held_plus_this_is_two_passes(self, ctx, limits) -> None:
@@ -471,11 +599,14 @@ class TestPerUnderlying:
 class TestNetBetaDelta:
     """$ P&L per 1% SPY = delta_shares x spot x beta x 0.01."""
 
-    def _cand(self, delta: str) -> Candidate:
+    def _cand(self, dollars: str) -> Candidate:
+        """The base spread's leg-consistent 50 shares, with spot and the sign
+        of beta chosen so 50 x spot x beta x 0.01 = ``dollars``: spot =
+        2 x |dollars|, beta = +/-1 (0 dollars: spot 100, beta 0)."""
+        d = D(dollars)
+        spot, beta = (D("100"), D("0")) if d == 0 else (abs(d) * 2, D(1).copy_sign(d))
         return _call_debit_spread(
-            risk=PositionRisk(
-                delta_shares=D(delta), vega_usd_per_volpt=D("0"), spot=D("100"), beta=D("1")
-            )
+            risk=PositionRisk(delta_shares=D("50"), vega_usd_per_volpt=D("5"), spot=spot, beta=beta)
         )
 
     def _book(self, dollars: str) -> BookView:
@@ -507,10 +638,10 @@ class TestNetBetaDelta:
         assert _status(report, "net_beta_delta") == want
 
     def test_beta_and_spot_scale_the_dollars(self, ctx, limits) -> None:
-        # 100 shares x 200 spot x 1.25 beta x 0.01 = $250 (at the cap)
+        # 50 shares x 400 spot x 1.25 beta x 0.01 = $250 (at the cap)
         c = _call_debit_spread(
             risk=PositionRisk(
-                delta_shares=D("100"), vega_usd_per_volpt=D("0"), spot=D("200"), beta=D("1.25")
+                delta_shares=D("50"), vega_usd_per_volpt=D("5"), spot=D("400"), beta=D("1.25")
             )
         )
         assert (
@@ -526,6 +657,49 @@ class TestNetBetaDelta:
         report = rails.check(self._cand("1"), book, ctx, limits)
         assert _status(report, "net_beta_delta") == NOT_EVALUABLE
         assert "h" in _detail(report, "net_beta_delta")
+
+    @pytest.mark.parametrize("spot", ["0", "-52"])
+    def test_candidate_spot_must_be_positive(self, spot, ctx, limits) -> None:
+        # a zero spot would zero the candidate's delta; a negative one flip it
+        c = _call_debit_spread(
+            risk=PositionRisk(
+                delta_shares=D("50"), vega_usd_per_volpt=D("5"), spot=D(spot), beta=D("1.1")
+            )
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "net_beta_delta") == NOT_EVALUABLE
+
+    @pytest.mark.parametrize("spot", ["0", "-100"])
+    def test_book_spot_must_be_positive(self, spot, ctx, limits) -> None:
+        book = BookView(
+            positions=(_pos("h", "QQQ", "100", delta="400", spot=spot, beta="1", vega="0"),)
+        )
+        report = rails.check(self._cand("100"), book, ctx, limits)
+        assert _status(report, "net_beta_delta") == NOT_EVALUABLE
+        assert "h" in _detail(report, "net_beta_delta")
+
+    def test_zero_and_negative_beta_are_legitimate(self, ctx, limits) -> None:
+        for beta in ("0", "-0.4"):
+            c = _call_debit_spread(
+                risk=PositionRisk(
+                    delta_shares=D("50"), vega_usd_per_volpt=D("5"), spot=D("52"), beta=D(beta)
+                )
+            )
+            report = rails.check(c, BookView(positions=()), ctx, limits)
+            assert _status(report, "net_beta_delta") == PASS, beta
+
+    def test_the_raw_beta_is_shown_beside_the_adjusted_one(self, ctx, limits) -> None:
+        c = _call_debit_spread(
+            risk=PositionRisk(
+                delta_shares=D("50"),
+                vega_usd_per_volpt=D("5"),
+                spot=D("52"),
+                beta=D("1.280942"),
+                beta_raw=D("1.419317"),
+            )
+        )
+        detail = _detail(rails.check(c, BookView(positions=()), ctx, limits), "net_beta_delta")
+        assert "1.280942" in detail and "raw 1.419317" in detail
 
 
 class TestAdmissions:
@@ -640,14 +814,90 @@ class TestLongSingleDelta:
         assert _status(report, "long_single_delta") == want
 
     def test_spreads_are_not_held_to_it(self, ctx, limits) -> None:
+        # (0.10 - 0.05) x 100 x 2 = 10 shares
         c = _call_debit_spread(
             legs=(
                 _leg("C", "BUY", "50", "3.00", "3.10", delta="0.10"),
                 _leg("C", "SELL", "53", "1.50", "1.55", delta="0.05"),
-            )
+            ),
+            risk=PositionRisk(
+                delta_shares=D("10"), vega_usd_per_volpt=D("2"), spot=D("52"), beta=D("1.1")
+            ),
         )
         report = rails.check(c, BookView(positions=()), ctx, limits)
         assert _status(report, "long_single_delta") == PASS
+
+    @pytest.mark.parametrize(
+        ("right", "delta"),
+        [
+            ("C", "5"),  # a per-contract figure passed as per-share delta
+            ("C", "1.01"),
+            ("C", "-0.40"),  # a call's delta is never negative
+            ("P", "0.40"),  # a put's delta is never positive
+            ("P", "-1.01"),
+        ],
+    )
+    def test_impossible_leg_delta_is_not_evaluable(self, right, delta, ctx, limits) -> None:
+        c = _long_call(delta, legs=(_leg(right, "BUY", "50", "1.98", "2.02", delta=delta),))
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "long_single_delta") == NOT_EVALUABLE
+
+    @pytest.mark.parametrize(
+        ("right", "delta", "want"),
+        [("C", "0", FAIL), ("C", "1", PASS), ("P", "-1", PASS), ("P", "0", FAIL)],
+    )
+    def test_the_ends_of_the_delta_range_are_possible(
+        self, right, delta, want, ctx, limits
+    ) -> None:
+        c = _long_call(delta, legs=(_leg(right, "BUY", "50", "1.98", "2.02", delta=delta),))
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "long_single_delta") == want
+
+    @pytest.mark.parametrize(
+        ("shares", "want"),
+        [
+            ("35", PASS),  # 0.35 x 100 x 1
+            ("40", PASS),  # within 0.05 x 100 x 1 = 5 shares
+            ("30", PASS),
+            ("40.01", NOT_EVALUABLE),
+            ("29.99", NOT_EVALUABLE),
+            ("3500", NOT_EVALUABLE),  # a unit error by 100x
+            ("-35", NOT_EVALUABLE),
+        ],
+    )
+    def test_position_delta_reconciles_with_the_leg(self, shares, want, ctx, limits) -> None:
+        c = _long_call(
+            "0.35",
+            risk=PositionRisk(
+                delta_shares=D(shares), vega_usd_per_volpt=D("3"), spot=D("52"), beta=D("1.1")
+            ),
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "long_single_delta") == want
+
+    def test_reconciliation_scales_with_quantity(self, ctx, limits) -> None:
+        # 3 lots: 0.35 x 100 x 3 = 105 shares, tolerance 0.05 x 100 x 3 = 15
+        for shares, want in (("120", PASS), ("120.01", NOT_EVALUABLE)):
+            c = _long_call(
+                "0.35",
+                quantity=3,
+                max_loss_usd=D("600"),
+                risk=PositionRisk(
+                    delta_shares=D(shares), vega_usd_per_volpt=D("9"), spot=D("52"), beta=D("1")
+                ),
+            )
+            report = rails.check(c, BookView(positions=()), ctx, limits)
+            assert _status(report, "long_single_delta") == want, shares
+
+    def test_missing_position_delta_is_not_evaluable_for_a_single(self, ctx, limits) -> None:
+        c = _long_call(
+            "0.35",
+            risk=PositionRisk(
+                delta_shares=None, vega_usd_per_volpt=D("3"), spot=D("52"), beta=D("1.1")
+            ),
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "long_single_delta") == NOT_EVALUABLE
 
 
 class TestFreshChain:
@@ -750,10 +1000,20 @@ class TestFreshChain:
 
 
 class TestBookShortVega:
+    """Net book vega (long vega on one name offsets short vega on another),
+    with the strictly-reduces exemption (main-session ruling b)."""
+
     def _cand(self, vega: str) -> Candidate:
+        # short vega: the put credit spread (+15 shares); else the debit spread
+        if D(vega) < 0:
+            return _put_credit_spread(
+                risk=PositionRisk(
+                    delta_shares=D("15"), vega_usd_per_volpt=D(vega), spot=D("52"), beta=D("1.1")
+                )
+            )
         return _call_debit_spread(
             risk=PositionRisk(
-                delta_shares=D("0"), vega_usd_per_volpt=D(vega), spot=D("52"), beta=D("1")
+                delta_shares=D("50"), vega_usd_per_volpt=D(vega), spot=D("52"), beta=D("1.1")
             )
         )
 
@@ -804,8 +1064,11 @@ class TestEarnings:
         assert _status(report, "earnings_short_premium") == want
 
     def test_iron_condor_is_short_premium(self, ctx, limits) -> None:
-        # (5 - 1.20) x 100 = $380 per condor
+        # (5 - 1.20) x 100 = $380 per condor; delta -8 + 18 - 18 + 8 = 0
         condor = _call_debit_spread(
+            risk=PositionRisk(
+                delta_shares=D("0"), vega_usd_per_volpt=D("-6"), spot=D("50"), beta=D("1.1")
+            ),
             kind="iron_condor",
             legs=(
                 _leg("P", "BUY", "40", "0.20", "0.21", delta="-0.08"),
@@ -837,23 +1100,153 @@ class TestEarnings:
 
 
 class TestExDividend:
-    def _x(self, d: date, status: str = "declared") -> ExDividend:
-        return ExDividend(ex_date=d, status=status)
+    """Main-session ruling (a): a short call across an ex-date is blocked
+    only when EXPOSED at entry: in the money or within 2% of it (strike <=
+    spot x 1.02) AND its extrinsic value (mid - intrinsic) < the dividend +
+    $0.05. A projected ex-date is an interval; any overlap with the hold
+    counts (P1-8)."""
+
+    def _x(
+        self,
+        d: date,
+        status: str = "declared",
+        cash: str | None = "0.27",
+        earliest: date | None = None,
+        latest: date | None = None,
+    ) -> ExDividend:
+        return ExDividend(
+            ex_date=d,
+            status=status,
+            earliest=earliest or d,
+            latest=latest or d,
+            cash_amount=None if cash is None else D(cash),
+        )
 
     @pytest.mark.parametrize(
-        ("when", "status", "want"),
+        ("when", "want"),
         [
-            (SESSION, "declared", FAIL),
-            (EXIT, "declared", FAIL),  # inclusive
-            (date(2026, 10, 5), "projected", FAIL),
-            (date(2026, 10, 23), "declared", PASS),
-            (date(2026, 9, 23), "declared", PASS),
+            (SESSION, FAIL),
+            (EXIT, FAIL),  # inclusive
+            (date(2026, 10, 5), FAIL),
+            (date(2026, 10, 23), PASS),  # after the planned exit
+            (date(2026, 9, 23), PASS),  # before the entry session
         ],
     )
-    def test_short_call_across_an_ex_date(self, when, status, want, ctx, limits) -> None:
-        c = _call_debit_spread(ex_dividends=(self._x(when, status),))
+    def test_exposed_short_call_across_an_ex_date(self, when, want, ctx, limits) -> None:
+        # short 45 call, spot 52: intrinsic 7.00, mid 7.10, extrinsic 0.10 < 0.27 + 0.05
+        c = dataclasses.replace(_itm_call_spread(), ex_dividends=(self._x(when),))
         report = rails.check(c, BookView(positions=()), ctx, limits)
         assert _status(report, "ex_dividend_short_call") == want
+
+    @pytest.mark.parametrize(
+        ("bid", "ask", "want"),
+        [
+            ("7.31", "7.33", PASS),  # mid 7.32: extrinsic 0.32 = 0.27 + 0.05, not below
+            ("7.30", "7.32", FAIL),  # mid 7.31: extrinsic 0.31 < 0.32
+            ("6.90", "6.96", FAIL),  # mid 6.93 below intrinsic: extrinsic negative
+        ],
+    )
+    def test_extrinsic_against_dividend_plus_buffer(self, bid, ask, want, ctx, limits) -> None:
+        c = dataclasses.replace(
+            _itm_call_spread(bid, ask), ex_dividends=(self._x(date(2026, 10, 5)),)
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == want
+
+    def test_near_money_short_call_with_ample_time_value_passes(self, ctx, limits) -> None:
+        # short 53 call, spot 52: 53 <= 52 x 1.02 = 53.04 (near), extrinsic 1.525 >= 0.32
+        c = _call_debit_spread(ex_dividends=(self._x(date(2026, 10, 5)),))
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == PASS
+        assert "not exposed" in _detail(report, "ex_dividend_short_call")
+
+    @pytest.mark.parametrize(("strike", "want"), [("51.00", FAIL), ("51.01", PASS)])
+    def test_distance_from_the_money(self, strike, want, ctx, limits) -> None:
+        # bear call spread, spot 50: 50 x 1.02 = 51.00 is the edge of "near";
+        # the short call quotes 0/0, so a near one has zero extrinsic
+        k = D(strike)
+        c = _put_credit_spread(
+            legs=(
+                _leg("C", "SELL", strike, "0", "0", delta="0.30"),
+                _leg("C", "BUY", str(k + 5), "0", "0", delta="0.10"),
+            ),
+            risk=PositionRisk(
+                delta_shares=D("-20"), vega_usd_per_volpt=D("-3"), spot=D("50"), beta=D("1")
+            ),
+            ex_dividends=(self._x(date(2026, 10, 5)),),
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == want
+
+    @pytest.mark.parametrize(
+        ("earliest", "expected", "latest", "want"),
+        [
+            # the expected date precedes entry, but the interval reaches into the hold
+            (date(2026, 9, 10), date(2026, 9, 17), date(2026, 9, 24), FAIL),  # ends on entry
+            (date(2026, 9, 17), date(2026, 9, 21), date(2026, 10, 1), FAIL),
+            (date(2026, 10, 22), date(2026, 10, 29), date(2026, 11, 5), FAIL),  # starts on exit
+            (date(2026, 10, 15), date(2026, 10, 22), date(2026, 10, 29), FAIL),
+            (date(2026, 9, 9), date(2026, 9, 16), date(2026, 9, 23), PASS),  # ends before entry
+            (date(2026, 10, 23), date(2026, 10, 30), date(2026, 11, 6), PASS),  # after the exit
+        ],
+    )
+    def test_projected_interval_overlap(
+        self, earliest, expected, latest, want, ctx, limits
+    ) -> None:
+        x = self._x(expected, "projected", earliest=earliest, latest=latest)
+        c = dataclasses.replace(_itm_call_spread(), ex_dividends=(x,))
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == want
+
+    @pytest.mark.parametrize(("cash", "want"), [("0", PASS), ("-0.01", NOT_EVALUABLE)])
+    def test_dividend_amount_edges(self, cash, want, ctx, limits) -> None:
+        # extrinsic 0.10 >= 0 + 0.05: a zero dividend exposes nothing; a
+        # negative one is nonsense
+        c = dataclasses.replace(
+            _itm_call_spread(), ex_dividends=(self._x(date(2026, 10, 5), cash=cash),)
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == want
+
+    def test_unknown_dividend_amount_fails_closed_near_the_money(self, ctx, limits) -> None:
+        c = dataclasses.replace(
+            _itm_call_spread(), ex_dividends=(self._x(date(2026, 10, 5), cash=None),)
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == NOT_EVALUABLE
+
+    def test_unknown_dividend_amount_is_moot_far_from_the_money(self, ctx, limits) -> None:
+        c = _put_credit_spread(
+            legs=(
+                _leg("C", "SELL", "60", "0.10", "0.12", delta="0.10"),
+                _leg("C", "BUY", "65", "0.03", "0.04", delta="0.04"),
+            ),
+            risk=PositionRisk(
+                delta_shares=D("-6"), vega_usd_per_volpt=D("-1"), spot=D("52"), beta=D("1")
+            ),
+            ex_dividends=(self._x(date(2026, 10, 5), cash=None),),
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == PASS
+
+    @pytest.mark.parametrize("spot", [None, "0"])
+    def test_no_usable_spot_fails_closed_when_an_ex_date_is_held(self, spot, ctx, limits) -> None:
+        c = _itm_call_spread()
+        c = dataclasses.replace(
+            c,
+            risk=dataclasses.replace(c.risk, spot=None if spot is None else D(spot)),
+            ex_dividends=(self._x(date(2026, 10, 5)),),
+        )
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == NOT_EVALUABLE
+
+    def test_incoherent_interval_fails_closed(self, ctx, limits) -> None:
+        x = self._x(
+            date(2026, 10, 5), "projected", earliest=date(2026, 10, 9), latest=date(2026, 10, 1)
+        )
+        c = dataclasses.replace(_itm_call_spread(), ex_dividends=(x,))
+        report = rails.check(c, BookView(positions=()), ctx, limits)
+        assert _status(report, "ex_dividend_short_call") == NOT_EVALUABLE
 
     def test_no_short_call_passes_across_an_ex_date(self, ctx, limits) -> None:
         c = _put_credit_spread(ex_dividends=(self._x(date(2026, 10, 5)),))
@@ -895,6 +1288,46 @@ class TestNewsVeto:
         v = NewsVeto(source="news.v1", available=True, veto=False)
         report = rails.check(_call_debit_spread(news_veto=v), BookView(positions=()), ctx, limits)
         assert _status(report, "news_veto") == PASS
+
+    @pytest.mark.parametrize(
+        ("available", "veto"),
+        [(True, None), (None, False), ("yes", False), (True, 0), (1, False), (True, "false")],
+    )
+    def test_a_configured_source_must_answer_with_booleans(
+        self, available, veto, ctx, limits
+    ) -> None:
+        v = NewsVeto(source="news.v1", available=available, veto=veto)
+        report = rails.check(_call_debit_spread(news_veto=v), BookView(positions=()), ctx, limits)
+        assert _status(report, "news_veto") == NOT_EVALUABLE
+
+
+class _Greeks:
+    """The engine lane's StructureGreeks shape (whole position, floats)."""
+
+    def __init__(self, delta: float, vega: float) -> None:
+        self.delta_shares = delta
+        self.gamma_shares_per_usd = 0.0
+        self.vega_usd_per_volpt = vega
+        self.theta_usd_per_day = 0.0
+
+
+class TestPositionRiskFromGreeks:
+    def test_floats_become_exact_decimals(self) -> None:
+        r = PositionRisk.from_greeks(
+            _Greeks(50.25, -4.5), spot=D("52"), beta=D("1.28"), beta_raw=D("1.42")
+        )
+        assert r == PositionRisk(
+            delta_shares=D("50.25"),
+            vega_usd_per_volpt=D("-4.5"),
+            spot=D("52"),
+            beta=D("1.28"),
+            beta_raw=D("1.42"),
+        )
+
+    def test_no_greeks_or_non_finite_greeks_stay_missing(self) -> None:
+        assert PositionRisk.from_greeks(None, spot=D("52"), beta=D("1")).delta_shares is None
+        r = PositionRisk.from_greeks(_Greeks(float("nan"), float("inf")), spot=D("52"), beta=D("1"))
+        assert (r.delta_shares, r.vega_usd_per_volpt) == (None, None)
 
 
 class TestPaperOnly:
@@ -959,6 +1392,10 @@ class TestFailClosed:
             (lambda c: _leg0(c, ask=None), {"roundtrip_cost", "leg_spread"}),
             (lambda c: _leg0(c, open_interest=None), {"leg_open_interest"}),
             (lambda c: dataclasses.replace(c, ex_dividends=None), {"ex_dividend_short_call"}),
+            (
+                lambda c: dataclasses.replace(c, risk=dataclasses.replace(c.risk, spot=D("0"))),
+                {"net_beta_delta"},
+            ),
         ],
     )
     def test_missing_candidate_input(self, mutate, rules, ctx, limits) -> None:

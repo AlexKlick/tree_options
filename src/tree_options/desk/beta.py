@@ -22,8 +22,14 @@ returns on SPY's:
   panel is split-adjusted: a later split rescales every earlier close by
   one factor, which leaves log returns unchanged.
 
-Beta is reported as a Decimal rounded to 6 places (a statistic, computed
-in float; it multiplies money only inside the rail).
+* BLUME-ADJUSTED for the rail (main-session ruling (c), 2026-09-23):
+  ``beta`` = 0.67 x raw + 0.33, pulled toward the market's 1; ``beta_raw``
+  (the regression slope) stays visible. One trailing year makes raw betas
+  noisy (2026-09-23 panel: KO -0.24, XLE -0.31, which would count long
+  KO/XLE as hedges; adjusted 0.17 and 0.12).
+
+Betas are Decimals rounded to 6 places (statistics, computed in float;
+they multiply money only inside the rail).
 """
 
 from __future__ import annotations
@@ -32,7 +38,7 @@ import bisect
 import itertools
 import math
 from collections.abc import Iterable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -45,6 +51,8 @@ WINDOW = 252
 MIN_RETURNS = 200
 BENCHMARK = "SPY"
 PANEL_FILE = "ohlc-panel.json"
+BLUME_WEIGHT = Decimal("0.67")
+_SIX_PLACES = Decimal("0.000001")
 
 
 class SessionCalendar(Protocol):
@@ -56,7 +64,8 @@ class BetaEstimate:
     symbol: str
     as_of: date  # the requested date
     session: date | None  # the window's last session (<= as_of)
-    beta: Decimal | None  # None: unavailable (see reason)
+    beta: Decimal | None  # Blume-adjusted, the rail's; None: unavailable (see reason)
+    beta_raw: Decimal | None  # the regression slope, shown beside it
     n_returns: int
     window_first: date | None  # the session of the window's first return
     reason: str = ""
@@ -96,7 +105,16 @@ def beta_from_panel(
     sessions = cal.sessions()
     end = bisect.bisect_right(sessions, as_of) - 1
     if end - window < 0:
-        return BetaEstimate(symbol, as_of, None, None, 0, None, "calendar too short for the window")
+        return BetaEstimate(
+            symbol=symbol,
+            as_of=as_of,
+            session=None,
+            beta=None,
+            beta_raw=None,
+            n_returns=0,
+            window_first=None,
+            reason="calendar too short for the window",
+        )
     days = sessions[end - window : end + 1]  # window + 1 closes -> window returns
     name_rows = panel.get(symbol)
     bench_rows = panel.get(benchmark)
@@ -110,24 +128,32 @@ def beta_from_panel(
         xs.append(math.log(b1 / b0))
         ys.append(math.log(n1 / n0))
     n = len(xs)
-    base = BetaEstimate(symbol, as_of, days[-1], None, n, days[1])
+    base = BetaEstimate(
+        symbol=symbol,
+        as_of=as_of,
+        session=days[-1],
+        beta=None,
+        beta_raw=None,
+        n_returns=n,
+        window_first=days[1],
+    )
     if n < min_returns:
-        return _with_reason(
-            base, f"{n} usable returns < {min_returns} in the {window}-session window"
+        return replace(
+            base, reason=f"{n} usable returns < {min_returns} in the {window}-session window"
         )
     mx = math.fsum(xs) / n
     my = math.fsum(ys) / n
     sxx = math.fsum((x - mx) ** 2 for x in xs)
     sxy = math.fsum((x - mx) * (y - my) for x, y in zip(xs, ys, strict=True))
     if sxx <= 0:
-        return _with_reason(base, f"{benchmark} returns have no variance in the window")
-    return BetaEstimate(symbol, as_of, days[-1], Decimal(f"{sxy / sxx:.6f}"), n, days[1])
+        return replace(base, reason=f"{benchmark} returns have no variance in the window")
+    raw = Decimal(f"{sxy / sxx:.6f}")
+    return replace(base, beta=blume(raw), beta_raw=raw)
 
 
-def _with_reason(est: BetaEstimate, reason: str) -> BetaEstimate:
-    return BetaEstimate(
-        est.symbol, est.as_of, est.session, None, est.n_returns, est.window_first, reason
-    )
+def blume(raw: Decimal) -> Decimal:
+    """Blume's adjustment toward 1: 0.67 x raw + 0.33, to 6 places."""
+    return (BLUME_WEIGHT * raw + (1 - BLUME_WEIGHT)).quantize(_SIX_PLACES)
 
 
 def load_betas(

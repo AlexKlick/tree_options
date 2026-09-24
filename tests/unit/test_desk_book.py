@@ -273,12 +273,22 @@ class TestLegacyStatusMapping:
                 _state(status="open", entry_fill="1.10", filled_qty=4),
                 ("open", D("440.00")),
             ),
-            # partial exit: 0.30 x (5 - 2) x 100 = 90 (the filled 5 exceed the plan's 4 on purpose:
-            # the book's own quantities rule)
+            # partial exit: 0.30 x (4 - 1) x 100 = 90
             (
                 "2026-09-22",
-                _state(status="exit_working", entry_fill="0.30", filled_qty=5, exit_filled_qty=2),
+                _state(status="exit_working", entry_fill="0.30", filled_qty=4, exit_filled_qty=1),
                 ("open", D("90.00")),
+            ),
+            # the smallest positions: 1 open (1.10 x 1 x 100), 1 exiting (0.30 x 1 x 100)
+            (
+                "2026-09-22",
+                _state(status="open", entry_fill="1.10", filled_qty=1),
+                ("open", D("110.00")),
+            ),
+            (
+                "2026-09-22",
+                _state(status="exit_working", entry_fill="0.30", filled_qty=1),
+                ("open", D("30.00")),
             ),
             # no fill price on an open position: counted at the cap
             ("2026-09-22", _state(status="open", filled_qty=4), ("open", D("1000.00"))),
@@ -330,6 +340,100 @@ class TestLegacyFailsClosed:
         (root / "p1" / "book.json").write_text(json.dumps(doc))
         view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=root)
         assert view.problems == ()
+        assert view.positions == ()
+
+    # -- P1-1: a book whose plan TOML is gone still counts ------------------
+
+    def test_orphan_book_with_open_positions_is_a_problem(self, legacy) -> None:
+        plans, state = legacy
+        (plans / "2026-09-22.toml").unlink()  # archived plan, live NVDA pair
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state)
+        assert any("putspread-20260922" in p and "no plan" in p for p in view.problems)
+
+    def test_orphan_book_that_never_entered_is_still_unresolved(self, legacy) -> None:
+        plans, state = legacy
+        (plans / "2026-09-18.toml").unlink()  # its structures are PLANNED, not CLOSED
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state)
+        assert any("putspread-20260918" in p for p in view.problems)
+
+    def test_orphan_book_all_closed_is_harmless(self, legacy) -> None:
+        plans, state = legacy
+        (state / "old-plan").mkdir()
+        (state / "old-plan" / "book.json").write_text(
+            json.dumps({"heartbeat": None, "structures": {"x": _state(status="closed")}})
+        )
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state)
+        assert view.problems == ()
+        assert len(view.positions) == 2
+
+    def test_unreadable_orphan_book_is_a_problem(self, legacy) -> None:
+        plans, state = legacy
+        (state / "old-plan").mkdir()
+        (state / "old-plan" / "book.json").write_text("[1, 2")
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state)
+        assert any("old-plan" in p for p in view.problems)
+
+    def test_state_dir_without_a_book_is_ignored(self, legacy) -> None:
+        plans, state = legacy
+        (state / "exit-watch").mkdir()
+        (state / "exit-watch" / "monitor.lock").write_text("")
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state)
+        assert view.problems == ()
+
+    def test_duplicate_plan_ids_are_a_problem(self, legacy) -> None:
+        plans, state = legacy
+        shutil.copy(plans / "2026-09-22.toml", plans / "copy.toml")
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state)
+        assert any("putspread-20260922" in p and "duplicate" in p for p in view.problems)
+
+    # -- P1-2: seeded PLANNED is not evidence -------------------------------
+
+    @pytest.mark.parametrize(
+        "doc",
+        [
+            {},  # an emptied book
+            {"heartbeat": None},
+            {"heartbeat": None, "structures": {}},
+        ],
+    )
+    def test_book_without_the_structure_after_its_entry_date(self, doc, tmp_path) -> None:
+        plans, root = _legacy_one(tmp_path, entry="2026-09-22", state=_state())
+        (root / "p1" / "book.json").write_text(json.dumps(doc))
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=root)
+        assert any("legacy:p1/a" in p and "unresolved" in p for p in view.problems)
+
+    def test_missing_book_file_after_the_entry_date(self, tmp_path) -> None:
+        plans, root = _legacy_one(tmp_path, entry="2026-09-22", state=None)
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=root)
+        assert any("legacy:p1/a" in p and "unresolved" in p for p in view.problems)
+
+    def test_no_state_yet_before_the_entry_date_is_a_working_entry(self, tmp_path) -> None:
+        plans, root = _legacy_one(tmp_path, entry="2026-09-24", state=_state())
+        (root / "p1" / "book.json").write_text("{}")
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=root)
+        assert view.problems == ()
+        assert [(p.status, p.max_loss_usd) for p in view.positions] == [("working", D("1000.00"))]
+
+    # -- P1-3: fills, quantities and states must be consistent --------------
+
+    @pytest.mark.parametrize(
+        "state",
+        [
+            _state(status="open", entry_fill="-0.10", filled_qty=4),  # a negative debit
+            _state(status="open", entry_fill="NaN", filled_qty=4),
+            _state(status="open", entry_fill="0", filled_qty=4),  # risks nothing: impossible
+            _state(status="open", entry_fill="1.10", filled_qty=0),  # open with nothing filled
+            _state(status="exit_working", entry_fill="1.10", filled_qty=2, exit_filled_qty=3),
+            _state(status="open", entry_fill="1.10", filled_qty=5),  # more than the plan's 4
+            _state(status="enter_working", entry_order="7", filled_qty=5),
+            _state(status="enter_working", entry_order="7", entry_fill="0", filled_qty=1),
+            _state(status="open", entry_fill="1.10", filled_qty=-1),
+        ],
+    )
+    def test_inconsistent_state_is_a_problem(self, state, tmp_path) -> None:
+        plans, root = _legacy_one(tmp_path, entry="2026-09-22", state=state)
+        view = desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=root)
+        assert any("legacy:p1/a" in p for p in view.problems)
         assert view.positions == ()
 
     def test_a_problem_makes_the_book_rules_not_evaluable(self, legacy, static_calendar) -> None:
@@ -415,6 +519,57 @@ class TestDeskSpecs:
         )
         # (3 - 1.10) x 100 x 2 = 380
         assert [(p.status, p.max_loss_usd) for p in view.positions] == [("open", D("380.00"))]
+
+    @pytest.mark.parametrize("fill", ["3.00", "3.50", "-1"])
+    def test_credit_fill_that_leaves_no_loss_is_a_problem(self, fill, tmp_path) -> None:
+        # width 3: a 3.00 credit risks 0, a 3.50 one "risks" -$100 per package
+        specs = tmp_path / "desk" / "specs"
+        self._write(specs, _spec())
+        book = tmp_path / "desk" / "book.json"
+        book.write_text(
+            json.dumps(
+                {
+                    "heartbeat": None,
+                    "structures": {"d1": _state(status="open", entry_fill=fill, filled_qty=2)},
+                }
+            )
+        )
+        plans, root = self._empty_legacy(tmp_path)
+        view = desk_book.load_book(
+            as_of=AS_OF, plans_root=plans, state_root=root, desk_specs=specs, desk_book=book
+        )
+        assert any("desk:d1" in p for p in view.problems)
+        assert view.positions == ()
+
+    def test_desk_run_dir_under_the_legacy_state_root(self, tmp_path) -> None:
+        # the Wave 3 runtime's run dir is ~/.local/state/trex/desk-paper/: passed as
+        # the desk book it is the desk's; not passed, it is an orphan book (fail closed)
+        plans, root = self._empty_legacy(tmp_path)
+        specs = tmp_path / "desk-specs"
+        self._write(specs, _spec())
+        run = root / "desk-paper"
+        run.mkdir(parents=True)
+        (run / "book.json").write_text(
+            json.dumps(
+                {
+                    "heartbeat": None,
+                    "structures": {"d1": _state(status="open", entry_fill="1.10", filled_qty=2)},
+                }
+            )
+        )
+        view = desk_book.load_book(
+            as_of=AS_OF,
+            plans_root=plans,
+            state_root=root,
+            desk_specs=specs,
+            desk_book=run / "book.json",
+        )
+        assert view.problems == ()
+        assert [p.id for p in view.positions] == ["desk:d1"]
+        unwired = desk_book.load_book(
+            as_of=AS_OF, plans_root=plans, state_root=root, desk_specs=specs
+        )
+        assert any("desk-paper" in p for p in unwired.problems)
 
     def test_closed_spec_is_not_exposure(self, tmp_path) -> None:
         specs = tmp_path / "desk" / "specs"
