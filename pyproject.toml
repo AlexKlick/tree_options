@@ -37,6 +37,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/tree_options"]
 
+# The desk universe is load-bearing config: ship it inside the wheel
+# (tree_options/desk-universe.toml) so installed desk modules can import
+# standalone; universe.py falls back to this copy when no repo root exists.
+[tool.hatch.build.targets.wheel.force-include]
+"desk-universe.toml" = "tree_options/desk-universe.toml"
+
 [tool.uv]
 # uv.lock is committed; `uv sync --locked` is the canonical install (CLI flag).
 
