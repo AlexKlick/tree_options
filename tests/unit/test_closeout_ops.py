@@ -11,6 +11,7 @@ template (and no unit is installed on this host).
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -41,10 +42,19 @@ _HELP_CACHE: dict[str, int] = {}
 
 
 def _help_exit(script: str) -> int:
+    # The test's own interpreter with this checkout's src first, never
+    # `uv run`: even with --frozen it syncs the shared .venv from the cwd,
+    # which repoints the editable install (and so every live unit that
+    # imports tree_options) at whichever worktree ran the suite (2026-09-23).
     if script not in _HELP_CACHE:
+        env = dict(os.environ)
+        env["PYTHONPATH"] = os.pathsep.join(
+            p for p in (str(REPO_ROOT / "src"), env.get("PYTHONPATH", "")) if p
+        )
         proc = subprocess.run(
-            ["uv", "run", "--frozen", "python", script, "--help"],
+            [sys.executable, script, "--help"],
             cwd=REPO_ROOT,
+            env=env,
             capture_output=True,
             text=True,
             timeout=120,

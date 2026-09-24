@@ -71,7 +71,14 @@ Checks: `artifacts/desk-store/manifest/<D>.json` shows `ok` for >= 35 of
 37 symbols; `~/.local/state/trex-desk/signals/<D>.json` exists with
 `panel_last_session == <D>`; the first eod-equity run gap-fills the panel
 from 2026-09-15 (it stopped on 09-14). fetch_ohlc.py paces the vendor at
-5 requests/min, so each session costs ~7.5 min (the first run ~1 h).
+5 requests/min, so each session costs ~8 min at the 39-name roster.
+
+First run after the 2026-09-23 roster change (+PLTR +SPCX): fetch_ohlc
+backfills PLTR's full vendor history and SPCX from its 2026-06-12 listing
+(expect a one-off ~10 extra minutes; SPCX's "short names" listing in the
+run's completeness check is EXPECTED, not an anomaly). XSMOM and PEAD
+outputs are unaffected: the ranking set is the sealed `[xsmom].tradables`
+roster in desk-universe.toml, which the new names are NOT in.
 
 ## Chain store (`artifacts/desk-store/`, `DESK_STORE` overrides)
 
