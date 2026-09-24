@@ -51,7 +51,7 @@ _PINNED_PANEL: tuple[str, ...] = (
 )  # fmt: skip
 _PINNED_ETFS: tuple[str, ...] = (
     "SPY", "QQQ", "IWM", "SMH", "SOXX", "XLE", "XLV", "XLF", "GLD", "TQQQ", "SQQQ",
-)
+)  # fmt: skip
 _PINNED_NO_OPTIONS: tuple[str, ...] = ("TQQQ", "SQQQ")
 _PINNED_LATE: tuple[str, ...] = ("SPY", "QQQ", "IWM", "SMH", "SOXX", "XLE", "XLF", "XLV", "GLD")
 _PINNED_REGULAR: tuple[str, ...] = (
