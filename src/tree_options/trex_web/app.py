@@ -400,6 +400,7 @@ def create_app(
     gateway_state: str | None = None,
     exit_watch_state: str | None = None,
     desk_paper_dir: str | None = None,
+    desk_store_dir: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Public for tests; production wires ``__main__``.
 
@@ -438,11 +439,15 @@ def create_app(
         else Path(os.environ.get("TREX_EXIT_WATCH_STATE", str(DEFAULT_EXIT_WATCH_STATE)))
     )
     from tree_options.desk.paths import paper_dir as _desk_paper_dir
+    from tree_options.desk.paths import store_root as _desk_store_root
 
     desk_paper_root = (
         Path(desk_paper_dir).expanduser() if desk_paper_dir else _desk_paper_dir()
     )
     desk_panel_path = desk_paper_root / "ohlc-panel.json"
+    desk_store_root = (
+        Path(desk_store_dir).expanduser() if desk_store_dir else _desk_store_root()
+    )
 
     app = FastAPI(
         title="trex options cockpit",
@@ -626,6 +631,20 @@ def create_app(
             payload.get("panel_last_session"), now
         )
         return JSONResponse(body, headers={"ETag": etag})
+
+    @app.get("/api/market/{sym}/options")
+    def api_market_symbol_options(
+        sym: str, window: int = 5, max_expiries: int = 6
+    ) -> dict[str, object]:
+        """The desk's RECORDED per-name options surface (features cards +
+        ATM-term + chain slice around ATM + iv30 history). Read-only, all
+        sections nullable; the live envelope is a later phase (``live``)."""
+        from tree_options.trex_web.options_view import options_payload
+
+        sym_up = sym.upper()
+        if not re.match(r"^[A-Z.]{1,6}$", sym_up):
+            raise HTTPException(status_code=404, detail="unknown symbol")
+        return options_payload(desk_store_root, sym_up, window, max_expiries, now_et())
 
     @app.post("/api/market/watch", status_code=202)
     def api_market_watch(body: dict[str, Any]) -> dict[str, object]:
