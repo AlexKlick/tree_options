@@ -19,7 +19,12 @@ Wave 1 adds two more:
 Wave 2 adds ``record-dividends`` (the ex-dividend rail's input,
 :mod:`tree_options.desk.dividends`) and the one admission check,
 :mod:`tree_options.desk.rails` (with :mod:`~tree_options.desk.book` and
-:mod:`~tree_options.desk.beta` feeding it).
+:mod:`~tree_options.desk.beta` feeding it); the sealed playbook
+(:mod:`tree_options.desk.playbook`, ``data/desk/playbook/v2.toml`` active,
+``v1.toml`` history) and the point-in-time conditions per name that select
+its rows (:mod:`tree_options.desk.regime`); and the deal valuation
+(:mod:`tree_options.desk.pit`, :mod:`~tree_options.desk.distribution`,
+:mod:`~tree_options.desk.pricing`).
 
 Paths come from :mod:`tree_options.desk.paths` (env-overridable; tests pin
 every one of them to tmp). Nothing here places orders or seals cards.
