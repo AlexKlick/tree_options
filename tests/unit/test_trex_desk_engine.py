@@ -772,7 +772,7 @@ class TestStepDrainsBeforeDeciding:
             CREDIT_PUT,
             st,
             _snap(CREDIT_PUT, _at(ENTRY, MIDDAY), _q("2.00", "2.40")),
-            WorkingOrder(role="exit", filled=2, avg_fill_price=Decimal("2.30")),
+            _wo("exit", 2, "2.30"),
         )
         assert d.action == NoAction("flat")
         assert (st.exit_filled_qty, st.exit_fill, st.open_qty) == (2, Decimal("2.30"), 0)
@@ -783,7 +783,7 @@ class TestStepDrainsBeforeDeciding:
             CREDIT_PUT,
             st,
             _snap(CREDIT_PUT, _at(ENTRY, MIDDAY), _q("2.00", "2.40")),
-            WorkingOrder(role="exit", filled=1, avg_fill_price=Decimal("2.30")),
+            _wo("exit", 1, "2.30"),
         )
         assert d.action == CloseOrder(ExitReason.BREACH, "BUY", 1, Decimal("2.20"))
 
@@ -793,7 +793,7 @@ class TestStepDrainsBeforeDeciding:
             CONDOR,
             st,
             _snap(CONDOR, _at(ENTRY, time(10, 0)), _q("2.20", "2.60")),
-            WorkingOrder(role="entry", filled=2, avg_fill_price=Decimal("2.35")),
+            _wo("entry", 2, "2.35"),
         )
         assert d.action == NoAction("entry filled")
         assert (st.filled_qty, st.entry_fill) == (2, Decimal("2.35"))
@@ -805,14 +805,24 @@ class TestStepDrainsBeforeDeciding:
         assert d.action == EntryOrder(side="SELL", qty=2, limit=Decimal("2.40"))
 
 
+def _wo(role: str, filled: int, avg: str, order_id: str = "701") -> WorkingOrder:
+    """A broker report: CUMULATIVE fills of order ``order_id`` and their
+    average (debit orientation; "0" = no average reported yet)."""
+    return WorkingOrder(role=role, filled=filled, avg_fill_price=Decimal(avg), order_id=order_id)
+
+
 class TestDrain:
     def test_checkpoint_makes_it_idempotent(self) -> None:
         st = _exiting("touch", filled=2)
-        report = WorkingOrder(role="exit", filled=1, avg_fill_price=Decimal("0.30"))
+        report = _wo("exit", 1, "0.30")
         assert drain(st, report) == 1
         assert drain(st, report) == 0  # the same broker state again: nothing new
         assert (st.exit_filled_qty, st.exit_fill) == (1, Decimal("0.30"))
-        assert (st.exit_order_seen, st.exit_order_notional) == (1, Decimal("0.30"))
+        assert (st.exit_order, st.exit_order_seen, st.exit_order_notional) == (
+            "701",
+            1,
+            Decimal("0.30"),
+        )
 
     def test_fills_blend_by_notional(self) -> None:
         # 1 @ 0.30 recorded; the order now says 2 @ avg 0.35, i.e. the
@@ -822,24 +832,131 @@ class TestDrain:
             filled=2,
             exit_filled_qty=1,
             exit_fill=Decimal("0.30"),
+            exit_order="701",
             exit_order_seen=1,
             exit_order_notional=Decimal("0.30"),
         )
-        assert drain(st, WorkingOrder(role="exit", filled=2, avg_fill_price=Decimal("0.35"))) == 1
+        assert drain(st, _wo("exit", 2, "0.35")) == 1
         assert (st.exit_filled_qty, st.exit_fill) == (2, Decimal("0.35"))
 
     def test_a_replacement_order_blends_with_the_book(self) -> None:
-        # 1 exited @ 0.30 on an earlier order; a NEW order (checkpoint 0)
-        # fills 1 @ 0.50: the book's exit average is (0.30 + 0.50) / 2
+        # 1 exited @ 0.30 on an earlier order; a NEW order fills 1 @ 0.50:
+        # the book's exit average is (0.30 + 0.50) / 2
         st = _exiting("touch", filled=2, exit_filled_qty=1, exit_fill=Decimal("0.30"))
-        assert drain(st, WorkingOrder(role="exit", filled=1, avg_fill_price=Decimal("0.50"))) == 1
+        assert drain(st, _wo("exit", 1, "0.50")) == 1
         assert (st.exit_filled_qty, st.exit_fill) == (2, Decimal("0.40"))
+
+    def test_a_new_order_id_starts_its_own_checkpoint(self) -> None:
+        # order 700 left its checkpoint (1 seen, 0.30) behind; order 701's
+        # first fill must not be swallowed as "already seen"
+        st = _exiting(
+            "touch",
+            filled=2,
+            exit_filled_qty=1,
+            exit_fill=Decimal("0.30"),
+            exit_order="700",
+            exit_order_seen=1,
+            exit_order_notional=Decimal("0.30"),
+        )
+        assert drain(st, _wo("exit", 1, "0.50", order_id="701")) == 1
+        assert (st.exit_filled_qty, st.exit_fill, st.exit_order) == (2, Decimal("0.40"), "701")
 
     def test_entry_role_fills_the_entry_side(self) -> None:
         st = StructureState(status=Status.ENTER_WORKING)
-        assert drain(st, WorkingOrder(role="entry", filled=1, avg_fill_price=Decimal("2.35"))) == 1
+        assert drain(st, _wo("entry", 1, "2.35")) == 1
         assert (st.filled_qty, st.entry_fill, st.exit_filled_qty) == (1, Decimal("2.35"), 0)
         assert (st.entry_order_seen, st.entry_order_notional) == (1, Decimal("2.35"))
+
+    def test_a_stale_report_changes_nothing(self) -> None:
+        st = StructureState(status=Status.ENTER_WORKING)
+        drain(st, _wo("entry", 2, "2.35"))
+        before = st.to_dict()
+        assert drain(st, _wo("entry", 1, "2.30")) == 0  # fewer fills than recorded
+        assert st.to_dict() == before
+
+    def test_an_average_without_fills_records_nothing(self) -> None:
+        st = StructureState(status=Status.ENTER_WORKING)
+        assert drain(st, _wo("entry", 0, "2.30")) == 0
+        assert (st.filled_qty, st.entry_fill, st.entry_order_notional) == (0, None, None)
+
+
+class TestDrainPricesLateFills:
+    """Codex P1 on 75a015a: IBKR can report a fill before its average price.
+    The quantity is recorded at once (it sizes closes); the price is
+    reconciled from the order's CUMULATIVE notional (avg x filled) whenever
+    it is present, even with no new quantity, and the book's average only
+    ever spans packages whose price is known."""
+
+    def test_a_price_that_arrives_after_its_fill_is_recorded(self) -> None:
+        st = StructureState(status=Status.ENTER_WORKING)
+        assert drain(st, _wo("entry", 1, "0")) == 1
+        assert (st.filled_qty, st.entry_fill) == (1, None)
+        assert drain(st, _wo("entry", 1, "2.00")) == 0  # no new package, a price
+        assert (st.filled_qty, st.entry_fill) == (1, Decimal("2.00"))
+        # and so the stop is evaluable once open: entry 2.00, debit_frac 0.5
+        # stops at a mid of 1.00 or less; the first confirming tick counts
+        st.status = Status.OPEN
+        d = _decide(TestStopLoss.DEBIT, st, ENTRY, MIDDAY, _q("0.90", "1.10"))
+        assert d.stop_ticks == 1
+
+    def test_a_late_price_is_not_charged_to_the_new_fills_alone(self) -> None:
+        # 1 filled with no price yet, then the order says 2 @ avg 2.00: the
+        # book's entry is 2.00 (4.00 / 2), never 4.00 (4.00 / 1 new fill)
+        st = StructureState(status=Status.ENTER_WORKING)
+        drain(st, _wo("entry", 1, "0"))
+        assert drain(st, _wo("entry", 2, "2.00")) == 1
+        assert (st.filled_qty, st.entry_fill) == (2, Decimal("2.00"))
+
+    def test_an_unpriced_order_never_skews_another_orders_price(self) -> None:
+        # order 700 fills 1 and is replaced before any price is reported;
+        # order 701 fills 1 @ 0.50: the average spans the priced package only
+        st = _exiting("touch", filled=2)
+        drain(st, _wo("exit", 1, "0", order_id="700"))
+        assert drain(st, _wo("exit", 1, "0.50", order_id="701")) == 1
+        assert (st.exit_filled_qty, st.exit_fill) == (2, Decimal("0.50"))
+
+    def test_a_late_price_reblends_across_orders(self) -> None:
+        # order 700: 1 @ 0.30; order 701: 1 filled, its price only later
+        # (0.50): the average goes 0.30 (priced part only) -> 0.40
+        st = _exiting("touch", filled=2)
+        drain(st, _wo("exit", 1, "0.30", order_id="700"))
+        assert drain(st, _wo("exit", 1, "0", order_id="701")) == 1
+        assert (st.exit_filled_qty, st.exit_fill) == (2, Decimal("0.30"))
+        assert drain(st, _wo("exit", 1, "0.50", order_id="701")) == 0
+        assert (st.exit_filled_qty, st.exit_fill) == (2, Decimal("0.40"))
+
+    @pytest.mark.parametrize(
+        "updates",
+        [
+            [("1", "0")],
+            [("1", "0"), ("1", "2.00")],
+            [("1", "0"), ("2", "2.00")],
+            [("1", "2.00"), ("2", "2.10")],
+        ],
+    )
+    def test_the_same_update_twice_records_nothing(self, updates: list[tuple[str, str]]) -> None:
+        st = StructureState(status=Status.ENTER_WORKING)
+        for filled, avg in updates:
+            drain(st, _wo("entry", int(filled), avg))
+        before = st.to_dict()
+        filled, avg = updates[-1]
+        assert drain(st, _wo("entry", int(filled), avg)) == 0
+        assert st.to_dict() == before
+
+    def test_unpriced_counts_persist_only_while_used(self, tmp_path: Path) -> None:
+        book = BookState(["dc"])
+        st = book.structures["dc"] = StructureState(status=Status.ENTER_WORKING)
+        assert "entry_unpriced_qty" not in st.to_dict()  # a legacy book's shape
+        drain(st, _wo("entry", 2, "0"))
+        raw = st.to_dict()
+        assert (raw["entry_unpriced_qty"], raw["entry_order_unpriced"]) == (2, 2)
+        book.save(tmp_path / "book.json")
+        # a restart between the fill and its price: the price still lands
+        reloaded = BookState.load(tmp_path / "book.json", ["dc"]).structures["dc"]
+        assert drain(reloaded, _wo("entry", 2, "1.80")) == 0
+        assert (reloaded.filled_qty, reloaded.entry_fill) == (2, Decimal("1.80"))
+        raw = reloaded.to_dict()
+        assert "entry_unpriced_qty" not in raw and "entry_order_unpriced" not in raw
 
 
 # -- adoption --------------------------------------------------------------

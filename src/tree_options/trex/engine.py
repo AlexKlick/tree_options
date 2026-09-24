@@ -265,11 +265,13 @@ class WorkingOrder:
     it (``adopted_role``) and its CUMULATIVE fills on that order
     (ibkr.OrderStatusInfo: ``filled``, ``avg_fill_price`` in debit
     orientation, i.e. the debit paid or the credit received per package;
-    0 when the broker has no average yet)."""
+    0 when the broker has no average yet), keyed by the broker's
+    ``order_id`` (the book's entry_order / exit_order)."""
 
     role: Role
     filled: int
     avg_fill_price: Decimal
+    order_id: str
 
 
 def last_hold_session(first_expiry: date) -> date:
@@ -482,41 +484,75 @@ def _desk_close_limit(
 
 
 def drain(st: StructureState, order: WorkingOrder) -> int:
-    """Merge the fills of the structure's working ``order`` that the book
-    has not recorded yet into its entry or exit side; returns how many
-    packages were newly recorded.
+    """Merge the broker's report on the structure's working ``order`` into
+    its entry or exit side; returns how many packages were newly recorded.
 
-    Idempotent through the persisted per-order checkpoint
-    (entry_order_seen/_notional, exit_order_seen/_notional; the runtime
-    resets it to 0/None when it places a new order): only fills beyond it
-    count, and the side's average price blends by NOTIONAL (the order's
-    cumulative average times its new fills alone would re-price the fills
-    already recorded). No broker average (0) records quantity only."""
+    Quantity and price are reconciled separately, because IBKR can report
+    a fill before its average price:
+
+    - quantity: fills beyond the order's checkpoint (``*_order_seen``) are
+      recorded at once (they size every close), priced or not; a report of
+      fewer fills than recorded is stale and changes nothing;
+    - price: whenever the report carries an average, the order's CUMULATIVE
+      notional (avg x filled) replaces what the book held for it, even with
+      no new quantity, so a price that arrives after its fill still lands
+      (else stops and take-profits would never become evaluable) and is
+      spread over all the order's fills, never over the new ones alone.
+      The side's average (entry_fill / exit_fill) spans only packages
+      whose price is known: ``*_unpriced_qty`` counts the rest in the book,
+      ``*_order_unpriced`` those of this order.
+
+    The checkpoint belongs to one broker order: a report for a different
+    ``order_id`` than the book's entry_order / exit_order starts a fresh
+    one. The same report twice records nothing."""
     entry = order.role == "entry"
+    if (st.entry_order if entry else st.exit_order) != order.order_id:
+        if entry:
+            st.entry_order, st.entry_order_seen, st.entry_order_notional = order.order_id, 0, None
+            st.entry_order_unpriced = 0
+        else:
+            st.exit_order, st.exit_order_seen, st.exit_order_notional = order.order_id, 0, None
+            st.exit_order_unpriced = 0
     seen = st.entry_order_seen if entry else st.exit_order_seen
+    if order.filled < seen:
+        return 0  # stale: the book never un-records a fill
     new = order.filled - seen
-    if new <= 0:
-        return 0
     recorded = st.filled_qty if entry else st.exit_filled_qty
     fill = st.entry_fill if entry else st.exit_fill
     notional = st.entry_order_notional if entry else st.exit_order_notional
-    if order.avg_fill_price:
-        increment = order.avg_fill_price * order.filled - (notional or Decimal(0))
-        if fill is not None and recorded > 0:
-            fill = (fill * recorded + increment) / (recorded + new)
-        else:
-            fill = increment / new
-        notional = order.avg_fill_price * order.filled
+    unpriced = st.entry_unpriced_qty if entry else st.exit_unpriced_qty
+    order_unpriced = st.entry_order_unpriced if entry else st.exit_order_unpriced
+    avg = order.avg_fill_price
+    if order.filled > 0 and avg.is_finite() and avg > 0:
+        cumulative = avg * order.filled
+        if new == 0 and order_unpriced == 0 and notional == cumulative:
+            return 0  # nothing new: the same report again
+        # take this order's earlier priced contribution out of the average
+        # and put its whole cumulative fill back in
+        priced = recorded - unpriced
+        others = priced - (seen - order_unpriced) if fill is not None else 0
+        others_notional = fill * priced - (notional or 0) if fill is not None and others else 0
+        fill = (others_notional + cumulative) / (others + order.filled)
+        notional = cumulative
+        unpriced -= order_unpriced
+        order_unpriced = 0
+    elif new == 0:
+        return 0
+    else:  # quantity now, its price when the broker reports one
+        unpriced += new
+        order_unpriced += new
     if entry:
         st.filled_qty = recorded + new
         st.entry_fill = fill
         st.entry_order_seen = order.filled
         st.entry_order_notional = notional
+        st.entry_unpriced_qty, st.entry_order_unpriced = unpriced, order_unpriced
     else:
         st.exit_filled_qty = recorded + new
         st.exit_fill = fill
         st.exit_order_seen = order.filled
         st.exit_order_notional = notional
+        st.exit_unpriced_qty, st.exit_order_unpriced = unpriced, order_unpriced
     return new
 
 
