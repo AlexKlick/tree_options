@@ -65,6 +65,7 @@ if str(REPO_ROOT / "src") not in sys.path:  # pragma: no cover - import plumbing
 
 from tree_options.desk import signals  # noqa: E402
 from tree_options.desk.sessions import Calendar, is_first_session_of_month  # noqa: E402
+from tree_options.desk.universe import XSMOM_TRADABLES  # noqa: E402
 from tree_options.time.calendar import CalendarError, NotASessionError  # noqa: E402
 
 DEFAULT_DIR = Path("/home/alexk/documents/tree_options/artifacts/paper-trades")
@@ -853,10 +854,24 @@ def main(argv: list[str] | None = None) -> int:
 
     main_panel, main_sha = read_panel(pt / MAIN_PANEL, pt / MAIN_LOCK)
     xu_panel, xu_sha = read_panel(pt / XU_PANEL)
-    orig_names = sorted(n for n in main_panel if n != "SPY")
+    # The sealed 36-name ranking roster comes from desk-universe.toml's
+    # [xsmom].tradables, NOT a panel derivation: the panel grows with new
+    # captures (PLTR, SPCX 2026-09-23) while the seal stays fixed until the
+    # owner re-seals. Extra panel names are captured-but-unsealed and are
+    # excluded from the ranking (a warning, never a mismatch).
+    orig_names = sorted(XSMOM_TRADABLES)
+    extra = sorted(set(main_panel) - set(orig_names) - {"SPY"})
+    if extra:
+        print(
+            f"note: panel carries unsealed name(s) {extra} -- excluded from the ranking",
+            file=sys.stderr,
+        )
+    if len(orig_names) != 36:
+        print(f"UNIVERSE MISMATCH: sealed roster is {len(orig_names)}/36", file=sys.stderr)
+        return 3
     xu_names = sorted(xu_panel)
-    if len(orig_names) != 36 or len(xu_names) != 62:
-        print(f"UNIVERSE MISMATCH: {len(orig_names)}/36, {len(xu_names)}/62", file=sys.stderr)
+    if len(xu_names) != 62:
+        print(f"UNIVERSE MISMATCH: {len(xu_names)}/62", file=sys.stderr)
         return 3
     cal = study_calendar()
 

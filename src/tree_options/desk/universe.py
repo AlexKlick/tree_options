@@ -52,7 +52,9 @@ class UniverseError(ValueError):
 
 
 def _invalid_symbols(names: tuple[str, ...]) -> list[str]:
-    return sorted(n for n in names if not _SYMBOL.match(n))
+    # fullmatch, not match: a trailing "\n" is legal TOML and "$" would
+    # accept it (fetch_ohlc's validator fullmatches too -- stay identical)
+    return sorted(n for n in names if not _SYMBOL.fullmatch(n))
 
 
 def _duplicate_symbols(names: tuple[str, ...]) -> list[str]:
@@ -103,11 +105,6 @@ class UniverseConfig:
         """The chain recorder's universe: the panel minus the leveraged pair."""
         no_options = set(self.panel.no_options_expression)
         return tuple(n for n in self.panel.names if n not in no_options)
-
-    @property
-    def xsmom_tradables(self) -> tuple[str, ...]:
-        """XSMOM-TOP3 ranks these: the sealed ranking universe (see XsmomSection)."""
-        return self.xsmom.tradables
 
 
 def _symbol_list(raw: object, where: str) -> tuple[str, ...]:
@@ -211,17 +208,27 @@ def _build(raw: dict) -> UniverseConfig:
 def resolve_universe_path(path: Path | str | None = None) -> Path:
     """Resolve which TOML file is the universe (pure precedence).
 
-    Explicit path, then the DESK_UNIVERSE env var, then the repo-root
-    default. Existence is deliberately NOT checked here: an explicit or
-    env-named path is an operator assertion, and load_universe fails
-    closed -- naming the path -- when the resolved file is missing.
+    Explicit path, then the DESK_UNIVERSE env var (resolved to an ABSOLUTE
+    path -- a relative value must not depend on the caller's cwd, or the
+    desk's import-time bind and fetch_ohlc's repo-cwd subprocess would read
+    different files), then the repo-root default. Existence is deliberately
+    NOT checked here: an explicit or env-named path is an operator
+    assertion, and load_universe fails closed -- naming the path -- when
+    the resolved file is missing.
     """
     if path is not None:
         return Path(path)
     if env := os.environ.get(_UNIVERSE_ENV_VAR, "").strip():
-        return Path(env)
+        return Path(env).expanduser().resolve()
     # src/tree_options/desk/universe.py -> repo root is parents[3].
     return Path(__file__).resolve().parents[3] / _UNIVERSE_FILE
+
+
+def _packaged_config_path() -> Path:
+    """The wheel-installed copy (tree_options/desk-universe.toml, shipped by
+    pyproject's force-include): the fallback when the repo-root file is
+    absent -- an installed wheel has no repo root to find."""
+    return Path(__file__).resolve().parents[1] / _UNIVERSE_FILE
 
 
 def load_universe(path: Path | str) -> UniverseConfig:
@@ -229,13 +236,21 @@ def load_universe(path: Path | str) -> UniverseConfig:
 
     Pure: no caching, no env lookup -- the module tail below is the only
     import-time load. Fails closed on anything wrong with the file, with
-    the path named in every error.
+    the path named in every error. A missing path falls back ONCE to the
+    packaged copy (wheel installs) before refusing.
     """
     p = Path(path)
     try:
         text = p.read_text(encoding="utf-8")
-    except FileNotFoundError as exc:
-        raise FileNotFoundError(f"desk universe config not found: {p}") from exc
+    except FileNotFoundError:
+        fallback = _packaged_config_path()
+        if p != fallback and fallback.is_file():
+            p = fallback
+            text = p.read_text(encoding="utf-8")
+        else:
+            raise FileNotFoundError(f"desk universe config not found: {p}") from None
+    except (UnicodeDecodeError, OSError) as exc:
+        raise UniverseError(f"{p}: unreadable ({exc})") from exc
     try:
         raw = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:

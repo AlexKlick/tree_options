@@ -214,7 +214,7 @@ class TestCommittedFileConsistency:
         assert frozenset(cfg.options_close.late) == universe.LATE_CLOSE_OPTIONS
         assert frozenset(cfg.options_close.regular) == universe.REGULAR_CLOSE_OPTIONS
         assert cfg.chain_universe == universe.CHAIN_UNIVERSE
-        assert cfg.xsmom_tradables == universe.XSMOM_TRADABLES
+        assert cfg.xsmom.tradables == universe.XSMOM_TRADABLES
 
 
 # ----------------------------------------------------------- path resolution
@@ -223,7 +223,13 @@ class TestCommittedFileConsistency:
 class TestResolveUniversePath:
     def test_default_is_the_repo_root_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv("DESK_UNIVERSE", raising=False)
-        assert universe.resolve_universe_path() == REPO / "desk-universe.toml"
+        # Derive the expectation from the IMPORTED module's tree, not this
+        # test file's repo: with the shared .venv's editable install pointing
+        # at another checkout, the two trees differ and a repo-derived pin
+        # would fail spuriously (environment, not semantics).
+        assert universe.resolve_universe_path() == (
+            Path(universe.__file__).resolve().parents[3] / "desk-universe.toml"
+        )
 
     def test_explicit_argument_wins_over_the_env(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -253,8 +259,8 @@ class TestStructuralRefusals:
         assert cfg.version == 1
         assert cfg.panel.names == _PINNED_PANEL
         assert cfg.chain_universe == _PINNED_CHAIN  # order preserved, TQQQ/SQQQ out
-        assert cfg.xsmom_tradables == _PINNED_XSMOM  # the sealed set, SPY excluded
-        assert "SPY" not in cfg.xsmom_tradables
+        assert cfg.xsmom.tradables == _PINNED_XSMOM  # the sealed set, SPY excluded
+        assert "SPY" not in cfg.xsmom.tradables
 
     def test_config_is_frozen(self, tmp_path: Path) -> None:
         cfg = universe.load_universe(_write_config(tmp_path))
@@ -333,15 +339,20 @@ class TestStructuralRefusals:
         with pytest.raises(ValueError, match="TQQQ"):
             universe.load_universe(path)
 
-    @pytest.mark.parametrize("bad", ["pltr", "PL7R", "PLTRSPX"])  # lower / digit / 7 chars
-    def test_bad_symbols_refused(self, tmp_path: Path, bad: str) -> None:
+    # (bent symbol, what the error must name): the newline case's list-repr
+    # escapes to backslash-n, so it matches on the bare name instead
+    @pytest.mark.parametrize(
+        ("bad", "named"),
+        [("pltr", "pltr"), ("PL7R", "PL7R"), ("PLTRSPX", "PLTRSPX"), ("PLTR\n", "PLTR")],
+    )
+    def test_bad_symbols_refused(self, tmp_path: Path, bad: str, named: str) -> None:
         # rename PLTR everywhere so ONLY the symbol-regex invariant is bent
         path = _write_config(
             tmp_path,
             names=[bad if n == "PLTR" else n for n in _PINNED_PANEL],
             regular=[bad if r == "PLTR" else r for r in _PINNED_REGULAR],
         )
-        with pytest.raises(ValueError, match=bad):
+        with pytest.raises(ValueError, match=named):
             universe.load_universe(path)
 
     def test_empty_names_refused(self, tmp_path: Path) -> None:
