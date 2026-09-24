@@ -6,7 +6,7 @@
 // degrade is honest: no recorded chains, cards-only sessions, thin rank
 // histories, and withheld earnings moves all render their reason.
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { getSymbolOptions } from '../../lib/api'
 import { usePoll } from '../../hooks/usePoll'
 import { ago, compactCount, num2 } from '../../lib/format'
@@ -187,9 +187,16 @@ function ExpiryRows({ group }: { group: ExpiryGroup }) {
 // ---------------------------------------------------------------- panel
 
 export function OptionsPanel({ sym }: { sym: string }) {
-  const poll = usePoll(() => getSymbolOptions(sym), 60_000)
+  const [rungs, setRungs] = useState(5) // strike ladder width around ATM
+  const [expiries, setExpiries] = useState(6) // nearest expiries kept
+  const poll = usePoll(() => getSymbolOptions(sym, rungs, expiries), 60_000)
   const [source, setSource] = useState<'recorded' | 'live'>('recorded')
   const o: SymbolOptions | null = poll.data
+  // control changes refetch at once (the poll's fetcher is always fresh)
+  useEffect(() => {
+    void poll.refresh()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rungs, expiries])
 
   if (o === null) {
     return (
@@ -230,8 +237,9 @@ export function OptionsPanel({ sym }: { sym: string }) {
       ? `live · delayed CBOE · fetched ${ago(live.age_seconds ?? 0)} ago` +
         (live.ttl_seconds !== null && live.ttl_seconds !== undefined
           ? ` · ttl ${live.ttl_seconds}s`
-          : '')
-      : `recorded${recordedAge} · ±5 rungs around ATM · nearest 6 expiries`
+          : '') +
+        ` · ±${rungs} rungs · nearest ${expiries} expiries`
+      : `recorded${recordedAge} · ±${rungs} rungs around ATM · nearest ${expiries} expiries`
 
   return (
     <>
@@ -247,7 +255,8 @@ export function OptionsPanel({ sym }: { sym: string }) {
           </Pill>
         ) : (
           <span className="muted" style={{ fontSize: '0.82rem' }}>
-            live chain not warmed yet — Refresh data spools the warm
+            live chain not warmed yet — Refresh data fetches the delayed
+            live chain
           </span>
         )}
       </div>
@@ -307,6 +316,39 @@ export function OptionsPanel({ sym }: { sym: string }) {
         >
           Live{live ? ` · ${ago(live.age_seconds ?? 0)} old` : ' · not warmed'}
         </button>
+      </div>
+      <div className="chip-row" role="group" aria-label="Slice width" style={{ marginTop: 8 }}>
+        <span className="muted" style={{ fontSize: '0.78rem', alignSelf: 'center' }}>
+          rungs
+        </span>
+        {[1, 3, 5, 10, 15].map((w) => (
+          <button
+            key={w}
+            type="button"
+            className="chip"
+            aria-pressed={rungs === w}
+            onClick={() => setRungs(w)}
+          >
+            ±{w}
+          </button>
+        ))}
+        <span
+          className="muted"
+          style={{ fontSize: '0.78rem', alignSelf: 'center', marginLeft: 10 }}
+        >
+          expiries
+        </span>
+        {[3, 6, 9, 12].map((n) => (
+          <button
+            key={n}
+            type="button"
+            className="chip"
+            aria-pressed={expiries === n}
+            onClick={() => setExpiries(n)}
+          >
+            {n}
+          </button>
+        ))}
       </div>
       {sliceRows && sliceRows.length > 0 ? (
         <div className="card table-card">

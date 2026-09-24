@@ -72,7 +72,24 @@ export function TimeSeriesChart({
   // chart draws ~all of its width instead of stubs around void
   const breakMs = gapBreakMs(pts)
   const scale = gapScale(pts, breakMs)
-  const segments = splitAtGaps(pts, breakMs).filter((s) => s.length > 1)
+  const runs = splitAtGaps(pts, breakMs)
+  const segments = runs.filter((s) => s.length > 1)
+  // dotted bridges across each compressed gap: the runs read as one
+  // series while the dash says "no observation here"
+  const bridges = scale
+    ? scale.runs.slice(1).map((r, i) => {
+        const prev = scale.runs[i]
+        const a = runs[i][runs[i].length - 1] // last real sample before the gap
+        const b = runs[i + 1][0] // first real sample after it
+        return {
+          key: `gap-${i}`,
+          x1: g.padL + prev.b * plotW,
+          y1: sy(a[1]),
+          x2: g.padL + r.a * plotW,
+          y2: sy(b[1]),
+        }
+      })
+    : []
   const sx = (t: number): number =>
     scale ? g.padL + scalePos(scale, t) * plotW : g.padL + ((t - t0) / (t1 - t0)) * plotW
 
@@ -138,7 +155,19 @@ export function TimeSeriesChart({
           </g>
         ))}
 
-        {/* the value line (per observed run) + directly labeled last point */}
+        {/* the value line (per observed run), dotted bridges across the
+            compressed gaps, + directly labeled last point */}
+        {bridges.map((b) => (
+          <line
+            key={b.key}
+            x1={b.x1}
+            y1={b.y1}
+            x2={b.x2}
+            y2={b.y2}
+            strokeDasharray="2 5"
+            className="gap-bridge"
+          />
+        ))}
         {segments.map((seg, k) => (
           <polyline
             key={k}

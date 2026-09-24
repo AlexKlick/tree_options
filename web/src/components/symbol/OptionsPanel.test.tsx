@@ -100,7 +100,11 @@ describe('OptionsPanel', () => {
 
     // source pills + the honest not-warmed hint
     expect(screen.getByText('recorded session 2026-06-03 · not live')).toBeTruthy()
-    expect(screen.getByText('live chain not warmed yet — Refresh data spools the warm')).toBeTruthy()
+    expect(
+      screen.getByText(
+        'live chain not warmed yet — Refresh data fetches the delayed live chain',
+      ),
+    ).toBeTruthy()
 
     // metric tiles: vols as %, rank percentile, term slope, liquidity, report
     expect(screen.getAllByText('25.0%').length).toBeGreaterThan(0)
@@ -186,6 +190,21 @@ describe('OptionsPanel', () => {
     await waitFor(() => expect(screen.getByText('7.70')).toBeTruthy())
     expect(screen.getByText(/fetched 42s ago · ttl 300s/)).toBeTruthy()
     expect(screen.queryByText('5.60')).toBeNull()
+  })
+
+  it('refetches the slice when rungs or expiries change', async () => {
+    mocked.mockResolvedValue(base)
+    render(<OptionsPanel sym="TEST" />)
+    await waitFor(() => expect(mocked).toHaveBeenCalledWith('TEST', 5, 6))
+    expect(screen.getByText(/±5 rungs around ATM · nearest 6 expiries/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '±10' }))
+    await waitFor(() => expect(mocked).toHaveBeenLastCalledWith('TEST', 10, 6))
+    expect(screen.getByText(/±10 rungs around ATM · nearest 6 expiries/)).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '9' }))
+    await waitFor(() => expect(mocked).toHaveBeenLastCalledWith('TEST', 10, 9))
+    expect(screen.getByText(/±10 rungs around ATM · nearest 9 expiries/)).toBeTruthy()
   })
 
   it('keeps the last surface and shows the error when the API blips', async () => {

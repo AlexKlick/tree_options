@@ -97,6 +97,41 @@ describe('TimeSeriesChart (M8 flash review)', () => {
     expect(segX[0][0]).toBeLessThanOrEqual(66) // first run starts at the left pad
   })
 
+  it('bridges the compressed gaps with a dotted connector, never a solid line', () => {
+    const gapped: HistorySeries = {
+      points: [
+        [0, 10],
+        [20_000, 11],
+        [40_000, 12],
+        [61_200_000, 13],
+        [61_220_000, 14],
+      ],
+      y_lo: 10,
+      y_hi: 14,
+      last: { ts_ms: 61_220_000, pnl: 14, pos: true },
+    }
+    const { container } = render(<TimeSeriesChart series={gapped} ariaLabel="pnl" />)
+    const bridges = container.querySelectorAll('line.gap-bridge')
+    expect(bridges.length).toBe(1) // one per compressed gap
+    const b = bridges[0]
+    // it connects the last sample of run 1 to the first sample of run 2
+    expect(Number(b.getAttribute('x1'))).toBeLessThan(Number(b.getAttribute('x2')))
+    expect(b.getAttribute('stroke-dasharray')).toBeTruthy() // visually "no data"
+    // and a gapless series draws none
+    const smooth: HistorySeries = {
+      points: [
+        [0, 1],
+        [20_000, 2],
+        [40_000, 3],
+      ],
+      y_lo: 1,
+      y_hi: 3,
+      last: { ts_ms: 40_000, pnl: 3, pos: true },
+    }
+    const { container: c2 } = render(<TimeSeriesChart series={smooth} ariaLabel="pnl" />)
+    expect(c2.querySelectorAll('line.gap-bridge').length).toBe(0)
+  })
+
   it('labels the x axis with dates once the span crosses a day', () => {
     const dayPlus: HistorySeries = {
       points: [

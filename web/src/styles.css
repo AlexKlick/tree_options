@@ -291,6 +291,9 @@ footer {
 .zero-line { stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 4 4; }
 .strike-tick { stroke: var(--border); stroke-width: 1; }
 .payoff-line { fill: none; stroke: var(--ink); stroke-width: 2; }
+/* dotted connector across a compressed observation gap: visually joins
+   the runs while saying "no data here" (never a solid move) */
+.gap-bridge { stroke: var(--muted); stroke-width: 1.25; stroke-dasharray: 2 5; opacity: 0.7; }
 .region-pos { fill: var(--pos); opacity: 0.16; }
 .region-neg { fill: var(--neg); opacity: 0.2; }
 .crosshair { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 3; }

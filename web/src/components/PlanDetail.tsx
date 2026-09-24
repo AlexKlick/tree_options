@@ -172,7 +172,8 @@ export function PlanDetail({ id }: { id: string }) {
               <h2 className="section-title">
                 Unrealized since entry{' '}
                 <span className="muted section-sub">
-                  (total book · every monitor tick · time-proportional)
+                  (total book · every monitor tick · overnight gaps compressed
+                  and dotted)
                 </span>
               </h2>
               <HistorySection history={d.history} />

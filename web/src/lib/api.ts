@@ -65,9 +65,17 @@ export const getSymbolHistory = (
   )
 
 /** Recorded options surface (cards + ATM term + slice) with a live slot
- * the discovery lane fills when its delayed-CBOE envelope warms. */
-export const getSymbolOptions = (sym: string): Promise<SymbolOptions> =>
-  fetchJson(`api/market/${encodeURIComponent(sym)}/options`)
+ * the discovery lane fills when its delayed-CBOE envelope warms. Rungs =
+ * strike ladder width around ATM; expiries = nearest N expiries kept. */
+export const getSymbolOptions = (
+  sym: string,
+  rungs = 5,
+  expiries = 6,
+): Promise<SymbolOptions> =>
+  fetchJson(
+    `api/market/${encodeURIComponent(sym)}/options` +
+      `?window=${rungs}&max_expiries=${expiries}`,
+  )
 
 /** Advisory ideas surface: signals, the PROPOSED queue, paper positions,
  * the sealed scratch lane, and research context. */

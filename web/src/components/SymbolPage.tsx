@@ -79,7 +79,7 @@ export function SymbolPage({ sym }: { sym: string }) {
               </div>
             </div>
             <div className="tile">
-              <p>IV30</p>
+              <p>IV30 · live</p>
               <div className="num tile-value">{q?.iv30 != null ? `${q.iv30.toFixed(1)}%` : '—'}</div>
             </div>
           </div>
