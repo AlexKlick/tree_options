@@ -168,9 +168,12 @@ def _slice_rows(
     """Nearest ``max_expiries`` expiries, +/- ``window`` ladder rungs around
     that expiry's ATM strike (nearest to spot), both rights, sorted by
     (exp, right, strike)."""
-    cols = chain.get("columns") if isinstance(chain.get("columns"), dict) else {}
-    exps = cols.get("exp") if isinstance(cols.get("exp"), list) else []
-    strikes = cols.get("strike") if isinstance(cols.get("strike"), list) else []
+    _cols = chain.get("columns")
+    cols = _cols if isinstance(_cols, dict) else {}
+    _exps = cols.get("exp")
+    exps: list[Any] = _exps if isinstance(_exps, list) else []
+    _strikes = cols.get("strike")
+    strikes: list[Any] = _strikes if isinstance(_strikes, list) else []
     by_exp: dict[str, list[int]] = {}
     for i, e in enumerate(exps):
         by_exp.setdefault(e, []).append(i)
@@ -384,7 +387,7 @@ def options_payload(
             )
     available = session is not None
     recorded: dict[str, Any] | None = None
-    if available and name is not None:
+    if session is not None and name is not None:
         spot = _num(name.get("spot"))
         if spot is None and chain is not None:
             quote = chain.get("header", {}).get("underlying_quote")

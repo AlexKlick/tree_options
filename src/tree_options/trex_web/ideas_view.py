@@ -126,12 +126,18 @@ def _signals_section(
     doc = _read_json_dict(path)
     if doc is None:
         return None
-    xsmom = doc.get("xsmom") if isinstance(doc.get("xsmom"), dict) else {}
-    scores = xsmom.get("scores") if isinstance(xsmom.get("scores"), dict) else {}
-    top3_raw = xsmom.get("top3") if isinstance(xsmom.get("top3"), list) else []
-    beats_raw = doc.get("pead") if isinstance(doc.get("pead"), list) else []
-    eval_raw = doc.get("pead_evaluated") if isinstance(doc.get("pead_evaluated"), list) else []
-    provenance = doc.get("provenance") if isinstance(doc.get("provenance"), dict) else {}
+    _x = doc.get("xsmom")
+    xsmom = _x if isinstance(_x, dict) else {}
+    _sc = xsmom.get("scores")
+    scores = _sc if isinstance(_sc, dict) else {}
+    _t3 = xsmom.get("top3")
+    top3_raw: list[Any] = _t3 if isinstance(_t3, list) else []
+    _b = doc.get("pead")
+    beats_raw: list[Any] = _b if isinstance(_b, list) else []
+    _e = doc.get("pead_evaluated")
+    eval_raw: list[Any] = _e if isinstance(_e, list) else []
+    _p = doc.get("provenance")
+    provenance = _p if isinstance(_p, dict) else {}
     evaluated = [
         {
             "report_date": e.get("report_date"),
@@ -232,7 +238,8 @@ def _queue_section(queue_dir: Path, sym: str) -> dict[str, Any] | None:
         for d in doc.get(key) or []
         if isinstance(d, dict) and d.get("underlying") == sym
     ]
-    miner = doc.get("miner") if isinstance(doc.get("miner"), dict) else {}
+    _m = doc.get("miner")
+    miner = _m if isinstance(_m, dict) else {}
     return {
         "session": doc.get("session"),
         "entry_session": doc.get("entry_session"),
