@@ -569,6 +569,7 @@ entry_date = 2026-09-24
 exit_deadline = 2026-10-09
 limit = 2.00
 deal_id = "d-0001"
+ref_mid = 2.15
 
 [[structures.legs]]
 right = "P"
@@ -630,6 +631,7 @@ class TestPlanLoading:
             Decimal("2.0"),
         )
         assert ic.exits.breach is True and ic.exits.take_profit is not None
+        assert str(ic.ref_mid) == "2.15"  # the TOML float's repr, never binary noise
         # 1840 legacy + (10 - 2) * 100 condor
         assert plan.committed_at_caps == Decimal("2640")
         assert [s.id for s in plan.all_specs()] == ["nvda-oct", "qqq-nov", "nvda-nov", "spy-ic"]
@@ -725,6 +727,27 @@ class TestPlanLoading:
         assert isinstance(legacy, PutSpread)
         spec = parse_structure(_spec("debit_vertical", PUT_DEBIT, "0.50").model_dump())
         assert isinstance(spec, LegStructure)
+
+
+class TestDealReferenceMid:
+    """ref_mid: the package mid the deal was priced at (the engine's
+    stale_deal abort measures from it). Required with a deal_id."""
+
+    def test_a_deal_needs_its_reference_mid(self) -> None:
+        with pytest.raises(ValidationError, match="ref_mid"):
+            _spec("iron_condor", CONDOR, "2.00", deal_id="d-0001")
+
+    @pytest.mark.parametrize("bad", ["0", "-0.10", "NaN", "Infinity"])
+    def test_reference_mid_is_positive(self, bad: str) -> None:
+        with pytest.raises(ValidationError):
+            _spec("iron_condor", CONDOR, "2.00", deal_id="d-0001", ref_mid=bad)
+
+    def test_optional_without_a_deal(self) -> None:
+        assert _spec("iron_condor", CONDOR, "2.00").ref_mid is None
+        spec = _spec("iron_condor", CONDOR, "2.00", ref_mid=2.15)  # a TOML-style float
+        assert str(spec.ref_mid) == "2.15"
+        deal = _spec("iron_condor", CONDOR, "2.00", deal_id="d-0001", ref_mid="2.15")
+        assert (deal.deal_id, deal.ref_mid) == ("d-0001", Decimal("2.15"))
 
 
 class TestLegacyRunnersRefuse:

@@ -297,8 +297,12 @@ class LegStructure(BaseModel):
     limit: Decimal = Field(gt=0)
     exits: ExitRules
     deal_id: str | None = None
+    # the package mid (debit orientation) the deal was priced at; the engine
+    # aborts the entry (stale_deal) when the live mid has moved too far from
+    # it. Required with a deal_id, optional otherwise.
+    ref_mid: Decimal | None = Field(default=None, gt=0)
 
-    @field_validator("limit", mode="before")
+    @field_validator("limit", "ref_mid", mode="before")
     @classmethod
     def _money(cls, value: object) -> object:
         return _dec_before(value)
@@ -306,6 +310,8 @@ class LegStructure(BaseModel):
     @model_validator(mode="after")
     def _validate_structure(self) -> LegStructure:
         where = f"{self.id}: {self.kind}"
+        if self.deal_id is not None and self.ref_mid is None:
+            raise ValueError(f"{where}: a deal ({self.deal_id}) needs its ref_mid")
         seen = [(g.right, g.strike, g.expiry) for g in self.legs]
         if len(seen) != len(set(seen)):
             raise ValueError(f"{where}: duplicate legs (same right, strike and expiry)")
