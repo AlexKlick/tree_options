@@ -111,7 +111,7 @@ PYTHONPATH=src python scripts/capture_massive_structural.py \
 | `--bars` | how many daily bar series to pull for representative in-band contracts; under `atm-grid`, the cap on TOTAL series |
 | `--bars-mode` | bar selection strategy: `representative` (default; exactly the pre-flag behavior) or `atm-grid` — see §6.1 |
 | `--bars-strike-band` | atm-grid only: DISTINCT strikes above and below ATM per in-band expiry (default 3; a RANK in the ladder, never an absolute strike range) |
-| `--bars-expiries` | atm-grid only: `all` in-band expiries (default) or `monthly` — third-Friday monthlies only |
+| `--bars-expiries` | atm-grid only: `all` in-band expiries (default), `monthly` — third-Friday monthlies only (calendar rule), or `monthly-traded` — the monthly that actually traded: the third Friday, or the session before it when the exchange was closed that Friday (Good Friday 2025-04-18, Juneteenth 2026-06-19 and 2027-06-18 moved to Thursday), per the trex NYSE calendar |
 | `--bars-sides` | atm-grid only: `both` calls + puts (default) or `call` alone |
 | `--dte-min`, `--dte-max` | the DTE band used to pick bar contracts (and restated by the inspector) |
 | `--cache-dir` | response cache location (default `artifacts/massive-cache/`) |

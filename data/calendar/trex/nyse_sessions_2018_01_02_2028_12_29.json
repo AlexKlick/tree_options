@@ -1,6 +1,9 @@
 {
   "calendar": "XNYS",
   "source": "exchange-calendars==4.5.2",
+  "closure_overrides": {
+    "2025-01-09": "NYSE closed: national day of mourning for former President Jimmy Carter"
+  },
   "scope": "trex-execution",
   "timezone": "America/New_York",
   "open": "09:30",
@@ -1798,7 +1801,6 @@
     "2025-01-06",
     "2025-01-07",
     "2025-01-08",
-    "2025-01-09",
     "2025-01-10",
     "2025-01-13",
     "2025-01-14",

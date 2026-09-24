@@ -818,6 +818,85 @@ def test_atm_grid_with_no_monthly_expiry_in_band_says_so() -> None:
     assert any("no monthly expiry in the 30-60 DTE band" in note for note in notes)
 
 
+# "monthly-traded": April 2025's monthly actually traded on Thursday NEAR --
+# Good Friday (MONTHLY, 2025-04-18) closed the exchange, and the vendor lists
+# the April monthlies on the 17th. The calendar-only "monthly" filter keeps
+# the closed Friday; "monthly-traded" keeps the Thursday that traded.
+MAY_MONTHLY = date(2025, 5, 16)  # May 2025's third Friday, a session: 63 DTE
+
+
+@pytest.fixture()
+def checked_in_trex_calendar(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The default session predicate resolves the checked-in trex calendar."""
+    from tree_options.trex import clock
+
+    monkeypatch.delenv("TREX_CALENDAR", raising=False)
+    monkeypatch.setattr(clock, "_calendar", None)
+
+
+def test_atm_grid_monthly_traded_keeps_the_thursday_before_a_closed_third_friday(
+    checked_in_trex_calendar: None,
+) -> None:
+    rows = [contract_json("SPY", exp, "560", "call") for exp in (NEAR, MONTHLY, FAR, MAY_MONTHLY)]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    picks, notes = cap.select_atm_grid_bars(
+        [master],
+        GRID_SPOT,
+        wanted=99,
+        dte_max=70,
+        strike_band=0,
+        sides="call",
+        expiries="monthly-traded",
+    )
+
+    assert notes == []
+    assert [e for _, _, e in picks] == [NEAR, MAY_MONTHLY], (
+        "the traded April monthly (Thursday) and May's third Friday; never the "
+        "closed Good Friday, never May's second Friday"
+    )
+    # The calendar-only filter on the same master, for contrast.
+    calendar_only, _ = cap.select_atm_grid_bars(
+        [master], GRID_SPOT, wanted=99, dte_max=70, strike_band=0, sides="call", expiries="monthly"
+    )
+    assert [e for _, _, e in calendar_only] == [MONTHLY, MAY_MONTHLY]
+
+
+def test_atm_grid_monthly_traded_uses_an_injected_session_predicate() -> None:
+    """In a world where Good Friday traded, the Friday is April's monthly."""
+    rows = [contract_json("SPY", exp, "560", "call") for exp in (NEAR, MONTHLY)]
+    master = _master_from(rows, "SPY", AS_OF)
+
+    picks, notes = cap.select_atm_grid_bars(
+        [master],
+        GRID_SPOT,
+        wanted=99,
+        strike_band=0,
+        sides="call",
+        expiries="monthly-traded",
+        is_session=lambda d: d.weekday() < 5,
+    )
+
+    assert notes == []
+    assert [e for _, _, e in picks] == [MONTHLY]
+
+
+def test_atm_grid_monthly_traded_names_an_empty_band() -> None:
+    master = _master_from([contract_json("SPY", FAR, "560", "call")], "SPY", AS_OF)
+
+    picks, notes = cap.select_atm_grid_bars(
+        [master],
+        GRID_SPOT,
+        wanted=99,
+        strike_band=0,
+        expiries="monthly-traded",
+        is_session=lambda d: True,
+    )
+
+    assert picks == []
+    assert any("no monthly expiry in the 30-60 DTE band" in note for note in notes)
+
+
 def test_atm_grid_sides_call_only_halves_the_grid() -> None:
     rows = [
         contract_json("SPY", NEAR, k, kind)
@@ -1378,6 +1457,59 @@ def test_atm_grid_flags_route_on_the_wire_like_existing_bar_routes(
     verify_massive_capture_manifest(manifest, out, capture_version=cap.CAPTURE_VERSION)
     assert manifest.bars == (pick.replace(":", "_") + ".json",)
     assert all("no monthly expiry" not in note for note in manifest.notes)
+
+
+def test_atm_grid_monthly_traded_flag_routes_the_traded_thursday(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, checked_in_trex_calendar: None
+) -> None:
+    """--bars-expiries monthly-traded on the wire: the Good Friday master's
+    April monthly is the Thursday, and that is the one series pulled."""
+    rows = [contract_json("SPY", exp, "560", "call") for exp in (NEAR, MONTHLY)]
+    pick = _grid_ticker(NEAR, "call", "560")
+    routes = {
+        spot_url("SPY", AS_OF, AS_OF): spot_page("SPY", [AS_OF]),
+        contracts_url("SPY", AS_OF): contracts_page(rows, request_id="r1"),
+        aggs_url(pick, AS_OF, NEAR): bars_page(pick, [date(2025, 3, 17)]),
+    }
+    vendor = RoutingVendor(routes)
+    monkeypatch.setattr(
+        cap, "client_from_environment", lambda **kwargs: _cli_client(tmp_path, vendor, "cache-t")
+    )
+    out = tmp_path / "atm-grid-traded"
+
+    assert (
+        cap.main(
+            [
+                "--out-dir",
+                str(out),
+                "--underlyings",
+                "SPY",
+                "--as-of",
+                AS_OF.isoformat(),
+                "--bars",
+                "5",
+                "--budget",
+                "20",
+                "--bars-mode",
+                "atm-grid",
+                "--bars-expiries",
+                "monthly-traded",
+                "--bars-sides",
+                "call",
+                "--bars-strike-band",
+                "0",
+            ]
+        )
+        == 0
+    )
+
+    assert vendor.calls == [
+        spot_url("SPY", AS_OF, AS_OF),
+        contracts_url("SPY", AS_OF),
+        aggs_url(pick, AS_OF, NEAR),
+    ]
+    manifest = load_massive_capture_manifest(out / "capture_manifest.json")
+    assert manifest.bars == (pick.replace(":", "_") + ".json",)
 
 
 def test_atm_grid_default_filters_route_a_both_sides_grid(

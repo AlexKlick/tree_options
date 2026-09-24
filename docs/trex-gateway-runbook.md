@@ -93,6 +93,11 @@ monitor sees no sessions and places no exits). `monitor.json` carries
 `calendar_last_session` and `calendar_horizon_warn` (true inside the last 60
 sessions; the watchdog copies it onto the book row). Regenerate with
 `scripts/gen_trex_calendar.py` (see its docstring for the pinned build env).
+Unscheduled closures the pinned exchange-calendars 4.5.2 does not know are
+declared in its `CLOSURE_OVERRIDES` (today: 2025-01-09, the Carter day of
+mourning) and recorded in the payload's `closure_overrides`; the sealed
+protocol calendar still lists that day, so research walking it must treat
+it as a non-session itself.
 
 **FLATTEN and working entries.** IBKR lets only the placing clientId cancel
 an order (error 10147), and the monitor (clientId 71) never sees the entry
