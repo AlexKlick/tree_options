@@ -20,6 +20,7 @@ import pytest
 from tree_options.trex.discovery.market import (
     MarketCache,
     fetch_chain_puts,
+    fetch_chain_view,
     fetch_daily_bars,
     fetch_equity_quote,
     fetch_news,
@@ -61,6 +62,37 @@ NEWS_RSS = """<?xml version="1.0"?>
 """
 
 
+def _view_chain_body(
+    sym: str,
+    expiries: list[tuple[str, list[float]]],
+    spot: float | None,
+) -> dict:
+    """A CBOE-options-URL payload: both rights per (expiry, strike) ladder
+    with more fields than viewchain keeps (the reduction must drop them)."""
+    data: dict = {"options": []}
+    if spot is not None:
+        data["current_price"] = spot
+        data["close"] = spot - 0.25
+    for expiry, strikes in expiries:
+        yymmdd = expiry[2:]
+        for right in ("C", "P"):
+            for strike in strikes:
+                data["options"].append(
+                    {
+                        "option": f"{sym}{yymmdd}{right}{int(strike * 1000):08d}",
+                        "bid": round(strike / 100.0, 2),
+                        "ask": round(strike / 100.0 + 0.5, 2),
+                        "iv": 0.31,
+                        "delta": 0.5 if right == "C" else -0.5,
+                        "gamma": 0.01,  # carried by the wire, dropped by viewchain
+                        "theo": strike / 100.0 + 0.25,
+                        "volume": 11,
+                        "open_interest": 110,
+                    }
+                )
+    return {"timestamp": "2026-09-22 22:08:55", "data": data}
+
+
 def _transport(body: bytes, status: int = 200):
     calls: list[str] = []
 
@@ -69,6 +101,31 @@ def _transport(body: bytes, status: int = 200):
         return status, body
 
     t.calls = calls  # type: ignore[attr-defined]
+    return t
+
+
+CHAIN_VIEW_BODY = _view_chain_body(
+    "SPY",
+    [("20261218", [90.0, 95.0, 100.0, 105.0, 110.0]), ("20270115", [92.5, 97.5, 102.5])],
+    spot=100.0,
+)
+
+
+def _view_t(chain_fail: set[str] | None = None):
+    """A transport dispatching by URL: quote/news/chain bodies, with
+    per-symbol failures only on the chain (options) endpoint."""
+
+    def t(url: str, *, timeout: float = 10.0) -> tuple[int, bytes]:
+        t.calls.append(url)  # type: ignore[attr-defined]
+        if "/options/" in url:
+            if any(f"/options/{s}.json" in url for s in (chain_fail or set())):
+                return 503, b"chain down"
+            return 200, json.dumps(CHAIN_VIEW_BODY).encode()
+        if "news.google.com" in url:
+            return 200, NEWS_RSS.encode()
+        return 200, json.dumps(CBOE_QUOTE_BODY).encode()
+
+    t.calls = []  # type: ignore[attr-defined]
     return t
 
 
@@ -126,6 +183,44 @@ class TestFetchers:
         assert leg["bid"] == pytest.approx(4.10)
         assert leg["iv"] == pytest.approx(0.18)
         assert leg["delta"] == pytest.approx(-0.31)
+
+    def test_chain_view_reduces_to_atm_band_both_rights(self) -> None:
+        # 35 rungs 10..180; spot 60 -> ATM rung 60 (index 10); the +/-15
+        # band keeps indexes 0..25 -> strikes 10..135, asymmetric trim
+        ladder = [10.0 + 5.0 * i for i in range(35)]
+        body = _view_chain_body(
+            "SPY",
+            [("20261218", ladder), ("20270115", [90.0, 95.0, 100.0, 105.0, 110.0])],
+            spot=60.0,
+        )
+        view = fetch_chain_view("SPY", _transport(json.dumps(body).encode()))
+        assert view["spot"] == pytest.approx(60.0)  # current_price, not close
+        assert set(view["expiries"]) == {"20261218", "20270115"}
+        wide = view["expiries"]["20261218"]
+        assert set(wide) == {"C", "P"}
+        for right in ("C", "P"):
+            kept = sorted(wide[right])
+            assert kept == [10.0 + 5.0 * i for i in range(26)]  # 10..135
+            leg = wide[right][60.0]
+            assert set(leg) == {"bid", "ask", "iv", "delta", "volume", "open_interest"}
+            assert leg["volume"] == 11 and leg["open_interest"] == 110
+            assert leg["delta"] == pytest.approx(0.5 if right == "C" else -0.5)
+        # a short ladder expiry keeps everything (band wider than the ladder)
+        assert sorted(view["expiries"]["20270115"]["C"]) == [90.0, 95.0, 100.0, 105.0, 110.0]
+
+    def test_chain_view_without_spot_falls_back_to_median_rung(self) -> None:
+        ladder = [10.0 + 5.0 * i for i in range(35)]  # median rung = 95 (index 17)
+        body = _view_chain_body("SPY", [("20261218", ladder)], spot=None)
+        view = fetch_chain_view("SPY", _transport(json.dumps(body).encode()))
+        assert view["spot"] is None
+        kept = sorted(view["expiries"]["20261218"]["P"])
+        # band indexes 2..32 -> strikes 20..170, trimmed at BOTH ends
+        assert kept == [10.0 + 5.0 * i for i in range(2, 33)]
+
+    def test_chain_view_bad_status_raises(self) -> None:
+        t = _transport(b"gateway timeout", status=504)
+        with pytest.raises(RuntimeError):
+            fetch_chain_view("SPY", t)
 
     def test_news_items_capped_and_shaped(self) -> None:
         t = _transport(NEWS_RSS.encode())
@@ -270,6 +365,48 @@ class TestMarketCycle:
         env = cache.get_envelope("news", "SPY")
         assert env is not None and env["payload"]["items"][0]["title"] == "keep me"
         assert cache.get_envelope("bars", "SPY") is None  # empty bars not cached
+
+    def test_force_warms_viewchain_ttl_gated(self, tmp_path: Path) -> None:
+        state = self._state(tmp_path)
+        cache = MarketCache(state / "market" / "cache")
+        t = _view_t()
+
+        class Cfg:
+            underlyings: ClassVar[list[str]] = ["SPY"]
+            market_refresh_seconds = 60
+
+        market_cycle(state, Cfg(), now=NOW, transport=t, symbols=["SPY"], force=True,
+                     bars_client=_EmptyBars())
+        view = cache.get("viewchain", "SPY", now=NOW)
+        assert view is not None and view["spot"] == pytest.approx(100.0)
+        env = cache.get_envelope("viewchain", "SPY")
+        assert env is not None and env["ttl_seconds"] == 300
+
+        def chain_calls() -> int:
+            return sum("/options/" in u for u in t.calls)
+
+        assert chain_calls() == 1
+        market_cycle(state, Cfg(), now=NOW, transport=t, symbols=["SPY"], force=True,
+                     bars_client=_EmptyBars())
+        assert chain_calls() == 1  # 300s TTL absorbs the repeat force
+
+    def test_force_viewchain_failure_isolated(self, tmp_path: Path) -> None:
+        state = self._state(tmp_path)
+        cache = MarketCache(state / "market" / "cache")
+        t = _view_t(chain_fail={"QQQ"})
+
+        class Cfg:
+            underlyings: ClassVar[list[str]] = ["SPY", "QQQ"]
+            market_refresh_seconds = 60
+
+        ran = market_cycle(state, Cfg(), now=NOW, transport=t, force=True,
+                           bars_client=_EmptyBars())
+        assert ran is True
+        assert cache.get_envelope("viewchain", "SPY") is not None  # sibling warmed
+        assert cache.get_envelope("viewchain", "QQQ") is None
+        doc = json.loads((state / "market.json").read_text())
+        assert "RuntimeError" in doc["errors"]["QQQ:viewchain"]
+        assert "SPY:viewchain" not in doc["errors"]
 
 
 class _EmptyBars:

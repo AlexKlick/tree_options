@@ -11,19 +11,23 @@ to cards with ``slice: null``, and no value is ever invented.
 ``iv30_history`` comes from ``iv-history/vwap_atm.json`` (IVHIST-001, a
 manual build whose last session trails the chain store): the ``first`` /
 ``last`` fields exist so the UI can disclose that staleness — it is not
-"fixed" here. ``live`` is parked at null for Phase 4 so the client contract
-is stable from day one.
+"fixed" here. ``live`` is the discovery lane's ``viewchain`` envelope
+(delayed CBOE chain reduced to ATM+/-15 rungs, both rights) rendered in
+the recorded row shape; no envelope keeps it null.
 """
 
 from __future__ import annotations
 
 import json
+import os
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
 from tree_options.desk.store import read_chain
+from tree_options.trex.discovery.market import MarketCache, nearest_rung
 from tree_options.trex.series import decimate_pairs, level_extent
+from tree_options.trex_web.discovery_view import _age
 from tree_options.trex_web.symbol_history import _ts_ms, history_age_seconds
 
 DEFAULT_WINDOW = 5
@@ -62,6 +66,18 @@ def _int(v: Any) -> int | None:
     if isinstance(v, bool) or not isinstance(v, int):
         return None
     return v
+
+
+def _intish(v: Any) -> int | None:
+    """A count as int; CBOE sends volume/open_interest as floats (5915.0),
+    so an integral float coerces and anything else passes as None."""
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, int):
+        return v
+    if isinstance(v, float) and v.is_integer():
+        return int(v)
+    return None
 
 
 def _at(cols: dict[str, Any], name: str, i: int) -> Any:
@@ -215,14 +231,134 @@ def _iv30_history(store_root: Path, sym: str) -> dict[str, Any] | None:
     }
 
 
+# ------------------------------------------------------------ live (Phase 4)
+
+
+def _market_cache_root(override: Path | None) -> Path:
+    """The discovery lane's market cache dir; ``TREX_DISCOVERY_DIR`` env or
+    the deployed default, mirroring app.py's discovery-root resolution."""
+    if override is not None:
+        return override
+    raw = os.environ.get("TREX_DISCOVERY_DIR") or "~/.local/state/trex-discovery"
+    return Path(raw).expanduser() / "market" / "cache"
+
+
+def _live_row(
+    quote: dict[str, Any], exp: str, dte: int, right: str, strike: float, atm_strike: float
+) -> dict[str, Any]:
+    bid = _num(quote.get("bid"))
+    ask = _num(quote.get("ask"))
+    mid = (bid + ask) / 2 if bid is not None and ask is not None else None
+    return {
+        "exp": exp,
+        "dte": dte,
+        "right": right,
+        "strike": strike,
+        "atm": strike == atm_strike,
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+        "iv": _num(quote.get("iv")),
+        "delta": _num(quote.get("delta")),
+        "gamma": None,  # viewchain carries no second-order greeks
+        "theta": None,
+        "vega": None,
+        "oi": _intish(quote.get("open_interest")),
+        "volume": _intish(quote.get("volume")),
+    }
+
+
+def _live_slice(
+    payload: dict[str, Any], spot: float | None, window: int, max_expiries: int, now: datetime
+) -> list[dict[str, Any]] | None:
+    """The viewchain expiries -> recorded-shaped rows: nearest
+    ``max_expiries`` expiries, +/- ``window`` rungs around the ATM (nearest
+    to the payload spot; median-nearest without one), sorted by
+    (exp, right, strike). Strike keys are JSON strings on disk -> floats."""
+    raw = payload.get("expiries")
+    if not isinstance(raw, dict) or not raw:
+        return None
+    rows: list[dict[str, Any]] = []
+    for exp in sorted(raw)[:max_expiries]:
+        try:
+            exp_date = datetime.strptime(exp, "%Y%m%d").date()
+        except ValueError:
+            continue
+        rights = raw[exp] if isinstance(raw[exp], dict) else {}
+        parsed: dict[str, dict[float, dict[str, Any]]] = {}
+        for right, strikes in rights.items():
+            if not isinstance(strikes, dict):
+                continue
+            for key, quote in strikes.items():
+                try:
+                    strike = float(key)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(quote, dict):
+                    parsed.setdefault(str(right), {})[strike] = quote
+        ladder = sorted({s for strikes in parsed.values() for s in strikes})
+        if not ladder:
+            continue
+        atm_strike = nearest_rung(ladder, spot)
+        atm_i = ladder.index(atm_strike)
+        keep = set(ladder[max(0, atm_i - window) : atm_i + window + 1])
+        dte = (exp_date - now.date()).days
+        for right in sorted(parsed):
+            for strike in sorted(parsed[right]):
+                if strike in keep:
+                    rows.append(
+                        _live_row(
+                            parsed[right][strike],
+                            exp_date.isoformat(),
+                            dte,
+                            right,
+                            strike,
+                            atm_strike,
+                        )
+                    )
+    return rows
+
+
+def _live_section(
+    market_cache_dir: Path,
+    sym: str,
+    window: int,
+    max_expiries: int,
+    now: datetime,
+) -> dict[str, Any] | None:
+    """The live slot: the discovery lane's viewchain envelope (delayed CBOE
+    chain, TTL-warmed by market_cycle's force path). Absent or junk
+    envelope -> None (the UI offers the refresh spool); a stale-but-present
+    envelope still serves with its age disclosed, like bars/news."""
+    env = MarketCache(market_cache_dir).get_envelope("viewchain", sym)
+    if env is None:
+        return None
+    payload = env.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    spot = _num(payload.get("spot"))
+    return {
+        "fetched_at": env.get("fetched_at"),
+        "age_seconds": _age(env.get("fetched_at"), now),
+        "ttl_seconds": _int(env.get("ttl_seconds")),
+        "spot": spot,
+        "slice": _live_slice(payload, spot, window, max_expiries, now),
+    }
+
+
 # ---------------------------------------------------------------- payload
 
 
 def options_payload(
-    store_root: Path, sym: str, window: int, max_expiries: int, now: datetime
+    store_root: Path,
+    sym: str,
+    window: int,
+    max_expiries: int,
+    now: datetime,
+    market_cache_dir: Path | None = None,
 ) -> dict[str, Any]:
     """The /api/market/{sym}/options body: the recorded surface (cards +
-    atm_term + slice), the iv30 history, and a parked null ``live`` slot."""
+    atm_term + slice), the iv30 history, and the live viewchain section."""
     w, cap = clamp_params(window, max_expiries)
     warnings: list[str] = []
     candidates = _find_features(store_root, sym)
@@ -271,7 +407,7 @@ def options_payload(
         "symbol": sym,
         "recorded": recorded,
         "iv30_history": _iv30_history(store_root, sym),
-        "live": None,  # Phase 4 (live envelope) fills this; key is stable now
+        "live": _live_section(_market_cache_root(market_cache_dir), sym, w, cap, now),
         "available": available,
         "warnings": warnings,
     }

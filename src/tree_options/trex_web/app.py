@@ -401,6 +401,7 @@ def create_app(
     exit_watch_state: str | None = None,
     desk_paper_dir: str | None = None,
     desk_store_dir: str | None = None,
+    market_cache_dir: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Public for tests; production wires ``__main__``.
 
@@ -447,6 +448,13 @@ def create_app(
     desk_panel_path = desk_paper_root / "ohlc-panel.json"
     desk_store_root = (
         Path(desk_store_dir).expanduser() if desk_store_dir else _desk_store_root()
+    )
+    # the discovery lane's market cache (bars/news/viewchain envelopes);
+    # derived from the already-resolved discovery root, never a fresh env read
+    market_cache_root = (
+        Path(market_cache_dir).expanduser()
+        if market_cache_dir
+        else discovery_root / "market" / "cache"
     )
 
     app = FastAPI(
@@ -637,14 +645,17 @@ def create_app(
         sym: str, window: int = 5, max_expiries: int = 6
     ) -> dict[str, object]:
         """The desk's RECORDED per-name options surface (features cards +
-        ATM-term + chain slice around ATM + iv30 history). Read-only, all
-        sections nullable; the live envelope is a later phase (``live``)."""
+        ATM-term + chain slice around ATM + iv30 history) plus the LIVE
+        delayed viewchain the discovery lane warmed (``live``; null when no
+        envelope). Read-only, all sections nullable."""
         from tree_options.trex_web.options_view import options_payload
 
         sym_up = sym.upper()
         if not re.match(r"^[A-Z.]{1,6}$", sym_up):
             raise HTTPException(status_code=404, detail="unknown symbol")
-        return options_payload(desk_store_root, sym_up, window, max_expiries, now_et())
+        return options_payload(
+            desk_store_root, sym_up, window, max_expiries, now_et(), market_cache_root
+        )
 
     @app.post("/api/market/watch", status_code=202)
     def api_market_watch(body: dict[str, Any]) -> dict[str, object]:

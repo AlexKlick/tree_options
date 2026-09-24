@@ -1,20 +1,23 @@
 """Recorded options-surface endpoint: ATM window math, expiry cap, walk-back
 to a matching chain, cards-only degrade, iv30 decimation with stale-last
-disclosure — the JSON contract of /api/market/{sym}/options."""
+disclosure — plus the Phase 4 live viewchain section — the JSON contract of
+/api/market/{sym}/options."""
 
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 from fastapi.testclient import TestClient
 
 from tree_options.desk.store import ChainStore, encode_document
+from tree_options.trex.discovery.market import MarketCache
 from tree_options.trex_web.app import create_app
-from tree_options.trex_web.options_view import clamp_params
+from tree_options.trex_web.options_view import clamp_params, options_payload
 from tree_options.trex_web.symbol_history import _ts_ms
 
 SYM = "TEST"
@@ -177,11 +180,12 @@ def _write_iv_history(store: Path, sym: str) -> None:
     )
 
 
-def _client(store: Path) -> TestClient:
+def _client(store: Path, discovery: Path | None = None) -> TestClient:
     app = create_app(
         state_dir=str(store.parent),
         plans_dir=str(store.parent),
         desk_store_dir=str(store),
+        discovery_dir=str(discovery or store.parent / "disc"),
     )
     return TestClient(app)
 
@@ -371,3 +375,170 @@ def test_missing_store_degrades_to_unavailable(tmp_path: Path) -> None:
     assert body["recorded"] is None
     assert body["iv30_history"] is None
     assert body["warnings"] == []
+
+
+# ------------------------------------------------------- live (Phase 4)
+
+ET = ZoneInfo("America/New_York")
+LIVE_NOW = datetime(2026, 9, 24, 15, 0, tzinfo=ET)
+LIVE_SPOT = 101.5
+LIVE_STRIKES = (85.0, 90.0, 95.0, 100.0, 105.0, 110.0, 115.0)
+LIVE_EXPIRIES = ("20261016", "20261218", "20270319")
+
+
+def _viewchain_payload(spot: float | None = LIVE_SPOT) -> dict[str, Any]:
+    """A viewchain envelope payload as market_cycle would cache it (strike
+    keys serialize to strings on disk — the reader must coerce them back)."""
+    expiries: dict[str, Any] = {}
+    for exp in LIVE_EXPIRIES:
+        expiries[exp] = {
+            right: {
+                strike: {
+                    "bid": round(strike / 200.0, 3),
+                    "ask": round(strike / 200.0 + 0.25, 3),
+                    "iv": 0.32,
+                    "delta": 0.5 if right == "C" else -0.5,
+                    "volume": 7,
+                    "open_interest": 70,
+                }
+                for strike in LIVE_STRIKES
+            }
+            for right in ("C", "P")
+        }
+    return {"spot": spot, "expiries": expiries}
+
+
+def _write_viewchain(discovery: Path, sym: str, payload: dict[str, Any], now: datetime) -> None:
+    MarketCache(discovery / "market" / "cache").put("viewchain", sym, payload, now=now)
+
+
+def test_live_section_from_viewchain_envelope(tmp_path: Path) -> None:
+    discovery = tmp_path / "disc"
+    fetched = LIVE_NOW - timedelta(seconds=90)
+    _write_viewchain(discovery, SYM, _viewchain_payload(), fetched)
+    body = options_payload(
+        tmp_path / "store",
+        SYM,
+        1,
+        2,
+        LIVE_NOW,
+        market_cache_dir=discovery / "market" / "cache",
+    )
+    live = body["live"]
+    assert live is not None
+    assert set(live) == {"fetched_at", "age_seconds", "ttl_seconds", "spot", "slice"}
+    assert live["fetched_at"] == fetched.isoformat()
+    assert live["age_seconds"] == 90  # envelope fetched_at vs now
+    assert live["ttl_seconds"] == 300
+    assert live["spot"] == LIVE_SPOT
+    rows = live["slice"]
+    # 2 nearest expiries x (95/100/105 x C/P) — spot 101.5 puts ATM at 100
+    assert sorted({r["exp"] for r in rows}) == ["2026-10-16", "2026-12-18"]
+    assert len(rows) == 12
+    assert rows[0] == {
+        "exp": "2026-10-16",
+        "dte": 22,  # expiry minus today (2026-09-24), session-date arithmetic
+        "right": "C",
+        "strike": 95.0,
+        "atm": False,
+        "bid": 0.475,
+        "ask": 0.725,
+        "mid": 0.6,
+        "iv": 0.32,
+        "delta": 0.5,
+        "gamma": None,
+        "theta": None,
+        "vega": None,
+        "oi": 70,  # served from open_interest
+        "volume": 7,
+    }
+    assert {(r["exp"], r["right"], r["strike"]) for r in rows if r["atm"]} == {
+        ("2026-10-16", "C", 100.0),
+        ("2026-10-16", "P", 100.0),
+        ("2026-12-18", "C", 100.0),
+        ("2026-12-18", "P", 100.0),
+    }
+
+
+def test_live_counts_coerce_cboe_floats(tmp_path: Path) -> None:
+    # the wire sends volume/open_interest as floats (5915.0) — the row
+    # contract wants ints, and 0.0 must survive as 0 (not null)
+    discovery = tmp_path / "disc"
+    payload = {
+        "spot": 100.0,
+        "expiries": {
+            "20261016": {
+                "C": {
+                    "100.0": {
+                        "bid": 1.0,
+                        "ask": 1.5,
+                        "iv": 0.3,
+                        "delta": 0.5,
+                        "volume": 5915.0,
+                        "open_interest": 0.0,
+                    }
+                }
+            }
+        },
+    }
+    _write_viewchain(discovery, SYM, payload, LIVE_NOW)
+    body = options_payload(
+        tmp_path / "store", SYM, 0, 1, LIVE_NOW, market_cache_dir=discovery / "market" / "cache"
+    )
+    row = body["live"]["slice"][0]
+    assert row["volume"] == 5915
+    assert row["oi"] == 0
+
+
+def test_live_missing_envelope_stays_null(tmp_path: Path) -> None:
+    body = options_payload(
+        tmp_path / "store",
+        SYM,
+        1,
+        2,
+        LIVE_NOW,
+        market_cache_dir=tmp_path / "disc" / "market" / "cache",
+    )
+    assert body["live"] is None
+
+
+def test_live_without_spot_windows_around_median_rung(tmp_path: Path) -> None:
+    discovery = tmp_path / "disc"
+    _write_viewchain(discovery, SYM, _viewchain_payload(spot=None), LIVE_NOW)
+    body = options_payload(
+        tmp_path / "store", SYM, 0, 6, LIVE_NOW, market_cache_dir=discovery / "market" / "cache"
+    )
+    live = body["live"]
+    assert live is not None and live["spot"] is None
+    # median rung of the 85..115 ladder is 100 -> ATM flags mark it
+    assert {(r["right"], r["strike"]) for r in live["slice"]} == {("C", 100.0), ("P", 100.0)}
+    assert all(r["atm"] for r in live["slice"])
+
+
+def test_live_served_through_app_wiring(tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    discovery = tmp_path / "disc"
+    _write_features(store, SESSION, {"TEST": _feature_name(101.0)})
+    _write_viewchain(discovery, SYM, _viewchain_payload(), LIVE_NOW)
+    live = _get(_client(store, discovery), f"/api/market/{SYM}/options?window=0&max_expiries=1")[
+        "live"
+    ]
+    assert live is not None
+    assert live["spot"] == LIVE_SPOT  # discovered from discovery_dir's market/cache
+    assert {r["strike"] for r in live["slice"]} == {100.0}
+    assert live["age_seconds"] is not None
+
+
+def test_market_cache_dir_param_overrides_discovery_root(tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    discovery = tmp_path / "disc"
+    _write_features(store, SESSION, {"TEST": _feature_name(101.0)})
+    _write_viewchain(discovery, SYM, _viewchain_payload(), LIVE_NOW)
+    app = create_app(
+        state_dir=str(store.parent),
+        plans_dir=str(store.parent),
+        desk_store_dir=str(store),
+        discovery_dir=str(discovery),
+        market_cache_dir=str(tmp_path / "elsewhere" / "market" / "cache"),
+    )
+    assert _get(TestClient(app), f"/api/market/{SYM}/options")["live"] is None

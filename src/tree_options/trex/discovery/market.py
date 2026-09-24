@@ -48,6 +48,7 @@ BARS_WINDOW_DAYS = 365  # ~250 sessions: symbol chart + scenario analogs
 KIND_TTL_SECONDS = {
     "quote": 60,
     "chain": 300,
+    "viewchain": 300,
     "news": 1800,
     "bars": 86400,
 }
@@ -244,6 +245,83 @@ def fetch_chain_puts(sym: str, transport: Transport) -> dict[str, dict[float, di
     return out
 
 
+VIEWCHAIN_ATM_RUNGS = 15  # ladder rungs kept per expiry around ATM (the
+# cache-level band; it covers every window the viewer can request, <= 15)
+
+
+def _parse_occ_both(option: str) -> tuple[str, str, float] | None:
+    """OCC symbol -> ('20261218', 'C', 575.0) for BOTH rights; junk -> None."""
+    try:
+        expiry, right, strike = parse_occ(option)
+    except ValueError:
+        return None
+    return expiry.strftime("%Y%m%d"), right, float(strike)
+
+
+def nearest_rung(ladder: list[float], spot: float | None) -> float:
+    """The rung nearest the underlying spot; without a spot, the middle
+    rung (nearest the strike median) of the tight money cluster."""
+    if spot is not None:
+        return min(ladder, key=lambda s: (abs(s - spot), s))
+    mid = (ladder[(len(ladder) - 1) // 2] + ladder[len(ladder) // 2]) / 2
+    return min(ladder, key=lambda s: (abs(s - mid), s))
+
+
+def _chain_spot(data: dict[str, Any]) -> float | None:
+    """The chain payload's underlying price (current_price, close as the
+    fallback); absent/non-numeric -> None (the median-rung fallback ATM)."""
+    for key in ("current_price", "close"):
+        val = data.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+    return None
+
+
+def fetch_chain_view(sym: str, transport: Transport) -> dict[str, Any]:
+    """Full CBOE delayed chain REDUCED for the viewer's live panel:
+    {"spot": float|None, "expiries": {yyyymmdd: {right: {strike:
+    {bid, ask, iv, delta, volume, open_interest}}}}}.
+
+    Same wire payload ``fetch_chain_puts`` reads (SPY's is ~5.5 MB); only
+    strikes within ATM +/- VIEWCHAIN_ATM_RUNGS ladder rungs per expiry
+    survive, BOTH rights, the six quote/greek fields (nulls pass through).
+    ATM is the rung nearest the payload's underlying price; a payload
+    without one falls back to the median-nearest rung. The full chain never
+    touches the disk cache - the puts-only "chain" kind stays the shadow
+    marker's and this stays the viewer's (calls included).
+    """
+    doc = _get_json(CBOE_CHAIN_URL.format(sym=sym), transport, timeout=30.0)
+    data = doc.get("data") or {}
+    if not isinstance(data, dict):
+        raise RuntimeError(f"{sym}: chain payload has no data object")
+    spot = _chain_spot(data)
+    rows: dict[str, dict[str, dict[float, dict[str, Any]]]] = {}
+    for row in data.get("options", []):
+        parsed = _parse_occ_both(str(row.get("option", "")))
+        if parsed is None:
+            continue
+        expiry, right, strike = parsed
+        rows.setdefault(expiry, {}).setdefault(right, {})[strike] = {
+            "bid": row.get("bid"),
+            "ask": row.get("ask"),
+            "iv": row.get("iv"),
+            "delta": row.get("delta"),
+            "volume": row.get("volume"),
+            "open_interest": row.get("open_interest"),
+        }
+    expiries: dict[str, dict[str, dict[float, dict[str, Any]]]] = {}
+    for expiry, rights in rows.items():
+        ladder = sorted({s for strikes in rights.values() for s in strikes})
+        atm = nearest_rung(ladder, spot)
+        atm_i = ladder.index(atm)
+        keep = set(ladder[max(0, atm_i - VIEWCHAIN_ATM_RUNGS) : atm_i + VIEWCHAIN_ATM_RUNGS + 1])
+        expiries[expiry] = {
+            right: {s: quote for s, quote in strikes.items() if s in keep}
+            for right, strikes in rights.items()
+        }
+    return {"spot": spot, "expiries": expiries}
+
+
 def fetch_news(sym: str, transport: Transport) -> list[dict[str, Any]]:
     """Google News RSS items (title/link/pubDate/source), capped; junk or
     unparseable feeds return [] (degradation, never an exception)."""
@@ -337,7 +415,7 @@ def market_cycle(
     age honest), never a failed cycle. ``symbols=None`` means the config
     universe; an explicit empty list means an empty watchlist. A forced
     refresh of a subset merges into the snapshot instead of replacing it,
-    and additionally warms bars + news for the forced symbols.
+    and additionally warms bars + news + viewchain for the forced symbols.
     ``last_refresh`` moves only on a successful fetch; ``last_attempt``
     (the runner's cadence clock) moves every cycle.
     """
@@ -381,6 +459,13 @@ def market_cycle(
                         cache.put("news", sym, {"items": news}, now)
                 except Exception as exc:  # per-symbol isolation
                     errors[f"{sym}:news"] = f"{type(exc).__name__}: {exc}"
+            if cache.get("viewchain", sym, now) is None:
+                try:
+                    view = fetch_chain_view(sym, transport)
+                    if view.get("expiries"):  # empty chain stays uncached
+                        cache.put("viewchain", sym, view, now)
+                except Exception as exc:  # per-symbol isolation
+                    errors[f"{sym}:viewchain"] = f"{type(exc).__name__}: {exc}"
     else:
         # keep already-warmed news fresh, bounded per cycle and backed off
         # after a failed/empty attempt (a dead feed must not stall the loop)

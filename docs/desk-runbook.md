@@ -546,3 +546,16 @@ entry on the next session. It places no orders and pushes nothing.
     candidates were valued; all 100 rail-failed, on `max_loss_per_trade`
     (QQQ spreads are wide) and on `ex_dividend_short_call` (no dividend
     snapshot yet). The book's two NVDA spreads came to -$110 per 1% SPY.
+
+## Viewer live chain (cockpit symbol pages)
+
+The symbol page's "live" chain panel (next to the recorded one,
+`GET /api/market/{sym}/options` → `live`) is fed by the discovery lane's
+`viewchain` cache — NOT the puts-only `chain` kind shadow marking uses.
+Each **Refresh-data** press spools `POST /api/market/refresh
+{symbols:[sym]}`, and the runner's force path fetches, per forced symbol:
+1 quote + 1 bars + 1 news + 1 **viewchain** GET (CBOE delayed CDN,
+`delayed_quotes/options/{sym}.json`, ~5.5 MB for SPY on the wire, reduced
+to the ATM±15-rung band, both rights, before anything touches disk).
+The 300 s TTL cache-absorbs repeat presses; per-symbol failures surface as
+`{sym}:viewchain` errors in `market.json` and never abort the cycle.
