@@ -106,6 +106,26 @@ class TestLegacyBook:
         # read-only: nothing written, nothing created (no lock files either)
         assert _tree_digest(tmp_path) == before
 
+    def test_positions_carry_their_structure_and_held_quantity(self, legacy) -> None:
+        """The deal miner prices each position's greeks from its legs: the
+        position names its structure (a legacy put spread as its
+        debit_vertical spec) and the quantity at risk (the OPEN quantity
+        for an open position, the full quantity for a working entry)."""
+        plans, state = legacy
+        pos = _by_id(desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state))
+        oct_ = pos["legacy:putspread-20260922/nvda-oct"]
+        assert oct_.spec is not None and oct_.spec.kind == "debit_vertical"
+        assert [(g.right, g.action, g.strike, g.expiry) for g in oct_.spec.legs] == [
+            ("P", "BUY", D("185.0"), date(2026, 10, 16)),
+            ("P", "SELL", D("150.0"), date(2026, 10, 16)),
+        ]
+        assert oct_.quantity == 5 and pos["legacy:putspread-20260922/nvda-nov"].quantity == 3
+        working = _by_id(
+            desk_book.load_book(as_of=date(2026, 9, 18), plans_root=plans, state_root=state)
+        )["legacy:putspread-20260918/qqq-nov"]
+        assert working.status == "working" and working.quantity == 4
+        assert working.spec is not None and working.spec.underlying == "QQQ"
+
     def test_superseded_planned_book_is_dormant_once_its_entry_date_passed(self, legacy) -> None:
         plans, state = legacy
         # on the 09-18 entry date its planned structures were live entries
@@ -500,6 +520,9 @@ class TestDeskSpecs:
             "working",
             D("400.00"),
         )
+        # the spec itself rides along (the miner prices its greeks, and a
+        # deal_id names the playbook row for the row's max_open)
+        assert p.spec == _spec() and p.quantity == 2
 
     def test_open_credit_spec_risks_width_minus_its_credit(self, tmp_path) -> None:
         specs = tmp_path / "desk" / "specs"

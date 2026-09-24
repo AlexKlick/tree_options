@@ -15,7 +15,11 @@
 * ``DESK_EVENTS_DIR``: the sealed macro calendar (tracked data), default
   ``<repo>/data/desk/events``;
 * ``DESK_PLAYBOOK_DIR``: the sealed playbook (tracked data), default
-  ``<repo>/data/desk/playbook``.
+  ``<repo>/data/desk/playbook``;
+* ``DESK_MINER_DIR``: the sealed deal-miner selection rules (tracked
+  data), default ``<repo>/data/desk/miner``;
+* ``TREX_DESK_QUEUE``: the deal miner's entry queue, default
+  ``<TREX_DESK_STATE>/queue``.
 
 Tests must pin all of these to tmp: nothing here caches a value.
 """
@@ -53,6 +57,16 @@ def events_dir() -> Path:
 
 def playbook_dir() -> Path:
     return _env_path("DESK_PLAYBOOK_DIR") or repo_root() / "data" / "desk" / "playbook"
+
+
+def miner_dir() -> Path:
+    """The sealed deal-miner selection rules (tracked data)."""
+    return _env_path("DESK_MINER_DIR") or repo_root() / "data" / "desk" / "miner"
+
+
+def queue_dir() -> Path:
+    """The deal miner's entry queue (``<D>.json``, schema trex.deal/1)."""
+    return _env_path("TREX_DESK_QUEUE") or state_root() / "queue"
 
 
 def notify_env_path() -> Path:

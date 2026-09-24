@@ -32,7 +32,8 @@ Model (every choice declared, none fitted here):
 * reported, money as Decimal (cents): EV (no-view paths), its Monte Carlo
   standard error, EV / max loss (``LegStructure.max_loss()``), probability
   of profit and of max loss, CVaR 5% (mean of the worst ceil(5% n) P&Ls),
-  signal EV (the view's paths, same draws), and the knobs on the no-view
+  signal EV (the view's paths, same draws) at the base and the stress
+  fill, and the knobs on the no-view
   paths: fill stress (k = 1.0), IV x 1.2 and x 0.8 at exit, a -2% crash day
   (every exit spot x 0.98), and the stress case: IV x 1.2 plus the crash.
 * refused (``NotEvaluable``): a leg expiring on or before the planned exit
@@ -314,6 +315,9 @@ class Valuation:
     ev: Decimal
     ev_se: Decimal
     ev_signal: Decimal | None
+    # the view's EV under the stress fill (stress_fill_k both ways, the same
+    # draws): the deal miner's selection gate on signal rows
+    ev_signal_fill_stress: Decimal | None
     ev_per_max_loss: Decimal
     p_profit: float
     p_max_loss: float
@@ -348,6 +352,7 @@ class Valuation:
             "ev": s(self.ev),
             "ev_se": s(self.ev_se),
             "ev_signal": s(self.ev_signal),
+            "ev_signal_fill_stress": s(self.ev_signal_fill_stress),
             "ev_per_max_loss": s(self.ev_per_max_loss),
             "p_profit": self.p_profit,
             "p_max_loss": self.p_max_loss,
@@ -487,9 +492,11 @@ def price_structure(
 
     k_tail = max(1, math.ceil(round(n * CVAR_ALPHA, 9)))
     ev = float(p.mean())
-    ev_signal = None
+    ev_signal = ev_signal_stress = None
     if paths.signal_offset is not None:
-        ev_signal = ev_of(paths.terminal(signal=True), 1.0)
+        sig_mid, sig_hs = exit_marks(paths.terminal(signal=True), 1.0)
+        ev_signal = _money(float(pnl(sig_mid, sig_hs, fill_k)[0].mean()))
+        ev_signal_stress = _money(float(pnl(sig_mid, sig_hs, stress_fill_k)[0].mean()))
     entry_fill = mid0 - fill_k * hs0 if credit else mid0 + fill_k * hs0
     limit = float(struct.limit)
     max_loss = struct.max_loss()
@@ -509,6 +516,7 @@ def price_structure(
         ev=_money(ev),
         ev_se=_money(float(p.std(ddof=1)) / math.sqrt(n) if n > 1 else 0.0),
         ev_signal=ev_signal,
+        ev_signal_fill_stress=ev_signal_stress,
         ev_per_max_loss=Decimal(repr(ev / float(max_loss))).quantize(
             _RATIO, rounding=ROUND_HALF_UP
         ),

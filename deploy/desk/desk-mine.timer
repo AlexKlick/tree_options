@@ -1,0 +1,21 @@
+[Unit]
+Description=Mine the desk's entry queue for the latest completed session
+
+[Timer]
+# 07:15 ET, after the 06:30 desk-chain slot that records the prior session
+# (Saturday 07:15 mines Friday: its chain lands Saturday 06:30). 08:15 and
+# 09:15 catch a late chain while the earnings-timing vintage of D can still be
+# taken (before D's 09:30 ET decision cutoff) and before desk-enter's 09:50
+# window. 13:00 catches the chain recorder's 12:30 slot: its queue is past
+# valid_until (11:30 ET), so desk-enter will not admit it, but every deal is
+# still surfaced for the Wave 3 shadow tracker. Idempotent: a mined session
+# is marked done and never rewritten.
+OnCalendar=Mon..Sat *-*-* 07:15:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 08:15:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 09:15:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 13:00:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

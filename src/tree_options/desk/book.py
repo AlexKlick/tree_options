@@ -44,7 +44,9 @@ entry (negative or non-finite fill, a fill that leaves no loss, quantities
 negative, above the structure's, or exits above entries, OPEN with nothing
 open) are recorded in ``BookView.problems``, which makes every book rule
 NOT_EVALUABLE. Greeks are the caller's: positions come without risk inputs
-(:meth:`BookView.with_risk` attaches them).
+(:meth:`BookView.with_risk` attaches them), each naming its structure
+(``spec``, a legacy put spread as its debit_vertical spec) and the packages
+at risk (``quantity``) so the caller can price them.
 """
 
 from __future__ import annotations
@@ -100,6 +102,34 @@ def _cap_per_package(struct: Struct) -> Decimal:
     return struct.limit_cap if isinstance(struct, PutSpread) else struct.max_loss_per_package()
 
 
+def _as_spec(struct: Struct) -> LegStructure | None:
+    """The structure as a LegStructure (a legacy put spread via ``as_spec``;
+    None when it does not validate as one, e.g. a cap not below its width):
+    the caller prices greeks from it, and without it the position's risk
+    stays missing (fail closed)."""
+    if isinstance(struct, LegStructure):
+        return struct
+    try:
+        return struct.as_spec()
+    except ValueError:
+        return None
+
+
+def _held(
+    pid: str, source: str, struct: Struct, status: str, loss: Decimal, how: str, qty: int
+) -> BookPosition:
+    return BookPosition(
+        pid,
+        source,
+        struct.underlying,
+        status,
+        loss,
+        detail=how,
+        spec=_as_spec(struct),
+        quantity=qty,
+    )
+
+
 def _fill_per_package(struct: Struct, fill: Decimal) -> Decimal:
     """Max loss of one package opened at ``fill`` (debit orientation)."""
     if isinstance(struct, LegStructure) and struct.is_credit:
@@ -149,12 +179,12 @@ def _position(
         else:
             per = _fill_per_package(struct, st.entry_fill)
             loss, how = per * _HUNDRED * qty, f"open {qty} @ {st.entry_fill}"
-        return BookPosition(pid, source, struct.underlying, "open", loss, detail=how)
+        return _held(pid, source, struct, "open", loss, how, qty)
     if status is Status.PLANNED and planned_dormant_after_entry and as_of > struct.entry_date:
         return None
     loss = _cap_per_package(struct) * _HUNDRED * struct.quantity
     how = f"{status.value}: at cap for {struct.quantity}"
-    return BookPosition(pid, source, struct.underlying, "working", loss, detail=how)
+    return _held(pid, source, struct, "working", loss, how, struct.quantity)
 
 
 def _unpersisted(pid: str, source: str, struct: Struct, as_of: date) -> BookPosition:
@@ -165,7 +195,7 @@ def _unpersisted(pid: str, source: str, struct: Struct, as_of: date) -> BookPosi
         )
     loss = _cap_per_package(struct) * _HUNDRED * struct.quantity
     how = f"no state yet (entry {struct.entry_date}): at cap for {struct.quantity}"
-    return BookPosition(pid, source, struct.underlying, "working", loss, detail=how)
+    return _held(pid, source, struct, "working", loss, how, struct.quantity)
 
 
 def _legacy(

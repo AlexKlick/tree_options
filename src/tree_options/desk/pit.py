@@ -36,11 +36,16 @@ What "knowable" means, per source:
   knowable, unless the caller opts into ``schedule_assumption``
   (FORECAST-001's declared assumption), which marks each such event
   ``sealed-assumed``.
-  Declared limitation: the timing file is not a vintage store. An estimate
-  the vendor later moved was deleted, and one re-timed or confirmed later
-  carries the later ``fetched_at``; a HISTORICAL D therefore sees only the
-  estimates that survived unchanged. A live run (D = the latest session,
-  file read at decision time) is exact.
+  The live timing file is rewritten in place (an estimate the vendor moved
+  is deleted, a re-timed one carries the later ``fetched_at``), so the deal
+  miner reads it only through the VINTAGE STORE
+  (``DESK_STORE/earnings-timing/<D>.json``, :func:`snapshot_timing`): a
+  copy taken once per session, only before that session's decision cutoff,
+  never rewritten; a decision for D reads the newest vintage dated on or
+  before D (:func:`load_timing_vintage`) and hands it to
+  :func:`load_sources` (``timing=``). Sessions before the first vintage
+  have no timing knowledge at all (reporters then fail closed on their
+  schedule), never today's file.
 * indices (the market lane's stored CSVs): rows dated <= D (CBOE posts D's
   row the evening of D); DTB3 rows dated <= the session BEFORE D (FRED
   posts D's rate the next afternoon, after the cutoff).
@@ -49,6 +54,7 @@ What "knowable" means, per source:
 from __future__ import annotations
 
 import bisect
+import hashlib
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -61,7 +67,7 @@ from tree_options.desk.events import EarningsEvent
 from tree_options.desk.ivhist import history_series
 from tree_options.desk.panel import read_panel
 from tree_options.desk.sessions import Calendar, first_session_after, previous_session
-from tree_options.desk.store import read_chain
+from tree_options.desk.store import atomic_create_bytes, read_chain
 from tree_options.desk.universe import CHAIN_UNIVERSE
 from tree_options.trex.clock import ET
 
@@ -96,10 +102,17 @@ class Sources:
     store: Path  # DESK_STORE: chains/ and indices/
 
 
-def load_sources(*, paper: Path | None = None, store: Path | None = None) -> Sources:
+def load_sources(
+    *,
+    paper: Path | None = None,
+    store: Path | None = None,
+    timing: Mapping[str, Mapping[str, Mapping[str, str]]] | None = None,
+) -> Sources:
     """Read the live sources (read-only; the panel under its shared lock).
     A missing or unreadable sealed calendar raises: silence must never read
-    as "no reports"; a missing timing file or IV history is empty."""
+    as "no reports"; a missing timing file or IV history is empty.
+    ``timing`` (a vintage's document) replaces the live timing file, which
+    is then not read at all."""
     paper = paper or paths.paper_dir()
     store = store or paths.store_root()
     panel = read_panel(paper / PANEL_FILE)
@@ -110,7 +123,8 @@ def load_sources(*, paper: Path | None = None, store: Path | None = None) -> Sou
     if not isinstance(raw, dict):
         raise NotEvaluable(f"{events.SEALED_CALENDAR} is not an object")
     sealed = {str(k): [str(d) for d in v] for k, v in raw.items() if isinstance(v, list)}
-    timing = events.load_timing(paper / events.TIMING_FILE)
+    if timing is None:
+        timing = events.load_timing(paper / events.TIMING_FILE)
     history_path = econ_jobs.iv_history_dir(store) / econ_jobs.HISTORY_FILE
     try:
         history = json.loads(history_path.read_text())
@@ -123,6 +137,126 @@ def load_sources(*, paper: Path | None = None, store: Path | None = None) -> Sou
         iv_history=history if isinstance(history, dict) else None,
         store=store,
     )
+
+
+# ------------------------------------------------- earnings-timing vintages
+
+TIMING_VINTAGE_SCHEMA = "desk-earnings-timing-vintage/1"
+TIMING_VINTAGE_DIR = "earnings-timing"
+
+
+@dataclass(frozen=True)
+class TimingVintage:
+    """The timing file as it stood before ``session``'s decision cutoff."""
+
+    session: date
+    snapshot_at: datetime  # aware; at or before the session's cutoff
+    source_sha256: str  # sha256 of the live file's bytes ("" when it was absent)
+    timing: Mapping[str, Mapping[str, Mapping[str, str]]]
+
+    @property
+    def sha256(self) -> str:
+        """sha256 of the timing content (canonical JSON), for provenance."""
+        return hashlib.sha256(json.dumps(self.timing, sort_keys=True).encode()).hexdigest()
+
+
+def timing_vintage_path(store: Path, session: date) -> Path:
+    return store / TIMING_VINTAGE_DIR / f"{session.isoformat()}.json"
+
+
+def _read_vintage(path: Path, session: date, cal: Calendar) -> TimingVintage:
+    """A stored vintage, checked against what its path says (NotEvaluable)."""
+    where = f"{TIMING_VINTAGE_DIR}/{path.name}"
+    try:
+        doc = json.loads(path.read_text())
+    except (OSError, ValueError) as exc:
+        raise NotEvaluable(f"{where}: unreadable ({type(exc).__name__})") from exc
+    if not isinstance(doc, dict) or doc.get("schema") != TIMING_VINTAGE_SCHEMA:
+        raise NotEvaluable(f"{where}: not a {TIMING_VINTAGE_SCHEMA} document")
+    if doc.get("session") != session.isoformat():
+        raise NotEvaluable(f"{where}: describes session {doc.get('session')!r}")
+    at = _instant(doc.get("snapshot_at"))
+    if at is None:
+        raise NotEvaluable(f"{where}: no aware snapshot_at")
+    if at > decision_cutoff(session, cal):
+        raise NotEvaluable(f"{where}: snapshotted {at.isoformat()}, after its decision cutoff")
+    try:
+        timing = events.check_timing(doc.get("timing"), where)
+    except events.EventsError as exc:
+        raise NotEvaluable(f"{where}: bad timing ({exc})") from exc
+    sha = doc.get("source_sha256")
+    return TimingVintage(session, at, sha if isinstance(sha, str) else "", timing)
+
+
+def snapshot_timing(
+    session: date,
+    cal: Calendar,
+    *,
+    paper: Path,
+    store: Path,
+    now: datetime,
+    dry_run: bool = False,
+) -> tuple[str, TimingVintage | None]:
+    """Copy the live timing file as ``session``'s vintage. Only before the
+    session's decision cutoff (later, it could hold what D could not know:
+    ``too_late``); never rewritten (``exists`` returns the stored one; of
+    two concurrent writers the first wins); ``dry_run`` returns the vintage
+    it would write. A malformed live file raises NotEvaluable."""
+    path = timing_vintage_path(store, session)
+    if path.exists():
+        return "exists", _read_vintage(path, session, cal)
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware")
+    if now > decision_cutoff(session, cal):
+        return "too_late", None
+    live = paper / events.TIMING_FILE
+    try:
+        raw = live.read_bytes()
+    except FileNotFoundError:
+        raw = None
+    except OSError as exc:
+        raise NotEvaluable(f"{events.TIMING_FILE} unreadable ({type(exc).__name__})") from exc
+    try:
+        timing = events.check_timing(json.loads(raw) if raw is not None else {}, events.TIMING_FILE)
+    except (ValueError, events.EventsError) as exc:
+        raise NotEvaluable(f"{events.TIMING_FILE}: bad timing ({exc})") from exc
+    sha = hashlib.sha256(raw).hexdigest() if raw is not None else ""
+    vintage = TimingVintage(session, now, sha, timing)
+    if dry_run:
+        return "dry_run", vintage
+    doc = {
+        "schema": TIMING_VINTAGE_SCHEMA,
+        "session": session.isoformat(),
+        "snapshot_at": now.isoformat(),
+        "source": events.TIMING_FILE,
+        "source_sha256": sha,
+        "timing": timing,
+    }
+    data = (json.dumps(doc, indent=1, sort_keys=True) + "\n").encode()
+    if not atomic_create_bytes(path, data):  # a concurrent writer won
+        return "exists", _read_vintage(path, session, cal)
+    return "written", vintage
+
+
+def load_timing_vintage(session: date, cal: Calendar, *, store: Path) -> TimingVintage | None:
+    """The newest vintage dated on or before ``session`` (None: none yet).
+    A malformed or inconsistent newest vintage raises NotEvaluable: an older
+    one would silently hide what was known."""
+    root = store / TIMING_VINTAGE_DIR
+    if not root.is_dir():
+        return None
+    dated: list[date] = []
+    for p in root.glob("*.json"):
+        try:
+            d = date.fromisoformat(p.stem)
+        except ValueError:
+            continue
+        if d <= session:
+            dated.append(d)
+    if not dated:
+        return None
+    newest = max(dated)
+    return _read_vintage(timing_vintage_path(store, newest), newest, cal)
 
 
 @dataclass(frozen=True)

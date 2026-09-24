@@ -1,6 +1,6 @@
-# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events; Wave 2: dividends)
+# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events; Wave 2: dividends + the deal miner)
 
-Five systemd **user** timers, all `oneshot` in `host-work.slice`, all
+Six systemd **user** timers, all `oneshot` in `host-work.slice`, all
 idempotent. None places orders or seals cards.
 
 | job | when (America/New_York) | does |
@@ -10,6 +10,7 @@ idempotent. None places orders or seals cards.
 | `desk-indices` | Tue-Sat 06:40 | CBOE index histories (VIX VIX9D VIX1D VIX3M VIX6M VIX1Y VVIX SKEW VXN RVX GVZ VXAPL VXAZN VXGOG) + FRED DTB3 |
 | `desk-events` | Sat 10:00 | earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 with `DESK_SEC_UA`) + the sealed macro calendar's Fed-page check |
 | `desk-dividends` | Mon-Fri 17:15; Tue-Sat 06:20 (catch-up) | Polygon `/v3/reference/dividends` histories for the 35 chain names into `desk-store/dividends/<D>/`, the ex-dividend rail's input (Wave 2; exit 3 = benign vendor gap) |
+| `desk-mine` | Mon-Sat 07:15; Mon-Fri 08:15, 09:15; Mon-Sat 13:00 (catch-up) | the deal miner (plan D6): the latest completed session's entry queue `~/.local/state/trex-desk/queue/<D>.json` (`trex.deal/1`); selection rules PROPOSED pending an operator ruling (Wave 2; files only, not installed) |
 
 All run `python -m tree_options.desk <command>` from the main checkout's
 `.venv`. Manual runs: add `--session YYYY-MM-DD` (a closed NYSE session;
@@ -17,7 +18,20 @@ chains/eod-equity) and/or `--dry-run`.
 
 ## Install / verify (operator)
 
-Wave 2 unit (files only until the operator installs it at landing). Until
+Wave 2 deal-miner unit (files only; install only after the operator rules
+on the PROPOSED selection rules, `data/desk/miner/v1.toml`, and after
+`desk-dividends` has stored a snapshot, or every deal with a short call
+fails the ex-dividend rail as NOT_EVALUABLE). `systemd-analyze --user
+verify` passes on both files (2026-09-24):
+
+```bash
+cp ~/documents/tree_options/deploy/desk/desk-mine.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now desk-mine.timer
+systemctl --user start desk-mine.service; journalctl --user -u desk-mine -n 30
+```
+
+Wave 2 dividends unit (files only until the operator installs it at landing). Until
 its first run stores a snapshot, every candidate with a short call is
 NOT_EVALUABLE on the ex-dividend rail:
 
@@ -417,3 +431,94 @@ the vendor (probed: a 2024-09-13 start returned its first bar on
 - `docs/desk/DESK-BT-001.md` + `DESK-BT-001-AMENDMENT-1.md` (entry on the
   next session after the signal) are sealed and NOT run: earliest run
   2026-10-20 (after 20 recorded chain sessions).
+
+## Deal miner (Wave 2 D6; `desk-mine`, files only)
+
+`python -m tree_options.desk mine [--session D] [--dry-run] [--names A,B]
+[--out PATH] [--desk-specs DIR] [--desk-book FILE]` (`desk.miner`) mines
+session D (default: the latest completed session) after its close, for
+entry on the next session. It places no orders and pushes nothing.
+
+- **Point in time.** D's decision cutoff is the next session's 09:30 ET.
+  Every input goes through `desk.pit` or is dated on or before D: D's
+  recorded chains, the features documents of D and its 252-session history,
+  `signals/<D>.json`, VIX/VIX3M closes of D, DTB3 lagged one session, the
+  panel through D, dividend snapshots dated on or before D, the sealed
+  macro calendar, and the earnings timing through the **vintage store**
+  `desk-store/earnings-timing/<D>.json`. `mine` snapshots the live
+  `earnings-timing.json` there once per session, only before D's cutoff,
+  and never rewrites it. A run after the cutoff reads the newest older
+  vintage. A session before the first vintage has **no** timing
+  knowledge, so every single stock is refused on its earnings schedule;
+  ETFs are unaffected. The first vintage is written by the first live run.
+- **Flow.** The playbook rows each name matches come from
+  `desk.regime`. R1 may match with the vol state NOT_EVALUABLE only during
+  the warm-up; any other reason refuses, and the reason is logged on the
+  deal. TQQQ/SQQQ picks are logged under `no_options_expression`, never
+  substituted. For each matched row:
+  1. Build the row's grid: expiries by calendar DTE at entry; strikes by
+     |delta| at our own chain IV; `same_as` legs shared.
+  2. Dedupe it, then cap it at 400 per (name, row), keeping the strikes
+     nearest the range centres.
+  3. Refuse before valuation: no two-sided quote, a debit fill at or
+     above the width, a credit at or below 0 or at or above the width, no
+     hold window, or a diagonal that is not protective on its actual
+     strikes.
+  4. Value it with `pricing.value_candidates` at 20,000 paths.
+     `limit_ok` false is refused.
+  5. Pre-check it with `rails.check`, using the account-wide book with
+     each position's greeks priced from D's chains.
+  6. Apply the sealed selection rules, rank, apply each row's
+     `max_open`, then re-check greedily and jointly (at most 3 per
+     session, 2 per underlying).
+- **Limit.** The cap is the first cent strictly above the modeled base
+  fill (mid + 0.5 x half-spread); a credit's floor is the first cent
+  below. `ref_mid` is the package mid, for the engine's `stale_deal`
+  abort. The exit deadline is the earliest of:
+  - the row's hold;
+  - its `min_dte`;
+  - its event bound;
+  - one session before the engine's expiry-safety session.
+- **Selection: `data/desk/miner/v1.toml`, sealed like the playbook**
+  (file + `.sha256` + `SEALS.md` + `desk.selection.APPROVED`). **PROPOSED,
+  pending an operator ruling before E6 goes live.** A deal is admissible
+  only if:
+  - every rail passes;
+  - its decision EV at stress fills (k = 1.0) is > $0;
+  - its decision EV / max loss at base fills is >= 0.05.
+
+  The decision EV is the signal EV on signal rows (R1 R2 R3 R6) and the
+  no-view EV elsewhere. Deals rank by that ratio, then EV, then smaller
+  max loss, then deal_id.
+- **Output.** `<TREX_DESK_QUEUE>/<D>.json`, default
+  `~/.local/state/trex-desk/queue/`, schema `trex.deal/1`:
+  - money as strings, and each deal's `structure` a LegStructure with
+    `deal_id` and `ref_mid` (its max loss re-derives from the structure);
+  - `valid_until`: 11:30 ET on the entry session;
+  - the playbook and miner digests, and input digests;
+  - per-row counts: matched, enumerated, candidates, valued, refused by
+    code, rail_failed by rule, not_selected, capacity, admissible;
+  - `admissible`: the entry queue, ranked;
+  - `surfaced`: every other candidate, with reasons, for the Wave 3 shadow
+    tracker;
+  - a fixed-template rationale per valued deal, never model text.
+
+  The bytes are deterministic, with no wall clock in them; the
+  future-poison test (`tests/unit/test_desk_miner_poison.py`) pins that.
+  A queue is written once and marked in `stages/<D>/mine.done.json`. A
+  re-run that computes different bytes is kept in `queue-conflicts/`
+  (exit 1) and never replaces the queue.
+- **Exit codes.** 0 written or already done; 3 D's chains or features
+  are not there yet, or the lock is held; 1 a failure or a conflict;
+  2 bad arguments.
+- **Smoke (2026-09-24, read-only against the live store, output under
+  /tmp).**
+  - D = 2026-09-22 dry run: 0.4 s, 98 MB peak RSS. No row matched: there
+    is no `signals/2026-09-22.json` (direction unknown), and 16 of 35
+    names have a liquidity score under 10.
+  - Exercise run with a SYNTHETIC XSMOM signal file (SMH SOXX QQQ), in a
+    tmp state dir: 4.5 s, 151 MB peak RSS. R1 matched QQQ only (SMH and
+    SOXX are illiquid). 100 candidates were valued; all 100 rail-failed,
+    on `max_loss_per_trade` (QQQ spreads are wide) and on
+    `ex_dividend_short_call` (no dividend snapshot yet). The book's two
+    NVDA spreads came to -$110 per 1% SPY.

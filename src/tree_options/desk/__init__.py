@@ -22,9 +22,11 @@ Wave 2 adds ``record-dividends`` (the ex-dividend rail's input,
 :mod:`~tree_options.desk.beta` feeding it); the sealed playbook
 (:mod:`tree_options.desk.playbook`, ``data/desk/playbook/v2.toml`` active,
 ``v1.toml`` history) and the point-in-time conditions per name that select
-its rows (:mod:`tree_options.desk.regime`); and the deal valuation
+its rows (:mod:`tree_options.desk.regime`); the deal valuation
 (:mod:`tree_options.desk.pit`, :mod:`~tree_options.desk.distribution`,
-:mod:`~tree_options.desk.pricing`).
+:mod:`~tree_options.desk.pricing`); and the deal miner that assembles them
+into each session's entry queue (``mine``: :mod:`tree_options.desk.miner`,
+its sealed selection rules :mod:`~tree_options.desk.selection`).
 
 Paths come from :mod:`tree_options.desk.paths` (env-overridable; tests pin
 every one of them to tmp). Nothing here places orders or seals cards.

@@ -63,6 +63,19 @@
         --coverage-sensitivity: the disclosed earnings-coverage sensitivity
         figure instead (FORECAST-001-coverage-sensitivity.json).
 
+    mine [--session D] [--dry-run] [--names A,B] [--out PATH]
+         [--desk-specs DIR] [--desk-book FILE]
+        The deal miner (plan D6, desk.miner): session D's entry queue
+        (default D: the latest completed session) into
+        <TREX_DESK_QUEUE>/<D>.json, schema trex.deal/1, written once and
+        marked done in stages/<D>/mine.done.json; features/<D>.json is
+        built first when missing. --dry-run writes nothing under the store
+        or the state (the payload goes to --out when given); --names (a
+        subset of the chain universe) needs --dry-run or --out. Exit 0
+        written or already done, 3 inputs not ready (no chains, no
+        features) or the lock held, 1 a conflict with the written queue or
+        a failure, 2 bad arguments. Places no orders.
+
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes; a second concurrent run exits 3. No secrets are printed
 (the chain, index and calendar feeds are keyless; fetch_ohlc.py reads its
@@ -105,6 +118,7 @@ from tree_options.desk import (  # noqa: E402
     http,
     indices,
     ivhist,
+    miner,
     paths,
     store,
 )
@@ -182,6 +196,15 @@ def _parser() -> argparse.ArgumentParser:
         action="store_true",
         help="write the disclosed earnings-coverage sensitivity figure (not a re-score)",
     )
+    mn = sub.add_parser("mine", help="the deal miner: session D's entry queue (trex.deal/1)")
+    mn.add_argument("--session", type=date.fromisoformat)
+    mn.add_argument(
+        "--dry-run", action="store_true", help="write nothing under the store or the state"
+    )
+    mn.add_argument("--names", help="comma-separated chain-universe subset (--dry-run/--out)")
+    mn.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
+    mn.add_argument("--desk-specs", type=Path, help="the desk runtime's spec dir (Wave 3)")
+    mn.add_argument("--desk-book", type=Path, help="the desk runtime's book.json (Wave 3)")
     return ap
 
 
@@ -390,6 +413,32 @@ def _record_chains(
     return rc
 
 
+def _mine(args: argparse.Namespace, *, clock: store.Clock, cal: Calendar) -> int:
+    names = None
+    if args.names is not None:
+        names = [s.strip() for s in args.names.split(",") if s.strip()]
+        if not names or any(not _SYMBOL.match(n) for n in names):
+            print(f"mine: bad --names {args.names!r}", file=sys.stderr)
+            return 2
+    res = miner.run_mine(
+        session=args.session,
+        now=clock(),
+        cal=cal,
+        dry_run=args.dry_run,
+        names=names,
+        out=args.out,
+        desk_specs=args.desk_specs,
+        desk_book=args.desk_book,
+        build_features=lambda d: econ_jobs.run_features(d, cal),
+    )
+    for line in res.summary():
+        print(line)
+    print(res.line() + (" (dry run)" if args.dry_run else ""))
+    if res.exit_code == 2:
+        print(f"mine: {res.detail}", file=sys.stderr)
+    return res.exit_code
+
+
 def _eod_equity(
     args: argparse.Namespace,
     *,
@@ -510,6 +559,8 @@ def run_cli(
             )
         if args.command == "seal-macro":
             return _seal_macro(args, get=get or http.urllib_get, clock=clock, cal=cal)
+        if args.command == "mine":
+            return _mine(args, clock=clock, cal=cal)
         return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 

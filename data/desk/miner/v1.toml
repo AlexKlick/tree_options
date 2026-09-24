@@ -1,0 +1,71 @@
+# Options desk deal-miner selection rules v1 (plan D6 / E6). SEALED: v1.sha256
+# holds the sha256 of this file's bytes, SEALS.md its one seal row, and
+# tree_options.desk.selection.APPROVED pins the same digest in code;
+# load_config refuses any mismatch. A change is a new version (v2.toml); this
+# file is never edited.
+#
+# STATUS: PROPOSED. The sealed playbook (data/desk/playbook/v2.toml) has no
+# selection thresholds, so turning valued deals into the entry queue is a
+# trading rule of its own. These are the miner lane's conservative
+# defaults (2026-09-24), PENDING AN OPERATOR RULING before E6 (desk-enter)
+# goes live. Until then the queue is advisory: Wave 3 runs auto_enter=false
+# and shadow-tracks every surfaced deal whatever its status.
+#
+# Every value is explicit (the loader has no defaults). Money is a string.
+
+schema = "desk-miner/1"
+version = "v1"
+written = "2026-09-24"
+status = "PROPOSED"
+ruling = "PENDING: an operator ruling on [selection] before E6 desk-enter admits from the queue"
+plan = "~/.claude/plans/ok-those-charts-need-eager-bumblebee.md, D6 and E6 (approved 2026-09-23)"
+
+# ------------------------------------------------------------- valuation
+# desk.pricing.value_candidates on n_paths seeded paths per (name, row,
+# exit); the fills are the pricer's own constants (the loader refuses any
+# other value: the file must describe what the code does). A (name, row)
+# enumerating more structures than max_valued_per_name_row values the ones
+# nearest the centres of the row's |delta| ranges (then by structure key);
+# the rest are surfaced as refused (enumeration_cap), never silently dropped.
+[valuation]
+n_paths = 20000
+fill_k = "0.5"
+stress_fill_k = "1.0"
+max_valued_per_name_row = 400
+
+# ----------------------------------------------------------------- limit
+# The structure's entry limit (debit orientation): the FIRST CENT STRICTLY
+# BEYOND the modeled base fill (mid +/- fill_k x half-spread, from the
+# chain's own bid/ask): a debit kind's cap is the smallest cent above it, a
+# credit kind's floor the largest cent below it. The valued fill is then
+# inside the limit; a valuation whose limit_ok is still false is REFUSED
+# (never re-limited). Before any valuation a debit fill at or above the
+# width, and a credit at or below 0 (or at or above the width), are refused.
+[limit]
+policy = "first_cent_beyond_base_fill"
+on_limit_not_ok = "refuse"
+
+# ------------------------------------------------------------- selection
+# A valued deal is ADMISSIBLE (joins the entry queue) only if ALL hold:
+#  1. every rail of desk.rails.check PASSES (the one admission check);
+#  2. the DECISION EV under STRESS fills (k = stress_fill_k on entry and
+#     exit) is STRICTLY above min_stress_fill_ev_usd;
+#  3. the DECISION EV at base fills / max loss is AT LEAST
+#     min_ev_per_max_loss.
+# The decision EV is the SIGNAL EV on rows whose drift view is "signal"
+# (R1 R2 R3 R6) and the NO-VIEW EV on every other row. Admissible deals are
+# ranked by decision EV / max loss (base fills), descending; ties by
+# decision EV descending, then max loss ascending, then deal_id ascending.
+# Walking that order, each deal is re-checked with desk.rails.check against
+# the book PLUS the higher-ranked deals already queued (as working entries
+# at their caps; admissions_this_session = the number queued), within its
+# row's max_open (open desk positions of the row + queued); one that fails
+# jointly, or repeats a queued structure, is surfaced, not queued.
+[selection]
+rails = "all_pass"
+decision_ev = "signal_ev_on_signal_rows_else_no_view_ev"
+min_stress_fill_ev_usd = "0"
+min_ev_per_max_loss = "0.05"
+rank = "ev_per_max_loss_desc"
+tie_breaks = ["ev_desc", "max_loss_asc", "deal_id_asc"]
+joint = "greedy_rails_recheck"

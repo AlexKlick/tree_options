@@ -665,11 +665,16 @@ def load_timing(path: Path) -> dict[str, dict[str, dict[str, str]]]:
         return {}
     except (OSError, ValueError) as exc:
         raise EventsError(f"{path.name}: unreadable ({type(exc).__name__})") from exc
+    return check_timing(doc, path.name)
+
+
+def check_timing(doc: Any, where: str) -> dict[str, dict[str, dict[str, str]]]:
+    """A parsed timing document, validated entry by entry (raises)."""
     if not isinstance(doc, dict):
-        raise EventsError(f"{path.name}: not an object")
+        raise EventsError(f"{where}: not an object")
     for name, per_day in doc.items():
         if not isinstance(per_day, dict):
-            raise EventsError(f"{path.name}: {name} is not an object")
+            raise EventsError(f"{where}: {name} is not an object")
         for day, e in per_day.items():
             ok = (
                 isinstance(e, dict)
@@ -678,7 +683,7 @@ def load_timing(path: Path) -> dict[str, dict[str, dict[str, str]]]:
                 and isinstance(e.get("source"), str)
             )
             if not ok:
-                raise EventsError(f"{path.name}: bad entry {name} {day}")
+                raise EventsError(f"{where}: bad entry {name} {day}")
     return doc
 
 

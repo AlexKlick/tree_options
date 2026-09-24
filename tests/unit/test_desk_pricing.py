@@ -276,6 +276,11 @@ def test_exit_is_sticky_moneyness_with_mean_reversion_spreads_and_costs(
     s_sig = s_exit * math.exp(20 * 0.5 * math.log(1.03) / 20.0)
     assert val.ev_signal is not None
     assert float(val.ev_signal) == pytest.approx(o(s_sig), abs=0.006)
+    # the view's EV under the stress fill (k = 1.0 both ways): the miner's
+    # selection gate for signal rows
+    assert val.ev_signal_fill_stress is not None
+    assert float(val.ev_signal_fill_stress) == pytest.approx(o(s_sig, k=1.0), abs=0.006)
+    assert val.as_dict()["ev_signal_fill_stress"] == str(val.ev_signal_fill_stress)
     assert float(val.cvar5) == pytest.approx(o(s_exit), abs=0.006)
     assert val.ev_se == Decimal("0.00")
     assert val.p_profit in (0.0, 1.0) and val.p_profit == (1.0 if o(s_exit) > 0 else 0.0)
@@ -436,6 +441,7 @@ def test_money_is_decimal_and_serializes_as_strings(cal: StaticSessionCalendar) 
     assert doc["ev"] == str(val.ev) and doc["max_loss"] == "300.00"
     assert isinstance(doc["p_profit"], float)
     assert doc["ev_signal"] is None
+    assert doc["ev_signal_fill_stress"] is None and val.ev_signal_fill_stress is None
 
 
 # ------------------------------------------------------- IV mean reversion

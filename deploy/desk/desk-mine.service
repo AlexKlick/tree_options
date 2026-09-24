@@ -1,0 +1,25 @@
+[Unit]
+Description=Options desk: the deal miner (session D's entry queue, trex.deal/1)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# The shared .venv's editable install is the main checkout (never re-synced here).
+# Mines the latest completed session D: snapshots the earnings-timing vintage
+# of D (only before D's decision cutoff, the next session's 09:30 ET), builds
+# features/<D>.json when missing, values every matched playbook row's grid and
+# writes ~/.local/state/trex-desk/queue/<D>.json once (stages/<D>/mine.done.json
+# marks it; a later slot for the same D is a no-op). Places no orders and sends
+# no pushes; reads no secrets (no network at all).
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk mine
+# exit 3 = D's chains or features are not there yet (or the lock is held): the
+# next slot retries. 1 = a failure or a conflict with the written queue (the
+# differing run is kept in ~/.local/state/trex-desk/queue-conflicts/): see the
+# journal.
+SuccessExitStatus=3
+# the pooled HAR fit plus 20,000 paths per (name, row, exit): minutes, not hours
+TimeoutStartSec=3600

@@ -424,7 +424,10 @@ class Candidate:
 class BookPosition:
     """One position the account holds or is entering. ``status``: "open"
     (filled exposure) or "working" (an entry that may fill; its
-    ``max_loss_usd`` is at its cap). ``id`` is unique across books."""
+    ``max_loss_usd`` is at its cap). ``id`` is unique across books.
+    ``spec`` and ``quantity`` (the packages at risk: open for "open", the
+    whole entry for "working") let a caller price the position's greeks;
+    the rules never read them (None / 0 when unknown)."""
 
     id: str
     source: str
@@ -433,6 +436,8 @@ class BookPosition:
     max_loss_usd: Decimal | None
     risk: PositionRisk = field(default_factory=PositionRisk)
     detail: str = ""
+    spec: LegStructure | None = None
+    quantity: int = 0
 
 
 @dataclass(frozen=True)
