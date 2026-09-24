@@ -515,17 +515,34 @@ entry on the next session. It places no orders and pushes nothing.
   A queue is written once and marked in `stages/<D>/mine.done.json`. A
   re-run that computes different bytes is kept in `queue-conflicts/`
   (exit 1) and never replaces the queue.
-- **Exit codes.** 0 written or already done; 3 D's chains or features
-  are not there yet, or the lock is held; 1 a failure or a conflict;
-  2 bad arguments.
+- **Readiness: D's signals file must prove itself.** `mine` needs D's
+  chains, D's features document and D's `signals/<D>.json`. The signals
+  file must parse as desk-eod-equity's document of session D, with
+  `panel_last_session == D`. A missing, unreadable or stale file is
+  **not ready**: exit 3, with no queue and no stage marker, so the next
+  slot retries. It never reads as "no signal". The signal rows (R1, R3)
+  are the desk's only live rows, so a queue finalized without the signals
+  would lose the session silently. The earnings-timing vintage is still
+  taken on a not-ready slot. eod-equity writes the signals at 16:40 and
+  20:40 ET, with a 08:40 ET catch-up. `desk-mine`'s 07:15 and 08:15 slots
+  may therefore find the file missing after a failed evening, and
+  **09:15 ET is the last retry before D's decision cutoff**. If the file
+  is still missing then, the session gets no admissible queue: the
+  fail-closed outcome. A 13:00 ET catch-up can still mine it, but that
+  queue is past `valid_until`, so it only feeds the shadow tracker.
+- **Exit codes.** 0 written or already done; 3 not ready (D's chains,
+  signals file or features; nothing written), or the lock is held; 1 a
+  failure or a conflict; 2 bad arguments.
 - **Smoke (2026-09-24, read-only against the live store, output under
   /tmp).**
-  - D = 2026-09-22 dry run: 0.4 s, 98 MB peak RSS. No row matched: there
-    is no `signals/2026-09-22.json` (direction unknown), and 16 of 35
-    names have a liquidity score under 10.
-  - Exercise run with a SYNTHETIC XSMOM signal file (SMH SOXX QQQ), in a
-    tmp state dir: 4.5 s, 151 MB peak RSS. R1 matched QQQ only (SMH and
-    SOXX are illiquid). 100 candidates were valued; all 100 rail-failed,
-    on `max_loss_per_trade` (QQQ spreads are wide) and on
-    `ex_dividend_short_call` (no dividend snapshot yet). The book's two
-    NVDA spreads came to -$110 per 1% SPY.
+  - D = 2026-09-22 dry run: exit 3 `not_ready`, "no signals file for
+    2026-09-22" (desk-eod-equity has no file for that session). 0.3 s,
+    56 MB peak RSS. Before the readiness fix the same run "succeeded"
+    with an empty queue: direction was unknown for all 35 names, and 16
+    of the 35 have a liquidity score under 10.
+  - Exercise run with a SYNTHETIC XSMOM signal file (SMH SOXX QQQ,
+    `panel_last_session` 2026-09-22), in a tmp state dir: 5.2 s, 151 MB
+    peak RSS. R1 matched QQQ only (SMH and SOXX are illiquid). 100
+    candidates were valued; all 100 rail-failed, on `max_loss_per_trade`
+    (QQQ spreads are wide) and on `ex_dividend_short_call` (no dividend
+    snapshot yet). The book's two NVDA spreads came to -$110 per 1% SPY.

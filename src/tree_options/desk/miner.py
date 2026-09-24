@@ -41,8 +41,10 @@ or dated on or before D:
 deterministic bytes (path seeds from sha256 of stable inputs, no wall clock
 in the payload), money as strings, written once (a completed session is
 never rewritten; a differing recomputation is kept beside it as a
-conflict) and marked done in ``<state>/stages/<D>/mine.done.json``.
-Nothing here places orders.
+conflict) and marked done in ``<state>/stages/<D>/mine.done.json``. A
+session whose chains, signals file or features are not ready yet exits 3
+with NO queue and NO marker (a missing signals file must never finalize a
+signal-less queue). Nothing here places orders.
 """
 
 from __future__ import annotations
@@ -65,6 +67,7 @@ from tree_options.desk import dividends, paths, pricing, rails, regime, selectio
 from tree_options.desk import pit as desk_pit
 from tree_options.desk.book import load_book
 from tree_options.desk.distribution import SignalDrift, schedule_through
+from tree_options.desk.eod_equity import SCHEMA as SIGNALS_SCHEMA
 from tree_options.desk.events import EARNINGS_NAMES
 from tree_options.desk.ivhist import days_between
 from tree_options.desk.panel import PanelLocked
@@ -1183,6 +1186,26 @@ def _has_chains(store: Path, session: date) -> bool:
     return any(not p.name.endswith(".conflict.json.gz") for p in chain_dir.glob("*.json.gz"))
 
 
+def signals_problem(path: Path, session: date) -> str | None:
+    """Why D's signals file cannot be mined yet (None: it proves itself).
+    It must exist and parse as desk-eod-equity's document of session D,
+    computed on a panel that reached D (``panel_last_session``, as that job
+    writes it). A missing or stale file must never read as "no signal":
+    the signal rows are the desk's live rows, and a queue finalized
+    without them would silently lose the session."""
+    if not path.exists():
+        return f"no signals file for {session} (desk-eod-equity has not written it yet)"
+    doc, _sha = _read_json(path)
+    if not isinstance(doc, dict) or doc.get("schema") != SIGNALS_SCHEMA:
+        return f"the signals file for {session} is not a signals document ({SIGNALS_SCHEMA})"
+    if doc.get("session") != session.isoformat():
+        return f"the signals file for {session} describes session {doc.get('session')!r}"
+    last = doc.get("panel_last_session")
+    if last != session.isoformat():
+        return f"signals for {session} were computed on a stale panel: panel_last_session {last}"
+    return None
+
+
 def run_mine(
     *,
     session: date | None,
@@ -1208,7 +1231,12 @@ def run_mine(
     latter also marks the stage done). ``names`` restricts the universe
     (only for a dry run or an ``out`` file: a live queue is whole).
     ``build_features`` (the CLI's ``features`` job) is run first when D's
-    features document is missing and this is not a dry run."""
+    features document is missing and this is not a dry run.
+
+    Not ready (exit 3, no queue, no marker; the vintage is still taken):
+    D's chains, D's signals file (:func:`signals_problem`: missing,
+    unreadable, another session's, or computed on a panel short of D) or
+    D's features document."""
     if now.tzinfo is None:
         raise ValueError("now must be timezone-aware")
     if session is None:
@@ -1246,6 +1274,10 @@ def run_mine(
         return MineResult(1, "inputs", f"NotEvaluable: {exc}", d)
     if not _has_chains(store, d):
         return MineResult(3, "not_ready", f"no recorded chains for {d}", d, timing_status=tstatus)
+    signals_path = state / "signals" / f"{d.isoformat()}.json"
+    why = signals_problem(signals_path, d)
+    if why is not None:  # no queue, no marker: the next slot retries
+        return MineResult(3, "not_ready", why, d, timing_status=tstatus)
     feat_path = store / "features" / f"{d.isoformat()}.json"
     if not feat_path.exists() and not dry_run and build_features is not None:
         build_features(d)
@@ -1266,7 +1298,7 @@ def run_mine(
     except (NotEvaluable, OSError, ValueError) as exc:
         return MineResult(1, "inputs", f"{type(exc).__name__}: {exc}", d)
     window = max(pb.vol_state.window_sessions, pb.term.window_sessions)
-    signals_doc, signals_sha = _read_json(state / "signals" / f"{d.isoformat()}.json")
+    signals_doc, signals_sha = _read_json(signals_path)
     _doc, features_sha = _read_json(feat_path)
     entry = first_session_after(d, cal)
     assert entry is not None  # PointInTime found a cutoff

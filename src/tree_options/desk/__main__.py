@@ -72,9 +72,11 @@
         built first when missing. --dry-run writes nothing under the store
         or the state (the payload goes to --out when given); --names (a
         subset of the chain universe) needs --dry-run or --out. Exit 0
-        written or already done, 3 inputs not ready (no chains, no
-        features) or the lock held, 1 a conflict with the written queue or
-        a failure, 2 bad arguments. Places no orders.
+        written or already done, 3 inputs not ready (no chains; D's
+        signals file missing, unreadable, another session's or on a panel
+        short of D; no features) or the lock held: no queue, no marker,
+        the next slot retries; 1 a conflict with the written queue or a
+        failure, 2 bad arguments. Places no orders.
 
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes; a second concurrent run exits 3. No secrets are printed

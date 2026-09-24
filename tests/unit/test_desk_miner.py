@@ -675,6 +675,95 @@ def test_inputs_not_ready_is_exit_3(cal, fast_cfg, tmp_path, monkeypatch) -> Non
     assert (res2.exit_code, res2.status) == (3, "not_ready") and "chains" in res2.detail
 
 
+# ------------------------------------------------- D's signals must prove themselves
+
+
+def _stale(w: wm.World) -> None:  # written before the panel reached D
+    prev = date(2025, 3, 11)
+    w.signals[SESSION.isoformat()] = wm.signals_doc(
+        SESSION, ["AAPL", "TQQQ", "QQQ"], ["QQQ"], panel_last=prev
+    )
+
+
+def _other_session(w: wm.World) -> None:  # another session's file under D's name
+    other = date(2025, 3, 11)
+    w.signals[SESSION.isoformat()] = wm.signals_doc(other, ["AAPL", "TQQQ", "QQQ"], ["QQQ"])
+
+
+def _garbage(w: wm.World) -> None:
+    w.signals[SESSION.isoformat()] = ["not", "a", "signals", "document"]  # type: ignore[assignment]
+
+
+def _missing(w: wm.World) -> None:
+    w.signals.pop(SESSION.isoformat())
+
+
+@pytest.mark.parametrize(
+    ("spoil", "why"),
+    [
+        (_missing, "no signals file"),
+        (_stale, "panel_last_session 2025-03-11"),
+        (_other_session, "session '2025-03-11'"),
+        (_garbage, "not a signals document"),
+    ],
+)
+def test_signals_not_ready_write_no_queue_and_no_marker(
+    cal, fast_cfg, tmp_path, monkeypatch, spoil: Any, why: str
+) -> None:
+    """eod-equity writes D's signals at 16:40/20:40 ET with an 08:40 ET
+    catch-up; a slot before them must NOT finalize a signal-less queue (the
+    signal rows are the desk's only live rows): exit 3, no queue, no
+    marker, so the next slot retries. The vintage is still taken."""
+    w = wm.base(cal)
+    w.vintages = {}
+    spoil(w)
+    res = _run(tmp_path, monkeypatch, cal, w, fast_cfg, dry_run=False)
+    assert (res.exit_code, res.status) == (3, "not_ready")
+    assert "signals" in res.detail and why in res.detail
+    assert res.payload is None and res.timing_status == "written"
+    state = tmp_path / "world" / "state"
+    assert not (state / "queue").exists()
+    assert not (state / "stages" / SESSION.isoformat() / "mine.done.json").exists()
+    assert (tmp_path / "world" / "store" / "earnings-timing" / "2025-03-12.json").exists()
+
+
+def test_a_dry_run_does_not_mine_without_ready_signals(
+    cal, fast_cfg, tmp_path, monkeypatch
+) -> None:
+    w = wm.base(cal)
+    _missing(w)
+    res = _run(tmp_path, monkeypatch, cal, w, fast_cfg, out=tmp_path / "q.json")
+    assert (res.exit_code, res.status) == (3, "not_ready")
+    assert not (tmp_path / "q.json").exists()
+
+
+def test_the_retry_after_the_signals_land_writes_the_queue(
+    cal, fast_cfg, tmp_path, monkeypatch
+) -> None:
+    w = wm.base(cal)
+    _missing(w)
+    first = _run(tmp_path, monkeypatch, cal, w, fast_cfg, dry_run=False)
+    assert (first.exit_code, first.status) == (3, "not_ready")
+    # eod-equity's 08:40 catch-up writes the file; the 09:15 slot retries
+    doc = wm.signals_doc(SESSION, ["AAPL", "TQQQ", "QQQ"], ["QQQ"])
+    signals = tmp_path / "world" / "state" / "signals" / "2025-03-12.json"
+    signals.parent.mkdir(parents=True, exist_ok=True)
+    signals.write_text(json.dumps(doc))
+    later = datetime(2025, 3, 13, 9, 15, tzinfo=wm.ET)
+    res = miner.run_mine(session=SESSION, now=later, cal=cal, config=fast_cfg)
+    assert (res.exit_code, res.status) == (0, "written"), res.line()
+    assert res.payload is not None
+    assert res.payload["inputs"]["signals"]["status"] == "ok"
+    assert set(res.payload["rows"]["R1"]["matched"]) == {"AAPL", "QQQ"}
+    marker = tmp_path / "world" / "state" / "stages" / "2025-03-12" / "mine.done.json"
+    assert marker.exists()
+
+
+def test_current_signals_proceed(base_run) -> None:
+    q = base_run
+    assert q["inputs"]["signals"]["status"] == "ok" and q["inputs"]["signals"]["sha256"]
+
+
 # --------------------------------------------------------------------- CLI
 
 

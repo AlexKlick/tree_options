@@ -142,12 +142,21 @@ def features_doc(session: date, *, iv30: float = 0.21) -> dict[str, Any]:
     }
 
 
-def signals_doc(session: date, top3: list[str], pead: Sequence[str] = ()) -> dict[str, Any]:
+def signals_doc(
+    session: date,
+    top3: list[str],
+    pead: Sequence[str] = (),
+    *,
+    panel_last: date | None = None,
+) -> dict[str, Any]:
+    """desk-eod-equity's signals file (desk-signals/1), with the panel's
+    last session as it writes it (``panel_last_session``, default D)."""
     return {
         "schema": "desk-signals/1",
         "session": session.isoformat(),
         "xsmom": {"fires": True, "top3": top3},
         "pead": [{"name": n} for n in pead],
+        "panel_last_session": (panel_last or session).isoformat(),
     }
 
 

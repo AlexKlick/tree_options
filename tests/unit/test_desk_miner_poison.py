@@ -97,6 +97,25 @@ def test_the_guarded_queue_is_not_vacuous(base_bytes) -> None:
     assert v["assumptions"]["paths"]["seed"]
 
 
+def test_later_signals_never_stand_in_for_a_missing_d(cal, cfg, tmp_path) -> None:
+    """The poisoned world holds signals files for D+1..D+3; without D's own
+    file the session is not ready (exit 3): no queue, no marker, and no
+    later session's picks used in its place."""
+    w = wm.poison(wm.base(cal), cal)
+    w.signals.pop(wm.D.isoformat())
+    assert w.signals  # the later sessions' files are there
+    mp = pytest.MonkeyPatch()
+    try:
+        where = wm.materialize(w, tmp_path / "w")
+        wm.env(mp, where)
+        res = miner.run_mine(session=wm.D, now=wm.NOW, cal=cal, config=cfg)
+    finally:
+        mp.undo()
+    assert (res.exit_code, res.status) == (3, "not_ready") and "signals" in res.detail
+    assert not (where["queue"] / QUEUE).exists()
+    assert not (where["state"] / "stages" / wm.D.isoformat() / "mine.done.json").exists()
+
+
 def _chain_ask(w: wm.World, cal: StaticSessionCalendar) -> None:
     doc = next(d for d, c in w.chains if d["header"]["underlying"] == "AAPL" and not c)
     doc["columns"]["ask"] = [a * 1.05 if a is not None else None for a in doc["columns"]["ask"]]
