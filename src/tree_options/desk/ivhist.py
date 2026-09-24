@@ -46,7 +46,12 @@ from typing import Any, cast
 
 from tree_options.data.massive_client import loads_exact
 from tree_options.data.massive_derived import MassiveDerivationError, implied_vol
-from tree_options.data.massive_options import MassiveDailyBar, MassiveSchemaError, parse_daily_bars
+from tree_options.data.massive_options import (
+    MassiveDailyBar,
+    MassiveSchemaError,
+    parse_daily_bars,
+    session_of_epoch_ms,
+)
 from tree_options.desk import stats
 from tree_options.desk.har import ETF_NAMES
 from tree_options.desk.sessions import Calendar, calendar_days_between, previous_session
@@ -244,14 +249,43 @@ def _bar_key(bar: MassiveDailyBar) -> int:
 _Cell = dict[date, tuple[Decimal, int]]
 
 
-def _merge(cell: _Cell, bad: set[date], bars: Iterable[MassiveDailyBar]) -> None:
-    for bar in bars:
-        prev = cell.get(bar.session)
-        key = _bar_key(bar)
+def _merge(cell: _Cell, bad: set[date], bars: Iterable[tuple[date, Decimal, int]]) -> None:
+    for session, vwap, key in bars:
+        prev = cell.get(session)
         if prev is None:
-            cell[bar.session] = (bar.vwap, key)
+            cell[session] = (vwap, key)
         elif prev[1] != key:
-            bad.add(bar.session)
+            bad.add(session)
+
+
+def parse_spot_bars(body: Mapping[str, Any], *, ticker: str) -> list[tuple[date, Decimal]]:
+    """(session, VWAP) of an underlying's daily bars.
+
+    Only ``t`` and ``vw`` are read. The option-bar parser's integrity
+    checks do not hold for stock bars and must not refuse them: Polygon
+    stock volumes are fractional from 2026-02-23 (``v: 90558087.165861``)
+    and the stock daily VWAP includes extended-hours trades, so it can lie
+    outside the regular-session [low, high] (an after-close earnings day).
+    The VWAP is the declared spot (IVHIST-001) and is kept as sent."""
+    results = body.get("results") or []
+    if not isinstance(results, list):
+        raise MassiveSchemaError(f"spot {ticker}: results is not a list")
+    out: list[tuple[date, Decimal]] = []
+    seen: set[date] = set()
+    for rec in results:
+        if not isinstance(rec, dict):
+            raise MassiveSchemaError(f"spot {ticker}: bar is not an object")
+        t, vw = rec.get("t"), rec.get("vw")
+        if isinstance(t, bool) or not isinstance(t, (int, Decimal)):
+            raise MassiveSchemaError(f"spot {ticker}: bar without an epoch t")
+        if isinstance(vw, bool) or not isinstance(vw, (int, Decimal)):
+            raise MassiveSchemaError(f"spot {ticker}: bar without a vw")
+        session = session_of_epoch_ms(int(t))
+        if session in seen:
+            raise MassiveSchemaError(f"spot {ticker}: duplicate session {session}")
+        seen.add(session)
+        out.append((session, Decimal(vw)))
+    return out
 
 
 def scan_cache(
@@ -296,23 +330,32 @@ def scan_cache(
             body = loads_exact(path.read_bytes())
             if not isinstance(body, dict) or body.get("ticker") != ticker:
                 raise MassiveSchemaError(f"{path.name}: ticker mismatch")
-            bars = [
-                b for b in parse_daily_bars(body, option_ticker=ticker) if start <= b.session <= end
-            ]
-        except (MassiveSchemaError, ValueError, UnicodeDecodeError):
+            if is_option and key is not None:
+                typed = [
+                    (b.session, b.vwap, _bar_key(b))
+                    for b in parse_daily_bars(body, option_ticker=ticker)
+                    # only the bars the method can read (8..90 calendar days out)
+                    if start <= b.session <= end
+                    and TAU_MIN <= days_between(b.session, key[1]) <= TAU_MAX
+                ]
+            elif body.get("adjusted") is False:
+                typed = [
+                    (s, vw, hash(vw))  # spot files conflict on the VWAP they supply
+                    for s, vw in parse_spot_bars(body, ticker=ticker)
+                    if start <= s <= end
+                ]
+            else:
+                scan.stats["adjusted_spot_bodies_skipped"] += 1
+                continue
+        except (MassiveSchemaError, ValueError, UnicodeDecodeError, ArithmeticError):
             scan.stats["refused_bodies"] += 1
             continue
-        if is_option and key is not None:
-            # only the bars the method can read (8..90 calendar days out)
-            bars = [b for b in bars if TAU_MIN <= days_between(b.session, key[1]) <= TAU_MAX]
         if is_option:
             scan.stats["option_bodies"] += 1
-            _merge(opt.setdefault(ticker, {}), opt_bad.setdefault(ticker, set()), bars)
-        elif body.get("adjusted") is False:
-            scan.stats["spot_bodies"] += 1
-            _merge(spot.setdefault(ticker, {}), spot_bad.setdefault(ticker, set()), bars)
+            _merge(opt.setdefault(ticker, {}), opt_bad.setdefault(ticker, set()), typed)
         else:
-            scan.stats["adjusted_spot_bodies_skipped"] += 1
+            scan.stats["spot_bodies"] += 1
+            _merge(spot.setdefault(ticker, {}), spot_bad.setdefault(ticker, set()), typed)
     for ticker, cell in sorted(opt.items()):
         parsed = parse_option_ticker(ticker)
         assert parsed is not None

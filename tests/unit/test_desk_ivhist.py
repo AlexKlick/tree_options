@@ -217,6 +217,51 @@ def test_build_history_on_synthetic_cache(tmp_path: Path, cal: StaticSessionCale
     assert doc["assumptions"]["dividend_yield"] == 0.0
 
 
+def test_stock_spot_bodies_are_not_held_to_option_bar_integrity(
+    tmp_path: Path, cal: StaticSessionCalendar
+) -> None:
+    """Real Polygon stock daily bars carry fractional share volumes (from
+    2026-02-23) and a VWAP outside [low, high] (extended-hours trades, e.g.
+    an after-close earnings day). The option-bar parser refuses both; the
+    spot reader must keep the session's VWAP."""
+    cache = tmp_path / "massive-cache"
+    frac = {
+        "v": 90558087.165861,
+        "vw": 101.5,
+        "o": 101.0,
+        "c": 102.0,
+        "h": 102.5,
+        "l": 100.5,
+        "t": _ms(D1),
+        "n": 7,
+    }
+    ext = {
+        "v": 1000,
+        "vw": 95.0,
+        "o": 101.0,
+        "c": 102.0,
+        "h": 102.5,
+        "l": 100.5,
+        "t": _ms(D2),
+        "n": 7,
+    }  # vwap below the regular-session low
+    _write(
+        cache,
+        "spot",
+        {"ticker": "SPY", "adjusted": False, "resultsCount": 2, "results": [frac, ext]},
+    )
+    # a second file disagreeing on D2's VWAP makes D2 a spot conflict
+    _write(
+        cache,
+        "spot2",
+        {"ticker": "SPY", "adjusted": False, "resultsCount": 1, "results": [{**ext, "vw": 95.5}]},
+    )
+    scan = ivhist.scan_cache(cache, ("SPY",), date(2025, 3, 1), date(2025, 3, 31), cal)
+    assert scan.stats["refused_bodies"] == 0
+    assert scan.spot["SPY"] == {D1: 101.5}
+    assert scan.spot_conflicts["SPY"] == {D2}
+
+
 def test_rate_source_reads_fred_point_in_time(tmp_path: Path) -> None:
     p = tmp_path / "DTB3.csv"
     p.write_text("observation_date,DTB3\n2025-03-03,4.20\n2025-03-04,.\n2025-03-05,4.10\n")
