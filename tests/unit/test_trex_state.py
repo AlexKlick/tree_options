@@ -210,3 +210,94 @@ class TestEventsAndHeartbeat:
         book = BookState(["a"])
         book.heartbeat = datetime.now(ET) - timedelta(seconds=61)
         assert not book.armed_within(30)
+
+
+def _legacy_row(**fields: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "status": "open",
+        "entry_order": None,
+        "entry_fill": None,
+        "filled_qty": 0,
+        "entry_cycles": 0,
+        "exit_order": None,
+        "exit_fill": None,
+        "exit_filled_qty": 0,
+        "exit_cycles": 0,
+        "exit_reason": None,
+        "close_reason": None,
+        "touch_ts": None,
+        "updated_at": None,
+        "exit_order_seen": 0,
+        "exit_order_notional": None,
+        "entry_order_seen": 0,
+        "entry_order_notional": None,
+    }
+    row.update(fields)
+    return row
+
+
+# The live putspread-20260922 book's SHAPE (every key the legacy monitor and
+# entry runner write), built by hand from the schema: two open NVDA spreads
+# and a QQQ entry that never filled. Never read from the live run dir.
+LIVE_BOOK_SHAPE: dict[str, object] = {
+    "heartbeat": "2026-09-23T14:59:40.123456-04:00",
+    "structures": {
+        "nvda-oct": _legacy_row(
+            entry_order="14",
+            entry_fill="0.47",
+            filled_qty=5,
+            entry_cycles=2,
+            updated_at="2026-09-22T10:31:02.000001-04:00",
+            entry_order_seen=5,
+            entry_order_notional="2.35",
+        ),
+        "qqq-nov": _legacy_row(
+            status="closed",
+            entry_order="15",
+            entry_cycles=4,
+            close_reason="entry window closed",
+            updated_at="2026-09-22T12:00:21-04:00",
+        ),
+        "nvda-nov": _legacy_row(
+            entry_order="16",
+            entry_fill="2.05",
+            filled_qty=3,
+            entry_cycles=1,
+            updated_at="2026-09-22T10:02:44-04:00",
+            entry_order_seen=3,
+            entry_order_notional="6.15",
+        ),
+    },
+}
+LIVE_IDS = ["nvda-oct", "qqq-nov", "nvda-nov"]
+
+
+class TestLiveBookCompatibility:
+    """Desk-era StructureState fields default, so the live book.json loads
+    unchanged, and are written only once used, so it saves unchanged."""
+
+    def test_live_book_shape_loads_with_defaults(self, tmp_path: Path) -> None:
+        path = tmp_path / "book.json"
+        path.write_text(json.dumps(LIVE_BOOK_SHAPE, indent=2) + "\n")
+        book = BookState.load(path, LIVE_IDS)
+        oct_ = book.structures["nvda-oct"]
+        assert oct_.status is Status.OPEN and oct_.open_qty == 5
+        assert oct_.entry_fill == Decimal("0.47")
+        assert oct_.entry_order_notional == Decimal("2.35")
+        assert book.structures["qqq-nov"].status is Status.CLOSED
+        assert book.structures["nvda-nov"].open_qty == 3
+        assert all(st.stop_ticks == 0 for st in book.structures.values())
+
+    def test_live_book_shape_saves_unchanged(self, tmp_path: Path) -> None:
+        path = tmp_path / "book.json"
+        path.write_text(json.dumps(LIVE_BOOK_SHAPE, indent=2) + "\n")
+        out = tmp_path / "out" / "book.json"
+        BookState.load(path, LIVE_IDS).save(out)
+        assert json.loads(out.read_text()) == LIVE_BOOK_SHAPE
+
+    def test_stop_ticks_round_trips_once_used(self) -> None:
+        st = StructureState(status=Status.OPEN, stop_ticks=2)
+        raw = json.loads(json.dumps(st.to_dict()))
+        assert raw["stop_ticks"] == 2
+        assert StructureState.from_dict(raw).stop_ticks == 2
+        assert "stop_ticks" not in StructureState(status=Status.OPEN).to_dict()

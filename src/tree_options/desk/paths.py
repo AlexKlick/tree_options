@@ -11,7 +11,9 @@
   ``~/.config/trex/notify.env`` (see :mod:`tree_options.trex.notify`);
 * ``DESK_REPO_ROOT``: the checkout the jobs run from (cwd of the
   research subprocesses), default: the tree this package was imported
-  from.
+  from;
+* ``DESK_EVENTS_DIR``: the sealed macro calendar (tracked data), default
+  ``<repo>/data/desk/events``.
 
 Tests must pin all of these to tmp: nothing here caches a value.
 """
@@ -41,6 +43,10 @@ def state_root() -> Path:
 
 def paper_dir() -> Path:
     return _env_path("DESK_PAPER_DIR") or repo_root() / "artifacts" / "paper-trades"
+
+
+def events_dir() -> Path:
+    return _env_path("DESK_EVENTS_DIR") or repo_root() / "data" / "desk" / "events"
 
 
 def notify_env_path() -> Path:

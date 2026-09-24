@@ -97,7 +97,13 @@ def _parse_iso(value: str | None) -> datetime | None:
 
 
 class StructureState:
-    """Persisted per-structure bookkeeping. Money fields are per-spread."""
+    """Persisted per-structure bookkeeping. Money fields are per-spread
+    (per package for multi-leg structures, as a positive debit-orientation
+    price: the debit paid, or the credit received, per package).
+
+    Fields added for the desk (multi-leg) runtime default when absent and
+    are written only once they leave their default, so a legacy book.json
+    loads and saves unchanged."""
 
     __slots__ = (
         "close_reason",
@@ -115,6 +121,7 @@ class StructureState:
         "exit_reason",
         "filled_qty",
         "status",
+        "stop_ticks",
         "touch_ts",
         "updated_at",
     )
@@ -138,6 +145,7 @@ class StructureState:
         exit_order_notional: Decimal | None = None,
         entry_order_seen: int = 0,
         entry_order_notional: Decimal | None = None,
+        stop_ticks: int = 0,
     ) -> None:
         self.status = status
         self.entry_order = entry_order
@@ -163,6 +171,10 @@ class StructureState:
         # fills the book already holds
         self.entry_order_seen = entry_order_seen
         self.entry_order_notional = entry_order_notional
+        # desk: consecutive ticks the stop-loss condition has held (a stop
+        # fires only after ExitRules.stop_confirm_ticks in a row; persisted
+        # so a restart neither resets nor skips the confirmation)
+        self.stop_ticks = stop_ticks
 
     @property
     def open_qty(self) -> int:
@@ -176,6 +188,13 @@ class StructureState:
         self.updated_at = now
 
     def to_dict(self) -> dict[str, Any]:
+        out = self._legacy_dict()
+        # desk-era fields: only once used (a legacy book's bytes never change)
+        if self.stop_ticks:
+            out["stop_ticks"] = self.stop_ticks
+        return out
+
+    def _legacy_dict(self) -> dict[str, Any]:
         return {
             "status": self.status.value,
             "entry_order": self.entry_order,
@@ -228,6 +247,7 @@ class StructureState:
             entry_order_notional=(
                 Decimal(raw["entry_order_notional"]) if raw.get("entry_order_notional") else None
             ),
+            stop_ticks=int(raw.get("stop_ticks", 0)),
         )
 
 

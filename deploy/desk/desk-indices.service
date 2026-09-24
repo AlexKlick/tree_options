@@ -1,0 +1,24 @@
+[Unit]
+Description=Options desk: CBOE index histories (VIX family, SKEW, GVZ, ...) and FRED DTB3
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# The shared .venv's editable install is the main checkout (never re-synced here).
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk record-indices
+# exit 3 = a vendor has not published the latest session yet (CBOE rewrites
+# its files ~21:50 ET), or a transport error (timeout/5xx) left a soft gap:
+# benign, the next slot catches up (each CSV carries the full history).
+# 1 = a vendor file vanished (404) or came back bad/shrunk: see the journal
+# and artifacts/desk-store/indices/{gaps,provenance}.jsonl.
+SuccessExitStatus=3
+# 15 small files at 1 request/s, up to 30 s each on a slow CDN
+TimeoutStartSec=900
+# Keyless sources; no pushes. Store: artifacts/desk-store/indices/
+# (DESK_STORE overrides).

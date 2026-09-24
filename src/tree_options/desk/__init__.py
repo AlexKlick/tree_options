@@ -9,6 +9,13 @@ Wave 0 ships two jobs, both systemd user timers (``deploy/desk/``):
   surviving direction signals, XSMOM-TOP3 and PEAD beats
   (:mod:`tree_options.desk.signals`), draft cards and an ntfy push.
 
+Wave 1 adds two more:
+
+* ``record-indices`` (D1): the CBOE index histories and FRED DTB3
+  (:mod:`tree_options.desk.indices`), revision-safe;
+* ``update-events`` (D3): earnings timing and the sealed macro calendar's
+  check (:mod:`tree_options.desk.events`; ``seal-macro`` reseals it).
+
 Paths come from :mod:`tree_options.desk.paths` (env-overridable; tests pin
 every one of them to tmp). Nothing here places orders or seals cards.
 """

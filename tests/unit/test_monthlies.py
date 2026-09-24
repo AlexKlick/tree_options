@@ -10,11 +10,18 @@ approximation a future reader will need to know about.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import date, timedelta
 
 import pytest
 
-from tree_options.time.monthlies import is_monthly_expiry, monthly_expiries
+from tests.conftest import REPO_ROOT
+from tree_options.time.calendar import StaticSessionCalendar
+from tree_options.time.monthlies import (
+    is_monthly_expiry,
+    is_traded_monthly_expiry,
+    monthly_expiries,
+)
 
 # Third Fridays verified against the calendar (each is a Friday in days 15-21).
 KNOWN_MONTHLIES = (date(2026, 3, 20), date(2024, 11, 15), date(2025, 6, 20))
@@ -102,3 +109,78 @@ def test_the_docstring_names_the_holiday_approximation() -> None:
     doc = is_monthly_expiry.__doc__ or ""
     assert "third Friday" in doc
     assert "APPROXIMATION" in doc
+
+
+# ---- the TRADED monthly: the third Friday, or the session before a closed one --
+
+# Exchange-closed third Fridays, hand-listed from the NYSE holiday schedule:
+# Good Friday 2025, Juneteenth 2026, and Juneteenth-observed 2027 (June 19,
+# 2027 is a Saturday, so the exchange closes Friday the 18th). The vendor
+# lists each month's monthlies on the Thursday before (verified in the
+# coverage-era masters: 2025-04-17, 2026-06-18, 2027-06-17).
+CLOSED_THIRD_FRIDAYS = {
+    date(2025, 4, 18): date(2025, 4, 17),
+    date(2026, 6, 19): date(2026, 6, 18),
+    date(2027, 6, 18): date(2027, 6, 17),
+}
+
+# Every traded monthly expiry of 2025-2027, hand-listed (third Fridays with
+# the three moves above substituted). The oracle is this list, never the
+# implementation.
+TRADED_MONTHLIES_2025_2027 = (
+    date(2025, 1, 17), date(2025, 2, 21), date(2025, 3, 21), date(2025, 4, 17),
+    date(2025, 5, 16), date(2025, 6, 20), date(2025, 7, 18), date(2025, 8, 15),
+    date(2025, 9, 19), date(2025, 10, 17), date(2025, 11, 21), date(2025, 12, 19),
+    date(2026, 1, 16), date(2026, 2, 20), date(2026, 3, 20), date(2026, 4, 17),
+    date(2026, 5, 15), date(2026, 6, 18), date(2026, 7, 17), date(2026, 8, 21),
+    date(2026, 9, 18), date(2026, 10, 16), date(2026, 11, 20), date(2026, 12, 18),
+    date(2027, 1, 15), date(2027, 2, 19), date(2027, 3, 19), date(2027, 4, 16),
+    date(2027, 5, 21), date(2027, 6, 17), date(2027, 7, 16), date(2027, 8, 20),
+    date(2027, 9, 17), date(2027, 10, 15), date(2027, 11, 19), date(2027, 12, 17),
+)  # fmt: skip
+
+
+def _closed_on(*closed: date) -> Callable[[date], bool]:
+    """A session predicate: every weekday except the named closures."""
+    shut = set(closed)
+    return lambda d: d.weekday() < 5 and d not in shut
+
+
+def test_a_session_third_friday_is_the_traded_monthly() -> None:
+    open_all = _closed_on()
+    assert is_traded_monthly_expiry(date(2026, 3, 20), open_all) is True
+    assert is_traded_monthly_expiry(date(2026, 3, 19), open_all) is False, "Thursday before"
+    assert is_traded_monthly_expiry(date(2026, 3, 13), open_all) is False, "second Friday"
+
+
+def test_a_closed_third_friday_moves_to_the_session_before_it() -> None:
+    for friday, thursday in CLOSED_THIRD_FRIDAYS.items():
+        sessions = _closed_on(friday)
+        assert is_traded_monthly_expiry(thursday, sessions) is True, thursday
+        assert is_traded_monthly_expiry(friday, sessions) is False, friday
+        wednesday = date(thursday.year, thursday.month, thursday.day - 1)
+        assert is_traded_monthly_expiry(wednesday, sessions) is False, wednesday
+
+
+def test_a_move_skips_a_closed_thursday_too() -> None:
+    """Never seen on the NYSE, but the rule is 'the last session before', not
+    'Thursday': with Thursday also closed the expiry lands on Wednesday."""
+    friday, thursday = date(2026, 6, 19), date(2026, 6, 18)
+    sessions = _closed_on(friday, thursday)
+    assert is_traded_monthly_expiry(date(2026, 6, 17), sessions) is True
+    assert is_traded_monthly_expiry(thursday, sessions) is False
+
+
+def test_the_checked_in_trex_calendar_yields_one_traded_monthly_per_month() -> None:
+    """Every day of 2025-2027 against the real NYSE calendar the capture uses."""
+    base = REPO_ROOT / "data" / "calendar" / "trex" / "nyse_sessions_2018_01_02_2028_12_29.json"
+    calendar = StaticSessionCalendar(base, base.with_suffix(".sha256"))
+    day = date(2025, 1, 1)
+    hits: list[date] = []
+    while day.year <= 2027:
+        if is_traded_monthly_expiry(day, calendar.is_session):
+            hits.append(day)
+        day += timedelta(days=1)
+    assert hits == list(TRADED_MONTHLIES_2025_2027)
+    for friday in CLOSED_THIRD_FRIDAYS:
+        assert not calendar.is_session(friday), f"{friday} must be an exchange holiday"

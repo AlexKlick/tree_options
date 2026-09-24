@@ -23,7 +23,17 @@ from tree_options.trex.engine import (
     Snapshot,
     decide,
 )
-from tree_options.trex.plan import PutSpread, TradePlan, load_plan
+from tree_options.trex.plan import (
+    ExitRules,
+    Leg,
+    LegStructure,
+    PutSpread,
+    StopLoss,
+    TakeProfit,
+    TradePlan,
+    load_legacy_plan,
+    load_plan,
+)
 from tree_options.trex.state import BookState, Status, StructureState
 
 __all__ = [
@@ -36,14 +46,20 @@ __all__ = [
     "EntryWindow",
     "ExitOrder",
     "ExitReason",
+    "ExitRules",
+    "Leg",
+    "LegStructure",
     "NoAction",
     "PlaceEntry",
     "PutSpread",
     "Snapshot",
     "Status",
+    "StopLoss",
     "StructureState",
+    "TakeProfit",
     "TradePlan",
     "decide",
+    "load_legacy_plan",
     "load_plan",
     "now_et",
 ]

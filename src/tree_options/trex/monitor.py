@@ -65,7 +65,7 @@ from tree_options.trex.engine import (
     decide,
 )
 from tree_options.trex.ibkr import IbkrTrex, OrderRef, Snapshot
-from tree_options.trex.plan import PutSpread, TradePlan, cents, load_plan
+from tree_options.trex.plan import PutSpread, TradePlan, cents, load_legacy_plan
 from tree_options.trex.spot import SpotFeed, polygon_fetcher, touch_window
 from tree_options.trex.state import ENTRY_LANE, BookState, Status
 
@@ -761,7 +761,7 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
 
-    plan = load_plan(args.plan)
+    plan = load_legacy_plan(args.plan)  # put spreads only: multi-leg is the desk's
     run_dir = _run_dir(plan, args.state_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
 
