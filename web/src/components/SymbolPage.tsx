@@ -1,9 +1,9 @@
 // Symbol detail: quote header, tabbed views (price history / options /
 // ideas), and Google News items. Cold caches show honest placeholders; the
 // refresh button spools a forced market refresh which warms bars + news
-// within a serve tick. The Price tab polls the desk panel history on its
-// own 60 s cadence (PriceHistoryPanel); the legacy Daily closes chart now
-// lives only in that tab's pre-backfill fallback path.
+// within a serve tick. Each tab polls its own surface on a 60 s cadence
+// (PriceHistoryPanel / OptionsPanel / IdeasPanel); the legacy Daily closes
+// chart now lives only in the Price tab's pre-backfill fallback path.
 
 import { useEffect, useState } from 'react'
 import { getSymbol, requestMarketRefresh } from '../lib/api'
@@ -13,8 +13,8 @@ import type { SymbolDetail } from '../lib/types'
 import { AppShell } from './AppShell'
 import { Pill } from './Pill'
 import { Tabs } from './Tabs'
-import { IdeasPanelStub } from './symbol/IdeasPanelStub'
-import { OptionsPanelStub } from './symbol/OptionsPanelStub'
+import { IdeasPanel } from './symbol/IdeasPanel'
+import { OptionsPanel } from './symbol/OptionsPanel'
 import { PriceHistoryPanel } from './symbol/PriceHistoryPanel'
 
 const ageNote = (seconds: number | null | undefined): string =>
@@ -97,8 +97,8 @@ export function SymbolPage({ sym }: { sym: string }) {
                   />
                 ),
               },
-              { id: 'options', label: 'Options', content: <OptionsPanelStub /> },
-              { id: 'ideas', label: 'Ideas', content: <IdeasPanelStub /> },
+              { id: 'options', label: 'Options', content: <OptionsPanel sym={sym} /> },
+              { id: 'ideas', label: 'Ideas', content: <IdeasPanel sym={sym} /> },
             ]}
           />
 

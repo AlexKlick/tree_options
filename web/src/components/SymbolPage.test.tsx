@@ -1,19 +1,23 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { SymbolDetail, SymbolHistory } from '../lib/types'
-import { getSymbol, getSymbolHistory } from '../lib/api'
+import { getSymbol, getSymbolHistory, getSymbolIdeas, getSymbolOptions } from '../lib/api'
 import { SymbolPage } from './SymbolPage'
 
 // getGateway/getExitMachine feed AppShell's health banners (tested on its own); never settles here
 vi.mock('../lib/api', () => ({
   getSymbol: vi.fn(),
   getSymbolHistory: vi.fn(),
+  getSymbolOptions: vi.fn(),
+  getSymbolIdeas: vi.fn(),
   requestMarketRefresh: vi.fn(),
   getGateway: () => new Promise(() => {}),
   getExitMachine: () => new Promise(() => {}),
 }))
 const mocked = vi.mocked(getSymbol)
 const mockedHistory = vi.mocked(getSymbolHistory)
+const mockedOptions = vi.mocked(getSymbolOptions)
+const mockedIdeas = vi.mocked(getSymbolIdeas)
 
 afterEach(() => {
   cleanup()
@@ -122,16 +126,44 @@ describe('SymbolPage', () => {
     await waitFor(() => expect(mockedHistory).toHaveBeenLastCalledWith('SPY', '5y', 160))
   })
 
-  it('fills the Options and Ideas tabs with honest placeholders', async () => {
+  it('mounts the real Options and Ideas panels in their tabs', async () => {
     mocked.mockResolvedValue(detail)
     mockedHistory.mockResolvedValue(history)
+    mockedOptions.mockResolvedValue({
+      now: '2026-09-22T19:30:00-04:00',
+      symbol: 'SPY',
+      available: false,
+      recorded: null,
+      live: null,
+      iv30_history: null,
+      warnings: [],
+    })
+    mockedIdeas.mockResolvedValue({
+      now: '2026-09-22T19:30:00-04:00',
+      symbol: 'SPY',
+      signals: null,
+      queue: null,
+      paper_positions: [],
+      cards: null,
+      research: null,
+      protocol: { allowed_direction: ['xsmom_top3', 'pead_beat'], context_only: [], advisory: true },
+    })
     render(<SymbolPage sym="SPY" />)
     await waitFor(() => expect(screen.getByRole('tab', { name: 'Options' })).toBeTruthy())
 
     fireEvent.click(screen.getByRole('tab', { name: 'Options' }))
-    expect(screen.getByText('Options surface lands in the next change')).toBeTruthy()
+    await waitFor(() =>
+      expect(screen.getByText('no recorded option chains for SPY yet')).toBeTruthy(),
+    )
     fireEvent.click(screen.getByRole('tab', { name: 'Ideas' }))
-    expect(screen.getByText('Ideas panel lands in the next change')).toBeTruthy()
+    await waitFor(() =>
+      expect(
+        screen.getByText('advisory — the desk suggests, the operator decides'),
+      ).toBeTruthy(),
+    )
+    expect(
+      screen.getByText(/no queue yet — the miner's selection rule is pending an operator ruling/),
+    ).toBeTruthy()
   })
 
   it('falls back to the legacy envelope chart when the panel has no history', async () => {

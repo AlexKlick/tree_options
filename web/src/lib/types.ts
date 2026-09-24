@@ -559,6 +559,238 @@ export interface SymbolHistory {
   error: string | null
 }
 
+// GET /api/market/{sym}/options (options_view.py): the RECORDED desk
+// surface (features cards + ATM term + chain slice around ATM), the long
+// IV30 history, and — once the discovery lane's envelope warms — a live
+// delayed-CBOE slice in the same row shape. Volatilities and moves are
+// decimal fractions (0.25 = 25%); this app formats. Cards pass through
+// the features JSON verbatim, so every card field is nullable and
+// iv_rank degrades to its {status, reason} shape.
+export interface OptionsSliceRow {
+  exp: string
+  dte: number
+  right: string // "C" | "P"
+  strike: number
+  atm: boolean
+  bid: number | null
+  ask: number | null
+  mid: number | null
+  iv: number | null
+  delta: number | null
+  gamma: number | null
+  theta: number | null
+  vega: number | null
+  oi: number | null
+  volume: number | null
+}
+
+/** Live envelope slot: null until the discovery lane's viewchain warms. */
+export interface OptionsLive {
+  fetched_at: string
+  age_seconds: number | null
+  ttl_seconds: number | null
+  spot: number | null
+  slice: OptionsSliceRow[]
+}
+
+export interface IvRankCard {
+  /** NOT_EVALUABLE degrade path (no IV30 / no history for the name). */
+  status?: string
+  reason?: string
+  rank?: number | null
+  percentile?: number | null
+  n?: number
+  low_n?: boolean
+  outside_range?: string | null
+  window?: number
+  history_label?: string
+}
+
+export interface OptionsEarnings {
+  next_report: string | null
+  event_sessions?: string[]
+  expiries?: string[]
+  implied_move?: number | null
+  implied_mean_abs_move?: number | null
+  hist_mean_abs_move?: number | null
+  hist_n?: number
+  in_progress?: boolean
+  reason?: string
+  flag?: string
+  schedule?: string
+}
+
+export interface OptionsCards {
+  iv?: Record<string, number | null> // "30" | "60" | "90" | "180"
+  iv_rank?: IvRankCard | null
+  skew25?: Record<string, number | null> // "30" | "90"
+  term_slope?: number | null // IV90/IV30 - 1
+  yz22_ann?: number | null // Yang-Zhang 22d RV, annualized
+  liquidity_score?: number | null
+  earnings?: OptionsEarnings | null
+}
+
+export interface OptionsRecorded {
+  session: string
+  age_seconds: number | null
+  spot: number | null
+  cards: OptionsCards
+  /** [expiry, dte, atm_iv, n_strikes, how] rows. */
+  atm_term: [string, number, number, number, string][] | null
+  slice: OptionsSliceRow[] | null
+}
+
+export interface Iv30History {
+  /** [ET-midnight epoch ms, decimal iv30]. */
+  points: [number, number][]
+  y_lo: number
+  y_hi: number
+  n: number
+  first: string
+  last: string
+  source: string
+}
+
+export interface SymbolOptions {
+  now: string
+  symbol: string
+  available: boolean
+  recorded: OptionsRecorded | null
+  live: OptionsLive | null
+  iv30_history: Iv30History | null
+  warnings: string[]
+}
+
+// GET /api/market/{sym}/ideas: the advisory surface — signals (xsmom +
+// PEAD), the miner's PROPOSED queue, paper positions, the sealed scratch
+// lane, and research-ledger context. protocol is the boundary: only
+// allowed_direction signals may point a trade; everything else is
+// information. Every section is nullable and degrades honestly.
+export interface XsmomCard {
+  score: number
+  in_top3: boolean
+  top3: string[]
+  is_rebalance_day: boolean
+  n_ranked: number
+  conventions_agree: boolean
+}
+
+export interface PeadBeat {
+  report_date: string
+  move: number
+}
+
+export interface PeadEvaluated {
+  report_date: string
+  prior_session: string | null
+  move: number | null
+  fires: boolean
+  reason: string | null
+}
+
+export interface PeadCard {
+  beats: PeadBeat[]
+  evaluated: PeadEvaluated[]
+}
+
+export interface IdeasSignals {
+  session: string
+  age_seconds: number | null
+  xsmom: XsmomCard
+  pead: PeadCard
+  next_report: string | null
+}
+
+export interface IdeasLeg {
+  right: string
+  action: string
+  strike: number
+  expiry: string
+  bid: number | null
+  ask: number | null
+  oi: number | null
+  iv: number | null
+  delta: number | null
+}
+
+export interface IdeasSignalRef {
+  name: string
+  excess_20: number | null
+}
+
+export interface IdeasDeal {
+  deal_id: string
+  rank: number
+  status: string
+  row_title: string
+  kind: string
+  underlying: string
+  quantity: number
+  legs: IdeasLeg[]
+  ref_mid: number | null
+  fill: number | null
+  limit: number | null
+  max_loss: number | null
+  signal: IdeasSignalRef | null
+  reasons: string[]
+  notes: string[]
+}
+
+export interface IdeasQueue {
+  session: string
+  entry_session: string
+  valid_until: string
+  miner_status: string // "PROPOSED" | ...
+  deals: IdeasDeal[]
+}
+
+export interface IdeasPaperPosition {
+  plan_id: string
+  structure_id: string
+  account_mode: string
+  expiry: string
+  long_strike: number
+  short_strike: number
+  quantity: number
+  open_qty: number
+  status: string
+  entry_fill: number | null
+  exit_deadline: string
+}
+
+export interface IdeasCardHistory {
+  lines: string[]
+  ledger_sha256_12: string
+}
+
+export interface IdeasResearchEntry {
+  section: string
+  line: string
+}
+
+export interface IdeasResearch {
+  ledger_date: string
+  sha256_12: string
+  entries: IdeasResearchEntry[]
+}
+
+export interface IdeasProtocol {
+  allowed_direction: string[]
+  context_only: string[]
+  advisory: boolean
+}
+
+export interface SymbolIdeas {
+  now: string
+  symbol: string
+  signals: IdeasSignals | null
+  queue: IdeasQueue | null
+  paper_positions: IdeasPaperPosition[]
+  cards: IdeasCardHistory | null
+  research: IdeasResearch | null
+  protocol: IdeasProtocol
+}
+
 export interface ScenarioStats {
   count: number
   wins: number

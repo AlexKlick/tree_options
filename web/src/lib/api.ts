@@ -10,6 +10,8 @@ import type {
   StatsResponse,
   SymbolDetail,
   SymbolHistory,
+  SymbolIdeas,
+  SymbolOptions,
 } from './types'
 
 async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -61,6 +63,16 @@ export const getSymbolHistory = (
     `api/market/${encodeURIComponent(sym)}/history` +
       `?range=${encodeURIComponent(range)}&max_points=${maxPoints}`,
   )
+
+/** Recorded options surface (cards + ATM term + slice) with a live slot
+ * the discovery lane fills when its delayed-CBOE envelope warms. */
+export const getSymbolOptions = (sym: string): Promise<SymbolOptions> =>
+  fetchJson(`api/market/${encodeURIComponent(sym)}/options`)
+
+/** Advisory ideas surface: signals, the PROPOSED queue, paper positions,
+ * the sealed scratch lane, and research context. */
+export const getSymbolIdeas = (sym: string): Promise<SymbolIdeas> =>
+  fetchJson(`api/market/${encodeURIComponent(sym)}/ideas`)
 
 export const requestMarketRefresh = (
   symbols?: string[],
