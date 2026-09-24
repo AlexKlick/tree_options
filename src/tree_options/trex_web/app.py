@@ -402,6 +402,7 @@ def create_app(
     desk_paper_dir: str | None = None,
     desk_store_dir: str | None = None,
     market_cache_dir: str | None = None,
+    desk_state_dir: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Public for tests; production wires ``__main__``.
 
@@ -440,6 +441,8 @@ def create_app(
         else Path(os.environ.get("TREX_EXIT_WATCH_STATE", str(DEFAULT_EXIT_WATCH_STATE)))
     )
     from tree_options.desk.paths import paper_dir as _desk_paper_dir
+    from tree_options.desk.paths import queue_dir as _desk_queue_dir
+    from tree_options.desk.paths import state_root as _desk_state_root
     from tree_options.desk.paths import store_root as _desk_store_root
 
     desk_paper_root = (
@@ -449,6 +452,14 @@ def create_app(
     desk_store_root = (
         Path(desk_store_dir).expanduser() if desk_store_dir else _desk_store_root()
     )
+    # the desk's job state (signals + the miner's entry queue). Default:
+    # desk.paths' own conventions (env-overridable); an explicit override
+    # pins BOTH under one root, the way the deployed unit sees them.
+    desk_state_root = (
+        Path(desk_state_dir).expanduser() if desk_state_dir else _desk_state_root()
+    )
+    desk_signals_dir = desk_state_root / "signals"
+    desk_queue_dir = desk_state_root / "queue" if desk_state_dir else _desk_queue_dir()
     # the discovery lane's market cache (bars/news/viewchain envelopes);
     # derived from the already-resolved discovery root, never a fresh env read
     market_cache_root = (
@@ -655,6 +666,30 @@ def create_app(
             raise HTTPException(status_code=404, detail="unknown symbol")
         return options_payload(
             desk_store_root, sym_up, window, max_expiries, now_et(), market_cache_root
+        )
+
+    @app.get("/api/market/{sym}/ideas")
+    def api_market_symbol_ideas(sym: str) -> dict[str, object]:
+        """The advisory idea-context payload for the symbol's Ideas tab:
+        desk signals (xsmom + PEAD + next report), the miner's entry queue
+        filtered to the name, the paper positions on it, the sealed
+        scratch ledger rows and research-ledger context that mention it,
+        plus the protocol boundary itself. Read-only and nullable — the
+        desk advises, only allowed_direction signals may point a trade."""
+        from tree_options.trex_web.ideas_view import ideas_payload
+
+        sym_up = sym.upper()
+        if not re.match(r"^[A-Z.]{1,6}$", sym_up):
+            raise HTTPException(status_code=404, detail="unknown symbol")
+        return ideas_payload(
+            sym_up,
+            desk_signals_dir,
+            desk_queue_dir,
+            desk_store_root,
+            desk_paper_root,
+            state_root,
+            plans_root,
+            now_et(),
         )
 
     @app.post("/api/market/watch", status_code=202)
