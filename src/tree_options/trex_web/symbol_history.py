@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 from tree_options.desk.panel import PanelLocked, read_panel_with_sha256
+from tree_options.time import calendar_days
 from tree_options.trex.clock import ET
 from tree_options.trex.series import level_extent
 
@@ -116,7 +117,7 @@ def history_payload(
     window = RANGES[range_key]
     if window is not None:
         cut = (
-            datetime.fromisoformat(days[-1]) - _days(window)
+            datetime.fromisoformat(days[-1]) - calendar_days(window)
         ).date().isoformat()
         days = [d for d in days if d >= cut]
     base["range_start"] = days[0] if days else None
@@ -138,12 +139,6 @@ def history_payload(
         "close": rows[-1][4],
     }
     return base, _etag(base)
-
-
-def _days(n: int):
-    from datetime import timedelta
-
-    return timedelta(days=n)
 
 
 def _etag(payload: dict[str, Any]) -> str:
