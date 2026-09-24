@@ -2123,3 +2123,95 @@ def test_bars_from_manifest_refuses_a_tampered_manifest(
     )
     assert rc == 2
     assert len(vendor.calls) == live, "still nothing went to the wire"
+
+
+# ---- memory: pages live in the response cache, bars stream to disk ----------
+
+
+def test_a_fetched_page_holds_its_cache_key_not_its_body(tmp_path: Path) -> None:
+    """A long-dated run holds ~945 masters of up to 25 pages: keeping each
+    decoded body and verbatim text resident peaked at 3.7 GB and got the run
+    SIGTERMed. A page is its cache key plus the control-flow facts; the
+    bytes come back from the on-disk cache on demand."""
+    client = make_client(tmp_path, RoutingVendor(_one_master_routes()))
+    capture = cap.capture_master(
+        client, "SPY", AS_OF, budget=cap.Budget(limit=5), max_pages=cap.PAGES_PER_MASTER
+    )
+    (page,) = capture.pages
+    assert isinstance(page, cap.CachedPage)
+    assert not hasattr(page, "__dict__"), "slots only: no body or text can be kept on it"
+    assert (page.n_results, page.next_url, capture.rows) == (3, None, 3)
+
+    cached = client.cache.path_for(page.key)
+    assert page.text == cached.read_bytes().decode("utf-8").strip()
+    assert [r["contract_type"] for r in page.body["results"]] == ["call", "put", "call"]
+    eager = cap.MasterCapture(
+        "SPY", AS_OF, pages=[cap.CapturedPage(body=page.body, text=page.text, from_cache=False)]
+    )
+    assert cap.master_envelope(eager) == cap.master_envelope(capture), "same envelope bytes"
+
+    cached.unlink()
+    with pytest.raises(RuntimeError, match="vanished"):
+        _ = page.text
+
+
+def test_bar_series_stream_to_the_sink_as_they_arrive(tmp_path: Path) -> None:
+    """With a sink, a series is handed over the moment it is fetched: a
+    crash on the next one loses nothing and no text stays in memory."""
+    first, second = "O:SPY250417C00560000", "O:SPY250417P00560000"
+    inner = RoutingVendor({aggs_url(first, AS_OF, NEAR): bars_page(first, [date(2025, 3, 17)])})
+
+    def dying(url: str, *, timeout: float) -> HttpResponse:
+        if "P00560000" in url:
+            raise AssertionError("vendor double died on the second series")
+        return inner(url, timeout=timeout)
+
+    client = MassiveClient(
+        api_key=KEY, transport=dying, cache_dir=tmp_path / "cache", governor=RateGovernor(None)
+    )
+    written: list[tuple[str, str]] = []
+    with pytest.raises(AssertionError, match="second series"):
+        cap.capture_bars(
+            client,
+            [(first, AS_OF, NEAR), (second, AS_OF, NEAR)],
+            budget=cap.Budget(limit=10),
+            sink=lambda name, text: written.append((name, text)),
+        )
+    assert [name for name, _ in written] == ["O_SPY250417C00560000.json"]
+    assert written[0][1].endswith("}\n") and '"results"' in written[0][1]
+
+    files, _ = cap.capture_bars(
+        make_client(tmp_path / "again", inner),
+        [(first, AS_OF, NEAR)],
+        budget=cap.Budget(limit=10),
+        sink=lambda name, text: None,
+    )
+    assert files == [("O_SPY250417C00560000.json", "")], "a streamed entry keeps no text"
+
+
+def test_a_crash_mid_bars_still_lists_every_streamed_series(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """run_capture writes each series as it lands and the manifest (written
+    in the finally) lists exactly what is on disk, even after a crash."""
+    monkeypatch.setattr(cap, "UNDERLYINGS", ("SPY",))
+    monkeypatch.setattr(cap, "AS_OF_DATES", (AS_OF,))
+    monkeypatch.setattr(cap, "BARS_WANTED", 3)
+    inner = RoutingVendor(_one_master_routes())
+
+    def exploding(url: str, *, timeout: float) -> HttpResponse:
+        if "P00560000" in url:
+            raise AssertionError("vendor double died on the put series")
+        return inner(url, timeout=timeout)
+
+    client = MassiveClient(
+        api_key=KEY, transport=exploding, cache_dir=tmp_path / "cache", governor=RateGovernor(None)
+    )
+    out = tmp_path / "captures"
+    with pytest.raises(AssertionError, match="put series"):
+        cap.run_capture(client, out, budget=cap.Budget(limit=12))
+
+    manifest = load_massive_capture_manifest(out / "capture_manifest.json")
+    verify_massive_capture_manifest(manifest, out, capture_version=cap.CAPTURE_VERSION)
+    assert (out / "bars" / "O_SPY250417C00560000.json").is_file()
+    assert list(manifest.bars) == ["O_SPY250417C00560000.json"]

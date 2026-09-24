@@ -75,8 +75,10 @@ from tree_options.data.massive_client import (  # noqa: E402
     MassiveClient,
     MassiveError,
     MassiveNotEntitledError,
+    ResponseCache,
     cache_key_for,
     client_from_environment,
+    loads_exact,
 )
 from tree_options.data.massive_manifest import (  # noqa: E402
     CAPTURE_MANIFEST_FILENAME,
@@ -193,6 +195,11 @@ class Budget:
         self.reserved = max(0, self.reserved - count)
 
 
+def _next_url(body: Mapping[str, Any]) -> str | None:
+    value = body.get("next_url")
+    return value if isinstance(value, str) and value else None
+
+
 @dataclass
 class CapturedPage:
     """One vendor response: decoded for control flow, verbatim for the file."""
@@ -201,19 +208,69 @@ class CapturedPage:
     text: str
     from_cache: bool
 
+    @property
+    def next_url(self) -> str | None:
+        return _next_url(self.body)
+
+    @property
+    def n_results(self) -> int:
+        return len(self.body.get("results") or ())
+
+
+class CachedPage:
+    """One vendor response held by its CACHE KEY only (what `fetch_page`
+    returns). A long-dated run holds up to 25 master pages of 1,000 contracts
+    for each of ~945 (name, as_of) pairs; keeping every decoded body and
+    verbatim text in memory peaked at 3.7 GB and got the run SIGTERMed by the
+    host's memory-pressure relief. The bytes are already on disk in the
+    response cache, so `text` and `body` are read back from it on demand (a
+    consumer holds one page's rows at a time) and only the control-flow facts
+    stay resident: the page's `next_url` (taken from the LIVE body, so a
+    key-redacted cursor can never reach `split_url`) and its row count.
+    `text` is exactly the bytes `fetch_page` used to keep; `body` decodes
+    them with the client's own exact decoder (`loads_exact`)."""
+
+    __slots__ = ("_cache", "from_cache", "key", "n_results", "next_url")
+
+    def __init__(
+        self, cache: ResponseCache, key: str, *, from_cache: bool, body: Mapping[str, Any]
+    ) -> None:
+        self._cache = cache
+        self.key = key
+        self.from_cache = from_cache
+        self.next_url = _next_url(body)
+        self.n_results = len(body.get("results") or ())
+
+    @property
+    def text(self) -> str:
+        raw = self._cache.get(self.key)
+        if raw is None:
+            raise RuntimeError(f"cached body {self.key} vanished from {self._cache.directory}")
+        return raw.decode("utf-8").strip()
+
+    @property
+    def body(self) -> Mapping[str, Any]:
+        body = loads_exact(self.text)
+        if not isinstance(body, Mapping):
+            raise RuntimeError(f"cached body {self.key} is {type(body).__name__}, not an object")
+        return body
+
+
+Page = CapturedPage | CachedPage
+
 
 @dataclass
 class MasterCapture:
     underlying: str
     as_of: date
-    pages: list[CapturedPage] = field(default_factory=list)
+    pages: list[Page] = field(default_factory=list)
     truncated: bool = False
     pending_next_url: bool = False
     error: str | None = None
 
     @property
     def rows(self) -> int:
-        return sum(len(page.body.get("results") or ()) for page in self.pages)
+        return sum(page.n_results for page in self.pages)
 
     @property
     def filename(self) -> str:
@@ -227,13 +284,15 @@ def fetch_page(
     *,
     budget: Budget,
     dry_run: bool = False,
-) -> CapturedPage:
+) -> CachedPage:
     """One page, charged to the budget only if it actually hits the wire.
 
     The verbatim text is read back out of the client's cache, which stores
     the response bytes with the API key redacted. That is the only way to
     keep the vendor's exact number tokens: the decoded body has already
-    turned them into `Decimal`s and re-encoding would not round-trip.
+    turned them into `Decimal`s and re-encoding would not round-trip. The
+    page comes back as a `CachedPage`: its text and body are read from that
+    cache on demand, never held in memory.
 
     A miss is PRE-CHARGED the call's worst case (`max_attempts`) and
     refunded the difference, so the budget caps wire requests rather than
@@ -261,10 +320,9 @@ def fetch_page(
         # client discarded it and refetched. The cost can only be charged
         # after the fact -- see Budget's docstring for the trade-off.
         budget.charge_block(f"{what} [self-heal refetch]", blocks=wire_requests)
-    raw = client.cache.get(key)
-    if raw is None:  # pragma: no cover - put() failed, which would have raised
+    if not client.cache.path_for(key).is_file():  # pragma: no cover - put() would have raised
         raise RuntimeError(f"{what}: body not cached")
-    return CapturedPage(body=body, text=raw.decode("utf-8").strip(), from_cache=hit)
+    return CachedPage(client.cache, key, from_cache=hit, body=body)
 
 
 def capture_master(
@@ -310,8 +368,8 @@ def capture_master(
             capture.error = f"{type(exc).__name__}: {exc}"
             return capture
         capture.pages.append(page)
-        next_url = page.body.get("next_url")
-        if not (isinstance(next_url, str) and next_url):
+        next_url = page.next_url
+        if next_url is None:
             return capture
         try:
             # Inside a guard: a foreign-host cursor must refuse THIS capture
@@ -688,8 +746,14 @@ def capture_bars(
     *,
     budget: Budget,
     dry_run: bool = False,
+    sink: Callable[[str, str], None] | None = None,
 ) -> tuple[list[tuple[str, str]], list[str]]:
-    """Daily bars over each contract's life inside the window."""
+    """Daily bars over each contract's life inside the window.
+
+    With a `sink`, each series is handed to it as soon as it is fetched and
+    its entry comes back as `(name, "")`: a multi-day run then keeps no bar
+    text in memory and its `bars/` export is current after a kill. Without
+    one, the texts come back in the list (the original contract)."""
     files: list[tuple[str, str]] = []
     notes: list[str] = []
     for ticker, start, end in picks:
@@ -705,12 +769,15 @@ def capture_bars(
             if isinstance(exc, BudgetExhausted):
                 break
             continue
-        results = page.body.get("results") or ()
-        if not results:
+        if not page.n_results:
             notes.append(f"{ticker}: no prints between {start} and {end} -- not written")
             continue
-        safe = ticker.replace(":", "_")
-        files.append((f"{safe}.json", page.text + "\n"))
+        name = f"{ticker.replace(':', '_')}.json"
+        if sink is None:
+            files.append((name, page.text + "\n"))
+        else:
+            sink(name, page.text + "\n")
+            files.append((name, ""))
     return files, notes
 
 
@@ -969,10 +1036,15 @@ def run_capture(
                 captures, spot, wanted=bars_wanted, dte_min=dte_min, dte_max=dte_max
             )
         notes.extend(pick_notes)
-        bar_files, bar_notes = capture_bars(client, picks, budget=budget, dry_run=dry_run)
-        notes.extend(bar_notes)
-        for name, text in bar_files:
+
+        def write_bar(name: str, text: str) -> None:
+            # Streamed: on disk at once, and listed at once, so the manifest
+            # in the finally names every written series even after a crash.
             (bars_dir / name).write_text(text, encoding="utf-8")
+            bar_files.append((name, ""))
+
+        _, bar_notes = capture_bars(client, picks, budget=budget, dry_run=dry_run, sink=write_bar)
+        notes.extend(bar_notes)
     finally:
         manifest = build_manifest(
             client,
@@ -1014,8 +1086,8 @@ def _deepen(
         deepened = 0
         exhausted = False
         for capture in pending:
-            next_url = capture.pages[-1].body.get("next_url")
-            if not (isinstance(next_url, str) and next_url):
+            next_url = capture.pages[-1].next_url
+            if next_url is None:
                 capture.pending_next_url = False
                 capture.truncated = False
                 continue
@@ -1038,8 +1110,7 @@ def _deepen(
                 notes.append(f"{capture.underlying} {capture.as_of}: deepening failed ({exc})")
                 continue
             capture.pages.append(page)
-            more = page.body.get("next_url")
-            capture.pending_next_url = bool(isinstance(more, str) and more)
+            capture.pending_next_url = page.next_url is not None
             capture.truncated = capture.pending_next_url
             (masters_dir / capture.filename).write_text(master_envelope(capture), encoding="utf-8")
             if capture.pending_next_url:
