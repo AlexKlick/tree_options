@@ -1,0 +1,47 @@
+# Tuesday 2026-09-22 re-issue of the putspread-20260918 book — same
+# structures, strikes, caps and exit deadlines; only the entry date moved.
+# (The 09-18 plan never entered: the monitor armed past its 12:00 ET window
+# close and the gateway login was stuck until 09-22.)
+#
+# NOT research-validated. Lottery sizing: $1,840 committed at caps, every
+# leg defined-risk, exits enforced by the trex monitor. Plan of record:
+# enter with limit orders at mid (caps are hard), touch-exit at the long
+# strike, time stops Oct 9 / Nov 6, never hold to expiry, never widen.
+id = "putspread-20260922"
+account_mode = "paper"
+total_debit_cap = 1840.00
+entry_window_start = "09:45"   # ET — skip OpEx open noise
+entry_window_end = "12:00"     # ET — no chasing into the afternoon
+
+[[structures]]
+id = "nvda-oct"
+underlying = "NVDA"
+entry_date = 2026-09-22
+expiry = 2026-10-16
+long_strike = 185.0
+short_strike = 150.0
+quantity = 5
+limit_cap = 0.50
+exit_deadline = 2026-10-09
+
+[[structures]]
+id = "qqq-nov"
+underlying = "QQQ"
+entry_date = 2026-09-22
+expiry = 2026-11-20
+long_strike = 600.0
+short_strike = 475.0
+quantity = 4
+limit_cap = 2.40
+exit_deadline = 2026-11-06
+
+[[structures]]
+id = "nvda-nov"
+underlying = "NVDA"
+entry_date = 2026-09-22
+expiry = 2026-11-20
+long_strike = 185.0
+short_strike = 150.0
+quantity = 3
+limit_cap = 2.10
+exit_deadline = 2026-11-06

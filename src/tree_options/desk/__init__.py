@@ -16,6 +16,11 @@ Wave 1 adds two more:
 * ``update-events`` (D3): earnings timing and the sealed macro calendar's
   check (:mod:`tree_options.desk.events`; ``seal-macro`` reseals it).
 
+Wave 2 adds ``record-dividends`` (the ex-dividend rail's input,
+:mod:`tree_options.desk.dividends`) and the one admission check,
+:mod:`tree_options.desk.rails` (with :mod:`~tree_options.desk.book` and
+:mod:`~tree_options.desk.beta` feeding it).
+
 Paths come from :mod:`tree_options.desk.paths` (env-overridable; tests pin
 every one of them to tmp). Nothing here places orders or seals cards.
 """

@@ -1,6 +1,6 @@
-# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events)
+# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events; Wave 2: dividends)
 
-Four systemd **user** timers, all `oneshot` in `host-work.slice`, all
+Five systemd **user** timers, all `oneshot` in `host-work.slice`, all
 idempotent. None places orders or seals cards.
 
 | job | when (America/New_York) | does |
@@ -9,12 +9,24 @@ idempotent. None places orders or seals cards.
 | `desk-eod-equity` | Mon-Fri 16:40, 20:40; Tue-Sat 08:40 | extends the research panel (`fetch_ohlc.py`), computes XSMOM-TOP3 + PEAD beats, writes draft cards, pushes ntfy when a rule fires |
 | `desk-indices` | Tue-Sat 06:40 | CBOE index histories (VIX VIX9D VIX1D VIX3M VIX6M VIX1Y VVIX SKEW VXN RVX GVZ VXAPL VXAZN VXGOG) + FRED DTB3 |
 | `desk-events` | Sat 10:00 | earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 with `DESK_SEC_UA`) + the sealed macro calendar's Fed-page check |
+| `desk-dividends` | Mon-Fri 17:15; Tue-Sat 06:20 (catch-up) | Polygon `/v3/reference/dividends` histories for the 35 chain names into `desk-store/dividends/<D>/`, the ex-dividend rail's input (Wave 2; exit 3 = benign vendor gap) |
 
 All run `python -m tree_options.desk <command>` from the main checkout's
 `.venv`. Manual runs: add `--session YYYY-MM-DD` (a closed NYSE session;
 chains/eod-equity) and/or `--dry-run`.
 
 ## Install / verify (operator)
+
+Wave 2 unit (files only until the operator installs it at landing). Until
+its first run stores a snapshot, every candidate with a short call is
+NOT_EVALUABLE on the ex-dividend rail:
+
+```bash
+cp ~/documents/tree_options/deploy/desk/desk-dividends.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now desk-dividends.timer
+systemctl --user start desk-dividends.service; journalctl --user -u desk-dividends -n 20
+```
 
 Wave 1 units (files only until the operator installs them):
 
