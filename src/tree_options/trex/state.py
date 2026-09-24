@@ -96,6 +96,15 @@ def _parse_iso(value: str | None) -> datetime | None:
     return datetime.fromisoformat(value) if value is not None else None
 
 
+# desk-era counters of fills recorded without a price (StructureState)
+_UNPRICED = (
+    "entry_unpriced_qty",
+    "entry_order_unpriced",
+    "exit_unpriced_qty",
+    "exit_order_unpriced",
+)
+
+
 class StructureState:
     """Persisted per-structure bookkeeping. Money fields are per-spread
     (per package for multi-leg structures, as a positive debit-orientation
@@ -112,13 +121,17 @@ class StructureState:
         "entry_order",
         "entry_order_notional",
         "entry_order_seen",
+        "entry_order_unpriced",
+        "entry_unpriced_qty",
         "exit_cycles",
         "exit_fill",
         "exit_filled_qty",
         "exit_order",
         "exit_order_notional",
         "exit_order_seen",
+        "exit_order_unpriced",
         "exit_reason",
+        "exit_unpriced_qty",
         "filled_qty",
         "status",
         "stop_ticks",
@@ -146,6 +159,10 @@ class StructureState:
         entry_order_seen: int = 0,
         entry_order_notional: Decimal | None = None,
         stop_ticks: int = 0,
+        entry_unpriced_qty: int = 0,
+        entry_order_unpriced: int = 0,
+        exit_unpriced_qty: int = 0,
+        exit_order_unpriced: int = 0,
     ) -> None:
         self.status = status
         self.entry_order = entry_order
@@ -175,6 +192,14 @@ class StructureState:
         # fires only after ExitRules.stop_confirm_ticks in a row; persisted
         # so a restart neither resets nor skips the confirmation)
         self.stop_ticks = stop_ticks
+        # desk: packages recorded before the broker reported their price
+        # (filled_qty / exit_filled_qty include them; entry_fill / exit_fill
+        # average only the PRICED ones), in the book and of the current
+        # order; its price, when it arrives, re-blends the average
+        self.entry_unpriced_qty = entry_unpriced_qty
+        self.entry_order_unpriced = entry_order_unpriced
+        self.exit_unpriced_qty = exit_unpriced_qty
+        self.exit_order_unpriced = exit_order_unpriced
 
     @property
     def open_qty(self) -> int:
@@ -192,6 +217,9 @@ class StructureState:
         # desk-era fields: only once used (a legacy book's bytes never change)
         if self.stop_ticks:
             out["stop_ticks"] = self.stop_ticks
+        for name in _UNPRICED:
+            if getattr(self, name):
+                out[name] = getattr(self, name)
         return out
 
     def _legacy_dict(self) -> dict[str, Any]:
@@ -248,6 +276,10 @@ class StructureState:
                 Decimal(raw["entry_order_notional"]) if raw.get("entry_order_notional") else None
             ),
             stop_ticks=int(raw.get("stop_ticks", 0)),
+            entry_unpriced_qty=int(raw.get("entry_unpriced_qty", 0)),
+            entry_order_unpriced=int(raw.get("entry_order_unpriced", 0)),
+            exit_unpriced_qty=int(raw.get("exit_unpriced_qty", 0)),
+            exit_order_unpriced=int(raw.get("exit_order_unpriced", 0)),
         )
 
 
