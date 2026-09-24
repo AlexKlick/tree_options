@@ -7,6 +7,9 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/alexk/documents/tree_options
+# Import the main checkout's code whatever the shared .venv's editable pointer
+# says (on 2026-09-23 an unknown writer repointed it to a worktree).
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
 ExecStart=/home/alexk/.local/bin/uv run --group trex-web python -m tree_options.trex_web --host 127.0.0.1 --port 8090
 Restart=on-failure
 RestartSec=5

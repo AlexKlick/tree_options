@@ -10,6 +10,9 @@ Slice=host-work.slice
 Nice=10
 Environment=HOME=/home/alexk
 WorkingDirectory=/home/alexk/documents/tree_options
+# Import the main checkout's code whatever the shared .venv's editable pointer
+# says (on 2026-09-23 an unknown writer repointed it to a worktree).
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
 # The shared .venv's editable install is the main checkout (never re-synced here).
 ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk record-chains
 # exit 3 = the overnight snapshot is not published yet (or still describes
