@@ -127,7 +127,9 @@ def _parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="command", required=True)
     rc = sub.add_parser("record-chains", help="record the CBOE delayed option chains")
     rc.add_argument("--session", type=date.fromisoformat)
-    rc.add_argument("--symbols", help="comma-separated (default: the 35-name chain universe)")
+    rc.add_argument(
+        "--symbols", help=f"comma-separated (default: the {len(CHAIN_UNIVERSE)}-name chain universe)"
+    )
     rc.add_argument("--dry-run", action="store_true", help="fetch and validate; write nothing")
     rc.add_argument(
         "--recheck",
@@ -169,7 +171,9 @@ def _parser() -> argparse.ArgumentParser:
     ib.add_argument("--massive-cache", type=Path)
     ib.add_argument("--start", type=date.fromisoformat, default=ivhist.WINDOW[0])
     ib.add_argument("--end", type=date.fromisoformat, default=ivhist.WINDOW[1])
-    ib.add_argument("--names", help="comma-separated (default: the 35-name chain universe)")
+    ib.add_argument(
+        "--names", help=f"comma-separated (default: the {len(CHAIN_UNIVERSE)}-name chain universe)"
+    )
     raw_help = "read the raw vendor snapshots of the sealed run (adapter), not the stored format"
     ib.add_argument("--raw-snapshots", action="store_true", help=raw_help)
     ie = sub.add_parser("ivhist-001", help="IVHIST-001 benchmark vs the CBOE vol indices")

@@ -20,13 +20,17 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from tests.fixtures.desk_cboe import N_NAMED, chain_payload, default_rows, encode, option_row
-from tree_options.desk import chains, paths, sessions, store, universe
+from tree_options.desk import chains, paths, sessions, store
 from tree_options.desk.__main__ import run_cli
 from tree_options.trex.discovery.market import _parse_occ, parse_occ
 
 ET = ZoneInfo("America/New_York")
 D = date(2026, 9, 22)  # Tuesday session
 NOW = datetime(2026, 9, 23, 6, 30, tzinfo=ET)
+
+# The desk universe (roster, close classes, the sealed XSMOM set) is tested
+# in its own home, tests/unit/test_desk_universe.py -- the pinned-roster
+# shadow and the config-refusal suite live there, not here.
 
 
 @pytest.fixture(autouse=True)
@@ -683,32 +687,8 @@ class TestSessionsAndUniverse:
         )
         assert sessions.options_close(D, cal, late=True).tzinfo is not None
 
-    def test_late_close_classes(self) -> None:
-        # Nasdaq "Options Market Hours" 9:30-16:15 list (fetched 2026-09-23)
-        # intersected with the chain universe; single stocks close at 16:00
-        assert universe.LATE_CLOSE_OPTIONS == frozenset(
-            {"SPY", "QQQ", "IWM", "SMH", "SOXX", "XLE", "XLF", "XLV", "GLD"}
-        )
-        assert universe.LATE_CLOSE_OPTIONS <= set(universe.CHAIN_UNIVERSE)
-
-    def test_regular_close_classes_are_explicit(self) -> None:
-        # the chain universe's single stocks, by hand; the two sets partition it
-        assert universe.REGULAR_CLOSE_OPTIONS == frozenset(
-            (
-                "AAPL MSFT NVDA GOOGL AMZN META TSLA AVGO LLY JPM V UNH XOM PG MA COST HD "
-                "ADBE NFLX CRM AMD PEP KO DIS INTC QCOM"
-            ).split()
-        )
-        assert not universe.REGULAR_CLOSE_OPTIONS & universe.LATE_CLOSE_OPTIONS
-        assert universe.REGULAR_CLOSE_OPTIONS | universe.LATE_CLOSE_OPTIONS == set(
-            universe.CHAIN_UNIVERSE
-        )
-
-    def test_universe(self) -> None:
-        assert len(universe.PANEL_NAMES) == 37 == len(set(universe.PANEL_NAMES))
-        assert set(universe.CHAIN_UNIVERSE) == set(universe.PANEL_NAMES) - {"TQQQ", "SQQQ"}
-        assert len(universe.CHAIN_UNIVERSE) == 35
-        assert len(universe.XSMOM_TRADABLES) == 36 and "SPY" not in universe.XSMOM_TRADABLES
+    # The universe itself (roster pins, close-class partition, the sealed
+    # XSMOM set, config refusals) is tested in tests/unit/test_desk_universe.py.
 
     def test_paths_env_and_defaults(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         assert paths.store_root() == tmp_path / "store"
