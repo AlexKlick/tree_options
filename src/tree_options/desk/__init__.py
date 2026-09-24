@@ -16,6 +16,10 @@ Wave 1 adds two more:
 * ``update-events`` (D3): earnings timing and the sealed macro calendar's
   check (:mod:`tree_options.desk.events`; ``seal-macro`` reseals it).
 
+Wave 2 adds the sealed playbook (:mod:`tree_options.desk.playbook`,
+``data/desk/playbook/v1.toml``) and the point-in-time conditions per name
+that select its rows (:mod:`tree_options.desk.regime`).
+
 Paths come from :mod:`tree_options.desk.paths` (env-overridable; tests pin
 every one of them to tmp). Nothing here places orders or seals cards.
 """

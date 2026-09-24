@@ -13,7 +13,9 @@
   research subprocesses), default: the tree this package was imported
   from;
 * ``DESK_EVENTS_DIR``: the sealed macro calendar (tracked data), default
-  ``<repo>/data/desk/events``.
+  ``<repo>/data/desk/events``;
+* ``DESK_PLAYBOOK_DIR``: the sealed playbook (tracked data), default
+  ``<repo>/data/desk/playbook``.
 
 Tests must pin all of these to tmp: nothing here caches a value.
 """
@@ -47,6 +49,10 @@ def paper_dir() -> Path:
 
 def events_dir() -> Path:
     return _env_path("DESK_EVENTS_DIR") or repo_root() / "data" / "desk" / "events"
+
+
+def playbook_dir() -> Path:
+    return _env_path("DESK_PLAYBOOK_DIR") or repo_root() / "data" / "desk" / "playbook"
 
 
 def notify_env_path() -> Path:

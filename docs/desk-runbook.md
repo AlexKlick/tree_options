@@ -372,3 +372,24 @@ the vendor (probed: a 2024-09-13 start returned its first bar on
 - Known limit: a series for a contract still alive at fetch time ends at
   the fetch date and is cached as such; the chain recorder (D1) carries the
   forward data.
+
+## Playbook and conditions (Wave 2 D5; no timer yet)
+
+- `data/desk/playbook/v1.toml` is SEALED (`v1.sha256` + the append-only
+  `SEALS.md`); `desk.playbook.load_playbook()` refuses any byte change.
+  Never edit it: write `v2.toml`, then seal it once from a worktree with
+  `desk.playbook.seal_playbook(path, basis=...)` (it validates first and
+  appends the seal row), and switch readers to it in the same change.
+  `DESK_PLAYBOOK_DIR` overrides the directory (tests pin it to tmp).
+- `desk.regime.conditions_at(...)` computes each name's conditions for a
+  session from the features files (`DESK_STORE/features/<D>.json`), the
+  signals file, the stored VIX/VIX3M, the report schedule and the sealed
+  macro calendar; `match_rows` / `regime_doc` give the rows each name meets
+  and why the others are unmet. It is pure: the pipeline wiring comes with
+  the miner.
+- Vol state warm-up: `NOT_EVALUABLE` until a name has 120 evaluable
+  chain-source sessions in the trailing 252 (2027-03-16 at the earliest
+  with no recorder gaps); R1, R2 and R4 match nothing until then, and R6
+  waits on the same warm-up for its steep-contango percentile.
+- `docs/desk/DESK-BT-001.md` is sealed and NOT run: earliest run
+  2026-10-20 (after 20 recorded chain sessions).
