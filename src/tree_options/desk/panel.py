@@ -55,7 +55,16 @@ def read_panel_with_sha256(
     if not panel.exists():
         raise FileNotFoundError(str(panel))
     deadline = monotonic() + timeout_s
-    with open(lock_path(panel), "a") as fh:
+    # flock(LOCK_SH) is legal on a read-only fd, and the cockpit's sandboxed
+    # web lane mounts the repo EROFS — an append-mode open (write intent)
+    # fails there before the lock is ever taken. Readers open the existing
+    # lock read-only; only a first-ever reader (writable contexts) creates it.
+    lock = lock_path(panel)
+    try:
+        fh = open(lock)
+    except FileNotFoundError:
+        fh = open(lock, "a")
+    with fh:
         while True:
             try:
                 fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
