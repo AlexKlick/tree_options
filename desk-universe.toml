@@ -1,0 +1,86 @@
+# The desk universe: the single source for every symbol list the options
+# desk uses. Loaded (and fully validated) at import time by
+# src/tree_options/desk/universe.py; the research lane's
+# artifacts/paper-trades/fetch_ohlc.py parses this same file directly with
+# tomllib (desk code is never imported from there). Lives at the repo root,
+# sibling of research_protocol.yaml -- NEVER under plans/, where the trex
+# plan glob would adopt it as a trade book.
+#
+# EDIT DISCIPLINE: adding, removing, or reordering a name is one reviewed
+# change to THIS FILE plus the pinned-roster test in
+# tests/unit/test_desk_chains.py -- never a lone edit here. A new single
+# stock MUST also join [options_close].regular in that same change: the
+# store treats any chain symbol in neither close list as late (16:15 ET),
+# so an unlisted new name silently gets the wrong cutoff (store's
+# fail-safe; an explicit regular listing is the only thing that earns the
+# 16:00 cutoff).
+#
+# [panel].names order is load-bearing: panel fixtures and iteration follow
+# it. Panel history: the 2026-09-11 paid-plan universe (the original 29
+# plus SMH SOXX XLE XLV XLF GLD TQQQ SQQQ); 2026-09-23: PLTR and SPCX
+# added (SpaceX listed on Nasdaq 2026-06-12).
+#
+# [xsmom].tradables is the SEALED ranking universe, deliberately separate
+# from the panel: XSMOM-TOP3's goldens and protocol rows are sealed against
+# that exact 36-name roster (operator ruling 2026-09-23, seal effective
+# 2026-10-01). A panel addition captures chains/panel data for a new name
+# WITHOUT entering the ranking; editing [xsmom].tradables IS the re-seal
+# decision, to be made with its own reviewed change.
+
+version = 1
+
+[panel]
+names = [
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO",
+    "LLY", "JPM", "V", "UNH", "XOM", "PG", "MA", "COST", "HD",
+    "ADBE", "NFLX", "CRM", "AMD", "PEP", "KO", "DIS", "INTC", "QCOM",
+    "PLTR", "SPCX", # added 2026-09-23
+    "SPY", "QQQ", "IWM",
+    "SMH", "SOXX", "XLE", "XLV", "XLF", "GLD", "TQQQ", "SQQQ",
+]
+
+# The panel's ETFs (no earnings of their own); the rest are single stocks.
+etfs = ["SPY", "QQQ", "IWM", "SMH", "SOXX", "XLE", "XLV", "XLF", "GLD", "TQQQ", "SQQQ"]
+
+# 3x leveraged ETFs: the desk gives them no options expression (plan D5);
+# an XSMOM pick of one is logged, never substituted.
+no_options_expression = ["TQQQ", "SQQQ"]
+
+[options_close]
+# "late": option classes whose regular session runs to 16:15 ET (13:15 on
+# early-close days), 15 minutes past the equity close. Source: Nasdaq
+# Trader "Options Market Hours" (nasdaqtrader.com/Trader.aspx?id=optionshours),
+# the exchange list of classes that "trade from 9:30 a.m. ET to 4:15 p.m.
+# ET", fetched 2026-09-23, intersected with the chain universe. Cboe
+# publishes no single list (its extended-hours FAQ gives only the rule).
+# Corroborated by the recorded 2026-09-22 chains: SPY QQQ IWM XLE XLF
+# options printed as late as 16:14:59.
+late = ["SPY", "QQQ", "IWM", "SMH", "SOXX", "XLE", "XLF", "XLV", "GLD"]
+
+# "regular": classes that stop at the equity close (16:00 ET; 13:00 on
+# early closes): the chain universe's single stocks, listed by hand. None
+# is on the 16:15 list above, and none printed after 16:00 in the recorded
+# 2026-09-22 chains (PLTR and SPCX last printed 15:59:59 ET that session).
+# Absent late prints never make a symbol regular-close, and a listed name
+# whose options DID print after the close is held to 16:15 too
+# (store.validate). Cboe may add single-stock classes to a 16:00-16:15
+# session (up to 100, by volume and size): move a name to "late" when it
+# is listed there.
+regular = [
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO",
+    "LLY", "JPM", "V", "UNH", "XOM", "PG", "MA", "COST", "HD",
+    "ADBE", "NFLX", "CRM", "AMD", "PEP", "KO", "DIS", "INTC", "QCOM",
+    "PLTR", "SPCX",
+]
+
+[xsmom]
+# XSMOM-TOP3 ranks exactly these (the sealed 36: the pre-2026-09-23 panel
+# minus SPY). PLTR and SPCX are captured but NOT ranked until the owner
+# re-seals -- see the header note above.
+tradables = [
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA", "AVGO",
+    "LLY", "JPM", "V", "UNH", "XOM", "PG", "MA", "COST", "HD",
+    "ADBE", "NFLX", "CRM", "AMD", "PEP", "KO", "DIS", "INTC", "QCOM",
+    "QQQ", "IWM",
+    "SMH", "SOXX", "XLE", "XLV", "XLF", "GLD", "TQQQ", "SQQQ",
+]
