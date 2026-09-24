@@ -21,13 +21,20 @@ from tree_options.desk import playbook, regime
 from tree_options.desk.events import MacroEvent
 
 REPO = Path(__file__).resolve().parents[2]
+PB_DIR = REPO / "data" / "desk" / "playbook"
 SESSION = date(2026, 6, 1)
 SCHEMA = "desk-features/1"
+NE = "NOT_EVALUABLE"
 
 
 @pytest.fixture(scope="module")
 def pb() -> playbook.Playbook:
-    return playbook.load_playbook(REPO / "data" / "desk" / "playbook" / "v1.toml")
+    return playbook.load_playbook(PB_DIR / "v2.toml")  # the active version
+
+
+@pytest.fixture(scope="module")
+def pb_v1() -> playbook.Playbook:
+    return playbook.load_playbook(PB_DIR / "v1.toml")
 
 
 def _entry(
@@ -38,7 +45,10 @@ def _entry(
     slope: float | None = 0.05,
     term: list[list[Any]] | None = None,
     liquidity: int = 50,
+    h: Any = 20,
+    fit_through: Any = "2024-06-28",
 ) -> dict[str, Any]:
+    """One name's features as desk features writes them (desk-features/1)."""
     return {
         "iv": {"30": iv30, "60": None, "90": None, "180": None},
         "term_slope": slope,
@@ -48,12 +58,27 @@ def _entry(
             "source": "har",
             "har_status": har_status,
             "har_vol": har_vol,
+            "h": h,
+            "fit_through": fit_through,
         },
     }
 
 
-def _doc(names: dict[str, dict[str, Any]], schema: str = SCHEMA) -> dict[str, Any]:
-    return {"schema": schema, "names": names}
+def _doc(
+    names: dict[str, dict[str, Any]],
+    schema: str = SCHEMA,
+    *,
+    session: date = SESSION,
+    chains: bool = True,
+) -> dict[str, Any]:
+    """A features document: its own session and the recorded chains' raw sha256."""
+    raw = {n: "ab" * 32 for n in names} if chains else {}
+    return {
+        "schema": schema,
+        "session": session.isoformat(),
+        "inputs": {"chains_raw_sha256": raw},
+        "names": names,
+    }
 
 
 def _prior(cal, n: int, end: date = SESSION) -> list[date]:
@@ -66,7 +91,8 @@ def _history(cal, ratios: list[float], name: str = "IWM", **kw: Any) -> dict[dat
     ratio x 0.25 over a HAR vol of 0.25 (so R = ratio)."""
     days = _prior(cal, len(ratios))
     return {
-        d: _doc({name: _entry(0.25 * r, 0.25, **kw)}) for d, r in zip(days, ratios, strict=True)
+        d: _doc({name: _entry(0.25 * r, 0.25, **kw)}, session=d)
+        for d, r in zip(days, ratios, strict=True)
     }
 
 
@@ -129,13 +155,13 @@ class TestVolState:
         feats: dict[date, dict] = {}
         for k, d in enumerate(days):
             if k < 60:  # another features schema (another source/method): not counted
-                feats[d] = _doc({"IWM": _entry(0.1, 0.25)}, schema="desk-features/0")
+                feats[d] = _doc({"IWM": _entry(0.1, 0.25)}, schema="desk-features/0", session=d)
             elif k < 70:  # HAR degraded that day: not evaluable, not counted
-                feats[d] = _doc({"IWM": _entry(0.1, 0.25, har_status="degraded")})
+                feats[d] = _doc({"IWM": _entry(0.1, 0.25, har_status="degraded")}, session=d)
             elif k < 75:  # no IV30
-                feats[d] = _doc({"IWM": _entry(None, 0.25)})
+                feats[d] = _doc({"IWM": _entry(None, 0.25)}, session=d)
             else:
-                feats[d] = _doc({"IWM": _entry(0.25 * 0.9, 0.25)})
+                feats[d] = _doc({"IWM": _entry(0.25 * 0.9, 0.25)}, session=d)
         feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.95, 0.25)})
         got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
         assert got.n == 125 and got.state == "rich"
@@ -171,17 +197,96 @@ class TestVolState:
 
     def test_future_poison(self, pb, static_calendar) -> None:
         """Nothing dated after the session, nor the session's own value,
-        enters the history: poisoning them changes nothing."""
+        enters the history: poisoning them changes nothing. That includes
+        future-dated documents filed under PAST keys (Codex P1-2)."""
         hist = [0.70 + 0.002 * k for k in range(150)]
         feats = _history(static_calendar, hist)
         feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.851, 0.25)})
         base = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
         assert base.state == "fair"
+        sessions = static_calendar.sessions()
         i = static_calendar.ordinal(SESSION)
         poisoned = dict(feats)
-        for d in static_calendar.sessions()[i + 1 : i + 40]:
-            poisoned[d] = _doc({"IWM": _entry(9.0, 0.25)})
+        for d in sessions[i + 1 : i + 40]:
+            poisoned[d] = _doc({"IWM": _entry(9.0, 0.25)}, session=d)
+        # the 100 window sessions older than the history, each holding a
+        # copy of a document dated after the session
+        for d in sessions[i - 252 : i - 150]:
+            poisoned[d] = _doc({"IWM": _entry(9.0, 0.25)}, session=sessions[i + 5])
         assert regime.vol_state("IWM", SESSION, static_calendar, poisoned, pb.vol_state) == base
+
+
+class TestFeatureProvenance:
+    """Codex P1-2: a document is identified by its own metadata, never by
+    the dictionary key it was filed under."""
+
+    def test_future_dated_documents_under_past_keys_never_count(self, pb, static_calendar) -> None:
+        future = static_calendar.sessions()[static_calendar.ordinal(SESSION) + 10]
+        days = _prior(static_calendar, 130)
+        feats = {d: _doc({"IWM": _entry(0.25 * 0.9, 0.25)}, session=future) for d in days}
+        feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.95, 0.25)})
+        got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
+        assert (got.state, got.n) == (NE, 0)
+        for d in days:  # the same documents, correctly dated, do count
+            feats[d] = _doc({"IWM": _entry(0.25 * 0.9, 0.25)}, session=d)
+        got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
+        assert (got.state, got.n) == ("rich", 130)
+
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            {"h": 5},  # another horizon
+            {"h": None},
+            {"fit_through": "2026-12-01"},  # fit after every origin in the window
+            {"fit_through": None},  # no fit provenance
+            {"fit_through": "last month"},
+        ],
+    )
+    def test_forecast_provenance_is_checked(self, pb, static_calendar, bad) -> None:
+        feats = _history(static_calendar, [0.9] * 150, **bad)
+        feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.95, 0.25)})
+        got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
+        assert (got.state, got.n) == (NE, 0)  # none of the history counts
+        feats = _history(static_calendar, [0.9] * 150)
+        feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.95, 0.25, **bad)})
+        got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
+        assert got.state == NE and got.n == 0
+
+    def test_the_fit_must_precede_the_origin(self, pb, static_calendar) -> None:
+        feats = _history(static_calendar, [0.9] * 150)
+        feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.95, 0.25, fit_through=SESSION.isoformat())})
+        got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
+        assert got.state == NE and "fit" in got.reason
+        prev = _prior(static_calendar, 1)[0]
+        feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.95, 0.25, fit_through=prev.isoformat())})
+        got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
+        assert got.state == "rich"
+
+    def test_missing_metadata_is_refused(self, pb, static_calendar) -> None:
+        feats = _history(static_calendar, [0.9] * 150)
+        for doc in list(feats.values())[:40]:
+            del doc["session"]
+        for doc in list(feats.values())[40:80]:
+            doc["inputs"] = {"chains_raw_sha256": {}}  # no recorded chain behind the name
+        for doc in list(feats.values())[80:100]:
+            del doc["inputs"]
+        feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.95, 0.25)})
+        got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
+        assert (got.state, got.n) == (NE, 50)  # warm-up: only the 50 intact documents count
+        feats[SESSION] = _doc({"IWM": _entry(0.25 * 0.95, 0.25)}, chains=False)
+        got = regime.vol_state("IWM", SESSION, static_calendar, feats, pb.vol_state)
+        assert got.state == NE and "chain" in got.reason and got.n == 0
+
+    def test_slope_history_uses_the_same_rules(self, pb, static_calendar) -> None:
+        future = static_calendar.sessions()[static_calendar.ordinal(SESSION) + 3]
+        days = _prior(static_calendar, 150)
+        feats = {d: _doc({"SPY": _entry(slope=0.01)}, session=future) for d in days}
+        feats[SESSION] = _doc({"SPY": _entry(slope=0.14)})
+        got = regime.term_state("SPY", SESSION, static_calendar, feats, pb, next_event=None)
+        assert got.state == "contango" and got.steep == NE and got.steep_n == 0
+        feats[SESSION] = _doc({"SPY": _entry(slope=0.14)}, session=future)  # today's own doc
+        got = regime.term_state("SPY", SESSION, static_calendar, feats, pb, next_event=None)
+        assert got.state == NE
 
 
 # ------------------------------------------------------------------- term
@@ -210,7 +315,9 @@ class TestTerm:
     def test_steep_contango_is_a_percentile_with_warm_up(self, pb, static_calendar) -> None:
         days = _prior(static_calendar, 150)
         slopes = [0.001 * k for k in range(150)]  # 0.000..0.149
-        feats = {d: _doc({"SPY": _entry(slope=s)}) for d, s in zip(days, slopes, strict=True)}
+        feats = {
+            d: _doc({"SPY": _entry(slope=s)}, session=d) for d, s in zip(days, slopes, strict=True)
+        }
         for current, want in ((0.14, "yes"), (0.05, "no")):
             feats[SESSION] = _doc({"SPY": _entry(slope=current)})
             got = regime.term_state("SPY", SESSION, static_calendar, feats, pb, next_event=None)
@@ -332,6 +439,37 @@ class TestEvents:
         )
         assert state(outside) == ("unknown", None)
 
+    def test_calendar_exhaustion_is_an_unknown_window(self, pb, static_calendar) -> None:
+        """Codex P2-6: with fewer than 5 sessions left the calendar raises
+        NotASessionError (a CalendarError); the window is unknown, no crash."""
+        late = static_calendar.sessions()[-3]
+        got = regime.events_state(
+            "AAPL",
+            late,
+            static_calendar,
+            pb.events,
+            schedule={"AAPL": ["2026-10-29", "2027-01-28"]},
+            macro=_macro(),
+        )
+        assert got.window_end is None
+        assert (got.earnings, got.holdings, got.macro) == ("unknown", "n/a", "unknown")
+        res = regime.conditions_at(
+            late,
+            static_calendar,
+            pb,
+            names=["AAPL", "SMH", "SPY"],
+            signals_doc=None,
+            features={},
+            indices={},
+            schedule={},
+            macro=_macro(),
+            news_flags=None,
+        )
+        assert {n: c.events.macro for n, c in res.names.items()} == dict.fromkeys(
+            ("AAPL", "SMH", "SPY"), "unknown"
+        )
+        assert res.names["SMH"].events.holdings == "unknown"
+
 
 # -------------------------------------------------------------- direction
 
@@ -431,12 +569,39 @@ class TestMatchRows:
         m = _matches(pb, res.names["AMD"])
         assert m["R2"].matched and not m["R1"].matched
 
-    def test_warm_up_matches_no_vol_row(self, pb, static_calendar) -> None:
-        res = _full(pb, static_calendar, name="AMD", ratios=[0.8] * 30, current=FAIR)
-        c = res.names["AMD"]
-        assert c.vol.state == "NOT_EVALUABLE"
-        m = _matches(pb, c)
-        assert not m["R1"].matched and not m["R2"].matched
+    def test_warm_up_only_the_debit_spread_matches_in_v2(self, pb, pb_v1, static_calendar) -> None:
+        """Operator ruling 2026-09-23: in v2 row 1 (the XSMOM call debit
+        spread) may match while the vol state is NOT_EVALUABLE; v1 and every
+        other vol-conditioned row keep waiting."""
+        for book, r1 in ((pb_v1, False), (pb, True)):
+            res = _full(book, static_calendar, name="AMD", ratios=[0.8] * 30, current=FAIR)
+            c = res.names["AMD"]
+            assert c.vol.state == NE and "warm-up" in c.vol.reason
+            m = _matches(book, c)
+            assert m["R1"].matched is r1
+            assert not m["R2"].matched and not m["R6"].matched
+            if r1:
+                assert any("NOT_EVALUABLE" in n for n in m["R1"].notes)
+            else:
+                assert any("vol" in r for r in m["R1"].reasons)
+
+    def test_warm_up_condor_still_waits(self, pb, static_calendar) -> None:
+        res = _full(
+            pb,
+            static_calendar,
+            name="IWM",
+            ratios=[0.8] * 30,
+            current=RICH,
+            signals_doc=_signals(top3=()),
+        )
+        m = _matches(pb, res.names["IWM"])
+        assert res.names["IWM"].vol.state == NE and not m["R4"].matched
+
+    def test_evaluable_vol_still_gates_row_1_in_v2(self, pb, static_calendar) -> None:
+        res = _full(pb, static_calendar, name="AMD", ratios=RAMP, current=RICH)
+        m = _matches(pb, res.names["AMD"])
+        assert not m["R1"].matched and any("vol: rich" in r for r in m["R1"].reasons)
+        assert m["R1"].notes == ()
 
     def test_condor_needs_validated_fidelity(self, pb, static_calendar) -> None:
         for name, want in (("IWM", True), ("SPY", False)):

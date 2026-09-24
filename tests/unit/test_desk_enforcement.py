@@ -25,7 +25,7 @@ from tree_options.desk import playbook, regime, signals
 
 REPO = Path(__file__).resolve().parents[2]
 DESK_SRC = REPO / "src" / "tree_options" / "desk"
-PB_FILE = REPO / "data" / "desk" / "playbook" / "v1.toml"
+PB_FILES = tuple(REPO / "data" / "desk" / "playbook" / f for f in ("v1.toml", "v2.toml"))
 
 # ledger family (where it died) -> the desk's banned name
 LEDGER_REFUTED: dict[str, str] = {
@@ -64,14 +64,15 @@ class TestRefutedFamilies:
     def test_refused_at_every_door(self, key: str) -> None:
         with pytest.raises(signals.BannedSignalError, match="banned"):
             signals.require_direction_signal(key)
-        doc = tomllib.loads(PB_FILE.read_text())
-        for row in doc["rows"]:
-            if row["when"]["direction"] == "bull":
-                bad = copy.deepcopy(doc)
-                (r,) = [x for x in bad["rows"] if x["id"] == row["id"]]
-                r["when"]["signals"] = [key]
-                with pytest.raises(playbook.PlaybookError, match="banned"):
-                    playbook.parse_playbook(bad, sha256="0" * 64)
+        for path in PB_FILES:
+            doc = tomllib.loads(path.read_text())
+            for row in doc["rows"]:
+                if row["when"]["direction"] == "bull":
+                    bad = copy.deepcopy(doc)
+                    (r,) = [x for x in bad["rows"] if x["id"] == row["id"]]
+                    r["when"]["signals"] = [key]
+                    with pytest.raises(playbook.PlaybookError, match="banned"):
+                        playbook.parse_playbook(bad, sha256="0" * 64)
 
     def test_a_signals_file_cannot_point_with_a_refuted_family(self) -> None:
         session = date(2026, 6, 1)
@@ -105,6 +106,21 @@ class TestPreregistrationSeals:
             want, name = side.read_text().split()[:2]
             assert name == doc.name
             assert hashlib.sha256(doc.read_bytes()).hexdigest() == want, doc.name
+
+    def test_desk_bt_001_is_amended_never_edited(self) -> None:
+        """Codex P1-3: the original entered at the signal session's own VWAP
+        (before a close-based signal is observable). A separately sealed
+        amendment moves entry to the next session; the original's bytes
+        stay as sealed and the amendment cites them by sha256."""
+        docs = REPO / "docs" / "desk"
+        original = hashlib.sha256((docs / "DESK-BT-001.md").read_bytes()).hexdigest()
+        assert original == "e3e1d12d75b043c6f344c928290f5f5a813c22a8df327de6c28e2d9943139f77"
+        amendment = docs / "DESK-BT-001-AMENDMENT-1.md"
+        text = amendment.read_text()
+        assert original in text
+        assert (docs / "DESK-BT-001-AMENDMENT-1.md.sha256").exists()
+        for words in ("next NYSE session", "signal session", "placebo", "MODELED", "E0"):
+            assert words in text
 
 
 class TestNoRouteIntoResearchCode:

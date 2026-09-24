@@ -375,12 +375,20 @@ the vendor (probed: a 2024-09-13 start returned its first bar on
 
 ## Playbook and conditions (Wave 2 D5; no timer yet)
 
-- `data/desk/playbook/v1.toml` is SEALED (`v1.sha256` + the append-only
-  `SEALS.md`); `desk.playbook.load_playbook()` refuses any byte change.
-  Never edit it: write `v2.toml`, then seal it once from a worktree with
-  `desk.playbook.seal_playbook(path, basis=...)` (it validates first and
-  appends the seal row), and switch readers to it in the same change.
+- `data/desk/playbook/v2.toml` is the ACTIVE version; `v1.toml` stays as
+  sealed history. Each has a `.sha256` sidecar and exactly one row in the
+  append-only `SEALS.md`, and its digest is pinned in
+  `desk.playbook.APPROVED`; `load_playbook()` refuses any mismatch (a
+  coordinated edit of TOML + sidecar + log still fails). Never edit a
+  version: write `v3.toml`, seal it once from a worktree with
+  `desk.playbook.seal_playbook(path, basis=...)` (it validates, refuses
+  other bytes under a sealed name, appends the row), then pin its digest in
+  `APPROVED` and move `ACTIVE_FILE` in the same reviewed change.
   `DESK_PLAYBOOK_DIR` overrides the directory (tests pin it to tmp).
+- v2 vs v1: R1 (XSMOM call debit spread) may match while the vol state is
+  NOT_EVALUABLE (operator ruling 2026-09-23); PEAD incremental drift 0
+  (Codex P2-4); R6 declares the actual-strike protective rule
+  (`desk.playbook.require_protective`, Codex P2-5).
 - `desk.regime.conditions_at(...)` computes each name's conditions for a
   session from the features files (`DESK_STORE/features/<D>.json`), the
   signals file, the stored VIX/VIX3M, the report schedule and the sealed
@@ -389,7 +397,11 @@ the vendor (probed: a 2024-09-13 start returned its first bar on
   the miner.
 - Vol state warm-up: `NOT_EVALUABLE` until a name has 120 evaluable
   chain-source sessions in the trailing 252 (2027-03-16 at the earliest
-  with no recorder gaps); R1, R2 and R4 match nothing until then, and R6
-  waits on the same warm-up for its steep-contango percentile.
-- `docs/desk/DESK-BT-001.md` is sealed and NOT run: earliest run
+  with no recorder gaps); R2 and R4 match nothing until then, R6 waits on
+  the same warm-up for its steep-contango percentile, and R1 matches with
+  a note (v2). A features document counts only when its own `session`,
+  chain provenance, forecast horizon (20) and `fit_through` (before the
+  session) check out.
+- `docs/desk/DESK-BT-001.md` + `DESK-BT-001-AMENDMENT-1.md` (entry on the
+  next session after the signal) are sealed and NOT run: earliest run
   2026-10-20 (after 20 recorded chain sessions).

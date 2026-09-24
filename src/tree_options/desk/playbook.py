@@ -1,9 +1,13 @@
 """The desk's sealed playbook (plan D5): ``data/desk/playbook/v<N>.toml``.
 
 ``<name>.sha256`` holds the sha256 of the file bytes and ``SEALS.md`` the
-append-only seal rows; :func:`load_playbook` refuses a file whose bytes do
-not match its sidecar, or whose sha256 has no seal row. A change is a new
-version, sealed by :func:`seal_playbook` before it is used.
+append-only seal rows. :func:`load_playbook` refuses a file whose bytes do
+not match its sidecar, the digest pinned for its name in :data:`APPROVED`
+(reviewed, gated code: a coordinated edit of the TOML, the sidecar and the
+log still fails), or the ONE seal row its name may have. A version is
+sealed once (:func:`seal_playbook` refuses other bytes under a sealed
+name); a change is a new version file. v1 stays as sealed history; the
+desk loads :data:`ACTIVE_FILE` (v2, operator ruling 2026-09-23).
 
 The loader is fail-closed and has NO defaults: every table and every row
 must state every key (``"none"`` is an explicit value where a rule is
@@ -35,6 +39,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from fractions import Fraction
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, cast
 
 from tree_options.desk import paths
@@ -43,10 +48,32 @@ from tree_options.desk.store import atomic_write_bytes
 from tree_options.desk.universe import CHAIN_UNIVERSE, NO_OPTIONS_EXPRESSION, PANEL_ETFS
 from tree_options.trex.plan import ExitRules, Kind, Leg, LegStructure, StopLoss, TakeProfit
 
-SCHEMA = "desk-playbook/1"
-DEFAULT_FILE = "v1.toml"
+SCHEMA_V1 = "desk-playbook/1"
+SCHEMA_V2 = "desk-playbook/2"  # adds when.vol_not_evaluable and protective_strike_rule
+SCHEMAS = frozenset({SCHEMA_V1, SCHEMA_V2})
 SEALS_FILE = "SEALS.md"
 NONE = "none"
+
+# The approved playbook versions, pinned by sha256 in reviewed, gated code
+# (Codex P1-1, 2026-09-23): a coordinated edit of a TOML, its sidecar and
+# SEALS.md still fails to load. A new version is sealed with
+# seal_playbook and becomes loadable only when its digest is added here.
+APPROVED: Mapping[str, str] = MappingProxyType(
+    {
+        "v1.toml": "bc69e250a9da181016e925f382657ef2b0db6de2630e93c709b7cb7e406e6cd1",
+        "v2.toml": "0d8964989b76423e2db742225b41a6ba82c6932c746c761ecfc3a3893706759f",
+    }
+)
+# the version the desk loads by default (operator ruling 2026-09-23: v2)
+ACTIVE_FILE = "v2.toml"
+
+# the forecast horizon each vol-state metric reads (FORECAST-001: h = 20)
+METRIC_HORIZON: Mapping[str, int] = MappingProxyType({"iv30_over_har20": 20})
+VOL_NOT_EVALUABLE = frozenset({"no_match", "match", "n/a"})
+# the kinds whose vega the operator ruled small enough to skip the vol
+# warm-up (2026-09-23: "a vertical's long and short legs largely cancel vega")
+WARM_UP_EXEMPT_KINDS = frozenset({"debit_vertical"})
+PROTECTIVE_RULE = MappingProxyType({"C": "long_strike_below_short", "P": "long_strike_above_short"})
 
 TIERS = frozenset({"signal-validated", "textbook-prior", "risk-control"})
 STATUSES = frozenset({"active", "dormant"})
@@ -131,6 +158,10 @@ class VolStatePolicy:
     validated_basis: str
     har_status_required: str
 
+    @property
+    def har_horizon(self) -> int:
+        return METRIC_HORIZON[self.metric]
+
     def band_for(self, name: str) -> tuple[str, VolBand]:
         if name in self.validated_names:
             return "validated", self.validated
@@ -177,6 +208,10 @@ class When:
     direction: str
     signals: tuple[str, ...]
     vol: frozenset[str] | None  # None: any vol state (the row reads none)
+    # when the vol state is NOT_EVALUABLE: no_match (wait) | match (skip the
+    # gate; debit verticals only, v2) | n/a (no vol condition). Schema /1
+    # rows mean no_match: that schema has no exemption.
+    vol_not_evaluable: str
     name_term: str
     market_term: str
     events: str
@@ -234,6 +269,9 @@ class Row:
     drift_weight: Decimal
     expiry_gap_days: tuple[int, int] | None
     dormant_reason: str | None
+    # a diagonal's candidate selection must check the ACTUAL strikes (schema
+    # /2; Codex P2-5): delta ranges across expiries cannot certify it
+    protective_strike_rule: str | None
 
     @property
     def is_signal_row(self) -> bool:
@@ -517,23 +555,23 @@ _ROW_KEYS = (
 )
 
 
-def _when(obj: Any, where: str, tier: str) -> When:
+_WHEN_KEYS = (
+    "direction",
+    "signals",
+    "vol",
+    "name_term",
+    "market_term",
+    "events",
+    "front_over_back",
+    "book",
+    "news",
+)
+
+
+def _when(obj: Any, where: str, tier: str, schema: str, kind: str) -> When:
     w = f"{where} when"
-    t = _table(
-        obj,
-        w,
-        (
-            "direction",
-            "signals",
-            "vol",
-            "name_term",
-            "market_term",
-            "events",
-            "front_over_back",
-            "book",
-            "news",
-        ),
-    )
+    v2 = schema == SCHEMA_V2
+    t = _table(obj, w, _WHEN_KEYS + (("vol_not_evaluable",) if v2 else ()))
     names = _str_list(t["signals"], f"{w} signals")
     for name in names:
         try:
@@ -552,6 +590,17 @@ def _when(obj: Any, where: str, tier: str) -> When:
         if not states or not set(states) <= VOL_STATES:
             raise PlaybookError(f"{w} vol: 'any' or a non-empty subset of {sorted(VOL_STATES)}")
         vol = frozenset(states)
+    if v2:
+        vne = _str(t["vol_not_evaluable"], f"{w} vol_not_evaluable", VOL_NOT_EVALUABLE)
+        if (vne == "n/a") != (vol is None):
+            raise PlaybookError(f"{w} vol_not_evaluable: 'n/a' exactly when vol is 'any'")
+        if vne == "match" and kind not in WARM_UP_EXEMPT_KINDS:
+            raise PlaybookError(
+                f"{w} vol_not_evaluable: only {sorted(WARM_UP_EXEMPT_KINDS)} may match without "
+                "an evaluable vol state (operator ruling 2026-09-23)"
+            )
+    else:
+        vne = "n/a" if vol is None else "no_match"  # schema /1 has no exemption
     news = _str(t["news"], f"{w} news", NEWS)
     if news == "ignore" and tier != "risk-control":
         raise PlaybookError(f"{w} news: only a risk-control row may ignore the news veto")
@@ -559,6 +608,7 @@ def _when(obj: Any, where: str, tier: str) -> When:
         direction=direction,
         signals=tuple(names),
         vol=vol,
+        vol_not_evaluable=vne,
         name_term=_str(t["name_term"], f"{w} name_term", NAME_TERMS),
         market_term=_str(t["market_term"], f"{w} market_term", MARKET_TERMS),
         events=_str(t["events"], f"{w} events", EVENT_CONDITIONS),
@@ -798,20 +848,23 @@ def _exits(obj: Any, where: str, kind: str, right: str, when: When) -> RowExits:
     return RowExits(rules, time_stop)
 
 
-def _row(obj: Any, i: int, limits: Limits, drift: DriftPolicy) -> Row:
+def _row(obj: Any, i: int, limits: Limits, drift: DriftPolicy, schema: str) -> Row:
     where = f"rows[{i}]"
     if not isinstance(obj, dict):
         raise PlaybookError(f"{where}: not a table")
     kind = _str(obj.get("kind"), f"{where} kind", KINDS)
     status = _str(obj.get("status"), f"{where} status", STATUSES)
-    optional = (("expiry_gap_days",) if kind in TWO_EXPIRY else ()) + (
-        ("dormant_reason",) if status == "dormant" else ()
+    diagonal_rule = schema == SCHEMA_V2 and kind == "diagonal"
+    conditional = (
+        (("expiry_gap_days",) if kind in TWO_EXPIRY else ())
+        + (("dormant_reason",) if status == "dormant" else ())
+        + (("protective_strike_rule",) if diagonal_rule else ())
     )
-    t = _table(obj, where, _ROW_KEYS + optional)
+    t = _table(obj, where, _ROW_KEYS + conditional)
     rid = _str(t["id"], f"{where} id")
     where = f"row {rid}"
     tier = _str(t["tier"], f"{where} tier", TIERS)
-    when = _when(t["when"], where, tier)
+    when = _when(t["when"], where, tier, schema, kind)
     max_open = _int(t["max_open"], f"{where} max_open", 0)
     if when.direction == "bear" and status != "dormant":
         raise PlaybookError(
@@ -838,6 +891,14 @@ def _row(obj: Any, i: int, limits: Limits, drift: DriftPolicy) -> Row:
         raise PlaybookError(f"{where} legs: a non-empty array")
     legs = tuple(_leg(g, f"{where} legs[{j}]") for j, g in enumerate(t["legs"]))
     _shape(kind, legs, gap, f"{where} ({kind})", limits)
+    rule = None
+    if diagonal_rule:
+        want = PROTECTIVE_RULE[legs[0].right]
+        rule = _str(t["protective_strike_rule"], f"{where} protective_strike_rule")
+        if rule != want:
+            raise PlaybookError(
+                f"{where} protective_strike_rule: a {legs[0].right} diagonal needs {want!r}"
+            )
     exits = _exits(t["exits"], where, kind, legs[0].right, when)
     dr = _table(t["drift"], f"{where} drift", ("view", "weight"))
     view = _str(dr["view"], f"{where} drift view", frozenset({"signal", "none"}))
@@ -868,7 +929,29 @@ def _row(obj: Any, i: int, limits: Limits, drift: DriftPolicy) -> Row:
         drift_weight=weight,
         expiry_gap_days=gap,
         dormant_reason=reason,
+        protective_strike_rule=rule,
     )
+
+
+def require_protective(row: Row, *, long_strike: Decimal, short_strike: Decimal) -> None:
+    """The check candidate selection must run on a two-expiry row's ACTUAL
+    strikes (Codex P2-5): a diagonal buys the call strike below the short
+    (the put strike above it); a calendar shares one strike. The |delta|
+    ranges of legs with different expiries and IVs cannot certify it (a
+    180-day 0.60-delta call can sit above a 30-day 0.35-delta call)."""
+    if row.kind not in TWO_EXPIRY:
+        raise PlaybookError(f"row {row.id}: not a two-expiry row ({row.kind})")
+    right = row.legs[0].right
+    if row.kind == "calendar":
+        if long_strike != short_strike:
+            raise PlaybookError(f"row {row.id}: a calendar shares one strike")
+        return
+    ok = long_strike < short_strike if right == "C" else long_strike > short_strike
+    if not ok:
+        raise PlaybookError(
+            f"row {row.id}: diagonal not protective: long {right} strike {long_strike} vs "
+            f"short {short_strike} ({PROTECTIVE_RULE[right]})"
+        )
 
 
 # ------------------------------------------------------------- the file
@@ -894,13 +977,13 @@ def parse_playbook(doc: Mapping[str, Any], *, sha256: str) -> Playbook:
             "rows",
         ),
     )
-    _str(t["schema"], "schema", frozenset({SCHEMA}))
+    schema = _str(t["schema"], "schema", SCHEMAS)
     _str(t["plan"], "plan")
     limits = _limits(t["limits"])
     drift = _drift(t["drift"])
     if not isinstance(t["rows"], list) or not t["rows"]:
         raise PlaybookError("rows: a non-empty array of tables")
-    rows = tuple(_row(r, i, limits, drift) for i, r in enumerate(t["rows"]))
+    rows = tuple(_row(r, i, limits, drift, schema) for i, r in enumerate(t["rows"]))
     ids = [r.id for r in rows]
     if len(set(ids)) != len(ids):
         raise PlaybookError(f"rows: duplicate ids {sorted(i for i in ids if ids.count(i) > 1)}")
@@ -919,16 +1002,18 @@ def parse_playbook(doc: Mapping[str, Any], *, sha256: str) -> Playbook:
     )
 
 
-def _sealed(seals: Path, name: str, sha: str) -> bool:
+def _seal_rows(seals: Path, name: str) -> list[str]:
+    """The sha256 cells of every SEALS.md row for ``name``."""
     try:
         lines = seals.read_text().splitlines()
     except OSError:
-        return False
+        return []
+    out = []
     for line in lines:
         cells = [c.strip() for c in line.strip().strip("|").split("|")]
-        if line.startswith("| ") and len(cells) >= 3 and cells[1] == name and cells[2] == sha:
-            return True
-    return False
+        if line.startswith("| ") and len(cells) >= 3 and cells[1] == name:
+            out.append(cells[2])
+    return out
 
 
 def _decode(data: bytes, name: str) -> dict[str, Any]:
@@ -938,25 +1023,56 @@ def _decode(data: bytes, name: str) -> dict[str, Any]:
         raise PlaybookError(f"{name}: not TOML ({exc})") from exc
 
 
+def _parse_file(path: Path, data: bytes, sha: str) -> Playbook:
+    pb = parse_playbook(_decode(data, path.name), sha256=sha)
+    if f"{pb.version}.toml" != path.name:
+        raise PlaybookError(f"{path.name}: declares version {pb.version!r}; the file names it")
+    return pb
+
+
+def _sidecar(path: Path) -> str | None:
+    """The sha256 recorded in the sidecar; None when there is none."""
+    try:
+        fields = path.with_suffix(".sha256").read_text().split()
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise PlaybookSealError(f"{path.name}: unreadable sha256 sidecar") from exc
+    if len(fields) != 2 or fields[1] != path.name:
+        raise PlaybookSealError(f"{path.name}: malformed sha256 sidecar")
+    return fields[0]
+
+
 def load_playbook(path: Path | None = None) -> Playbook:
-    """The sealed playbook (default ``<DESK_PLAYBOOK_DIR>/v1.toml``)."""
-    path = path or paths.playbook_dir() / DEFAULT_FILE
+    """A sealed, approved playbook version (default: the active one,
+    ``<DESK_PLAYBOOK_DIR>/`` :data:`ACTIVE_FILE`). Refuses bytes that differ
+    from the sidecar, from the digest pinned in :data:`APPROVED`, or from
+    the one SEALS.md row the version must have."""
+    path = path or paths.playbook_dir() / ACTIVE_FILE
     try:
         data = path.read_bytes()
     except OSError as exc:
         raise PlaybookSealError(f"{path.name}: unreadable ({type(exc).__name__})") from exc
-    try:
-        fields = path.with_suffix(".sha256").read_text().split()
-    except OSError as exc:
-        raise PlaybookSealError(f"{path.name}: no sha256 sidecar") from exc
-    if len(fields) != 2 or fields[1] != path.name:
-        raise PlaybookSealError(f"{path.name}: malformed sha256 sidecar")
     got = hashlib.sha256(data).hexdigest()
-    if got != fields[0]:
-        raise PlaybookSealError(f"{path.name}: sha256 {got[:12]} != sealed {fields[0][:12]}")
-    if not _sealed(path.parent / SEALS_FILE, path.name, got):
+    sealed = _sidecar(path)
+    if sealed is None:
+        raise PlaybookSealError(f"{path.name}: no sha256 sidecar")
+    if got != sealed:
+        raise PlaybookSealError(f"{path.name}: sha256 {got[:12]} != sealed {sealed[:12]}")
+    approved = APPROVED.get(path.name)
+    if approved != got:
+        raise PlaybookSealError(
+            f"{path.name}: sha256 {got[:12]} is not the approved digest"
+            + (f" {approved[:12]}" if approved else " (no approved version by this name)")
+        )
+    rows = _seal_rows(path.parent / SEALS_FILE, path.name)
+    if got not in rows:
         raise PlaybookSealError(f"{path.name}: sha256 {got[:12]} has no row in {SEALS_FILE}")
-    return parse_playbook(_decode(data, path.name), sha256=got)
+    if len(rows) != 1:
+        raise PlaybookSealError(
+            f"{path.name}: {len(rows)} conflicting rows in {SEALS_FILE}; a version has one"
+        )
+    return _parse_file(path, data, got)
 
 
 _SEALS_HEADER = """\
@@ -973,12 +1089,26 @@ Rows are only ever appended; never edit or delete a row.
 
 
 def seal_playbook(path: Path, *, basis: str, sealed_at: datetime | None = None) -> str:
-    """Validate the file, write its sidecar and append a seal row."""
+    """Validate a NEW version, write its sidecar and append its one seal row.
+
+    A version is sealed once: sealing identical bytes again changes nothing;
+    other bytes under an already sealed name are refused (a change is a new
+    version, v<N+1>.toml). The version becomes loadable only when its digest
+    is pinned in :data:`APPROVED`."""
     data = path.read_bytes()
     sha = hashlib.sha256(data).hexdigest()
-    pb = parse_playbook(_decode(data, path.name), sha256=sha)  # never seal an invalid file
-    atomic_write_bytes(path.with_suffix(".sha256"), f"{sha}  {path.name}\n".encode("ascii"))
+    pb = _parse_file(path, data, sha)  # never seal an invalid file
     seals = path.parent / SEALS_FILE
+    prior = {s for s in (_sidecar(path),) if s is not None} | set(_seal_rows(seals, path.name))
+    if prior - {sha}:
+        raise PlaybookSealError(
+            f"{path.name} is already sealed with other bytes; a change is a new version"
+        )
+    if sha in _seal_rows(seals, path.name):
+        if _sidecar(path) is None:
+            atomic_write_bytes(path.with_suffix(".sha256"), f"{sha}  {path.name}\n".encode("ascii"))
+        return sha  # already sealed: nothing to append
+    atomic_write_bytes(path.with_suffix(".sha256"), f"{sha}  {path.name}\n".encode("ascii"))
     if not seals.exists():
         atomic_write_bytes(seals, _SEALS_HEADER.encode("ascii"))
     at = (sealed_at or datetime.now(UTC)).astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

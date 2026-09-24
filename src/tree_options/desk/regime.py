@@ -18,7 +18,12 @@ future-poisoned input changes nothing (tests prove it).
   vol from desk features; the state is R's percentile within the name's
   own source-consistent R history (``cheap`` / ``fair`` / ``rich`` by the
   name's fidelity band), ``NOT_EVALUABLE`` during warm-up or without a
-  validated forecast. Never a guessed or default state.
+  validated forecast. Never a guessed or default state. A features
+  document counts only by its own metadata: its ``session``, a recorded
+  chain behind the name, a forecast of the metric's horizon whose fit
+  precedes the origin (Codex P1-2). Rows wait for an evaluable state,
+  except a v2 row declaring ``vol_not_evaluable = "match"`` (the XSMOM call
+  debit spread, operator ruling 2026-09-23), which matches with a note.
 * **term**: the name's IV90/IV30 slope sign (``contango`` /
   ``backwardation`` / ``flat``), ``steep`` contango by the slope's own
   percentile (same warm-up rule), the event inversion (front IV above
@@ -58,6 +63,7 @@ from tree_options.desk.playbook import (
 from tree_options.desk.sessions import Calendar
 from tree_options.desk.signals import ALLOWED_DIRECTION, require_direction_signal
 from tree_options.desk.universe import NO_OPTIONS_EXPRESSION, PANEL_ETFS
+from tree_options.time.calendar import CalendarError
 
 SCHEMA = "desk-regime/1"
 NE = "NOT_EVALUABLE"
@@ -77,12 +83,31 @@ def _prior_sessions(session: date, cal: Calendar, window: int) -> Sequence[date]
     return sessions[max(0, i - window) : i]
 
 
-def _names_of(doc: Mapping[str, Any] | None, schema: str) -> Mapping[str, Any] | None:
-    """A features document's per-name table, only if it is the sealed source."""
-    if not isinstance(doc, Mapping) or doc.get("schema") != schema:
-        return None
-    names = doc.get("names")
-    return names if isinstance(names, Mapping) else None
+def _entry(
+    doc: Mapping[str, Any] | None, name: str, session: date, schema: str
+) -> tuple[Mapping[str, Any] | None, str]:
+    """One name's features from the document of ``session``, identified by
+    the document's OWN metadata, never by the key it was filed under (Codex
+    P1-2): the sealed schema, ``session`` equal to the session asked for,
+    and a recorded chain behind the name (``inputs.chains_raw_sha256``).
+    Missing or inconsistent metadata: (None, why)."""
+    if not isinstance(doc, Mapping):
+        return None, "no features for the session"
+    if doc.get("schema") != schema:
+        return None, f"features schema {doc.get('schema')!r} is not the sealed source"
+    if doc.get("session") != session.isoformat():
+        return None, f"features document dated {doc.get('session')!r}, not {session}"
+    names, inputs = doc.get("names"), doc.get("inputs")
+    raw = inputs.get("chains_raw_sha256") if isinstance(inputs, Mapping) else None
+    if not isinstance(names, Mapping) or not isinstance(raw, Mapping):
+        return None, "features document without names or chain provenance"
+    entry = names.get(name)
+    if not isinstance(entry, Mapping):
+        return None, "no features for the name"
+    sha = raw.get(name)
+    if not isinstance(sha, str) or not sha:
+        return None, "no recorded chain behind the name's features"
+    return entry, ""
 
 
 def _history(
@@ -93,14 +118,14 @@ def _history(
     *,
     window: int,
     schema: str,
-    value: Callable[[Any], float | None],
+    value: Callable[[Mapping[str, Any], date], float | None],
 ) -> list[float]:
     out: list[float] = []
     for d in _prior_sessions(session, cal, window):
-        names = _names_of(features.get(d), schema)
-        if names is None:
-            continue  # no document, or another source/method: not counted
-        v = value(names.get(name))
+        entry, _why = _entry(features.get(d), name, d, schema)
+        if entry is None:
+            continue  # no document, another source, another date: not counted
+        v = value(entry, d)
         if v is not None:
             out.append(v)
     return out
@@ -125,9 +150,9 @@ class VolState:
     band: VolBand
 
 
-def _ratio_reason(entry: Any, policy: VolStatePolicy) -> tuple[float | None, str]:
-    if not isinstance(entry, Mapping):
-        return None, "no features for the name"
+def _ratio_reason(
+    entry: Mapping[str, Any], policy: VolStatePolicy, origin: date
+) -> tuple[float | None, str]:
     if entry.get("status") == NE:
         return None, f"features not evaluable: {entry.get('reason', '')}"
     iv = entry.get("iv")
@@ -139,6 +164,18 @@ def _ratio_reason(entry: Any, policy: VolStatePolicy) -> tuple[float | None, str
         return None, "no HAR forecast"
     if fc.get("har_status") != policy.har_status_required:
         return None, f"HAR status {fc.get('har_status')!r}, not {policy.har_status_required!r}"
+    h = fc.get("h")
+    if type(h) is not int or h != policy.har_horizon:
+        return None, f"forecast horizon {h!r}, not {policy.har_horizon}"
+    fit = fc.get("fit_through")
+    try:
+        fit_d = date.fromisoformat(fit) if isinstance(fit, str) else None
+    except ValueError:
+        fit_d = None
+    if fit_d is None:
+        return None, f"forecast without a readable fit_through ({fit!r})"
+    if not fit_d < origin:
+        return None, f"forecast fit through {fit_d} does not precede its origin {origin}"
     har_vol = _num(fc.get("har_vol"))
     if har_vol is None or har_vol <= 0.0:
         return None, "no HAR vol"
@@ -159,13 +196,10 @@ def vol_state(
 
     if not cal.is_session(session):
         return nev(f"{session} is not an NYSE session")
-    doc = features.get(session)
-    if doc is None:
-        return nev("no features for the session")
-    names = _names_of(doc, policy.features_schema)
-    if names is None:
-        return nev(f"features schema {doc.get('schema')!r} is not the sealed source")
-    ratio, why = _ratio_reason(names.get(name), policy)
+    entry, why = _entry(features.get(session), name, session, policy.features_schema)
+    if entry is None:
+        return nev(why)
+    ratio, why = _ratio_reason(entry, policy, session)
     if ratio is None:
         return nev(why)
     hist = _history(
@@ -175,7 +209,7 @@ def vol_state(
         features,
         window=policy.window_sessions,
         schema=policy.features_schema,
-        value=lambda e: _ratio_reason(e, policy)[0],
+        value=lambda e, d: _ratio_reason(e, policy, d)[0],
     )
     if len(hist) < policy.min_history:
         return nev(
@@ -202,7 +236,7 @@ class TermState:
     event_detail: str
 
 
-def _slope(entry: Any) -> float | None:
+def _slope(entry: Mapping[str, Any] | None, _origin: date | None = None) -> float | None:
     return _num(entry.get("term_slope")) if isinstance(entry, Mapping) else None
 
 
@@ -238,12 +272,11 @@ def term_state(
     next_event: date | None,
 ) -> TermState:
     term, schema = pb.term, pb.vol_state.features_schema
-    names = _names_of(features.get(session), schema)
-    entry = names.get(name) if names is not None else None
+    entry, why = _entry(features.get(session), name, session, schema)
     slope = _slope(entry)
     inversion, detail = _event_inversion(entry, next_event, term)
-    if names is None or slope is None:
-        why = "no sealed-source features for the session" if names is None else "no IV30/IV90 slope"
+    if entry is None or slope is None:
+        why = why or "no IV30/IV90 slope"
         return TermState(NE, why, None, NE, why, None, 0, inversion, detail)
     state = "contango" if slope > 0 else "backwardation" if slope < 0 else "flat"
     if slope <= 0:
@@ -354,11 +387,24 @@ def events_state(
 ) -> EventState:
     try:
         end: date | None = cal.nth_after(session, policy.window_sessions)
-    except (ValueError, IndexError, KeyError):
+    except (CalendarError, ValueError, IndexError, KeyError):
+        # the static calendar raises NotASessionError (a CalendarError) when
+        # fewer sessions remain than the window needs (Codex P2-6)
         end = None
     if end is None:
         why = "the calendar does not cover the event window"
-        return EventState(None, "unknown", why, "unknown", why, "unknown", (), None)
+        etf = name in PANEL_ETFS
+        mapped = name in desk_events.ETF_HOLDINGS
+        return EventState(
+            None,
+            "n/a" if etf else "unknown",
+            why,
+            ("unknown" if mapped else "unmapped") if etf else "n/a",
+            why,
+            "unknown",
+            (),
+            None,
+        )
 
     def reports(n: str) -> Sequence[str] | None:
         return None if schedule is None else tuple(schedule.get(n, ()))
@@ -506,12 +552,12 @@ def conditions_at(
     timing file; None = unavailable); ``news_flags`` None = no news model."""
     dirs = directions(signals_doc, session)
     market = market_term(session, indices, pb.term)
-    today = _names_of(features.get(session), pb.vol_state.features_schema) or {}
+    today = features.get(session)
     out: dict[str, NameConditions] = {}
     for name in names:
         ev = events_state(name, session, cal, pb.events, schedule=schedule, macro=macro)
-        entry = today.get(name)
-        liq = entry.get("liquidity_score") if isinstance(entry, Mapping) else None
+        entry, _why = _entry(today, name, session, pb.vol_state.features_schema)
+        liq = entry.get("liquidity_score") if entry is not None else None
         flags = () if news_flags is None else tuple(news_flags.get(name, ()))
         out[name] = NameConditions(
             name=name,
@@ -537,6 +583,7 @@ class RowMatch:
     row_id: str
     matched: bool
     reasons: tuple[str, ...]
+    notes: tuple[str, ...] = ()  # what a match rests on beyond the plain conditions
 
 
 def match_row(row: Row, c: NameConditions, *, book_over_delta_cap: bool | None) -> RowMatch:
@@ -548,6 +595,7 @@ def match_row(row: Row, c: NameConditions, *, book_over_delta_cap: bool | None) 
         return RowMatch(row.id, False, ("dormant",))
     w = row.when
     why: list[str] = []
+    notes: list[str] = []
     if c.name not in row.universe.names:
         why.append("universe: not in the row's universe")
     if c.liquidity_score is None or c.liquidity_score < row.universe.min_liquidity_score:
@@ -560,7 +608,12 @@ def match_row(row: Row, c: NameConditions, *, book_over_delta_cap: bool | None) 
     elif w.direction == "none" and c.direction != "none":
         why.append(f"direction: {c.direction}, needs none")
     if w.vol is not None:
-        if c.vol.state not in w.vol:
+        if c.vol.state == NE and w.vol_not_evaluable == "match":
+            # v2 ruling 2026-09-23: a debit vertical's legs largely cancel
+            # vega, so it may trade before the vol state warms up; once the
+            # state is evaluable it gates the row as before
+            notes.append(f"vol NOT_EVALUABLE ({c.vol.reason}): matched without the vol gate")
+        elif c.vol.state not in w.vol:
             why.append(f"vol: {c.vol.state} {c.vol.reason}".rstrip())
         if row.iv_fidelity == "validated_only" and c.vol.band_name != "validated":
             why.append("fidelity: the row takes validated-IV names only")
@@ -588,7 +641,7 @@ def match_row(row: Row, c: NameConditions, *, book_over_delta_cap: bool | None) 
         why.append(f"book: over the delta cap is {book_over_delta_cap}")
     if w.news == "block_if_flagged" and c.news_flags:
         why.append(f"news: flagged {list(c.news_flags)}")
-    return RowMatch(row.id, not why, tuple(why))
+    return RowMatch(row.id, not why, tuple(why), tuple(notes) if not why else ())
 
 
 def match_rows(
@@ -641,7 +694,7 @@ def regime_doc(res: Regime, pb: Playbook, *, book_over_delta_cap: bool | None) -
             "news": {"source": c.news_source, "flags": list(c.news_flags)},
             "liquidity_score": c.liquidity_score,
             "rows": {
-                m.row_id: {"matched": m.matched, "reasons": list(m.reasons)}
+                m.row_id: {"matched": m.matched, "reasons": list(m.reasons), "notes": list(m.notes)}
                 for m in match_rows(pb, c, book_over_delta_cap=book_over_delta_cap)
             },
         }

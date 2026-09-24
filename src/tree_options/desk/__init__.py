@@ -17,7 +17,8 @@ Wave 1 adds two more:
   check (:mod:`tree_options.desk.events`; ``seal-macro`` reseals it).
 
 Wave 2 adds the sealed playbook (:mod:`tree_options.desk.playbook`,
-``data/desk/playbook/v1.toml``) and the point-in-time conditions per name
+``data/desk/playbook/v2.toml`` active, ``v1.toml`` history) and the
+point-in-time conditions per name
 that select its rows (:mod:`tree_options.desk.regime`).
 
 Paths come from :mod:`tree_options.desk.paths` (env-overridable; tests pin

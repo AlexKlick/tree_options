@@ -1,32 +1,43 @@
-"""Desk D5 playbook: the sealed ``data/desk/playbook/v1.toml``, its loader
-and the rules the loader enforces by construction.
+"""Desk D5 playbook: the sealed ``data/desk/playbook/v1.toml`` (history)
+and ``v2.toml`` (active), their loader and the rules the loader enforces
+by construction.
 
 The expectations below are written from the approved plan (D5 rows, the
-[limits] table the rails lane loads with the same schema) and the lane
-brief, never read back from the implementation. Seal checks recompute the
-sha256 of the file bytes in the test.
+[limits] table the rails lane loads with the same schema), the lane brief
+and the operator's 2026-09-23 ruling (v2: the XSMOM call debit spread may
+match while the vol state is NOT_EVALUABLE), never read back from the
+implementation. Seal checks recompute the sha256 of the file bytes here.
 """
 
 from __future__ import annotations
 
 import copy
 import hashlib
+import math
 import shutil
 import tomllib
+from datetime import date
 from decimal import Decimal
 from fractions import Fraction
 from pathlib import Path
+from statistics import NormalDist
 from typing import Any
 
 import pytest
 
 from tree_options.desk import playbook, signals
 from tree_options.desk.universe import CHAIN_UNIVERSE, NO_OPTIONS_EXPRESSION, PANEL_ETFS
-from tree_options.trex.plan import ExitRules, StopLoss, TakeProfit
+from tree_options.trex.plan import ExitRules, Leg, LegStructure, StopLoss, TakeProfit
 
 REPO = Path(__file__).resolve().parents[2]
 PB_DIR = REPO / "data" / "desk" / "playbook"
-PB_FILE = PB_DIR / "v1.toml"
+PB_V1 = PB_DIR / "v1.toml"
+PB_FILE = PB_DIR / "v2.toml"  # the active version
+SEAL_FILES = ("v1.toml", "v1.sha256", "v2.toml", "v2.sha256", "SEALS.md")
+
+
+def _sha(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 @pytest.fixture(scope="module")
@@ -35,8 +46,23 @@ def raw() -> dict[str, Any]:
 
 
 @pytest.fixture(scope="module")
+def raw_v1() -> dict[str, Any]:
+    return tomllib.loads(PB_V1.read_text())
+
+
+@pytest.fixture(scope="module")
 def pb() -> playbook.Playbook:
     return playbook.load_playbook(PB_FILE)
+
+
+@pytest.fixture(scope="module")
+def pb_v1() -> playbook.Playbook:
+    return playbook.load_playbook(PB_V1)
+
+
+@pytest.fixture(scope="module")
+def books(pb, pb_v1) -> dict[str, playbook.Playbook]:
+    return {"v1": pb_v1, "v2": pb}
 
 
 def _parse(doc: dict[str, Any]) -> playbook.Playbook:
@@ -51,22 +77,36 @@ def _row(doc: dict[str, Any], rid: str) -> dict[str, Any]:
 # ------------------------------------------------------------------ seal
 
 
-class TestSeal:
-    def test_real_playbook_is_sealed(self, pb) -> None:
-        sha = hashlib.sha256(PB_FILE.read_bytes()).hexdigest()
-        assert pb.sha256 == sha
-        assert (PB_DIR / "v1.sha256").read_text() == f"{sha}  v1.toml\n"
-        rows = [
-            line
-            for line in (PB_DIR / "SEALS.md").read_text().splitlines()
-            if line.startswith("| ") and "| v1.toml |" in line
-        ]
-        assert any(f"| {sha} |" in line for line in rows)
+def _seal_rows(seals: Path, name: str) -> list[str]:
+    """The sha256 cells of SEALS.md rows for ``name`` (parsed here)."""
+    out = []
+    for line in seals.read_text().splitlines():
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if line.startswith("| ") and len(cells) >= 3 and cells[1] == name:
+            out.append(cells[2])
+    return out
 
-    def _copy(self, tmp_path: Path) -> Path:
-        for name in ("v1.toml", "v1.sha256", "SEALS.md"):
-            shutil.copy(PB_DIR / name, tmp_path / name)
-        return tmp_path / "v1.toml"
+
+class TestSeal:
+    @pytest.mark.parametrize("name", ["v1.toml", "v2.toml"])
+    def test_versions_are_sealed_and_approved(self, name: str) -> None:
+        sha = _sha(PB_DIR / name)
+        stem = name.removesuffix(".toml")
+        assert (PB_DIR / f"{stem}.sha256").read_text() == f"{sha}  {name}\n"
+        assert _seal_rows(PB_DIR / "SEALS.md", name) == [sha]  # exactly one row
+        assert playbook.APPROVED[name] == sha  # pinned in reviewed, gated code
+        assert playbook.load_playbook(PB_DIR / name).sha256 == sha
+
+    def test_the_approved_set_and_the_active_version(self, monkeypatch) -> None:
+        assert set(playbook.APPROVED) == {"v1.toml", "v2.toml"}
+        assert playbook.ACTIVE_FILE == "v2.toml"
+        monkeypatch.delenv("DESK_PLAYBOOK_DIR", raising=False)
+        assert playbook.load_playbook().sha256 == _sha(PB_FILE)
+
+    def _copy(self, tmp_path: Path, name: str = "v1.toml") -> Path:
+        for f in SEAL_FILES:
+            shutil.copy(PB_DIR / f, tmp_path / f)
+        return tmp_path / name
 
     def test_hash_mismatch_is_refused(self, tmp_path) -> None:
         path = self._copy(tmp_path)
@@ -81,40 +121,104 @@ class TestSeal:
         with pytest.raises(playbook.PlaybookSealError):
             playbook.load_playbook(path)
 
-    def test_a_sha_without_a_seal_row_is_refused(self, tmp_path) -> None:
-        """Rewriting the file AND its sidecar is not enough: the append-only
-        SEALS.md must carry the row."""
-        path = self._copy(tmp_path)
-        data = path.read_bytes() + b"\n# edited\n"
-        path.write_bytes(data)
-        sha = hashlib.sha256(data).hexdigest()
-        (tmp_path / "v1.sha256").write_text(f"{sha}  v1.toml\n")
+    def test_a_missing_seal_row_is_refused(self, tmp_path) -> None:
+        path = self._copy(tmp_path, "v2.toml")
+        seals = tmp_path / "SEALS.md"
+        sha = _sha(path)
+        seals.write_text(
+            "\n".join(x for x in seals.read_text().splitlines() if sha not in x) + "\n"
+        )
         with pytest.raises(playbook.PlaybookSealError, match="SEALS"):
             playbook.load_playbook(path)
 
-    def test_seal_writes_sidecar_and_appends(self, tmp_path) -> None:
+    def test_a_coordinated_edit_is_refused(self, tmp_path) -> None:
+        """Codex P1-1: change v1's loss limit, rewrite its sidecar and its
+        seal row: the pinned digest still refuses it."""
         path = self._copy(tmp_path)
-        data = path.read_bytes() + b"\n# a v1 variant for this test only\n"
+        data = path.read_bytes().replace(
+            b'max_loss_per_trade_usd = "500"', b'max_loss_per_trade_usd = "900"'
+        )
         path.write_bytes(data)
+        sha = hashlib.sha256(data).hexdigest()
+        (tmp_path / "v1.sha256").write_text(f"{sha}  v1.toml\n")
+        seals = tmp_path / "SEALS.md"
+        seals.write_text(seals.read_text().replace(_sha(PB_V1), sha))
+        playbook.parse_playbook(tomllib.loads(data.decode()), sha256=sha)  # a valid playbook
+        with pytest.raises(playbook.PlaybookSealError, match="approved"):
+            playbook.load_playbook(path)
+
+    def test_another_versions_bytes_under_a_name_are_refused(self, tmp_path) -> None:
+        self._copy(tmp_path)
+        shutil.copy(PB_V1, tmp_path / "v2.toml")
+        sha = _sha(PB_V1)
+        (tmp_path / "v2.sha256").write_text(f"{sha}  v2.toml\n")
+        with pytest.raises(playbook.PlaybookSealError, match="approved"):
+            playbook.load_playbook(tmp_path / "v2.toml")
+
+    def test_conflicting_seal_rows_are_refused(self, tmp_path) -> None:
+        path = self._copy(tmp_path)
+        with open(tmp_path / "SEALS.md", "a") as fh:
+            fh.write(f"| 2026-09-24T00:00:00Z | v1.toml | {'f' * 64} | rows=9 | forged |\n")
+        with pytest.raises(playbook.PlaybookSealError, match="conflicting"):
+            playbook.load_playbook(path)
+
+    def test_an_existing_version_cannot_be_resealed_with_other_bytes(self, tmp_path) -> None:
+        path = self._copy(tmp_path)
+        path.write_bytes(
+            path.read_bytes().replace(b'max_book_loss_usd = "5000"', b'max_book_loss_usd = "9000"')
+        )
+        before = {f: (tmp_path / f).read_bytes() for f in ("v1.sha256", "SEALS.md")}
+        with pytest.raises(playbook.PlaybookSealError, match="new version"):
+            playbook.seal_playbook(path, basis="test")
+        assert {f: (tmp_path / f).read_bytes() for f in before} == before
+
+    def test_resealing_identical_bytes_is_a_no_op(self, tmp_path) -> None:
+        path = self._copy(tmp_path)
+        before = (tmp_path / "SEALS.md").read_bytes()
+        assert playbook.seal_playbook(path, basis="again") == _sha(PB_V1)
+        assert (tmp_path / "SEALS.md").read_bytes() == before
+
+    def test_a_new_version_seals_once_and_still_needs_approval(self, tmp_path) -> None:
+        self._copy(tmp_path)
+        new = tmp_path / "v9.toml"
+        new.write_text(PB_FILE.read_text().replace('version = "v2"', 'version = "v9"'))
         before = (tmp_path / "SEALS.md").read_text()
-        sha = playbook.seal_playbook(path, basis="test")
-        assert sha == hashlib.sha256(data).hexdigest()
+        sha = playbook.seal_playbook(new, basis="test")
+        assert sha == _sha(new)
+        assert (tmp_path / "v9.sha256").read_text() == f"{sha}  v9.toml\n"
         after = (tmp_path / "SEALS.md").read_text()
-        assert after.startswith(before) and after.count(sha) == 1
-        assert playbook.load_playbook(path).sha256 == sha
+        assert after.startswith(before) and _seal_rows(tmp_path / "SEALS.md", "v9.toml") == [sha]
+        with pytest.raises(playbook.PlaybookSealError, match="approved"):
+            playbook.load_playbook(new)  # until its digest is pinned in code
+
+    def test_the_version_must_name_its_file(self, tmp_path) -> None:
+        self._copy(tmp_path)
+        new = tmp_path / "v9.toml"
+        new.write_text(PB_FILE.read_text())  # says version "v2"
+        with pytest.raises(playbook.PlaybookError, match="version"):
+            playbook.seal_playbook(new, basis="test")
 
     def test_seal_refuses_an_invalid_playbook(self, tmp_path) -> None:
-        path = self._copy(tmp_path)
-        path.write_text(path.read_text().replace('max_book_loss_usd = "5000"', ""))
+        self._copy(tmp_path)
+        new = tmp_path / "v9.toml"
+        new.write_text(
+            PB_FILE.read_text()
+            .replace('version = "v2"', 'version = "v9"')
+            .replace('max_book_loss_usd = "5000"', "")
+        )
         before = (tmp_path / "SEALS.md").read_text()
         with pytest.raises(playbook.PlaybookError):
-            playbook.seal_playbook(path, basis="test")
+            playbook.seal_playbook(new, basis="test")
         assert (tmp_path / "SEALS.md").read_text() == before
+        assert not (tmp_path / "v9.sha256").exists()
 
     def test_default_path_follows_the_env(self, tmp_path, monkeypatch) -> None:
-        path = self._copy(tmp_path)
+        self._copy(tmp_path)
         monkeypatch.setenv("DESK_PLAYBOOK_DIR", str(tmp_path))
-        assert playbook.load_playbook().sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert playbook.load_playbook().sha256 == _sha(PB_FILE)
+        (tmp_path / "v2.toml").write_bytes(PB_FILE.read_bytes() + b"\n")
+        with pytest.raises(playbook.PlaybookSealError):
+            playbook.load_playbook()
 
 
 # ---------------------------------------------------------------- limits
@@ -421,14 +525,17 @@ ROWS: dict[str, dict[str, Any]] = {
 
 
 class TestRowsAsThePlanListsThem:
-    def test_row_set(self, pb) -> None:
+    @pytest.mark.parametrize("version", ["v1", "v2"])
+    def test_row_set(self, books, version: str) -> None:
+        pb = books[version]
         assert [r.id for r in pb.rows] == list(ROWS)
         assert sorted({r.number for r in pb.rows}) == list(range(1, 9))
 
+    @pytest.mark.parametrize("version", ["v1", "v2"])
     @pytest.mark.parametrize("rid", list(ROWS))
-    def test_row(self, pb, rid: str) -> None:
+    def test_row(self, books, version: str, rid: str) -> None:
         want = ROWS[rid]
-        (row,) = [r for r in pb.rows if r.id == rid]
+        (row,) = [r for r in books[version].rows if r.id == rid]
         assert row.number == want["number"]
         assert row.tier == want["tier"]
         assert row.status == want["status"]
@@ -553,13 +660,24 @@ class TestNoOptionsExpression:
 
 
 class TestDrift:
-    def test_pinned_excess_and_weights(self, pb) -> None:
+    @pytest.mark.parametrize(
+        ("version", "pead"),
+        [
+            ("v1", "0.0389"),  # PROTOCOL-PEAD.md beat-proxy +6120 USD / 63 / 2500, RAW
+            ("v2", "0"),  # Codex P2-4: raw carries market beta; withheld until a matched excess
+        ],
+    )
+    def test_pinned_excess_and_weights(self, books, version: str, pead: str) -> None:
+        pb = books[version]
         assert pb.drift.signal_weight == Decimal("0.5")
         assert pb.drift.horizon_sessions == 20
         assert pb.drift.excess_20 == {
             "xsmom_top3": Decimal("0.00962"),  # XSMOM-12-1.md no-skip orig-36 top3 h20 holdout cond
-            "pead_beat": Decimal("0.0389"),  # PROTOCOL-PEAD.md beat-proxy +6120 USD / 63 / 2500
+            "pead_beat": Decimal(pead),
         }
+        if version == "v2":  # the raw mean survives as description only
+            basis = pb.drift.excess_basis["pead_beat"].lower()
+            assert "3.89%" in basis and "descriptive" in basis and "beta" in basis
         for r in pb.rows:
             signal_row = r.status == "active" and bool(r.when.signals)
             assert r.drift_view == ("signal" if signal_row else "none")
@@ -642,7 +760,7 @@ class TestSchema:
             lambda d: _row(d, "R1").update(tier="gut-feel"),
             lambda d: _row(d, "R4").update(expiry_gap_days=[21, 63]),  # single expiry kind
             lambda d: _row(d, "R5").pop("expiry_gap_days"),
-            lambda d: d.update(schema="desk-playbook/2"),
+            lambda d: d.update(schema="desk-playbook/3"),
             lambda d: d["rows"].append(copy.deepcopy(_row(d, "R1"))),  # duplicate id
         ],
     )
@@ -686,3 +804,158 @@ class TestSchema:
         _row(doc, "R1")["when"]["news"] = "ignore"
         with pytest.raises(playbook.PlaybookError):
             _parse(doc)
+
+
+# ------------------------------------------------------------ v2 vs v1
+
+# operator ruling 2026-09-23: only the XSMOM call DEBIT spread skips the
+# vol warm-up; rows without a vol condition declare n/a
+V2_VOL_NOT_EVALUABLE = {
+    "R1": "match",
+    "R2": "no_match",
+    "R3": "n/a",
+    "R4": "no_match",
+    "R5": "n/a",
+    "R6": "n/a",
+    "R7": "n/a",
+    "R8a": "no_match",
+    "R8b": "no_match",
+}
+
+
+class TestV2AgainstV1:
+    def test_v2_changes_exactly_what_the_ruling_and_the_review_name(self, raw, raw_v1) -> None:
+        a, b = copy.deepcopy(raw_v1), copy.deepcopy(raw)
+        assert (a.pop("schema"), b.pop("schema")) == ("desk-playbook/1", "desk-playbook/2")
+        assert (a.pop("version"), b.pop("version")) == ("v1", "v2")
+        pead = (a["drift"]["excess_20"].pop("pead_beat"), b["drift"]["excess_20"].pop("pead_beat"))
+        assert pead == ("0.0389", "0")
+        a["drift"]["excess_basis"].pop("pead_beat")
+        b["drift"]["excess_basis"].pop("pead_beat")
+        for row in b["rows"]:
+            assert row["when"].pop("vol_not_evaluable") == V2_VOL_NOT_EVALUABLE[row["id"]]
+        assert _row(b, "R6").pop("protective_strike_rule") == "long_strike_below_short"
+        assert a == b  # every other table, row, key and value is v1's
+
+    def test_the_seal_row_records_the_reasons(self) -> None:
+        (line,) = [x for x in (PB_DIR / "SEALS.md").read_text().splitlines() if "| v2.toml |" in x]
+        for words in ("operator ruling 2026-09-23", "vega", "P2-4", "P2-5", "v1"):
+            assert words in line
+
+    def test_v1_schema_semantics_need_a_vol_state(self, pb_v1, pb) -> None:
+        for r in pb_v1.rows:
+            assert r.when.vol_not_evaluable == ("n/a" if r.when.vol is None else "no_match")
+        assert {r.id: r.when.vol_not_evaluable for r in pb.rows} == V2_VOL_NOT_EVALUABLE
+
+    @pytest.mark.parametrize(
+        ("rid", "value"),
+        [
+            ("R2", "match"),  # credit spread: waits for an evaluable state
+            ("R4", "match"),  # condor
+            ("R8a", "maybe"),
+            ("R1", "n/a"),  # R1 has a vol condition
+            ("R3", "no_match"),  # R3 has none
+            ("R6", "match"),
+            ("R5", "match"),
+        ],
+    )
+    def test_only_a_debit_vertical_may_skip_the_warm_up(self, raw, rid, value) -> None:
+        doc = copy.deepcopy(raw)
+        _row(doc, rid)["when"]["vol_not_evaluable"] = value
+        with pytest.raises(playbook.PlaybookError):
+            _parse(doc)
+
+    def test_schema_keys_are_per_version(self, raw, raw_v1) -> None:
+        doc = copy.deepcopy(raw)
+        del _row(doc, "R1")["when"]["vol_not_evaluable"]
+        with pytest.raises(playbook.PlaybookError):
+            _parse(doc)
+        doc = copy.deepcopy(raw_v1)
+        _row(doc, "R1")["when"]["vol_not_evaluable"] = "match"  # unknown to schema /1
+        with pytest.raises(playbook.PlaybookError):
+            _parse(doc)
+        for rid, value in (("R6", None), ("R6", "long_strike_above_short"), ("R5", "x")):
+            doc = copy.deepcopy(raw)
+            row = _row(doc, rid)
+            if value is None:
+                del row["protective_strike_rule"]
+            else:
+                row["protective_strike_rule"] = value
+            with pytest.raises(playbook.PlaybookError):
+                _parse(doc)
+
+
+# ------------------------------------------------------ protective diagonal
+
+
+def _call_strike(spot: float, days: int, iv: float, delta: float, rate: float = 0.04) -> float:
+    """The call strike with Black-Scholes delta ``delta`` (q = 0)."""
+    t = days / 365.0
+    d1 = NormalDist().inv_cdf(delta)
+    return spot * math.exp(-(d1 * iv * math.sqrt(t) - (rate + iv * iv / 2.0) * t))
+
+
+class TestProtectiveDiagonal:
+    def test_codex_example_meets_the_ranges_but_not_the_strike_rule(self, pb) -> None:
+        """Codex P2-5: spot 100, r 4%: a 180-day 90%-IV 0.60-delta call
+        (strike ~106.11) and a 30-day 30%-IV 0.35-delta call (~104.09) both
+        satisfy R6, yet buying the higher strike is not protective."""
+        long_k, short_k = _call_strike(100, 180, 0.90, 0.60), _call_strike(100, 30, 0.30, 0.35)
+        assert (round(long_k, 2), round(short_k, 2)) == (106.11, 104.09)
+        (r6,) = [r for r in pb.rows if r.id == "R6"]
+        back, front = (next(g for g in r6.legs if g.role == role) for role in ("back", "front"))
+        assert back.abs_delta and front.abs_delta and back.dte and front.dte
+        assert back.abs_delta[0] <= Decimal("0.60") <= back.abs_delta[1]
+        assert front.abs_delta[0] <= Decimal("0.35") <= front.abs_delta[1]
+        assert back.dte[0] <= 180 <= back.dte[1] and front.dte[0] <= 30 <= front.dte[1]
+        assert r6.expiry_gap_days and r6.expiry_gap_days[0] <= 150 <= r6.expiry_gap_days[1]
+        assert r6.protective_strike_rule == "long_strike_below_short"
+        with pytest.raises(playbook.PlaybookError, match="protective"):
+            playbook.require_protective(
+                r6, long_strike=Decimal("106.11"), short_strike=Decimal("104.09")
+            )
+        with pytest.raises(ValueError, match="protective"):  # the engine agrees
+            LegStructure(
+                id="codex-p2-5",
+                underlying="X",
+                kind="diagonal",
+                legs=(
+                    Leg(
+                        right="C", action="SELL", strike=Decimal("104.09"), expiry=date(2026, 7, 1)
+                    ),
+                    Leg(
+                        right="C", action="BUY", strike=Decimal("106.11"), expiry=date(2026, 11, 28)
+                    ),
+                ),
+                quantity=1,
+                entry_date=date(2026, 6, 1),
+                exit_deadline=date(2026, 6, 10),
+                limit=Decimal(1),
+                exits=ExitRules(touch=False, breach=False, stop_confirm_ticks=3),
+            )
+        playbook.require_protective(
+            r6, long_strike=Decimal("104.09"), short_strike=Decimal("106.11")
+        )
+        with pytest.raises(playbook.PlaybookError, match="protective"):
+            playbook.require_protective(r6, long_strike=Decimal(105), short_strike=Decimal(105))
+
+    def test_a_put_diagonal_is_the_reverse(self, raw) -> None:
+        doc = copy.deepcopy(raw)
+        r6 = _row(doc, "R6")
+        for leg in r6["legs"]:
+            leg["right"] = "P"
+        r6["protective_strike_rule"] = "long_strike_above_short"
+        (row,) = [r for r in _parse(doc).rows if r.id == "R6"]
+        playbook.require_protective(row, long_strike=Decimal(106), short_strike=Decimal(104))
+        with pytest.raises(playbook.PlaybookError, match="protective"):
+            playbook.require_protective(row, long_strike=Decimal(104), short_strike=Decimal(106))
+
+    def test_calendar_and_other_kinds(self, pb) -> None:
+        by = {r.id: r for r in pb.rows}
+        playbook.require_protective(by["R5"], long_strike=Decimal(100), short_strike=Decimal(100))
+        with pytest.raises(playbook.PlaybookError):
+            playbook.require_protective(
+                by["R5"], long_strike=Decimal(100), short_strike=Decimal(101)
+            )
+        with pytest.raises(playbook.PlaybookError, match="two-expiry"):
+            playbook.require_protective(by["R1"], long_strike=Decimal(90), short_strike=Decimal(95))
