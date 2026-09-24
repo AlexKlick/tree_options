@@ -5,7 +5,7 @@ idempotent. None places orders or seals cards.
 
 | job | when (America/New_York) | does |
 |---|---|---|
-| `desk-chain` | Mon-Fri 17:45, 20:45, 23:45; Mon-Sat 06:30 and 12:30 (catch-up) | records the CBOE delayed chain (calls + puts) for the 35 optionable panel names |
+| `desk-chain` | Mon-Fri 17:45, 20:45, 23:45; Mon-Sat 06:30 and 12:30 (catch-up) | records the CBOE delayed chain (calls + puts) for the 37 optionable panel names (2026-09-23: +PLTR, +SPCX) |
 | `desk-eod-equity` | Mon-Fri 16:40, 20:40; Tue-Sat 08:40 | extends the research panel (`fetch_ohlc.py`), computes XSMOM-TOP3 + PEAD beats, writes draft cards, pushes ntfy when a rule fires |
 | `desk-indices` | Tue-Sat 06:40 | CBOE index histories (VIX VIX9D VIX1D VIX3M VIX6M VIX1Y VVIX SKEW VXN RVX GVZ VXAPL VXAZN VXGOG) + FRED DTB3 |
 | `desk-events` | Sat 10:00 | earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 with `DESK_SEC_UA`) + the sealed macro calendar's Fed-page check |
@@ -41,8 +41,8 @@ systemctl --user start desk-chain.service; journalctl --user -u desk-chain -n 20
 systemctl --user start desk-eod-equity.service; journalctl --user -u desk-eod-equity -n 20
 ```
 
-Checks: `artifacts/desk-store/manifest/<D>.json` shows `ok` for >= 33 of
-35 symbols; `~/.local/state/trex-desk/signals/<D>.json` exists with
+Checks: `artifacts/desk-store/manifest/<D>.json` shows `ok` for >= 35 of
+37 symbols; `~/.local/state/trex-desk/signals/<D>.json` exists with
 `panel_last_session == <D>`; the first eod-equity run gap-fills the panel
 from 2026-09-15 (it stopped on 09-14). fetch_ohlc.py paces the vendor at
 5 requests/min, so each session costs ~7.5 min (the first run ~1 h).
