@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { clamp, interpAt, nearestIndex } from './interp'
+import { clamp, gapBreakMs, interpAt, nearestIndex, splitAtGaps } from './interp'
 
 // Long put spread: flat max-gain plateau, one kink at the breakeven,
 // flat max-loss plateau. The server emits the kink exactly.
@@ -43,5 +43,59 @@ describe('clamp', () => {
     expect(clamp(5, 0, 3)).toBe(3)
     expect(clamp(-2, 0, 3)).toBe(0)
     expect(clamp(2, 0, 3)).toBe(2)
+  })
+})
+
+describe('gapBreakMs', () => {
+  const S = 1_000
+  // monitor cadence: 20s ticks, then an overnight hold
+  const ticks: [number, number][] = [
+    ...Array.from({ length: 20 }, (_, i) => [i * 20 * S, i] as [number, number]),
+    ...Array.from({ length: 20 }, (_, i) => [17 * 3600 * S + i * 20 * S, i] as [number, number]),
+  ]
+  // daily bars across a weekend (Fri, Sat, Sun, Mon)
+  const D = 86_400 * S
+  const daily: [number, number][] = [
+    [0, 1],
+    [D, 2],
+    [2 * D, 3],
+    [3 * D, 4],
+  ]
+
+  it('is 30x the median spacing, floored at 2 minutes', () => {
+    expect(gapBreakMs(ticks)).toBe(30 * 20 * S) // 10 min
+    expect(gapBreakMs(daily)).toBe(30 * D) // 30 days: weekends never break
+  })
+
+  it('degenerates safely', () => {
+    expect(gapBreakMs([])).toBe(Number.POSITIVE_INFINITY)
+    expect(gapBreakMs([[0, 1]])).toBe(Number.POSITIVE_INFINITY)
+    expect(gapBreakMs([[0, 1], [0, 2]])).toBe(Number.POSITIVE_INFINITY) // no positive deltas
+  })
+})
+
+describe('splitAtGaps', () => {
+  const S = 1_000
+  const pts: [number, number][] = [
+    [0, 10],
+    [20 * S, 11],
+    [40 * S, 12],
+    [17 * 3600 * S, 13], // overnight hold
+    [17 * 3600 * S + 20 * S, 14],
+  ]
+
+  it('splits only across the gap, keeping single-point runs', () => {
+    const runs = splitAtGaps(pts, 30 * 20 * S)
+    expect(runs.map((r) => r.length)).toEqual([3, 2])
+    expect(runs[1][0][1]).toBe(13)
+  })
+
+  it('returns one run when there is no gap', () => {
+    expect(splitAtGaps(pts, Number.POSITIVE_INFINITY).map((r) => r.length)).toEqual([5])
+  })
+
+  it('degenerates safely', () => {
+    expect(splitAtGaps([], 1)).toEqual([])
+    expect(splitAtGaps([[5, 1]], 1).map((r) => r.length)).toEqual([1])
   })
 })

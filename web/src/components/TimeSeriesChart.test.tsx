@@ -45,6 +45,27 @@ describe('TimeSeriesChart (M8 flash review)', () => {
     expect(container.querySelector('.zero-line')).not.toBeNull()
   })
 
+  it('breaks the line across an observation gap instead of bridging it', () => {
+    // 20s monitor ticks with a 17h overnight hold between them
+    const gapped: HistorySeries = {
+      points: [
+        [0, 10],
+        [20_000, 11],
+        [40_000, 12],
+        [61_200_000, 13],
+        [61_220_000, 14],
+      ],
+      y_lo: 10,
+      y_hi: 14,
+      last: { ts_ms: 61_220_000, pnl: 14, pos: true },
+    }
+    const { container } = render(<TimeSeriesChart series={gapped} ariaLabel="pnl" />)
+    const lines = container.querySelectorAll('polyline.payoff-line')
+    expect(lines.length).toBe(2) // one per observed run, never a bridge
+    const first = lines[0].getAttribute('points')!.split(' ')
+    expect(first.length).toBe(3)
+  })
+
   it('keeps every label inside the drawing area', () => {
     const { container } = render(
       <TimeSeriesChart series={equity} ariaLabel="equity" valueFormat={usdLevel} />,

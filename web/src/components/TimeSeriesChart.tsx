@@ -1,13 +1,15 @@
 // Generic (time, value) line chart: crosshair snaps to the nearest
-// recorded sample; the last point is directly labeled. Drawn at its
-// measured pixel width (ResizeObserver; 640 until measured), so labels
-// stay 12px on a phone and the chart does not grow 700px tall on a
-// widescreen. Shared by equity curves, stock charts, P&L history, and
+// recorded sample; the last point is directly labeled. The line breaks
+// across observation gaps (cadence-relative; see lib/interp gapBreakMs)
+// so unobserved spans render as a break, never a fabricated move. Drawn
+// at its measured pixel width (ResizeObserver; 640 until measured), so
+// labels stay 12px on a phone and the chart does not grow 700px tall on
+// a widescreen. Shared by equity curves, stock charts, P&L history, and
 // valuation scenarios.
 
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { HistorySeries } from '../lib/types'
-import { clamp, nearestIndex } from '../lib/interp'
+import { clamp, gapBreakMs, nearestIndex, splitAtGaps } from '../lib/interp'
 import { chartGeometry, endLabel, tipTransform } from '../lib/chart'
 import { etTimeMs, usdSigned } from '../lib/format'
 import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
@@ -46,7 +48,10 @@ export function TimeSeriesChart({
   const plotH = g.vh - g.padT - g.padB
   const sx = (t: number): number => g.padL + ((t - t0) / (t1 - t0)) * plotW
   const sy = (v: number): number => g.padT + ((yHi - v) / (yHi - yLo)) * plotH
-  const line = pts.map(([t, v]) => `${sx(t).toFixed(1)},${sy(v).toFixed(1)}`).join(' ')
+  // one line per observed run: the line BREAKS across an observation gap
+  // (overnight holds, weekends) instead of drawing a move through span
+  // the monitor never saw
+  const segments = splitAtGaps(pts, gapBreakMs(pts)).filter((s) => s.length > 1)
 
   const ts = pts.map(([t]) => t)
   const lastPt = pts[pts.length - 1]
@@ -98,8 +103,14 @@ export function TimeSeriesChart({
           </g>
         ))}
 
-        {/* the value line + directly labeled last point */}
-        <polyline points={line} className="payoff-line" />
+        {/* the value line (per observed run) + directly labeled last point */}
+        {segments.map((seg, k) => (
+          <polyline
+            key={k}
+            points={seg.map(([t, v]) => `${sx(t).toFixed(1)},${sy(v).toFixed(1)}`).join(' ')}
+            className="payoff-line"
+          />
+        ))}
         <circle
           cx={sx(lastPt[0])}
           cy={sy(lastPt[1])}

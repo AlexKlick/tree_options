@@ -41,3 +41,35 @@ export function interpAt(points: [number, number][], x: number): number {
   if (x1 === x0) return y0
   return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0)
 }
+
+/** The observation-gap threshold for a series: 30x the median sample
+ * spacing, floored at 2 minutes. Cadence-relative on purpose — a 20s-tick
+ * monitor series breaks its line across an overnight hold (17h >> 10min)
+ * while a daily-bar series never breaks on a weekend (2d << 30d). A line
+ * drawn across an unobserved span reads as a move that never happened. */
+export function gapBreakMs(points: [number, number][]): number {
+  if (points.length < 2) return Number.POSITIVE_INFINITY
+  const deltas: number[] = []
+  for (let i = 1; i < points.length; i++) {
+    const d = points[i][0] - points[i - 1][0]
+    if (d > 0) deltas.push(d)
+  }
+  if (deltas.length === 0) return Number.POSITIVE_INFINITY
+  deltas.sort((a, b) => a - b)
+  return Math.max(deltas[deltas.length >> 1] * 30, 120_000)
+}
+
+/** The series split into contiguous runs with no gap over ``breakMs``
+ * (single-point runs included, in order). */
+export function splitAtGaps(
+  points: [number, number][],
+  breakMs: number,
+): [number, number][][] {
+  if (points.length === 0) return []
+  const runs: [number, number][][] = [[points[0]]]
+  for (let i = 1; i < points.length; i++) {
+    if (points[i][0] - points[i - 1][0] > breakMs) runs.push([])
+    runs[runs.length - 1].push(points[i])
+  }
+  return runs
+}
