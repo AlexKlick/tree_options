@@ -9,9 +9,17 @@
 
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import type { HistorySeries } from '../lib/types'
-import { clamp, gapBreakMs, nearestIndex, splitAtGaps } from '../lib/interp'
+import {
+  clamp,
+  gapBreakMs,
+  gapScale,
+  nearestIndex,
+  scalePos,
+  scaleTime,
+  splitAtGaps,
+} from '../lib/interp'
 import { chartGeometry, endLabel, tipTransform } from '../lib/chart'
-import { etTimeMs, usdSigned } from '../lib/format'
+import { etDateMs, etTimeMs, usdSigned } from '../lib/format'
 import { useMeasuredWidth } from '../hooks/useMeasuredWidth'
 
 export interface TimeSeriesChartProps {
@@ -25,7 +33,7 @@ export function TimeSeriesChart({
   series,
   ariaLabel,
   valueFormat = usdSigned,
-  timeFormat = (ts: number) => `${etTimeMs(ts)} ET`,
+  timeFormat,
 }: TimeSeriesChartProps) {
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
@@ -39,25 +47,51 @@ export function TimeSeriesChart({
   const flat = series.y_lo === series.y_hi
   const yLo = flat ? series.y_lo - 1 : series.y_lo
   const yHi = flat ? series.y_hi + 1 : series.y_hi
-  // zero gets a gridline only when the axis actually contains it (level
-  // series such as equity or prices sit far from $0)
-  const ticks = Array.from(new Set(yLo <= 0 && 0 <= yHi ? [yHi, 0, yLo] : [yHi, yLo]))
 
-  const g = chartGeometry(width, ticks.map(valueFormat))
+  const g = chartGeometry(width, [yHi, 0, yLo].map(valueFormat))
   const plotW = g.vw - g.padL - g.padR
   const plotH = g.vh - g.padT - g.padB
-  const sx = (t: number): number => g.padL + ((t - t0) / (t1 - t0)) * plotW
   const sy = (v: number): number => g.padT + ((yHi - v) / (yHi - yLo)) * plotH
-  // one line per observed run: the line BREAKS across an observation gap
-  // (overnight holds, weekends) instead of drawing a move through span
-  // the monitor never saw
-  const segments = splitAtGaps(pts, gapBreakMs(pts)).filter((s) => s.length > 1)
+  // y ticks in draw order, each at least 14px from every tick kept
+  // before it (0 and y_lo can sit a hair apart on a mostly-positive
+  // series and stack into an unreadable corner); zero keeps its gridline
+  // only when the axis actually contains it (level series such as equity
+  // or prices sit far from $0)
+  const ticks = (yLo <= 0 && 0 <= yHi ? [yHi, 0, yLo] : [yHi, yLo]).filter((v, i, cand) =>
+    i === 0 || cand.slice(0, i).every((u) => Math.abs(sy(u) - sy(v)) >= 14),
+  )
+  // x labels carry the date once the span crosses a day — a time-only
+  // pair like "12:53 ET .. 13:18 ET" reads as 25 minutes on a 25-hour
+  // series
+  const fmtTime =
+    timeFormat ??
+    ((ts: number) => `${t1Raw - t0 > 86_400_000 ? `${etDateMs(ts)} ` : ''}${etTimeMs(ts)} ET`)
+  // gap-compressed axis when the series has observation gaps: each run
+  // keeps its share of OBSERVED time, each gap a small allowance — the
+  // line still BREAKS across the gap (never a fabricated move), but the
+  // chart draws ~all of its width instead of stubs around void
+  const breakMs = gapBreakMs(pts)
+  const scale = gapScale(pts, breakMs)
+  const segments = splitAtGaps(pts, breakMs).filter((s) => s.length > 1)
+  const sx = (t: number): number =>
+    scale ? g.padL + scalePos(scale, t) * plotW : g.padL + ((t - t0) / (t1 - t0)) * plotW
 
   const ts = pts.map(([t]) => t)
   const lastPt = pts[pts.length - 1]
   const lastPos = lastPt[1] >= 0
   const lastText = valueFormat(lastPt[1])
   const lastAt = endLabel(sx(lastPt[0]), lastText, g.vw)
+  // the flipped-inside (end-anchored) label sits left of the dot where a
+  // steep final segment can cross it — push it to the side of the dot
+  // away from the incoming slope
+  const prevPt = pts[pts.length - 2]
+  const lastLabelY =
+    sy(lastPt[1]) +
+    (lastAt.anchor === 'end' && prevPt !== undefined && prevPt[0] !== lastPt[0]
+      ? lastPt[1] >= prevPt[1]
+        ? -12
+        : 12
+      : 0)
 
   const onPointerMove = (e: ReactPointerEvent<SVGRectElement>): void => {
     const svg = svgRef.current
@@ -65,7 +99,8 @@ export function TimeSeriesChart({
     const rect = svg.getBoundingClientRect()
     if (rect.width === 0) return
     const vx = clamp(((e.clientX - rect.left) / rect.width) * g.vw, g.padL, g.vw - g.padR)
-    const t = t0 + ((vx - g.padL) / plotW) * (t1 - t0)
+    const n = (vx - g.padL) / plotW
+    const t = scale ? scaleTime(scale, n) : t0 + n * (t1 - t0)
     const i = nearestIndex(ts, t)
     setHover({ i, cssX: (sx(ts[i]) / g.vw) * rect.width, cssW: rect.width })
   }
@@ -119,7 +154,7 @@ export function TimeSeriesChart({
         />
         <text
           x={lastAt.x}
-          y={sy(lastPt[1])}
+          y={lastLabelY}
           textAnchor={lastAt.anchor}
           dominantBaseline="middle"
           className={`plateau-label ${lastPos ? 'fill-pos' : 'fill-neg'}`}
@@ -129,10 +164,10 @@ export function TimeSeriesChart({
 
         {/* time axis: first + last sample */}
         <text x={g.padL} y={g.vh - g.padB + 18} className="axis-label">
-          {timeFormat(t0)}
+          {fmtTime(t0)}
         </text>
         <text x={g.vw - g.padR} y={g.vh - g.padB + 18} textAnchor="end" className="axis-label">
-          {timeFormat(t1Raw)}
+          {fmtTime(t1Raw)}
         </text>
 
         {/* crosshair snapped to the nearest sample */}
@@ -174,7 +209,7 @@ export function TimeSeriesChart({
             transform: tipTransform(hover.cssX, hover.cssW, 0.6),
           }}
         >
-          <div className="tip-price num">{timeFormat(hoverPt[0])}</div>
+          <div className="tip-price num">{fmtTime(hoverPt[0])}</div>
           <div className={`num ${hoverPt[1] >= 0 ? 'pnl-pos' : 'pnl-neg'}`}>
             {valueFormat(hoverPt[1])}
           </div>

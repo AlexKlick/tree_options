@@ -66,6 +66,105 @@ describe('TimeSeriesChart (M8 flash review)', () => {
     expect(first.length).toBe(3)
   })
 
+  it('compresses the gaps instead of leaving the axis mostly void', () => {
+    const gapped: HistorySeries = {
+      points: [
+        [0, 10],
+        [20_000, 11],
+        [40_000, 12],
+        [61_200_000, 13],
+        [61_220_000, 14],
+      ],
+      y_lo: 10,
+      y_hi: 14,
+      last: { ts_ms: 61_220_000, pnl: 14, pos: true },
+    }
+    const { container } = render(<TimeSeriesChart series={gapped} ariaLabel="pnl" />)
+    const svg = container.querySelector('svg')!
+    const vb = Number(svg.getAttribute('viewBox')!.split(' ')[2])
+    const lines = [...container.querySelectorAll('polyline.payoff-line')]
+    const segX = lines
+      .map((l) =>
+        l
+          .getAttribute('points')!
+          .split(' ')
+          .map((p) => Number(p.split(',')[0])),
+      )
+      .map((xs) => [Math.min(...xs), Math.max(...xs)] as const)
+      .sort((a, b) => a[0] - b[0])
+    const voids = segX.slice(1).reduce((s, [a], i) => s + (a - segX[i][1]), 0)
+    expect(voids / vb).toBeLessThan(0.1) // ~3% per gap, not 70% of nothing
+    expect(segX[0][0]).toBeLessThanOrEqual(66) // first run starts at the left pad
+  })
+
+  it('labels the x axis with dates once the span crosses a day', () => {
+    const dayPlus: HistorySeries = {
+      points: [
+        [Date.UTC(2026, 8, 23, 16), 1],
+        [Date.UTC(2026, 8, 23, 16) + 20_000, 2],
+        [Date.UTC(2026, 8, 24, 17), 3],
+      ],
+      y_lo: 1,
+      y_hi: 3,
+      last: { ts_ms: Date.UTC(2026, 8, 24, 17), pnl: 3, pos: true },
+    }
+    const { container } = render(<TimeSeriesChart series={dayPlus} ariaLabel="pnl" />)
+    const labels = [...container.querySelectorAll('text.axis-label')].map((t) => t.textContent)
+    const timeAxis = labels.filter((l) => l?.includes('ET'))
+    expect(timeAxis.length).toBe(2)
+    expect(timeAxis[0]).toMatch(/Sep 2[34] \d{2}:\d{2} ET/)
+  })
+
+  it('drops y ticks that would stack into an unreadable corner', () => {
+    // mostly-positive series: 0 and y_lo are 1 apart -> sub-14px apart
+    const nearZeroFloor: HistorySeries = {
+      points: [
+        [0, -1],
+        [1_000, 50],
+        [2_000, 100],
+      ],
+      y_lo: -1,
+      y_hi: 100,
+      last: { ts_ms: 2_000, pnl: 100, pos: true },
+    }
+    const { container } = render(<TimeSeriesChart series={nearZeroFloor} ariaLabel="pnl" />)
+    const yLabels = [...container.querySelectorAll('text.axis-label')]
+      .map((t) => t.textContent)
+      .filter((l) => !l?.includes('ET'))
+    expect(yLabels).toEqual(['+$100', '+$0']) // the -$1 tick was dropped
+    expect(container.querySelectorAll('.zero-line').length).toBe(1)
+  })
+
+  it('lifts the flipped end label clear of a steep final segment', () => {
+    const steep: HistorySeries = {
+      points: [
+        [0, 1],
+        [20_000, 2],
+        [40_000, 3],
+        [60_000, 90],
+      ],
+      y_lo: 1,
+      y_hi: 90,
+      last: { ts_ms: 60_000, pnl: 90, pos: true },
+    }
+    const { container } = render(<TimeSeriesChart series={steep} ariaLabel="pnl" />)
+    const svg = container.querySelector('svg')!
+    const vb = Number(svg.getAttribute('viewBox')!.split(' ')[2])
+    const dotX = Number(
+      svg.querySelector('circle.dot-ring')!.getAttribute('cx'),
+    )
+    const endText = [...svg.querySelectorAll('text.plateau-label')].find(
+      (t) => Number(t.getAttribute('x') ?? 0) < Number(dotX),
+    )
+    expect(endText).toBeDefined()
+    expect(endText!.getAttribute('x')).toBeDefined()
+    // ascending into the dot -> label sits ABOVE it (smaller svg y)
+    const dotY = Number(svg.querySelector('circle.dot-ring')!.getAttribute('cy'))
+    const textY = Number(endText!.getAttribute('y') as string)
+    expect(textY).toBeLessThan(dotY)
+    expect(vb).toBeGreaterThan(0)
+  })
+
   it('keeps every label inside the drawing area', () => {
     const { container } = render(
       <TimeSeriesChart series={equity} ariaLabel="equity" valueFormat={usdLevel} />,

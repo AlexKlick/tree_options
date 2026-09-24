@@ -25,6 +25,9 @@ export const etTime = (iso: string): string => etTimeFmt.format(new Date(iso))
 /** Same ET wall-clock, for epoch-ms chart points. */
 export const etTimeMs = (ms: number): string => etTimeFmt.format(new Date(ms))
 
+/** ET date only, for epoch-ms chart points. */
+export const etDateMs = (ms: number): string => etDateFmt.format(new Date(ms))
+
 export const etDateTime = (iso: string): string => {
   const d = new Date(iso)
   return `${etDateFmt.format(d)} ${etSecFmt.format(d)} ET`
