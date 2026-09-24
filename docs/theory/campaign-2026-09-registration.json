@@ -1,312 +1,551 @@
 {
-  "program": "campaign-2026-09",
-  "registered_at_head": "f0759973b733966797830253d5ae3559f2bd6e6b",
-  "protocol_version": "0.2.2",
-  "protocol_hash": "2fde83db80f7d8d601dd7d3b9d2f153beb47eed23caf0a010ef464a5248cc58e",
-  "protocol_hash_basis": "sha256 over raw bytes of research_protocol.yaml at registered_at_head; the canonical protocol identity is computed over the validated model (meta.change_policy: comment edits do not fork the protocol) and is re-stamped by the runner on every trial (INV-14).",
-  "dataset_manifest_hash": null,
-  "dataset_pinning_note": "No single manifest exists for this campaign; per-source sha256 pinned at assembly below (read-only, computed 2026-09-23 at head f075997). The vrp-cond.md and term-gate.md hashes are of the POST-fix bytes (see rules.fixes_applied_at_assembly); all other slot docs are as authored. Slot authors additionally pin run-time sha256 of the panel and calendar inside each trial row; the runner stamps the full manifest (INV-14).",
-  "dataset_pinning": {
-    "artifacts/paper-trades/ohlc-panel.json": "0861f525b6620fec084ccf0edc678c1b89decec0451f3f2adec67f328b5f1c1d",
-    "artifacts/paper-trades/earnings-calendar.json": "916569ad1f81bcf8a074fb8594fc1de26290210eff79a1e92fef7131888c0383",
-    "artifacts/paper-trades/earnings-timing.json": "2efba575b92a5fb3d546857b3fca69c300061da439564b0ba959a60602c39cbc",
-    "artifacts/desk-store/iv-history/vwap_atm.json": "b7305fd9dd229f26254cc10948608b53bd7e5f6b797b6a59dc9ab65d99b160d4",
-    "artifacts/desk-store/indices/VIX.csv": "998f9edb633434e4a6e7949588954e04b4068c6c813d0551b7bfbd8faceb4004",
-    "artifacts/desk-store/indices/VIX9D.csv": "e4d686af7e1ce98ebe1649142b5e9ce641d886804e5f9c83535afaefdb0a973b",
-    "artifacts/desk-store/indices/VIX3M.csv": "e48e9ddb8cce0d2c88c778aac0bb86f253f90649fc80bf126cf7e684552757a6",
-    "artifacts/desk-store/indices/VIX1Y.csv": "8bc34e2df997d1a6d380293ac8e4a27d689e06759f1df03206150f4c4b9513c3",
-    "artifacts/desk-store/indices/VVIX.csv": "18705b83eb3a2fff02efc91ceb8a73c4fd3f100b21689b826674ef0050e791b3",
-    "data/calendar/nyse_sessions_2018_01_02_2026_12_31.json": "7f9cccba702e79f6a7cb93fccca3d23dca5e8f2692ba83455c82f62ef697aea4",
-    "docs/theory/campaign-2026-09/slots/vrp-cond.md": "8caa7aa0dbc74840156881ed497c82ec990b05e40c84aeefffad08f54c5c6795",
-    "docs/theory/campaign-2026-09/slots/pead-deep-2.md": "8626ee08cde0e9bc111f8899687aaa4aed23ebd7baef7142f15625132940f832",
-    "docs/theory/campaign-2026-09/slots/term-gate.md": "2b7e0b94c9031f6fcab27f33234a2ba3aec5b8740586982d30d4f49d85372d9d",
-    "docs/theory/campaign-2026-09/slots/exit-grid-2.md": "13634c778316d6ea67933eec56bf3a4640829d15316b34de2eac44617d0a72bd",
-    "docs/theory/campaign-2026-09/slots/jepa-filter.md": "280a7e57e3749ce544e042ebd46f5f2d3e024ab1fd9fe870da8f1ae69354b8d0",
-    "docs/theory/trade-agent-gepa-game-2026-09-23.md": "ef6b503846ad976b6c045f8bb042a809ad3e9f50a3649ed84b27ab6306148f92"
-  },
-  "alias_map": {},
-  "alias_map_note": "No cross-config aliases: unlike wave-0, no config here shares a canonical cell with another (wave-0's band/dte/flow/hold ladder cells all rode null-s1). Each id below is a distinct canonical slot.",
-  "geometry": {
-    "protocol_folds": "anchored_expanding; label_horizon 5; embargo 5; validation 126 (min 126 / max 252 / default 126); test 63 (min 63 / max 126 / default 63); roll 63; min_train 252; purge_gap_rule ordinal(s)+label+embargo < ordinal(first eval) on calendar ordinals.",
-    "protocol_inner_loop": "max_registered_configs = 32 per scope; ten scopes assigned, arithmetic in docs/theory/campaign-2026-09/REGISTRATION-NOTES.md.",
-    "declared_deviations": [
-      "pead-deep-2 / term-gate / exit-grid-2: label horizon = the card hold (10/20/40/60 as declared per cell) with purge = hold+5, stricter than the yaml's label_horizon 5; geometry carried by the registration, not a protocol edit (wave-0 geometry_grid_fridays precedent).",
-      "term-gate / exit-grid-2: single sealed block instead of rolling 63-session test folds (GATE-001 / XSMOM-EXITGRID era idiom; disclosed in the slot docs).",
-      "exit-grid-2 scopes A/B: inner loop EMPTY BY DESIGN (frozen grid; nothing selected on data; reserved protocol-geometry windows computed and published in the slot doc for any successor).",
-      "jepa-filter: label horizon 21 declared for h=21 configs; sealed outer span 182 sessions replaces repeated 63-session test folds; roll = quarterly = 63 sessions.",
-      "vrp-cond: tuning entries restricted to ordinal<=417 so 20-session holds + 5 embargo clear the sealed window (the INV-06 purge at the desk hold length)."
-    ]
-  },
-  "rules": {
-    "sequencing": "T-NULL x3 FIRST (wave-0 Agenda A, owner ruling 2026-09-02): the deterministic null calibration artifact is stamped before ANY family sealed-window scoring; a DEFECT-FLAGGED seed freezes family scoring pending an operator ruling. Slot order after the null: vrp-cond, pead-deep-2, term-gate, exit-grid-2, jepa-filter, agent-exec (placeholder).",
-    "registration_before_outcome": "INV-13: every config id in this file is written to the trials sqlite (trials.register_before_outcome: true, storage sqlite, duplicate_trial_id: reject) before its outcome is viewed; one scored run per cell; no re-gridding after results; a new idea is a successor pre-registration (XSMOM-12-1-PREREG precedent).",
-    "direction_policy": "ALLOWED_DIRECTION = {xsmom_top3, pead_beat} are the only direction signals (src/tree_options/desk/signals.py); CONTEXT_ONLY = {trend, breadth, vix_term} may shape or time but never point; BANNED (22 refuted families incl. short_any, xsmom_short_leg, short_vol_gated, semi_reversion) may never point a trade; naked shorts prohibited (short_options.policy). Every slot below gates context or times execution of an ALLOWED direction; none points a new direction.",
-    "adoption": "Nothing adopts on in-window evidence. Nomination -> promotion only via the forward sealed-card chain: >= 20 cards per rule (artifacts/paper-trades/promotion.py gate; PEAD retire-at-20 kill-switch), the XSMOM 18/20-card review for exit/rule successors, and the pre-registered kill-switches in RESEARCH-LEDGER.md DESK-CHECKS.",
-    "calendar_and_universe": "2025-01-09 is a phantom session in the sealed protocol calendar (byte-identical, sha256 7f9cccba...) and is treated as a non-session by every engine; META hole 2022-01-28..2022-06-09 guard; NFLX 10:1 split 2025-11-17 (panel split-adjusted). Universe pinned to the 35 full-history chain-universe names (panel 37 minus TQQQ/SQQQ); XSMOM ranks the 36 tradables (panel minus SPY); PLTR and SPCX are in desk-universe.toml but NOT in the ohlc panel - later additions via backfill + successor registration only.",
-    "data_gates_campaign": [
-      "long-dated option-bar capture IN FLIGHT, ETA ~2026-09-27 (scripts/desk_longdated_capture.sh): gates vrp-cond scope O (needs >=126 sessions of history, earliest sealed window ~2027-01) and exit-grid-2 scope C (feasibility floor 466 usable sessions).",
-      "IV fidelity (docs/desk/IVHIST-001-verdict.json): only IWM 'ok'; 28 low-fidelity; 6 not-evaluable - absolute IV thresholds are IWM-only and within-name constructs only until an IVHIST-002 successor passes.",
-      "macro calendar 2026-01-01..2027-12-31 ONLY: no historical macro dates exist; no macro feature or macro episode is registered anywhere in this menu.",
-      "recorded chains: one session (2026-09-22); intraday option quotes do not exist - any intraday fill is SIM-FILL-INTRADAY-v1, synthetic-class evidence."
-    ],
-    "fixes_applied_at_assembly": [
-      "docs/theory/campaign-2026-09/slots/vrp-cond.md: inner V2 window corrected 317..442 -> 316..441 (2025-11-26..2026-05-29); the published 317 start was a 64-session roll, contradicting folds.roll_forward_sessions = 63. Ordinal 442 (2026-06-01) becomes the declared pre-seal shoulder (not tuned, not scored). Sealed window 443..505, restriction ordinal<=417, coda 506..508 unchanged.",
-      "docs/theory/campaign-2026-09/slots/term-gate.md: trailing window corrected [t-253, t-1] -> [t-252, t-1] inclusive; the published bracket spans 253 sessions while claiming '252 >= protocol min_train 252'. Aligns with the file's own trailing-252 quantile/Q60/median definitions."
-    ]
-  },
-  "slots": [
-    {
-      "slot_id": "tnull",
-      "order": 0,
-      "family": "T-NULL",
-      "title": "deterministic null calibration - precedes every family",
-      "source_doc": "docs/theory/campaign-2026-09-registration.json (registrar-authored; wave-0 T-NULL idiom, docs/theory/wave0-registration.json slots null-s1..s3 and rules.sequencing)",
-      "scope_ids": [{"scope_id": "c09-tnull", "config_count": 3, "cap": 32}],
-      "hypothesis": "Under deterministic hash-random entry at the campaign's card rates, per-trade gross returns over each sealed evaluation era are noise (day-clustered |t| < 2) and net returns sit at the cost floor (mean within [-15bp, +5bp] at 5bp RT); any seed violating either band indicates a machinery defect, not an edge, and freezes family scoring until an operator ruling.",
-      "declared_use": "CALIBRATION ONLY. The three seeds produce the rejection baseline every family's sealed deltas are read against and the realized per-trade-mean sd recorded as the D8-analog tripwire prior (wave-0 rule: priors come ONLY from executed null artifacts; synthetic priors are FORBIDDEN on the real lane). No direction, no card, no promotion path; report-only.",
-      "configs": [
-        {"slot_id": "tnull-s1", "model_family": "null-sha256/1", "score_seed": "campaign-2026-09-null-1", "params_key": ["card-lane", "null-sha256/1", "campaign-2026-09-null-1", "hold20", "5bp"], "run_index": 1},
-        {"slot_id": "tnull-s2", "model_family": "null-sha256/1", "score_seed": "campaign-2026-09-null-2", "params_key": ["card-lane", "null-sha256/1", "campaign-2026-09-null-2", "hold20", "5bp"], "run_index": 2},
-        {"slot_id": "tnull-s3", "model_family": "null-sha256/1", "score_seed": "campaign-2026-09-null-3", "params_key": ["card-lane", "null-sha256/1", "campaign-2026-09-null-3", "hold20", "5bp"], "run_index": 3}
-      ],
-      "config_ids": ["tnull-s1", "tnull-s2", "tnull-s3"],
-      "config_count": 3,
-      "entry_rule_pinned": "Per seed: (a) XSMOM-shaped stream - 3 names per first-of-month session drawn by sha256(score_seed, name, session) over the 36 tradables; (b) event-shaped stream - 1 name per first-post-report session (earnings-calendar.json, 26 reporters) among the 35 chain-universe names. Hold 20 sessions, close-to-close, 5bp RT primary (15bp robustness), day-clustered t, 2025-01-09 excluded.",
-      "fold_mapping": {
-        "tuning": "none - the null is fit-free (INV-07 vacuous); no parameter is estimated anywhere",
-        "sealed": "One pass per seed over the union evaluation span 2024-10-01..2026-09-23, reported per sub-era: the sealed card era 2024-10-01..2026-08-28 (term-gate / exit-grid-2), the vrp-cond window 2026-06-02..2026-08-31, the pead-deep-2 window 2026-06-25..2026-09-23, and the jepa-filter outer origins 2026-01-02..cutoff-h",
-        "geometry_notes": "63/126/252 windows do not bind a fit-free null; sub-era reporting matches the families' sealed windows exactly so the band is read on the same sessions"
-      },
-      "acceptance_criteria": [
-        "per seed x sub-era: day-clustered |t| < 2 on gross per-trade mean",
-        "net per-trade mean within [-15bp, +5bp] (cost floor at 5bp RT)",
-        "entry floors: >= 60 XSMOM-shaped entries and >= 100 event-shaped entries per seed over the union span, else NOT_EVALUABLE for that stream",
-        "realized sd of the per-trade mean per sub-era is recorded in the calibration block and becomes the standing tripwire prior for every family run after it"
-      ],
-      "verdict_vocabulary": ["CALIBRATED", "DEFECT-FLAGGED", "NOT_EVALUABLE"],
-      "data_gates": [],
-      "census_novelty": "Wave-0 ran T-NULL x3 on the options vehicle (docs/theory/wave0-registration.json); this is the same construction on the equity card lane the campaign-2026-09 families evaluate. No census cell is re-run.",
-      "risks": "Thinnest sub-era (vrp-cond's 3 XSMOM rebalances) yields a wide, weak band - disclosed, not fixed; the null calibrates the machinery, not any hypothesis."
-    },
-    {
-      "slot_id": "vrp-cond",
-      "order": 1,
-      "family": "VRP-COND",
-      "title": "implied-vs-forecast vol spread conditioning of the two ALLOWED directions",
-      "source_doc": "docs/theory/campaign-2026-09/slots/vrp-cond.md",
-      "scope_ids": [
-        {"scope_id": "c09-vrp-e", "config_count": 20, "cap": 32},
-        {"scope_id": "c09-vrp-o", "config_count": 4, "cap": 32}
-      ],
-      "hypothesis": "Per-trade net returns of XSMOM-TOP3 monthly longs and PEAD beats are higher when the entry session's 30-day ATM IV is cheap relative to the HAR h=20 forecast (within-name bottom-tercile percentile of IV30/HAR-vol, or IWM spread percentile <= 1/3) than the same rules earn unconditionally over the same sessions; falsified if the promoted config's sealed conditioned-minus-base delta <= 0 or any pre-committed check fails.",
-      "declared_use": "CONTEXT/EXECUTION ONLY: gates entry timing (fire/defer), size (full/half), and - scope O, data-gated - a long-call expression vehicle. Never direction, never name selection, never sign inversion; distinct from CONTEXT_ONLY vix_term (term structure) and from BANNED short_vol_gated (never sells vol, never shorts). If adopted, vrp_cond joins CONTEXT_ONLY via a successor code change.",
-      "config_ids": [
-        "xe-book-lo", "xe-book-hi", "xe-book-mid", "xe-mkt-lo", "xe-mkt-hi", "xe-playbook", "xe-size-mkt", "xe-size-book", "xe-defer",
-        "xp-name-lo", "xp-name-hi", "xp-name-mid", "xp-mkt-lo", "xp-mkt-hi", "xp-playbook", "xp-size-name", "xp-size-mkt",
-        "xe-lag21", "xp-lag21", "xp-shuffle",
-        "ox-cheap", "ox-rich-fallback", "op-cheap", "op-rich-fallback"
-      ],
-      "config_count": 24,
-      "fold_mapping": {
-        "feature_window": "IV history sessions 2024-08-26..2026-09-03 = 508 sessions (verified against the sealed calendar, 2025-01-09 excluded)",
-        "warm_up": "ordinals 1..252 = 2024-08-26..2025-08-27 (min_train 252; never scored)",
-        "inner_v1": "253..378 = 2025-08-28..2026-02-27 (126 = validation default)",
-        "inner_v2": "316..441 = 2025-11-26..2026-05-29 (roll 63; overlaps V1 by 63 sessions; FIXED at assembly - see rules.fixes_applied_at_assembly)",
-        "pre_seal_shoulder": "ordinal 442 = 2026-06-01 (unused; not tuned, not scored)",
-        "sealed": "443..505 = 2026-06-02..2026-08-31 (63 = test default; the single sealed window, opened once after the promoted config is frozen)",
-        "coda": "506..508 = 2026-09-01..2026-09-03 (unused)",
-        "purge": "tuning entries restricted to ordinal <= 417 (2026-04-24): 417+20+5 = 442 < 443 (purge_gap_rule at the desk hold length); scope O has NO evaluatable window (one recorded chain session)"
-      },
-      "acceptance_criteria": [
-        "selection (tuning only): within family (xe, xp), largest pooled V1+V2 conditioned-minus-base per-trade net delta (5bp RT) among configs meeting floors; ties -> sparser gate, then slot id lexicographic",
-        "sealed acceptance, ALL four: (1) sealed ON-minus-OFF-session base delta > 0 (matched-sessions conditional column decisive, SQUEEZE precedent); (2) day-clustered block bootstrap (block 10, 2000 resamples, one-sided) p < 0.10; (3) delta exceeds BOTH same-family placebo deltas (xe-lag21 / xp-lag21 / xp-shuffle) on the identical path; (4) delta > 0 at 15bp RT",
-        "power floors: xe-* n_ON >= 6 sealed entries; xp-* n_ON >= 8 sealed trades; below floor = NOT_EVALUABLE, never FAIL",
-        "no pre-2024 holdout exists for any IV construct (IV starts 2024-08-26): the sealed window + forward cards replace the census holdout deflation; nothing adopts on in-window evidence"
-      ],
-      "verdict_vocabulary": ["PASS", "FAIL", "NOT_EVALUABLE", "DATA_GATED", "WITHDRAWN", "SURVIVOR-CANDIDATE", "DEFLATED", "NOT_EVALUABLE-SEALED"],
-      "data_gates": [
-        "scope O (4 configs): DATA_GATED on (i) the in-flight long-dated bar capture (ETA ~2026-09-27) landing >= 126 sessions of history AND (ii) an IVHIST-002-successor fidelity verdict covering the new source; else WITHDRAWN without running",
-        "fidelity split binding in scope E: absolute thresholds IWM-only ('ok'); 28 low-fidelity names appear in within-name constructs only (level correlations 0.933..0.962, bias-invariance justification; time-varying-bias residual risk declared)"
-      ],
-      "census_novelty": "No implied-vol input and no vol-spread conditioning of the survivors exists anywhere in the ~1,220-cell census (artifacts/paper-trades/RESEARCH-LEDGER.md); GATE-001's 48 cells were price/volume gates on now-dead rules (artifacts/paper-trades/GATE-001.md); both enabling studies sealed 2026-09-23 (docs/desk/IVHIST-001.md, docs/desk/FORECAST-001.md) after every census family ran.",
-      "risks": "Power (3 sealed XSMOM rebalances, ~8-15 sealed PEAD beats -> NOT_EVALUABLE-SEALED likely); regime collinearity with calm-market proxies (GATE-001 prior); 28/29 names low-fidelity (time-varying bias misranks terciles in selloffs); desk already displayed vrp_har (display exposure disclosed, no outcome-conditioned selection)."
-    },
-    {
-      "slot_id": "pead-deep-2",
-      "order": 2,
-      "family": "PEAD-DEEP-2",
-      "title": "conditioning deepening of the pead_beat survivor (timing, magnitude, vol regime)",
-      "source_doc": "docs/theory/campaign-2026-09/slots/pead-deep-2.md",
-      "scope_ids": [{"scope_id": "c09-pd2", "config_count": 24, "cap": 32}],
-      "hypothesis": "Conditioning pead_beat card issuance on report timing, beat magnitude, and the prevailing volatility regime separates the beat population into strata whose per-card forward edge beats the unconditioned baseline by a positive conditional margin surviving the sealed window - and if no pre-registered stratum does, the conditioning set is null and the question closes.",
-      "declared_use": "Direction stays pead_beat for every cell. Every conditioning is a CONTEXT gate on execution timing of an ALLOWED direction: it may suppress, delay, or size-zero a card; never fire a card the sealed rule would not fire, never point a new direction, never create a short leg. A surviving gate is a SUCCESSOR CANDIDATE evaluated only after the sealed rule's own 20-card review (never a mid-stream swap), re-based on the card engine's option fills before touching a card.",
-      "config_ids": [
-        "PD2-B-h10", "PD2-B-h20", "PD2-B-h40",
-        "PD2-M-lo-h10", "PD2-M-hi-h10", "PD2-M-lo-h20", "PD2-M-hi-h20", "PD2-M-lo-h40", "PD2-M-hi-h40",
-        "PD2-L-mod", "PD2-L-str", "PD2-L-ext",
-        "PD2-V-lo-h10", "PD2-V-mid-h10", "PD2-V-hi-h10", "PD2-V-lo-h20", "PD2-V-mid-h20", "PD2-V-hi-h20", "PD2-V-lo-h40", "PD2-V-mid-h40", "PD2-V-hi-h40",
-        "PD2-R-lo", "PD2-R-mid", "PD2-R-hi"
-      ],
-      "config_count": 24,
-      "fold_mapping": {
-        "era": "entry sessions 2024-09-05..2026-09-23 = 514 sessions (verified from the sealed calendar, 2025-01-09 excluded)",
-        "outer_walk_diagnostic_only": "fold 1: train 1..252 = 2024-09-05..2025-09-08, val 253..378 = ..2026-03-10 (126), test 2026-03-11..2026-06-09 (63); fold 2 rolls +63: test 2026-06-10..2026-09-09 (63); ten tail sessions 2026-09-10..2026-09-23 belong to the sealed window only",
-        "inner": "all beat events with entry <= 2026-04-20 (ordinal 406; 406+40+5 = 451 < 452 = ordinal(2026-06-25), the strictest h40 purge; verified); strata edges are quantiles of this span only (INV-07)",
-        "sealed": "the final 63 sessions, entries 2026-06-25..2026-09-23, frozen edges, evaluated once (label completion per iter002.py: beyond-panel holds dropped and counted)",
-        "forward_timing_arm": "PD2-T-bmo/amc/unknown: 0 backtest cells, no fold mapping; labels attach to sealed cards from 2026-10-01 (historical timing coverage is zero)"
-      },
-      "acceptance_criteria": [
-        "cell bar (inner span): mean > 0 AND day-clustered t >= 2 AND n_days >= 30 AND n >= 20 AND conditional (stratum - PD2-B same hold) > 0",
-        "sealed confirmation: STRATUM-CONFIRMED only if the pre-declared directional contrast keeps the same sign in the sealed window with pooled sealed n >= 10 beats",
-        "timing arm: no verdict until BOTH bmo and amc strata hold >= 12 valid timed cards; standing verdict INSUFFICIENT_COVERAGE; can never gate a card regardless of interim readings",
-        "one scored run; bands/terciles/holds/window frozen; DSR reported at N = 24 for any PROMOTE-AS-GATE"
-      ],
-      "verdict_vocabulary": ["CANDIDATE", "NULL", "INSUFFICIENT_N", "STRATUM-CONFIRMED", "FAMILY-NULL", "PROMOTE-AS-GATE", "CLOSE", "WITHDRAWN", "INSUFFICIENT_COVERAGE"],
-      "data_gates": [
-        "per-name IV conditioning EXCLUDED (IVHIST-001 low-fidelity gate) - declared and dropped",
-        "options-expression arm dropped: long-dated bars capture in flight (ETA ~2026-09-27)"
-      ],
-      "census_novelty": "Within-beat magnitude on the sealed rule's own variable m was never run: PEAD-DEEP ran pooled-sign big/small + SPY-mom20 regimes, PEAD-Q ran pooled-sign quintiles + XSMOM-half (both dropped as duplicates here); PEAD-SIGN/PROTOCOL-PEAD did the sign split; HORIZON-001 the unconditioned hold ladder; GATE-001 never touched PEAD (artifacts/paper-trades/{PEAD-DEEP,PEAD-Q,PEAD-SIGN,PROTOCOL-PEAD,HORIZON-001,GATE-001}.md).",
-      "risks": "Thin n dominates (~63-70 era beats, strata n ~5-8 sealed); magnitude arm may re-derive PEAD-Q's non-monotone mess; VIX terciles may proxy calendar clusters; amc stratum is a 2-name contrast (COST, NFLX); if the base rule dies at its 20-card review the families die with it."
-    },
-    {
-      "slot_id": "term-gate",
-      "order": 3,
-      "family": "TERM-GATE",
-      "title": "VIX term-structure context gate on the survivor card rules (must beat the vix_term incumbent)",
-      "source_doc": "docs/theory/campaign-2026-09/slots/term-gate.md",
-      "scope_ids": [{"scope_id": "c09-term", "config_count": 24, "cap": 32}],
-      "hypothesis": "A VIX term-structure gate evaluated at t-1 - the VIX9D/VIX3M ratio (or VIX3M/VIX1Y back slope) against a trailing-252 quantile - withholds XSMOM-TOP3 and PEAD-BIGSURPRISE cards whose sealed-window conditional mean is below the kept cards', and separates kept from withheld strictly better than the incumbent vix_term definition (VIX/VIX3M - 1) on identical machinery; if no new-quantity gate both passes the cell bar and beats the incumbent, the family withdraws.",
-      "declared_use": "CONTEXT_ONLY (the vix_term family). May only WITHHOLD an entry of an ALLOWED_DIRECTION signal: OFF = the card is skipped for that occurrence. No deferral, re-entry, re-ranking, name substitution, inversion, sizing-up, or short leg. A PASS-GATE earns a recorded context annotation on future cards plus a queued successor pre-registration; never a mid-stream edit of sealed rules. Arm T2 is report-only (SEMI-GATE posture).",
-      "config_ids": [
-        "T1-01", "T1-02", "T1-03", "T1-04", "T1-05", "T1-06", "T1-07", "T1-08", "T1-09", "T1-10", "T1-11", "T1-12",
-        "T2-01", "T2-02", "T2-03", "T2-04", "T2-05", "T2-06", "T2-07", "T2-08", "T2-09", "T2-10", "T2-11", "T2-12"
-      ],
-      "config_count": 24,
-      "fold_mapping": {
-        "gate_timing": "index closes of session t-1 only (CBOE prints finalize 16:15 ET; INV-02/INV-10 conservatism; absorbs the 1-session index tail lag); trailing stats over [t-252, t-1] inclusive = 252 sessions = min_train (FIXED at assembly)",
-        "inner_tuning": "sessions <= 2024-09-03 (~752 >= min_train); realized tuning cards: 22 XSMOM entries 2022-11-01..2024-08-01; PEAD has NO tuning-era cards (thresholds fit-free SIGN or trailing-quantile, outcome-free); the only tuning-era selection is ranking the six gate specs on the 22 XSMOM cards, recorded before any sealed-era run",
-        "purge": "last tuning signal 2024-08-01; ordinal+20+5 = ordinal(2024-09-06) so the first eligible eval session is 2024-09-09 (strict purge_gap_rule, verified); declared sealed boundary 2024-10-01 (first FOM past the purge; PEAD drops its three 2024-09 cards for symmetry)",
-        "sealed": "ONE block (declared deviation, GATE-001/XSMOM-EXITGRID idiom): XSMOM entries 2024-10-01..2026-08-03 (23 monthly cards; the 2026-09-01 card is incomplete at panel end); PEAD entries 2024-10-16..2026-08-06 (141 cards with completed holds); later cards accrue to the forward chain only"
-      },
-      "acceptance_criteria": [
-        "per T1 cell, ALL four to be a CANDIDATE: (1) ON mean > 0 and clustered-t >= 2.64 (one-sided Bonferroni, m = 12); (2) ON > OFF; (3) gated book mean/card AND total P&L >= ungated; (4) OFF-n >= 8 (XSMOM) / >= 20 (PEAD) else NOT_EVALUABLE",
-        "family beat-or-withdraw: best new-quantity ON-OFF spread must beat the best incumbent spread by entry-date block bootstrap (10,000 resamples, one-sided P < 0.05) on the same rule; parity = WITHDRAW",
-        "T2 (descriptive-only): REGIME-SIGN-FLIP requires paired mean > 0 with conservative t >= 2 in STRESSED while <= 0 in CALM; any cell < 100 signal dates = NOT_EVALUABLE; outcome conditioning on already-viewed cells - no live change possible (XU post-hoc-amendment precedent)"
-      ],
-      "verdict_vocabulary": ["PASS-GATE", "INCUMBENT-CONFIRMED", "WITHDRAW", "NOT_EVALUABLE", "DESCRIPTIVE-ONLY:REGIME-SIGN-FLIP", "DESCRIPTIVE-ONLY:NO-REGIME-SIGNAL", "DESCRIPTIVE-ONLY:NOT_EVALUABLE"],
-      "data_gates": [
-        "none for the slot proper: consumes only the equity panel and CBOE index CSVs (IV history, chains, long-dated bars all irrelevant - no IV-threshold rule declared)",
-        "index outage > 5 sealed sessions triggers NOT_EVALUABLE rather than imputation; CBOE restates bound by provenance.jsonl sha256 at run time"
-      ],
-      "census_novelty": "GATE-001's 48 cells were spyup/breadth/spyvol gates on MR/R3f+up/CONT/VOLSPIKE at holds 1-2 (all now DEAD); no VIX index, no term-structure quantity, and never the survivors were gated (artifacts/paper-trades/GATE-001.md, RESEARCH-LEDGER.md); vix_term sits in CONTEXT_ONLY by declaration with no card-gate evidence ever computed - the inc cells are its first evaluation, r93/bs the first uses of VIX9D/VIX1Y in the program.",
-      "risks": "XSMOM power (23 cards, ~40% OFF under Q60 vs floor 8; 5.1%-OFF SIGN cells ~1 card); the gate may skip the best months (criterion 3 then converts to WITHDRAW - intended); term-structure regime persistence leaves ~few effective draws; T2 prior is t -12..-26 pooled, expected NO-REGIME-SIGNAL."
-    },
-    {
-      "slot_id": "exit-grid-2",
-      "order": 4,
-      "family": "EXIT-GRID-2",
-      "title": "exit/hold-policy grid on the survivors at the sealed hold-20 card horizon",
-      "source_doc": "docs/theory/campaign-2026-09/slots/exit-grid-2.md",
-      "scope_ids": [
-        {"scope_id": "c09-eg2-a", "config_count": 10, "cap": 32},
-        {"scope_id": "c09-eg2-b", "config_count": 11, "cap": 32},
-        {"scope_id": "c09-eg2-c", "config_count": 6, "cap": 32}
-      ],
-      "hypothesis": "On the two allowed directions' sealed hold-20 card streams, at least one pre-registered post-entry conditioning exit - wide armed adverse-drift, ratcheting trailing, context-flip timer (CONTEXT_ONLY variables), calendar-aligned time-stop, or (data-gated) options-expression time/delta stop - improves paired per-signal net return vs hold-20 by >= 5bp with conservative day-clustered one-sided Bonferroni significance on its sealed era; otherwise the hold-to-horizon discipline stands everywhere and the exit question closes.",
-      "declared_use": "Every cell TIMES THE EXECUTION of an ALLOWED direction: no cell fires an entry, selects or substitutes a name, flips or points a direction, shorts, or applies to a BANNED rule. Conditioning variables appear ONLY as exit conditions (CONTEXT_ONLY consumed as exits; they may shorten a hold, never widen the trade set). A PASS nominates an EXIT-SUCCESSOR - evaluated after the sealed rule's 18/20-card review through the forward chain, never a swap of a card in flight.",
-      "config_ids": [
-        "a-hold20", "a-adv05-arm5", "a-adv10-arm5", "a-adv05-arm10", "a-adv10-arm10", "a-trail10-arm5", "a-trail15-arm5", "a-vixterm", "a-breadth40", "a-mom20flip",
-        "b-hold20", "b-trail10-arm5", "b-trail15-arm5", "b-trail20-arm5", "b-adv10", "b-adv15", "b-adv10-arm10", "b-mom20flip", "b-vixterm", "b-breadth40", "b-monthend",
-        "c-ts20", "c-ts5", "c-ts10", "c-dstop70", "c-dstop15", "c-expiry"
-      ],
-      "config_count": 27,
-      "alternatives_count": 24,
-      "fold_mapping": {
-        "inner": "EMPTY BY DESIGN for scopes A and B (every level pinned ex-ante with enumerated justification; frozen-grid house precedent: EXIT-GRID.md, XSMOM-EXITGRID.md, XSMOM-12-1-PREREG.md); nothing is selected on data so no tuning fold is consumed",
-        "reserved_geometry_eg2a": "train 2024-09-05..2025-09-08 (252), validation 2025-09-09..2026-03-10 (126, 53 report dates - verified), purge >= 25 (hold 20 + embargo 5; val end +25 = 2026-04-15), sealed test 2026-05-21..2026-08-20 (63, hold-complete through 2026-09-18 - verified)",
-        "reserved_geometry_eg2b": "tuning rebalances 2022-11-01..2024-09-03 (23 month-starts), validation block 2024-03-05..2024-09-03 (126, 6 rebalances - verified), purge 25 after 2024-09-03 ends 2024-10-08 (verified); the reserve binds only a successor that introduces tunable parameters - the sealed era below legitimately begins inside it because no tuning is consumed",
-        "sealed_eg2a": "calendar era 2024-09-05..2026-08-28, beats-only, hold-complete entries (family convention; boundary computed by the engine)",
-        "sealed_eg2b": "sealed basis era on the monthly card stream: 23 rebalances 2024-10-01..2026-08-03, 69 legs (matches PROTOCOL-XSMOM.md months 2024-10..2026-08); the daily-overlap research construction is NOT re-run (XSMOM-EXITGRID's ground, answered at h60)",
-        "sealed_eg2c": "mirrors A on whatever bar span passes the data gate; feasibility floor 252+126+25+63 = 466 usable sessions (on-disk cache spans 508)",
-        "honesty_statement": "load-bearing: no virgin backtest window exists for either survivor (census consumed the panel through 2026-09-23); the seal binds the VARIANT DELTAS (none of the 24 alternatives exists in the census), the base hold-20 outcomes are public, and the only clean OOS for a PASS is the forward card chain"
-      },
-      "acceptance_criteria": [
-        "per cell, paired vs the hold-20 baseline on the sealed era: PASS iff paired mean > 0 AND conservative t >= one-sided Bonferroni quantile at alpha = 0.05/m (m = 9 for A, 10 for B, 5 for C) AND paired mean >= 5bp (economic floor) AND power floor met (A: >= 30 sealed beats; B: >= 60 legs and >= 20 rebalance clusters; C: >= 40 spread episodes)",
-        "scope verdicts: HOLD-STANDS (no cell PASSes) or EXIT-SUCCESSOR-NOMINATED (>= 1 PASS; adoption only via the forward chain after the sealed rule's 18/20-card review)",
-        "multiplicity charged at the full declared scope count regardless of run subset; DSR report at N = 24 declared alternatives for any survivor"
-      ],
-      "verdict_vocabulary": ["PASS", "FAIL", "UNDERPOWERED", "DATA-GATED-NOT-RUN", "HOLD-STANDS", "EXIT-SUCCESSOR-NOMINATED"],
-      "data_gates": [
-        "scope C (6 configs): DATA-GATED on (i) the long-dated bar capture landing and passing a coverage/integrity check on the evaluation span (ETA ~2026-09-27) AND (ii) the post-M0 short-leg machinery existing (debit-spread short legs require expiration/assignment logic per short_options policy); otherwise DATA-GATED-NOT-RUN forever and the slot's value collapses to A+B, disclosed",
-        "scope C fills: vwap/G3 quote kind, $0.65/contract, $1/order min, next-session execution, delta provenance model-derived-from-vwap accepted (0.2.2)"
-      ],
-      "census_novelty": "EXIT-GRID.md (52 cells, horizon 1-2, all four rules now BANNED) and XSMOM-EXITGRID.md (26 cells at h60, 0/26) never ran trailing/armed/context-timed/calendar-aligned variants and never exit-gridded the monthly hold-20 card rule; PEAD-DEEP/HORIZON-001 ran unconditional hold ladders with entry-information cuts only; no exit variant exists for PEAD anywhere (artifacts/paper-trades/{EXIT-GRID,XSMOM-EXITGRID,PEAD-DEEP,HORIZON-001}.md); intraday_exit_pilot.py output absent on disk, superseded (banned rule, wrong horizon).",
-      "risks": "The census null generalizes (tail-carried premium vs tail-amputating exits -> HOLD-STANDS expected); B capped at 23 clusters; published base outcomes contaminate post-hoc (forward chain is the only clean test); close-trigger semantics conservative vs live intraday touch; scope C may never run."
-    },
-    {
-      "slot_id": "jepa-filter",
-      "order": 5,
-      "family": "JEPA-SURPRISE",
-      "title": "latent-surprise context filter vs the vix_term incumbent",
-      "source_doc": "docs/theory/campaign-2026-09/slots/jepa-filter.md (sealed translation of docs/theory/trade-jepa-exploration-2026-09-23.md)",
-      "scope_ids": [{"scope_id": "c09-jf", "config_count": 8, "cap": 32}],
-      "hypothesis": "Primary (b): the cross-sectional mean S_u of the standardized latent forecast error of a PCA-anchored linear JEPA over the 11-feature equity+index state beats the incumbent vix_term (VIX/VIX3M - 1) on Spearman rank correlation with forward 21-session SPY realized variance over the sealed outer origins (one-sided paired block bootstrap p < 0.05), and the family is falsified otherwise. Companion (a): per-name standardized latent surprise ranks forward h-session returns (long LOW / short HIGH as a scoring convention only) with mean daily cross-sectional Spearman IC > 0 at one-sided p < 0.05 at h in {5, 21}, and a significant association that does NOT survive partialing out the XSMOM score and lnRV21 is recorded as re-labeled momentum/vol, never promoted.",
-      "declared_use": "CONTEXT_ONLY door only, competing with vix_term: at most gates or times the expression of ALLOWED directions, never a new trade. (a)'s long-low/short-high is a scoring convention for a one-sided rank test, not a trade - no orders, no fills, option_candidate_defaults inert; the census killed shorts at every horizon and naked short options are prohibited, so even a PASS on (a) authorizes nothing; promotion of (a) to a direction input is a separate later sealed study. Reverse direction is NOT available post hoc (FLIP consumes a variant slot). On (b) PASS: S_u recorded as a candidate context input beside vix_term; on FAIL: vix_term remains the sole vol-regime context input and the family closes.",
-      "config_ids": ["JF-V1-H5", "JF-V1-H21", "JF-V2-H5", "JF-V2-H21", "JF-V3-H5", "JF-V3-H21", "JF-V4-H5", "JF-V4-H21"],
-      "config_count": 8,
-      "pinned_constants": "ridge alpha 1.0; lambda_v = lambda_c = 25.0; GD 2000 iters lr 1e-2 seed PCG64(22); V3 latent k=8; V4 = sector-residual over the 26 single stocks (static hand-declared map, ETF_HOLDINGS precedent); surprise indexed by completion session u with vintage v in force at u-h; index block lagged one session on challenger AND incumbent (INV-02)",
-      "fold_mapping": {
-        "initial_train": "2021-09-13..2024-06-30 = 703 panel-union sessions (>= min_train 252; verified)",
-        "inner": "origins 2024-07-01..2025-12-31 = 378 sessions (verified); quarterly anchored-expanding refits (6); training rows satisfy ordinal(t)+h+5 < ordinal(first session of Q) (purge_gap_rule); ALL tuning including SEL-a variant selection, direction confirmation, incrementality diagnostics",
-        "sealed": "origins 2026-01-02 through cutoff-h, cutoff = earliest last session among the 35 (today 2026-09-23); 182 sessions in span (verified), complete origins 177 at h=5 / 161 at h=21; refit schedule continues under the identical rule; scored ONCE after the inner-loop selection is frozen and recorded",
-        "geometry_notes": "roll = quarterly = 63; embargo 5 rides inside the declared purge gap h+5; label horizon 5 (protocol) at h=5 and 21 (declared) at h=21; the 182-session sealed span replaces repeated 63-session test folds (declared, wave-0 precedent)"
-      },
-      "acceptance_criteria": [
-        "(a) PASS iff mean daily cross-sectional Spearman IC on sealed outer origins in the declared direction, one-sided p < 0.05 (circular block bootstrap, block = h, B = 2000, seed PCG64(22)); PASS-REDUNDANT iff PASS but partial IC (vs XSMOM score and lnRV21) has |t| < 1; FAIL otherwise incl. inner wrong-sign",
-        "(b) PASS iff S_u (JF-V1-H21, fixed by SEL-b) beats vix_term (same one-session lag) on Spearman with forward RV21(SPY) by one-sided paired circular block bootstrap p < 0.05; MDD21 twin reported with identical machinery (disclosure); dispersion twin and tercile card-gate lift DISCLOSED, never verdicts",
-        "NOT_EVALUABLE: V3 collapse tripwire (eval-fold latent variance < 1e-2 x train), future-poison failure, complete outer origins < 126, > 10% skipped origins; defective runs by operator ruling only",
-        "three sealed verdicts total: (a) at h=5, (a) at h=21, (b); baselines on identical origins incl. the no-signal null band, a disclosed-only 3-seed randomized-score null (wave-0 T-NULL style), the XSMOM score, cheap-surprise controls lnRV21 and |r_21|, and vix_term as the (b) incumbent"
-      ],
-      "verdict_vocabulary": ["PASS", "PASS-REDUNDANT", "FAIL", "NOT_EVALUABLE"],
-      "data_gates": [
-        "option chains (one session) and the low-fidelity IV history excluded from the state (IVHIST-001 gate); surface-augmented state is a LATER pre-registered variant, not data-gated inside this slot",
-        "macro features impossible (macro calendar 2026-01-01..2027-12-31 only); earnings calendar excluded from the state by design"
-      ],
-      "census_novelty": "No learned-state family exists in the ~1,220-cell census (every cell a threshold/rule/gate over raw price, volume, earnings, or index features; artifacts/paper-trades/RESEARCH-LEDGER.md); HAR/FORECAST-001 is the degenerate special case already in production (docs/desk/FORECAST-001.md, sealed PASS) and inherits the hardest baseline; GATE-001 is the same CONTEXT door on raw statistics with a rule-lift verdict, not a paired beat-incumbent on forward vol.",
-      "risks": "Most likely failure PASS-REDUNDANT (an 11-feature linear state re-labels vol/momentum - the partial-IC tripwire exists to say exactly this); 35 names cap detectable IC (power disclosed: daily IC ~0.03-0.05 at 161-177 origins); V3 collapse; basis drift across refits; the (b) filter can be an expensive vix_term - the paired identical-origins test kills exactly this."
-    },
-    {
-      "slot_id": "agent-exec",
-      "order": 6,
-      "family": "AGENT-EXEC",
-      "title": "GEPA-evolved LLM execution agent - BUILD-GATED PLACEHOLDER, do not activate",
-      "source_doc": "docs/theory/trade-agent-gepa-game-2026-09-23.md (exploration memo; NOT a registration - this menu entry is the placeholder only)",
-      "scope_ids": [{"scope_id": "c09-agentexec", "config_count": 1, "cap": 32}],
-      "status": "PLACEHOLDER-BUILD-GATED",
-      "hypothesis": "A GEPA-evolved one-predictor LLM policy timing defined-risk intraday entries on the two ALLOWED directions beats both the un-evolved seed prompt and the best fixed EXEC-001-style rule on inner-fold median-of-k episode scores (>= +0.05 R mean over the seed, paired block bootstrap p < 0.10 inner / p < 0.05 sealed outer) - and if it does not, the learned-timing family closes at the evolved frontier.",
-      "declared_use": "EXECUTION ONLY: the agent TIMES and SIZES; it never PICKS. On live-signal episodes the only expressible direction is the declared ALLOWED one (long, defined risk); on plain no-signal days any action is PAPER-SANDBOX-ONLY (informational, never promotion-grade). Banned families are mechanically inexpressible (long-only action validator; BANNED registry verbatim in every reflection prompt; post-hoc action-trace audit for disguised volspike/gap_fade). Whole GEPA loop = ONE registered optimizer config; its output is a single frozen policy artifact (prompt + decoding params + parser version, sha256) that alone receives ONE sealed evaluation.",
-      "config_ids": ["agentexec-mve-n15"],
-      "config_count": 1,
-      "config_detail": "N = 15-minute bars (26 steps/episode); population 4 seeds x 3 generations, DSPy GEPA auto='light' (420 selection calls); k = 3 median voting on validation; actor glm-5.3-flash T = 0.2 via the quota broker; reflector glm-5.3 non-flash (MiniMax fallback); hard caps 30,000 actor requests / 60M input tokens (abort scores 0); four baselines incl. the un-evolved-seed ablation; program plans <= 4 of 32 scope slots (MVE, N = 5 arm only if N = 15 passes, JEPA-obs variant, macro variant).",
-      "fold_mapping": {
-        "inner": "episodes 2024-09-05..2025-12-31, stratified 24/24/12 train + 8/8/4 validation (XSMOM card day / PEAD beat day / plain day); ALL tuning including every GEPA decision stays here; macro days EXCLUDED (no historical macro dates exist - macro-2026-2027.json covers 2026-01-01..2027-12-31 only)",
-        "sealed": "episodes from the first session >= 2026-01-09 (inner end + the protocol's 5-session embargo, applied literally) through the capture date; the frozen artifact is the only thing that crosses the seal; nothing outer feeds reflection; forward results never promote"
-      },
-      "acceptance_criteria": [
-        "inner validation fold, median-of-k, paired block bootstrap over episodes: PASS iff evolved > un-evolved seed > best fixed rule with evolved beating seed by >= +0.05 R mean at p < 0.10; PASS-RULES-ONLY-SEED iff seed ~ evolved and seed > best fixed rule; FAIL otherwise; NOT_EVALUABLE on harness/data-integrity defects (budget abort, integrity gate failing on > 10% of episodes, absent measurement floor)",
-        "mandatory diagnostic: transpile the frozen policy to a <= 8-node tree; >= 95% action match with simulator PnL inside the noise band = rule-equivalent, recorded with the honest PASS-RULES-ONLY-SEED / FAIL vocabulary; the transpiled rule is NOT registerable as a signal (post-hoc; dead on arrival if BANNED)",
-        "evidence class: SIM-FILL-INTRADAY-v1 (next-bar-open, declared 5%-of-mid-per-side spread penalty, participation caps, BS pricer off prev-session IV30) - SYNTHETIC-CLASS; no real-market performance or discovery claim may rest on it; promotion only via the paper sandbox, never this simulator"
-      ],
-      "verdict_vocabulary": ["PASS", "PASS-RULES-ONLY-SEED", "FAIL", "NOT_EVALUABLE", "NOT_PROMOTABLE"],
-      "data_gates": [
-        "intraday episode capture (~192 wire requests incl. 20% retry budget, ~32 min at the 5 req/min governor) PENDING SEPARATE OPERATOR APPROVAL - do not fetch",
-        "four builds named, none built: registration seam, capture, harness + artifact hashing, SIM-FILL-INTRADAY-v1 fill model; macro-episode variant additionally gated on historical macro-date capture (public calendars, MACRO-SEALS.md convention)",
-        "activation requires an explicit operator GO on the memo's MVE recommendation, a NEW sealed registration with its own sha256 in the FORECAST-001 manner, and a trial row in the sqlite registry BEFORE any episode is evaluated"
-      ],
-      "census_novelty": "EXEC-001 (GATE-001.md) priced fixed next-open entry at daily granularity (+-2-4bp, no gap-capture alpha) - the fixed-rule null this family must beat; no learned policy, no intraday simulation, and no LLM agent exists anywhere in the census; minute bars absent on disk (artifacts/intraday-cache/ verified absent).",
-      "risks": "Most likely: the evolved policy transpiles to a small fixed rule (5.1) - the ablation + vocabulary is the honest answer; actor noise masquerading as improvement (k = 3 median, identical machinery); overfit to 60/20 episodes; the measurement-floor pilot (10 episodes: does the un-evolved seed separate from no-trade beyond the actor-noise band?) may render the MVE NOT_EVALUABLE by construction."
-    }
+ "alias_map": {},
+ "alias_map_note": "No cross-config aliases: unlike wave-0, no config here shares a canonical cell with another (wave-0's band/dte/flow/hold ladder cells all rode null-s1). Each id below is a distinct canonical slot.",
+ "amendment_authority": "operator ruling 2026-09-23 ~23:45 MDT (campaign session): drift-relative null chosen over band-recenter and basket-relative alternatives, after the v1 cost-floor band [-15bp,+5bp] was DEFECT-FLAGGED on all three seeds (era baseline drift: SPY +35.3%, equal-weight 36-name +43.9%, unconditional all-names 20-session net mean +1.55%, n=17,136 over the card era; seeds straddle the unconditional mean -> era, not code).",
+ "dataset_manifest_hash": null,
+ "dataset_pinning": {
+  "artifacts/desk-store/indices/VIX.csv": "998f9edb633434e4a6e7949588954e04b4068c6c813d0551b7bfbd8faceb4004",
+  "artifacts/desk-store/indices/VIX1Y.csv": "8bc34e2df997d1a6d380293ac8e4a27d689e06759f1df03206150f4c4b9513c3",
+  "artifacts/desk-store/indices/VIX3M.csv": "e48e9ddb8cce0d2c88c778aac0bb86f253f90649fc80bf126cf7e684552757a6",
+  "artifacts/desk-store/indices/VIX9D.csv": "e4d686af7e1ce98ebe1649142b5e9ce641d886804e5f9c83535afaefdb0a973b",
+  "artifacts/desk-store/indices/VVIX.csv": "18705b83eb3a2fff02efc91ceb8a73c4fd3f100b21689b826674ef0050e791b3",
+  "artifacts/desk-store/iv-history/vwap_atm.json": "b7305fd9dd229f26254cc10948608b53bd7e5f6b797b6a59dc9ab65d99b160d4",
+  "artifacts/paper-trades/earnings-calendar.json": "916569ad1f81bcf8a074fb8594fc1de26290210eff79a1e92fef7131888c0383",
+  "artifacts/paper-trades/earnings-timing.json": "2efba575b92a5fb3d546857b3fca69c300061da439564b0ba959a60602c39cbc",
+  "artifacts/paper-trades/ohlc-panel.json": "0861f525b6620fec084ccf0edc678c1b89decec0451f3f2adec67f328b5f1c1d",
+  "data/calendar/nyse_sessions_2018_01_02_2026_12_31.json": "7f9cccba702e79f6a7cb93fccca3d23dca5e8f2692ba83455c82f62ef697aea4",
+  "docs/theory/campaign-2026-09/slots/exit-grid-2.md": "13634c778316d6ea67933eec56bf3a4640829d15316b34de2eac44617d0a72bd",
+  "docs/theory/campaign-2026-09/slots/jepa-filter.md": "280a7e57e3749ce544e042ebd46f5f2d3e024ab1fd9fe870da8f1ae69354b8d0",
+  "docs/theory/campaign-2026-09/slots/pead-deep-2.md": "8626ee08cde0e9bc111f8899687aaa4aed23ebd7baef7142f15625132940f832",
+  "docs/theory/campaign-2026-09/slots/term-gate.md": "2b7e0b94c9031f6fcab27f33234a2ba3aec5b8740586982d30d4f49d85372d9d",
+  "docs/theory/campaign-2026-09/slots/vrp-cond.md": "8caa7aa0dbc74840156881ed497c82ec990b05e40c84aeefffad08f54c5c6795",
+  "docs/theory/trade-agent-gepa-game-2026-09-23.md": "ef6b503846ad976b6c045f8bb042a809ad3e9f50a3649ed84b27ab6306148f92"
+ },
+ "dataset_pinning_note": "No single manifest exists for this campaign; per-source sha256 pinned at assembly below (read-only, computed 2026-09-23 at head f075997). The vrp-cond.md and term-gate.md hashes are of the POST-fix bytes (see rules.fixes_applied_at_assembly); all other slot docs are as authored. Slot authors additionally pin run-time sha256 of the panel and calendar inside each trial row; the runner stamps the full manifest (INV-14).",
+ "geometry": {
+  "declared_deviations": [
+   "pead-deep-2 / term-gate / exit-grid-2: label horizon = the card hold (10/20/40/60 as declared per cell) with purge = hold+5, stricter than the yaml's label_horizon 5; geometry carried by the registration, not a protocol edit (wave-0 geometry_grid_fridays precedent).",
+   "term-gate / exit-grid-2: single sealed block instead of rolling 63-session test folds (GATE-001 / XSMOM-EXITGRID era idiom; disclosed in the slot docs).",
+   "exit-grid-2 scopes A/B: inner loop EMPTY BY DESIGN (frozen grid; nothing selected on data; reserved protocol-geometry windows computed and published in the slot doc for any successor).",
+   "jepa-filter: label horizon 21 declared for h=21 configs; sealed outer span 182 sessions replaces repeated 63-session test folds; roll = quarterly = 63 sessions.",
+   "vrp-cond: tuning entries restricted to ordinal<=417 so 20-session holds + 5 embargo clear the sealed window (the INV-06 purge at the desk hold length)."
   ],
-  "unique_configs": 111
+  "protocol_folds": "anchored_expanding; label_horizon 5; embargo 5; validation 126 (min 126 / max 252 / default 126); test 63 (min 63 / max 126 / default 63); roll 63; min_train 252; purge_gap_rule ordinal(s)+label+embargo < ordinal(first eval) on calendar ordinals.",
+  "protocol_inner_loop": "max_registered_configs = 32 per scope; ten scopes assigned, arithmetic in docs/theory/campaign-2026-09/REGISTRATION-NOTES.md."
+ },
+ "program": "campaign-2026-09",
+ "protocol_hash": "2fde83db80f7d8d601dd7d3b9d2f153beb47eed23caf0a010ef464a5248cc58e",
+ "protocol_hash_basis": "sha256 over raw bytes of research_protocol.yaml at registered_at_head; the canonical protocol identity is computed over the validated model (meta.change_policy: comment edits do not fork the protocol) and is re-stamped by the runner on every trial (INV-14).",
+ "protocol_version": "0.2.2",
+ "registered_at_head": "f0759973b733966797830253d5ae3559f2bd6e6b",
+ "rules": {
+  "adoption": "Nothing adopts on in-window evidence. Nomination -> promotion only via the forward sealed-card chain: >= 20 cards per rule (artifacts/paper-trades/promotion.py gate; PEAD retire-at-20 kill-switch), the XSMOM 18/20-card review for exit/rule successors, and the pre-registered kill-switches in RESEARCH-LEDGER.md DESK-CHECKS.",
+  "calendar_and_universe": "2025-01-09 is a phantom session in the sealed protocol calendar (byte-identical, sha256 7f9cccba...) and is treated as a non-session by every engine; META hole 2022-01-28..2022-06-09 guard; NFLX 10:1 split 2025-11-17 (panel split-adjusted). Universe pinned to the 35 full-history chain-universe names (panel 37 minus TQQQ/SQQQ); XSMOM ranks the 36 tradables (panel minus SPY); PLTR and SPCX are in desk-universe.toml but NOT in the ohlc panel - later additions via backfill + successor registration only.",
+  "data_gates_campaign": [
+   "long-dated option-bar capture IN FLIGHT, ETA ~2026-09-27 (scripts/desk_longdated_capture.sh): gates vrp-cond scope O (needs >=126 sessions of history, earliest sealed window ~2027-01) and exit-grid-2 scope C (feasibility floor 466 usable sessions).",
+   "IV fidelity (docs/desk/IVHIST-001-verdict.json): only IWM 'ok'; 28 low-fidelity; 6 not-evaluable - absolute IV thresholds are IWM-only and within-name constructs only until an IVHIST-002 successor passes.",
+   "macro calendar 2026-01-01..2027-12-31 ONLY: no historical macro dates exist; no macro feature or macro episode is registered anywhere in this menu.",
+   "recorded chains: one session (2026-09-22); intraday option quotes do not exist - any intraday fill is SIM-FILL-INTRADAY-v1, synthetic-class evidence."
+  ],
+  "direction_policy": "ALLOWED_DIRECTION = {xsmom_top3, pead_beat} are the only direction signals (src/tree_options/desk/signals.py); CONTEXT_ONLY = {trend, breadth, vix_term} may shape or time but never point; BANNED (22 refuted families incl. short_any, xsmom_short_leg, short_vol_gated, semi_reversion) may never point a trade; naked shorts prohibited (short_options.policy). Every slot below gates context or times execution of an ALLOWED direction; none points a new direction.",
+  "fixes_applied_at_assembly": [
+   "docs/theory/campaign-2026-09/slots/vrp-cond.md: inner V2 window corrected 317..442 -> 316..441 (2025-11-26..2026-05-29); the published 317 start was a 64-session roll, contradicting folds.roll_forward_sessions = 63. Ordinal 442 (2026-06-01) becomes the declared pre-seal shoulder (not tuned, not scored). Sealed window 443..505, restriction ordinal<=417, coda 506..508 unchanged.",
+   "docs/theory/campaign-2026-09/slots/term-gate.md: trailing window corrected [t-253, t-1] -> [t-252, t-1] inclusive; the published bracket spans 253 sessions while claiming '252 >= protocol min_train 252'. Aligns with the file's own trailing-252 quantile/Q60/median definitions."
+  ],
+  "null_baseline": "B(W, shape) = the unconditional drift baseline: the day-clustered NET (5bp RT) per-trade mean of the ALL-NAMES stream over window W, computed by the SAME runner code path, holds, Decimal closes, and exclusions as the null streams (hold-20 close-to-close, 2025-01-09 excluded, window-completeness rules unchanged). Shapes: xsmom-shaped = every first-of-month NYSE session in W x ALL sealed-36 tradables; event-shaped = every first-post-report session of every chain-35 reporter in W, the reporting name entered. Windows W = the four declared evaluation windows exactly as stamped in the v1 calibration artifact (card-era 2024-10-01..2026-08-28, vrp-cond 2026-06-02..2026-08-31, pead-deep-2 2026-06-25..2026-09-23, jepa-outer 2026-01-02..2026-08-24). B and its day-clustered se are stamped in calibration-v2.json and are the standing baselines every absolute-mean leg in this menu is read against. Priors still come ONLY from executed null artifacts (wave-0 rule); B is calibration, not a signal.",
+  "registration_before_outcome": "INV-13: every config id in this file is written to the trials sqlite (trials.register_before_outcome: true, storage sqlite, duplicate_trial_id: reject) before its outcome is viewed; one scored run per cell; no re-gridding after results; a new idea is a successor pre-registration (XSMOM-12-1-PREREG precedent).",
+  "sequencing": "T-NULL x3 FIRST (wave-0 Agenda A, owner ruling 2026-09-02): the deterministic null calibration artifact is stamped before ANY family sealed-window scoring; a DEFECT-FLAGGED seed freezes family scoring pending an operator ruling. Slot order after the null: vrp-cond, pead-deep-2, term-gate, exit-grid-2, jepa-filter, agent-exec (placeholder). AMENDMENT v2: family scoring unfreezes ONLY after a v2 re-stamp (calibration-v2.json citing THIS menu's sha256) passes the drift-relative criteria below; the v1 T-NULL streams remain valid data (trade arithmetic verified against the pinned panel) -- only the pass criteria and the baseline are re-derived."
+ },
+ "slots": [
+  {
+   "acceptance_criteria": [
+    "per seed x sub-era: day-clustered |t| < 2 on gross per-trade mean",
+    "net per-trade mean within 2 x day-clustered se of the same-window unconditional baseline B(W, shape) (drift-relative; v1's [-15bp, +5bp] cost-floor band refuted by the era baseline, see amendment_authority)",
+    "entry floors: >= 60 XSMOM-shaped entries and >= 100 event-shaped entries per seed over the union span, else NOT_EVALUABLE for that stream",
+    "realized sd of the per-trade mean per sub-era is recorded in the calibration block and becomes the standing tripwire prior for every family run after it"
+   ],
+   "census_novelty": "Wave-0 ran T-NULL x3 on the options vehicle (docs/theory/wave0-registration.json); this is the same construction on the equity card lane the campaign-2026-09 families evaluate. No census cell is re-run.",
+   "config_count": 3,
+   "config_ids": [
+    "tnull-s1",
+    "tnull-s2",
+    "tnull-s3"
+   ],
+   "configs": [
+    {
+     "model_family": "null-sha256/1",
+     "params_key": [
+      "card-lane",
+      "null-sha256/1",
+      "campaign-2026-09-null-1",
+      "hold20",
+      "5bp"
+     ],
+     "run_index": 1,
+     "score_seed": "campaign-2026-09-null-1",
+     "slot_id": "tnull-s1"
+    },
+    {
+     "model_family": "null-sha256/1",
+     "params_key": [
+      "card-lane",
+      "null-sha256/1",
+      "campaign-2026-09-null-2",
+      "hold20",
+      "5bp"
+     ],
+     "run_index": 2,
+     "score_seed": "campaign-2026-09-null-2",
+     "slot_id": "tnull-s2"
+    },
+    {
+     "model_family": "null-sha256/1",
+     "params_key": [
+      "card-lane",
+      "null-sha256/1",
+      "campaign-2026-09-null-3",
+      "hold20",
+      "5bp"
+     ],
+     "run_index": 3,
+     "score_seed": "campaign-2026-09-null-3",
+     "slot_id": "tnull-s3"
+    }
+   ],
+   "data_gates": [],
+   "declared_use": "CALIBRATION ONLY. The three seeds produce the rejection baseline every family's sealed deltas are read against and the realized per-trade-mean sd recorded as the D8-analog tripwire prior (wave-0 rule: priors come ONLY from executed null artifacts; synthetic priors are FORBIDDEN on the real lane). No direction, no card, no promotion path; report-only. v2: also produces B(W, shape) (rules.null_baseline) as the standing drift baseline the absolute-mean legs of pead-deep-2 and term-gate are read against.",
+   "entry_rule_pinned": "Per seed: (a) XSMOM-shaped stream - 3 names per first-of-month session drawn by sha256(score_seed, name, session) over the 36 tradables; (b) event-shaped stream - 1 name per first-post-report session (earnings-calendar.json, 26 reporters) among the 35 chain-universe names. Hold 20 sessions, close-to-close, 5bp RT primary (15bp robustness), day-clustered t, 2025-01-09 excluded.",
+   "family": "T-NULL",
+   "fold_mapping": {
+    "geometry_notes": "63/126/252 windows do not bind a fit-free null; sub-era reporting matches the families' sealed windows exactly so the band is read on the same sessions",
+    "sealed": "One pass per seed over the union evaluation span 2024-10-01..2026-09-23, reported per sub-era: the sealed card era 2024-10-01..2026-08-28 (term-gate / exit-grid-2), the vrp-cond window 2026-06-02..2026-08-31, the pead-deep-2 window 2026-06-25..2026-09-23, and the jepa-filter outer origins 2026-01-02..cutoff-h",
+    "tuning": "none - the null is fit-free (INV-07 vacuous); no parameter is estimated anywhere"
+   },
+   "hypothesis": "v2 (drift-relative): under deterministic hash-random entry at the campaign's card rates, each seed's per-trade returns over every sealed evaluation era are (a) noise (day-clustered |t| < 2 on gross) and (b) statistically consistent with the same-window unconditional baseline B(W, shape) -- net mean within 2 x the seed's day-clustered se of B -- indicating no selection leakage; a seed violating either indicates a machinery defect, not an edge, and freezes family scoring pending an operator ruling.",
+   "order": 0,
+   "risks": "Thinnest sub-era (vrp-cond's 3 XSMOM rebalances) yields a wide, weak band - disclosed, not fixed; the null calibrates the machinery, not any hypothesis.",
+   "scope_ids": [
+    {
+     "cap": 32,
+     "config_count": 3,
+     "scope_id": "c09-tnull"
+    }
+   ],
+   "slot_id": "tnull",
+   "source_doc": "docs/theory/campaign-2026-09-registration.json (registrar-authored; wave-0 T-NULL idiom, docs/theory/wave0-registration.json slots null-s1..s3 and rules.sequencing)",
+   "title": "deterministic null calibration - precedes every family",
+   "verdict_vocabulary": [
+    "CALIBRATED",
+    "DEFECT-FLAGGED",
+    "NOT_EVALUABLE"
+   ]
+  },
+  {
+   "acceptance_criteria": [
+    "selection (tuning only): within family (xe, xp), largest pooled V1+V2 conditioned-minus-base per-trade net delta (5bp RT) among configs meeting floors; ties -> sparser gate, then slot id lexicographic",
+    "sealed acceptance, ALL four: (1) sealed ON-minus-OFF-session base delta > 0 (matched-sessions conditional column decisive, SQUEEZE precedent); (2) day-clustered block bootstrap (block 10, 2000 resamples, one-sided) p < 0.10; (3) delta exceeds BOTH same-family placebo deltas (xe-lag21 / xp-lag21 / xp-shuffle) on the identical path; (4) delta > 0 at 15bp RT",
+    "power floors: xe-* n_ON >= 6 sealed entries; xp-* n_ON >= 8 sealed trades; below floor = NOT_EVALUABLE, never FAIL",
+    "no pre-2024 holdout exists for any IV construct (IV starts 2024-08-26): the sealed window + forward cards replace the census holdout deflation; nothing adopts on in-window evidence"
+   ],
+   "census_novelty": "No implied-vol input and no vol-spread conditioning of the survivors exists anywhere in the ~1,220-cell census (artifacts/paper-trades/RESEARCH-LEDGER.md); GATE-001's 48 cells were price/volume gates on now-dead rules (artifacts/paper-trades/GATE-001.md); both enabling studies sealed 2026-09-23 (docs/desk/IVHIST-001.md, docs/desk/FORECAST-001.md) after every census family ran.",
+   "config_count": 24,
+   "config_ids": [
+    "xe-book-lo",
+    "xe-book-hi",
+    "xe-book-mid",
+    "xe-mkt-lo",
+    "xe-mkt-hi",
+    "xe-playbook",
+    "xe-size-mkt",
+    "xe-size-book",
+    "xe-defer",
+    "xp-name-lo",
+    "xp-name-hi",
+    "xp-name-mid",
+    "xp-mkt-lo",
+    "xp-mkt-hi",
+    "xp-playbook",
+    "xp-size-name",
+    "xp-size-mkt",
+    "xe-lag21",
+    "xp-lag21",
+    "xp-shuffle",
+    "ox-cheap",
+    "ox-rich-fallback",
+    "op-cheap",
+    "op-rich-fallback"
+   ],
+   "data_gates": [
+    "scope O (4 configs): DATA_GATED on (i) the in-flight long-dated bar capture (ETA ~2026-09-27) landing >= 126 sessions of history AND (ii) an IVHIST-002-successor fidelity verdict covering the new source; else WITHDRAWN without running",
+    "fidelity split binding in scope E: absolute thresholds IWM-only ('ok'); 28 low-fidelity names appear in within-name constructs only (level correlations 0.933..0.962, bias-invariance justification; time-varying-bias residual risk declared)"
+   ],
+   "declared_use": "CONTEXT/EXECUTION ONLY: gates entry timing (fire/defer), size (full/half), and - scope O, data-gated - a long-call expression vehicle. Never direction, never name selection, never sign inversion; distinct from CONTEXT_ONLY vix_term (term structure) and from BANNED short_vol_gated (never sells vol, never shorts). If adopted, vrp_cond joins CONTEXT_ONLY via a successor code change.",
+   "family": "VRP-COND",
+   "fold_mapping": {
+    "coda": "506..508 = 2026-09-01..2026-09-03 (unused)",
+    "feature_window": "IV history sessions 2024-08-26..2026-09-03 = 508 sessions (verified against the sealed calendar, 2025-01-09 excluded)",
+    "inner_v1": "253..378 = 2025-08-28..2026-02-27 (126 = validation default)",
+    "inner_v2": "316..441 = 2025-11-26..2026-05-29 (roll 63; overlaps V1 by 63 sessions; FIXED at assembly - see rules.fixes_applied_at_assembly)",
+    "pre_seal_shoulder": "ordinal 442 = 2026-06-01 (unused; not tuned, not scored)",
+    "purge": "tuning entries restricted to ordinal <= 417 (2026-04-24): 417+20+5 = 442 < 443 (purge_gap_rule at the desk hold length); scope O has NO evaluatable window (one recorded chain session)",
+    "sealed": "443..505 = 2026-06-02..2026-08-31 (63 = test default; the single sealed window, opened once after the promoted config is frozen)",
+    "warm_up": "ordinals 1..252 = 2024-08-26..2025-08-27 (min_train 252; never scored)"
+   },
+   "hypothesis": "Per-trade net returns of XSMOM-TOP3 monthly longs and PEAD beats are higher when the entry session's 30-day ATM IV is cheap relative to the HAR h=20 forecast (within-name bottom-tercile percentile of IV30/HAR-vol, or IWM spread percentile <= 1/3) than the same rules earn unconditionally over the same sessions; falsified if the promoted config's sealed conditioned-minus-base delta <= 0 or any pre-committed check fails.",
+   "order": 1,
+   "risks": "Power (3 sealed XSMOM rebalances, ~8-15 sealed PEAD beats -> NOT_EVALUABLE-SEALED likely); regime collinearity with calm-market proxies (GATE-001 prior); 28/29 names low-fidelity (time-varying bias misranks terciles in selloffs); desk already displayed vrp_har (display exposure disclosed, no outcome-conditioned selection).",
+   "scope_ids": [
+    {
+     "cap": 32,
+     "config_count": 20,
+     "scope_id": "c09-vrp-e"
+    },
+    {
+     "cap": 32,
+     "config_count": 4,
+     "scope_id": "c09-vrp-o"
+    }
+   ],
+   "slot_id": "vrp-cond",
+   "source_doc": "docs/theory/campaign-2026-09/slots/vrp-cond.md",
+   "title": "implied-vs-forecast vol spread conditioning of the two ALLOWED directions",
+   "verdict_vocabulary": [
+    "PASS",
+    "FAIL",
+    "NOT_EVALUABLE",
+    "DATA_GATED",
+    "WITHDRAWN",
+    "SURVIVOR-CANDIDATE",
+    "DEFLATED",
+    "NOT_EVALUABLE-SEALED"
+   ]
+  },
+  {
+   "acceptance_criteria": [
+    "cell bar (inner span): mean - B(pead-deep-2 window, event shape) > 0 (excess over drift baseline) AND day-clustered t >= 2 AND n_days >= 30 AND n >= 20 AND conditional (stratum - PD2-B same hold) > 0",
+    "sealed confirmation: STRATUM-CONFIRMED only if the pre-declared directional contrast keeps the same sign in the sealed window with pooled sealed n >= 10 beats",
+    "timing arm: no verdict until BOTH bmo and amc strata hold >= 12 valid timed cards; standing verdict INSUFFICIENT_COVERAGE; can never gate a card regardless of interim readings",
+    "one scored run; bands/terciles/holds/window frozen; DSR reported at N = 24 for any PROMOTE-AS-GATE"
+   ],
+   "census_novelty": "Within-beat magnitude on the sealed rule's own variable m was never run: PEAD-DEEP ran pooled-sign big/small + SPY-mom20 regimes, PEAD-Q ran pooled-sign quintiles + XSMOM-half (both dropped as duplicates here); PEAD-SIGN/PROTOCOL-PEAD did the sign split; HORIZON-001 the unconditioned hold ladder; GATE-001 never touched PEAD (artifacts/paper-trades/{PEAD-DEEP,PEAD-Q,PEAD-SIGN,PROTOCOL-PEAD,HORIZON-001,GATE-001}.md).",
+   "config_count": 24,
+   "config_ids": [
+    "PD2-B-h10",
+    "PD2-B-h20",
+    "PD2-B-h40",
+    "PD2-M-lo-h10",
+    "PD2-M-hi-h10",
+    "PD2-M-lo-h20",
+    "PD2-M-hi-h20",
+    "PD2-M-lo-h40",
+    "PD2-M-hi-h40",
+    "PD2-L-mod",
+    "PD2-L-str",
+    "PD2-L-ext",
+    "PD2-V-lo-h10",
+    "PD2-V-mid-h10",
+    "PD2-V-hi-h10",
+    "PD2-V-lo-h20",
+    "PD2-V-mid-h20",
+    "PD2-V-hi-h20",
+    "PD2-V-lo-h40",
+    "PD2-V-mid-h40",
+    "PD2-V-hi-h40",
+    "PD2-R-lo",
+    "PD2-R-mid",
+    "PD2-R-hi"
+   ],
+   "data_gates": [
+    "per-name IV conditioning EXCLUDED (IVHIST-001 low-fidelity gate) - declared and dropped",
+    "options-expression arm dropped: long-dated bars capture in flight (ETA ~2026-09-27)"
+   ],
+   "declared_use": "Direction stays pead_beat for every cell. Every conditioning is a CONTEXT gate on execution timing of an ALLOWED direction: it may suppress, delay, or size-zero a card; never fire a card the sealed rule would not fire, never point a new direction, never create a short leg. A surviving gate is a SUCCESSOR CANDIDATE evaluated only after the sealed rule's own 20-card review (never a mid-stream swap), re-based on the card engine's option fills before touching a card.",
+   "family": "PEAD-DEEP-2",
+   "fold_mapping": {
+    "era": "entry sessions 2024-09-05..2026-09-23 = 514 sessions (verified from the sealed calendar, 2025-01-09 excluded)",
+    "forward_timing_arm": "PD2-T-bmo/amc/unknown: 0 backtest cells, no fold mapping; labels attach to sealed cards from 2026-10-01 (historical timing coverage is zero)",
+    "inner": "all beat events with entry <= 2026-04-20 (ordinal 406; 406+40+5 = 451 < 452 = ordinal(2026-06-25), the strictest h40 purge; verified); strata edges are quantiles of this span only (INV-07)",
+    "outer_walk_diagnostic_only": "fold 1: train 1..252 = 2024-09-05..2025-09-08, val 253..378 = ..2026-03-10 (126), test 2026-03-11..2026-06-09 (63); fold 2 rolls +63: test 2026-06-10..2026-09-09 (63); ten tail sessions 2026-09-10..2026-09-23 belong to the sealed window only",
+    "sealed": "the final 63 sessions, entries 2026-06-25..2026-09-23, frozen edges, evaluated once (label completion per iter002.py: beyond-panel holds dropped and counted)"
+   },
+   "hypothesis": "Conditioning pead_beat card issuance on report timing, beat magnitude, and the prevailing volatility regime separates the beat population into strata whose per-card forward edge beats the unconditioned baseline by a positive conditional margin surviving the sealed window - and if no pre-registered stratum does, the conditioning set is null and the question closes.",
+   "order": 2,
+   "risks": "Thin n dominates (~63-70 era beats, strata n ~5-8 sealed); magnitude arm may re-derive PEAD-Q's non-monotone mess; VIX terciles may proxy calendar clusters; amc stratum is a 2-name contrast (COST, NFLX); if the base rule dies at its 20-card review the families die with it.",
+   "scope_ids": [
+    {
+     "cap": 32,
+     "config_count": 24,
+     "scope_id": "c09-pd2"
+    }
+   ],
+   "slot_id": "pead-deep-2",
+   "source_doc": "docs/theory/campaign-2026-09/slots/pead-deep-2.md",
+   "title": "conditioning deepening of the pead_beat survivor (timing, magnitude, vol regime)",
+   "verdict_vocabulary": [
+    "CANDIDATE",
+    "NULL",
+    "INSUFFICIENT_N",
+    "STRATUM-CONFIRMED",
+    "FAMILY-NULL",
+    "PROMOTE-AS-GATE",
+    "CLOSE",
+    "WITHDRAWN",
+    "INSUFFICIENT_COVERAGE"
+   ]
+  },
+  {
+   "acceptance_criteria": [
+    "per T1 cell, ALL four to be a CANDIDATE: (1) ON mean - B(declared sealed window, matching book shape: xsmom-shaped for XSMOM legs, event-shaped for PEAD legs) > 0 (excess over drift baseline) and clustered-t >= 2.64 (one-sided Bonferroni, m = 12); (2) ON > OFF; (3) gated book mean/card AND total P&L >= ungated; (4) OFF-n >= 8 (XSMOM) / >= 20 (PEAD) else NOT_EVALUABLE",
+    "family beat-or-withdraw: best new-quantity ON-OFF spread must beat the best incumbent spread by entry-date block bootstrap (10,000 resamples, one-sided P < 0.05) on the same rule; parity = WITHDRAW",
+    "T2 (descriptive-only): REGIME-SIGN-FLIP requires paired mean > 0 with conservative t >= 2 in STRESSED while <= 0 in CALM; any cell < 100 signal dates = NOT_EVALUABLE; outcome conditioning on already-viewed cells - no live change possible (XU post-hoc-amendment precedent)"
+   ],
+   "census_novelty": "GATE-001's 48 cells were spyup/breadth/spyvol gates on MR/R3f+up/CONT/VOLSPIKE at holds 1-2 (all now DEAD); no VIX index, no term-structure quantity, and never the survivors were gated (artifacts/paper-trades/GATE-001.md, RESEARCH-LEDGER.md); vix_term sits in CONTEXT_ONLY by declaration with no card-gate evidence ever computed - the inc cells are its first evaluation, r93/bs the first uses of VIX9D/VIX1Y in the program.",
+   "config_count": 24,
+   "config_ids": [
+    "T1-01",
+    "T1-02",
+    "T1-03",
+    "T1-04",
+    "T1-05",
+    "T1-06",
+    "T1-07",
+    "T1-08",
+    "T1-09",
+    "T1-10",
+    "T1-11",
+    "T1-12",
+    "T2-01",
+    "T2-02",
+    "T2-03",
+    "T2-04",
+    "T2-05",
+    "T2-06",
+    "T2-07",
+    "T2-08",
+    "T2-09",
+    "T2-10",
+    "T2-11",
+    "T2-12"
+   ],
+   "data_gates": [
+    "none for the slot proper: consumes only the equity panel and CBOE index CSVs (IV history, chains, long-dated bars all irrelevant - no IV-threshold rule declared)",
+    "index outage > 5 sealed sessions triggers NOT_EVALUABLE rather than imputation; CBOE restates bound by provenance.jsonl sha256 at run time"
+   ],
+   "declared_use": "CONTEXT_ONLY (the vix_term family). May only WITHHOLD an entry of an ALLOWED_DIRECTION signal: OFF = the card is skipped for that occurrence. No deferral, re-entry, re-ranking, name substitution, inversion, sizing-up, or short leg. A PASS-GATE earns a recorded context annotation on future cards plus a queued successor pre-registration; never a mid-stream edit of sealed rules. Arm T2 is report-only (SEMI-GATE posture).",
+   "family": "TERM-GATE",
+   "fold_mapping": {
+    "gate_timing": "index closes of session t-1 only (CBOE prints finalize 16:15 ET; INV-02/INV-10 conservatism; absorbs the 1-session index tail lag); trailing stats over [t-252, t-1] inclusive = 252 sessions = min_train (FIXED at assembly)",
+    "inner_tuning": "sessions <= 2024-09-03 (~752 >= min_train); realized tuning cards: 22 XSMOM entries 2022-11-01..2024-08-01; PEAD has NO tuning-era cards (thresholds fit-free SIGN or trailing-quantile, outcome-free); the only tuning-era selection is ranking the six gate specs on the 22 XSMOM cards, recorded before any sealed-era run",
+    "purge": "last tuning signal 2024-08-01; ordinal+20+5 = ordinal(2024-09-06) so the first eligible eval session is 2024-09-09 (strict purge_gap_rule, verified); declared sealed boundary 2024-10-01 (first FOM past the purge; PEAD drops its three 2024-09 cards for symmetry)",
+    "sealed": "ONE block (declared deviation, GATE-001/XSMOM-EXITGRID idiom): XSMOM entries 2024-10-01..2026-08-03 (23 monthly cards; the 2026-09-01 card is incomplete at panel end); PEAD entries 2024-10-16..2026-08-06 (141 cards with completed holds); later cards accrue to the forward chain only"
+   },
+   "hypothesis": "A VIX term-structure gate evaluated at t-1 - the VIX9D/VIX3M ratio (or VIX3M/VIX1Y back slope) against a trailing-252 quantile - withholds XSMOM-TOP3 and PEAD-BIGSURPRISE cards whose sealed-window conditional mean is below the kept cards', and separates kept from withheld strictly better than the incumbent vix_term definition (VIX/VIX3M - 1) on identical machinery; if no new-quantity gate both passes the cell bar and beats the incumbent, the family withdraws.",
+   "order": 3,
+   "risks": "XSMOM power (23 cards, ~40% OFF under Q60 vs floor 8; 5.1%-OFF SIGN cells ~1 card); the gate may skip the best months (criterion 3 then converts to WITHDRAW - intended); term-structure regime persistence leaves ~few effective draws; T2 prior is t -12..-26 pooled, expected NO-REGIME-SIGNAL.",
+   "scope_ids": [
+    {
+     "cap": 32,
+     "config_count": 24,
+     "scope_id": "c09-term"
+    }
+   ],
+   "slot_id": "term-gate",
+   "source_doc": "docs/theory/campaign-2026-09/slots/term-gate.md",
+   "title": "VIX term-structure context gate on the survivor card rules (must beat the vix_term incumbent)",
+   "verdict_vocabulary": [
+    "PASS-GATE",
+    "INCUMBENT-CONFIRMED",
+    "WITHDRAW",
+    "NOT_EVALUABLE",
+    "DESCRIPTIVE-ONLY:REGIME-SIGN-FLIP",
+    "DESCRIPTIVE-ONLY:NO-REGIME-SIGNAL",
+    "DESCRIPTIVE-ONLY:NOT_EVALUABLE"
+   ]
+  },
+  {
+   "acceptance_criteria": [
+    "per cell, paired vs the hold-20 baseline on the sealed era: PASS iff paired mean > 0 AND conservative t >= one-sided Bonferroni quantile at alpha = 0.05/m (m = 9 for A, 10 for B, 5 for C) AND paired mean >= 5bp (economic floor) AND power floor met (A: >= 30 sealed beats; B: >= 60 legs and >= 20 rebalance clusters; C: >= 40 spread episodes)",
+    "scope verdicts: HOLD-STANDS (no cell PASSes) or EXIT-SUCCESSOR-NOMINATED (>= 1 PASS; adoption only via the forward chain after the sealed rule's 18/20-card review)",
+    "multiplicity charged at the full declared scope count regardless of run subset; DSR report at N = 24 declared alternatives for any survivor"
+   ],
+   "alternatives_count": 24,
+   "census_novelty": "EXIT-GRID.md (52 cells, horizon 1-2, all four rules now BANNED) and XSMOM-EXITGRID.md (26 cells at h60, 0/26) never ran trailing/armed/context-timed/calendar-aligned variants and never exit-gridded the monthly hold-20 card rule; PEAD-DEEP/HORIZON-001 ran unconditional hold ladders with entry-information cuts only; no exit variant exists for PEAD anywhere (artifacts/paper-trades/{EXIT-GRID,XSMOM-EXITGRID,PEAD-DEEP,HORIZON-001}.md); intraday_exit_pilot.py output absent on disk, superseded (banned rule, wrong horizon).",
+   "config_count": 27,
+   "config_ids": [
+    "a-hold20",
+    "a-adv05-arm5",
+    "a-adv10-arm5",
+    "a-adv05-arm10",
+    "a-adv10-arm10",
+    "a-trail10-arm5",
+    "a-trail15-arm5",
+    "a-vixterm",
+    "a-breadth40",
+    "a-mom20flip",
+    "b-hold20",
+    "b-trail10-arm5",
+    "b-trail15-arm5",
+    "b-trail20-arm5",
+    "b-adv10",
+    "b-adv15",
+    "b-adv10-arm10",
+    "b-mom20flip",
+    "b-vixterm",
+    "b-breadth40",
+    "b-monthend",
+    "c-ts20",
+    "c-ts5",
+    "c-ts10",
+    "c-dstop70",
+    "c-dstop15",
+    "c-expiry"
+   ],
+   "data_gates": [
+    "scope C (6 configs): DATA-GATED on (i) the long-dated bar capture landing and passing a coverage/integrity check on the evaluation span (ETA ~2026-09-27) AND (ii) the post-M0 short-leg machinery existing (debit-spread short legs require expiration/assignment logic per short_options policy); otherwise DATA-GATED-NOT-RUN forever and the slot's value collapses to A+B, disclosed",
+    "scope C fills: vwap/G3 quote kind, $0.65/contract, $1/order min, next-session execution, delta provenance model-derived-from-vwap accepted (0.2.2)"
+   ],
+   "declared_use": "Every cell TIMES THE EXECUTION of an ALLOWED direction: no cell fires an entry, selects or substitutes a name, flips or points a direction, shorts, or applies to a BANNED rule. Conditioning variables appear ONLY as exit conditions (CONTEXT_ONLY consumed as exits; they may shorten a hold, never widen the trade set). A PASS nominates an EXIT-SUCCESSOR - evaluated after the sealed rule's 18/20-card review through the forward chain, never a swap of a card in flight.",
+   "family": "EXIT-GRID-2",
+   "fold_mapping": {
+    "honesty_statement": "load-bearing: no virgin backtest window exists for either survivor (census consumed the panel through 2026-09-23); the seal binds the VARIANT DELTAS (none of the 24 alternatives exists in the census), the base hold-20 outcomes are public, and the only clean OOS for a PASS is the forward card chain",
+    "inner": "EMPTY BY DESIGN for scopes A and B (every level pinned ex-ante with enumerated justification; frozen-grid house precedent: EXIT-GRID.md, XSMOM-EXITGRID.md, XSMOM-12-1-PREREG.md); nothing is selected on data so no tuning fold is consumed",
+    "reserved_geometry_eg2a": "train 2024-09-05..2025-09-08 (252), validation 2025-09-09..2026-03-10 (126, 53 report dates - verified), purge >= 25 (hold 20 + embargo 5; val end +25 = 2026-04-15), sealed test 2026-05-21..2026-08-20 (63, hold-complete through 2026-09-18 - verified)",
+    "reserved_geometry_eg2b": "tuning rebalances 2022-11-01..2024-09-03 (23 month-starts), validation block 2024-03-05..2024-09-03 (126, 6 rebalances - verified), purge 25 after 2024-09-03 ends 2024-10-08 (verified); the reserve binds only a successor that introduces tunable parameters - the sealed era below legitimately begins inside it because no tuning is consumed",
+    "sealed_eg2a": "calendar era 2024-09-05..2026-08-28, beats-only, hold-complete entries (family convention; boundary computed by the engine)",
+    "sealed_eg2b": "sealed basis era on the monthly card stream: 23 rebalances 2024-10-01..2026-08-03, 69 legs (matches PROTOCOL-XSMOM.md months 2024-10..2026-08); the daily-overlap research construction is NOT re-run (XSMOM-EXITGRID's ground, answered at h60)",
+    "sealed_eg2c": "mirrors A on whatever bar span passes the data gate; feasibility floor 252+126+25+63 = 466 usable sessions (on-disk cache spans 508)"
+   },
+   "hypothesis": "On the two allowed directions' sealed hold-20 card streams, at least one pre-registered post-entry conditioning exit - wide armed adverse-drift, ratcheting trailing, context-flip timer (CONTEXT_ONLY variables), calendar-aligned time-stop, or (data-gated) options-expression time/delta stop - improves paired per-signal net return vs hold-20 by >= 5bp with conservative day-clustered one-sided Bonferroni significance on its sealed era; otherwise the hold-to-horizon discipline stands everywhere and the exit question closes.",
+   "order": 4,
+   "risks": "The census null generalizes (tail-carried premium vs tail-amputating exits -> HOLD-STANDS expected); B capped at 23 clusters; published base outcomes contaminate post-hoc (forward chain is the only clean test); close-trigger semantics conservative vs live intraday touch; scope C may never run.",
+   "scope_ids": [
+    {
+     "cap": 32,
+     "config_count": 10,
+     "scope_id": "c09-eg2-a"
+    },
+    {
+     "cap": 32,
+     "config_count": 11,
+     "scope_id": "c09-eg2-b"
+    },
+    {
+     "cap": 32,
+     "config_count": 6,
+     "scope_id": "c09-eg2-c"
+    }
+   ],
+   "slot_id": "exit-grid-2",
+   "source_doc": "docs/theory/campaign-2026-09/slots/exit-grid-2.md",
+   "title": "exit/hold-policy grid on the survivors at the sealed hold-20 card horizon",
+   "verdict_vocabulary": [
+    "PASS",
+    "FAIL",
+    "UNDERPOWERED",
+    "DATA-GATED-NOT-RUN",
+    "HOLD-STANDS",
+    "EXIT-SUCCESSOR-NOMINATED"
+   ]
+  },
+  {
+   "acceptance_criteria": [
+    "(a) PASS iff mean daily cross-sectional Spearman IC on sealed outer origins in the declared direction, one-sided p < 0.05 (circular block bootstrap, block = h, B = 2000, seed PCG64(22)); PASS-REDUNDANT iff PASS but partial IC (vs XSMOM score and lnRV21) has |t| < 1; FAIL otherwise incl. inner wrong-sign",
+    "(b) PASS iff S_u (JF-V1-H21, fixed by SEL-b) beats vix_term (same one-session lag) on Spearman with forward RV21(SPY) by one-sided paired circular block bootstrap p < 0.05; MDD21 twin reported with identical machinery (disclosure); dispersion twin and tercile card-gate lift DISCLOSED, never verdicts",
+    "NOT_EVALUABLE: V3 collapse tripwire (eval-fold latent variance < 1e-2 x train), future-poison failure, complete outer origins < 126, > 10% skipped origins; defective runs by operator ruling only",
+    "three sealed verdicts total: (a) at h=5, (a) at h=21, (b); baselines on identical origins incl. the no-signal null band, a disclosed-only 3-seed randomized-score null (wave-0 T-NULL style), the XSMOM score, cheap-surprise controls lnRV21 and |r_21|, and vix_term as the (b) incumbent"
+   ],
+   "census_novelty": "No learned-state family exists in the ~1,220-cell census (every cell a threshold/rule/gate over raw price, volume, earnings, or index features; artifacts/paper-trades/RESEARCH-LEDGER.md); HAR/FORECAST-001 is the degenerate special case already in production (docs/desk/FORECAST-001.md, sealed PASS) and inherits the hardest baseline; GATE-001 is the same CONTEXT door on raw statistics with a rule-lift verdict, not a paired beat-incumbent on forward vol.",
+   "config_count": 8,
+   "config_ids": [
+    "JF-V1-H5",
+    "JF-V1-H21",
+    "JF-V2-H5",
+    "JF-V2-H21",
+    "JF-V3-H5",
+    "JF-V3-H21",
+    "JF-V4-H5",
+    "JF-V4-H21"
+   ],
+   "data_gates": [
+    "option chains (one session) and the low-fidelity IV history excluded from the state (IVHIST-001 gate); surface-augmented state is a LATER pre-registered variant, not data-gated inside this slot",
+    "macro features impossible (macro calendar 2026-01-01..2027-12-31 only); earnings calendar excluded from the state by design"
+   ],
+   "declared_use": "CONTEXT_ONLY door only, competing with vix_term: at most gates or times the expression of ALLOWED directions, never a new trade. (a)'s long-low/short-high is a scoring convention for a one-sided rank test, not a trade - no orders, no fills, option_candidate_defaults inert; the census killed shorts at every horizon and naked short options are prohibited, so even a PASS on (a) authorizes nothing; promotion of (a) to a direction input is a separate later sealed study. Reverse direction is NOT available post hoc (FLIP consumes a variant slot). On (b) PASS: S_u recorded as a candidate context input beside vix_term; on FAIL: vix_term remains the sole vol-regime context input and the family closes.",
+   "family": "JEPA-SURPRISE",
+   "fold_mapping": {
+    "geometry_notes": "roll = quarterly = 63; embargo 5 rides inside the declared purge gap h+5; label horizon 5 (protocol) at h=5 and 21 (declared) at h=21; the 182-session sealed span replaces repeated 63-session test folds (declared, wave-0 precedent)",
+    "initial_train": "2021-09-13..2024-06-30 = 703 panel-union sessions (>= min_train 252; verified)",
+    "inner": "origins 2024-07-01..2025-12-31 = 378 sessions (verified); quarterly anchored-expanding refits (6); training rows satisfy ordinal(t)+h+5 < ordinal(first session of Q) (purge_gap_rule); ALL tuning including SEL-a variant selection, direction confirmation, incrementality diagnostics",
+    "sealed": "origins 2026-01-02 through cutoff-h, cutoff = earliest last session among the 35 (today 2026-09-23); 182 sessions in span (verified), complete origins 177 at h=5 / 161 at h=21; refit schedule continues under the identical rule; scored ONCE after the inner-loop selection is frozen and recorded"
+   },
+   "hypothesis": "Primary (b): the cross-sectional mean S_u of the standardized latent forecast error of a PCA-anchored linear JEPA over the 11-feature equity+index state beats the incumbent vix_term (VIX/VIX3M - 1) on Spearman rank correlation with forward 21-session SPY realized variance over the sealed outer origins (one-sided paired block bootstrap p < 0.05), and the family is falsified otherwise. Companion (a): per-name standardized latent surprise ranks forward h-session returns (long LOW / short HIGH as a scoring convention only) with mean daily cross-sectional Spearman IC > 0 at one-sided p < 0.05 at h in {5, 21}, and a significant association that does NOT survive partialing out the XSMOM score and lnRV21 is recorded as re-labeled momentum/vol, never promoted.",
+   "order": 5,
+   "pinned_constants": "ridge alpha 1.0; lambda_v = lambda_c = 25.0; GD 2000 iters lr 1e-2 seed PCG64(22); V3 latent k=8; V4 = sector-residual over the 26 single stocks (static hand-declared map, ETF_HOLDINGS precedent); surprise indexed by completion session u with vintage v in force at u-h; index block lagged one session on challenger AND incumbent (INV-02)",
+   "risks": "Most likely failure PASS-REDUNDANT (an 11-feature linear state re-labels vol/momentum - the partial-IC tripwire exists to say exactly this); 35 names cap detectable IC (power disclosed: daily IC ~0.03-0.05 at 161-177 origins); V3 collapse; basis drift across refits; the (b) filter can be an expensive vix_term - the paired identical-origins test kills exactly this.",
+   "scope_ids": [
+    {
+     "cap": 32,
+     "config_count": 8,
+     "scope_id": "c09-jf"
+    }
+   ],
+   "slot_id": "jepa-filter",
+   "source_doc": "docs/theory/campaign-2026-09/slots/jepa-filter.md (sealed translation of docs/theory/trade-jepa-exploration-2026-09-23.md)",
+   "title": "latent-surprise context filter vs the vix_term incumbent",
+   "verdict_vocabulary": [
+    "PASS",
+    "PASS-REDUNDANT",
+    "FAIL",
+    "NOT_EVALUABLE"
+   ]
+  },
+  {
+   "acceptance_criteria": [
+    "inner validation fold, median-of-k, paired block bootstrap over episodes: PASS iff evolved > un-evolved seed > best fixed rule with evolved beating seed by >= +0.05 R mean at p < 0.10; PASS-RULES-ONLY-SEED iff seed ~ evolved and seed > best fixed rule; FAIL otherwise; NOT_EVALUABLE on harness/data-integrity defects (budget abort, integrity gate failing on > 10% of episodes, absent measurement floor)",
+    "mandatory diagnostic: transpile the frozen policy to a <= 8-node tree; >= 95% action match with simulator PnL inside the noise band = rule-equivalent, recorded with the honest PASS-RULES-ONLY-SEED / FAIL vocabulary; the transpiled rule is NOT registerable as a signal (post-hoc; dead on arrival if BANNED)",
+    "evidence class: SIM-FILL-INTRADAY-v1 (next-bar-open, declared 5%-of-mid-per-side spread penalty, participation caps, BS pricer off prev-session IV30) - SYNTHETIC-CLASS; no real-market performance or discovery claim may rest on it; promotion only via the paper sandbox, never this simulator"
+   ],
+   "census_novelty": "EXEC-001 (GATE-001.md) priced fixed next-open entry at daily granularity (+-2-4bp, no gap-capture alpha) - the fixed-rule null this family must beat; no learned policy, no intraday simulation, and no LLM agent exists anywhere in the census; minute bars absent on disk (artifacts/intraday-cache/ verified absent).",
+   "config_count": 1,
+   "config_detail": "N = 15-minute bars (26 steps/episode); population 4 seeds x 3 generations, DSPy GEPA auto='light' (420 selection calls); k = 3 median voting on validation; actor glm-5.3-flash T = 0.2 via the quota broker; reflector glm-5.3 non-flash (MiniMax fallback); hard caps 30,000 actor requests / 60M input tokens (abort scores 0); four baselines incl. the un-evolved-seed ablation; program plans <= 4 of 32 scope slots (MVE, N = 5 arm only if N = 15 passes, JEPA-obs variant, macro variant).",
+   "config_ids": [
+    "agentexec-mve-n15"
+   ],
+   "data_gates": [
+    "intraday episode capture (~192 wire requests incl. 20% retry budget, ~32 min at the 5 req/min governor) PENDING SEPARATE OPERATOR APPROVAL - do not fetch",
+    "four builds named, none built: registration seam, capture, harness + artifact hashing, SIM-FILL-INTRADAY-v1 fill model; macro-episode variant additionally gated on historical macro-date capture (public calendars, MACRO-SEALS.md convention)",
+    "activation requires an explicit operator GO on the memo's MVE recommendation, a NEW sealed registration with its own sha256 in the FORECAST-001 manner, and a trial row in the sqlite registry BEFORE any episode is evaluated"
+   ],
+   "declared_use": "EXECUTION ONLY: the agent TIMES and SIZES; it never PICKS. On live-signal episodes the only expressible direction is the declared ALLOWED one (long, defined risk); on plain no-signal days any action is PAPER-SANDBOX-ONLY (informational, never promotion-grade). Banned families are mechanically inexpressible (long-only action validator; BANNED registry verbatim in every reflection prompt; post-hoc action-trace audit for disguised volspike/gap_fade). Whole GEPA loop = ONE registered optimizer config; its output is a single frozen policy artifact (prompt + decoding params + parser version, sha256) that alone receives ONE sealed evaluation.",
+   "family": "AGENT-EXEC",
+   "fold_mapping": {
+    "inner": "episodes 2024-09-05..2025-12-31, stratified 24/24/12 train + 8/8/4 validation (XSMOM card day / PEAD beat day / plain day); ALL tuning including every GEPA decision stays here; macro days EXCLUDED (no historical macro dates exist - macro-2026-2027.json covers 2026-01-01..2027-12-31 only)",
+    "sealed": "episodes from the first session >= 2026-01-09 (inner end + the protocol's 5-session embargo, applied literally) through the capture date; the frozen artifact is the only thing that crosses the seal; nothing outer feeds reflection; forward results never promote"
+   },
+   "hypothesis": "A GEPA-evolved one-predictor LLM policy timing defined-risk intraday entries on the two ALLOWED directions beats both the un-evolved seed prompt and the best fixed EXEC-001-style rule on inner-fold median-of-k episode scores (>= +0.05 R mean over the seed, paired block bootstrap p < 0.10 inner / p < 0.05 sealed outer) - and if it does not, the learned-timing family closes at the evolved frontier.",
+   "order": 6,
+   "risks": "Most likely: the evolved policy transpiles to a small fixed rule (5.1) - the ablation + vocabulary is the honest answer; actor noise masquerading as improvement (k = 3 median, identical machinery); overfit to 60/20 episodes; the measurement-floor pilot (10 episodes: does the un-evolved seed separate from no-trade beyond the actor-noise band?) may render the MVE NOT_EVALUABLE by construction.",
+   "scope_ids": [
+    {
+     "cap": 32,
+     "config_count": 1,
+     "scope_id": "c09-agentexec"
+    }
+   ],
+   "slot_id": "agent-exec",
+   "source_doc": "docs/theory/trade-agent-gepa-game-2026-09-23.md (exploration memo; NOT a registration - this menu entry is the placeholder only)",
+   "status": "PLACEHOLDER-BUILD-GATED",
+   "title": "GEPA-evolved LLM execution agent - BUILD-GATED PLACEHOLDER, do not activate",
+   "verdict_vocabulary": [
+    "PASS",
+    "PASS-RULES-ONLY-SEED",
+    "FAIL",
+    "NOT_EVALUABLE",
+    "NOT_PROMOTABLE"
+   ]
+  }
+ ],
+ "supersedes": "3bb10a2feb340e4b3aac92980fb0537352a767fc2e53af4bb3fc70e25d3ce440",
+ "unique_configs": 111,
+ "version": 2
 }
