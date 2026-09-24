@@ -559,3 +559,36 @@ Each **Refresh-data** press spools `POST /api/market/refresh
 to the ATM±15-rung band, both rights, before anything touches disk).
 The 300 s TTL cache-absorbs repeat presses; per-symbol failures surface as
 `{sym}:viewchain` errors in `market.json` and never abort the cycle.
+
+## Cockpit symbol pages (data sources, 2026-09-24 upgrade)
+
+`#/market/<SYM>` reads three endpoint families, each with its own
+freshness semantics (never mixed silently):
+
+- **`/api/market/{sym}/history`** — the desk panel
+  (`artifacts/paper-trades/ohlc-panel.json`, 5y split-adjusted, extended
+  nightly by `desk-eod-equity`). Read under the panel's SHARED flock with
+  a 3 s web timeout: a writer holding the lock degrades to an honest
+  `points:null · panel busy` body, never a 500. Names without panel
+  history serve `in_panel:false` and the UI falls back to the legacy
+  365-day envelope. ETag/304 on the stable subset.
+- **`/api/market/{sym}/options`** — the RECORDED surface (nightly
+  `desk-chain` snapshot + on-demand `features`) is always
+  session-stamped ("recorded session D · not live"); the LIVE section
+  comes from the `viewchain` cache (see the section above) and carries
+  its age in seconds. The IV30 history chart discloses its own span
+  (`iv-history/vwap_atm.json`, ends with the last manual
+  `ivhist-build`).
+- **`/api/market/{sym}/ideas`** — advisory-only: signals slice from the
+  nightly `signals/<D>.json`, desk-mine queue deals (selection rule
+  PROPOSED — labeled verbatim), paper positions from the plan TOMLs +
+  `book.json`, sealed-card lines from `LEDGER.md`, research lines from
+  `RESEARCH-LEDGER.md`. Direction chips derive from the endpoint's
+  `protocol.allowed_direction` (= `desk.signals.ALLOWED_DIRECTION`);
+  nothing else may render as direction.
+
+Panel data notes for the viewer: SPCX's panel history is trimmed to
+its 2026-06-12 listing floor (`LISTING_FLOORS` in `fetch_ohlc.py` —
+the vendor serves the prior ticker occupant before the listing; the
+clamp also guards the rebase full-refetch path). PLTR's 2021+ history
+is genuine (listed 2020-09).

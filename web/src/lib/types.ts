@@ -667,7 +667,7 @@ export interface SymbolOptions {
 // allowed_direction signals may point a trade; everything else is
 // information. Every section is nullable and degrades honestly.
 export interface XsmomCard {
-  score: number
+  score: number | null  // null: name not in the sealed-36 ranking (e.g. PLTR/SPCX)
   in_top3: boolean
   top3: string[]
   is_rebalance_day: boolean

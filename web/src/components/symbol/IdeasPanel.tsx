@@ -147,7 +147,7 @@ function SignalsCard({
             </p>
           </div>
           <div className="num" style={{ fontSize: '1.5rem', fontWeight: 700 }}>
-            {s.xsmom.score.toFixed(2)}
+            {s.xsmom.score !== null ? s.xsmom.score.toFixed(2) : '—'}
           </div>
         </div>
         <div className="pill-row" style={{ margin: '10px 0' }}>

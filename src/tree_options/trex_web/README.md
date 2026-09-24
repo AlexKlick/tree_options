@@ -14,13 +14,23 @@ never imports `ib_async`. Designed to run in parallel with the live
 | `/plan/{plan_id}` | Legacy-bookmark shim: inline script rewrites to `./../#/plan/<id>` (never an HTTP redirect — an absolute Location would escape the portal prefix) |
 | `/api/plans` | Plan summaries (no marks data) |
 | `/api/plans/{plan_id}` | Plan detail: specs, runbook, per-structure state (incl. server-computed `realized_pnl`), marks, numeric book summary, payoff series, decimated P&L history, trailing events |
+| `/api/market` | Market snapshot: `market.json` symbols + watchlist + proposals |
+| `/api/market/{sym}` | Symbol detail: quote + ~1y daily closes + news (discovery cache envelopes, ages disclosed) |
+| `/api/market/{sym}/history` | Long-term OHLCV from the desk panel (5y split-adjusted, `?range=1y\|3y\|5y\|max&max_points=`, row-decimated, ETag/304; `points:null` + `error` when the writer holds the panel lock, `in_panel:false` pre-backfill) |
+| `/api/market/{sym}/options` | Recorded options surface (nightly chain ATM slice + features cards + iv_rank + 2y IV30 history) plus `live` viewchain when warmed (`?window=&max_expiries=`) |
+| `/api/market/{sym}/ideas` | Advisory idea context: signals slice (xsmom rank/top3, PEAD, next report), desk-mine queue deals, paper positions, sealed cards, research lines, and the `protocol` block (`allowed_direction` from `desk.signals` — the UI's direction chips derive from it, nothing else) |
+| `/api/market/refresh` `POST` | Spool a forced market refresh (warms quote/bars/news/viewchain for the symbols) |
 | `/plan/{plan_id}/book.json` | Raw `book.json` for debugging |
 | `/plan/{plan_id}/events.jsonl` | Raw `events.jsonl` |
 | `/health` | JSON liveness probe |
 
-The SPA hash-routes (`#/plan/<id>`), polls `/api/plans[/{id}]` every 15s
-(paused while hidden), and formats everything client-side (ET via
-`Intl` timeZone, USD signs) except the prebuilt `+_usd` payoff labels.
+The SPA hash-routes (`#/plan/<id>`, `#/market[/{sym}]`), polls
+`/api/plans[/{id}]` + the symbol endpoints every 15s/60s (paused while
+hidden), and formats everything client-side (ET via `Intl` timeZone, USD
+signs) except the prebuilt `+_usd` payoff labels. The symbol page's
+Ideas tab is advisory-only by protocol: direction chips render solely
+for `ALLOWED_DIRECTION` members; queue deals carry the miner's
+`PROPOSED` status verbatim; research lines are non-directional display.
 
 ## Build & deploy
 
