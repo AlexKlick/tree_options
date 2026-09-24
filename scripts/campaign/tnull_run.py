@@ -44,6 +44,58 @@ stamps the calibration block, or -- on any DEFECT-FLAGGED seed -- writes
 the defect flag file and stamps DEFECT-FLAGGED so family scoring stays
 frozen pending an operator ruling. Every phase refuses on any mismatch
 with the sealed menu (hashes, params, floors, bands).
+
+v2 RE-STAMP (menu v2, operator ruling 2026-09-23 ~23:45 MDT — drift-
+relative null; ``REGISTRATION-NOTES.md`` section 7): ``--baseline``
+computes B(W, shape) per menu ``rules.null_baseline`` — the
+unconditional drift baseline: the day-clustered NET (5bp RT) per-trade
+mean of the ALL-NAMES stream over each declared evaluation window, built
+by the SAME code path, holds, Decimal closes, and exclusions as the null
+streams (hold-20 close-to-close, house hold filter, 2025-01-09
+excluded). Shapes: xsmom-shaped = every first-of-month NYSE session in
+the window x ALL sealed-36 tradables (the desk config's
+``XSMOM_TRADABLES``, never a panel derivation); event-shaped = every
+chain-35 reporter reporting at a first-post-report session, the
+reporting name entered. The v2 criteria are then re-evaluated against
+the EXISTING v1 seed streams read from ``calibration.json`` (never
+re-fetched, re-randomized, or re-run — the streams and their arithmetic
+are verified data): per seed x window, criterion 1 unchanged
+(day-clustered |t| < 2 on gross) and criterion 2 drift-relative (seed
+net per-trade mean within 2 x its day-clustered se of B(W, shape)),
+plus the unchanged union entry floors; the tripwire prior block a
+CALIBRATED null stamps is carried under the same v1 convention.
+``--baseline`` refuses unless the v1 calibration binds this menu's
+``supersedes`` sha, the same pinned input hashes, the same trial ids,
+the same cutoff/windows, and registry rows that are COMPLETED with the
+same sub_eras. It stamps ``calibration-v2.json`` citing the menu v2 sha
+(menu ``rules.sequencing`` AMENDMENT v2: family scoring unfreezes only
+after this re-stamp passes) and, on any seed still failing, writes the
+v2 defect flag so family scoring stays frozen pending another operator
+ruling.
+
+v3 RE-STAMP (menu v3, operator ruling 2, 2026-09-23 ~23:55 MDT — the
+NOT_EVALUABLE floor for sub-evaluable null cells;
+``REGISTRATION-NOTES.md`` section 8): ``--v3-floor`` reads the EXISTING
+``calibration-v2.json`` per-cell stats — never re-fetching,
+re-randomizing, or re-running the seeds, and never re-deriving B — and
+classifies every seed x window x shape cell: a cell with < 5 entry-days
+or < 20 complete trades is NOT_EVALUABLE (its values are still reported,
+for transparency — that is the point of the floor — but it carries no
+flag authority and feeds no prior). The null is CALIBRATED iff every
+EVALUABLE cell passes BOTH v2 criteria (their pass arithmetic — t,
+delta-vs-B, band — is carried from the v2 stamp unchanged) on every
+seed, with the unchanged union entry floors. B(W, shape) and the
+all-names shape blocks are carried forward verbatim from the v2 stamp;
+the tripwire prior block is stamped only by a CALIBRATED null and is
+built from EVALUABLE cells only, so windows with no evaluable cell
+carry no prior — families in those windows are gated by B(W, shape)
+alone. ``--v3-floor`` refuses unless the v2 artifact binds this menu's
+``supersedes`` sha, the same pinned input hashes, the same trial ids,
+and the same cutoff, and stamps ``calibration-v3.json`` citing the menu
+v3 sha (menu ``rules.sequencing`` AMENDMENT v3: calibration-v3.json
+citing the v3 menu sha unfreezes family scoring); on any EVALUABLE cell
+failing it writes the v3 defect flag so family scoring stays frozen
+pending yet another operator ruling.
 """
 
 from __future__ import annotations
@@ -98,6 +150,10 @@ TNULL_DIR = CAMPAIGN_DIR / "tnull"
 TRIALS_DIR = TNULL_DIR / "trials"
 CALIBRATION_PATH = TNULL_DIR / "calibration.json"
 DEFECT_FLAG_PATH = TNULL_DIR / "DEFECT-FLAG.txt"
+CALIBRATION_V2_PATH = TNULL_DIR / "calibration-v2.json"
+DEFECT_FLAG_V2_PATH = TNULL_DIR / "DEFECT-FLAG-V2.txt"
+CALIBRATION_V3_PATH = TNULL_DIR / "calibration-v3.json"
+DEFECT_FLAG_V3_PATH = TNULL_DIR / "DEFECT-FLAG-V3.txt"
 LOCK_PATH = TNULL_DIR / "execute.lock"
 
 SCOPE_ID = "c09-tnull"
@@ -123,8 +179,11 @@ UNION_END = "2026-09-23"
 HOLD_SESSIONS = 20
 RT_PRIMARY = 0.0005  # 5bp round trip, primary
 RT_ROBUST = 0.0015  # 15bp round trip, robustness disclosure
-NET_BAND = (-0.0015, 0.0005)  # [-15bp, +5bp] on the net per-trade mean
+NET_BAND = (-0.0015, 0.0005)  # [-15bp, +5bp] on the net per-trade mean (v1; superseded by menu v2)
 T_BAND = 2.0  # day-clustered |t| < 2 on the gross per-trade mean
+V2_K = 2.0  # menu v2 criterion 2: |seed net mean - B(W, shape)| <= K x seed day-clustered se
+V3_MIN_ENTRY_DAYS = 5  # menu v3 floor: below this the cell is NOT_EVALUABLE
+V3_MIN_COMPLETE_TRADES = 20  # menu v3 floor: below this the cell is NOT_EVALUABLE
 ENTRY_FLOORS = {"xsmom": 60, "event": 100}
 # Fixed sub-era starts/ends from the menu's fold_mapping.sealed; the
 # jepa-outer END is computed at run time as cutoff - 21 sessions (the
@@ -458,6 +517,73 @@ def event_stream(inputs: Inputs, seed: str) -> list[Trade]:
             _complete_trade(inputs, name, entry, sub_era, f"post-report:{report_iso}")
         )
     return trades
+
+
+def _baseline_names_xsmom(inputs: Inputs) -> tuple[str, ...]:
+    """The all-names xsmom shape trades the desk CONFIG's sealed-36
+    tradables (menu v2 rules.null_baseline: ``XSMOM_TRADABLES from the
+    config, never a panel derivation``); load_and_bind has already
+    refused unless panel-minus-SPY equals that set, so this is a
+    cross-check, not a derivation."""
+    from tree_options.desk.universe import XSMOM_TRADABLES
+
+    names = tuple(sorted(XSMOM_TRADABLES))
+    if len(names) != 36 or set(names) != set(inputs.tradables):
+        raise Refused("the desk config's xsmom.tradables are not the sealed 36")
+    return names
+
+
+def baseline_xsmom_stream(inputs: Inputs) -> list[Trade]:
+    """rules.null_baseline, xsmom shape: EVERY sealed-36 tradable entered
+    at EVERY first-of-month NYSE session in the union span (windows are
+    entry-date containment cuts of the same pass, exactly like the null
+    streams -- same code path, holds, Decimal closes, exclusions)."""
+    cal = inputs.calendar
+    union_lo = date.fromisoformat(UNION_START)
+    union_hi = date.fromisoformat(UNION_END)
+    names = _baseline_names_xsmom(inputs)
+    trades: list[Trade] = []
+    for s in cal.sessions():
+        if not (union_lo <= s <= union_hi) or not cal.is_first_session_of_month(s):
+            continue
+        sub_era = _sub_era_of(inputs, s)
+        for name in names:
+            trades.append(_complete_trade(inputs, name, s, sub_era, "fom-all36"))
+    return trades
+
+
+def baseline_event_stream(inputs: Inputs) -> tuple[list[Trade], int]:
+    """rules.null_baseline, event shape: EVERY chain-35 reporter reporting
+    at a first-post-report session is entered that session (the reporting
+    name entered; no hash selection). Same by_entry construction as the
+    seeded event stream. A name reporting twice into the same entry
+    session is entered once (deterministic earliest-report tie-break);
+    the dedupe count is returned for disclosure."""
+    cal = inputs.calendar
+    union_lo = date.fromisoformat(UNION_START)
+    union_hi = date.fromisoformat(UNION_END)
+    by_entry: dict[date, list[tuple[str, str]]] = {}
+    for name in inputs.reporters:
+        for report_iso in inputs.earnings[name]:
+            entry = cal.first_session_after(date.fromisoformat(report_iso))
+            if entry is None or not (union_lo <= entry <= union_hi):
+                continue
+            by_entry.setdefault(entry, []).append((name, report_iso))
+    trades: list[Trade] = []
+    deduped = 0
+    for entry in sorted(by_entry):
+        seen: set[str] = set()
+        for name, report_iso in sorted(by_entry[entry], key=lambda nr: (nr[1], nr[0])):
+            if name in seen:
+                deduped += 1
+                continue
+            seen.add(name)
+            trades.append(
+                _complete_trade(
+                    inputs, name, entry, _sub_era_of(inputs, entry), f"post-report-all:{report_iso}"
+                )
+            )
+    return trades, deduped
 
 
 def _sub_era_of(inputs: Inputs, entry: date) -> str:
@@ -996,6 +1122,755 @@ def phase_calibrate() -> int:
     return 0
 
 
+# -- v2 re-stamp (menu v2, drift-relative null) ----------------------------------------
+
+
+def _read_v1_calibration(inputs: Inputs) -> Mapping[str, Any]:
+    """The v1 calibration artifact is the SEALED seed evidence for v2: its
+    verdict cells are read, never re-derived. Refuse unless it binds this
+    menu's ``supersedes`` pin, the same pinned inputs, the same trial ids,
+    and the same panel cutoff (which fixes the jepa-outer window)."""
+    if not CALIBRATION_PATH.exists():
+        raise Refused(f"{CALIBRATION_PATH} is missing -- the v1 calibration is the sealed seed evidence")
+    body = json.loads(CALIBRATION_PATH.read_text(encoding="utf-8"))
+    stamp = body.get("stamp", {})
+    supersedes = inputs.menu.get("supersedes")
+    if not supersedes:
+        raise Refused("the menu carries no `supersedes` pin -- not a v2 amendment")
+    if stamp.get("registration_menu_sha256") != supersedes:
+        raise Refused(
+            "the v1 calibration's menu sha is not this menu's supersedes pin"
+            f" ({stamp.get('registration_menu_sha256')} != {supersedes})"
+        )
+    if stamp.get("dataset_manifest_hash") != inputs.dataset_manifest_hash:
+        raise Refused("the v1 calibration was stamped on a different dataset manifest")
+    if stamp.get("inputs_sha256") != {
+        "ohlc-panel.json": inputs.panel_sha256,
+        "earnings-calendar.json": inputs.earnings_sha256,
+        "nyse_sessions json": inputs.calendar_sha256,
+    }:
+        raise Refused("the v1 calibration's per-input sha256 do not match the pinned inputs")
+    if stamp.get("artifact_trial_ids") != [_trial_id(c) for c in _slot_configs(inputs)]:
+        raise Refused("the v1 calibration binds different artifact trial ids")
+    if stamp.get("cutoff_earliest_last_session_chain35") != inputs.cutoff_iso:
+        raise Refused("the panel cutoff moved since the v1 stamp -- the windows differ")
+    seeds = body.get("verdict", {}).get("seeds", {})
+    if sorted(seeds) != ["tnull-s1", "tnull-s2", "tnull-s3"]:
+        raise Refused("the v1 calibration does not carry exactly the three seed blocks")
+    for slot_id, blk in seeds.items():
+        for stream_key in STREAM_KEYS:
+            cells = blk.get("cells", {}).get(stream_key, {}).get("windows", {})
+            if sorted(cells) != sorted(label for label, _s, _e in _windows(inputs)):
+                raise Refused(
+                    f"v1 seed {slot_id}/{stream_key} window labels {sorted(cells)}"
+                    " do not match the re-derived windows"
+                )
+    return body
+
+
+def _registry_g2_check(inputs: Inputs) -> None:
+    """Read-only registry bind: the three g2 rows are COMPLETED and their
+    registered hyperparameters carry the SAME sub-era windows the current
+    pinned inputs re-derive (the executed truth behind calibration.json)."""
+    import sqlite3
+
+    conn = sqlite3.connect(f"file:{REGISTRY_PATH}?mode=ro", uri=True)
+    try:
+        rows = dict(
+            conn.execute(
+                "SELECT trial_id, status FROM trials"
+            ).fetchall()
+        )
+        hypers = dict(
+            conn.execute(
+                "SELECT trial_id, hyperparameters_json FROM trials"
+            ).fetchall()
+        )
+    finally:
+        conn.close()
+    for config in _slot_configs(inputs):
+        trial_id = _trial_id(config)
+        if rows.get(trial_id) != "COMPLETED":
+            raise Refused(f"registry row {trial_id} is {rows.get(trial_id)!r}, not COMPLETED")
+        hyper = json.loads(hypers[trial_id])
+        stamped = {k: tuple(v) for k, v in hyper.get("sub_eras", {}).items()}
+        if stamped != inputs.sub_eras:
+            raise Refused(
+                f"{trial_id} registered sub-eras {stamped} != the re-derived {inputs.sub_eras}"
+            )
+
+
+def _check_v1_window_alignment(inputs: Inputs, v1: Mapping[str, Any]) -> None:
+    """Calendar-arithmetic proof that the v1 cells' windows are the windows
+    the current pinned inputs re-derive (no stream re-execution): the
+    seeded xsmom stream enters EXACTLY 3 names per first-of-month session
+    and the seeded event stream EXACTLY 1 name per first-post-report
+    session, so each v1 cell's n_entries must equal 3 x fom-count
+    (xsmom) / entry-session-count (event) under the re-derived bounds."""
+    cal = inputs.calendar
+    union_lo = date.fromisoformat(UNION_START)
+    union_hi = date.fromisoformat(UNION_END)
+    fom = [
+        s
+        for s in cal.sessions()
+        if union_lo <= s <= union_hi and cal.is_first_session_of_month(s)
+    ]
+    entry_sessions = set()
+    for name in inputs.reporters:
+        for report_iso in inputs.earnings[name]:
+            entry = cal.first_session_after(date.fromisoformat(report_iso))
+            if entry is not None and union_lo <= entry <= union_hi:
+                entry_sessions.add(entry)
+    for label, start, end in _windows(inputs):
+        fom_n = sum(1 for s in fom if date.fromisoformat(start) <= s <= date.fromisoformat(end))
+        ev_n = sum(1 for s in entry_sessions if date.fromisoformat(start) <= s <= date.fromisoformat(end))
+        for slot_id, blk in v1["verdict"]["seeds"].items():
+            cells = blk["cells"]
+            got_x = cells["xsmom"]["windows"][label]["n_entries"]
+            got_e = cells["event"]["windows"][label]["n_entries"]
+            if got_x != 3 * fom_n or got_e != ev_n:
+                raise Refused(
+                    f"v1 {slot_id} window {label}: n_entries ({got_x} xsmom / {got_e} event)"
+                    f" != re-derived calendar arithmetic ({3 * fom_n} / {ev_n})"
+                    " -- the windows are not aligned; refusing"
+                )
+
+
+def _baseline_blocks(inputs: Inputs) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Build both all-names baseline streams, stamp their per-window cells
+    (SAME ``_windows_of`` code path as the null streams), and extract
+    B(W, shape) + day-clustered se per window."""
+    rows_x = baseline_xsmom_stream(inputs)
+    rows_e, deduped_e = baseline_event_stream(inputs)
+    blocks: dict[str, Any] = {}
+    b_table: dict[str, Any] = {}
+    for stream_key, rows in (("xsmom", rows_x), ("event", rows_e)):
+        windows = _windows_of(
+            [
+                {
+                    "entry": t.entry,
+                    "exit": t.exit_session,
+                    "name": t.name,
+                    "gross": t.gross,
+                    "sub_era": t.sub_era,
+                    "detail": t.detail,
+                }
+                for t in rows
+            ],
+            inputs,
+        )
+        b_table[stream_key] = {}
+        for label, _s, _e in _windows(inputs):
+            cell = windows[label]
+            b_table[stream_key][label] = {
+                "B_net_per_trade_mean": cell["net_per_trade_mean"],
+                "per_trade_mean_sd_day_clustered": cell["per_trade_mean_sd_day_clustered"],
+                "B_net_day_clustered_mean": (
+                    cell["gross_day_mean"] - RT_PRIMARY
+                    if cell["gross_day_mean"] is not None
+                    else None
+                ),
+                "net15_per_trade_mean": cell["net15_per_trade_mean"],
+            }
+        blocks[stream_key] = {
+            "construction": (
+                "every first-of-month NYSE session in the union span x ALL sealed-36"
+                " tradables (desk-config XSMOM_TRADABLES; cross-checked == panel-minus-SPY)"
+                if stream_key == "xsmom"
+                else "every chain-35 reporter reporting at a first-post-report session,"
+                " the reporting name entered (deduped per name per session,"
+                f" earliest-report tie-break; deduped={deduped_e})"
+            ),
+            "n_trades_union": len(rows),
+            "windows": windows,
+        }
+    return blocks, b_table
+
+
+def _v2_stream_checks(
+    inputs: Inputs,
+    seed_cells: Mapping[str, Any],
+    stream_key: str,
+    b_row: Mapping[str, Any],
+) -> tuple[str, list[str], list[str], dict[str, Any]]:
+    """Menu v2 criteria for one (seed x stream): floors bind on the union;
+    criterion 1 (unchanged) |t| < 2 on gross and criterion 2
+    (drift-relative) |net - B(W, shape)| <= 2 x the seed's day-clustered
+    se bind per sub-era window. Returns (verdict, defect_reasons,
+    disclosures, per-window check arithmetic)."""
+    reasons: list[str] = []
+    disclosures: list[str] = []
+    checks: dict[str, Any] = {}
+    if seed_cells["floor_entries_union"] < ENTRY_FLOORS[stream_key]:
+        return (
+            "NOT_EVALUABLE",
+            [],
+            [f"entry floor missed: {seed_cells['floor_entries_union']} < {ENTRY_FLOORS[stream_key]}"],
+            checks,
+        )
+    for label, _s, _e in _windows(inputs):
+        if label == "union":
+            continue  # floors bind on the union; bands on the sub-eras (v1 convention)
+        cell = seed_cells["windows"][label]
+        base = b_row[label]
+        t_stat = cell["gross_clustered_t"]
+        net = cell["net_per_trade_mean"]
+        cse = cell["per_trade_mean_sd_day_clustered"]
+        b_val = base["B_net_per_trade_mean"]
+        row: dict[str, Any] = {
+            "gross_clustered_t": t_stat,
+            "net_per_trade_mean": net,
+            "seed_cse_day_clustered": cse,
+            "B": b_val,
+        }
+        if t_stat is None or math.isnan(t_stat):
+            disclosures.append(
+                f"{label}: clustered t undefined (days={cell['days']}) -- NOT_EVALUABLE cell, disclosed"
+            )
+            row["t_pass"] = None
+        else:
+            row["t_pass"] = abs(t_stat) < T_BAND
+            if not row["t_pass"]:
+                reasons.append(
+                    f"{label}: |t|={t_stat:.3f} >= {T_BAND} on gross per-trade mean (criterion 1, unchanged)"
+                )
+        if b_val is None or cse is None or net is None:
+            disclosures.append(
+                f"{label}: drift-relative check not evaluable (B={b_val}, seed cse={cse}) -- disclosed"
+            )
+            row["baseline_pass"] = None
+            row["delta_net_minus_B"] = None
+            row["band_halfwidth"] = None
+        else:
+            delta = net - b_val
+            band = V2_K * cse
+            row["delta_net_minus_B"] = delta
+            row["band_halfwidth"] = band
+            row["baseline_pass"] = abs(delta) <= band
+            if not row["baseline_pass"]:
+                reasons.append(
+                    f"{label}: net per-trade mean {net:.6f} outside"
+                    f" B +/- {V2_K:g}x day-clustered se (B={b_val:.6f},"
+                    f" delta={delta:.6f}, band={band:.6f})"
+                )
+        checks[label] = row
+    return ("DEFECT-FLAGGED" if reasons else "CALIBRATED", reasons, disclosures, checks)
+
+
+def phase_baseline() -> int:
+    """The v2 re-stamp: B(W, shape) from the pinned inputs + the v2
+    criteria re-evaluated on the v1 calibration's seed cells."""
+    inputs = load_and_bind()
+    if inputs.menu.get("version") != 2 or "null_baseline" not in inputs.menu.get("rules", {}):
+        raise Refused("the sealed menu is not the v2 drift-relative amendment")
+    if CALIBRATION_V2_PATH.exists():
+        raise Refused(f"{CALIBRATION_V2_PATH} already exists -- the v2 re-stamp is one-shot")
+    v1 = _read_v1_calibration(inputs)
+    _registry_g2_check(inputs)
+    _check_v1_window_alignment(inputs, v1)
+    baseline_blocks, b_table = _baseline_blocks(inputs)
+
+    seed_blocks: dict[str, Any] = {}
+    defect_reasons: list[str] = []
+    not_evaluable_reasons: list[str] = []
+    for config in _slot_configs(inputs):
+        slot_id = config["slot_id"]
+        v1_seed = v1["verdict"]["seeds"][slot_id]
+        streams_verdict: dict[str, str] = {}
+        stream_cells: dict[str, Any] = {}
+        for stream_key in STREAM_KEYS:
+            verdict, reasons, disclosures, checks = _v2_stream_checks(
+                inputs, v1_seed["cells"][stream_key], stream_key, b_table[stream_key]
+            )
+            streams_verdict[stream_key] = verdict
+            stream_cells[stream_key] = {
+                "v1_windows": v1_seed["cells"][stream_key]["windows"],
+                "floor_entries_union": v1_seed["cells"][stream_key]["floor_entries_union"],
+                "v2_checks": checks,
+                "reasons": reasons,
+                "disclosures": disclosures,
+            }
+            if verdict == "DEFECT-FLAGGED":
+                defect_reasons.extend(f"{slot_id}/{stream_key}: {r}" for r in reasons)
+            elif verdict == "NOT_EVALUABLE":
+                not_evaluable_reasons.extend(f"{slot_id}/{stream_key}: {r}" for r in reasons)
+        seed_blocks[slot_id] = {
+            "trial_id": _trial_id(config),
+            "v1_verdict": v1_seed["verdict"],
+            "verdict": _lattice(streams_verdict.values()),
+            "streams": streams_verdict,
+            "cells": stream_cells,
+        }
+    overall = _lattice(b["verdict"] for b in seed_blocks.values())
+
+    # tripwire prior block: the v1 convention -- stamped ONLY by a
+    # CALIBRATED null (wave-0 rule: priors come only from executed null
+    # artifacts); on any defect the block stays empty and family scoring
+    # stays frozen pending an operator ruling.
+    priors: dict[str, Any] = {}
+    if overall == "CALIBRATED":
+        for stream_key in STREAM_KEYS:
+            priors[stream_key] = {}
+            for label, _s, _e in _windows(inputs):
+                vals = [
+                    seed_blocks[c["slot_id"]]["cells"][stream_key]["v1_windows"][label][
+                        "per_trade_mean_sd_day_clustered"
+                    ]
+                    for c in _slot_configs(inputs)
+                ]
+                usable = [v for v in vals if v is not None]
+                priors[stream_key][label] = {
+                    "seeds": vals,
+                    "mean": statistics.fmean(usable) if usable else None,
+                    "convention": "sd of the per-trade mean, day-clustered"
+                    " (sd of entry-day means / sqrt(days)); the standing"
+                    " D8-analog tripwire prior for family runs after this",
+                }
+
+    calibration_v2 = {
+        "stamp": {
+            **_stamp(inputs, _slot_configs(inputs)[0]),
+            "trial_id": None,
+            "artifact_trial_ids": [_trial_id(c) for c in _slot_configs(inputs)],
+            "menu_version": 2,
+            "menu_supersedes_v1": inputs.menu.get("supersedes"),
+            "amendment_authority": inputs.menu.get("amendment_authority"),
+            "menu_hypothesis": _menu_slot(inputs)["hypothesis"],
+            "acceptance_criteria": _menu_slot(inputs)["acceptance_criteria"],
+            "verdict_vocabulary": _menu_slot(inputs)["verdict_vocabulary"],
+            "null_baseline_rule": inputs.menu["rules"]["null_baseline"],
+            "v1_calibration": {
+                "path": str(CALIBRATION_PATH),
+                "registration_menu_sha256": v1["stamp"]["registration_menu_sha256"],
+                "dataset_manifest_hash": v1["stamp"]["dataset_manifest_hash"],
+                "artifact_trial_ids": v1["stamp"]["artifact_trial_ids"],
+                "verdict": v1["verdict"]["slot"],
+            },
+            "bands": {
+                "gross_clustered_t_abs_lt": T_BAND,
+                "v2_net_within_kx_cse_of_B": V2_K,
+                "superseded_v1_net_per_trade_mean_band": list(NET_BAND),
+                "rt_primary": RT_PRIMARY,
+                "rt_robust": RT_ROBUST,
+                "entry_floors": dict(ENTRY_FLOORS),
+            },
+        },
+        "baseline": {
+            "definition": inputs.menu["rules"]["null_baseline"],
+            "shapes": baseline_blocks,
+            "B": b_table,
+        },
+        "verdict": {"slot": overall, "seeds": seed_blocks},
+        "tripwire_priors": priors,
+        "defect_reasons": defect_reasons,
+        "not_evaluable_reasons": not_evaluable_reasons,
+        "notes": [
+            "v2 RE-STAMP (menu v2 drift-relative amendment): B(W, shape) is computed from the",
+            "SAME pinned inputs the v1 run stamped (verified against calibration.json); the v1",
+            "seed streams and their arithmetic are read from calibration.json, never re-run.",
+            "CALIBRATION ONLY (menu declared_use): no direction, no card, no promotion path.",
+            "Criterion 1 (|t| < 2 on gross, per seed x sub-era) is UNCHANGED by the amendment;",
+            "criterion 2 is drift-relative: seed net within 2x its day-clustered se of B(W, shape).",
+            "B is the standing baseline every absolute-mean leg in the menu is read against;",
+            "it is calibration, never a signal (wave-0 priors rule unchanged).",
+            "Cells with an undefined clustered t or an not-evaluable drift check are disclosed,",
+            "never defects (v1 convention); a zero-variance day-mean sd with drift stamps t=inf",
+            "and defects.",
+        ],
+    }
+    TNULL_DIR.mkdir(parents=True, exist_ok=True)
+    CALIBRATION_V2_PATH.write_text(
+        json.dumps(calibration_v2, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    for stream_key in STREAM_KEYS:
+        for label in ("card-era", "vrp-cond", "pead-deep-2", "jepa-outer"):
+            b = b_table[stream_key][label]
+            print(
+                f"B[{stream_key:5s}][{label:11s}] = {b['B_net_per_trade_mean']:+.6f}"
+                f"  se={b['per_trade_mean_sd_day_clustered']}"
+            )
+    print(f"overall v2 verdict: {overall}")
+    if overall == "DEFECT-FLAGGED":
+        for sid, blk in seed_blocks.items():
+            print(f"  {sid}: {blk['verdict']} streams={blk['streams']}")
+        flag = "\n".join(
+            [
+                "campaign-2026-09 T-NULL v2 DEFECT FLAG (drift-relative re-stamp)",
+                f"written: {_utcnow().isoformat()}",
+                f"calibration artifact: {CALIBRATION_V2_PATH}",
+                f"menu: v2 sha256 {inputs.menu_sha256} (supersedes {inputs.menu.get('supersedes')})",
+                "",
+                "A seed still violates the menu v2 acceptance criteria;",
+                "family sealed-window scoring stays FROZEN pending another",
+                "operator ruling (menu rules.sequencing AMENDMENT v2).",
+                "",
+                "v2 defect reasons:",
+                *(f"- {r}" for r in defect_reasons),
+                *(f"- disclosure: {r}" for r in not_evaluable_reasons),
+                "",
+            ]
+        )
+        DEFECT_FLAG_V2_PATH.write_text(flag, encoding="utf-8")
+        print(f"DEFECT-FLAGGED (v2) -- flag file {DEFECT_FLAG_V2_PATH}; family scoring stays frozen")
+        for r in defect_reasons:
+            print(f"  - {r}")
+    else:
+        print(f"CALIBRATED (v2) -- re-stamp at {CALIBRATION_V2_PATH}; family scoring unfrozen")
+    return 0
+
+
+# -- v3 re-stamp (menu v3, NOT_EVALUABLE floor) -----------------------------------------
+
+
+def _read_v2_calibration(inputs: Inputs) -> Mapping[str, Any]:
+    """The v2 calibration artifact is the SEALED cell evidence for v3: its
+    per-window stats (``v1_windows``) and its v2 criterion arithmetic
+    (``v2_checks``) are read, never re-derived. Refuse unless it binds
+    this menu's ``supersedes`` pin, the same pinned inputs, the same
+    trial ids, and the same panel cutoff (which fixes jepa-outer)."""
+    if not CALIBRATION_V2_PATH.exists():
+        raise Refused(f"{CALIBRATION_V2_PATH} is missing -- the v2 stamp is the sealed cell evidence")
+    body = json.loads(CALIBRATION_V2_PATH.read_text(encoding="utf-8"))
+    stamp = body.get("stamp", {})
+    supersedes = inputs.menu.get("supersedes")
+    if not supersedes:
+        raise Refused("the menu carries no `supersedes` pin -- not a v3 amendment")
+    if stamp.get("registration_menu_sha256") != supersedes:
+        raise Refused(
+            "the v2 calibration's menu sha is not this menu's supersedes pin"
+            f" ({stamp.get('registration_menu_sha256')} != {supersedes})"
+        )
+    if stamp.get("dataset_manifest_hash") != inputs.dataset_manifest_hash:
+        raise Refused("the v2 calibration was stamped on a different dataset manifest")
+    if stamp.get("inputs_sha256") != {
+        "ohlc-panel.json": inputs.panel_sha256,
+        "earnings-calendar.json": inputs.earnings_sha256,
+        "nyse_sessions json": inputs.calendar_sha256,
+    }:
+        raise Refused("the v2 calibration's per-input sha256 do not match the pinned inputs")
+    if stamp.get("artifact_trial_ids") != [_trial_id(c) for c in _slot_configs(inputs)]:
+        raise Refused("the v2 calibration binds different artifact trial ids")
+    if stamp.get("cutoff_earliest_last_session_chain35") != inputs.cutoff_iso:
+        raise Refused("the panel cutoff moved since the v2 stamp -- the windows differ")
+    labels = [label for label, _s, _e in _windows(inputs)]
+    seeds = body.get("verdict", {}).get("seeds", {})
+    if sorted(seeds) != ["tnull-s1", "tnull-s2", "tnull-s3"]:
+        raise Refused("the v2 calibration does not carry exactly the three seed blocks")
+    for slot_id, blk in seeds.items():
+        for stream_key in STREAM_KEYS:
+            cells = blk.get("cells", {}).get(stream_key, {})
+            if sorted(cells.get("v1_windows", {})) != sorted(labels):
+                raise Refused(
+                    f"v2 seed {slot_id}/{stream_key} window labels do not match the re-derived windows"
+                )
+            checks = cells.get("v2_checks", {})
+            if sorted(checks) != sorted(lbl for lbl in labels if lbl != "union"):
+                raise Refused(
+                    f"v2 seed {slot_id}/{stream_key} criterion checks do not cover every sub-era"
+                )
+    b_table = body.get("baseline", {}).get("B", {})
+    if sorted(b_table) != sorted(STREAM_KEYS):
+        raise Refused("the v2 calibration does not carry B(W, shape) for both shapes")
+    for stream_key in STREAM_KEYS:
+        if sorted(b_table[stream_key]) != sorted(labels):
+            raise Refused(f"the v2 B table does not cover every window for shape {stream_key}")
+    return body
+
+
+def _v3_cell_classify(cell: Mapping[str, Any]) -> tuple[str, list[str]]:
+    """Menu v3 floor for one seed x window x shape cell: below 5
+    entry-days or 20 complete trades the cell is NOT_EVALUABLE (values
+    reported, no flag authority, no priors)."""
+    days = cell.get("days")
+    n_complete = cell.get("n_complete")
+    reasons: list[str] = []
+    if not isinstance(days, int) or not isinstance(n_complete, int):
+        return "NOT_EVALUABLE", ["days/n_complete not stamped as integers"]
+    if days < V3_MIN_ENTRY_DAYS:
+        reasons.append(f"entry-days {days} < {V3_MIN_ENTRY_DAYS}")
+    if n_complete < V3_MIN_COMPLETE_TRADES:
+        reasons.append(f"complete trades {n_complete} < {V3_MIN_COMPLETE_TRADES}")
+    return ("NOT_EVALUABLE" if reasons else "EVALUABLE"), reasons
+
+
+def _v3_stream_checks(
+    inputs: Inputs,
+    v2_stream_cells: Mapping[str, Any],
+    stream_key: str,
+) -> tuple[str, list[str], dict[str, Any]]:
+    """Menu v3 verdict for one (seed x stream): the union entry floors are
+    UNCHANGED (criterion 3); every sub-era cell is first classified by
+    the v3 floor and only EVALUABLE cells are judged on the two v2
+    criteria, whose pass arithmetic (t, delta-vs-B, band) is carried
+    from the v2 stamp unchanged -- same numbers, never re-derived."""
+    if v2_stream_cells["floor_entries_union"] < ENTRY_FLOORS[stream_key]:
+        return (
+            "NOT_EVALUABLE",
+            [],
+            {
+                "floor_entries_union": v2_stream_cells["floor_entries_union"],
+                "reason": f"entry floor missed: {v2_stream_cells['floor_entries_union']}"
+                f" < {ENTRY_FLOORS[stream_key]}",
+            },
+        )
+    reasons: list[str] = []
+    cells_out: dict[str, Any] = {}
+    for label, _s, _e in _windows(inputs):
+        if label == "union":
+            continue  # floors bind on the union; bands on the sub-eras (v1 convention)
+        cell = v2_stream_cells["v1_windows"][label]
+        classification, floor_reasons = _v3_cell_classify(cell)
+        row: dict[str, Any] = {
+            "days": cell["days"],
+            "n_complete": cell["n_complete"],
+            "n_entries": cell["n_entries"],
+            "classification": classification,
+        }
+        if classification == "NOT_EVALUABLE":
+            # values reported for transparency; no flag authority, no priors
+            row.update(
+                {
+                    "floor_reasons": floor_reasons,
+                    "verdict": "NOT_EVALUABLE",
+                    "gross_clustered_t": cell["gross_clustered_t"],
+                    "net_per_trade_mean": cell["net_per_trade_mean"],
+                    "per_trade_mean_sd_day_clustered": cell["per_trade_mean_sd_day_clustered"],
+                }
+            )
+        else:
+            chk = v2_stream_cells["v2_checks"][label]
+            t_pass = chk.get("t_pass")
+            b_pass = chk.get("baseline_pass")
+            row.update(
+                {
+                    "floor_reasons": [],
+                    "criterion_1_t_pass": t_pass,
+                    "criterion_2_baseline_pass": b_pass,
+                    "gross_clustered_t": chk.get("gross_clustered_t"),
+                    "net_per_trade_mean": chk.get("net_per_trade_mean"),
+                    "seed_cse_day_clustered": chk.get("seed_cse_day_clustered"),
+                    "B": chk.get("B"),
+                    "delta_net_minus_B": chk.get("delta_net_minus_B"),
+                    "band_halfwidth": chk.get("band_halfwidth"),
+                }
+            )
+            row["verdict"] = "PASS" if (t_pass is True and b_pass is True) else "FAIL"
+            if row["verdict"] == "FAIL":
+                if t_pass is not True:
+                    reasons.append(
+                        f"{label}: |t|={chk['gross_clustered_t']:.3f} >= {T_BAND}"
+                        " on gross per-trade mean (criterion 1, unchanged)"
+                    )
+                if b_pass is not True:
+                    reasons.append(
+                        f"{label}: net per-trade mean {chk['net_per_trade_mean']:.6f} outside"
+                        f" B +/- {V2_K:g}x day-clustered se (B={chk['B']:.6f},"
+                        f" delta={chk['delta_net_minus_B']:.6f}, band={chk['band_halfwidth']:.6f})"
+                    )
+        cells_out[label] = row
+    return ("DEFECT-FLAGGED" if reasons else "CALIBRATED"), reasons, cells_out
+
+
+def phase_v3_floor() -> int:
+    """The v3 re-stamp: the NOT_EVALUABLE floor applied to the EXISTING
+    v2 artifact's per-cell stats; B(W, shape) carried forward verbatim;
+    priors from EVALUABLE cells only."""
+    inputs = load_and_bind()
+    criteria = _menu_slot(inputs)["acceptance_criteria"]
+    if inputs.menu.get("version") != 3 or not any(
+        "v3 sub-evaluability floor" in c for c in criteria
+    ):
+        raise Refused("the sealed menu is not the v3 NOT_EVALUABLE-floor amendment")
+    if "AMENDMENT v3 sub-evaluability floor" not in inputs.menu.get("rules", {}).get(
+        "null_baseline", ""
+    ):
+        raise Refused("the menu's null_baseline rule does not carry the v3 floor amendment")
+    if CALIBRATION_V3_PATH.exists():
+        raise Refused(f"{CALIBRATION_V3_PATH} already exists -- the v3 re-stamp is one-shot")
+    v2 = _read_v2_calibration(inputs)
+    _registry_g2_check(inputs)
+
+    seed_blocks: dict[str, Any] = {}
+    defect_reasons: list[str] = []
+    not_evaluable_cells: list[dict[str, Any]] = []
+    for config in _slot_configs(inputs):
+        slot_id = config["slot_id"]
+        v2_seed = v2["verdict"]["seeds"][slot_id]
+        streams_verdict: dict[str, str] = {}
+        stream_cells: dict[str, Any] = {}
+        for stream_key in STREAM_KEYS:
+            verdict, reasons, cells_out = _v3_stream_checks(
+                inputs, v2_seed["cells"][stream_key], stream_key
+            )
+            streams_verdict[stream_key] = verdict
+            stream_cells[stream_key] = {
+                "floor_entries_union": v2_seed["cells"][stream_key]["floor_entries_union"],
+                "v3_cells": cells_out,
+                "reasons": reasons,
+            }
+            if verdict == "DEFECT-FLAGGED":
+                defect_reasons.extend(f"{slot_id}/{stream_key}: {r}" for r in reasons)
+            for label, row in cells_out.items():
+                if row.get("classification") == "NOT_EVALUABLE":
+                    not_evaluable_cells.append(
+                        {
+                            "seed": slot_id,
+                            "shape": stream_key,
+                            "window": label,
+                            "days": row["days"],
+                            "n_complete": row["n_complete"],
+                            "floor_reasons": row["floor_reasons"],
+                        }
+                    )
+        seed_blocks[slot_id] = {
+            "trial_id": _trial_id(config),
+            "v2_verdict": v2_seed["verdict"],
+            "verdict": _lattice(streams_verdict.values()),
+            "streams": streams_verdict,
+            "cells": stream_cells,
+        }
+    overall = _lattice(b["verdict"] for b in seed_blocks.values())
+
+    # tripwire prior block: the v1 convention -- stamped ONLY by a
+    # CALIBRATED null (wave-0 rule: priors come only from executed null
+    # artifacts); menu v3: built from EVALUABLE cells only, so a window
+    # with no evaluable cell carries NO prior -- families in that window
+    # are gated by B(W, shape) alone.
+    priors: dict[str, Any] = {}
+    if overall == "CALIBRATED":
+        for stream_key in STREAM_KEYS:
+            priors[stream_key] = {}
+            for label, _s, _e in _windows(inputs):
+                vals = []
+                for config in _slot_configs(inputs):
+                    slot_id = config["slot_id"]
+                    if label == "union":
+                        row_class = "EVALUABLE"  # the union span floors the stream (criterion 3)
+                        if v2["verdict"]["seeds"][slot_id]["cells"][stream_key][
+                            "floor_entries_union"
+                        ] < ENTRY_FLOORS[stream_key]:
+                            row_class = "NOT_EVALUABLE"
+                    else:
+                        row_class = seed_blocks[slot_id]["cells"][stream_key]["v3_cells"][label][
+                            "classification"
+                        ]
+                    if row_class != "EVALUABLE":
+                        continue
+                    sd = v2["verdict"]["seeds"][slot_id]["cells"][stream_key]["v1_windows"][label][
+                        "per_trade_mean_sd_day_clustered"
+                    ]
+                    if sd is not None:
+                        vals.append(sd)
+                if not vals:
+                    continue  # no evaluable cell -> no prior; B(W, shape) gates that window
+                priors[stream_key][label] = {
+                    "seeds": vals,
+                    "mean": statistics.fmean(vals),
+                    "convention": "sd of the per-trade mean, day-clustered"
+                    " (sd of entry-day means / sqrt(days)); the standing"
+                    " D8-analog tripwire prior for family runs after this;"
+                    " menu v3: EVALUABLE cells only",
+                }
+
+    calibration_v3 = {
+        "stamp": {
+            **_stamp(inputs, _slot_configs(inputs)[0]),
+            "trial_id": None,
+            "artifact_trial_ids": [_trial_id(c) for c in _slot_configs(inputs)],
+            "menu_version": 3,
+            "menu_supersedes_v2": inputs.menu.get("supersedes"),
+            "amendment_authority": inputs.menu.get("amendment_authority"),
+            "menu_hypothesis": _menu_slot(inputs)["hypothesis"],
+            "acceptance_criteria": criteria,
+            "verdict_vocabulary": _menu_slot(inputs)["verdict_vocabulary"],
+            "null_baseline_rule": inputs.menu["rules"]["null_baseline"],
+            "v2_calibration": {
+                "path": str(CALIBRATION_V2_PATH),
+                "registration_menu_sha256": v2["stamp"]["registration_menu_sha256"],
+                "dataset_manifest_hash": v2["stamp"]["dataset_manifest_hash"],
+                "artifact_trial_ids": v2["stamp"]["artifact_trial_ids"],
+                "runner_sha256": v2["stamp"]["runner_sha256"],
+                "git_sha": v2["stamp"]["git_sha"],
+                "verdict": v2["verdict"]["slot"],
+            },
+            "bands": {
+                "gross_clustered_t_abs_lt": T_BAND,
+                "v2_net_within_kx_cse_of_B": V2_K,
+                "v3_min_entry_days": V3_MIN_ENTRY_DAYS,
+                "v3_min_complete_trades": V3_MIN_COMPLETE_TRADES,
+                "superseded_v1_net_per_trade_mean_band": list(NET_BAND),
+                "rt_primary": RT_PRIMARY,
+                "rt_robust": RT_ROBUST,
+                "entry_floors": dict(ENTRY_FLOORS),
+            },
+        },
+        "baseline": v2["baseline"],  # B(W, shape) + shape blocks carried forward VERBATIM
+        "verdict": {"slot": overall, "seeds": seed_blocks},
+        "not_evaluable_cells": not_evaluable_cells,
+        "tripwire_priors": priors,
+        "defect_reasons": defect_reasons,
+        "notes": [
+            "v3 RE-STAMP (menu v3 NOT_EVALUABLE-floor amendment): every seed x window x shape",
+            "cell was classified from the EXISTING calibration-v2.json per-cell stats;",
+            "nothing was re-fetched, re-randomized, or re-run, and B(W, shape) is carried",
+            "forward verbatim from the v2 stamp.",
+            "Cells below the floor (< 5 entry-days or < 20 complete trades) are NOT_EVALUABLE:",
+            "values reported for transparency, no flag authority, no priors.",
+            "The null is CALIBRATED iff every EVALUABLE cell passes BOTH criteria on every seed;",
+            "the pass arithmetic (t, delta-vs-B, band) is the v2 stamp's own numbers.",
+            "Tripwire priors are stamped only because the null is CALIBRATED, and are built",
+            "from EVALUABLE cells only; windows absent from the prior block have no evaluable",
+            "cell -- families in those windows are gated by B(W, shape) alone.",
+            "CALIBRATION ONLY (menu declared_use): no direction, no card, no promotion path.",
+        ],
+    }
+    TNULL_DIR.mkdir(parents=True, exist_ok=True)
+    CALIBRATION_V3_PATH.write_text(
+        json.dumps(calibration_v3, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(f"menu v3 sha256 {inputs.menu_sha256} (sidecar-verified)")
+    print(f"NOT_EVALUABLE cells: {len(not_evaluable_cells)}")
+    for c in not_evaluable_cells:
+        print(
+            f"  {c['seed']}/{c['shape']:5s}/{c['window']:11s}"
+            f"  days={c['days']} complete={c['n_complete']}  ({'; '.join(c['floor_reasons'])})"
+        )
+    for sid, blk in seed_blocks.items():
+        print(f"  {sid}: {blk['verdict']} streams={blk['streams']}")
+    print(f"overall v3 verdict: {overall}")
+    if overall == "DEFECT-FLAGGED":
+        flag = "\n".join(
+            [
+                "campaign-2026-09 T-NULL v3 DEFECT FLAG (NOT_EVALUABLE-floor re-stamp)",
+                f"written: {_utcnow().isoformat()}",
+                f"calibration artifact: {CALIBRATION_V3_PATH}",
+                f"menu: v3 sha256 {inputs.menu_sha256} (supersedes {inputs.menu.get('supersedes')})",
+                "",
+                "An EVALUABLE cell violates the menu acceptance criteria;",
+                "family sealed-window scoring stays FROZEN pending another",
+                "operator ruling (menu rules.sequencing AMENDMENT v3).",
+                "",
+                "v3 defect reasons:",
+                *(f"- {r}" for r in defect_reasons),
+                "",
+                "NOT_EVALUABLE cells (reported, no flag authority):",
+                *(
+                    f"- {c['seed']}/{c['shape']}/{c['window']}:"
+                    f" days={c['days']} complete={c['n_complete']}"
+                    for c in not_evaluable_cells
+                ),
+                "",
+            ]
+        )
+        DEFECT_FLAG_V3_PATH.write_text(flag, encoding="utf-8")
+        print(f"DEFECT-FLAGGED (v3) -- flag file {DEFECT_FLAG_V3_PATH}; family scoring stays frozen")
+        for r in defect_reasons:
+            print(f"  - {r}")
+    else:
+        print(f"CALIBRATED (v3) -- re-stamp at {CALIBRATION_V3_PATH}; family scoring unfrozen")
+    return 0
+
+
 def phase_plan() -> int:
     inputs = load_and_bind()
     print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified)")
@@ -1029,6 +1904,21 @@ def main(argv: list[str] | None = None) -> int:
         help="evaluate the menu's acceptance criteria on the EXECUTED artifacts and"
         " stamp the calibration (or the DEFECT flag)",
     )
+    parser.add_argument(
+        "--baseline",
+        action="store_true",
+        help="menu v2 re-stamp: compute B(W, shape) from the pinned inputs, re-evaluate"
+        " the drift-relative criteria on the v1 calibration's seed cells, and stamp"
+        " calibration-v2.json (or the v2 DEFECT flag)",
+    )
+    parser.add_argument(
+        "--v3-floor",
+        action="store_true",
+        help="menu v3 re-stamp: classify every seed x window x shape cell by the"
+        " NOT_EVALUABLE floor (< 5 entry-days or < 20 complete trades) using the"
+        " EXISTING calibration-v2.json cells, carry B(W, shape) forward verbatim,"
+        " and stamp calibration-v3.json (or the v3 DEFECT flag)",
+    )
     parser.add_argument("--plan", action="store_true", help="read-only: print the bound geometry")
     args = parser.parse_args(argv)
     try:
@@ -1038,6 +1928,10 @@ def main(argv: list[str] | None = None) -> int:
             return phase_execute()
         if args.calibrate:
             return phase_calibrate()
+        if args.baseline:
+            return phase_baseline()
+        if args.v3_floor:
+            return phase_v3_floor()
         if args.plan:
             return phase_plan()
     except Refused as exc:

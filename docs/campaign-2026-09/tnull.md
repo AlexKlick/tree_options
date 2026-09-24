@@ -203,3 +203,83 @@ spec; the executor flags, the operator rules.
   pending the operator ruling (one commit per slot per round).
 - Nothing outside this slot was run; no family config was scored; the
   RESEARCH-LEDGER was not touched; nothing was adopted or promoted.
+
+# campaign-2026-09 / T-NULL — round 3: v3 re-stamp (NOT_EVALUABLE floor)
+
+Menu v3 `3210e2e` (registration sha256
+`4aca21014f6efa640d97bf2abd3fdbb912af5a7b9acb68f65b842f924379b10a`,
+sidecar-verified; supersedes v2 `9fde5e66…`) per operator ruling 2,
+2026-09-23 ~23:55 MDT, recorded in `REGISTRATION-NOTES.md` section 8.
+Runner: `scripts/campaign/tnull_run.py --v3-floor` (this round's commit
+carries BOTH the round-2 `--baseline` extension — runner sha256
+`31a89de12075e1a7a3f47a580cce0ba54a0a44f546dfe57a518cd64b4d1352a7`,
+verified before committing — and the new `--v3-floor` phase; committed
+file sha256 `488d15abbdb36d2fb0f2d498f6123c83e3ecae6ff72e42f50759113c7fa9a631`
+== the `runner_sha256` stamped in `calibration-v3.json`; worktree git
+`3210e2e37f17…` at stamp time).
+
+## VERDICT (v3): CALIBRATED (all three seeds) — family scoring UNFROZEN
+
+Every seed x window x shape cell was classified from the EXISTING
+`calibration-v2.json` per-cell stats — nothing re-fetched,
+re-randomized, or re-run; B(W, shape) carried forward verbatim. All 12
+EVALUABLE cells (card-era + jepa-outer, both shapes, three seeds) pass
+BOTH criteria with the v2 stamp's own arithmetic (worst |t| = 1.803,
+s2 event card-era; every drift delta inside its band). `tnull-s3`'s
+two round-2 misses — the 2-entry-day / 6-trade pead-deep-2 and
+vrp-cond xsmom cells (|t| = 4.693) — are floored NOT_EVALUABLE by the
+ruling, exactly the trigger it cites. Per menu `rules.sequencing`
+AMENDMENT v3, `calibration-v3.json` (citing the v3 menu sha) unfreezes
+family sealed-window scoring. No v3 defect flag exists.
+
+## The NOT_EVALUABLE cells (transparency — the point of the floor)
+
+The floor as ruled is generic (< 5 entry-days OR < 20 complete trades)
+and was applied to EVERY cell; it catches 12 cells, not only the two
+that triggered it — the event-shaped pead-deep-2 (12 complete trades)
+and vrp-cond (14 complete trades) cells are floored on all three seeds
+too (they never caused a flag; they simply carry no authority now):
+
+| seed | shape | window | entry-days | complete trades | floor breach |
+|---|---|---|---|---|---|
+| s1, s2, s3 | xsmom | pead-deep-2 | 2 | 6 | both bounds |
+| s1, s2, s3 | xsmom | vrp-cond | 2 | 6 | both bounds |
+| s1, s2, s3 | event | pead-deep-2 | 12 | 12 | trades < 20 |
+| s1, s2, s3 | event | vrp-cond | 14 | 14 | trades < 20 |
+
+Consequence: pead-deep-2 and vrp-cond carry NO evaluable cell in
+either shape, so those windows stamp NO tripwire prior — families
+there are gated by B(W, shape) alone (the deep all-names streams: B
+pead-deep-2 event stamps on 21 complete trades, xsmom on 72), exactly
+the menu's fallback. Priors are stamped only from evaluable cells
+(v1 convention: only a CALIBRATED null stamps one):
+
+| shape | window | prior mean (day-clustered sd of per-trade mean) | seeds |
+|---|---|---|---|
+| xsmom | card-era | 1.4361% | 3 |
+| xsmom | jepa-outer | 2.1394% | 3 |
+| xsmom | union | 1.4361% | 3 |
+| event | card-era | 0.8148% | 3 |
+| event | jepa-outer | 1.3929% | 3 |
+| event | union | 0.8148% | 3 |
+
+## Round-3 execution record
+
+- Artifact: `artifacts/campaign-2026-09/tnull/calibration-v3.json` —
+  B(W, shape) + shape blocks byte-carried from v2; per-cell
+  classification + verdicts; per-seed CALIBRATED verdicts;
+  `not_evaluable_cells` (12, with reasons); tripwire prior block from
+  evaluable cells only; menu v3 sha + supersedes, input/manifest
+  hashes, git + runner shas, v2-bind provenance block. The v1/v2
+  artifacts and flag files are untouched (sealed evidence).
+- Binding refusals held: the v2 artifact must bind this menu's
+  `supersedes` sha, the same pinned inputs, the same g2 trial ids and
+  cutoff; the g2 registry rows are read-only (COMPLETED, identical
+  sub-eras; scope load stays 6/32).
+- INV-13: no new config id exists or was run — the v3 stamp introduces
+  no outcome; it re-reads the sealed v2 cells. 111 configs / 3 tnull
+  seeds unchanged.
+- One commit this round: the runner (v2 `--baseline` extension +
+  `--v3-floor` phase) and this doc, nothing else.
+- Nothing outside this slot was run; no family config was scored; the
+  RESEARCH-LEDGER was not touched; nothing was adopted or promoted.
