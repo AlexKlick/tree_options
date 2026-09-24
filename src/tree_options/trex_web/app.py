@@ -11,7 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
@@ -399,6 +399,7 @@ def create_app(
     discovery_dir: str | None = None,
     gateway_state: str | None = None,
     exit_watch_state: str | None = None,
+    desk_paper_dir: str | None = None,
 ) -> FastAPI:
     """Build the FastAPI app. Public for tests; production wires ``__main__``.
 
@@ -436,6 +437,12 @@ def create_app(
         if exit_watch_state
         else Path(os.environ.get("TREX_EXIT_WATCH_STATE", str(DEFAULT_EXIT_WATCH_STATE)))
     )
+    from tree_options.desk.paths import paper_dir as _desk_paper_dir
+
+    desk_paper_root = (
+        Path(desk_paper_dir).expanduser() if desk_paper_dir else _desk_paper_dir()
+    )
+    desk_panel_path = desk_paper_root / "ohlc-panel.json"
 
     app = FastAPI(
         title="trex options cockpit",
@@ -592,6 +599,33 @@ def create_app(
             "news": news[:12] if isinstance(news, list) else [],
             "news_age_seconds": _age(news_env.get("fetched_at"), now) if news_env else None,
         }
+
+    @app.get("/api/market/{sym}/history")
+    def api_market_symbol_history(
+        sym: str, request: Request, range: str = "3y", max_points: int = 600
+    ) -> Response:
+        """Long-term OHLCV from the desk panel (5y, nightly) — NOT the
+        viewer's 365-day envelope. ETag/304 keeps the 60 s re-poll free."""
+        from tree_options.trex_web.symbol_history import (
+            clamp_request,
+            history_age_seconds,
+            history_payload,
+        )
+
+        sym_up = sym.upper()
+        if not re.match(r"^[A-Z.]{1,6}$", sym_up):
+            raise HTTPException(status_code=404, detail="unknown symbol")
+        range_key, points_cap = clamp_request(range, max_points)
+        payload, etag = history_payload(desk_panel_path, sym_up, range_key, points_cap)
+        if request.headers.get("if-none-match") == etag:
+            return Response(status_code=304, headers={"ETag": etag})
+        now = now_et()
+        body = dict(payload)
+        body["now"] = now.isoformat()
+        body["history_age_seconds"] = history_age_seconds(
+            payload.get("panel_last_session"), now
+        )
+        return JSONResponse(body, headers={"ETag": etag})
 
     @app.post("/api/market/watch", status_code=202)
     def api_market_watch(body: dict[str, Any]) -> dict[str, object]:
