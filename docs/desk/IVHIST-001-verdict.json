@@ -1,0 +1,177 @@
+{
+ "bar": {
+  "max_abs_median_bias": 2.0,
+  "min_corr": 0.85,
+  "min_n": 250
+ },
+ "inputs": {
+  "indices_dir": "/home/alexk/.local/state/trex-desk-w1-econ/desk-store/indices",
+  "indices_sha256": {
+   "GVZ": "102c7a3ba143303bfcaff722f5e2f99e649100c636c7f2b0652de48c1d54b0d0",
+   "RVX": "58b00b16a1f4eb29140b7fd06735350eb94592028eb0c1b6f50c03cd310b1e37",
+   "VIX": "c1fa255f4e659d217f8cf244310a126517dc8f832568afe6be8184f46ca6dae7",
+   "VXAPL": "8bd039b4022cedebeffa138a6e806c0b8b8795722a1aed85fe8538b8210b7e5b",
+   "VXAZN": "fb04c6d76d2bffe3332560650645ce2921fd9713f2a5b6227a821f69f6a22eb3",
+   "VXGOG": "7c8344211027e6d542bc504e2bb0d6a8230337040c8b1c09b704260cc5944b42",
+   "VXN": "9eec3e55fc98dcb4271415ac7ee1f71c6cd52d5915d83cd45f49ed17c4d18e18"
+  },
+  "iv_history_sha256": "105aaabecbc2a2ae36074d1271a7b417b6bbc33f2b3c5cfac505c87975b1e696"
+ },
+ "labels": {
+  "AAPL": "low-fidelity",
+  "ADBE": "low-fidelity",
+  "AMD": "low-fidelity",
+  "AMZN": "low-fidelity",
+  "AVGO": "low-fidelity",
+  "COST": "low-fidelity",
+  "CRM": "low-fidelity",
+  "DIS": "low-fidelity",
+  "GLD": "not-evaluable",
+  "GOOGL": "low-fidelity",
+  "HD": "low-fidelity",
+  "INTC": "low-fidelity",
+  "IWM": "ok",
+  "JPM": "low-fidelity",
+  "KO": "low-fidelity",
+  "LLY": "low-fidelity",
+  "MA": "low-fidelity",
+  "META": "low-fidelity",
+  "MSFT": "low-fidelity",
+  "NFLX": "low-fidelity",
+  "NVDA": "low-fidelity",
+  "PEP": "low-fidelity",
+  "PG": "low-fidelity",
+  "QCOM": "low-fidelity",
+  "QQQ": "low-fidelity",
+  "SMH": "not-evaluable",
+  "SOXX": "not-evaluable",
+  "SPY": "low-fidelity",
+  "TSLA": "low-fidelity",
+  "UNH": "low-fidelity",
+  "V": "low-fidelity",
+  "XLE": "not-evaluable",
+  "XLF": "not-evaluable",
+  "XLV": "not-evaluable",
+  "XOM": "low-fidelity"
+ },
+ "overall": "PARTIAL",
+ "pairs": {
+  "GVZ": {
+   "n": 0,
+   "name": "GLD",
+   "reason": "no IV history for GLD",
+   "status": "NOT_EVALUABLE"
+  },
+  "RVX": {
+   "corr": 0.9441248081363073,
+   "corr_changes": 0.6151414530862046,
+   "extrapolated_share": 0.4692982456140351,
+   "interpolated_only": {
+    "corr": 0.9260641638429375,
+    "mean_bias": -1.4127090176317594,
+    "median_abs_diff": 1.4648074197394703,
+    "median_bias": -1.4420389582154325,
+    "n": 242
+   },
+   "mean_bias": -1.5708970707323378,
+   "median_abs_diff": 1.5273931775848304,
+   "median_bias": -1.507205498347565,
+   "n": 456,
+   "name": "IWM",
+   "status": "PASS"
+  },
+  "VIX": {
+   "corr": 0.941296952200501,
+   "corr_changes": 0.655370169675829,
+   "extrapolated_share": 0.4557235421166307,
+   "interpolated_only": {
+    "corr": 0.9342920781785167,
+    "mean_bias": -2.96768119801233,
+    "median_abs_diff": 2.8187178314987493,
+    "median_bias": -2.8187178314987493,
+    "n": 252
+   },
+   "mean_bias": -3.2049727655466893,
+   "median_abs_diff": 2.9118518375001834,
+   "median_bias": -2.9118518375001834,
+   "n": 463,
+   "name": "SPY",
+   "status": "FAIL"
+  },
+  "VXAPL": {
+   "corr": 0.9621918936794049,
+   "corr_changes": 0.6960122702989836,
+   "extrapolated_share": 0.4591194968553459,
+   "interpolated_only": {
+    "corr": 0.9679517893506588,
+    "mean_bias": -2.6653776930469126,
+    "median_abs_diff": 2.596298406294096,
+    "median_bias": -2.596298406294096,
+    "n": 258
+   },
+   "mean_bias": -2.762670844352828,
+   "median_abs_diff": 2.5738141311284473,
+   "median_bias": -2.5738141311284473,
+   "n": 477,
+   "name": "AAPL",
+   "status": "FAIL"
+  },
+  "VXAZN": {
+   "corr": 0.959086398355955,
+   "corr_changes": 0.7639386337630002,
+   "extrapolated_share": 0.4905263157894737,
+   "interpolated_only": {
+    "corr": 0.9628214899984503,
+    "mean_bias": -2.538380944878103,
+    "median_abs_diff": 2.331526642936497,
+    "median_bias": -2.3021049563567466,
+    "n": 242
+   },
+   "mean_bias": -2.4998198083600003,
+   "median_abs_diff": 2.44913018170028,
+   "median_bias": -2.348380429293698,
+   "n": 475,
+   "name": "AMZN",
+   "status": "FAIL"
+  },
+  "VXGOG": {
+   "corr": 0.9326280005855031,
+   "corr_changes": 0.6807155162454973,
+   "extrapolated_share": 0.5202558635394456,
+   "interpolated_only": {
+    "corr": 0.9179845612746381,
+    "mean_bias": -2.8212225263778947,
+    "median_abs_diff": 2.8042645026985227,
+    "median_bias": -2.669308674721808,
+    "n": 225
+   },
+   "mean_bias": -2.6428198879430274,
+   "median_abs_diff": 2.476294702018926,
+   "median_bias": -2.4618143963037156,
+   "n": 469,
+   "name": "GOOGL",
+   "status": "FAIL"
+  },
+  "VXN": {
+   "corr": 0.9455497030388048,
+   "corr_changes": 0.5982728428833354,
+   "extrapolated_share": 0.490280777537797,
+   "interpolated_only": {
+    "corr": 0.9487477985880749,
+    "mean_bias": -2.1081481947262013,
+    "median_abs_diff": 1.9733438928049676,
+    "median_bias": -1.9733438928049676,
+    "n": 236
+   },
+   "mean_bias": -2.162808254924288,
+   "median_abs_diff": 2.117111150659511,
+   "median_bias": -2.0988170369150083,
+   "n": 463,
+   "name": "QQQ",
+   "status": "FAIL"
+  }
+ },
+ "schema": "desk-ivhist-verdict/1",
+ "single_stock_generalization": false,
+ "study": "IVHIST-001"
+}

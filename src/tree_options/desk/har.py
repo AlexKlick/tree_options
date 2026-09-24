@@ -446,8 +446,10 @@ def walk_forward(
 # The sealed FORECAST-001 verdict (docs/desk/FORECAST-001-results.md). Only a
 # PASS makes the HAR forecast the desk's vol input; anything else (FAIL, or
 # PENDING before the run) keeps the naive RV22 benchmark and shows HAR as
-# unvalidated (the pre-registered failure rule).
-FORECAST_001_VERDICT = "PENDING"
+# unvalidated (the pre-registered failure rule). PASS as of the 2026-09-23 run
+# (h=20 p=5.35e-07, h=63 p=7.79e-07; cutoff 2026-09-23). The forward-monitoring
+# demotion rule of the pre-registration can set it back.
+FORECAST_001_VERDICT = "PASS"
 
 
 def forecast_source() -> str:

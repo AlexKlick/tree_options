@@ -277,6 +277,14 @@ def test_iv_rank_percentile_and_small_n(cal: StaticSessionCalendar) -> None:
     assert got["percentile"] == pytest.approx(50 / 130)
     few = surface.iv_rank(0.15, dict(list(hist.items())[:100]), D, cal)
     assert few["n"] == 100 and few["low_n"] is True
+    assert got["outside_range"] is None
+    # the chain-mid IV can leave the VWAP history's range: rank clamps, flagged
+    below = surface.iv_rank(0.05, hist, D, cal)
+    assert below["rank"] == 0.0 and below["percentile"] == 0.0
+    assert below["outside_range"] == "below"
+    above = surface.iv_rank(0.40, hist, D, cal)
+    assert above["rank"] == 1.0 and above["percentile"] == 1.0
+    assert above["outside_range"] == "above"
 
 
 def test_vrp_hand_value() -> None:

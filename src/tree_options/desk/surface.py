@@ -341,15 +341,28 @@ def iv_rank(
     current: float, history: Mapping[date, float], session: date, cal: Calendar
 ) -> dict[str, Any]:
     """Rank and percentile of ``current`` against the history's values over
-    the RANK_WINDOW sessions strictly before ``session``."""
+    the RANK_WINDOW sessions strictly before ``session``. The rank clamps
+    to [0, 1]; ``outside_range`` says when the current value (chain mids)
+    left the history's (VWAP) range."""
     sessions = cal.sessions()
     i = bisect.bisect_left(sessions, session)
     vals = [history[d] for d in sessions[max(0, i - RANK_WINDOW) : i] if d in history]
     n = len(vals)
-    lo, hi = (min(vals), max(vals)) if vals else (None, None)
-    rank = (current - lo) / (hi - lo) if lo is not None and hi is not None and hi > lo else None
+    rank: float | None = None
+    outside: str | None = None
+    if vals:
+        lo, hi = min(vals), max(vals)
+        outside = "below" if current < lo else "above" if current > hi else None
+        if hi > lo:
+            rank = min(1.0, max(0.0, (current - lo) / (hi - lo)))
     pct = sum(1 for v in vals if v < current) / n if n else None
-    return {"n": n, "rank": rank, "percentile": pct, "low_n": n < RANK_MIN_N}
+    return {
+        "n": n,
+        "rank": rank,
+        "percentile": pct,
+        "low_n": n < RANK_MIN_N,
+        "outside_range": outside,
+    }
 
 
 def vrp(iv: float, var_h: float, calendar_days: int) -> float:

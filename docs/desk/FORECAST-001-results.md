@@ -1,0 +1,141 @@
+# FORECAST-001 results: pooled log-HAR vs naive realized variance
+
+- Pre-registration: `docs/desk/FORECAST-001.md` (sha256 `2942b73a...a4d7`), sealed in `84e3cc8` before any fit. Both runs re-verified the hash.
+- **Verdict: PASS.** HAR beats the 22-day naive (RV22) on QLIKE:
+
+  | h | DM | one-sided p |
+  |---|---|---|
+  | 20 | 4.878 | 5.35e-07 |
+  | 63 | 4.804 | 7.79e-07 |
+
+  Both are below 0.05, as the bar requires.
+- Machine-readable output: `docs/desk/FORECAST-001.json`, a copy of `DESK_STORE/evaluations/FORECAST-001.json`.
+
+## Provenance
+
+- **Panel:** `ohlc-panel.json` sha256 `0861f525b6620fec084ccf0edc678c1b89decec0451f3f2adec67f328b5f1c1d`, read under the shared flock. Cutoff 2026-09-23 (the earliest last session among the 35 names).
+- **Earnings calendar:** sha256 `916569ad...0383`, equal to the value at sealing.
+- **Names:** the 35-name chain universe.
+- **Test origins:** from 2024-09-03.
+- **Refits:** 25 monthly refits per horizon, 2024-09..2026-09.
+- **Runs.** Both under `host-work --profile test`, with a clean tree at each head. The non-IV cells, every refit and the per-name table are byte-identical between them (same panel sha).
+
+  | run | code | outcome |
+  |---|---|---|
+  | 1 | `7aa3425` | used the defective IVHIST-001 run 1 labels (no IV-ok name), so every IV-squared cell and the blend were NOT_EVALUABLE |
+  | 2 | `c339f03` | used IVHIST-001 run 2's labels (IV-ok: IWM); the tables below are run 2 |
+
+- **Calendar.** 2025-01-09 (a phantom session; the NYSE was closed) was made a non-session before either run. It voids no window and shifts no lag or split; the results are invariant to whether the calendar lists it (tested).
+
+## Consequences (pre-registered)
+
+- HAR at h = 20 becomes the desk's vol-forecast input (`forecast_source: har`). `har.FORECAST_001_VERDICT = "PASS"` from this run; `desk features` now reports `vrp = vrp_har` with `har_status: validated`.
+- **IV blend, h = 20: allowed.** Encompassing on blend-train: c2 = 0.687, Driscoll-Kraay one-sided p = 0.0048. It holds for the IV-ok names only, which today means IWM. Out of sample from 2025-09-02, the frozen blend beat HAR on QLIKE with DM 1.804, p = 0.036 (information only).
+- **IV blend, h = 5, 63, 126: not allowed.** The p values for c2 were 0.053, 0.858 and 0.981.
+- **Forward monitoring** starts now: the same code on each month's newly realized windows. After at least 6 forward months, HAR is demoted to RV22 if it is worse than RV22 on QLIKE at h = 20 with p < 0.05. Forward results never promote.
+
+## Observations (not decisions)
+
+- **IV-squared vs HAR on IWM** (the only IV-ok name): HAR is not significantly better at any h. At h = 20 the IV-squared QLIKE is lower (0.149 vs 0.159, p = 0.69 for HAR better). The IV-squared cells cover one name, 367 to 452 dates.
+- **`be` (earnings)** is estimated once at least 100 covered event rows exist: from 2024-12 at h = 5, 2024-11 at h = 20, 2025-01 at h = 63 and 2025-04 at h = 126. Its final values (2026-09 refit): 0.915, 0.360, 0.227 and 0.234.
+- **Per-name.** HAR's QLIKE is below RV22's for most names at every horizon. Exceptions at some horizons: TSLA (h = 5, 20), NVDA, XOM and COST (h = 20), INTC (h = 5, 20, 63, 126), and GLD (h = 5, 20, 63). The per-name table is descriptive only.
+- **VRP bias.** VRP = IV30 - sqrt(forecast) as specified is biased negative by construction:
+  - the forecast is a bias-corrected mean variance, so sqrt(E[var]) >= E[vol];
+  - ATM IV runs about 2 vol points below variance-swap levels (IVHIST-001).
+
+  The playbook's cheap/fair/rich thresholds (IV30/forecast < 1.0 / <= 1.25 / > 1.25) should be set with that in mind (Wave 2 decision).
+
+## FORECAST-001 cells (all pre-registered cells, pass or fail)
+
+Cutoff 2026-09-23; test origins from 2024-09-03; IV-ok names: IWM.
+
+| h | benchmark | loss | n dates | n rows | mean loss HAR | mean loss bench | DM | p (one-sided) |
+|---|---|---|---|---|---|---|---|---|
+| 5 | rv22 | qlike | 511 | 17885 | 0.242517 | 0.353135 | 6.647 | 1.493e-11 |
+| 5 | rv22 | mse | 511 | 17885 | 1.42054e-05 | 1.70993e-05 | 4.971 | 3.339e-07 |
+| 5 | ewma | qlike | 511 | 17885 | 0.242517 | 0.332510 | 7.140 | 4.663e-13 |
+| 5 | ewma | mse | 511 | 17885 | 1.42054e-05 | 1.61119e-05 | 4.749 | 1.022e-06 |
+| 5 | iv2 | qlike | 452 | 452 | 0.230273 | 0.249682 | 0.656 | 0.2560 |
+| 5 | iv2 | mse | 452 | 452 | 2.30209e-06 | 2.42702e-06 | 0.910 | 0.1813 |
+| 20 | rv22 | qlike | 496 | 17360 | 0.181491 | 0.266625 | 4.878 | 5.353e-07 |
+| 20 | rv22 | mse | 496 | 17360 | 9.30267e-05 | 0.000128906 | 2.385 | 0.0085 |
+| 20 | ewma | qlike | 496 | 17360 | 0.181491 | 0.239978 | 4.590 | 2.213e-06 |
+| 20 | ewma | mse | 496 | 17360 | 9.30267e-05 | 0.00011489 | 2.078 | 0.0189 |
+| 20 | iv2 | qlike | 446 | 446 | 0.158724 | 0.149190 | -0.499 | 0.6909 |
+| 20 | iv2 | mse | 446 | 446 | 1.07145e-05 | 1.05693e-05 | -0.185 | 0.5734 |
+| 63 | rv22 | qlike | 453 | 15855 | 0.152376 | 0.262204 | 4.804 | 7.788e-07 |
+| 63 | rv22 | mse | 453 | 15855 | 0.000603765 | 0.001088 | 2.155 | 0.0156 |
+| 63 | ewma | qlike | 453 | 15855 | 0.152376 | 0.225817 | 3.203 | 0.0006799 |
+| 63 | ewma | mse | 453 | 15855 | 0.000603765 | 0.000891932 | 1.739 | 0.0410 |
+| 63 | iv2 | qlike | 403 | 403 | 0.131579 | 0.184216 | 1.152 | 0.1246 |
+| 63 | iv2 | mse | 403 | 403 | 6.78481e-05 | 8.53206e-05 | 1.231 | 0.1091 |
+| 126 | rv22 | qlike | 390 | 13650 | 0.138120 | 0.316613 | 7.043 | 9.382e-13 |
+| 126 | rv22 | mse | 390 | 13650 | 0.001802 | 0.003966 | 2.649 | 0.0040 |
+| 126 | ewma | qlike | 390 | 13650 | 0.138120 | 0.252115 | 5.691 | 6.333e-09 |
+| 126 | ewma | mse | 390 | 13650 | 0.001802 | 0.003082 | 2.003 | 0.0226 |
+| 126 | iv2 | qlike | 367 | 367 | 0.094684 | 0.118855 | 1.202 | 0.1147 |
+| 126 | iv2 | mse | 367 | 367 | 0.000171012 | 0.000220042 | 1.333 | 0.0913 |
+
+**Verdict: PASS** (HAR vs RV22, QLIKE, p < 0.05 at h=20 AND h=63).
+
+### IV blend (encompassing on blend-train)
+
+| h | n rows | c1 | c2 | se c2 | p c2 | allowed | OOS blend vs HAR DM | p |
+|---|---|---|---|---|---|---|---|---|
+| 5 | 221 | 0.7212 | 0.5027 | 0.3105 | 0.0527 | False | n/a | n/a |
+| 20 | 206 | 0.2248 | 0.6871 | 0.2656 | 0.0048 | True | 1.804 | 0.0356 |
+| 63 | 163 | -0.0563 | -0.4168 | 0.3897 | 0.8576 | False | n/a | n/a |
+| 126 | 114 | -0.5726 | -0.2338 | 0.1126 | 0.9811 | False | n/a | n/a |
+
+### Refits (first and last per horizon)
+
+| h | month | through | n | names | s2 | bd | bw | bm | be | event rows |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 5 | 2024-09 | 2024-08-30 | 25083 | 35 | 0.3732 | 0.1578 | 0.2081 | 0.2406 | n/a | 0 |
+| 5 | 2026-09 | 2026-08-31 | 42583 | 35 | 0.3692 | 0.1522 | 0.2132 | 0.2793 | 0.9152 | 1242 |
+| 20 | 2024-09 | 2024-08-30 | 24543 | 35 | 0.2616 | 0.1016 | 0.1245 | 0.2650 | n/a | 0 |
+| 20 | 2026-09 | 2026-08-31 | 42043 | 35 | 0.2730 | 0.0983 | 0.1327 | 0.2859 | 0.3599 | 4287 |
+| 63 | 2024-09 | 2024-08-30 | 22995 | 35 | 0.1526 | 0.0510 | 0.0490 | 0.3731 | n/a | 0 |
+| 63 | 2026-09 | 2026-08-31 | 40495 | 35 | 0.1974 | 0.0589 | 0.0798 | 0.2568 | 0.2273 | 11245 |
+| 126 | 2024-09 | 2024-08-30 | 20778 | 35 | 0.1372 | 0.0479 | 0.0603 | 0.2902 | n/a | 0 |
+| 126 | 2026-09 | 2026-08-31 | 38278 | 35 | 0.1625 | 0.0432 | 0.0625 | 0.1750 | 0.2336 | 9750 |
+
+### Per-name mean QLIKE, HAR vs RV22
+
+| name | h=5 HAR | h=5 RV22 | h=20 HAR | h=20 RV22 | h=63 HAR | h=63 RV22 | h=126 HAR | h=126 RV22 |
+|---|---|---|---|---|---|---|---|---|
+| AAPL | 0.2340 | 0.3135 | 0.2144 | 0.2711 | 0.2039 | 0.3248 | 0.2097 | 0.5144 |
+| MSFT | 0.2004 | 0.5781 | 0.1544 | 0.4731 | 0.0673 | 0.2664 | 0.0625 | 0.3609 |
+| NVDA | 0.1991 | 0.2140 | 0.1848 | 0.1544 | 0.1642 | 0.1867 | 0.1701 | 0.2281 |
+| GOOGL | 0.1888 | 0.3086 | 0.0824 | 0.1778 | 0.0360 | 0.1084 | 0.0268 | 0.1352 |
+| AMZN | 0.2397 | 0.5307 | 0.1719 | 0.4021 | 0.0960 | 0.3220 | 0.0609 | 0.3753 |
+| META | 0.2258 | 0.5262 | 0.1493 | 0.3643 | 0.0711 | 0.2795 | 0.0404 | 0.3889 |
+| TSLA | 0.2165 | 0.2042 | 0.1268 | 0.1133 | 0.1017 | 0.1174 | 0.1092 | 0.1271 |
+| AVGO | 0.2396 | 0.4761 | 0.2307 | 0.3388 | 0.2193 | 0.3209 | 0.1968 | 0.2956 |
+| LLY | 0.3792 | 0.5492 | 0.2505 | 0.4706 | 0.1217 | 0.3339 | 0.1067 | 0.2904 |
+| JPM | 0.2147 | 0.2606 | 0.1245 | 0.1723 | 0.1234 | 0.2218 | 0.0849 | 0.2143 |
+| V | 0.2296 | 0.3443 | 0.1548 | 0.2301 | 0.1053 | 0.2448 | 0.0738 | 0.2587 |
+| UNH | 0.7910 | 0.9744 | 0.6047 | 0.7929 | 0.4711 | 0.5463 | 0.5812 | 0.5827 |
+| XOM | 0.1955 | 0.2027 | 0.1313 | 0.1177 | 0.0995 | 0.1748 | 0.0743 | 0.2518 |
+| PG | 0.1030 | 0.1746 | 0.0666 | 0.1116 | 0.0666 | 0.1003 | 0.0585 | 0.1675 |
+| MA | 0.1934 | 0.2848 | 0.1425 | 0.1866 | 0.0873 | 0.1902 | 0.0637 | 0.2522 |
+| COST | 0.1581 | 0.1728 | 0.1232 | 0.1113 | 0.0976 | 0.1636 | 0.0783 | 0.2019 |
+| HD | 0.1317 | 0.1862 | 0.0869 | 0.1154 | 0.0552 | 0.1271 | 0.0396 | 0.1583 |
+| ADBE | 0.1697 | 0.3957 | 0.0986 | 0.2597 | 0.0657 | 0.1931 | 0.0568 | 0.2564 |
+| NFLX | 0.2393 | 0.5691 | 0.1454 | 0.3825 | 0.1101 | 0.2834 | 0.0717 | 0.3250 |
+| CRM | 0.1892 | 0.3045 | 0.1172 | 0.2030 | 0.0605 | 0.1969 | 0.0490 | 0.2332 |
+| AMD | 0.4073 | 0.5048 | 0.2768 | 0.4238 | 0.1827 | 0.3426 | 0.1319 | 0.3144 |
+| PEP | 0.1495 | 0.2146 | 0.0946 | 0.1341 | 0.0627 | 0.1291 | 0.0611 | 0.1578 |
+| KO | 0.1605 | 0.2617 | 0.1026 | 0.1706 | 0.0954 | 0.1413 | 0.0825 | 0.1889 |
+| DIS | 0.2164 | 0.4869 | 0.1366 | 0.3335 | 0.0937 | 0.2863 | 0.0680 | 0.3521 |
+| INTC | 0.4509 | 0.3849 | 0.3001 | 0.2389 | 0.3322 | 0.3223 | 0.3276 | 0.2887 |
+| QCOM | 0.3014 | 0.4555 | 0.2648 | 0.4695 | 0.3223 | 0.5044 | 0.2627 | 0.5872 |
+| SPY | 0.2864 | 0.3688 | 0.2563 | 0.3151 | 0.2388 | 0.4201 | 0.2153 | 0.6061 |
+| QQQ | 0.2230 | 0.2773 | 0.1939 | 0.2433 | 0.1661 | 0.3051 | 0.1339 | 0.4418 |
+| IWM | 0.2171 | 0.2868 | 0.1833 | 0.2419 | 0.1386 | 0.2559 | 0.0939 | 0.2624 |
+| SMH | 0.1957 | 0.2339 | 0.1512 | 0.1785 | 0.1474 | 0.2317 | 0.1111 | 0.3211 |
+| SOXX | 0.1906 | 0.2210 | 0.1659 | 0.1794 | 0.1993 | 0.2685 | 0.1491 | 0.3406 |
+| XLE | 0.2116 | 0.2370 | 0.1480 | 0.1575 | 0.1336 | 0.2516 | 0.0831 | 0.2997 |
+| XLV | 0.1702 | 0.2287 | 0.1519 | 0.2044 | 0.1217 | 0.2093 | 0.0987 | 0.2381 |
+| XLF | 0.2355 | 0.3081 | 0.2069 | 0.2626 | 0.1998 | 0.3577 | 0.1504 | 0.4092 |
+| GLD | 0.3337 | 0.3191 | 0.3581 | 0.3301 | 0.4755 | 0.4489 | 0.6500 | 0.6555 |
