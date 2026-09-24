@@ -123,8 +123,12 @@ def pnl_history_series(
     for s in samples:
         try:
             ts = datetime.fromisoformat(str(s["ts"]))
+            if s["total"] is None:
+                # a tick where nothing quoted (empty books at the open, a
+                # quote-less terminal line): no observation, never a $0 one
+                continue
             val = float(s["total"])
-        except (KeyError, ValueError):
+        except (KeyError, TypeError, ValueError):
             continue
         pts.append((int(ts.timestamp() * 1000), val))
     if len(pts) < 2 or pts[-1][0] - pts[0][0] < 1000:

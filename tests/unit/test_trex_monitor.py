@@ -569,7 +569,29 @@ class TestComputeMarks:
         st.entry_fill = Decimal("0.21")
         marks = compute_marks([self._spread()], book, {"nvda-oct": None})
         assert marks["structures"]["nvda-oct"]["mark"] is None
-        assert marks["total_unrealized"] == "0.00"
+        # nothing quoted = no observation, never a fabricated $0 (an
+        # all-empty book at the 2026-09-24 open once read as exactly the
+        # full committed loss)
+        assert marks["total_unrealized"] is None
+
+    def test_partial_quotes_total_sums_the_quoted(self) -> None:
+        book = BookState(["nvda-oct", "nvda-nov"])
+        for sid, fill in (("nvda-oct", "0.21"), ("nvda-nov", "1.24")):
+            st = book.structures[sid]
+            st.to(Status.ENTER_WORKING, _at(9, 50))
+            st.to(Status.OPEN, _at(10, 0))
+            st.filled_qty = 5
+            st.entry_fill = Decimal(fill)
+        marks = compute_marks(
+            [self._spread("nvda-oct"), self._spread("nvda-nov")],
+            book,
+            {
+                "nvda-oct": ComboQuote(bid=Decimal("0.21"), ask=Decimal("0.23")),
+                "nvda-nov": None,
+            },
+        )
+        assert marks["total_unrealized"] == "5.00"  # (mid 0.22 - 0.21) x 5 x 100
+        assert marks["structures"]["nvda-nov"]["mark"] is None
 
 
 class TestMarksHistoryLog:

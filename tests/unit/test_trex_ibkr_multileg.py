@@ -283,6 +283,23 @@ class TestPackageQuote:
         assert ib.package_quote("ic") is None
         assert ib.package_quote("unknown") is None
 
+    def test_empty_book_leg_is_no_quote_not_a_zero_market(self) -> None:
+        # 2026-09-24: for ~16 min after the open the gateway reported legs
+        # 0.0/0.0 (no MM book yet); those quotes flowed through as mids of
+        # $0.00 and marked the whole book at exactly its committed debit
+        ib, gw = _adapter(CONDOR)
+        gw.quote(90, 0.20, 0.25)
+        gw.quote(95, 0.50, 0.60)
+        gw.quote(105, 0.0, 0.0)  # empty book
+        gw.quote(115, 0.10, 0.15)
+        assert ib.package_quote("ic") is None
+
+    def test_zero_bid_with_an_ask_is_still_a_market(self) -> None:
+        ib, gw = _adapter(LONG_CALL)
+        gw.quote(105, 0.0, 0.05)  # genuinely near-worthless, but two-sided
+        q = ib.package_quote("lc")
+        assert q is not None and (q.bid, q.ask) == (Decimal("0"), Decimal("0.05"))
+
     def test_fake_desk_broker_prices_like_the_adapter(self) -> None:
         ib, gw = _adapter(CONDOR)
         fake = FakeDeskBroker()

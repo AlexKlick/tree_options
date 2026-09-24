@@ -428,6 +428,22 @@ class TestHistorySeries:
         assert pnl_history_series([{"junk": 1}]) is None
         assert pnl_history_series(self._samples(1)) is None
 
+    def test_none_total_ticks_are_skipped_not_zero(self) -> None:
+        # a tick where nothing quoted (empty books at the open, a
+        # quote-less terminal line) is no observation: it must vanish
+        # from the series, never render as a $0 (or crash on float(None))
+        base = datetime(2026, 9, 24, 9, 30, tzinfo=ET)
+        samples = [
+            {"ts": base.isoformat(), "total": "100.00"},
+            {"ts": (base + timedelta(minutes=1)).isoformat(), "total": None},
+            {"ts": (base + timedelta(minutes=2)).isoformat(), "total": None},
+            {"ts": (base + timedelta(minutes=3)).isoformat(), "total": "128.50"},
+        ]
+        series = pnl_history_series(samples)
+        assert series is not None
+        assert [p[1] for p in series["points"]] == [100.0, 128.5]
+        assert (series["y_lo"], series["y_hi"]) == (0.0, 128.5)  # no stretch
+
     def test_decimation_keeps_endpoints_and_bound(self) -> None:
         samples = self._samples(1500)
         series = pnl_history_series(samples)

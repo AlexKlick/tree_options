@@ -357,6 +357,13 @@ class IbkrTrex:
         bid, ask = sub.ticker.bid, sub.ticker.ask
         if bid is None or ask is None or bid != bid or ask != ask:  # NaN guard
             return None
+        if bid <= 0 and ask <= 0:
+            # an empty book (combo legs before the MMs open, a gateway whose
+            # ticklers never primed) reports 0.0/0.0 — that is NO market,
+            # not a $0.00 one. Letting it through marked whole books at
+            # zero (a full-loss chart overnight) and could price a forced
+            # exit limit at $0.00.
+            return None
         return _d(bid), _d(ask)
 
     def package_quote(self, structure_id: str) -> ComboQuote | None:

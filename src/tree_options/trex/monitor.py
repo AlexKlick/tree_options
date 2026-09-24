@@ -97,6 +97,7 @@ def compute_marks(
     """
     rows: dict[str, dict[str, object]] = {}
     total = Decimal("0")
+    quoted = 0
     for spread in spreads:
         st = book.structures[spread.id]
         if st.filled_qty <= 0 or st.entry_fill is None:
@@ -106,6 +107,7 @@ def compute_marks(
         if quote is None:
             row["mark"] = None
         else:
+            quoted += 1
             mid = (quote.bid + quote.ask) / 2
             unrealized = (mid - st.entry_fill) * st.filled_qty * 100
             total += unrealized
@@ -116,7 +118,12 @@ def compute_marks(
                 unrealized=str(unrealized.quantize(_CENT)),
             )
         rows[spread.id] = row
-    return {"structures": rows, "total_unrealized": str(total.quantize(_CENT))}
+    # a tick where nothing quoted is NO observation, not a $0 one (an
+    # all-empty book once drew the book at exactly its full loss)
+    return {
+        "structures": rows,
+        "total_unrealized": str(total.quantize(_CENT)) if quoted else None,
+    }
 
 
 def _engine_config(plan: TradePlan) -> EngineConfig:
