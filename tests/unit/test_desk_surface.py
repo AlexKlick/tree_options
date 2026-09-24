@@ -9,6 +9,7 @@ bisection on the planted smile), never by calling the surface module.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 from datetime import UTC, date, datetime
@@ -18,7 +19,7 @@ from typing import Any
 import numpy as np
 import pytest
 
-from tree_options.desk import har, store, surface
+from tree_options.desk import har, indices, store, surface
 from tree_options.desk.__main__ import run_cli
 from tree_options.synth_options.greeks import bs_abs_delta, bs_price
 from tree_options.time.calendar import StaticSessionCalendar
@@ -223,8 +224,38 @@ def test_implied_earnings_move_two_expiry_split(cal: StaticSessionCalendar) -> N
     assert ev["expiries"] == ["2026-11-06", "2026-12-31"]
     assert ev["implied_move"] == pytest.approx(JUMP, abs=1e-6)
     assert ev["implied_mean_abs_move"] == pytest.approx(JUMP * math.sqrt(2 / math.pi), abs=1e-6)
-    none = surface.implied_event_move(term, [], D, cal)
-    assert none == {"next_report": None}
+    none = surface.implied_event_move(term, [], D, cal, reporter=False)
+    assert none == {"next_report": None}  # an ETF: no scheduled event
+    unknown = surface.implied_event_move(term, ["2026-07-30"], D, cal)
+    assert unknown["next_report"] is None and unknown["schedule"] == "incomplete"
+
+
+def _tp(dte: int, iv: float) -> surface.TermPoint:
+    """A term point dte calendar days after D (expiry dates only order them)."""
+    exp = date(2026, 10, 21) if dte < 32 else date(2026, 10, 28) if dte < 40 else date(2026, 12, 31)
+    return surface.TermPoint(exp, dte, iv, 4, "bracket")
+
+
+def test_implied_move_rejects_impossible_decompositions(cal: StaticSessionCalendar) -> None:
+    rep = ["2026-10-20", "2027-01-28"]
+    # front IV far above back IV: background variance (w2-w1)/(T2-T1) < 0
+    # w1 = .16*31/365, w2 = .09*38/365 -> ex2 = -0.22 (annualized)
+    bad_bg = surface.implied_event_move([_tp(31, 0.40), _tp(38, 0.30)], rep, D, cal)
+    assert bad_bg["implied_move"] is None and "background" in bad_bg["reason"]
+    # back IV far above front IV: J^2 = (w1 T2 - w2 T1)/(T2 - T1) < 0
+    bad_j = surface.implied_event_move([_tp(31, 0.20), _tp(100, 0.40)], rep, D, cal)
+    assert bad_j["implied_move"] is None and "jump" in bad_j["reason"]
+    # a flat term structure: J^2 = 0 exactly -> no premium, not an error
+    flat = surface.implied_event_move([_tp(31, 0.25), _tp(100, 0.25)], rep, D, cal)
+    assert flat["implied_move"] == 0.0 and flat["flag"] == "no_event_premium"
+
+
+def test_implied_move_needs_one_event_in_both_expiries(cal: StaticSessionCalendar) -> None:
+    term = surface.atm_term(_quotes(), spot=S, rate=R)
+    # expiries after the event pair: 2026-11-06 and 2026-12-31; a second
+    # report on 2026-12-01 lands before the second expiry
+    ev = surface.implied_event_move(term, [REPORT, "2026-12-01"], D, cal)
+    assert ev["implied_move"] is None and "second report" in ev["reason"]
 
 
 def test_historical_earnings_moves(cal: StaticSessionCalendar) -> None:
@@ -319,26 +350,48 @@ def _panel(cal: StaticSessionCalendar) -> dict[str, Any]:
     return panel
 
 
-def test_features_cli_writes_the_session_file(
-    tmp_path: Path, cal: StaticSessionCalendar, monkeypatch: pytest.MonkeyPatch
-) -> None:
+TIMING = {  # the market lane's earnings-timing.json (estimated beyond the window)
+    "AAPL": {
+        "2027-01-28": {
+            "timing": "amc",
+            "source": "nasdaq earnings calendar (time-after-hours)",
+            "status": "estimated",
+            "fetched_at": "2026-09-20T10:00:00+00:00",
+        }
+    }
+}
+
+
+def _setup_store(
+    tmp_path: Path,
+    cal: StaticSessionCalendar,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    timing: bool = True,
+    verdict_sha: str | None = "match",
+    panel: dict[str, Any] | None = None,
+) -> Path:
     root = tmp_path / "store"
     paper = tmp_path / "paper"
-    paper.mkdir()
+    paper.mkdir(exist_ok=True)
     monkeypatch.setenv("DESK_STORE", str(root))
     monkeypatch.setenv("TREX_DESK_STATE", str(tmp_path / "state"))
     monkeypatch.setenv("DESK_PAPER_DIR", str(paper))
     chain = root / "chains" / D.isoformat() / "AAPL.json.gz"
-    chain.parent.mkdir(parents=True)
+    chain.parent.mkdir(parents=True, exist_ok=True)
     chain.write_bytes(store.encode_document(_chain_doc()))
-    (root / "indices").mkdir()
-    (root / "indices" / "DTB3.csv").write_text("observation_date,DTB3\n2026-09-21,4.00\n")
-    panel = _panel(cal)
-    (paper / "ohlc-panel.json").write_text(json.dumps(panel))
+    (root / "indices").mkdir(exist_ok=True)
+    # the market lane's stored format (record-indices), not the raw FRED file
+    (root / "indices" / "DTB3.csv").write_text(
+        indices.render([("2026-09-18", "", "", "", "3.95"), ("2026-09-21", "", "", "", "4.00")])
+    )
+    (paper / "ohlc-panel.json").write_text(json.dumps(panel if panel is not None else _panel(cal)))
     (paper / "earnings-calendar.json").write_text(json.dumps({"AAPL": ["2026-07-30", REPORT]}))
+    if timing:
+        (paper / "earnings-timing.json").write_text(json.dumps(TIMING))
     hist_sessions = [s for s in cal.sessions() if s < D][-130:]
-    (root / "iv-history").mkdir()
-    (root / "iv-history" / "vwap_atm.json").write_text(
+    (root / "iv-history").mkdir(exist_ok=True)
+    hist = (
         json.dumps(
             {
                 "schema": "desk-ivhist/1",
@@ -352,18 +405,35 @@ def test_features_cli_writes_the_session_file(
                 },
             }
         )
+        + "\n"
     )
+    (root / "iv-history" / "vwap_atm.json").write_text(hist)
+    sha = hashlib.sha256(hist.encode()).hexdigest() if verdict_sha == "match" else verdict_sha
     (root / "iv-history" / "IVHIST-001-verdict.json").write_text(
-        json.dumps({"labels": {"AAPL": "ok"}})
+        json.dumps({"labels": {"AAPL": "ok"}, "inputs": {"iv_history_sha256": sha}})
     )
+    return root
+
+
+def _run_features(root: Path, cal: StaticSessionCalendar) -> dict[str, Any]:
     rc = run_cli(
         ["features", "--session", D.isoformat()],
         cal=cal,
         now=datetime(2026, 9, 23, 12, 0, tzinfo=UTC),
     )
     assert rc == 0
-    out = json.loads((root / "features" / f"{D.isoformat()}.json").read_text())
+    doc: dict[str, Any] = json.loads((root / "features" / f"{D.isoformat()}.json").read_text())
+    return doc
+
+
+def test_features_cli_writes_the_session_file(
+    tmp_path: Path, cal: StaticSessionCalendar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _setup_store(tmp_path, cal, monkeypatch)
+    out = _run_features(root, cal)
     assert out["schema"] == surface.FEATURES_SCHEMA and out["session"] == D.isoformat()
+    assert out["inputs"]["rate"] == pytest.approx(0.04)  # stored DTB3 (last obs <= D)
+    assert out["inputs"]["rate_source"].startswith("DTB3 store DTB3.csv sha256 ")
     f = out["names"]["AAPL"]
     assert f["iv"]["30"] == pytest.approx(
         math.sqrt((0.30**2 * 20 + (_atm(45) ** 2 * 45 - 0.30**2 * 20) * 10 / 25) / 30), abs=1e-6
@@ -373,6 +443,9 @@ def test_features_cli_writes_the_session_file(
     fc = f["forecast"]
     expected_source = "har" if har.FORECAST_001_VERDICT == "PASS" else "rv22"
     assert fc["source"] == expected_source
+    # the 20-session window (09-22, 10-20] holds the 10-20 report; the
+    # estimated 2027-01-28 report pins the schedule beyond it
+    assert fc["schedule"] == "complete" and fc["n_earn"] == 1.0
     end = cal.nth_after(D, 20)
     c20 = round(
         (
@@ -386,18 +459,77 @@ def test_features_cli_writes_the_session_file(
     assert fc["vrp_har"] == pytest.approx(f["iv"]["30"] - math.sqrt(fc["har_var"] * 365 / c20))
     assert fc["vrp"] == fc[f"vrp_{expected_source}"]
     assert fc["har_status"] == ("validated" if expected_source == "har" else "unvalidated")
-    # a rerun rewrites the derived file with identical content (the panel is
-    # the only input that can move, and it did not)
+    # a rerun rewrites the derived file with identical content
     first = (root / "features" / f"{D.isoformat()}.json").read_bytes()
-    assert (
-        run_cli(
-            ["features", "--session", D.isoformat()],
-            cal=cal,
-            now=datetime(2026, 9, 23, 12, 0, tzinfo=UTC),
-        )
-        == 0
-    )
+    _run_features(root, cal)
     assert (root / "features" / f"{D.isoformat()}.json").read_bytes() == first
+
+
+def test_features_without_a_known_report_beyond_the_window_are_degraded(
+    tmp_path: Path, cal: StaticSessionCalendar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """No timing file: the sealed calendar's last AAPL date (10-20) is the
+    window's last session, so nothing pins the schedule after it. The HAR
+    forecast is degraded and its VRP withheld; RV22's is still shown."""
+    root = _setup_store(tmp_path, cal, monkeypatch, timing=False)
+    fc = _run_features(root, cal)["names"]["AAPL"]["forecast"]
+    assert fc["schedule"] == "incomplete" and "no known report after" in fc["schedule_reason"]
+    assert fc["har_status"] == "degraded"
+    if fc["source"] == "har":
+        assert fc["vrp"] is None and fc["vrp_withheld"]
+    assert fc["vrp_rv22"] is not None
+
+
+def test_iv_labels_bind_to_the_history_they_scored(
+    tmp_path: Path, cal: StaticSessionCalendar, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _setup_store(tmp_path, cal, monkeypatch, verdict_sha="0" * 64)
+    out = _run_features(root, cal)
+    assert out["names"]["AAPL"]["iv_rank"]["history_label"] == "unvalidated"
+    assert any("IVHIST-001 verdict" in w for w in out["warnings"])
+
+
+@pytest.mark.parametrize("mode", ["full", "partial", "absurd"])
+def test_feature_path_ignores_everything_after_the_session(
+    tmp_path: Path, cal: StaticSessionCalendar, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    """Future poison on the whole feature path: D's features are the same
+    with no bars after D and with future bars present (every session:
+    ``full``; 70% of them: ``partial``; 70% with absurd closes:
+    ``absurd``). A fit that saw 30 future sessions fails ``full`` and
+    ``partial`` (checked by mutation)."""
+    later = [s for s in cal.sessions() if D < s <= date(2026, 11, 30)]
+    rng = np.random.default_rng(7)
+    base = _panel(cal)
+    extra: dict[str, Any] = {}
+    for name, bars in base.items():
+        last = float(bars[D.isoformat()]["close"])
+        extra[name] = {}
+        for s in later:
+            if mode == "full" or rng.random() < 0.7:
+                c = last * math.exp(0.3 * rng.normal())
+                extra[name][s.isoformat()] = {
+                    "open": f"{c:.4f}",
+                    "high": f"{c * 1.1:.4f}",
+                    "low": f"{c * 0.9:.4f}",
+                    "close": f"{c:.4f}",
+                    "volume": 1,
+                }
+    variants = []
+    for with_future in (False, True):
+        panel = {n: {**b, **(extra[n] if with_future else {})} for n, b in base.items()}
+        if mode == "absurd" and with_future:
+            panel = {
+                n: {**b, **{d: {**v, "close": "1.0"} for d, v in extra[n].items()}}
+                for n, b in base.items()
+            }
+        sub = tmp_path / f"v{int(with_future)}"
+        sub.mkdir()
+        root = _setup_store(sub, cal, monkeypatch, panel=panel)
+        doc = _run_features(root, cal)
+        doc["inputs"].pop("panel_sha256")  # the only input that names the file
+        variants.append(doc)
+    assert variants[0] == variants[1]
 
 
 def test_features_cli_without_chains_exits_1(

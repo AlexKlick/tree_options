@@ -294,22 +294,53 @@ def test_har_data_marks_etfs_and_event_pairs(cal: StaticSessionCalendar) -> None
     assert grid[data.coverage_idx] == date(2024, 9, 3)  # first session >= 2024-09-01
 
 
+def _drop_after(
+    panel: dict[str, dict[str, Any]], cut: str, seed: int, share: float
+) -> dict[str, dict[str, Any]]:
+    """Remove a random share of the bars dated after ``cut``, and every
+    name's bar on some dates (a vendor-wide outage)."""
+    rng = np.random.default_rng(seed)
+    outage = {d for d in panel["SPY"] if d > cut and rng.random() < share / 2}
+    return {
+        name: {
+            d: dict(b)
+            for d, b in bars.items()
+            if d <= cut or (d not in outage and rng.random() >= share)
+        }
+        for name, bars in panel.items()
+    }
+
+
+def _variants(panel: dict[str, dict[str, Any]], cut: str, mode: str) -> tuple[Any, Any]:
+    """(base, altered) panels identical up to ``cut``: future prices
+    changed, future bars dropped, or future bars added."""
+    if mode == "values":
+        return panel, _poison_after(panel, cut)
+    if mode == "drop":
+        return panel, _drop_after(panel, cut, 3, 0.2)
+    return _drop_after(panel, cut, 4, 0.2), _poison_after(panel, cut)  # add (and alter)
+
+
+@pytest.mark.parametrize("mode", ["values", "drop", "add"])
+@pytest.mark.parametrize("h", har.HORIZONS)
 def test_future_poison_does_not_change_point_in_time_forecasts(
-    cal: StaticSessionCalendar,
+    cal: StaticSessionCalendar, h: int, mode: str
 ) -> None:
-    """Altering every bar after t must leave every forecast at origins <= t
-    byte-identical (walk-forward HAR, RV22 and EWMA)."""
+    """Altering anything dated after t (prices, or which future bars
+    exist) must leave every forecast at origins <= t byte-identical
+    (walk-forward HAR, RV22 and EWMA), at every horizon."""
     panel = _synthetic_panel(cal, 5)
     cut = "2024-11-14"
-    poisoned = _poison_after(panel, cut)
+    base, altered = _variants(panel, cut, mode)
     names = ("AAA", "SPY", "QQQ")
     outs = []
-    for p in (panel, poisoned):
+    for p in (base, altered):
         data = har.build_har_data(p, EARNINGS, cal, names)
-        wf = har.walk_forward(data, 20, start=date(2024, 9, 1), min_event_rows=1)
+        wf = har.walk_forward(data, h, start=date(2024, 9, 1), min_event_rows=1)
         outs.append((data, wf))
     (d0, wf0), (d1, wf1) = outs
     cut_idx = d0.index(date.fromisoformat(cut))
+    assert d0.sessions[: cut_idx + 1] == d1.sessions[: cut_idx + 1]
     checked = 0
     for name in names:
         early0 = {t: f for t, f in wf0.forecasts[name].items() if t <= cut_idx}
@@ -317,23 +348,108 @@ def test_future_poison_does_not_change_point_in_time_forecasts(
         assert early0 == early1
         checked += len(early0)
         for t in range(cut_idx - 30, cut_idx + 1):
-            assert har.rv22_forecast(d0.names[name], t, 20) == har.rv22_forecast(
-                d1.names[name], t, 20
+            assert har.rv22_forecast(d0.names[name], t, h) == har.rv22_forecast(
+                d1.names[name], t, h
             )
             assert d0.names[name].ewma[t] == d1.names[name].ewma[t]
     assert checked > 100  # the test really compared forecasts
-    # and the future really was poisoned: a later forecast moved
-    late = max(wf0.forecasts["SPY"])
-    assert wf0.forecasts["SPY"][late] != wf1.forecasts["SPY"][late]
+    # and the future really differs: some later forecast moved or vanished
+    late0 = {t: f for t, f in wf0.forecasts["SPY"].items() if t > cut_idx}
+    late1 = {t: f for t, f in wf1.forecasts["SPY"].items() if t > cut_idx}
+    assert late0 != late1
 
 
-def test_forecast_at_truncates_the_panel(cal: StaticSessionCalendar) -> None:
+@pytest.mark.parametrize("mode", ["values", "drop", "add"])
+def test_forecast_at_truncates_the_panel(cal: StaticSessionCalendar, mode: str) -> None:
     panel = _synthetic_panel(cal, 8)
     d = date(2025, 3, 12)
-    poisoned = _poison_after(panel, d.isoformat())
-    a = har.forecast_at(panel, EARNINGS, cal, ("AAA", "SPY", "QQQ"), "AAA", d, 20)
-    b = har.forecast_at(poisoned, EARNINGS, cal, ("AAA", "SPY", "QQQ"), "AAA", d, 20)
+    base, altered = _variants(panel, d.isoformat(), mode)
+    a = har.forecast_at(base, EARNINGS, cal, ("AAA", "SPY", "QQQ"), "AAA", d, 20)
+    b = har.forecast_at(altered, EARNINGS, cal, ("AAA", "SPY", "QQQ"), "AAA", d, 20)
     assert a is not None and a == b
     # the fit is the month's: through the last session before 2025-03-03
     assert a.fit_through == date(2025, 2, 28)
-    assert a.forecast > 0.0 and a.rv22 > 0.0
+    assert a.forecast > 0.0 and a.rv22 is not None and a.rv22 > 0.0
+
+
+# --------------------------------------------- raw mask, empty names (P2)
+
+
+def test_cleaning_never_fills_a_missing_raw_observation() -> None:
+    """A report-session bar missing from the panel leaves raw v missing;
+    cleaning replaces v* there, but no regressor window may contain the
+    missing raw value (FORECAST-001: every raw v_{t-21..t+h} must exist)."""
+    v: list[float | None] = [1e-4] * 70
+    v[30] = None
+    ns = _series(v, reporter=True, pairs=((30, 31),))
+    assert ns.v_clean[30] is not None  # the cleaned value exists...
+    # ...but every origin whose 22-window holds session 30 has no regressors
+    assert all(har.regressors(ns, t) is None for t in range(30, 52))
+    assert har.regressors(ns, 29) is not None
+    assert har.regressors(ns, 52) is not None
+    rows = har.build_rows(
+        har.HarData(
+            sessions=tuple(range(70)),
+            names={"X": ns},  # type: ignore[arg-type]
+            coverage_idx=0,
+        ),
+        5,
+    )
+    assert not any(25 <= t <= 51 for t in rows.t.tolist())  # targets or regressors hit 30
+
+
+def test_one_empty_name_does_not_disable_the_others(cal: StaticSessionCalendar) -> None:
+    panel = _synthetic_panel(cal, 2)
+    panel["NEW"] = {}  # no bars at all
+    names = ("AAA", "SPY", "QQQ", "NEW")
+    data = har.build_har_data(panel, EARNINGS, cal, names)
+    assert all(x is None for x in data.names["NEW"].v)
+    got = har.forecasts_at(panel, EARNINGS, cal, names, date(2025, 3, 12), 20)
+    assert set(got) == {"AAA", "SPY", "QQQ"}
+    # a name listed only after the as-of is skipped, not fatal
+    late = {**panel, "LATE": {"2025-06-02": dict(panel["SPY"]["2025-06-02"])}}
+    got2 = har.forecasts_at(late, EARNINGS, cal, (*names, "LATE"), date(2025, 3, 12), 20)
+    assert set(got2) == {"AAA", "SPY", "QQQ"}
+
+
+# ---------------------------------------------- earnings schedule (P1-3)
+
+
+def test_schedule_status_requires_a_known_report_beyond_the_window(
+    cal: StaticSessionCalendar,
+) -> None:
+    t, end = date(2026, 9, 22), date(2026, 10, 20)
+    # the supplied calendar ends in July: nothing is known about October
+    assert har.schedule_status(["2026-04-30", "2026-07-30"], t, end, cal)[0] == "incomplete"
+    # a report known beyond the window (estimated dates count): complete
+    ok = har.schedule_status(["2026-04-30", "2026-07-30", "2026-10-29"], t, end, cal)
+    assert ok == ("complete", "")
+    # one inside the window and one beyond: complete
+    assert har.schedule_status(["2026-07-30", "2026-10-15", "2027-01-28"], t, end, cal)[0] == (
+        "complete"
+    )
+    # a quarter missing between the last known report and the next one
+    gap = har.schedule_status(["2026-03-01", "2026-12-01"], t, end, cal)
+    assert gap[0] == "incomplete" and "gap" in gap[1]
+    assert har.schedule_status([], t, end, cal)[0] == "unavailable"
+
+
+def test_forward_schedule_sets_n_earn_and_status(cal: StaticSessionCalendar) -> None:
+    panel = _synthetic_panel(cal, 6)
+    names = ("AAA", "SPY", "QQQ")
+    d = date(2025, 3, 12)
+    # the sealed calendar (fit) ends 2025-04-24: the 20-session window after
+    # d ends 2025-04-09, so the sealed schedule alone is complete
+    got = har.forecasts_at(panel, EARNINGS, cal, names, d, 20)
+    assert got["AAA"].schedule == "complete" and got["AAA"].n_earn == 0.0
+    assert got["SPY"].schedule == "n/a"
+    # a forward schedule without anything beyond the window: incomplete
+    fwd = {"AAA": ["2025-01-23"]}
+    got2 = har.forecasts_at(panel, EARNINGS, cal, names, d, 20, forward_schedule=fwd)
+    assert got2["AAA"].schedule == "incomplete" and got2["AAA"].schedule_reason
+    # an estimated report inside the window counts for variance purposes
+    fwd3 = {"AAA": ["2025-01-23", "2025-03-27", "2025-07-24"]}
+    got3 = har.forecasts_at(panel, EARNINGS, cal, names, d, 20, forward_schedule=fwd3)
+    assert got3["AAA"].schedule == "complete" and got3["AAA"].n_earn == 1.0
+    # the fit is the sealed calendar's either way (same coefficients)
+    assert got3["AAA"].fit_n == got["AAA"].fit_n

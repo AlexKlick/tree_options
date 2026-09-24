@@ -16,7 +16,7 @@ from typing import Any
 
 import pytest
 
-from tree_options.desk import ivhist
+from tree_options.desk import indices, ivhist
 from tree_options.synth_options.greeks import bs_price
 from tree_options.time.calendar import StaticSessionCalendar
 from tree_options.trex.clock import ET
@@ -262,25 +262,98 @@ def test_stock_spot_bodies_are_not_held_to_option_bar_integrity(
     assert scan.spot_conflicts["SPY"] == {D2}
 
 
-def test_rate_source_reads_fred_point_in_time(tmp_path: Path) -> None:
+def test_spot_duplicates_conflict_on_the_whole_bar(
+    tmp_path: Path, cal: StaticSessionCalendar
+) -> None:
+    """IVHIST-001: "if cached files disagree on D, D is NOT_EVALUABLE". Two
+    stock files agreeing on the VWAP but not on the rest of the bar still
+    disagree on D (c339f03 had narrowed this to the VWAP alone)."""
+    cache = tmp_path / "massive-cache"
+    bar = {
+        "v": 1000,
+        "vw": 101.5,
+        "o": 101.0,
+        "c": 102.0,
+        "h": 102.5,
+        "l": 100.5,
+        "t": _ms(D1),
+        "n": 7,
+    }
+    _write(cache, "a", {"ticker": "SPY", "adjusted": False, "resultsCount": 1, "results": [bar]})
+    _write(
+        cache,
+        "b",
+        {"ticker": "SPY", "adjusted": False, "resultsCount": 1, "results": [{**bar, "v": 1001}]},
+    )
+    _write(
+        cache, "c", {"ticker": "SPY", "adjusted": False, "resultsCount": 1, "results": [{**bar}]}
+    )  # an identical duplicate is fine
+    scan = ivhist.scan_cache(cache, ("SPY",), date(2025, 3, 1), date(2025, 3, 31), cal)
+    assert scan.spot_conflicts["SPY"] == {D1}
+    assert scan.spot["SPY"] == {}
+
+
+def test_raw_fred_adapter_reads_the_sealed_snapshot(tmp_path: Path) -> None:
     p = tmp_path / "DTB3.csv"
     p.write_text("observation_date,DTB3\n2025-03-03,4.20\n2025-03-04,.\n2025-03-05,4.10\n")
-    rs = ivhist.RateSource.from_csv(p)
+    rs = ivhist.RateSource.from_raw_fred_csv(p)
     assert rs.rate_on(date(2025, 3, 3)) == pytest.approx(0.042)
     assert rs.rate_on(date(2025, 3, 4)) == pytest.approx(0.042)  # '.' is missing
     assert rs.rate_on(date(2025, 3, 7)) == pytest.approx(0.041)
     assert rs.rate_on(date(2025, 3, 1)) is None
+    assert rs.label.startswith("DTB3 DTB3.csv sha256 ")  # the sealed run's label, unchanged
 
 
-def test_read_index_csv_both_layouts(tmp_path: Path) -> None:
+def test_raw_cboe_adapter_reads_both_vendor_layouts(tmp_path: Path) -> None:
     a = tmp_path / "VIX_History.csv"
     a.write_text(
         "DATE,OPEN,HIGH,LOW,CLOSE\n09/19/2026,15.0,16.0,14.0,15.5\n09/22/2026,14.6,14.9,14.1,14.21\n"
     )
     b = tmp_path / "GVZ_History.csv"
     b.write_text("DATE,GVZ\n09/22/2026,23.59\n")
-    assert ivhist.read_index_csv(a) == {date(2026, 9, 19): 15.5, date(2026, 9, 22): 14.21}
-    assert ivhist.read_index_csv(b) == {date(2026, 9, 22): 23.59}
+    assert ivhist.read_raw_cboe_csv(a) == {date(2026, 9, 19): 15.5, date(2026, 9, 22): 14.21}
+    assert ivhist.read_raw_cboe_csv(b) == {date(2026, 9, 22): 23.59}
+
+
+def test_stored_index_and_dtb3_formats_of_the_market_lane(tmp_path: Path) -> None:
+    """record-indices writes <store>/indices/<X>.csv (ISO dates,
+    date,open,high,low,close; a one-value series fills close only; FRED's
+    no-observation days stay empty). The live readers use that format."""
+    idx = tmp_path / "indices"
+    idx.mkdir()
+    (idx / "VIX.csv").write_text(
+        indices.render(
+            [
+                ("2026-09-19", "15.0", "16.0", "14.0", "15.5"),
+                ("2026-09-22", "14.6", "14.9", "14.1", "14.21"),
+            ]
+        )
+    )
+    (idx / "GVZ.csv").write_text(indices.render([("2026-09-22", "", "", "", "23.59")]))
+    (idx / "DTB3.csv").write_text(
+        indices.render(
+            [
+                ("2025-03-03", "", "", "", "4.20"),
+                ("2025-03-04", "", "", "", ""),
+                ("2025-03-05", "", "", "", "4.10"),
+            ]
+        )
+    )
+    assert ivhist.read_index_store(idx / "VIX.csv") == {
+        date(2026, 9, 19): 15.5,
+        date(2026, 9, 22): 14.21,
+    }
+    assert ivhist.read_index_store(idx / "GVZ.csv") == {date(2026, 9, 22): 23.59}
+    rs, warn = ivhist.rate_source_for_store(tmp_path)
+    assert warn is None
+    assert rs.rate_on(date(2025, 3, 4)) == pytest.approx(0.042)
+    assert rs.rate_on(date(2025, 3, 5)) == pytest.approx(0.041)
+    # a raw FRED file where the stored format belongs is refused, not misread
+    (idx / "DTB3.csv").write_text("observation_date,DTB3\n2025-03-03,4.20\n")
+    with pytest.raises(ValueError):
+        ivhist.rate_source_for_store(tmp_path)
+    raw, _ = ivhist.rate_source_for_store(tmp_path, raw_snapshots=True)
+    assert raw.rate_on(date(2025, 3, 3)) == pytest.approx(0.042)
 
 
 def _history(series: dict[str, list[float]], sessions: list[date]) -> dict[str, Any]:

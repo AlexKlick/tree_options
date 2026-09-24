@@ -8,7 +8,6 @@ outside ``time/``). Calendar-day distances use epoch math.
 from __future__ import annotations
 
 import bisect
-from collections.abc import Iterable
 from datetime import UTC, date, datetime, time
 from typing import Protocol
 
@@ -95,59 +94,6 @@ def is_first_session_of_month(d: date, cal: Calendar) -> bool:
         return False
     prev = previous_session(d, cal)
     return prev is None or (prev.year, prev.month) != (d.year, d.month)
-
-
-def phantom_sessions(cal: Calendar, series: Iterable[Iterable[str]]) -> frozenset[date]:
-    """Calendar sessions inside the observed span on which NO series has an
-    observation (keys are ISO dates). 2025-01-09 is one: both static
-    calendars list it, but the NYSE was closed (national day of mourning)
-    and no name has a bar. Outside the span nothing is dropped: absent data
-    there is not evidence of a closure."""
-    observed: set[str] = set()
-    for keys in series:
-        observed.update(keys)
-    if not observed:
-        return frozenset()
-    lo, hi = min(observed), max(observed)
-    return frozenset(
-        s for s in cal.sessions() if lo <= s.isoformat() <= hi and s.isoformat() not in observed
-    )
-
-
-class FilteredCalendar:
-    """``cal`` minus ``drop`` (phantom sessions), with the same interface."""
-
-    def __init__(self, cal: Calendar, drop: Iterable[date]) -> None:
-        gone = frozenset(drop)
-        self._sessions = tuple(s for s in cal.sessions() if s not in gone)
-        self._ordinals = {s: i for i, s in enumerate(self._sessions)}
-        self.dropped = tuple(sorted(gone & set(cal.sessions())))
-
-    def sessions(self) -> tuple[date, ...]:
-        return self._sessions
-
-    def is_session(self, d: date) -> bool:
-        return d in self._ordinals
-
-    def ordinal(self, d: date) -> int:
-        try:
-            return self._ordinals[d]
-        except KeyError:
-            raise ValueError(f"{d} is not a session") from None
-
-    def nth_after(self, d: date, n: int) -> date:
-        if n < 0:
-            raise ValueError(f"nth_after requires n >= 0, got {n}")
-        idx = self.ordinal(d) + n
-        if idx >= len(self._sessions):
-            raise ValueError(
-                f"only {len(self._sessions) - self.ordinal(d)} sessions remain after {d}"
-            )
-        return self._sessions[idx]
-
-
-def without_phantoms(cal: Calendar, series: Iterable[Iterable[str]]) -> FilteredCalendar:
-    return FilteredCalendar(cal, phantom_sessions(cal, series))
 
 
 def _epoch_day(iso: str) -> float:

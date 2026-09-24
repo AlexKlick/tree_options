@@ -29,6 +29,7 @@ consecutive NYSE sessions (no date arithmetic).
 from __future__ import annotations
 
 import bisect
+import itertools
 import math
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -38,7 +39,7 @@ from typing import Any
 import numpy as np
 
 from tree_options.desk import rv, stats
-from tree_options.desk.sessions import Calendar, without_phantoms
+from tree_options.desk.sessions import Calendar, calendar_days_between
 
 HORIZONS: tuple[int, ...] = (5, 20, 63, 126)
 WEEK = 5
@@ -133,7 +134,12 @@ class NameSeries:
 
 
 def regressors(ns: NameSeries, t: int) -> tuple[float, float, float] | None:
-    """(ln v*_t, ln mean5 v*, ln mean22 v*) or None if any window is incomplete."""
+    """(ln v*_t, ln mean5 v*, ln mean22 v*) or None if any window is
+    incomplete. The RAW proxy must also be present over the whole 22-window:
+    cleaning replaces v on event sessions, but it never stands in for a
+    missing raw observation (FORECAST-001 row validity)."""
+    if ns._mean(t - MONTH + 1, t, clean=False) is None:
+        return None
     d = ns._mean(t, t, clean=True)
     w = ns._mean(t - WEEK + 1, t, clean=True)
     m = ns._mean(t - MONTH + 1, t, clean=True)
@@ -224,22 +230,19 @@ def build_har_data(
     """Per-name proxies on the NYSE grid spanning the names' panel bars
     (only bars dated <= ``through`` when given: point-in-time truncation).
 
-    A calendar session on which none of ``names`` has a bar (2025-01-09:
-    listed by both static calendars, the NYSE was closed) is a phantom and
-    is dropped from the grid and from the event-pair session count, so it
-    never voids a window or shifts a lag, and the grid is the same whether
-    or not the calendar lists it (whether a day is a phantom depends only
-    on bars dated that day: point in time)."""
+    The grid is the authoritative session calendar (the trex calendar drops
+    confirmed closures such as 2025-01-09 by a declared override); sessions
+    are never inferred from data, so a missing bar, even one missing for
+    every name, stays a missing observation."""
     cut = through.isoformat() if through is not None else None
     bars: dict[str, dict[str, Mapping[str, Any]]] = {}
     for name in names:
         raw = panel.get(name) or {}
         bars[name] = {d: b for d, b in raw.items() if cut is None or d <= cut}
-    dated = [d for b in bars.values() for d in (min(b), max(b)) if b]
+    dated = [d for b in bars.values() if b for d in (min(b), max(b))]
     if not dated:
         raise ValueError("no panel bars for the requested names")
     first, last = date.fromisoformat(min(dated)), date.fromisoformat(max(dated))
-    cal = without_phantoms(cal, bars.values())
     all_sessions = cal.sessions()
     lo = bisect.bisect_left(all_sessions, first)
     hi = bisect.bisect_right(all_sessions, last)
@@ -468,6 +471,55 @@ class PointForecast:
     fit_through: date
     be_estimated: bool
     fit_n: int
+    # the earnings schedule behind n_earn: n/a (ETF) | complete | incomplete
+    # | unavailable; only "complete" (or n/a) makes n_earn a known count
+    schedule: str = "n/a"
+    schedule_reason: str = ""
+
+
+# Consecutive quarterly reports are 60..120 calendar days apart in the sealed
+# calendar (its spacing lint); a longer gap means a report is missing.
+MAX_REPORT_GAP_DAYS = 130
+
+
+def schedule_status(reports: Iterable[str], t: date, end: date, cal: Calendar) -> tuple[str, str]:
+    """Whether the known report dates (sealed, confirmed or estimated) pin
+    the event count in (t, end]: ``complete`` needs a known report whose
+    event session lies after ``end`` and no quarter missing between the last
+    report on/before t and that one; else ``incomplete`` (or
+    ``unavailable`` without any dates), with the reason."""
+    known: list[date] = []
+    for rep in sorted(set(reports)):
+        try:
+            known.append(date.fromisoformat(rep))
+        except (TypeError, ValueError):
+            continue
+    if not known:
+        return "unavailable", "no known report dates for this name"
+    sessions = cal.sessions()
+
+    def s_of(d: date) -> date | None:
+        i = bisect.bisect_left(sessions, d)
+        return sessions[i] if i < len(sessions) else None
+
+    beyond = [d for d in known if (s := s_of(d)) is not None and s > end]
+    if not beyond:
+        return (
+            "incomplete",
+            f"no known report after the window end {end.isoformat()} "
+            f"(last known {known[-1].isoformat()})",
+        )
+    before = [d for d in known if d <= t]
+    chain = before[-1:] + [d for d in known if t < d <= beyond[0]]
+    for a, b in itertools.pairwise(chain):
+        gap = calendar_days_between(a.isoformat(), b.isoformat())
+        if gap > MAX_REPORT_GAP_DAYS:
+            return (
+                "incomplete",
+                f"gap of {gap:.0f} days between known reports {a.isoformat()} and "
+                f"{b.isoformat()} (a quarter is missing)",
+            )
+    return "complete", ""
 
 
 def forecasts_at(
@@ -479,10 +531,18 @@ def forecasts_at(
     h: int,
     *,
     min_event_rows: int = MIN_EVENT_ROWS,
+    forward_schedule: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, PointForecast]:
     """The HAR forecasts a desk run on ``session`` may use: the panel is
     cut at ``session``, the fit is the month's (rows realized by the last
-    session before the month's first session), one pooled fit for all."""
+    session before the month's first session), one pooled fit for all.
+
+    The fit and the regressor cleaning use ``earnings`` (the sealed
+    calendar, as FORECAST-001 specifies). The forward event count uses
+    ``forward_schedule`` when given (sealed plus timing-file dates;
+    estimated dates count as scheduled for variance purposes), else
+    ``earnings``; each reporter's forecast carries whether that schedule
+    pins the count through the horizon (:func:`schedule_status`)."""
     try:
         data = build_har_data(panel, earnings, cal, names, through=session)
         t = data.index(session)
@@ -494,12 +554,29 @@ def forecasts_at(
     fit = fit_har(build_rows(data, h), through=m0 - 1, min_event_rows=min_event_rows)
     if fit is None:
         return {}
+    try:
+        end: date | None = cal.nth_after(session, h)
+    except (LookupError, ValueError, RuntimeError):  # CalendarError: past the calendar end
+        end = None
     out: dict[str, PointForecast] = {}
     for name, ns in data.names.items():
         x = regressors(ns, t)
         if x is None:
             continue
+        status, reason = "n/a", ""
         n_value = n_earn_used(ns, t, h, data.coverage_idx)
+        if ns.reporter:
+            dates = list(
+                (forward_schedule if forward_schedule is not None else earnings).get(name, ())
+            )
+            if end is None:
+                status, reason = "unavailable", "the session calendar ends inside the horizon"
+            else:
+                status, reason = schedule_status(dates, session, end, cal)
+            fwd = NameSeries.from_proxy(
+                name, ns.v, reporter=True, pairs=event_pairs(dates, cal, data.sessions[0])
+            )
+            n_value = float(n_earn(fwd, t, h))
         f = predict(fit, name, x, n_value)
         if f is None:
             continue
@@ -514,6 +591,8 @@ def forecasts_at(
             fit_through=data.sessions[m0 - 1],
             be_estimated=fit.be is not None,
             fit_n=fit.n,
+            schedule=status,
+            schedule_reason=reason,
         )
     return out
 

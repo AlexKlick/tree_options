@@ -287,6 +287,85 @@ def run_forecast_001(
     }
 
 
+def coverage_sensitivity(
+    panel: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    earnings: Mapping[str, Sequence[str]],
+    cal: Calendar,
+    *,
+    names: Sequence[str],
+    iv_history: Mapping[str, Any] | None,
+    iv_labels: Mapping[str, str],
+    horizons: Sequence[int] = har.HORIZONS,
+    min_event_rows: int = har.MIN_EVENT_ROWS,
+) -> dict[str, Any]:
+    """Disclosed sensitivity (Codex P1-3), NOT a re-score: the scored cells
+    (name, origin, h) of the HAR-vs-RV22 QLIKE comparison whose window
+    (t, t+h] runs past the end of the name's sealed calendar coverage (no
+    sealed report whose event session s(D) lies after t+h), and the primary
+    cells recomputed without them. The verdict of record is the run's."""
+    data = har.build_har_data(panel, earnings, cal, names)
+    cutoff = cutoff_index(data)
+    start = bisect.bisect_left(data.sessions, TEST_START)
+    sessions = cal.sessions()
+    last_event: dict[str, date | None] = {}
+    for name, ns in data.names.items():
+        if not ns.reporter:
+            continue
+        s_of = []
+        for rep in earnings.get(name, ()):
+            try:
+                i = bisect.bisect_left(sessions, date.fromisoformat(rep))
+            except (TypeError, ValueError):
+                continue
+            if i < len(sessions):
+                s_of.append(sessions[i])
+        last_event[name] = max(s_of) if s_of else None
+    out: dict[str, Any] = {
+        "study": STUDY,
+        "kind": "coverage-sensitivity (disclosed; the verdict of record stays as run)",
+        "rule": "reporter cell uncovered iff no sealed report has s(D) > t+h",
+        "horizons": {},
+    }
+    cells_all: dict[str, Any] = {}
+    cells_cov: dict[str, Any] = {}
+    for h in horizons:
+        wf = har.walk_forward(
+            data, h, start=TEST_START, through_idx=cutoff, min_event_rows=min_event_rows
+        )
+        rows = [
+            r
+            for r in score_rows(data, wf, cutoff=cutoff, start=start, iv={})
+            if r.rv22 is not None and r.rv22 > 0.0
+        ]
+        uncovered: dict[str, int] = {}
+        covered: list[ScoreRow] = []
+        for r in rows:
+            if r.name in last_event:
+                end_event = last_event[r.name]
+                if end_event is None or end_event <= data.sessions[r.t + h]:
+                    uncovered[r.name] = uncovered.get(r.name, 0) + 1
+                    continue
+            covered.append(r)
+        c_all = compare(rows, "rv22", "qlike", lag=h - 1)
+        c_cov = compare(covered, "rv22", "qlike", lag=h - 1)
+        cells_all[str(h)] = {"rv22": {"qlike": c_all}}
+        cells_cov[str(h)] = {"rv22": {"qlike": c_cov}}
+        out["horizons"][str(h)] = {
+            "n_rows": len(rows),
+            "n_uncovered": sum(uncovered.values()),
+            "by_name": dict(sorted(uncovered.items())),
+            "dm_all": c_all.get("dm"),
+            "p_all": c_all.get("p_one_sided"),
+            "dm_covered_only": c_cov.get("dm"),
+            "p_covered_only": c_cov.get("p_one_sided"),
+            "n_rows_covered_only": c_cov.get("n_rows"),
+        }
+    out["verdict_all"] = verdict(cells_all)
+    out["verdict_covered_only"] = verdict(cells_cov)
+    out["verdict_changes"] = out["verdict_all"] != out["verdict_covered_only"]
+    return out
+
+
 # ---------------------------------------------------------------- report
 
 

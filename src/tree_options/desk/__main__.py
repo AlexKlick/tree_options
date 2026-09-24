@@ -36,16 +36,23 @@
         written, 1 no chains for D, 2 bad arguments.
 
     ivhist-build [--massive-cache P] [--start D] [--end D] [--names A,B]
+                 [--raw-snapshots]
         IVHIST-001's VWAP 30-day ATM IV history from the on-disk Polygon
         bars into DESK_STORE/iv-history/vwap_atm.json (read-only cache).
+        DTB3 is read from <store>/indices/DTB3.csv in the stored format
+        (record-indices); --raw-snapshots reads the raw FRED file instead
+        (the sealed IVHIST-001 run's input).
 
-    ivhist-001 [--indices-dir P]
+    ivhist-001 [--indices-dir P] [--raw-snapshots]
         The pre-registered benchmark of that history against the CBOE vol
-        indices (<X>_History.csv) into IVHIST-001-verdict.json.
+        indices into IVHIST-001-verdict.json: the stored <X>.csv files, or
+        with --raw-snapshots the raw CBOE <X>_History.csv snapshots.
 
-    forecast-001 [--out P]
+    forecast-001 [--out P] [--coverage-sensitivity]
         The pre-registered FORECAST-001 scoring of the pooled log-HAR into
-        DESK_STORE/evaluations/FORECAST-001.{json,md}.
+        DESK_STORE/evaluations/FORECAST-001.{json,md}. With
+        --coverage-sensitivity: the disclosed earnings-coverage sensitivity
+        figure instead (FORECAST-001-coverage-sensitivity.json).
 
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes; a second concurrent run exits 3. No secrets are printed
@@ -143,10 +150,18 @@ def _parser() -> argparse.ArgumentParser:
     ib.add_argument("--start", type=date.fromisoformat, default=ivhist.WINDOW[0])
     ib.add_argument("--end", type=date.fromisoformat, default=ivhist.WINDOW[1])
     ib.add_argument("--names", help="comma-separated (default: the 35-name chain universe)")
+    raw_help = "read the raw vendor snapshots of the sealed run (adapter), not the stored format"
+    ib.add_argument("--raw-snapshots", action="store_true", help=raw_help)
     ie = sub.add_parser("ivhist-001", help="IVHIST-001 benchmark vs the CBOE vol indices")
     ie.add_argument("--indices-dir", type=Path)
+    ie.add_argument("--raw-snapshots", action="store_true", help=raw_help)
     fc = sub.add_parser("forecast-001", help="FORECAST-001 out-of-sample HAR scoring")
     fc.add_argument("--out", type=Path, help="output directory (default DESK_STORE/evaluations)")
+    fc.add_argument(
+        "--coverage-sensitivity",
+        action="store_true",
+        help="write the disclosed earnings-coverage sensitivity figure (not a re-score)",
+    )
     return ap
 
 
@@ -401,11 +416,17 @@ def run_cli(
                 print(f"ivhist-build: bad --names {args.names!r}", file=sys.stderr)
                 return 2
             cache = args.massive_cache or default_cache_dir()
-            return econ_jobs.run_ivhist_build(cache, args.start, args.end, names, cal)
+            return econ_jobs.run_ivhist_build(
+                cache, args.start, args.end, names, cal, raw_snapshots=args.raw_snapshots
+            )
         if args.command == "ivhist-001":
-            return econ_jobs.run_ivhist_001(args.indices_dir or paths.store_root() / "indices")
+            return econ_jobs.run_ivhist_001(
+                args.indices_dir or paths.store_root() / "indices", raw_cboe=args.raw_snapshots
+            )
         if args.command == "forecast-001":
-            return econ_jobs.run_forecast_001(args.out, cal)
+            return econ_jobs.run_forecast_001(
+                args.out, cal, coverage_sensitivity=args.coverage_sensitivity
+            )
         if args.command == "record-indices":
             return _record_indices(
                 args,

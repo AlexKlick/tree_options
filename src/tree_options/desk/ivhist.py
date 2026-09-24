@@ -54,6 +54,7 @@ from tree_options.data.massive_options import (
 )
 from tree_options.desk import stats
 from tree_options.desk.har import ETF_NAMES
+from tree_options.desk.indices import read_store
 from tree_options.desk.sessions import Calendar, calendar_days_between, previous_session
 from tree_options.synth_options.greeks import CallPut
 from tree_options.time.expiries import is_friday
@@ -258,19 +259,21 @@ def _merge(cell: _Cell, bad: set[date], bars: Iterable[tuple[date, Decimal, int]
             bad.add(session)
 
 
-def parse_spot_bars(body: Mapping[str, Any], *, ticker: str) -> list[tuple[date, Decimal]]:
-    """(session, VWAP) of an underlying's daily bars.
+def parse_spot_bars(body: Mapping[str, Any], *, ticker: str) -> list[tuple[date, Decimal, int]]:
+    """(session, VWAP, whole-bar identity) of an underlying's daily bars.
 
-    Only ``t`` and ``vw`` are read. The option-bar parser's integrity
+    The spot is ``vw``; ``t`` dates it. The option-bar parser's integrity
     checks do not hold for stock bars and must not refuse them: Polygon
     stock volumes are fractional from 2026-02-23 (``v: 90558087.165861``)
     and the stock daily VWAP includes extended-hours trades, so it can lie
     outside the regular-session [low, high] (an after-close earnings day).
-    The VWAP is the declared spot (IVHIST-001) and is kept as sent."""
+    The VWAP is the declared spot (IVHIST-001) and is kept as sent. The
+    identity hashes every field of the bar as sent, so two cached files
+    "disagree on D" (IVHIST-001) whenever any field differs, not only vw."""
     results = body.get("results") or []
     if not isinstance(results, list):
         raise MassiveSchemaError(f"spot {ticker}: results is not a list")
-    out: list[tuple[date, Decimal]] = []
+    out: list[tuple[date, Decimal, int]] = []
     seen: set[date] = set()
     for rec in results:
         if not isinstance(rec, dict):
@@ -284,7 +287,8 @@ def parse_spot_bars(body: Mapping[str, Any], *, ticker: str) -> list[tuple[date,
         if session in seen:
             raise MassiveSchemaError(f"spot {ticker}: duplicate session {session}")
         seen.add(session)
-        out.append((session, Decimal(vw)))
+        identity = hash(tuple(sorted((str(k), repr(v)) for k, v in rec.items())))
+        out.append((session, Decimal(vw), identity))
     return out
 
 
@@ -340,8 +344,8 @@ def scan_cache(
                 ]
             elif body.get("adjusted") is False:
                 typed = [
-                    (s, vw, hash(vw))  # spot files conflict on the VWAP they supply
-                    for s, vw in parse_spot_bars(body, ticker=ticker)
+                    (s, vw, ident)
+                    for s, vw, ident in parse_spot_bars(body, ticker=ticker)
                     if start <= s <= end
                 ]
             else:
@@ -395,9 +399,11 @@ class RateSource:
         return cls(label=f"declared-constant {rate}", fallback=rate)
 
     @classmethod
-    def from_csv(cls, path: Path) -> RateSource:
-        """FRED layout (``observation_date,DTB3`` or ``DATE,DTB3``; ``.``
-        or empty = missing), percent -> decimal."""
+    def from_raw_fred_csv(cls, path: Path) -> RateSource:
+        """ADAPTER for the raw FRED snapshot the sealed IVHIST-001 run used
+        (``observation_date,DTB3`` or ``DATE,DTB3``; ``.`` or empty =
+        missing), percent -> decimal. Live runs read the stored format
+        (:meth:`from_store`)."""
         raw = path.read_bytes()
         rows = list(csv.reader(raw.decode("utf-8").splitlines()))
         obs = []
@@ -411,6 +417,21 @@ class RateSource:
         sha = hashlib.sha256(raw).hexdigest()
         return cls(label=f"DTB3 {path.name} sha256 {sha}", obs=tuple(sorted(obs)))
 
+    @classmethod
+    def from_store(cls, path: Path) -> RateSource:
+        """The market lane's stored DTB3 (``indices/DTB3.csv``: ISO date,
+        the rate in percent in ``close``, empty on FRED's no-observation
+        days), read with its own reader; raises ValueError on any other
+        layout."""
+        raw = path.read_bytes()
+        obs = [
+            (date.fromisoformat(d), float(close) / 100.0)
+            for d, _o, _h, _lo, close in read_store(path)
+            if close != ""
+        ]
+        sha = hashlib.sha256(raw).hexdigest()
+        return cls(label=f"DTB3 store {path.name} sha256 {sha}", obs=tuple(sorted(obs)))
+
     def rate_on(self, d: date) -> float | None:
         """The latest observation dated on or before ``d`` (point in time)."""
         i = bisect.bisect_right(self.obs, (d, math.inf)) - 1
@@ -419,10 +440,16 @@ class RateSource:
         return self.fallback
 
 
-def rate_source_for_store(store: Path) -> tuple[RateSource, str | None]:
+def rate_source_for_store(
+    store: Path, *, raw_snapshots: bool = False
+) -> tuple[RateSource, str | None]:
+    """DTB3 from ``<store>/indices/DTB3.csv``: the market lane's stored
+    format, or (``raw_snapshots``) the raw FRED file of the sealed run."""
     path = store / "indices" / "DTB3.csv"
     if path.exists():
-        return RateSource.from_csv(path), None
+        if raw_snapshots:
+            return RateSource.from_raw_fred_csv(path), None
+        return RateSource.from_store(path), None
     return (
         RateSource.constant(DEFAULT_RATE),
         f"no {path}: using the declared constant rate {DEFAULT_RATE}",
@@ -477,31 +504,11 @@ def iv30_record(
     return {"iv30": iv, "method": how, "spot": spot, "rate": rate, "expiries": used}
 
 
-def observed_sessions(scan: CacheScan) -> set[date]:
-    out: set[date] = set()
-    for by_session in scan.options.values():
-        out.update(by_session)
-    for spots in scan.spot.values():
-        out.update(spots)
-    for bad in scan.spot_conflicts.values():
-        out.update(bad)
-    return out
-
-
-def drop_phantoms(sessions: Sequence[date], observed: set[date]) -> list[date]:
-    """Drop sessions inside the observed span that no name has any bar for
-    (2025-01-09: calendar-listed, the market was closed); the history is
-    then identical whether or not the calendar lists such a day."""
-    if not observed:
-        return list(sessions)
-    lo, hi = min(observed), max(observed)
-    return [d for d in sessions if d in observed or not lo <= d <= hi]
-
-
 def build_history(
     scan: CacheScan, names: Sequence[str], sessions: Sequence[date], rates: RateSource
 ) -> dict[str, Any]:
-    sessions = drop_phantoms(sessions, observed_sessions(scan))
+    """``sessions`` come from the authoritative calendar; a session without
+    bars is recorded NOT_EVALUABLE, never dropped as a presumed closure."""
     out: dict[str, Any] = {}
     for name in names:
         opts = scan.options.get(name, {})
@@ -559,9 +566,22 @@ def history_series(history: Mapping[str, Any], name: str) -> dict[date, tuple[fl
 # ------------------------------------------------------------- benchmark
 
 
-def read_index_csv(path: Path) -> dict[date, float]:
-    """CBOE daily history: ``DATE,OPEN,HIGH,LOW,CLOSE`` (CLOSE used) or
-    ``DATE,<NAME>`` (GVZ); dates MM/DD/YYYY."""
+def read_index_store(path: Path) -> dict[date, float]:
+    """The market lane's stored index history (``indices/<X>.csv``, ISO
+    dates, ``date,open,high,low,close``; a one-value series fills close
+    only), read with its own reader: {date: close}."""
+    return {
+        date.fromisoformat(d): float(close)
+        for d, _o, _h, _lo, close in read_store(path)
+        if close != ""
+    }
+
+
+def read_raw_cboe_csv(path: Path) -> dict[date, float]:
+    """ADAPTER for the raw CBOE snapshots the sealed IVHIST-001 run used
+    (``<X>_History.csv``): ``DATE,OPEN,HIGH,LOW,CLOSE`` (CLOSE used) or
+    ``DATE,<NAME>`` (GVZ); dates MM/DD/YYYY. Live runs read the stored
+    format (:func:`read_index_store`)."""
     rows = list(csv.reader(path.read_text().splitlines()))
     if not rows:
         return {}

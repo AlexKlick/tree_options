@@ -168,3 +168,37 @@ def test_run_end_to_end_reports_every_cell(cal: StaticSessionCalendar) -> None:
     assert "per_name" in res and "AAPL" in res["per_name"]["20"]
     md = evaluate.render_markdown(res)
     assert "FORECAST-001" in md and "| 20 | rv22 | qlike |" in md
+
+
+def test_coverage_sensitivity_counts_cells_past_the_calendar(cal: StaticSessionCalendar) -> None:
+    """P1-3 sensitivity: a reporter's cell (name, origin, h) is uncovered
+    when no sealed report lies after its window end (s(D) > t+h); ETF cells
+    never are. Reported beside the run; it never replaces the verdict."""
+    panel = _panel(cal)
+    common: dict[str, Any] = dict(names=("AAPL", "SPY", "QQQ"), iv_history=None, iv_labels={})
+    base = evaluate.run_forecast_001(
+        panel,
+        {"AAPL": ["2024-10-31", "2025-01-30", "2025-05-01", "2025-07-31"]},
+        cal,
+        provenance={},
+        **common,
+    )
+    aapl_rows = {h: base["per_name"][h]["AAPL"]["n"] for h in ("5", "20", "63", "126")}
+    far = evaluate.coverage_sensitivity(
+        panel, {"AAPL": ["2024-10-31", "2025-01-30", "2025-05-01", "2025-07-31"]}, cal, **common
+    )
+    for h in ("5", "20", "63", "126"):
+        assert far["horizons"][h]["n_uncovered"] == 0  # 2025-07-31 lies past the cutoff
+        assert far["horizons"][h]["n_rows"] == base["cells"][h]["rv22"]["qlike"]["n_rows"]
+        assert far["horizons"][h]["p_all"] == base["cells"][h]["rv22"]["qlike"]["p_one_sided"]
+    none = evaluate.coverage_sensitivity(panel, {"AAPL": []}, cal, **common)
+    for h in ("5", "20", "63", "126"):
+        assert none["horizons"][h]["n_uncovered"] == aapl_rows[h]  # every AAPL cell, no ETF cell
+        assert none["horizons"][h]["by_name"] == {"AAPL": aapl_rows[h]}
+    mid = evaluate.coverage_sensitivity(
+        panel, {"AAPL": ["2024-10-31", "2025-01-30"]}, cal, **common
+    )
+    assert 0 < mid["horizons"]["20"]["n_uncovered"] < aapl_rows["20"]
+    assert mid["verdict_all"] in ("PASS", "FAIL")
+    assert mid["verdict_covered_only"] in ("PASS", "FAIL")
+    assert mid["verdict_changes"] == (mid["verdict_all"] != mid["verdict_covered_only"])

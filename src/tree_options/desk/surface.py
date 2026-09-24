@@ -255,20 +255,47 @@ def _event_pair(report: str, cal: Calendar) -> tuple[date, date] | None:
     return sessions[i], sessions[i + 1]
 
 
+# Feasibility tolerances of the two-expiry split: a jump variance within
+# (0.1% move)^2 of zero is "no premium"; a background variance more
+# negative than (1 vol point)^2 annualized, or a jump variance more
+# negative than (0.1% move)^2, is an impossible decomposition (no move).
+TOL_JUMP_VAR = 1e-6
+TOL_BACKGROUND_VAR = 1e-4
+
+
 def implied_event_move(
-    term: Sequence[TermPoint], reports: Iterable[str], session: date, cal: Calendar
+    term: Sequence[TermPoint],
+    reports: Iterable[str],
+    session: date,
+    cal: Calendar,
+    *,
+    reporter: bool = True,
 ) -> dict[str, Any]:
     """Two-expiry variance split around the next report whose event pair is
     not fully past: w_i = iv_i^2 T_i = s^2 T_i + J^2 for the first two
-    expiries on/after the pair's second session -> J^2 = (w1 T2 - w2 T1)/(T2 - T1)."""
+    expiries on/after the pair's second session -> J^2 = (w1 T2 - w2 T1)/(T2 - T1).
+
+    The split assumes both expiries hold the SAME single event over a
+    constant background variance s^2 = (w2 - w1)/(T2 - T1). It returns no
+    move (``implied_move: None`` with the reason) when another known report
+    lands before the second expiry, when s^2 is materially negative, or
+    when J^2 is. A reporter with no known report ahead is ``schedule:
+    incomplete`` (unknown), never "no event"."""
+    known = sorted(set(reports))
     upcoming = None
-    for rep in sorted(set(reports)):
+    for rep in known:
         pair = _event_pair(rep, cal)
         if pair is not None and pair[1] > session:
             upcoming = (rep, pair)
             break
     if upcoming is None:
-        return {"next_report": None}
+        if not reporter:
+            return {"next_report": None}
+        return {
+            "next_report": None,
+            "schedule": "incomplete",
+            "reason": "no known report ahead of the session (schedule incomplete)",
+        }
     rep, (s, nxt) = upcoming
     out: dict[str, Any] = {
         "next_report": rep,
@@ -280,13 +307,36 @@ def implied_event_move(
         out.update(implied_move=None, reason="fewer than two expiries after the event")
         return out
     p1, p2 = after[0], after[1]
+    out["expiries"] = [p1.expiry.isoformat(), p2.expiry.isoformat()]
+    for other in known:
+        pair = _event_pair(other, cal)
+        if other != rep and pair is not None and s < pair[0] <= p2.expiry:
+            out.update(
+                implied_move=None,
+                reason=f"a second report ({other}) falls before the second expiry "
+                f"{p2.expiry.isoformat()}: the expiries do not hold the same single event",
+            )
+            return out
     t1, t2 = p1.dte / 365.0, p2.dte / 365.0
     w1, w2 = p1.iv**2 * t1, p2.iv**2 * t2
     j2 = (w1 * t2 - w2 * t1) / (t2 - t1)
-    out["expiries"] = [p1.expiry.isoformat(), p2.expiry.isoformat()]
     ex2 = (w2 - w1) / (t2 - t1)
-    out["ex_event_vol"] = math.sqrt(ex2) if ex2 > 0.0 else None
-    if j2 <= 0.0:
+    out["background_var"] = ex2
+    out["jump_var"] = j2
+    if ex2 < -TOL_BACKGROUND_VAR:
+        out.update(
+            implied_move=None,
+            ex_event_vol=None,
+            reason=f"negative background variance {ex2:.6g} (impossible decomposition)",
+        )
+        return out
+    out["ex_event_vol"] = math.sqrt(max(ex2, 0.0))
+    if j2 < -TOL_JUMP_VAR:
+        out.update(
+            implied_move=None, reason=f"negative jump variance {j2:.6g} (impossible decomposition)"
+        )
+        return out
+    if j2 <= TOL_JUMP_VAR:
         out.update(implied_move=0.0, implied_mean_abs_move=0.0, flag="no_event_premium")
         return out
     j = math.sqrt(j2)
@@ -385,6 +435,7 @@ def name_features(
     history_label: str,
     forecast: har.PointForecast | None,
     forecast_note: str,
+    reporter: bool = True,
 ) -> dict[str, Any]:
     spot = chain_spot(doc)
     if spot is None:
@@ -405,7 +456,7 @@ def name_features(
         "term_slope": term_slope(iv),
         "liquidity_score": liquidity_score(quotes),
     }
-    ev = implied_event_move(term, reports, session, cal)
+    ev = implied_event_move(term, reports, session, cal, reporter=reporter)
     if bars is not None and reports:
         hist = historical_event_moves(bars, reports, session, cal)
         ev["hist_n"] = hist["n"]
@@ -456,13 +507,24 @@ def forecast_block(
         har_vol=math.sqrt(fc.forecast * 365.0 / days),
         rv22_vol=math.sqrt(fc.rv22 * 365.0 / days) if fc.rv22 is not None else None,
         n_earn=fc.n_earn,
+        schedule=fc.schedule,
+        schedule_reason=fc.schedule_reason,
         fit_through=fc.fit_through.isoformat(),
         be_estimated=fc.be_estimated,
     )
+    # an unknown earnings schedule leaves n_earn unknown: the HAR forecast
+    # is degraded and never the desk's selected VRP
+    degraded = fc.schedule in ("incomplete", "unavailable")
+    if degraded:
+        block["har_status"] = "degraded"
     if iv30 is not None:
         block["vrp_har"] = vrp(iv30, fc.forecast, days)
         block["vrp_rv22"] = vrp(iv30, fc.rv22, days) if fc.rv22 is not None else None
-        block["vrp"] = block[f"vrp_{source}"]
+        if degraded and source == "har":
+            block["vrp"] = None
+            block["vrp_withheld"] = f"earnings schedule {fc.schedule}: {fc.schedule_reason}"
+        else:
+            block["vrp"] = block[f"vrp_{source}"]
     return block
 
 
@@ -489,14 +551,27 @@ def build_features(
     history_sha256: str | None,
     labels: Mapping[str, str],
     warnings: Sequence[str] = (),
+    schedule: Mapping[str, Sequence[str]] | None = None,
+    schedule_available: bool = True,
+    timing_sha256: str | None = None,
 ) -> dict[str, Any]:
+    """``earnings`` is the sealed calendar (the HAR fit, as FORECAST-001
+    specifies); ``schedule`` the forward report dates (sealed plus the
+    timing file; default: ``earnings``). ``schedule_available=False`` (the
+    sealed calendar could not be read) makes every reporter's schedule
+    unavailable: its HAR forecast is degraded, never a zero-event one."""
     notes = list(warnings)
+    fwd: Mapping[str, Sequence[str]] = (
+        (schedule if schedule is not None else earnings) if schedule_available else {}
+    )
     forecasts: dict[str, har.PointForecast] = {}
     note = ""
     if panel is None:
         note = "panel unavailable"
     else:
-        forecasts = har.forecasts_at(panel, earnings, cal, har_names, session, VRP_H)
+        forecasts = har.forecasts_at(
+            panel, earnings, cal, har_names, session, VRP_H, forward_schedule=fwd
+        )
         if not forecasts:
             note = f"no HAR forecast for {session} (panel lacks the session or history)"
     names: dict[str, Any] = {}
@@ -514,12 +589,13 @@ def build_features(
             session=session,
             rate=rate,
             cal=cal,
-            reports=list(earnings.get(sym, ())),
+            reports=list(fwd.get(sym, ())),
             bars=panel.get(sym) if panel is not None else None,
             iv_history=hist,
             history_label=labels.get(sym, "unlabeled"),
             forecast=forecasts.get(sym),
             forecast_note=note,
+            reporter=sym not in har.ETF_NAMES,
         )
     return {
         "schema": FEATURES_SCHEMA,
@@ -528,6 +604,7 @@ def build_features(
             "chains_raw_sha256": inputs,
             "panel_sha256": panel_sha256,
             "earnings_calendar_sha256": earnings_sha256,
+            "earnings_timing_sha256": timing_sha256,
             "iv_history_sha256": history_sha256,
             "rate": rate,
             "rate_source": rate_label,
