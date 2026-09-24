@@ -1,9 +1,9 @@
 # IVHIST-001 results: VWAP 30-day ATM IV vs the CBOE vol indices
 
 - Pre-registration: `docs/desk/IVHIST-001.md` (sha256 `9c426c21...ed82`), sealed in `84e3cc8` before any IV was solved. Both runs re-verified the hash.
-- **Status: PROVISIONAL, pending an operator ruling.** Run 2 gives PARTIAL: one of 6 evaluable pairs passes (RVX~IWM), and GVZ~GLD is NOT_EVALUABLE, as declared.
-  - Run 2 replaced run 1, which was defective (see below). The sealed pre-registration does not provide for replacing a defective run automatically, so run 2 is not the verdict of record until the operator rules.
-  - Until then, every downstream use of run 2's labels is provisional too. That includes IWM's `ok`, and with it FORECAST-001's IV-squared cells and IV-blend decision.
+- **Status: PARTIAL, verdict of record = run 2 (operator ruling 2026-09-23).** One of 6 evaluable pairs passes (RVX~IWM), and GVZ~GLD is NOT_EVALUABLE, as declared.
+  - Run 2 replaced run 1, which was defective (see below). The sealed pre-registration does not provide for replacing a defective run automatically, so the operator ruled on it: run 2 is the verdict of record, and run 1 stays on file as a defective run, fully disclosed below.
+  - Run 2's labels (IWM `ok`; the rest `low-fidelity` or `not-evaluable`) and FORECAST-001's IV-squared cells and IV-blend decision are therefore final, not provisional.
 - Machine-readable output: `docs/desk/IVHIST-001-verdict.json`, a copy of `DESK_STORE/iv-history/IVHIST-001-verdict.json`.
 
 ## Runs, stated plainly
@@ -16,7 +16,7 @@ Both runs used the same inputs:
 | run | code | result | status |
 |---|---|---|---|
 | 1 | `7aa3425` | every pair NOT_EVALUABLE (n = 12 to 14), overall FAIL by the literal rule | **defective**, kept in the lane state `run1/` with sha256s |
-| 2 | `c339f03` | the table below | **provisional** (operator ruling pending) |
+| 2 | `c339f03` | the table below | **verdict of record** (operator ruling 2026-09-23) |
 
 **What was wrong in run 1.** The scan typed the underlying (stock) bars with the option-bar parser, `massive_options.parse_daily_bars`. That parser refuses a whole body when:
 - a volume is fractional (Polygon stock volumes are fractional from 2026-02-23, for example SPY `v: 90558087.165861`), or
@@ -60,7 +60,7 @@ Both runs used the same inputs:
 | VXAZN~AMZN | 14 | -2.45 | 0.949 |
 | VXGOG~GOOGL | 13 | -3.65 | 0.887 |
 
-Run 1 covered only 2024-08-28..2024-09-13, extrapolated days only. This was seen before run 2. **Operator ruling needed:** accept run 2 as the verdict of record, or rule the defective run 1 (FAIL) binding and send this to IVHIST-002.
+Run 1 covered only 2024-08-28..2024-09-13, extrapolated days only. This was seen before run 2. **Operator ruling (2026-09-23): run 2 is the verdict of record.** The choice was between that and ruling the defective run 1 (FAIL) binding and sending the question to IVHIST-002.
 
 **Calendar.** 2025-01-09 was listed by both static calendars, but the NYSE was closed and no name has a bar.
 - **At the runs** (`7aa3425`), the desk treated any calendar session that no name has a bar for as a non-session. That gave the history 508 sessions per name, not 509.
@@ -85,7 +85,7 @@ The consistency check reran IVHIST-001 at `7dfb767` into TEMP paths.
 | `vwap_atm.json` | `105aaabecbc2a2ae...` | `105aaabecbc2a2ae...` | **byte-identical** |
 | `IVHIST-001-verdict.json` | as committed | as committed (`cmp`) | **byte-identical** |
 
-The build logged 508 sessions: the corrected calendar holds 508 in the window, where run 2 held 509 with one inferred away. Evaluable name-sessions, 13,610, and spot conflicts, 17, are unchanged. The verdict stays PARTIAL and provisional; nothing was re-scored.
+The build logged 508 sessions: the corrected calendar holds 508 in the window, where run 2 held 509 with one inferred away. Evaluable name-sessions, 13,610, and spot conflicts, 17, are unchanged. The verdict stays PARTIAL (made the verdict of record by the 2026-09-23 operator ruling); nothing was re-scored.
 
 ## Pair metrics (run 2)
 

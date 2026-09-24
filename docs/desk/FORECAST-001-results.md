@@ -78,8 +78,8 @@ This is Codex P1-3. The sealed earnings calendar lists report dates only through
 - HAR at h = 20 becomes the desk's vol-forecast input (`forecast_source: har`). `har.FORECAST_001_VERDICT = "PASS"` from this run.
   - `desk features` reports `vrp = vrp_har` with `har_status: validated`, but only for names whose earnings schedule is pinned through the horizon (Codex P1-3).
   - A reporter without a known report beyond the window, or with a missing quarter, gets `har_status: degraded` and a withheld HAR VRP. The RV22 VRP is still shown.
-- **IV blend, h = 20: allowed**, provisionally.
-  - It rests on IVHIST-001 run 2's IWM `ok` label, which is provisional until the operator rules on IVHIST-001.
+- **IV blend, h = 20: allowed.**
+  - It rests on IVHIST-001 run 2's IWM `ok` label; the operator ruled run 2 the verdict of record on 2026-09-23.
   - Encompassing on blend-train: c2 = 0.687, Driscoll-Kraay one-sided p = 0.0048. It holds for the IV-ok names only, which today means IWM.
   - Out of sample from 2025-09-02, the frozen blend beat HAR on QLIKE with DM 1.804, p = 0.036 (information only).
   - The primary verdict (HAR vs RV22) does not depend on IVHIST-001.
