@@ -373,3 +373,27 @@ chosen over (B) recentering the absolute band around measured drift and
 dataset pinning, banned-registry screen, INV-13 shape unchanged.
 v2 menu sha256 `9fde5e660842333866b5ba729d1ddb299805ad4901163212b6c2d05b10882dc3`
 (sidecar written beside the menu).
+
+
+## 8. Amendment v3 — NOT_EVALUABLE floor for sub-evaluable null cells (2026-09-23, operator ruling 2)
+
+**Trigger.** The v2 re-stamp (calibration-v2.json, doc @ 5483742) cleared
+every v1 cost-floor miss; s1/s2 CALIBRATED everywhere; s3 flagged ONLY in
+the 2-entry-day / 6-trade pead-deep-2 and vrp-cond xsmom cells (unchanged
+criterion 1: |t| = 4.693 on 2 days; criterion 2: net +0.8215% vs B
++1.2636%, delta -0.4422% vs the +/-0.3714% band of the seed's own 2-day
+clustered se) -- the cells this registration pre-disclosed as "wide, weak
+band - disclosed, not fixed".
+
+**Ruling (operator, 2026-09-23 ~23:55 MDT):** NOT_EVALUABLE floor --
+chosen over pooling seeds, adding seeds, and investigating s3.
+
+**Diffs:** tnull criteria gain the v3 floor (cells < 5 entry-days or < 20
+complete trades: NOT_EVALUABLE, reported, no flag authority, no priors);
+null CALIBRATED iff every evaluable cell passes on every seed; priors from
+evaluable cells only; families in NOT_EVALUABLE windows gated by B(W,
+shape) alone (deep all-names streams: 864 xsmom / 207 event union
+entries). rules.sequencing + null_baseline carry the same. Everything
+else byte-carried from v2. 111 configs / 10 scopes unchanged.
+
+v3 menu sha256 `4aca21014f6efa640d97bf2abd3fdbb912af5a7b9acb68f65b842f924379b10a` (sidecar written beside the menu).
