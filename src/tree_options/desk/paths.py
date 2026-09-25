@@ -69,5 +69,10 @@ def queue_dir() -> Path:
     return _env_path("TREX_DESK_QUEUE") or state_root() / "queue"
 
 
+def desk_paper_dir() -> Path:
+    """The desk runtime's run dir (Wave 3: spec files, claims, admissions)."""
+    return _env_path("DESK_PAPER_DIR") or Path.home() / ".local" / "state" / "trex" / "desk-paper"
+
+
 def notify_env_path() -> Path:
     return _env_path("TREX_NOTIFY_ENV") or Path.home() / ".config" / "trex" / "notify.env"

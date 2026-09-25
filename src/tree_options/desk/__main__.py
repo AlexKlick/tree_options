@@ -115,6 +115,7 @@ from tree_options.data.massive_client import (  # noqa: E402
 from tree_options.desk import (  # noqa: E402
     dividends,
     econ_jobs,
+    enter,
     eod_equity,
     events,
     http,
@@ -213,6 +214,19 @@ def _parser() -> argparse.ArgumentParser:
     mn.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
     mn.add_argument("--desk-specs", type=Path, help="the desk runtime's spec dir (Wave 3)")
     mn.add_argument("--desk-book", type=Path, help="the desk runtime's book.json (Wave 3)")
+    de = sub.add_parser(
+        "desk-enter",
+        help="claim and validate the queue's admissible deals (plan E6, Wave 3)",
+    )
+    de.add_argument("--session", type=date.fromisoformat,
+                    help="the mine session to admit from (default: latest completed)")
+    de.add_argument("--shadow", dest="shadow", action="store_true", default=True,
+                    help="shadow mode: writes specs + admissions without touching book.json (default)")
+    de.add_argument("--armed", dest="shadow", action="store_false",
+                    help="armed mode: requires the desk runtime + live book.json")
+    de.add_argument("--once", action="store_true",
+                    help="admit at most one deal (the rollout's quantity-1 step)")
+    de.add_argument("--dry-run", action="store_true", help="write nothing")
     return ap
 
 
@@ -569,6 +583,13 @@ def run_cli(
             return _seal_macro(args, get=get or http.urllib_get, clock=clock, cal=cal)
         if args.command == "mine":
             return _mine(args, clock=clock, cal=cal)
+        if args.command == "desk-enter":
+            res = enter.run_enter(
+                now=clock(), cal=cal, session=args.session,
+                shadow=args.shadow, once=args.once, dry_run=args.dry_run,
+            )
+            print(res.line())
+            return res.exit_code
         return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 
