@@ -246,7 +246,23 @@ SCOPE_E = r1.SCOPE_E
 SEALED_CONFIGS = ("xe-mkt-hi", "xp-size-mkt", "xe-lag21", "xp-lag21", "xp-shuffle")
 NOMINEES = ("xe-mkt-hi", "xp-size-mkt")
 FAMILY_PLACEBOS = {"xe": ("xe-lag21",), "xp": ("xp-lag21", "xp-shuffle")}
-XSMOM_SEALED_REBALANCES = ("2026-06-02", "2026-07-01", "2026-08-03")
+# DEFECT FLAG (2026-09-24, disclosed in every artifact): the slot doc's prose
+# says "Sealed XSMOM rebalances: 3 (2026-06-02, 2026-07-01, 2026-08-03; 9
+# entries)" and the menu's risk note says "3 sealed XSMOM rebalances" -- but
+# the PINNED calendar puts June's first session at 2026-06-01 = ordinal 442,
+# the registration's own "pre-seal shoulder, unused; not tuned, not scored"
+# (the doc's fold table itself dates ordinal 442 = 2026-06-01, so its
+# June-2 rebalance claim is a transcription slip: 2026-06-02 = ordinal 443
+# is not a first-of-month session). The sealed xe region therefore holds
+# TWO rebalances (6 entries) under the byte-pinned first-of-month rule.
+# The power floor is NOT bent: xe-* still requires n_ON >= 6 sealed entries,
+# now met only if the gate fires on BOTH rebalances -- strictly harder, in
+# the direction the registration already flagged (NOT_EVALUABLE-SEALED
+# likely). Scoring the shoulder's June-1 rebalance would violate the
+# registration ("unused; not tuned, not scored"); fabricating a June-2
+# rebalance would violate the byte-pinned rule. The calendar-derived
+# expectation is the only faithful reading.
+XSMOM_SEALED_REBALANCES = ("2026-07-01", "2026-08-03")
 N_SEALED_SESSIONS = 63
 SEALED_FIRST_ISO = "2026-06-02"
 SEALED_LAST_ISO = "2026-08-31"
@@ -361,7 +377,10 @@ def xsmom_base_sealed(inputs: r1.Inputs) -> list[dict[str, Any]]:  # type: ignor
             f" {XSMOM_SEALED_REBALANCES}"
         )
     if len(rows) != len(XSMOM_SEALED_REBALANCES) * r1.signals_mod.XSMOM_TOPK:
-        raise r1.Refused(f"sealed xsmom base carries {len(rows)} entries, expected 9")
+        raise r1.Refused(
+            f"sealed xsmom base carries {len(rows)} entries, expected"
+            f" {len(XSMOM_SEALED_REBALANCES) * r1.signals_mod.XSMOM_TOPK}"
+        )
     return rows
 
 
@@ -849,17 +868,23 @@ def phase_execute() -> int:
                         f"{artifact} exists but trial is {status} -- inconsistent state,"
                         " refusing (one scored run per cell)"
                     )
-                if status != "REGISTERED":
+                if status not in ("REGISTERED", "RUNNING"):
                     raise r1.Refused(f"{trial_id} is {status}, not REGISTERED -- refusing")
+                # INV-13 resume: a cell left RUNNING by a crashed attempt that
+                # recorded NO outcome and wrote NO artifact has not consumed its
+                # seal (the outcome insert is the single scored run; complete()/
+                # fail() are the only doors). Resume it without re-marking --
+                # the provenance recorded at its first mark_running still binds.
                 hyper = _hyperparameters_sealed(inputs, config_id, frozen)
-                git_sha = r1._git_head(r1.REPO_ROOT)
-                registry.mark_running(
-                    trial_id,
-                    git_sha=git_sha,
-                    config_hash=r1._config_hash(hyper),
-                    dataset_manifest_hash=inputs.dataset_manifest_hash,
-                    at=r1._utcnow(),
-                )
+                if status == "REGISTERED":
+                    git_sha = r1._git_head(r1.REPO_ROOT)
+                    registry.mark_running(
+                        trial_id,
+                        git_sha=git_sha,
+                        config_hash=r1._config_hash(hyper),
+                        dataset_manifest_hash=inputs.dataset_manifest_hash,
+                        at=r1._utcnow(),
+                    )
                 if config_id.startswith("xe-"):
                     base_rows = xsmom_base_sealed(inputs)
                 else:
@@ -1127,6 +1152,32 @@ def phase_stamp() -> int:
             " byte-exact into the frozen root before the run: load_and_bind reads it"
             " for the IV fidelity labels and the frozen root did not carry a docs/"
             " tree. No other file was added to or changed in the frozen root's inputs.",
+            "DEFECT FLAG (xe sealed geometry): the slot doc prose and the menu risk"
+            " note say '3 sealed XSMOM rebalances (2026-06-02, 2026-07-01,"
+            " 2026-08-03; 9 entries)', but the PINNED calendar puts June's first"
+            " session at 2026-06-01 = ordinal 442 -- the registration's own"
+            " 'pre-seal shoulder, unused; not tuned, not scored' row (the fold"
+            " table itself dates ordinal 442 = 2026-06-01; ordinal 443 ="
+            " 2026-06-02 is not a first-of-month session). The sealed xe region"
+            " therefore holds TWO rebalances (2026-07-01, 2026-08-03; 6 entries)"
+            " under the byte-pinned first-of-month rule. The xe floor was NOT"
+            " bent (n_ON >= 6 sealed entries, met only if the gate fires on both"
+            " rebalances -- strictly harder, in the NOT_EVALUABLE-SEALED"
+            " direction the registration already flagged as likely). Scoring the"
+            " shoulder's June-1 rebalance or fabricating a June-2 rebalance"
+            " would each violate the registration; the calendar-derived"
+            " expectation is the only faithful reading.",
+            "CRASH-RESUME DISCLOSURE: the first execute attempt (worktree HEAD"
+            " b629847, the registration provenance of all five r2 rows) REFUSED"
+            " pre-scoring on the mis-transcribed 3-rebalance guard -- no sealed"
+            " outcome was computed or viewed and no per-trial artifact existed,"
+            " so per INV-13 the seal was NOT consumed (xe-mkt-hi-r2 sat RUNNING"
+            " with no outcome; the registry's single-outcome primary key keeps"
+            " the scored run one-shot). The guard was corrected to the"
+            " calendar-derived expectation and the run resumed under the same"
+            " HEAD; the runner bytes that executed and stamped this round are"
+            " committed at the stamp-phase git_sha (per-trial artifacts record"
+            " the execute-phase HEAD b629847 with the same runner_sha256).",
         ],
     }
     SEAL_PATH.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
