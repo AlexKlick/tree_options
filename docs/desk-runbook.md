@@ -1,6 +1,6 @@
-# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events; Wave 2: dividends + the deal miner)
+# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events; Wave 2: dividends + the deal miner; Wave 3 D7: the shadow tracker)
 
-Six systemd **user** timers, all `oneshot` in `host-work.slice`, all
+Seven systemd **user** timers, all `oneshot` in `host-work.slice`, all
 idempotent. None places orders or seals cards.
 
 | job | when (America/New_York) | does |
@@ -17,6 +17,16 @@ All run `python -m tree_options.desk <command>` from the main checkout's
 chains/eod-equity) and/or `--dry-run`.
 
 ## Install / verify (operator)
+
+Wave 3 shadow-tracker unit (the D7 evidence loop; safe to install the day
+the queue exists - it is read-only over the queue and the store):
+
+```bash
+cp ~/documents/tree_options/deploy/desk/desk-shadow.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now desk-shadow.timer
+systemctl --user start desk-shadow.service; journalctl --user -u desk-shadow -n 20
+```
 
 Wave 2 deal-miner unit (files only; install only after the operator rules
 on the PROPOSED selection rules, `data/desk/miner/v1.toml`, and after
@@ -546,6 +556,51 @@ entry on the next session. It places no orders and pushes nothing.
     candidates were valued; all 100 rail-failed, on `max_loss_per_trade`
     (QQQ spreads are wide) and on `ex_dividend_short_call` (no dividend
     snapshot yet). The book's two NVDA spreads came to -$110 per 1% SPY.
+
+## Shadow tracker (Wave 3 D7; `desk-shadow`, timer)
+
+`python -m tree_options.desk shadows [--session D] [--dry-run]`
+(`desk.shadows`) turns the queue into forward evidence, and
+`python -m tree_options.desk scorecards [--state DIR]` (`desk.scorecards`)
+aggregates it. Neither places orders, pushes, or touches the network.
+
+- **Episodes.** One episode per `(underlying, row, ISO week)` of the entry
+  session, whether the deal was admissible, refused, rail-failed or not
+  selected: the queue's own preference picks the representative
+  (admissible first, then the lowest rank, then deal id). Episodes live in
+  `~/.local/state/trex-desk/shadows/episodes/<deal_id>.json`
+  (`desk-shadow/1`); claimed weeks are recorded in `shadows/status.json`,
+  so a re-run or a second deal of the same week never duplicates. An
+  empty queue is a normal pass (nothing surfaced that day; exit 0).
+- **Marks.** Every recorded chain session after the entry and through the
+  exit deadline adds one mark with two prices, both in the miner's
+  package-sign convention: `mid` (only when every leg quotes
+  `0 < bid <= ask` - a 0.00/0.00 book is NO market) and `realistic` (the
+  adverse-side close: BUY legs at their bid, SELL legs at their ask; a
+  long leg pinned at a zero bid closes at zero). A session whose chain is
+  missing adds nothing (the 2026-09-23 gap is simply absent).
+- **Resolution.** Once a recorded session proves the deadline window has
+  passed, the episode resolves at the deadline session's chain, or, when
+  that session never recorded or does not price the package, at the
+  latest recorded session at or before the deadline (`fallback: true`).
+  P&L is dollars from the deal's modeled `fill` to the realistic close
+  (debit kinds earn `exit - fill`, credit kinds `fill - exit`, x100
+  shares x quantity); `pnl_minus_ev_dollars` compares it with the deal's
+  decision EV and `slippage_first_mark_dollars` with the first mark's
+  realistic close.
+- **Scorecards.** `scorecards` rebuilds `shadows/scorecards/` from the
+  resolved episodes: per playbook row (`row:R*`) and per decision input
+  (`input:*`), totals, win rate, weekly clustered t-statistics
+  (clusters are the ISO weeks the episodes dedupe on), realized-vs-
+  predicted EV, first-mark slippage, stress-EV means (recorded, never an
+  automatic rule), and the plan's rules: promotion needs >= 20 resolved;
+  retire when the first 20 average <= 0; pause when the trailing-6-week
+  mean <= 0 AND cumulative <= -$1,000.
+- **Timer.** `desk-shadow.timer` fires five minutes after every mine slot
+  (07:20/08:20/09:20/13:05 ET) plus 19:30 ET, so the day's own evening
+  chain is marked the same day. Exit 3 = the session's queue file is not
+  there yet; the next slot retries. The pass is idempotent and safe to
+  run by hand.
 
 ## Viewer live chain (cockpit symbol pages)
 

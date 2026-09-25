@@ -78,6 +78,25 @@
         the next slot retries; 1 a conflict with the written queue or a
         failure, 2 bad arguments. Places no orders.
 
+    shadows [--session D] [--dry-run]
+        The shadow tracker (plan D7, desk.shadows): adopt one episode per
+        (underlying, row, ISO week) from session D's queue (admissible
+        first, then rank), mark every open episode at each later recorded
+        chain session (mid + realistic adverse-side close), resolve at
+        the exit deadline (fallback: the latest recorded session at or
+        before it). Episodes live in <TREX_DESK_STATE>/shadows/episodes/,
+        claims in shadows/status.json; re-running never duplicates.
+        Exit 3 when D's queue file is missing (retry at the next slot);
+        an empty queue is a normal pass. Places no orders.
+
+    scorecards [--state DIR]
+        The D7 scorecards (desk.scorecards): per playbook row and per
+        decision input, over RESOLVED episodes only - totals, weekly
+        clustered t-statistics, realized-vs-predicted EV, first-mark
+        slippage, and the promotion (>= 20 resolved) / pause / retire
+        rules. Written under <state>/scorecards/ (summary.json + one card
+        per family). Read-only over episodes.
+
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes; a second concurrent run exits 3. No secrets are printed
 (the chain, index and calendar feeds are keyless; fetch_ohlc.py reads its
@@ -122,6 +141,8 @@ from tree_options.desk import (  # noqa: E402
     ivhist,
     miner,
     paths,
+    scorecards,
+    shadows,
     store,
 )
 from tree_options.desk.chains import urllib_transport  # noqa: E402
@@ -213,6 +234,17 @@ def _parser() -> argparse.ArgumentParser:
     mn.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
     mn.add_argument("--desk-specs", type=Path, help="the desk runtime's spec dir (Wave 3)")
     mn.add_argument("--desk-book", type=Path, help="the desk runtime's book.json (Wave 3)")
+    sdw = sub.add_parser(
+        "shadows", help="adopt, mark and resolve the queue's shadow episodes (plan D7)"
+    )
+    sdw.add_argument("--session", type=date.fromisoformat)
+    sdw.add_argument(
+        "--dry-run", action="store_true", help="write nothing under the store or the state"
+    )
+    sc = sub.add_parser(
+        "scorecards", help="aggregate resolved shadow episodes into family cards (plan D7)"
+    )
+    sc.add_argument("--state", type=Path, help="the shadows state dir (default <state>/shadows)")
     return ap
 
 
@@ -569,6 +601,19 @@ def run_cli(
             return _seal_macro(args, get=get or http.urllib_get, clock=clock, cal=cal)
         if args.command == "mine":
             return _mine(args, clock=clock, cal=cal)
+        if args.command == "shadows":
+            res = shadows.update_shadows(
+                session=args.session, now=clock(), cal=cal, dry_run=args.dry_run
+            )
+            print(res.line())
+            return res.exit_code
+        if args.command == "scorecards":
+            doc = scorecards.write_scorecards(args.state or paths.state_root() / "shadows")
+            print(
+                f"scorecards episodes={doc['episodes_total']} "
+                f"resolved={doc['resolved_total']} families={len(doc['families'])}"
+            )
+            return 0
         return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 

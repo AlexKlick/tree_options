@@ -1,0 +1,28 @@
+[Unit]
+Description=Options desk: the D7 shadow tracker (adopt, mark, resolve episodes)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# Import the main checkout's code whatever the shared .venv's editable pointer
+# says (on 2026-09-23 an unknown writer repointed it to a worktree).
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+# The shared .venv's editable install is the main checkout (never re-synced here).
+# Adopts one episode per (underlying, row, ISO week) from the latest completed
+# session D's queue (admissible first, then rank), marks every open episode at
+# each later recorded chain session (package mid + realistic adverse-side
+# close), resolves at exit deadlines (fallback: the latest recorded session at
+# or before the deadline), then rebuilds the scorecards. Places no orders,
+# sends no pushes, reads no secrets (no network at all).
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk shadows
+ExecStartPost=/bin/sh -c '/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk scorecards || true'
+# exit 3 = D's queue file is not there yet: the next slot retries, nothing
+# was written. An empty queue is a normal, successful pass.
+SuccessExitStatus=3
+# marking loads one chain document per (session, name) with open episodes:
+# seconds per pass
+TimeoutStartSec=900

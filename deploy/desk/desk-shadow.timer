@@ -1,0 +1,22 @@
+[Unit]
+Description=Track the desk's shadow episodes after each mine slot
+
+[Timer]
+# Five minutes after every desk-mine slot (07:20/08:20/09:20/13:05 ET):
+# the queue exists by then or the pass exits 3 and the next slot retries.
+# Re-running never duplicates (episodes are keyed by deal id; weeks are
+# claimed in shadows/status.json), and every pass re-marks open episodes,
+# so a deal surfaced at 07:15 and a chain recorded at 12:30 both land.
+OnCalendar=Mon..Sat *-*-* 07:20:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 08:20:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 09:20:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 13:05:00 America/New_York
+# An evening pass after the chain recorder's 18:45/16:45-ish slots: the
+# day's own chain is in, so today's entries get their first real mark the
+# same evening they were mined.
+OnCalendar=Mon..Fri *-*-* 19:30:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
