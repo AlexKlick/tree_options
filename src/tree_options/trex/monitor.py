@@ -737,6 +737,25 @@ class Monitor:
                     avg=str(st.exit_fill),
                     status=info.status,
                 )
+            elif (
+                info.filled == seen and seen > 0
+                and info.avg_fill_price.is_finite() and info.avg_fill_price > 0
+                and info.avg_fill_price * info.filled
+                != self._order_notional.get(sid, Decimal(0))
+            ):
+                revised = info.avg_fill_price * info.filled
+                previous = self._order_notional.get(sid, Decimal(0))
+                if st.exit_fill is not None and st.exit_filled_qty > 0:
+                    st.exit_fill += (revised - previous) / st.exit_filled_qty
+                elif st.exit_filled_qty == info.filled:
+                    st.exit_fill = info.avg_fill_price
+                self._order_notional[sid] = revised
+                changed = True
+                self.book.event(
+                    self.events_path, "exit_fill_revised", structure=sid,
+                    filled=st.exit_filled_qty, order_filled=info.filled,
+                    avg=str(st.exit_fill), status=info.status,
+                )
             # persist the order checkpoint whenever it moved (adoption
             # idempotency; Codex-M2 #8)
             st.exit_order_seen = self._order_seen.get(sid, 0)

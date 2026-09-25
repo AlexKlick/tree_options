@@ -410,6 +410,25 @@ class Enterer:
                 avg=str(st.entry_fill),
                 status=status,
             )
+        elif (
+            filled == seen and seen > 0 and avg.is_finite() and avg > 0
+            and avg * filled != prev_notional
+        ):
+            # A broker average can arrive/revise without quantity growth. Blend
+            # only this tracked order's notional delta into the cumulative book.
+            # Terminal orders removed from self.orders still need a future
+            # execution-id reconciliation ledger; this is the active-order fix.
+            revised = avg * filled
+            if st.entry_fill is not None and st.filled_qty > 0:
+                st.entry_fill += (revised - prev_notional) / st.filled_qty
+            elif st.filled_qty == filled:
+                st.entry_fill = avg
+            prev_notional = revised
+            self.book.event(
+                self.events_path, "entry_fill_revised", structure=sid,
+                filled=st.filled_qty, order_filled=filled,
+                avg=str(st.entry_fill), status=status,
+            )
         self._order_seen[sid] = seen
         self._order_notional[sid] = prev_notional
         st.entry_order_seen, st.entry_order_notional = seen, prev_notional

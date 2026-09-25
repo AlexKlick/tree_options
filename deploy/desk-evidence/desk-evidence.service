@@ -1,0 +1,28 @@
+[Unit]
+Description=TREX shadow evidence only (no broker access)
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+UMask=0077
+Environment=HOME=%h
+Environment=UV_NO_SYNC=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=OPENBLAS_NUM_THREADS=1
+Environment=OMP_NUM_THREADS=1
+Environment=PYTHONPATH=%h/.local/share/trex/releases/desk-wave3-safety-rc1/src
+Environment=DESK_STORE=%h/documents/tree_options/artifacts/desk-store
+Environment=TREX_DESK_STATE=%h/.local/state/trex-desk
+WorkingDirectory=%h/.local/share/trex/releases/desk-wave3-safety-rc1
+ExecStart=%h/.local/share/trex/releases/desk-wave3-safety-rc1/.venv/bin/python -m tree_options.desk shadows
+SuccessExitStatus=3
+TimeoutStartSec=180
+MemoryHigh=384M
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.local/state/trex-desk/evidence
+RestrictAddressFamilies=AF_UNIX

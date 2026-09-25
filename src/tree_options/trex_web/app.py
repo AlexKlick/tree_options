@@ -475,6 +475,10 @@ def create_app(
         openapi_url=None,
     )
 
+    from tree_options.trex_web.desk_view import attach as attach_desk_evidence
+
+    attach_desk_evidence(app, database=desk_state_root / "evidence" / "desk.sqlite3")
+
     @app.get("/health")
     def health() -> dict[str, object]:
         return {

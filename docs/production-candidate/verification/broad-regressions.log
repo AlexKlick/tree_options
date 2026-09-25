@@ -1,0 +1,19 @@
+
+==================================== ERRORS ====================================
+__________ ERROR collecting tests/unit/test_desk_longdated_capture.py __________
+ImportError while importing test module '/mnt/data/work/tree_options-main/tests/unit/test_desk_longdated_capture.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+/usr/lib/python3.13/importlib/__init__.py:88: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests/unit/test_desk_longdated_capture.py:18: in <module>
+    from tests.conftest import REPO_ROOT
+tests/conftest.py:15: in <module>
+    from hypothesis import settings  # noqa: E402
+    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E   ModuleNotFoundError: No module named 'hypothesis'
+=========================== short test summary info ============================
+ERROR tests/unit/test_desk_longdated_capture.py
+!!!!!!!!!!!!!!!!!!!! Interrupted: 1 error during collection !!!!!!!!!!!!!!!!!!!!
+2 skipped, 1 error in 4.43s

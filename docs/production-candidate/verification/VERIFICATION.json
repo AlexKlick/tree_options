@@ -1,0 +1,206 @@
+{
+  "schema": "trex.release-verification/1",
+  "release": "desk-wave3-safety-rc1",
+  "generated_at": "2026-09-25T19:11:54.005799+00:00",
+  "verdict": "SHADOW_CANDIDATE_ONLY__HOST_GATE_AND_INDEPENDENT_REVIEW_REQUIRED",
+  "scope": "new desk evidence commands; legacy broker execution remains separate",
+  "input": {
+    "archive": "tree_options-main.zip",
+    "sha256": "d46546e671b4a91b0597bcdea4369ff49c4d28c40f47b00ec9f7ef89fc37ed60",
+    "upstream_main": "ab493d7b0758ebb04611d7b5f842a47049b2e77f",
+    "synthetic_local_baseline": "ba8dd41",
+    "claimed_wave3_refs_not_retrievable": [
+      "b6c5b26",
+      "7e7d82c",
+      "a5ca17d",
+      "f96275d"
+    ],
+    "additional_sessions": [
+      "Pasted text(20260925-183546).txt",
+      "Pasted text (2)(20260925-183557).txt"
+    ]
+  },
+  "source_manifest": "SOURCE_MANIFEST.json",
+  "code_and_test_sha256": "ecdf343f8deac9b0798a6c39810600d5a356b8c6cdbe2b2bb3139d6b9b51cbbf",
+  "environment": {
+    "python": "3.13.5",
+    "python_executable": "/opt/pyvenv/bin/python3",
+    "requested_python": "3.12",
+    "packages": {
+      "numpy": "2.3.5",
+      "pydantic": "2.13.4",
+      "pytest": "9.0.2",
+      "fastapi": "0.128.2",
+      "httpx": "0.28.1",
+      "anyio": "4.13.0",
+      "starlette": "0.50.0",
+      "PyYAML": "6.0.3",
+      "hypothesis": null,
+      "ruff": null,
+      "mypy": null,
+      "ib_async": null
+    },
+    "canonical_locked_environment": false
+  },
+  "tests": {
+    "targeted": {
+      "passed": 694,
+      "skipped": 6,
+      "failed": 0,
+      "errors": 0,
+      "new_safety_suite_cases": 102,
+      "elapsed_seconds": 17.49,
+      "skip_reason": "ib_async not installed; six existing entry-adapter tests skipped",
+      "command": "OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 PYTHONPATH=src python3 -m pytest tests/desk_safety tests/unit/test_trex_engine.py tests/unit/test_trex_desk_engine.py tests/unit/test_trex_enter.py tests/unit/test_trex_monitor.py tests/unit/test_desk_enforcement.py tests/unit/test_desk_playbook.py tests/unit/test_desk_selection.py tests/unit/test_desk_miner.py tests/unit/test_trex_web*.py --confcutdir=tests/desk_safety -o addopts='' --maxfail=1 -q -rs --junitxml=/mnt/data/final-targeted.xml",
+      "limitation": "confcutdir omits unavailable root Hypothesis fixtures; not the full repository gate"
+    },
+    "baseline_subset": {
+      "passed": 198,
+      "skipped": 6
+    },
+    "legacy_behavioral_red": {
+      "failed_before_fix": 4,
+      "log": "legacy-revisions-red.log"
+    },
+    "full_repository": "NOT_COMPLETED; broad collection failed on Hypothesis, later compatibility attempt timed out with unavailable fixtures",
+    "lint": "NOT_RUN; ruff unavailable",
+    "typecheck": "NOT_RUN; mypy unavailable",
+    "canonical_gate": "REFUSED: current interpreter differs from .python-version; prior preflight also reported missing hypothesis/ruff/mypy",
+    "canonical_install": "FAILED: Python download DNS resolution; dependency files not modified",
+    "compileall": "PASS",
+    "bash_syntax": "PASS",
+    "git_diff_check": "PASS"
+  },
+  "visual": {
+    "renderer": "Chromium",
+    "fixture": "synthetic_not_live",
+    "method": "inline_content_with_fixture_fetch",
+    "limitations": [
+      "not HTTP navigation",
+      "not CSP enforcement",
+      "not live broker data"
+    ],
+    "checks": [
+      {
+        "viewport": "desktop",
+        "page_errors": [],
+        "horizontal_page_overflow": false,
+        "modeled_net_rendered": "-$12.60"
+      },
+      {
+        "viewport": "mobile",
+        "page_errors": [],
+        "horizontal_page_overflow": false,
+        "modeled_net_rendered": "-$12.60"
+      }
+    ]
+  },
+  "deployment": {
+    "systemd_timer_calendar_syntax": "PASS",
+    "actual_unit_installation": "NOT_PERFORMED",
+    "systemd_sandbox_and_memory_soak": "NOT_VERIFIED",
+    "browser_http_navigation": "BLOCKED_BY_ENVIRONMENT; inline rendering checked separately"
+  },
+  "preservation": {
+    "protected_original_files_checked": 67,
+    "changed": [],
+    "no_sealed_studies_run": true
+  },
+  "actions_not_performed": [
+    "remote_push",
+    "remote_merge",
+    "broker_connect",
+    "broker_order_submit",
+    "broker_order_cancel",
+    "option_exercise",
+    "service_install",
+    "service_enable",
+    "service_restart",
+    "policy_activation",
+    "sealed_research_rescore"
+  ],
+  "remaining_execution_work": [
+    "single-owner E5 paper runtime",
+    "durable broker execution/correction ledger",
+    "fresh authoritative rails and position/order reconciliation",
+    "raw paper-margin/account diagnostic",
+    "live dividend/short-call quote inputs",
+    "operator activation bound to account/release/policy",
+    "D8 veto-only study pipeline",
+    "DESK-BT-001 machinery and actual data coverage"
+  ],
+  "logs": [
+    "final-targeted.log",
+    "final-targeted.xml",
+    "baseline-tests.log",
+    "legacy-revisions-red.log",
+    "contracts-nested-red.log",
+    "backup-corruption-red.log",
+    "dependency-install.log",
+    "host-gate-attempt.log",
+    "final-host-gate-attempt.log",
+    "devtools-install.log",
+    "static-validation.log",
+    "timer-calendar.log",
+    "broad-regressions.log",
+    "broad-regressions-compatible.log",
+    "browser-verification.json"
+  ],
+  "log_format": {
+    "text_logs": "trailing whitespace stripped for clean patch application; substantive stdout unchanged",
+    "hashes": {
+      "devtools-install.log": {
+        "original_sha256": "8aed30f39c46118dee84c3393c56404043ed9d14d12d9f4862b2c00a4023740b",
+        "packaged_sha256": "8aed30f39c46118dee84c3393c56404043ed9d14d12d9f4862b2c00a4023740b"
+      },
+      "static-validation.log": {
+        "original_sha256": "4a62476b8a1b06bae25162a9151c74086762000bbf9b688ffab0b2720f9d0ec4",
+        "packaged_sha256": "4a62476b8a1b06bae25162a9151c74086762000bbf9b688ffab0b2720f9d0ec4"
+      },
+      "contracts-nested-red.log": {
+        "original_sha256": "bef6ba97a18c238fd9f1f6b3bb2ad0074e1c6ed52914397dbac3fb3cc85633ee",
+        "packaged_sha256": "1bf379cc7fb0f5b0acdbc6e75955c0a16b3ff32913ab2f0b960558d91e7f41ba"
+      },
+      "legacy-revisions-red.log": {
+        "original_sha256": "d6316170888923127e2e0f4cb4eaa16dd8a1d7247eedec72cfbeb8bbbcf8834a",
+        "packaged_sha256": "d6316170888923127e2e0f4cb4eaa16dd8a1d7247eedec72cfbeb8bbbcf8834a"
+      },
+      "final-host-gate-attempt.log": {
+        "original_sha256": "2339ee15e07fab6c41d97868ecba054086bea4cec8ccd885fb5e166d551176a3",
+        "packaged_sha256": "2339ee15e07fab6c41d97868ecba054086bea4cec8ccd885fb5e166d551176a3"
+      },
+      "dependency-install.log": {
+        "original_sha256": "ab79380c6b33aa6bc0224385c8655d57c9618212608a27ecb464de9c2d09025a",
+        "packaged_sha256": "ab79380c6b33aa6bc0224385c8655d57c9618212608a27ecb464de9c2d09025a"
+      },
+      "host-gate-attempt.log": {
+        "original_sha256": "75e19fd78178ec51e71827c3054a0cf4c0fd11d02347cbebedef1a9b355a5c3a",
+        "packaged_sha256": "75e19fd78178ec51e71827c3054a0cf4c0fd11d02347cbebedef1a9b355a5c3a"
+      },
+      "backup-corruption-red.log": {
+        "original_sha256": "14b080ad1afef53590d4ce351c259aadd784149f719c8a1a3a095fc53053cd5c",
+        "packaged_sha256": "14b080ad1afef53590d4ce351c259aadd784149f719c8a1a3a095fc53053cd5c"
+      },
+      "timer-calendar.log": {
+        "original_sha256": "9ed178c7011327524a02de49dd9290e3f9dd0ab38bb8b73081cd92394d14eae3",
+        "packaged_sha256": "9ed178c7011327524a02de49dd9290e3f9dd0ab38bb8b73081cd92394d14eae3"
+      },
+      "baseline-tests.log": {
+        "original_sha256": "058d3c4883e630c64602b3b4eaba3e1ad3ca77116e286a4ed8982a298b484a61",
+        "packaged_sha256": "058d3c4883e630c64602b3b4eaba3e1ad3ca77116e286a4ed8982a298b484a61"
+      },
+      "broad-regressions-compatible.log": {
+        "original_sha256": "64958437ef60af7677c6dad1eccc931f207795601ea2757543ba145470e69779",
+        "packaged_sha256": "c29a911dd11eab69e57b8356528c079596c657c7df52e6e7dd4542d81130b7e5"
+      },
+      "broad-regressions.log": {
+        "original_sha256": "3fee6d3172ab66e1365bcc3771269d9f7c1b8753ab94cbd1621c3905feb62cbb",
+        "packaged_sha256": "3fee6d3172ab66e1365bcc3771269d9f7c1b8753ab94cbd1621c3905feb62cbb"
+      },
+      "final-targeted.log": {
+        "original_sha256": "ad354274a2502b8b4b1f98897e86c82ccf7a95b99b85488848a058396f99a080",
+        "packaged_sha256": "ad354274a2502b8b4b1f98897e86c82ccf7a95b99b85488848a058396f99a080"
+      }
+    }
+  }
+}

@@ -1,0 +1,132 @@
+{
+  "schema": "trex.evidence-capabilities/1",
+  "release": "desk-wave3-safety-rc1",
+  "execution_enabled": false,
+  "broker_account_access": "none",
+  "network_access": "none",
+  "forbidden_effects": [
+    "broker.submit",
+    "broker.cancel",
+    "broker.exercise",
+    "research.rescore_sealed",
+    "policy.activate",
+    "service.install_or_restart",
+    "credentials.read"
+  ],
+  "commands": [
+    {
+      "command": "shadows",
+      "purpose": "record_deadline_eod_proxy",
+      "effects": [
+        "read:queue",
+        "read:chains",
+        "write:local_evidence"
+      ],
+      "cli": [
+        "python",
+        "-m",
+        "tree_options.desk",
+        "shadows"
+      ],
+      "approval_scope": "local_evidence_only_not_trading_authority"
+    },
+    {
+      "command": "scorecards",
+      "purpose": "describe_proxy_outcomes",
+      "effects": [
+        "read:local_evidence"
+      ],
+      "cli": [
+        "python",
+        "-m",
+        "tree_options.desk",
+        "scorecards"
+      ],
+      "approval_scope": "local_evidence_only_not_trading_authority"
+    },
+    {
+      "command": "desk-enter",
+      "purpose": "preview_blocked_admissions",
+      "effects": [
+        "read:queue",
+        "read:kill_files",
+        "write:local_evidence"
+      ],
+      "cli": [
+        "python",
+        "-m",
+        "tree_options.desk",
+        "desk-enter"
+      ],
+      "approval_scope": "local_evidence_only_not_trading_authority"
+    },
+    {
+      "command": "desk-health",
+      "purpose": "report_evidence_readiness",
+      "effects": [
+        "read:local_evidence",
+        "read:sealed_policy"
+      ],
+      "cli": [
+        "python",
+        "-m",
+        "tree_options.desk",
+        "desk-health"
+      ],
+      "approval_scope": "local_evidence_only_not_trading_authority"
+    },
+    {
+      "command": "verify-evidence",
+      "purpose": "verify_audit_custody",
+      "effects": [
+        "read:local_evidence"
+      ],
+      "cli": [
+        "python",
+        "-m",
+        "tree_options.desk",
+        "verify-evidence"
+      ],
+      "approval_scope": "local_evidence_only_not_trading_authority"
+    },
+    {
+      "command": "backup-evidence",
+      "purpose": "publish_verified_snapshot",
+      "effects": [
+        "read:local_evidence",
+        "write:new_backup"
+      ],
+      "cli": [
+        "python",
+        "-m",
+        "tree_options.desk",
+        "backup-evidence"
+      ],
+      "approval_scope": "local_evidence_only_not_trading_authority"
+    }
+  ],
+  "wire_schemas": [
+    "trex.deal/1",
+    "desk-episode/2",
+    "desk-mark/2",
+    "desk-shadow-run/2",
+    "desk-scorecards/2",
+    "desk-health/2",
+    "desk-admission-preview/2"
+  ],
+  "future_execution_adapter": {
+    "implemented": false,
+    "must_not_consume": "admission_preview objects as executable specifications",
+    "requirements": [
+      "exclusive_account_bound_broker_owner",
+      "fresh_verified_risk_snapshot",
+      "reconcile_positions_orders_executions",
+      "raw_margin_and_account_type_evidence",
+      "intraday_exit_inputs",
+      "durable_execution_id_and_correction_ledger",
+      "operator_activation_bound_to_policy_hash_and_release",
+      "host_gate_and_shadow_soak"
+    ]
+  },
+  "scope": "new_desk_evidence_commands_only; existing legacy execution remains separate"
+}

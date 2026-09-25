@@ -213,6 +213,9 @@ def _parser() -> argparse.ArgumentParser:
     mn.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
     mn.add_argument("--desk-specs", type=Path, help="the desk runtime's spec dir (Wave 3)")
     mn.add_argument("--desk-book", type=Path, help="the desk runtime's book.json (Wave 3)")
+    from tree_options.desk import production
+
+    production.register(sub)
     return ap
 
 
@@ -512,6 +515,12 @@ def run_cli(
     fixed = now
     clock: store.Clock = (lambda: fixed) if fixed is not None else now_et
     cal = cal or session_calendar()
+    if getattr(args, "production_command", False):
+        from tree_options.desk import production
+
+        # SQLite serializes all evidence writes across command names. Read-only
+        # commands and dry runs must not create the old per-command lock files.
+        return production.dispatch(args, now=clock(), cal=cal)
     with _single_run(args.command, enabled=not getattr(args, "dry_run", False)) as owned:
         if not owned:
             print(f"{args.command}: another run holds the lock; retry later", file=sys.stderr)

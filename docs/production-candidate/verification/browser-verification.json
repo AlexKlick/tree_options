@@ -1,0 +1,24 @@
+{
+  "renderer": "Chromium",
+  "fixture": "synthetic_not_live",
+  "method": "inline_content_with_fixture_fetch",
+  "limitations": [
+    "not HTTP navigation",
+    "not CSP enforcement",
+    "not live broker data"
+  ],
+  "checks": [
+    {
+      "viewport": "desktop",
+      "page_errors": [],
+      "horizontal_page_overflow": false,
+      "modeled_net_rendered": "-$12.60"
+    },
+    {
+      "viewport": "mobile",
+      "page_errors": [],
+      "horizontal_page_overflow": false,
+      "modeled_net_rendered": "-$12.60"
+    }
+  ]
+}

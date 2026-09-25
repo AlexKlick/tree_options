@@ -1,0 +1,110 @@
+FFFF                                                                     [100%]
+=================================== FAILURES ===================================
+_________ test_entry_revision_blends_current_order_not_whole_book[0-0] _________
+
+world = World(cal=<tree_options.time.calendar.StaticSessionCalendar object at 0x7f1bf7ae0c20>, session=datetime.date(2025, 3, ...': None}], 'surfaced': [], 'rows': {}}, root=PosixPath('/tmp/pytest-of-root/pytest-8/test_entry_revision_blends_cur0'))
+prior_qty = 0, prior_price = '0'
+
+    @pytest.mark.parametrize('prior_qty,prior_price', [(0, '0'), (2, '1.00')])
+    def test_entry_revision_blends_current_order_not_whole_book(world, prior_qty, prior_price):
+        ent = _enterer(world.root, FakeEntryIbkr(), world.now)
+        sid = ent.plan.structures[0].id
+        st = ent.book.structures[sid]
+        st.filled_qty = prior_qty
+        st.entry_fill = Decimal(prior_price) if prior_qty else None
+        ent._merge_order_total(sid, 2, Decimal('2.00'), 'Submitted')
+        ent._merge_order_total(sid, 2, Decimal('3.00'), 'Submitted')
+        expected = (prior_qty * Decimal(prior_price) + Decimal('6.00')) / (prior_qty + 2)
+        assert st.filled_qty == prior_qty + 2
+>       assert st.entry_fill == expected
+E       AssertionError: assert Decimal('2.00') == Decimal('3.00')
+E        +  where Decimal('2.00') = <tree_options.trex.state.StructureState object at 0x7f1bf7a7f9f0>.entry_fill
+
+tests/desk_safety/test_legacy_revisions.py:25: AssertionError
+_______ test_entry_revision_blends_current_order_not_whole_book[2-1.00] ________
+
+world = World(cal=<tree_options.time.calendar.StaticSessionCalendar object at 0x7f1bf7be7110>, session=datetime.date(2025, 3, ...': None}], 'surfaced': [], 'rows': {}}, root=PosixPath('/tmp/pytest-of-root/pytest-8/test_entry_revision_blends_cur1'))
+prior_qty = 2, prior_price = '1.00'
+
+    @pytest.mark.parametrize('prior_qty,prior_price', [(0, '0'), (2, '1.00')])
+    def test_entry_revision_blends_current_order_not_whole_book(world, prior_qty, prior_price):
+        ent = _enterer(world.root, FakeEntryIbkr(), world.now)
+        sid = ent.plan.structures[0].id
+        st = ent.book.structures[sid]
+        st.filled_qty = prior_qty
+        st.entry_fill = Decimal(prior_price) if prior_qty else None
+        ent._merge_order_total(sid, 2, Decimal('2.00'), 'Submitted')
+        ent._merge_order_total(sid, 2, Decimal('3.00'), 'Submitted')
+        expected = (prior_qty * Decimal(prior_price) + Decimal('6.00')) / (prior_qty + 2)
+        assert st.filled_qty == prior_qty + 2
+>       assert st.entry_fill == expected
+E       AssertionError: assert Decimal('1.50') == Decimal('2.00')
+E        +  where Decimal('1.50') = <tree_options.trex.state.StructureState object at 0x7f1bf7a7f1d0>.entry_fill
+
+tests/desk_safety/test_legacy_revisions.py:25: AssertionError
+_________ test_exit_revision_blends_current_order_not_whole_book[0-0] __________
+
+world = World(cal=<tree_options.time.calendar.StaticSessionCalendar object at 0x7f1bf7be7890>, session=datetime.date(2025, 3, ...': None}], 'surfaced': [], 'rows': {}}, root=PosixPath('/tmp/pytest-of-root/pytest-8/test_exit_revision_blends_curr0'))
+prior_qty = 0, prior_price = '0'
+
+    @pytest.mark.parametrize('prior_qty,prior_price', [(0, '0'), (1, '1.00')])
+    def test_exit_revision_blends_current_order_not_whole_book(world, prior_qty, prior_price):
+        fake = FakeIbkr()
+        mon = _monitor(world.root, fake, world.now)
+        spec = mon.plan.structures[0]
+        sid = spec.id
+        st = mon.book.structures[sid]
+        st.filled_qty = spec.quantity
+        st.exit_filled_qty = prior_qty
+        st.exit_fill = Decimal(prior_price) if prior_qty else None
+        ref = fake.place_combo(spec, 'SELL', spec.quantity - prior_qty, Decimal('2'))
+        mon.orders[sid] = ref
+        fake.fill(ref, 2, '2.00')
+        mon._drain_orders()
+        fake.fill(ref, 2, '3.00')
+>       assert mon._drain_orders() is True  # price-only mutations must report changed
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       assert False is True
+E        +  where False = _drain_orders()
+E        +    where _drain_orders = <tree_options.trex.monitor.Monitor object at 0x7f1bf7ae1d30>._drain_orders
+
+tests/desk_safety/test_legacy_revisions.py:50: AssertionError
+________ test_exit_revision_blends_current_order_not_whole_book[1-1.00] ________
+
+world = World(cal=<tree_options.time.calendar.StaticSessionCalendar object at 0x7f1bf7a0fa80>, session=datetime.date(2025, 3, ...': None}], 'surfaced': [], 'rows': {}}, root=PosixPath('/tmp/pytest-of-root/pytest-8/test_exit_revision_blends_curr1'))
+prior_qty = 1, prior_price = '1.00'
+
+    @pytest.mark.parametrize('prior_qty,prior_price', [(0, '0'), (1, '1.00')])
+    def test_exit_revision_blends_current_order_not_whole_book(world, prior_qty, prior_price):
+        fake = FakeIbkr()
+        mon = _monitor(world.root, fake, world.now)
+        spec = mon.plan.structures[0]
+        sid = spec.id
+        st = mon.book.structures[sid]
+        st.filled_qty = spec.quantity
+        st.exit_filled_qty = prior_qty
+        st.exit_fill = Decimal(prior_price) if prior_qty else None
+        ref = fake.place_combo(spec, 'SELL', spec.quantity - prior_qty, Decimal('2'))
+        mon.orders[sid] = ref
+        fake.fill(ref, 2, '2.00')
+        mon._drain_orders()
+        fake.fill(ref, 2, '3.00')
+>       assert mon._drain_orders() is True  # price-only mutations must report changed
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       assert False is True
+E        +  where False = _drain_orders()
+E        +    where _drain_orders = <tree_options.trex.monitor.Monitor object at 0x7f1bf79ace10>._drain_orders
+
+tests/desk_safety/test_legacy_revisions.py:50: AssertionError
+=========================== short test summary info ============================
+FAILED tests/desk_safety/test_legacy_revisions.py::test_entry_revision_blends_current_order_not_whole_book[0-0] - AssertionError: assert Decimal('2.00') == Decimal('3.00')
+ +  where Decimal('2.00') = <tree_options.trex.state.StructureState object at 0x7f1bf7a7f9f0>.entry_fill
+FAILED tests/desk_safety/test_legacy_revisions.py::test_entry_revision_blends_current_order_not_whole_book[2-1.00] - AssertionError: assert Decimal('1.50') == Decimal('2.00')
+ +  where Decimal('1.50') = <tree_options.trex.state.StructureState object at 0x7f1bf7a7f1d0>.entry_fill
+FAILED tests/desk_safety/test_legacy_revisions.py::test_exit_revision_blends_current_order_not_whole_book[0-0] - assert False is True
+ +  where False = _drain_orders()
+ +    where _drain_orders = <tree_options.trex.monitor.Monitor object at 0x7f1bf7ae1d30>._drain_orders
+FAILED tests/desk_safety/test_legacy_revisions.py::test_exit_revision_blends_current_order_not_whole_book[1-1.00] - assert False is True
+ +  where False = _drain_orders()
+ +    where _drain_orders = <tree_options.trex.monitor.Monitor object at 0x7f1bf79ace10>._drain_orders
+4 failed in 0.15s

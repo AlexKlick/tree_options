@@ -1,0 +1,14 @@
+[Unit]
+Description=TREX evidence cadence, without order entry
+
+[Timer]
+OnCalendar=Mon..Sat *-*-* 09:55:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 11:05:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 13:05:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 19:30:00 America/New_York
+Persistent=true
+AccuracySec=10s
+Unit=desk-evidence.service
+
+[Install]
+WantedBy=timers.target

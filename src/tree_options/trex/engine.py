@@ -63,6 +63,17 @@ class Snapshot:
     spots: Mapping[str, Decimal]
     quotes: Mapping[str, ComboQuote | None]
     spot_sources: Mapping[str, SpotReading] = field(default_factory=dict)
+    # Optional desk observations. The legacy put-spread monitor does not supply
+    # these; their existence does not mean the E5 broker feed is wired.
+    dividends: Mapping[str, DividendCalendar] = field(default_factory=dict)
+    short_call_mids: Mapping[str, Decimal | None] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DividendCalendar:
+    ex_date: date
+    prev_session: date
+    amount: Decimal
 
 
 class ExitReason(StrEnum):
@@ -71,6 +82,7 @@ class ExitReason(StrEnum):
     TIME_STOP = "time_stop"
     EXPIRY_SAFETY = "expiry_safety"
     FLATTEN = "flatten"  # runner-injected (kill file); engine never emits it
+    ASSIGNMENT_RISK = "assignment_risk"
     BREACH = "breach"  # desk: spot crossed a short strike (credit kinds)
     STOP_LOSS = "stop_loss"  # desk: held for ExitRules.stop_confirm_ticks ticks
 
@@ -410,6 +422,9 @@ def _desk_exit(spec: LegStructure, st: StructureState, snap: Snapshot) -> Struct
             and any(_at_or_beyond(g.right, spot, g.strike) for g in spec.legs if g.action == "SELL")
         ):
             return close(ExitReason.BREACH)
+    # Known pre-ex short-call risk uses a marketable close, before profit/stop.
+    if _assignment_exit(spec, snap):
+        return close(ExitReason.ASSIGNMENT_RISK, force=True)
     # 5. take-profit
     if quote is not None and _take_profit_hit(spec, st, quote.mid):
         return close(ExitReason.TAKE_PROFIT)
@@ -422,6 +437,42 @@ def _desk_exit(spec: LegStructure, st: StructureState, snap: Snapshot) -> Struct
     if today > deadline or (today == deadline and now.time() >= cfg.time_stop_time):
         return close(ExitReason.TIME_STOP, ticks=ticks)
     return StructureDecision(NoAction("hold"), ticks)
+
+
+def short_call_key(sid: str, strike: Decimal, expiry: date) -> str:
+    """Canonical key: a Decimal's display precision must not change identity."""
+    return f"{sid}|C{format(strike.normalize(), 'f')}|{expiry.isoformat()}"
+
+
+def _assignment_exit(spec: LegStructure, snap: Snapshot) -> bool:
+    """Known dividend + accepted ITM spot, on the last session before ex-date.
+
+    This is a risk heuristic, not a guarantee about exercise. No dividend/spot
+    observation means unknown, not safe; the admission boundary stays blocked
+    until a runtime can supply validated fresh observations. An unavailable or
+    invalid short quote in the known risk window closes conservatively.
+    """
+    div = snap.dividends.get(spec.underlying)
+    if div is None or not div.amount.is_finite() or div.amount <= 0:
+        return False
+    if not div.prev_session < div.ex_date or snap.ts.date() != div.prev_session:
+        return False
+    sessions = session_calendar().sessions()
+    previous = next((d for d in reversed(sessions) if d < div.ex_date), None)
+    if previous != div.prev_session:
+        return False
+    spot = snap.spots.get(spec.underlying)
+    if spot is None or not spot.is_finite() or spot <= 0:
+        return False
+    for leg in spec.legs:
+        if leg.action != "SELL" or leg.right != "C" or spot <= leg.strike:
+            continue
+        mid = snap.short_call_mids.get(short_call_key(spec.id, leg.strike, leg.expiry))
+        if mid is None or not mid.is_finite() or mid < 0:
+            return True
+        if mid - (spot - leg.strike) < div.amount:
+            return True
+    return False
 
 
 def _at_or_beyond(right: str, spot: Decimal, strike: Decimal) -> bool:

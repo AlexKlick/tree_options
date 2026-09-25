@@ -1,0 +1,13 @@
+[Unit]
+Description=TREX entry-window previews (cannot arm trading)
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 09:50..59:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 10:00..59:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 11:00..29:00 America/New_York
+Persistent=false
+AccuracySec=5s
+Unit=desk-admission-preview.service
+
+[Install]
+WantedBy=timers.target
