@@ -57,12 +57,30 @@ class Snapshot:
 
     ``spots`` holds only ACCEPTED readings (trex.spot): an underlying with
     no fresh price is absent, and absent means no touch decision.
-    ``spot_sources`` is their provenance, for observation only."""
+    ``spot_sources`` is their provenance, for observation only.
+
+    ``dividends`` (by underlying) and ``short_call_mids`` (by
+    ``"<sid>|C<strike>|<expiry>"``) carry the desk runtime's assignment-risk
+    observations; both default empty, so callers that never set them get no
+    assignment-risk decision (the rule below stands down)."""
 
     ts: datetime  # aware, ET
     spots: Mapping[str, Decimal]
     quotes: Mapping[str, ComboQuote | None]
     spot_sources: Mapping[str, SpotReading] = field(default_factory=dict)
+    dividends: Mapping[str, DividendCalendar | None] = field(default_factory=dict)
+    short_call_mids: Mapping[str, Decimal | None] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class DividendCalendar:
+    """The next ex-dividend of one underlying and the last session before
+    it, as the desk runtime observes them (desk/dividends.py plus the
+    session calendar). Only the engine's assignment-risk rule reads it."""
+
+    ex_date: date
+    prev_session: date
+    amount: Decimal
 
 
 class ExitReason(StrEnum):
@@ -72,6 +90,7 @@ class ExitReason(StrEnum):
     EXPIRY_SAFETY = "expiry_safety"
     FLATTEN = "flatten"  # runner-injected (kill file); engine never emits it
     BREACH = "breach"  # desk: spot crossed a short strike (credit kinds)
+    ASSIGNMENT_RISK = "assignment_risk"  # desk: last session before an ex-date, an ITM short call's extrinsic < the dividend
     STOP_LOSS = "stop_loss"  # desk: held for ExitRules.stop_confirm_ticks ticks
 
 
@@ -309,16 +328,22 @@ def decide_structure(spec: LegStructure, st: StructureState, snap: Snapshot) -> 
        (put: spot <= strike, call: spot >= strike);
     4. breach (exits.breach): spot at or beyond a short strike (put: spot <=
        strike, call: spot >= strike);
-    5. take-profit on the package mid: width_frac (mid >= cents(value x
+    5. assignment risk (close at marketable prices): on the last session
+       before an ex-dividend, a short call in the money whose extrinsic is
+       worth less than the dividend (``Snapshot.dividends`` /
+       ``short_call_mids``, both runtime-fed; absent observations stand the
+       rule down; an ITM short call with no leg quote that day closes -
+       fail closed);
+    6. take-profit on the package mid: width_frac (mid >= cents(value x
        width), the legacy rule), gain_frac (mid >= entry x (1 + value)),
        credit_frac (mid <= entry x (1 - value)); credit kinds default to
        credit_frac CREDIT_TAKE_PROFIT_DEFAULT;
-    6. stop-loss once it held ``exits.stop_confirm_ticks`` consecutive
+    7. stop-loss once it held ``exits.stop_confirm_ticks`` consecutive
        evaluated ticks (debit_frac: mid <= entry x (1 - value); credit_mult:
        mid >= entry x value); a tick that meets it counts, one that doesn't
        resets, one that can't be evaluated (no quote, no entry price)
        neither counts nor resets;
-    7. time stop: at ``time_stop_time`` on the exit deadline, at once after it.
+    8. time stop: at ``time_stop_time`` on the exit deadline, at once after it.
 
     Without a spot there is no touch or breach decision; without an entry
     price no gain/credit take-profit or stop. Closes size to st.open_qty
@@ -410,14 +435,20 @@ def _desk_exit(spec: LegStructure, st: StructureState, snap: Snapshot) -> Struct
             and any(_at_or_beyond(g.right, spot, g.strike) for g in spec.legs if g.action == "SELL")
         ):
             return close(ExitReason.BREACH)
-    # 5. take-profit
+    # 5. assignment risk: the last session before an ex-dividend, a short
+    # call in the money whose extrinsic is worth less than the dividend
+    # (fail closed: an ITM short call with no leg quote that day also
+    # closes - the window is one session and cannot wait for data)
+    if _assignment_exit(spec, snap):
+        return close(ExitReason.ASSIGNMENT_RISK, force=True)
+    # 6. take-profit
     if quote is not None and _take_profit_hit(spec, st, quote.mid):
         return close(ExitReason.TAKE_PROFIT)
-    # 6. stop-loss, confirmed over consecutive ticks
+    # 7. stop-loss, confirmed over consecutive ticks
     ticks = _stop_ticks(spec, st, quote)
     if spec.exits.stop_loss is not None and ticks >= spec.exits.stop_confirm_ticks:
         return close(ExitReason.STOP_LOSS, ticks=ticks)
-    # 7. time stop
+    # 8. time stop
     deadline = spec.exit_deadline
     if today > deadline or (today == deadline and now.time() >= cfg.time_stop_time):
         return close(ExitReason.TIME_STOP, ticks=ticks)
@@ -427,6 +458,46 @@ def _desk_exit(spec: LegStructure, st: StructureState, snap: Snapshot) -> Struct
 def _at_or_beyond(right: str, spot: Decimal, strike: Decimal) -> bool:
     """Spot at the strike or past it in the option's money direction."""
     return spot <= strike if right == "P" else spot >= strike
+
+
+def _short_call_key(sid: str, strike: Decimal, expiry: date) -> str:
+    return f"{sid}|C{strike}|{expiry.isoformat()}"
+
+
+def _assignment_exit(spec: LegStructure, snap: Snapshot) -> bool:
+    """True when early-assignment risk says close now: on the LAST session
+    before an ex-dividend, a short call is in the money and its extrinsic
+    (mid minus intrinsic) is worth less than the dividend - exercising to
+    capture the dividend beats the option's remaining time value, so the
+    counterparty takes the stock and the short call becomes a short stock
+    hole the package was never margined for. The rails' relaxed ex-div
+    entry rail stands only because this exit exists (carry-forward
+    2026-09-23 ruling: they land together).
+
+    Stands down - no decision - when the structure has no short calls, the
+    runtime observed no dividend calendar, the dividend is not positive,
+    today is not the last session before the ex-date, or no spot is
+    accepted. An ITM short call with NO leg quote on the trigger session
+    closes anyway: the window is one session (fail closed)."""
+    shorts = [g for g in spec.legs if g.action == "SELL" and g.right == "C"]
+    if not shorts:
+        return False
+    div = snap.dividends.get(spec.underlying)
+    if div is None or div.amount <= 0:
+        return False
+    if snap.ts.date() != div.prev_session:
+        return False
+    spot = snap.spots.get(spec.underlying)
+    if spot is None:
+        return False
+    for g in shorts:
+        if spot <= g.strike:  # not in the money: no exercise to capture
+            continue
+        mid = snap.short_call_mids.get(_short_call_key(spec.id, g.strike, g.expiry))
+        extrinsic = None if mid is None else mid - (spot - g.strike)
+        if extrinsic is None or extrinsic < div.amount:
+            return True
+    return False
 
 
 def _working_reason(stored: str | None) -> ExitReason:

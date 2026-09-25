@@ -23,6 +23,7 @@ from tree_options.trex.engine import (
     AbortEntry,
     CloseOrder,
     ComboQuote,
+    DividendCalendar,
     EngineConfig,
     EntryOrder,
     ExitReason,
@@ -153,11 +154,23 @@ def _snap(
     ts: datetime,
     quote: ComboQuote | None,
     spot: str | None = None,  # no spot: no touch/breach decision unless a test sets one
+    dividend: tuple[date, date, str] | None = None,  # (ex_date, prev_session, amount)
+    short_call_mids: dict[str, str] | None = None,
 ) -> Snapshot:
     return Snapshot(
         ts=ts,
         spots={} if spot is None else {spec.underlying: Decimal(spot)},
         quotes={spec.id: quote},
+        dividends={}
+        if dividend is None
+        else {
+            spec.underlying: DividendCalendar(
+                ex_date=dividend[0], prev_session=dividend[1], amount=Decimal(dividend[2])
+            )
+        },
+        short_call_mids={}
+        if short_call_mids is None
+        else {k: Decimal(v) for k, v in short_call_mids.items()},
     )
 
 
@@ -187,8 +200,12 @@ def _decide(
     hhmm: time,
     quote: ComboQuote | None,
     spot: str | None = None,
+    dividend: tuple[date, date, str] | None = None,
+    short_call_mids: dict[str, str] | None = None,
 ) -> StructureDecision:
-    return decide_structure(spec, st, _snap(spec, _at(day, hhmm), quote, spot))
+    return decide_structure(
+        spec, st, _snap(spec, _at(day, hhmm), quote, spot, dividend, short_call_mids)
+    )
 
 
 def _action(*args: Any, **kwargs: Any) -> Any:
@@ -509,6 +526,157 @@ class TestBreach:
         )
         act = _action(debit, _open(), ENTRY, MIDDAY, _q("1.00", "1.20"), spot="94")
         assert act == NoAction("hold")
+
+
+def _short_call_key_of(spec: LegStructure) -> str:
+    """The Snapshot.short_call_mids key of a spec's first short call, built
+    FROM the spec so a fixture change moves the key with it. The wire
+    format itself is pinned literally once, in the test below."""
+    leg = next(g for g in spec.legs if g.action == "SELL" and g.right == "C")
+    return f"{spec.id}|C{leg.strike}|{leg.expiry.isoformat()}"
+
+
+class TestAssignmentRisk:
+    """The ex-dividend exit rule (carry-forward 2026-09-23: it lands with
+    the rails' relaxed entry rail or the relaxation waits). DIAGONAL is
+    short the front 105 call with NO breach flag - exactly the kind the
+    rule protects (a breach-enabled credit kind exits at the same ITM
+    boundary before this rule is reached, which the last test pins)."""
+
+    TRIGGER = date(2026, 10, 5)  # Mon; ex-date Tue 2026-10-06
+    EX = date(2026, 10, 6)
+    KEY = _short_call_key_of(DIAGONAL)
+
+    def test_the_short_call_key_wire_format(self) -> None:
+        # one literal pin: the runtime and the engine must agree on this
+        # format forever, and every other test derives its keys
+        assert TestAssignmentRisk.KEY == "dg|C105|2026-10-16"
+
+    def test_itm_short_call_with_extrinsic_below_the_dividend_closes(self) -> None:
+        # spot 106: intrinsic 1.00, mid 2.50 -> extrinsic 1.50 < 2.00
+        act = _action(
+            DIAGONAL, _open(entry_fill="5.00"), self.TRIGGER, MIDDAY,
+            _q("5.90", "6.10"), spot="106",
+            dividend=(self.EX, self.TRIGGER, "2.00"),
+            short_call_mids={self.KEY: "2.50"},
+        )
+        assert act.reason is ExitReason.ASSIGNMENT_RISK
+        # a debit diagonal closes by SELLING the package; forced: the window
+        # is one session, marketable means the bid
+        assert act.side == "SELL" and act.qty == 2
+        assert act.limit == Decimal("5.90")
+
+    def test_extrinsic_above_the_dividend_holds(self) -> None:
+        # extrinsic 1.50 >= dividend 1.00: no exercise edge, keep the position
+        act = _action(
+            DIAGONAL, _open(entry_fill="5.00"), self.TRIGGER, MIDDAY,
+            _q("5.90", "6.10"), spot="106",
+            dividend=(self.EX, self.TRIGGER, "1.00"),
+            short_call_mids={self.KEY: "2.50"},
+        )
+        assert act == NoAction("hold")
+
+    def test_itm_short_call_with_no_leg_quote_closes_fail_closed(self) -> None:
+        act = _action(
+            DIAGONAL, _open(entry_fill="5.00"), self.TRIGGER, MIDDAY,
+            _q("5.90", "6.10"), spot="106",
+            dividend=(self.EX, self.TRIGGER, "2.00"),
+        )
+        assert act.reason is ExitReason.ASSIGNMENT_RISK
+
+    def test_not_itm_holds_even_with_a_small_dividend(self) -> None:
+        # spot 104 < strike 105: no exercise to capture, no rule
+        act = _action(
+            DIAGONAL, _open(entry_fill="5.00"), self.TRIGGER, MIDDAY,
+            _q("5.40", "5.60"), spot="104",
+            dividend=(self.EX, self.TRIGGER, "5.00"),
+            short_call_mids={self.KEY: "1.80"},
+        )
+        assert act == NoAction("hold")
+
+    def test_only_the_last_session_before_the_ex_date_triggers(self) -> None:
+        for day in (date(2026, 10, 1), date(2026, 10, 2)):
+            act = _action(
+                DIAGONAL, _open(entry_fill="5.00"), day, MIDDAY,
+                _q("5.90", "6.10"), spot="106",
+                dividend=(self.EX, self.TRIGGER, "2.00"),
+                short_call_mids={self.KEY: "2.50"},
+            )
+            assert isinstance(act, NoAction), day
+
+    def test_no_short_calls_or_no_observation_stands_down(self) -> None:
+        # DEBIT_PUT has no short call (spot 101: also clear of its touch);
+        # DIAGONAL without a dividend observation, without a spot, or with
+        # a zero dividend all stand down
+        assert isinstance(
+            _action(
+                DEBIT_PUT, _open(), self.TRIGGER, MIDDAY, _q("1.00", "1.20"),
+                spot="101", dividend=(self.EX, self.TRIGGER, "5.00"),
+                # no key can matter: the structure has no short call
+                short_call_mids={"whatever": "0.10"},
+            ),
+            NoAction,
+        )
+        for kwargs in (
+            {"spot": "106", "short_call_mids": {self.KEY: "0.10"}},  # no dividend obs
+            {"spot": "106", "dividend": (self.EX, self.TRIGGER, "0")},  # zero dividend
+            {"dividend": (self.EX, self.TRIGGER, "2.00"),
+             "short_call_mids": {self.KEY: "0.10"}},  # no spot
+        ):
+            assert isinstance(
+                _action(
+                    DIAGONAL, _open(entry_fill="5.00"), self.TRIGGER, MIDDAY,
+                    _q("5.90", "6.10"), **kwargs,
+                ),
+                NoAction,
+            ), kwargs
+
+    def test_expiry_safety_and_a_working_exit_still_preempt(self) -> None:
+        # inside expiry safety the reason stays expiry safety
+        act = _action(
+            DIAGONAL, _open(entry_fill="5.00"), LAST_HOLD, MIDDAY,
+            _q("5.90", "6.10"), spot="106",
+            dividend=(date(2026, 10, 17), LAST_HOLD, "2.00"),
+            short_call_mids={self.KEY: "2.50"},
+        )
+        assert act.reason is ExitReason.EXPIRY_SAFETY
+        # an exit already working keeps its own reason
+        act = _action(
+            DIAGONAL, _exiting("time_stop"), self.TRIGGER, MIDDAY,
+            _q("5.90", "6.10"), spot="106",
+            dividend=(self.EX, self.TRIGGER, "2.00"),
+            short_call_mids={self.KEY: "2.50"},
+        )
+        assert act.reason is ExitReason.TIME_STOP
+
+    def test_fires_before_take_profit_when_both_apply(self) -> None:
+        spec = DIAGONAL.model_copy(
+            update={
+                "exits": DIAGONAL.exits.model_copy(
+                    update={"take_profit": {"gain_frac": "0.10"}}
+                )
+            }
+        )
+        # package mid 6.00 >= entry 5.00 x 1.10: take-profit would also fire
+        act = _action(
+            spec, _open(entry_fill="5.00"), self.TRIGGER, MIDDAY,
+            _q("5.90", "6.10"), spot="106",
+            dividend=(self.EX, self.TRIGGER, "2.00"),
+            short_call_mids={self.KEY: "0.30"},  # extrinsic -0.70 < 2.00
+        )
+        assert act.reason is ExitReason.ASSIGNMENT_RISK
+
+    def test_a_breach_enabled_kind_exits_at_breach_first(self) -> None:
+        """The breach rule fires at the same ITM boundary on credit kinds,
+        so it preempts assignment risk; the assignment rule exists for the
+        non-breach kinds (diagonals, calendars) and any breach-off row."""
+        act = _action(
+            CREDIT_CALL, _open(entry_fill="1.00"), self.TRIGGER, MIDDAY,
+            _q("2.40", "2.60"), spot="111",
+            dividend=(self.EX, self.TRIGGER, "2.00"),
+            short_call_mids={_short_call_key_of(CREDIT_CALL): "2.50"},  # extrinsic < div
+        )
+        assert act.reason is ExitReason.BREACH
 
 
 class TestTakeProfit:
