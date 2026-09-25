@@ -14,13 +14,17 @@ from typing import Any
 
 from tree_options.desk.contracts import digest, money, timestamp
 from tree_options.desk.evidence import EvidenceStore
-from tree_options.desk.shadows import database_path
 from tree_options.desk.sessions import cutoff_instant
+from tree_options.desk.shadows import database_path
 
 # An operational sample floor from the D7 plan, NOT an adoption criterion.
 MIN_RESOLVED = 20
 _INVALIDATING = frozenset({'chain_vendor_conflict', 'chain_identity', 'chain_schema',
                           'chain_source_session', 'duplicate_contract_quote'})
+
+
+def _total(resolved: list[dict[str, Any]], field: str) -> str | None:
+    return str(sum((money(m[field]) for m in resolved), Decimal(0))) if resolved else None
 
 
 def summarize(episodes: list[dict[str, Any]], marks: list[dict[str, Any]],
@@ -50,16 +54,14 @@ def summarize(episodes: list[dict[str, Any]], marks: list[dict[str, Any]],
             else:
                 censored += 1
         n = len(resolved)
-        def total(field: str) -> str | None:
-            return str(sum((money(m[field]) for m in resolved), Decimal(0))) if n else None
-        net = total('modeled_net_pnl_dollars')
+        net = _total(resolved, 'modeled_net_pnl_dollars')
         out.append({'family_id': key, **{k: group[0][k] for k in
             ('row', 'tier', 'miner_sha256', 'playbook_sha256')},
             'n_episodes': len(group), 'n_resolved': n, 'n_censored': censored,
             'n_retrospective_registrations': sum(e.get('registration_timing') == 'retrospective_backfill' for e in group),
             'n_open': opened, 'n_invalidated': invalidated,
-            'modeled_gross_pnl_dollars': total('modeled_gross_pnl_dollars'),
-            'assumed_commissions_dollars': total('modeled_fees_dollars'),
+            'modeled_gross_pnl_dollars': _total(resolved, 'modeled_gross_pnl_dollars'),
+            'assumed_commissions_dollars': _total(resolved, 'modeled_fees_dollars'),
             'modeled_net_pnl_dollars': net,
             'mean_modeled_net_pnl_dollars': str(Decimal(net) / n) if net is not None else None,
             'win_rate': sum(money(m['modeled_net_pnl_dollars']) > 0 for m in resolved) / n if n else None,

@@ -17,8 +17,15 @@ from typing import Any
 
 from tree_options.desk import paths
 from tree_options.desk.contracts import (
-    MAX_JSON_BYTES, ContractError, Deal, Queue, digest, parse_deal, parse_queue,
-    read_json, timestamp,
+    MAX_JSON_BYTES,
+    ContractError,
+    Deal,
+    Queue,
+    digest,
+    parse_deal,
+    parse_queue,
+    read_json,
+    timestamp,
 )
 from tree_options.desk.evidence import EvidenceError, EvidenceStore
 from tree_options.desk.rails import COMMISSION_PER_CONTRACT_USD

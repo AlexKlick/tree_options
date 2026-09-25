@@ -1,15 +1,15 @@
 """Command/health integration: operational success is not trading readiness."""
 import json
 from datetime import datetime, time
-from tree_options.trex.clock import ET
 
 from tree_options.desk import production, shadows
 from tree_options.desk.sessions import cutoff_instant
+from tree_options.trex.clock import ET
 
 
 def invoke(world, capsys, args, *, now=None):
     from tree_options.desk.__main__ import run_cli
-    code = run_cli(args + ['--database', str(world.db)], now=now or world.now, cal=world.cal)
+    code = run_cli([*args, '--database', str(world.db)], now=now or world.now, cal=world.cal)
     return code, json.loads(capsys.readouterr().out)
 
 
@@ -35,7 +35,7 @@ def test_shadow_cli_dry_run_and_integrity_commands(world, capsys):
     args = ['shadows', '--session', world.entry.isoformat(), '--queue-dir', str(world.queues),
             '--store-root', str(world.store)]
     now = cutoff_instant(world.entry)
-    code, doc = invoke(world, capsys, args + ['--dry-run'], now=now)
+    code, doc = invoke(world, capsys, [*args, '--dry-run'], now=now)
     assert code == 3  # missing entry day's NEXT-session queue, but adoption works
     assert doc['episodes_created'] == 1 and not world.db.exists()
     code, doc = invoke(world, capsys, args, now=now)

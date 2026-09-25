@@ -6,7 +6,6 @@ interface. Test the drain directly so market-hour and trigger rules are irreleva
 from decimal import Decimal
 
 import pytest
-
 from tests.unit.test_trex_enter import FakeEntryIbkr, _enterer
 from tests.unit.test_trex_monitor import FakeIbkr, _monitor
 

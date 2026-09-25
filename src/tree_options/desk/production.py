@@ -64,7 +64,8 @@ def health(*, database: Path | None, now: datetime, cal: Calendar) -> dict[str, 
         cards = scorecards.summarize(store.all('episode'), store.all('mark'),
                                      store.all('quality'), as_of=as_of)
         censored = sum(c['n_censored'] for c in cards)
-        blockers, pending = [], []
+        blockers: list[str] = []
+        pending: list[str] = []
         next_entry = first_session_after(as_of, cal)
         queue_due = datetime.combine(next_entry, time(9, 30), ET) if next_entry else None
         evaluation_due = datetime.combine(as_of, time(19, 35), ET)

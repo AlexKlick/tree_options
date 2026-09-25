@@ -6,7 +6,7 @@ import pytest
 
 from tree_options.trex import engine
 from tree_options.trex.clock import ET
-from tree_options.trex.plan import LegStructure
+from tree_options.trex.plan import ExitRules, Leg, LegStructure, TakeProfit
 from tree_options.trex.state import Status, StructureState
 
 
@@ -106,17 +106,24 @@ def test_a_working_exit_keeps_its_reason_over_assignment_risk(scenario, world):
     assert decision(scenario).reason is engine.ExitReason.TIME_STOP
 
 
-def test_breach_preempts_assignment_risk_on_a_breach_kind(scenario):
-    spec, _, _, _ = scenario
-    armed = spec.model_copy(update={'exits': {'touch': False, 'breach': True}})
-    # spot 106 >= the short 105 call: breach fires at the same ITM boundary
-    assert decision(scenario, spec=armed).reason is engine.ExitReason.BREACH
+def test_breach_preempts_assignment_risk_on_a_breach_kind(scenario, world):
+    _, st, _, _ = scenario
+    short_call = LegStructure(
+        id='cc-breach', kind='credit_vertical', underlying='AAPL',
+        legs=[Leg(right='C', action='SELL', strike=Decimal('105'), expiry=world.expiry),
+              Leg(right='C', action='BUY', strike=Decimal('110'), expiry=world.expiry)],
+        quantity=1, entry_date=world.entry, exit_deadline=world.deadline,
+        limit=Decimal('1.00'), exits=ExitRules(touch=False, breach=True))
+    # spot 106 >= the short 105 call on a credit kind: breach fires at the
+    # same ITM boundary the assignment rule watches
+    assert decision(scenario, spec=short_call, st=st).reason is engine.ExitReason.BREACH
 
 
 def test_assignment_risk_fires_before_take_profit(scenario):
     spec, _, _, _ = scenario
-    tp = spec.model_copy(update={'exits': {
-        'touch': False, 'breach': False, 'take_profit': {'gain_frac': '0.10'}}})
+    tp = spec.model_copy(update={'exits': ExitRules(
+        touch=False, breach=False,
+        take_profit=TakeProfit(basis='gain_frac', value='0.10'))})
     # mid 2.55 >= entry 2.20 x 1.10 fires take-profit; assignment must win
     quote = engine.ComboQuote(Decimal('2.50'), Decimal('2.60'))
     assert decision(scenario, spec=tp, quote=quote).reason \

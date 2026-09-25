@@ -13,7 +13,15 @@ from pathlib import Path
 from typing import Any
 
 from tree_options.desk import paths, selection
-from tree_options.desk.contracts import MAX_JSON_BYTES, ContractError, digest, parse_deal, parse_queue, read_json, timestamp
+from tree_options.desk.contracts import (
+    MAX_JSON_BYTES,
+    ContractError,
+    digest,
+    parse_deal,
+    parse_queue,
+    read_json,
+    timestamp,
+)
 from tree_options.desk.evidence import EvidenceStore
 from tree_options.desk.sessions import Calendar, latest_completed_session
 from tree_options.desk.shadows import database_path

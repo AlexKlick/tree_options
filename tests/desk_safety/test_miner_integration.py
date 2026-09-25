@@ -3,6 +3,7 @@ import dataclasses
 from decimal import Decimal
 
 from tests.fixtures import desk_miner as fixture
+
 from tree_options.desk import contracts, miner, selection
 
 

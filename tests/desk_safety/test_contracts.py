@@ -89,7 +89,7 @@ def test_json_ambiguities_fail_closed(raw):
     ('exits', {'take_profit': []}), ('legs', [{'right': [], 'strike': '100'}]),
 ])
 def test_malformed_nested_shapes_fail_as_contract_errors(world, field, value):
-    from tree_options.desk.contracts import parse_queue, parse_deal
+    from tree_options.desk.contracts import parse_deal, parse_queue
     q = parse_queue(world.queue, world.cal)
     row = copy.deepcopy(world.queue['admissible'][0])
     row['structure'][field] = value
