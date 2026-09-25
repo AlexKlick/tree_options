@@ -105,10 +105,140 @@ from typing import Any, Mapping, Sequence
 REPO_ROOT = Path(__file__).resolve().parents[2]  # the EXECUTION worktree
 R1_PATH = REPO_ROOT / "scripts" / "campaign" / "vrp-cond_run.py"
 
+# ---- frozen-input repoint (2026-09-24; the repair of the blocked attempt) --------------
+#
+# The round-1 runner binds every campaign input AND every artifact path to
+# MAIN_ROOT = /home/alexk/documents/tree_options (the live main checkout).
+# The sealed round reads and writes ONLY the pin-verified frozen snapshot at
+# DESK_REPO_ROOT = /home/alexk/.local/state/campaign-sealed-inputs/root: the
+# prior sealed attempt (worktree commit 9a81a2b) BLOCKED pre-registration
+# because the main checkout's live ohlc-panel had drifted off the menu pin
+# 0861f525...; the pinned bytes were recovered from the Wave-1 econ lane
+# sha-named snapshot (~/.local/state/trex-desk-w1-econ/paper-snapshot-0861f525/
+# ohlc-panel.json, full sha256 verified) into the frozen root, and the block
+# dissolved -- the pin binds. The round-1 runner's BYTES stay pinned
+# (R1_RUNNER_SHA256 below; the identical-path guarantee), so its module-level
+# path constants are rebound here, BEFORE any phase runs. The desk universe
+# binds at import time (universe.py binds constants at import), so DESK_UNIVERSE
+# is pinned BEFORE the round-1 module (and its signals import) is executed.
+#
+# Universe binding, disclosed: the runner DERIVES its universe from the pinned
+# 37-name PANEL exactly as round 1 did (load_and_bind enforces 37 panel names
+# -> 35 chain / 36 tradables); a 39-name PANEL roster is a misbind and refuses.
+# The desk-universe.toml CONFIG the module loads is the WORKTREE's own copy --
+# the exact bytes round 1 imported (its execution commit 0433522 carried the
+# 39-name config whose panel adds only PLTR/SPCX over the registered 37, and
+# load_and_bind's cross-checks tolerate exactly that shape). The frozen root's
+# 37-name desk-universe.toml is the panel-roster PIN OF RECORD but cannot load
+# under the universe module (its options_close lists still name PLTR/SPCX), so
+# the binding here proves the two differ by exactly the PLTR/SPCX panel
+# additions and then binds the worktree bytes.
+
+DESK_REPO_ROOT_ENV = "DESK_REPO_ROOT"
+MAIN_CHECKOUT = Path("/home/alexk/documents/tree_options")
+
+
+def _bind_frozen_root() -> tuple[Path, dict[str, Any]]:
+    env = os.environ.get(DESK_REPO_ROOT_ENV, "")
+    if not env:
+        raise SystemExit(
+            f"REFUSED: {DESK_REPO_ROOT_ENV} is not set -- the sealed round reads"
+            " only the frozen snapshot root"
+        )
+    frozen = Path(env).resolve()
+    if frozen == MAIN_CHECKOUT.resolve():
+        raise SystemExit(
+            f"REFUSED: {DESK_REPO_ROOT_ENV} points at the live main checkout --"
+            " sealed inputs come only from the frozen snapshot"
+        )
+    required = (
+        "artifacts/paper-trades/ohlc-panel.json",
+        "artifacts/paper-trades/earnings-calendar.json",
+        "data/calendar/nyse_sessions_2018_01_02_2026_12_31.json",
+        "artifacts/desk-store/iv-history/vwap_atm.json",
+        "docs/desk/IVHIST-001-verdict.json",
+        "artifacts/campaign-2026-09/tnull/calibration-v3.json",
+        "artifacts/campaign-2026-09/vrp-cond/round1-selection.json",
+        "artifacts/campaign-2026-09/vrp-cond/scope-O-withdrawal.json",
+        "artifacts/campaign-2026-09/vrp-cond.db",
+        "desk-universe.toml",
+    )
+    missing = [rel for rel in required if not (frozen / rel).exists()]
+    if missing:
+        raise SystemExit(
+            f"REFUSED: the frozen root {frozen} is missing required inputs: {missing}"
+        )
+    import tomllib
+
+    frozen_universe_path = frozen / "desk-universe.toml"
+    frozen_universe = tomllib.loads(frozen_universe_path.read_text(encoding="utf-8"))
+    frozen_names = set(frozen_universe.get("panel", {}).get("names", ()))
+    if len(frozen_names) != 37:
+        raise SystemExit(
+            f"REFUSED: frozen desk-universe.toml carries {len(frozen_names)} panel"
+            " names, not the registered 37 -- a 39-name roster means the runner"
+            " is misbound; abort and report"
+        )
+    worktree_universe_path = REPO_ROOT / "desk-universe.toml"
+    worktree_universe = tomllib.loads(worktree_universe_path.read_text(encoding="utf-8"))
+    wt_names = set(worktree_universe.get("panel", {}).get("names", ()))
+    if wt_names - frozen_names - {"PLTR", "SPCX"} or frozen_names - wt_names:
+        raise SystemExit(
+            "REFUSED: the worktree desk-universe.toml and the frozen 37-name pin"
+            " differ by more than the registered PLTR/SPCX panel additions"
+            f" (worktree {len(wt_names)} names vs frozen {len(frozen_names)})"
+        )
+    os.environ["DESK_UNIVERSE"] = str(worktree_universe_path)
+    binding = {
+        "config_bound": str(worktree_universe_path),
+        "config_sha256": hashlib.sha256(worktree_universe_path.read_bytes()).hexdigest(),
+        "config_panel_names": len(wt_names),
+        "frozen_pin_of_record": str(frozen_universe_path),
+        "frozen_pin_sha256": hashlib.sha256(frozen_universe_path.read_bytes()).hexdigest(),
+        "frozen_pin_panel_names": len(frozen_names),
+        "equivalence": (
+            "the bound config's panel = the frozen 37-name pin + exactly"
+            " {PLTR, SPCX} (the registered 2026-09-23 additions load_and_bind"
+            " tolerates); the runner's derived universe comes from the pinned"
+            " 37-name panel"
+        ),
+        "frozen_copy_note": (
+            "the frozen root's 37-name desk-universe.toml is the panel-roster pin"
+            " of record; it cannot itself load under universe.py (its"
+            " options_close lists still name PLTR/SPCX), so the round-1-identical"
+            " worktree bytes are bound instead"
+        ),
+    }
+    return frozen, binding
+
+
+FROZEN_ROOT, DESK_UNIVERSE_BINDING = _bind_frozen_root()
+
 _spec = importlib.util.spec_from_file_location("vrp_cond_round1", R1_PATH)
 r1 = importlib.util.module_from_spec(_spec)  # type: ignore[arg-type]
 sys.modules["vrp_cond_round1"] = r1
 _spec.loader.exec_module(r1)  # type: ignore[union-attr]
+
+# Rebind the round-1 module's MAIN_ROOT-derived path constants to the frozen
+# root (load_and_bind and the phases resolve them at call time). The
+# worktree-side pins (registration + sidecar + protocol + slot doc) stay on
+# REPO_ROOT -- the registered docs are read-only truth, not frozen inputs.
+r1.MAIN_ROOT = FROZEN_ROOT
+r1.PANEL_PATH = FROZEN_ROOT / "artifacts" / "paper-trades" / "ohlc-panel.json"
+r1.EARNINGS_PATH = FROZEN_ROOT / "artifacts" / "paper-trades" / "earnings-calendar.json"
+r1.CALENDAR_PATH = FROZEN_ROOT / "data" / "calendar" / "nyse_sessions_2018_01_02_2026_12_31.json"
+r1.IVHIST_PATH = FROZEN_ROOT / "artifacts" / "desk-store" / "iv-history" / "vwap_atm.json"
+r1.IVHIST_VERDICT_PATH = FROZEN_ROOT / "docs" / "desk" / "IVHIST-001-verdict.json"
+r1.CALIBRATION_V3_PATH = (
+    FROZEN_ROOT / "artifacts" / "campaign-2026-09" / "tnull" / "calibration-v3.json"
+)
+r1.CAMPAIGN_DIR = FROZEN_ROOT / "artifacts" / "campaign-2026-09"
+r1.REGISTRY_PATH = r1.CAMPAIGN_DIR / "vrp-cond.db"
+r1.SLOT_DIR = r1.CAMPAIGN_DIR / "vrp-cond"
+r1.TRIALS_DIR = r1.SLOT_DIR / "trials"
+r1.SELECTION_PATH = r1.SLOT_DIR / "round1-selection.json"
+r1.SCOPE_O_RECORD_PATH = r1.SLOT_DIR / "scope-O-withdrawal.json"
+r1.LOCK_PATH = r1.SLOT_DIR / "execute.lock"
 
 ROUND = 2
 SLOT_ID = r1.SLOT_ID
@@ -538,6 +668,14 @@ def _stamp(inputs: r1.Inputs, config_id: str, frozen: Mapping[str, Any]) -> dict
         "protocol_raw_sha256": inputs.protocol_raw_sha256,
         "protocol_canonical_sha256": inputs.protocol_canonical_sha256,
         "dataset_manifest_hash": inputs.dataset_manifest_hash,
+        "desk_repo_root": str(FROZEN_ROOT),
+        "desk_repo_root_note": (
+            "DESK_REPO_ROOT frozen snapshot (2026-09-24): every campaign read and"
+            " write is bound here; the round-1 module's MAIN_ROOT path constants"
+            " were rebound to this root before any phase ran (round-1 runner bytes"
+            " still pinned by round1_runner_sha256 -- the identical-path guarantee)"
+        ),
+        "desk_universe_binding": dict(DESK_UNIVERSE_BINDING),
         "inputs_sha256": {
             "ohlc-panel.json": inputs.panel_sha256,
             "earnings-calendar.json": inputs.earnings_sha256,
@@ -969,6 +1107,26 @@ def phase_stamp() -> int:
             " outcome was computed or viewed; per-trial artifacts under trials/*-r2.json.",
             "The xe nominee sits on the RICH side (sign-flipped vs the registered"
             " hypothesis direction); tested once exactly as registered.",
+            "PANEL BLOCK HISTORY: a prior sealed attempt (worktree commit 9a81a2b)"
+            " BLOCKED pre-registration on ohlc-panel drift vs the menu pin, concluded"
+            " 'unrecoverable'. Superseded: the pinned bytes were recovered from the"
+            " Wave-1 econ lane sha-named snapshot"
+            " ~/.local/state/trex-desk-w1-econ/paper-snapshot-0861f525/ohlc-panel.json"
+            " (full 64-hex sha256 == the menu pin 0861f525..., verified) and copied"
+            " into the frozen root; the block dissolved, the pin binds.",
+            "FROZEN-ROOT BINDING: every campaign read and write of this round landed"
+            " under DESK_REPO_ROOT=/home/alexk/.local/state/campaign-sealed-inputs/root;"
+            " the live main checkout at /home/alexk/documents/tree_options was never"
+            " read for campaign inputs and never written. All dataset_pinning shas"
+            " re-verified against the frozen bytes before computing.",
+            "The frozen root's data/calendar path is a symlink into the main"
+            " checkout's data dir as assembled by the operator; the calendar pin"
+            " 7f9cccba... verifies byte-exact through it (load_and_bind re-checks"
+            " the pin at bind).",
+            "docs/desk/IVHIST-001-verdict.json (sha256 509aec01...) was copied"
+            " byte-exact into the frozen root before the run: load_and_bind reads it"
+            " for the IV fidelity labels and the frozen root did not carry a docs/"
+            " tree. No other file was added to or changed in the frozen root's inputs.",
         ],
     }
     SEAL_PATH.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
