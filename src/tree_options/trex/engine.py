@@ -507,7 +507,9 @@ def _take_profit_hit(spec: LegStructure, st: StructureState, mid: Decimal) -> bo
         width = spec.width
         return width is not None and mid >= cents(value * width)
     entry = st.entry_fill
-    if entry is None:
+    if entry is None or st.entry_unpriced_qty:
+        # no basis, or an incomplete one: the average spans only priced
+        # packages and must not fire a take-profit (R2-02)
         return False
     if basis == "gain_frac":
         return mid >= entry * (1 + value)
@@ -518,7 +520,7 @@ def _stop_ticks(spec: LegStructure, st: StructureState, quote: ComboQuote | None
     """The stop-loss confirmation count after this tick."""
     stop = spec.exits.stop_loss
     entry = st.entry_fill
-    if stop is None or quote is None or entry is None:
+    if stop is None or quote is None or entry is None or st.entry_unpriced_qty:
         return st.stop_ticks  # not evaluable: neither counts nor resets
     if stop.basis == "debit_frac":
         hit = quote.mid <= entry * (1 - stop.value)

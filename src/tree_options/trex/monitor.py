@@ -61,8 +61,10 @@ from tree_options.trex.engine import (
     ExitReason,
     NoAction,
     PlaceEntry,
+    WorkingOrder,
     configure,
     decide,
+    drain,
 )
 from tree_options.trex.ibkr import IbkrTrex, OrderRef, Snapshot
 from tree_options.trex.plan import PutSpread, TradePlan, cents, load_legacy_plan
@@ -103,20 +105,25 @@ def compute_marks(
         if st.filled_qty <= 0 or st.entry_fill is None:
             continue
         row: dict[str, object] = {"qty": st.filled_qty, "entry": str(st.entry_fill)}
+        if st.entry_unpriced_qty:
+            # incomplete price coverage: the entry average spans only the
+            # PRICED packages — disclosed, never multiplied by the whole qty
+            row["unpriced"] = st.entry_unpriced_qty
         quote = quotes.get(spread.id)
         if quote is None:
             row["mark"] = None
         else:
-            quoted += 1
             mid = (quote.bid + quote.ask) / 2
-            unrealized = (mid - st.entry_fill) * st.filled_qty * 100
-            total += unrealized
             row.update(
                 bid=str(quote.bid),
                 ask=str(quote.ask),
                 mark=str(mid.quantize(_CENT)),
-                unrealized=str(unrealized.quantize(_CENT)),
             )
+            if not st.entry_unpriced_qty:
+                quoted += 1
+                unrealized = (mid - st.entry_fill) * st.filled_qty * 100
+                total += unrealized
+                row["unrealized"] = str(unrealized.quantize(_CENT))
         rows[spread.id] = row
     # a tick where nothing quoted is NO observation, not a $0 one (an
     # all-empty book once drew the book at exactly its full loss)
@@ -159,16 +166,13 @@ class Monitor:
         # the Polygon feed, the only touch source (see trex.spot)
         self.spots = spots
         self.orders: dict[str, OrderRef] = {}  # structure_id -> working exit OrderRef
-        # Order-local fill counts RESTART on every replacement, so the drain
-        # merges increments (seen -> now) into the book's cumulative totals.
-        # Comparing a local count against the cumulative once recorded a
-        # phantom open qty and the refresh path re-sold contracts no longer
-        # held (naked short) — see test_trex_monitor.TestCumulativeExitAccounting.
-        self._order_seen: dict[str, int] = {}
-        # per-order cumulative notional (avg * filled), so blends merge
-        # NOTIONAL increments - an order's cumulative average times only
-        # its new fills would re-price the old ones (Codex-M2 #2)
-        self._order_notional: dict[str, Decimal] = {}
+        # Order-local fill checkpoints (exit_order_seen/_notional/_unpriced)
+        # live ONLY in the persisted book: engine.drain reconciles the
+        # broker's cumulative report against them idempotently, and no
+        # in-memory checkpoint can outlive a book reload (R2-01; a local
+        # count compared against the cumulative once recorded a phantom
+        # open qty and the refresh path re-sold contracts no longer held —
+        # see test_trex_monitor.TestCumulativeExitAccounting).
         self._account_writes = 0
         self._history: list[dict[str, str]] | None = None  # marks history, lazy-loaded
         self._marks_history_lines: int | None = None  # jsonl line count, lazy
@@ -262,20 +266,27 @@ class Monitor:
                 mark = row.get("mark")
                 entry = st.entry_fill
                 unrealized_open: Decimal | None = None
-                if mark is not None and entry is not None:
+                if mark is not None and entry is not None and not st.entry_unpriced_qty:
+                    # a partial average must not price the whole open qty
                     quoted_ct += 1
                     try:
                         unrealized_open = (Decimal(str(mark)) - entry) * st.open_qty * 100
                         total_open_unrealized += unrealized_open
                     except Exception:
                         unrealized_open = None
-                realized = Decimal("0.00")
-                if (
-                    st.entry_fill is not None
-                    and st.exit_fill is not None
-                    and st.exit_filled_qty > 0
-                ):
-                    realized = (st.exit_fill - st.entry_fill) * st.exit_filled_qty * 100
+                realized: Decimal | None = Decimal("0.00")
+                if st.exit_filled_qty > 0:
+                    if (
+                        st.entry_fill is None
+                        or st.exit_fill is None
+                        or st.entry_unpriced_qty
+                        or st.exit_unpriced_qty
+                    ):
+                        # cost coverage incomplete on a side: the aggregate is
+                        # unknown, not zero (R2-02)
+                        realized = None
+                    else:
+                        realized = (st.exit_fill - st.entry_fill) * st.exit_filled_qty * 100
                 structures[spread.id] = {
                     "mark": mark,  # already a money-string or None
                     "unrealized": (
@@ -283,7 +294,10 @@ class Monitor:
                     ),
                     "open_qty": st.open_qty,
                     "entry": str(entry) if entry is not None else None,
-                    "realized_to_date": str(realized),
+                    "unpriced": st.entry_unpriced_qty,
+                    "realized_to_date": (
+                        str(realized) if realized is not None else None
+                    ),
                 }
             line: dict[str, Any] = {
                 "ts": (payload or {}).get("ts") or now_et().isoformat(),
@@ -516,15 +530,17 @@ class Monitor:
             order_id = str(trade.order.orderId)
             info = self.ib.order_status(ref)
             if st.exit_order == order_id:
-                # known order: resume from the persisted checkpoint; fills
-                # since then (downtime) merge on the next drain
-                self._order_seen[sid] = st.exit_order_seen
-                self._order_notional[sid] = st.exit_order_notional or Decimal(0)
+                # known order: resume from the persisted checkpoint (in the
+                # book); fills since then (downtime) merge on the next drain
+                pass
             else:
                 # unknown order (replaced while we were down): baseline the
                 # broker's current execution state, disclose the adoption
-                self._order_seen[sid] = info.filled
-                self._order_notional[sid] = info.avg_fill_price * info.filled
+                st.exit_order_seen = info.filled
+                st.exit_order_notional = (
+                    info.avg_fill_price * info.filled if info.avg_fill_price else Decimal(0)
+                )
+                st.exit_order_unpriced = 0
                 self.book.event(
                     self.events_path,
                     "exit_adopt_baseline",
@@ -626,9 +642,12 @@ class Monitor:
             return
         ref = self.ib.place_combo(spread, "SELL", qty, limit)
         self.orders[spread.id] = ref
-        self._order_seen[spread.id] = 0  # new order: local count starts over
-        self._order_notional[spread.id] = Decimal(0)  # and its notional too
-        self.book.structures[spread.id].exit_order = f"{ref.trade.order.orderId}"
+        st = self.book.structures[spread.id]
+        st.exit_order = f"{ref.trade.order.orderId}"
+        # new order: its checkpoint starts over (engine.drain also resets on
+        # an order-id change; this keeps the book explicit at place time)
+        st.exit_order_seen, st.exit_order_notional = 0, None
+        st.exit_order_unpriced = 0
         self._save_book()
         self.book.event(
             self.events_path,
@@ -670,9 +689,18 @@ class Monitor:
             ):
                 log.warning("%s: exit cancel not confirmed; keeping old order", spread.id)
                 return
+            # the cancelled order's final fills first: fills can land while
+            # we waited for the confirmation, and the replacement must size
+            # from the reconciled book (R2-01's exit-side sibling — enter's
+            # _place_after_cancel has always merged; this path did not)
+            self._merge_exit_fills(spread.id, ref)
+            self._save_book()
             self._place_exit(spread, st.open_qty, limit)
         else:
-            # prior order done but position remains — re-place the remainder
+            # prior order done but position remains — merge anything the
+            # broker reported since the drain, then re-place the remainder
+            self._merge_exit_fills(spread.id, ref)
+            self._save_book()
             if st.open_qty > 0:
                 st.exit_cycles += 1
                 self._place_exit(spread, st.open_qty, limit)
@@ -695,9 +723,43 @@ class Monitor:
         log.warning("%s: FLATTEN - waiting for the entry runner to cancel its BUY", spread.id)
         self.book.event(self.events_path, "flatten_waits_for_entry_runner", structure=spread.id)
 
+    def _merge_exit_fills(self, sid: str, ref: OrderRef) -> tuple[Any, bool]:
+        """Merge the order's cumulative fill report into the book through
+        the engine's accounting law (``engine.drain``): quantity and price
+        are reconciled separately, the order's cumulative notional replaces
+        only its own priced contribution, and fills without a reported price
+        count as unpriced — ``exit_fill`` averages only priced packages
+        (R2-02). Returns (status, changed)."""
+        info = self.ib.order_status(ref)
+        st = self.book.structures[sid]
+        before = (st.exit_filled_qty, st.exit_fill, st.exit_order_seen,
+                  st.exit_order_notional, st.exit_unpriced_qty)
+        new = drain(st, WorkingOrder(role="exit", filled=info.filled,
+                                     avg_fill_price=info.avg_fill_price,
+                                     order_id=str(ref.trade.order.orderId)))
+        after = (st.exit_filled_qty, st.exit_fill, st.exit_order_seen,
+                 st.exit_order_notional, st.exit_unpriced_qty)
+        if new > 0:
+            self.book.event(
+                self.events_path,
+                "exit_fill",
+                structure=sid,
+                filled=st.exit_filled_qty,
+                order_filled=info.filled,
+                avg=str(st.exit_fill),
+                status=info.status,
+            )
+        elif after != before:
+            self.book.event(
+                self.events_path, "exit_fill_revised", structure=sid,
+                filled=st.exit_filled_qty, order_filled=info.filled,
+                avg=str(st.exit_fill), status=info.status,
+            )
+        return info, after != before
+
     def _drain_orders(self) -> bool:
-        """Merge order-local fill increments into the book. Returns True
-        when anything changed (a fill merged or a structure closed)."""
+        """Merge order-local fill reports into the book. Returns True when
+        anything changed (a fill merged or a structure closed)."""
         changed = False
         for spread in self.plan.structures:
             sid = spread.id
@@ -705,61 +767,8 @@ class Monitor:
             ref = self.orders.get(sid)
             if ref is None:
                 continue
-            info = self.ib.order_status(ref)
-            seen = self._order_seen.get(sid, 0)
-            if info.filled > seen:
-                # merge the order-local increment into the cumulative book,
-                # blending by NOTIONAL: the order's cumulative average times
-                # only its new fills would re-price the earlier fills
-                new_fills = info.filled - seen
-                new_cum = st.exit_filled_qty + new_fills
-                prev_notional = self._order_notional.get(sid, Decimal(0))
-                if info.avg_fill_price:
-                    inc_notional = info.avg_fill_price * info.filled - prev_notional
-                    if st.exit_fill is not None and st.exit_filled_qty > 0:
-                        st.exit_fill = (
-                            st.exit_fill * st.exit_filled_qty + inc_notional
-                        ) / new_cum
-                    else:
-                        st.exit_fill = (
-                            inc_notional / new_fills if new_fills else info.avg_fill_price
-                        )
-                    self._order_notional[sid] = info.avg_fill_price * info.filled
-                st.exit_filled_qty = new_cum
-                self._order_seen[sid] = info.filled
-                changed = True
-                self.book.event(
-                    self.events_path,
-                    "exit_fill",
-                    structure=sid,
-                    filled=st.exit_filled_qty,
-                    order_filled=info.filled,
-                    avg=str(st.exit_fill),
-                    status=info.status,
-                )
-            elif (
-                info.filled == seen and seen > 0
-                and info.avg_fill_price.is_finite() and info.avg_fill_price > 0
-                and info.avg_fill_price * info.filled
-                != self._order_notional.get(sid, Decimal(0))
-            ):
-                revised = info.avg_fill_price * info.filled
-                previous = self._order_notional.get(sid, Decimal(0))
-                if st.exit_fill is not None and st.exit_filled_qty > 0:
-                    st.exit_fill += (revised - previous) / st.exit_filled_qty
-                elif st.exit_filled_qty == info.filled:
-                    st.exit_fill = info.avg_fill_price
-                self._order_notional[sid] = revised
-                changed = True
-                self.book.event(
-                    self.events_path, "exit_fill_revised", structure=sid,
-                    filled=st.exit_filled_qty, order_filled=info.filled,
-                    avg=str(st.exit_fill), status=info.status,
-                )
-            # persist the order checkpoint whenever it moved (adoption
-            # idempotency; Codex-M2 #8)
-            st.exit_order_seen = self._order_seen.get(sid, 0)
-            st.exit_order_notional = self._order_notional.get(sid)
+            info, merged = self._merge_exit_fills(sid, ref)
+            changed = changed or merged
             if st.open_qty <= 0 and info.status in ("Filled", "Cancelled", "ApiCancelled"):
                 st.to(Status.CLOSED, self._now())
                 st.close_reason = st.exit_reason or "flat"

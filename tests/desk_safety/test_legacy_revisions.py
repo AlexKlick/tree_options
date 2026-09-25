@@ -10,7 +10,7 @@ import pytest
 from tests.unit.test_trex_enter import FakeEntryIbkr, _at, _enterer
 from tests.unit.test_trex_monitor import FakeIbkr, _monitor
 
-from tree_options.trex.state import BookState
+from tree_options.trex.state import BookState, Status
 
 
 @pytest.mark.parametrize('prior_qty,prior_price', [(0, '0'), (2, '1.00')])
@@ -20,17 +20,17 @@ def test_entry_revision_blends_current_order_not_whole_book(world, prior_qty, pr
     st = ent.book.structures[sid]
     st.filled_qty = prior_qty
     st.entry_fill = Decimal(prior_price) if prior_qty else None
-    ent._merge_order_total(sid, 2, Decimal('2.00'), 'Submitted')
-    ent._merge_order_total(sid, 2, Decimal('3.00'), 'Submitted')
+    ent._merge_order_total(sid, 2, Decimal('2.00'), 'Submitted', '701')
+    ent._merge_order_total(sid, 2, Decimal('3.00'), 'Submitted', '701')
     expected = (prior_qty * Decimal(prior_price) + Decimal('6.00')) / (prior_qty + 2)
     assert st.filled_qty == prior_qty + 2
     assert st.entry_fill == expected
     assert st.entry_order_notional == Decimal('6.00')
-    ent._order_seen.clear()  # persisted checkpoints, as on restart
-    ent._order_notional.clear()
-    ent._merge_order_total(sid, 2, Decimal('3.00'), 'Submitted')
-    assert st.entry_fill == expected
-    assert st.filled_qty == prior_qty + 2
+    ent._save_book()  # persist the checkpoint, as the drain does
+    ent._sync_book_from_disk()  # a restart/reload resumes from it
+    ent._merge_order_total(sid, 2, Decimal('3.00'), 'Submitted', '701')
+    assert ent.book.structures[sid].entry_fill == expected
+    assert ent.book.structures[sid].filled_qty == prior_qty + 2
     assert ent.events_path.read_text().count('entry_fill_revised') == 1
 
 
@@ -41,6 +41,11 @@ def test_exit_revision_blends_current_order_not_whole_book(world, prior_qty, pri
     spec = mon.plan.structures[0]
     sid = spec.id
     st = mon.book.structures[sid]
+    # production shape: a working SELL only exists past the entry lane
+    # (_begin_exit moves the structure out first; an entry-lane structure
+    # is adopted from disk wholesale by save_owned and would swap objects)
+    st.to(Status.ENTER_WORKING, world.now)
+    st.to(Status.OPEN, world.now)
     st.filled_qty = spec.quantity
     st.exit_filled_qty = prior_qty
     st.exit_fill = Decimal(prior_price) if prior_qty else None

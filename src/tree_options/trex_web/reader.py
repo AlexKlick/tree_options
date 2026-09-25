@@ -76,14 +76,23 @@ class StructureView:
     close_reason: str | None
     touch_ts: datetime | None
     updated_at: datetime | None
+    # packages recorded without a price: while either count is nonzero the
+    # side's average spans only priced packages and no whole-position
+    # number may be derived from it (round-2 audit R2-02)
+    entry_unpriced_qty: int = 0
+    exit_unpriced_qty: int = 0
 
     @property
     def realized_pnl(self) -> Decimal | None:
         """Cash P&L on realized fills, in dollars (already includes the
         per-contract 100-multiplier). Negative if entry debit > exit credit.
 
-        ``None`` until both ``entry_fill`` and ``exit_fill`` are recorded."""
+        ``None`` until both ``entry_fill`` and ``exit_fill`` are recorded —
+        and while either side's price coverage is incomplete (the aggregate
+        is unknown, not zero)."""
         if self.entry_fill is None or self.exit_fill is None:
+            return None
+        if self.entry_unpriced_qty or self.exit_unpriced_qty:
             return None
         if self.exit_filled_qty <= 0:
             return None
@@ -145,6 +154,8 @@ def _state_view(st: StructureState) -> StructureView:
         close_reason=st.close_reason,
         touch_ts=st.touch_ts,
         updated_at=st.updated_at,
+        entry_unpriced_qty=st.entry_unpriced_qty,
+        exit_unpriced_qty=st.exit_unpriced_qty,
     )
 
 

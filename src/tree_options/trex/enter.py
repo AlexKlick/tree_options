@@ -36,8 +36,10 @@ from tree_options.trex.engine import (
     Action,
     NoAction,
     PlaceEntry,
+    WorkingOrder,
     configure,
     decide,
+    drain,
 )
 from tree_options.trex.ibkr import IbkrTrex, OrderRef, OrderStatusInfo
 from tree_options.trex.monitor import (
@@ -71,17 +73,13 @@ class Enterer:
         self.run_dir = run_dir
         self._clock = clock or now_et  # injectable for tests, mirrors Monitor
         self.orders: dict[str, OrderRef] = {}
-        # Order-local fill counts restart on replacement; drain merges
-        # increments into the book's cumulative filled_qty (C1 regression).
-        self._order_seen: dict[str, int] = {}
-        # per-order cumulative notional (avg * filled) for notional blends
-        self._order_notional: dict[str, Decimal] = {}
-        # (both mirrored into the book's entry_order_seen/_notional checkpoint)
+        # Order-local fill checkpoints live ONLY in the persisted book
+        # (entry_order_seen/_notional/_unpriced): the loop reloads book.json
+        # every cycle, and an in-memory checkpoint that outlived a reload
+        # silently lost fills (R2-01). engine.drain reconciles the broker's
+        # cumulative report against the durable checkpoint idempotently, so
+        # a failed save self-heals on the next cycle.
         self._unresolved_noted: set[str] = set()
-        # set by _merge_order_total when a price revision mutated the book;
-        # _drain_fills persists the book then (the loop reloads book.json
-        # every cycle, so an unsaved revision would be wiped and re-applied)
-        self._fill_revised = False
 
     @property
     def events_path(self) -> Path:
@@ -124,16 +122,12 @@ class Enterer:
             if st.status is Status.PLANNED:
                 st.to(Status.ENTER_WORKING, now_et())
             oid = str(trade.order.orderId)
-            if st.entry_order == oid:
-                # known order: resume from the persisted checkpoint, so the
-                # fills the book already holds are not added again
-                self._order_seen[sid] = st.entry_order_seen
-                self._order_notional[sid] = st.entry_order_notional or Decimal(0)
-            else:
+            if st.entry_order != oid:
                 # an order the book never recorded: none of its fills are in it
-                self._order_seen[sid] = 0
-                self._order_notional[sid] = Decimal(0)
                 st.entry_order_seen, st.entry_order_notional = 0, None
+                st.entry_order_unpriced = 0
+            # a known order resumes from the persisted checkpoint (in the
+            # book); downtime fills merge against it on the next drain
             st.entry_order = oid
             log.info("adopted working entry order for %s (oid %s)", sid, oid)
         self._save_book()
@@ -235,7 +229,7 @@ class Enterer:
                         self.ib.sleep(0.5)
                         if self.ib.order_status(ref).status in _TERMINAL:
                             break
-                info = self._merge_fills(sid, ref)
+                info, _changed = self._merge_fills(sid, ref)
                 if info.status not in _TERMINAL:
                     log.warning("%s: entry cancel not confirmed; retrying next cycle", sid)
                     return False
@@ -275,7 +269,8 @@ class Enterer:
                 )
             return False
         filled, avg = evidence
-        self._merge_order_total(spread.id, filled, avg or Decimal(0), "reconciled")
+        self._merge_order_total(spread.id, filled, avg or Decimal(0), "reconciled",
+                                st.entry_order or f"evidence-{spread.id}")
         return True
 
     def _apply(self, spread: PutSpread, action: Action) -> None:
@@ -306,10 +301,11 @@ class Enterer:
         self._save_book()
         ref = self.ib.place_combo(spread, "BUY", remaining, limit)
         self.orders[spread.id] = ref
-        self._order_seen[spread.id] = 0  # new order: local count starts over
-        self._order_notional[spread.id] = Decimal(0)
         st.entry_order = str(ref.trade.order.orderId)
+        # new order: its checkpoint starts over (engine.drain also resets on
+        # an order-id change; this keeps the book explicit at place time)
         st.entry_order_seen, st.entry_order_notional = 0, None
+        st.entry_order_unpriced = 0
         self.book.event(
             self.events_path,
             "entry_order",
@@ -377,34 +373,37 @@ class Enterer:
             st = self.book.structures[spread.id]
             log.info("%s: entry aborted (%s) filled_qty=%d", spread.id, reason, st.filled_qty)
 
-    def _merge_fills(self, sid: str, ref: OrderRef) -> OrderStatusInfo:
-        """Merge this order's latest cumulative fills into the book."""
+    def _merge_fills(self, sid: str, ref: OrderRef) -> tuple[OrderStatusInfo, bool]:
+        """Merge this order's latest cumulative fills into the book.
+        Returns (status, changed)."""
         info = self.ib.order_status(ref)
-        self._merge_order_total(sid, info.filled, info.avg_fill_price, info.status)
-        return info
+        changed = self._merge_order_total(
+            sid, info.filled, info.avg_fill_price, info.status,
+            str(ref.trade.order.orderId))
+        return info, changed
 
-    def _merge_order_total(self, sid: str, filled: int, avg: Decimal, status: str) -> None:
-        """Merge the order-local fill increment into the book's cumulative
-        entry, blending by NOTIONAL: the order's cumulative average times
-        only its new fills would re-price the earlier fills (Codex-M2 #2).
-        The increment is measured against the order checkpoint (in memory,
-        else the one persisted with the book) and the checkpoint moves with
-        it, so a restart never adds recorded fills twice."""
+    def _merge_order_total(
+        self, sid: str, filled: int, avg: Decimal, status: str, order_id: str
+    ) -> bool:
+        """Merge the order's cumulative fill report into the book through
+        the engine's accounting law (``engine.drain``): quantity and price
+        are reconciled separately (a fill can arrive before its average),
+        the order's cumulative notional replaces only its own priced
+        contribution, and fills without a reported price count as unpriced —
+        ``entry_fill`` averages only priced packages, never a fabricated
+        whole-position number (R2-02). The checkpoint lives in the book, so
+        a restart (or the per-cycle reload) never adds recorded fills twice.
+
+        Returns True when the book changed (R2-01: every mutation must be
+        persisted before the next reload)."""
         st = self.book.structures[sid]
-        seen = self._order_seen.get(sid, st.entry_order_seen)
-        prev_notional = self._order_notional.get(sid, st.entry_order_notional or Decimal(0))
-        if filled > seen:
-            new_fills = filled - seen
-            new_cum = st.filled_qty + new_fills
-            if avg:
-                inc_notional = avg * filled - prev_notional
-                if st.entry_fill is not None and st.filled_qty > 0:
-                    st.entry_fill = (st.entry_fill * st.filled_qty + inc_notional) / new_cum
-                else:
-                    st.entry_fill = inc_notional / new_fills if new_fills else avg
-                prev_notional = avg * filled
-            st.filled_qty = new_cum
-            seen = filled
+        before = (st.filled_qty, st.entry_fill, st.entry_order_seen,
+                  st.entry_order_notional, st.entry_unpriced_qty)
+        new = drain(st, WorkingOrder(role="entry", filled=filled, avg_fill_price=avg,
+                                     order_id=order_id))
+        after = (st.filled_qty, st.entry_fill, st.entry_order_seen,
+                 st.entry_order_notional, st.entry_unpriced_qty)
+        if new > 0:
             self.book.event(
                 self.events_path,
                 "entry_fill",
@@ -414,38 +413,23 @@ class Enterer:
                 avg=str(st.entry_fill),
                 status=status,
             )
-        elif (
-            filled == seen and seen > 0 and avg.is_finite() and avg > 0
-            and avg * filled != prev_notional
-        ):
-            # A broker average can arrive/revise without quantity growth. Blend
-            # only this tracked order's notional delta into the cumulative book.
-            # Terminal orders removed from self.orders still need a future
-            # execution-id reconciliation ledger; this is the active-order fix.
-            revised = avg * filled
-            if st.entry_fill is not None and st.filled_qty > 0:
-                st.entry_fill += (revised - prev_notional) / st.filled_qty
-            elif st.filled_qty == filled:
-                st.entry_fill = avg
-            prev_notional = revised
-            self._fill_revised = True
+        elif after != before:
             self.book.event(
                 self.events_path, "entry_fill_revised", structure=sid,
                 filled=st.filled_qty, order_filled=filled,
                 avg=str(st.entry_fill), status=status,
             )
-        self._order_seen[sid] = seen
-        self._order_notional[sid] = prev_notional
-        st.entry_order_seen, st.entry_order_notional = seen, prev_notional
+        return after != before
 
     def _drain_fills(self) -> None:
+        mutated = False
         for spread in self.plan.structures:
             sid = spread.id
             st = self.book.structures[sid]
             ref = self.orders.get(sid)
             if ref is None or st.status is not Status.ENTER_WORKING:
                 continue
-            info = self._merge_fills(sid, ref)
+            info, changed = self._merge_fills(sid, ref)
             if info.status in _TERMINAL:
                 if st.filled_qty > 0:
                     st.to(Status.OPEN, now_et())
@@ -455,12 +439,16 @@ class Enterer:
                     # our own reprice cancel — back to PLANNED for the next cycle
                     st.to(Status.PLANNED, now_et())
                     self.orders.pop(sid, None)
-                self._save_book()
-            elif self._fill_revised:
-                # a same-quantity price revision must survive the per-cycle
-                # book reload (Codex round 1, finding 3)
-                self._fill_revised = False
-                self._save_book()
+                mutated = True  # a lane transition is durable state
+            mutated = mutated or changed
+        if mutated:
+            # every accounting mutation is persisted before the loop's next
+            # book reload (R2-01: the round-1 fix covered revisions only and
+            # plain partial fills were wiped by the reload). A failed save
+            # propagates to run()'s handler; the next cycle reloads the
+            # durable book and the broker's cumulative report reconciles
+            # against the durable checkpoint (a duplicate event is fine).
+            self._save_book()
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -596,6 +596,43 @@ the green oneshot. The read-only cockpit page is `/desk/evidence`
 (GET-only routes `/api/desk/health`, `/api/desk/scorecards`) on the existing
 trex-web instance.
 
+### Round-2 corrections (2026-09-25)
+
+The round-2 audit's three reproduced defects are fixed on this head; two
+operational semantics changed shape and are contract now:
+
+- **Scorecard time boundaries**: `--as-of` is the KNOWLEDGE cutoff and is
+  never moved backward; the outcome HORIZON is separately bounded by
+  evaluated coverage (`as_of_session`, with `as_of_clamped_to_evaluation:
+  true` when the request ran past it, `as_of_requested` echoing the ask).
+  A deadline quote fetched on D+1 resolves the as-of D+1 view of a session
+  evaluated through D — clamping the horizon must not censor what was
+  already known. A store with no evaluation reports `no_evaluation` no
+  matter what date is supplied.
+- **Fill accounting (legacy runners)**: both `trex/enter.py` and
+  `trex/monitor.py` merge broker reports through `engine.drain`. Order
+  checkpoints (`*_order_seen/_notional/_unpriced`) live ONLY in the durable
+  book — every accounting mutation is saved before the loop's next
+  `book.json` reload, and a failed save self-heals when the broker's next
+  cumulative report reconciles against the durable checkpoint (a duplicate
+  fill event in the log is the accepted cost). A reprice merges the
+  cancelled order's final fills before sizing the replacement, on both
+  sides.
+- **Incomplete price coverage**: `entry_fill` / `exit_fill` are averages
+  over PRICED packages only; `*_unpriced_qty` counts the rest and is
+  persisted. While it is nonzero the side's average is NOT a position
+  average: marks rows disclose `unpriced` and carry no `unrealized`,
+  `realized_to_date` is null, and take-profit / stop-loss confirmation
+  stand down (not evaluable) until coverage completes — a late cumulative
+  average completes it automatically. A legacy `book.json` written before
+  this change loads unchanged (its recorded average is treated as complete
+  coverage); the live 2026-09-22 paper book is reconciled at the operator's
+  SP-5 monitor restart, which this code deliberately does not perform.
+- **Status wording**: Gate 1 is "deployed / acceptance pending" until the
+  first-fire, invocation, browser and off-host-anchor receipts exist
+  (round-2 audit R2-04); rc1's authoring receipts remain historical
+  artifacts, and any later release carries its own manifest and gate log.
+
 ## Viewer live chain (cockpit symbol pages)
 
 The symbol page's "live" chain panel (next to the recorded one,

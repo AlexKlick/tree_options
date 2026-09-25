@@ -84,29 +84,35 @@ def build_scorecards(database: Path | None = None, *, as_of: date | None = None)
         store.conn.execute('BEGIN')  # audit and aggregates see one consistent snapshot
         audit = store.verify()
         evaluated = [date.fromisoformat(x['session']) for x in store.all('evaluation')]
-        clamped = False
-        if as_of is not None and evaluated and as_of > max(evaluated):
-            # An as-of beyond the evaluated horizon has no observations behind
-            # it: unobserved outcomes stay open, not censored (Codex r1 f4).
-            as_of = max(evaluated)
-            clamped = True
-        horizon = as_of or max(evaluated, default=None)
-        if horizon is None:
+        if not evaluated:
+            # a requested date is not evidence that an evaluation occurred
             return {**base, 'status': 'no_evaluation', 'audit': audit}
+        requested = as_of
+        clamped = requested is not None and requested > max(evaluated)
+        # Three distinct boundaries (R2-03): the REQUESTED as-of is the
+        # knowledge cutoff and is never moved backward; the OUTCOME horizon
+        # is bounded by evaluated coverage (an as-of beyond it has no
+        # observations behind it — unobserved outcomes stay open, not
+        # censored); the knowledge cutoff itself filters marks and quality
+        # by when they were first recorded.
+        horizon = min(requested, max(evaluated)) if requested is not None else max(evaluated)
         episodes = store.all('episode')
         marks, quality = store.all('mark'), store.all('quality')
-        if as_of is not None:
-            known_by = cutoff_instant(as_of)
+        if requested is not None:
+            known_by = cutoff_instant(requested)
             marks = [m for m in marks if timestamp(m['fetched_at']) <= known_by]
             # bound by DISCOVERY time, not the session the event talks about:
             # a conflict found on D+1 must not censor the as-of D card
             quality = [q for q, at in store.all_at('quality') if timestamp(at) <= known_by]
         families = summarize(episodes, marks, quality, as_of=horizon)
         candidates = [x for x in store.all('candidate') if x['source_session'] <= horizon.isoformat()]
-        return {**base, 'status': 'ok', 'as_of_session': horizon.isoformat(),
+        return {**base, 'status': 'ok',
+            'as_of_requested': requested.isoformat() if requested is not None else None,
+            'as_of_session': horizon.isoformat(),
             'as_of_clamped_to_evaluation': clamped,
             'audit': audit, 'families': families,
-            'quote_knowledge_cutoff': cutoff_instant(as_of).isoformat() if as_of else 'all_recorded_observations',
+            'quote_knowledge_cutoff': (cutoff_instant(requested).isoformat()
+                if requested is not None else 'all_recorded_observations'),
             'historical_view': 'reconstructed_from_sealed_queue_and_vendor_timestamps_not_contemporaneous_capture_proof',
             'candidates_total': len(candidates),
             'candidates_with_contract_errors': sum(bool(x['contract_errors']) for x in candidates),

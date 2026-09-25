@@ -46,9 +46,27 @@ logs. Four findings, each verified against the code before action:
 | # | Finding | Verdict | Action |
 |---|---|---|---|
 | 1 | CRITICAL: a historical `--as-of` scorecard could be censored by a quality event discovered after that date (quality filtered by session, marks by discovery time) | REAL | Fixed: `EvidenceStore.all_at()` pairs payloads with the audit commit time; `build_scorecards` filters quality by discovery time under `as_of`. Regression: `test_historical_card_does_not_use_quality_events_discovered_after_requested_session` (red pre-fix) |
-| 2 | HIGH: a delayed price for a replacement order can be checkpointed without entering the aggregate fill price (`st.filled_qty > filled` with `entry_fill` None) | NOT a new defect: this is the documented E5 boundary (the fix's own comment: corrections after an order leaves the tracked set need the future execution-id reconciliation ledger; INTEGRATION_REVIEW §2.F assigns it to Gate 2) | None; recorded here as accepted-boundary |
-| 3 | HIGH: a nonterminal entry price revision was not persisted to `book.json` (enter saves only on terminal order status, but reloads the book every cycle) | REAL | Fixed: `Enterer._fill_revised` flag; `_drain_fills` saves the book when a revision mutated it. Regression: `test_entry_price_revision_survives_the_next_book_reload` (red pre-fix: disk `entry_fill` was `None`) |
-| 4 | MEDIUM: an explicit future `--as-of` censored outcomes that have not happened yet | REAL (semantics) | Fixed: `as_of` beyond the evaluated horizon clamps to that horizon and the summary reports `as_of_clamped_to_evaluation: true`; unobserved outcomes stay open. Regression: `test_future_asof_does_not_censor_unobserved_outcomes` (red pre-fix) |
+| 2 | HIGH: a delayed price for a replacement order can be checkpointed without entering the aggregate fill price (`st.filled_qty > filled` with `entry_fill` None) | **Reopened by the round-2 audit (R2-02): real, still-tracked incomplete-price coverage.** The E5 boundary legitimately covers only corrections arriving after an order LEAVES the tracked set; the reproduced cases keep the replacement in `self.orders`, where the old merge conflated filled quantity with price coverage (2 unpriced fills then a cumulative average recorded 1.50, not 0.50; unknown earlier-order costs became fabricated whole-position averages) | **Fixed in round 2:** both legacy runners now merge through `engine.drain`, whose unpriced-quantity accounting (already the desk runtime's landed law) keeps `entry_fill`/`exit_fill` as averages over PRICED packages only, with `*_unpriced_qty` explicit; consumers (marks, realized P&L, take-profit, stop ticks) stand down or disclose while coverage is incomplete. Complete retired-order/execution-ID recovery remains E5 (Gate 2) |
+| 3 | HIGH: a nonterminal entry price revision was not persisted to `book.json` (enter saves only on terminal order status, but reloads the book every cycle) | REAL — **but the fix was revision-only: the round-2 audit (R2-01) reproduced ordinary nonterminal PARTIAL FILLS still being lost across the real reload cycle** (the round-1 regression ticked without ever calling `_sync_book_from_disk`, so it never exercised the boundary its name describes) | Round 1: `Enterer._fill_revised` flag. **Round 2 (complete):** every accounting mutation persists before the next reload; order checkpoints live only in the durable book (the in-memory precedence dicts are gone), so a failed save self-heals when the broker's cumulative report reconciles against the durable checkpoint |
+| 4 | MEDIUM: an explicit future `--as-of` censored outcomes that have not happened yet | REAL (semantics) — **but the clamp implementation moved the KNOWLEDGE cutoff backward with the horizon (round-2 audit R2-03): a deadline quote fetched on D+1 became invisible to `--as-of D+1`, censoring an already-known outcome; an explicit date also turned a no-evaluation store into `ok`** | Round 1: clamp to the evaluated horizon. **Round 2:** requested as-of (knowledge cutoff, never moved backward), outcome horizon (bounded by evaluated coverage) and the cutoff filter are separate fields (`as_of_requested`, `as_of_session`, `quote_knowledge_cutoff`); `no_evaluation` is returned whenever no evaluation exists, regardless of a supplied date |
 
 No findings in evidence-store transactionality/backup, `--armed` refusal or
 preview-to-execution paths, GET-only web routes, or shared-environment safety.
+
+## Round-2 audit corrections (2026-09-25, TREX-Round2-Audit-and-Handoff)
+
+Independent round-2 audit against `bedced9` reproduced three code defects
+(R2-01 fill custody, R2-02 cost coverage, R2-03 scorecard cutoffs — all
+verified red-first here as `tests/desk_safety/test_round2_regressions.py`,
+15 failing at `bedced9`) and relabeled Gate 1 "deployed / acceptance
+pending". Dispositions above record the reopened/annotated round-1 rows;
+the history is retained, not rewritten. The round-2 fixes route both legacy
+runners through `engine.drain` (the accounting law the desk runtime already
+used), keep checkpoints only in the durable book, and gate every consumer
+of a side average on complete price coverage. An exit-side sibling of
+R2-01 was found and fixed in the same pass: `_refresh_exit` replaced a
+cancelled exit order without merging its final fills (enter's
+`_place_after_cancel` always merged; the exit path did not). The audit's
+suggested per-lane branches were folded into one integration worktree as
+separate commits (single integrator; gate and review run once on the
+whole corrective diff).
