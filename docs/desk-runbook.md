@@ -1,7 +1,8 @@
-# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events; Wave 2: dividends + the deal miner)
+# Options desk runbook (Wave 0: chains + eod-equity; Wave 1: indices + events; Wave 2: dividends + the deal miner; Wave 3: the evidence lane)
 
 Six systemd **user** timers, all `oneshot` in `host-work.slice`, all
-idempotent. None places orders or seals cards.
+idempotent. None places orders or seals cards. (The Wave 3 evidence units
+below run from a pinned release dir instead of the main checkout.)
 
 | job | when (America/New_York) | does |
 |---|---|---|
@@ -546,6 +547,54 @@ entry on the next session. It places no orders and pushes nothing.
     candidates were valued; all 100 rail-failed, on `max_loss_per_trade`
     (QQQ spreads are wide) and on `ex_dividend_short_call` (no dividend
     snapshot yet). The book's two NVDA spreads came to -$110 per 1% SPY.
+
+## Evidence lane (Wave 3 rc1: shadows, scorecards, admission preview; `desk-evidence`)
+
+The wave3 safety candidate (`desk-wave3-safety-rc1`, landed from the reviewed
+patch; see `docs/production-candidate/`) adds six local-evidence commands to
+`python -m tree_options.desk`. **None of them places, cancels or arms
+anything**: `desk-health` reports `execution_enabled: false` in every state,
+`desk-enter --armed` is refused before any persistent write, and the legacy
+execution paths are untouched. Everything writes one transactional SQLite
+store, `<TREX_DESK_STATE>/evidence/desk.sqlite3` (WAL, synchronous=FULL,
+content-addressed objects + a hash-chained audit table; replay is idempotent,
+a same-key/different-content write is a conflict).
+
+- **`shadows [--dry-run]`** records deadline-EOD shadow episodes from the
+  sealed `trex.deal/1` queue (strict consumer: ids, dates, policy hashes,
+  Decimal money, recomputed max loss). Marks are adverse-side proxy closes
+  from the recorded chain store; a missing or conflicted deadline session is
+  **censored** (never back-filled from an earlier quote), and can resolve
+  later when a valid exact-date observation arrives. Quotes received after
+  the observation cutoff cannot leak into a view.
+- **`scorecards`** describes the proxy outcomes per family (row, tier, both
+  policy hashes): gross modeled P&L, assumed round-trip commissions and
+  modeled net are separate; open/censored denominators stay visible. The
+  20-resolved count is a sample floor, not a significance test;
+  `promotion_ready` is always false here.
+- **`desk-enter --dry-run`** records blocked admission previews only (the
+  window is 09:50-11:30 ET of a valid session; outside it the preview says
+  `outside_entry_window`). HALT/AUTO_OFF, missing risk snapshot, missing
+  reconciliation, unresolved margin, missing live exit inputs and the
+  PROPOSED policy state are explicit blockers, not activation tokens.
+- **`verify-evidence`** re-checks the audit chain; **`backup-evidence --out
+  <path>`** publishes a verified whole-database snapshot (exclusive name).
+  Never copy the live main file alone: WAL state belongs to the backup.
+- Exit codes: 0 = inspection/preview completed (never "trading allowed");
+  3 = pending/missing input or degraded readiness (read the JSON); 1 =
+  contract, custody, database or unsupported-arming error.
+
+Units: `deploy/desk-evidence/desk-evidence.{service,timer}` (Mon-Sat 09:55,
+11:05, 13:05, 19:30 ET) and `desk-admission-preview.{service,timer}`
+(Mon-Fri 09:50-11:29 ET). Unlike the six units above they run from a pinned
+immutable release, `~/.local/share/trex/releases/desk-wave3-safety-rc1`, with
+their own locked `.venv`, `ProtectSystem=strict` and write access only to the
+evidence directory. Install/verify and the rehearsal evidence live in
+`docs/production-candidate/`; `SuccessExitStatus=3` means exit 3 is a
+success-shaped degraded-readiness signal: read the readiness JSON, not just
+the green oneshot. The read-only cockpit page is `/desk/evidence`
+(GET-only routes `/api/desk/health`, `/api/desk/scorecards`) on the existing
+trex-web instance.
 
 ## Viewer live chain (cockpit symbol pages)
 
