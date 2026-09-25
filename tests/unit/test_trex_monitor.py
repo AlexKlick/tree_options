@@ -233,6 +233,45 @@ class TestFillDrain:
         assert st.exit_fill == Decimal("2.10")
         assert st.close_reason == "touch"
 
+    def test_late_price_revision_folds_into_the_exit_average(
+        self, tmp_path: Path
+    ) -> None:
+        """IBKR revising the average of already-counted exit fills (same
+        quantity) must reach the book: quantities never move, the average
+        does, and the revision is evented (the 2026-09-24 carry-forward
+        defect: the merge was gated on quantity growth, so recorded exit
+        P&L kept the stale price forever). HALT keeps the working order in
+        place so the revision is still observable."""
+        fake = FakeIbkr(spot="184.50")
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        mon._tick()  # touch exit placed
+        a = mon.orders["nvda-oct"]
+        (mon.run_dir / "HALT").write_text("")  # block the remainder re-place
+
+        fake.fill(a, 2, "2.10")
+        mon._tick()  # drain 2 @ 2.10; HALT keeps order a working
+        assert mon.orders["nvda-oct"] is a
+        assert st.exit_filled_qty == 2 and st.exit_fill == Decimal("2.10")
+
+        fake.fill(a, 2, "2.30")  # the same 2 fills, price revised
+        mon._tick()
+
+        assert st.exit_filled_qty == 2  # quantities never move on a revision
+        assert st.exit_fill == Decimal("2.30")
+        events = [
+            json.loads(line)
+            for line in (mon.run_dir / "events.jsonl").read_text().splitlines()
+            if json.loads(line).get("event") == "exit_fill_revised"
+        ]
+        assert len(events) == 1
+        assert Decimal(events[0]["avg"]) == Decimal("2.30")
+        # the checkpoint moved with it: a restart never re-applies it
+        assert st.exit_order_notional == Decimal("2.30") * 2
+
     def test_partial_exit_fill_keeps_working_the_remainder(
         self, tmp_path: Path
     ) -> None:

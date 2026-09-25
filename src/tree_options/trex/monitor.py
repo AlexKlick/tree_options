@@ -737,6 +737,35 @@ class Monitor:
                     avg=str(st.exit_fill),
                     status=info.status,
                 )
+            elif (
+                info.filled == seen
+                and seen > 0
+                and info.avg_fill_price
+                and info.avg_fill_price * info.filled
+                != self._order_notional.get(sid, Decimal(0))
+            ):
+                # a late PRICE for fills already counted (no new quantity):
+                # fold the revision into the recorded average, never
+                # touching quantities (the 2026-09-24 carry-forward defect:
+                # the whole merge used to be gated on quantity growth, so
+                # IBKR revising an average after the fact left the book at
+                # the stale price forever - recorded P&L only, but wrong)
+                revised = info.avg_fill_price * info.filled
+                if st.exit_fill is not None and st.exit_filled_qty > 0:
+                    st.exit_fill += (revised - self._order_notional[sid]) / st.exit_filled_qty
+                else:
+                    st.exit_fill = info.avg_fill_price
+                self._order_notional[sid] = revised
+                changed = True
+                self.book.event(
+                    self.events_path,
+                    "exit_fill_revised",
+                    structure=sid,
+                    filled=st.exit_filled_qty,
+                    order_filled=info.filled,
+                    avg=str(st.exit_fill),
+                    status=info.status,
+                )
             # persist the order checkpoint whenever it moved (adoption
             # idempotency; Codex-M2 #8)
             st.exit_order_seen = self._order_seen.get(sid, 0)

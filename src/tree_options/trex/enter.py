@@ -410,6 +410,27 @@ class Enterer:
                 avg=str(st.entry_fill),
                 status=status,
             )
+        elif filled == seen and seen > 0 and avg and avg * filled != prev_notional:
+            # a late PRICE for fills already counted (no new quantity):
+            # fold the revision into the recorded average, never touching
+            # quantities (the mirror of the monitor's exit-drain fix; the
+            # merge used to be gated on quantity growth, so a revised
+            # average never reached the book's entry price)
+            revised = avg * filled
+            if st.entry_fill is not None and st.filled_qty > 0:
+                st.entry_fill += (revised - prev_notional) / st.filled_qty
+            else:
+                st.entry_fill = avg
+            prev_notional = revised
+            self.book.event(
+                self.events_path,
+                "entry_fill_revised",
+                structure=sid,
+                filled=st.filled_qty,
+                order_filled=filled,
+                avg=str(st.entry_fill),
+                status=status,
+            )
         self._order_seen[sid] = seen
         self._order_notional[sid] = prev_notional
         st.entry_order_seen, st.entry_order_notional = seen, prev_notional

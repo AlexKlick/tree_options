@@ -8,6 +8,7 @@ never compare an order-local count against the book's cumulative.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from decimal import Decimal
@@ -226,6 +227,39 @@ class TestCumulativeEntryAccounting:
         assert st.entry_fill == (Decimal("0.44") * 2 + Decimal("0.32") * 3) / 5
         assert st.status is Status.OPEN
         assert "nvda-oct" not in ent.orders  # entry lane done; monitor's now
+
+    def test_late_price_revision_folds_into_the_entry_average(
+        self, tmp_path: Path
+    ) -> None:
+        """IBKR revising the average of already-counted fills (same
+        quantity) must reach the book: quantities never move, the average
+        does, and the revision is evented (the 2026-09-24 carry-forward
+        defect: the merge was gated on quantity growth, so the book kept
+        the stale price forever)."""
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()  # BUY 5 placed
+        a = ent.orders["nvda-oct"]
+
+        fake.fill_partial(a, 2, "0.44")
+        ent._tick()
+        st = ent.book.structures["nvda-oct"]
+        assert st.filled_qty == 2 and st.entry_fill == Decimal("0.44")
+
+        fake.fill_partial(a, 2, "0.50")  # the same 2 fills, price revised
+        ent._tick()
+
+        assert st.filled_qty == 2  # quantities never move on a revision
+        assert st.entry_fill == Decimal("0.50")
+        events = [
+            json.loads(line)
+            for line in ent.events_path.read_text().splitlines()
+            if json.loads(line).get("event") == "entry_fill_revised"
+        ]
+        assert len(events) == 1
+        assert events[0]["avg"] == "0.50"
+        # the checkpoint moved with it: a restart never re-applies it
+        assert st.entry_order_notional == Decimal("0.50") * 2
 
     def test_full_fill_on_first_order_still_opens(self, tmp_path: Path) -> None:
         fake = FakeEntryIbkr()
