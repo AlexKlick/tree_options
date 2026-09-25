@@ -330,3 +330,70 @@ Menu assembled and validated: **ready for the operator commit** — 111
 configs across 10 scopes (max load 24/32), banned-registry clean,
 fold mappings protocol-consistent after the two recorded fixes, INV-13
 shape complete, all data-gated arms marked with their gates.
+
+## 7. Amendment v2 — drift-relative null (2026-09-23, operator ruling)
+
+**Trigger.** The v1 T-NULL calibration (exec/campaign-2026-09 @ 95eccc1;
+calibration.json stamped menu sha `3bb10a2f…`) DEFECT-FLAGGED all three
+seeds: the cost-floor band `[-15bp, +5bp]` assumed hash-random longs sit
+near zero, but the card-era baseline drifted (SPY +35.3%, equal-weight
+36-name +43.9%, unconditional all-names 20-session net mean +1.55%,
+n=17,136). Seeds straddle the unconditional mean — era, not code; trade
+arithmetic hand-verified. Per rules.sequencing the executor froze all
+five family slots and required an operator ruling.
+
+**Ruling (operator, 2026-09-23 ~23:45 MDT):** drift-relative null —
+chosen over (B) recentering the absolute band around measured drift and
+(C) basket-relative family metrics.
+
+**Diffs (surgical; everything else byte-carried from v1):**
+
+1. Top level: `version: 2`, `supersedes: 3bb10a2f…`,
+   `amendment_authority` = the ruling above.
+2. `rules.sequencing` + the v2 unfreeze clause: family scoring unfreezes
+   only after a `calibration-v2.json` re-stamp citing the v2 menu sha
+   passes; v1 streams remain valid data.
+3. `rules.null_baseline` (NEW): B(W, shape) — the all-names unconditional
+   day-clustered net per-trade mean per evaluation window, same runner
+   code path/holds/exclusions; xsmom-shaped = first-of-month × sealed-36,
+   event-shaped = every chain-35 reporter at every first-post-report
+   session. Stamped in calibration-v2.json; calibration only, never a
+   signal (wave-0 priors rule unchanged).
+4. `tnull` hypothesis + criterion 2: seed net mean within 2 × its
+   day-clustered se of B(W, shape) — leakage detection, not drift
+   detection. Criteria 1/3/4 (|t|<2 noise, entry floors, tripwire prior)
+   unchanged.
+5. `pead-deep-2` cell bar: `mean > 0` → `mean − B(pead-deep-2 window,
+   event shape) > 0`. `term-gate` (1): `ON mean > 0` → `ON mean −
+   B(window, matching book shape) > 0`. All other slots untouched —
+   vrp-cond/exit-grid-2/jepa-filter/agent-exec criteria are already
+   delta-, paired-, or rank-relative (drift-immune by construction).
+
+**Invariants held:** 111 configs / 10 scopes / 6+1 slots; geometry,
+dataset pinning, banned-registry screen, INV-13 shape unchanged.
+v2 menu sha256 `9fde5e660842333866b5ba729d1ddb299805ad4901163212b6c2d05b10882dc3`
+(sidecar written beside the menu).
+
+
+## 8. Amendment v3 — NOT_EVALUABLE floor for sub-evaluable null cells (2026-09-23, operator ruling 2)
+
+**Trigger.** The v2 re-stamp (calibration-v2.json, doc @ 5483742) cleared
+every v1 cost-floor miss; s1/s2 CALIBRATED everywhere; s3 flagged ONLY in
+the 2-entry-day / 6-trade pead-deep-2 and vrp-cond xsmom cells (unchanged
+criterion 1: |t| = 4.693 on 2 days; criterion 2: net +0.8215% vs B
++1.2636%, delta -0.4422% vs the +/-0.3714% band of the seed's own 2-day
+clustered se) -- the cells this registration pre-disclosed as "wide, weak
+band - disclosed, not fixed".
+
+**Ruling (operator, 2026-09-23 ~23:55 MDT):** NOT_EVALUABLE floor --
+chosen over pooling seeds, adding seeds, and investigating s3.
+
+**Diffs:** tnull criteria gain the v3 floor (cells < 5 entry-days or < 20
+complete trades: NOT_EVALUABLE, reported, no flag authority, no priors);
+null CALIBRATED iff every evaluable cell passes on every seed; priors from
+evaluable cells only; families in NOT_EVALUABLE windows gated by B(W,
+shape) alone (deep all-names streams: 864 xsmom / 207 event union
+entries). rules.sequencing + null_baseline carry the same. Everything
+else byte-carried from v2. 111 configs / 10 scopes unchanged.
+
+v3 menu sha256 `4aca21014f6efa640d97bf2abd3fdbb912af5a7b9acb68f65b842f924379b10a` (sidecar written beside the menu).
