@@ -37,3 +37,18 @@ label the difference "slippage" — it also contains market movement). Any futur
 promotion study must re-derive these under a registered estimand with a fixed
 forward window; the lane's numbers must not be back-filled into the evidence
 store.
+
+## Independent review round (codex, 2026-09-25) — disposition
+
+One bounded round on the full integ diff; transcript in the campaign state
+logs. Four findings, each verified against the code before action:
+
+| # | Finding | Verdict | Action |
+|---|---|---|---|
+| 1 | CRITICAL: a historical `--as-of` scorecard could be censored by a quality event discovered after that date (quality filtered by session, marks by discovery time) | REAL | Fixed: `EvidenceStore.all_at()` pairs payloads with the audit commit time; `build_scorecards` filters quality by discovery time under `as_of`. Regression: `test_historical_card_does_not_use_quality_events_discovered_after_requested_session` (red pre-fix) |
+| 2 | HIGH: a delayed price for a replacement order can be checkpointed without entering the aggregate fill price (`st.filled_qty > filled` with `entry_fill` None) | NOT a new defect: this is the documented E5 boundary (the fix's own comment: corrections after an order leaves the tracked set need the future execution-id reconciliation ledger; INTEGRATION_REVIEW §2.F assigns it to Gate 2) | None; recorded here as accepted-boundary |
+| 3 | HIGH: a nonterminal entry price revision was not persisted to `book.json` (enter saves only on terminal order status, but reloads the book every cycle) | REAL | Fixed: `Enterer._fill_revised` flag; `_drain_fills` saves the book when a revision mutated it. Regression: `test_entry_price_revision_survives_the_next_book_reload` (red pre-fix: disk `entry_fill` was `None`) |
+| 4 | MEDIUM: an explicit future `--as-of` censored outcomes that have not happened yet | REAL (semantics) | Fixed: `as_of` beyond the evaluated horizon clamps to that horizon and the summary reports `as_of_clamped_to_evaluation: true`; unobserved outcomes stay open. Regression: `test_future_asof_does_not_censor_unobserved_outcomes` (red pre-fix) |
+
+No findings in evidence-store transactionality/backup, `--armed` refusal or
+preview-to-execution paths, GET-only web routes, or shared-environment safety.

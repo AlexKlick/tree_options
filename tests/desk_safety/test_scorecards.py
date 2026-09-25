@@ -107,3 +107,35 @@ def test_historical_card_does_not_use_quotes_received_after_requested_session(wo
     historical = scorecards.build_scorecards(world.db, as_of=world.deadline)['families'][0]
     assert current['n_resolved'] == 1
     assert historical['n_resolved'] == 0 and historical['n_censored'] == 1
+
+
+def test_historical_card_does_not_use_quality_events_discovered_after_requested_session(world):
+    """A vendor conflict discovered on D+1 must censor the current view but
+    not the as-of D view (the same cutoff principle marks already follow).
+    Codex round 1, finding 1."""
+    world.queue_file()
+    world.chain(world.deadline)
+    record(world)
+    later = world.cal.nth_after(world.deadline, 1)
+    world.chain(later)  # a later chain exists; the deadline one stays valid
+    conflict = world.store / 'chains' / world.deadline.isoformat() / 'AAPL.conflict.json.gz'
+    conflict.parent.mkdir(parents=True, exist_ok=True)
+    conflict.write_bytes(b'conflict')
+    record(world, later)  # discovers the conflict a session later
+    current = scorecards.build_scorecards(world.db)['families'][0]
+    historical = scorecards.build_scorecards(world.db, as_of=world.deadline)['families'][0]
+    assert current['n_resolved'] == 0 and current['n_censored'] == 1
+    assert historical['n_resolved'] == 1 and historical['n_censored'] == 0
+
+
+def test_future_asof_does_not_censor_unobserved_outcomes(world):
+    """An as-of beyond the evaluated horizon must clamp to that horizon:
+    outcomes that simply have not happened yet are open, not censored.
+    Codex round 1, finding 4."""
+    world.queue_file()
+    record(world, world.entry)  # evaluation exists through the entry only
+    future = world.cal.nth_after(world.deadline, 2)
+    doc = scorecards.build_scorecards(world.db, as_of=future)
+    card = doc['families'][0]
+    assert card['n_open'] == 1 and card['n_censored'] == 0
+    assert doc['as_of_clamped_to_evaluation'] is True

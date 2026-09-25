@@ -78,6 +78,10 @@ class Enterer:
         self._order_notional: dict[str, Decimal] = {}
         # (both mirrored into the book's entry_order_seen/_notional checkpoint)
         self._unresolved_noted: set[str] = set()
+        # set by _merge_order_total when a price revision mutated the book;
+        # _drain_fills persists the book then (the loop reloads book.json
+        # every cycle, so an unsaved revision would be wiped and re-applied)
+        self._fill_revised = False
 
     @property
     def events_path(self) -> Path:
@@ -424,6 +428,7 @@ class Enterer:
             elif st.filled_qty == filled:
                 st.entry_fill = avg
             prev_notional = revised
+            self._fill_revised = True
             self.book.event(
                 self.events_path, "entry_fill_revised", structure=sid,
                 filled=st.filled_qty, order_filled=filled,
@@ -450,6 +455,11 @@ class Enterer:
                     # our own reprice cancel — back to PLANNED for the next cycle
                     st.to(Status.PLANNED, now_et())
                     self.orders.pop(sid, None)
+                self._save_book()
+            elif self._fill_revised:
+                # a same-quantity price revision must survive the per-cycle
+                # book reload (Codex round 1, finding 3)
+                self._fill_revised = False
                 self._save_book()
 
 

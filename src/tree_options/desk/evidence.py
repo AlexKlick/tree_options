@@ -117,6 +117,20 @@ class EvidenceStore:
         rows = self.conn.execute("SELECT payload FROM objects WHERE kind=? ORDER BY object_key", (kind,))
         return [read_json(r[0].encode()) for r in rows]
 
+    def all_at(self, kind: str) -> list[tuple[dict[str, Any], str]]:
+        """Payloads paired with the occurred_at of their first audit commit.
+
+        A historical view must bound itself by when evidence was recorded,
+        not only by the session it talks about (a vendor conflict discovered
+        on D+1 must not censor the as-of D card)."""
+        rows = self.conn.execute(
+            "SELECT o.payload, a.occurred_at FROM objects o JOIN audit a"
+            " ON a.kind=o.kind AND a.object_key=o.object_key WHERE o.kind=?"
+            " ORDER BY o.object_key",
+            (kind,),
+        )
+        return [(read_json(r[0].encode()), r[1]) for r in rows]
+
     def put(self, kind: str, key: str, payload: dict[str, Any], at: datetime) -> bool:
         if self.readonly or not self.conn.in_transaction:
             raise EvidenceError("transaction_required")
