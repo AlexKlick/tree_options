@@ -321,16 +321,22 @@ def decide_structure(spec: LegStructure, st: StructureState, snap: Snapshot) -> 
        (put: spot <= strike, call: spot >= strike);
     4. breach (exits.breach): spot at or beyond a short strike (put: spot <=
        strike, call: spot >= strike);
-    5. take-profit on the package mid: width_frac (mid >= cents(value x
+    5. assignment risk (close at marketable prices): on the last session
+       before an ex-dividend, a short call in the money whose extrinsic
+       (mid minus intrinsic) is worth less than the dividend
+       (``Snapshot.dividends`` / ``short_call_mids``, both runtime-fed;
+       absent observations stand the rule down; an ITM short call with no
+       or invalid leg quote that day closes - fail closed);
+    6. take-profit on the package mid: width_frac (mid >= cents(value x
        width), the legacy rule), gain_frac (mid >= entry x (1 + value)),
        credit_frac (mid <= entry x (1 - value)); credit kinds default to
        credit_frac CREDIT_TAKE_PROFIT_DEFAULT;
-    6. stop-loss once it held ``exits.stop_confirm_ticks`` consecutive
+    7. stop-loss once it held ``exits.stop_confirm_ticks`` consecutive
        evaluated ticks (debit_frac: mid <= entry x (1 - value); credit_mult:
        mid >= entry x value); a tick that meets it counts, one that doesn't
        resets, one that can't be evaluated (no quote, no entry price)
        neither counts nor resets;
-    7. time stop: at ``time_stop_time`` on the exit deadline, at once after it.
+    8. time stop: at ``time_stop_time`` on the exit deadline, at once after it.
 
     Without a spot there is no touch or breach decision; without an entry
     price no gain/credit take-profit or stop. Closes size to st.open_qty
