@@ -85,7 +85,12 @@ export interface PlanSummary {
 
 export interface PortfolioModeBucket {
   open_qty: number
-  committed_filled: number
+  /** null while any filled structure's entry cost is unknown (R3-02). */
+  committed_filled: number | null
+  /** labelled priced-subtotal: never a whole-bucket claim */
+  committed_known: number
+  cost_unknown: boolean
+  unpriced_qty: number
   unrealized_open: number
   unrealized_filled: number
   realized: number
@@ -96,7 +101,12 @@ export interface PortfolioBlock {
   plans_with_state: number
   open_qty: number
   committed_at_caps: number
-  committed_filled: number
+  /** null while any filled structure's entry cost is unknown (R3-02). */
+  committed_filled: number | null
+  /** labelled priced-subtotal: never a whole-book claim */
+  committed_known: number
+  cost_unknown: boolean
+  unpriced_qty: number
   unrealized_open: number | null
   unrealized_filled: number | null
   realized: number | null
@@ -318,6 +328,10 @@ export interface StructureStateView {
   touch_ts: string | null
   updated_at: string | null
   realized_pnl: number | null
+  /** price coverage (R3-02): nonzero = the side's average spans the priced
+   * packages only; no whole-position cost/payoff may be derived */
+  entry_unpriced_qty: number
+  exit_unpriced_qty: number
 }
 
 export interface MarkRow {
@@ -327,6 +341,8 @@ export interface MarkRow {
   ask: number | null
   mark: number | null
   unrealized: number | null
+  /** fills without a reported price: entry covers the priced subset only */
+  unpriced: number | null
 }
 
 export interface Marks {
@@ -350,7 +366,8 @@ export interface NetPositionLeg {
   long_strike: number
   short_strike: number
   open_qty: number
-  entry: number
+  entry: number | null
+  entry_unpriced_qty: number
 }
 
 export interface NetPosition {
@@ -358,9 +375,14 @@ export interface NetPosition {
   structure_count: number
   open_qty: number
   avg_entry: number | null
-  committed: number
-  max_gain: number
-  max_loss: number
+  /** null while any leg's entry cost is unknown (R3-02) */
+  committed: number | null
+  /** labelled priced-subtotal: never a whole-position claim */
+  committed_known: number
+  cost_unknown: boolean
+  unpriced_qty: number
+  max_gain: number | null
+  max_loss: number | null
   unrealized: number | null
   short_floor: number
   long_ceiling: number

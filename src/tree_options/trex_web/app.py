@@ -148,6 +148,9 @@ def _marks_payload(marks: dict[str, Any] | None) -> dict[str, Any] | None:
                 "ask": _fnum(row.get("ask")),
                 "mark": _fnum(row.get("mark")),
                 "unrealized": _fnum(row.get("unrealized")),
+                # fill packages without a reported price (R3-02): the entry
+                # average covers the priced subset only — disclose, don't drop
+                "unpriced": row.get("unpriced"),
             }
     spots: dict[str, float] = {}
     raw_spots = marks.get("spots")
@@ -195,6 +198,9 @@ def _plans_payload(
             sid: {
                 "open_qty": st.open_qty,
                 "entry_fill": float(st.entry_fill) if st.entry_fill is not None else None,
+                "filled_qty": st.filled_qty,
+                "entry_unpriced_qty": st.entry_unpriced_qty,
+                "exit_unpriced_qty": st.exit_unpriced_qty,
             }
             for sid, st in view.structures.items()
             if st is not None
@@ -338,8 +344,15 @@ def _plan_payload(
             "touch_ts": st.touch_ts.isoformat() if st.touch_ts else None,
             "updated_at": st.updated_at.isoformat() if st.updated_at else None,
             "realized_pnl": float(st.realized_pnl) if st.realized_pnl is not None else None,
+            # price coverage (R3-02): a nonzero count means the entry/exit
+            # average spans the priced packages only — no whole-position
+            # payoff or cost may be derived from it
+            "entry_unpriced_qty": st.entry_unpriced_qty,
+            "exit_unpriced_qty": st.exit_unpriced_qty,
         }
-        if st.entry_fill is not None and st.filled_qty > 0:
+        # a payoff labels max loss with the full entry basis: with unpriced
+        # fills that label would be fabricated, so the series is withheld
+        if st.entry_fill is not None and st.filled_qty > 0 and not st.entry_unpriced_qty:
             entry_f = float(st.entry_fill)
             long_f, short_f = float(s.long_strike), float(s.short_strike)
             legs.append((long_f, short_f, entry_f, st.filled_qty))

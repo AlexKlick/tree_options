@@ -34,17 +34,26 @@ def _f(raw: Any) -> float | None:
 def plan_unrealized(
     view: Any, marks: dict[str, Any] | None
 ) -> tuple[float | None, float | None]:
-    """(open-basis, filled-basis) unrealized for one plan."""
+    """(open-basis, filled-basis) unrealized for one plan.
+
+    Both are None while any structure's entry price coverage is incomplete
+    (R3-02): a priced-subset average must not be rescaled to the whole open
+    quantity, and a stale complete mark proves nothing about the current
+    book's newly added unpriced fills."""
     if marks is None:
         return None, None
     filled_total = _f(marks.get("total_unrealized"))
     rows = marks.get("structures")
     open_total = 0.0
     any_row = False
+    coverage_incomplete = False
     if isinstance(rows, dict):
         for sid, row in rows.items():
             st = view.structures.get(sid)
             if st is None:
+                continue
+            if getattr(st, "entry_unpriced_qty", 0):
+                coverage_incomplete = True
                 continue
             entry = _f(row.get("entry"))
             if entry is None:
@@ -54,6 +63,8 @@ def plan_unrealized(
                 continue
             open_total += value
             any_row = True
+    if coverage_incomplete:
+        return None, None
     return (open_total if any_row else None), filled_total
 
 
@@ -85,6 +96,12 @@ def portfolio_rollup(
     open_qty = 0
     committed_caps = 0.0
     committed_filled = 0.0
+    # R3-02: whole-book cost is unknown while any filled structure's entry
+    # price coverage is incomplete; the priced subset stays available as a
+    # separately labelled subtotal, never silently substituted.
+    committed_known = 0.0
+    cost_unknown = False
+    unpriced_qty = 0
     unrealized_open = 0.0
     any_open = False
     unrealized_filled = 0.0
@@ -108,6 +125,9 @@ def portfolio_rollup(
             {
                 "open_qty": 0,
                 "committed_filled": 0.0,
+                "committed_known": 0.0,
+                "cost_unknown": False,
+                "unpriced_qty": 0,
                 "unrealized_open": 0.0,
                 "unrealized_filled": 0.0,
                 "realized": 0.0,
@@ -121,9 +141,23 @@ def portfolio_rollup(
         plan_open = 0
         for st in view.structures.values():
             plan_open += st.open_qty
-            if st.entry_fill is not None:
+            unpriced = getattr(st, "entry_unpriced_qty", 0)
+            if st.entry_fill is not None and not unpriced:
                 committed_filled += float(st.entry_fill) * st.filled_qty * MULT
                 bucket["committed_filled"] += float(st.entry_fill) * st.filled_qty * MULT
+                committed_known += float(st.entry_fill) * st.filled_qty * MULT
+                bucket["committed_known"] += float(st.entry_fill) * st.filled_qty * MULT
+            elif st.filled_qty > 0:
+                # a priced-subset average times the whole fill would fabricate
+                # cost: the whole-book number is unknown (R3-02)
+                cost_unknown = True
+                bucket["cost_unknown"] = True
+                unpriced_qty += unpriced
+                bucket["unpriced_qty"] += unpriced
+                if st.entry_fill is not None:
+                    known = float(st.entry_fill) * (st.filled_qty - unpriced) * MULT
+                    committed_known += known
+                    bucket["committed_known"] += known
         open_qty += plan_open
         bucket["open_qty"] += plan_open
         committed_caps += float(view.plan.committed_at_caps)
@@ -152,12 +186,19 @@ def portfolio_rollup(
             if age is not None and (marks_age is None or age < marks_age):
                 marks_age = age
 
+    for bucket in modes.values():
+        if bucket["cost_unknown"]:
+            bucket["committed_filled"] = None  # not a whole-bucket number
+
     return {
         "plans_count": len(seen),
         "plans_with_state": plans_with_state,
         "open_qty": open_qty,
         "committed_at_caps": committed_caps,
-        "committed_filled": committed_filled,
+        "committed_filled": None if cost_unknown else committed_filled,
+        "committed_known": committed_known,
+        "cost_unknown": cost_unknown,
+        "unpriced_qty": unpriced_qty,
         "unrealized_open": unrealized_open if any_open else None,
         "unrealized_filled": unrealized_filled if any_filled else None,
         "realized": realized if any_realized else None,

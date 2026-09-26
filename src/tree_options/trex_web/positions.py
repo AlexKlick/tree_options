@@ -63,10 +63,11 @@ def net_positions(
         if not st:
             continue
         open_qty = int(st.get("open_qty") or 0)
-        entry = st.get("entry_fill")
-        if open_qty <= 0 or entry is None:
+        if open_qty <= 0:
             continue
-        entry_f = float(entry)
+        entry = st.get("entry_fill")
+        unpriced = int(st.get("entry_unpriced_qty") or 0)
+        entry_f = float(entry) if entry is not None else None
         long_f = float(s["long_strike"])
         short_f = float(s["short_strike"])
         row = groups.setdefault(
@@ -75,7 +76,10 @@ def net_positions(
                 "underlying": str(s["underlying"]),
                 "structure_count": 0,
                 "open_qty": 0,
-                "committed": 0.0,
+                "committed": 0.0,  # complete-coverage cost only (None else)
+                "committed_known": 0.0,  # labelled priced subtotal (R3-02)
+                "unpriced_qty": 0,
+                "cost_unknown": False,
                 "unrealized_vals": [],
                 "short_floor": short_f,
                 "long_ceiling": long_f,
@@ -85,8 +89,18 @@ def net_positions(
         )
         row["structure_count"] += 1
         row["open_qty"] += open_qty
-        row["committed"] += entry_f * open_qty * MULT
-        row["max_gain"] += (long_f - short_f - entry_f) * open_qty * MULT
+        row["unpriced_qty"] += unpriced
+        # An unknown entry cost is NOT an absent position (R3-02): the row
+        # and its legs stay visible; entry-derived aggregates become unknown
+        # and the priced subset is kept as a labelled subtotal.
+        if entry_f is not None and not unpriced:
+            row["committed"] += entry_f * open_qty * MULT
+            row["committed_known"] += entry_f * open_qty * MULT
+            row["max_gain"] += (long_f - short_f - entry_f) * open_qty * MULT
+        else:
+            row["cost_unknown"] = True
+            if entry_f is not None:
+                row["committed_known"] += entry_f * (open_qty - unpriced) * MULT
         row["short_floor"] = min(row["short_floor"], short_f)
         row["long_ceiling"] = max(row["long_ceiling"], long_f)
         row["legs"].append(
@@ -97,23 +111,32 @@ def net_positions(
                 "short_strike": short_f,
                 "open_qty": open_qty,
                 "entry": entry_f,
+                "entry_unpriced_qty": unpriced,
             }
         )
-        unrealized = open_unrealized(
-            (marks or {}).get(str(s["id"])),
-            entry_f,
-            open_qty,
-            int(st.get("filled_qty") or 0),
-        )
-        if unrealized is not None:
-            row["unrealized_vals"].append(unrealized)
+        if entry_f is not None and not unpriced:
+            unrealized = open_unrealized(
+                (marks or {}).get(str(s["id"])),
+                entry_f,
+                open_qty,
+                int(st.get("filled_qty") or 0),
+            )
+            if unrealized is not None:
+                row["unrealized_vals"].append(unrealized)
 
     rows: list[dict[str, Any]] = []
     for row in groups.values():
         vals: list[float] = row.pop("unrealized_vals")
         open_qty = int(row["open_qty"])
-        row["avg_entry"] = row["committed"] / open_qty / MULT if open_qty else None
-        row["max_loss"] = -float(row["committed"])
+        unknown = bool(row["cost_unknown"])
+        row["committed"] = None if unknown else row["committed"]
+        row["max_gain"] = None if unknown else row["max_gain"]
+        row["avg_entry"] = (
+            row["committed"] / open_qty / MULT
+            if open_qty and not unknown and row["committed"] is not None
+            else None
+        )
+        row["max_loss"] = None if unknown or row["committed"] is None else -float(row["committed"])
         row["unrealized"] = sum(vals) if vals else None
         rows.append(row)
     return rows
@@ -141,6 +164,9 @@ def merge_net_positions(
                     "structure_count": 0,
                     "open_qty": 0,
                     "committed": 0.0,
+                    "committed_known": 0.0,
+                    "unpriced_qty": 0,
+                    "cost_unknown": False,
                     "max_gain": 0.0,
                     "short_floor": row["short_floor"],
                     "long_ceiling": row["long_ceiling"],
@@ -150,8 +176,15 @@ def merge_net_positions(
             )
             target["structure_count"] += int(row["structure_count"])
             target["open_qty"] += int(row["open_qty"])
-            target["committed"] += float(row["committed"])
-            target["max_gain"] += float(row["max_gain"])
+            target["unpriced_qty"] += int(row.get("unpriced_qty") or 0)
+            if row.get("committed") is not None:
+                target["committed"] += float(row["committed"])
+            else:
+                # one unknown leg makes the whole merged cost unknown (R3-02)
+                target["cost_unknown"] = True
+            target["committed_known"] += float(row.get("committed_known") or 0.0)
+            if row.get("max_gain") is not None:
+                target["max_gain"] += float(row["max_gain"])
             target["short_floor"] = min(target["short_floor"], row["short_floor"])
             target["long_ceiling"] = max(target["long_ceiling"], row["long_ceiling"])
             for leg in row["legs"]:
@@ -167,8 +200,15 @@ def merge_net_positions(
     for row in merged.values():
         vals: list[float] = row.pop("unrealized_vals")
         open_qty = int(row["open_qty"])
-        row["avg_entry"] = row["committed"] / open_qty / MULT if open_qty else None
-        row["max_loss"] = -float(row["committed"])
+        unknown = bool(row["cost_unknown"])
+        row["committed"] = None if unknown else row["committed"]
+        row["max_gain"] = None if unknown else row["max_gain"]
+        row["avg_entry"] = (
+            row["committed"] / open_qty / MULT
+            if open_qty and not unknown and row["committed"] is not None
+            else None
+        )
+        row["max_loss"] = None if unknown or row["committed"] is None else -float(row["committed"])
         row["unrealized"] = sum(vals) if vals else None
         rows.append(row)
     rows.sort(key=lambda r: str(r["underlying"]))

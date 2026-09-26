@@ -70,3 +70,43 @@ cancelled exit order without merging its final fills (enter's
 suggested per-lane branches were folded into one integration worktree as
 separate commits (single integrator; gate and review run once on the
 whole corrective diff).
+
+## Round-3 audit corrections (2026-09-25, TREX-Round3-Audit-and-Handoff)
+
+Pre-landing review of the round-2 corrective tree reproduced three further
+defects, fixed red-first in `tests/desk_safety/test_round3_review.py`
+(12 failing on the frozen corrective bytes, commit `2985cb3`):
+
+- **R3-01 (P1)** `trex/enter.py`: a `BookState.save` failure on the terminal
+  OPEN/CLOSED transition left the durable book in the entry lane while the
+  in-memory loop condition declared completion and `run()` returned 0 — the
+  handoff was reported, never published. Fix: completion is a durable
+  boundary (`run()` ends only when the book ON DISK leaves the entry lane;
+  it resumes from durable state otherwise) and `_drain_fills` drops an
+  order reference only after the terminal state is on disk. The
+  cancel-and-settle path recovers through `_reconcile`'s broker evidence.
+  The exit side was audited separately and already had the right shape
+  (close save precedes the reference drop; the monitor loop reloads) —
+  pinned by `test_r3_exit_terminal_close_survives_a_failed_save`.
+- **R3-02 (P1)** `trex_web/`: the round-2 coverage counters stopped at the
+  first read-model layer — `plan_unrealized` re-inflated a priced-subset
+  average to the whole open qty ($850 from $90 of known cost),
+  `portfolio_rollup`/`net_positions` multiplied the subset average by all
+  fills ($150 "committed"), payoff labels stamped a fabricated max loss,
+  `_marks_payload` dropped the `unpriced` disclosure, and a fully unpriced
+  position vanished from net positions entirely. Fix: coverage propagates
+  book → view → API → calculators → SPA. Whole-position cost, unrealized,
+  avg entry and max-gain/loss become `null` while coverage is incomplete;
+  the priced subset stays visible as a separately labelled
+  `committed_known` (+ `unpriced_qty`, `cost_unknown`); an unknown cost is
+  no longer an absent position (rows and legs stay); a stale complete mark
+  no longer vouches for newly unpriced fills; payoff series are withheld
+  without the full entry basis; the SPA renders "unknown" with the known
+  subtotal instead of a fabricated number.
+- **R3-03 (P2)** `trex/monitor.py`: a SELL that fully filled during a
+  cancel-wait produced a `SELL 0` replacement request (the cancel branch
+  lacked the terminal branch's positive-remainder check). Fix: the
+  cancel-wait branch replaces only a positive remainder, and `_place_exit`
+  enforces the invariant — zero places nothing, a negative remainder is
+  surfaced as an `exit_reconciliation_fault` event and refused, never
+  silently converted into an ordinary close.

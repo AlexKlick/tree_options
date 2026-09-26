@@ -36,7 +36,16 @@ export function PortfolioTiles({
       </div>
       <div className="tiles">
         <Tile label="Open contracts" value={String(portfolio.open_qty)} />
-        <Tile label="Committed (fills)" value={usd(portfolio.committed_filled)} />
+        {portfolio.committed_filled === null ? (
+          <Tile
+            label="Committed (fills)"
+            value="unknown"
+            className="muted"
+            hint={`priced fills: ${usd(portfolio.committed_known)}`}
+          />
+        ) : (
+          <Tile label="Committed (fills)" value={usd(portfolio.committed_filled)} />
+        )}
         {portfolio.unrealized_open === null ? (
           <Tile label="Unrealized (open)" value="—" />
         ) : (

@@ -47,6 +47,15 @@ export function PositionsTable({
                   </td>
                   <td className="num">
                     {st.entry_fill !== null ? usd2(st.entry_fill) : '—'}
+                    {st.entry_unpriced_qty > 0 && (
+                      <span
+                        className="muted leg-note"
+                        title={`${st.entry_unpriced_qty} fill(s) without a price: the average covers the priced fills only`}
+                      >
+                        {' '}
+                        +{st.entry_unpriced_qty} unpriced
+                      </span>
+                    )}
                   </td>
                   <td className="num">
                     {st.filled_qty}/{s.quantity}
@@ -54,9 +63,26 @@ export function PositionsTable({
                   <td className="num">{st.open_qty}</td>
                   <td className="num">
                     {st.exit_fill !== null ? usd2(st.exit_fill) : '—'}
+                    {st.exit_unpriced_qty > 0 && (
+                      <span
+                        className="muted leg-note"
+                        title={`${st.exit_unpriced_qty} exit fill(s) without a price`}
+                      >
+                        {' '}
+                        +{st.exit_unpriced_qty} unpriced
+                      </span>
+                    )}
                   </td>
                   <td className={`num ${pnlClass(st.realized_pnl)}`}>
-                    {st.realized_pnl !== null ? usdSigned(st.realized_pnl) : '—'}
+                    {st.realized_pnl !== null ? (
+                      usdSigned(st.realized_pnl)
+                    ) : st.entry_unpriced_qty > 0 || st.exit_unpriced_qty > 0 ? (
+                      <span className="muted" title="some fills have no price yet">
+                        unknown
+                      </span>
+                    ) : (
+                      '—'
+                    )}
                   </td>
                   <td className="num">
                     {s.expiry} ({s.days_to_expiry}d)

@@ -10,6 +10,9 @@ const nvda: NetPosition = {
   open_qty: 8,
   avg_entry: 0.64125,
   committed: 477,
+  committed_known: 477,
+  cost_unknown: false,
+  unpriced_qty: 0,
   max_gain: 27523,
   max_loss: -477,
   unrealized: -11,
@@ -23,6 +26,7 @@ const nvda: NetPosition = {
       short_strike: 150,
       open_qty: 5,
       entry: 0.21,
+      entry_unpriced_qty: 0,
     },
     {
       structure_id: 'nvda-nov',
@@ -31,6 +35,7 @@ const nvda: NetPosition = {
       short_strike: 150,
       open_qty: 3,
       entry: 1.24,
+      entry_unpriced_qty: 0,
     },
   ],
 }
@@ -50,6 +55,27 @@ describe('NetPositionsTable', () => {
     expect(screen.getByText(/nvda-nov/)).toBeTruthy()
     expect(screen.getByText(/×5/)).toBeTruthy()
     expect(screen.getByText(/×3/)).toBeTruthy()
+  })
+
+  it('discloses unknown cost with the known subtotal (R3-02)', () => {
+    render(
+      <NetPositionsTable
+        rows={[
+          {
+            ...nvda,
+            committed: null,
+            avg_entry: null,
+            max_gain: null,
+            max_loss: null,
+            cost_unknown: true,
+            unpriced_qty: 2,
+            committed_known: 377,
+          },
+        ]}
+      />,
+    )
+    expect(screen.getByText(/unknown/)).toBeTruthy()
+    expect(screen.getByText(/\$377 known/)).toBeTruthy()
   })
 
   it('renders an em-dash when no quote feeds the unrealized cell', () => {

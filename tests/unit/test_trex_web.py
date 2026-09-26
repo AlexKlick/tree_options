@@ -557,6 +557,7 @@ class TestNetPositions:
             "short_strike": 150.0,
             "open_qty": 5,
             "entry": 0.21,
+            "entry_unpriced_qty": 0,
         }
 
     def test_partial_exit_shrinks_and_full_exit_drops_out(self) -> None:

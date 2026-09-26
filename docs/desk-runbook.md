@@ -633,6 +633,35 @@ operational semantics changed shape and are contract now:
   (round-2 audit R2-04); rc1's authoring receipts remain historical
   artifacts, and any later release carries its own manifest and gate log.
 
+### Round-3 corrections (2026-09-25)
+
+- **Terminal publication is a durable boundary** (`trex/enter.py`): if the
+  save that publishes the OPEN/CLOSED handoff fails, `trex-enter` no longer
+  reports success over a stale book — the run loop ends only when the book
+  ON DISK has left the entry lane, resumes from durable state otherwise,
+  and keeps the working-order reference until the terminal state is on
+  disk. Operator signal: `entry lane unfinished on disk ... resuming` in
+  the log means a storage fault was survived, not ignored. The monitor's
+  exit-side close already saved before dropping its reference; that shape
+  is now pinned by a test.
+- **Coverage propagates to every cockpit surface** (`trex_web/`): while
+  `*_unpriced_qty` is nonzero the API and SPA show `null`/`unknown` for
+  whole-position cost, unrealized, avg entry and max gain/loss — with the
+  priced subset labelled `committed_known` and counts as
+  `unpriced_qty`/`cost_unknown`. Net-position rows stay visible with known
+  quantities, legs and wings when the entry cost is unknown (an unknown
+  cost is not an absent position). Payoff charts are withheld without the
+  full entry basis. A stale complete mark never vouches for fills recorded
+  after it was written.
+- **No zero-size exit replacements** (`trex/monitor.py`): a SELL fully
+  filling during a cancel-wait now resolves flat — the next drain closes
+  the structure. `_place_exit` refuses `qty <= 0` outright: zero places
+  nothing; a NEGATIVE remainder raises an
+  `exit_reconciliation_fault` event and is never silently converted into
+  an ordinary close. Operator signal: an `exit_reconciliation_fault` event
+  means the book and the broker disagree on sold quantity — reconcile by
+  hand before trusting the book's exit side.
+
 ## Viewer live chain (cockpit symbol pages)
 
 The symbol page's "live" chain panel (next to the recorded one,

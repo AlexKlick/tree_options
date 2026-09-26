@@ -9,6 +9,9 @@ const portfolio: PortfolioBlock = {
   open_qty: 8,
   committed_at_caps: 1840,
   committed_filled: 477,
+  committed_known: 477,
+  cost_unknown: false,
+  unpriced_qty: 0,
   unrealized_open: -14,
   unrealized_filled: -14,
   realized: null,
@@ -74,5 +77,22 @@ describe('PortfolioTiles', () => {
       <PortfolioTiles portfolio={{ ...portfolio, unrealized_open: null }} account={null} />,
     )
     expect(screen.getAllByText('—').length).toBeGreaterThanOrEqual(1)
+  })
+
+  it('discloses unknown committed cost with the priced subtotal (R3-02)', () => {
+    render(
+      <PortfolioTiles
+        portfolio={{
+          ...portfolio,
+          committed_filled: null,
+          cost_unknown: true,
+          unpriced_qty: 2,
+          committed_known: 377,
+        }}
+        account={null}
+      />,
+    )
+    expect(screen.getByText('unknown')).toBeTruthy()
+    expect(screen.getByText('priced fills: $377')).toBeTruthy()
   })
 })

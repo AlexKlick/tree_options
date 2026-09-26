@@ -134,12 +134,35 @@ class Enterer:
 
     def run(self) -> int:
         self.adopt_open_entries()
-        while self._entry_pending():
+        while True:
             try:
                 self._sync_book_from_disk()
                 self._tick()
             except Exception:
                 log.exception("tick failed — retrying next poll")
+            if self._entry_pending():
+                self.ib.sleep(POLL_SECONDS)
+                continue
+            # Completion is a DURABLE boundary (R3-01): a failed save on the
+            # terminal transition leaves the disk in the entry lane while
+            # memory says done. The loop may only end when the book on disk
+            # agrees — resuming re-adopts the durable state and the broker's
+            # cumulative report reconciles against the durable checkpoint.
+            disk = BookState.load(
+                self.run_dir / "book.json", list(self.book.structures)
+            )
+            pending = [
+                sid
+                for sid, st in disk.structures.items()
+                if st.status in (Status.PLANNED, Status.ENTER_WORKING)
+            ]
+            if not pending:
+                break
+            self.book.structures = disk.structures
+            log.warning(
+                "entry lane unfinished on disk (%s) despite in-memory state; resuming",
+                ",".join(pending),
+            )
             self.ib.sleep(POLL_SECONDS)
         log.info("entry phase complete; book is with the monitor")
         return 0
@@ -233,6 +256,9 @@ class Enterer:
                 if info.status not in _TERMINAL:
                     log.warning("%s: entry cancel not confirmed; retrying next cycle", sid)
                     return False
+                # the ref is dropped before the caller's save: if that save
+                # fails, run()'s durable completion check keeps the loop alive
+                # and _reconcile recovers the fills from broker evidence (R3-01)
                 self.orders.pop(sid, None)
             elif not self._reconcile(spread):
                 return False
@@ -423,6 +449,7 @@ class Enterer:
 
     def _drain_fills(self) -> None:
         mutated = False
+        finished: list[str] = []  # refs dropped only after a durable save
         for spread in self.plan.structures:
             sid = spread.id
             st = self.book.structures[sid]
@@ -434,11 +461,11 @@ class Enterer:
                 if st.filled_qty > 0:
                     st.to(Status.OPEN, now_et())
                     log.info("%s: OPEN with %d spreads @ %s", sid, st.filled_qty, st.entry_fill)
-                    self.orders.pop(sid, None)
+                    finished.append(sid)
                 elif info.status == "Cancelled":
                     # our own reprice cancel — back to PLANNED for the next cycle
                     st.to(Status.PLANNED, now_et())
-                    self.orders.pop(sid, None)
+                    finished.append(sid)
                 mutated = True  # a lane transition is durable state
             mutated = mutated or changed
         if mutated:
@@ -449,6 +476,12 @@ class Enterer:
             # durable book and the broker's cumulative report reconciles
             # against the durable checkpoint (a duplicate event is fine).
             self._save_book()
+        # the terminal report's reference is dropped only once the terminal
+        # state is on disk (R3-01): a reference discarded before publication
+        # cannot be retried, and the memory-only loop condition could then
+        # declare completion over a stale book.
+        for sid in finished:
+            self.orders.pop(sid, None)
 
 
 def main(argv: list[str] | None = None) -> int:

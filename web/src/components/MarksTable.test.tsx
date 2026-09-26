@@ -34,7 +34,7 @@ describe('MarksTable', () => {
           bid: 0.19,
           ask: 0.21,
           mark: 0.2,
-          unrealized: -5,
+          unrealized: -5, unpriced: null,
         },
       },
     }
@@ -55,7 +55,7 @@ describe('MarksTable', () => {
       age_seconds: 1,
       total_unrealized: null,
       spots: {},
-      structures: { 'nvda-oct': { qty: 4, entry: 1.37, bid: null, ask: null, mark: null, unrealized: null } },
+      structures: { 'nvda-oct': { qty: 4, entry: 1.37, bid: null, ask: null, mark: null, unrealized: null, unpriced: null } },
     }
     render(<MarksTable marks={marks} specs={specs} />)
     expect(screen.getByText('no quote this cycle')).toBeTruthy()
@@ -68,7 +68,7 @@ describe('MarksTable', () => {
       total_unrealized: -3,
       spots: {},
       structures: {
-        'nvda-oct': { qty: 5, entry: 0.21, bid: 0.18, ask: 0.21, mark: 0.2, unrealized: -7.5 },
+        'nvda-oct': { qty: 5, entry: 0.21, bid: 0.18, ask: 0.21, mark: 0.2, unrealized: -7.5, unpriced: null },
       },
     }
     render(<MarksTable marks={marks} specs={specs} />)

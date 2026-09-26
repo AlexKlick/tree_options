@@ -6,15 +6,19 @@ export function Tile({
   label,
   value,
   className,
+  hint,
 }: {
   label: string
   value: string
   className?: string
+  /** muted sub-line under the value (e.g. a known-subtotal qualifier) */
+  hint?: string
 }) {
   return (
     <div className="card tile">
       <p className="tile-label">{label}</p>
       <div className={`tile-value num ${className ?? ''}`}>{value}</div>
+      {hint !== undefined && <p className="tile-label">{hint}</p>}
     </div>
   )
 }

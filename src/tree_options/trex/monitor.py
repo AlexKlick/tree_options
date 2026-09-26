@@ -637,6 +637,24 @@ class Monitor:
         self._place_exit(spread, qty, limit)
 
     def _place_exit(self, spread: PutSpread, qty: int, limit: Decimal) -> None:
+        if qty < 0:
+            # a negative remainder is a book/broker disagreement, not
+            # flatness: keep the evidence visible and refuse the order
+            # rather than silently converting it into an ordinary close
+            self.book.event(
+                self.events_path,
+                "exit_reconciliation_fault",
+                structure=spread.id,
+                open_qty=qty,
+            )
+            raise RuntimeError(
+                f"{spread.id}: negative open_qty {qty} — refusing exit order"
+            )
+        if qty <= 0:
+            # flat: nothing to place (R3-03) — a zero-size SELL is an
+            # invalid order request, never a normal replacement
+            log.info("%s: open_qty 0 — placing no exit order", spread.id)
+            return
         if self._halt_requested():
             log.warning("%s: HALT active — not placing exit order", spread.id)
             return
@@ -695,7 +713,11 @@ class Monitor:
             # _place_after_cancel has always merged; this path did not)
             self._merge_exit_fills(spread.id, ref)
             self._save_book()
-            self._place_exit(spread, st.open_qty, limit)
+            if st.open_qty > 0:
+                self._place_exit(spread, st.open_qty, limit)
+            # else the cancel's final fills flattened the position: a
+            # zero-size SELL is an invalid order request (R3-03) — the next
+            # drain resolves the flat book instead of replacing anything.
         else:
             # prior order done but position remains — merge anything the
             # broker reported since the drain, then re-place the remainder

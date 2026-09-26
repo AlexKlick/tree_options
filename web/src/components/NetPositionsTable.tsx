@@ -36,8 +36,19 @@ export function NetPositionsTable({ rows }: { rows: NetPosition[] }) {
                 </td>
                 <td className="num strike">{r.open_qty}</td>
                 <td className="num">{r.avg_entry !== null ? usd2(r.avg_entry) : '—'}</td>
-                <td className="num">{usd(r.committed)}</td>
-                <td className="num pnl-pos">{usdSigned(r.max_gain)}</td>
+                <td className="num">
+                  {r.committed !== null ? (
+                    usd(r.committed)
+                  ) : (
+                    <span className="muted" title="some fills have no price yet — the full cost is unknown">
+                      unknown
+                      {r.committed_known > 0 ? ` (${usd(r.committed_known)} known)` : ''}
+                    </span>
+                  )}
+                </td>
+                <td className={`num ${r.max_gain !== null ? 'pnl-pos' : 'muted'}`}>
+                  {r.max_gain !== null ? usdSigned(r.max_gain) : '—'}
+                </td>
                 <td className={`num ${pnlClass(r.unrealized)}`}>
                   {r.unrealized !== null ? usdSigned(r.unrealized) : '—'}
                 </td>
