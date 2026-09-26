@@ -403,24 +403,9 @@ def _parse_spec(payload: dict[str, Any]) -> ComparisonSpec:
 
 
 def _result_to_dict(result) -> dict[str, Any]:
-    out: dict[str, Any] = {
-        "spec": result.spec.to_dict(),
-        "candidates": [
-            {
-                "candidate_id": s.candidate_id,
-                "candidate": s.candidate.to_dict(),
-                "rows_by_date": s.rows_by_date,
-                "drawdown": s.drawdown,
-                "fees_paid_total": str(s.fees_paid_total),
-                "sample_size": s.sample_size,
-                "sample_floor": s.sample_floor,
-                "sample_floor_met": s.sample_floor_met,
-                "rejection_reason": s.rejection_reason,
-                "final_ending_value": (str(s.final_ending_value)
-                                        if s.final_ending_value is not None else None),
-            }
-            for s in result.candidates
-        ],
-        "paired_diff": result.paired_diff,
-    }
-    return out
+    """Delegate to ``ComparisonResult.to_wire`` — the single wire
+    boundary (ISO date keys, money strings). The view never re-shapes
+    result payloads (RL1-02: a bespoke serializer here passed
+    ``datetime.date`` keys straight into ``JSONResponse`` and the first
+    nonempty result returned HTTP 500)."""
+    return result.to_wire()

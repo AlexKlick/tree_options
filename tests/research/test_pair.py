@@ -110,23 +110,46 @@ def test_align_pair_without_baseline_emits_unpaired_series() -> None:
     assert all(c.value is not None for c in pair.cells)
 
 
-def test_align_pair_intersects_supported_windows() -> None:
-    """A candidate whose supported window ends in 2026 should not have
-    cells past 2026 even if the baseline extends to 2027."""
+def test_align_pair_bound_by_declared_sessions_not_observed_union() -> None:
+    """RL1-02: alignment follows the DECLARED session calendar (the
+    resolved plan's window), not the union of observed trade dates. A
+    candidate whose data extends past the declared basis has the excess
+    excluded — and a declared session nobody observed surfaces as a
+    null cell with a reason, not a quietly dropped date."""
+    c = _candidate(date(2024, 1, 1), date(2026, 6, 30))
+    b = _candidate(date(2024, 1, 1), date(2027, 1, 1), family="bh")
+    declared = (date(2026, 6, 29), date(2026, 6, 30), date(2026, 7, 1))
+    pair = align_pair(
+        c, b,
+        {date(2026, 6, 30): Decimal("110"),
+         date(2026, 12, 31): Decimal("120")},  # outside the declared basis
+        {date(2026, 6, 30): Decimal("105"),
+         date(2026, 12, 31): Decimal("108")},
+        sessions=declared,
+    )
+    dates = [cell.date for cell in pair.cells]
+    assert dates == list(declared)  # exactly the declared sessions, no union
+    assert date(2026, 12, 31) not in dates
+    observed = next(cell for cell in pair.cells if cell.date == date(2026, 6, 30))
+    assert observed.value == Decimal("5")
+    gaps = [cell for cell in pair.cells if cell.date != date(2026, 6, 30)]
+    assert all(cell.value is None and cell.reason is not None for cell in gaps)
+
+
+def test_align_pair_legacy_path_uses_candidate_dates_without_union() -> None:
+    """Without declared sessions (legacy/test callers) and WITH a
+    baseline, cells cover the candidate's observed dates; a candidate
+    date the baseline lacks carries the benchmark-overlap reason."""
     c = _candidate(date(2024, 1, 1), date(2026, 6, 30))
     b = _candidate(date(2024, 1, 1), date(2027, 1, 1), family="bh")
     pair = align_pair(
         c, b,
-        {date(2026, 6, 30): Decimal("110"),
-         date(2026, 12, 31): Decimal("120")},
-        {date(2026, 6, 30): Decimal("105"),
-         date(2026, 12, 31): Decimal("108")},
+        {date(2026, 6, 30): Decimal("110")},
+        {},  # baseline observed nothing
     )
-    # Only 2026-06-30 survives the intersection; the 2026-12-31 candidate
-    # datum is also dropped because it falls outside the candidate's
-    # supported window.
-    dates = [c.date for c in pair.cells]
-    assert dates == [date(2026, 6, 30)]
+    assert [cell.date for cell in pair.cells] == [date(2026, 6, 30)]
+    assert pair.cells[0].reason is not None
+    assert pair.cells[0].reason.code == REASON_BENCHMARK_OVERLAP_MISSING
 
 
 def test_diff_in_dollars_serializes_decimals_as_strings() -> None:

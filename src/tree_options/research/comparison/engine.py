@@ -28,7 +28,6 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from tree_options.research.comparison.calendar import sessions_between
 from tree_options.research.comparison.drawdown import compute_drawdown
 from tree_options.research.comparison.funded import run_funded_account
 from tree_options.research.comparison.missingness import (
@@ -36,6 +35,7 @@ from tree_options.research.comparison.missingness import (
     reason_retrospective_only,
 )
 from tree_options.research.comparison.pair import align_pair
+from tree_options.research.comparison.plan import ComparisonPlan, resolve_plan
 from tree_options.research.contracts import (
     ComparisonSpec,
     ResearchCandidate,
@@ -56,6 +56,7 @@ class CandidateSummary:
     rows_by_date: dict[date, dict[str, Any]] = field(default_factory=dict)
     drawdown: dict[date, dict[str, Any]] = field(default_factory=dict)
     fees_paid_total: Decimal = Decimal("0")
+    excluded_out_of_window: int = 0  # adapter observations outside the declared window
     sample_size: int = 0
     sample_floor: int = SAMPLE_FLOOR
     sample_floor_met: bool = False
@@ -70,6 +71,42 @@ class ComparisonResult:
     candidates: tuple[CandidateSummary, ...]
     paired_diff: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
     rejection: str | None = None
+
+    def to_wire(self) -> dict[str, Any]:
+        """The ONE serialization boundary: ISO date keys and money
+        strings everywhere — the exact shape that crosses HTTP and feeds
+        the TS types (RL1-02: the first nonempty result died with a 500
+        because ``datetime.date`` keys went straight into
+        ``JSONResponse``; nonempty results must serialize)."""
+        return {
+            "spec": self.spec.to_dict(),
+            "rejection": self.rejection,
+            "candidates": [
+                {
+                    "candidate_id": s.candidate_id,
+                    "candidate": s.candidate.to_dict(),
+                    "rows_by_date": {
+                        d.isoformat(): row
+                        for d, row in s.rows_by_date.items()
+                    },
+                    "drawdown": {
+                        d.isoformat(): cell
+                        for d, cell in s.drawdown.items()
+                    },
+                    "fees_paid_total": str(s.fees_paid_total),
+                    "excluded_out_of_window": s.excluded_out_of_window,
+                    "sample_size": s.sample_size,
+                    "sample_floor": s.sample_floor,
+                    "sample_floor_met": s.sample_floor_met,
+                    "rejection_reason": s.rejection_reason,
+                    "final_ending_value": (str(s.final_ending_value)
+                                            if s.final_ending_value is not None
+                                            else None),
+                }
+                for s in self.candidates
+            ],
+            "paired_diff": self.paired_diff,
+        }
 
 
 # -- Adapters: candidate → execution series ---------------------------------
@@ -149,7 +186,13 @@ def run_comparison(
 
     The four-line decomposition is enforced inside
     ``run_funded_account`` via ``LedgerBook.assert_conservation``.
+
+    The spec is BINDING (RL1-02): ``resolve_plan`` validates it and pins
+    the calendar, contribution schedule, fee policy and cutoff. A refused
+    plan rejects every candidate with the plan's reason — never a
+    silently defaulted basis.
     """
+    plan = resolve_plan(spec)
     summaries: list[CandidateSummary] = []
     baseline_run = None
 
@@ -185,6 +228,17 @@ def run_comparison(
             ))
             continue
 
+        # Candidate-level gates spoke first (their reasons are about the
+        # candidate); a refused plan rejects everything that would
+        # otherwise have run.
+        if plan.refused:
+            summaries.append(CandidateSummary(
+                candidate_id=cand.id,
+                candidate=cand,
+                rejection_reason=plan.refusal_reason,
+            ))
+            continue
+
         adapter = _ADAPTERS.get(cand.evidence_kind)
         if adapter is None:
             summaries.append(CandidateSummary(
@@ -194,14 +248,17 @@ def run_comparison(
             ))
             continue
 
-        executions, marks = adapter(cand)
+        raw_executions, raw_marks = adapter(cand, plan)
+        executions, marks, excluded = _clip_to_window(
+            raw_executions, raw_marks, plan)
         run = run_funded_account(
             candidate_id=cand.id,
             starting_capital=spec.starting_capital,
-            calendar=sessions_between(spec.common_start, spec.common_end),
+            calendar=plan.sessions,
             executions=executions,
             marks=marks,
-            cashflows=[],  # contribution schedule lands with the resolved plan (RL1-02)
+            cashflows=plan.cashflows,
+            fee_model=plan.fee_model,
         )
         if run.refusal_reason is not None:
             summaries.append(CandidateSummary(
@@ -246,6 +303,7 @@ def run_comparison(
             rows_by_date=rows_by_date,
             drawdown=drawdown_by_date,
             fees_paid_total=run.total_fees,
+            excluded_out_of_window=excluded,
             sample_size=len(run.rows),
             sample_floor_met=len(run.rows) >= SAMPLE_FLOOR,
             final_ending_value=run.final_nav,
@@ -253,18 +311,21 @@ def run_comparison(
 
     # Baseline run (same admission path as candidates — never a
     # privileged series).
-    if baseline is not None:
+    if baseline is not None and not plan.refused:
         if baseline.plot_funded_account:
             base_adapter = _ADAPTERS.get(baseline.evidence_kind)
             if base_adapter is not None:
-                base_ex, base_marks = base_adapter(baseline)
+                base_ex, base_marks = base_adapter(baseline, plan)
+                base_ex, base_marks, _base_excluded = _clip_to_window(
+                    base_ex, base_marks, plan)
                 baseline_run = run_funded_account(
                     candidate_id=baseline.id,
                     starting_capital=spec.starting_capital,
-                    calendar=sessions_between(spec.common_start, spec.common_end),
+                    calendar=plan.sessions,
                     executions=base_ex,
                     marks=base_marks,
-                    cashflows=[],
+                    cashflows=plan.cashflows,
+                    fee_model=plan.fee_model,
                 )
 
     paired_diff: dict[str, dict[str, dict[str, Any]]] = {}
@@ -272,14 +333,17 @@ def run_comparison(
         base_by_session = baseline_run.ending_value_by_session()
         for s in summaries:
             if s.candidate.plot_funded_account:
-                cand_by_session: dict[date, Decimal] = {}
-                for d, r in s.rows_by_date.items():
-                    cand_by_session[d] = Decimal(r["ending_value"])
+                cand_by_session: dict[date, Decimal] = {
+                    d: Decimal(r["nav"])
+                    for d, r in s.rows_by_date.items()
+                    if r["nav"] is not None
+                }
                 series = align_pair(
                     s.candidate,
                     baseline,
                     cand_by_session,
                     base_by_session,
+                    sessions=plan.sessions,
                 )
                 paired_diff[s.candidate_id] = {
                     pc.date.isoformat(): {
@@ -293,8 +357,27 @@ def run_comparison(
         spec=spec,
         candidates=tuple(summaries),
         paired_diff=paired_diff,
-        rejection=None,
+        rejection=plan.refusal_reason,
     )
+
+
+def _clip_to_window(
+    executions: list[Any],
+    marks: list[Any],
+    plan: ComparisonPlan,
+) -> tuple[list[Any], list[Any], int]:
+    """Drop adapter observations outside the declared window and count
+    what was excluded — data beyond the requested basis is surfaced on
+    the summary, never silently truncated into the comparison."""
+    lo = plan.window_start
+    hi = plan.window_end
+    if lo is None or hi is None:  # refused plans never reach the engine body
+        return executions, marks, 0
+    clipped_ex = [e for e in executions if lo <= e.date <= hi]
+    clipped_marks = [m for m in marks if lo <= m.date <= hi]
+    excluded = ((len(executions) - len(clipped_ex))
+                + (len(marks) - len(clipped_marks)))
+    return clipped_ex, clipped_marks, excluded
 
 
 __all__ = [

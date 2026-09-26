@@ -71,8 +71,24 @@ def align_pair(
     baseline: ResearchCandidate | None,
     candidate_value_by_session: dict[date, Decimal],
     baseline_value_by_session: dict[date, Decimal],
+    *,
+    sessions: tuple[date, ...] | None = None,
 ) -> PairSeries:
-    """Build the paired series. Missingness rules:
+    """Build the paired series over the DECLARED session calendar.
+
+    ``sessions`` is the resolved plan's calendar — the common basis the
+    operator asked for. Cells are emitted for every declared session:
+    both sides observed -> the dollar difference; either side missing ->
+    value=None with the specific reason. There is NO fallback to the
+    union of observed dates: a date the calendar declares but the data
+    does not cover is a visible gap with a reason, not a date the
+    comparison quietly drops (RL1-02: the spec window binds, the union
+    of trade dates never did).
+
+    Without ``sessions`` (legacy/test callers) the observed candidate
+    dates are used, sorted — still no union fallback against a baseline.
+
+    Missingness rules:
         - candidate and baseline MUST both have a value for the cell to
           carry a number. If either is missing, value=None + reason.
         - If the baseline is None (no spec.benchmark_candidate_id), the
@@ -82,48 +98,56 @@ def align_pair(
           candidate covers, the cell carries
           ``reason_benchmark_overlap_missing``.
     """
-    if candidate_value_by_session and baseline is None:
-        paired_cells: list[PairCell] = [
-            PairCell(date=d, value=v, reason=None)
-            for d, v in sorted(candidate_value_by_session.items())
-        ]
-        return PairSeries(candidate.id, None, tuple(paired_cells))
-
     if baseline is None:
+        if sessions is not None:
+            paired_cells = [
+                PairCell(date=d, value=candidate_value_by_session.get(d),
+                         reason=(None if d in candidate_value_by_session
+                                 else MissingnessReason(
+                                     code="research.pair.candidate_missing",
+                                     description=(
+                                         f"candidate has no observation on {d.isoformat()}"
+                                     ),
+                                 )))
+                for d in sessions
+            ]
+            return PairSeries(candidate.id, None, tuple(paired_cells))
+        if candidate_value_by_session:
+            paired_cells_legacy: list[PairCell] = [
+                PairCell(date=d, value=v, reason=None)
+                for d, v in sorted(candidate_value_by_session.items())
+            ]
+            return PairSeries(candidate.id, None, tuple(paired_cells_legacy))
         return PairSeries(candidate.id, None, ())
 
-    window_lo, window_hi = intersect_window(
-        candidate.supported_start, candidate.supported_end,
-        baseline.supported_start, baseline.supported_end,
-    )
-
-    dates: set[date] = set(candidate_value_by_session) | set(baseline_value_by_session)
-    if not dates:
-        return PairSeries(candidate.id, baseline.id, ())
-
-    # If neither side has a known supported window, fall back to the union
-    # of observed dates — the operator's spec asked for a specific window;
-    # we trust their spec.date window.
-    if window_lo is None or window_hi is None:
-        window_lo = min(dates)
-        window_hi = max(dates)
+    declared = sessions if sessions is not None else tuple(
+        sorted(set(candidate_value_by_session) | set(baseline_value_by_session)))
 
     paired_cells = []
-    for d in sorted(d for d in dates if window_lo <= d <= window_hi):
+    for d in declared:
         c_val = candidate_value_by_session.get(d)
         b_val = baseline_value_by_session.get(d)
-        if c_val is None or b_val is None:
+        if c_val is None and b_val is None:
             paired_cells.append(PairCell(
-                date=d,
-                value=None,
-                reason=(reason_benchmark_overlap_missing(d.isoformat())
-                        if (b_val is None and c_val is not None)
-                        else MissingnessReason(
-                            code="research.pair.incomplete",
-                            description=(
-                                f"candidate or baseline missing data on {d.isoformat()}"
-                            ),
-                        )),
+                date=d, value=None,
+                reason=MissingnessReason(
+                    code="research.pair.no_observation",
+                    description=(f"neither candidate nor baseline observed "
+                                 f"{d.isoformat()}"),
+                ),
+            ))
+        elif c_val is None:
+            paired_cells.append(PairCell(
+                date=d, value=None,
+                reason=MissingnessReason(
+                    code="research.pair.candidate_missing",
+                    description=f"candidate has no observation on {d.isoformat()}",
+                ),
+            ))
+        elif b_val is None:
+            paired_cells.append(PairCell(
+                date=d, value=None,
+                reason=reason_benchmark_overlap_missing(d.isoformat()),
             ))
         else:
             paired_cells.append(PairCell(date=d, value=c_val - b_val, reason=None))
