@@ -128,3 +128,56 @@ export const requestScenario = (
 
 export const getScenario = (key: string): Promise<ScenarioDoc> =>
   fetchJson(`api/discovery/backtest?key=${encodeURIComponent(key)}`)
+
+// --- RL-1 (research lab) — see TREX-Research-Lab-Design-and-Build-Handoff-29a9aa.md
+// These are GET-only reads + POST-to-spool; the forecast/scenarios
+// endpoints return 410 Gone (RL-3 / RL-2 out of scope).
+
+import type {
+  CandidateResultSummary,
+  ComparisonResultResponse,
+  ComparisonRunResponse,
+  ComparisonSpec,
+  ResearchCandidatesResponse,
+  ResearchEvidenceEnvelope,
+} from './types'
+
+export const listResearchCandidates = (filters?: {
+  family?: string
+  disposition?: string
+  evidence_kind?: string
+}): Promise<ResearchCandidatesResponse> => {
+  const qs = new URLSearchParams()
+  if (filters?.family) qs.set('family', filters.family)
+  if (filters?.disposition) qs.set('disposition', filters.disposition)
+  if (filters?.evidence_kind) qs.set('evidence_kind', filters.evidence_kind)
+  const q = qs.toString()
+  return fetchJson(`api/research/candidates${q ? `?${q}` : ''}`)
+}
+
+export const getResearchCandidate = (id: string): Promise<ResearchCandidatesResponse['candidates'][number]> =>
+  fetchJson(`api/research/candidates/${encodeURIComponent(id)}`)
+
+export const getResearchEvidence = (
+  id: string,
+  opts: { session?: string; as_of?: string } = {},
+): Promise<ResearchEvidenceEnvelope> => {
+  const qs = new URLSearchParams()
+  if (opts.session) qs.set('session', opts.session)
+  if (opts.as_of) qs.set('as_of', opts.as_of)
+  const q = qs.toString()
+  return fetchJson(`api/research/candidates/${encodeURIComponent(id)}/evidence${q ? `?${q}` : ''}`)
+}
+
+export const spoolComparison = (spec: ComparisonSpec): Promise<ComparisonRunResponse> =>
+  fetchJson('api/research/compare', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spec),
+  })
+
+export const getComparisonResult = (run_id: string): Promise<ComparisonResultResponse> =>
+  fetchJson(`api/research/runs/${encodeURIComponent(run_id)}/result`)
+
+// Re-export for callers that already imported this from the old path.
+export type { CandidateResultSummary as CandidateResult }

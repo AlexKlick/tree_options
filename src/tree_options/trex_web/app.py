@@ -492,6 +492,12 @@ def create_app(
 
     attach_desk_evidence(app, database=desk_state_root / "evidence" / "desk.sqlite3")
 
+    # RL-1: research lane routes (catalog + comparisons + evidence drawer).
+    # RL-2 (scenarios) and RL-3 (forecast) return 410 Gone until shipped.
+    from tree_options.trex_web.research_view import attach as attach_research
+
+    attach_research(app)
+
     @app.get("/health")
     def health() -> dict[str, object]:
         return {

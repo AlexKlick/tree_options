@@ -7,6 +7,7 @@ import { PlanDetail } from './components/PlanDetail'
 import { MarketPage } from './components/MarketPage'
 import { SymbolPage } from './components/SymbolPage'
 import { PlanList } from './components/PlanList'
+import { ResearchPage } from './components/ResearchPage'
 
 export default function App() {
   const [route, setRoute] = useState<Route>(() => parseHash(location.hash))
@@ -27,6 +28,8 @@ export default function App() {
         <MarketPage />
       ) : route.view === 'symbol' ? (
         <SymbolPage key={route.id} sym={route.id} />
+      ) : route.view === 'research' ? (
+        <ResearchPage />
       ) : (
         <PlanList />
       )}

@@ -857,3 +857,140 @@ export interface ScenarioDoc {
   }
   sessions?: number
 }
+
+// --- RL-1 (research lab) contracts: catalog + comparisons + evidence ---
+// Handoff: ~/pop-deck-uploads/2026-09/TREX-Research-Lab-Design-and-Build-Handoff-29a9aa.md
+// Mirror of src/tree_options/research/contracts.py — keep string values in lockstep.
+
+export type ResearchEvidenceKind =
+  | 'synthetic_backtest'   // backtest/equity.py synthetic/v1
+  | 'shadow_proxy'         // desk/shadows.py EOD-deadline proxy
+  | 'sealed_campaign'      // artifacts/campaign-2026-09/<scope>/sealed-round.json
+  | 'paper_execution'      // DESK_PAPER_DIR; reserved (RL-2 only)
+  | 'broker_paper'         // E5; explicit out-of-scope for RL-1
+
+export type ResearchRegistration =
+  | 'before_entry_window_end'
+  | 'retrospective_backfill'
+
+export type ResearchDisposition =
+  | 'PASS'
+  | 'FAIL'
+  | 'HOLD-STANDS'
+  | 'DATA-GATED-NOT-RUN'
+  | 'NOT_EVALUABLE'
+  | 'WITHDRAWN'
+  | 'INSUFFICIENT_N'
+  | 'INSUFFICIENT_COVERAGE'
+  | 'NOT_CANDIDATE'
+  | 'DESCRIPTIVE-ONLY:NO-REGIME-SIGNAL'
+  | 'NOT_EVALUABLE-SEALED'
+
+export interface ResearchCandidate {
+  id: string
+  family: string
+  version: string
+  evidence_kind: ResearchEvidenceKind
+  registration: ResearchRegistration
+  disposition: ResearchDisposition
+  plot_funded_account: boolean
+  supported_start: string | null
+  supported_end: string | null
+  artifact_hashes: Record<string, string>
+  capabilities: string[]
+  ineligibility_reason: string | null
+  data_completeness: Record<string, unknown>
+  warnings: string[]
+  source_url: string
+}
+
+export interface ResearchCandidatesResponse {
+  candidates: ResearchCandidate[]
+}
+
+export interface ResearchEvidenceEnvelope {
+  candidate_id: string
+  point_session: string | null
+  hypothesis: string
+  estimand: string
+  exact_versions: Record<string, string>
+  cohort_membership: string[]
+  registered_or_exploratory: ResearchRegistration
+  diagnostics: Record<string, unknown>
+  robustness: string[]
+  source_artifacts: { path: string; sha256: string }[]
+  reproduction_command: string
+  warnings: string[]
+}
+
+export interface ComparisonSpec {
+  candidate_ids: string[]
+  starting_capital: string                 // Decimal as string across the wire
+  common_start: string | null
+  common_end: string | null
+  cashflow_timing: 'beginning_of_period' | 'end_of_period'
+  contribution_per_period: string
+  cost_model_kind: 'five_bp_fixed' | 'pass_through'
+  benchmark_candidate_id: string | null
+  currency: 'USD'
+  price_basis: 'nominal_pretax'
+  idle_cash_policy: 'cash_yields_zero'
+  rebalancing: 'none' | 'monthly'
+  position_sizing: 'integer' | 'fractional'
+  collateral: 'none'
+  borrowing: 'none'
+  knowledge_cutoff: string | null           // ISO instant
+  proposed_by: string
+  notes: string
+}
+
+export interface ComparisonRunResponse {
+  run_id: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  spec_hash: string
+  workspace: string
+}
+
+export interface ComparisonRow {
+  date: string
+  ending_value: string | null
+  starting_capital: string | null
+  committed_signed: string | null
+  contributions: string | null
+  withdrawals: string | null
+  gain: string | null
+  idle_cash: string | null
+  fees_paid: string | null
+}
+
+export interface DrawdownRow {
+  date: string
+  drawdown_dollar: string
+  drawdown_pct: string
+  recovery_end_date: string | null
+}
+
+export interface CandidateResultSummary {
+  candidate_id: string
+  candidate: ResearchCandidate
+  rows_by_date: Record<string, ComparisonRow>
+  drawdown: Record<string, DrawdownRow>
+  fees_paid_total: string
+  sample_size: number
+  sample_floor: number
+  sample_floor_met: boolean
+  rejection_reason: string | null
+  final_ending_value: string | null
+}
+
+export interface ComparisonResultResponse {
+  spec: ComparisonSpec
+  candidates: CandidateResultSummary[]
+  paired_diff: Record<string, Record<string, { value: string | null; reason: string | null }>>
+}
+
+export interface ResearchErrorResponse {
+  schema: 'research-error/1'
+  error: string
+  message: string
+}
