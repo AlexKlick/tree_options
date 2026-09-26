@@ -36,7 +36,11 @@ from dataclasses import dataclass
 from typing import Any
 
 from tree_options.research.comparison.engine import run_comparison
-from tree_options.research.contracts import ComparisonSpec
+from tree_options.research.contracts import (
+    ComparisonSpec,
+    PositionSizing,
+    Rebalancing,
+)
 from tree_options.research.scenarios.contracts import (
     ScenarioDiff,
     ScenarioKind,
@@ -61,9 +65,10 @@ class ForkOutcome:
     """The result of attempting to fork. EITHER ``refusal`` is set
     (no work was done) OR ``rewritten_spec``/``result`` are set.
 
-    ``parent_ref`` is returned in both branches — the worker uses it
-    to persist the parent's effective identity on first fork (immutable
-    thereafter).
+    ``parent_ref`` is the parent's CURRENT identity once the envelope
+    is well-formed (the worker persists it on first fork; immutable
+    thereafter). It is ``None`` for the earliest refusals (missing
+    parent / malformed envelope) where no identity could be bound.
     """
     spec: ScenarioSpec
     parent_ref: ParentRef | None
@@ -79,8 +84,20 @@ def fork_parent_and_replay(
     parent_result_envelope: dict[str, Any],
     catalog_provider: Callable[[], list],
     engine_fn: Callable[..., Any] = run_comparison,
+    attach_ref: ParentRef | None = None,
 ) -> ForkOutcome:
     """Fork ``scenario`` over its parent and return ``ForkOutcome``.
+
+    ``attach_ref`` is the ParentRef stored at FIRST attach time (read
+    back via ``lineage.load_parent_ref``). When present it is the
+    comparison baseline for lineage honesty: the parent's CURRENT
+    envelope identity must still match what it was at attach, or the
+    fork refuses with ``SCENARIO_PARENT_CHANGED``. When ``None``
+    (first fork of this parent) no drift comparison is possible and
+    the caller persists the returned ``parent_ref`` as the attach-time
+    record — comparing the envelope against a ref built from itself
+    would be a no-op, which is exactly the defect this parameter
+    exists to prevent.
 
     The caller (the bounded worker, see ``ResearchWorker`` in
     ``tree_options.research.runstate.worker``) is responsible for
@@ -119,13 +136,15 @@ def fork_parent_and_replay(
         parent_calendar_sha256=str(parent_calendar_sha),
     )
 
-    # -- lineage honesty: the parent's stored identity still matches --
-    changed = parent_changed(parent_result_envelope, parent_ref)
-    if changed is not None:
-        return ForkOutcome(
-            spec=scenario, parent_ref=parent_ref, rewritten_spec=None,
-            refusal=changed, result=None,
-        )
+    # -- lineage honesty: the parent's CURRENT identity still matches --
+    # -- what it was at attach time (the stored ParentRef), not itself --
+    if attach_ref is not None:
+        changed = parent_changed(parent_result_envelope, attach_ref)
+        if changed is not None:
+            return ForkOutcome(
+                spec=scenario, parent_ref=attach_ref,
+                rewritten_spec=None, refusal=changed, result=None,
+            )
 
     # -- type B stress: explicit refusal until the shock surface ships --
     if scenario.kind is ScenarioKind.CONDITIONAL_STRESS:
@@ -271,10 +290,6 @@ def _diff_is_legal(spec: ComparisonSpec) -> bool:
     is refused here before the engine runs — this is RL-2's analogue
     of the comparison plan's "implement the control or refuse it
     explicitly" rule."""
-    from tree_options.research.contracts import (
-        PositionSizing,
-        Rebalancing,
-    )
     return (spec.position_sizing is PositionSizing.INTEGER
             and spec.rebalancing is Rebalancing.NONE)
 

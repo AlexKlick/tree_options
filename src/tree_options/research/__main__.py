@@ -97,7 +97,19 @@ def _inspect_run(args: argparse.Namespace) -> int:
     if result is not None:
         payload["result_sha256"] = result["result_sha256"]
         payload["engine_sha256"] = result["engine_sha256"]
-        payload["input_snapshot"] = result["input_snapshot"]
+        # Scenario results (success AND refusal) legitimately lack an
+        # input_snapshot — only comparison computes and scenarios that
+        # ran the engine carry one. Read conditionally (the
+        # unconditional read crashed on scenario run ids).
+        if "input_snapshot" in result:
+            payload["input_snapshot"] = result["input_snapshot"]
+        if "input_snapshot_sha256" in result:
+            payload["input_snapshot_sha256"] = result[
+                "input_snapshot_sha256"]
+        if "calendar_sha256" in result:
+            payload["calendar_sha256"] = result["calendar_sha256"]
+        if "parent_run_id" in result:
+            payload["parent_run_id"] = result["parent_run_id"]
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     return 0
 
@@ -105,10 +117,12 @@ def _inspect_run(args: argparse.Namespace) -> int:
 def _inspect_scenario(args: argparse.Namespace) -> int:
     """RL-2: a scenario fork's full trace — parent spec, lineage
     pointer, child result with content-bound identity shas. The CLI
-    prints byte-for-byte the same envelope the API returns, so the
-    /api/research/runs/<id>/result ↔ python -m tree_options.research
-    inspect --scenario parity oracle (RL-2 acceptance matrix #6)
-    holds across transport."""
+    prints every identity field the API's ``GET /runs/<id>/result``
+    surfaces (engine / input-snapshot / calendar / scenario-diff /
+    result shas, parent_run_id) from the SAME stored record, so the
+    parity oracle (RL-2 acceptance matrix #6) compares like with
+    like across transport; the payload SHAPES differ (the CLI adds
+    the spec/lineage records, the API adds the workspace envelope)."""
     from tree_options.research.runstate.store import RunstateStore
 
     workspace = Path(args.workspace) if args.workspace else (
@@ -146,6 +160,11 @@ def _inspect_scenario(args: argparse.Namespace) -> int:
                 "scenario_diff_sha256"]
         if "parent_run_id" in result:
             payload["parent_run_id"] = result["parent_run_id"]
+        if "input_snapshot_sha256" in result:
+            payload["input_snapshot_sha256"] = result[
+                "input_snapshot_sha256"]
+        if "calendar_sha256" in result:
+            payload["calendar_sha256"] = result["calendar_sha256"]
         payload["wire"] = result.get("wire")
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     return 0

@@ -12,9 +12,11 @@ RL-1 surface:
     GET  /api/research/runs/{id}                    — poll run status (404 until claimed)
     GET  /api/research/runs/{id}/result             — funded-account rows + drawdown + diff
 
-RL §5 / §6 explicit out-of-scope (RL-1):
-    GET  /api/research/forecast   -> 410 Gone
-    GET  /api/research/scenarios  -> 410 Gone
+RL §5 / §6 explicit out-of-scope:
+    GET  /api/research/forecast   -> 410 Gone (RL-3 owns it)
+RL-2 shipped the scenario surface:
+    GET  /api/research/scenarios            — list lineage children
+    POST /api/research/scenarios/{parent}   — spool a scenario fork
 
 Broker boundary:
     The view NEVER imports ``tree_options.trex.ibkr``, ``.monitor``,
@@ -53,7 +55,10 @@ from tree_options.research.runstate.worker import (
     RUN_FORMAT_VERSION,
     ResearchWorker,
 )
-from tree_options.research.scenarios.contracts import scenario_spec_hash
+from tree_options.research.scenarios.contracts import (
+    scenario_diff_sha256,
+    scenario_spec_hash,
+)
 from tree_options.research.scenarios.spec_io import scenario_from_dict
 from tree_options.research.spec_io import spec_from_dict
 
@@ -425,25 +430,40 @@ def attach(
                     attach_child,
                     store_parent_ref,
                 )
-                store_parent_ref(store, ParentRef(
-                    parent_run_id=parent_run_id,
-                    parent_spec_hash=str(parent_run.get("spec_hash", "")),
-                    parent_engine_sha256=str(parent_result.get(
-                        "engine_sha256", "")),
-                    parent_input_snapshot_sha256=str(parent_result.get(
-                        "input_snapshot_sha256", "")),
-                    parent_calendar_sha256=str(parent_result.get(
-                        "calendar_sha256", "")),
-                ), at=datetime.now())
+                try:
+                    store_parent_ref(store, ParentRef(
+                        parent_run_id=parent_run_id,
+                        parent_spec_hash=str(parent_run.get(
+                            "spec_hash", "")),
+                        parent_engine_sha256=str(parent_result.get(
+                            "engine_sha256", "")),
+                        parent_input_snapshot_sha256=str(parent_result.get(
+                            "input_snapshot_sha256", "")),
+                        parent_calendar_sha256=str(parent_result.get(
+                            "calendar_sha256", "")),
+                    ), at=datetime.now())
+                except RunstateStoreError as exc:
+                    # A ParentRef already stored at an earlier attach no
+                    # longer matches this parent's current identity —
+                    # the parent was re-run under changed source/inputs.
+                    # The lineage is immutable once attached, so the
+                    # honest answer is 409, never an unhandled 500.
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "research.scenario.parent_changed",
+                            "message": (
+                                "this parent's identity changed since its "
+                                "first scenario attach; its stored lineage "
+                                f"is immutable — {exc}"),
+                            "parent_run_id": parent_run_id,
+                        },
+                    ) from exc
                 attach_child(store, ChildRef(
                     child_run_id=run_id,
                     parent_run_id=parent_run_id,
                     scenario_kind=spec.kind.value,
-                    scenario_diff_sha256=str(
-                        __import__(
-                            "tree_options.research.scenarios.contracts",
-                            fromlist=["scenario_diff_sha256"],
-                        ).scenario_diff_sha256(spec)),
+                    scenario_diff_sha256=scenario_diff_sha256(spec),
                 ), at=datetime.now())
                 status_value = "queued"
             else:

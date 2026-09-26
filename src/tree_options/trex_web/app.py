@@ -492,8 +492,9 @@ def create_app(
 
     attach_desk_evidence(app, database=desk_state_root / "evidence" / "desk.sqlite3")
 
-    # RL-1: research lane routes (catalog + comparisons + evidence drawer).
-    # RL-2 (scenarios) and RL-3 (forecast) return 410 Gone until shipped.
+    # Research lane routes: RL-1 catalog + comparisons + evidence
+    # drawer; RL-2 scenario branching (GET/POST /api/research/
+    # scenarios). RL-3 (forecast) still returns 410 Gone.
     from tree_options.trex_web.research_view import attach as attach_research
 
     attach_research(app)

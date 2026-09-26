@@ -224,3 +224,34 @@ def test_post_scenario_rejects_nonfinite_contribution_at_parse(client):
                       "diff": {"contribution_per_period": "Infinity"}})
     assert r.status_code == 400
     assert "must be finite" in r.json()["detail"]["message"]
+
+
+def test_post_scenario_409s_when_stored_parent_ref_drifted(client):
+    """RL-2 hardening (P1-1 route half): a ParentRef stored at an
+    earlier attach no longer matches the parent's current identity
+    (the parent was re-run under changed source/inputs). The lineage
+    is immutable once attached, so submitting a NEW child spec on
+    that parent must 409 with the parent_changed reason — never the
+    unhandled RunstateStoreError 500 the pre-hardening route raised."""
+    from tree_options.research.scenarios.lineage import (
+        ParentRef,
+        store_parent_ref,
+    )
+
+    tc, ws, _ = client
+    parent_id = _spawn_parent(ws)
+    # Simulate an attach that happened when the parent's engine sha
+    # was different from what its current result record claims.
+    with open_runstate_store(ws) as store:
+        store_parent_ref(store, ParentRef(
+            parent_run_id=parent_id,
+            parent_spec_hash="x" * 64,
+            parent_engine_sha256="Z" * 64,   # drifted vs "e"*64
+            parent_input_snapshot_sha256="b" * 64,
+            parent_calendar_sha256="c" * 64,
+        ), at=datetime.now())
+    body = {"kind": "contribution_planning",
+            "diff": {"contribution_per_period": "750"}}  # fresh child
+    r = tc.post(f"/api/research/scenarios/{parent_id}", json=body)
+    assert r.status_code == 409
+    assert r.json()["detail"]["error"] == "research.scenario.parent_changed"

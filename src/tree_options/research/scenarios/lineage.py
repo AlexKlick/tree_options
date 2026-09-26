@@ -39,9 +39,8 @@ from tree_options.research.scenarios.refusal_codes import (
     ScenarioRefusal,
 )
 
-#: Store kind for ParentRef records (sibling of "spec", "result" in
-#: tree_options.research.runstate.store._KINDS). Added to the
-#: allowlist in this module's open_runstate_store extension.
+#: Store kind for ParentRef records (sibling of "spec", "result").
+#: The allowlist lives in ``tree_options.research.runstate.store._KINDS``.
 PARENT_KIND: str = "scenario_parent"
 
 
@@ -115,8 +114,8 @@ def attach_child(store: Any, child: ChildRef,
 
 def list_children(store: Any, parent_run_id: str) -> tuple[str, ...]:
     """Walk all child pointers and return the child_run_ids attached to
-    this parent. Order is by insertion (sort by the audit row's
-    occurred_at, cheapest available signal)."""
+    this parent, ordered by the store's ``created_at`` (insertion
+    order)."""
     out: list[str] = []
     for payload, _at in store.all_at("child"):
         if (isinstance(payload, dict)

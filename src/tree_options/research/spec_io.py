@@ -34,7 +34,6 @@ from tree_options.research.contracts import (
     PriceBasis,
     Rebalancing,
 )
-from tree_options.research.scenarios.spec_io import scenario_from_dict
 
 #: Upper bound on starting capital (money max_digits=18 in the ledger
 #: schemas; a comparison with more digits than that cannot execute).
@@ -133,4 +132,4 @@ def spec_from_dict(payload: dict[str, Any]) -> ComparisonSpec:
     )
 
 
-__all__ = ["scenario_from_dict", "spec_from_dict"]
+__all__ = ["spec_from_dict"]

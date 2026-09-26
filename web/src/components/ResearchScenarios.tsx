@@ -12,18 +12,16 @@
  * reused from ResearchNavChart for the diff chart.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { usePoll } from '../hooks/usePoll'
 import {
   getComparisonResult,
-  listResearchCandidates,
   listScenarios,
   spoolScenario,
   getResearchRun,
 } from '../lib/api'
 import type {
   ComparisonResultWire,
-  ResearchCandidate,
   RunResultResponse,
 } from '../lib/types'
 import { ResearchNavChart, type NavSeries } from './ResearchNavChart'
@@ -70,10 +68,8 @@ function buildChildSeries(result: RunResultResponse, candidateId: string): NavSe
 }
 
 export function ResearchScenarios(): JSX.Element {
-  const { data: catalog } = usePoll(() => listResearchCandidates(), 30_000)
-  const candidates: ResearchCandidate[] = catalog?.candidates ?? []
-
-  // Default the parent picker to the first PASS plot_funded_account candidate.
+  // The parent field starts EMPTY by design (P2-5): it must hold a
+  // completed run's 64-hex run_id, never a candidate id.
   const [parentRunId, setParentRunId] = useState<string>('')
   const [contribution, setContribution] = useState('500')
   const [pickedChild, setPickedChild] = useState<string | null>(null)
@@ -83,22 +79,12 @@ export function ResearchScenarios(): JSX.Element {
     'contribution_planning',
   )
 
-  // The first plottable candidate becomes the parent's natural id for
-  // browsing — a real operator workflow uses the run they'd just
-  // submitted, so the picker keeps both the catalog and a typed-in
-  // run_id field.
-  useEffect(() => {
-    if (!parentRunId && candidates.length > 0) {
-      setParentRunId(candidates[0].id)
-    }
-  }, [candidates, parentRunId])
-
   const { data: lineage } = usePoll(
     () => listScenarios(parentRunId || undefined),
     30_000,
   )
 
-  const { data: childResult, refresh: refreshChild } = usePoll(
+  const { data: childResult } = usePoll(
     async () =>
       pickedChild ? getComparisonResult(pickedChild) : null,
     5_000,
@@ -134,7 +120,9 @@ export function ResearchScenarios(): JSX.Element {
         diff: { contribution_per_period: contribution },
       })
       setPickedChild(r.run_id)
-      void refreshChild()
+      // No manual refresh here: the child-result poll's fetcher is a
+      // ref, so calling the old closure now would fetch the PREVIOUS
+      // (or null) child; the next 5 s tick picks up the new id.
     } catch (e) {
       setSubmitError(e instanceof Error ? e.message : 'submit failed')
     }
@@ -226,31 +214,19 @@ export function ResearchScenarios(): JSX.Element {
         )}
       </section>
 
-      {pickedChild && childResult && childResult.status === 'completed' && (
-        <section className="research-scenarios__chart">
-          <h3>Diff chart</h3>
-          <ResearchNavChart series={series} ariaLabel="scenario diff chart" />
+      {/* A refused scenario is an HONEST BLOCKER, not an empty chart:
+          the refusal wire ({refusal, message}) has no candidates, so
+          gating the chart/totals on their presence alone rendered a
+          silently blank workspace. Failed runs surface their error
+          the same way. */}
+      {pickedChild && childResult && childResult.status === 'failed' && (
+        <section className="research-scenarios__refusal" data-testid="scenarios-failure">
+          <h3>Run failed</h3>
+          <p className="error">{childResult.error ?? 'the worker recorded an error'}</p>
         </section>
       )}
-
       {pickedChild && childResult && childResult.status === 'completed' && (
-        <section className="research-scenarios__totals">
-          <h3>Totals</h3>
-          <table data-testid="scenarios-totals">
-            <thead>
-              <tr><th>Candidate</th><th>Final NAV</th><th>Total fees</th></tr>
-            </thead>
-            <tbody>
-              {((childResult.result as ComparisonResultWire).candidates ?? []).map(s => (
-                <tr key={s.candidate_id} data-testid={`scenarios-total-${s.candidate_id}`}>
-                  <td>{s.candidate_id}</td>
-                  <td>{fmtUsd(s.final_ending_value)}</td>
-                  <td>{fmtUsd(s.fees_paid_total)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </section>
+        <ScenarioOutcome childResult={childResult} series={series} />
       )}
 
       {pickedChild && (
@@ -260,17 +236,82 @@ export function ResearchScenarios(): JSX.Element {
   )
 }
 
+/** Renders a completed scenario run's outcome: a typed refusal is a
+ * first-class result (the worker records it content-bound), shown as
+ * the honest blocker with its code + message; a computed result
+ * renders the diff chart and the totals table. */
+function ScenarioOutcome({
+  childResult,
+  series,
+}: {
+  childResult: RunResultResponse
+  series: NavSeries[]
+}): JSX.Element | null {
+  const wire = childResult.result
+  const refused =
+    wire !== null &&
+    typeof wire === 'object' &&
+    'refusal' in wire &&
+    (wire as { refusal?: string | null }).refusal
+  if (refused) {
+    const w = wire as { refusal: string; message?: string; scenario_kind?: string }
+    return (
+      <section className="research-scenarios__refusal" data-testid="scenarios-refusal">
+        <h3>Scenario refused: <code>{w.refusal}</code></h3>
+        <p className="muted">{w.message ?? 'no refusal message recorded'}</p>
+        <p className="muted">
+          A refusal is a recorded outcome, not an error — the worker
+          published it content-bound. Fix the diff or the parent, then
+          fork again.
+        </p>
+      </section>
+    )
+  }
+  if (!wire || typeof wire !== 'object' || !('candidates' in wire)) {
+    return (
+      <section className="research-scenarios__refusal" data-testid="scenarios-empty-result">
+        <p className="muted">
+          The recorded result carries no candidate series for this fork.
+        </p>
+      </section>
+    )
+  }
+  const w = wire as ComparisonResultWire
+  return (
+    <>
+      <section className="research-scenarios__chart">
+        <h3>Diff chart</h3>
+        <ResearchNavChart series={series} ariaLabel="scenario diff chart" />
+      </section>
+      <section className="research-scenarios__totals">
+        <h3>Totals</h3>
+        <table data-testid="scenarios-totals">
+          <thead>
+            <tr><th>Candidate</th><th>Final NAV</th><th>Total fees</th></tr>
+          </thead>
+          <tbody>
+            {(w.candidates ?? []).map(s => (
+              <tr key={s.candidate_id} data-testid={`scenarios-total-${s.candidate_id}`}>
+                <td>{s.candidate_id}</td>
+                <td>{fmtUsd(s.final_ending_value)}</td>
+                <td>{fmtUsd(s.fees_paid_total)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </section>
+    </>
+  )
+}
+
 /** Tiny inline lifecycle probe so the SPA confirms a child run
  * actually exists in the runstate store after submit. The probe
- * reads /api/research/runs/<id> and surfaces the result on screen
- * — a "queued → running → completed" pulse the user can see. */
+ * reads /api/research/runs/<id> on every child change and surfaces
+ * the status the store currently records. */
 function ChildLifecycleProbe({ childRunId }: { childRunId: string }): JSX.Element {
-  const lastFetchedFor = useRef<string | null>(null)
   const [lifecycle, setLifecycle] = useState<string>('idle')
   useEffect(() => {
     let cancelled = false
-    if (lastFetchedFor.current === childRunId) return
-    lastFetchedFor.current = childRunId
     ;(async () => {
       const r = await getResearchRun(childRunId)
       if (!cancelled) setLifecycle(typeof r === 'object' && r && 'status' in r ? String((r as { status: string }).status) : 'unknown')

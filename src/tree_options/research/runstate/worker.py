@@ -67,7 +67,13 @@ from tree_options.research.scenarios.contracts import (
 from tree_options.research.scenarios.engine import fork_parent_and_replay
 from tree_options.research.scenarios.lineage import (
     ChildRef,
+    load_parent_ref,
     store_parent_ref,
+)
+from tree_options.research.scenarios.refusal_codes import (
+    SCENARIO_PARENT_CHANGED,
+    SCENARIO_PARENT_MISSING,
+    ScenarioRefusal,
 )
 from tree_options.research.scenarios.spec_io import scenario_from_dict
 from tree_options.research.spec_io import spec_from_dict
@@ -280,16 +286,11 @@ class ResearchWorker:
         # The parent's stored result envelope — the source of truth
         # for identity matching (the parent's wire payload carries
         # the engine/input/calendar shas that must still match).
-        parent_envelope_payload = store_get_cached(
-            self.workspace, "result", parent_run_id)
+        parent_envelope_payload = store.get("result", parent_run_id)
         if parent_envelope_payload is None:
             # Mirrors the comparison engine's "missing parent" shape;
             # the spec holder refusal is rendered into the result
             # wire so the SPA renders the honest blocker.
-            from tree_options.research.scenarios.refusal_codes import (
-                SCENARIO_PARENT_MISSING,
-                ScenarioRefusal,
-            )
             refusal = ScenarioRefusal(
                 code=SCENARIO_PARENT_MISSING,
                 message="parent run has no stored result record",
@@ -302,10 +303,6 @@ class ResearchWorker:
             )
         parent_envelope = parent_envelope_payload.get("wire")
         if not isinstance(parent_envelope, dict):
-            from tree_options.research.scenarios.refusal_codes import (
-                SCENARIO_PARENT_MISSING,
-                ScenarioRefusal,
-            )
             refusal = ScenarioRefusal(
                 code=SCENARIO_PARENT_MISSING,
                 message="parent run result envelope is malformed")
@@ -335,12 +332,18 @@ class ResearchWorker:
         }
         parent_envelope_for_engine = {**parent_envelope, **parent_identity,
                                     "status": parent_status}
+        # P1-1 enforcement: the attach-time ParentRef (written on the
+        # first fork of this parent) is READ BACK and handed to the
+        # engine as the lineage baseline. First fork (no stored ref)
+        # attaches; every later fork is compared against the original.
+        attach_ref = load_parent_ref(store, parent_run_id)
         outcome = fork_parent_and_replay(
             store,
             scenario=spec,
             parent_result_envelope=parent_envelope_for_engine,
             catalog_provider=self.catalog_provider,
             engine_fn=self.engine_fn,
+            attach_ref=attach_ref,
         )
         if outcome.refusal is not None:
             return _refusal_result(
@@ -363,6 +366,59 @@ class ResearchWorker:
         )
         from tree_options.research.scenarios.lineage import attach_child
         attach_child(store, child, at=datetime.now())
+        # P1-2 enforcement: the child's input identity is RECOMPUTED
+        # from the live catalog for the rewritten spec — never
+        # inherited from the parent's record. A candidate whose
+        # artifact hashes changed under the same id between the
+        # parent run and this fork produces a different snapshot, and
+        # the fork refuses rather than publishing a receipt that
+        # claims the parent's inputs.
+        assert outcome.rewritten_spec is not None
+        live_plan = resolve_plan(outcome.rewritten_spec)
+        if live_plan.refused:
+            return _refusal_result(
+                run_id, spec,
+                ScenarioRefusal(
+                    code=SCENARIO_PARENT_CHANGED,
+                    message=("the scenario diff made the plan unresolvable "
+                             f"at compute time: {live_plan.refusal_reason}"),
+                ),
+                spec_hash=scenario_spec_hash(spec),
+                format_version=RUN_FORMAT_VERSION,
+                engine_sha256=engine_identity_sha(),
+                parent_run_id=parent_run_id,
+                scenario_diff_sha256=scenario_diff_sha256(spec),
+            )
+        catalog_now = {c.id: c for c in self.catalog_provider()}
+        live_cands = tuple(catalog_now[cid]
+                           for cid in outcome.rewritten_spec.candidate_ids)
+        live_baseline = (
+            catalog_now.get(outcome.rewritten_spec.benchmark_candidate_id)
+            if outcome.rewritten_spec.benchmark_candidate_id else None)
+        live_snapshot, live_snapshot_sha = input_snapshot_sha(
+            live_cands, live_baseline, live_plan.calendar_sha256)
+        parent_input_sha = parent_envelope_payload.get(
+            "input_snapshot_sha256")
+        if live_snapshot_sha != parent_input_sha:
+            refusal = ScenarioRefusal(
+                code=SCENARIO_PARENT_CHANGED,
+                message=(f"parent input_snapshot_sha256 drifted: parent "
+                         f"record claims {parent_input_sha}, live catalog "
+                         f"resolves to {live_snapshot_sha}; refuse to "
+                         "publish a child whose receipt would misrepresent "
+                         "its inputs"),
+            )
+            refusal_payload = _refusal_result(
+                run_id, spec, refusal,
+                spec_hash=scenario_spec_hash(spec),
+                format_version=RUN_FORMAT_VERSION,
+                engine_sha256=engine_identity_sha(),
+                parent_run_id=parent_run_id,
+                scenario_diff_sha256=scenario_diff_sha256(spec),
+            )
+            refusal_payload["wire"][
+                "live_input_snapshot_sha256"] = live_snapshot_sha
+            return refusal_payload
         wire = outcome.result.to_wire()
         # Append scenario-specific metadata to the wire envelope so
         # the SPA can render the lineage chip without an extra
@@ -371,6 +427,7 @@ class ResearchWorker:
         wire_meta["parent_run_id"] = parent_run_id
         wire_meta["scenario_kind"] = spec.kind.value
         wire_meta["scenario_access_mode"] = spec.access_mode.value
+        wire_meta["refusal"] = None
         result_sha = hashlib.sha256(
             json.dumps(wire_meta, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
@@ -379,9 +436,10 @@ class ResearchWorker:
             "spec_hash": scenario_spec_hash(spec),
             "format_version": RUN_FORMAT_VERSION,
             "engine_sha256": engine_identity_sha(),
-            "input_snapshot_sha256":
-                parent_envelope_for_engine["input_snapshot_sha256"],
-            "calendar_sha256": parent_envelope_for_engine["calendar_sha256"],
+            "input_snapshot": live_snapshot,
+            "input_snapshot_sha256": live_snapshot_sha,
+            "input_snapshot_verified_against_parent": True,
+            "calendar_sha256": live_plan.calendar_sha256,
             "scenario_diff_sha256": scenario_diff_sha256(spec),
             "parent_run_id": parent_run_id,
             "scenario_kind": spec.kind.value,
@@ -434,20 +492,6 @@ __all__ = ["RUN_FORMAT_VERSION", "ResearchWorker", "engine_identity_sha",
 
 
 # -- module-scope helpers --------------------------------------------------
-
-
-def store_get_cached(workspace: Path, kind: str, key: str) -> dict[str, Any] | None:
-    """Open the runstate store at ``workspace`` and return the payload
-    of ``(kind, key)``. Used by ``_compute_scenario`` to read the
-    parent's stored result envelope without holding the store open
-    across the engine call.
-
-    The store is opened briefly (in its own ``with`` block) so a
-    second open for the lineage writes does not stack two openers on
-    the same SQLite file (which on some kernels surfaces as
-    ``database is locked``)."""
-    with open_runstate_store(workspace) as store:
-        return store.get(kind, key)
 
 
 def _refusal_result(run_id: str, spec: Any, refusal: Any, **extra: Any) -> dict[str, Any]:

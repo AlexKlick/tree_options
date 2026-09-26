@@ -211,18 +211,6 @@ def test_hold_20_candidate_mirrors_vix_term():
     assert "can_defend_daily_nav=True" in cand.funded_history_reason
 
 
-def test_shadow_evidence_kind_marker():
-    """Tiny structural oracle: the catalog scan key for shadow-proxy
-    candidates is exactly ``"shadow_proxy"`` (matches the engine
-    adapter table)."""
-    from tree_options.research.catalog.shadow_proxy import (
-        adapt_shadow_executions,
-    )
-    assert adapt_shadow_executions(
-        ResearchEvidenceKind.SHADOW_PROXY) == "shadow_proxy"
-    assert adapt_shadow_executions(
-        ResearchEvidenceKind.SEALED_CAMPAIGN) == ""
-
 
 # -- 4. Shadow fixture integration (oracle 4 of RL-2) ----------------------
 

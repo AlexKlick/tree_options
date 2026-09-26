@@ -152,9 +152,16 @@ def test_cli_scenario_inspect_matches_api_result(tmp_path):
     )
     cli_payload = json.loads(result.stdout)
 
-    # Same identity shas on both surfaces
+    # Same identity shas on both surfaces — every field BOTH surfaces
+    # carry is compared for equality, not just presence (the original
+    # oracle only compared engine_sha and truth-checked the diff sha).
     assert api_body["engine_sha256"] == cli_payload["engine_sha256"]
-    assert cli_payload["scenario_diff_sha256"]
+    assert api_body["scenario_diff_sha256"] == cli_payload[
+        "scenario_diff_sha256"]
+    assert api_body["input_snapshot_sha256"] == cli_payload[
+        "input_snapshot_sha256"]
+    assert api_body["calendar_sha256"] == cli_payload["calendar_sha256"]
+    assert api_body["result_sha256"] == cli_payload["result_sha256"]
     assert cli_payload["parent_run_id"] == parent_id
     # The wired parent_run_id on the API body comes from the result
     # envelope (research_view surfaces it), not the legacy field.

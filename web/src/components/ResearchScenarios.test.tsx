@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
     scenario_diff_sha256: string
   }>,
   lastResultEnvelope: null as null | object,
+  resultEnvelope: null as null | object,
 }))
 
 const CANDIDATES = [
@@ -119,7 +120,7 @@ vi.mock('../lib/api', () => ({
       workspace: '/tmp',
     }
   },
-  getComparisonResult: async () => RESULT_ENVELOPE,
+  getComparisonResult: async () => mocks.resultEnvelope ?? RESULT_ENVELOPE,
   getResearchRun: async () => ({ run_id: 'r1', status: 'completed', spec_hash: 'r1', workspace: '/tmp' }),
 }))
 
@@ -139,6 +140,12 @@ describe('ResearchScenarios (RL-2)', () => {
     await waitFor(() => {
       expect(screen.getByTestId('scenarios-parent-input')).toBeTruthy()
     })
+    // The parent field starts EMPTY by design (P2-5: seeding it from
+    // a candidate id guaranteed a 404); the operator pastes a
+    // completed run's id.
+    fireEvent.change(screen.getByTestId('scenarios-parent-input'), {
+      target: { value: 'a'.repeat(64) },
+    })
     const contribution = screen.getByTestId('scenarios-contribution-input')
     fireEvent.change(contribution, { target: { value: '500' } })
     fireEvent.click(screen.getByTestId('scenarios-submit'))
@@ -151,5 +158,33 @@ describe('ResearchScenarios (RL-2)', () => {
       expect(row).toBeTruthy()
     }, { timeout: 8_000 })
     expect(screen.getAllByText('$10,883.20').length).toBeGreaterThan(0)
+  })
+
+  it('renders a refused scenario as the honest blocker, never an empty chart', { timeout: 15_000 }, async () => {
+    // P2-3 oracle: the refusal wire ({refusal, message}) carries no
+    // candidates, so gating on status alone used to render a blank
+    // workspace. The blocker must name the machine-readable code.
+    mocks.resultEnvelope = {
+      run_id: 'r2',
+      status: 'completed',
+      result: {
+        refusal: 'research.scenario.stress_unsupported',
+        message: 'RL-2 ships no option-valuation shock engine',
+        scenario_kind: 'conditional_stress',
+      },
+    }
+    render(<ResearchScenarios />)
+    await waitFor(() => {
+      expect(screen.getByTestId('scenarios-parent-input')).toBeTruthy()
+    })
+    fireEvent.change(screen.getByTestId('scenarios-parent-input'), {
+      target: { value: 'b'.repeat(64) },
+    })
+    fireEvent.click(screen.getByTestId('scenarios-submit'))
+    await waitFor(() => {
+      expect(screen.getByTestId('scenarios-refusal')).toBeTruthy()
+    }, { timeout: 8_000 })
+    expect(screen.getByText(/research\.scenario\.stress_unsupported/)).toBeTruthy()
+    expect(screen.queryByTestId('scenarios-totals')).toBeNull()
   })
 })

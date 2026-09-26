@@ -60,7 +60,7 @@ from tree_options.research.scenarios.refusal_codes import (
     SCENARIO_PARENT_MISSING,
     SCENARIO_STRESS_UNSUPPORTED,
 )
-from tree_options.research.spec_io import scenario_from_dict
+from tree_options.research.scenarios.spec_io import scenario_from_dict
 
 # -- fixtures ---------------------------------------------------------------
 
@@ -217,11 +217,16 @@ def test_contribution_changes_wealth_not_profit():
     # catalog without adapter executions, NAV is the contributed
     # cash on every session -> 10500.00 every day.
     summary = out.result.candidates[0]
-    if summary.rows_by_date:
-        first = min(summary.rows_by_date)
-        assert summary.rows_by_date[first]["nav"] == "10500.00", (
-            "contribution on first session must add exactly $500 "
-            "to NAV; this is wealth, not measured investment profit")
+    # A $500 beginning-of-period flow IS an observation, so rows must
+    # exist — the guard-free form (the old `if rows_by_date` guard
+    # made the oracle vacuously passable on an empty result).
+    assert summary.rows_by_date, (
+        "a contribution scenario must emit rows (the flow is an "
+        "observation, per the funded engine's missingness contract)")
+    first = min(summary.rows_by_date)
+    assert summary.rows_by_date[first]["nav"] == "10500.00", (
+        "contribution on first session must add exactly $500 "
+        "to NAV; this is wealth, not measured investment profit")
 
 
 def test_withdrawal_overdraw_refuses_in_funded_engine():

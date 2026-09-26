@@ -23,7 +23,7 @@ appear in the catalog with explicit `funded_history` rationale.
   `contracts.py`, `refusal_codes.py`, `engine.py`, `lineage.py`,
   `spec_io.py`) + `src/tree_options/research/catalog/shadow_proxy.py`
   + `src/tree_options/research/runstate/worker.py` (extends
-  `_next_queued` + `_process_scenario`) + `src/tree_options/trex_web/research_view.py`
+  `_next_queued` + `_compute_scenario`) + `src/tree_options/trex_web/research_view.py`
   (replaces 410 Gone with real `GET/POST`).
 - **Tests:** `tests/research/` now 18 files / 197 cases (was 12 /
   151 at RL-1 landing):
@@ -43,7 +43,7 @@ appear in the catalog with explicit `funded_history` rationale.
     POST, 400 on unknown diff fields, 404 on missing parent, 409 on
     parent with no result envelope, lineage filtering).
   - `test_inspect_cli_parity.py` — 1 end-to-end parity oracle (CLI
-    `inspect --scenario` agrees with API GET on all four shas and
+    `inspect --scenario` agrees with API GET on every shared identity field (engine / input-snapshot / calendar / scenario-diff / result shas) and
     parent_run_id).
   - `test_shadow_proxy.py` — 9 shadow-proxy oracles (hand-calculable
     NAV conversion, defense document honesty, candidate boundaries
@@ -67,9 +67,9 @@ each is pinned by the oracles above:
 | # | Boundary | Where it lives |
 |---|---|---|
 | 1 | Baseline reproduction (an all-None diff reproduces the parent's `wire` byte-for-byte) | `test_scenario.py::test_unmodified_fork_reproduces_parent_byte_for_byte` |
-| 2 | Unchanged-input identity (`engine_sha + input_sha + calendar_sha` of the child equal the parent's; only `scenario_diff_sha256` differs) | `test_scenario.py::test_unchanged_inputs_share_three_shas` (via `test_unmodified_fork_reproduces_parent_byte_for_byte`'s shared-identity step) + `test_scenario_worker.py::test_scenario_publishes_content_bound_result` |
+| 2 | Unchanged-input identity (`engine_sha + input_sha + calendar_sha` of the child equal the parent's; only `scenario_diff_sha256` differs) — the child's input snapshot is RECOMPUTED from the live catalog and the fork refuses `SCENARIO_PARENT_CHANGED` on drift | `test_lineage_enforcement.py::test_unchanged_inputs_share_three_shas` (added in the 2026-09-26 hardening pass; the original exit-packet citation named a test that did not exist) + `test_lineage_enforcement.py::test_worker_refuses_fork_when_candidate_artifacts_drifted` |
 | 3 | Cash/capital invariants (a contribution scenario contributes cash on the declared session; an overdraw refuses) | `test_scenario.py::test_contribution_changes_wealth_not_profit`, `test_withdrawal_overdraw_refuses_in_funded_engine` |
-| 4 | Scenario lineage (parent → child walking; a child whose parent identity drifted refuses with `SCENARIO_PARENT_CHANGED`) | `tests/research/test_lineage.py` (12 tests covering `attach_child`, `list_children`, `store_parent_ref`, `load_parent_ref`, `parent_changed`, `parent_missing`) |
+| 4 | Scenario lineage (parent → child walking; a child whose parent identity drifted refuses with `SCENARIO_PARENT_CHANGED`) — the attach-time `ParentRef` is READ BACK and compared against the parent's current envelope (`attach_ref`); pre-hardening this gate compared the envelope against itself and could never fire | `tests/research/test_lineage.py` (12 tests covering `attach_child`, `list_children`, `store_parent_ref`, `load_parent_ref`, `parent_changed`, `parent_missing`) |
 | 5 | Missing-input refusals (a funding scenario with unplottable candidates refuses pre-write with `SCENARIO_MISSING_CAPABILITY`) | `test_scenario.py::test_missing_capability_refused_when_funding_diff_targets_unplottable` + the type-B `SCENARIO_STRESS_UNSUPPORTED` oracle |
 | 6 | API/CLI numerical parity (read-only CLI prints the same numbers as the API GET) | `test_inspect_cli_parity.py` (subprocess invocation of `python -m tree_options.research inspect --scenario`) + the `/api/research/runs/<id>/result` route reading the SAME stored result envelope |
 
@@ -179,7 +179,7 @@ test-suite rows above.)
 | Live POST /scenarios idempotency | `curl -X POST /api/research/scenarios/<parent>`  × 2 | 202 first / 200 second; same `run_id`; same stored result |
 | Live `GET /api/research/scenarios?parent_run_id=<id>` | `curl :8090/api/research/scenarios?...` | children list returns the published child |
 | Live `GET /api/research/runs/<child>/result` | `curl :8090/api/research/runs/<id>/result` | `status=completed`, `engine_sha256` / `input_snapshot_sha256` / `calendar_sha256` / `scenario_diff_sha256` / `parent_run_id` all present |
-| CLI parity probe | `python -m tree_options.research inspect --scenario <child_run_id> --workspace /home/alexk/.local/state/trex-research/run-anon` | payload's `engine_sha256` (1618163f04daaa11…) and `parent_run_id` match the API GET byte-for-byte; `scenario_diff_sha256` (f07e2616c84ae480…) matches |
+| CLI parity probe | `python -m tree_options.research inspect --scenario <child_run_id> --workspace /home/alexk/.local/state/trex-research/run-anon` | payload's `engine_sha256` (1618163f04daaa11…) and `parent_run_id` match the API GET exactly (equality on every shared identity field; the payload SHAPES differ by design — the CLI adds spec/lineage records) |
 | Boundary (AST) | `grep -RIn 'tree_options.trex.{ibkr,monitor,gateway_watch,enter}' src/tree_options/research` | zero matches |
 | Research gate | `bash scripts/research_gate.sh` | rc=0 |
 
@@ -236,7 +236,11 @@ workspace, write never. The only environment action was the
 RL-3 — calibrated outlook and study templates (rolling-origin
 evaluation, forecast distributions, CRPS diagnostics). When the
 shadow-proxy adapter's catalog reads a desk table with enough
-coverage for `vix_term` and `hold-20`, those two incumbents flip
-to `funded_history=reconstructed` automatically — no code change
-needed in the research lane; the defense document drives the
-catalog.
+coverage for `vix_term` and `hold-20`, those two incumbents CAN
+flip to `funded_history=reconstructed` — but NOT automatically: the
+flip needs the desk-side read adapter wired (a mark loader over the
+desk evidence store's `mark`/`episode` objects, a defense
+computation, and the catalog call-site change from the hardcoded
+`UNAVAILABLE`). Until that adapter lands AND the desk's shadow
+tables actually contain episodes/marks (as of 2026-09-26 they
+contain zero), both incumbents stay honestly `unavailable`.

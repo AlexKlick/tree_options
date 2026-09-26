@@ -180,15 +180,6 @@ def build_hold_20_candidate(support: FundedHistorySupport,
     )
 
 
-def adapt_shadow_executions(adapter: ResearchEvidenceKind) -> str:
-    """Marker for the catalog scan to pick up shadow-proxy candidates:
-    the engine's adapter dispatch lives in
-    ``comparison.engine._ADAPTERS`` keyed by evidence_kind. This
-    helper exists for unit-test wiring only — the engine adapter
-    is the shadow engine wired below."""
-    return "shadow_proxy" if adapter is ResearchEvidenceKind.SHADOW_PROXY else ""
-
-
 def convert_shadow_to_funded_inputs(
     shadow_marks: Iterable[ShadowMark],
     session_window: Iterable[date],
@@ -242,7 +233,6 @@ __all__ = [
     "SHADOW_FAMILY_VIX_TERM",
     "ShadowDefense",
     "ShadowMark",
-    "adapt_shadow_executions",
     "build_hold_20_candidate",
     "build_vix_term_candidate",
     "convert_shadow_to_funded_inputs",
