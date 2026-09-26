@@ -38,6 +38,16 @@ runstate store via the lineage table; the engine forks the parent's
 result and publishes the child's content-bound artifact under the
 child's own run_id. Status / failure / requeue rules are unchanged.
 
+RL-3 adds FORECAST runs (``kind == "forecast"``) under the same
+lifecycle, with execution-bound identity: the run record carries the
+``series_sha256`` and ``engine_sha256`` captured at SUBMISSION, and
+the worker RECOMPUTES both before evaluating — a data revision or an
+engine change between enqueue and compute publishes a typed refusal
+(``research.forecast.source_drift`` / ``engine_changed``, both shas in
+the wire), never revised bytes or new code under the submission's
+identity. Unknown run kinds now FAIL loudly instead of silently
+computing a comparison.
+
 Workers are unit-testable without threads: ``step()`` claims at most
 one queued run synchronously.
 """
@@ -52,9 +62,24 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from tree_options.desk.contracts import canonical
+from tree_options.research.comparison.calendar import calendar_sha256
 from tree_options.research.comparison.engine import run_comparison
 from tree_options.research.comparison.plan import resolve_plan
 from tree_options.research.contracts import ResearchCandidate
+from tree_options.research.forecast.contracts import ForecastSourceId
+from tree_options.research.forecast.engine import evaluate_forecast
+from tree_options.research.forecast.refusal_codes import (
+    FORECAST_ENGINE_CHANGED,
+    FORECAST_SOURCE_DRIFT,
+    ForecastRefusal,
+)
+from tree_options.research.forecast.sources import (
+    ForecastSeries,
+    load_index,
+    load_synthetic,
+)
+from tree_options.research.forecast.spec_io import forecast_from_dict
 from tree_options.research.runstate.spec_hash import spec_hash as make_spec_hash
 from tree_options.research.runstate.store import (
     RunstateStoreError,
@@ -87,6 +112,9 @@ RUN_FORMAT_VERSION = 2
 #: adds the scenarios engine to the same identity surface so a
 #: scenario result's ``engine_sha`` matches the comparison engine
 #: bytes that produced it (scenarios reuse run_comparison verbatim).
+#: RL-3 adds the forecast package AND ``tree_options.desk.stats``
+#: (forecast receipts depend on its DM/OLS) — changing the shared sha
+#: for every lane is expected and documented: a rerun is a NEW run.
 _ENGINE_MODULES = (
     "tree_options.research.comparison.funded",
     "tree_options.research.comparison.engine",
@@ -97,6 +125,14 @@ _ENGINE_MODULES = (
     "tree_options.research.scenarios.engine",
     "tree_options.research.scenarios.lineage",
     "tree_options.research.scenarios.contracts",
+    "tree_options.research.forecast.contracts",
+    "tree_options.research.forecast.refusal_codes",
+    "tree_options.research.forecast.spec_io",
+    "tree_options.research.forecast.metrics",
+    "tree_options.research.forecast.sources",
+    "tree_options.research.forecast.harness",
+    "tree_options.research.forecast.engine",
+    "tree_options.desk.stats",
 )
 
 
@@ -192,8 +228,17 @@ class ResearchWorker:
             if kind == "scenario":
                 result_payload = self._compute_scenario(
                     store, run_id, spec_payload, run)
-            else:
+            elif kind == "forecast":
+                result_payload = self._compute_forecast(
+                    run_id, spec_payload, run)
+            elif kind == "comparison":
                 result_payload = self._compute(run_id, spec_payload)
+            else:
+                # An unknown kind must FAIL loudly — pre-RL-3 it fell
+                # through to the comparison engine, computing a
+                # different job than the record describes.
+                raise RunstateStoreError(
+                    f"unknown run kind {kind!r} for run {run_id}")
         except Exception as exc:
             store.replace(
                 "run",
@@ -261,6 +306,91 @@ class ResearchWorker:
             "input_snapshot": snapshot,
             "input_snapshot_sha256": snapshot_sha,
             "calendar_sha256": plan.calendar_sha256,
+            "result_sha256": result_sha,
+            "wire": wire,
+        }
+
+    def _compute_forecast(self, run_id: str, spec_payload: dict[str, Any],
+                          run: dict[str, Any]) -> dict[str, Any]:
+        """Evaluate a forecast run with execution-bound identity (RL-3).
+
+        The run record carries the ``series_sha256`` and
+        ``engine_sha256`` captured at SUBMISSION; both are RECOMPUTED
+        here. Drift publishes a typed refusal with BOTH shas — revised
+        bytes or changed code never execute under the submission's
+        identity (the run id itself binds spec + series + calendar +
+        engine, so the drifted execution is a NEW run, never a silent
+        re-serve of this one).
+        """
+        spec = forecast_from_dict(spec_payload)
+        series = _load_forecast_series(spec)
+        if isinstance(series, ForecastRefusal):
+            return _forecast_refusal_result(run_id, spec, series)
+
+        engine_now = engine_identity_sha()
+        expected_engine = run.get("engine_sha256_at_submission")
+        if isinstance(expected_engine, str) and expected_engine != engine_now:
+            return _forecast_refusal_result(
+                run_id, spec, ForecastRefusal(
+                    code=FORECAST_ENGINE_CHANGED,
+                    message=("engine identity moved between submission "
+                             f"and compute: submitted {expected_engine}, "
+                             f"now {engine_now}; refusing to execute new "
+                             "code under the submission's run id"),
+                    payload={"engine_sha256_at_submission": expected_engine,
+                             "engine_sha256_at_compute": engine_now}),
+                engine_sha256=expected_engine)
+
+        expected_series = run.get("series_sha256_at_submission")
+        if isinstance(expected_series, str) \
+                and expected_series != series.series_sha256:
+            return _forecast_refusal_result(
+                run_id, spec, ForecastRefusal(
+                    code=FORECAST_SOURCE_DRIFT,
+                    message=("source data drifted between submission and "
+                             f"compute: submitted {expected_series}, live "
+                             f"resolves to {series.series_sha256}; "
+                             "refusing to publish revised bytes under the "
+                             "submission's run id"),
+                    payload={"series_sha256_at_submission": expected_series,
+                             "series_sha256_at_compute":
+                                 series.series_sha256}),
+                engine_sha256=engine_now)
+
+        outcome = evaluate_forecast(
+            spec, series=series,
+            calendar_sha256=calendar_sha256(),
+            engine_sha256=engine_now)
+        if isinstance(outcome, ForecastRefusal):
+            return _forecast_refusal_result(
+                run_id, spec, outcome, engine_sha256=engine_now)
+
+        wire = outcome.to_wire()
+        result_sha = hashlib.sha256(canonical(wire)).hexdigest()
+        snapshot: dict[str, Any] = {
+            "schema": "forecast-input/1",
+            "source": spec.source.value,
+            "series_sha256": series.series_sha256,
+            "basis": series.basis,
+            "grid_basis": series.grid_basis,
+            "provenance": dict(series.provenance),
+            "horizon": spec.horizon,
+            "evaluation_window": {
+                "start": spec.evaluation_start.isoformat(),
+                "end": (spec.evaluation_end.isoformat()
+                        if spec.evaluation_end else None),
+            },
+            "calendar_sha256": calendar_sha256(),
+        }
+        snapshot_sha = hashlib.sha256(canonical(snapshot)).hexdigest()
+        return {
+            "run_id": run_id,
+            "spec_hash": run_id,
+            "format_version": RUN_FORMAT_VERSION,
+            "engine_sha256": engine_now,
+            "input_snapshot": snapshot,
+            "input_snapshot_sha256": snapshot_sha,
+            "calendar_sha256": calendar_sha256(),
             "result_sha256": result_sha,
             "wire": wire,
         }
@@ -512,6 +642,44 @@ def _refusal_result(run_id: str, spec: Any, refusal: Any, **extra: Any) -> dict[
     payload = dict(extra)
     payload.update({
         "run_id": run_id,
+        "result_sha256": result_sha,
+        "wire": wire,
+    })
+    return payload
+
+
+def _load_forecast_series(spec: Any) -> ForecastSeries | ForecastRefusal:
+    """Resolve the spec's source through the registry loaders (a
+    refusal is a value — the caller publishes it content-bound)."""
+    if spec.source is ForecastSourceId.SYNTHETIC:
+        return load_synthetic()
+    if spec.source is ForecastSourceId.INDEX_VIX:
+        return load_index("VIX")
+    raise RunstateStoreError(
+        f"no source loader for {spec.source.value!r}")
+
+
+def _forecast_refusal_result(run_id: str, spec: Any,
+                             refusal: ForecastRefusal,
+                             **extra: Any) -> dict[str, Any]:
+    """A forecast that refused still gets a content-bound result record
+    (the scenario discipline): the wire carries the machine-readable
+    code, the message, AND the refusal's structured payload — the
+    tally/ledger/both-shas evidence — so the SPA renders the honest
+    blocker and downstream readers can replay why."""
+    wire: dict[str, Any] = {
+        "schema": "research-forecast-refusal/1",
+        "refusal": refusal.code,
+        "message": refusal.message,
+        "source": spec.source.value,
+        "horizon": spec.horizon,
+        **dict(refusal.payload),
+    }
+    result_sha = hashlib.sha256(canonical(wire)).hexdigest()
+    payload = dict(extra)
+    payload.update({
+        "run_id": run_id,
+        "engine_sha256": extra.get("engine_sha256", engine_identity_sha()),
         "result_sha256": result_sha,
         "wire": wire,
     })

@@ -142,7 +142,13 @@ def test_interrupted_run_requeues_on_start(tmp_path):
                        "requeued_at": datetime.now().isoformat()},
                       key=run_id)
     # A fresh worker start requeues ``running`` and processes it.
-    worker.start(poll_seconds=0.1)
+    # poll_seconds is a full hour: start() performs the REQUEUE (the
+    # discipline under test); the daemon must stay dormant while the
+    # test drives its own deterministic step — a short poll lets the
+    # thread and the manual step claim the SAME requeued run
+    # concurrently (the claim is a replace with no cross-call CAS),
+    # which is a harness race, not the behavior under test.
+    worker.start(poll_seconds=3600.0)
     try:
         # Drive at least one step manually so the test is deterministic.
         worker.step()
@@ -197,7 +203,7 @@ def test_interrupted_scenario_requeues_on_restart(tmp_path):
                       {**run, "status": "running",
                        "started_at": datetime.now().isoformat()},
                       key=child_id)
-    worker.start(poll_seconds=0.1)
+    worker.start(poll_seconds=3600.0)
     try:
         worker.step()
     finally:
