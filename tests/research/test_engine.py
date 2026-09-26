@@ -2,12 +2,6 @@
 engine covers.
 
 Coverage:
-    * Cashflows vs return — contributions change wealth, not gain
-    * Account conservation — LedgerBook.assert_conservation holds
-    * Cost / size changes — FiveBasisPointFeeModel.affordable_quantity
-      recompute (the fee-model integration is at the budget layer; the
-      engine surfaces the model's effect via run_funded_account's fees
-      accounting)
     * Dataset scope — synthetic, paper, sealed, broker-paper are distinct
       evidence kinds; the engine refuses broker-paper with a reason
     * Selection integrity — retrospective candidates get no wallet curve
@@ -15,6 +9,12 @@ Coverage:
       SAMPLE_FLOOR
     * Missingness (priced-subset never prices whole) — covered via the
       funded accounting + the paired-diff null rendering (see test_pair.py)
+
+The funded-account economic oracles (NAV vs cash, flows vs gain, fee
+application, ledger conservation) moved to ``test_funded.py`` when the
+2026-09-25 audit showed this file's contribution oracle ($10,520)
+repeated the implementation's flawed identity instead of checking
+economics (correct NAV: $10,510).
 """
 
 from __future__ import annotations
@@ -25,11 +25,6 @@ from decimal import Decimal
 from tree_options.research.comparison.engine import (
     SAMPLE_FLOOR,
     run_comparison,
-)
-from tree_options.research.comparison.funded import (
-    CashflowEvent,
-    TradeExecution,
-    run_funded_account,
 )
 from tree_options.research.contracts import (
     PLOT_FUNDED_ALLOWED,
@@ -69,80 +64,6 @@ def _spec(candidates=("vix_term-v2", "hold-20-v2"),
         common_start=date(2024, 1, 2),
         common_end=date(2026, 9, 25),
     )
-
-
-# -- funded accounting tests (cashflows vs return, conservation) --------------
-
-
-def test_contribution_changes_wealth_not_profit() -> None:
-    """A capital injection increases ending_value by the injection
-    amount — but it does NOT increase ``gain`` (gain = realized +
-    unrealized; capital is wealth, not P&L)."""
-    run = run_funded_account(
-        candidate_id="vix_term-v2",
-        starting_capital=Decimal("10000"),
-        executions=[
-            TradeExecution(date=date(2024, 1, 2), symbol="NVDA",
-                           signed_quantity=10, price=Decimal("5.00"),
-                           realized_pnl=Decimal("0")),
-            TradeExecution(date=date(2024, 6, 1), symbol="NVDA",
-                           signed_quantity=-10, price=Decimal("6.00"),
-                           realized_pnl=Decimal("10.00")),
-        ],
-        cashflows=[
-            CashflowEvent(date=date(2024, 1, 15), amount=Decimal("500")),
-        ],
-    )
-    # Rows are emitted only on execution dates (not pure cashflow dates);
-    # the $500 contribution on 2024-01-15 is rolled into the 2024-06-01
-    # row's `contributions` field.
-    assert len(run.rows) == 2
-    r1 = run.rows[0]
-    assert r1.starting_capital == Decimal("10000")
-    assert r1.committed_signed == Decimal("-50")  # 10 long @ $5 debit
-    assert r1.contributions == Decimal("0")
-    assert r1.gain == Decimal("0")
-    assert r1.ending_value == Decimal("9950")
-    # Second row (after 2024-06-01): close + $500 contribution already booked
-    r2 = run.rows[1]
-    # Closed the position at $6/share: receive +$60 (cash in); committed_signed
-    # goes from -50 to -50 + 60 = +10 (a positive committed_signed at this
-    # moment means the wallet is briefly ahead of starting capital in net
-    # cash terms; the realized P&L is the gain, NOT a committed-signed bump.
-    assert r2.committed_signed == Decimal("10")
-    assert r2.contributions == Decimal("500")
-    assert r2.withdrawals == Decimal("0")
-    # gain is the day_realized (10) — not the contribution
-    assert r2.gain == Decimal("10")
-    # ending = 10000 + 10 + 500 - 0 + 10 = 10520
-    assert r2.ending_value == Decimal("10520")
-
-
-def test_ledger_assert_conservation_holds_across_full_run() -> None:
-    """The four-line identity is exact — conservation never breaks."""
-    run = run_funded_account(
-        candidate_id="hold-20-v2",
-        starting_capital=Decimal("5000"),
-        executions=[
-            TradeExecution(date=date(2024, 2, 1), symbol="SPY",
-                           signed_quantity=20, price=Decimal("100"),
-                           realized_pnl=Decimal("0")),
-            TradeExecution(date=date(2024, 7, 1), symbol="SPY",
-                           signed_quantity=-20, price=Decimal("120"),
-                           realized_pnl=Decimal("400")),
-        ],
-        cashflows=[
-            CashflowEvent(date=date(2024, 3, 1), amount=Decimal("1000")),
-            CashflowEvent(date=date(2024, 9, 1), amount=Decimal("-500")),  # withdrawal
-        ],
-    )
-    for r in run.rows:
-        # ending = starting + committed + contribs - withdrawals + gain
-        expected = (r.starting_capital + r.committed_signed + r.contributions
-                   - r.withdrawals + r.gain)
-        assert r.ending_value == expected, f"row {r.date} failed conservation"
-    # LedgerBook.assert_conservation also runs at the end of run_funded_account
-    # and would have raised on a bookkeeping bug.
 
 
 # -- engine tests (acceptance matrix) --------------------------------------

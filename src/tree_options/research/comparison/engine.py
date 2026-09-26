@@ -28,6 +28,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
+from tree_options.research.comparison.calendar import sessions_between
 from tree_options.research.comparison.drawdown import compute_drawdown
 from tree_options.research.comparison.funded import run_funded_account
 from tree_options.research.comparison.missingness import (
@@ -72,41 +73,46 @@ class ComparisonResult:
 
 
 # -- Adapters: candidate → execution series ---------------------------------
+#
+# Adapter contract: one adapter per evidence kind, returning the raw
+# observation streams for the funded replay —
+#     (executions, marks) -> tuple[list[TradeExecution], list[MarkObservation]]
+# The RESOLVED plan (window, calendar, cutoff, costs) governs how the
+# engine admits them; adapters only surface what the evidence contains.
+# An adapter that finds nothing returns ([], []) and the summary reports
+# zero observations — never a fabricated curve.
 
 
 def _shadow_executions(candidate: ResearchCandidate,
-                       *args: Any, **kwargs: Any) -> list:
+                       *args: Any, **kwargs: Any) -> tuple[list, list]:
     """Adapter stub for ``evidence_kind=SHADOW_PROXY``.
 
-    The implementer fills this in once ``read_only_evidence.py`` lands
-    (Step 4). For RL-1 the engine returns an empty execution series; the
-    summary still reports zero fills so the operator sees "no evidence"
-    rather than a fabricated curve.
+    The desk's EOD-deadline proxy marks are NOT execution evidence (RL
+    §4 dataset scope); wiring them as funded history is refused until a
+    real adapter exists that can defend the conversion.
     """
-    return []
+    return [], []
 
 
 def _sealed_executions(candidate: ResearchCandidate,
-                      *args: Any, **kwargs: Any) -> list:
+                      *args: Any, **kwargs: Any) -> tuple[list, list]:
     """Adapter stub for ``evidence_kind=SEALED_CAMPAIGN``.
 
-    Reads ``trials/c09-*.json`` from the candidate's ``source_url``
-    (already resolved to a directory by the catalog adapter). For RL-1
-    the engine returns an empty execution series; the implementer
-    converts per-trial dispatches into ``TradeExecution`` instances in
-    a follow-up step.
+    Sealed trials are per-trial dispatch records, not a reconstructable
+    daily portfolio history; no funded series is derivable from them
+    (the honest data blocker lives on the candidate).
     """
-    return []
+    return [], []
 
 
 def _synthetic_executions(candidate: ResearchCandidate,
-                          *args: Any, **kwargs: Any) -> list:
+                          *args: Any, **kwargs: Any) -> tuple[list, list]:
     """Adapter stub for ``evidence_kind=SYNTHETIC_BACKTEST``.
 
-    RL-1 leaves synthetic execution synthesis to Step 4 / Step 6 once
-    fixture-loading helpers are in place.
+    The synthetic/v1 vertical slice (permanently labeled synthetic)
+    lands with the fixture loader.
     """
-    return []
+    return [], []
 
 
 _ADAPTERS = {
@@ -188,13 +194,22 @@ def run_comparison(
             ))
             continue
 
-        executions = adapter(cand)
+        executions, marks = adapter(cand)
         run = run_funded_account(
             candidate_id=cand.id,
             starting_capital=spec.starting_capital,
+            calendar=sessions_between(spec.common_start, spec.common_end),
             executions=executions,
-            cashflows=[],  # placeholder: contribution handling lives in Step 4
+            marks=marks,
+            cashflows=[],  # contribution schedule lands with the resolved plan (RL1-02)
         )
+        if run.refusal_reason is not None:
+            summaries.append(CandidateSummary(
+                candidate_id=cand.id,
+                candidate=cand,
+                rejection_reason=run.refusal_reason,
+            ))
+            continue
         dd = compute_drawdown(
             candidate_id=cand.id,
             registration=cand.registration,
@@ -203,14 +218,17 @@ def run_comparison(
 
         rows_by_date = {
             r.date: {
-                "ending_value": str(r.ending_value),
-                "starting_capital": str(r.starting_capital),
-                "committed_signed": str(r.committed_signed),
-                "contributions": str(r.contributions),
-                "withdrawals": str(r.withdrawals),
-                "gain": str(r.gain),
-                "idle_cash": str(r.idle_cash),
-                "fees_paid": str(r.fees_paid),
+                "cash": str(r.cash),
+                "inventory": [[sym, qty] for sym, qty in r.inventory],
+                "marked_value": str(r.marked_value) if r.marked_value is not None else None,
+                "nav": str(r.nav) if r.nav is not None else None,
+                "contributions_cum": str(r.contributions_cum),
+                "withdrawals_cum": str(r.withdrawals_cum),
+                "fees_cum": str(r.fees_cum),
+                "realized_pnl_cum": str(r.realized_pnl_cum),
+                "investment_gain": (str(r.investment_gain)
+                                    if r.investment_gain is not None else None),
+                "missing_mark_symbols": list(r.missing_mark_symbols),
             }
             for r in run.rows
         }
@@ -227,24 +245,25 @@ def run_comparison(
             candidate=cand,
             rows_by_date=rows_by_date,
             drawdown=drawdown_by_date,
-            fees_paid_total=sum(
-                (r.fees_paid for r in run.rows), Decimal("0")
-            ),
+            fees_paid_total=run.total_fees,
             sample_size=len(run.rows),
             sample_floor_met=len(run.rows) >= SAMPLE_FLOOR,
-            final_ending_value=run.final_ending_value,
+            final_ending_value=run.final_nav,
         ))
 
-    # Baseline run (same path). Used for paired diff.
+    # Baseline run (same admission path as candidates — never a
+    # privileged series).
     if baseline is not None:
         if baseline.plot_funded_account:
             base_adapter = _ADAPTERS.get(baseline.evidence_kind)
             if base_adapter is not None:
-                base_ex = base_adapter(baseline)
+                base_ex, base_marks = base_adapter(baseline)
                 baseline_run = run_funded_account(
                     candidate_id=baseline.id,
                     starting_capital=spec.starting_capital,
+                    calendar=sessions_between(spec.common_start, spec.common_end),
                     executions=base_ex,
+                    marks=base_marks,
                     cashflows=[],
                 )
 
