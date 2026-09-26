@@ -75,11 +75,17 @@ def _build_app(tmp_path: Path, *, engine_fn=None) -> tuple[TestClient, object]:
     return TestClient(app), worker
 
 
-def test_forecast_endpoint_returns_410_gone(tmp_path: Path) -> None:
+def test_forecast_endpoint_serves_metadata_not_410(tmp_path: Path) -> None:
+    # RL-3 replaced RL-1's 410 Gone stub: GET now serves the registry.
+    # (The old pinned error string retired WITH the stub — see
+    # docs/research/rl3-exit.md; the full metadata oracles live in
+    # test_forecast_routes.py.)
     client, _worker = _build_app(tmp_path)
     r = client.get("/api/research/forecast")
-    assert r.status_code == 410
-    assert "forecast_out_of_scope_for_rl1" in r.json()["error"]
+    assert r.status_code == 200
+    body = r.json()
+    assert body["schema"] == "research-forecast-metadata/1"
+    assert "forecast_out_of_scope" not in json.dumps(body)
 
 
 def test_scenarios_endpoint_returns_empty_list_when_none_spawned(
