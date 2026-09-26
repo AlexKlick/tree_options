@@ -176,6 +176,67 @@ class TestRefusals:
         assert not isinstance(out, ForecastOutcome)
         assert out.code == FORECAST_INSUFFICIENT_HISTORY
 
+    def test_exactly_at_the_floor_publishes(self) -> None:
+        # The floor is >= 12, not > 12: a window with EXACTLY 12
+        # evaluated origins publishes a receipt (floor_met true). This
+        # is the boundary a `<=` mutation of the floor comparison would
+        # silently turn into a refusal. The window is DERIVED: start at
+        # the 12th-from-last origin of the wide grid.
+        series = load_synthetic()
+        assert isinstance(series, ForecastSeries)
+        wide = month_origin_grid(
+            series.sessions, first_eval=date(2019, 1, 1),
+            last_eval=None, horizon=5, min_history=260)
+        start = series.sessions[wide.origins[-ORIGIN_FLOOR]]
+        out = _evaluate(_spec(start=start), series)
+        assert isinstance(out, ForecastOutcome), out
+        wire = out.to_wire()
+        assert wire["origins"]["evaluated"] == ORIGIN_FLOOR
+        assert wire["origins"]["floor_met"] is True
+        assert wire["evaluation_status"] == "receipt_published"
+
+    def test_paired_n_is_the_intersection_not_the_union(self) -> None:
+        # Baseline fails exactly one origin; the model runs all: the
+        # skill cohort is the INTERSECTION (n-1), never the union (n)
+        # — comparing unmatched origins manufactures skill. (700 daily
+        # dates: enough month starts that n-1 still clears the floor.)
+        series = _hand_series(700)
+        grid = month_origin_grid(
+            series.sessions, first_eval=date(2020, 2, 1),
+            last_eval=None, horizon=5, min_history=20)
+        origins = grid.origins
+        cut = origins[0] + 1    # baseline fails exactly the FIRST origin
+
+        def baseline(closes, *, h, taus):
+            if len(closes) <= cut:
+                return None
+            return tuple(math.log(90.0 + 5.0 * k)
+                         for k in range(len(taus)))
+
+        def model(closes, *, h, taus):
+            # tighter bands than the baseline: strictly better pinball,
+            # with per-origin variation so the DM differential has
+            # variance
+            return tuple(math.log(97.0 + 1.5 * k)
+                         for k in range(len(taus)))
+
+        out = _evaluate(
+            ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
+                         evaluation_start=date(2020, 2, 1)),
+            series, models=[("b", baseline, True), ("m", model, False)],
+            min_history=20)
+        assert isinstance(out, ForecastOutcome)
+        wire = out.to_wire()
+        b = next(m for m in wire["models"] if m["model"] == "b")
+        m = next(m for m in wire["models"] if m["model"] == "m")
+        assert b["n_evaluated"] == len(origins) - 1
+        assert m["n_evaluated"] == len(origins)
+        skill = m["metrics"]["skill_vs_baseline"]
+        assert skill["paired_n"] == len(origins) - 1   # intersection
+        assert skill["pinball_skill"] > 0.0
+        assert skill["dm"] is not None
+        assert skill["dm"]["n"] == len(origins) - 1
+
     def test_floor_refusal_retains_ledgers(self) -> None:
         series = load_synthetic()
         assert isinstance(series, ForecastSeries)
