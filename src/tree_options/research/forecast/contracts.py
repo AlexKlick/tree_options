@@ -183,7 +183,9 @@ class LedgerRow:
     """
 
     origin_date: date
-    target_date: date
+    #: None only for excluded origins whose target lies beyond the data
+    #: (the reason says so; an invented target date would be dishonest).
+    target_date: date | None
     training_count: int
     status: str            # "evaluated" | "failed" | "excluded"
     reason: str | None     # failure/exclusion reason, None when evaluated
@@ -194,7 +196,9 @@ class LedgerRow:
     def to_dict(self) -> dict[str, Any]:
         return {
             "origin_date": self.origin_date.isoformat(),
-            "target_date": self.target_date.isoformat(),
+            "target_date": (
+                self.target_date.isoformat()
+                if self.target_date is not None else None),
             "training_count": self.training_count,
             "status": self.status,
             "reason": self.reason,
