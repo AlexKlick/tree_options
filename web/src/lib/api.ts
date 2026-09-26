@@ -135,11 +135,11 @@ export const getScenario = (key: string): Promise<ScenarioDoc> =>
 
 import type {
   CandidateResultSummary,
-  ComparisonResultResponse,
   ComparisonRunResponse,
   ComparisonSpec,
   ResearchCandidatesResponse,
   ResearchEvidenceEnvelope,
+  RunResultResponse,
 } from './types'
 
 export const listResearchCandidates = (filters?: {
@@ -176,7 +176,13 @@ export const spoolComparison = (spec: ComparisonSpec): Promise<ComparisonRunResp
     body: JSON.stringify(spec),
   })
 
-export const getComparisonResult = (run_id: string): Promise<ComparisonResultResponse> =>
+/** Poll a run's lifecycle state (never triggers computation). */
+export const getResearchRun = (run_id: string): Promise<ComparisonRunResponse> =>
+  fetchJson(`api/research/runs/${encodeURIComponent(run_id)}`)
+
+/** The recorded result — the lifecycle envelope; `result` is present
+ * exactly when status === 'completed'. */
+export const getComparisonResult = (run_id: string): Promise<RunResultResponse> =>
   fetchJson(`api/research/runs/${encodeURIComponent(run_id)}/result`)
 
 // Re-export for callers that already imported this from the old path.

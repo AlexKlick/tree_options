@@ -526,3 +526,71 @@ footer {
 .candle-up .candle-body { fill: var(--pos); }
 .candle-down .candle-wick { stroke: var(--neg); }
 .candle-down .candle-body { fill: var(--neg); }
+
+/* --- Research comparison workspace (RL-1) --- */
+
+.nav-cursor {
+  stroke: var(--border);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+
+.nav-chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+.nav-chart-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.nav-chart-key .swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  display: inline-block;
+}
+
+.nav-chart-key .key-value {
+  font-variant-numeric: tabular-nums;
+  min-width: 72px;
+}
+
+.summary-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px;
+  margin: 10px 0;
+}
+
+.summary-tile {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.summary-tile .tile-label {
+  font-size: 12px;
+  color: var(--muted, inherit);
+}
+
+.summary-tile .tile-value {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+}
+
+.synthetic-badge {
+  display: inline-block;
+  background: #5b4a11;
+  color: #ffd966;
+  border-radius: 4px;
+  font-size: 11px;
+  padding: 1px 6px;
+  margin-left: 6px;
+  letter-spacing: 0.4px;
+}

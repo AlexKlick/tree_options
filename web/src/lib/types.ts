@@ -896,6 +896,8 @@ export interface ResearchCandidate {
   plot_funded_account: boolean
   supported_start: string | null
   supported_end: string | null
+  funded_history: 'reconstructed' | 'unavailable' // DATA support, independent of verdict
+  funded_history_reason: string | null
   artifact_hashes: Record<string, string>
   capabilities: string[]
   ineligibility_reason: string | null
@@ -946,25 +948,25 @@ export interface ComparisonSpec {
 
 export interface ComparisonRunResponse {
   run_id: string
-  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked'
   spec_hash: string
   workspace: string
 }
 
 export interface ComparisonRow {
-  date: string
-  ending_value: string | null
-  starting_capital: string | null
-  committed_signed: string | null
-  contributions: string | null
-  withdrawals: string | null
-  gain: string | null
-  idle_cash: string | null
-  fees_paid: string | null
+  cash: string
+  inventory: [string, number][]            // symbols with nonzero holdings
+  marked_value: string | null              // null = a held symbol lacks a mark
+  nav: string | null                       // account value; null = gap, never zero
+  contributions_cum: string
+  withdrawals_cum: string
+  fees_cum: string
+  realized_pnl_cum: string
+  investment_gain: string | null           // NAV − opening − contributions + withdrawals
+  missing_mark_symbols: string[]
 }
 
 export interface DrawdownRow {
-  date: string
   drawdown_dollar: string
   drawdown_pct: string
   recovery_end_date: string | null
@@ -973,9 +975,10 @@ export interface DrawdownRow {
 export interface CandidateResultSummary {
   candidate_id: string
   candidate: ResearchCandidate
-  rows_by_date: Record<string, ComparisonRow>
+  rows_by_date: Record<string, ComparisonRow> // ISO date keys (to_wire boundary)
   drawdown: Record<string, DrawdownRow>
   fees_paid_total: string
+  excluded_out_of_window: number
   sample_size: number
   sample_floor: number
   sample_floor_met: boolean
@@ -983,10 +986,24 @@ export interface CandidateResultSummary {
   final_ending_value: string | null
 }
 
-export interface ComparisonResultResponse {
+export interface ComparisonResultWire {
   spec: ComparisonSpec
+  rejection: string | null
   candidates: CandidateResultSummary[]
   paired_diff: Record<string, Record<string, { value: string | null; reason: string | null }>>
+}
+
+/** GET /runs/{id}/result — the lifecycle envelope. The result payload
+ * is present exactly when status === 'completed'; GET never computes. */
+export interface RunResultResponse {
+  run_id: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked'
+  result: ComparisonResultWire | null
+  error?: string | null
+  result_sha256?: string
+  engine_sha256?: string
+  input_snapshot_sha256?: string
+  calendar_sha256?: string
 }
 
 export interface ResearchErrorResponse {
