@@ -27,6 +27,7 @@ FORECAST_INSUFFICIENT_HISTORY: Final = "research.forecast.insufficient_history"
 FORECAST_INSUFFICIENT_ORIGINS: Final = "research.forecast.insufficient_origins"
 FORECAST_INVALID_QUANTILE_GRID: Final = "research.forecast.invalid_quantile_grid"
 FORECAST_SOURCE_DRIFT: Final = "research.forecast.source_drift"
+FORECAST_SOURCE_INVALID: Final = "research.forecast.source_invalid"
 FORECAST_ENGINE_CHANGED: Final = "research.forecast.engine_changed"
 
 FORECAST_REFUSAL_KINDS: Final[tuple[str, ...]] = (
@@ -36,6 +37,7 @@ FORECAST_REFUSAL_KINDS: Final[tuple[str, ...]] = (
     FORECAST_INSUFFICIENT_ORIGINS,
     FORECAST_INVALID_QUANTILE_GRID,
     FORECAST_SOURCE_DRIFT,
+    FORECAST_SOURCE_INVALID,
     FORECAST_ENGINE_CHANGED,
 )
 
@@ -70,6 +72,7 @@ __all__ = [
     "FORECAST_INVALID_QUANTILE_GRID",
     "FORECAST_REFUSAL_KINDS",
     "FORECAST_SOURCE_DRIFT",
+    "FORECAST_SOURCE_INVALID",
     "FORECAST_UNKNOWN_SOURCE",
     "REASON_BENCH_LOSS_NONPOSITIVE",
     "REASON_BOOTSTRAP_DEGENERATE",
