@@ -54,13 +54,17 @@ def _child_after_first_put(database: str, queue_dir: str, store_root: str,
 def _child_after_commit(database: str, queue_dir: str, store_root: str,
                         barrier: str, session: str, now: str) -> None:
     """Run the real writer to completion (one committed transaction), then
-    signal and hang — the kill lands after the commit, before any ack."""
+    signal and HANG — the kill must land after the commit, before any ack.
+    Without the hang the kill races interpreter shutdown: the parent can
+    SIGKILL an already-exited process and read a clean exit code (the
+    4714/1 gate failure on 2026-09-25)."""
     shadows.update_shadows(session=date.fromisoformat(session),
                            now=datetime.fromisoformat(now),
                            cal=StaticSessionCalendar(_CAL, _CAL_SHA),
                            database=Path(database), store_root=Path(store_root),
                            queue_dir=Path(queue_dir))
     Path(barrier).write_text('committed-not-acked')
+    time.sleep(600)
 
 
 def _kill_child_at_barrier(root: Path, target, world, timeout: float = 30.0) -> None:
