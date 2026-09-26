@@ -79,11 +79,22 @@ def test_engine_refuses_broker_paper_with_reason() -> None:
            "research.broker_paper" == res.candidates[0].rejection_reason
 
 
-def test_engine_refuses_retrospective_with_reason() -> None:
-    c = _candidate(registration=ResearchRegistration.RETROSPECTIVE_BACKFILL)
-    spec = _spec()
-    res = run_comparison(spec, (c,))
-    assert res.candidates[0].rejection_reason == "research.retrospective_only"
+def test_engine_no_longer_refuses_retrospective_wholesale() -> None:
+    """RL1-06: registration is a study-provenance LABEL the summary
+    carries, not a plotting veto — a retrospective candidate with
+    reconstructable data plots; one without data is rejected for the
+    MISSING DATA, with the verdict named separately."""
+    with_data = _candidate(registration=ResearchRegistration.RETROSPECTIVE_BACKFILL)
+    res = run_comparison(_spec(), (with_data,))
+    assert res.candidates[0].rejection_reason is None  # data speaks
+    assert res.candidates[0].candidate.registration.value == "retrospective_backfill"
+
+    no_data = _candidate(registration=ResearchRegistration.RETROSPECTIVE_BACKFILL,
+                         disposition=ResearchDisposition.WITHDRAWN)
+    res2 = run_comparison(_spec(), (no_data,))
+    assert res2.candidates[0].rejection_reason is not None
+    assert "no funded history" in res2.candidates[0].rejection_reason
+    assert "WITHDRAWN" in res2.candidates[0].rejection_reason
 
 
 def test_engine_marks_ineligible_disposition_with_reason() -> None:

@@ -45,19 +45,25 @@ def test_passing_scope_emits_plot_eligible_candidate(tmp_path: Path) -> None:
     cand = build_candidate(scope)
     assert cand.family == "vix_term"
     assert cand.disposition is ResearchDisposition.PASS
-    assert cand.plot_funded_account is True
+    # RL1-06: a PASS verdict is NOT data. The sealed-round format records
+    # no capital/cashflow/valuation history, so even a PASS cannot plot a
+    # funded account — the verdict and the capability stay separate.
+    assert cand.plot_funded_account is False
+    assert cand.funded_history.value == "unavailable"
+    assert cand.funded_history_reason
     assert cand.registration is ResearchRegistration.RETROSPECTIVE_BACKFILL
     assert cand.evidence_kind.value == "sealed_campaign"
-    assert cand.ineligibility_reason is None
+    assert cand.ineligibility_reason is not None
     assert cand.source_url == "sealed-round/vix_term"
     # Hashes include both frozen-input names AND the sealed-round.json itself.
     assert "sealed-round.round1_selection_sha256" in cand.artifact_hashes
     assert "sealed-round.calibration_v3_sha256" in cand.artifact_hashes
     assert "sealed-round.json" in cand.artifact_hashes
     assert len(cand.artifact_hashes["sealed-round.json"]) == 64  # sha256 hex
-    # Capabilities expand for plot-eligible.
-    assert "plot_funded_account" in cand.capabilities
-    assert "plot_trade_outcomes" in cand.capabilities
+    # Capabilities come from DATA support: no funded plot without a
+    # reconstructable series, published study always viewable.
+    assert "plot_funded_account" not in cand.capabilities
+    assert "view_published_study" in cand.capabilities
 
 
 def test_withdrawn_scope_emits_non_plot_candidate_with_reason(tmp_path: Path) -> None:
@@ -77,10 +83,10 @@ def test_withdrawn_scope_emits_non_plot_candidate_with_reason(tmp_path: Path) ->
     assert "sealed-round.calibration_v3_sha256" in cand.artifact_hashes
 
 
-def test_hold_stands_is_plot_eligible(tmp_path: Path) -> None:
-    """HOLD-STANDS is on PLOT_FUNDED_ALLOWED per the campaign sealed-round
-    disposition table — vix_term may stay dominant, but a HOLD-STANDS
-    family still earns a funded-account plot."""
+def test_hold_stands_keeps_verdict_but_not_a_funded_plot(tmp_path: Path) -> None:
+    """HOLD-STANDS remains a valid scientific disposition — and still
+    cannot conjure a funded series the artifacts do not contain
+    (RL1-06: verdict and data capability are separate dimensions)."""
     scope = tmp_path / "hold-20"
     _write(scope, {
         "family_verdict": "HOLD-STANDS",
@@ -89,8 +95,9 @@ def test_hold_stands_is_plot_eligible(tmp_path: Path) -> None:
     })
     cand = build_candidate(scope)
     assert cand.disposition is ResearchDisposition.HOLD_STANDS
-    assert cand.plot_funded_account is True
-    assert cand.ineligibility_reason is None
+    assert cand.plot_funded_account is False
+    assert cand.funded_history.value == "unavailable"
+    assert cand.ineligibility_reason is not None
 
 
 def test_scope_o_withdrawal_overrides_verdict(tmp_path: Path) -> None:

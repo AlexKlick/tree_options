@@ -65,11 +65,30 @@ class ResearchDisposition(StrEnum):
     NOT_EVALUABLE_SEALED = "NOT_EVALUABLE-SEALED"
 
 
-#: Dispositions whose candidate may plot a funded account curve.
+#: Dispositions whose candidate MAY be considered for funded plotting —
+#: a NECESSARY condition, never a sufficient one. Plotting is granted by
+#: DATA support (``FundedHistorySupport.RECONSTRUCTED``), not by a
+#: scientific verdict: a PASS without reconstructable history cannot
+#: plot, and a FAIL with complete authorized history stays inspectable
+#: with its failure label intact (RL1-06).
 PLOT_FUNDED_ALLOWED: frozenset[ResearchDisposition] = frozenset({
     ResearchDisposition.PASS,
     ResearchDisposition.HOLD_STANDS,
+    ResearchDisposition.FAIL,
+    ResearchDisposition.INSUFFICIENT_N,
+    ResearchDisposition.INSUFFICIENT_COVERAGE,
+    ResearchDisposition.DESCRIPTIVE_ONLY_NO_REGIME_SIGNAL,
 })
+
+
+class FundedHistorySupport(StrEnum):
+    """Whether a funded-account series is reconstructable from the
+    candidate's actual inputs (handoff §4 capability matrix: "Full
+    capital, cashflow, inventory/valuation and cost conventions are
+    reconstructable"). Independent of the scientific verdict."""
+
+    RECONSTRUCTED = "reconstructed"
+    UNAVAILABLE = "unavailable"
 
 
 class CashflowTiming(StrEnum):
@@ -125,7 +144,15 @@ class ResearchRunStatus(StrEnum):
 @dataclass(frozen=True)
 class ResearchCandidate:
     """One catalog entry: a registered study, a sealed family, or a
-    shadow-proxy candidate."""
+    shadow-proxy candidate.
+
+    Separated dimensions (RL1-06 — a scientific verdict is not data
+    availability): ``disposition`` is the verdict; ``funded_history``
+    is whether a funded series is reconstructable; ``plot_funded_account``
+    derives from data support (never from PASS alone); ``registration``
+    is a study-provenance label the UI displays as a qualification, not
+    a plotting veto.
+    """
 
     id: str
     family: str
@@ -136,6 +163,8 @@ class ResearchCandidate:
     plot_funded_account: bool
     supported_start: date | None
     supported_end: date | None
+    funded_history: FundedHistorySupport = FundedHistorySupport.UNAVAILABLE
+    funded_history_reason: str | None = None
     artifact_hashes: dict[str, str] = field(default_factory=dict)
     capabilities: tuple[str, ...] = ()
     ineligibility_reason: str | None = None
@@ -154,6 +183,8 @@ class ResearchCandidate:
             "plot_funded_account": self.plot_funded_account,
             "supported_start": self.supported_start.isoformat() if self.supported_start else None,
             "supported_end": self.supported_end.isoformat() if self.supported_end else None,
+            "funded_history": self.funded_history.value,
+            "funded_history_reason": self.funded_history_reason,
             "artifact_hashes": dict(self.artifact_hashes),
             "capabilities": list(self.capabilities),
             "ineligibility_reason": self.ineligibility_reason,
@@ -290,6 +321,7 @@ __all__ = [
     "CostModelKind",
     "Currency",
     "EvidenceEnvelope",
+    "FundedHistorySupport",
     "IdleCashPolicy",
     "PositionSizing",
     "PriceBasis",

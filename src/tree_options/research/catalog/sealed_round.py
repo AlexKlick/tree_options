@@ -29,6 +29,7 @@ from typing import Any
 
 from tree_options.research.contracts import (
     PLOT_FUNDED_ALLOWED,
+    FundedHistorySupport,
     ResearchCandidate,
     ResearchDisposition,
     ResearchEvidenceKind,
@@ -175,9 +176,11 @@ def build_candidate(scope_dir: Path, *, scope_id: str | None = None) -> Research
             plot_funded_account=False,
             supported_start=None,
             supported_end=None,
+            funded_history=FundedHistorySupport.UNAVAILABLE,
+            funded_history_reason="sealed-round.json not present (scope never sealed)",
             ineligibility_reason="sealed-round.json not present (scope never sealed)",
             artifact_hashes={},
-            capabilities=(),
+            capabilities=("view_published_study",),
             warnings=("research.data_gated",),
             source_url=f"sealed-round/{family}",
         )
@@ -211,9 +214,25 @@ def build_candidate(scope_dir: Path, *, scope_id: str | None = None) -> Research
     supported_start, supported_end = _candidate_supported_window(scope_dir, sealed)
     version = (artifact_hashes.get("sealed-round.round1_selection_sha256")
                or artifact_hashes.get("sealed-round.json") or "v?")[:12]
+
+    # RL1-06: data capability is derived from what the artifacts can
+    # actually reconstruct, NOT from the scientific verdict. A sealed
+    # campaign records per-trial dispatches and verdicts — it does not
+    # carry the capital/cashflow/inventory/valuation coverage a funded
+    # series needs, so a PASS cannot conjure a portfolio curve and a
+    # FAIL keeps its (absent) data status distinct from its verdict.
+    funded_history = FundedHistorySupport.UNAVAILABLE
+    funded_history_reason = (
+        "no daily portfolio history is reconstructable from sealed "
+        "trials: capital, cashflow and valuation coverage are not "
+        "recorded by the sealed-round format"
+    )
+    plot = False  # funded_history is RECONSTRUCTED is the gate; it is not
     ineligibility_reason = (
-        None if disposition in PLOT_FUNDED_ALLOWED
-        else _humanize_non_plot(reason=raw_disposition, sealed=sealed)
+        None if plot
+        else (f"{funded_history_reason}"
+              + (f" (disposition {disposition.value})"
+                 if disposition not in PLOT_FUNDED_ALLOWED else ""))
     )
 
     return ResearchCandidate(
@@ -223,17 +242,24 @@ def build_candidate(scope_dir: Path, *, scope_id: str | None = None) -> Research
         evidence_kind=ResearchEvidenceKind.SEALED_CAMPAIGN,
         registration=_trial_registration(scope_dir),
         disposition=disposition,
-        plot_funded_account=disposition in PLOT_FUNDED_ALLOWED,
+        plot_funded_account=plot,
         supported_start=supported_start,
         supported_end=supported_end,
+        funded_history=funded_history,
+        funded_history_reason=funded_history_reason,
         artifact_hashes=artifact_hashes,
-        capabilities=_capabilities(disposition),
+        capabilities=_capabilities(disposition,
+                                   trials_present=_has_trials(scope_dir)),
         ineligibility_reason=ineligibility_reason,
         warnings=_warnings(sealed,
                           supported_start=supported_start,
                           supported_end=supported_end),
         source_url=f"sealed-round/{family}",
     )
+
+
+def _has_trials(scope_dir: Path) -> bool:
+    return any((scope_dir / "trials").glob("c09-*.json"))
 
 
 def _first_verdict_value(verdicts: Any) -> str | None:
@@ -249,27 +275,25 @@ def _first_verdict_value(verdicts: Any) -> str | None:
     return None
 
 
-def _capabilities(disposition: ResearchDisposition) -> tuple[str, ...]:
-    """The handoff §4 capability matrix, narrowed by what a sealed-round
-    candidate can actually do (no portfolio curve until PASS/HOLD-STANDS).
+def _capabilities(disposition: ResearchDisposition,
+                  *, trials_present: bool) -> tuple[str, ...]:
+    """The handoff §4 capability matrix, derived from DATA support.
+
+    ``plot_funded_account``/``rerun_historical_strategy`` require a
+    RECONSTRUCTED funded history (``funded_history``) — never a
+    verdict. ``plot_trade_outcomes`` needs the timestamped per-trial
+    outcomes, which the trials/ directory carries when present. The
+    published study is always viewable with its verdict and limitations
+    intact (a FAIL or WITHDRAWN result stays inspectable — hiding
+    non-successes would be selection bias).
     """
     base = ("view_published_study",)
-    if disposition in PLOT_FUNDED_ALLOWED:
-        return (
-            *base,
-            "plot_trade_outcomes",
-            "plot_funded_account",
-            "rerun_historical_strategy",
-        )
-    if disposition is ResearchDisposition.NOT_EVALUABLE_SEALED:
-        return (*base, "plot_trade_outcomes")  # trade outcomes known; curve refused
-    return base  # only the published study is honest
-
-
-def _humanize_non_plot(reason: str, sealed: dict[str, Any]) -> str:
-    notes = sealed.get("notes") or ""
-    extra = f" ({notes[:80]})" if notes else ""
-    return f"disposition={reason} — see REPORT.md §7{extra}"
+    caps = list(base)
+    if trials_present:
+        caps.append("plot_trade_outcomes")
+    # funded_history is UNAVAILABLE for every current sealed scope; the
+    # day an adapter can reconstruct a series, these flip with it.
+    return tuple(caps)
 
 
 def _warnings(sealed: dict[str, Any], *,

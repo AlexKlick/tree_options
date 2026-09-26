@@ -68,11 +68,12 @@ def test_drawdown_open_at_last_observation_keeps_recovery_null() -> None:
     assert all(c.recovery_end_date is None for c in s.cells)
 
 
-def test_retrospective_registration_never_claims_recovery() -> None:
-    """For ``retrospective_backfill``, every under-peak cell gets
-    ``recovery_end_date=None`` regardless of whether the series later
-    returned to peak — the audit window isn't complete in the original
-    selection's reference frame."""
+def test_observed_recovery_is_reported_regardless_of_registration() -> None:
+    """RL1-06: an observed recovery is data, not a scientific claim.
+    The audit's probe — a fully supplied 100 -> 80 -> 100 series — has a
+    recovery date even for ``retrospective_backfill``; describing it
+    neither edits a registration nor asserts predictive validation. The
+    registration stays visible on the summary as a qualification."""
     s = compute_drawdown(
         "cand-v2",
         ResearchRegistration.RETROSPECTIVE_BACKFILL,
@@ -80,11 +81,12 @@ def test_retrospective_registration_never_claims_recovery() -> None:
             date(2024, 1, 2): Decimal("100"),
             date(2024, 1, 3): Decimal("80"),
             date(2024, 1, 4): Decimal("90"),
-            date(2024, 1, 5): Decimal("100"),  # recovered — but doesn't matter
+            date(2024, 1, 5): Decimal("100"),  # recovered — observed
         },
     )
     assert len(s.cells) == 2
-    assert all(c.recovery_end_date is None for c in s.cells)
+    for c in s.cells:
+        assert c.recovery_end_date == date(2024, 1, 5)
 
 
 def test_drawdown_percentage_handles_zero_peak() -> None:

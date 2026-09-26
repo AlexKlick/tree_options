@@ -30,17 +30,13 @@ from typing import Any
 
 from tree_options.research.comparison.drawdown import compute_drawdown
 from tree_options.research.comparison.funded import run_funded_account
-from tree_options.research.comparison.missingness import (
-    reason_broker_paper,
-    reason_retrospective_only,
-)
+from tree_options.research.comparison.missingness import reason_broker_paper
 from tree_options.research.comparison.pair import align_pair
 from tree_options.research.comparison.plan import ComparisonPlan, resolve_plan
 from tree_options.research.contracts import (
     ComparisonSpec,
     ResearchCandidate,
     ResearchEvidenceKind,
-    ResearchRegistration,
 )
 
 #: Engine's per-candidate sample floor for "promotion_ready" semantics.
@@ -198,22 +194,18 @@ def run_comparison(
 
     for cand in candidates:
         if not cand.plot_funded_account:
+            # Data capability speaks, not the verdict: a PASS without a
+            # reconstructable funded history cannot plot, and the reason
+            # is the missing data (RL1-06).
             summaries.append(CandidateSummary(
                 candidate_id=cand.id,
                 candidate=cand,
                 rejection_reason=(
-                    f"ineligible disposition: {cand.disposition.value}"
-                    + (f" — {cand.ineligibility_reason}"
-                       if cand.ineligibility_reason else "")
+                    f"no funded history ({cand.disposition.value}): "
+                    + (cand.ineligibility_reason
+                       or cand.funded_history_reason
+                       or "funded series not reconstructable")
                 ),
-            ))
-            continue
-
-        if cand.registration is ResearchRegistration.RETROSPECTIVE_BACKFILL:
-            summaries.append(CandidateSummary(
-                candidate_id=cand.id,
-                candidate=cand,
-                rejection_reason=reason_retrospective_only(cand.family).code,
             ))
             continue
 
