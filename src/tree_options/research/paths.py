@@ -13,10 +13,17 @@ admission / unit conventions apply unchanged.
 * ``RESEARCH_CACHE_DIR``: where the catalog and evidence caches live,
   default ``<RESEARCH_WORKSPACE_DIR>/.cache/`` (untracked; safe to wipe).
 
-Tests must pin all of these to tmp: nothing here caches a value. A path
-overlap guard in ``attach_research`` (see ``tree_options.trex_web.research_view``)
-refuses to wire the lane if any of these resolves to the desk evidence
-or paper-trades directory.
+Boundary contract (RL §9 + RL1-04): the research workspace must never
+overlap the desk's state or paper-trades trees — not equal to them, not
+inside them, and not containing them. ``assert_no_overlap_with_desk``
+enforces CONTAINMENT in both directions over fully resolved paths
+(symlinks included) and fails CLOSED when resolution itself fails: an
+unresolvable path is unsafe until proven otherwise, never waved through.
+
+Every entry point that opens a research workspace validates the path it
+was ACTUALLY given — ``attach(workspace=...)`` and
+``open_runstate_store(workspace)`` call this guard on their explicit
+argument, not only on environment-derived defaults.
 """
 
 from __future__ import annotations
@@ -59,25 +66,49 @@ def cache_dir() -> Path:
     return _env_path("RESEARCH_CACHE_DIR") or workspace_root() / ".cache"
 
 
-def assert_no_overlap_with_desk() -> None:
-    """Refuse to wire the research lane if any research path collides with
-    a desk/treasury path. Called from the FastAPI ``attach_research`` hook.
+def _resolve_strict(path: Path) -> Path:
+    """Resolve symlinks, failing closed on resolution errors (an
+    unresolvable path cannot be proven safe)."""
+    try:
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise RuntimeError(
+            f"research path {path} could not be resolved; failing closed "
+            f"until it can be proven outside the desk workspace ({exc})"
+        ) from exc
 
-    The boundary is part of the RL §9 contract: research writes to its own
-    workspace, not the live evidence audit chain.
+
+def _overlaps(a: Path, b: Path) -> bool:
+    """True when either path contains the other (equality counts)."""
+    return a == b or b in a.parents or a in b.parents
+
+
+def assert_no_overlap_with_desk(*, workspace: Path | None = None) -> None:
+    """Refuse any research path that overlaps a desk/treasury tree.
+
+    Called from the FastAPI ``attach_research`` hook (on the workspace it
+    actually resolved), from ``open_runstate_store`` on its explicit
+    argument, and by the lane gate. With ``workspace`` supplied, the
+    check targets that path; without it, the environment-derived
+    defaults are checked (backward-compatible gate behavior).
     """
-    forbidden = {state_root().resolve(), paper_dir().resolve()}
-    for label, path in (
-        ("workspace", workspace_root()),
-        ("adapter_dir", adapter_dir()),
-        ("cache_dir", cache_dir()),
-    ):
-        try:
-            resolved = path.resolve()
-        except (FileNotFoundError, OSError):
-            continue
-        if resolved in forbidden:
-            raise RuntimeError(
-                f"research path {label}={resolved} collides with a desk "
-                f"workspace; choose a different RESEARCH_* env var"
-            )
+    forbidden = (_resolve_strict(state_root()), _resolve_strict(paper_dir()))
+    targets: list[tuple[str, Path]] = []
+    if workspace is not None:
+        targets.append(("workspace", workspace))
+    else:
+        targets.extend((
+            ("workspace", workspace_root()),
+            ("adapter_dir", adapter_dir()),
+            ("cache_dir", cache_dir()),
+        ))
+    for label, path in targets:
+        resolved = _resolve_strict(path)
+        for desk_root in forbidden:
+            if _overlaps(resolved, desk_root):
+                raise RuntimeError(
+                    f"research path {label}={resolved} collides with the "
+                    f"desk workspace {desk_root}; choose a different "
+                    f"research workspace (equality, descendant, and "
+                    f"ancestor all count as overlap)"
+                )

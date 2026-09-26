@@ -25,10 +25,11 @@ Broker boundary:
 
 from __future__ import annotations
 
+import os
 import sqlite3
+from collections.abc import Callable
 from contextlib import contextmanager
 from datetime import date, datetime
-from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -38,8 +39,8 @@ from fastapi.responses import JSONResponse
 from tree_options.research import paths as research_paths
 from tree_options.research.catalog.sealed_round import build_candidate
 from tree_options.research.comparison.engine import run_comparison
+from tree_options.research.comparison.plan import resolve_plan
 from tree_options.research.contracts import (
-    ComparisonSpec,
     ResearchCandidate,
     ResearchDisposition,
     ResearchEvidenceKind,
@@ -47,6 +48,12 @@ from tree_options.research.contracts import (
 )
 from tree_options.research.evidence.drawer import evidence_for_point
 from tree_options.research.runstate.spec_hash import spec_hash
+from tree_options.research.runstate.store import RunstateStoreError
+from tree_options.research.runstate.worker import (
+    RUN_FORMAT_VERSION,
+    ResearchWorker,
+)
+from tree_options.research.spec_io import spec_from_dict
 
 _DEFAULT_ADAPTER = "sealed_round"  # the catalog's only built-in adapter for RL-1
 
@@ -56,21 +63,29 @@ def attach(
     *,
     workspace: Path | None = None,
     candidate_scopes_root: Path | None = None,
-) -> None:
-    """Mount the ``/api/research/*`` routes on ``app``.
+    engine_fn: Callable[..., Any] | None = None,
+    start_worker: bool | None = None,
+) -> ResearchWorker | None:
+    """Mount the ``/api/research/*`` routes on ``app`` and start the
+    bounded research worker.
 
     ``workspace`` defaults to ``research_paths.workspace_root()``.
     ``candidate_scopes_root`` defaults to ``<repo>/artifacts/campaign-2026-09``
     — the catalog adapter iterates this directory's per-scope subdirs.
+    ``start_worker`` defaults to the ``TREX_RESEARCH_WORKER`` env var
+    (``0`` disables — tests drive ``worker.step()`` synchronously);
+    returns the worker handle either way.
 
-    Attach-time path-overlap guard: refuses if any research path collides
-    with the desk state or paper-trades directories (RL §9).
+    Attach-time path-overlap guard: refuses if the ACTUAL resolved
+    workspace collides with the desk state or paper-trades trees (RL
+    §9 + RL1-04: the explicit argument is validated, not just env
+    defaults).
     """
     workspace = workspace or research_paths.workspace_root()
     candidate_scopes_root = candidate_scopes_root or (
         Path(__file__).resolve().parents[3] / "artifacts" / "campaign-2026-09"
     )
-    research_paths.assert_no_overlap_with_desk()
+    research_paths.assert_no_overlap_with_desk(workspace=workspace)
     # Panel survival: an unwritable workspace must never take the desk
     # panel down at attach time (a unit sandbox without the research
     # dir in ReadWritePaths raises here). GET catalog/evidence
@@ -87,6 +102,21 @@ def attach(
     # restart — for a few-thousand-entry catalog the scan is sub-second
     # but the file count is the runtime bottleneck.
     catalog_cache: list[ResearchCandidate] = _build_catalog(candidate_scopes_root)
+
+    worker = ResearchWorker(
+        workspace=workspace,
+        catalog_provider=lambda: catalog_cache,
+        engine_fn=engine_fn or run_comparison,
+    )
+    if start_worker is None:
+        start_worker = os.environ.get("TREX_RESEARCH_WORKER", "1") != "0"
+    if start_worker:
+        try:
+            worker.start()
+        except OSError:
+            pass  # unwritable workspace: endpoints degrade to 503 per-request
+    # The worker handle is returned so tests can step it synchronously;
+    # production ignores it (the daemon thread owns the loop).
 
     @app.get('/api/research/candidates')
     def list_candidates(
@@ -154,83 +184,145 @@ def attach(
         """Spool a ``ResearchRun`` via the runstate store. The body is a
         ``ComparisonSpec.to_dict()`` JSON document.
 
-        RL §9: state-changing = create bounded jobs or draft specs
-        (not GET side-effects). POST is spool-only; the actual run is
-        executed by a worker that consumes the spool (RL-2).
+        RL1-03 custody contract:
+          * everything is VALIDATED BEFORE any write — body shape,
+            candidate/benchmark membership, finite positive capital,
+            ISO dates, timezone-aware cutoff, and the semantic plan
+            (window, supported controls); invalid specs are 400s and
+            leave nothing persisted;
+          * the immutable ``spec`` object is EXACTLY the canonical form
+            the spec hash covers — no server metadata inside the hashed
+            payload (the pre-correction code embedded ``queued_at``
+            there, so an identical resubmission collided with itself
+            and returned 500);
+          * resubmitting an identical spec is IDEMPOTENT: same run_id,
+            same stored run, 200 with the run's current status;
+          * the run record (status/timestamps/result binding) is a
+            separate MUTABLE object the worker advances; POST never
+            computes and GET never computes.
         """
         try:
             payload = await request.json()
         except Exception as exc:
             raise HTTPException(status_code=400,
                                 detail={"error": "invalid_json"}) from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400,
+                                detail={"error": "invalid_body",
+                                        "message": "body must be a JSON object"})
         try:
-            spec = _parse_spec(payload)
-        except HTTPException:
-            raise
+            spec = spec_from_dict(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400,
+                                detail={"error": "invalid_comparison_spec",
+                                        "message": str(exc)}) from exc
+        # catalog membership — refused BEFORE anything is persisted
+        missing = [cid for cid in spec.candidate_ids
+                   if cid not in {c.id for c in catalog_cache}]
+        if missing:
+            raise HTTPException(status_code=400,
+                                detail={"error": "candidate_not_in_catalog",
+                                        "missing": missing})
+        if spec.benchmark_candidate_id and not any(
+                c.id == spec.benchmark_candidate_id for c in catalog_cache):
+            raise HTTPException(status_code=400,
+                                detail={"error": "benchmark_not_in_catalog",
+                                        "benchmark_candidate_id":
+                                            spec.benchmark_candidate_id})
+        # semantic validation: the spec must resolve to an executable
+        # plan (window, sessions, supported controls) at submission time
+        plan = resolve_plan(spec)
+        if plan.refused:
+            raise HTTPException(status_code=400,
+                                detail={"error": plan.refusal_reason,
+                                        "message": plan.refusal_detail})
+
         run_id = spec_hash(spec)
-        # Store the parsed spec's to_dict() so the GET endpoints can find
-        # the row by its sha-keyed `id` field. The original raw payload
-        # had no `id`; persisting the parsed form is the canonical record.
-        record = dict(spec.to_dict())
-        record["id"] = run_id
-        record["status"] = "queued"
-        record["queued_at"] = datetime.now().isoformat()
         with _open_store_or_503(workspace) as store:
-            store.put("spec", record, key=run_id, at=datetime.now())
+            try:
+                store.put("spec", spec.to_dict(), key=run_id, at=datetime.now())
+            except RunstateStoreError as exc:
+                # A pre-custody-format record (metadata embedded in the
+                # immutable payload) occupies this key: preserved, never
+                # erased, reported honestly.
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "pre_custody_format_run_exists",
+                            "message": "this spec was first submitted before "
+                                       "run custody landed; its record is "
+                                       "preserved — resubmit from a fresh "
+                                       "workspace or after migration"},
+                ) from exc
+            existing = store.get("run", run_id)
+            created = existing is None
+            if created:
+                # Deterministic initial payload (no timestamps): two
+                # concurrent identical POSTs both land idempotently.
+                store.put("run", {"run_id": run_id, "spec_hash": run_id,
+                                  "status": "queued",
+                                  "format_version": RUN_FORMAT_VERSION},
+                          key=run_id, at=datetime.now())
+                status_value = "queued"
+            else:
+                status_value = existing.get("status", "queued") \
+                    if isinstance(existing, dict) else "queued"
         return JSONResponse(
-            {"run_id": run_id, "status": "queued",
+            {"run_id": run_id, "status": status_value,
              "spec_hash": run_id, "workspace": str(workspace)},
-            status_code=202,
+            status_code=202 if created else 200,
             headers={"Cache-Control": "no-store"},
         )
 
     @app.get('/api/research/runs/{run_id}')
     def run_status(run_id: str) -> JSONResponse:
         with _open_store_or_503(workspace) as store:
-            specs = store.all("spec")
-        row = next((s for s in specs if s.get("id") == run_id), None)
-        if row is None:
+            run = store.get("run", run_id)
+            legacy = store.get("spec", run_id)
+        if run is None:
+            if legacy is not None:
+                return JSONResponse(
+                    {"run_id": run_id, "spec_hash": run_id,
+                     "status": "blocked",
+                     "error": "pre-custody-format run; resubmit the "
+                              "comparison to execute it under run custody"},
+                    headers={"Cache-Control": "no-store"})
             raise HTTPException(status_code=404,
                                 detail={"error": "run_not_found", "run_id": run_id})
-        return JSONResponse(row, headers={"Cache-Control": "no-store"})
+        return JSONResponse(run, headers={"Cache-Control": "no-store"})
 
     @app.get('/api/research/runs/{run_id}/result')
     def run_result(run_id: str) -> JSONResponse:
+        """Return the RECORDED result — never a fresh computation. Two
+        GETs must not cause two engine runs (RL1-03); pending runs get
+        an honest status, failed runs their error, completed runs the
+        immutable content-bound artifact."""
         with _open_store_or_503(workspace) as store:
-            spec_payload = next(
-                (s for s in store.all("spec") if s.get("id") == run_id),
-                None,
-            )
-            if spec_payload is None:
-                raise HTTPException(status_code=404,
-                                    detail={"error": "run_not_found", "run_id": run_id})
-        try:
-            spec = _parse_spec(spec_payload)
-        except HTTPException as exc:
-            raise HTTPException(status_code=400,
-                                detail={"error": "invalid_stored_spec"}) from exc
-        cands = [next((c for c in catalog_cache if c.id == cid), None)
-                 for cid in spec.candidate_ids]
-        if any(c is None for c in cands):
-            raise HTTPException(status_code=400,
-                                detail={"error": "candidate_not_in_catalog",
-                                        "missing": [cid for cid, c
-                                                    in zip(spec.candidate_ids, cands,
-                                                          strict=True)
-                                                    if c is None]})
-        baseline = None
-        if spec.benchmark_candidate_id:
-            baseline = next((c for c in catalog_cache
-                             if c.id == spec.benchmark_candidate_id), None)
-            if baseline is None:
-                raise HTTPException(status_code=400,
-                                    detail={"error": "benchmark_not_in_catalog",
-                                            "benchmark_candidate_id":
-                                                spec.benchmark_candidate_id})
-        result = run_comparison(spec, tuple(c for c in cands if c is not None),
-                                baseline=baseline)
-        return JSONResponse(_result_to_dict(result),
-                            headers={"Cache-Control": "no-store"})
+            run = store.get("run", run_id)
+            result = store.get("result", run_id)
+            legacy = store.get("spec", run_id)
+        if run is None:
+            if legacy is not None:
+                return JSONResponse(
+                    {"run_id": run_id, "status": "blocked", "result": None,
+                     "error": "pre-custody-format run; resubmit the "
+                              "comparison to execute it under run custody"},
+                    headers={"Cache-Control": "no-store"})
+            raise HTTPException(status_code=404,
+                                detail={"error": "run_not_found", "run_id": run_id})
+        status_value = run.get("status")
+        body: dict[str, Any] = {"run_id": run_id, "status": status_value,
+                                "result": None}
+        if status_value == "completed" and result is not None:
+            body.update({
+                "result": result["wire"],
+                "result_sha256": result["result_sha256"],
+                "engine_sha256": result["engine_sha256"],
+                "input_snapshot_sha256": result["input_snapshot_sha256"],
+                "calendar_sha256": result["calendar_sha256"],
+            })
+        elif status_value == "failed":
+            body["error"] = run.get("error")
+        return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
     # RL §5 / §6 — explicit out-of-scope. RL-3 (forecasts) and RL-2
     # (scenarios) own these surfaces; until they ship, the routes
@@ -255,6 +347,8 @@ def attach(
             status_code=410,
             headers={"Cache-Control": "no-store"},
         )
+
+    return worker
 
 
 # -- Catalog adapter -------------------------------------------------------
@@ -334,78 +428,8 @@ def _open_store_or_503(workspace: Path):
         ) from exc
 
 
-# -- Spec parser (POST body) -----------------------------------------------
-
-
-def _parse_spec(payload: dict[str, Any]) -> ComparisonSpec:
-    """Convert an incoming POST body to a ComparisonSpec.
-
-    Validates Decimal-encoded fields and date fields. Raises HTTP 400
-    on type errors. Missing fields default to the spec's dataclass
-    defaults (e.g. currency='USD', idle_cash_policy='cash_yields_zero').
-    """
-    try:
-        from decimal import InvalidOperation as DecimalError
-
-        from tree_options.research.contracts import (
-            BorrowingPolicy,
-            CashflowTiming,
-            CollateralPolicy,
-            CostModelKind,
-            Currency,
-            IdleCashPolicy,
-            PositionSizing,
-            PriceBasis,
-            Rebalancing,
-        )
-
-        def _decimal(field: str) -> Decimal:
-            raw = payload.get(field, "0")
-            try:
-                return Decimal(str(raw))
-            except DecimalError as exc:
-                raise ValueError(f"field {field!r} not a decimal: {raw!r}") from exc
-
-        common_start = (date.fromisoformat(payload["common_start"])
-                       if payload.get("common_start") else None)
-        common_end = (date.fromisoformat(payload["common_end"])
-                     if payload.get("common_end") else None)
-        cutoff = (datetime.fromisoformat(payload["knowledge_cutoff"])
-                  if payload.get("knowledge_cutoff") else None)
-        return ComparisonSpec(
-            candidate_ids=tuple(payload["candidate_ids"]),
-            starting_capital=_decimal("starting_capital"),
-            common_start=common_start,
-            common_end=common_end,
-            cashflow_timing=CashflowTiming(payload.get("cashflow_timing", "beginning_of_period")),
-            contribution_per_period=_decimal("contribution_per_period"),
-            cost_model_kind=CostModelKind(payload.get("cost_model_kind", "five_bp_fixed")),
-            benchmark_candidate_id=payload.get("benchmark_candidate_id"),
-            currency=Currency(payload.get("currency", "USD")),
-            price_basis=PriceBasis(payload.get("price_basis", "nominal_pretax")),
-            idle_cash_policy=IdleCashPolicy(payload.get("idle_cash_policy", "cash_yields_zero")),
-            rebalancing=Rebalancing(payload.get("rebalancing", "none")),
-            position_sizing=PositionSizing(payload.get("position_sizing", "integer")),
-            collateral=CollateralPolicy(payload.get("collateral", "none")),
-            borrowing=BorrowingPolicy(payload.get("borrowing", "none")),
-            knowledge_cutoff=cutoff,
-            proposed_by=payload.get("proposed_by", "operator"),
-            notes=payload.get("notes", ""),
-        )
-    except (KeyError, ValueError, TypeError) as exc:
-        raise HTTPException(
-            status_code=400,
-            detail={"error": "invalid_comparison_spec", "message": str(exc)},
-        ) from exc
-
-
-# -- Result serialiser -----------------------------------------------------
-
-
-def _result_to_dict(result) -> dict[str, Any]:
-    """Delegate to ``ComparisonResult.to_wire`` — the single wire
-    boundary (ISO date keys, money strings). The view never re-shapes
-    result payloads (RL1-02: a bespoke serializer here passed
-    ``datetime.date`` keys straight into ``JSONResponse`` and the first
-    nonempty result returned HTTP 500)."""
-    return result.to_wire()
+# Spec parsing lives in ``tree_options.research.spec_io.spec_from_dict``
+# (shared verbatim by the HTTP view and the worker — RL1-03: the stored
+# canonical spec and the POSTed body parse identically). Result
+# serialization lives in ``ComparisonResult.to_wire`` — the single wire
+# boundary.

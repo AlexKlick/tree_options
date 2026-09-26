@@ -7,15 +7,35 @@ own workspace (``~/.local/state/trex-research/<run-id>/`` per
 
 The surface mirrors the desk's ``EvidenceStore.put/all_at/verify/backup``
 but is scoped to the research lane's purpose:
-    - ``put(kind, key, payload, at)`` — record a per-run artifact
-      (spec, run metadata, comparison result, evidence snapshot)
-    - ``all(kind)`` — list all artifacts of a kind
-    - ``all_at(kind)`` — (payload, at) pairs, used by the cutoff filter
-    - ``verify()`` — returns ``{ok, events, objects, head_sha256}``
+    - ``put(kind, key, payload, at)`` — record an immutable artifact
+      (spec, result); idempotent on identical payload, conflicting on
+      different content. The audit head is updated INSIDE the same
+      transaction as the insert.
+    - ``replace(kind, key, payload, at)`` — append a new state snapshot
+      for a MUTABLE record (run lifecycle); the previous payload is
+      superseded but the audit trail keeps every version.
+    - ``all(kind)`` / ``all_at(kind)`` — list artifacts of a kind
+    - ``verify()`` — read-only integrity check (see below)
 
-This module deliberately does NOT subclass the desk's ``EvidenceStore``
-to keep the boundary obvious; the SQL schema is similar but the path
-isolation is enforced in ``open_runstate_store`` below.
+RL1-04 correction (2026-09-25 audit): the previous verifier compared a
+cached audit head that legitimate writes never updated (so a valid
+append after a first verify FAILED), and never rehashed the stored
+payload bytes (so tampered ``payload_json`` with an untouched claimed
+hash PASSED). Verification now recomputes, in one consistent snapshot:
+
+    1. every object's payload hash (sha256 of the stored bytes vs the
+       claimed ``payload_sha256``);
+    2. object/audit correspondence (every object has at least one audit
+       row; every audit row references an existing object);
+    3. the full hash chain over audit rows, compared against the
+       committed head.
+
+The committed head is written only by mutating operations, in the same
+transaction as their changes. ``verify()`` NEVER writes.
+
+Receipt semantics: ``verify()`` attests LOCAL CONSISTENCY of this
+database's contents — it is not an independently anchored authenticity
+claim about how the artifacts came to exist.
 """
 
 from __future__ import annotations
@@ -28,14 +48,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+from tree_options.research.paths import assert_no_overlap_with_desk
+
 # Same table names as the desk, but a separate database file.
 _KINDS: tuple[str, ...] = ("run", "spec", "result", "evidence_snapshot", "comparison_row")
 
 
 class RunstateStoreError(RuntimeError):
     """Raised when the research lane's runstate store fails an
-    invariant the desk's store would not catch (path-overlap, content
-    corruption)."""
+    invariant (path-overlap, tampering, corruption, content conflict)."""
 
 
 @contextmanager
@@ -43,10 +64,12 @@ def open_runstate_store(workspace: Path) -> Iterator[RunstateStore]:
     """Open (and lazily create) the runstate store at
     ``<workspace>/runstate.sqlite3``.
 
-    The caller (the FastAPI ``attach_research`` hook) is responsible for
-    ensuring ``workspace`` is NOT the desk evidence or paper-trades
-    directory. This layer enforces that with a runtime check.
+    The ACTUAL resolved workspace is validated here against the desk
+    trees (RL1-04: the explicit argument is checked, not just
+    environment-derived defaults — a workspace passed by a caller counts
+    exactly as much as one read from the environment).
     """
+    assert_no_overlap_with_desk(workspace=workspace)
     db_path = workspace / "runstate.sqlite3"
     db_path.parent.mkdir(parents=True, exist_ok=True)
     store = RunstateStore(db_path)
@@ -108,17 +131,15 @@ class RunstateStore:
 
     def put(self, kind: str, payload: dict[str, Any], *,
             key: str, at: datetime | None = None) -> str:
-        """Record one artifact. Returns the payload sha256.
+        """Record one immutable artifact. Returns the payload sha256.
 
-        Raises ``RunstateStoreError`` if ``(kind, key)`` already exists
-        with a different payload (the desk's content_conflict semantics,
-        in our namespace).
+        Idempotent on identical content. Raises ``RunstateStoreError``
+        if ``(kind, key)`` already exists with a different payload (the
+        desk's content_conflict semantics, in our namespace).
         """
         if kind not in _KINDS:
             raise RunstateStoreError(f"unknown kind: {kind!r}")
-        body = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-        sha = _sha256_hex(body)
-        at_iso = (at or datetime.now()).isoformat()
+        sha, body, at_iso = _canonical_entry(payload, at)
         cur = self.conn.execute(
             "SELECT payload_sha256 FROM objects WHERE kind = ? AND object_key = ?",
             (kind, key),
@@ -130,7 +151,7 @@ class RunstateStore:
                 f"content_conflict: {kind}/{key} already exists with a "
                 "different payload"
             )
-        self.conn.execute("BEGIN")
+        self.conn.execute("BEGIN IMMEDIATE")
         try:
             self.conn.execute(
                 "INSERT INTO objects (kind, object_key, payload_sha256, payload_json, created_at) "
@@ -138,11 +159,50 @@ class RunstateStore:
                 (kind, key, sha, body, at_iso),
             )
             self._audit(kind, key, "put", prev=None, next_sha=sha, at=at_iso)
+            self._refresh_head_locked()
             self.conn.execute("COMMIT")
         except Exception:
             self.conn.execute("ROLLBACK")
             raise
         return sha
+
+    def replace(self, kind: str, payload: dict[str, Any], *,
+                key: str, at: datetime | None = None) -> str:
+        """Publish a new state snapshot for a MUTABLE record (run
+        lifecycle). Requires the key to exist; the full audit trail
+        keeps every prior version. Returns the new payload sha256.
+        """
+        if kind not in _KINDS:
+            raise RunstateStoreError(f"unknown kind: {kind!r}")
+        sha, body, at_iso = _canonical_entry(payload, at)
+        cur = self.conn.execute(
+            "SELECT payload_sha256 FROM objects WHERE kind = ? AND object_key = ?",
+            (kind, key),
+        ).fetchone()
+        if cur is None:
+            raise RunstateStoreError(f"no such object: {kind}/{key} to replace")
+        prev_sha: str = cur["payload_sha256"]
+        self.conn.execute("BEGIN IMMEDIATE")
+        try:
+            self.conn.execute(
+                "UPDATE objects SET payload_sha256 = ?, payload_json = ?, created_at = ? "
+                "WHERE kind = ? AND object_key = ?",
+                (sha, body, at_iso, kind, key),
+            )
+            self._audit(kind, key, "replace", prev=prev_sha, next_sha=sha, at=at_iso)
+            self._refresh_head_locked()
+            self.conn.execute("COMMIT")
+        except Exception:
+            self.conn.execute("ROLLBACK")
+            raise
+        return sha
+
+    def get(self, kind: str, key: str) -> dict[str, Any] | None:
+        row = self.conn.execute(
+            "SELECT payload_json FROM objects WHERE kind = ? AND object_key = ?",
+            (kind, key),
+        ).fetchone()
+        return json.loads(row["payload_json"]) if row is not None else None
 
     def all(self, kind: str) -> tuple[dict[str, Any], ...]:
         rows = self.conn.execute(
@@ -151,34 +211,81 @@ class RunstateStore:
         ).fetchall()
         return tuple(json.loads(r["payload_json"]) for r in rows)
 
-    def all_at(self, kind: str) -> tuple[tuple[dict[str, Any], datetime], ...]:
+    def all_at(self, kind: str) -> tuple[tuple[dict[str, Any], str], ...]:
+        """Payloads with their recorded timestamps as ISO strings (the
+        desk store's convention — callers normalize once)."""
         rows = self.conn.execute(
             "SELECT payload_json, created_at FROM objects WHERE kind = ? ORDER BY created_at",
             (kind,),
         ).fetchall()
-        out: list[tuple[dict[str, Any], datetime]] = []
-        for r in rows:
-            out.append((json.loads(r["payload_json"]), datetime.fromisoformat(r["created_at"])))
-        return tuple(out)
+        return tuple(
+            (json.loads(r["payload_json"]), r["created_at"]) for r in rows
+        )
 
     def verify(self) -> dict[str, Any]:
-        cur = self.conn.execute("SELECT head_sha256, events, objects, updated_at "
-                                "FROM audit_head WHERE id = 1").fetchone()
-        # Recompute from scratch for the receipt (the desk's store does
-        # the same; the audit_head row is a fast-path cache).
-        head = self._compute_head()
-        if cur is None:
-            self.conn.execute("INSERT INTO audit_head (id, head_sha256, events, objects, updated_at) "
-                               "VALUES (1, ?, ?, ?, ?)",
-                               (head["head_sha256"], head["events"], head["objects"],
-                                head["updated_at"]))
-        elif (cur["head_sha256"] != head["head_sha256"]
-              or cur["events"] != head["events"]
-              or cur["objects"] != head["objects"]):
-            raise RunstateStoreError(
-                f"audit_head mismatch: stored {dict(cur)} vs computed {head}"
-            )
-        return head
+        """Read-only integrity verification (never writes). Raises
+        ``RunstateStoreError`` on any tampering, drift, or corruption.
+        """
+        self.conn.execute("BEGIN DEFERRED")  # one consistent snapshot
+        try:
+            # 1) every object's payload bytes hash to its claimed hash
+            for row in self.conn.execute(
+                "SELECT kind, object_key, payload_sha256, payload_json FROM objects"
+            ):
+                actual = _sha256_hex(row["payload_json"])
+                if actual != row["payload_sha256"]:
+                    raise RunstateStoreError(
+                        f"payload_tampering: {row['kind']}/{row['object_key']} "
+                        f"stored bytes hash to {actual} but claim "
+                        f"{row['payload_sha256']}"
+                    )
+            # 2) object/audit correspondence
+            object_keys = {
+                (r["kind"], r["object_key"])
+                for r in self.conn.execute("SELECT kind, object_key FROM objects")
+            }
+            audited_keys = {
+                (r["kind"], r["object_key"])
+                for r in self.conn.execute("SELECT DISTINCT kind, object_key FROM audit")
+            }
+            missing_audit = object_keys - audited_keys
+            if missing_audit:
+                raise RunstateStoreError(
+                    f"orphan_objects with no audit trail: {sorted(missing_audit)}"
+                )
+            dangling_audit = audited_keys - object_keys
+            if dangling_audit:
+                raise RunstateStoreError(
+                    f"audit_rows referencing missing objects: {sorted(dangling_audit)}"
+                )
+            # 3) chain + committed head agreement
+            head = self._compute_head()
+            cur = self.conn.execute(
+                "SELECT head_sha256, events, objects, updated_at "
+                "FROM audit_head WHERE id = 1"
+            ).fetchone()
+            if cur is None:
+                if head["events"] or head["objects"]:
+                    raise RunstateStoreError(
+                        "missing audit_head: store has content but no "
+                        "committed head"
+                    )
+            elif (cur["head_sha256"] != head["head_sha256"]
+                  or cur["events"] != head["events"]
+                  or cur["objects"] != head["objects"]):
+                raise RunstateStoreError(
+                    f"audit_head mismatch: committed {dict(cur)} vs "
+                    f"computed {head}"
+                )
+        finally:
+            self.conn.execute("COMMIT")
+        return {
+            "ok": True,
+            "head_sha256": head["head_sha256"],
+            "events": head["events"],
+            "objects": head["objects"],
+            "scope": "local-consistency",
+        }
 
     # -- internals --------------------------------------------------------
 
@@ -188,6 +295,21 @@ class RunstateStore:
             "INSERT INTO audit (kind, object_key, action, prev_sha256, next_sha256, occurred_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
             (kind, key, action, prev, next_sha, at),
+        )
+
+    def _refresh_head_locked(self) -> None:
+        """Recompute and commit the audit head inside the caller's open
+        transaction — the head can never lag the content it summarizes
+        (RL1-04: a stale head made legitimate appends fail verify)."""
+        head = self._compute_head()
+        self.conn.execute(
+            "INSERT INTO audit_head (id, head_sha256, events, objects, updated_at) "
+            "VALUES (1, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET head_sha256 = excluded.head_sha256, "
+            "events = excluded.events, objects = excluded.objects, "
+            "updated_at = excluded.updated_at",
+            (head["head_sha256"], head["events"], head["objects"],
+             head["updated_at"]),
         )
 
     def _compute_head(self) -> dict[str, Any]:
@@ -212,6 +334,13 @@ class RunstateStore:
             "objects": objects,
             "updated_at": datetime.now().isoformat(),
         }
+
+
+def _canonical_entry(payload: dict[str, Any], at: datetime | None) -> tuple[str, str, str]:
+    body = json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str)
+    sha = _sha256_hex(body)
+    at_iso = (at or datetime.now()).isoformat()
+    return sha, body, at_iso
 
 
 def _sha256_hex(s: str) -> str:
