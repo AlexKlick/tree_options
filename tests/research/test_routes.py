@@ -82,11 +82,17 @@ def test_forecast_endpoint_returns_410_gone(tmp_path: Path) -> None:
     assert "forecast_out_of_scope_for_rl1" in r.json()["error"]
 
 
-def test_scenarios_endpoint_returns_410_gone(tmp_path: Path) -> None:
+def test_scenarios_endpoint_returns_empty_list_when_none_spawned(
+    tmp_path: Path,
+) -> None:
+    """RL-2 ships the real GET /api/research/scenarios — it lists the
+    children attached via the lineage table. Empty on a fresh workspace."""
     client, _worker = _build_app(tmp_path)
     r = client.get("/api/research/scenarios")
-    assert r.status_code == 410
-    assert "scenarios_out_of_scope_for_rl1" in r.json()["error"]
+    assert r.status_code == 200
+    body = r.json()
+    assert "scenarios" in body
+    assert body["scenarios"] == []
 
 
 def test_candidates_endpoint_lists_catalog(tmp_path: Path) -> None:
@@ -95,7 +101,8 @@ def test_candidates_endpoint_lists_catalog(tmp_path: Path) -> None:
     assert r.status_code == 200
     body = r.json()
     assert "candidates" in body
-    assert len(body["candidates"]) == 4  # 1 sealed + 3 synthetic
+    # RL-2: 1 sealed + 3 synthetic + 2 shadow-proxy = 6.
+    assert len(body["candidates"]) == 6
     c = body["candidates"][0]
     assert c["family"] == "test-scope"
     assert c["disposition"] == "WITHDRAWN"
@@ -286,7 +293,8 @@ def test_malformed_scope_surfaces_instead_of_vanishing(tmp_path: Path) -> None:
     assert families == {"good-scope", "bad-scope",
                         "synthetic-benchmark-v1",
                         "synthetic-momentum-v1",
-                        "synthetic-drift-v1"}
+                        "synthetic-drift-v1",
+                        "vix_term", "hold-20"}
     bad_row = next(c for c in body if c["family"] == "bad-scope")
     assert bad_row["disposition"] == "DATA-GATED-NOT-RUN"
     assert "adapter" in bad_row["ineligibility_reason"]
@@ -322,7 +330,8 @@ def test_attach_survives_unwritable_workspace(tmp_path: Path) -> None:
 
     r = client.get("/api/research/candidates")
     assert r.status_code == 200
-    assert len(r.json()["candidates"]) == 4  # 1 sealed + 3 synthetic
+    # RL-2: 1 sealed + 3 synthetic + 2 shadow-proxy = 6.
+    assert len(r.json()["candidates"]) == 6
     cid = r.json()["candidates"][0]["id"]
 
     # The spec must pass validation (membership + plan) so the request

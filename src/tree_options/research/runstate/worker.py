@@ -1,5 +1,6 @@
 r"""Bounded research worker: claim queued runs, compute, publish
-immutable results (RL1-03 correction).
+immutable results (RL1-03 correction; RL-2 scenario forks extend the
+same single-thread loop).
 
 The 2026-09-25 audit found a spool that never emptied: POST wrote
 ``queued`` records and every GET of ``/runs/{id}/result`` recomputed
@@ -29,6 +30,14 @@ Design points the audit demanded:
       which stored metadata inside the immutable spec payload) are
       marked ``blocked`` — never erased, never silently rerun.
 
+RL-2 extends this worker with the same lifecycle for SCENARIO runs
+(a run record with ``kind == "scenario"``). The scenario's spec is
+parsed from the stored immutable payload under ``spec`` (the canonical
+diff body) just like a comparison spec; the parent is read out of the
+runstate store via the lineage table; the engine forks the parent's
+result and publishes the child's content-bound artifact under the
+child's own run_id. Status / failure / requeue rules are unchanged.
+
 Workers are unit-testable without threads: ``step()`` claims at most
 one queued run synchronously.
 """
@@ -51,6 +60,16 @@ from tree_options.research.runstate.store import (
     RunstateStoreError,
     open_runstate_store,
 )
+from tree_options.research.scenarios.contracts import (
+    scenario_diff_sha256,
+    scenario_spec_hash,
+)
+from tree_options.research.scenarios.engine import fork_parent_and_replay
+from tree_options.research.scenarios.lineage import (
+    ChildRef,
+    store_parent_ref,
+)
+from tree_options.research.scenarios.spec_io import scenario_from_dict
 from tree_options.research.spec_io import spec_from_dict
 
 #: Run-record format written by this module; anything else in the store
@@ -58,7 +77,10 @@ from tree_options.research.spec_io import spec_from_dict
 RUN_FORMAT_VERSION = 2
 
 #: Engine identity: sha256 over the comparison modules' source bytes —
-#: the "engine/code version" bound into every result receipt.
+#: the "engine/code version" bound into every result receipt. RL-2
+#: adds the scenarios engine to the same identity surface so a
+#: scenario result's ``engine_sha`` matches the comparison engine
+#: bytes that produced it (scenarios reuse run_comparison verbatim).
 _ENGINE_MODULES = (
     "tree_options.research.comparison.funded",
     "tree_options.research.comparison.engine",
@@ -66,6 +88,9 @@ _ENGINE_MODULES = (
     "tree_options.research.comparison.calendar",
     "tree_options.research.comparison.drawdown",
     "tree_options.research.comparison.pair",
+    "tree_options.research.scenarios.engine",
+    "tree_options.research.scenarios.lineage",
+    "tree_options.research.scenarios.contracts",
 )
 
 
@@ -157,7 +182,12 @@ class ResearchWorker:
             spec_payload = store.get("spec", run_id)
             if spec_payload is None:
                 raise RunstateStoreError(f"run {run_id} has no stored spec")
-            result_payload = self._compute(run_id, spec_payload)
+            kind = run.get("kind", "comparison")
+            if kind == "scenario":
+                result_payload = self._compute_scenario(
+                    store, run_id, spec_payload, run)
+            else:
+                result_payload = self._compute(run_id, spec_payload)
         except Exception as exc:
             store.replace(
                 "run",
@@ -167,13 +197,25 @@ class ResearchWorker:
             )
             return
         store.put("result", result_payload, key=run_id)
+        replace_fields = {
+            "completed_at": datetime.now().isoformat(),
+            "result_sha256": result_payload["result_sha256"],
+            "engine_sha256": result_payload["engine_sha256"],
+        }
+        # input_snapshot_sha is OPTIONAL on the stored result: refusal
+        # envelopes (no parent / typed refusal) don't bind an input
+        # snapshot — they're honest "no computation happened" records.
+        if "input_snapshot_sha256" in result_payload:
+            replace_fields["input_snapshot_sha256"] = (
+                result_payload["input_snapshot_sha256"])
+        if "scenario_diff_sha256" in result_payload:
+            replace_fields["scenario_diff_sha256"] = (
+                result_payload["scenario_diff_sha256"])
+        if "parent_run_id" in result_payload:
+            replace_fields["parent_run_id"] = result_payload["parent_run_id"]
         store.replace(
             "run",
-            {**run, "status": "completed",
-             "completed_at": datetime.now().isoformat(),
-             "result_sha256": result_payload["result_sha256"],
-             "engine_sha256": result_payload["engine_sha256"],
-             "input_snapshot_sha256": result_payload["input_snapshot_sha256"]},
+            {**run, "status": "completed", **replace_fields},
             key=run_id,
         )
 
@@ -215,6 +257,136 @@ class ResearchWorker:
             "calendar_sha256": plan.calendar_sha256,
             "result_sha256": result_sha,
             "wire": wire,
+        }
+
+    def _compute_scenario(self, store: Any, run_id: str,
+                          spec_payload: dict[str, Any],
+                          run: dict[str, Any]) -> dict[str, Any]:
+        """Fork the parent run, replay the diff via the scenario
+        engine, persist the parent_ref on first fork, and publish the
+        child's content-bound result.
+
+        The ``parent_run_id`` lives on the run record (not the spec)
+        because the spec is body content parsed verbatim at the HTTP
+        layer; the URL path is the parent identifier. The parent's
+        stored ``result`` envelope is reconstructed from
+        ``store.get("result", parent_run_id)``.
+        """
+        parent_run_id = run.get("parent_run_id")
+        if not isinstance(parent_run_id, str) or not parent_run_id:
+            raise RunstateStoreError(
+                "scenario run is missing parent_run_id")
+        spec = scenario_from_dict(parent_run_id, spec_payload)
+        # The parent's stored result envelope — the source of truth
+        # for identity matching (the parent's wire payload carries
+        # the engine/input/calendar shas that must still match).
+        parent_envelope_payload = store_get_cached(
+            self.workspace, "result", parent_run_id)
+        if parent_envelope_payload is None:
+            # Mirrors the comparison engine's "missing parent" shape;
+            # the spec holder refusal is rendered into the result
+            # wire so the SPA renders the honest blocker.
+            from tree_options.research.scenarios.refusal_codes import (
+                SCENARIO_PARENT_MISSING,
+                ScenarioRefusal,
+            )
+            refusal = ScenarioRefusal(
+                code=SCENARIO_PARENT_MISSING,
+                message="parent run has no stored result record",
+            )
+            return _refusal_result(
+                run_id, spec, refusal,
+                spec_hash=scenario_spec_hash(spec),
+                format_version=RUN_FORMAT_VERSION,
+                engine_sha256=engine_identity_sha(),
+            )
+        parent_envelope = parent_envelope_payload.get("wire")
+        if not isinstance(parent_envelope, dict):
+            from tree_options.research.scenarios.refusal_codes import (
+                SCENARIO_PARENT_MISSING,
+                ScenarioRefusal,
+            )
+            refusal = ScenarioRefusal(
+                code=SCENARIO_PARENT_MISSING,
+                message="parent run result envelope is malformed")
+            return _refusal_result(
+                run_id, spec, refusal,
+                spec_hash=scenario_spec_hash(spec),
+                format_version=RUN_FORMAT_VERSION,
+                engine_sha256=engine_identity_sha(),
+            )
+        # The parent's TERMINAL status lives on the run record, not the
+        # result envelope; ``parent_missing`` needs the run.status to
+        # decide whether the fork can proceed.
+        parent_run_record = store.get("run", parent_run_id)
+        parent_status = (
+            parent_run_record.get("status")
+            if isinstance(parent_run_record, dict) else None)
+        # Parent envelope identity fields are read off the parent's
+        # top-level result record (where the worker writes them via
+        # the ``result`` kind), not inside ``wire``.
+        parent_identity = {
+            "engine_sha256": parent_envelope_payload.get("engine_sha256"),
+            "input_snapshot_sha256":
+                parent_envelope_payload.get("input_snapshot_sha256"),
+            "calendar_sha256":
+                parent_envelope_payload.get("calendar_sha256"),
+            "spec_hash": parent_envelope_payload.get("spec_hash"),
+        }
+        parent_envelope_for_engine = {**parent_envelope, **parent_identity,
+                                    "status": parent_status}
+        outcome = fork_parent_and_replay(
+            store,
+            scenario=spec,
+            parent_result_envelope=parent_envelope_for_engine,
+            catalog_provider=self.catalog_provider,
+            engine_fn=self.engine_fn,
+        )
+        if outcome.refusal is not None:
+            return _refusal_result(
+                run_id, spec, outcome.refusal,
+                spec_hash=scenario_spec_hash(spec),
+                format_version=RUN_FORMAT_VERSION,
+                engine_sha256=engine_identity_sha(),
+                parent_run_id=parent_run_id,
+                scenario_diff_sha256=scenario_diff_sha256(spec),
+            )
+        # Persist parent_ref (idempotent), then child pointer.
+        if outcome.parent_ref is not None:
+            store_parent_ref(store, outcome.parent_ref,
+                             at=datetime.now())
+        child = ChildRef(
+            child_run_id=run_id,
+            parent_run_id=parent_run_id,
+            scenario_kind=spec.kind.value,
+            scenario_diff_sha256=scenario_diff_sha256(spec),
+        )
+        from tree_options.research.scenarios.lineage import attach_child
+        attach_child(store, child, at=datetime.now())
+        wire = outcome.result.to_wire()
+        # Append scenario-specific metadata to the wire envelope so
+        # the SPA can render the lineage chip without an extra
+        # roundtrip to GET /api/research/scenarios.
+        wire_meta = dict(wire)
+        wire_meta["parent_run_id"] = parent_run_id
+        wire_meta["scenario_kind"] = spec.kind.value
+        wire_meta["scenario_access_mode"] = spec.access_mode.value
+        result_sha = hashlib.sha256(
+            json.dumps(wire_meta, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
+        return {
+            "run_id": run_id,
+            "spec_hash": scenario_spec_hash(spec),
+            "format_version": RUN_FORMAT_VERSION,
+            "engine_sha256": engine_identity_sha(),
+            "input_snapshot_sha256":
+                parent_envelope_for_engine["input_snapshot_sha256"],
+            "calendar_sha256": parent_envelope_for_engine["calendar_sha256"],
+            "scenario_diff_sha256": scenario_diff_sha256(spec),
+            "parent_run_id": parent_run_id,
+            "scenario_kind": spec.kind.value,
+            "result_sha256": result_sha,
+            "wire": wire_meta,
         }
 
     # -- thread loop -------------------------------------------------------
@@ -259,3 +431,44 @@ class ResearchWorker:
 
 __all__ = ["RUN_FORMAT_VERSION", "ResearchWorker", "engine_identity_sha",
            "input_snapshot_sha"]
+
+
+# -- module-scope helpers --------------------------------------------------
+
+
+def store_get_cached(workspace: Path, kind: str, key: str) -> dict[str, Any] | None:
+    """Open the runstate store at ``workspace`` and return the payload
+    of ``(kind, key)``. Used by ``_compute_scenario`` to read the
+    parent's stored result envelope without holding the store open
+    across the engine call.
+
+    The store is opened briefly (in its own ``with`` block) so a
+    second open for the lineage writes does not stack two openers on
+    the same SQLite file (which on some kernels surfaces as
+    ``database is locked``)."""
+    with open_runstate_store(workspace) as store:
+        return store.get(kind, key)
+
+
+def _refusal_result(run_id: str, spec: Any, refusal: Any, **extra: Any) -> dict[str, Any]:
+    """A scenario that refused (parent missing, type-B stress, missing
+    capability, etc.) still gets a content-bound result record so the
+    SPA can render the honest blocker — never a 404 from a missing
+    row. The result_sha binds the canonical refusal text so
+    downstream readers can replay why."""
+    wire = {"refusal": refusal.code, "message": refusal.message,
+            "scenario_kind": spec.kind.value}
+    if "parent_run_id" in extra:
+        wire["parent_run_id"] = extra["parent_run_id"]
+    if "scenario_diff_sha256" in extra:
+        wire["scenario_diff_sha256"] = extra["scenario_diff_sha256"]
+    result_sha = hashlib.sha256(
+        json.dumps(wire, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()
+    payload = dict(extra)
+    payload.update({
+        "run_id": run_id,
+        "result_sha256": result_sha,
+        "wire": wire,
+    })
+    return payload

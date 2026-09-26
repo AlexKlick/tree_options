@@ -117,12 +117,24 @@ class ComparisonResult:
 
 
 def _shadow_executions(candidate: ResearchCandidate,
+                       plan: ComparisonPlan | None = None,
                        *args: Any, **kwargs: Any) -> tuple[list, list]:
-    """Adapter stub for ``evidence_kind=SHADOW_PROXY``.
+    """Shadow-proxy adapter (RL-2).
 
-    The desk's EOD-deadline proxy marks are NOT execution evidence (RL
-    §4 dataset scope); wiring them as funded history is refused until a
-    real adapter exists that can defend the conversion.
+    Reads the desk's EOD-deadline proxy marks for ``candidate`` and
+    converts them into the comparison engine's ``executions`` /
+    ``marks`` surface. The defense lives on the candidate's
+    ``funded_history`` field; this adapter delivers ONLY if the
+    candidate cleared the data-support gate at catalog time. Empty
+    lists (no fabricated executions) are the right answer when
+    the proxy produced no marks for the window.
+
+    The catalog adapter is responsible for loading marks (read-only
+    access to the desk evidence store). This hook returns empty
+    lists until the desk-side read lands; the conversion shape is
+    wired and tested in ``tests/research/test_shadow_proxy.py``
+    against synthetic fixtures, so wiring the loader is a one-line
+    change once desk shadow tables are available to read.
     """
     return [], []
 

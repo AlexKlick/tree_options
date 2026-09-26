@@ -8,6 +8,12 @@ Decimal fields reject non-finite magnitudes (``NaN``/``Infinity`` were
 previously accepted and persisted), capital must be positive and
 representable, and ``candidate_ids`` must be a deduplicated list of
 non-empty strings.
+
+The ScenarioSpec parser (``scenario_from_dict``) is a sibling module:
+see ``tree_options.research.scenarios.spec_io``. Keeping the two
+parsers separate is on purpose — they sit at different API boundaries
+and a single shared module would force an import cycle through the
+scenarios package's ``__init__``.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ from tree_options.research.contracts import (
     PriceBasis,
     Rebalancing,
 )
+from tree_options.research.scenarios.spec_io import scenario_from_dict
 
 #: Upper bound on starting capital (money max_digits=18 in the ledger
 #: schemas; a comparison with more digits than that cannot execute).
@@ -126,4 +133,4 @@ def spec_from_dict(payload: dict[str, Any]) -> ComparisonSpec:
     )
 
 
-__all__ = ["spec_from_dict"]
+__all__ = ["scenario_from_dict", "spec_from_dict"]

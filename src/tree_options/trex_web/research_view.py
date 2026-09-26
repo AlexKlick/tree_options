@@ -53,6 +53,8 @@ from tree_options.research.runstate.worker import (
     RUN_FORMAT_VERSION,
     ResearchWorker,
 )
+from tree_options.research.scenarios.contracts import scenario_spec_hash
+from tree_options.research.scenarios.spec_io import scenario_from_dict
 from tree_options.research.spec_io import spec_from_dict
 
 _DEFAULT_ADAPTER = "sealed_round"  # the catalog's only built-in adapter for RL-1
@@ -313,37 +315,157 @@ def attach(
         body: dict[str, Any] = {"run_id": run_id, "status": status_value,
                                 "result": None}
         if status_value == "completed" and result is not None:
-            body.update({
+            updates: dict[str, Any] = {
                 "result": result["wire"],
                 "result_sha256": result["result_sha256"],
                 "engine_sha256": result["engine_sha256"],
-                "input_snapshot_sha256": result["input_snapshot_sha256"],
-                "calendar_sha256": result["calendar_sha256"],
-            })
+            }
+            if "input_snapshot_sha256" in result:
+                updates["input_snapshot_sha256"] = result[
+                    "input_snapshot_sha256"]
+            if "calendar_sha256" in result:
+                updates["calendar_sha256"] = result["calendar_sha256"]
+            if "scenario_diff_sha256" in result:
+                updates["scenario_diff_sha256"] = result[
+                    "scenario_diff_sha256"]
+            if "parent_run_id" in result:
+                updates["parent_run_id"] = result["parent_run_id"]
+            body.update(updates)
         elif status_value == "failed":
             body["error"] = run.get("error")
         return JSONResponse(body, headers={"Cache-Control": "no-store"})
 
-    # RL §5 / §6 — explicit out-of-scope. RL-3 (forecasts) and RL-2
-    # (scenarios) own these surfaces; until they ship, the routes
-    # return 410 Gone so the SPA can hard-disable them rather than show
-    # a confusing half-broken UX.
+    # RL-2: reproducible scenario branching surfaces replace the RL-1
+    # 410 Gone stub. The same idempotency / pre-write validation /
+    # content-bound result pattern from POST /compare applies (RL1-03).
+    @app.get('/api/research/scenarios')
+    def list_scenarios(parent_run_id: str | None = Query(None)) -> JSONResponse:
+        """List scenario children. With ``?parent_run_id=<id>`` returns
+        only the children of that parent; without it returns every
+        child pointer in the store ordered by insertion."""
+        with _open_store_or_503(workspace) as store:
+            children: list[dict[str, Any]] = []
+            for payload, _at in store.all_at("child"):
+                if not isinstance(payload, dict):
+                    continue
+                if (parent_run_id is not None
+                        and payload.get("parent_run_id") != parent_run_id):
+                    continue
+                children.append(payload)
+        return JSONResponse(
+            {"scenarios": children, "parent_run_id": parent_run_id},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post('/api/research/scenarios/{parent_run_id}')
+    async def spawn_scenario(parent_run_id: str,
+                              request: Request) -> JSONResponse:
+        """Spool a ``ResearchRun`` whose ``kind == "scenario"``. The
+        body is a ScenarioDiff / kind / access_mode JSON. The path
+        component is the parent identifier (URL is honest about the
+        fork's subject); the body carries only the diff payload."""
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(status_code=400,
+                                detail={"error": "invalid_json"}) from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400,
+                                detail={"error": "invalid_body",
+                                        "message": "body must be a JSON object"})
+        try:
+            spec = scenario_from_dict(parent_run_id, payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=400,
+                                detail={"error": "invalid_scenario_spec",
+                                        "message": str(exc)}) from exc
+        # The parent must exist as a completed run with a stored
+        # result envelope (lineage honesty is a pre-write gate, not
+        # a worker-time surprise).
+        with _open_store_or_503(workspace) as store:
+            parent_run = store.get("run", parent_run_id)
+            parent_result = store.get("result", parent_run_id)
+        if parent_run is None or parent_run.get("status") != "completed":
+            raise HTTPException(
+                status_code=404,
+                detail={"error": "parent_not_found",
+                        "parent_run_id": parent_run_id})
+        if parent_result is None:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": "parent_missing_result",
+                        "parent_run_id": parent_run_id})
+        run_id = scenario_spec_hash(spec)
+        with _open_store_or_503(workspace) as store:
+            try:
+                store.put("spec", spec.to_dict(), key=run_id,
+                          at=datetime.now())
+            except RunstateStoreError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "pre_custody_format_run_exists",
+                            "message": str(exc)}) from exc
+            existing_run = store.get("run", run_id)
+            created = existing_run is None
+            if created:
+                store.put("run",
+                          {"run_id": run_id, "spec_hash": run_id,
+                           "kind": "scenario",
+                           "parent_run_id": parent_run_id,
+                           "status": "queued",
+                           "format_version": RUN_FORMAT_VERSION},
+                          key=run_id, at=datetime.now())
+                # Persist the lineage pointers at submission time too
+                # (not only when the worker completes) so the SPA can
+                # list queued children via GET /scenarios. Both writes
+                # are idempotent on retry.
+                from tree_options.research.scenarios.lineage import (
+                    ChildRef,
+                    ParentRef,
+                    attach_child,
+                    store_parent_ref,
+                )
+                store_parent_ref(store, ParentRef(
+                    parent_run_id=parent_run_id,
+                    parent_spec_hash=str(parent_run.get("spec_hash", "")),
+                    parent_engine_sha256=str(parent_result.get(
+                        "engine_sha256", "")),
+                    parent_input_snapshot_sha256=str(parent_result.get(
+                        "input_snapshot_sha256", "")),
+                    parent_calendar_sha256=str(parent_result.get(
+                        "calendar_sha256", "")),
+                ), at=datetime.now())
+                attach_child(store, ChildRef(
+                    child_run_id=run_id,
+                    parent_run_id=parent_run_id,
+                    scenario_kind=spec.kind.value,
+                    scenario_diff_sha256=str(
+                        __import__(
+                            "tree_options.research.scenarios.contracts",
+                            fromlist=["scenario_diff_sha256"],
+                        ).scenario_diff_sha256(spec)),
+                ), at=datetime.now())
+                status_value = "queued"
+            else:
+                status_value = (
+                    existing_run.get("status", "queued")
+                    if isinstance(existing_run, dict) else "queued")
+        return JSONResponse(
+            {"run_id": run_id, "status": status_value,
+             "spec_hash": run_id, "parent_run_id": parent_run_id,
+             "workspace": str(workspace)},
+            status_code=202 if created else 200,
+            headers={"Cache-Control": "no-store"},
+        )
+
+    # RL-3 still out-of-scope — RL-3 owns forecasts; until it ships
+    # the route returns 410 Gone so the SPA can hard-disable it.
     @app.get('/api/research/forecast')
     def forecast_out_of_scope() -> JSONResponse:
         return JSONResponse(
             {"schema": "research-error/1",
              "error": "forecast_out_of_scope_for_rl1",
              "message": "RL-3 (calibrated outlook + study templates) ships separately"},
-            status_code=410,
-            headers={"Cache-Control": "no-store"},
-        )
-
-    @app.get('/api/research/scenarios')
-    def scenarios_out_of_scope() -> JSONResponse:
-        return JSONResponse(
-            {"schema": "research-error/1",
-             "error": "scenarios_out_of_scope_for_rl1",
-             "message": "RL-2 (reproducible scenario branching) ships separately"},
             status_code=410,
             headers={"Cache-Control": "no-store"},
         )
@@ -401,6 +523,29 @@ def _build_catalog(scopes_root: Path) -> list[ResearchCandidate]:
         build_synthetic_candidates,
     )
     candidates.extend(build_synthetic_candidates())
+    # RL-2: the shadow-proxy adapter surfaces the desk's two named
+    # incumbents (``vix_term``, ``hold-20``) with ``evidence_kind=
+    # shadow_proxy`` and an HONEST ``funded_history`` field. When the
+    # desk has produced shadow tables for a scope, the adapter
+    # renders ``reconstructed`` + a defended daily NAV; when it has
+    # not, the candidate is ``unavailable`` with an explicit reason
+    # (the SPA renders that as an inspectable-but-not-plottable row).
+    # The current desk tree carries no shadow tables, so both rows
+    # land as ``unavailable`` with a deterministic reason — exactly
+    # the honest terminal state until desk-shadow read is wired.
+    from tree_options.research.catalog.shadow_proxy import (
+        build_hold_20_candidate,
+        build_vix_term_candidate,
+    )
+    from tree_options.research.contracts import FundedHistorySupport
+    candidates.append(build_vix_term_candidate(
+        FundedHistorySupport.UNAVAILABLE, None,
+        supported_start=None, supported_end=None,
+    ))
+    candidates.append(build_hold_20_candidate(
+        FundedHistorySupport.UNAVAILABLE, None,
+        supported_start=None, supported_end=None,
+    ))
     return candidates
 
 

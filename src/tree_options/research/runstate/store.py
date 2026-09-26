@@ -50,8 +50,16 @@ from typing import Any
 
 from tree_options.research.paths import assert_no_overlap_with_desk
 
-# Same table names as the desk, but a separate database file.
-_KINDS: tuple[str, ...] = ("run", "spec", "result", "evidence_snapshot", "comparison_row")
+# Same table names as the desk, but a separate database file. RL-2
+# adds two more immutable kinds for scenario lineage:
+#   ``scenario_parent`` — the effective identity of a parent at fork
+#         attach-time (ParentRef)
+#   ``child``          — parent_run_id -> child_run_id pointer (ChildRef)
+# Both are immutable keys, written via the same ``put`` discipline.
+_KINDS: tuple[str, ...] = (
+    "run", "spec", "result", "evidence_snapshot", "comparison_row",
+    "scenario_parent", "child",
+)
 
 
 class RunstateStoreError(RuntimeError):
@@ -203,6 +211,17 @@ class RunstateStore:
             (kind, key),
         ).fetchone()
         return json.loads(row["payload_json"]) if row is not None else None
+
+    def get_kind_payload_sha(self, kind: str, key: str) -> str | None:
+        """Read the stored payload sha for an existing object (immutable
+        kind). Returns ``None`` if no such object exists. Used by
+        idempotent lineage writes to confirm the prior payload matched
+        without writing again (RL-2)."""
+        cur = self.conn.execute(
+            "SELECT payload_sha256 FROM objects WHERE kind = ? AND object_key = ?",
+            (kind, key),
+        ).fetchone()
+        return cur["payload_sha256"] if cur is not None else None
 
     def all(self, kind: str) -> tuple[dict[str, Any], ...]:
         rows = self.conn.execute(

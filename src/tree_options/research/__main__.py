@@ -9,6 +9,7 @@ recorded.
 
     python -m tree_options.research inspect --candidate <id> [--session YYYY-MM-DD]
     python -m tree_options.research inspect --run <run_id> [--workspace DIR]
+    python -m tree_options.research inspect --scenario <child_run_id> [--workspace DIR]
 """
 
 from __future__ import annotations
@@ -23,11 +24,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
 def _cmd_inspect(args: argparse.Namespace) -> int:
+    if args.scenario:
+        return _inspect_scenario(args)
     if args.run:
         return _inspect_run(args)
     if args.candidate:
         return _inspect_candidate(args)
-    print("nothing to inspect: pass --candidate or --run", file=sys.stderr)
+    print("nothing to inspect: pass --candidate, --run, or --scenario",
+          file=sys.stderr)
     return 2
 
 
@@ -98,6 +102,55 @@ def _inspect_run(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inspect_scenario(args: argparse.Namespace) -> int:
+    """RL-2: a scenario fork's full trace — parent spec, lineage
+    pointer, child result with content-bound identity shas. The CLI
+    prints byte-for-byte the same envelope the API returns, so the
+    /api/research/runs/<id>/result ↔ python -m tree_options.research
+    inspect --scenario parity oracle (RL-2 acceptance matrix #6)
+    holds across transport."""
+    from tree_options.research.runstate.store import RunstateStore
+
+    workspace = Path(args.workspace) if args.workspace else (
+        Path.home() / ".local" / "state" / "trex-research" / "run-anon")
+    db = workspace / "runstate.sqlite3"
+    if not db.is_file():
+        print(json.dumps({"error": "runstate_store_missing",
+                          "path": str(db)}), file=sys.stderr)
+        return 1
+    store = RunstateStore(db)
+    try:
+        run = store.get("run", args.scenario)
+        result = store.get("result", args.scenario)
+        spec = store.get("spec", args.scenario)
+        child = store.get("child", args.scenario)
+    finally:
+        store.close()
+    if (run is None and result is None and spec is None
+            and child is None):
+        print(json.dumps({"error": "scenario_not_found",
+                          "child_run_id": args.scenario}), file=sys.stderr)
+        return 1
+    payload: dict = {"child_run_id": args.scenario}
+    if spec is not None:
+        payload["scenario_spec"] = spec
+    if run is not None:
+        payload["run"] = run
+    if child is not None:
+        payload["lineage"] = child
+    if result is not None:
+        payload["result_sha256"] = result["result_sha256"]
+        payload["engine_sha256"] = result["engine_sha256"]
+        if "scenario_diff_sha256" in result:
+            payload["scenario_diff_sha256"] = result[
+                "scenario_diff_sha256"]
+        if "parent_run_id" in result:
+            payload["parent_run_id"] = result["parent_run_id"]
+        payload["wire"] = result.get("wire")
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tree_options.research",
                                      description="Read-only research inspection")
@@ -107,6 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     inspect.add_argument("--session", help="ISO session date (point inspection)")
     inspect.add_argument("--as-of", help="ISO knowledge-cutoff instant")
     inspect.add_argument("--run", help="stored run id")
+    inspect.add_argument("--scenario", help="stored scenario child run id (RL-2)")
     inspect.add_argument("--workspace", help="research workspace (default: run-anon)")
     inspect.add_argument("--scopes-root", help="catalog scopes root")
     inspect.set_defaults(func=_cmd_inspect)

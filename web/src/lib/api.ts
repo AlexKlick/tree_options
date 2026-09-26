@@ -185,5 +185,36 @@ export const getResearchRun = (run_id: string): Promise<ComparisonRunResponse> =
 export const getComparisonResult = (run_id: string): Promise<RunResultResponse> =>
   fetchJson(`api/research/runs/${encodeURIComponent(run_id)}/result`)
 
+// --- RL-2: reproducible scenario branching (handoff §10)
+// Scenarios are FORKS of completed comparison runs. The body carries
+// the diff over the parent's controls; the URL path carries the
+// parent_run_id. The result record binds engine / input / calendar /
+// scenario_diff shas for honest cache-key collision detection.
+
+export const listScenarios = (
+  parent_run_id?: string,
+): Promise<{ scenarios: unknown[]; parent_run_id: string | null }> => {
+  const qs = parent_run_id
+    ? `?parent_run_id=${encodeURIComponent(parent_run_id)}`
+    : ''
+  return fetchJson(`api/research/scenarios${qs}`)
+}
+
+export const spoolScenario = (
+  parent_run_id: string,
+  body: { kind: string; access_mode?: string; diff?: Record<string, unknown> },
+): Promise<{
+  run_id: string
+  status: string
+  spec_hash: string
+  parent_run_id: string
+  workspace: string
+}> =>
+  fetchJson(`api/research/scenarios/${encodeURIComponent(parent_run_id)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
+
 // Re-export for callers that already imported this from the old path.
 export type { CandidateResultSummary as CandidateResult }

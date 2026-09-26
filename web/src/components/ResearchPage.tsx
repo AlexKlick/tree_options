@@ -27,6 +27,7 @@ import type {
   RunResultResponse,
 } from '../lib/types'
 import { ResearchNavChart, type NavSeries } from './ResearchNavChart'
+import { ResearchScenarios } from './ResearchScenarios'
 
 const SERIES_COLORS = ['#4f9cf9', '#e8833a', '#3aa88f', '#a25bd6']
 
@@ -42,6 +43,45 @@ function fmtUsd(v: string | null | undefined): string {
 }
 
 export function ResearchPage(): JSX.Element {
+  const [tab, setTab] = useState<'comparison' | 'scenarios'>('comparison')
+
+  return (
+    <div className="research-page">
+      <h1>Research Lab</h1>
+      <p className="muted">
+        Compare investments on a common declared basis: same calendar,
+        same capital, same costs. Scenarios fork a parent comparison to
+        quantify how a single control change moves the result.
+      </p>
+      <nav className="research-page__tabs" role="tablist">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'comparison'}
+          onClick={() => setTab('comparison')}
+          data-testid="research-tab-comparison"
+        >
+          Comparison
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'scenarios'}
+          onClick={() => setTab('scenarios')}
+          data-testid="research-tab-scenarios"
+        >
+          Scenarios
+        </button>
+      </nav>
+      {tab === 'comparison' ? <ComparisonWorkspace /> : <ResearchScenarios />}
+    </div>
+  )
+}
+
+/** The RL-1 comparison workspace — lifted into its own component so
+ * the tab strip above can mount it without re-creating state in the
+ * Scenarios tab. The behavior is unchanged from the RL-1 landing. */
+function ComparisonWorkspace(): JSX.Element {
   const { data: catalog, error: catalogError } = usePoll(
     () => listResearchCandidates(),
     30_000,
@@ -149,14 +189,7 @@ export function ResearchPage(): JSX.Element {
   }, [plotted])
 
   return (
-    <div className="research-page">
-      <h1>Research Lab</h1>
-      <p className="muted">
-        Compare investments on a common declared basis: same calendar,
-        same capital, same costs. What-if scenarios (RL-2) and calibrated
-        outlook (RL-3) return 410 Gone until shipped.
-      </p>
-
+    <div className="comparison-workspace">
       {catalogError && <p className="error">catalog error: {catalogError}</p>}
 
       <section className="controls" aria-label="comparison controls">
