@@ -15,15 +15,17 @@ ExecStart=/home/alexk/.local/bin/uv run --group trex-web python -m tree_options.
 Restart=on-failure
 RestartSec=5
 # Read-only operator tool: only the trex state dirs under %h/.local/state
-# are read, plus ONE writable directory — the discovery spool (scan
-# requests from the site). The spool dir must EXIST before the unit
-# starts (ReadWritePaths on a missing path fails the unit):
+# are read, plus two writable directories — the discovery spool (scan
+# requests from the site) and the research lane's own workspace
+# (runstate store for /api/research/*; RL-1). Both must EXIST before the
+# unit starts (ReadWritePaths on a missing path fails the unit):
 #   mkdir -p ~/.local/state/trex-discovery/spool
+#   mkdir -p ~/.local/state/trex-research/run-anon
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/alexk/.cache/uv /home/alexk/.local/share/uv /home/alexk/.local/state/trex-discovery/spool
+ReadWritePaths=/home/alexk/.cache/uv /home/alexk/.local/share/uv /home/alexk/.local/state/trex-discovery/spool /home/alexk/.local/state/trex-research
 RestrictAddressFamilies=AF_INET AF_INET6
 
 [Install]

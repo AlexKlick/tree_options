@@ -1,5 +1,36 @@
 # RL-1 — exit checklist
 
+## STATUS (2026-09-25 external audit): RL-1 FOUNDATION — comparison acceptance PENDING
+
+The external audit of the RL-1 return packet (packet:
+`~/pop-deck-uploads/2026-09/TREX-RL1-Audit-and-Completion-Handoff-20260925-03b83f.md`,
+verified against `168eb12`) **did not accept RL-1 as complete**. The
+catalog foundation stands; the historical-comparison milestone does not.
+Correction campaign: branch `feat/rl1-completion`. Every claim in this
+document below this banner is the ORIGINAL handback's claim set, kept
+for the record; the audit's dispositions supersede it:
+
+| Original claim (below) | Audit disposition |
+|---|---|
+| RL-1 is the completed historical-comparison milestone | Relabeled foundation / acceptance pending; chart-first exit unmet |
+| Repeated spec POST is idempotent | Reopened — exact-source handler returns 500 on repeat |
+| Bad candidate POST returns 400 | Reopened — handler queues it; rejection only at result fetch |
+| LedgerBook enforces conservation of the funded run | Corrected — `assert_conservation()` never invoked; invoking it fails |
+| Contribution/cash accounting is tested | Corrected — the oracle repeated the flawed expression ($10,520; correct NAV is $10,510) |
+| Table/drawer first, no chart library | Library omission fine; deferring the required result/chart experience is a scope change |
+| Drawer = scientific point evidence | Metadata UI only; point association, hash binding, reproduction all incomplete |
+| Tailnet 403 proves the route works | 403 is denial evidence only; an authenticated success probe is still required |
+| Gates green | Retained as head-bound receipts only, not semantic certification |
+
+Findings under correction: RL1-01 (funded accounting is not NAV),
+RL1-02 (spec hashed but not implemented; nonempty HTTP results 500),
+RL1-03 (duplicate POST 500; no pre-write validation; GET recomputes;
+status never leaves `queued`), RL1-04 (store verifier unsound; path
+guard misses desk descendants), RL1-05 (drawer lacks point-specific
+provenance), RL1-06 (verdict substituted for data capability),
+RL1-07 (zero-interval drawer polling; stale completions can win —
+hotfixed first, deployed 2026-09-25).
+
 RL-1 = "Catalog + historical comparisons + dollar accounting + baseline
 differences + evidence drill-down" — the first milestone of the TREX
 Research Lab handoff (see
@@ -10,7 +41,8 @@ for the corrective branch.
 
 ## Final state
 
-- **Head:** `5c54cef` (rc1 + R2 + R3 corrective pass landed on `origin/main`)
+- **Head:** `168eb12` (supersedes the `5c54cef` rc1 state recorded in
+  the original handback; the audit verified `168eb12` on `origin/main`)
 - **Source:** `src/tree_options/research/` (10 modules) + `src/tree_options/trex_web/research_view.py` + `scripts/research_gate.sh` (the catalog adapter is in-package at `research/catalog/sealed_round.py`)
 - **Tests:** `tests/research/` (10 test files, 76 cases)
 - **SPA:** `web/src/lib/types.ts` RL-1 contracts + `web/src/lib/api.ts` wrappers + `web/src/lib/router.ts` `#/research` + `web/src/components/ResearchPage.tsx` + `web/src/App.tsx` wiring

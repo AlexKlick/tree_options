@@ -164,7 +164,10 @@ export function ResearchPage(): JSX.Element {
       </section>
 
       {evidenceFor && (
-        <EvidenceDrawer candidateId={evidenceFor}
+        // Keyed by candidate: switching candidates remounts the drawer
+        // with fresh state — one candidate's envelope never lingers
+        // under another candidate's heading.
+        <EvidenceDrawer key={evidenceFor} candidateId={evidenceFor}
                         onClose={() => setEvidenceFor(null)} />
       )}
     </div>
@@ -173,6 +176,7 @@ export function ResearchPage(): JSX.Element {
 
 function EvidenceDrawer(props: { candidateId: string; onClose: () => void }): JSX.Element {
   const { candidateId, onClose } = props
+  // 0 = polling disabled: one-shot load per mount (see usePoll).
   const { data: env, error } = usePoll(
     () => getResearchEvidence(candidateId),
     0,
