@@ -169,8 +169,19 @@ The catalog now lists 6 candidates (was 4 in RL-1):
 | Boundary (AST) | `grep -RIn 'tree_options.trex.{ibkr,monitor,gateway_watch,enter}' src/tree_options/research` | zero matches |
 | Research gate | `bash scripts/research_gate.sh` | rc=0 |
 | Desk safety gate | `bash scripts/desk_safety_gate.sh` | **4912 passed, 36 skipped** |
+
+(The duplicate Boundary / Research-gate entries that follow
+duplicate the earlier rows in the table — they are left here so
+the live verification has a read-along summary independent of the
+test-suite rows above.)
 | Web typecheck + vitest + build | `(cd web && npm run check)` | tsc clean; vitest 156 passed; vite build OK; bundle single-chunk |
-| CLI parity probe | `(cd web && python -m tree_options.research inspect --scenario <child_run_id> --workspace <ws>)` | JSON payload agrees with `GET /api/research/runs/<id>/result` on `engine_sha256`, `scenario_diff_sha256`, `parent_run_id` |
+| Live `GET /api/research/candidates` | `curl :8090/api/research/candidates` | 11 candidates: 6 sealed + 3 synthetic + 2 shadow-proxy (the vix_term / hold-20 incumbents carry `evidence_kind=shadow_proxy`, `funded_history=unavailable` with the explicit reason "no shadow tables for this scope") |
+| Live POST /scenarios idempotency | `curl -X POST /api/research/scenarios/<parent>`  × 2 | 202 first / 200 second; same `run_id`; same stored result |
+| Live `GET /api/research/scenarios?parent_run_id=<id>` | `curl :8090/api/research/scenarios?...` | children list returns the published child |
+| Live `GET /api/research/runs/<child>/result` | `curl :8090/api/research/runs/<id>/result` | `status=completed`, `engine_sha256` / `input_snapshot_sha256` / `calendar_sha256` / `scenario_diff_sha256` / `parent_run_id` all present |
+| CLI parity probe | `python -m tree_options.research inspect --scenario <child_run_id> --workspace /home/alexk/.local/state/trex-research/run-anon` | payload's `engine_sha256` (1618163f04daaa11…) and `parent_run_id` match the API GET byte-for-byte; `scenario_diff_sha256` (f07e2616c84ae480…) matches |
+| Boundary (AST) | `grep -RIn 'tree_options.trex.{ibkr,monitor,gateway_watch,enter}' src/tree_options/research` | zero matches |
+| Research gate | `bash scripts/research_gate.sh` | rc=0 |
 
 Capture pattern: the gate runs in a single batched invocation
 (`pytest -q` + `ruff` + `mypy` + `npm run check` + `bash` gates all
