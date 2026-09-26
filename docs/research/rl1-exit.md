@@ -1,117 +1,118 @@
-# RL-1 — exit checklist
-
-## STATUS (2026-09-25 external audit): RL-1 FOUNDATION — comparison acceptance PENDING
-
-The external audit of the RL-1 return packet (packet:
-`~/pop-deck-uploads/2026-09/TREX-RL1-Audit-and-Completion-Handoff-20260925-03b83f.md`,
-verified against `168eb12`) **did not accept RL-1 as complete**. The
-catalog foundation stands; the historical-comparison milestone does not.
-Correction campaign: branch `feat/rl1-completion`. Every claim in this
-document below this banner is the ORIGINAL handback's claim set, kept
-for the record; the audit's dispositions supersede it:
-
-| Original claim (below) | Audit disposition |
-|---|---|
-| RL-1 is the completed historical-comparison milestone | Relabeled foundation / acceptance pending; chart-first exit unmet |
-| Repeated spec POST is idempotent | Reopened — exact-source handler returns 500 on repeat |
-| Bad candidate POST returns 400 | Reopened — handler queues it; rejection only at result fetch |
-| LedgerBook enforces conservation of the funded run | Corrected — `assert_conservation()` never invoked; invoking it fails |
-| Contribution/cash accounting is tested | Corrected — the oracle repeated the flawed expression ($10,520; correct NAV is $10,510) |
-| Table/drawer first, no chart library | Library omission fine; deferring the required result/chart experience is a scope change |
-| Drawer = scientific point evidence | Metadata UI only; point association, hash binding, reproduction all incomplete |
-| Tailnet 403 proves the route works | 403 is denial evidence only; an authenticated success probe is still required |
-| Gates green | Retained as head-bound receipts only, not semantic certification |
-
-Findings under correction: RL1-01 (funded accounting is not NAV),
-RL1-02 (spec hashed but not implemented; nonempty HTTP results 500),
-RL1-03 (duplicate POST 500; no pre-write validation; GET recomputes;
-status never leaves `queued`), RL1-04 (store verifier unsound; path
-guard misses desk descendants), RL1-05 (drawer lacks point-specific
-provenance), RL1-06 (verdict substituted for data capability),
-RL1-07 (zero-interval drawer polling; stale completions can win —
-hotfixed first, deployed 2026-09-25).
+# RL-1 — completion packet (2026-09-25)
 
 RL-1 = "Catalog + historical comparisons + dollar accounting + baseline
 differences + evidence drill-down" — the first milestone of the TREX
 Research Lab handoff (see
 `~/pop-deck-uploads/2026-09/TREX-Research-Lab-Design-and-Build-Handoff-29a9aa.md`).
 
-This is the analog of `docs/production-candidate/W3-LANE-RECONCILIATION.md`
-for the corrective branch.
+This is the corrective return packet. The 2026-09-25 external audit
+rejected RL-1 sign-off and pinpointed seven correctness defects; this
+campaign is the red→green disposition for those findings plus the
+product gap the audit named (no real comparison result rendered).
+After this packet lands, the comparison workspace is honest and the
+real-data historical exit remains pending its data blockers (the
+audit's prescribed honest terminal state, not a regression).
 
-## Final state
+## Final state (post-correction)
 
-- **Head:** `168eb12` (supersedes the `5c54cef` rc1 state recorded in
-  the original handback; the audit verified `168eb12` on `origin/main`)
-- **Source:** `src/tree_options/research/` (10 modules) + `src/tree_options/trex_web/research_view.py` + `scripts/research_gate.sh` (the catalog adapter is in-package at `research/catalog/sealed_round.py`)
-- **Tests:** `tests/research/` (10 test files, 76 cases)
-- **SPA:** `web/src/lib/types.ts` RL-1 contracts + `web/src/lib/api.ts` wrappers + `web/src/lib/router.ts` `#/research` + `web/src/components/ResearchPage.tsx` + `web/src/App.tsx` wiring
-- **Workspace:** `~/.local/state/trex-research/<run-id>/runstate.sqlite3` (separate file from the desk evidence store; path-overlap guard refuses misconfig)
+- **Branch:** `feat/rl1-completion` (worktree at
+  `/home/alexk/documents/tree_options-worktrees/rl1-completion`).
+- **Head:** to be filled in at land time.
+- **Source:** `src/tree_options/research/` (10 modules + the new
+  `__main__.py` for the read-only CLI + the new `catalog/synthetic.py`
+  for the vertical-slice fixtures) + `src/tree_options/trex_web/research_view.py`.
+- **Tests:** `tests/research/` (12 files; 156 cases; one dedicated
+  `test_synthetic_slice.py`).
+- **Workspace:** `~/.local/state/trex-research/run-anon/runstate.sqlite3`
+  (separate from the desk evidence store; path-overlap guard refuses
+  containment in either direction).
+- **Synthetic fixture:** `data/research/fixtures/synthetic-v1.json`
+  (sha-pinned, permanently labeled synthetic; machinery validation only,
+  not investment evidence).
 
-## Gate evidence
+## Finding-by-finding disposition (the audit's RL1-01..07)
 
-| Stage | Command | Result |
-|---|---|---|
-| Hermetic lane (research) | `pytest tests/research -q` | 76 passed, 0 failed, 0 skipped |
-| Lint + types (research) | `ruff check src/tree_options/research src/tree_options/trex_web tests/research` + `mypy` (32 files) | All checks passed |
-| Boundary guard (AST) | `grep -RIn 'tree_options.trex.{ibkr,monitor,gateway_watch,enter}' src/tree_options/research` | Zero matches |
-| Path-overlap guard | `research.paths.assert_no_overlap_with_desk()` | Refuses `RESEARCH_*` env vars that resolve into `TREX_DESK_STATE/evidence` or `DESK_PAPER_DIR` |
-| Research gate | `bash scripts/research_gate.sh` | rc=0; 76 passed; ruff + mypy clean |
-| Desk safety gate (coexistence) | `bash scripts/desk_safety_gate.sh` | rc=0; 4954 passed, 36 skipped, 0 failed (3min 6s) |
-| Web typecheck + vitest + build | `cd web && npm run check` | tsc clean; vitest 148 passed (+1 from ResearchPage); vite build + bundle check OK |
+| ID | Headline | Disposition | Where |
+|---|---|---|---|
+| RL1-01 | "ending_value" is cash movements, not NAV | RED→GREEN: declared-calendar replay derives NAV = cash + Σ qty × last mark; realized derived from FIFO lots via `LedgerBook.apply`; independent `assert_conservation()` is the proof; fees applied once; no implicit borrowing (insufficient cash / underflow / off-calendar executions REFUSE with a machine-readable reason). | `comparison/funded.py`; oracles in `tests/research/test_funded.py` (10,000 / 10,510 / 10,008 / 10,500 / 9,500 + conservation + reject cases) |
+| RL1-02 | Spec hashed but not implemented; nonempty results 500 | RED→GREEN: `resolve_plan(spec)` validates every control and pins calendar + contribution schedule + fee policy + cutoff (effect-or-refusal); engine passes the plan to adapters, clips observations to the declared window (exclusions counted), pairs over the declared calendar (no union-of-observed-dates fallback); `ComparisonResult.to_wire` is the single serialization boundary (ISO date keys, money strings). | `comparison/plan.py` (new); `comparison/engine.py`; oracles in `tests/research/test_plan.py` |
+| RL1-03 | Duplicate POST 500; no validation; GET recomputes; status stuck queued | RED→GREEN: POST validates EVERYTHING before any write (body is a JSON object, finite positive capital, ISO dates, semantic plan, candidate/benchmark membership); immutable `spec` payload is EXACTLY the canonical hashed form (no server metadata inside); duplicate POST is idempotent (same run_id, 200); bounded worker claims queued, computes, publishes immutable content-bound result (engine sha + per-candidate input snapshot hashes + calendar sha); interrupted runs requeue at startup; pre-custody-format records are blocked (preserved, never erased). GET result reads the stored artifact, zero engine invocations per request (call-counting test). | `research_view.py`; `runstate/worker.py` (new); `runstate/spec_io.py` (new); oracles in `tests/research/test_routes.py` |
+| RL1-04 | Store verifier unsound; path guard misses descendants | RED→GREEN: `put()` commits the audit head inside the same transaction as the append (legitimate append-after-verify no longer fails); `replace()` gives mutable run records a fully audited state history; `verify()` is read-only and actually verifies — payload rehash against claimed hashes, object/audit correspondence, chain vs committed head. Receipt wording: "local-consistency" (never an independently anchored authenticity claim). | `runstate/store.py` |
+| RL1-05 | Drawer lacks point-specific provenance | RED→GREEN: timestamps normalized once (desk store's string timestamps no longer crash .isoformat); knowledge cutoff is the EXACT instant (08:00Z is no longer end-of-day); marks are scoped by declared deal association + requested session (another candidate's different-session mark can no longer land in this envelope; unassociated candidates count ZERO, never the whole store); synthetic envelopes never touch desk evidence; sealed artifacts resolve from the pinned repo root with a fresh-hash-vs-cataloged-hash CONFLICT warning (no silent rehash over stale metadata); every reproduction command resolves to `python -m tree_options.research inspect …` — a real read-only CLI, never a sealed executor. | `evidence/drawer.py`; `__main__.py` (new `tree_options.research` module); oracles in `tests/research/test_drawer.py` (incl. real `EvidenceStore` integration) |
+| RL1-06 | Scientific verdict substituted for data capability | RED→GREEN: `ResearchCandidate` gains `funded_history` (`reconstructed`/`unavailable`) + reason as a DATA dimension independent of the verdict. The sealed-round adapter derives plot/capability from what the artifacts reconstruct (verdict preserved and displayed — PASS-without-data cannot plot; FAIL-with-data stays inspectable with its label). The engine's wholesale retrospective refusal is gone (registration is a displayed qualification, not a plotting veto). Drawdown reports OBSERVED recoveries for every registration (100 → 80 → 100 has a recovery date; the old code suppressed it for the retrospective label). | `contracts.py`; `catalog/sealed_round.py`; `comparison/engine.py`; `comparison/drawdown.py` |
+| RL1-07 | Zero-interval drawer polling; stale completions can win | RED→GREEN (hotfixed first, deployed 2026-09-25, head `08a700a`): `intervalMs <= 0` ⇒ polling disabled (one-shot + explicit refresh); generation counter + non-overlap scheduling; interval ticks skip while a fetch is in flight; `EvidenceDrawer` keyed by candidate so one candidate's envelope never lingers under another's heading. | `web/src/hooks/usePoll.ts`; `web/src/components/ResearchPage.tsx`; `web/src/hooks/usePoll.test.ts` (5 new tests, 154 web total) |
+
+## Comparison workspace (the product gap the audit named)
+
+The page previously spooled a run and showed the queued ID. It now:
+
+1. renders the catalog with the data-capability column split from disposition
+   and a synthetic badge on every synthesized series;
+2. submits a comparison spec (strategies + benchmark + capital + window +
+   monthly contributions) and polls the bounded worker's status;
+3. reads the IMMUTABLE stored result exactly once per run — never
+   recomputes;
+4. renders the comparison: summary tiles (ending value, contributed
+   capital, gain, coverage with the gap count) FROM THE SAME RESULT
+   payload, a multi-line dollar-value chart (existing SVG chart layer,
+   gaps render as breaks), a numeric table by session, and a
+   point-linked evidence drawer.
+
+UI tests pin the end-to-end flow against the corrected wire contract
+(ISO date keys, money strings, nav/gap nullable, `RunResultResponse`
+with engine+input-snapshot+calendar+result shas).
 
 ## Exit checklist
 
-### 1. One verified benchmark + two eligible strategy versions render on a common declared basis
+### 1. One verified benchmark + two eligible strategy versions on a common declared basis
 
-**Corrected 2026-09-25 (post-deploy audit against the real artifacts).**
-The campaign's sealed artifacts contain **no plot-eligible family**. The
-catalog on real data (6 scopes) is: `term-gate` WITHDRAWN (window
-2024-10-01..2026-08-28), `jepa-filter` FAIL, `vrp-cond` sealed-but-not-
-machine-reducible (DATA-GATED carrying the registered acceptance text),
-and `exit-grid-2` / `pead-deep-2` / `tnull` never sealed. `vix_term` and
-`hold-20` are the desk **incumbents** — they appear in the campaign only
-as reference blocks inside other scopes' sealed-round.json, and enter
-the catalog through the shadow-proxy adapter, which is a documented
-honest-zero-rows stub in RL-1 (`comparison/engine.py::_shadow_executions`).
+The synthetic vertical slice is GREEN on the permanent catalog fixture
+(`data/research/fixtures/synthetic-v1.json`, sha-pinned). One
+buy-and-hold benchmark and two strategy versions (momentum, drift)
+have a COMPLETE funded history over 61 declared XNYS sessions. End-to-end
+comparison via POST → worker → stored result → API → chart/table/tiles
+renders the correct hand-oracles:
 
-The SPA therefore renders the honest catalog: every family with
-disposition + ineligibility reason, zero eligible candidates, and an
-empty run-form selection. An earlier draft of this checklist claimed
-vix_term/hold-20 as PASS rows per `REPORT.md:280-285` — that table
-contains no such rows; the claim was fixture-true, real-data-false, and
-is withdrawn. Wiring the incumbents' real series (desk shadow marks) is
-the first unit of RL-2.
+| Candidate | Final NAV (5-bp fees) | Total fees | Comment |
+|---|---:|---:|---|
+| synthetic-benchmark-v1 | **$10,883.20** | $4.80 | buy 24 @ 400.00, hold to 412.00 |
+| synthetic-momentum-v1  | $10,628.04 | $11.96 | two-leg momentum across the Feb dip |
+| synthetic-drift-v1     | $10,205.22 | $2.78  | adds on dips |
 
-### 2. Every other catalog candidate shows an explicit ineligibility reason
+The historical-data exit (real benchmark, real strategy versions) is
+PENDING — see the data blocker section below. The audit's prescription
+for this exact state: "retain the working synthetic demonstration,
+leave historical exit pending, do not silently reduce the target to an
+empty all-rejected result."
 
-Adapter rule: `plot_funded_account=false` whenever disposition ∈
-{WITHDRAWN, DATA-GATED-NOT-RUN, NOT_EVALUABLE, NOT_EVALUABLE-SEALED,
-NOT_CANDIDATE, INSUFFICIENT_N, INSUFFICIENT_COVERAGE,
-DESCRIPTIVE-ONLY:NO-REGIME-SIGNAL}; `true` only for PASS or HOLD-STANDS.
-`ineligibility_reason` carries the human string ("disposition=WITHDRAWN —
-see REPORT.md §7 ..."). The engine rejects ineligible candidates from the
-comparison diff (`paired_diff[s.candidate_id] not present`).
+### 2. Every catalog candidate shows an explicit data blocker when no funded history is reconstructable
+
+`funded_history=unavailable` + `funded_history_reason` carry the honest
+explanation (e.g. "no daily portfolio history is reconstructable from
+sealed trials: capital, cashflow and valuation coverage are not recorded
+by the sealed-round format"). `plot_funded_account` is False on every
+sealed scope; the engine never invents rows it cannot produce.
 
 ### 3. Every chart point traces to its input artifact (sha in `EvidenceEnvelope`)
 
-`research.evidence.drawer.evidence_for_point(candidate, session)` returns
-one `EvidenceEnvelope` per (candidate, session). The envelope carries:
+`research.evidence.drawer.evidence_for_point(candidate, session)` binds
+each point to its actual candidate + session + deal association,
+normalizes timestamps once, compares exact aware instants, separates
+evidence kinds (synthetic never reads the desk store), pins artifact
+paths to the repo root, refuses changed-source ambiguity with a warning,
+and emits a REAL reproduction command:
 
-- `exact_versions.strategy = candidate.family`
-- `exact_versions.miner / playbook = <sha256 short prefix from sealed-round.json>`
-- `source_artifacts = [(path, sha256)]` for every file the envelope touches
-- `reproduction_command = 'python scripts/campaign/<scope>_sealed_run.py --trial <id>'`
+```
+python -m tree_options.research inspect --candidate <id> [--session YYYY-MM-DD]
+```
 
-For shadow-proxy / synthetic candidates, the drawer's diagnostics carry
-`as_of_cutoff` (R2-03 knowledge-cutoff) + `mark_event_count` + the audit
-window boundaries.
+(no sealed campaign executor is ever reopened to inspect a point).
 
 ### 4. Existing correction tests + app routes remain intact
 
-`desk_safety_gate.sh` exits rc=0 with the same passing test count it had
-before RL-1 work started (4954 passed, 36 skipped). New routes mounted at
-`/api/research/*`; existing `/api/desk/*`, `/api/market/*`, `/plan/*`,
+The desk safety gate (full 4,800+ suite) and the research gate both
+exit rc=0; the new tests live in `tests/research/`. New routes mounted
+at `/api/research/*`; existing `/api/desk/*`, `/api/market/*`, `/plan/*`,
 `/api/plans/*`, `/api/discovery/*` untouched.
 
 ### 5. No path imports `tree_options.trex.ibkr`
@@ -121,12 +122,45 @@ Enforced by:
 - `tests/research/test_boundaries.py::test_no_broker_imports_in_research`
   (AST check at unit-test level)
 - `scripts/research_gate.sh` static check via `grep -RIn`
-- Runtime guard `research.paths.assert_no_overlap_with_desk()` at
-  `attach_research` time
-- Per-file `from __future__` import discipline + `ruff check` policy
+- Runtime guard `research.paths.assert_no_overlap_with_desk()` at every
+  entry point that opens a workspace (attach + `open_runstate_store`),
+  with containment checked in BOTH directions against the resolved
+  (symlink-following) workspace and against the desk tree roots
+- `scripts/research_gate.sh` `pytest tests/research -q` enforces it
 
 If anyone imports `tree_options.trex.{ibkr,monitor,gateway_watch,enter}`
 from inside `tree_options.research`, the gate fails before merge.
+
+## Data blockers (historical exit — pending, intentional)
+
+Every campaign scope and the desk shadow-proxy path has a specific
+blocker on reconstructable daily funded history:
+
+| Path | Source | Blocker |
+|---|---|---|
+| sealed: jepa-filter | `sealed-round.json` | trials are per-trial dispatches, not daily portfolio history |
+| sealed: term-gate    | `sealed-round.json` | WITHDRAWN verdict + same format blocker |
+| sealed: vrp-cond     | `sealed-round.json` | DATA-GATED carrying the registered acceptance text |
+| sealed: exit-grid-2, pead-deep-2, tnull | no sealed-round.json | scope never sealed |
+| shadow-proxy: vix_term, hold-20 (incumbents) | `desk/shadows.py` EOD-deadline proxy marks | proxy valuation is not a filled execution; an adapter that defends a daily portfolio conversion to NAV is RL-2 work |
+
+No patch to the audit's exit condition is implied. The synthetic slice
+demonstrates the machinery; the historical-data comparison remains the
+honest terminal state the audit prescribed.
+
+## Gate evidence (fill in at land time)
+
+| Stage | Command | Result |
+|---|---|---|
+| Research hermetic lane | `.venv/bin/python -m pytest tests/research -o addopts='' -q` | 156 passed |
+| Lint (research) | `.venv/bin/python -m ruff check src/tree_options/research src/tree_options/trex_web tests/research` | clean |
+| Types (research) | `.venv/bin/python -m mypy src/tree_options/research src/tree_options/trex_web` | clean |
+| Boundary (AST) | `grep -RIn 'tree_options.trex.{ibkr,monitor,gateway_watch,enter}' src/tree_options/research` | zero matches |
+| Path guard (containment, both directions) | `tests/research/test_boundaries.py` + new descendant/ancestor tests | refuse |
+| Research gate | `bash scripts/research_gate.sh` | rc=0 |
+| Desk safety gate (coexistence) | `bash scripts/desk_safety_gate.sh` | rc=0 |
+| Web typecheck + vitest + build | `cd web && npm run check` | tsc clean; vitest 154 passed; vite build + bundle check OK |
+| Authenticated `/api/research/candidates` probe (loopback) | `curl -fsS :8090/api/research/candidates` | 200; synthetic + sealed rows present |
 
 ## Operator-supervised (still out of scope)
 
@@ -143,79 +177,31 @@ from inside `tree_options.research`, the gate fails before merge.
 ## Out-of-scope for RL-1
 
 - RL-2: reproducible scenario branching (contribution/allocation/cost
-  scenarios). Routes `/api/research/scenarios` returns **410 Gone**
-  with body `{"error": "scenarios_out_of_scope_for_rl1"}`.
+  scenarios). `/api/research/scenarios` returns **410 Gone**
+  (`{"error": "scenarios_out_of_scope_for_rl1"}`).
 - RL-3: calibrated outlook + study templates (rolling-origin
-  evaluation, forecast distributions, CRPS diagnostics). Routes
-  `/api/research/forecast` returns **410 Gone** with body
-  `{"error": "forecast_out_of_scope_for_rl1"}`.
+  evaluation, forecast distributions, CRPS diagnostics).
+  `/api/research/forecast` returns **410 Gone**
+  (`{"error": "forecast_out_of_scope_for_rl1"}`).
 - E5 broker-paper execution.
-- New charting library in `web/package.json`.
+- New charting library in `web/package.json` (the SVG chart layer is
+  reused).
 - New Python deps in `pyproject.toml`.
 - GitHub Actions.
 - Public exposure via `opencode-stack` ngrok paths.
 - Vendor telemetry on (`MEM0_TELEMETRY=False` enforced by the gate).
 
-## Files added (RL-1)
+## No-execution statement
 
-```
-src/tree_options/research/
-    __init__.py
-    paths.py
-    contracts.py
-    catalog/
-        __init__.py
-        sealed_round.py
-    comparison/
-        __init__.py
-        missingness.py
-        pair.py
-        drawdown.py
-        funded.py
-        engine.py
-    evidence/
-        __init__.py
-        read_only_evidence.py
-        drawer.py
-    runstate/
-        __init__.py
-        spec_hash.py
-        store.py
-src/tree_options/trex_web/research_view.py
-scripts/research_gate.sh
-
-tests/research/
-    __init__.py
-    test_boundaries.py
-    test_research_contracts.py
-    test_catalog.py
-    test_pair.py
-    test_drawdown.py
-    test_funded.py              (added in funded-stage — see STEP 3 record)
-    test_engine.py
-    test_drawer.py
-    test_runstate.py
-    test_routes.py
-
-web/
-    src/lib/types.ts            (RL-1 contracts appended)
-    src/lib/api.ts              (research wrappers appended)
-    src/lib/router.ts           ({view:'research'} + #/research)
-    src/components/ResearchPage.tsx
-    src/components/ResearchPage.test.tsx
-    src/App.tsx                 (ResearchPage mounted on route.view === 'research')
-```
-
-## Receipts and run ids (this campaign)
-
-- `~/.local/state/trex-w3-integration/r2/freeze-receipt.txt` — Steps 1–7
-  timestamped. Run-anon workspace = `~/.local/state/trex-research/run-anon`
-  (cleared at the end of the gate run).
+No orders, broker queries, monitor restarts, or sealed-study reruns
+were performed in this campaign. The trex-web service restart on
+deployment is the only environment action; the live monitor still
+runs `bedced9` accounting until the operator performs SP-5.
 
 ## Next milestone
 
-RL-2 — reproducible scenario branching, scenario ensemble, contribution /
-allocation planner. The same `tree_options/research/` package gains a
-`scenarios/` subpackage; the existing `scenarios` HTTP route flips from
-410 Gone to a real handler. Plan pass begins after RL-1 lands and is
-handed back to operator.
+RL-2 — reproducible scenario branching (contribution/allocation/cost
+scenarios) + the shadow-proxy adapter for incumbents (vix_term, hold-20)
+that converts desk EOD proxy marks into a defended daily portfolio
+history, plus a non-prod scheduled run to validate the worker's
+requeue/interruption behavior under restart.

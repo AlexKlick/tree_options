@@ -23,7 +23,7 @@ const CANDIDATES = [
     capabilities: ['plot_funded_account'],
     ineligibility_reason: null,
     data_completeness: {},
-    warnings: ['research.synthetic_v1_machinery_validation'],
+    warnings: ['research.fixture_slice_machinery_validation'],
     source_url: 'synthetic/synthetic-benchmark-v1',
   },
   {
@@ -42,7 +42,7 @@ const CANDIDATES = [
     capabilities: ['plot_funded_account'],
     ineligibility_reason: null,
     data_completeness: {},
-    warnings: ['research.synthetic_v1_machinery_validation'],
+    warnings: ['research.fixture_slice_machinery_validation'],
     source_url: 'synthetic/synthetic-momentum-v1',
   },
   {

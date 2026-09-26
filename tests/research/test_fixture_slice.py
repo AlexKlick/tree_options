@@ -5,7 +5,7 @@ compared on a common declared basis through the real adapter -> plan ->
 engine path. This is the nonempty positive path the zero-row catalog
 never exercised (audit §6 Phase B), PERMANENTLY labeled synthetic:
 every expectation below is hand-calculated from the frozen fixture
-(``data/research/fixtures/synthetic-v1.json``, sha-pinned), and the
+(``data/research/fixtures/synthetic-slice-v1.json``, sha-pinned), and the
 numbers are invented machinery-validation values — never investment
 evidence.
 
@@ -29,7 +29,7 @@ from decimal import Decimal
 
 from fastapi.testclient import TestClient
 
-from tree_options.research.catalog.synthetic import (
+from tree_options.research.catalog.fixture_slice import (
     build_synthetic_candidates,
     fixture_sha256,
 )
@@ -63,8 +63,8 @@ def test_fixture_is_present_pinned_and_synthetic_labeled() -> None:
     for c in cands.values():
         assert c.plot_funded_account is True
         assert c.funded_history.value == "reconstructed"
-        assert c.artifact_hashes["synthetic-fixture.json"] == fixture_sha256()
-        assert c.warnings == ("research.synthetic_v1_machinery_validation",)
+        assert c.artifact_hashes["synthetic-slice-fixture.json"] == fixture_sha256()
+        assert c.warnings == ("research.fixture_slice_machinery_validation",)
 
 
 def test_benchmark_and_two_versions_on_a_common_basis() -> None:
@@ -152,7 +152,7 @@ def test_worker_publishes_the_slice_end_to_end(tmp_path) -> None:
                              "synthetic-drift-v1"}
     for c in cat:
         if c["evidence_kind"] == "synthetic_backtest":
-            assert c["warnings"] == ["research.synthetic_v1_machinery_validation"]
+            assert c["warnings"] == ["research.fixture_slice_machinery_validation"]
 
     run_id = client.post("/api/research/compare", json={
         "candidate_ids": ["synthetic-momentum-v1", "synthetic-drift-v1"],

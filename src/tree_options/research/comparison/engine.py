@@ -153,7 +153,7 @@ def _synthetic_executions(candidate: ResearchCandidate,
     """
     from datetime import datetime
 
-    from tree_options.research.catalog.synthetic import load_fixture
+    from tree_options.research.catalog.fixture_slice import load_fixture
     from tree_options.research.comparison.funded import (
         MarkObservation,
         TradeExecution,

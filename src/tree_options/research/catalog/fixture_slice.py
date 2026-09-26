@@ -32,9 +32,9 @@ from tree_options.research.contracts import (
 ADAPTER_API_VERSION = 1
 
 _REPO_ROOT = Path(__file__).resolve().parents[4]
-_FIXTURE = _REPO_ROOT / "data" / "research" / "fixtures" / "synthetic-v1.json"
+_FIXTURE = _REPO_ROOT / "data" / "research" / "fixtures" / "synthetic-slice-v1.json"
 
-_SYNTHETIC_WARNING = "research.synthetic_v1_machinery_validation"
+_SYNTHETIC_WARNING = "research.fixture_slice_machinery_validation"
 
 
 def fixture_path() -> Path:
@@ -79,7 +79,7 @@ def build_synthetic_candidates() -> list[ResearchCandidate]:
             supported_end=sessions[-1] if sessions else None,
             funded_history=FundedHistorySupport.RECONSTRUCTED,
             funded_history_reason=None,
-            artifact_hashes={"synthetic-fixture.json": sha},
+            artifact_hashes={"synthetic-slice-fixture.json": sha},
             capabilities=(
                 "view_published_study",
                 "plot_trade_outcomes",

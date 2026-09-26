@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
-from datetime import UTC, date, datetime, timedelta
+from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Literal
 
@@ -146,11 +146,12 @@ def _utc_execution_at(day: date, seq: int) -> datetime:
     """Non-decreasing UTC timestamps for same-session executions: one
     sequence number of separation keeps the book's ordering guard
     satisfied without inventing intraday times that mean anything. The
-    offset is seconds past a 21:00 base and may roll into the next day
-    for pathological same-session fill counts — ordering, not wall
-    time, is the contract."""
-    return (datetime(day.year, day.month, day.day, 21, 0, tzinfo=UTC)
-            + timedelta(seconds=seq))
+    offset is whole seconds past a 21:00 base (may roll into the next
+    day for pathological same-session fill counts) — ordering, not
+    wall time, is the contract."""
+    from tree_options.time.sessions import shift_instant
+    base = datetime(day.year, day.month, day.day, 21, 0, tzinfo=UTC)
+    return shift_instant(base, seq)
 
 
 def _refusal(run_kwargs: dict, code: str, detail: str) -> FundedRun:
