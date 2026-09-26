@@ -139,13 +139,52 @@ def _sealed_executions(candidate: ResearchCandidate,
 
 
 def _synthetic_executions(candidate: ResearchCandidate,
+                          plan: ComparisonPlan | None = None,
                           *args: Any, **kwargs: Any) -> tuple[list, list]:
-    """Adapter stub for ``evidence_kind=SYNTHETIC_BACKTEST``.
+    """Synthetic/v1 fixture adapter — the RL-1 vertical slice.
 
-    The synthetic/v1 vertical slice (permanently labeled synthetic)
-    lands with the fixture loader.
+    Loads the sha-pinned fixture (``data/research/fixtures/
+    synthetic-v1.json``) and converts the candidate's declared series
+    into executions + shared SPY marks. PERMANENTLY SYNTHETIC: the
+    numbers are invented machinery-validation values, labeled as such
+    on the candidate, the envelope, and every payload they reach. The
+    knowledge cutoff is honored at fixture granularity: observations
+    recorded after the cutoff instant are not knowable at it.
     """
-    return [], []
+    from datetime import datetime
+
+    from tree_options.research.catalog.synthetic import load_fixture
+    from tree_options.research.comparison.funded import (
+        MarkObservation,
+        TradeExecution,
+    )
+
+    doc = load_fixture()
+    if doc is None:
+        return [], []
+    series = doc.get("candidates", {}).get(candidate.id)
+    if series is None:
+        return [], []
+    cutoff = plan.cutoff if plan is not None else None
+    if cutoff is not None:
+        recorded = datetime.fromisoformat(doc["recorded_at"])
+        if recorded > cutoff:
+            return [], []  # the fixture postdates the knowledge cutoff
+    executions = [
+        TradeExecution(
+            date=date.fromisoformat(e["date"]),
+            symbol=e["symbol"],
+            signed_quantity=int(e["signed_quantity"]),
+            price=Decimal(str(e["price"])),
+        )
+        for e in series.get("executions", [])
+    ]
+    marks = [
+        MarkObservation(date.fromisoformat(d), symbol, Decimal(str(p)))
+        for symbol, series_marks in doc.get("marks", {}).items()
+        for d, p in series_marks.items()
+    ]
+    return executions, marks
 
 
 _ADAPTERS = {

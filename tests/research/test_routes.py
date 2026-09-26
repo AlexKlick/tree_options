@@ -95,7 +95,7 @@ def test_candidates_endpoint_lists_catalog(tmp_path: Path) -> None:
     assert r.status_code == 200
     body = r.json()
     assert "candidates" in body
-    assert len(body["candidates"]) == 1
+    assert len(body["candidates"]) == 4  # 1 sealed + 3 synthetic
     c = body["candidates"][0]
     assert c["family"] == "test-scope"
     assert c["disposition"] == "WITHDRAWN"
@@ -106,9 +106,11 @@ def test_candidates_endpoint_filters_by_family(tmp_path: Path) -> None:
     client, _worker = _build_app(tmp_path)
     r = client.get("/api/research/candidates?family=test-scope")
     assert r.status_code == 200
-    assert len(r.json()["candidates"]) == 1
+    assert len(r.json()["candidates"]) == 1  # the family filter still scopes
     r2 = client.get("/api/research/candidates?family=nope")
     assert len(r2.json()["candidates"]) == 0
+    r3 = client.get("/api/research/candidates?family=synthetic-benchmark-v1")
+    assert len(r3.json()["candidates"]) == 1  # synthetic entries filter too
 
 
 def test_unknown_candidate_returns_404(tmp_path: Path) -> None:
@@ -281,7 +283,10 @@ def test_malformed_scope_surfaces_instead_of_vanishing(tmp_path: Path) -> None:
     client = TestClient(app)
     body = client.get("/api/research/candidates").json()["candidates"]
     families = {c["family"] for c in body}
-    assert families == {"good-scope", "bad-scope"}
+    assert families == {"good-scope", "bad-scope",
+                        "synthetic-benchmark-v1",
+                        "synthetic-momentum-v1",
+                        "synthetic-drift-v1"}
     bad_row = next(c for c in body if c["family"] == "bad-scope")
     assert bad_row["disposition"] == "DATA-GATED-NOT-RUN"
     assert "adapter" in bad_row["ineligibility_reason"]
@@ -317,7 +322,7 @@ def test_attach_survives_unwritable_workspace(tmp_path: Path) -> None:
 
     r = client.get("/api/research/candidates")
     assert r.status_code == 200
-    assert len(r.json()["candidates"]) == 1
+    assert len(r.json()["candidates"]) == 4  # 1 sealed + 3 synthetic
     cid = r.json()["candidates"][0]["id"]
 
     # The spec must pass validation (membership + plan) so the request

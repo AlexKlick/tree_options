@@ -394,6 +394,13 @@ def _build_catalog(scopes_root: Path) -> list[ResearchCandidate]:
             ))
             continue
         candidates.append(cand)
+    # The synthetic vertical slice (permanently labeled): one benchmark
+    # + two strategy versions with a COMPLETE funded history, proving
+    # the comparison path the zero-row catalog never exercised.
+    from tree_options.research.catalog.synthetic import (
+        build_synthetic_candidates,
+    )
+    candidates.extend(build_synthetic_candidates())
     return candidates
 
 
