@@ -49,6 +49,7 @@ _DISPOSITION_MAP: dict[str, ResearchDisposition] = {
     "NOT_EVALUABLE": ResearchDisposition.NOT_EVALUABLE,
     "NOT_EVALUABLE-SEALED": ResearchDisposition.NOT_EVALUABLE_SEALED,
     "WITHDRAWN": ResearchDisposition.WITHDRAWN,
+    "WITHDRAW": ResearchDisposition.WITHDRAWN,  # term-gate spells it without the -N
     "INSUFFICIENT_N": ResearchDisposition.INSUFFICIENT_N,
     "INSUFFICIENT_COVERAGE": ResearchDisposition.INSUFFICIENT_COVERAGE,
     "NOT_CANDIDATE": ResearchDisposition.NOT_CANDIDATE,
@@ -57,10 +58,26 @@ _DISPOSITION_MAP: dict[str, ResearchDisposition] = {
 }
 
 
-def _normalize_disposition(raw: str) -> ResearchDisposition | None:
-    if not raw:
+def _normalize_disposition(raw: Any) -> ResearchDisposition | None:
+    """Map a raw verdict to a disposition. Anything that is not a
+    non-empty string (structured verdict blocks, numbers, None) maps to
+    ``None`` — the caller decides the fallback. Never raises."""
+    if not isinstance(raw, str) or not raw.strip():
         return None
-    return _DISPOSITION_MAP.get(raw.upper())
+    return _DISPOSITION_MAP.get(raw.strip().upper())
+
+
+def _raw_verdict(value: Any) -> str | None:
+    """Reduce a verdict field to a string: either a bare string
+    (jepa-filter shape) or a structured verdict block's ``verdict`` key
+    (term-gate shape)."""
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    if isinstance(value, dict):
+        inner = value.get("verdict")
+        if isinstance(inner, str) and inner.strip():
+            return inner.strip()
+    return None
 
 
 def _coerce_date(value: Any) -> date | None:
@@ -88,16 +105,27 @@ def _candidate_supported_window(scope_dir: Path, sealed: dict[str, Any]) -> tupl
 
     Returns ``(None, None)`` when nothing parseable exists.
     """
+    lo: date | None = None
+    hi: date | None = None
     sw = sealed.get("sealed_window")
     if isinstance(sw, dict):
-        return _coerce_date(sw.get("start") or sw.get("from")), _coerce_date(sw.get("end") or sw.get("to"))
+        lo = _coerce_date(sw.get("start") or sw.get("from"))
+        hi = _coerce_date(sw.get("end") or sw.get("to"))
+        if lo is None or hi is None:
+            # term-gate shape: a `window` 2-list of ISO dates inside a
+            # stats block (alongside n_sessions etc.).
+            win = sw.get("window")
+            if isinstance(win, (list, tuple)) and len(win) >= 2:
+                lo, hi = _coerce_date(win[0]), _coerce_date(win[1])
+        if lo is not None and hi is not None:
+            return lo, hi
+        # present but unparseable — fall through to the other sources
+        lo, hi = None, None
     rnd = sealed.get("round")
     if isinstance(rnd, dict):
         w = rnd.get("scope_window") or rnd.get("window")
         if isinstance(w, dict):
             return _coerce_date(w.get("start")), _coerce_date(w.get("end"))
-    lo: date | None = None
-    hi: date | None = None
     for trial_path in sorted((scope_dir / "trials").glob("c09-*.json")):
         try:
             tdoc = json.loads(trial_path.read_text())
@@ -158,9 +186,9 @@ def build_candidate(scope_dir: Path, *, scope_id: str | None = None) -> Research
 
     # Family verdict (top-level or per-nominee verdict table).
     raw_disposition = (
-        sealed.get("family_verdict")
+        _raw_verdict(sealed.get("family_verdict"))
         or _first_verdict_value(sealed.get("verdicts"))
-        or sealed.get("registered_sealed_acceptance")
+        or _raw_verdict(sealed.get("registered_sealed_acceptance"))
         or "DATA-GATED-NOT-RUN"
     )
     # Scope-O / scope-C / scope-A withdrawals override.

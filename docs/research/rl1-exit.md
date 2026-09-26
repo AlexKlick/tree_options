@@ -32,14 +32,24 @@ for the corrective branch.
 
 ### 1. One verified benchmark + two eligible strategy versions render on a common declared basis
 
-The SPA's `#/research` route lists every catalog candidate with disposition,
-eligibility, supported window, and version shas. The first two eligible
-candidates are auto-selected into the run form. The catalog adapter
-walks `artifacts/campaign-2026-09/<scope>/sealed-round.json` for every
-scope; `vix_term` and `hold-20` (both PASS-confirmed per the campaign
-family verdict table in `docs/campaign-2026-09/REPORT.md:280-285`)
-land as `plot_funded_account=true`. Non-PASS families surface with
-ineligibility reasons.
+**Corrected 2026-09-25 (post-deploy audit against the real artifacts).**
+The campaign's sealed artifacts contain **no plot-eligible family**. The
+catalog on real data (6 scopes) is: `term-gate` WITHDRAWN (window
+2024-10-01..2026-08-28), `jepa-filter` FAIL, `vrp-cond` sealed-but-not-
+machine-reducible (DATA-GATED carrying the registered acceptance text),
+and `exit-grid-2` / `pead-deep-2` / `tnull` never sealed. `vix_term` and
+`hold-20` are the desk **incumbents** — they appear in the campaign only
+as reference blocks inside other scopes' sealed-round.json, and enter
+the catalog through the shadow-proxy adapter, which is a documented
+honest-zero-rows stub in RL-1 (`comparison/engine.py::_shadow_executions`).
+
+The SPA therefore renders the honest catalog: every family with
+disposition + ineligibility reason, zero eligible candidates, and an
+empty run-form selection. An earlier draft of this checklist claimed
+vix_term/hold-20 as PASS rows per `REPORT.md:280-285` — that table
+contains no such rows; the claim was fixture-true, real-data-false, and
+is withdrawn. Wiring the incumbents' real series (desk shadow marks) is
+the first unit of RL-2.
 
 ### 2. Every other catalog candidate shows an explicit ineligibility reason
 

@@ -160,6 +160,38 @@ def test_evidence_endpoint_returns_envelope_for_known_candidate(tmp_path: Path) 
     assert body["reproduction_command"]
 
 
+def test_malformed_scope_surfaces_instead_of_vanishing(tmp_path: Path) -> None:
+    """A scope whose sealed-round.json is not an object must appear in
+    the catalog as a DATA-GATED row (adapter backstop), never be
+    silently dropped from the catalog."""
+    from fastapi import FastAPI
+
+    from tree_options.trex_web.research_view import attach as attach_research
+
+    fake_scopes = tmp_path / "scopes"
+    fake_scopes.mkdir()
+    good = fake_scopes / "good-scope"
+    good.mkdir()
+    (good / "sealed-round.json").write_text(json.dumps({
+        "family_verdict": "WITHDRAWN",
+        "frozen_inputs": {"calibration_v3_sha256": "deadbeef"},
+        "round": {},
+    }))
+    bad = fake_scopes / "bad-scope"
+    bad.mkdir()
+    (bad / "sealed-round.json").write_text("12345")  # valid JSON, not an object
+
+    app = FastAPI()
+    attach_research(app, workspace=tmp_path / "ws", candidate_scopes_root=fake_scopes)
+    client = TestClient(app)
+    body = client.get("/api/research/candidates").json()["candidates"]
+    families = {c["family"] for c in body}
+    assert families == {"good-scope", "bad-scope"}
+    bad_row = next(c for c in body if c["family"] == "bad-scope")
+    assert bad_row["disposition"] == "DATA-GATED-NOT-RUN"
+    assert "adapter" in bad_row["ineligibility_reason"]
+
+
 def test_attach_survives_unwritable_workspace(tmp_path: Path) -> None:
     """Panel survival: an unwritable workspace must never take the
     routes down at attach time. attach() tolerates the mkdir failure;

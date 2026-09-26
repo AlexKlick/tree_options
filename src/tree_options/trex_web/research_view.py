@@ -41,6 +41,9 @@ from tree_options.research.comparison.engine import run_comparison
 from tree_options.research.contracts import (
     ComparisonSpec,
     ResearchCandidate,
+    ResearchDisposition,
+    ResearchEvidenceKind,
+    ResearchRegistration,
 )
 from tree_options.research.evidence.drawer import evidence_for_point
 from tree_options.research.runstate.spec_hash import spec_hash
@@ -275,10 +278,26 @@ def _build_catalog(scopes_root: Path) -> list[ResearchCandidate]:
             continue
         try:
             cand = build_candidate(scope_dir)
-        except Exception:
-            # Adapter must NEVER crash the route. A malformed scope is
-            # surfaced as a DATA-GATED-NOT-RUN candidate by the adapter
-            # itself; this catch is a defensive backstop only.
+        except Exception as exc:
+            # Adapter must NEVER crash the route — and a malformed scope
+            # must NEVER silently vanish from the catalog: it surfaces
+            # as a DATA-GATED row carrying the adapter error.
+            candidates.append(ResearchCandidate(
+                id=f"{scope_dir.name}-v?",
+                family=scope_dir.name,
+                version="v?",
+                evidence_kind=ResearchEvidenceKind.SEALED_CAMPAIGN,
+                registration=ResearchRegistration.RETROSPECTIVE_BACKFILL,
+                disposition=ResearchDisposition.DATA_GATED_NOT_RUN,
+                plot_funded_account=False,
+                supported_start=None,
+                supported_end=None,
+                artifact_hashes={},
+                capabilities=(),
+                ineligibility_reason=f"catalog adapter raised: {exc}",
+                warnings=("research.adapter_error",),
+                source_url=f"sealed-round/{scope_dir.name}",
+            ))
             continue
         candidates.append(cand)
     return candidates

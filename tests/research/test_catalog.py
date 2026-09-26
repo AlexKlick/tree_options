@@ -9,6 +9,7 @@ default; the loader-discovery layer is a separate test in
 from __future__ import annotations
 
 import json
+from datetime import date
 from pathlib import Path
 
 from tree_options.research.catalog.sealed_round import build_candidate
@@ -171,6 +172,55 @@ def test_adapter_tolerates_unknown_disposition_string(tmp_path: Path) -> None:
     cand = build_candidate(scope)
     assert cand.disposition is ResearchDisposition.DATA_GATED_NOT_RUN
     assert cand.plot_funded_account is False
+
+
+def test_structured_family_verdict_block_reduces_to_its_verdict_key(tmp_path: Path) -> None:
+    """term-gate shape: ``family_verdict`` is a structured block whose
+    ``verdict`` key carries the machine-readable family verdict."""
+    scope = tmp_path / "term-gate"
+    _write(scope, {
+        "family_verdict": {
+            "candidates": [],
+            "registered_criterion": "family beat-or-withdraw",
+            "verdict": "WITHDRAW",
+            "verdict_reason": "no CANDIDATE on either rule",
+        },
+        "frozen_inputs": {"round1_selection_sha256": "abcdef1234567890"},
+    })
+    cand = build_candidate(scope)
+    assert cand.disposition is ResearchDisposition.WITHDRAWN
+    assert cand.plot_funded_account is False
+    assert cand.ineligibility_reason is not None
+    assert "WITHDRAW" in cand.ineligibility_reason
+
+
+def test_non_string_verdict_never_crashes_the_adapter(tmp_path: Path) -> None:
+    """A structured verdict block WITHOUT a ``verdict`` key (or a
+    non-string where a string was expected) degrades to DATA-GATED —
+    never AttributeError."""
+    scope = tmp_path / "odd-scope"
+    _write(scope, {
+        "family_verdict": {"candidates": [], "registered_criterion": 7},
+        "frozen_inputs": {},
+    })
+    cand = build_candidate(scope)
+    assert cand.disposition is ResearchDisposition.DATA_GATED_NOT_RUN
+    assert cand.plot_funded_account is False
+
+
+def test_sealed_window_list_shape_parses(tmp_path: Path) -> None:
+    """term-gate shape: ``sealed_window`` is a stats block whose
+    ``window`` key is a 2-list of ISO dates; an unparseable explicit
+    field must fall through, not return (None, None) early."""
+    scope = tmp_path / "term-gate"
+    _write(scope, {
+        "family_verdict": {"verdict": "WITHDRAW"},
+        "sealed_window": {"n_sessions": 479, "window": ["2024-10-01", "2026-08-28"]},
+    })
+    cand = build_candidate(scope)
+    assert cand.disposition is ResearchDisposition.WITHDRAWN
+    assert cand.supported_start == date(2024, 10, 1)
+    assert cand.supported_end == date(2026, 8, 28)
 
 
 def test_supersession_record_emits_warning(tmp_path: Path) -> None:
