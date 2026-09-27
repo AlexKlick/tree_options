@@ -28,8 +28,9 @@ monthlies. The data reader accepts 7–365 entry DTE and does not substitute
 another contract when a leg is missing. One or more `--cache` directories
 can be supplied; conflicting duplicate prices are dropped.
 
-The signal is known at session D's close. The selected contract is opened
-at the next session's VWAP and closed at the earlier of 20 NYSE sessions or
+The signal and contract selection use only bars available at session D's
+close. The exact selected legs are modeled as opened at the next session's
+VWAP and closed at the earlier of 20 NYSE sessions or
 the last session with at least 7 calendar DTE. Both sides pay the configured
 per-leg VWAP haircut and $0.65 commission per leg at entry and exit. The
 default 1% haircut is an assumption, not measured spread evidence. A trade
@@ -44,7 +45,9 @@ the Action model cockpit; it does not launch jobs or expose a trade action.
 
 Win rates and returns are **modeled on the evaluable subset only**. Cached
 daily VWAPs are neither executable quotes nor IBKR fills; missing bars can
-bias the subset. Overlapping trades are counted independently, so aggregate
+bias the subset. Contract selection sees only contracts with decision-day
+trade bars, and the sealed earnings calendar has no historical
+announcement-time vintages. Overlapping trades are counted independently, so aggregate
 P&L is not a $5,000 portfolio path and the $1,500 combined open-risk limit
 is not tested here. This lane supplies research evidence for later governed
 proposal review, not a measured live edge or broker authorization.

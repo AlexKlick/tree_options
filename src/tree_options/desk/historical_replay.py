@@ -2,7 +2,8 @@
 
 This is not DESK-BT-001: its haircut is an explicit scenario input, cached
 bars are not fills, and incomplete vendor coverage is reported as omissions.
-Signals are learned at D's close; option entry is the NEXT session's VWAP.
+Signals and contract selection use D's close; option entry is priced from
+the NEXT session's VWAP. That VWAP remains a modeled price, not an order.
 """
 
 from __future__ import annotations
@@ -188,12 +189,13 @@ def replay(
                 counts["no_next_session"] += len(spec.structures)
                 continue
             entry = cal.sessions()[i]
-            spot = scan.spot.get(name, {}).get(entry)
+            spot = scan.spot.get(name, {}).get(decision)
+            decision_bars = scan.options.get(name, {}).get(decision, ())
             entry_bars = scan.options.get(name, {}).get(entry, ())
-            if spot is None or not entry_bars:
-                counts["missing_entry_spot_or_options"] += len(spec.structures)
+            if spot is None or not decision_bars:
+                counts["missing_decision_spot_or_options"] += len(spec.structures)
                 continue
-            selection = _select(entry_bars, spot, entry, spec)
+            selection = _select(decision_bars, spot, entry, spec)
             if selection is None:
                 counts["no_eligible_expiry_or_atm"] += len(spec.structures)
                 continue
@@ -202,11 +204,12 @@ def replay(
             if exit_day is None:
                 counts["no_exit_session"] += len(spec.structures)
                 continue
+            decision_marks = _mark(decision_bars)
             start_marks = _mark(entry_bars)
             end_marks = _mark(scan.options.get(name, {}).get(exit_day, ()))
             for kind in spec.structures:
                 counts["attempted"] += 1
-                legs = _legs(kind, expiry, calls, start_marks, spot)
+                legs = _legs(kind, expiry, calls, decision_marks, spot)
                 if legs is None:
                     counts["missing_entry_leg"] += 1
                     continue
@@ -228,8 +231,11 @@ def replay(
                     continue
                 pnl = opening + closing
                 rows.append({"signal": signal, "name": name, "structure": kind,
-                             "decision": decision.isoformat(), "entry": entry.isoformat(),
+                             "decision": decision.isoformat(), "selection_as_of": decision.isoformat(),
+                             "entry": entry.isoformat(),
                              "exit": exit_day.isoformat(), "expiry": expiry.isoformat(),
+                             "legs": [{"right": right, "strike": strike, "side": side}
+                                      for right, strike, side in legs],
                              "max_loss": round(max_loss, 2), "pnl": round(pnl, 2),
                              "win": pnl > 0})
                 counts["evaluable_within_trade_cap"] += 1
@@ -251,6 +257,8 @@ def replay(
     return {"schema": "desk-historical-replay/1", "label": "exploratory modeled VWAP replay",
             "limitations": ["daily VWAP is not an executable quote or broker fill",
                             "haircut is assumed, not measured from entry quotes",
+                            "sealed earnings dates lack historical announcement-time vintages",
+                            "contract selection only sees contracts with a decision-day trade bar",
                             "overlapping trades are counted independently; no portfolio or daily risk simulation",
                             "missing bars and cap exclusions select the sample"],
             "spec": {"start": spec.start.isoformat(), "end": spec.end.isoformat(),

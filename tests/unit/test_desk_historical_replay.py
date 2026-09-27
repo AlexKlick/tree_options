@@ -30,13 +30,16 @@ def test_cross_cache_conflicts_are_dropped() -> None:
 
 
 def test_replay_uses_next_session_entry_and_records_missing_exit(monkeypatch) -> None:
+    decision = date(2025, 3, 3)
     entry = date(2025, 3, 4)
     exit_day = date(2025, 3, 5)
     expiry = date(2025, 4, 18)
     rows = [ivhist.OptionBar(expiry, "C", 100, 4), ivhist.OptionBar(expiry, "P", 100, 3)]
-    scan = ivhist.CacheScan(source="fixture", options={"SPY": {entry: rows,
+    entry_rows = [*rows, ivhist.OptionBar(expiry, "C", 110, 2),
+                  ivhist.OptionBar(expiry, "P", 110, 8)]
+    scan = ivhist.CacheScan(source="fixture", options={"SPY": {decision: rows, entry: entry_rows,
                                exit_day: [ivhist.OptionBar(expiry, "C", 100, 5)]}},
-                            spot={"SPY": {entry: 100}})
+                            spot={"SPY": {decision: 100, entry: 110}})
     monkeypatch.setattr(replay, "_signals_on", lambda *_args: [("xsmom_top3", "SPY")])
     spec = replay.ReplaySpec(date(2025, 3, 3), date(2025, 3, 3), ("SPY",),
                              signals=("xsmom_top3",), structures=("long_call",),
@@ -44,6 +47,8 @@ def test_replay_uses_next_session_entry_and_records_missing_exit(monkeypatch) ->
     result = replay.replay(scan, {}, {}, Calendar(), spec)
     assert result["counts"]["evaluable_within_trade_cap"] == 1
     assert result["rows"][0]["entry"] == "2025-03-04"
+    assert result["rows"][0]["selection_as_of"] == "2025-03-03"
+    assert result["rows"][0]["legs"][0]["strike"] == 100
     assert result["rows"][0]["exit"] == "2025-03-05"
     assert result["rows"][0]["pnl"] < 100  # haircut and two commissions
     scan.options["SPY"].pop(exit_day)
@@ -53,13 +58,16 @@ def test_replay_uses_next_session_entry_and_records_missing_exit(monkeypatch) ->
 
 
 def test_risk_cap_excludes_trade_without_turning_it_into_loss(monkeypatch) -> None:
+    decision = date(2025, 3, 3)
     entry = date(2025, 3, 4)
     exit_day = date(2025, 3, 5)
     expiry = date(2025, 4, 18)
-    scan = ivhist.CacheScan(source="fixture", options={"SPY": {entry: [
+    decision_rows = [ivhist.OptionBar(expiry, "C", 100, 4),
+                     ivhist.OptionBar(expiry, "P", 100, 3)]
+    scan = ivhist.CacheScan(source="fixture", options={"SPY": {decision: decision_rows, entry: [
         ivhist.OptionBar(expiry, "C", 100, 4), ivhist.OptionBar(expiry, "P", 100, 3)],
         exit_day: [ivhist.OptionBar(expiry, "C", 100, 5)]}},
-        spot={"SPY": {entry: 100}})
+        spot={"SPY": {decision: 100}})
     monkeypatch.setattr(replay, "_signals_on", lambda *_args: [("xsmom_top3", "SPY")])
     spec = replay.ReplaySpec(date(2025, 3, 3), date(2025, 3, 3), ("SPY",),
                              structures=("long_call",), hold_sessions=1, max_loss=300)
