@@ -1,5 +1,10 @@
 # TREX governed action integration status
 
+Deployment status: **BLOCKED**. This worktree contains research and read-only
+cockpit integration, but no trusted operator mandate, single-use permit,
+durable IBKR paper outbox, or supervised broker receipt. The current live
+legacy book has a position, so the agreed flat-book canary gate is closed.
+
 Source packet: `TREX-Governed-Adaptive-Action-Model-20260926-9472c2.zip`,
 SHA-256 `826bae1fb666224e2eb5d378df3e33c7c7fb6939b4ff6a5554eeb267c0bfe78b`.
 The extracted packet is preserved in this directory with its own checksums.
@@ -24,7 +29,10 @@ runtime operation registrations or an authority source.
   assignment plan and broker margin. An empty blocker list means reviewable only.
 - `review_canary` screens a manually specified, one-package operational paper
   canary against fresh account and quote facts, legacy-flat status, exit
-  readiness and the authored capital limits. It does not issue a permit.
+  readiness and the authored capital limits. `review_canary_package` also
+  requires one vertical and binds its exact structure, entry limit, exit
+  rules, quantity and modeled worst-case loss to the intent SHA-256. These
+  pure checks do not issue a permit.
 - Historical replay now records per-row eligibility; a separate frozen
   portfolio scenario applies modeled $5,000/$300/$1,500 overlap limits and
   publishes read-only summaries to the cockpit. It cannot test the $300
@@ -37,7 +45,7 @@ runtime operation registrations or an authority source.
 | Login and paper account observation | `deploy/trex/docker-compose.yml`, `trex.gateway_watch`, `trex.ibkr.IbkrTrex.account_snapshot` | Bind every decision to a fresh broker-reported account ID and verify paper environment at dispatch. Do not create a second login loop. |
 | Exit protection and ownership | `trex.monitor`, `trex.exit_watch`, `trex.enter` | Prove exclusive owner/epoch at the send boundary; retain protection independent of the planner. |
 | Desk selection | `desk.miner`, `desk.rails`, `desk.enter` | Convert validated queue rows to exact trade intents only after strategy, margin, account, quote, and reconciliation contracts are complete. `desk.enter` currently refuses non-shadow execution. |
-| Existing execution facts | `execution.records`, `execution.lifecycle`, `execution.paper` | Keep their intent, attempt and broker-observation IDs distinct; implement a durable outbox and an IBKR adapter around the same facts. The current `execution.paper` is deterministic simulation, not IBKR paper account execution. |
+| Existing execution facts | `execution.records`, `execution.lifecycle`, `execution.paper` | Keep intent, attempt and broker-observation IDs distinct. Extend the record contract for spread economics before broker dispatch: current `OrderIntent` permits positive LIMIT prices and BUY/open-long or SELL/close-long only, while the IBKR package lane represents debit and credit spreads with distinct entry orientation. Implement a durable outbox and IBKR adapter around the corrected contract. The current `execution.paper` is deterministic simulation, not IBKR paper account execution. |
 | Volatility forecasting and modeled trade outcomes | `desk.har`, `desk.evaluate`, `desk.pricing`, `desk.scorecards` | `FORECAST-001` passed a pre-registered realized-variance forecast comparison. That does not verify a trade win probability or live execution quality. Link its exact result and the trade-level scorecard to proposals without turning either into a grant. |
 | Research result and chart | `research_view`, `ResearchPage`, RL-3b Outlook | Project immutable source/result IDs into the action graph. RL-3b evaluates index-level quantile forecasts and claims no calibration; it is not the desk's volatility-trade win-rate oracle. |
 

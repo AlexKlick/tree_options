@@ -11,8 +11,11 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
+from hashlib import sha256
 
 from tree_options.action_graph.capital import CapitalProfile, _money
+from tree_options.action_graph.proposal import canonical_bytes
+from tree_options.trex.plan import LegStructure
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 ACCOUNT_MAX_AGE = timedelta(seconds=60)
@@ -112,4 +115,24 @@ def review_canary(profile: CapitalProfile, facts: CanaryFacts) -> tuple[str, ...
     elif (profile.max_daily_loss is not None
           and facts.realized_daily_loss + facts.worst_case_loss > profile.max_daily_loss):
         blockers.append("daily_loss_cap_exceeded")
+    return tuple(blockers)
+
+
+def package_intent_sha256(structure: LegStructure) -> str:
+    """Hash exact authored package geometry, entry cap and exit rules."""
+    return sha256(canonical_bytes(structure.model_dump(mode="json"))).hexdigest()
+
+
+def review_canary_package(profile: CapitalProfile, structure: LegStructure,
+                          facts: CanaryFacts) -> tuple[str, ...]:
+    """Bind pure readiness screening to one immutable, defined-risk vertical."""
+    blockers = list(review_canary(profile, facts))
+    if structure.kind not in ("debit_vertical", "credit_vertical"):
+        blockers.append("canary_structure_not_vertical")
+    if structure.quantity != 1 or structure.quantity != facts.package_quantity:
+        blockers.append("package_quantity_mismatch")
+    if structure.max_loss() != facts.worst_case_loss:
+        blockers.append("package_loss_mismatch")
+    if package_intent_sha256(structure) != facts.intent_sha256:
+        blockers.append("intent_hash_mismatch")
     return tuple(blockers)

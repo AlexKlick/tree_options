@@ -1,5 +1,8 @@
 # TREX historical strategy system graph
 
+Broker deployment status: **BLOCKED** pending a trusted mandate, outbox,
+broker reconciliation, and a flat legacy book.
+
 Source branch: `feat/governed-action-foundation` at `b3023f7`. This graph
 describes installed source paths and the missing authority links. It does not
 certify deployment or a profitable strategy.

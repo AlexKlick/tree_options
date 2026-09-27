@@ -1,11 +1,17 @@
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
-from tree_options.action_graph.canary import CanaryFacts, review_canary
+from tree_options.action_graph.canary import (
+    CanaryFacts,
+    package_intent_sha256,
+    review_canary,
+    review_canary_package,
+)
 from tree_options.action_graph.capital import CapitalProfile
+from tree_options.trex.plan import ExitRules, Leg, LegStructure
 
 NOW = datetime(2026, 9, 27, 15, 0, tzinfo=UTC)
 
@@ -34,6 +40,16 @@ def facts() -> CanaryFacts:
         temporary_assignment_exposure=Decimal("4000"),
         broker_margin_change=Decimal("500"), current_open_loss=Decimal("0"),
         realized_daily_loss=Decimal("0"),
+    )
+
+
+def package() -> LegStructure:
+    return LegStructure(
+        id="manual-canary-1", underlying="XYZ", kind="debit_vertical",
+        legs=(Leg(right="P", action="BUY", strike=Decimal("100"), expiry=date(2026, 10, 16)),
+              Leg(right="P", action="SELL", strike=Decimal("98"), expiry=date(2026, 10, 16))),
+        quantity=1, entry_date=date(2026, 9, 28), exit_deadline=date(2026, 10, 1),
+        limit=Decimal("1.50"), exits=ExitRules(touch=True, breach=False),
     )
 
 
@@ -94,3 +110,14 @@ def test_bad_risk_inputs_are_rejected(bad: Decimal) -> None:
 def test_naive_snapshot_is_rejected() -> None:
     with pytest.raises(ValueError, match="timezone-aware"):
         replace(facts(), quote_observed_at=NOW.replace(tzinfo=None))
+
+
+def test_package_geometry_and_exact_intent_are_bound() -> None:
+    structure = package()
+    candidate = replace(facts(), intent_sha256=package_intent_sha256(structure),
+                        worst_case_loss=structure.max_loss())
+    assert review_canary_package(profile(), structure, candidate) == ()
+    changed = structure.model_copy(update={"limit": Decimal("1.60")})
+    assert review_canary_package(profile(), changed, candidate) == (
+        "package_loss_mismatch", "intent_hash_mismatch",
+    )

@@ -1,5 +1,7 @@
 # Exploratory historical options replay
 
+Broker readiness: **BLOCKED**. These artifacts are research scenarios only.
+
 This lane reads cached Massive/Polygon daily option VWAPs and the desk's
 historical equity panel. It is separate from the sealed `DESK-BT-001` study:
 the haircut is a scenario input, the cache may be incomplete, and no result
