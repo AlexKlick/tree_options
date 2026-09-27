@@ -217,6 +217,24 @@ def test_build_history_on_synthetic_cache(tmp_path: Path, cal: StaticSessionCale
     assert doc["assumptions"]["dividend_yield"] == 0.0
 
 
+def test_exploratory_scan_can_include_longer_dte_and_weeklies(
+    tmp_path: Path, cal: StaticSessionCalendar
+) -> None:
+    cache = tmp_path / "cache"
+    weekly = date(2025, 3, 14)
+    far_monthly = date(2025, 6, 20)
+    for n, expiry in enumerate((weekly, far_monthly)):
+        _write(cache, f"opt-{n}", {"ticker": _occ("SPY", expiry, "C", 100),
+             "adjusted": True, "resultsCount": 1, "results": [_bar(D1, 3.0)]})
+    standard = ivhist.scan_cache(cache, ("SPY",), D1, D1, cal)
+    assert not standard.options
+    expanded = ivhist.scan_cache(cache, ("SPY",), D1, D1, cal,
+                                  min_dte=0, max_dte=270, monthly_only=False)
+    assert {b.expiry for b in expanded.options["SPY"][D1]} == {weekly, far_monthly}
+    assert expanded.input_files == 2
+    assert len(expanded.input_digest) == 64
+
+
 def test_stock_spot_bodies_are_not_held_to_option_bar_integrity(
     tmp_path: Path, cal: StaticSessionCalendar
 ) -> None:

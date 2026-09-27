@@ -1,0 +1,85 @@
+{
+  "schema": "trex-graph-integration-map/0.1",
+  "status": "proposed_slices_not_new_issue_ids",
+  "prior_backlog": "TREX-Integrated-System-Backlog-20260926.json",
+  "current_head_observed": "c4035f6b30f5a177c0a9b4334b682589c9d62377",
+  "delta": "Forecast evaluation machinery now exists; calibration explicitly not claimed. Do not restart RL-3 from scratch.",
+  "slices": [
+    {
+      "id": "GRAPH-01",
+      "extends_existing_tasks": [
+        "CORE-01",
+        "CORE-03",
+        "AGENT-02"
+      ],
+      "title": "Typed graph and revision contracts",
+      "acceptance": "Plan, attempt, effect, result and authority IDs remain distinct."
+    },
+    {
+      "id": "GRAPH-02",
+      "extends_existing_tasks": [
+        "CORE-03",
+        "DATA-02",
+        "OPS-02"
+      ],
+      "title": "Provenance projection and snapshot custody",
+      "acceptance": "Trace from a result point to actual source revisions; no duplicate accounting store."
+    },
+    {
+      "id": "GRAPH-03",
+      "extends_existing_tasks": [
+        "PAPER-01",
+        "PAPER-02",
+        "PAPER-04",
+        "OPS-01"
+      ],
+      "title": "Mandate evaluation and effect permits",
+      "acceptance": "Deny by default; bound current account, input, owner and policy state at dispatch."
+    },
+    {
+      "id": "GRAPH-04",
+      "extends_existing_tasks": [
+        "TEST-02",
+        "PAPER-02",
+        "PAPER-03",
+        "TEST-01"
+      ],
+      "title": "Durable action-plan runner",
+      "acceptance": "Bounded scheduling, nonempty receipts, idempotent compute and reconciled effects."
+    },
+    {
+      "id": "GRAPH-05",
+      "extends_existing_tasks": [
+        "TEST-03",
+        "RL-02",
+        "RL-05",
+        "ADV-02"
+      ],
+      "title": "Adaptive evaluation and version promotion",
+      "acceptance": "Frozen champion, versioned challenger, full selector replay and scoped review."
+    },
+    {
+      "id": "GRAPH-06",
+      "extends_existing_tasks": [
+        "GUI-01",
+        "GUI-02",
+        "GUI-03",
+        "AGENT-01",
+        "GUI-04"
+      ],
+      "title": "Plan/actual/review/chart linked workspace",
+      "acceptance": "One object/revision across all lenses; stale result and permission fences."
+    },
+    {
+      "id": "GRAPH-07",
+      "extends_existing_tasks": [
+        "PAPER-05",
+        "PAPER-06",
+        "GUI-05",
+        "OPS-02"
+      ],
+      "title": "Supervised paper-cycle acceptance",
+      "acceptance": "Separate operator-authorized canary; no waiver of SP-3/SP-5."
+    }
+  ]
+}

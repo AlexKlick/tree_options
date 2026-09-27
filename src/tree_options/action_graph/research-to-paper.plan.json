@@ -1,0 +1,915 @@
+{
+  "schema": "trex-action-plan/0.1",
+  "artifact_status": "synthetic_design_example",
+  "execution_authorized": false,
+  "plan_id": "example.research-to-paper",
+  "revision": 1,
+  "goal": "Compare, review, propose a bounded paper experiment, observe and propose a next version.",
+  "state": "proposed",
+  "source_repository_head": "c4035f6b30f5a177c0a9b4334b682589c9d62377",
+  "artifacts": [
+    {
+      "id": "fixture.snapshot",
+      "kind": "DataSnapshot",
+      "sha256": "a6d0933e3cb6fb65cea2f091985143a4cbb251b2ee14cf3457990aefb674c9e5",
+      "classification": "synthetic_fixture",
+      "payload": {
+        "fixture": true,
+        "contains_market_observations": false,
+        "purpose": "Contract fixture only; a real loader must resolve an authorized immutable data snapshot."
+      }
+    },
+    {
+      "id": "fixture.baseline",
+      "kind": "StrategyVersion",
+      "sha256": "a57cd61aa48de0cb3ac9c1b059832bd648b8b39808b48a288147be9b99250c13",
+      "classification": "synthetic_fixture",
+      "payload": {
+        "fixture": true,
+        "strategy_name": "baseline-example",
+        "revision": 1
+      }
+    },
+    {
+      "id": "fixture.challenger",
+      "kind": "StrategyVersion",
+      "sha256": "ceeb86f42b4e68ddca84ff48613e33c1f484be27b56f35e07691160312e09f59",
+      "classification": "synthetic_fixture",
+      "payload": {
+        "fixture": true,
+        "strategy_name": "cost-aware-variant-example",
+        "revision": 1
+      }
+    },
+    {
+      "id": "fixture.protocol",
+      "kind": "ExperimentSpec",
+      "sha256": "efce0c2d4e2fc61ecb3f28e237b68aadc34b1692cd595972bd179f64eb2626e5",
+      "classification": "synthetic_fixture",
+      "payload": {
+        "fixture": true,
+        "scope": "exploratory",
+        "evaluation_window": "not_assigned",
+        "limits": "operator_to_define",
+        "no_live_money": true
+      }
+    },
+    {
+      "id": "fixture.policy",
+      "kind": "GovernancePolicy",
+      "sha256": "d973e0d554128590e92721e16552cbeccc6c082e7aa515c81e94b87b39dd6af2",
+      "classification": "synthetic_fixture",
+      "payload": {
+        "fixture": true,
+        "grants": [],
+        "default": "deny_effects_without_verified_mandate",
+        "promotion": "proposal_only"
+      }
+    }
+  ],
+  "nodes": [
+    {
+      "id": "N01",
+      "label": "Resolve pinned research inputs",
+      "operation": "research.resolve_inputs",
+      "operation_version": "0.1",
+      "owner_role": "data_service",
+      "effect_class": "read",
+      "target_environment": "research",
+      "dependencies": [],
+      "inputs": {
+        "source": {
+          "artifact_id": "fixture.snapshot",
+          "expected_type": "DataSnapshot"
+        }
+      },
+      "outputs": {
+        "snapshot": "DataSnapshot"
+      },
+      "required_guards": [
+        "authorized_data_scope",
+        "input_hash_match"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N02",
+      "label": "Check data capability and timing",
+      "operation": "research.check_coverage",
+      "operation_version": "0.1",
+      "owner_role": "data_service",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N01",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "snapshot": {
+          "producer_node_id": "N01",
+          "output_name": "snapshot",
+          "expected_type": "DataSnapshot"
+        }
+      },
+      "outputs": {
+        "coverage": "CoverageReceipt"
+      },
+      "required_guards": [
+        "point_in_time_valid"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N03",
+      "label": "Replay frozen baseline",
+      "operation": "research.run_baseline",
+      "operation_version": "0.1",
+      "owner_role": "research_worker",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N02",
+          "on_outcomes": [
+            "passed"
+          ]
+        }
+      ],
+      "inputs": {
+        "snapshot": {
+          "producer_node_id": "N01",
+          "output_name": "snapshot",
+          "expected_type": "DataSnapshot"
+        },
+        "strategy": {
+          "artifact_id": "fixture.baseline",
+          "expected_type": "StrategyVersion"
+        },
+        "protocol": {
+          "artifact_id": "fixture.protocol",
+          "expected_type": "ExperimentSpec"
+        }
+      },
+      "outputs": {
+        "result": "ResearchResult"
+      },
+      "required_guards": [
+        "research_budget_available"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N04",
+      "label": "Replay challenger on the same inputs",
+      "operation": "research.run_challenger",
+      "operation_version": "0.1",
+      "owner_role": "research_worker",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N02",
+          "on_outcomes": [
+            "passed"
+          ]
+        }
+      ],
+      "inputs": {
+        "snapshot": {
+          "producer_node_id": "N01",
+          "output_name": "snapshot",
+          "expected_type": "DataSnapshot"
+        },
+        "strategy": {
+          "artifact_id": "fixture.challenger",
+          "expected_type": "StrategyVersion"
+        },
+        "protocol": {
+          "artifact_id": "fixture.protocol",
+          "expected_type": "ExperimentSpec"
+        }
+      },
+      "outputs": {
+        "result": "ResearchResult"
+      },
+      "required_guards": [
+        "research_budget_available"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N05",
+      "label": "Build paired comparison",
+      "operation": "research.compare",
+      "operation_version": "0.1",
+      "owner_role": "research_worker",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N03",
+          "on_outcomes": [
+            "completed"
+          ]
+        },
+        {
+          "node_id": "N04",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "baseline": {
+          "producer_node_id": "N03",
+          "output_name": "result",
+          "expected_type": "ResearchResult"
+        },
+        "challenger": {
+          "producer_node_id": "N04",
+          "output_name": "result",
+          "expected_type": "ResearchResult"
+        }
+      },
+      "outputs": {
+        "comparison": "ComparisonResult"
+      },
+      "required_guards": [
+        "same_comparison_basis"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N06",
+      "label": "Publish comparison plot specification",
+      "operation": "workspace.project_comparison",
+      "operation_version": "0.1",
+      "owner_role": "projector",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N05",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "result": {
+          "producer_node_id": "N05",
+          "output_name": "comparison",
+          "expected_type": "ComparisonResult"
+        }
+      },
+      "outputs": {
+        "chart": "ChartSpec"
+      },
+      "required_guards": [
+        "result_hash_match"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N07",
+      "label": "Run deterministic broker-fault acceptance",
+      "operation": "validation.run_fault_suite",
+      "operation_version": "0.1",
+      "owner_role": "test_worker",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N02",
+          "on_outcomes": [
+            "passed"
+          ]
+        }
+      ],
+      "inputs": {
+        "protocol": {
+          "artifact_id": "fixture.protocol",
+          "expected_type": "ExperimentSpec"
+        }
+      },
+      "outputs": {
+        "tests": "TestReceipt"
+      },
+      "required_guards": [
+        "no_external_broker_access"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N08",
+      "label": "Review methods and evidence limitations",
+      "operation": "review.methods",
+      "operation_version": "0.1",
+      "owner_role": "method_reviewer",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N05",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "result": {
+          "producer_node_id": "N05",
+          "output_name": "comparison",
+          "expected_type": "ComparisonResult"
+        }
+      },
+      "outputs": {
+        "review": "MethodReview"
+      },
+      "required_guards": [
+        "review_inputs_complete"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N09",
+      "label": "Assemble prospective paper-test readiness",
+      "operation": "review.paper_readiness",
+      "operation_version": "0.1",
+      "owner_role": "review_service",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N07",
+          "on_outcomes": [
+            "passed"
+          ]
+        },
+        {
+          "node_id": "N08",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "tests": {
+          "producer_node_id": "N07",
+          "output_name": "tests",
+          "expected_type": "TestReceipt"
+        },
+        "methods": {
+          "producer_node_id": "N08",
+          "output_name": "review",
+          "expected_type": "MethodReview"
+        }
+      },
+      "outputs": {
+        "readiness": "ReadinessReview"
+      },
+      "required_guards": [
+        "reviewer_conflicts_disclosed"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N10",
+      "label": "Propose a bounded paper mandate",
+      "operation": "paper.propose_mandate",
+      "operation_version": "0.1",
+      "owner_role": "learning_agent",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N09",
+          "on_outcomes": [
+            "passed"
+          ]
+        }
+      ],
+      "inputs": {
+        "review": {
+          "producer_node_id": "N09",
+          "output_name": "readiness",
+          "expected_type": "ReadinessReview"
+        },
+        "policy": {
+          "artifact_id": "fixture.policy",
+          "expected_type": "GovernancePolicy"
+        }
+      },
+      "outputs": {
+        "proposal": "MandateProposal"
+      },
+      "required_guards": [
+        "no_authority_in_proposal"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N11",
+      "label": "Approve or decline the exact mandate proposal",
+      "operation": "governance.decide_mandate",
+      "operation_version": "0.1",
+      "owner_role": "operator",
+      "effect_class": "authority_change",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N10",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "proposal": {
+          "producer_node_id": "N10",
+          "output_name": "proposal",
+          "expected_type": "MandateProposal"
+        }
+      },
+      "outputs": {
+        "mandate": "PaperMandate"
+      },
+      "required_guards": [
+        "authenticated_operator",
+        "exact_proposal_hash",
+        "explicit_paper_scope"
+      ],
+      "retry": {
+        "mode": "no_automatic_retry",
+        "max_attempts": 1
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "authority_decision_recorded"
+    },
+    {
+      "id": "N12",
+      "label": "Instantiate one authorized paper decision cycle",
+      "operation": "campaign.instantiate_cycle",
+      "operation_version": "0.1",
+      "owner_role": "campaign_owner",
+      "effect_class": "execution_state_write",
+      "target_environment": "paper",
+      "dependencies": [
+        {
+          "node_id": "N11",
+          "on_outcomes": [
+            "approved"
+          ]
+        }
+      ],
+      "inputs": {
+        "mandate": {
+          "producer_node_id": "N11",
+          "output_name": "mandate",
+          "expected_type": "PaperMandate"
+        }
+      },
+      "outputs": {
+        "draft": "OrderIntentDraft"
+      },
+      "required_guards": [
+        "mandate_active",
+        "current_owner",
+        "current_strategy_revision"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N13",
+      "label": "Recheck scope and atomically reserve risk",
+      "operation": "paper.reserve_and_permit",
+      "operation_version": "0.1",
+      "owner_role": "risk_service",
+      "effect_class": "execution_state_write",
+      "target_environment": "paper",
+      "dependencies": [
+        {
+          "node_id": "N12",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "draft": {
+          "producer_node_id": "N12",
+          "output_name": "draft",
+          "expected_type": "OrderIntentDraft"
+        },
+        "mandate": {
+          "producer_node_id": "N11",
+          "output_name": "mandate",
+          "expected_type": "PaperMandate"
+        }
+      },
+      "outputs": {
+        "permit": "EffectPermit",
+        "reservation": "RiskReservation",
+        "intent": "OrderIntent"
+      },
+      "required_guards": [
+        "mandate_active",
+        "account_bound",
+        "current_owner",
+        "fresh_risk_snapshot",
+        "fresh_quotes",
+        "capacity_available",
+        "effect_hash_bound"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N14",
+      "label": "Submit through the exclusive paper gateway",
+      "operation": "paper.submit",
+      "operation_version": "0.1",
+      "owner_role": "broker_gateway",
+      "effect_class": "paper_effect",
+      "target_environment": "paper",
+      "dependencies": [
+        {
+          "node_id": "N13",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "permit": {
+          "producer_node_id": "N13",
+          "output_name": "permit",
+          "expected_type": "EffectPermit"
+        },
+        "reservation": {
+          "producer_node_id": "N13",
+          "output_name": "reservation",
+          "expected_type": "RiskReservation"
+        },
+        "intent": {
+          "producer_node_id": "N13",
+          "output_name": "intent",
+          "expected_type": "OrderIntent"
+        }
+      },
+      "outputs": {
+        "submission": "SubmissionReceipt"
+      },
+      "required_guards": [
+        "mandate_active",
+        "permit_active",
+        "account_bound",
+        "current_owner",
+        "fresh_risk_snapshot",
+        "fresh_quotes",
+        "effect_hash_bound"
+      ],
+      "retry": {
+        "mode": "reconcile_before_retry",
+        "max_attempts": 1
+      },
+      "timeout_seconds": 300,
+      "on_failure": "preserve_uncertain_effect",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "submission_observed_or_uncertain"
+    },
+    {
+      "id": "N15",
+      "label": "Reconcile acknowledgment, executions and exposure",
+      "operation": "paper.reconcile",
+      "operation_version": "0.1",
+      "owner_role": "reconciler",
+      "effect_class": "execution_state_write",
+      "target_environment": "paper",
+      "dependencies": [
+        {
+          "node_id": "N14",
+          "on_outcomes": [
+            "acknowledged",
+            "submission_uncertain"
+          ]
+        }
+      ],
+      "inputs": {
+        "submission": {
+          "producer_node_id": "N14",
+          "output_name": "submission",
+          "expected_type": "SubmissionReceipt"
+        }
+      },
+      "outputs": {
+        "snapshot": "ReconciledAccountSnapshot"
+      },
+      "required_guards": [
+        "account_bound",
+        "current_owner"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N16",
+      "label": "Publish the observed paper-result view",
+      "operation": "paper.project_result",
+      "operation_version": "0.1",
+      "owner_role": "projector",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N15",
+          "on_outcomes": [
+            "reconciled"
+          ]
+        }
+      ],
+      "inputs": {
+        "snapshot": {
+          "producer_node_id": "N15",
+          "output_name": "snapshot",
+          "expected_type": "ReconciledAccountSnapshot"
+        }
+      },
+      "outputs": {
+        "result": "PaperOutcome"
+      },
+      "required_guards": [
+        "coverage_disclosed"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N17",
+      "label": "Review observed versus expected outcomes",
+      "operation": "review.outcomes",
+      "operation_version": "0.1",
+      "owner_role": "review_service",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N16",
+          "on_outcomes": [
+            "completed"
+          ]
+        },
+        {
+          "node_id": "N05",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "observed": {
+          "producer_node_id": "N16",
+          "output_name": "result",
+          "expected_type": "PaperOutcome"
+        },
+        "modeled": {
+          "producer_node_id": "N05",
+          "output_name": "comparison",
+          "expected_type": "ComparisonResult"
+        }
+      },
+      "outputs": {
+        "review": "OutcomeReview"
+      },
+      "required_guards": [
+        "evidence_kinds_separate",
+        "labels_mature"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    },
+    {
+      "id": "N18",
+      "label": "Propose a new version, without activating it",
+      "operation": "adaptation.propose_revision",
+      "operation_version": "0.1",
+      "owner_role": "learning_agent",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "dependencies": [
+        {
+          "node_id": "N17",
+          "on_outcomes": [
+            "completed"
+          ]
+        }
+      ],
+      "inputs": {
+        "review": {
+          "producer_node_id": "N17",
+          "output_name": "review",
+          "expected_type": "OutcomeReview"
+        },
+        "baseline": {
+          "artifact_id": "fixture.baseline",
+          "expected_type": "StrategyVersion"
+        }
+      },
+      "outputs": {
+        "proposal": "AdaptationProposal"
+      },
+      "required_guards": [
+        "adaptation_budget_available",
+        "no_authority_in_proposal"
+      ],
+      "retry": {
+        "mode": "bounded_idempotent",
+        "max_attempts": 3
+      },
+      "timeout_seconds": 300,
+      "on_failure": "block_descendants",
+      "required_receipts": [
+        "input_manifest",
+        "operation_outcome"
+      ],
+      "postcondition": "receipt_published"
+    }
+  ],
+  "non_scheduling_links": [
+    {
+      "from": "N04",
+      "to": "N03",
+      "relation": "compares_to"
+    },
+    {
+      "from": "N18",
+      "to": "N03",
+      "relation": "proposes_revision_of"
+    }
+  ],
+  "notes": [
+    "No node has run. Output references are declared ports, not existing evidence.",
+    "No actual dataset, funded result, broker identifier, policy threshold or active grant is supplied.",
+    "N09 passes operational/method readiness for an exploratory trial, not a profitability threshold.",
+    "N12-N16 represent one bounded child cycle. A durable campaign instantiates new cycle and effect identities, not a back-edge to N14.",
+    "The fixture registry is not trusted runtime policy. The validator checks structural conformance only."
+  ]
+}

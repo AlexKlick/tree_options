@@ -8,6 +8,7 @@ import { MarketPage } from './components/MarketPage'
 import { SymbolPage } from './components/SymbolPage'
 import { PlanList } from './components/PlanList'
 import { ResearchPage } from './components/ResearchPage'
+import { ActionModelPage } from './components/ActionModelPage'
 
 export default function App() {
   const [route, setRoute] = useState<Route>(() => parseHash(location.hash))
@@ -30,6 +31,8 @@ export default function App() {
         <SymbolPage key={route.id} sym={route.id} />
       ) : route.view === 'research' ? (
         <ResearchPage />
+      ) : route.view === 'action-model' ? (
+        <ActionModelPage />
       ) : (
         <PlanList />
       )}

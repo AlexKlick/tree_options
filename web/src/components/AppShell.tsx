@@ -64,6 +64,12 @@ export function AppShell({
             >
               Market
             </a>
+            <a
+              href="#/action-model"
+              aria-current={title === 'Action model' ? 'page' : undefined}
+            >
+              Action model
+            </a>
           </nav>
         </div>
         <div className="header-right">

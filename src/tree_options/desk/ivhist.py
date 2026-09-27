@@ -238,6 +238,8 @@ class CacheScan:
     spot: dict[str, dict[date, float]] = field(default_factory=dict)
     spot_conflicts: dict[str, set[date]] = field(default_factory=dict)
     stats: Counter[str] = field(default_factory=Counter)
+    input_digest: str = ""
+    input_files: int = 0
 
 
 def _bar_key(bar: MassiveDailyBar) -> int:
@@ -293,16 +295,29 @@ def parse_spot_bars(body: Mapping[str, Any], *, ticker: str) -> list[tuple[date,
 
 
 def scan_cache(
-    cache_dir: Path, names: Iterable[str], start: date, end: date, cal: Calendar
+    cache_dir: Path,
+    names: Iterable[str],
+    start: date,
+    end: date,
+    cal: Calendar,
+    *,
+    min_dte: int = TAU_MIN,
+    max_dte: int = TAU_MAX,
+    monthly_only: bool = True,
 ) -> CacheScan:
     """Option bars (monthly expiries of standard roots) and unadjusted spot
-    bars of ``names`` for sessions in [start, end], merged across files."""
+    bars of ``names`` for sessions in [start, end], merged across files.
+    The default bounds preserve the sealed IVHIST-001 reader. Exploratory
+    replays may request a wider band without altering that study."""
+    if min_dte < 0 or max_dte < min_dte:
+        raise ValueError("invalid DTE bounds")
     wanted = set(names)
     scan = CacheScan(source=str(cache_dir))
     opt: dict[str, _Cell] = {}
     opt_bad: dict[str, set[date]] = {}
     spot: dict[str, _Cell] = {}
     spot_bad: dict[str, set[date]] = {}
+    digest = hashlib.sha256()
     for path in sorted(cache_dir.glob("*.json")):
         if path.name.startswith("."):
             continue
@@ -325,13 +340,17 @@ def scan_cache(
                 continue
             if key[0] not in wanted:
                 continue
-            if not is_monthly_expiry_session(key[1], cal):
+            if monthly_only and not is_monthly_expiry_session(key[1], cal):
                 scan.stats["non_monthly_skipped"] += 1
                 continue
         elif ticker not in wanted:
             continue
         try:
-            body = loads_exact(path.read_bytes())
+            raw = path.read_bytes()
+            digest.update(path.name.encode("utf-8"))
+            digest.update(hashlib.sha256(raw).digest())
+            scan.input_files += 1
+            body = loads_exact(raw)
             if not isinstance(body, dict) or body.get("ticker") != ticker:
                 raise MassiveSchemaError(f"{path.name}: ticker mismatch")
             if is_option and key is not None:
@@ -340,7 +359,7 @@ def scan_cache(
                     for b in parse_daily_bars(body, option_ticker=ticker)
                     # only the bars the method can read (8..90 calendar days out)
                     if start <= b.session <= end
-                    and TAU_MIN <= days_between(b.session, key[1]) <= TAU_MAX
+                    and min_dte <= days_between(b.session, key[1]) <= max_dte
                 ]
             elif body.get("adjusted") is False:
                 typed = [
@@ -382,6 +401,7 @@ def scan_cache(
             s: float(vwap) for s, (vwap, _key) in cell.items() if s not in bad and vwap > 0
         }
         scan.stats["spot_conflicts"] += len(bad)
+    scan.input_digest = digest.hexdigest()
     return scan
 
 

@@ -490,7 +490,10 @@ def create_app(
 
     from tree_options.trex_web.desk_view import attach as attach_desk_evidence
 
-    attach_desk_evidence(app, database=desk_state_root / "evidence" / "desk.sqlite3")
+    attach_desk_evidence(app, database=desk_state_root / "evidence" / "desk.sqlite3",
+                         replay_dir=desk_store_root / "evaluations" / "historical-replay",
+                         portfolio_dir=desk_store_root / "evaluations" / "portfolio-scenario",
+                         intraday_dir=desk_store_root / "evaluations" / "intraday-graph")
 
     # Research lane routes: RL-1 catalog + comparisons + evidence
     # drawer; RL-2 scenario branching (GET/POST /api/research/
@@ -523,6 +526,19 @@ def create_app(
     @app.get("/api/plans")
     def api_plans() -> dict[str, object]:
         return _plans_payload(state_root, plans_root, discovery_root)
+
+    @app.get("/api/action-model/example")
+    def api_action_model_example() -> JSONResponse:
+        """Verified synthetic proposal for the governed action workspace.
+
+        This route reads package fixtures only. It cannot submit, authorize,
+        arm or mutate any trading state.
+        """
+        from tree_options.action_graph.proposal import load_design_example
+
+        plan, receipt = load_design_example()
+        return JSONResponse({"plan": plan, "receipt": receipt},
+                            headers={"Cache-Control": "no-store"})
 
     @app.get("/api/plans/{plan_id}")
     def api_plan_detail(plan_id: str) -> dict[str, object]:

@@ -594,3 +594,10 @@ footer {
   margin-left: 6px;
   letter-spacing: 0.4px;
 }
+/* Governed action design fixture: selection is inspect-only. */
+.action-layout { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(18rem, 1fr); gap: 16px; align-items: start; }
+.action-node-list { display: grid; gap: 8px; }
+.action-node { width: 100%; text-align: left; display: grid; gap: 5px; cursor: pointer; }
+.action-node-selected { outline: 2px solid #4f9cf9; }
+.action-inspector { position: sticky; top: 16px; overflow-wrap: anywhere; }
+@media (max-width: 760px) { .action-layout { grid-template-columns: 1fr; } .action-inspector { position: static; } }

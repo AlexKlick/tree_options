@@ -1,4 +1,96 @@
 // Mirrors the Python API contract (src/tree_options/trex_web/app.py).
+export interface ActionNode {
+  id: string
+  label: string
+  operation: string
+  operation_version: string
+  owner_role: string
+  effect_class: string
+  target_environment: string
+  dependencies: { node_id: string; on_outcomes: string[] }[]
+  inputs: Record<string, { artifact_id?: string; producer_node_id?: string; output_name?: string; expected_type: string }>
+  outputs: Record<string, string>
+  required_guards: string[]
+  required_receipts: string[]
+  postcondition: string
+}
+
+export interface ActionModelExample {
+  plan: {
+    plan_id: string
+    revision: number
+    goal: string
+    state: 'proposed'
+    artifact_status: 'synthetic_design_example'
+    execution_authorized: false
+    source_repository_head: string
+    artifacts: { id: string; kind: string; sha256: string; classification: string }[]
+    nodes: ActionNode[]
+  }
+  receipt: {
+    valid_structure: boolean
+    node_count: number
+    dependency_count: number
+    execution_authorized: false
+    broker_contacted: false
+    scope: string
+  }
+}
+
+export interface HistoricalReplayList {
+  schema: 'desk-historical-replay-list/1'
+  execution_enabled: false
+  reports: {
+    id: string
+    label: string
+    spec: { start: string; end: string; names: string[]; entry_dte: number[]; haircut: number; max_loss: number }
+    counts: Record<string, number>
+    by_structure: Record<string, { trades: number; wins: number; win_rate: number | null; mean_pnl: number | null }>
+    by_variant: Record<string, { trades: number; wins: number; win_rate: number | null; mean_pnl: number | null; worst_pnl: number | null }>
+    eligibility_by_variant?: Record<string, Record<string, number>> | null
+    provenance: { sources: { path: string; input_sha256: string; input_files: number }[] }
+    limitations: string[]
+  }[]
+}
+
+export interface PortfolioScenarioList {
+  schema: 'desk-portfolio-scenario-list/1'
+  execution_enabled: false
+  reports: {
+    id: string
+    label: string
+    spec: { intended_capital: string; max_trade_loss: string; max_open_loss: string }
+    variants: Record<string, {
+      considered: number; admitted: number
+      skipped: { trade_cap: number; open_cap: number; capital: number }
+      peak_open_loss_reserved: string; closed_pnl: string
+      ending_closed_capital: string; minimum_closed_capital: string
+    }>
+    provenance: { replay_sha256: string; code_head: string; code_dirty: boolean }
+    limitations: string[]
+  }[]
+}
+
+export interface IntradayGraphList {
+  schema: 'desk-intraday-graph-list/1'
+  execution_enabled: false
+  reports: {
+    id: string
+    policy: string
+    source_sha256: string
+    requested_contracts: number
+    captured_contracts: number
+    traded_minute_bars: number
+    limitations: string[]
+    windows: {
+      start: string; end: string; sessions: number; scheduled_snapshots: number
+      potential_trades: number; entered: number; modeled_wins: number; modeled_losses: number
+      open_at_end: number; closed_capital_proxy: string
+      minimum_closed_capital_proxy: string; peak_open_loss_reserved: string
+    }[]
+  }[]
+}
+
 // Plain numbers + ISO strings from the server; this app formats.
 
 // GET /api/gateway: the gateway watchdog's verdict (epoch seconds).

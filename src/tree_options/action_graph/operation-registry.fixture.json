@@ -1,0 +1,254 @@
+{
+  "schema": "trex-operation-registry-fixture/0.1",
+  "status": "synthetic_fixture_not_authority",
+  "operations": [
+    {
+      "operation": "research.resolve_inputs",
+      "operation_version": "0.1",
+      "owner_role": "data_service",
+      "effect_class": "read",
+      "target_environment": "research",
+      "outputs": {
+        "snapshot": "DataSnapshot"
+      },
+      "input_types": {
+        "source": "DataSnapshot"
+      }
+    },
+    {
+      "operation": "research.check_coverage",
+      "operation_version": "0.1",
+      "owner_role": "data_service",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "coverage": "CoverageReceipt"
+      },
+      "input_types": {
+        "snapshot": "DataSnapshot"
+      }
+    },
+    {
+      "operation": "research.run_baseline",
+      "operation_version": "0.1",
+      "owner_role": "research_worker",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "result": "ResearchResult"
+      },
+      "input_types": {
+        "snapshot": "DataSnapshot",
+        "strategy": "StrategyVersion",
+        "protocol": "ExperimentSpec"
+      }
+    },
+    {
+      "operation": "research.run_challenger",
+      "operation_version": "0.1",
+      "owner_role": "research_worker",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "result": "ResearchResult"
+      },
+      "input_types": {
+        "snapshot": "DataSnapshot",
+        "strategy": "StrategyVersion",
+        "protocol": "ExperimentSpec"
+      }
+    },
+    {
+      "operation": "research.compare",
+      "operation_version": "0.1",
+      "owner_role": "research_worker",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "comparison": "ComparisonResult"
+      },
+      "input_types": {
+        "baseline": "ResearchResult",
+        "challenger": "ResearchResult"
+      }
+    },
+    {
+      "operation": "workspace.project_comparison",
+      "operation_version": "0.1",
+      "owner_role": "projector",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "chart": "ChartSpec"
+      },
+      "input_types": {
+        "result": "ComparisonResult"
+      }
+    },
+    {
+      "operation": "validation.run_fault_suite",
+      "operation_version": "0.1",
+      "owner_role": "test_worker",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "tests": "TestReceipt"
+      },
+      "input_types": {
+        "protocol": "ExperimentSpec"
+      }
+    },
+    {
+      "operation": "review.methods",
+      "operation_version": "0.1",
+      "owner_role": "method_reviewer",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "review": "MethodReview"
+      },
+      "input_types": {
+        "result": "ComparisonResult"
+      }
+    },
+    {
+      "operation": "review.paper_readiness",
+      "operation_version": "0.1",
+      "owner_role": "review_service",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "readiness": "ReadinessReview"
+      },
+      "input_types": {
+        "tests": "TestReceipt",
+        "methods": "MethodReview"
+      }
+    },
+    {
+      "operation": "paper.propose_mandate",
+      "operation_version": "0.1",
+      "owner_role": "learning_agent",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "proposal": "MandateProposal"
+      },
+      "input_types": {
+        "review": "ReadinessReview",
+        "policy": "GovernancePolicy"
+      }
+    },
+    {
+      "operation": "governance.decide_mandate",
+      "operation_version": "0.1",
+      "owner_role": "operator",
+      "effect_class": "authority_change",
+      "target_environment": "research",
+      "outputs": {
+        "mandate": "PaperMandate"
+      },
+      "input_types": {
+        "proposal": "MandateProposal"
+      }
+    },
+    {
+      "operation": "campaign.instantiate_cycle",
+      "operation_version": "0.1",
+      "owner_role": "campaign_owner",
+      "effect_class": "execution_state_write",
+      "target_environment": "paper",
+      "outputs": {
+        "draft": "OrderIntentDraft"
+      },
+      "input_types": {
+        "mandate": "PaperMandate"
+      }
+    },
+    {
+      "operation": "paper.reserve_and_permit",
+      "operation_version": "0.1",
+      "owner_role": "risk_service",
+      "effect_class": "execution_state_write",
+      "target_environment": "paper",
+      "outputs": {
+        "permit": "EffectPermit",
+        "reservation": "RiskReservation",
+        "intent": "OrderIntent"
+      },
+      "input_types": {
+        "draft": "OrderIntentDraft",
+        "mandate": "PaperMandate"
+      }
+    },
+    {
+      "operation": "paper.submit",
+      "operation_version": "0.1",
+      "owner_role": "broker_gateway",
+      "effect_class": "paper_effect",
+      "target_environment": "paper",
+      "outputs": {
+        "submission": "SubmissionReceipt"
+      },
+      "input_types": {
+        "permit": "EffectPermit",
+        "reservation": "RiskReservation",
+        "intent": "OrderIntent"
+      }
+    },
+    {
+      "operation": "paper.reconcile",
+      "operation_version": "0.1",
+      "owner_role": "reconciler",
+      "effect_class": "execution_state_write",
+      "target_environment": "paper",
+      "outputs": {
+        "snapshot": "ReconciledAccountSnapshot"
+      },
+      "input_types": {
+        "submission": "SubmissionReceipt"
+      }
+    },
+    {
+      "operation": "paper.project_result",
+      "operation_version": "0.1",
+      "owner_role": "projector",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "result": "PaperOutcome"
+      },
+      "input_types": {
+        "snapshot": "ReconciledAccountSnapshot"
+      }
+    },
+    {
+      "operation": "review.outcomes",
+      "operation_version": "0.1",
+      "owner_role": "review_service",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "review": "OutcomeReview"
+      },
+      "input_types": {
+        "observed": "PaperOutcome",
+        "modeled": "ComparisonResult"
+      }
+    },
+    {
+      "operation": "adaptation.propose_revision",
+      "operation_version": "0.1",
+      "owner_role": "learning_agent",
+      "effect_class": "research_write",
+      "target_environment": "research",
+      "outputs": {
+        "proposal": "AdaptationProposal"
+      },
+      "input_types": {
+        "review": "OutcomeReview",
+        "baseline": "StrategyVersion"
+      }
+    }
+  ]
+}
