@@ -71,6 +71,26 @@ export interface PortfolioScenarioList {
   }[]
 }
 
+export interface IntradayGraphList {
+  schema: 'desk-intraday-graph-list/1'
+  execution_enabled: false
+  reports: {
+    id: string
+    policy: string
+    source_sha256: string
+    requested_contracts: number
+    captured_contracts: number
+    traded_minute_bars: number
+    limitations: string[]
+    windows: {
+      start: string; end: string; sessions: number; scheduled_snapshots: number
+      potential_trades: number; entered: number; modeled_wins: number; modeled_losses: number
+      open_at_end: number; closed_capital_proxy: string
+      minimum_closed_capital_proxy: string; peak_open_loss_reserved: string
+    }[]
+  }[]
+}
+
 // Plain numbers + ISO strings from the server; this app formats.
 
 // GET /api/gateway: the gateway watchdog's verdict (epoch seconds).

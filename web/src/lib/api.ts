@@ -42,6 +42,9 @@ export const getHistoricalReplays = (): Promise<import('./types').HistoricalRepl
 export const getPortfolioScenarios = (): Promise<import('./types').PortfolioScenarioList> =>
   fetchJson('api/desk/portfolio-scenarios')
 
+export const getIntradayGraphs = (): Promise<import('./types').IntradayGraphList> =>
+  fetchJson('api/desk/intraday-graphs')
+
 export const getPlan = (id: string): Promise<PlanDetailResponse> =>
   fetchJson(`api/plans/${encodeURIComponent(id)}`)
 

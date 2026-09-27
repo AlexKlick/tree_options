@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getActionModelExample, getHistoricalReplays, getPlans, getPortfolioScenarios } from '../lib/api'
+import { getActionModelExample, getHistoricalReplays, getIntradayGraphs, getPlans, getPortfolioScenarios } from '../lib/api'
 import type { ActionNode } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
@@ -32,6 +32,7 @@ export function ActionModelPage() {
   const accountPoll = usePoll(getPlans, 30_000)
   const replays = usePoll(getHistoricalReplays, 60_000)
   const portfolios = usePoll(getPortfolioScenarios, 60_000)
+  const intraday = usePoll(getIntradayGraphs, 60_000)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const plan = poll.data?.plan
   const selected = plan?.nodes.find((node) => node.id === selectedId) ?? plan?.nodes[0]
@@ -65,6 +66,23 @@ export function ActionModelPage() {
               <li key={name}>{name}: {row.trades} modeled trades · {row.trades < 20 ? `${row.wins} modeled wins; too few trades for a rate` : row.win_rate === null ? 'win rate unavailable' : `${(row.win_rate * 100).toFixed(1)}% modeled wins`} · mean {row.mean_pnl === null ? 'unavailable' : `$${row.mean_pnl.toFixed(2)}`} · worst {row.worst_pnl === null ? 'unavailable' : `$${row.worst_pnl.toFixed(2)}`}{run.eligibility_by_variant?.[name] && <> · eligibility: {Object.entries(run.eligibility_by_variant[name]).map(([status, count]) => `${status} ${count}`).join(', ')}</>}</li>
             ))}</ul>
             <p className="muted">{run.id} · {run.provenance.sources.length} cache sets · {run.limitations.join('; ')}</p>
+          </div>
+        ))}
+      </section>
+      <section className="card" aria-label="Intraday action graphs">
+        <div className="eyebrow">Historical minute bars · research only</div>
+        <h2>Intraday action graphs</h2>
+        <p className="muted">Each window has scheduled snapshots, available spread candidates, and a separate chosen-action path. Option trade prices are valuation proxies, not executable quotes or broker fills. Overlapping windows reuse some sessions.</p>
+        {intraday.error && <p role="alert">Intraday graph summaries unavailable: {intraday.error}</p>}
+        {intraday.data?.reports.length === 0 && <p>No intraday action graph has completed in this cockpit store.</p>}
+        {intraday.data?.reports.map((run) => (
+          <div key={run.id} className="card">
+            <h3>{run.policy} · {run.id}</h3>
+            <p>{run.captured_contracts}/{run.requested_contracts} captured option series · {run.traded_minute_bars} traded-minute bars</p>
+            <ul>{run.windows.map((window) => (
+              <li key={`${window.start}-${window.end}`}>{window.start} through {window.end}: {window.scheduled_snapshots} snapshots across {window.sessions} sessions · {window.potential_trades} potential spread nodes · {window.entered} modeled entries · {window.modeled_wins} wins, {window.modeled_losses} losses from later trade-bar marks · ${window.peak_open_loss_reserved} peak reserved loss · ${window.closed_capital_proxy} closed capital proxy{window.open_at_end > 0 ? ` · ${window.open_at_end} still open at cutoff` : ''}</li>
+            ))}</ul>
+            <p className="muted">Source SHA-256 {run.source_sha256.slice(0, 12)} · {run.limitations.join('; ')} · execution disabled</p>
           </div>
         ))}
       </section>

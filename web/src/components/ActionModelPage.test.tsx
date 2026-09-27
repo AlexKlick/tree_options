@@ -1,12 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ActionModelPage } from './ActionModelPage'
-import { getActionModelExample, getHistoricalReplays, getPlans, getPortfolioScenarios } from '../lib/api'
+import { getActionModelExample, getHistoricalReplays, getIntradayGraphs, getPlans, getPortfolioScenarios } from '../lib/api'
 
 vi.mock('../lib/api', () => ({
   getActionModelExample: vi.fn(),
   getPlans: vi.fn(),
   getHistoricalReplays: vi.fn(),
+  getIntradayGraphs: vi.fn(),
   getPortfolioScenarios: vi.fn(),
   getGateway: () => new Promise(() => {}),
   getExitMachine: () => new Promise(() => {}),
@@ -45,6 +46,18 @@ it('shows proposal status and inspects guards without a trade control', async ()
       provenance: { sources: [] }, limitations: ['modeled prices'],
     }],
   })
+  vi.mocked(getIntradayGraphs).mockResolvedValue({
+    schema: 'desk-intraday-graph-list/1', execution_enabled: false, reports: [{
+      id: 'sample/rolling-put-credit', policy: 'put_credit', source_sha256: 'd'.repeat(64),
+      requested_contracts: 72, captured_contracts: 72, traded_minute_bars: 172748,
+      limitations: ['trade bars are not executable quotes'], windows: [{
+        start: '2026-05-26', end: '2026-08-25', sessions: 64, scheduled_snapshots: 512,
+        potential_trades: 100, entered: 3, modeled_wins: 1, modeled_losses: 2,
+        open_at_end: 0, closed_capital_proxy: '4998', minimum_closed_capital_proxy: '4970',
+        peak_open_loss_reserved: '300',
+      }],
+    }],
+  })
   vi.mocked(getPortfolioScenarios).mockResolvedValue({
     schema: 'desk-portfolio-scenario-list/1', execution_enabled: false, reports: [{
       id: 'portfolio-one', label: 'exploratory',
@@ -65,6 +78,8 @@ it('shows proposal status and inspects guards without a trade control', async ()
   expect(screen.queryByText(/100\.0% modeled wins/)).toBeNull()
   expect(screen.getByRole('region', { name: 'Trading system graph' })).toBeTruthy()
   expect(screen.getByRole('region', { name: 'Portfolio risk scenarios' })).toBeTruthy()
+  expect(screen.getByRole('region', { name: 'Intraday action graphs' })).toBeTruthy()
+  expect(screen.getByText(/512 snapshots across 64 sessions/)).toBeTruthy()
   expect(screen.getByText(/1\/2 modeled entries admitted/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /N01.*Resolve inputs/ }))
   expect(screen.getByText(/Guards: input_hash_match/)).toBeTruthy()

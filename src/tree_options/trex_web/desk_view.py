@@ -20,7 +20,7 @@ _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 
 
 def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
-           portfolio_dir: Path | None = None) -> None:
+           portfolio_dir: Path | None = None, intraday_dir: Path | None = None) -> None:
     @app.get('/api/desk/health')
     def health() -> JSONResponse:
         try:
@@ -106,6 +106,46 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
         except (OSError, ValueError, json.JSONDecodeError):
             return _unavailable()
         return JSONResponse({'schema': 'desk-portfolio-scenario-list/1', 'reports': reports,
+                             'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/desk/intraday-graphs')
+    def intraday_graphs() -> JSONResponse:
+        """Project bounded graph summaries; never serve full bars or trigger replay."""
+        root = intraday_dir or database.parent.parent / 'evaluations' / 'intraday-graph'
+        reports: list[dict[str, Any]] = []
+        try:
+            for path in sorted(root.glob('*/*.summary.json'), reverse=True)[:24]:
+                if path.is_symlink() or path.parent.is_symlink() or path.stat().st_size > 1_000_000:
+                    continue
+                doc = json.loads(path.read_text(encoding='utf-8'))
+                if (not isinstance(doc, dict) or doc.get('schema') != 'desk-intraday-graph-summary/1'
+                        or doc.get('execution_authorized') is not False
+                        or not isinstance(doc.get('windows'), list)
+                        or any(not isinstance(row, dict) or any(key not in row for key in (
+                            'start', 'end', 'sessions', 'scheduled_snapshots', 'potential_trades',
+                            'entered', 'modeled_wins', 'modeled_losses', 'open_at_end',
+                            'closed_capital_proxy', 'minimum_closed_capital_proxy',
+                            'peak_open_loss_reserved'))
+                            for row in doc['windows'])
+                        or not isinstance(doc.get('limitations'), list)
+                        or not isinstance(doc.get('source_sha256'), str)
+                        or len(doc['source_sha256']) != 64):
+                    continue
+                reports.append({'id': f"{path.parent.name}/{path.stem.removesuffix('.summary')}",
+                                'policy': doc.get('policy'), 'source_sha256': doc['source_sha256'],
+                                'requested_contracts': doc.get('requested_contracts'),
+                                'captured_contracts': doc.get('captured_contracts'),
+                                'traded_minute_bars': doc.get('traded_minute_bars'),
+                                'windows': [{key: row.get(key) for key in (
+                                    'start', 'end', 'sessions', 'scheduled_snapshots',
+                                    'potential_trades', 'entered', 'modeled_wins', 'modeled_losses',
+                                    'open_at_end', 'closed_capital_proxy',
+                                    'minimum_closed_capital_proxy', 'peak_open_loss_reserved')}
+                                    for row in doc['windows']],
+                                'limitations': doc['limitations']})
+        except (OSError, ValueError, json.JSONDecodeError):
+            return _unavailable()
+        return JSONResponse({'schema': 'desk-intraday-graph-list/1', 'reports': reports,
                              'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
 
     @app.get('/desk/evidence')

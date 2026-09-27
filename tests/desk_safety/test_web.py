@@ -92,3 +92,31 @@ def test_portfolio_scenarios_are_read_only_and_summary_only(world):
     assert 'admitted_decision_names' not in response.json()['reports'][0]['variants']['xsmom_top3/call_debit']
     assert 'private_rows' not in response.json()['reports'][0]
     assert c.post('/api/desk/portfolio-scenarios').status_code == 405
+
+
+def test_intraday_graphs_project_only_summary_and_never_actions(world):
+    out = world.root / 'desk-store' / 'evaluations' / 'intraday-graph' / 'run-one'
+    out.mkdir(parents=True)
+    (out / 'rolling-put-credit.summary.json').write_text(json.dumps({
+        'schema': 'desk-intraday-graph-summary/1', 'policy': 'put_credit',
+        'source_sha256': 'a' * 64, 'requested_contracts': 72, 'captured_contracts': 72,
+        'traded_minute_bars': 1000, 'limitations': ['not a fill'],
+        'windows': [{'start': '2026-05-26', 'end': '2026-08-25', 'sessions': 64,
+                     'scheduled_snapshots': 512, 'potential_trades': 100, 'entered': 3,
+                     'modeled_wins': 1, 'modeled_losses': 2, 'closed_capital_proxy': '4998',
+                     'open_at_end': 0, 'minimum_closed_capital_proxy': '4970',
+                     'peak_open_loss_reserved': '300',
+                     'private_actions': [{'candidate_id': 'secret'}]}],
+        'execution_authorized': False, 'private_bars': [1, 2, 3],
+    }))
+    c = TestClient(create_app(state_dir=str(world.root / 'legacy'),
+        plans_dir=str(world.root / 'plans'), discovery_dir=str(world.root / 'discovery'),
+        desk_state_dir=str(world.root / 'desk-state'), desk_store_dir=str(world.root / 'desk-store')))
+    response = c.get('/api/desk/intraday-graphs')
+    assert response.status_code == 200
+    doc = response.json()
+    assert doc['execution_enabled'] is False
+    assert doc['reports'][0]['windows'][0]['scheduled_snapshots'] == 512
+    assert 'private_actions' not in doc['reports'][0]['windows'][0]
+    assert 'private_bars' not in doc['reports'][0]
+    assert c.post('/api/desk/intraday-graphs').status_code == 405
