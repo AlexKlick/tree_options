@@ -1,5 +1,8 @@
 # TREX blind historical model exercise, 2026-09-27
 
+Paper deployment status: **BLOCKED**. This report is a completed historical
+selection exercise; broker authority and supervised paper proof are separate.
+
 This is a research exercise on the 35-name exploratory replay, not a broker
 paper trial or a strategy promotion. The replay SHA-256 is
 `6f2f03a2bd1fe9f15e88ed9f392e4130b7ab5db29924ca69e37e2f285bf15fe4`.
@@ -58,6 +61,7 @@ selections, so this artifact does not demonstrate handling of a constrained
 book under pressure. The scorer's synthetic overlap test covers the cap
 logic, not live trading behavior.
 
-The frozen report is `scoreboard-v3.json` in the game directory. Its code and
-source hashes are part of the report. The earlier `scoreboard.json` and
+The frozen report is `scoreboard-v3.json` in the game directory (SHA-256
+`0e795ecc96c1ad71fdb34cf258cb4651a61208b0ebb388ec5bd6b6545cb8d3e0`).
+It records clean scorer code head `ef07dd8` and source hashes. The earlier `scoreboard.json` and
 `scoreboard-v2.json` are preserved as preliminary scoring receipts.
