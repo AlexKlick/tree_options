@@ -186,6 +186,20 @@ describe('hasReceipt — the no-fan precondition', () => {
     } as unknown as ForecastRunResultResponse)).toBe(false)
     expect(hasReceipt(null)).toBe(false)
   })
+  it('false for a NONCOMPLETED run whose result field carries receipt-shaped data', () => {
+    // The discriminating case for the status check: a running/queued
+    // envelope with a receipt-shaped result must NOT count — dropping
+    // the `status !== 'completed'` condition leaves every other test's
+    // expectations unchanged (their pending cases carry result: null).
+    expect(hasReceipt({
+      run_id: 'r4', status: 'running',
+      result: { schema: 'research-forecast-result/1', refusal: null },
+    } as unknown as ForecastRunResultResponse)).toBe(false)
+    expect(hasReceipt({
+      run_id: 'r5', status: 'failed',
+      result: { schema: 'research-forecast-result/1', refusal: null },
+    } as unknown as ForecastRunResultResponse)).toBe(false)
+  })
 })
 
 describe('skillLine', () => {

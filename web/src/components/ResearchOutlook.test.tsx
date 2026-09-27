@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   resultCalls: [] as string[],
   resultByRun: {} as Record<string, ForecastRunResultResponse | Promise<ForecastRunResultResponse>>,
   runRecords: {} as Record<string, { run_id: string; status: string; kind: string; error?: string }>,
+  runDeferred: {} as Record<string, Promise<{ run_id: string; status: string; kind: string }>>,
 }))
 
 const A = 'a'.repeat(64)
@@ -344,8 +345,14 @@ const METADATA = {
 
 vi.mock('../lib/api', () => ({
   getForecastMetadata: async () => METADATA,
-  getForecastRun: async (run_id: string) => mocks.runRecords[run_id] ?? {
-    run_id, status: 'completed', spec_hash: run_id, kind: 'forecast',
+  getForecastRun: async (run_id: string) => {
+    // a deferred status promise (when set) holds that run's lifecycle
+    // response pending — used to keep a stale completed record cached
+    const deferred = mocks.runDeferred[run_id]
+    if (deferred !== undefined) return deferred
+    return mocks.runRecords[run_id] ?? {
+      run_id, status: 'completed', spec_hash: run_id, kind: 'forecast',
+    }
   },
   getForecastResult: async (run_id: string) => {
     mocks.resultCalls.push(run_id)
@@ -383,6 +390,7 @@ describe('ResearchOutlook (RL-3)', () => {
     mocks.resultCalls = []
     mocks.resultByRun = {}
     mocks.runRecords = {}
+    mocks.runDeferred = {}
   })
 
   it('renders the registry: disabled horizons show their exact copy and are not selectable', async () => {
@@ -409,8 +417,10 @@ describe('ResearchOutlook (RL-3)', () => {
     await waitFor(() => {
       expect(screen.getByTestId('outlook-semantics')).toBeTruthy()
     })
+    // VERBATIM rendering of the registry string, not a paraphrase that
+    // happens to contain one distinctive phrase
     expect(screen.getByTestId('outlook-semantics').textContent)
-      .toContain('NOT a confidence interval')
+      .toContain(METADATA.interval_semantics)
   })
 
   it('a horizon without a receipt shows the run-evaluation empty state and NO fan', async () => {
@@ -494,6 +504,13 @@ describe('ResearchOutlook (RL-3)', () => {
     expect(screen.getByTestId('outlook-fan').textContent).toContain('14.80')
     expect(document.querySelector('[data-testid="forecast-fan-bar-ar1_direct"]')).toBeNull()
     expect(document.body.textContent).toContain('ar1_direct: unavailable')
+
+    // the fan caption states the beyond-data honesty and the
+    // not-a-confidence-interval semantics — removing it must fail
+    expect(screen.getByTestId('outlook-fan').textContent)
+      .toContain('the target session lies beyond the observed data')
+    expect(screen.getByTestId('outlook-fan').textContent)
+      .toContain('not confidence intervals')
 
     // GEOMETRY (derived from the published fan numbers, scale-free):
     // the outer band rect has positive height; the median line sits
@@ -600,6 +617,39 @@ describe('ResearchOutlook (RL-3)', () => {
     expect(screen.queryByTestId('outlook-status')).toBeNull()
     expect(screen.queryByTestId('outlook-receipt')).toBeNull()
     expect(screen.queryByTestId('outlook-fan')).toBeNull()
+  })
+
+  it('polled-status identity gate: a cached COMPLETED status for run A cannot trigger run B\'s result fetch', { timeout: 15_000 }, async () => {
+    // The poll keeps A's completed record while runId has moved to B.
+    // Without the run.run_id === runId gate, the stale 'completed'
+    // status would fire B's one-shot result fetch while B is still
+    // queued (the real endpoint would return {status:'queued',
+    // result:null}) and B's receipt could never load.
+    mocks.spoolQueue = [A, B]
+    mocks.resultByRun[B] = RECEIPT_B
+    let resolveBStatus: (v: { run_id: string; status: string; kind: string }) => void = () => { }
+    mocks.runDeferred[B] = new Promise((res) => { resolveBStatus = res })
+    render(<ResearchOutlook />)
+    await waitFor(() => {
+      expect(screen.getByTestId('outlook-run')).toBeTruthy()
+    })
+    await runEvaluation()   // A completes through the default route
+    await waitFor(() => {
+      expect(mocks.resultCalls).toContain(A)
+    })
+    await runEvaluation()   // supersede with B; B's status stays pending
+    await new Promise((r) => setTimeout(r, 150))
+    // the stale A-completed status must NOT have fetched B's result
+    expect(mocks.resultCalls).not.toContain(B)
+    expect(screen.queryByTestId('outlook-receipt')).toBeNull()
+    // B's status arrives → the CURRENT run's identity gates the fetch
+    resolveBStatus({ run_id: B, status: 'completed', kind: 'forecast' })
+    await waitFor(() => {
+      expect(mocks.resultCalls).toContain(B)
+    }, { timeout: 8_000 })
+    await waitFor(() => {
+      expect(screen.getByTestId('outlook-receipt')).toBeTruthy()
+    }, { timeout: 8_000 })
   })
 
   it('run-keying: a slow response for run A can never render under run B\'s selection', { timeout: 15_000 }, async () => {
