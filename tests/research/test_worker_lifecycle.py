@@ -142,12 +142,17 @@ def test_interrupted_run_requeues_on_start(tmp_path):
                        "requeued_at": datetime.now().isoformat()},
                       key=run_id)
     # A fresh worker start requeues ``running`` and processes it.
-    worker.start(poll_seconds=0.1)
-    try:
-        # Drive at least one step manually so the test is deterministic.
-        worker.step()
-    finally:
-        worker.stop()
+    # start() performs the REQUEUE synchronously (the discipline under
+    # test); the daemon's loop then takes ONE IMMEDIATE step before its
+    # first poll wait, so a manual step() racing the thread can double-
+    # claim the requeued run (the claim is a replace with no cross-call
+    # CAS) — a harness race, not the behavior under test. Joining the
+    # thread BEFORE the manual drive sequences the processors: the
+    # daemon's step (if it claimed) finishes inside stop(), and at most
+    # one processor ever exists at a time.
+    worker.start(poll_seconds=3600.0)
+    worker.stop()
+    worker.step()
     with open_runstate_store(ws) as store:
         run = store.get("run", run_id)
         result = store.get("result", run_id)
@@ -197,11 +202,11 @@ def test_interrupted_scenario_requeues_on_restart(tmp_path):
                       {**run, "status": "running",
                        "started_at": datetime.now().isoformat()},
                       key=child_id)
-    worker.start(poll_seconds=0.1)
-    try:
-        worker.step()
-    finally:
-        worker.stop()
+    worker.start(poll_seconds=3600.0)
+    # same sequencing as the comparison requeue test: join the daemon's
+    # one immediate step before driving manually (no double claims)
+    worker.stop()
+    worker.step()
     with open_runstate_store(ws) as store:
         run = store.get("run", child_id)
         result = store.get("result", child_id)

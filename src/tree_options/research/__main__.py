@@ -10,6 +10,7 @@ recorded.
     python -m tree_options.research inspect --candidate <id> [--session YYYY-MM-DD]
     python -m tree_options.research inspect --run <run_id> [--workspace DIR]
     python -m tree_options.research inspect --scenario <child_run_id> [--workspace DIR]
+    python -m tree_options.research inspect --forecast <run_id> [--workspace DIR]
 """
 
 from __future__ import annotations
@@ -26,12 +27,14 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 def _cmd_inspect(args: argparse.Namespace) -> int:
     if args.scenario:
         return _inspect_scenario(args)
+    if args.forecast:
+        return _inspect_forecast(args)
     if args.run:
         return _inspect_run(args)
     if args.candidate:
         return _inspect_candidate(args)
-    print("nothing to inspect: pass --candidate, --run, or --scenario",
-          file=sys.stderr)
+    print("nothing to inspect: pass --candidate, --run, --scenario, or "
+          "--forecast", file=sys.stderr)
     return 2
 
 
@@ -170,6 +173,54 @@ def _inspect_scenario(args: argparse.Namespace) -> int:
     return 0
 
 
+def _inspect_forecast(args: argparse.Namespace) -> int:
+    """RL-3: a forecast run's full trace — spec, run record with the
+    submission-time identity, and the result with content-bound shas.
+    Parity mirrors the scenario CLI: every identity field the API's
+    ``GET /runs/<id>/result`` surfaces (engine / input-snapshot /
+    calendar / result shas) is printed from the SAME stored record; the
+    payload SHAPES differ by design (the CLI adds the spec record)."""
+    from tree_options.research.runstate.store import RunstateStore
+
+    workspace = Path(args.workspace) if args.workspace else (
+        Path.home() / ".local" / "state" / "trex-research" / "run-anon")
+    db = workspace / "runstate.sqlite3"
+    if not db.is_file():
+        print(json.dumps({"error": "runstate_store_missing",
+                          "path": str(db)}), file=sys.stderr)
+        return 1
+    store = RunstateStore(db)
+    try:
+        run = store.get("run", args.forecast)
+        result = store.get("result", args.forecast)
+        spec = store.get("spec", args.forecast)
+    finally:
+        store.close()
+    if run is None and result is None and spec is None:
+        print(json.dumps({"error": "forecast_not_found",
+                          "run_id": args.forecast}), file=sys.stderr)
+        return 1
+    payload: dict = {"run_id": args.forecast}
+    if spec is not None:
+        payload["forecast_spec"] = spec
+    if run is not None:
+        payload["run"] = run
+    if result is not None:
+        payload["result_sha256"] = result["result_sha256"]
+        payload["engine_sha256"] = result["engine_sha256"]
+        if "input_snapshot_sha256" in result:
+            payload["input_snapshot_sha256"] = result[
+                "input_snapshot_sha256"]
+        if "calendar_sha256" in result:
+            payload["calendar_sha256"] = result["calendar_sha256"]
+        if "session_authority_sha256" in result:
+            payload["session_authority_sha256"] = result[
+                "session_authority_sha256"]
+        payload["wire"] = result.get("wire")
+    print(json.dumps(payload, indent=2, sort_keys=True, default=str))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m tree_options.research",
                                      description="Read-only research inspection")
@@ -180,6 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     inspect.add_argument("--as-of", help="ISO knowledge-cutoff instant")
     inspect.add_argument("--run", help="stored run id")
     inspect.add_argument("--scenario", help="stored scenario child run id (RL-2)")
+    inspect.add_argument("--forecast", help="stored forecast run id (RL-3)")
     inspect.add_argument("--workspace", help="research workspace (default: run-anon)")
     inspect.add_argument("--scopes-root", help="catalog scopes root")
     inspect.set_defaults(func=_cmd_inspect)

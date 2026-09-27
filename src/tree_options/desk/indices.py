@@ -210,18 +210,28 @@ def render(rows: Iterable[Row]) -> str:
     return STORE_HEADER + "\n" + "".join(",".join(r) + "\n" for r in rows)
 
 
-def read_store(path: Path) -> list[Row]:
-    """A stored ``<X>.csv`` back into rows (our own format, strictly)."""
-    lines = path.read_text().splitlines()
+def rows_from_text(text: str, name: str = "index store") -> list[Row]:
+    """Parse stored ``<X>.csv`` text into rows (our own format, strictly).
+
+    Pure function split out of :func:`read_store` so callers that must
+    hash and parse the SAME bytes (the research forecast loader binds
+    the sha of exactly the rows it evaluates) share one parser.
+    """
+    lines = text.splitlines()
     if not lines or lines[0] != STORE_HEADER:
-        raise ValueError(f"{path.name}: not a desk index file")
+        raise ValueError(f"{name}: not a desk index file")
     rows: list[Row] = []
     for line in lines[1:]:
         cells = line.split(",")
         if len(cells) != 5:
-            raise ValueError(f"{path.name}: malformed row {line!r}")
+            raise ValueError(f"{name}: malformed row {line!r}")
         rows.append((cells[0], cells[1], cells[2], cells[3], cells[4]))
     return rows
+
+
+def read_store(path: Path) -> list[Row]:
+    """A stored ``<X>.csv`` back into rows (our own format, strictly)."""
+    return rows_from_text(path.read_text(), path.name)
 
 
 @dataclass(frozen=True)

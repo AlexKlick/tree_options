@@ -12,11 +12,13 @@ RL-1 surface:
     GET  /api/research/runs/{id}                    — poll run status (404 until claimed)
     GET  /api/research/runs/{id}/result             — funded-account rows + drawdown + diff
 
-RL §5 / §6 explicit out-of-scope:
-    GET  /api/research/forecast   -> 410 Gone (RL-3 owns it)
 RL-2 shipped the scenario surface:
     GET  /api/research/scenarios            — list lineage children
     POST /api/research/scenarios/{parent}   — spool a scenario fork
+RL-3 ships the forecast surface (the RL-1 410 Gone stub is retired):
+    GET  /api/research/forecast   — registry + freshness-qualified receipts
+    POST /api/research/forecast   — spool an evaluation run (idempotent on
+                                    spec + data + calendar + engine)
 
 Broker boundary:
     The view NEVER imports ``tree_options.trex.ibkr``, ``.monitor``,
@@ -330,6 +332,9 @@ def attach(
                     "input_snapshot_sha256"]
             if "calendar_sha256" in result:
                 updates["calendar_sha256"] = result["calendar_sha256"]
+            if "session_authority_sha256" in result:
+                updates["session_authority_sha256"] = result[
+                    "session_authority_sha256"]
             if "scenario_diff_sha256" in result:
                 updates["scenario_diff_sha256"] = result[
                     "scenario_diff_sha256"]
@@ -478,15 +483,260 @@ def attach(
             headers={"Cache-Control": "no-store"},
         )
 
-    # RL-3 still out-of-scope — RL-3 owns forecasts; until it ships
-    # the route returns 410 Gone so the SPA can hard-disable it.
+    # RL-3: the forecast surface (replaces RL-1's 410 Gone stub).
+    # GET serves the registry + freshness-qualified receipts; POST is
+    # the execution-bound idempotent spool (spec + series bytes + BOTH
+    # calendar shas + engine sha => the run id: a data revision, a
+    # closure correction, or an engine change is a NEW run, never a
+    # silent re-serve).
+    from tree_options.research.comparison.calendar import calendar_sha256
+    from tree_options.research.forecast.contracts import (
+        MIN_HISTORY_SESSIONS,
+        ORIGIN_FLOOR,
+        PAIRED_FLOOR,
+        QUANTILE_GRID,
+        ForecastSourceId,
+        forecast_run_id,
+    )
+    from tree_options.research.forecast.refusal_codes import (
+        FORECAST_HORIZON_NOT_ENABLED,
+        ForecastRefusal,
+    )
+    from tree_options.research.forecast.sources import (
+        INTERVAL_SEMANTICS,
+        SOURCE_REGISTRY,
+        load_index,
+        load_synthetic,
+        session_authority_sha256,
+    )
+    from tree_options.research.forecast.spec_io import forecast_from_dict
+    from tree_options.research.runstate.worker import engine_identity_sha
+
+    def _load_series_or_none(source: ForecastSourceId):
+        if source is ForecastSourceId.SYNTHETIC:
+            return load_synthetic()
+        if source is ForecastSourceId.INDEX_VIX:
+            return load_index("VIX")
+        return None
+
     @app.get('/api/research/forecast')
-    def forecast_out_of_scope() -> JSONResponse:
+    def forecast_metadata() -> JSONResponse:
+        """Registry + interval semantics + freshness-qualified receipts.
+
+        A receipt is ``fresh`` only when EVERY execution binding matches
+        the CURRENT world: series bytes, engine identity, and both
+        calendar identities (checkpoint B, P2-3 — an engine correction
+        with unchanged data must still mark the old receipt stale, never
+        promote it as current). A refused attempt surfaces separately
+        as ``last_attempt_refused``. Sources are separate objects, so a
+        synthetic receipt can never qualify the index lane.
+        """
+        engine_now = engine_identity_sha()
+        calendar_now = calendar_sha256()
+        authority_now = session_authority_sha256()
+        sources = []
+        with _open_store_or_503(workspace) as store:
+            receipts: dict[tuple[str, int], dict[str, Any]] = {}
+            refusals: dict[tuple[str, int], dict[str, Any]] = {}
+            for payload, at in store.all_at("run"):
+                if not isinstance(payload, dict) \
+                        or payload.get("kind") != "forecast":
+                    continue
+                result = store.get("result", str(payload.get("run_id")))
+                if result is None or "wire" not in result:
+                    continue
+                wire = result["wire"]
+                key = (str(wire.get("source")), int(wire.get("horizon", 0)))
+                if wire.get("refusal") is None:
+                    candidate = {
+                        "run_id": payload["run_id"],
+                        "at": at,
+                        "series_sha256": wire.get("series", {}).get(
+                            "series_sha256"),
+                        "engine_sha256": result.get("engine_sha256"),
+                        "calendar_sha256": result.get("calendar_sha256"),
+                        "session_authority_sha256":
+                            result.get("session_authority_sha256"),
+                    }
+                    best = receipts.get(key)
+                    if best is None or candidate["at"] > best["at"]:
+                        receipts[key] = candidate
+                else:
+                    attempt = {"code": wire.get("refusal"),
+                               "n_evaluated": (wire.get("origins", {})
+                                               .get("evaluated"))}
+                    last = refusals.get(key)
+                    if last is None or at > last["at"]:
+                        refusals[key] = {"at": at, **attempt}
+
+        for source_id, descriptor in SOURCE_REGISTRY.items():
+            live = _load_series_or_none(source_id)
+            current_sha = (live.series_sha256
+                           if not isinstance(live, ForecastRefusal)
+                           else None)
+            horizons = []
+            for h in descriptor.listed_horizons:
+                if h not in descriptor.enabled_horizons:
+                    horizons.append({
+                        "horizon": h, "enabled": False,
+                        "status": "illustrative_only",
+                        "status_copy": "not enabled - no evaluation "
+                                       "receipt (illustrative only)",
+                    })
+                    continue
+                entry: dict[str, Any] = {
+                    "horizon": h, "enabled": True,
+                    "latest_receipt_run_id": None,
+                    "receipt_series_sha256": None,
+                    "current_series_sha256": current_sha,
+                    "receipt_engine_sha256": None,
+                    "current_engine_sha256": engine_now,
+                    "receipt_calendar_sha256": None,
+                    "current_calendar_sha256": calendar_now,
+                    "receipt_session_authority_sha256": None,
+                    "current_session_authority_sha256": authority_now,
+                    "fresh": None,
+                }
+                receipt = receipts.get((source_id.value, h))
+                if receipt is not None:
+                    entry["latest_receipt_run_id"] = receipt["run_id"]
+                    entry["receipt_series_sha256"] = receipt["series_sha256"]
+                    entry["receipt_engine_sha256"] = receipt["engine_sha256"]
+                    entry["receipt_calendar_sha256"] = \
+                        receipt["calendar_sha256"]
+                    entry["receipt_session_authority_sha256"] = \
+                        receipt["session_authority_sha256"]
+                    entry["fresh"] = (
+                        current_sha is not None
+                        and receipt["series_sha256"] == current_sha
+                        and receipt["engine_sha256"] == engine_now
+                        and receipt["calendar_sha256"] == calendar_now
+                        and receipt["session_authority_sha256"]
+                        == authority_now)
+                refusal = refusals.get((source_id.value, h))
+                if refusal is not None:
+                    entry["last_attempt_refused"] = {
+                        "code": refusal["code"],
+                        "n_evaluated": refusal["n_evaluated"],
+                    }
+                horizons.append(entry)
+            sources.append({
+                "source": source_id.value,
+                "label": descriptor.label,
+                "basis": descriptor.basis,
+                "grid_basis": descriptor.grid_basis,
+                "horizons": horizons,
+            })
         return JSONResponse(
-            {"schema": "research-error/1",
-             "error": "forecast_out_of_scope_for_rl1",
-             "message": "RL-3 (calibrated outlook + study templates) ships separately"},
-            status_code=410,
+            {"schema": "research-forecast-metadata/1",
+             "quantile_grid": list(QUANTILE_GRID),
+             "origin_floor": ORIGIN_FLOOR,
+             "min_history_sessions": MIN_HISTORY_SESSIONS,
+             "paired_floor": PAIRED_FLOOR,
+             "interval_semantics": INTERVAL_SEMANTICS,
+             "sources": sources},
+            headers={"Cache-Control": "no-store"},
+        )
+
+    @app.post('/api/research/forecast')
+    async def spool_forecast(request: Request) -> JSONResponse:
+        """Spool a forecast evaluation run (idempotent on the full
+        execution identity: spec + data + calendar + engine)."""
+        try:
+            payload = await request.json()
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_json",
+                        "message": str(exc)}) from exc
+        try:
+            spec = forecast_from_dict(payload)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "invalid_forecast_spec",
+                        "message": str(exc)}) from exc
+        descriptor = SOURCE_REGISTRY.get(spec.source)
+        if descriptor is None:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "research.forecast.unknown_source",
+                        "message": f"unknown source {spec.source.value!r}"})
+        # Horizon gating is enforced PRE-WRITE: a listed-but-disabled
+        # horizon (63/126) never creates a run record - the SPA hides
+        # nothing the backend would not refuse.
+        if spec.horizon not in descriptor.enabled_horizons:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": FORECAST_HORIZON_NOT_ENABLED,
+                        "message": (f"horizon {spec.horizon} is not "
+                                    f"enabled for {spec.source.value}; "
+                                    f"enabled "
+                                    f"{list(descriptor.enabled_horizons)}"),
+                        "listed": list(descriptor.listed_horizons)})
+        series = _load_series_or_none(spec.source)
+        if isinstance(series, ForecastRefusal):
+            raise HTTPException(
+                status_code=400,
+                detail={"error": series.code, "message": series.message,
+                        **dict(series.payload)})
+        assert series is not None
+        if len(series.sessions) < MIN_HISTORY_SESSIONS + spec.horizon:
+            raise HTTPException(
+                status_code=400,
+                detail={"error": "research.forecast.insufficient_history",
+                        "message": (f"series has {len(series.sessions)} "
+                                    f"sessions; needs >= "
+                                    f"{MIN_HISTORY_SESSIONS + spec.horizon}"
+                                    f" (min_history "
+                                    f"{MIN_HISTORY_SESSIONS} + horizon "
+                                    f"{spec.horizon})")})
+        # Single-read submission binding (checkpoint B-prime, N1): each
+        # identity value is computed ONCE and reused for BOTH the run id
+        # and the queued record — a calendar or engine file replaced
+        # mid-request can never desynchronize the id from the record.
+        engine_sha = engine_identity_sha()
+        calendar_sha = calendar_sha256()
+        authority_sha = session_authority_sha256()
+        run_id = forecast_run_id(
+            spec, series_sha256=series.series_sha256,
+            calendar_sha256=calendar_sha,
+            session_authority_sha256=authority_sha,
+            engine_sha256=engine_sha)
+        with _open_store_or_503(workspace) as store:
+            try:
+                store.put("spec", spec.to_dict(), key=run_id,
+                          at=datetime.now())
+            except RunstateStoreError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail={"error": "pre_custody_format_run_exists",
+                            "message": "this spec was first submitted "
+                                       "before run custody landed; its "
+                                       "record is preserved"},
+                ) from exc
+            existing = store.get("run", run_id)
+            created = existing is None
+            if created:
+                store.put("run", {
+                    "run_id": run_id, "spec_hash": run_id,
+                    "kind": "forecast", "status": "queued",
+                    "format_version": RUN_FORMAT_VERSION,
+                    "series_sha256_at_submission": series.series_sha256,
+                    "engine_sha256_at_submission": engine_sha,
+                    "calendar_sha256_at_submission": calendar_sha,
+                    "session_authority_sha256_at_submission": authority_sha,
+                }, key=run_id, at=datetime.now())
+                status_value = "queued"
+            else:
+                status_value = (existing.get("status", "queued")
+                                if isinstance(existing, dict) else "queued")
+        return JSONResponse(
+            {"run_id": run_id, "status": status_value,
+             "spec_hash": run_id, "kind": "forecast",
+             "series_sha256": series.series_sha256,
+             "workspace": str(workspace)},
+            status_code=202 if created else 200,
             headers={"Cache-Control": "no-store"},
         )
 
