@@ -27,6 +27,7 @@ import type {
   RunResultResponse,
 } from '../lib/types'
 import { ResearchNavChart, type NavSeries } from './ResearchNavChart'
+import { ResearchOutlook } from './ResearchOutlook'
 import { ResearchScenarios } from './ResearchScenarios'
 
 const SERIES_COLORS = ['#4f9cf9', '#e8833a', '#3aa88f', '#a25bd6']
@@ -43,7 +44,7 @@ function fmtUsd(v: string | null | undefined): string {
 }
 
 export function ResearchPage(): JSX.Element {
-  const [tab, setTab] = useState<'comparison' | 'scenarios'>('comparison')
+  const [tab, setTab] = useState<'comparison' | 'scenarios' | 'outlook'>('comparison')
 
   return (
     <div className="research-page">
@@ -51,7 +52,9 @@ export function ResearchPage(): JSX.Element {
       <p className="muted">
         Compare investments on a common declared basis: same calendar,
         same capital, same costs. Scenarios fork a parent comparison to
-        quantify how a single control change moves the result.
+        quantify how a single control change moves the result. The
+        Outlook tab evaluates quantile forecasts on a rolling-origin
+        grid and publishes content-bound receipts.
       </p>
       <nav className="research-page__tabs" role="tablist">
         <button
@@ -72,8 +75,19 @@ export function ResearchPage(): JSX.Element {
         >
           Scenarios
         </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === 'outlook'}
+          onClick={() => setTab('outlook')}
+          data-testid="research-tab-outlook"
+        >
+          Outlook
+        </button>
       </nav>
-      {tab === 'comparison' ? <ComparisonWorkspace /> : <ResearchScenarios />}
+      {tab === 'comparison' ? <ComparisonWorkspace />
+        : tab === 'scenarios' ? <ResearchScenarios />
+          : <ResearchOutlook />}
     </div>
   )
 }
