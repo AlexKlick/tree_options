@@ -84,6 +84,8 @@ def main() -> int:
         if cached is not None:
             body = loads_exact(cached)
         elif used < args.wire_budget:
+            if _structural_capture_active():
+                raise RuntimeError("structural Massive capture resumed; stopping before another wire request")
             if client is None:
                 client = client_from_environment(cache_dir=args.cache)
             if used + client.backoff.max_attempts > args.wire_budget:
