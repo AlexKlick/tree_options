@@ -79,13 +79,29 @@ def main() -> int:
         raise ValueError("baseline drift")
     results = {name: _model_result(game_dir, name, model, manifest["prompt_sha256"], hidden)
                for name, model in MODELS.items()}
+    simple_rules = {
+        "no_trade": [],
+        "put_credit_only": [row["id"] for row in packet["blind_candidates"]
+                            if row["structure"] == "put_credit"],
+        "xsmom_only": [row["id"] for row in packet["blind_candidates"]
+                       if row["signal"] == "xsmom_top3"],
+        "xsmom_defined_spreads": [row["id"] for row in packet["blind_candidates"]
+                                  if row["signal"] == "xsmom_top3"
+                                  and row["structure"] in ("call_debit", "put_credit")],
+    }
     head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, check=True,
                           text=True, capture_output=True).stdout.strip()
+    dirty = bool(subprocess.run(["git", "status", "--porcelain"], cwd=ROOT, check=True,
+                                text=True, capture_output=True).stdout)
     report = {
-        "schema": "desk-model-game-scoreboard/1", "source_sha256": manifest["source_sha256"],
+        "schema": "desk-model-game-scoreboard/2", "source_sha256": manifest["source_sha256"],
         "prompt_sha256": manifest["prompt_sha256"], "code_head": head,
+        "code_dirty": dirty,
+        "scorer_sha256": _sha(Path(__file__).read_bytes()),
+        "game_engine_sha256": _sha((ROOT / "src/tree_options/desk/model_game.py").read_bytes()),
         "training_rows": len(packet["training"]), "blind_rows": len(hidden),
         "baseline_accept_all": manifest["baseline"], "models": results,
+        "simple_rules": {name: score(hidden, ids) for name, ids in simple_rules.items()},
         "limitations": [
             "only 13 blind evaluable rows from a selected and incomplete daily-VWAP cache",
             "training and blind periods were split once; model selection on this holdout would invalidate it",
@@ -95,12 +111,13 @@ def main() -> int:
         ],
         "execution_authorized": False,
     }
-    path = game_dir / "scoreboard.json"
+    path = game_dir / "scoreboard-v3.json"
     with path.open("x", encoding="utf-8") as stream:
         json.dump(report, stream, indent=2, sort_keys=True)
         stream.write("\n")
     print(json.dumps({"scoreboard": str(path), "baseline": report["baseline_accept_all"],
-                      "models": {name: result["score"] for name, result in results.items()}},
+                      "models": {name: result["score"] for name, result in results.items()},
+                      "simple_rules": report["simple_rules"]},
                      sort_keys=True))
     return 0
 
