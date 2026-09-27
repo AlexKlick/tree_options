@@ -452,6 +452,17 @@ class TestPairedCohort:
                       models=[("a", stub, True), ("b", stub, True)],
                       min_history=20)
 
+    def test_zero_baselines_also_refuse(self) -> None:
+        # The guard is `!= 1`, not `> 1`: OMITTING the baseline must
+        # refuse too — a `> 1` mutation would pass the two-baseline
+        # test above while silently allowing a receipt whose baseline
+        # row (and the §6 comparison row) was dropped by omission.
+        stub = _stub(tuple(math.log(90.0 + 5.0 * k) for k in range(5)))
+        with pytest.raises(ValueError, match="exactly one baseline"):
+            _evaluate(_spec(), _hand_series(420),
+                      models=[("a", stub, False)],
+                      min_history=20)
+
 
 class TestBootstrapDegeneracy:
     def test_all_hits_marks_bootstrap_degenerate(self) -> None:

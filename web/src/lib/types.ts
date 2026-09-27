@@ -1011,3 +1011,257 @@ export interface ResearchErrorResponse {
   error: string
   message: string
 }
+
+// --- RL-3 (forecast lane): calibrated outlook — evaluation receipts ---
+// Mirror of src/tree_options/research/forecast/{contracts,engine,sources}.py
+// and the GET/POST /api/research/forecast routes in
+// trex_web/research_view.py — keep field names and string values in
+// lockstep. Numbers on this surface are native JSON FLOATS (statistics
+// and index levels, never money), so they stay `number`, not string.
+
+/** POST body == the stored spec; the run id hashes exactly this. */
+export interface ForecastSpec {
+  source: string                     // ForecastSourceId.value, e.g. 'index:VIX'
+  horizon: number
+  evaluation_start: string           // ISO date
+  evaluation_end: string | null
+  proposed_by: string
+  notes: string
+}
+
+/** A listed-but-disabled horizon (63/126): shown, never selectable. */
+export interface ForecastIllustrativeHorizon {
+  horizon: number
+  enabled: false
+  status: 'illustrative_only'
+  status_copy: string
+}
+
+/** An enabled horizon plus its freshness-qualified latest receipt. */
+export interface ForecastEnabledHorizon {
+  horizon: number
+  enabled: true
+  latest_receipt_run_id: string | null
+  receipt_series_sha256: string | null
+  current_series_sha256: string | null
+  receipt_engine_sha256: string | null
+  current_engine_sha256: string | null
+  receipt_calendar_sha256: string | null
+  current_calendar_sha256: string | null
+  receipt_session_authority_sha256: string | null
+  current_session_authority_sha256: string | null
+  /** fresh only when EVERY binding matches the current world; null
+   * when no receipt exists at all. */
+  fresh: boolean | null
+  last_attempt_refused?: { code: string; n_evaluated: number | null }
+}
+
+export type ForecastHorizonStatus =
+  | ForecastEnabledHorizon
+  | ForecastIllustrativeHorizon
+
+export interface ForecastSourceStatus {
+  source: string
+  label: string
+  basis: string
+  grid_basis: string
+  horizons: ForecastHorizonStatus[]
+}
+
+export interface ForecastMetadata {
+  schema: 'research-forecast-metadata/1'
+  quantile_grid: number[]
+  origin_floor: number
+  min_history_sessions: number
+  paired_floor: number
+  interval_semantics: string
+  sources: ForecastSourceStatus[]
+}
+
+/** One origin's full trace for one model (contracts.LedgerRow). */
+export interface ForecastLedgerRow {
+  origin_date: string
+  target_date: string | null          // null: target beyond the data
+  training_count: number
+  status: 'evaluated' | 'failed' | 'excluded'
+  reason: string | null
+  actual: number | null
+  quantiles: number[]
+  losses_by_tau: number[]
+}
+
+/** contracts.OriginTally; the RESULT wire headline adds failed_by_model. */
+export interface ForecastOriginsTally {
+  total: number
+  evaluated: number
+  excluded: number
+  excluded_reasons: Record<string, number>
+  floor: number
+  floor_met: boolean
+  failed_by_model?: Record<string, number>
+}
+
+export interface ForecastSeriesSummary {
+  n_sessions: number
+  first_session: string | null
+  last_session: string | null
+  series_sha256: string
+  basis: string
+  grid_basis: string
+  provenance: Record<string, unknown>
+  excluded_rows: Record<string, string[]>
+  n_source_rows: number
+}
+
+export interface ForecastCoverage90 {
+  hits: number
+  n: number                            // coverage is never shown without n
+  point: number | null
+  wilson_low: number | null
+  wilson_high: number | null
+  wilson_note: string
+  bootstrap_low: number | null
+  bootstrap_high: number | null
+  bootstrap_block: number
+  bootstrap_seed: number
+  bootstrap_reason?: string            // present when the bootstrap degenerated
+}
+
+export interface ForecastDmBlock {
+  n: number
+  mean: number
+  stat: number
+  p_one_sided: number
+  lag: number
+  lag_units: string                    // 'origin_index'
+  direction: string                    // 'baseline loss - model loss'
+  series_note: string
+  sensitivity: Record<string, { stat: number; p_one_sided: number } | null>
+}
+
+export interface ForecastSkill {
+  baseline: string
+  paired_n: number
+  loss_paired: number | null
+  bench_paired: number | null
+  pinball_skill: number | null
+  reason: string | null                // e.g. paired_cohort_insufficient
+  dm: ForecastDmBlock | null
+  dm_unavailable_reason?: string
+}
+
+/** The honest fallback when finite per-origin losses overflow an
+ * aggregate: metrics withheld with a reason, never non-finite floats. */
+export interface ForecastDegradedMetrics {
+  aggregate_status: 'non_finite'
+  reason: string
+  n_evaluated: number
+}
+
+export interface ForecastModelMetrics {
+  pinball_by_tau: Record<string, number>
+  grid_quantile_score: number          // a GRID score; never named CRPS
+  coverage_90: ForecastCoverage90
+  mean_width_90: number
+  skill_vs_baseline: ForecastSkill | null   // null: this model IS the baseline
+}
+
+export interface ForecastModelReceipt {
+  model: string
+  is_baseline: boolean
+  n_evaluated: number
+  n_failed: number
+  failure_reasons: Record<string, number>
+  metrics: ForecastModelMetrics | ForecastDegradedMetrics
+  ledger: ForecastLedgerRow[]
+}
+
+export interface ForecastFanEntry {
+  model: string
+  status: 'ok' | 'unavailable'         // a latest-fit failure is explicit
+  quantiles?: Record<string, number>   // '0.05'..'0.95' -> level; ok only
+}
+
+export interface ForecastForward {
+  origin_session: string
+  last_close: number
+  horizon_sessions: number
+  beyond_data: boolean
+  target_session: string | null        // null: target lies beyond the data
+  fan: ForecastFanEntry[]
+}
+
+export interface ForecastStudyBlock {
+  schema: 'research-forecast-study/1'
+  estimand: string
+  target: string
+  data_vintage: Record<string, unknown>
+  windows: { evaluation_start: string; evaluation_end: string | null }
+  models: string[]
+  benchmark: string | null
+  primary_score: string
+  inference: Record<string, unknown>
+  model_notes: Record<string, string>
+  access_mode: string                  // 'exploratory' in v1
+}
+
+/** research-forecast-result/1 — the evaluation receipt. */
+export interface ForecastResultWire {
+  schema: 'research-forecast-result/1'
+  source: string
+  source_basis: string
+  grid_basis: string
+  horizon: number
+  quantile_grid: number[]
+  quantile_interpolation: string
+  series: ForecastSeriesSummary
+  evaluation_window: { start: string; end: string | null }
+  study: ForecastStudyBlock
+  execution_status: string
+  evaluation_status: string            // 'receipt_published' | 'below_floor'
+  calibration_status: string           // always 'not_claimed' in v1
+  origins: ForecastOriginsTally
+  models: ForecastModelReceipt[]
+  forward: ForecastForward
+  refusal: null
+}
+
+/** research-forecast-refusal/1 — a typed refusal is a recorded outcome
+ * with the evidence retained, never a 404. The payload varies by code
+ * (drift refusals carry both shas; the floor refusal carries the tally
+ * and every model's ledger). */
+export interface ForecastRefusalWire {
+  schema?: 'research-forecast-refusal/1'
+  refusal: string
+  message: string
+  source?: string
+  horizon?: number
+  origins?: ForecastOriginsTally
+  grid_reasons?: Record<string, number>
+  models?: Array<{ model: string; tally: ForecastOriginsTally; ledger: ForecastLedgerRow[] }>
+  [key: string]: unknown
+}
+
+/** GET /api/research/runs/{id}/result narrowed to forecast runs: the
+ * lifecycle envelope with the forecast result/refusal wire inside. */
+export interface ForecastRunResultResponse {
+  run_id: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked'
+  result: ForecastResultWire | ForecastRefusalWire | null
+  error?: string | null
+  result_sha256?: string
+  engine_sha256?: string
+  input_snapshot_sha256?: string
+  calendar_sha256?: string
+  session_authority_sha256?: string
+}
+
+/** GET /api/research/runs/{id} narrowed to forecast runs (the stored
+ * run record carries the submission-time bindings). */
+export interface ForecastRunResponse {
+  run_id: string
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked'
+  spec_hash: string
+  kind: 'forecast'
+  [key: string]: unknown
+}

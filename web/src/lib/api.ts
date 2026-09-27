@@ -130,8 +130,8 @@ export const getScenario = (key: string): Promise<ScenarioDoc> =>
   fetchJson(`api/discovery/backtest?key=${encodeURIComponent(key)}`)
 
 // --- RL-1 (research lab) — see TREX-Research-Lab-Design-and-Build-Handoff-29a9aa.md
-// These are GET-only reads + POST-to-spool; the forecast/scenarios
-// endpoints return 410 Gone (RL-3 / RL-2 out of scope).
+// These are GET-only reads + POST-to-spool; results are the RECORDED
+// content-bound artifacts the worker published (GET never computes).
 
 import type {
   CandidateResultSummary,
@@ -215,6 +215,45 @@ export const spoolScenario = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+
+// --- RL-3: forecast evaluation surface (calibrated outlook). The run id
+// is execution-bound (spec + series bytes + both calendar shas + engine
+// sha), so POST is idempotent only on a fully identical world; any
+// drift is a NEW run, never a silent re-serve.
+
+import type {
+  ForecastMetadata,
+  ForecastRunResponse,
+  ForecastRunResultResponse,
+  ForecastSpec,
+} from './types'
+
+/** Registry + interval semantics + freshness-qualified receipts (no-store). */
+export const getForecastMetadata = (): Promise<ForecastMetadata> =>
+  fetchJson('api/research/forecast')
+
+export const spoolForecast = (spec: ForecastSpec): Promise<{
+  run_id: string
+  status: string
+  spec_hash: string
+  kind: 'forecast'
+  series_sha256: string
+  workspace: string
+}> =>
+  fetchJson('api/research/forecast', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(spec),
+  })
+
+/** The shared lifecycle route, typed to the forecast run record. */
+export const getForecastRun = (run_id: string): Promise<ForecastRunResponse> =>
+  fetchJson(`api/research/runs/${encodeURIComponent(run_id)}`)
+
+/** The recorded forecast receipt — result is the forecast result/refusal
+ * wire exactly when status === 'completed'. */
+export const getForecastResult = (run_id: string): Promise<ForecastRunResultResponse> =>
+  fetchJson(`api/research/runs/${encodeURIComponent(run_id)}/result`)
 
 // Re-export for callers that already imported this from the old path.
 export type { CandidateResultSummary as CandidateResult }
