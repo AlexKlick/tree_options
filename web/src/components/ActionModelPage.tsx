@@ -59,13 +59,23 @@ export function ActionModelPage() {
           <div key={run.id} className="card">
             <h3>{run.spec.start} through {run.spec.end}</h3>
             <p>{run.spec.names.length} names · {run.spec.entry_dte.join('–')} entry DTE · assumed haircut {(run.spec.haircut * 100).toFixed(1)}% per leg · ${run.spec.max_loss} trade cap</p>
-            <p>{run.counts.evaluable_within_trade_cap ?? 0} evaluable · {run.counts.missing_exit_or_entry_bar ?? 0} missing bars · {run.counts.over_trade_loss_cap ?? 0} above cap</p>
+            <p>{run.counts.evaluable_within_trade_cap ?? 0} evaluable of {run.counts.attempted ?? 0} attempted · {run.counts.missing_decision_spot_or_options ?? 0} missing decision data before attempts · {run.counts.missing_exit_or_entry_bar ?? 0} missing bars · {run.counts.over_trade_loss_cap ?? 0} above cap</p>
             <ul>{Object.entries(run.by_variant).map(([name, row]) => (
-              <li key={name}>{name}: {row.trades} modeled trades · {row.win_rate === null ? 'win rate unavailable' : `${(row.win_rate * 100).toFixed(1)}% modeled wins`} · mean {row.mean_pnl === null ? 'unavailable' : `$${row.mean_pnl.toFixed(2)}`} · worst {row.worst_pnl === null ? 'unavailable' : `$${row.worst_pnl.toFixed(2)}`}</li>
+              <li key={name}>{name}: {row.trades} modeled trades · {row.trades < 20 ? `${row.wins} modeled wins; too few trades for a rate` : row.win_rate === null ? 'win rate unavailable' : `${(row.win_rate * 100).toFixed(1)}% modeled wins`} · mean {row.mean_pnl === null ? 'unavailable' : `$${row.mean_pnl.toFixed(2)}`} · worst {row.worst_pnl === null ? 'unavailable' : `$${row.worst_pnl.toFixed(2)}`}</li>
             ))}</ul>
             <p className="muted">{run.id} · {run.provenance.sources.length} cache sets · {run.limitations.join('; ')}</p>
           </div>
         ))}
+      </section>
+      <section className="card" aria-label="Trading system graph">
+        <div className="eyebrow">System graph · current source boundary</div>
+        <h2>From historical evidence to paper trading</h2>
+        <ol>
+          <li>Option bars and locked signal data → exploratory replay → source-bound report → read-only cockpit.</li>
+          <li>Forecast and pricing → governed candidate: evidence binding and capital mandate still needed.</li>
+          <li>Governed candidate → IBKR paper order: permit, reconciliation, and supervised receipt still needed.</li>
+        </ol>
+        <p className="muted">The existing IBKR login and legacy position monitor are separate from this governed path. No replay or model review enables trading.</p>
       </section>
       <div className="card">
         <div className="eyebrow">Proposal only · synthetic design example</div>
