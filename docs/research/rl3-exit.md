@@ -103,7 +103,7 @@ UI correctly explains interval semantics."
   values are structurally impossible (`canonical` allow_nan=False +
   FAILED-origin guards + SPA `fmtLevel` dashes).
 
-## Review loop (12 codex passes, all findings dispositioned)
+## Review loop (14 codex passes through checkpoint D, all findings dispositioned)
 
 | Checkpoint | Receipt(s) | Outcome |
 |---|---|---|
@@ -141,12 +141,12 @@ here rather than silently absorbed.
 |---|---|---|
 | `scripts/research_gate.sh` | `rl3b-research-gate2.log` | rc=0; **349 passed**; ruff + mypy clean |
 | web check (tsc + vitest + build + bundle) | `rl3b-web-check4.log` | rc=0; **36 files / 185 tests** passed; single relative chunk `index-CFGpcFAu.js` |
-| `scripts/desk_safety_gate.sh` (host-test) | `rl3b-desk-gate.log` | rc=0; **5219 passed / 7 skipped** (run at `0628e2c`; the only later changes are SPA tests, the SPA harness, one engine TEST, and docs — no `src/` production bytes changed after `0628e2c` except none; the engine test addition is covered by the research-gate rerun above) |
+| `scripts/desk_safety_gate.sh` (host-test) | `rl3b-desk-gate.log` | rc=0; **5219 passed / 7 skipped** (run at `0628e2c`; after that head the campaign changed SPA production code, SPA tests, the SPA harness, one engine TEST, and docs — but NO production Python under `src/`, which remains byte-identical through this head; the engine-test addition is covered by the research-gate rerun above) |
 | `forecast_mutation_pass.py` | `rl3b-py-mutation.log` | **15 KILLED / 0 SURVIVED / 0 other** — re-executed on the wave-2 tree; `src/` is byte-identical to the wave-1 head `a1abcb5` (wave 2 added no production Python), so this run is the same source binding |
 | `spa_mutation_pass.py` | `rl3b-spa-mutation.log` | **7 KILLED / 0 SURVIVED / 2 justified-survivor / 9 total** at the wave-2 tree |
 
 Tests added by the campaign: `tests/research/test_forecast_*.py`
-(9 files / 135 test functions / 144 parametrized cases) + forecast
+(9 files / 136 test functions / 145 parametrized cases) + forecast
 lifecycle/worker/route coverage; SPA `lib/forecast.test.ts` (18) +
 `ResearchOutlook.test.tsx` (10).
 
