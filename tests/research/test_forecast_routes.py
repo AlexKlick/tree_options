@@ -88,6 +88,10 @@ class TestSpool:
         run = runs[0]
         assert run["engine_sha256_at_submission"] == engine_identity_sha()
         assert run["series_sha256_at_submission"]
+        # P1-1: BOTH calendar identities are captured at submission —
+        # they gate the worker's drift check and enter the run id.
+        assert run["calendar_sha256_at_submission"]
+        assert run["session_authority_sha256_at_submission"]
 
     def test_pre_write_400s_persist_nothing(self, env) -> None:
         client, ws, _worker = env
@@ -130,7 +134,7 @@ class TestSpool:
 
 class TestResultSurface:
     def test_shared_result_route_serves_forecast_runs(self, env) -> None:
-        client, ws, worker = env
+        client, _ws, worker = env
         r = client.post("/api/research/forecast", json=GOOD_BODY)
         run_id = r.json()["run_id"]
         assert worker.step() is True
@@ -148,7 +152,7 @@ class TestResultSurface:
 
     def test_refusal_result_visible_through_shared_route(
             self, env) -> None:
-        client, ws, worker = env
+        client, _ws, worker = env
         r = client.post("/api/research/forecast", json={
             **GOOD_BODY, "evaluation_start": "2020-10-01"})
         run_id = r.json()["run_id"]
@@ -176,6 +180,52 @@ class TestFreshness:
         h5 = next(h for h in syn["horizons"] if h["horizon"] == 5)
         assert h5["latest_receipt_run_id"] == run_id
         assert h5["fresh"] is True
+        # freshness covers EVERY execution binding (P2-3): series,
+        # engine, and both calendars each publish receipt/current pairs.
+        assert h5["receipt_series_sha256"] == h5["current_series_sha256"]
+        assert h5["receipt_engine_sha256"] == h5["current_engine_sha256"]
+        assert h5["receipt_calendar_sha256"] == \
+            h5["current_calendar_sha256"]
+        assert h5["receipt_session_authority_sha256"] == \
+            h5["current_session_authority_sha256"]
+
+    def test_stale_engine_marks_receipt_never_fresh(self, env) -> None:
+        # An engine correction with UNCHANGED data must still mark the
+        # old receipt stale (checkpoint B, P2-3): comparing only the
+        # series sha would promote an obsolete-engine receipt as fresh.
+        client, ws, worker = env
+        self._complete(client, worker)   # a fresh receipt exists
+        with open_runstate_store(ws) as store:
+            runs = [p for p, _at in store.all_at("run")
+                    if isinstance(p, dict)
+                    and p.get("kind") == "forecast"]
+            result = store.get("result", runs[0]["run_id"])
+            assert result is not None
+            # Simulate an engine correction: a LATER record whose
+            # receipt was computed under an older engine, series
+            # unchanged (records are immutable — new id, same shape as
+            # the series-stale test).
+            stale_id = "6" * 64
+            store.put("spec", {"source": "synthetic-forecast-v1",
+                               "horizon": 5,
+                               "evaluation_start": "2019-06-03"},
+                      key=stale_id, at=datetime.now())
+            store.put("run", {"run_id": stale_id, "spec_hash": stale_id,
+                              "kind": "forecast", "status": "completed",
+                              "format_version": RUN_FORMAT_VERSION},
+                      key=stale_id, at=datetime.now())
+            store.put("result", {**result, "run_id": stale_id,
+                                 "engine_sha256": "e" * 64},
+                      key=stale_id, at=datetime.now())
+        meta = client.get("/api/research/forecast").json()
+        syn = next(s for s in meta["sources"]
+                   if s["source"] == "synthetic-forecast-v1")
+        h5 = next(h for h in syn["horizons"] if h["horizon"] == 5)
+        assert h5["latest_receipt_run_id"] == stale_id
+        assert h5["receipt_series_sha256"] == h5["current_series_sha256"]
+        assert h5["receipt_engine_sha256"] == "e" * 64
+        assert h5["current_engine_sha256"] != "e" * 64
+        assert h5["fresh"] is False
 
     def test_stale_receipt_is_marked_never_promoted(self, env) -> None:
         client, ws, worker = env

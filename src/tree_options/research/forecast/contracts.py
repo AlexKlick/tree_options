@@ -29,8 +29,10 @@ structurally impossible: ``desk.contracts.canonical`` (allow_nan=False)
 hashes every published payload, and the harness demotes any non-finite
 model output to a FAILED origin before the wire is assembled.
 
-Run identity (v3): ``forecast_run_id`` binds spec + series bytes +
-calendar sha + ENGINE sha. Any change to the data, the request, or the
+Run identity (v4): ``forecast_run_id`` binds spec + series bytes +
+BOTH calendar shas (the pinned comparison calendar that declares scope
+AND the closure-corrected session authority that shapes the grid) +
+ENGINE sha. Any change to the data, the calendars, the request, or the
 engine code produces a NEW run — an engine fix can never re-serve a
 stale receipt, and a vendor revision can never publish revised bytes
 under the submission's identity.
@@ -126,20 +128,28 @@ class ForecastSpec:
 
 
 def forecast_run_id(spec: ForecastSpec, *, series_sha256: str,
-                    calendar_sha256: str, engine_sha256: str) -> str:
+                    calendar_sha256: str,
+                    session_authority_sha256: str,
+                    engine_sha256: str) -> str:
     """Execution-bound run id: sha256 over the canonical binding of
-    spec + series bytes + calendar sha + engine sha.
+    spec + series bytes + BOTH calendar shas + engine sha.
 
-    Any of the four changing produces a NEW run (a rerun under changed
+    Any of the five changing produces a NEW run (a rerun under changed
     inputs or changed engine code is a new execution, never a silent
-    re-serve of the old receipt). Domain-separated from the comparison
-    and scenario hash schemes by the embedded schema string.
+    re-serve of the old receipt). ``calendar_sha256`` is the pinned
+    comparison calendar (declared scope); ``session_authority_sha256``
+    is the closure-corrected session authority whose intersection with
+    the observed dates IS the evaluation grid — a closure correction
+    moves targets and scores, so it must move the run id (checkpoint B,
+    P1-1). Domain-separated from the comparison and scenario hash
+    schemes by the embedded schema string.
     """
     payload = canonical({
-        "schema": "forecast-run/1",
+        "schema": "forecast-run/2",
         "spec": spec.to_dict(),
         "series_sha256": series_sha256,
         "calendar_sha256": calendar_sha256,
+        "session_authority_sha256": session_authority_sha256,
         "engine_sha256": engine_sha256,
     })
     return hashlib.sha256(payload).hexdigest()

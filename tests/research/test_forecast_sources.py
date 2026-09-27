@@ -30,6 +30,7 @@ from tree_options.research.forecast.sources import (
     ForecastSeries,
     load_index,
     load_synthetic,
+    session_authority_sha256,
 )
 
 REPO = Path(__file__).resolve().parents[2]
@@ -200,6 +201,10 @@ class TestIndexLoader:
     @pytest.mark.parametrize("bad_row", [
         "2025-03-03,10.0,10.0,10.0,-5.0",     # negative close
         "2025-03-03,10.0,10.0,10.0,",         # empty close
+        # +inf parses, compares equal to itself, and is > 0 — a NaN-only
+        # guard would accept it (checkpoint B, P2-4)
+        "2025-03-03,10.0,10.0,10.0,inf",
+        "2025-03-03,10.0,10.0,10.0,1e999",
     ])
     def test_bad_close_refuses_rather_than_skips(
             self, tmp_path: Path, bad_row: str) -> None:
@@ -211,6 +216,35 @@ class TestIndexLoader:
         assert not isinstance(out, ForecastSeries)
         assert out.code == FORECAST_SOURCE_INVALID
         assert "2025-03-03" in out.message
+
+    def test_positive_infinity_level_refuses(self, tmp_path: Path) -> None:
+        # json.loads accepts bare Infinity — the shared grid validator
+        # must reject it (isfinite, not a NaN-only check; P2-4).
+        doc = json.loads(
+            (FIXTURES / "synthetic-forecast-v1.json").read_text())
+        doc["levels"][10] = float("inf")
+        d = tmp_path / "synth"
+        d.mkdir()
+        (d / "synthetic-forecast-v1.json").write_text(json.dumps(doc))
+        out = load_synthetic(fixtures_dir=d)
+        assert not isinstance(out, ForecastSeries)
+        assert out.code == FORECAST_SOURCE_INVALID
+        assert "non-finite" in out.message
+
+    def test_session_authority_sha_is_the_authority_bytes(
+            self, tmp_path: Path) -> None:
+        # The calendar identity bound into run ids hashes exactly the
+        # authority file's bytes — recomputed here from the file, not
+        # from the implementation's constant.
+        body = (REPO / "data" / "calendar" / "trex"
+                / "nyse_sessions_2018_01_02_2028_12_29.json").read_bytes()
+        assert session_authority_sha256() == \
+            hashlib.sha256(body).hexdigest()
+        # and the index lane's provenance binds the SAME identity
+        out = _series_or_fail(
+            load_index("VIX", store_root=self._store(tmp_path)))
+        assert out.provenance["session_authority_sha256"] == \
+            session_authority_sha256()
 
     def test_duplicate_date_refuses(self, tmp_path: Path) -> None:
         root = self._store(tmp_path)

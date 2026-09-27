@@ -16,7 +16,11 @@ from pathlib import Path
 import pytest
 
 from tree_options.desk.stats import dm_test
+from tree_options.evaluation.diagnostics import block_bootstrap_ci
 from tree_options.research.forecast.contracts import (
+    BOOTSTRAP_BLOCK,
+    DM_LAG_SENSITIVITY,
+    N_BOOTSTRAP,
     ORIGIN_FLOOR,
     PAIRED_FLOOR,
     ForecastSourceId,
@@ -32,6 +36,7 @@ from tree_options.research.forecast.refusal_codes import (
     FORECAST_HORIZON_NOT_ENABLED,
     FORECAST_INSUFFICIENT_HISTORY,
     FORECAST_INSUFFICIENT_ORIGINS,
+    REASON_BOOTSTRAP_DEGENERATE,
 )
 from tree_options.research.forecast.sources import (
     SOURCE_REGISTRY,
@@ -156,6 +161,105 @@ class TestReceiptShape:
         assert skill["dm"]["stat"] == pytest.approx(dm.stat)
         assert skill["dm"]["p_one_sided"] == pytest.approx(dm.p_one_sided)
 
+    def test_dm_sensitivity_re_runs_each_lag(self) -> None:
+        # Each sensitivity entry is a REAL dm_test at that lag over the
+        # matched-cohort differential (checkpoint B, surviving mutation
+        # 4): recompute every lag from the ledger and demand agreement —
+        # copying the lag-1 result into all three slots must fail here.
+        series = load_synthetic()
+        assert isinstance(series, ForecastSeries)
+        out = _evaluate(_spec(), series)
+        assert isinstance(out, ForecastOutcome)
+        wire = out.to_wire()
+        baseline_rows = {
+            r["origin_date"]: _loss(r)
+            for m in wire["models"] if m["is_baseline"]
+            for r in m["ledger"] if r["status"] == "evaluated"}
+        model = next(m for m in wire["models"]
+                     if m["model"] == "ar1_direct")
+        model_rows = {r["origin_date"]: _loss(r)
+                      for r in model["ledger"] if r["status"] == "evaluated"}
+        matched = sorted(set(baseline_rows) & set(model_rows))
+        d = [baseline_rows[k] - model_rows[k] for k in matched]
+        skill = model["metrics"]["skill_vs_baseline"]
+        assert skill["dm"] is not None
+        sens = skill["dm"]["sensitivity"]
+        assert set(sens) == {str(lag) for lag in DM_LAG_SENSITIVITY}
+        for lag in DM_LAG_SENSITIVITY:
+            alt = dm_test(d, lag=lag)
+            entry = sens[str(lag)]
+            if alt is None:
+                assert entry is None, lag
+            else:
+                assert entry is not None, lag
+                assert entry["stat"] == pytest.approx(alt.stat), lag
+                assert entry["p_one_sided"] == pytest.approx(
+                    alt.p_one_sided), lag
+
+    def test_coverage_bootstrap_declares_block_and_matches_helper(
+            self) -> None:
+        # The receipt DECLARES the block it used and its bounds ARE the
+        # shared helper's at that block and seed (the engine-level
+        # companion of the metrics block oracle).
+        series = load_synthetic()
+        assert isinstance(series, ForecastSeries)
+        wire = _evaluate(_spec(), series).to_wire()
+        baseline = next(m for m in wire["models"] if m["is_baseline"])
+        cov = baseline["metrics"]["coverage_90"]
+        rows = [r for r in baseline["ledger"] if r["status"] == "evaluated"]
+        indicators = [
+            1.0 if r["quantiles"][0] <= r["actual"] <= r["quantiles"][-1]
+            else 0.0 for r in rows]
+        assert len(indicators) == cov["n"]
+        assert cov["bootstrap_block"] == BOOTSTRAP_BLOCK
+
+        def mean_stat(sample: list[float]) -> float | None:
+            return sum(sample) / len(sample) if sample else None
+
+        want = block_bootstrap_ci(
+            indicators, statistic=mean_stat,
+            block_size=cov["bootstrap_block"], iterations=N_BOOTSTRAP,
+            seed=cov["bootstrap_seed"], confidence=0.95)
+        if want is None:
+            assert cov["bootstrap_low"] is None
+            assert cov["bootstrap_high"] is None
+            assert cov["bootstrap_reason"] == REASON_BOOTSTRAP_DEGENERATE
+        else:
+            assert cov["bootstrap_low"] == pytest.approx(want.lower)
+            assert cov["bootstrap_high"] == pytest.approx(want.upper)
+
+    def test_forward_fan_failure_is_explicit_not_silent(self) -> None:
+        # Latest-fit failure (the model fails ONLY on the full sample):
+        # the historical receipt still publishes, and the forward block
+        # carries an explicit unavailable entry — never a silent
+        # omission (checkpoint B, P2-5).
+        series = _hand_series(420)
+        n = len(series.closes)
+
+        def ok(closes, *, h, taus):
+            _ = h
+            return tuple(math.log(95.0 + 2.5 * k) for k in range(len(taus)))
+
+        def latest_only_failure(closes, *, h, taus):
+            _ = h
+            if len(closes) == n:
+                return None
+            return tuple(math.log(95.0 + 2.5 * k) for k in range(len(taus)))
+
+        out = _evaluate(
+            ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
+                         evaluation_start=date(2020, 2, 1)),
+            series, models=[("b", ok, True),
+                            ("m", latest_only_failure, False)],
+            min_history=20)
+        assert isinstance(out, ForecastOutcome)
+        fan = out.to_wire()["forward"]["fan"]
+        by_model = {f["model"]: f for f in fan}
+        assert by_model["b"]["status"] == "ok"
+        assert "quantiles" in by_model["b"]
+        assert by_model["m"]["status"] == "unavailable"
+        assert "quantiles" not in by_model["m"]
+
 
 class TestRefusals:
     def test_horizon_not_enabled_rechecked_in_engine(self) -> None:
@@ -237,6 +341,48 @@ class TestRefusals:
         # sign depends on the stubs; the cohort is the oracle)
         assert skill["pinball_skill"] is not None
         assert "dm" in skill or "dm_unavailable_reason" in skill
+
+    def test_nonbaseline_below_floor_refuses_while_baseline_passes(
+            self) -> None:
+        # The floor is per MODEL (checkpoint B, surviving mutation 5):
+        # a non-baseline that evaluates only 11 of ~23 origins must
+        # REFUSE the whole receipt even though the baseline clears the
+        # floor — an insufficient-data model may not ride a publishable
+        # baseline, and restricting the floor check to the first run
+        # (the baseline) must fail here.
+        series = _hand_series(700)
+        grid = month_origin_grid(
+            series.sessions, first_eval=date(2020, 2, 1),
+            last_eval=None, horizon=5, min_history=20)
+        origins = grid.origins
+        assert len(origins) >= 20
+        cut = origins[11]    # model fails origins[11:] -> 11 evaluated
+
+        def baseline(closes, *, h, taus):
+            _ = h
+            return tuple(math.log(95.0 + 2.5 * k) for k in range(len(taus)))
+
+        def weak(closes, *, h, taus):
+            _ = h
+            if len(closes) > cut:
+                return None
+            return tuple(math.log(95.0 + 2.5 * k) for k in range(len(taus)))
+
+        out = _evaluate(
+            ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
+                         evaluation_start=date(2020, 2, 1)),
+            series, models=[("b", baseline, True), ("m", weak, False)],
+            min_history=20)
+        assert not isinstance(out, ForecastOutcome)
+        assert out.code == FORECAST_INSUFFICIENT_ORIGINS
+        assert "m evaluated 11 origins" in out.message
+        by = {m["model"]: m for m in out.payload["models"]}
+        assert by["m"]["tally"]["evaluated"] == 11
+        assert by["m"]["tally"]["floor_met"] is False
+        assert by["b"]["tally"]["evaluated"] == len(origins)
+        assert by["b"]["tally"]["floor_met"] is True
+        # the refusal retains BOTH ledgers
+        assert by["m"]["ledger"] and by["b"]["ledger"]
 
     def test_floor_refusal_retains_ledgers(self) -> None:
         series = load_synthetic()
@@ -355,9 +501,9 @@ class TestNoLeakage:
                                     "closes": list(series.closes)})
         object.__setattr__(
             mutated, "closes",
-            series.closes[: t0 + 5]
-            + (series.closes[t0 + 5] * 1.5,)
-            + series.closes[t0 + 6:])
+            (*series.closes[: t0 + 5],
+             series.closes[t0 + 5] * 1.5,
+             *series.closes[t0 + 6:]))
         out_b = _evaluate(spec, mutated, models=[("s", stub, True)],
                           min_history=20)
         assert isinstance(out_b, ForecastOutcome)

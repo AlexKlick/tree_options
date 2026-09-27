@@ -12,6 +12,7 @@ separately as a unit check of the FACT, not of any estimator.
 """
 from __future__ import annotations
 
+import itertools
 import math
 
 import numpy as np
@@ -125,7 +126,7 @@ class TestAr1Direct:
         sx = sum(x[:-1])
         sxx = sum(v * v for v in x[:-1])
         sy = sum(x[1:])
-        sxy = sum(a * b for a, b in zip(x[:-1], x[1:], strict=True))
+        sxy = sum(a * b for a, b in itertools.pairwise(x))
         det = n * sxx - sx * sx
         b0 = (sy * sxx - sx * sxy) / det
         p = (n * sxy - sx * sy) / det

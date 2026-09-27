@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 import json
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
@@ -270,7 +271,9 @@ def load_index(
                 code=FORECAST_SOURCE_INVALID,
                 message=f"index row not parsable ({row[0]!r}): {exc}",
             )
-        if not (close == close and close > 0.0):  # NaN or non-positive
+        # isfinite, not a NaN-only check: +inf compares equal to itself
+        # and is > 0, but is not a usable close (checkpoint B, P2-4).
+        if not (math.isfinite(close) and close > 0.0):
             return ForecastRefusal(
                 code=FORECAST_SOURCE_INVALID,
                 message=(
@@ -322,9 +325,19 @@ def _validate_grid(sessions: list[date],
             return (f"sessions not strictly increasing: "
                     f"{a.isoformat()} -> {b.isoformat()}")
     for v in closes:
-        if v != v or v <= 0.0:  # NaN or non-positive
+        # isfinite rejects +inf too (a NaN-only check would accept it)
+        if not math.isfinite(v) or v <= 0.0:
             return f"non-finite or non-positive close: {v!r}"
     return None
+
+
+def session_authority_sha256() -> str:
+    """sha256 over the closure-corrected session authority BYTES — the
+    calendar identity of the grid. Bound into every forecast run id and
+    re-checked at compute (checkpoint B, P1-1): the grid is observed
+    dates INTERSECTED with this file, so changing it changes targets and
+    scores, and must produce a NEW run — never a silent re-serve."""
+    return hashlib.sha256(_SESSION_AUTHORITY.read_bytes()).hexdigest()
 
 
 def _load_session_authority() -> frozenset[str]:
@@ -368,8 +381,7 @@ def _latest_provenance(
         "status": latest.get("status"),
         "vendor_rows": latest.get("rows"),
         "vendor_last_date": latest.get("last_date"),
-        "session_authority_sha256": hashlib.sha256(
-            _SESSION_AUTHORITY.read_bytes()).hexdigest(),
+        "session_authority_sha256": session_authority_sha256(),
         "sha_note": "vendor_body_sha256 hashes the downloaded vendor "
                     "body; series_sha256 hashes the stored CSV bytes — "
                     "they differ by design and both are recorded",
@@ -385,4 +397,5 @@ __all__ = [
     "SourceDescriptor",
     "load_index",
     "load_synthetic",
+    "session_authority_sha256",
 ]

@@ -116,39 +116,41 @@ class TestParse:
 
 
 class TestRunId:
-    """Execution-bound identity: spec + series + calendar + engine. Any
-    of the four changing produces a NEW run — derived from the hash
-    binding contract, checked by mutation."""
+    """Execution-bound identity: spec + series + BOTH calendars +
+    engine. Any of the five changing produces a NEW run — derived from
+    the hash binding contract, checked by mutation."""
+
+    def _rid(self, **overrides: str) -> str:
+        base = dict(series_sha256="s" * 64, calendar_sha256="c" * 64,
+                    session_authority_sha256="a" * 64,
+                    engine_sha256="e" * 64)
+        return forecast_run_id(_spec(), **{**base, **overrides})
 
     def test_identical_inputs_same_id(self) -> None:
-        a = forecast_run_id(_spec(), series_sha256="s" * 64,
-                            calendar_sha256="c" * 64, engine_sha256="e" * 64)
-        b = forecast_run_id(_spec(), series_sha256="s" * 64,
-                            calendar_sha256="c" * 64, engine_sha256="e" * 64)
-        assert a == b
+        assert self._rid() == self._rid()
 
     def test_any_identity_change_is_a_new_run(self) -> None:
-        base = dict(series_sha256="s" * 64, calendar_sha256="c" * 64,
-                    engine_sha256="e" * 64)
-        ref = forecast_run_id(_spec(), **base)
+        ref = self._rid()
         # spec change
         changed_spec = ForecastSpec(
             source=ForecastSourceId.INDEX_VIX, horizon=20,
             evaluation_start=date(2018, 2, 1))
-        assert forecast_run_id(changed_spec, **base) != ref
+        assert forecast_run_id(
+            changed_spec, series_sha256="s" * 64, calendar_sha256="c" * 64,
+            session_authority_sha256="a" * 64,
+            engine_sha256="e" * 64) != ref
         # data revision
-        assert forecast_run_id(
-            _spec(), **{**base, "series_sha256": "t" * 64}) != ref
-        # calendar change
-        assert forecast_run_id(
-            _spec(), **{**base, "calendar_sha256": "d" * 64}) != ref
+        assert self._rid(series_sha256="t" * 64) != ref
+        # comparison-calendar change (declared scope)
+        assert self._rid(calendar_sha256="d" * 64) != ref
+        # session-authority change: a closure correction re-grades the
+        # grid (targets and scores move) — checkpoint B, P1-1
+        assert self._rid(session_authority_sha256="b" * 64) != ref
         # engine change (an engine fix can never re-serve a stale receipt)
-        assert forecast_run_id(
-            _spec(), **{**base, "engine_sha256": "f" * 64}) != ref
+        assert self._rid(engine_sha256="f" * 64) != ref
 
     def test_run_id_is_64_hex(self) -> None:
-        rid = forecast_run_id(_spec(), series_sha256="s" * 64,
-                              calendar_sha256="c" * 64, engine_sha256="e" * 64)
+        rid = self._rid()
         assert len(rid) == 64 and all(c in "0123456789abcdef" for c in rid)
 
 

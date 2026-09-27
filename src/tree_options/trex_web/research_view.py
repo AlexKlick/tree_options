@@ -332,6 +332,9 @@ def attach(
                     "input_snapshot_sha256"]
             if "calendar_sha256" in result:
                 updates["calendar_sha256"] = result["calendar_sha256"]
+            if "session_authority_sha256" in result:
+                updates["session_authority_sha256"] = result[
+                    "session_authority_sha256"]
             if "scenario_diff_sha256" in result:
                 updates["scenario_diff_sha256"] = result[
                     "scenario_diff_sha256"]
@@ -482,9 +485,10 @@ def attach(
 
     # RL-3: the forecast surface (replaces RL-1's 410 Gone stub).
     # GET serves the registry + freshness-qualified receipts; POST is
-    # the execution-bound idempotent spool (spec + series bytes +
-    # calendar sha + engine sha => the run id: a data revision or an
-    # engine change is a NEW run, never a silent re-serve).
+    # the execution-bound idempotent spool (spec + series bytes + BOTH
+    # calendar shas + engine sha => the run id: a data revision, a
+    # closure correction, or an engine change is a NEW run, never a
+    # silent re-serve).
     from tree_options.research.comparison.calendar import calendar_sha256
     from tree_options.research.forecast.contracts import (
         MIN_HISTORY_SESSIONS,
@@ -503,6 +507,7 @@ def attach(
         SOURCE_REGISTRY,
         load_index,
         load_synthetic,
+        session_authority_sha256,
     )
     from tree_options.research.forecast.spec_io import forecast_from_dict
     from tree_options.research.runstate.worker import engine_identity_sha
@@ -518,12 +523,17 @@ def attach(
     def forecast_metadata() -> JSONResponse:
         """Registry + interval semantics + freshness-qualified receipts.
 
-        A receipt whose ``series_sha256`` differs from the CURRENT data
-        sha is marked ``fresh: false`` - an obsolete receipt is never
-        silently promoted, and a refused attempt surfaces separately as
-        ``last_attempt_refused``. Sources are separate objects, so a
+        A receipt is ``fresh`` only when EVERY execution binding matches
+        the CURRENT world: series bytes, engine identity, and both
+        calendar identities (checkpoint B, P2-3 — an engine correction
+        with unchanged data must still mark the old receipt stale, never
+        promote it as current). A refused attempt surfaces separately
+        as ``last_attempt_refused``. Sources are separate objects, so a
         synthetic receipt can never qualify the index lane.
         """
+        engine_now = engine_identity_sha()
+        calendar_now = calendar_sha256()
+        authority_now = session_authority_sha256()
         sources = []
         with _open_store_or_503(workspace) as store:
             receipts: dict[tuple[str, int], dict[str, Any]] = {}
@@ -544,6 +554,9 @@ def attach(
                         "series_sha256": wire.get("series", {}).get(
                             "series_sha256"),
                         "engine_sha256": result.get("engine_sha256"),
+                        "calendar_sha256": result.get("calendar_sha256"),
+                        "session_authority_sha256":
+                            result.get("session_authority_sha256"),
                     }
                     best = receipts.get(key)
                     if best is None or candidate["at"] > best["at"]:
@@ -576,15 +589,30 @@ def attach(
                     "latest_receipt_run_id": None,
                     "receipt_series_sha256": None,
                     "current_series_sha256": current_sha,
+                    "receipt_engine_sha256": None,
+                    "current_engine_sha256": engine_now,
+                    "receipt_calendar_sha256": None,
+                    "current_calendar_sha256": calendar_now,
+                    "receipt_session_authority_sha256": None,
+                    "current_session_authority_sha256": authority_now,
                     "fresh": None,
                 }
                 receipt = receipts.get((source_id.value, h))
                 if receipt is not None:
                     entry["latest_receipt_run_id"] = receipt["run_id"]
                     entry["receipt_series_sha256"] = receipt["series_sha256"]
+                    entry["receipt_engine_sha256"] = receipt["engine_sha256"]
+                    entry["receipt_calendar_sha256"] = \
+                        receipt["calendar_sha256"]
+                    entry["receipt_session_authority_sha256"] = \
+                        receipt["session_authority_sha256"]
                     entry["fresh"] = (
                         current_sha is not None
-                        and receipt["series_sha256"] == current_sha)
+                        and receipt["series_sha256"] == current_sha
+                        and receipt["engine_sha256"] == engine_now
+                        and receipt["calendar_sha256"] == calendar_now
+                        and receipt["session_authority_sha256"]
+                        == authority_now)
                 refusal = refusals.get((source_id.value, h))
                 if refusal is not None:
                     entry["last_attempt_refused"] = {
@@ -666,6 +694,7 @@ def attach(
         run_id = forecast_run_id(
             spec, series_sha256=series.series_sha256,
             calendar_sha256=calendar_sha256(),
+            session_authority_sha256=session_authority_sha256(),
             engine_sha256=engine_identity_sha())
         with _open_store_or_503(workspace) as store:
             try:
@@ -688,6 +717,9 @@ def attach(
                     "format_version": RUN_FORMAT_VERSION,
                     "series_sha256_at_submission": series.series_sha256,
                     "engine_sha256_at_submission": engine_identity_sha(),
+                    "calendar_sha256_at_submission": calendar_sha256(),
+                    "session_authority_sha256_at_submission":
+                        session_authority_sha256(),
                 }, key=run_id, at=datetime.now())
                 status_value = "queued"
             else:

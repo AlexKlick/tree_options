@@ -41,12 +41,13 @@ child's own run_id. Status / failure / requeue rules are unchanged.
 RL-3 adds FORECAST runs (``kind == "forecast"``) under the same
 lifecycle, with execution-bound identity: the run record carries the
 ``series_sha256`` and ``engine_sha256`` captured at SUBMISSION, and
-the worker RECOMPUTES both before evaluating — a data revision or an
-engine change between enqueue and compute publishes a typed refusal
-(``research.forecast.source_drift`` / ``engine_changed``, both shas in
-the wire), never revised bytes or new code under the submission's
-identity. Unknown run kinds now FAIL loudly instead of silently
-computing a comparison.
+the worker RECOMPUTES them before evaluating — a data revision, an
+engine change, or a moved calendar (comparison or session authority)
+between enqueue and compute publishes a typed refusal
+(``research.forecast.source_drift`` / ``engine_changed`` /
+``calendar_changed``, both values in the wire), never revised bytes or
+new code under the submission's identity. Unknown run kinds now FAIL
+loudly instead of silently computing a comparison.
 
 Workers are unit-testable without threads: ``step()`` claims at most
 one queued run synchronously.
@@ -70,6 +71,7 @@ from tree_options.research.contracts import ResearchCandidate
 from tree_options.research.forecast.contracts import ForecastSourceId
 from tree_options.research.forecast.engine import evaluate_forecast
 from tree_options.research.forecast.refusal_codes import (
+    FORECAST_CALENDAR_CHANGED,
     FORECAST_ENGINE_CHANGED,
     FORECAST_SOURCE_DRIFT,
     ForecastRefusal,
@@ -78,6 +80,7 @@ from tree_options.research.forecast.sources import (
     ForecastSeries,
     load_index,
     load_synthetic,
+    session_authority_sha256,
 )
 from tree_options.research.forecast.spec_io import forecast_from_dict
 from tree_options.research.runstate.spec_hash import spec_hash as make_spec_hash
@@ -113,8 +116,15 @@ RUN_FORMAT_VERSION = 2
 #: scenario result's ``engine_sha`` matches the comparison engine
 #: bytes that produced it (scenarios reuse run_comparison verbatim).
 #: RL-3 adds the forecast package AND ``tree_options.desk.stats``
-#: (forecast receipts depend on its DM/OLS) — changing the shared sha
-#: for every lane is expected and documented: a rerun is a NEW run.
+#: (forecast receipts depend on its DM/OLS); the checkpoint-B pass adds
+#: ``evaluation.diagnostics`` (its bootstrap DETERMINES published
+#: intervals), ``desk.indices`` (read_store shapes the series), and the
+#: worker itself (its forecast orchestration — drift checks, snapshot
+#: and envelope shape — determines what a receipt IS; hashing the
+#: module that computes the sha is intentional, not circular: the
+#: bytes are read from disk, not derived from the digest). Changing
+#: the shared sha for every lane is expected and documented: a rerun
+#: is a NEW run.
 _ENGINE_MODULES = (
     "tree_options.research.comparison.funded",
     "tree_options.research.comparison.engine",
@@ -133,6 +143,9 @@ _ENGINE_MODULES = (
     "tree_options.research.forecast.harness",
     "tree_options.research.forecast.engine",
     "tree_options.desk.stats",
+    "tree_options.evaluation.diagnostics",
+    "tree_options.desk.indices",
+    "tree_options.research.runstate.worker",
 )
 
 
@@ -314,13 +327,13 @@ class ResearchWorker:
                           run: dict[str, Any]) -> dict[str, Any]:
         """Evaluate a forecast run with execution-bound identity (RL-3).
 
-        The run record carries the ``series_sha256`` and
-        ``engine_sha256`` captured at SUBMISSION; both are RECOMPUTED
-        here. Drift publishes a typed refusal with BOTH shas — revised
-        bytes or changed code never execute under the submission's
-        identity (the run id itself binds spec + series + calendar +
-        engine, so the drifted execution is a NEW run, never a silent
-        re-serve of this one).
+        The run record carries the ``series_sha256``, ``engine_sha256``
+        and BOTH calendar shas captured at SUBMISSION; all are RECOMPUTED
+        here. Drift publishes a typed refusal with BOTH values — revised
+        bytes, changed code, or a moved calendar never execute under the
+        submission's identity (the run id itself binds spec + series +
+        both calendars + engine, so the drifted execution is a NEW run,
+        never a silent re-serve of this one).
         """
         spec = forecast_from_dict(spec_payload)
         series = _load_forecast_series(spec)
@@ -357,9 +370,38 @@ class ResearchWorker:
                                  series.series_sha256}),
                 engine_sha256=engine_now)
 
+        calendar_now = calendar_sha256()
+        authority_now = session_authority_sha256()
+        calendar_moved = (
+            (isinstance(run.get("calendar_sha256_at_submission"), str)
+             and run["calendar_sha256_at_submission"] != calendar_now)
+            or (isinstance(
+                run.get("session_authority_sha256_at_submission"), str)
+                and run["session_authority_sha256_at_submission"]
+                != authority_now))
+        if calendar_moved:
+            return _forecast_refusal_result(
+                run_id, spec, ForecastRefusal(
+                    code=FORECAST_CALENDAR_CHANGED,
+                    message=("a calendar bound into this run's identity "
+                             "moved between submission and compute "
+                             "(comparison calendar and/or closure-"
+                             "corrected session authority); refusing to "
+                             "re-grade the grid under the submission's "
+                             "run id"),
+                    payload={
+                        "calendar_sha256_at_submission":
+                            run.get("calendar_sha256_at_submission"),
+                        "calendar_sha256_at_compute": calendar_now,
+                        "session_authority_sha256_at_submission":
+                            run.get("session_authority_sha256_at_submission"),
+                        "session_authority_sha256_at_compute": authority_now,
+                    }),
+                engine_sha256=engine_now)
+
         outcome = evaluate_forecast(
             spec, series=series,
-            calendar_sha256=calendar_sha256(),
+            calendar_sha256=calendar_now,
             engine_sha256=engine_now)
         if isinstance(outcome, ForecastRefusal):
             return _forecast_refusal_result(
@@ -380,7 +422,8 @@ class ResearchWorker:
                 "end": (spec.evaluation_end.isoformat()
                         if spec.evaluation_end else None),
             },
-            "calendar_sha256": calendar_sha256(),
+            "calendar_sha256": calendar_now,
+            "session_authority_sha256": authority_now,
         }
         snapshot_sha = hashlib.sha256(canonical(snapshot)).hexdigest()
         return {
@@ -390,7 +433,8 @@ class ResearchWorker:
             "engine_sha256": engine_now,
             "input_snapshot": snapshot,
             "input_snapshot_sha256": snapshot_sha,
-            "calendar_sha256": calendar_sha256(),
+            "calendar_sha256": calendar_now,
+            "session_authority_sha256": authority_now,
             "result_sha256": result_sha,
             "wire": wire,
         }

@@ -159,6 +159,20 @@ class ModelRun:
         )
 
 
+def _exp_levels(vals: tuple[float, ...]) -> tuple[float, ...] | None:
+    """Exponentiate log-quantiles to levels; None on overflow.
+
+    A FINITE log-quantile can still overflow ``math.exp`` (e.g. 1000.0)
+    — that is a counted NON_FINITE failure at the origin (or an
+    unavailable forward fan), never an exception that would crash the
+    run and discard the ledger (checkpoint B, P2-4).
+    """
+    try:
+        return tuple(math.exp(v) for v in vals)
+    except OverflowError:
+        return None
+
+
 def evaluate_model(
     sessions: Sequence[date],
     closes: Sequence[float],
@@ -206,6 +220,7 @@ def evaluate_model(
         training_count = t - horizon + 1
         failed: str | None = None
         vals: tuple[float, ...] = ()
+        levels: tuple[float, ...] | None = None
         if log_q is None:
             failed = FAIL_FIT
         else:
@@ -214,6 +229,12 @@ def evaluate_model(
                 failed = FAIL_NON_FINITE
             elif any(b < a for a, b in itertools.pairwise(vals)):
                 failed = FAIL_QUANTILE_ORDERING
+            else:
+                levels = _exp_levels(vals)
+                if levels is None:
+                    # finite log-quantiles whose LEVELS overflow: a
+                    # counted numerical failure, never a crash
+                    failed = FAIL_NON_FINITE
         if failed is not None:
             failures[failed] = failures.get(failed, 0) + 1
             rows.append((t, LedgerRow(
@@ -221,7 +242,7 @@ def evaluate_model(
                 training_count=training_count, status="failed",
                 reason=failed, actual=actual)))
             continue
-        levels = tuple(math.exp(v) for v in vals)
+        assert levels is not None
         losses = tuple(
             tau * (actual - q) if actual >= q else (1.0 - tau) * (q - actual)
             for tau, q in zip(taus_t, levels, strict=True)
@@ -264,7 +285,7 @@ def forward_fan(
         return None
     if any(b < a for a, b in itertools.pairwise(vals)):
         return None
-    return tuple(math.exp(v) for v in vals)
+    return _exp_levels(tuple(vals))
 
 
 # ---------------------------------------------------------------- models

@@ -326,9 +326,15 @@ def evaluate_forecast(
             series.closes,
             bind(factory, h=spec.horizon, taus=QUANTILE_GRID))
         if levels is None:
+            # A latest-fit failure (e.g. AR(1) explosive on the full
+            # sample) must not VANISH from the receipt: the model gets
+            # an explicit unavailable entry (checkpoint B, P2-5).
+            forward["fan"].append(
+                {"model": name, "status": "unavailable"})
             continue
         forward["fan"].append({
             "model": name,
+            "status": "ok",
             "quantiles": dict(
                 (f"{t:.2f}", q)
                 for t, q in zip(QUANTILE_GRID, levels, strict=True)),
@@ -389,6 +395,7 @@ def _metrics_for(
                            "origins, dependence not captured",
             "bootstrap_low": boot.lower if boot else None,
             "bootstrap_high": boot.upper if boot else None,
+            "bootstrap_block": BOOTSTRAP_BLOCK,
             "bootstrap_seed": seed,
             **({} if boot else
                {"bootstrap_reason": REASON_BOOTSTRAP_DEGENERATE}),

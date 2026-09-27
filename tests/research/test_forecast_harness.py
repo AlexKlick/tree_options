@@ -245,6 +245,68 @@ class TestEvaluateModel:
                              model=nan_once)
         assert run.failure_reasons == {"non_finite": 1}
 
+    def test_ledger_losses_follow_pinball_orientation(self) -> None:
+        # Hand-derived oracle (checkpoint B, surviving mutation 1):
+        # recompute rho_tau from the row's OWN actual and quantiles and
+        # demand the ledger agree — no other test derives production
+        # ledger losses independently of the harness expression. The
+        # wide stub band straddles the actuals, so BOTH branches
+        # (y >= q and y < q) occur; a swapped tau weighting cannot pass.
+        sessions, closes = self._setup()
+
+        def wide(closes_in: tuple[float, ...]) -> tuple[float, ...]:
+            _ = closes_in
+            return tuple(math.log(80.0 + 30.0 * k)
+                         for k in range(len(QUANTILE_GRID)))
+
+        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
+                                 last_eval=None, horizon=5, min_history=1)
+        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
+                             taus=QUANTILE_GRID, model_name="wide",
+                             model=wide)
+        rows = [r for r in run.ledger if r.status == "evaluated"]
+        assert rows
+        saw_over = saw_under = False
+        for row in rows:
+            y = row.actual
+            assert y is not None
+            assert len(row.losses_by_tau) == len(QUANTILE_GRID)
+            for tau, q, got in zip(QUANTILE_GRID, row.quantiles,
+                                   row.losses_by_tau, strict=True):
+                if y >= q:
+                    saw_over = True
+                    expected = tau * (y - q)
+                else:
+                    saw_under = True
+                    expected = (1.0 - tau) * (q - y)
+                assert got == pytest.approx(expected), (row.origin_date,
+                                                        tau)
+        assert saw_over and saw_under
+
+    def test_exp_overflow_is_a_counted_non_finite_failure(self) -> None:
+        # Finite log-quantiles whose LEVELS overflow exp: a counted
+        # failure that retains the ledger — never an exception that
+        # crashes the run and discards it (checkpoint B, P2-4).
+        sessions, closes = self._setup()
+        calls: list[int] = []
+
+        def huge(closes_in: tuple[float, ...]) -> tuple[float, ...]:
+            calls.append(len(closes_in))
+            if len(calls) == 2:      # exactly one origin overflows
+                return (1000.0, 1000.1, 1000.2, 1000.3, 1000.4)
+            return tuple(math.log(90.0 + 5.0 * k)
+                         for k in range(len(QUANTILE_GRID)))
+
+        grid = month_origin_grid(sessions, first_eval=date(2024, 1, 1),
+                                 last_eval=None, horizon=5, min_history=1)
+        run = evaluate_model(sessions, closes, grid=grid, horizon=5,
+                             taus=QUANTILE_GRID, model_name="huge",
+                             model=huge)
+        assert run.failure_reasons == {"non_finite": 1}
+        assert run.n_evaluated == len(grid.origins) - 1
+        failed = [r for r in run.ledger if r.status == "failed"]
+        assert failed and failed[0].actual is not None
+
     def test_tally_identity_is_enforced(self) -> None:
         # A tally whose arithmetic does not close is a defect, not a
         # display: the identity assert must fire.
@@ -306,6 +368,15 @@ class TestForwardFan:
                     math.log(103.0), math.log(108.0))
 
         assert forward_fan((100.0, 101.0), unordered) is None
+
+    def test_overflow_returns_none_never_raises(self) -> None:
+        # Finite log-quantiles that overflow exp at the latest fit: the
+        # fan is unavailable (None), never an exception (P2-4).
+        def huge(closes_in: tuple[float, ...]) -> tuple[float, ...]:
+            _ = closes_in
+            return (1000.0, 1000.1, 1000.2, 1000.3, 1000.4)
+
+        assert forward_fan((100.0, 101.0, 102.0), huge) is None
 
 
 def test_rw_full_is_bindable_and_ordered() -> None:

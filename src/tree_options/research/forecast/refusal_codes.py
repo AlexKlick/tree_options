@@ -29,6 +29,10 @@ FORECAST_INVALID_QUANTILE_GRID: Final = "research.forecast.invalid_quantile_grid
 FORECAST_SOURCE_DRIFT: Final = "research.forecast.source_drift"
 FORECAST_SOURCE_INVALID: Final = "research.forecast.source_invalid"
 FORECAST_ENGINE_CHANGED: Final = "research.forecast.engine_changed"
+#: Either calendar bound into the run identity moved between submission
+#: and compute: the comparison calendar (scope) or the closure-corrected
+#: session authority (the grid itself).
+FORECAST_CALENDAR_CHANGED: Final = "research.forecast.calendar_changed"
 
 FORECAST_REFUSAL_KINDS: Final[tuple[str, ...]] = (
     FORECAST_UNKNOWN_SOURCE,
@@ -39,6 +43,7 @@ FORECAST_REFUSAL_KINDS: Final[tuple[str, ...]] = (
     FORECAST_SOURCE_DRIFT,
     FORECAST_SOURCE_INVALID,
     FORECAST_ENGINE_CHANGED,
+    FORECAST_CALENDAR_CHANGED,
 )
 
 #: Per-ORIGIN failure reasons (counted per model, never hidden — §10
@@ -65,6 +70,7 @@ __all__ = [
     "FAIL_FIT",
     "FAIL_NON_FINITE",
     "FAIL_QUANTILE_ORDERING",
+    "FORECAST_CALENDAR_CHANGED",
     "FORECAST_ENGINE_CHANGED",
     "FORECAST_HORIZON_NOT_ENABLED",
     "FORECAST_INSUFFICIENT_HISTORY",

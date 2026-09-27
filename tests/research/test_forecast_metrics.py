@@ -14,7 +14,11 @@ from typing import ClassVar
 
 import pytest
 
-from tree_options.research.forecast.contracts import QUANTILE_GRID
+from tree_options.evaluation.diagnostics import block_bootstrap_ci
+from tree_options.research.forecast.contracts import (
+    BOOTSTRAP_BLOCK,
+    QUANTILE_GRID,
+)
 from tree_options.research.forecast.metrics import (
     coverage_bootstrap_ci,
     dm_on_differentials,
@@ -169,6 +173,34 @@ class TestBootstrap:
         assert (a.lower, a.upper) == (b.lower, b.upper)
         assert 0.0 <= a.lower <= a.upper <= 1.0
 
+    def test_block_two_matches_the_shared_helper(self) -> None:
+        # The CI must be the shared moving-block bootstrap AT THE
+        # REQUESTED BLOCK SIZE (checkpoint B, surviving mutation 3):
+        # recompute with ``evaluation.diagnostics.block_bootstrap_ci``
+        # verbatim and demand exact agreement. The trailing inequality
+        # self-validates the oracle — block 1 must genuinely differ on
+        # this sample, else this test could not kill an
+        # independent-observation mutant and must be re-derived.
+        hits = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0,
+                1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+
+        def mean_stat(sample: list[float]) -> float | None:
+            return sum(sample) / len(sample) if sample else None
+
+        got = coverage_bootstrap_ci(hits, block_size=BOOTSTRAP_BLOCK,
+                                    iterations=500, seed=7)
+        want = block_bootstrap_ci(
+            hits, statistic=mean_stat,
+            block_size=BOOTSTRAP_BLOCK, iterations=500, seed=7,
+            confidence=0.95)
+        assert got is not None and want is not None
+        assert (got.lower, got.upper) == (want.lower, want.upper)
+        indep = block_bootstrap_ci(
+            hits, statistic=mean_stat, block_size=1, iterations=500,
+            seed=7, confidence=0.95)
+        assert indep is not None
+        assert (indep.lower, indep.upper) != (got.lower, got.upper)
+
     def test_degenerate_coverage_returns_none(self) -> None:
         # All hits / all misses: every resample reproduces the same
         # proportion, so a bootstrap interval is not uncertainty
@@ -262,6 +294,17 @@ class TestPerOriginGridLosses:
         # pinball = 0.5*2 = 1 ; grid loss = 2*mean = 2.
         out = per_origin_grid_losses([12.0], [[10.0]], [0.5])
         assert out[0] == pytest.approx(2.0)
+
+    def test_orientation_at_asymmetric_tau(self) -> None:
+        # Hand-derived at tau = 0.25 (checkpoint B, surviving mutation
+        # 2): y = 10 vs q = 8 (forecast too LOW) charges tau*(y - q)
+        # = 0.5, grid loss 2*0.5 = 1; y = 10 vs q = 12 (too HIGH)
+        # charges (1 - tau)*(q - y) = 1.5, grid loss 3. A reversed
+        # weighting returns 3 and 1 — the pairing of value to case is
+        # the oracle (tau = 0.5 cannot detect orientation).
+        out = per_origin_grid_losses([10.0, 10.0], [[8.0], [12.0]], [0.25])
+        assert out[0] == pytest.approx(1.0)
+        assert out[1] == pytest.approx(3.0)
 
     def test_perfect_forecast_is_zero(self) -> None:
         out = per_origin_grid_losses([10.0, 10.0],

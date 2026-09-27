@@ -213,6 +213,9 @@ def _inspect_forecast(args: argparse.Namespace) -> int:
                 "input_snapshot_sha256"]
         if "calendar_sha256" in result:
             payload["calendar_sha256"] = result["calendar_sha256"]
+        if "session_authority_sha256" in result:
+            payload["session_authority_sha256"] = result[
+                "session_authority_sha256"]
         payload["wire"] = result.get("wire")
     print(json.dumps(payload, indent=2, sort_keys=True, default=str))
     return 0
