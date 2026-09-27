@@ -67,6 +67,8 @@ def test_stale_choice_and_three_month_windows() -> None:
     with pytest.raises(ValueError):
         replay(_bundle(day), [day], {"s:2026-09-24T10:00": None})
     assert len(schedule_for(date(2026, 11, 27))) == 5
+    month_end_days = [date(2026, 1, 31) + timedelta(days=i) for i in range(150)]
+    assert windows(month_end_days, stride_sessions=200)[0][1] == date(2026, 4, 29)
 
 
 def test_combined_open_loss_cap_with_missing_exit_marks() -> None:

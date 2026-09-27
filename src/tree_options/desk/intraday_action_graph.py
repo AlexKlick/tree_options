@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import re
 from bisect import bisect_right
+from calendar import monthrange
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
@@ -56,8 +57,9 @@ def windows(sessions: list[date], *, months: int = 3, stride_sessions: int = 21
         year, month = d.year, d.month + months
         year += (month - 1) // 12
         month = (month - 1) % 12 + 1
-        end = date(year, month, min(d.day, 28))
-        if end > sessions[-1] + timedelta(days=3):
+        end = date(year, month, min(d.day, monthrange(year, month)[1]))
+        next_session = next((day for day in session_calendar().sessions() if day > sessions[-1]), None)
+        if next_session is not None and next_session < end:
             break
         contained = [day for day in sessions if d <= day < end]
         if len(contained) >= 40:

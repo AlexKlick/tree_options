@@ -75,12 +75,15 @@ must not be promoted to a deployable strategy.
 
 ## Validation state
 
-`ruff check` on the changed Python files passed. The focused graph suite
-passed 3/3 after the calendar and combined-risk changes. The backend route
-test, full web check, and RAM-admitted rolling policy sweep were submitted
-with full logs under `/tmp/trex-intraday-*.log`; their final results must be
-read from those logs before any pass claim. No cockpit deployment or broker
-paper order occurred.
+`ruff check` on the changed Python files passed. The focused action-model and
+desk replay suite passed 45/45 (`/tmp/trex-pr-focused-tests.log`). After the
+month-end and source-custody correction, the intraday graph and desk web tests
+passed 9/9 (`/tmp/trex-pr-iteration-tests.log`). The exact-head web check
+passed TypeScript, 186/186 Vitest tests, production build, and bundle check
+(`/tmp/trex-pr-web-check.log`); that run preceded the later Python-only
+correction. The RAM-admitted rolling policy sweep is queued, so no full-window
+strategy result is verified. No cockpit deployment or broker paper order
+occurred.
 
 The RAM launcher queued the full replay and web gates behind other active
 work. A request to cancel the separate longdated capture to release capacity

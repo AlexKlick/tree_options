@@ -38,6 +38,21 @@ def main() -> int:
         parser.error("invalid date range or output already exists")
     source = args.bundle.read_bytes()
     bundle = json.loads(source)
+    try:
+        source_start = date.fromisoformat(bundle["start"])
+        source_end = date.fromisoformat(bundle["end"])
+        selected_as_of = date.fromisoformat(bundle["selected_as_of"])
+        contracts = bundle["contracts"]
+        if (bundle.get("schema") != "desk-option-minute-bars/1"
+                or source_start > args.start or source_end < args.end
+                or selected_as_of > args.start or not isinstance(contracts, dict)
+                or bundle.get("found") != len(contracts)
+                or bundle.get("requested", -1) < len(contracts)
+                or not isinstance(bundle.get("contract_source_sha256"), str)
+                or len(bundle["contract_source_sha256"]) != 64):
+            raise ValueError("incomplete or mismatched minute source")
+    except (KeyError, TypeError, ValueError) as exc:
+        parser.error(f"minute source custody failed: {exc}")
     choices = json.loads(args.decisions.read_text()) if args.decisions else None
     if choices is not None and (not isinstance(choices, dict) or any(
             not isinstance(key, str) or not key.startswith("s:")
