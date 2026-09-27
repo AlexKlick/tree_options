@@ -39,6 +39,9 @@ export const getActionModelExample = (): Promise<import('./types').ActionModelEx
 export const getHistoricalReplays = (): Promise<import('./types').HistoricalReplayList> =>
   fetchJson('api/desk/historical-replays')
 
+export const getPortfolioScenarios = (): Promise<import('./types').PortfolioScenarioList> =>
+  fetchJson('api/desk/portfolio-scenarios')
+
 export const getPlan = (id: string): Promise<PlanDetailResponse> =>
   fetchJson(`api/plans/${encodeURIComponent(id)}`)
 

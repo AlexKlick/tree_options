@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getActionModelExample, getHistoricalReplays, getPlans } from '../lib/api'
+import { getActionModelExample, getHistoricalReplays, getPlans, getPortfolioScenarios } from '../lib/api'
 import type { ActionNode } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
@@ -31,6 +31,7 @@ export function ActionModelPage() {
   const poll = usePoll(getActionModelExample, 0)
   const accountPoll = usePoll(getPlans, 30_000)
   const replays = usePoll(getHistoricalReplays, 60_000)
+  const portfolios = usePoll(getPortfolioScenarios, 60_000)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const plan = poll.data?.plan
   const selected = plan?.nodes.find((node) => node.id === selectedId) ?? plan?.nodes[0]
@@ -46,7 +47,7 @@ export function ActionModelPage() {
         ) : (
           <p className="muted">Broker account snapshot unavailable in this view.</p>
         )}
-        {accountPoll.data?.net_positions && <p>Existing TREX positions: {accountPoll.data.net_positions.length} underlying rows. Their legacy monitor remains the owner; this action model does not claim or control them.</p>}
+        {accountPoll.data?.net_positions && <p>Existing TREX positions: {accountPoll.data.net_positions.length} underlying rows. Their legacy monitor remains the owner; this action model does not claim or control them. {accountPoll.data.net_positions.length > 0 && 'The supervised governed canary remains blocked until the legacy book is flat.'}</p>}
         {accountPoll.error && <p className="muted">Account observation unavailable: {accountPoll.error}</p>}
       </section>
       <section className="card" aria-label="Historical options replay">
@@ -61,9 +62,26 @@ export function ActionModelPage() {
             <p>{run.spec.names.length} names · {run.spec.entry_dte.join('–')} entry DTE · assumed haircut {(run.spec.haircut * 100).toFixed(1)}% per leg · ${run.spec.max_loss} trade cap</p>
             <p>{run.counts.evaluable_within_trade_cap ?? 0} evaluable of {run.counts.attempted ?? 0} attempted · {run.counts.missing_decision_spot_or_options ?? 0} missing decision data before attempts · {run.counts.missing_exit_or_entry_bar ?? 0} missing bars · {run.counts.over_trade_loss_cap ?? 0} above cap</p>
             <ul>{Object.entries(run.by_variant).map(([name, row]) => (
-              <li key={name}>{name}: {row.trades} modeled trades · {row.trades < 20 ? `${row.wins} modeled wins; too few trades for a rate` : row.win_rate === null ? 'win rate unavailable' : `${(row.win_rate * 100).toFixed(1)}% modeled wins`} · mean {row.mean_pnl === null ? 'unavailable' : `$${row.mean_pnl.toFixed(2)}`} · worst {row.worst_pnl === null ? 'unavailable' : `$${row.worst_pnl.toFixed(2)}`}</li>
+              <li key={name}>{name}: {row.trades} modeled trades · {row.trades < 20 ? `${row.wins} modeled wins; too few trades for a rate` : row.win_rate === null ? 'win rate unavailable' : `${(row.win_rate * 100).toFixed(1)}% modeled wins`} · mean {row.mean_pnl === null ? 'unavailable' : `$${row.mean_pnl.toFixed(2)}`} · worst {row.worst_pnl === null ? 'unavailable' : `$${row.worst_pnl.toFixed(2)}`}{run.eligibility_by_variant?.[name] && <> · eligibility: {Object.entries(run.eligibility_by_variant[name]).map(([status, count]) => `${status} ${count}`).join(', ')}</>}</li>
             ))}</ul>
             <p className="muted">{run.id} · {run.provenance.sources.length} cache sets · {run.limitations.join('; ')}</p>
+          </div>
+        ))}
+      </section>
+      <section className="card" aria-label="Portfolio risk scenarios">
+        <div className="eyebrow">$5,000 target · modeled overlap</div>
+        <h2>Portfolio risk scenarios</h2>
+        <p className="muted">Each fixed strategy variant is projected separately. Daily option bars cannot prove an intraday or daily loss stop, broker fills, or a profitable strategy.</p>
+        {portfolios.error && <p role="alert">Portfolio scenarios unavailable: {portfolios.error}</p>}
+        {portfolios.data?.reports.length === 0 && <p>No portfolio scenario has completed in this cockpit store.</p>}
+        {portfolios.data?.reports.map((run) => (
+          <div key={run.id} className="card">
+            <h3>{run.id}</h3>
+            <p>${run.spec.intended_capital} target capital · ${run.spec.max_trade_loss} per modeled trade · ${run.spec.max_open_loss} combined open loss cap</p>
+            <ul>{Object.entries(run.variants).map(([name, row]) => (
+              <li key={name}>{name}: {row.admitted}/{row.considered} modeled entries admitted · {row.skipped.open_cap} blocked by open-risk cap · ${row.peak_open_loss_reserved} peak reserved loss · ${row.closed_pnl} closed modeled P&amp;L</li>
+            ))}</ul>
+            <p className="muted">Replay SHA-256 {run.provenance.replay_sha256.slice(0, 12)} · {run.provenance.code_dirty ? 'code tree was dirty' : 'clean code tree'} · {run.limitations.join('; ')}</p>
           </div>
         ))}
       </section>

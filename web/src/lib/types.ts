@@ -47,7 +47,26 @@ export interface HistoricalReplayList {
     counts: Record<string, number>
     by_structure: Record<string, { trades: number; wins: number; win_rate: number | null; mean_pnl: number | null }>
     by_variant: Record<string, { trades: number; wins: number; win_rate: number | null; mean_pnl: number | null; worst_pnl: number | null }>
+    eligibility_by_variant?: Record<string, Record<string, number>> | null
     provenance: { sources: { path: string; input_sha256: string; input_files: number }[] }
+    limitations: string[]
+  }[]
+}
+
+export interface PortfolioScenarioList {
+  schema: 'desk-portfolio-scenario-list/1'
+  execution_enabled: false
+  reports: {
+    id: string
+    label: string
+    spec: { intended_capital: string; max_trade_loss: string; max_open_loss: string }
+    variants: Record<string, {
+      considered: number; admitted: number
+      skipped: { trade_cap: number; open_cap: number; capital: number }
+      peak_open_loss_reserved: string; closed_pnl: string
+      ending_closed_capital: string; minimum_closed_capital: string
+    }>
+    provenance: { replay_sha256: string; code_head: string; code_dirty: boolean }
     limitations: string[]
   }[]
 }

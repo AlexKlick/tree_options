@@ -54,3 +54,7 @@ def test_malformed_rows_and_limits_are_rejected() -> None:
     bad["max_loss"] = "bad"
     with pytest.raises(ValueError, match="max_loss must be numeric"):
         simulate(report(bad))
+    bad["max_loss"] = 100
+    bad["pnl"] = -101
+    with pytest.raises(ValueError, match="exceeds declared worst-case"):
+        simulate(report(bad))

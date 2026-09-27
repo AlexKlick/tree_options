@@ -12,7 +12,9 @@ flowchart LR
     D --> E
     E --> F[Next session and exit VWAP<br/>assumed haircut and commission]
     F --> G[Immutable run JSON<br/>omissions and modeled outcomes]
+    G --> P[5000 dollar portfolio scenario<br/>300 trade and 1500 open risk caps]
     G --> H[Read only cockpit replay summaries]
+    P --> H
 
     C --> I[HAR realized variance forecast]
     B --> J[IV history and desk pricing]
@@ -34,10 +36,11 @@ flowchart LR
 | Volatility | `desk.har`, `FORECAST-001-results.md` | Pooled HAR beat RV22 on the sealed realized-variance forecast test at 20 and 63 sessions. This does not establish trade profitability. |
 | Implied volatility | `IVHIST-001-results.md` | IWM is the only pair labeled `ok`; broader IV quality is not established. |
 | Exploratory trade replay | `historical_replay.py`, `scripts/run_desk_historical_replay.py` | Daily option VWAP scenarios with next-session prices, omissions, source digests and a per-trade cap. No broker fills, quote spread measurement, concurrent exposure, or daily stop. |
+| Portfolio scenario | `portfolio_replay.py`, `scripts/run_desk_portfolio_scenario.py` | Variant-by-variant modeled concurrent reservation under $5,000 capital and $300/$1,500 caps. Daily loss stop and intraday exits remain untested. |
 | Sealed option study | `DESK-BT-001.md` and amendment | Separately preregistered; needs 20 recorded chain sessions and a measured haircut before its scored run. It does not consume or inherit an exploratory replay verdict. |
 | Capital review | `action_graph.capital` | Candidate screening only. Daily loss cap, horizon, win floor, reward tiers and allowed strategy versions still need an authored profile. |
 | Paper broker | `trex.gateway_watch`, `trex.ibkr`, `trex.enter`, `trex.monitor` | Existing login, account observation and legacy order ownership. No governed action-model dispatch is installed. |
-| Cockpit | `GET /api/desk/historical-replays`, `GET /api/action-model/example` | Read-only replay summaries and a synthetic plan. Neither route authorizes trading. |
+| Cockpit | `GET /api/desk/historical-replays`, `GET /api/desk/portfolio-scenarios`, `GET /api/action-model/example` | Read-only replay and portfolio summaries and a synthetic plan. None authorizes trading. |
 
 ## First local replay
 

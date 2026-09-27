@@ -22,6 +22,13 @@ runtime operation registrations or an authority source.
   equity, and `review_candidate` fails closed on missing explicit loss limits,
   objective-specific outcome evidence, strategy scope, reconciled exposure, package risk,
   assignment plan and broker margin. An empty blocker list means reviewable only.
+- `review_canary` screens a manually specified, one-package operational paper
+  canary against fresh account and quote facts, legacy-flat status, exit
+  readiness and the authored capital limits. It does not issue a permit.
+- Historical replay now records per-row eligibility; a separate frozen
+  portfolio scenario applies modeled $5,000/$300/$1,500 overlap limits and
+  publishes read-only summaries to the cockpit. It cannot test the $300
+  realized daily stop from daily bars.
 
 ## Existing owner paths to reuse
 

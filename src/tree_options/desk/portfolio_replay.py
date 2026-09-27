@@ -76,6 +76,8 @@ def simulate(replay: dict[str, Any], *, capital: Decimal = Decimal("5000"),
                 raise ValueError("pnl must be numeric") from exc
             if not pnl.is_finite():
                 raise ValueError("pnl must be finite")
+            if -pnl > loss:
+                raise ValueError("modeled loss exceeds declared worst-case loss")
             remaining: list[tuple[date, Decimal, Decimal]] = []
             for prior_exit, prior_loss, prior_pnl in active:
                 if prior_exit < entry:

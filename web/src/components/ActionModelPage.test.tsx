@@ -1,12 +1,13 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ActionModelPage } from './ActionModelPage'
-import { getActionModelExample, getHistoricalReplays, getPlans } from '../lib/api'
+import { getActionModelExample, getHistoricalReplays, getPlans, getPortfolioScenarios } from '../lib/api'
 
 vi.mock('../lib/api', () => ({
   getActionModelExample: vi.fn(),
   getPlans: vi.fn(),
   getHistoricalReplays: vi.fn(),
+  getPortfolioScenarios: vi.fn(),
   getGateway: () => new Promise(() => {}),
   getExitMachine: () => new Promise(() => {}),
 }))
@@ -44,6 +45,18 @@ it('shows proposal status and inspects guards without a trade control', async ()
       provenance: { sources: [] }, limitations: ['modeled prices'],
     }],
   })
+  vi.mocked(getPortfolioScenarios).mockResolvedValue({
+    schema: 'desk-portfolio-scenario-list/1', execution_enabled: false, reports: [{
+      id: 'portfolio-one', label: 'exploratory',
+      spec: { intended_capital: '5000', max_trade_loss: '300', max_open_loss: '1500' },
+      variants: { 'xsmom_top3/put_credit': { considered: 2, admitted: 1,
+        skipped: { trade_cap: 0, open_cap: 1, capital: 0 },
+        peak_open_loss_reserved: '150', closed_pnl: '41',
+        ending_closed_capital: '5041', minimum_closed_capital: '5000' } },
+      provenance: { replay_sha256: 'a'.repeat(64), code_head: 'b'.repeat(40), code_dirty: false },
+      limitations: ['modeled prices'],
+    }],
+  })
   render(<ActionModelPage />)
   await waitFor(() => expect(screen.getByText('Compare a version')).toBeTruthy())
   expect(screen.getByText(/execution authorized: no/)).toBeTruthy()
@@ -51,6 +64,8 @@ it('shows proposal status and inspects guards without a trade control', async ()
   expect(screen.getByText(/1 modeled wins; too few trades for a rate/)).toBeTruthy()
   expect(screen.queryByText(/100\.0% modeled wins/)).toBeNull()
   expect(screen.getByRole('region', { name: 'Trading system graph' })).toBeTruthy()
+  expect(screen.getByRole('region', { name: 'Portfolio risk scenarios' })).toBeTruthy()
+  expect(screen.getByText(/1\/2 modeled entries admitted/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /N01.*Resolve inputs/ }))
   expect(screen.getByText(/Guards: input_hash_match/)).toBeTruthy()
   expect(screen.getByText(/No attempt, grant, permit, broker effect/)).toBeTruthy()

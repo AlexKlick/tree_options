@@ -67,3 +67,28 @@ def test_historical_replay_reports_are_read_only_and_summary_only(world):
     assert doc['reports'][0]['counts']['evaluable_within_trade_cap'] == 1
     assert 'rows' not in doc['reports'][0]
     assert c.post('/api/desk/historical-replays').status_code == 405
+
+
+def test_portfolio_scenarios_are_read_only_and_summary_only(world):
+    out = world.root / 'desk-store' / 'evaluations' / 'portfolio-scenario'
+    out.mkdir(parents=True)
+    (out / 'portfolio-20260927T000000Z-abcdef.json').write_text(json.dumps({
+        'schema': 'desk-portfolio-scenario/1', 'label': 'exploratory',
+        'spec': {'intended_capital': '5000', 'max_trade_loss': '300', 'max_open_loss': '1500'},
+        'variants': {'xsmom_top3/call_debit': {'considered': 1, 'admitted': 1,
+            'skipped': {'trade_cap': 0, 'open_cap': 0, 'capital': 0},
+            'peak_open_loss_reserved': '100', 'closed_pnl': '10',
+            'ending_closed_capital': '5010', 'minimum_closed_capital': '5000',
+            'admitted_decision_names': ['2025-01-01:SPY']}},
+        'provenance': {'replay_sha256': 'a' * 64, 'code_head': 'b' * 40, 'code_dirty': False},
+        'limitations': ['not a fill'], 'private_rows': [{'name': 'SPY'}],
+    }))
+    c = TestClient(create_app(state_dir=str(world.root / 'legacy'),
+        plans_dir=str(world.root / 'plans'), discovery_dir=str(world.root / 'discovery'),
+        desk_state_dir=str(world.root / 'desk-state'), desk_store_dir=str(world.root / 'desk-store')))
+    response = c.get('/api/desk/portfolio-scenarios')
+    assert response.status_code == 200
+    assert response.json()['reports'][0]['variants']['xsmom_top3/call_debit']['admitted'] == 1
+    assert 'admitted_decision_names' not in response.json()['reports'][0]['variants']['xsmom_top3/call_debit']
+    assert 'private_rows' not in response.json()['reports'][0]
+    assert c.post('/api/desk/portfolio-scenarios').status_code == 405

@@ -54,3 +54,28 @@ announcement-time vintages. Overlapping trades are counted independently, so agg
 P&L is not a $5,000 portfolio path and the $1,500 combined open-risk limit
 is not tested here. This lane supplies research evidence for later governed
 proposal review, not a measured live edge or broker authorization.
+
+## Overlap-aware budget scenario
+
+`scripts/run_desk_portfolio_scenario.py` takes one frozen replay JSON, records
+its SHA-256 and code head, and projects each predeclared signal/structure
+variant separately. The default target budget is $5,000 with a $300 modeled
+per-trade loss cap and $1,500 combined reserved open loss cap. Positions
+exiting on an entry date still reserve risk for that date; proceeds are
+recognized only before a later entry date. The scenario preserves trade-cap,
+open-cap, and capital exclusions and writes a new immutable JSON artifact.
+
+Run it through `host-benchmark` with a full log, using a specific replay file:
+
+```bash
+~/.local/bin/host-benchmark .venv/bin/python scripts/run_desk_portfolio_scenario.py \
+  --replay /absolute/path/to/replay.json \
+  --out-dir /home/alexk/documents/tree_options/artifacts/desk-store/evaluations/portfolio-scenario \
+  > /tmp/trex-portfolio-scenario.log 2>&1
+tail -n 40 /tmp/trex-portfolio-scenario.log
+```
+
+`GET /api/desk/portfolio-scenarios` publishes only read-only summaries in the
+Action model cockpit. This daily-bar calculation cannot enforce or test the
+$300 realized daily loss stop or intraday exits, and its closed P&L is not a
+broker fill. No adaptive selector is applied across variants.
