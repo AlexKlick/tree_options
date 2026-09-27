@@ -112,7 +112,7 @@ function modelMetrics(ledger: OracleRow[], skill: object | null) {
   const rows = ledger.filter((r) => r.status === 'evaluated')
   const n = rows.length
   const perTauMean = TAUS.map((_tau, k) => rows.reduce(
-    (s, r) => s + oraclePinball(r.actual as number, r.quantiles[k], TAUS[k]), 0) / n)
+    (s, r) => s + buildPinball(r.actual as number, r.quantiles[k], TAUS[k]), 0) / n)
   return {
     pinball_by_tau: Object.fromEntries(TAUS.map((t, k) => [t.toFixed(2), perTauMean[k]])),
     grid_quantile_score: 2 * (perTauMean.reduce((a, b) => a + b, 0) / TAUS.length),
@@ -159,25 +159,28 @@ function pairedSkill(
 /** Receipts A and B differ by a level SHIFT (and shifted fans), so the
  * run-keying oracle can tell them apart by rendered numbers. */
 function receiptWire(runId: string, shift: number) {
+  // The REALIZED close at an origin is a property of the SERIES —
+  // identical across models for the same origin/target. Only each
+  // model's QUANTILES differ (and therefore who covers whom).
+  const actualOf = (i: number): number => 14 + (i % 7) + shift
   const baseQ = [12, 14, 15, 16.5, 19].map((v) => v + shift)
-  const winQ = [11.5, 13.5, 15, 16.5, 19.5].map((v) => v + shift)
+  const winQ = [11.5, 13.5, 15, 16, 17.5].map((v) => v + shift)
   const ar1Q = [12.5, 14.2, 15, 15.8, 18.5].map((v) => v + shift)
 
-  // baseline: 19 origins, first 16 inside the band, last 3 above q95
   const baseLedger = Array.from({ length: 19 }, (_, i) => ledgerRow(
-    i, 'evaluated', i < 16 ? 13 + (i % 5) + shift : 24 + shift, baseQ, null))
-  // rw_window: evaluated on origins 0..16 (14 inside, 3 above),
-  // FAILED at 17, EXCLUDED (target beyond data) at 18
+    i, 'evaluated', actualOf(i), baseQ, null))
+  // rw_window: evaluated on origins 0..16, FAILED at 17, EXCLUDED
+  // (target beyond data) at 18
   const winLedger = [
     ...Array.from({ length: 17 }, (_, j) => ledgerRow(
-      j, 'evaluated', j < 14 ? 13 + (j % 5) + shift : 24 + shift, winQ, null)),
+      j, 'evaluated', actualOf(j), winQ, null)),
     ledgerRow(17, 'failed', null, null, 'non_finite'),
     ledgerRow(18, 'excluded', null, null, 'target_beyond_data'),
   ]
-  // ar1_direct: evaluated on 3 origins only (inside), rest excluded
+  // ar1_direct: evaluated on 3 origins only, rest excluded
   const ar1Ledger = [
     ...Array.from({ length: 3 }, (_, j) => ledgerRow(
-      j, 'evaluated', 14 + j + shift, ar1Q, null)),
+      j, 'evaluated', actualOf(j), ar1Q, null)),
     ...Array.from({ length: 16 }, (_, j) => ledgerRow(
       j + 3, 'excluded', null, null, 'insufficient_history')),
   ]
@@ -185,8 +188,11 @@ function receiptWire(runId: string, shift: number) {
   const fan = (c: number) => [
     { model: 'rw_full', status: 'ok', quantiles: {
       '0.05': c - 3.6, '0.25': c - 1.7, '0.50': c, '0.75': c + 1.6, '0.95': c + 4.1 } },
+    // rw_window's median sits clearly ABOVE rw_full's (c + 1.2) so the
+    // geometry oracle's inverted-y ordering is robust even on a cold
+    // zero-width first measure
     { model: 'rw_window', status: 'ok', quantiles: {
-      '0.05': c - 3.3, '0.25': c - 1.5, '0.50': c + 0.1, '0.75': c + 1.7, '0.95': c + 4.3 } },
+      '0.05': c - 3.3, '0.25': c - 1.5, '0.50': c + 1.2, '0.75': c + 2.6, '0.95': c + 4.3 } },
     { model: 'ar1_direct', status: 'unavailable' },
   ]
   const center = 14.8 + shift
@@ -438,12 +444,22 @@ describe('ResearchOutlook (RL-3)', () => {
       expect(row.textContent).toContain(o.gridScore.toFixed(3))
       expect(row.textContent).toContain(o.width.toFixed(2))
     }
-    // the skill percent re-derives from the matched-cohort losses
-    const skill = pairedSkill(LEDGERS_A.rw_window, LEDGERS_A.rw_full)
+    // the skill percent is RE-DERIVED here with freshly written code
+    // (not the builder's pairedSkill): matched = same origin, both
+    // models evaluated; per-origin loss = 2 x mean-tau; skill = 1 -
+    // loss/bench on the matched cohort
+    const evalRows = (m: string) => LEDGERS_A[m].filter((r) => r.status === 'evaluated')
+    const windowDates = new Set(evalRows('rw_window').map((r) => r.origin_date))
+    const matched = evalRows('rw_full').filter((r) => windowDates.has(r.origin_date))
+    const perOrigin = (r: OracleRow) =>
+      2 * (r.losses_by_tau.reduce((a, b) => a + b, 0) / r.losses_by_tau.length)
+    const winByDate = new Map(evalRows('rw_window').map((r) => [r.origin_date, r]))
+    const loss = matched.reduce((s, r) => s + perOrigin(
+      winByDate.get(r.origin_date) as OracleRow), 0) / matched.length
+    const bench = matched.reduce((s, r) => s + perOrigin(r), 0) / matched.length
     const winRow = screen.getByTestId('outlook-model-rw_window')
-    expect(winRow.textContent).toContain(`on ${skill.paired_n} paired origins`)
-    expect(winRow.textContent)
-      .toContain(`${(100 * (skill.pinball_skill as number)).toFixed(1)}%`)
+    expect(winRow.textContent).toContain(`on ${matched.length} paired origins`)
+    expect(winRow.textContent).toContain(`${(100 * (1 - loss / bench)).toFixed(1)}%`)
 
     // coverage intervals + caveat
     expect(screen.getByTestId('outlook-model-rw_full').textContent)
@@ -473,10 +489,29 @@ describe('ResearchOutlook (RL-3)', () => {
     // the fan interprets the RECEIPT's grid (5 taus), not the
     // metadata's 3-tau grid; unavailable models are explicit gaps
     expect(screen.getByTestId('outlook-fan')).toBeTruthy()
-    expect(document.querySelector('[data-testid="forecast-fan-bar-rw_full"]')).toBeTruthy()
+    const barFull = document.querySelector('[data-testid="forecast-fan-bar-rw_full"]')
+    expect(barFull).toBeTruthy()
     expect(screen.getByTestId('outlook-fan').textContent).toContain('14.80')
     expect(document.querySelector('[data-testid="forecast-fan-bar-ar1_direct"]')).toBeNull()
     expect(document.body.textContent).toContain('ar1_direct: unavailable')
+
+    // GEOMETRY (derived from the published fan numbers, scale-free):
+    // the outer band rect has positive height; the median line sits
+    // strictly INSIDE the band; and orientation is inverted-y — the
+    // model with the HIGHER published median (rw_window 14.9 vs
+    // rw_full 14.8) draws its median line at a SMALLER y
+    const rect = barFull?.querySelector('rect')
+    const medianLine = barFull?.querySelector('line')
+    const ry = parseFloat(rect?.getAttribute('y') ?? '')
+    const rh = parseFloat(rect?.getAttribute('height') ?? '')
+    const my = parseFloat(medianLine?.getAttribute('y1') ?? '')
+    expect(Number.isFinite(rh) && rh).toBeGreaterThan(0)
+    expect(my).toBeGreaterThan(ry)
+    expect(my).toBeLessThan(ry + rh)
+    const winMedianY = parseFloat(
+      document.querySelector('[data-testid="forecast-fan-bar-rw_window"] line')
+        ?.getAttribute('y1') ?? '')
+    expect(winMedianY).toBeLessThan(my)
 
     // honesty copy: no "calibrate"/"calibrated" anywhere
     expect(document.body.textContent ?? '').not.toMatch(/\bcalibrate(d)?\b/)

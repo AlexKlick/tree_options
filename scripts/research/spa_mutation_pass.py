@@ -167,6 +167,12 @@ def main() -> int:
             return 2
         print("baseline: scoped vitest green on the disposable copy")
 
+        def _restore(files):
+            for rel, _edits in files:
+                targets[rel].write_bytes(pristine[rel])
+                if targets[rel].read_bytes() != pristine[rel]:
+                    raise RuntimeError(f"restore failed for {rel}")
+
         for mid, gate, files in _REGISTRY:
             for rel, _edits in files:
                 targets[rel].write_bytes(pristine[rel])   # pristine start
@@ -176,20 +182,39 @@ def main() -> int:
             except RuntimeError as exc:
                 results.append({"id": mid, "gate": gate,
                                 "verdict": "HARNESS_ERROR", "detail": str(exc)})
+                _restore(files)
                 continue
             try:
                 rc, tail = _run_vitest(web)
-            except subprocess.TimeoutExpired:
-                rc, tail = 124, "timeout"
-            verdict = "KILLED" if rc != 0 else "SURVIVED"
+            except subprocess.TimeoutExpired as exc:
+                # An infrastructure failure (stall, kill, crash) is
+                # NEVER mutation credit: only a vitest run that FAILED
+                # (rc == 1, a real assertion/count failure) kills a
+                # mutant; rc == 0 survives; anything else is a harness
+                # error carrying the tail for diagnosis.
+                results.append({"id": mid, "gate": gate,
+                                "verdict": "HARNESS_ERROR",
+                                "detail": f"vitest timeout: {exc}"})
+                _restore(files)
+                continue
+            if rc == 0:
+                verdict, detail = "SURVIVED", "scoped tests still pass"
+            elif rc == 1:
+                verdict = "KILLED"
+                detail = f"rc=1; {tail[-240:]!r}"
+            else:
+                results.append({"id": mid, "gate": gate,
+                                "verdict": "HARNESS_ERROR",
+                                "detail": f"unexpected vitest rc={rc}; {tail[-240:]!r}"})
+                _restore(files)
+                continue
             results.append({"id": mid, "gate": gate, "verdict": verdict,
-                            "detail": (f"rc={rc}" if verdict == "KILLED"
-                                       else "scoped tests still pass")})
-            for rel, _edits in files:
-                targets[rel].write_bytes(pristine[rel])   # restore
-                if targets[rel].read_bytes() != pristine[rel]:
-                    print(f"HARNESS_ERROR: restore failed for {rel}")
-                    return 2
+                            "detail": detail})
+            try:
+                _restore(files)
+            except RuntimeError as exc:
+                print(f"HARNESS_ERROR: {exc}")
+                return 2
 
     print(json.dumps(results, indent=2))
     by_id = {r["id"]: r for r in results}
