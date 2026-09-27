@@ -51,9 +51,11 @@ def test_replay_uses_next_session_entry_and_records_missing_exit(monkeypatch) ->
     assert result["rows"][0]["legs"][0]["strike"] == 100
     assert result["rows"][0]["exit"] == "2025-03-05"
     assert result["rows"][0]["pnl"] < 100  # haircut and two commissions
+    assert result["attempts"][0]["status"] == "evaluable_within_trade_cap"
     scan.options["SPY"].pop(exit_day)
     missing = replay.replay(scan, {}, {}, Calendar(), spec)
     assert missing["counts"]["missing_exit_or_entry_bar"] == 1
+    assert missing["attempts"][0]["status"] == "missing_exit_or_entry_bar"
     assert missing["rows"] == []
 
 
@@ -73,4 +75,18 @@ def test_risk_cap_excludes_trade_without_turning_it_into_loss(monkeypatch) -> No
                              structures=("long_call",), hold_sessions=1, max_loss=300)
     result = replay.replay(scan, {}, {}, Calendar(), spec)
     assert result["counts"]["over_trade_loss_cap"] == 1
+    assert result["attempts"][0]["status"] == "over_trade_loss_cap"
+    assert result["attempts"][0]["max_loss"] > 300
     assert not result["rows"]
+
+
+def test_pre_attempt_missing_decision_data_has_one_record_per_structure(monkeypatch) -> None:
+    day = date(2025, 3, 3)
+    monkeypatch.setattr(replay, "_signals_on", lambda *_args: [("xsmom_top3", "SPY")])
+    spec = replay.ReplaySpec(day, day, ("SPY",), signals=("xsmom_top3",))
+    result = replay.replay(ivhist.CacheScan(source="empty"), {}, {}, Calendar(), spec)
+    assert result["counts"] == {"missing_decision_spot_or_options": 3}
+    assert len(result["attempts"]) == 3
+    assert {row["status"] for row in result["attempts"]} == {"missing_decision_spot_or_options"}
+    assert all(counts == {"missing_decision_spot_or_options": 1}
+               for counts in result["eligibility_by_variant"].values())

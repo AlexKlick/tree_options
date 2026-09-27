@@ -40,7 +40,10 @@ Each run writes a distinct JSON file under
 `DESK_STORE/evaluations/historical-replay/` by default. It records the panel
 and earnings hashes, the digest and file count of each cache set's consumed
 responses, every evaluable modeled row, and counts of missing or excluded
-rows. `GET /api/desk/historical-replays` projects the 12 newest summaries to
+rows. New runs also retain one status record for every signal/structure row,
+including rows screened out before the attempt counter, plus exclusion counts
+by variant. Older runs remain readable without these added fields.
+`GET /api/desk/historical-replays` projects the 12 newest summaries to
 the Action model cockpit; it does not launch jobs or expose a trade action.
 
 Win rates and returns are **modeled on the evaluable subset only**. Cached

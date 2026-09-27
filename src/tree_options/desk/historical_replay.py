@@ -178,6 +178,18 @@ def replay(
 ) -> dict[str, Any]:
     counts: Counter[str] = Counter()
     rows: list[dict[str, Any]] = []
+    attempts: list[dict[str, Any]] = []
+
+    def note(signal: str, name: str, decision: date, kind: str, status: str,
+             *, entry: date | None = None, expiry: date | None = None,
+             exit_day: date | None = None, max_loss: float | None = None) -> None:
+        attempts.append({"signal": signal, "name": name, "decision": decision.isoformat(),
+                         "structure": kind, "status": status,
+                         "entry": entry.isoformat() if entry else None,
+                         "expiry": expiry.isoformat() if expiry else None,
+                         "exit": exit_day.isoformat() if exit_day else None,
+                         "max_loss": round(max_loss, 2) if max_loss is not None else None})
+
     available = set(spec.names)
     sessions = [d for d in cal.sessions() if spec.start <= d <= spec.end]
     for decision in sessions:
@@ -187,6 +199,8 @@ def replay(
             i = bisect.bisect_right(cal.sessions(), decision)
             if i >= len(cal.sessions()):
                 counts["no_next_session"] += len(spec.structures)
+                for kind in spec.structures:
+                    note(signal, name, decision, kind, "no_next_session")
                 continue
             entry = cal.sessions()[i]
             spot = scan.spot.get(name, {}).get(decision)
@@ -194,15 +208,22 @@ def replay(
             entry_bars = scan.options.get(name, {}).get(entry, ())
             if spot is None or not decision_bars:
                 counts["missing_decision_spot_or_options"] += len(spec.structures)
+                for kind in spec.structures:
+                    note(signal, name, decision, kind, "missing_decision_spot_or_options",
+                         entry=entry)
                 continue
             selection = _select(decision_bars, spot, entry, spec)
             if selection is None:
                 counts["no_eligible_expiry_or_atm"] += len(spec.structures)
+                for kind in spec.structures:
+                    note(signal, name, decision, kind, "no_eligible_expiry_or_atm", entry=entry)
                 continue
             expiry, calls = selection
             exit_day = _exit_day(entry, expiry, cal, spec.hold_sessions)
             if exit_day is None:
                 counts["no_exit_session"] += len(spec.structures)
+                for kind in spec.structures:
+                    note(signal, name, decision, kind, "no_exit_session", entry=entry, expiry=expiry)
                 continue
             decision_marks = _mark(decision_bars)
             start_marks = _mark(entry_bars)
@@ -212,11 +233,15 @@ def replay(
                 legs = _legs(kind, expiry, calls, decision_marks, spot)
                 if legs is None:
                     counts["missing_entry_leg"] += 1
+                    note(signal, name, decision, kind, "missing_entry_leg", entry=entry,
+                         expiry=expiry, exit_day=exit_day)
                     continue
                 opening = _cash(legs, start_marks, expiry, spec.haircut, entry=True)
                 closing = _cash(legs, end_marks, expiry, spec.haircut, entry=False)
                 if opening is None or closing is None:
                     counts["missing_exit_or_entry_bar"] += 1
+                    note(signal, name, decision, kind, "missing_exit_or_entry_bar", entry=entry,
+                         expiry=expiry, exit_day=exit_day)
                     continue
                 if kind == "put_credit":
                     width = abs(legs[0][1] - legs[1][1]) * MULTIPLIER
@@ -225,9 +250,13 @@ def replay(
                     max_loss = -opening + len(legs) * COMMISSION
                 if max_loss <= 0:
                     counts["invalid_payoff"] += 1
+                    note(signal, name, decision, kind, "invalid_payoff", entry=entry,
+                         expiry=expiry, exit_day=exit_day, max_loss=max_loss)
                     continue
                 if max_loss > spec.max_loss:
                     counts["over_trade_loss_cap"] += 1
+                    note(signal, name, decision, kind, "over_trade_loss_cap", entry=entry,
+                         expiry=expiry, exit_day=exit_day, max_loss=max_loss)
                     continue
                 pnl = opening + closing
                 rows.append({"signal": signal, "name": name, "structure": kind,
@@ -239,6 +268,8 @@ def replay(
                              "max_loss": round(max_loss, 2), "pnl": round(pnl, 2),
                              "win": pnl > 0})
                 counts["evaluable_within_trade_cap"] += 1
+                note(signal, name, decision, kind, "evaluable_within_trade_cap", entry=entry,
+                     expiry=expiry, exit_day=exit_day, max_loss=max_loss)
     def summary(subset: list[dict[str, Any]]) -> dict[str, Any]:
         pnls = sorted(float(r["pnl"]) for r in subset)
         wins = sum(p > 0 for p in pnls)
@@ -254,6 +285,11 @@ def replay(
     by_variant = {f"{signal}/{kind}": summary([r for r in rows if
                   r["structure"] == kind and r["signal"] == signal])
                   for signal in spec.signals for kind in spec.structures}
+    eligibility_by_variant = {
+        f"{signal}/{kind}": dict(sorted(Counter(a["status"] for a in attempts if
+                                     a["signal"] == signal and a["structure"] == kind).items()))
+        for signal in spec.signals for kind in spec.structures
+    }
     return {"schema": "desk-historical-replay/1", "label": "exploratory modeled VWAP replay",
             "limitations": ["daily VWAP is not an executable quote or broker fill",
                             "haircut is assumed, not measured from entry quotes",
@@ -267,4 +303,5 @@ def replay(
                      "hold_sessions": spec.hold_sessions, "haircut": spec.haircut,
                      "max_loss": spec.max_loss},
             "counts": dict(sorted(counts.items())), "by_structure": by_structure,
-            "by_variant": by_variant, "rows": rows}
+            "by_variant": by_variant, "eligibility_by_variant": eligibility_by_variant,
+            "attempts": attempts, "rows": rows}

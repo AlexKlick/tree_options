@@ -68,3 +68,34 @@ links. Neither model can authorize dispatch.
    selection, and keep the sealed DESK-BT-001 verdict separate.
 
 No profitability, high win rate, or paper-trading readiness is established.
+
+## Full-window replay received later on 2026-09-27
+
+The queued 35-name replay completed from decisions 2024-09-03 through
+2026-08-31 with the same 30–90 DTE, 20-session exit, 1% assumed haircut,
+and $300 trade cap. Its immutable artifact is
+`replay-20260927T081700Z-6f2f03a2bd1f.json` (SHA-256
+`6f2f03a2bd1fe9f15e88ed9f392e4130b7ab5db29924ca69e37e2f285bf15fe4`).
+It consumed two response caches with 16,206 and 4,721 source files. It is
+still exploratory and has no executable quotes or $5,000 portfolio path.
+
+Of 243 attempted rows, 173 exceeded the loss cap, 32 lacked a selected leg,
+12 lacked an entry or exit bar, and 26 were evaluable. Another 93 rows lacked
+decision-day spot or options, and 69 had no eligible expiry/ATM before the
+attempt counter. All six variants have fewer than 20 evaluable trades:
+
+| Variant | Evaluable | Modeled wins | Unconstrained modeled P&L |
+| --- | ---: | ---: | ---: |
+| XSMOM / long call | 1 | 0 | -$119.13 |
+| XSMOM / call debit | 9 | 5 | -$14.65 |
+| XSMOM / put credit | 9 | 5 | +$398.66 |
+| PEAD / long call | 3 | 0 | -$329.07 |
+| PEAD / call debit | 4 | 0 | -$387.06 |
+| PEAD / put credit | 0 | 0 | no sample |
+
+Only six names produced evaluable rows; INTC accounts for 13 of the 26.
+The favorable XSMOM put-credit cell has nine selected observations, with
+assumed fills and no measured spread. It is a hypothesis for a future frozen
+test, not evidence to activate or size that structure. The six cells were
+viewed together, so picking the best one from this artifact is selection on
+the same data.
