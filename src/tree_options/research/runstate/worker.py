@@ -407,6 +407,35 @@ class ResearchWorker:
                                  series.series_sha256}),
                 engine_sha256=engine_now)
 
+        # The authority bytes that SHAPED the loaded grid (the loader
+        # records the sha of exactly the bytes it intersected with). If
+        # the authority was replaced between the identity check above
+        # and this load, the grid is B's while the checked binding is
+        # A's — refuse rather than publish B's grid under A's run id
+        # (checkpoint B-double-prime, NEW P1). Absent for sources whose
+        # grid does not intersect the authority (synthetic lane).
+        grid_authority = series.provenance.get(
+            "session_authority_sha256")
+        if isinstance(grid_authority, str) \
+                and grid_authority != authority_now:
+            return _forecast_refusal_result(
+                run_id, spec, ForecastRefusal(
+                    code=FORECAST_CALENDAR_CHANGED,
+                    message=("the closure-corrected session authority "
+                             "moved between the identity check and the "
+                             "series load: the loaded grid was shaped by "
+                             "different authority bytes than the checked "
+                             "binding — refusing to publish that grid "
+                             "under this run id"),
+                    payload={
+                        "session_authority_sha256_at_submission":
+                            run.get("session_authority_sha256_at_submission"),
+                        "session_authority_sha256_at_check": authority_now,
+                        "session_authority_sha256_that_shaped_the_grid":
+                            grid_authority,
+                    }),
+                engine_sha256=engine_now)
+
         recomputed = forecast_run_id(
             spec, series_sha256=series.series_sha256,
             calendar_sha256=calendar_now,

@@ -11,6 +11,8 @@ import hashlib
 from datetime import date, datetime
 from pathlib import Path
 
+import pytest
+
 from tree_options.desk.contracts import canonical
 from tree_options.research.comparison.calendar import calendar_sha256
 from tree_options.research.forecast.contracts import (
@@ -265,6 +267,77 @@ class TestExecutionRefusals:
         assert result["calendar_sha256"]
         assert result["input_snapshot"]["session_authority_sha256"] == \
             session_authority_sha256()
+
+    def test_malformed_authority_meets_the_typed_wall(
+            self, tmp_path: Path,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        # Malformed authority bytes after submission: the identity
+        # check hashes BYTES ONLY (never parses), so the stale binding
+        # gets the typed calendar_changed refusal — a completed run
+        # with a refusal receipt, never a generic failed run
+        # (checkpoint B-double-prime, N2 residual).
+        import tree_options.research.forecast.sources as sources_mod
+        bad = tmp_path / "authority.json"
+        bad.write_text("{not json")
+        monkeypatch.setattr(sources_mod, "_SESSION_AUTHORITY", bad)
+        ws = tmp_path / "rs"
+        ws.mkdir()
+        series = _live_series()
+        engine = engine_identity_sha()
+        spec = _good_spec()
+        run_id = _rid(spec, series.series_sha256, engine,
+                      session_authority_sha256="b" * 64)
+        _seed(ws, spec, run_id=run_id,
+              series_sha=series.series_sha256, engine_sha=engine,
+              extra_run={"session_authority_sha256_at_submission":
+                             "b" * 64})
+        assert _worker(ws).step() is True
+        with open_runstate_store(ws) as store:
+            run = store.get("run", run_id)
+            result = store.get("result", run_id)
+        assert run is not None and run["status"] == "completed"
+        assert result is not None
+        assert result["wire"]["refusal"] == FORECAST_CALENDAR_CHANGED
+
+    def test_authority_swap_after_check_refuses(
+            self, tmp_path: Path,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        # The identity pre-check passed on authority A; the loader then
+        # intersected with a REPLACED authority B (the loaded grid's
+        # provenance carries B's sha): the run must refuse — B's grid
+        # is never published under A's run id (checkpoint
+        # B-double-prime, NEW P1).
+        ws = tmp_path / "rs"
+        ws.mkdir()
+        series = _live_series()
+        engine = engine_identity_sha()
+        spec = _good_spec()
+        run_id = _rid(spec, series.series_sha256, engine)
+        swapped = ForecastSeries(
+            source_id=series.source_id, sessions=series.sessions,
+            closes=series.closes, series_sha256=series.series_sha256,
+            basis=series.basis, grid_basis=series.grid_basis,
+            provenance={**series.provenance,
+                        "session_authority_sha256": "b" * 64},
+            excluded_rows=series.excluded_rows,
+            n_source_rows=series.n_source_rows)
+        import tree_options.research.runstate.worker as worker_mod
+        monkeypatch.setattr(worker_mod, "_load_forecast_series",
+                            lambda _spec: swapped)
+        _seed(ws, spec, run_id=run_id,
+              series_sha=series.series_sha256, engine_sha=engine)
+        assert _worker(ws).step() is True
+        with open_runstate_store(ws) as store:
+            run = store.get("run", run_id)
+            result = store.get("result", run_id)
+        assert run is not None and run["status"] == "completed"
+        assert result is not None
+        wire = result["wire"]
+        assert wire["refusal"] == FORECAST_CALENDAR_CHANGED
+        assert wire["session_authority_sha256_at_check"] == \
+            session_authority_sha256()
+        assert wire["session_authority_sha256_that_shaped_the_grid"] == \
+            "b" * 64
 
     def test_inconsistent_bindings_refuse_identity_mismatch(
             self, tmp_path: Path) -> None:

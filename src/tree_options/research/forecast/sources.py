@@ -354,8 +354,13 @@ def session_authority_sha256() -> str:
     calendar identity of the grid. Bound into every forecast run id and
     re-checked at compute (checkpoint B, P1-1): the grid is observed
     dates INTERSECTED with this file, so changing it changes targets and
-    scores, and must produce a NEW run — never a silent re-serve."""
-    return _session_authority()[1]
+    scores, and must produce a NEW run — never a silent re-serve.
+
+    BYTES ONLY, never a parse: this is the identity CHECK, and it must
+    stay computable when the file holds malformed JSON — the typed
+    ``calendar_changed`` / ``source_invalid`` refusals (not a crash)
+    are the honest answers for that state."""
+    return hashlib.sha256(_SESSION_AUTHORITY.read_bytes()).hexdigest()
 
 
 def _session_authority() -> tuple[frozenset[str], str]:
