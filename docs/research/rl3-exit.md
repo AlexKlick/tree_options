@@ -220,21 +220,26 @@ the honest numbers.
   worktree for the scratch proof (gitignored path; the desk store
   itself untouched; no monitor/broker interaction).
 
-## Post-deploy checklist (executed at deployment; the :8090 restart)
+## Post-deploy checklist (executed 2026-09-26, merge `6347c3c`)
 
-1. [ ] Merge `feat/rl3-outlook` → main (normal merge), push.
-2. [ ] **BUILD the SPA in the serving checkout** (`web` check or the
-   build step) — static output is gitignored, so the serving
-   checkout's bundle must be regenerated or the restart would serve
-   the pre-RL-3b SPA (checkpoint D, P1).
-3. [ ] `systemctl --user restart trex-web.service`.
-4. [ ] `GET :8090/api/research/forecast` → 200
-   `research-forecast-metadata/1`.
-5. [ ] The SERVED bundle (the asset filename in the served
-   `index.html`) is the new chunk and contains
+1. [x] Merge `feat/rl3-outlook` → main (normal merge `6347c3c`),
+   pushed (`c4035f6..6347c3c main -> main`).
+2. [x] **BUILD the SPA in the serving checkout**: full web check in
+   the primary checkout rc=0 (36 files / 185 tests; log
+   `tree_options-logs/rl3b-deploy-build.log`), installing the new
+   bundle.
+3. [x] `systemctl --user restart trex-web.service` → active.
+4. [x] `GET :8090/api/research/forecast` → 200
+   `research-forecast-metadata/1` (grid [0.05..0.95], floor 12;
+   registry: synthetic h5 enabled, index h5/h20 enabled, 63/126
+   illustrative; production store carries no receipts — the honest
+   empty state).
+5. [x] Served asset identity: `index.html` references
+   `assets/index-CFGpcFAu.js` — the SAME chunk identity the gate log
+   records — and the served bundle contains the
    `research-tab-outlook` / `outlook-receipt` / `forecast-fan-svg`
-   testids — record the served asset identity.
-6. [ ] Tailnet `/trex/` → 403 operator gate (route live).
+   testids.
+6. [x] Tailnet `/trex/` → 403 operator gate (route live).
 
 ## Operator-supervised / out-of-scope (carried)
 
