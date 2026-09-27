@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -109,16 +110,32 @@ _REGISTRY: tuple[_RegistryEntry, ...] = (
 )
 
 
-def _run_vitest(web_dir: Path) -> tuple[int, str]:
+def _run_vitest(web_dir: Path, log_path: Path) -> tuple[int, str]:
+    """Run the scoped suite, capturing the FULL combined output to
+    ``log_path`` (durable, per mutant — including the partial output
+    of a timed-out run)."""
     env = dict(os.environ)
     env["HOME"] = "/home/alexk"          # npx/vitest need a real HOME
     env["MEM0_TELEMETRY"] = "false"
-    proc = subprocess.run(
-        ["npx", "vitest", "run", *_VITEST_FILES],
-        cwd=web_dir, env=env, capture_output=True, text=True,
-        timeout=600,
-    )
-    return proc.returncode, (proc.stdout + proc.stderr)[-2000:]
+    with open(log_path, "w") as log:
+        proc = subprocess.Popen(
+            ["npx", "vitest", "run", *_VITEST_FILES],
+            cwd=web_dir, env=env, stdout=log, stderr=subprocess.STDOUT,
+            text=True)
+        try:
+            proc.wait(timeout=600)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait()
+            return 124, log_path.read_text()
+    return proc.returncode, log_path.read_text()
+
+
+#: The marker of a REAL test failure: vitest's completed summary line
+#: "Tests  N failed | M passed ...". vitest ALSO exits 1 for startup
+#: errors and unhandled errors (no completed summary) — those are
+#: runner failures, never mutation credit.
+_FAILED_SUMMARY = re.compile(r"Tests\s+\d+\s+failed")
 
 
 def _apply(path: Path, edits: tuple[tuple[str, str], ...]) -> None:
@@ -140,6 +157,8 @@ _COMBOS: dict[str, str] = {"M-C3": "M-C3b", "M-C6": "M-C6b"}
 
 def main() -> int:
     results: list[dict[str, str]] = []
+    logs_dir = Path(tempfile.gettempdir()) / "rl3b-spa-mut-logs"
+    logs_dir.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="rl3b-spa-mut-") as tmp:
         copy = Path(tmp) / "repo"
         shutil.copytree(
@@ -160,10 +179,11 @@ def main() -> int:
             print(f"HARNESS_ERROR: mutant target(s) missing: {missing}")
             return 2
 
-        rc, tail = _run_vitest(web)
-        if rc != 0:
+        rc, out = _run_vitest(web, logs_dir / "baseline.log")
+        if rc != 0 or _FAILED_SUMMARY.search(out):
             print("HARNESS_ERROR: pristine baseline fails the scoped "
-                  f"vitest run (rc={rc}):\n{tail}")
+                  f"run (rc={rc}, log {logs_dir / 'baseline.log'}):\n"
+                  f"{out[-400:]}")
             return 2
         print("baseline: scoped vitest green on the disposable copy")
 
@@ -184,28 +204,32 @@ def main() -> int:
                                 "verdict": "HARNESS_ERROR", "detail": str(exc)})
                 _restore(files)
                 continue
-            try:
-                rc, tail = _run_vitest(web)
-            except subprocess.TimeoutExpired as exc:
-                # An infrastructure failure (stall, kill, crash) is
-                # NEVER mutation credit: only a vitest run that FAILED
-                # (rc == 1, a real assertion/count failure) kills a
-                # mutant; rc == 0 survives; anything else is a harness
-                # error carrying the tail for diagnosis.
+            log_path = logs_dir / f"{mid}.log"
+            rc, out = _run_vitest(web, log_path)
+            # KILLED requires a COMPLETED run whose summary shows real
+            # test failures ("Tests  N failed"). rc == 1 alone is NOT
+            # enough — vitest also exits 1 on startup and unhandled
+            # errors, which are runner failures (HARNESS_ERROR), never
+            # mutation credit. Full output for every mutant (including
+            # timeout partials) is kept at the logged path.
+            if rc == 0 and not _FAILED_SUMMARY.search(out):
+                verdict, detail = "SURVIVED", f"scoped tests pass; log {log_path}"
+            elif rc == 1 and _FAILED_SUMMARY.search(out):
+                verdict = "KILLED"
+                detail = f"real test failures; log {log_path}"
+            elif rc == 124:
                 results.append({"id": mid, "gate": gate,
                                 "verdict": "HARNESS_ERROR",
-                                "detail": f"vitest timeout: {exc}"})
+                                "detail": f"vitest timeout (partial output "
+                                          f"retained); log {log_path}"})
                 _restore(files)
                 continue
-            if rc == 0:
-                verdict, detail = "SURVIVED", "scoped tests still pass"
-            elif rc == 1:
-                verdict = "KILLED"
-                detail = f"rc=1; {tail[-240:]!r}"
             else:
                 results.append({"id": mid, "gate": gate,
                                 "verdict": "HARNESS_ERROR",
-                                "detail": f"unexpected vitest rc={rc}; {tail[-240:]!r}"})
+                                "detail": f"runner failure rc={rc} without a "
+                                          f"completed failing summary; "
+                                          f"log {log_path}"})
                 _restore(files)
                 continue
             results.append({"id": mid, "gate": gate, "verdict": verdict,
