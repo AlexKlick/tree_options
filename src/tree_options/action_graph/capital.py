@@ -108,6 +108,8 @@ def review_candidate(profile: CapitalProfile, candidate: CandidateRisk) -> tuple
     facts. Missing measurements block the proposal.
     """
     blockers: list[str] = []
+    if candidate.objective not in ("steady", "asymmetric"):
+        raise ValueError("unknown candidate objective")
     if not profile.complete_for_review:
         blockers.append("profile_limits_or_strategy_scope_missing")
     if candidate.strategy_version not in profile.allowed_strategy_versions:

@@ -86,3 +86,8 @@ def test_steady_objective_requires_trade_win_evidence_not_forecast_quality() -> 
     assert review_candidate(_profile(), candidate) == ("win_probability_below_floor",)
     profile = replace(_profile(), steady_win_floor=None)
     assert review_candidate(profile, _candidate()) == ("steady_win_floor_missing",)
+
+
+def test_unknown_objective_is_refused() -> None:
+    with pytest.raises(ValueError, match="unknown candidate objective"):
+        review_candidate(_profile(), replace(_candidate(), objective="unsupported"))  # type: ignore[arg-type]

@@ -62,7 +62,7 @@ runtime operation registrations or an authority source.
    IBKR paper cycle on a concrete order and report the broker receipts.
 6. Only after that, evaluate adaptive candidate selection against a frozen
    baseline with complete version/review history. Paper fills alone do not
-   establish a profitable strategy or suitability for a $5,000 live account.
+   establish a profitable strategy or suitability for a future live account.
 
 No current code in this worktree enables governed paper entry. The existing
 legacy `trex.enter` behavior is outside this action-model change.
