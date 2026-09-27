@@ -118,9 +118,35 @@ def review_canary(profile: CapitalProfile, facts: CanaryFacts) -> tuple[str, ...
     return tuple(blockers)
 
 
-def package_intent_sha256(structure: LegStructure) -> str:
-    """Hash exact authored package geometry, entry cap and exit rules."""
-    return sha256(canonical_bytes(structure.model_dump(mode="json"))).hexdigest()
+def package_intent_sha256(profile: CapitalProfile, structure: LegStructure,
+                          account_id: str, owner_epoch: str) -> str:
+    """Hash package, policy revision and paper account/owner binding.
+
+    A later effect permit must also bind live quote and broker snapshots.
+    """
+    if not account_id or not owner_epoch:
+        raise ValueError("account and owner identity required")
+    payload = {
+        "schema": "operational-canary-intent/1", "environment": "ibkr-paper",
+        "account_id": account_id, "owner_epoch": owner_epoch,
+        "profile": {
+            "id": profile.profile_id, "revision": profile.revision,
+            "intended_capital": str(profile.intended_capital),
+            "risk_style": profile.risk_style, "goals": profile.goals,
+            "max_loss_per_trade": str(profile.max_loss_per_trade),
+            "max_open_loss": str(profile.max_open_loss),
+            "max_daily_loss": str(profile.max_daily_loss),
+            "horizon_days": profile.horizon_days,
+            "allowed_strategy_versions": profile.allowed_strategy_versions,
+            "reward_tiers": [{"min_ratio": str(tier.min_ratio),
+                              "max_trade_loss": str(tier.max_trade_loss)}
+                             for tier in profile.reward_tiers],
+            "steady_win_floor": (str(profile.steady_win_floor)
+                                 if profile.steady_win_floor is not None else None),
+        },
+        "structure": structure.model_dump(mode="json"),
+    }
+    return sha256(canonical_bytes(payload)).hexdigest()
 
 
 def review_canary_package(profile: CapitalProfile, structure: LegStructure,
@@ -133,6 +159,7 @@ def review_canary_package(profile: CapitalProfile, structure: LegStructure,
         blockers.append("package_quantity_mismatch")
     if structure.max_loss() != facts.worst_case_loss:
         blockers.append("package_loss_mismatch")
-    if package_intent_sha256(structure) != facts.intent_sha256:
+    if package_intent_sha256(profile, structure, facts.mandate_account_id,
+                             facts.owner_epoch) != facts.intent_sha256:
         blockers.append("intent_hash_mismatch")
     return tuple(blockers)

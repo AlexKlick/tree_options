@@ -114,10 +114,15 @@ def test_naive_snapshot_is_rejected() -> None:
 
 def test_package_geometry_and_exact_intent_are_bound() -> None:
     structure = package()
-    candidate = replace(facts(), intent_sha256=package_intent_sha256(structure),
+    candidate = replace(facts(), intent_sha256=package_intent_sha256(
+        profile(), structure, "DUT143714", "epoch-1"),
                         worst_case_loss=structure.max_loss())
     assert review_canary_package(profile(), structure, candidate) == ()
     changed = structure.model_copy(update={"limit": Decimal("1.60")})
     assert review_canary_package(profile(), changed, candidate) == (
         "package_loss_mismatch", "intent_hash_mismatch",
+    )
+    different_policy = replace(profile(), revision=2)
+    assert review_canary_package(different_policy, structure, candidate) == (
+        "intent_hash_mismatch",
     )

@@ -31,7 +31,8 @@ runtime operation registrations or an authority source.
   canary against fresh account and quote facts, legacy-flat status, exit
   readiness and the authored capital limits. `review_canary_package` also
   requires one vertical and binds its exact structure, entry limit, exit
-  rules, quantity and modeled worst-case loss to the intent SHA-256. These
+  rules, quantity, modeled worst-case loss, capital-profile fields, paper
+  account ID and owner epoch to the intent SHA-256. These
   pure checks do not issue a permit.
 - Historical replay now records per-row eligibility; a separate frozen
   portfolio scenario applies modeled $5,000/$300/$1,500 overlap limits and
