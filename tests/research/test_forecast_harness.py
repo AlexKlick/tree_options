@@ -282,6 +282,21 @@ class TestEvaluateModel:
                 assert got == pytest.approx(expected), (row.origin_date,
                                                         tau)
         assert saw_over and saw_under
+        # LITERAL pins, independent of any shared expression: the wide
+        # stub's levels are exactly (80, 110, 140, 170, 200) and the
+        # first evaluated origin (t = 13) scores actual 118.0, so the
+        # five pinball losses follow by hand:
+        #   tau .05, q  80: 0.05 * (118 -  80) =  1.9
+        #   tau .25, q 110: 0.25 * (118 - 110) =  2.0
+        #   tau .50, q 140: 0.50 * (140 - 118) = 11.0
+        #   tau .75, q 170: 0.25 * (170 - 118) = 13.0
+        #   tau .95, q 200: 0.05 * (200 - 118) =  4.1
+        first = rows[0]
+        assert first.actual == pytest.approx(118.0)
+        assert first.quantiles == pytest.approx(
+            (80.0, 110.0, 140.0, 170.0, 200.0))
+        assert first.losses_by_tau == pytest.approx(
+            (1.9, 2.0, 11.0, 13.0, 4.1))
 
     def test_exp_overflow_is_a_counted_non_finite_failure(self) -> None:
         # Finite log-quantiles whose LEVELS overflow exp: a counted

@@ -1,13 +1,18 @@
 """Forecast worker lifecycle (RL-3) — the third dispatch kind with
 execution-bound identity: submission-time shas are recomputed at
-compute time and drift publishes a typed refusal with BOTH shas, never
-revised bytes or new code under the submission's run id.
+compute time, the run id is RE-DERIVED from the stored spec plus the
+current bindings, and drift or inconsistency publishes a typed refusal
+with BOTH values — never revised bytes, new code, or a desynchronized
+record under the submission's run id.
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import date, datetime
 from pathlib import Path
 
+from tree_options.desk.contracts import canonical
+from tree_options.research.comparison.calendar import calendar_sha256
 from tree_options.research.forecast.contracts import (
     ForecastSourceId,
     ForecastSpec,
@@ -16,6 +21,7 @@ from tree_options.research.forecast.contracts import (
 from tree_options.research.forecast.refusal_codes import (
     FORECAST_CALENDAR_CHANGED,
     FORECAST_ENGINE_CHANGED,
+    FORECAST_IDENTITY_MISMATCH,
     FORECAST_INSUFFICIENT_ORIGINS,
     FORECAST_SOURCE_DRIFT,
 )
@@ -30,6 +36,19 @@ from tree_options.research.runstate.worker import (
     ResearchWorker,
     engine_identity_sha,
 )
+
+
+def _rid(spec: ForecastSpec, series_sha: str, engine_sha: str,
+         **overrides: str) -> str:
+    """A run id over the REAL current calendar bindings (the worker
+    recomputes the id at compute time, so seeded ids must be ones the
+    current world actually reproduces — except where a test overrides a
+    binding to force drift)."""
+    kw = {"calendar_sha256": calendar_sha256(),
+          "session_authority_sha256": session_authority_sha256(),
+          **overrides}
+    return forecast_run_id(spec, series_sha256=series_sha,
+                           engine_sha256=engine_sha, **kw)
 
 
 def _worker(ws: Path) -> ResearchWorker:
@@ -73,10 +92,7 @@ class TestLifecycle:
         series = _live_series()
         engine = engine_identity_sha()
         spec = _good_spec()
-        run_id = forecast_run_id(
-            spec, series_sha256=series.series_sha256,
-            calendar_sha256="c" * 64,
-            session_authority_sha256="a" * 64, engine_sha256=engine)
+        run_id = _rid(spec, series.series_sha256, engine)
         # NOTE: the calendar sha inside the id is route-side binding;
         # the worker independently binds the REAL calendar sha into the
         # published receipt. Only the shas recorded on the run record
@@ -97,6 +113,11 @@ class TestLifecycle:
         assert result["wire"]["schema"] == "research-forecast-result/1"
         assert result["wire"]["refusal"] is None
         assert run["result_sha256"] == result["result_sha256"]
+        # Independent content binding (checkpoint B-prime, sol #7): the
+        # receipt's sha is the canonical hash of the wire, recomputed
+        # HERE — a fixed placeholder digest would not survive.
+        assert result["result_sha256"] == hashlib.sha256(
+            canonical(result["wire"])).hexdigest()
 
     def test_second_step_is_a_noop(self, tmp_path: Path) -> None:
         ws = tmp_path / "rs"
@@ -104,10 +125,7 @@ class TestLifecycle:
         series = _live_series()
         engine = engine_identity_sha()
         spec = _good_spec()
-        run_id = forecast_run_id(
-            spec, series_sha256=series.series_sha256,
-            calendar_sha256="c" * 64,
-            session_authority_sha256="a" * 64, engine_sha256=engine)
+        run_id = _rid(spec, series.series_sha256, engine)
         _seed(ws, spec, run_id=run_id,
               series_sha=series.series_sha256, engine_sha=engine)
         worker = _worker(ws)
@@ -125,10 +143,7 @@ class TestLifecycle:
                               evaluation_start=date(2019, 9, 2)))
         shas = []
         for spec in specs:
-            run_id = forecast_run_id(
-                spec, series_sha256=series.series_sha256,
-                calendar_sha256="c" * 64,
-            session_authority_sha256="a" * 64, engine_sha256=engine)
+            run_id = _rid(spec, series.series_sha256, engine)
             _seed(ws, spec, run_id=run_id,
                   series_sha=series.series_sha256, engine_sha=engine)
             assert _worker(ws).step() is True
@@ -147,10 +162,7 @@ class TestExecutionRefusals:
         engine = engine_identity_sha()
         spec = ForecastSpec(source=ForecastSourceId.SYNTHETIC, horizon=5,
                             evaluation_start=date(2020, 10, 1))
-        run_id = forecast_run_id(
-            spec, series_sha256=series.series_sha256,
-            calendar_sha256="c" * 64,
-            session_authority_sha256="a" * 64, engine_sha256=engine)
+        run_id = _rid(spec, series.series_sha256, engine)
         _seed(ws, spec, run_id=run_id,
               series_sha=series.series_sha256, engine_sha=engine)
         assert _worker(ws).step() is True
@@ -174,10 +186,7 @@ class TestExecutionRefusals:
         series = _live_series()
         engine = engine_identity_sha()
         spec = _good_spec()
-        run_id = forecast_run_id(
-            spec, series_sha256="a" * 64,
-            calendar_sha256="c" * 64,
-            session_authority_sha256="a" * 64, engine_sha256=engine)
+        run_id = _rid(spec, "a" * 64, engine)
         _seed(ws, spec, run_id=run_id,
               series_sha="a" * 64, engine_sha=engine)
         assert _worker(ws).step() is True
@@ -195,10 +204,7 @@ class TestExecutionRefusals:
         ws.mkdir()
         series = _live_series()
         spec = _good_spec()
-        run_id = forecast_run_id(
-            spec, series_sha256=series.series_sha256,
-            calendar_sha256="c" * 64,
-            session_authority_sha256="a" * 64, engine_sha256="Z" * 64)
+        run_id = _rid(spec, series.series_sha256, "Z" * 64)
         _seed(ws, spec, run_id=run_id,
               series_sha=series.series_sha256, engine_sha="Z" * 64)
         assert _worker(ws).step() is True
@@ -221,10 +227,8 @@ class TestExecutionRefusals:
         series = _live_series()
         engine = engine_identity_sha()
         spec = _good_spec()
-        run_id = forecast_run_id(
-            spec, series_sha256=series.series_sha256,
-            calendar_sha256="c" * 64,
-            session_authority_sha256="b" * 64, engine_sha256=engine)
+        run_id = _rid(spec, series.series_sha256, engine,
+                      session_authority_sha256="b" * 64)
         _seed(ws, spec, run_id=run_id,
               series_sha=series.series_sha256, engine_sha=engine,
               extra_run={"session_authority_sha256_at_submission":
@@ -249,10 +253,7 @@ class TestExecutionRefusals:
         series = _live_series()
         engine = engine_identity_sha()
         spec = _good_spec()
-        run_id = forecast_run_id(
-            spec, series_sha256=series.series_sha256,
-            calendar_sha256="c" * 64,
-            session_authority_sha256="a" * 64, engine_sha256=engine)
+        run_id = _rid(spec, series.series_sha256, engine)
         _seed(ws, spec, run_id=run_id,
               series_sha=series.series_sha256, engine_sha=engine)
         assert _worker(ws).step() is True
@@ -264,6 +265,38 @@ class TestExecutionRefusals:
         assert result["calendar_sha256"]
         assert result["input_snapshot"]["session_authority_sha256"] == \
             session_authority_sha256()
+
+    def test_inconsistent_bindings_refuse_identity_mismatch(
+            self, tmp_path: Path) -> None:
+        # The five bindings that pass every specific drift check must
+        # still HASH BACK to the run id (checkpoint B-prime, N1): a
+        # record spooled with a desynchronized id — e.g. the id bound a
+        # calendar the record does not carry — can never publish.
+        ws = tmp_path / "rs"
+        ws.mkdir()
+        series = _live_series()
+        engine = engine_identity_sha()
+        spec = _good_spec()
+        run_id = _rid(spec, series.series_sha256, engine,
+                      calendar_sha256="c" * 64)   # id bound a phantom
+        _seed(ws, spec, run_id=run_id,
+              series_sha=series.series_sha256, engine_sha=engine,
+              extra_run={"calendar_sha256_at_submission":
+                             calendar_sha256(),
+                         "session_authority_sha256_at_submission":
+                             session_authority_sha256()})
+        assert _worker(ws).step() is True
+        with open_runstate_store(ws) as store:
+            run = store.get("run", run_id)
+            result = store.get("result", run_id)
+        assert run is not None and run["status"] == "completed"
+        assert result is not None
+        wire = result["wire"]
+        assert wire["refusal"] == FORECAST_IDENTITY_MISMATCH
+        assert wire["run_id"] == run_id
+        assert wire["recomputed_run_id"] == _rid(
+            spec, series.series_sha256, engine)
+        assert wire["recomputed_run_id"] != run_id
 
 
 class TestHonestFailures:

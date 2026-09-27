@@ -25,6 +25,7 @@ that is the point of the ledger.
 from __future__ import annotations
 
 import hashlib
+import math
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import date
@@ -34,6 +35,7 @@ from tree_options.research.forecast.contracts import (
     BOOTSTRAP_BLOCK,
     DM_LAG_ORIGIN_UNITS,
     DM_LAG_SENSITIVITY,
+    EMPIRICAL_WINDOW_SESSIONS,
     MIN_HISTORY_SESSIONS,
     N_BOOTSTRAP,
     ORIGIN_FLOOR,
@@ -107,9 +109,14 @@ class ForecastOutcome:
     forward: dict[str, Any]
     calendar_sha256: str
     engine_sha256: str
+    #: per-model failed-origin counts, published beside the GRID-level
+    #: headline so the wire reconciles without opening the ledgers
+    failed_by_model: dict[str, int]
 
     def to_wire(self) -> dict[str, Any]:
         descriptor = SOURCE_REGISTRY[self.spec.source]
+        origins = dict(self.origins.to_dict())
+        origins["failed_by_model"] = dict(self.failed_by_model)
         return {
             "schema": "research-forecast-result/1",
             "source": self.spec.source.value,
@@ -130,7 +137,7 @@ class ForecastOutcome:
                 "receipt_published" if self.origins.floor_met
                 else "below_floor"),
             "calibration_status": "not_claimed",
-            "origins": self.origins.to_dict(),
+            "origins": origins,
             "models": [m.to_dict() for m in self.models],
             "forward": self.forward,
             "refusal": None,
@@ -164,9 +171,26 @@ class ForecastOutcome:
                 "dm_lag": DM_LAG_ORIGIN_UNITS,
                 "dm_lag_units": "origin_index",
                 "dm_sensitivity": list(DM_LAG_SENSITIVITY),
+                "origin_sequence": "evaluated origins are COMPRESSED to "
+                                   "a consecutive sequence: failed or "
+                                   "excluded origins are dropped, and "
+                                   "lag / block units are positions in "
+                                   "the evaluated sequence, not "
+                                   "calendar months",
                 "wilson": "binomial approximation; time-ordered "
                           "origins, dependence not captured",
                 "bootstrap_block": BOOTSTRAP_BLOCK,
+            },
+            "model_notes": {
+                "rw_full": "expanding window over ALL eligible h-step "
+                           "log changes; median is the empirical median, "
+                           "not recentered",
+                "rw_window": f"trailing {EMPIRICAL_WINDOW_SESSIONS} "
+                             "eligible h-step log changes",
+                "ar1_direct": "OLS AR(1) on the log level; bands are "
+                              "quantiles of IN-SAMPLE direct h-step "
+                              "prediction errors; parameter uncertainty "
+                              "NOT modeled; |phi| >= 1 refuses",
             },
             "access_mode": ACCESS_MODE,
         }
@@ -340,7 +364,21 @@ def evaluate_forecast(
                 for t, q in zip(QUANTILE_GRID, levels, strict=True)),
         })
 
-    tally = runs[0].tally(total=grid.total, floor=origin_floor)
+    # Headline tally is the GRID's (checkpoint B-prime: a baseline-only
+    # tally cannot reconcile on the wire when the baseline fails
+    # origins — its shape has no `failed` count). Grid-level
+    # ``total == evaluated + excluded`` holds by construction; each
+    # model's own evaluated/excluded/failed identity is asserted inside
+    # its tally() and its failures are counted here by name.
+    tally = OriginTally(
+        total=grid.total,
+        evaluated=len(grid.origins),
+        excluded=len(grid.excluded),
+        excluded_reasons=grid.reasons(),
+        floor=origin_floor,
+        floor_met=len(grid.origins) >= origin_floor,
+    )
+    failed_by_model = {r.model: r.n_failed for r in runs}
     return ForecastOutcome(
         spec=spec,
         series=series,
@@ -349,7 +387,34 @@ def evaluate_forecast(
         forward=forward,
         calendar_sha256=calendar_sha256,
         engine_sha256=engine_sha256,
+        failed_by_model=failed_by_model,
     )
+
+
+def _contains_non_finite(obj: object) -> bool:
+    """Recursive scan: any non-finite float anywhere in a metrics tree."""
+    if isinstance(obj, float):
+        return not math.isfinite(obj)
+    if isinstance(obj, dict):
+        return any(_contains_non_finite(v) for v in obj.values())
+    if isinstance(obj, (list, tuple)):
+        return any(_contains_non_finite(v) for v in obj)
+    return False
+
+
+def _degraded_metrics(n: int) -> dict[str, Any]:
+    """The honest fallback when finite per-origin losses overflow an
+    aggregate (checkpoint B-prime): the metrics are WITHHELD with a
+    reason instead of published as non-finite (which the wire cannot
+    even hash) or crashing the run and losing the ledger."""
+    return {
+        "aggregate_status": "non_finite",
+        "reason": "finite per-origin losses produced a non-finite "
+                  "aggregate (overflow); metrics withheld rather than "
+                  "published as non-finite; the ledger is intact and "
+                  "re-derivable",
+        "n_evaluated": n,
+    }
 
 
 def _metrics_for(
@@ -405,6 +470,8 @@ def _metrics_for(
 
     if run.model == baseline_name:
         metrics["skill_vs_baseline"] = None
+        if _contains_non_finite(metrics):
+            return _degraded_metrics(n)
         return metrics
 
     model_loss_by_date = _loss_by_date(run.ledger)
@@ -435,6 +502,10 @@ def _metrics_for(
                 "lag": DM_LAG_ORIGIN_UNITS,
                 "lag_units": "origin_index",
                 "direction": "baseline loss - model loss",
+                "series_note": "differentials are the matched EVALUATED "
+                               "origins in origin order; gaps from "
+                               "failed or excluded origins are dropped, "
+                               "not modeled",
                 "sensitivity": {},
             }
             for lag in DM_LAG_SENSITIVITY:
@@ -448,6 +519,8 @@ def _metrics_for(
         "dm": dm_block,
         **({"dm_unavailable_reason": dm_reason} if dm_reason else {}),
     }
+    if _contains_non_finite(metrics):
+        return _degraded_metrics(n)
     return metrics
 
 

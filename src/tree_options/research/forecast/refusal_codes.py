@@ -33,6 +33,11 @@ FORECAST_ENGINE_CHANGED: Final = "research.forecast.engine_changed"
 #: and compute: the comparison calendar (scope) or the closure-corrected
 #: session authority (the grid itself).
 FORECAST_CALENDAR_CHANGED: Final = "research.forecast.calendar_changed"
+#: The submission bindings do not REPRODUCE the run id they were stored
+#: beside (checkpoint B-prime, N1): the run record's five identity
+#: values, hashed together, must equal the run id under which the
+#: record was spooled.
+FORECAST_IDENTITY_MISMATCH: Final = "research.forecast.identity_mismatch"
 
 FORECAST_REFUSAL_KINDS: Final[tuple[str, ...]] = (
     FORECAST_UNKNOWN_SOURCE,
@@ -44,6 +49,7 @@ FORECAST_REFUSAL_KINDS: Final[tuple[str, ...]] = (
     FORECAST_SOURCE_INVALID,
     FORECAST_ENGINE_CHANGED,
     FORECAST_CALENDAR_CHANGED,
+    FORECAST_IDENTITY_MISMATCH,
 )
 
 #: Per-ORIGIN failure reasons (counted per model, never hidden — §10
@@ -73,6 +79,7 @@ __all__ = [
     "FORECAST_CALENDAR_CHANGED",
     "FORECAST_ENGINE_CHANGED",
     "FORECAST_HORIZON_NOT_ENABLED",
+    "FORECAST_IDENTITY_MISMATCH",
     "FORECAST_INSUFFICIENT_HISTORY",
     "FORECAST_INSUFFICIENT_ORIGINS",
     "FORECAST_INVALID_QUANTILE_GRID",

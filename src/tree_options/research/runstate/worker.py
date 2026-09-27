@@ -68,11 +68,15 @@ from tree_options.research.comparison.calendar import calendar_sha256
 from tree_options.research.comparison.engine import run_comparison
 from tree_options.research.comparison.plan import resolve_plan
 from tree_options.research.contracts import ResearchCandidate
-from tree_options.research.forecast.contracts import ForecastSourceId
+from tree_options.research.forecast.contracts import (
+    ForecastSourceId,
+    forecast_run_id,
+)
 from tree_options.research.forecast.engine import evaluate_forecast
 from tree_options.research.forecast.refusal_codes import (
     FORECAST_CALENDAR_CHANGED,
     FORECAST_ENGINE_CHANGED,
+    FORECAST_IDENTITY_MISMATCH,
     FORECAST_SOURCE_DRIFT,
     ForecastRefusal,
 )
@@ -327,18 +331,18 @@ class ResearchWorker:
                           run: dict[str, Any]) -> dict[str, Any]:
         """Evaluate a forecast run with execution-bound identity (RL-3).
 
-        The run record carries the ``series_sha256``, ``engine_sha256``
-        and BOTH calendar shas captured at SUBMISSION; all are RECOMPUTED
-        here. Drift publishes a typed refusal with BOTH values — revised
-        bytes, changed code, or a moved calendar never execute under the
-        submission's identity (the run id itself binds spec + series +
-        both calendars + engine, so the drifted execution is a NEW run,
-        never a silent re-serve of this one).
+        Refusal order (checkpoint B-prime): engine identity, then BOTH
+        calendar identities (checked BEFORE the series is loaded — the
+        loader parses the authority file, and a malformed replacement
+        must meet the typed ``calendar_changed`` wall, not crash into a
+        generic failed run), then the series load, then series drift —
+        and finally the run id itself is RECOMPUTED from the stored
+        spec plus the current bindings and must reproduce the id under
+        which the record was spooled (the submission-side
+        single-read/same-id guarantee; a record whose bindings do not
+        hash back to its run id can never publish).
         """
         spec = forecast_from_dict(spec_payload)
-        series = _load_forecast_series(spec)
-        if isinstance(series, ForecastRefusal):
-            return _forecast_refusal_result(run_id, spec, series)
 
         engine_now = engine_identity_sha()
         expected_engine = run.get("engine_sha256_at_submission")
@@ -353,22 +357,6 @@ class ResearchWorker:
                     payload={"engine_sha256_at_submission": expected_engine,
                              "engine_sha256_at_compute": engine_now}),
                 engine_sha256=expected_engine)
-
-        expected_series = run.get("series_sha256_at_submission")
-        if isinstance(expected_series, str) \
-                and expected_series != series.series_sha256:
-            return _forecast_refusal_result(
-                run_id, spec, ForecastRefusal(
-                    code=FORECAST_SOURCE_DRIFT,
-                    message=("source data drifted between submission and "
-                             f"compute: submitted {expected_series}, live "
-                             f"resolves to {series.series_sha256}; "
-                             "refusing to publish revised bytes under the "
-                             "submission's run id"),
-                    payload={"series_sha256_at_submission": expected_series,
-                             "series_sha256_at_compute":
-                                 series.series_sha256}),
-                engine_sha256=engine_now)
 
         calendar_now = calendar_sha256()
         authority_now = session_authority_sha256()
@@ -397,6 +385,50 @@ class ResearchWorker:
                             run.get("session_authority_sha256_at_submission"),
                         "session_authority_sha256_at_compute": authority_now,
                     }),
+                engine_sha256=engine_now)
+
+        series = _load_forecast_series(spec)
+        if isinstance(series, ForecastRefusal):
+            return _forecast_refusal_result(run_id, spec, series)
+
+        expected_series = run.get("series_sha256_at_submission")
+        if isinstance(expected_series, str) \
+                and expected_series != series.series_sha256:
+            return _forecast_refusal_result(
+                run_id, spec, ForecastRefusal(
+                    code=FORECAST_SOURCE_DRIFT,
+                    message=("source data drifted between submission and "
+                             f"compute: submitted {expected_series}, live "
+                             f"resolves to {series.series_sha256}; "
+                             "refusing to publish revised bytes under the "
+                             "submission's run id"),
+                    payload={"series_sha256_at_submission": expected_series,
+                             "series_sha256_at_compute":
+                                 series.series_sha256}),
+                engine_sha256=engine_now)
+
+        recomputed = forecast_run_id(
+            spec, series_sha256=series.series_sha256,
+            calendar_sha256=calendar_now,
+            session_authority_sha256=authority_now,
+            engine_sha256=engine_now)
+        if recomputed != run_id:
+            # The bindings that passed every specific drift check still
+            # do not hash back to this run id: the record was spooled
+            # with inconsistent bindings (checkpoint B-prime, N1). The
+            # execution is refused — never published under an id it
+            # does not bind.
+            return _forecast_refusal_result(
+                run_id, spec, ForecastRefusal(
+                    code=FORECAST_IDENTITY_MISMATCH,
+                    message=("the run record's bindings do not reproduce "
+                             "its run id: recomputing the id from the "
+                             "stored spec and the current series / "
+                             "calendar / engine bindings yields a "
+                             "different id — refusing to publish under "
+                             "an identity the execution does not bind"),
+                    payload={"run_id": run_id,
+                             "recomputed_run_id": recomputed}),
                 engine_sha256=engine_now)
 
         outcome = evaluate_forecast(

@@ -691,11 +691,18 @@ def attach(
                                     f" (min_history "
                                     f"{MIN_HISTORY_SESSIONS} + horizon "
                                     f"{spec.horizon})")})
+        # Single-read submission binding (checkpoint B-prime, N1): each
+        # identity value is computed ONCE and reused for BOTH the run id
+        # and the queued record — a calendar or engine file replaced
+        # mid-request can never desynchronize the id from the record.
+        engine_sha = engine_identity_sha()
+        calendar_sha = calendar_sha256()
+        authority_sha = session_authority_sha256()
         run_id = forecast_run_id(
             spec, series_sha256=series.series_sha256,
-            calendar_sha256=calendar_sha256(),
-            session_authority_sha256=session_authority_sha256(),
-            engine_sha256=engine_identity_sha())
+            calendar_sha256=calendar_sha,
+            session_authority_sha256=authority_sha,
+            engine_sha256=engine_sha)
         with _open_store_or_503(workspace) as store:
             try:
                 store.put("spec", spec.to_dict(), key=run_id,
@@ -716,10 +723,9 @@ def attach(
                     "kind": "forecast", "status": "queued",
                     "format_version": RUN_FORMAT_VERSION,
                     "series_sha256_at_submission": series.series_sha256,
-                    "engine_sha256_at_submission": engine_identity_sha(),
-                    "calendar_sha256_at_submission": calendar_sha256(),
-                    "session_authority_sha256_at_submission":
-                        session_authority_sha256(),
+                    "engine_sha256_at_submission": engine_sha,
+                    "calendar_sha256_at_submission": calendar_sha,
+                    "session_authority_sha256_at_submission": authority_sha,
                 }, key=run_id, at=datetime.now())
                 status_value = "queued"
             else:

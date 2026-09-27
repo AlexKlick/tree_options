@@ -33,7 +33,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Final
 
-from tree_options.desk.indices import read_store
+from tree_options.desk.indices import rows_from_text
 from tree_options.research.forecast.contracts import ForecastSourceId
 from tree_options.research.forecast.refusal_codes import (
     FORECAST_SOURCE_DRIFT,
@@ -232,11 +232,18 @@ def load_index(
 ) -> ForecastSeries | ForecastRefusal:
     """A desk-store index series on its corrected session grid.
 
-    Read-only over the desk evidence store (``read_store``; the
-    non-overlap guard covers writes). Validation: strictly increasing
-    unique dates, finite positive closes, scope [2018-01-02,
-    2026-12-31], observed dates intersected with the closure-corrected
-    session authority — non-session rows are EXCLUDED with listed dates.
+    Read-only over the desk evidence store. Validation: strictly
+    increasing unique dates, finite positive closes, scope
+    [2018-01-02, 2026-12-31], observed dates intersected with the
+    closure-corrected session authority — non-session rows are
+    EXCLUDED with listed dates.
+
+    SINGLE-READ BINDING (checkpoint B-prime): the stored CSV bytes are
+    read ONCE; ``series_sha256`` hashes exactly the bytes the rows were
+    parsed from, and the session authority's sha hashes exactly the
+    bytes its session set was parsed from. A concurrent atomic replace
+    of either file therefore cannot produce rows-from-one-revision
+    named by another revision's sha.
     """
     root = (
         store_root if store_root is not None
@@ -249,19 +256,30 @@ def load_index(
             message=f"index store file absent: {path}",
         )
     try:
-        rows = read_store(path)
-    except (OSError, ValueError) as exc:
+        body = path.read_bytes()
+        rows = rows_from_text(body.decode(), path.name)
+    except (OSError, ValueError, UnicodeDecodeError) as exc:
         return ForecastRefusal(
             code=FORECAST_SOURCE_INVALID,
             message=f"index store unreadable: {exc}",
         )
-    series_sha = hashlib.sha256(path.read_bytes()).hexdigest()
+    series_sha = hashlib.sha256(body).hexdigest()
+
+    try:
+        authority, authority_sha = _session_authority()
+    except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
+        # bytes hash fine but do not parse: a typed refusal, never a
+        # crash into a generic failed run (checkpoint B-prime, N2)
+        return ForecastRefusal(
+            code=FORECAST_SOURCE_INVALID,
+            message=f"closure-corrected session authority unreadable: "
+                    f"{exc}",
+        )
 
     sessions: list[date] = []
     closes: list[float] = []
     non_session: list[str] = []
     out_of_scope = 0
-    authority = _load_session_authority()
     for row in rows:
         try:
             d = date.fromisoformat(row[0])
@@ -294,7 +312,7 @@ def load_index(
     if bad is not None:
         return ForecastRefusal(code=FORECAST_SOURCE_INVALID, message=bad)
 
-    prov = _latest_provenance(root, name)
+    prov = _latest_provenance(root, name, authority_sha)
     if isinstance(prov, ForecastRefusal):
         return prov
 
@@ -337,16 +355,23 @@ def session_authority_sha256() -> str:
     re-checked at compute (checkpoint B, P1-1): the grid is observed
     dates INTERSECTED with this file, so changing it changes targets and
     scores, and must produce a NEW run — never a silent re-serve."""
-    return hashlib.sha256(_SESSION_AUTHORITY.read_bytes()).hexdigest()
+    return _session_authority()[1]
 
 
-def _load_session_authority() -> frozenset[str]:
-    doc = json.loads(_SESSION_AUTHORITY.read_text())
-    return frozenset(str(s) for s in doc["sessions"])
+def _session_authority() -> tuple[frozenset[str], str]:
+    """The authority's session set AND its sha from ONE read of the
+    bytes (single-read binding: the sha names exactly the sessions the
+    grid was intersected with; a mid-read replace cannot desynchronize
+    the pair). Raises when the bytes do not parse — callers convert
+    that into a typed refusal."""
+    body = _SESSION_AUTHORITY.read_bytes()
+    doc = json.loads(body)
+    return (frozenset(str(s) for s in doc["sessions"]),
+            hashlib.sha256(body).hexdigest())
 
 
 def _latest_provenance(
-    root: Path, name: str,
+    root: Path, name: str, authority_sha: str,
 ) -> Mapping[str, Any] | ForecastRefusal:
     """The latest SUCCESSFUL provenance line for THIS source. The last
     line of the file can be another instrument (verified live: the file
@@ -381,7 +406,7 @@ def _latest_provenance(
         "status": latest.get("status"),
         "vendor_rows": latest.get("rows"),
         "vendor_last_date": latest.get("last_date"),
-        "session_authority_sha256": session_authority_sha256(),
+        "session_authority_sha256": authority_sha,
         "sha_note": "vendor_body_sha256 hashes the downloaded vendor "
                     "body; series_sha256 hashes the stored CSV bytes — "
                     "they differ by design and both are recorded",

@@ -246,6 +246,21 @@ class TestIndexLoader:
         assert out.provenance["session_authority_sha256"] == \
             session_authority_sha256()
 
+    def test_unreadable_authority_is_a_typed_refusal(
+            self, tmp_path: Path,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        # Malformed authority bytes hash fine but do not parse: the
+        # loader refuses source_invalid instead of raising into a
+        # generic failed run (checkpoint B-prime, N2).
+        import tree_options.research.forecast.sources as sources_mod
+        bad = tmp_path / "authority.json"
+        bad.write_text("{not json")
+        monkeypatch.setattr(sources_mod, "_SESSION_AUTHORITY", bad)
+        out = load_index("VIX", store_root=self._store(tmp_path))
+        assert not isinstance(out, ForecastSeries)
+        assert out.code == FORECAST_SOURCE_INVALID
+        assert "authority unreadable" in out.message
+
     def test_duplicate_date_refuses(self, tmp_path: Path) -> None:
         root = self._store(tmp_path)
         lines = (root / "VIX.csv").read_text().splitlines()

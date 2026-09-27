@@ -103,6 +103,7 @@ __all__ = [
     "OriginTally",
     "forecast_from_dict",
     "forecast_run_id",
+    "session_authority_sha256",
     "tally_identity_ok",
 ]
 
@@ -117,6 +118,7 @@ def __getattr__(name: str):
         "SOURCE_REGISTRY", "SourceDescriptor", "ForecastSeries",
         "load_synthetic", "load_index", "INTERVAL_SEMANTICS",
         "DEFAULT_MODELS", "BASELINE_MODEL",
+        "session_authority_sha256",
     }:
         from tree_options.research.forecast import engine as _engine_mod
         from tree_options.research.forecast import sources as _sources_mod

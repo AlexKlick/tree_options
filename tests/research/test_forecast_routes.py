@@ -15,6 +15,8 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from tree_options.research.forecast.contracts import forecast_run_id
+from tree_options.research.forecast.spec_io import forecast_from_dict
 from tree_options.research.runstate.store import open_runstate_store
 from tree_options.research.runstate.worker import (
     RUN_FORMAT_VERSION,
@@ -92,6 +94,16 @@ class TestSpool:
         # they gate the worker's drift check and enter the run id.
         assert run["calendar_sha256_at_submission"]
         assert run["session_authority_sha256_at_submission"]
+        # Single-read binding (checkpoint B-prime, N1): the stored
+        # bindings hash BACK to the run id the response carried — the
+        # id and the record were built from one capture of each value.
+        assert r1.json()["run_id"] == forecast_run_id(
+            forecast_from_dict(GOOD_BODY),
+            series_sha256=run["series_sha256_at_submission"],
+            calendar_sha256=run["calendar_sha256_at_submission"],
+            session_authority_sha256=run[
+                "session_authority_sha256_at_submission"],
+            engine_sha256=run["engine_sha256_at_submission"])
 
     def test_pre_write_400s_persist_nothing(self, env) -> None:
         client, ws, _worker = env
