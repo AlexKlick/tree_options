@@ -1,0 +1,63 @@
+{
+  "schema": "trex-model-packet-verification/0.1",
+  "created_at": "2026-09-27T04:14:38.903921+00:00",
+  "source_head_observed": "c4035f6b30f5a177c0a9b4334b682589c9d62377",
+  "source_tree_observed": "7596ecefc3d436569149b615595eb6952b2cfc33",
+  "source_scope": "Current main metadata, forecast package initializer and desk entry source read through GitHub; supplied master plan/backlog and ATKO theory. Not a full latest-source audit.",
+  "local_checks": {
+    "model_conformance": {
+      "passed": 16,
+      "failed": 0,
+      "skipped": 0,
+      "log": "receipts/conformance-tests.log",
+      "junit": "receipts/conformance-tests.xml"
+    },
+    "example_plan": {
+      "nodes": 18,
+      "dependencies": 20,
+      "fixture_inputs": 5,
+      "execution_authorized": false
+    },
+    "integration_map": {
+      "slices": 7,
+      "all_prior_task_refs_resolve": true
+    },
+    "future_acceptance_cases": {
+      "count": 34,
+      "executed": false
+    }
+  },
+  "python": "3.13.5",
+  "dependencies": {
+    "jsonschema": "4.26.0",
+    "pytest": "9.0.2"
+  },
+  "project_source_inputs": [
+    {
+      "name": "TREX-Integrated-Agentic-Paper-System-Master-Plan-20260926.md",
+      "sha256": "2a00d0b93c236f82592899bc6b84b19d27547e5c409b93b75438f4607a62bca7",
+      "source": "supplied_conversation_artifact"
+    },
+    {
+      "name": "TREX-Integrated-System-Backlog-20260926.json",
+      "sha256": "f9b467f73e583cb152efe3008327f9b0565d494c58e4912daf22897456a6b18f",
+      "source": "supplied_conversation_artifact"
+    },
+    {
+      "name": "ATKO-Shared-Workspace-Design-Theory(1).md",
+      "sha256": "1cbf391b560d32a89393f408c0fe8ae00813664324caec43098adf6723007b0f",
+      "source": "supplied_conversation_artifact"
+    }
+  ],
+  "not_performed": [
+    "TREX application test suite",
+    "host gate or live deployment inspection",
+    "broker contact or order/cancel/what-if",
+    "financial calculation/backtest/forecast",
+    "protected sealed-data read",
+    "policy activation or actual authorization",
+    "remote repository write or service restart",
+    "graph GUI implementation or browser rendering"
+  ],
+  "classification": "design_packet_with_static_fixture_checks_not_production_approval"
+}

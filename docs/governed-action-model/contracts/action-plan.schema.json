@@ -1,0 +1,364 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:trex:proposal:action-plan:0.1",
+  "title": "TREX proposal-only action plan v0.1",
+  "description": "Design/model validation only. Passing this schema grants no authority and does not execute a node.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "trex-action-plan/0.1"
+    },
+    "artifact_status": {
+      "const": "synthetic_design_example"
+    },
+    "execution_authorized": {
+      "const": false
+    },
+    "plan_id": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "goal": {
+      "type": "string",
+      "minLength": 1
+    },
+    "state": {
+      "const": "proposed"
+    },
+    "source_repository_head": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{40}$"
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/artifact"
+      },
+      "minItems": 1
+    },
+    "nodes": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "minItems": 1
+    },
+    "non_scheduling_links": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "from": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "to": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "relation": {
+            "enum": [
+              "compares_to",
+              "supports_review",
+              "proposes_revision_of"
+            ]
+          }
+        },
+        "required": [
+          "from",
+          "to",
+          "relation"
+        ]
+      }
+    },
+    "notes": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema",
+    "artifact_status",
+    "execution_authorized",
+    "plan_id",
+    "revision",
+    "goal",
+    "state",
+    "source_repository_head",
+    "artifacts",
+    "nodes",
+    "non_scheduling_links",
+    "notes"
+  ],
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "kind": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "classification": {
+          "enum": [
+            "synthetic_fixture"
+          ]
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "sha256",
+        "classification",
+        "payload"
+      ]
+    },
+    "input_binding": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+            },
+            "expected_type": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+            }
+          },
+          "required": [
+            "artifact_id",
+            "expected_type"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "producer_node_id": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+            },
+            "output_name": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+            },
+            "expected_type": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+            }
+          },
+          "required": [
+            "producer_node_id",
+            "output_name",
+            "expected_type"
+          ]
+        }
+      ]
+    },
+    "dependency": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "node_id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "on_outcomes": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "passed",
+              "failed",
+              "approved",
+              "declined",
+              "completed",
+              "blocked",
+              "no_op",
+              "submission_uncertain",
+              "acknowledged",
+              "reconciled",
+              "cancelled",
+              "expired"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        }
+      },
+      "required": [
+        "node_id",
+        "on_outcomes"
+      ]
+    },
+    "node": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "operation": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "operation_version": {
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+$"
+        },
+        "owner_role": {
+          "enum": [
+            "data_service",
+            "research_worker",
+            "test_worker",
+            "method_reviewer",
+            "review_service",
+            "operator",
+            "campaign_owner",
+            "risk_service",
+            "broker_gateway",
+            "reconciler",
+            "projector",
+            "learning_agent"
+          ]
+        },
+        "effect_class": {
+          "enum": [
+            "read",
+            "research_write",
+            "authority_change",
+            "execution_state_write",
+            "paper_effect"
+          ]
+        },
+        "target_environment": {
+          "enum": [
+            "research",
+            "paper"
+          ]
+        },
+        "dependencies": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/dependency"
+          },
+          "uniqueItems": true
+        },
+        "inputs": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/input_binding"
+          }
+        },
+        "outputs": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          }
+        },
+        "required_guards": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "uniqueItems": true
+        },
+        "retry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mode": {
+              "enum": [
+                "bounded_idempotent",
+                "no_automatic_retry",
+                "reconcile_before_retry"
+              ]
+            },
+            "max_attempts": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 8
+            }
+          },
+          "required": [
+            "mode",
+            "max_attempts"
+          ]
+        },
+        "timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "on_failure": {
+          "enum": [
+            "block_descendants",
+            "preserve_uncertain_effect",
+            "retain_receipt"
+          ]
+        },
+        "required_receipts": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "postcondition": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "operation",
+        "operation_version",
+        "owner_role",
+        "effect_class",
+        "target_environment",
+        "dependencies",
+        "inputs",
+        "outputs",
+        "required_guards",
+        "retry",
+        "timeout_seconds",
+        "on_failure",
+        "required_receipts",
+        "postcondition"
+      ]
+    }
+  }
+}

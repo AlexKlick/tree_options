@@ -1,0 +1,2 @@
+# Preserve the supplied model packet's Markdown hard line breaks byte-for-byte.
+docs/governed-action-model/TREX-Governed-Adaptive-Action-Model-20260926.md -whitespace

@@ -33,6 +33,9 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
 // (portal-stripped) alike. Never a leading slash.
 export const getPlans = (): Promise<PlansResponse> => fetchJson('api/plans')
 
+export const getActionModelExample = (): Promise<import('./types').ActionModelExample> =>
+  fetchJson('api/action-model/example')
+
 export const getPlan = (id: string): Promise<PlanDetailResponse> =>
   fetchJson(`api/plans/${encodeURIComponent(id)}`)
 

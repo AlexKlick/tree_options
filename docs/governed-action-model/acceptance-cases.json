@@ -1,0 +1,176 @@
+{
+  "schema": "trex-system-acceptance-plan/0.1",
+  "status": "required_future_tests_not_run_by_this_packet",
+  "cases": [
+    {
+      "id": "GOV-01",
+      "scenario": "Forged client approval",
+      "expected": "No permit or effect; authoritative identity and policy required."
+    },
+    {
+      "id": "GOV-02",
+      "scenario": "Mandate revoked after proposal",
+      "expected": "Dispatch refuses new exposure and records current revocation epoch."
+    },
+    {
+      "id": "GOV-03",
+      "scenario": "Plan/strategy changes after approval",
+      "expected": "Approval does not cover changed material; new review or within-envelope proof required."
+    },
+    {
+      "id": "GOV-04",
+      "scenario": "Stale owner lease",
+      "expected": "Exclusive gateway refuses old owner; no bypass connection retains send ability."
+    },
+    {
+      "id": "GOV-05",
+      "scenario": "Two requests consume remaining capacity",
+      "expected": "Only feasible reservations commit; pending and unknown effects still count."
+    },
+    {
+      "id": "GOV-06",
+      "scenario": "Sealed-data read or prompt injection",
+      "expected": "No protected read/export/effect authority obtained from source text or an LLM."
+    },
+    {
+      "id": "EXE-01",
+      "scenario": "Crash before send",
+      "expected": "Committed intent recovered; dedupe before any permitted dispatch."
+    },
+    {
+      "id": "EXE-02",
+      "scenario": "Crash after send before acknowledgment",
+      "expected": "Keep uncertainty and reservation; reconcile before retry."
+    },
+    {
+      "id": "EXE-03",
+      "scenario": "Partial fill/cancel/replacement race",
+      "expected": "Only reconciled positive remainder may be sent; uncertainty not cancelled."
+    },
+    {
+      "id": "EXE-04",
+      "scenario": "Late execution/price/commission correction",
+      "expected": "Append correction and update derived results with revisions; retain original decision context."
+    },
+    {
+      "id": "EXE-05",
+      "scenario": "Terminal state save failure",
+      "expected": "Do not report successful terminal completion from unsaved memory."
+    },
+    {
+      "id": "EXE-06",
+      "scenario": "Mandate expiry while position open",
+      "expected": "No new exposure; preauthorized protection/reconciliation follows explicit surviving scope."
+    },
+    {
+      "id": "EXE-07",
+      "scenario": "LLM/browser/resource outage",
+      "expected": "Deterministic control and recovery remain independent; protective work has capacity."
+    },
+    {
+      "id": "EXE-08",
+      "scenario": "Manual order/assignment/account reset",
+      "expected": "No silent attribution; reconcile or create new epoch and expose actual quantities."
+    },
+    {
+      "id": "EVI-01",
+      "scenario": "Payload tamper or source mismatch",
+      "expected": "Integrity check rejects mismatch; old result kept, affected current claim flagged."
+    },
+    {
+      "id": "EVI-02",
+      "scenario": "Legitimate append after verification",
+      "expected": "Verification succeeds without stale-head false failure."
+    },
+    {
+      "id": "EVI-03",
+      "scenario": "Same request changed dependencies",
+      "expected": "New execution identity; no stale cache result under old request hash."
+    },
+    {
+      "id": "EVI-04",
+      "scenario": "Conflicting providers or revised evidence",
+      "expected": "Retain each source and disposition; no overwrite or averaging away disagreement."
+    },
+    {
+      "id": "ACC-01",
+      "scenario": "Buy/hold/sell with fees and external flows",
+      "expected": "Independent cash+inventory NAV agrees; costs and flows counted once."
+    },
+    {
+      "id": "ACC-02",
+      "scenario": "Unpriced position",
+      "expected": "Known exposure remains visible; affected aggregate metrics null with reasons."
+    },
+    {
+      "id": "ADA-01",
+      "scenario": "New model fits observed winners",
+      "expected": "Retain trial history; cannot relabel explored data as untouched validation."
+    },
+    {
+      "id": "ADA-02",
+      "scenario": "Adaptive version selection over time",
+      "expected": "Replay the selector and historical information state, not hindsight-spliced winner curves."
+    },
+    {
+      "id": "ADA-03",
+      "scenario": "Distribution shift or missing inputs",
+      "expected": "Log diagnosis uncertainty; bounded fallback or freeze; no automatic risk increase."
+    },
+    {
+      "id": "ADA-04",
+      "scenario": "Changing strategy with open inventory",
+      "expected": "Old position exit/owner policy persists unless explicit migration is authorized."
+    },
+    {
+      "id": "ADA-05",
+      "scenario": "Paper outcomes overstate modeled execution quality",
+      "expected": "Keep simulator/model/real evidence separate; no inferred live execution validation."
+    },
+    {
+      "id": "UI-01",
+      "scenario": "Old voice referent after selection changes",
+      "expected": "Original target/revision retained or explicit conflict; no silent retargeting."
+    },
+    {
+      "id": "UI-02",
+      "scenario": "Slow result after human edit",
+      "expected": "Revision/generation fence preserves new accepted state."
+    },
+    {
+      "id": "UI-03",
+      "scenario": "Graph drag or chart zoom",
+      "expected": "Presentation-only unless explicit domain edit; no broker grant or study mutation."
+    },
+    {
+      "id": "UI-04",
+      "scenario": "Chart point/table/export disagreement",
+      "expected": "All bind same immutable metric/result; stop unsupported presentation."
+    },
+    {
+      "id": "UI-05",
+      "scenario": "Stream gap/reconnect",
+      "expected": "Fresh authoritative snapshot and continuation; no false complete/flat status."
+    },
+    {
+      "id": "UI-06",
+      "scenario": "Mobile/keyboard only episode",
+      "expected": "Compare, inspect, propose, review, intervene and resume without voice/drag."
+    },
+    {
+      "id": "REV-01",
+      "scenario": "Review skipped or outcome indeterminate",
+      "expected": "Not counted as passed; explicitly scoped readiness and reason."
+    },
+    {
+      "id": "REV-02",
+      "scenario": "Two reviewers share the same evidence/error",
+      "expected": "Do not treat model vote count as independent statistical evidence."
+    },
+    {
+      "id": "REC-01",
+      "scenario": "Cold restore while broker state advanced",
+      "expected": "Local integrity followed by broker reconciliation before effects resume."
+    }
+  ]
+}

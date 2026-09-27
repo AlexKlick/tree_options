@@ -9,12 +9,14 @@ export type Route =
   | { view: 'market' }
   | { view: 'symbol'; id: string }
   | { view: 'research' }
+  | { view: 'action-model' }
 
 export function parseHash(hash: string): Route {
   if (hash === '#/discover') return { view: 'discover' }
   if (hash === '#/stats') return { view: 'stats' }
   if (hash === '#/market') return { view: 'market' }
   if (hash === '#/research') return { view: 'research' }
+  if (hash === '#/action-model') return { view: 'action-model' }
   const sym = /^#\/market\/([A-Z.]{1,6})$/.exec(hash)
   if (sym) return { view: 'symbol', id: sym[1] }
   const m = /^#\/plan\/([^/]+)$/.exec(hash)
@@ -26,6 +28,7 @@ export function serialize(route: Route): string {
   if (route.view === 'stats') return '#/stats'
   if (route.view === 'market') return '#/market'
   if (route.view === 'research') return '#/research'
+  if (route.view === 'action-model') return '#/action-model'
   if (route.view === 'symbol') return `#/market/${route.id}`
   return route.view === 'plan'
     ? `#/plan/${encodeURIComponent(route.id)}`

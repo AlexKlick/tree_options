@@ -524,6 +524,19 @@ def create_app(
     def api_plans() -> dict[str, object]:
         return _plans_payload(state_root, plans_root, discovery_root)
 
+    @app.get("/api/action-model/example")
+    def api_action_model_example() -> JSONResponse:
+        """Verified synthetic proposal for the governed action workspace.
+
+        This route reads package fixtures only. It cannot submit, authorize,
+        arm or mutate any trading state.
+        """
+        from tree_options.action_graph.proposal import load_design_example
+
+        plan, receipt = load_design_example()
+        return JSONResponse({"plan": plan, "receipt": receipt},
+                            headers={"Cache-Control": "no-store"})
+
     @app.get("/api/plans/{plan_id}")
     def api_plan_detail(plan_id: str) -> dict[str, object]:
         payload = _plan_payload(plan_id, state_root, plans_root)

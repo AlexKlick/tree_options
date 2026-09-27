@@ -1,4 +1,42 @@
 // Mirrors the Python API contract (src/tree_options/trex_web/app.py).
+export interface ActionNode {
+  id: string
+  label: string
+  operation: string
+  operation_version: string
+  owner_role: string
+  effect_class: string
+  target_environment: string
+  dependencies: { node_id: string; on_outcomes: string[] }[]
+  inputs: Record<string, { artifact_id?: string; producer_node_id?: string; output_name?: string; expected_type: string }>
+  outputs: Record<string, string>
+  required_guards: string[]
+  required_receipts: string[]
+  postcondition: string
+}
+
+export interface ActionModelExample {
+  plan: {
+    plan_id: string
+    revision: number
+    goal: string
+    state: 'proposed'
+    artifact_status: 'synthetic_design_example'
+    execution_authorized: false
+    source_repository_head: string
+    artifacts: { id: string; kind: string; sha256: string; classification: string }[]
+    nodes: ActionNode[]
+  }
+  receipt: {
+    valid_structure: boolean
+    node_count: number
+    dependency_count: number
+    execution_authorized: false
+    broker_contacted: false
+    scope: string
+  }
+}
+
 // Plain numbers + ISO strings from the server; this app formats.
 
 // GET /api/gateway: the gateway watchdog's verdict (epoch seconds).
