@@ -59,7 +59,13 @@ export function ResearchOutlook(): JSX.Element {
   const [runId, setRunId] = useState<string | null>(null)
   const [runError, setRunError] = useState<string | null>(null)
   const [result, setResult] = useState<ForecastRunResultResponse | null>(null)
+  const [resultAttempt, setResultAttempt] = useState(0)
   const resultFetchedFor = useRef<string | null>(null)
+  /** Submission generation (checkpoint C, P1-1): every selection change
+   * and every new POST increments it; a response whose captured
+   * generation is stale is DISCARDED — a slow POST can never restore
+   * an old lane's run under the current controls. */
+  const submitGen = useRef(0)
 
   // Defaults follow the registry: first source, first ENABLED horizon.
   useEffect(() => {
@@ -90,6 +96,7 @@ export function ResearchOutlook(): JSX.Element {
    * receipt from the old lane may present itself as this one's. */
   function onPickSource(next: string): void {
     if (next === source) return
+    submitGen.current += 1
     setSource(next)
     setHorizon(null)
     setRunId(null)
@@ -99,6 +106,7 @@ export function ResearchOutlook(): JSX.Element {
   }
   function onPickHorizon(next: number): void {
     if (next === horizon) return
+    submitGen.current += 1
     setHorizon(next)
     setRunId(null)
     setResult(null)
@@ -107,13 +115,17 @@ export function ResearchOutlook(): JSX.Element {
   }
 
   // Run lifecycle: bounded polling while live; the receipt is fetched
-  // exactly once per run, and a superseded run's late response is
+  // exactly once per attempt, and a superseded run's late response is
   // dropped (run-keying — the receipt renders under its own id only).
-  const { data: run } = usePoll(
+  // The poll's LAST data may still describe the PREVIOUS run (usePoll
+  // keeps it across fetcher changes), so status is trusted only when
+  // the polled record names the CURRENT run (checkpoint C, P2-2).
+  const { data: run, error: runPollError } = usePoll(
     () => (runId ? getForecastRun(runId) : Promise.resolve(null)),
     runId ? 2_500 : 0,
   )
-  const status = run?.status
+  const runForId = run !== null && run.run_id === runId ? run : null
+  const status = runForId?.status
   useEffect(() => {
     if (!runId || status !== 'completed') return
     if (resultFetchedFor.current === runId) return
@@ -127,12 +139,12 @@ export function ResearchOutlook(): JSX.Element {
       setRunError(errText(err))
     })
     return () => { superseded = true }
-  }, [runId, status])
+  }, [runId, status, resultAttempt])
 
   async function onRunEvaluation(): Promise<void> {
     if (!source || horizon === null || !evalStart) return
+    const gen = ++submitGen.current
     setRunError(null)
-    setResult(null)
     const spec: ForecastSpec = {
       source,
       horizon,
@@ -143,9 +155,24 @@ export function ResearchOutlook(): JSX.Element {
     }
     try {
       const queued = await spoolForecast(spec)
+      if (gen !== submitGen.current) return   // lane moved or newer submit
+      if (queued.run_id === runId && result !== null
+          && result.run_id === runId) {
+        // Idempotent same-world resubmit (HTTP 200, same run id): the
+        // recorded receipt STANDS — clearing it could never restore it
+        // (the effect deps would not change). (checkpoint C, P2-3)
+        return
+      }
+      setResult(null)
       resultFetchedFor.current = null
+      if (queued.run_id === runId) {
+        // Same id but no receipt in hand (earlier fetch failed): force
+        // the effect to refetch by moving its dependency.
+        setResultAttempt((a) => a + 1)
+      }
       setRunId(queued.run_id)
     } catch (err) {
+      if (gen !== submitGen.current) return
       setRunError(errText(err))
     }
   }
@@ -288,6 +315,9 @@ export function ResearchOutlook(): JSX.Element {
                 run <code>{runId.slice(0, 12)}…</code>:{' '}
                 {status === 'completed' ? 'completed' : (status ?? 'queued')}
               </p>
+              {runPollError && (
+                <p className="error">run status poll failed: {runPollError}</p>
+              )}
             </section>
           )}
 
@@ -312,15 +342,14 @@ export function ResearchOutlook(): JSX.Element {
             <OutlookReceiptBlock
               key={result.run_id}
               response={result}
-              quantileGrid={metadata.quantile_grid}
               wilsonNote={wilsonNote}
             />
           )}
 
-          {result !== null && result.run_id === runId && result.status === 'failed' && (
+          {runForId !== null && runForId.status === 'failed' && (
             <section className="error" data-testid="outlook-failure">
               <h3>Run failed</h3>
-              <p>{result.error ?? 'the worker recorded an error'}</p>
+              <p>{String(runForId.error ?? 'the worker recorded an error')}</p>
             </section>
           )}
         </>
@@ -366,14 +395,15 @@ function OutlookRefusalBlock({
 }
 
 /** A completed evaluation receipt: headline tally, per-model metrics
- * table (coverage always with n), and the forward fan. */
+ * table (coverage always with n), and the forward fan. The fan chart
+ * interprets the receipt's OWN quantile grid (w.quantile_grid), never
+ * the live metadata's — an immutable receipt cannot be reinterpreted
+ * by a registry refresh (checkpoint C, P2-4). */
 function OutlookReceiptBlock({
   response,
-  quantileGrid,
   wilsonNote,
 }: {
   response: ForecastRunResultResponse
-  quantileGrid: number[]
   wilsonNote: string | null
 }): JSX.Element {
   const w = response.result
@@ -478,7 +508,7 @@ function OutlookReceiptBlock({
         <h3>Forward quantiles — latest origin {w.forward.origin_session}</h3>
         <ForecastFanChart
           forward={w.forward}
-          quantileGrid={quantileGrid}
+          quantileGrid={w.quantile_grid}
           ariaLabel={`forward quantile bands ${w.forward.horizon_sessions} sessions after ${w.forward.origin_session}`}
         />
       </section>

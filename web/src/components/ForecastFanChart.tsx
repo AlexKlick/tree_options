@@ -30,9 +30,17 @@ export interface ForecastFanChartProps {
 interface Bar {
   model: string
   color: string
-  /** [q05, q25, q50, q75, q95] aligned to the grid; first/last may be
-   * null when the model did not publish that extreme. */
+  /** levels aligned to the declared grid by tau slot; null = that
+   * quantile was not published (a gap, never substituted). */
   levels: Array<number | null>
+}
+
+/** A model is drawable only when BOTH outer endpoints (the first and
+ * last grid slots) are published: a missing q05 must narrow nothing —
+ * the model renders as an explicit gap. Eligibility is the SAME test
+ * for domain, geometry, and legend (checkpoint C, P2-5). */
+function drawableBar(b: Bar): boolean {
+  return b.levels[0] !== null && b.levels[b.levels.length - 1] !== null
 }
 
 export function ForecastFanChart({
@@ -49,9 +57,7 @@ export function ForecastFanChart({
     color: MODEL_COLORS[i % MODEL_COLORS.length],
     levels: fanLevels(entry, quantileGrid),
   }))
-  const drawable = bars.filter(
-    (b) => b.levels.filter((v): v is number => v !== null).length >= 2,
-  )
+  const drawable = bars.filter(drawableBar)
   const lo = drawable.flatMap((b) => b.levels.filter((v): v is number => v !== null))
   const domainValues = [...lo, forward.last_close]
   if (drawable.length === 0 || domainValues.length === 0) {
@@ -77,15 +83,7 @@ export function ForecastFanChart({
   const xTarget = g.padL + plotW * 0.78
   const ticks = [domain.hi, (domain.hi + domain.lo) / 2, domain.lo]
   const bandW = Math.max(10, plotW * 0.06)
-
-  const first = (levels: Array<number | null>): number | null => {
-    const v = levels.find((x): x is number => x !== null)
-    return v ?? null
-  }
-  const last = (levels: Array<number | null>): number | null => {
-    const v = [...levels].reverse().find((x): x is number => x !== null)
-    return v ?? null
-  }
+  const mid = Math.floor(quantileGrid.length / 2)   // median slot (τ=0.5 on the 5-slot grid)
 
   return (
     <div ref={wrapRef} className="chart-wrap" role="img" aria-label={ariaLabel}>
@@ -112,11 +110,8 @@ export function ForecastFanChart({
           +{forward.horizon_sessions} sessions
         </text>
         {bars.map((b) => {
-          const qLo = first(b.levels)
-          const qHi = last(b.levels)
-          const median = b.levels[Math.floor(b.levels.length / 2)]
-          if (qLo === null || qHi === null) {
-            // an explicit gap: the model has no forward band here
+          if (!drawableBar(b)) {
+            // an explicit gap: the model's outer band is incomplete
             return (
               <text key={b.model} x={xTarget} y={g.padT + 12} textAnchor="middle"
                 className="axis-label" fill={b.color}>
@@ -124,18 +119,25 @@ export function ForecastFanChart({
               </text>
             )
           }
+          // endpoints by GRID SLOT, never first/last non-null: a missing
+          // quantile stays missing instead of narrowing the band
+          const qLo = b.levels[0] as number
+          const qHi = b.levels[b.levels.length - 1] as number
+          const iLo = b.levels[1]
+          const iHi = b.levels[b.levels.length - 2]
+          const median = b.levels[mid]
           return (
             <g key={b.model} data-testid={`forecast-fan-bar-${b.model}`}>
-              {/* central 90% band */}
+              {/* outer band: first to last grid slot */}
               <rect x={xTarget - bandW / 2} y={sy(qHi)} width={bandW} height={sy(qLo) - sy(qHi)}
                 fill={b.color} fillOpacity={0.18} stroke={b.color} strokeWidth={1} />
-              {/* interquartile band when both quartiles published */}
-              {b.levels[1] !== null && b.levels[3] !== null && (
-                <rect x={xTarget - bandW / 2} y={sy(b.levels[3] as number)} width={bandW}
-                  height={sy(b.levels[1] as number) - sy(b.levels[3] as number)}
+              {/* inner band only when BOTH inner slots published */}
+              {iLo !== null && iHi !== null && (
+                <rect x={xTarget - bandW / 2} y={sy(iHi)} width={bandW}
+                  height={sy(iLo) - sy(iHi)}
                   fill={b.color} fillOpacity={0.38} />
               )}
-              {/* median */}
+              {/* median: the middle grid slot, when published */}
               {median !== null && (
                 <>
                   <line x1={xTarget - bandW / 2 - 4} x2={xTarget + bandW / 2 + 4}
@@ -156,8 +158,8 @@ export function ForecastFanChart({
             <span className="swatch" style={{ background: b.color }} aria-hidden />
             <span className="key-label">{b.model}</span>
             <span className="key-value">
-              {b.levels.filter((v) => v !== null).length >= 2
-                ? `${valueFormat(first(b.levels) as number)} – ${valueFormat(last(b.levels) as number)}`
+              {drawableBar(b)
+                ? `${valueFormat(b.levels[0] as number)} – ${valueFormat(b.levels[b.levels.length - 1] as number)}`
                 : 'unavailable'}
             </span>
           </span>
