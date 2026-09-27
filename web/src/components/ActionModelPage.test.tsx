@@ -1,11 +1,12 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ActionModelPage } from './ActionModelPage'
-import { getActionModelExample, getPlans } from '../lib/api'
+import { getActionModelExample, getHistoricalReplays, getPlans } from '../lib/api'
 
 vi.mock('../lib/api', () => ({
   getActionModelExample: vi.fn(),
   getPlans: vi.fn(),
+  getHistoricalReplays: vi.fn(),
   getGateway: () => new Promise(() => {}),
   getExitMachine: () => new Promise(() => {}),
 }))
@@ -34,10 +35,14 @@ it('shows proposal status and inspects guards without a trade control', async ()
       execution_authorized: false, broker_contacted: false, scope: 'fixture only' },
   })
   vi.mocked(getPlans).mockResolvedValue({ account: null } as Awaited<ReturnType<typeof getPlans>>)
+  vi.mocked(getHistoricalReplays).mockResolvedValue({
+    schema: 'desk-historical-replay-list/1', execution_enabled: false, reports: [],
+  })
   render(<ActionModelPage />)
   await waitFor(() => expect(screen.getByText('Compare a version')).toBeTruthy())
   expect(screen.getByText(/execution authorized: no/)).toBeTruthy()
   expect(screen.getByText(/Governed entry: disabled/)).toBeTruthy()
+  expect(screen.getByText(/No historical replay has completed/)).toBeTruthy()
   fireEvent.click(screen.getByRole('button', { name: /N01.*Resolve inputs/ }))
   expect(screen.getByText(/Guards: input_hash_match/)).toBeTruthy()
   expect(screen.getByText(/No attempt, grant, permit, broker effect/)).toBeTruthy()

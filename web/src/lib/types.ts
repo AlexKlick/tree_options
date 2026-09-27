@@ -37,6 +37,21 @@ export interface ActionModelExample {
   }
 }
 
+export interface HistoricalReplayList {
+  schema: 'desk-historical-replay-list/1'
+  execution_enabled: false
+  reports: {
+    id: string
+    label: string
+    spec: { start: string; end: string; names: string[]; entry_dte: number[]; haircut: number; max_loss: number }
+    counts: Record<string, number>
+    by_structure: Record<string, { trades: number; wins: number; win_rate: number | null; mean_pnl: number | null }>
+    by_variant: Record<string, { trades: number; wins: number; win_rate: number | null; mean_pnl: number | null; worst_pnl: number | null }>
+    provenance: { sources: { path: string; input_sha256: string; input_files: number }[] }
+    limitations: string[]
+  }[]
+}
+
 // Plain numbers + ISO strings from the server; this app formats.
 
 // GET /api/gateway: the gateway watchdog's verdict (epoch seconds).

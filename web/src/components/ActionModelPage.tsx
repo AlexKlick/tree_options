@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getActionModelExample, getPlans } from '../lib/api'
+import { getActionModelExample, getHistoricalReplays, getPlans } from '../lib/api'
 import type { ActionNode } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
@@ -30,6 +30,7 @@ function NodeInspector({ node }: { node: ActionNode }) {
 export function ActionModelPage() {
   const poll = usePoll(getActionModelExample, 0)
   const accountPoll = usePoll(getPlans, 30_000)
+  const replays = usePoll(getHistoricalReplays, 60_000)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const plan = poll.data?.plan
   const selected = plan?.nodes.find((node) => node.id === selectedId) ?? plan?.nodes[0]
@@ -47,6 +48,24 @@ export function ActionModelPage() {
         )}
         {accountPoll.data?.net_positions && <p>Existing TREX positions: {accountPoll.data.net_positions.length} underlying rows. Their legacy monitor remains the owner; this action model does not claim or control them.</p>}
         {accountPoll.error && <p className="muted">Account observation unavailable: {accountPoll.error}</p>}
+      </section>
+      <section className="card" aria-label="Historical options replay">
+        <div className="eyebrow">Historical options · modeled evidence</div>
+        <h2>Replay history</h2>
+        <p className="muted">Cached daily option VWAPs are modeled prices, not broker fills. Runs do not place orders or authorize a strategy.</p>
+        {replays.error && <p role="alert">Replay reports unavailable: {replays.error}</p>}
+        {replays.data?.reports.length === 0 && <p>No historical replay has completed in this cockpit store.</p>}
+        {replays.data?.reports.map((run) => (
+          <div key={run.id} className="card">
+            <h3>{run.spec.start} through {run.spec.end}</h3>
+            <p>{run.spec.names.length} names · {run.spec.entry_dte.join('–')} entry DTE · assumed haircut {(run.spec.haircut * 100).toFixed(1)}% per leg · ${run.spec.max_loss} trade cap</p>
+            <p>{run.counts.evaluable_within_trade_cap ?? 0} evaluable · {run.counts.missing_exit_or_entry_bar ?? 0} missing bars · {run.counts.over_trade_loss_cap ?? 0} above cap</p>
+            <ul>{Object.entries(run.by_variant).map(([name, row]) => (
+              <li key={name}>{name}: {row.trades} modeled trades · {row.win_rate === null ? 'win rate unavailable' : `${(row.win_rate * 100).toFixed(1)}% modeled wins`} · mean {row.mean_pnl === null ? 'unavailable' : `$${row.mean_pnl.toFixed(2)}`} · worst {row.worst_pnl === null ? 'unavailable' : `$${row.worst_pnl.toFixed(2)}`}</li>
+            ))}</ul>
+            <p className="muted">{run.id} · {run.provenance.sources.length} cache sets · {run.limitations.join('; ')}</p>
+          </div>
+        ))}
       </section>
       <div className="card">
         <div className="eyebrow">Proposal only · synthetic design example</div>
