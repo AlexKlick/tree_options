@@ -45,10 +45,11 @@ def _assert_parity(api_body: dict, cli_payload: dict,
     for field in ("result_sha256", "engine_sha256"):
         assert api_body[field] == cli_payload[field], field
     if require_snapshot:
-        # a computed run binds its input snapshot; a refusal is an
-        # honest "no computation happened" record and omits it on BOTH
-        # surfaces by design
-        for field in ("input_snapshot_sha256", "calendar_sha256"):
+        # a computed run binds its input snapshot and BOTH calendars; a
+        # refusal is an honest "no computation happened" record and
+        # omits them on BOTH surfaces by design
+        for field in ("input_snapshot_sha256", "calendar_sha256",
+                      "session_authority_sha256"):
             assert api_body[field] == cli_payload[field], field
     else:
         assert "input_snapshot_sha256" not in api_body
