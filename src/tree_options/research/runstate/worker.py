@@ -391,29 +391,16 @@ class ResearchWorker:
         if isinstance(series, ForecastRefusal):
             return _forecast_refusal_result(run_id, spec, series)
 
-        expected_series = run.get("series_sha256_at_submission")
-        if isinstance(expected_series, str) \
-                and expected_series != series.series_sha256:
-            return _forecast_refusal_result(
-                run_id, spec, ForecastRefusal(
-                    code=FORECAST_SOURCE_DRIFT,
-                    message=("source data drifted between submission and "
-                             f"compute: submitted {expected_series}, live "
-                             f"resolves to {series.series_sha256}; "
-                             "refusing to publish revised bytes under the "
-                             "submission's run id"),
-                    payload={"series_sha256_at_submission": expected_series,
-                             "series_sha256_at_compute":
-                                 series.series_sha256}),
-                engine_sha256=engine_now)
-
         # The authority bytes that SHAPED the loaded grid (the loader
         # records the sha of exactly the bytes it intersected with). If
         # the authority was replaced between the identity check above
         # and this load, the grid is B's while the checked binding is
         # A's — refuse rather than publish B's grid under A's run id
-        # (checkpoint B-double-prime, NEW P1). Absent for sources whose
-        # grid does not intersect the authority (synthetic lane).
+        # (checkpoint B-double-prime, NEW P1). Checked BEFORE series
+        # drift so a combined CSV+authority change still reports the
+        # calendar divergence with its three values (sol final P2).
+        # Absent for sources whose grid does not intersect the
+        # authority (synthetic lane).
         grid_authority = series.provenance.get(
             "session_authority_sha256")
         if isinstance(grid_authority, str) \
@@ -434,6 +421,22 @@ class ResearchWorker:
                         "session_authority_sha256_that_shaped_the_grid":
                             grid_authority,
                     }),
+                engine_sha256=engine_now)
+
+        expected_series = run.get("series_sha256_at_submission")
+        if isinstance(expected_series, str) \
+                and expected_series != series.series_sha256:
+            return _forecast_refusal_result(
+                run_id, spec, ForecastRefusal(
+                    code=FORECAST_SOURCE_DRIFT,
+                    message=("source data drifted between submission and "
+                             f"compute: submitted {expected_series}, live "
+                             f"resolves to {series.series_sha256}; "
+                             "refusing to publish revised bytes under the "
+                             "submission's run id"),
+                    payload={"series_sha256_at_submission": expected_series,
+                             "series_sha256_at_compute":
+                                 series.series_sha256}),
                 engine_sha256=engine_now)
 
         recomputed = forecast_run_id(

@@ -339,6 +339,44 @@ class TestExecutionRefusals:
         assert wire["session_authority_sha256_that_shaped_the_grid"] == \
             "b" * 64
 
+    def test_combined_csv_and_authority_change_reports_the_calendar(
+            self, tmp_path: Path,
+            monkeypatch: pytest.MonkeyPatch) -> None:
+        # CSV AND authority both replaced between check and load: the
+        # refusal must still be the calendar one WITH its three
+        # authority values (the grid cannot be graded at all when the
+        # authority moved — that divergence outranks the data drift).
+        ws = tmp_path / "rs"
+        ws.mkdir()
+        series = _live_series()
+        engine = engine_identity_sha()
+        spec = _good_spec()
+        run_id = _rid(spec, series.series_sha256, engine)
+        swapped = ForecastSeries(
+            source_id=series.source_id, sessions=series.sessions,
+            closes=series.closes,
+            series_sha256="f" * 64,      # the CSV ALSO moved
+            basis=series.basis, grid_basis=series.grid_basis,
+            provenance={**series.provenance,
+                        "session_authority_sha256": "b" * 64},
+            excluded_rows=series.excluded_rows,
+            n_source_rows=series.n_source_rows)
+        import tree_options.research.runstate.worker as worker_mod
+        monkeypatch.setattr(worker_mod, "_load_forecast_series",
+                            lambda _spec: swapped)
+        _seed(ws, spec, run_id=run_id,
+              series_sha=series.series_sha256, engine_sha=engine)
+        assert _worker(ws).step() is True
+        with open_runstate_store(ws) as store:
+            result = store.get("result", run_id)
+        assert result is not None
+        wire = result["wire"]
+        assert wire["refusal"] == FORECAST_CALENDAR_CHANGED
+        assert wire["session_authority_sha256_at_check"] == \
+            session_authority_sha256()
+        assert wire["session_authority_sha256_that_shaped_the_grid"] == \
+            "b" * 64
+
     def test_inconsistent_bindings_refuse_identity_mismatch(
             self, tmp_path: Path) -> None:
         # The five bindings that pass every specific drift check must
