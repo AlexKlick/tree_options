@@ -57,18 +57,74 @@ Refusals print `refused: <machine-readable reason> <detail>` on stderr,
 exit 2. A revoked mandate can never be replaced inside the same state
 dir; clearing it is a deliberate by-hand act.
 
+## IBKR adapter (`trex/supervised_ibkr.py`)
+
+`IbkrSupervisedBroker` implements the port over one `IbkrTrex` session.
+The port's `submit(attempt, effect_payload)` receives the exact bytes the
+permit hashed, and the adapter builds its order FROM those bytes:
+
+- `SupervisedEffect` = the one order a permit may send: intent id, bound
+  paper account, `LegStructure`, side (the structure's OPEN side only),
+  quantity (<= the structure's), limit, and order tag. `effect_bytes` is
+  its canonical encoding; `decode_effect` refuses any other encoding, so
+  no unhashed field (a `tif`, a second account) can ride along.
+- Wire: the real `IbkrTrex._order` (BAG/OPT, `validate_package_order`
+  bounds, DAY limit), then `orderRef = trex:sup:<intent_id>` and an
+  EXPLICIT `order.account` (carry-forward E5 item).
+- Guards before `placeOrder`: connected; paper gateway port 4002; the
+  dedicated clientId **83** (monitor 77, discovery 74, desk 81 - IBKR
+  lets only the placing client cancel); the account is managed by the
+  session and carries the paper prefix `D`; the effect is for this
+  intent; no order with this tag already exists in ANY view (an
+  unreadable view refuses). Every local refusal is `Uncertain("not_sent:
+  ...")`: the core holds the effect until reconciliation (after its
+  settle window) confirms nothing reached the broker. No broker fact is
+  ever fabricated.
+- Acknowledgement: bounded poll (`ACK_TIMEOUT_S` 10 s) for
+  PreSubmitted/Submitted/Filled -> `Acknowledged`; Cancelled/Inactive
+  with no fill -> `Refused` (reason `IB<errorCode>`); dead with fills or
+  no status -> `Uncertain`. One order on the wire, never a retry.
+- `lookup`: all-client open orders + the session's completed orders +
+  executions, matched by tag and deduped by `permId`. `NotSubmitted`
+  only when every view was read; two distinct orders for one tag are
+  `LookupUnknown`. Views cover the current gateway session: reconcile
+  the same session, or check positions by hand after a restart.
+- `preflight(effect_payload)`: session guards, encoding, contract
+  qualification, order bounds, a two-sided package quote. Never places.
+
+Legacy non-adoption: the monitor's tag parser reads `trex:sup:<id>` as
+structure `sup:<id>` (never prepared by a book; effects refuse `sup:`
+structure ids). The legacy put-spread adoption path (`open_combo_trades`
++ `structure_for_bag`) matches BAGs by leg conIds WITHOUT reading the
+tag; it is kept off supervised orders only by clientId isolation
+(`openTrades()` on clientId 77 lists that client's orders). FOLLOW-UP:
+make that legacy adoption skip `trex:sup:` refs (a characterization-
+pinned legacy change, its own lane).
+
+Tests: `tests/unit/test_supervised_ibkr.py` (27) drive the REAL
+`IbkrTrex` over `FakeGateway` plus all-client views and a scripted
+status walk. Mutation pass: 10/10 KILLED (tag override, explicit
+account, duplicate-tag refusal, unreadable views never prove absence,
+canonical bytes, permId dedupe, clientId, paper port, intent match,
+open-side rule).
+
+The desk-safety gate now requires `ib_async`, `uvicorn` and
+`jsonschema` to be importable: a venv synced without the `trex` group
+used to SKIP every broker suite silently and still pass.
+
 ## What is deliberately NOT here yet
 
-- No IBKR adapter: `send`/`reconcile_intent` take an injected
-  `SupervisedBroker` port. The production port wraps `trex.ibkr`
-  (account snapshot, fresh leg quotes, orderRef `trex:sup:<intent>`),
-  and is the next integration step before any live-canary rehearsal.
 - No CanaryFacts collector: the permit gate consumes the blocker tuple
-  the runtime must derive from live observations (paper gateway account
-  age <= 60 s, quote age <= 30 s, legacy book flat, qty-1 vertical).
+  the runtime must derive from live observations. The adapter supplies
+  the session/contract/quote facts (`preflight`); the operator must
+  still rule on (a) the definition of `temporary_assignment_exposure`
+  (notional vs. width) and (b) WHO owns the protective exit of a
+  supervised position (`protective_exit_ready`): nothing monitors a
+  supervised order after its acknowledgement yet.
 - No timer/service: nothing schedules sends. E5-style arming is a later,
   operator-gated change that composes this module with desk rails.
-- Paper environment only: the mandate model refuses any other value.
+- Paper environment only: the mandate and the effect both refuse
+  anything else.
 
 ## Review trail
 

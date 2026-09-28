@@ -20,7 +20,7 @@ expected = pathlib.Path('src/tree_options').resolve()
 assert actual == expected, f'import root mismatch: {actual} != {expected}'
 requested = tuple(int(v) for v in pathlib.Path('.python-version').read_text().strip().split('.'))
 assert sys.version_info[:len(requested)] == requested, 'interpreter differs from .python-version'
-missing = [m for m in ('pytest', 'hypothesis', 'ruff', 'mypy', 'fastapi', 'httpx')
+missing = [m for m in ('pytest', 'hypothesis', 'ruff', 'mypy', 'fastapi', 'httpx', 'ib_async', 'uvicorn', 'jsonschema')
            if importlib.util.find_spec(m) is None]
 assert not missing, f'gate dependencies missing: {missing}'
 critical = ('numpy', 'pydantic', 'pyyaml', 'pytest', 'hypothesis', 'ruff', 'mypy', 'fastapi', 'httpx', 'anyio', 'starlette')

@@ -243,9 +243,14 @@ LookupVerdict = NotSubmitted | Submitted | LookupUnknown
 
 
 class SupervisedBroker(Protocol):
-    """The only path to broker contact; injected, never constructed here."""
+    """The only path to broker contact; injected, never constructed here.
 
-    def submit(self, attempt: SubmitAttempt) -> SubmissionOutcome: ...
+    ``submit`` receives the exact effect bytes whose hash the permit bound,
+    so an adapter builds its order FROM the verified bytes: what was
+    checked is what is sent.
+    """
+
+    def submit(self, attempt: SubmitAttempt, effect_payload: bytes) -> SubmissionOutcome: ...
 
     def lookup(self, intent_id: str) -> LookupVerdict: ...
 
@@ -673,7 +678,7 @@ def send(paths: SupervisedPaths, *, now: datetime, permit_id: str,
         base = _fold(ExecutionLifecycle.start(intent.intent), [attempt])
         outcome: SubmissionOutcome
         try:
-            outcome = broker.submit(attempt)
+            outcome = broker.submit(attempt, effect_payload)
         except Exception as error:  # preserved as an uncertain effect, never swallowed
             outcome = Uncertain("broker_transport_error", repr(error))
         facts: list[ExecutionRecord] = []

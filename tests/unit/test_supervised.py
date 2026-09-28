@@ -105,7 +105,7 @@ class PaperPortBroker:
         self._paper: PaperBroker | None = None
         self.submitted: list[object] = []
 
-    def submit(self, attempt):
+    def submit(self, attempt, effect_payload=b""):
         self.submitted.append(attempt)
         self._paper = PaperBroker(intent=_order_intent(attempt.intent_id),
                                   quote=self._quote)
@@ -119,7 +119,7 @@ class PaperPortBroker:
 
 
 class ExplodingBroker:
-    def submit(self, attempt):
+    def submit(self, attempt, effect_payload=b""):
         raise ConnectionResetError("gateway vanished mid-submit")
 
     def lookup(self, intent_id: str):
@@ -403,7 +403,7 @@ SETTLED = RECONCILE_SETTLE_S + 10
 class SubmittedLookupBroker:
     """Lookup reports a live broker order (positive evidence) with no facts."""
 
-    def submit(self, attempt):
+    def submit(self, attempt, effect_payload=b""):
         raise AssertionError("reconciliation must never submit")
 
     def lookup(self, intent_id: str):
@@ -497,7 +497,7 @@ def test_reconcile_refuses_non_uncertain_intent(paths, mandate):
 
 def test_rejected_send_allows_new_intent_for_package(paths, mandate):
     class RejectingBroker:
-        def submit(self, attempt):
+        def submit(self, attempt, effect_payload=b""):
             return Refused(OrderReject(
                 record_id=f"rej-{attempt.record_id}", intent_id=attempt.intent_id,
                 reason_code="INSUFFICIENT_MARGIN",
@@ -605,7 +605,7 @@ def test_state_lock_refuses_when_busy(paths, monkeypatch):
 
 def test_contradictory_broker_facts_become_uncertain(paths, mandate):
     class ContradictingBroker:
-        def submit(self, attempt):
+        def submit(self, attempt, effect_payload=b""):
             ack = PaperBroker(intent=_order_intent(attempt.intent_id),
                               quote=PaperQuote(bid=Decimal("1.10"), ask=Decimal("1.40"))
                               ).acknowledge(attempt)
