@@ -77,6 +77,15 @@ matrix, TTL bounds, intent idempotency/collision/in-flight rules, permit
 gates (blockers, deadline, budget, double-issue), send-boundary refusals
 (hash mismatch, consumed/expired permit, expired mandate leaves the
 pending intent untouched), uncertainty preservation, the reconciliation
-matrix (clear/hold/conflict), orphan recovery, and status inventory.
-The FILLED projection is asserted through the execution package's own
-lifecycle over PaperBroker facts, not through supervised code.
+matrix (clear/hold/conflict), orphan recovery (the recovered terminal
+carries the package sha and keeps the package in flight), and status
+inventory. The FILLED projection is asserted through the execution
+package's own lifecycle over PaperBroker facts, not through supervised
+code.
+
+Adversarial review pass (glm-5.3 main session, 2026-09-28; the Codex
+round was skipped because Codex is meter-only per the 09-27 reservation)
+found and fixed two double-send race windows: the outbox claim and the
+permit consumption are now atomic RENAMES, not write-then-unlink pairs -
+a crash or a concurrent runtime can no longer leave an intent both
+pending and claimed, or a permit both issued and consumed.

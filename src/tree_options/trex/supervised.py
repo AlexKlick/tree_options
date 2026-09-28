@@ -543,18 +543,26 @@ def send(paths: SupervisedPaths, *, now: datetime, permit_id: str,
     intent = SupervisedIntent.model_validate(_read_model(pending))
     if intent.package_intent_sha256 != permit.package_intent_sha256:
         raise SupervisedRefused("intent_permit_binding_mismatch", permit.intent_id)
-    # Durable claim before any broker contact.
+    # Durable claim before any broker contact: the rename IS the claim, so
+    # a concurrent sender or a crash can never double-claim the intent.
+    try:
+        os.rename(pending, paths.sending(permit.intent_id))
+    except FileNotFoundError:
+        raise SupervisedRefused("intent_in_flight", permit.intent_id) from None
     claim = _dump(intent)
     claim["claimed_at"] = now.isoformat()
     claim["permit_id"] = permit_id
     claim["effect_sha256"] = permit.effect_sha256
     _atomic_write(paths.sending(permit.intent_id), claim)
-    pending.unlink()
-    # Consume the permit before submitting: authority is spent, never doubled.
+    # Consume the permit before submitting: authority is spent, never
+    # doubled. The rename IS the consumption; the enriched record follows.
+    try:
+        os.rename(issued, consumed)
+    except FileNotFoundError:
+        raise SupervisedRefused("permit_consumed", permit_id) from None
     consumed_doc = _dump(permit)
     consumed_doc["consumed_at"] = now.isoformat()
     _atomic_write(consumed, consumed_doc)
-    issued.unlink()
     attempt = SubmitAttempt(
         record_id=f"sup-send-{permit_id}", intent_id=permit.intent_id,
         send_attempt_at=now, source="supervised", source_sequence_id=permit_id)

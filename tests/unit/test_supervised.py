@@ -8,6 +8,7 @@ machine-readable reason string.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from decimal import Decimal
 
@@ -468,13 +469,20 @@ def test_rejected_send_allows_new_intent_for_package(paths, mandate):
 def test_recover_reclassifies_orphan_sending(paths):
     intent = _sup_intent()
     record_intent(paths, intent)
-    # Simulate a crash after the claim rename but before any terminal write.
-    paths.sending(intent.intent.intent_id).write_text('{"orphan": true}')
+    # Simulate the real crash window: the pending file was atomically
+    # renamed to its claim content but no terminal was ever written.
+    claim = intent.model_dump(mode="json", by_alias=True)
+    paths.sending(intent.intent.intent_id).write_text(json.dumps(claim))
     paths.pending(intent.intent.intent_id).unlink()
     recovered = recover(paths, now=T0)
     assert recovered == ["sup-001"]
-    terminal = paths.terminal("sup-001").read_bytes()
-    assert b"sending_orphan_recovered" in terminal
+    terminal = json.loads(paths.terminal("sup-001").read_bytes())
+    assert terminal["reason"] == "sending_orphan_recovered"
+    assert terminal["package_intent_sha256"] == PACKAGE_SHA
+    # The preserved package sha keeps the package in flight after recovery.
+    with pytest.raises(SupervisedRefused) as caught:
+        record_intent(paths, _sup_intent("sup-002"))
+    assert caught.value.reason == "package_already_in_flight"
     assert recover(paths, now=shift_instant(T0, 1)) == []
 
 
