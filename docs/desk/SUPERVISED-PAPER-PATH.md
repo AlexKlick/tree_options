@@ -155,15 +155,70 @@ acknowledged receipt projected in the journal. Mutation: 11/11 KILLED
 (after one survivor exposed a missing test: one fresh leg must not
 vouch for a leg that never ticked).
 
+## E5 desk runtime v1 (`trex/desk_runtime.py`) - the exit owner (ruling 2b)
+
+`DeskRuntime` is the SAME process and clientId (83) that sends supervised
+entries (IBKR lets only the placing client see and cancel an order), with
+state in `~/.local/state/trex/desk-paper/` (`TREX_DESK_RUN_DIR`):
+`specs/<sid>.json` (one `DeskSpec` per structure), a single-writer
+`book.json` (`BookState`), `events.jsonl`, `runtime.lock`, and the `HALT`
+/ `FLATTEN` kill files. Decisions are the pure desk engine's
+(`engine.step`: drain the working order, then decide).
+
+- `register(effect)` BEFORE the send: spec + PLANNED book entry
+  (idempotent; another intent on the same structure id refuses). A
+  PLANNED structure resolves from the broker's live `trex:sup:` order, or
+  the supervised outbox: acknowledged -> ENTER_WORKING; rejected /
+  confirmed-not-submitted / an intent whose send deadline passed unsent ->
+  CLOSED; uncertain -> held (event). An order at the broker is never
+  unowned, even across a crash between send and bookkeeping.
+- Entry lane: cancel-only. `AbortEntry` (entry window closed, stale deal)
+  cancels and waits for the confirmation; `EntryOrder` repricing is
+  NEVER sent (the permit binds one limit; event `entry_reprice_not_sent`).
+  An entry that left the live view resolves only from broker evidence
+  (`IbkrTrex.entry_fill_evidence`): fills -> OPEN, provably none ->
+  CLOSED, inconclusive -> held + event.
+- Exit lane: every engine exit (expiry safety, touch/breach, assignment
+  risk, take-profit, stop-loss, time stop; FLATTEN at marketable prices)
+  is a DAY limit with `orderRef trex:desk:<sid>` and the bound account.
+  Reprice = cancel -> confirmed -> merge the final fills -> replace the
+  REMAINDER; an unconfirmed cancel keeps the old order and sends nothing.
+- Legs-held guard before EVERY close: the bound account's leg positions
+  must equal the book's open quantity (BUY legs long, SELL legs short),
+  else refuse + `legs_mismatch` event. A double close (a reversed
+  position) cannot be sent, across restarts too. (v1 assumes one
+  supervised structure per leg contract; ruling 3b's same-underlying
+  flat-book rule makes that true for canaries.)
+- Unknown exposure (a tagged order whose side contradicts the book) is
+  noted and never acted on. `HALT` sends nothing new (fills still drain).
+- Arm gate: `exit_owner_ready(paths, now)` = heartbeat <= 30 s AND the
+  runtime lock held. It is the canary's `protective_exit_ready`.
+- Assignment: `assignment_plan(structure, dividend_snapshot, as_of)` is the
+  canary's `assignment_plan_verified`: no short call -> covered by expiry
+  safety; a short call needs a fresh snapshot and no PROJECTED (undeclared)
+  ex-date in the hold window. The next DECLARED ex-date and the short
+  call's leg mid feed the engine's pre-ex-date exit
+  (`Snapshot.dividends`, `short_call_mids`).
+
+Tests: `tests/unit/test_desk_runtime.py` (30) over the real `IbkrTrex` and
+the real engine. Mutation: 15/15 KILLED (legs guard, abort-cancel,
+cancel-confirm, exit tag, exit account, HALT, unknown exposure, uncertain
+receipt, send deadline, inconclusive evidence, heartbeat, lock, short-call
+mids, projected dividend, entry reprice).
+
 ## What is deliberately NOT here yet
 
-- E5 exit ownership (ruling 2b): the E5 desk runtime must adopt every
-  acknowledged supervised position (by its `trex:sup:` tag) and run its
-  exits (time stop, touch/breach per kind, expiry safety, assignment
-  risk) before `protective_exit_ready` may be True. Until then no live
-  screening clears.
-- No timer/service: nothing schedules sends. E5-style arming is a later,
-  operator-gated change that composes this module with desk rails.
+- The loop and the service: nothing runs `DeskRuntime.tick()` on a
+  cadence yet, and no unit is installed. Next: `python -m
+  tree_options.trex.desk_runtime` (connect clientId 83, acquire, tick
+  every N s in session, the Polygon spot feed like the monitor, the desk
+  dividend store), then an operator-armed `trex-desk.service`.
+- The entry orchestrator: one call that runs preflight -> screening
+  (with `exit_owner_ready` and `assignment_plan` as inputs) -> permit ->
+  `register` -> `send` inside the runtime process.
+- An exit order that FILLED while the runtime was down leaves the book
+  EXIT_WORKING and the legs-held guard refusing (alert, operator
+  resolves); exit-side fill evidence is a follow-up.
 - Paper environment only: the mandate and the effect both refuse
   anything else.
 
