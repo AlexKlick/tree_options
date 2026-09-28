@@ -1,0 +1,743 @@
+"""Supervised paper-path authority: mandate, permit, durable intent outbox.
+
+This module is the operator-facing authority layer that the proposal
+surface (``tree_options.action_graph``) declares and the broker-neutral
+execution contracts (``tree_options.execution``) project. It composes
+both with three crash-safe mechanisms:
+
+- an expiring, account-bound, strategy-scoped **mandate** granted by the
+  operator; at most one is active and nothing here can grant itself;
+- a single-use **effect permit** issued only after the pure canary
+  screening returns zero blockers, bound to the exact effect bytes it
+  may submit (``effect_hash_bound``);
+- a durable **intent outbox** (pending -> sending -> terminal) plus an
+  append-only per-intent execution journal.
+
+Sending travels an injected ``SupervisedBroker`` port; this module never
+contacts a broker. On any uncertain outcome the effect is preserved
+(``preserve_uncertain_effect``) and only ``reconcile_intent`` can clear
+it: a retry requires a ``confirmed_not_submitted`` verdict first
+(``reconcile_before_retry``), expressed structurally because a terminal
+uncertain intent can never re-enter ``send`` and a new intent for the
+same package is refused while the old one is unresolved.
+
+All instants are timezone-aware; ages and TTLs are epoch-second math
+(the repo bans naive ``timedelta`` construction outside ``time/``).
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import sys
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+from pathlib import Path
+from typing import Any, Protocol
+
+from pydantic import Field, TypeAdapter
+
+from tree_options.action_graph.proposal import canonical_bytes
+from tree_options.execution import (
+    BrokerAcknowledgement,
+    ExecutionLifecycle,
+    ExecutionRecord,
+    OrderIntent,
+    OrderReject,
+    SubmitAttempt,
+    TimeoutObserved,
+)
+from tree_options.execution.records import StoredExecutionRecord
+from tree_options.schemas.common import IdStr, StrictModel
+from tree_options.time.sessions import shift_instant
+
+MANDATE_SCHEMA = "supervised-mandate/1"
+INTENT_SCHEMA = "supervised-intent/1"
+PERMIT_SCHEMA = "supervised-permit/1"
+
+#: Operator rulings bound the mandate lifetime: long enough to work a
+#: session, short enough that a forgotten grant cannot outlive attention.
+MIN_MANDATE_TTL_S = 60
+MAX_MANDATE_TTL_S = 8 * 60 * 60
+
+#: A permit lives only inside its intent's send deadline and this bound.
+MAX_PERMIT_TTL_S = 15 * 60
+
+
+class SupervisedRefused(RuntimeError):
+    """Fail-closed refusal with a machine-readable reason."""
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(f"{reason}: {detail}" if detail else reason)
+        self.reason = reason
+        self.detail = detail
+
+
+def _require_aware(value: datetime, name: str) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be timezone-aware")
+    return value
+
+
+class SupervisedMandate(StrictModel):
+    """Operator-granted, expiring, account-bound trading authority."""
+
+    schema_version: str = Field(default=MANDATE_SCHEMA, alias="schema")
+    mandate_id: IdStr
+    environment: str = "ibkr-paper"
+    account_id: IdStr
+    owner_epoch: IdStr
+    strategy_version: IdStr
+    profile_digest: str
+    max_orders: int = Field(strict=True, ge=1)
+    orders_used: int = Field(strict=True, ge=0, default=0)
+    granted_at: datetime
+    expires_at: datetime
+    granted_by: IdStr
+
+    def model_post_init(self, __context: Any) -> None:
+        _require_aware(self.granted_at, "granted_at")
+        _require_aware(self.expires_at, "expires_at")
+        if self.expires_at <= self.granted_at:
+            raise ValueError("expires_at must be after granted_at")
+        if self.orders_used > self.max_orders:
+            raise ValueError("orders_used cannot exceed max_orders")
+        if self.environment != "ibkr-paper":
+            raise ValueError("this build supervises the paper environment only")
+
+    def expired_at(self, now: datetime) -> bool:
+        return (now - self.expires_at).total_seconds() >= 0
+
+
+class SupervisedIntent(StrictModel):
+    """Durable order intent with its canary package binding and deadline."""
+
+    schema_version: str = Field(default=INTENT_SCHEMA, alias="schema")
+    intent: OrderIntent
+    package_intent_sha256: str
+    created_at: datetime
+    send_deadline: datetime
+
+    def model_post_init(self, __context: Any) -> None:
+        _require_aware(self.created_at, "created_at")
+        _require_aware(self.send_deadline, "send_deadline")
+        if self.send_deadline <= self.created_at:
+            raise ValueError("send_deadline must be after created_at")
+
+
+class EffectPermit(StrictModel):
+    """Single-use submit authority bound to exact effect bytes."""
+
+    schema_version: str = Field(default=PERMIT_SCHEMA, alias="schema")
+    permit_id: IdStr
+    mandate_id: IdStr
+    intent_id: IdStr
+    package_intent_sha256: str
+    effect_sha256: str
+    account_id: IdStr
+    owner_epoch: IdStr
+    strategy_version: IdStr
+    screening_sha256: str
+    issued_at: datetime
+    expires_at: datetime
+    consumed_at: datetime | None = None
+
+    def model_post_init(self, __context: Any) -> None:
+        _require_aware(self.issued_at, "issued_at")
+        _require_aware(self.expires_at, "expires_at")
+        if self.consumed_at is not None:
+            _require_aware(self.consumed_at, "consumed_at")
+        if self.expires_at <= self.issued_at:
+            raise ValueError("expires_at must be after issued_at")
+
+
+@dataclass(frozen=True)
+class Acknowledged:
+    """A submit the broker answered with an order identity and facts."""
+
+    acknowledgement: BrokerAcknowledgement
+    facts: tuple[ExecutionRecord, ...] = ()
+
+
+@dataclass(frozen=True)
+class Refused:
+    """A submit the broker answered with a rejection."""
+
+    reject: OrderReject
+
+
+@dataclass(frozen=True)
+class Uncertain:
+    """A submit whose outcome is unknown; the effect is preserved."""
+
+    reason: str
+    detail: str = ""
+
+
+type SubmissionOutcome = Acknowledged | Refused | Uncertain
+
+_RECORD_ADAPTER: TypeAdapter[ExecutionRecord] = TypeAdapter(ExecutionRecord)
+
+
+@dataclass(frozen=True)
+class NotSubmitted:
+    """Reconciliation evidence that no broker order exists."""
+
+
+@dataclass(frozen=True)
+class Submitted:
+    """Reconciliation evidence of a live broker order for the intent."""
+
+    broker_order_id: str
+    facts: tuple[ExecutionRecord, ...] = ()
+
+
+@dataclass(frozen=True)
+class LookupUnknown:
+    """Reconciliation could not determine submission either way."""
+
+    reason: str
+
+
+LookupVerdict = NotSubmitted | Submitted | LookupUnknown
+
+
+class SupervisedBroker(Protocol):
+    """The only path to broker contact; injected, never constructed here."""
+
+    def submit(self, attempt: SubmitAttempt) -> SubmissionOutcome: ...
+
+    def lookup(self, intent_id: str) -> LookupVerdict: ...
+
+
+class _OutboxState(StrEnum):
+    PENDING = "pending"
+    SENDING = "sending"
+    RECEIPT = "receipt"
+    REJECTED = "rejected"
+    UNCERTAIN = "uncertain"
+    RECONCILED = "reconciled"
+
+
+@dataclass(frozen=True)
+class SupervisedPaths:
+    """All durable state under one root; nothing else is touched."""
+
+    root: Path
+
+    @classmethod
+    def default(cls) -> SupervisedPaths:
+        env = os.environ.get("TREX_SUPERVISED_DIR", "~/.local/state/trex/supervised")
+        return cls(Path(env).expanduser())
+
+    def prepare(self) -> None:
+        for sub in ("permits", "outbox", "journal"):
+            (self.root / sub).mkdir(parents=True, exist_ok=True)
+
+    def mandate(self) -> Path:
+        return self.root / "mandate.json"
+
+    def mandate_revoked(self) -> Path:
+        return self.root / "mandate.revoked.json"
+
+    def permit(self, permit_id: str) -> Path:
+        return self.root / "permits" / f"{permit_id}.issued.json"
+
+    def permit_consumed(self, permit_id: str) -> Path:
+        return self.root / "permits" / f"{permit_id}.consumed.json"
+
+    def outbox_dir(self) -> Path:
+        return self.root / "outbox"
+
+    def pending(self, intent_id: str) -> Path:
+        return self.outbox_dir() / f"{intent_id}.pending.json"
+
+    def sending(self, intent_id: str) -> Path:
+        return self.outbox_dir() / f"{intent_id}.sending.json"
+
+    def terminal(self, intent_id: str) -> Path:
+        return self.outbox_dir() / f"{intent_id}.terminal.json"
+
+    def reconciled(self, intent_id: str) -> Path:
+        return self.outbox_dir() / f"{intent_id}.reconciled.json"
+
+    def journal(self, intent_id: str) -> Path:
+        return self.root / "journal" / f"{intent_id}.jsonl"
+
+
+def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.parent / (path.name + ".tmp")
+    tmp.write_bytes(canonical_bytes(payload))
+    os.replace(tmp, path)
+
+
+def _read_model(path: Path) -> dict[str, Any]:
+    return json.loads(path.read_bytes())
+
+
+def _dump(model: StrictModel) -> dict[str, Any]:
+    return model.model_dump(mode="json", by_alias=True)
+
+
+# --------------------------------------------------------------- mandate
+
+
+def grant_mandate(paths: SupervisedPaths, *, now: datetime, account_id: str,
+                  owner_epoch: str, strategy_version: str, profile_digest: str,
+                  max_orders: int, ttl_seconds: int, granted_by: str,
+                  mandate_id: str | None = None) -> SupervisedMandate:
+    """Grant a new mandate; an unexpired one must be revoked or expire first."""
+    _require_aware(now, "now")
+    if not MIN_MANDATE_TTL_S <= ttl_seconds <= MAX_MANDATE_TTL_S:
+        raise SupervisedRefused(
+            "mandate_ttl_out_of_bounds",
+            f"ttl {ttl_seconds}s outside [{MIN_MANDATE_TTL_S}, {MAX_MANDATE_TTL_S}]")
+    if paths.mandate_revoked().exists():
+        raise SupervisedRefused("mandate_revoked_permanent",
+                                "revoke the tombstone directory state by hand to re-arm")
+    if paths.mandate().exists():
+        existing = SupervisedMandate.model_validate(_read_model(paths.mandate()))
+        if not existing.expired_at(now):
+            raise SupervisedRefused("mandate_already_active", existing.mandate_id)
+        archive = paths.root / f"mandate.expired-{existing.mandate_id}.json"
+        os.replace(paths.mandate(), archive)
+    mandate = SupervisedMandate(
+        mandate_id=mandate_id or f"mandate-{int(now.timestamp()):x}",
+        account_id=account_id, owner_epoch=owner_epoch,
+        strategy_version=strategy_version, profile_digest=profile_digest,
+        max_orders=max_orders, granted_at=now,
+        expires_at=shift_instant(now, ttl_seconds), granted_by=granted_by)
+    paths.prepare()
+    _atomic_write(paths.mandate(), _dump(mandate))
+    return mandate
+
+
+def revoke_mandate(paths: SupervisedPaths, *, now: datetime, reason: str) -> None:
+    """Replace the mandate with a permanent tombstone."""
+    _require_aware(now, "now")
+    if not paths.mandate().exists():
+        raise SupervisedRefused("mandate_absent")
+    mandate = SupervisedMandate.model_validate(_read_model(paths.mandate()))
+    record = _dump(mandate)
+    record["revoked_at"] = now.isoformat()
+    record["revoked_reason"] = reason
+    _atomic_write(paths.mandate_revoked(), record)
+    paths.mandate().unlink()
+
+
+def active_mandate(paths: SupervisedPaths, *, now: datetime, account_id: str,
+                   owner_epoch: str, strategy_version: str) -> SupervisedMandate:
+    """Load the one mandate and refuse, with the reason, on any mismatch."""
+    _require_aware(now, "now")
+    if paths.mandate_revoked().exists():
+        raise SupervisedRefused("mandate_revoked")
+    if not paths.mandate().exists():
+        raise SupervisedRefused("mandate_absent")
+    mandate = SupervisedMandate.model_validate(_read_model(paths.mandate()))
+    if mandate.expired_at(now):
+        raise SupervisedRefused("mandate_expired", mandate.mandate_id)
+    if mandate.account_id != account_id:
+        raise SupervisedRefused("mandate_account_mismatch")
+    if mandate.owner_epoch != owner_epoch:
+        raise SupervisedRefused("mandate_owner_mismatch")
+    if mandate.strategy_version != strategy_version:
+        raise SupervisedRefused("mandate_scope_mismatch")
+    return mandate
+
+
+# ---------------------------------------------------------------- intent
+
+
+def record_intent(paths: SupervisedPaths, intent: SupervisedIntent) -> Path:
+    """Persist a pending intent; identical replays are idempotent."""
+    paths.prepare()
+    path = paths.pending(intent.intent.intent_id)
+    if path.exists():
+        existing = SupervisedIntent.model_validate(_read_model(path))
+        if _dump(existing) != _dump(intent):
+            raise SupervisedRefused("intent_id_collision", intent.intent.intent_id)
+        return path
+    blocked = _in_flight_reason(paths, intent.package_intent_sha256)
+    if blocked is not None:
+        raise SupervisedRefused(blocked[0], blocked[1])
+    _atomic_write(path, _dump(intent))
+    return path
+
+
+_TERMINAL_STATES = {"acknowledged": _OutboxState.RECEIPT,
+                    "rejected": _OutboxState.REJECTED,
+                    "uncertain": _OutboxState.UNCERTAIN}
+
+
+def _outbox_states(paths: SupervisedPaths) -> list[tuple[str, _OutboxState, dict[str, Any]]]:
+    """Every outbox entry as (intent_id, state, document)."""
+    found: list[tuple[str, _OutboxState, dict[str, Any]]] = []
+    if not paths.outbox_dir().exists():
+        return found
+    for path in sorted(paths.outbox_dir().glob("*.json")):
+        stripped = path.name.removesuffix(".json")
+        state_name = stripped.rsplit(".", 1)[-1]
+        document = _read_model(path)
+        if state_name == "terminal":
+            state = _TERMINAL_STATES.get(str(document.get("outcome")))
+            if state is None:
+                continue
+        else:
+            try:
+                state = _OutboxState(state_name)
+            except ValueError:
+                continue
+        stem = stripped[: -(len(state_name) + 1)]
+        found.append((stem, state, document))
+    return found
+
+
+def _in_flight_reason(paths: SupervisedPaths,
+                      package_sha: str) -> tuple[str, str] | None:
+    """The refusal for a NEW intent on a package that is not cleared."""
+    verdicts: dict[str, str] = {}
+    entries: dict[str, _OutboxState] = {}
+    for intent_id, state, document in _outbox_states(paths):
+        if document.get("package_intent_sha256") != package_sha:
+            continue
+        if state == _OutboxState.RECONCILED:
+            verdicts[intent_id] = str(document.get("verdict", ""))
+        else:
+            entries[intent_id] = state
+    for intent_id, verdict in sorted(verdicts.items()):
+        if verdict != "confirmed_not_submitted":
+            return ("package_already_in_flight", f"{intent_id}:reconciled:{verdict}")
+    for intent_id, state in sorted(entries.items()):
+        if intent_id in verdicts:
+            # A reconciliation verdict supersedes the uncertain terminal it clears.
+            continue
+        if state in (_OutboxState.PENDING, _OutboxState.SENDING,
+                     _OutboxState.RECEIPT, _OutboxState.UNCERTAIN):
+            return ("package_already_in_flight", f"{intent_id}:{state.value}")
+    return None
+
+
+# ---------------------------------------------------------------- permit
+
+
+def issue_permit(paths: SupervisedPaths, *, now: datetime,
+                 account_id: str, owner_epoch: str,
+                 intent: SupervisedIntent, canary_blockers: tuple[str, ...] | list[str],
+                 effect_payload: bytes, screening_sha256: str,
+                 ttl_seconds: int = MAX_PERMIT_TTL_S) -> EffectPermit:
+    """Spend one mandate order on a hash-bound permit, or refuse.
+
+    Refusal reasons: canary blockers, a passed send deadline, an inactive
+    or exhausted mandate, or a permit that already exists for the intent.
+    """
+    _require_aware(now, "now")
+    if canary_blockers:
+        raise SupervisedRefused("canary_blockers", ",".join(canary_blockers))
+    if (now - intent.send_deadline).total_seconds() >= 0:
+        raise SupervisedRefused("intent_deadline_passed")
+    if not 1 <= ttl_seconds <= MAX_PERMIT_TTL_S:
+        raise SupervisedRefused("permit_ttl_out_of_bounds")
+    # The intent's emitting source must equal the granted strategy scope;
+    # a mismatch refuses here as mandate_scope_mismatch.
+    mandate = active_mandate(paths, now=now, account_id=account_id,
+                             owner_epoch=owner_epoch,
+                             strategy_version=intent.intent.source)
+    if mandate.orders_used >= mandate.max_orders:
+        raise SupervisedRefused("mandate_budget_exhausted")
+    permits_dir = paths.root / "permits"
+    for path in sorted(permits_dir.glob("*.json")) if permits_dir.exists() else ():
+        document = _read_model(path)
+        if document.get("intent_id") == intent.intent.intent_id:
+            raise SupervisedRefused("permit_already_issued", path.name)
+    effect_sha = hashlib.sha256(effect_payload).hexdigest()
+    permit_id = "permit-" + hashlib.sha256(
+        canonical_bytes({"intent_id": intent.intent.intent_id,
+                         "effect_sha256": effect_sha})).hexdigest()[:16]
+    permit = EffectPermit(
+        permit_id=permit_id, mandate_id=mandate.mandate_id,
+        intent_id=intent.intent.intent_id,
+        package_intent_sha256=intent.package_intent_sha256,
+        effect_sha256=effect_sha, account_id=account_id, owner_epoch=owner_epoch,
+        strategy_version=mandate.strategy_version, screening_sha256=screening_sha256,
+        issued_at=now, expires_at=shift_instant(now, ttl_seconds))
+    spent = mandate.model_copy(update={"orders_used": mandate.orders_used + 1})
+    _atomic_write(paths.mandate(), _dump(spent))
+    _atomic_write(paths.permit(permit_id), _dump(permit))
+    return permit
+
+
+# ----------------------------------------------------------------- send
+
+
+def _journal_append(paths: SupervisedPaths, record: StoredExecutionRecord) -> None:
+    path = paths.journal(record.intent_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(canonical_bytes(_dump(record)).decode("utf-8"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def load_journal(paths: SupervisedPaths, intent_id: str) -> list[StoredExecutionRecord]:
+    """Replay the append-only journal as validated records."""
+    path = paths.journal(intent_id)
+    if not path.exists():
+        return []
+    records: list[StoredExecutionRecord] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        document = json.loads(line)
+        if document.get("record_type") == "ORDER_INTENT":
+            records.append(OrderIntent.model_validate(document))
+        else:
+            records.append(_RECORD_ADAPTER.validate_python(document))
+    return records
+
+
+def project_intent(paths: SupervisedPaths, intent_id: str) -> ExecutionLifecycle:
+    """Fold the journal through the pure lifecycle projection."""
+    records = load_journal(paths, intent_id)
+    if not records or not isinstance(records[0], OrderIntent):
+        raise SupervisedRefused("journal_empty", intent_id)
+    lifecycle = ExecutionLifecycle.start(records[0])
+    for record in records[1:]:
+        lifecycle = lifecycle.apply(record)  # type: ignore[arg-type]
+    return lifecycle
+
+
+def send(paths: SupervisedPaths, *, now: datetime, permit_id: str,
+         effect_payload: bytes, broker: SupervisedBroker) -> dict[str, Any]:
+    """The send boundary: guards, durable claim, consume, submit, receipt.
+
+    Order matters and is load-bearing: the sending claim and the permit
+    consumption are persisted BEFORE the broker call, so a crash at any
+    point leaves an uncertain effect that only reconciliation can clear.
+    """
+    _require_aware(now, "now")
+    issued = paths.permit(permit_id)
+    consumed = paths.permit_consumed(permit_id)
+    if not issued.exists():
+        if consumed.exists():
+            raise SupervisedRefused("permit_consumed", permit_id)
+        raise SupervisedRefused("permit_absent", permit_id)
+    permit = EffectPermit.model_validate(_read_model(issued))
+    if (now - permit.expires_at).total_seconds() >= 0:
+        raise SupervisedRefused("permit_expired", permit_id)
+    if hashlib.sha256(effect_payload).hexdigest() != permit.effect_sha256:
+        raise SupervisedRefused("effect_hash_mismatch", permit_id)
+    active_mandate(paths, now=now, account_id=permit.account_id,
+                   owner_epoch=permit.owner_epoch, strategy_version=permit.strategy_version)
+    pending = paths.pending(permit.intent_id)
+    if not pending.exists():
+        if paths.terminal(permit.intent_id).exists() or paths.reconciled(permit.intent_id).exists():
+            raise SupervisedRefused("intent_terminal", permit.intent_id)
+        if paths.sending(permit.intent_id).exists():
+            raise SupervisedRefused("intent_in_flight", permit.intent_id)
+        raise SupervisedRefused("intent_absent", permit.intent_id)
+    intent = SupervisedIntent.model_validate(_read_model(pending))
+    if intent.package_intent_sha256 != permit.package_intent_sha256:
+        raise SupervisedRefused("intent_permit_binding_mismatch", permit.intent_id)
+    # Durable claim before any broker contact.
+    claim = _dump(intent)
+    claim["claimed_at"] = now.isoformat()
+    claim["permit_id"] = permit_id
+    claim["effect_sha256"] = permit.effect_sha256
+    _atomic_write(paths.sending(permit.intent_id), claim)
+    pending.unlink()
+    # Consume the permit before submitting: authority is spent, never doubled.
+    consumed_doc = _dump(permit)
+    consumed_doc["consumed_at"] = now.isoformat()
+    _atomic_write(consumed, consumed_doc)
+    issued.unlink()
+    attempt = SubmitAttempt(
+        record_id=f"sup-send-{permit_id}", intent_id=permit.intent_id,
+        send_attempt_at=now, source="supervised", source_sequence_id=permit_id)
+    _journal_append(paths, intent.intent)
+    _journal_append(paths, attempt)
+    receipt: dict[str, Any]
+    try:
+        outcome = broker.submit(attempt)
+    except Exception as error:  # preserved as an uncertain effect, never swallowed
+        outcome = Uncertain("broker_transport_error", repr(error))
+    if isinstance(outcome, Acknowledged):
+        _journal_append(paths, outcome.acknowledgement)
+        for fact in outcome.facts:
+            _journal_append(paths, fact)
+        receipt = {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
+                   "outcome": "acknowledged",
+                   "broker_order_id": outcome.acknowledgement.broker_order_id,
+                   "package_intent_sha256": permit.package_intent_sha256,
+                   "permit_id": permit_id, "at": now.isoformat()}
+    elif isinstance(outcome, Refused):
+        _journal_append(paths, outcome.reject)
+        receipt = {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
+                   "outcome": "rejected", "reason_code": outcome.reject.reason_code,
+                   "package_intent_sha256": permit.package_intent_sha256,
+                   "permit_id": permit_id, "at": now.isoformat()}
+    else:
+        timeout = TimeoutObserved(
+            record_id=f"sup-timeout-{permit_id}", intent_id=permit.intent_id,
+            attempt_id=attempt.record_id, locally_received_at=now,
+            source="supervised", source_sequence_id=f"timeout-{permit_id}")
+        _journal_append(paths, timeout)
+        receipt = {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
+                   "outcome": "uncertain", "reason": outcome.reason,
+                   "detail": outcome.detail,
+                   "package_intent_sha256": permit.package_intent_sha256,
+                   "permit_id": permit_id, "at": now.isoformat()}
+    _atomic_write(paths.terminal(permit.intent_id), receipt)
+    paths.sending(permit.intent_id).unlink(missing_ok=True)
+    return receipt
+
+
+# ------------------------------------------------------------ reconcile
+
+
+def reconcile_intent(paths: SupervisedPaths, *, now: datetime, intent_id: str,
+                     broker: SupervisedBroker) -> dict[str, Any]:
+    """Clear an uncertain effect with broker evidence, or keep it held."""
+    _require_aware(now, "now")
+    recover(paths, now=now)
+    terminal_path = paths.terminal(intent_id)
+    if not terminal_path.exists():
+        raise SupervisedRefused("intent_not_terminal", intent_id)
+    terminal = _read_model(terminal_path)
+    if terminal.get("outcome") != "uncertain":
+        raise SupervisedRefused("intent_not_uncertain", intent_id)
+    existing_reconciled = paths.reconciled(intent_id)
+    verdict_record: dict[str, Any]
+    verdict = broker.lookup(intent_id)
+    if isinstance(verdict, NotSubmitted):
+        outcome = "confirmed_not_submitted"
+    elif isinstance(verdict, Submitted):
+        outcome = "confirmed_submitted"
+        for fact in verdict.facts:
+            _journal_append(paths, fact)
+    else:
+        outcome = "still_uncertain"
+    verdict_record = {"schema": "supervised-reconciliation/1", "intent_id": intent_id,
+                      "verdict": outcome, "at": now.isoformat(),
+                      "package_intent_sha256": terminal.get("package_intent_sha256"),
+                      "broker_order_id": getattr(verdict, "broker_order_id", None)}
+    if existing_reconciled.exists():
+        prior = _read_model(existing_reconciled)
+        if prior.get("verdict") != outcome:
+            raise SupervisedRefused("reconcile_verdict_conflict",
+                                    f"{prior.get('verdict')} -> {outcome}")
+        return prior
+    _atomic_write(existing_reconciled, verdict_record)
+    return verdict_record
+
+
+def recover(paths: SupervisedPaths, *, now: datetime) -> list[str]:
+    """Reclassify orphan sending claims as uncertain; idempotent."""
+    _require_aware(now, "now")
+    recovered: list[str] = []
+    if not paths.outbox_dir().exists():
+        return recovered
+    for path in sorted(paths.outbox_dir().glob("*.sending.json")):
+        intent_id = path.name.removesuffix(".sending.json")
+        if paths.terminal(intent_id).exists():
+            path.unlink(missing_ok=True)
+            continue
+        try:
+            claim = _read_model(path)
+            package_sha = claim.get("package_intent_sha256")
+        except (OSError, ValueError):
+            package_sha = None
+        receipt = {"schema": "supervised-send-receipt/1", "intent_id": intent_id,
+                   "outcome": "uncertain", "reason": "sending_orphan_recovered",
+                   "detail": "process died between claim and terminal write",
+                   "package_intent_sha256": package_sha,
+                   "at": now.isoformat()}
+        _atomic_write(paths.terminal(intent_id), receipt)
+        path.unlink()
+        recovered.append(intent_id)
+    return recovered
+
+
+def status(paths: SupervisedPaths, *, now: datetime) -> dict[str, Any]:
+    """Read-only inventory for the operator."""
+    _require_aware(now, "now")
+    report: dict[str, Any] = {"schema": "supervised-status/1", "at": now.isoformat()}
+    if paths.mandate_revoked().exists():
+        report["mandate"] = {"state": "revoked"}
+    elif paths.mandate().exists():
+        mandate = SupervisedMandate.model_validate(_read_model(paths.mandate()))
+        report["mandate"] = {"state": "expired" if mandate.expired_at(now) else "active",
+                             **_dump(mandate)}
+    else:
+        report["mandate"] = {"state": "absent"}
+    entries = []
+    for intent_id, state, document in _outbox_states(paths):
+        entry: dict[str, Any] = {"intent_id": intent_id, "state": state.value}
+        if state == _OutboxState.PENDING:
+            entry["package_intent_sha256"] = document.get("package_intent_sha256")
+        elif state == _OutboxState.RECONCILED:
+            entry["verdict"] = document.get("verdict")
+        elif state != _OutboxState.SENDING:
+            entry["outcome"] = document.get("outcome")
+        try:
+            lifecycle = project_intent(paths, intent_id)
+            entry["execution_state"] = lifecycle.state.value
+        except SupervisedRefused:
+            entry["execution_state"] = None
+        entries.append(entry)
+    report["outbox"] = entries
+    return report
+
+
+# ------------------------------------------------------------------ CLI
+
+
+def _cli() -> int:
+    parser = argparse.ArgumentParser(
+        prog="python -m tree_options.trex.supervised",
+        description="Operator surface for the supervised paper path (no broker contact).")
+    parser.add_argument("--dir", type=Path, default=None,
+                        help="state directory (default TREX_SUPERVISED_DIR)")
+    from datetime import UTC
+    now = datetime.now(UTC)
+    sub = parser.add_subparsers(dest="command", required=True)
+    grant = sub.add_parser("grant", help="grant an expiring mandate")
+    grant.add_argument("--account", required=True)
+    grant.add_argument("--owner-epoch", required=True)
+    grant.add_argument("--strategy", required=True)
+    grant.add_argument("--profile-digest", required=True)
+    grant.add_argument("--max-orders", type=int, default=1)
+    grant.add_argument("--ttl-seconds", type=int, default=3600)
+    grant.add_argument("--granted-by", required=True)
+    sub.add_parser("revoke", help="revoke the active mandate").add_argument("--reason", default="")
+    sub.add_parser("status", help="read-only inventory")
+    sub.add_parser("recover", help="reclassify orphan sending claims")
+    args = parser.parse_args()
+    paths = SupervisedPaths(args.dir.expanduser() if args.dir else SupervisedPaths.default().root)
+    try:
+        if args.command == "grant":
+            mandate = grant_mandate(
+                paths, now=now, account_id=args.account, owner_epoch=args.owner_epoch,
+                strategy_version=args.strategy, profile_digest=args.profile_digest,
+                max_orders=args.max_orders, ttl_seconds=args.ttl_seconds,
+                granted_by=args.granted_by)
+            print(json.dumps(_dump(mandate), indent=2, sort_keys=True))
+        elif args.command == "revoke":
+            revoke_mandate(paths, now=now, reason=args.reason)
+            print("revoked")
+        elif args.command == "recover":
+            print(json.dumps(recover(paths, now=now)))
+        else:
+            print(json.dumps(status(paths, now=now), indent=2, sort_keys=True))
+    except SupervisedRefused as refused:
+        print(f"refused: {refused.reason} {refused.detail}", file=sys.stderr)
+        return 2
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_cli())
