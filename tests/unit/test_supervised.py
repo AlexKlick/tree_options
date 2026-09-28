@@ -8,6 +8,7 @@ machine-readable reason string.
 
 from __future__ import annotations
 
+import fcntl
 import json
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -15,6 +16,7 @@ from decimal import Decimal
 import pytest
 
 from tree_options.execution import (
+    CompleteFill,
     ExecutionLifecycle,
     ExecutionState,
     OrderIntent,
@@ -22,7 +24,9 @@ from tree_options.execution import (
 )
 from tree_options.execution.paper import PaperBroker, PaperQuote
 from tree_options.time.sessions import shift_instant
+from tree_options.trex import supervised as supervised_module
 from tree_options.trex.supervised import (
+    RECONCILE_SETTLE_S,
     Acknowledged,
     LookupUnknown,
     NotSubmitted,
@@ -361,10 +365,11 @@ def test_send_refused_when_mandate_expired(paths):
                   strategy_version=STRATEGY, profile_digest="c" * 64,
                   max_orders=1, ttl_seconds=60, granted_by="operator-terminal")
     permit = _armed(paths)
-    # +120s: the 60s mandate is expired while the 15-minute permit is not;
-    # the send boundary must re-check the mandate, not trust the permit.
+    # +90s: the 60s mandate is expired while the permit (clamped to the
+    # intent's +120s deadline) is not; the send boundary must re-check the
+    # mandate, not trust the permit.
     with pytest.raises(SupervisedRefused) as caught:
-        send(paths, now=shift_instant(T0, 120), permit_id=permit.permit_id,
+        send(paths, now=shift_instant(T0, 90), permit_id=permit.permit_id,
              effect_payload=EFFECT, broker=PaperPortBroker())
     assert caught.value.reason == "mandate_expired"
     # Nothing was claimed: the intent is still pending, untouched.
@@ -392,43 +397,92 @@ def test_uncertain_send_preserves_and_blocks_retry(paths, mandate):
                                ExecutionState.RECONCILIATION_REQUIRED)
 
 
+SETTLED = RECONCILE_SETTLE_S + 10
+
+
+class SubmittedLookupBroker:
+    """Lookup reports a live broker order (positive evidence) with no facts."""
+
+    def submit(self, attempt):
+        raise AssertionError("reconciliation must never submit")
+
+    def lookup(self, intent_id: str):
+        return Submitted(f"ib-{intent_id}")
+
+
 def test_reconcile_not_submitted_clears_the_package(paths, mandate):
     permit = _armed(paths)
     send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
          broker=ExplodingBroker())
-    verdict = reconcile_intent(paths, now=shift_instant(T0, 30), intent_id="sup-001",
+    verdict = reconcile_intent(paths, now=shift_instant(T0, SETTLED), intent_id="sup-001",
                                broker=PaperPortBroker())
     assert verdict["verdict"] == "confirmed_not_submitted"
     # A fresh intent for the same package is admissible again.
     record_intent(paths, _sup_intent("sup-002"))
     # Re-reconciling with the same verdict is idempotent.
-    again = reconcile_intent(paths, now=shift_instant(T0, 60), intent_id="sup-001",
-                             broker=PaperPortBroker())
+    again = reconcile_intent(paths, now=shift_instant(T0, SETTLED + 30),
+                             intent_id="sup-001", broker=PaperPortBroker())
     assert again["verdict"] == "confirmed_not_submitted"
 
 
-def test_reconcile_still_unknown_keeps_package_held(paths, mandate):
+def test_reconcile_refused_inside_settle_window(paths, mandate):
     permit = _armed(paths)
     send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
          broker=ExplodingBroker())
-    verdict = reconcile_intent(paths, now=shift_instant(T0, 30), intent_id="sup-001",
+    with pytest.raises(SupervisedRefused) as caught:
+        reconcile_intent(paths, now=shift_instant(T0, RECONCILE_SETTLE_S - 1),
+                         intent_id="sup-001", broker=PaperPortBroker())
+    assert caught.value.reason == "reconcile_too_early"
+    assert not paths.reconciled("sup-001").exists()
+
+
+def test_reconcile_still_unknown_keeps_package_held_and_is_not_a_verdict(paths, mandate):
+    permit = _armed(paths)
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
+         broker=ExplodingBroker())
+    verdict = reconcile_intent(paths, now=shift_instant(T0, SETTLED), intent_id="sup-001",
                                broker=ExplodingBroker())
     assert verdict["verdict"] == "still_uncertain"
+    assert verdict["persisted"] is False
+    assert not paths.reconciled("sup-001").exists()
+    assert paths.reconcile_audit("sup-001").exists()
     with pytest.raises(SupervisedRefused) as caught:
         record_intent(paths, _sup_intent("sup-002"))
     assert caught.value.reason == "package_already_in_flight"
 
 
-def test_reconcile_conflicting_verdict_refused(paths, mandate):
+def test_reconcile_upgrades_after_inconclusive_lookup(paths, mandate):
+    """A lookup made while the gateway was down must not strand the package."""
     permit = _armed(paths)
     send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
          broker=ExplodingBroker())
-    reconcile_intent(paths, now=shift_instant(T0, 30), intent_id="sup-001",
+    reconcile_intent(paths, now=shift_instant(T0, SETTLED), intent_id="sup-001",
                      broker=ExplodingBroker())
+    verdict = reconcile_intent(paths, now=shift_instant(T0, SETTLED + 60),
+                               intent_id="sup-001", broker=PaperPortBroker())
+    assert verdict["verdict"] == "confirmed_not_submitted"
+    record_intent(paths, _sup_intent("sup-002"))
+    audit = paths.reconcile_audit("sup-001").read_text().splitlines()
+    assert [json.loads(line)["verdict"] for line in audit] == [
+        "still_uncertain", "confirmed_not_submitted"]
+
+
+def test_reconcile_conflicting_confirmed_verdicts_refused(paths, mandate):
+    permit = _armed(paths)
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
+         broker=ExplodingBroker())
+    first = reconcile_intent(paths, now=shift_instant(T0, SETTLED), intent_id="sup-001",
+                             broker=SubmittedLookupBroker())
+    assert first["verdict"] == "confirmed_submitted"
+    assert first["broker_order_id"] == "ib-sup-001"
     with pytest.raises(SupervisedRefused) as caught:
-        reconcile_intent(paths, now=shift_instant(T0, 60), intent_id="sup-001",
+        reconcile_intent(paths, now=shift_instant(T0, SETTLED + 60), intent_id="sup-001",
                          broker=PaperPortBroker())
     assert caught.value.reason == "reconcile_verdict_conflict"
+    # A confirmed-submitted package stays held.
+    with pytest.raises(SupervisedRefused) as caught:
+        record_intent(paths, _sup_intent("sup-002"))
+    assert caught.value.reason == "package_already_in_flight"
 
 
 def test_reconcile_refuses_non_uncertain_intent(paths, mandate):
@@ -509,3 +563,93 @@ def test_status_reports_mandate_and_outbox(paths, mandate):
     assert entry["state"] == "receipt"
     assert entry["outcome"] == "acknowledged"
     assert entry["execution_state"] == ExecutionState.FILLED.value
+
+
+# ------------------------------------------------------ review regressions
+
+
+def _fill_before_intent(intent_id: str, broker_order_id: str, record_id: str) -> CompleteFill:
+    """A fill stamped before the intent existed: the lifecycle must refuse it."""
+    return CompleteFill(
+        record_id=record_id, intent_id=intent_id, broker_order_id=broker_order_id,
+        fill_quantity=1, cumulative_quantity=1, unit_price=Decimal("1.25"),
+        fees=Decimal("0.65"), exchange_event_at=shift_instant(T0, -60),
+        locally_received_at=shift_instant(T0, -59), source="bad-adapter",
+        source_sequence_id=record_id, broker_sequence_id=record_id)
+
+
+def test_permit_expiry_clamped_to_send_deadline(paths, mandate):
+    record_intent(paths, _sup_intent())
+    permit = issue_permit(paths, now=shift_instant(T0, 100), account_id=ACCOUNT,
+                          owner_epoch=OWNER, intent=_sup_intent(), canary_blockers=(),
+                          effect_payload=EFFECT, screening_sha256=SCREENING_SHA)
+    assert permit.expires_at == shift_instant(T0, 120)
+    with pytest.raises(SupervisedRefused) as caught:
+        send(paths, now=shift_instant(T0, 120), permit_id=permit.permit_id,
+             effect_payload=EFFECT, broker=PaperPortBroker())
+    assert caught.value.reason == "permit_expired"
+    assert paths.pending("sup-001").exists()
+
+
+def test_state_lock_refuses_when_busy(paths, monkeypatch):
+    monkeypatch.setattr(supervised_module, "LOCK_WAIT_S", 0.0)
+    with open(paths.lock(), "a+b") as holder:
+        fcntl.flock(holder.fileno(), fcntl.LOCK_EX)
+        with pytest.raises(SupervisedRefused) as caught:
+            grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
+                          strategy_version=STRATEGY, profile_digest="c" * 64,
+                          max_orders=1, ttl_seconds=3600, granted_by="operator-terminal")
+        assert caught.value.reason == "state_busy"
+    assert not paths.mandate().exists()
+
+
+def test_contradictory_broker_facts_become_uncertain(paths, mandate):
+    class ContradictingBroker:
+        def submit(self, attempt):
+            ack = PaperBroker(intent=_order_intent(attempt.intent_id),
+                              quote=PaperQuote(bid=Decimal("1.10"), ask=Decimal("1.40"))
+                              ).acknowledge(attempt)
+            return Acknowledged(ack, (_fill_before_intent(
+                attempt.intent_id, ack.broker_order_id, "bad-fill"),))
+
+        def lookup(self, intent_id):
+            return LookupUnknown("n/a")
+
+    permit = _armed(paths)
+    receipt = send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
+                   broker=ContradictingBroker())
+    assert receipt["outcome"] == "uncertain"
+    assert receipt["reason"] == "broker_facts_rejected"
+    assert b"bad-fill" not in paths.journal("sup-001").read_bytes()
+    # The journal still projects: nothing poisoned it.
+    assert project_intent(paths, "sup-001").state in (
+        ExecutionState.UNKNOWN, ExecutionState.RECONCILIATION_REQUIRED)
+
+
+def test_status_survives_a_poisoned_journal(paths, mandate):
+    permit = _armed(paths)
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
+         broker=PaperPortBroker())
+    poison = _fill_before_intent("sup-001", "paper-order-sup-001", "poison")
+    with paths.journal("sup-001").open("a", encoding="utf-8") as stream:
+        stream.write(poison.model_dump_json() + "\n")
+    report = status(paths, now=shift_instant(T0, 1))
+    entry = next(e for e in report["outbox"] if e["intent_id"] == "sup-001")
+    assert entry["execution_state"] == "projection_error"
+    assert "projection_error" in entry
+
+
+def test_intent_id_reuse_after_terminal_refused(paths, mandate):
+    permit = _armed(paths)
+    send(paths, now=T0, permit_id=permit.permit_id, effect_payload=EFFECT,
+         broker=PaperPortBroker())
+    with pytest.raises(SupervisedRefused) as caught:
+        record_intent(paths, _sup_intent("sup-001", sha="e" * 64))
+    assert caught.value.reason == "intent_id_reused"
+
+
+@pytest.mark.parametrize("bad", ["NOT-A-SHA", "A" * 64, "a" * 63])
+def test_sha_fields_must_be_lowercase_hex(bad):
+    with pytest.raises(ValueError):
+        SupervisedIntent(intent=_order_intent(), package_intent_sha256=bad,
+                         created_at=T0, send_deadline=shift_instant(T0, 60))

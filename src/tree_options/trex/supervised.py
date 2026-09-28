@@ -9,7 +9,8 @@ both with three crash-safe mechanisms:
   operator; at most one is active and nothing here can grant itself;
 - a single-use **effect permit** issued only after the pure canary
   screening returns zero blockers, bound to the exact effect bytes it
-  may submit (``effect_hash_bound``);
+  may submit (``effect_hash_bound``) and never outliving its intent's
+  send deadline;
 - a durable **intent outbox** (pending -> sending -> terminal) plus an
   append-only per-intent execution journal.
 
@@ -19,7 +20,16 @@ contacts a broker. On any uncertain outcome the effect is preserved
 it: a retry requires a ``confirmed_not_submitted`` verdict first
 (``reconcile_before_retry``), expressed structurally because a terminal
 uncertain intent can never re-enter ``send`` and a new intent for the
-same package is refused while the old one is unresolved.
+same package is refused while the old one is unresolved. Reconciliation
+waits out a settle window, so a lookup that races a just-sent order
+cannot clear it; confirmed verdicts never change, while an inconclusive
+lookup is only audited and may be retried.
+
+Every mutating operation holds one advisory lock on the state directory,
+so a CLI and a runtime cannot both spend the same mandate budget.
+Broker facts are folded through the pure lifecycle BEFORE they are
+journaled; facts the lifecycle refuses turn the outcome uncertain rather
+than poisoning the journal.
 
 All instants are timezone-aware; ages and TTLs are epoch-second math
 (the repo bans naive ``timedelta`` construction outside ``time/``).
@@ -28,15 +38,19 @@ All instants are timezone-aware; ages and TTLs are epoch-second math
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import sys
+import time
+from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Annotated, Any, Protocol
 
 from pydantic import Field, TypeAdapter
 
@@ -44,6 +58,7 @@ from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.execution import (
     BrokerAcknowledgement,
     ExecutionLifecycle,
+    ExecutionLifecycleError,
     ExecutionRecord,
     OrderIntent,
     OrderReject,
@@ -66,6 +81,15 @@ MAX_MANDATE_TTL_S = 8 * 60 * 60
 #: A permit lives only inside its intent's send deadline and this bound.
 MAX_PERMIT_TTL_S = 15 * 60
 
+#: An uncertain effect cannot be reconciled sooner than this after its
+#: terminal receipt: a lookup racing a just-sent order must not clear it.
+RECONCILE_SETTLE_S = 120
+
+#: How long a mutating call waits for the state lock before refusing.
+LOCK_WAIT_S = 10.0
+
+Sha256Hex = Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
 
 class SupervisedRefused(RuntimeError):
     """Fail-closed refusal with a machine-readable reason."""
@@ -82,6 +106,10 @@ def _require_aware(value: datetime, name: str) -> datetime:
     return value
 
 
+def _reached(now: datetime, instant: datetime) -> bool:
+    return (now - instant).total_seconds() >= 0
+
+
 class SupervisedMandate(StrictModel):
     """Operator-granted, expiring, account-bound trading authority."""
 
@@ -91,7 +119,7 @@ class SupervisedMandate(StrictModel):
     account_id: IdStr
     owner_epoch: IdStr
     strategy_version: IdStr
-    profile_digest: str
+    profile_digest: Sha256Hex
     max_orders: int = Field(strict=True, ge=1)
     orders_used: int = Field(strict=True, ge=0, default=0)
     granted_at: datetime
@@ -109,7 +137,7 @@ class SupervisedMandate(StrictModel):
             raise ValueError("this build supervises the paper environment only")
 
     def expired_at(self, now: datetime) -> bool:
-        return (now - self.expires_at).total_seconds() >= 0
+        return _reached(now, self.expires_at)
 
 
 class SupervisedIntent(StrictModel):
@@ -117,7 +145,7 @@ class SupervisedIntent(StrictModel):
 
     schema_version: str = Field(default=INTENT_SCHEMA, alias="schema")
     intent: OrderIntent
-    package_intent_sha256: str
+    package_intent_sha256: Sha256Hex
     created_at: datetime
     send_deadline: datetime
 
@@ -135,12 +163,12 @@ class EffectPermit(StrictModel):
     permit_id: IdStr
     mandate_id: IdStr
     intent_id: IdStr
-    package_intent_sha256: str
-    effect_sha256: str
+    package_intent_sha256: Sha256Hex
+    effect_sha256: Sha256Hex
     account_id: IdStr
     owner_epoch: IdStr
     strategy_version: IdStr
-    screening_sha256: str
+    screening_sha256: Sha256Hex
     issued_at: datetime
     expires_at: datetime
     consumed_at: datetime | None = None
@@ -184,12 +212,21 @@ _RECORD_ADAPTER: TypeAdapter[ExecutionRecord] = TypeAdapter(ExecutionRecord)
 
 @dataclass(frozen=True)
 class NotSubmitted:
-    """Reconciliation evidence that no broker order exists."""
+    """Positive evidence that no broker order exists for the intent.
+
+    An adapter returns this only from a connected, authoritative view
+    (open AND completed orders for the bound account, matched by the
+    intent's order tag); absence of evidence is ``LookupUnknown``.
+    """
 
 
 @dataclass(frozen=True)
 class Submitted:
-    """Reconciliation evidence of a live broker order for the intent."""
+    """Evidence of a broker order for the intent.
+
+    ``facts`` should carry the acknowledgement and any fills/readbacks so
+    the journal projects the order's real state.
+    """
 
     broker_order_id: str
     facts: tuple[ExecutionRecord, ...] = ()
@@ -237,6 +274,9 @@ class SupervisedPaths:
         for sub in ("permits", "outbox", "journal"):
             (self.root / sub).mkdir(parents=True, exist_ok=True)
 
+    def lock(self) -> Path:
+        return self.root / ".lock"
+
     def mandate(self) -> Path:
         return self.root / "mandate.json"
 
@@ -267,12 +307,61 @@ class SupervisedPaths:
     def journal(self, intent_id: str) -> Path:
         return self.root / "journal" / f"{intent_id}.jsonl"
 
+    def reconcile_audit(self, intent_id: str) -> Path:
+        return self.root / "journal" / f"{intent_id}.reconcile.jsonl"
+
+
+@contextlib.contextmanager
+def _locked(paths: SupervisedPaths) -> Iterator[None]:
+    """Hold the state directory's advisory lock, or refuse ``state_busy``."""
+    paths.prepare()
+    with open(paths.lock(), "a+b") as handle:
+        deadline = time.monotonic() + LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise SupervisedRefused("state_busy", str(paths.lock())) from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def _fsync_dir(directory: Path) -> None:
+    fd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
 
 def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.parent / (path.name + ".tmp")
-    tmp.write_bytes(canonical_bytes(payload))
+    with open(tmp, "wb") as stream:
+        stream.write(canonical_bytes(payload))
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(tmp, path)
+    _fsync_dir(path.parent)
+
+
+def _durable_rename(source: Path, target: Path) -> None:
+    os.rename(source, target)
+    _fsync_dir(target.parent)
+
+
+def _append_line(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(canonical_bytes(payload).decode("utf-8"))
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
 
 
 def _read_model(path: Path) -> dict[str, Any]:
@@ -296,37 +385,39 @@ def grant_mandate(paths: SupervisedPaths, *, now: datetime, account_id: str,
         raise SupervisedRefused(
             "mandate_ttl_out_of_bounds",
             f"ttl {ttl_seconds}s outside [{MIN_MANDATE_TTL_S}, {MAX_MANDATE_TTL_S}]")
-    if paths.mandate_revoked().exists():
-        raise SupervisedRefused("mandate_revoked_permanent",
-                                "revoke the tombstone directory state by hand to re-arm")
-    if paths.mandate().exists():
-        existing = SupervisedMandate.model_validate(_read_model(paths.mandate()))
-        if not existing.expired_at(now):
-            raise SupervisedRefused("mandate_already_active", existing.mandate_id)
-        archive = paths.root / f"mandate.expired-{existing.mandate_id}.json"
-        os.replace(paths.mandate(), archive)
-    mandate = SupervisedMandate(
-        mandate_id=mandate_id or f"mandate-{int(now.timestamp()):x}",
-        account_id=account_id, owner_epoch=owner_epoch,
-        strategy_version=strategy_version, profile_digest=profile_digest,
-        max_orders=max_orders, granted_at=now,
-        expires_at=shift_instant(now, ttl_seconds), granted_by=granted_by)
-    paths.prepare()
-    _atomic_write(paths.mandate(), _dump(mandate))
-    return mandate
+    with _locked(paths):
+        if paths.mandate_revoked().exists():
+            raise SupervisedRefused("mandate_revoked_permanent",
+                                    "remove the tombstone by hand to re-arm")
+        if paths.mandate().exists():
+            existing = SupervisedMandate.model_validate(_read_model(paths.mandate()))
+            if not existing.expired_at(now):
+                raise SupervisedRefused("mandate_already_active", existing.mandate_id)
+            _durable_rename(paths.mandate(),
+                            paths.root / f"mandate.expired-{existing.mandate_id}.json")
+        mandate = SupervisedMandate(
+            mandate_id=mandate_id or f"mandate-{int(now.timestamp()):x}",
+            account_id=account_id, owner_epoch=owner_epoch,
+            strategy_version=strategy_version, profile_digest=profile_digest,
+            max_orders=max_orders, granted_at=now,
+            expires_at=shift_instant(now, ttl_seconds), granted_by=granted_by)
+        _atomic_write(paths.mandate(), _dump(mandate))
+        return mandate
 
 
 def revoke_mandate(paths: SupervisedPaths, *, now: datetime, reason: str) -> None:
     """Replace the mandate with a permanent tombstone."""
     _require_aware(now, "now")
-    if not paths.mandate().exists():
-        raise SupervisedRefused("mandate_absent")
-    mandate = SupervisedMandate.model_validate(_read_model(paths.mandate()))
-    record = _dump(mandate)
-    record["revoked_at"] = now.isoformat()
-    record["revoked_reason"] = reason
-    _atomic_write(paths.mandate_revoked(), record)
-    paths.mandate().unlink()
+    with _locked(paths):
+        if not paths.mandate().exists():
+            raise SupervisedRefused("mandate_absent")
+        mandate = SupervisedMandate.model_validate(_read_model(paths.mandate()))
+        record = _dump(mandate)
+        record["revoked_at"] = now.isoformat()
+        record["revoked_reason"] = reason
+        _atomic_write(paths.mandate_revoked(), record)
+        paths.mandate().unlink()
+        _fsync_dir(paths.root)
 
 
 def active_mandate(paths: SupervisedPaths, *, now: datetime, account_id: str,
@@ -354,18 +445,23 @@ def active_mandate(paths: SupervisedPaths, *, now: datetime, account_id: str,
 
 def record_intent(paths: SupervisedPaths, intent: SupervisedIntent) -> Path:
     """Persist a pending intent; identical replays are idempotent."""
-    paths.prepare()
-    path = paths.pending(intent.intent.intent_id)
-    if path.exists():
-        existing = SupervisedIntent.model_validate(_read_model(path))
-        if _dump(existing) != _dump(intent):
-            raise SupervisedRefused("intent_id_collision", intent.intent.intent_id)
+    intent_id = intent.intent.intent_id
+    with _locked(paths):
+        path = paths.pending(intent_id)
+        if path.exists():
+            existing = SupervisedIntent.model_validate(_read_model(path))
+            if _dump(existing) != _dump(intent):
+                raise SupervisedRefused("intent_id_collision", intent_id)
+            return path
+        for used in (paths.sending(intent_id), paths.terminal(intent_id),
+                     paths.reconciled(intent_id)):
+            if used.exists():
+                raise SupervisedRefused("intent_id_reused", used.name)
+        blocked = _in_flight_reason(paths, intent.package_intent_sha256)
+        if blocked is not None:
+            raise SupervisedRefused(blocked[0], blocked[1])
+        _atomic_write(path, _dump(intent))
         return path
-    blocked = _in_flight_reason(paths, intent.package_intent_sha256)
-    if blocked is not None:
-        raise SupervisedRefused(blocked[0], blocked[1])
-    _atomic_write(path, _dump(intent))
-    return path
 
 
 _TERMINAL_STATES = {"acknowledged": _OutboxState.RECEIPT,
@@ -413,7 +509,7 @@ def _in_flight_reason(paths: SupervisedPaths,
             return ("package_already_in_flight", f"{intent_id}:reconciled:{verdict}")
     for intent_id, state in sorted(entries.items()):
         if intent_id in verdicts:
-            # A reconciliation verdict supersedes the uncertain terminal it clears.
+            # A confirmed verdict supersedes the uncertain terminal it clears.
             continue
         if state in (_OutboxState.PENDING, _OutboxState.SENDING,
                      _OutboxState.RECEIPT, _OutboxState.UNCERTAIN):
@@ -426,61 +522,58 @@ def _in_flight_reason(paths: SupervisedPaths,
 
 def issue_permit(paths: SupervisedPaths, *, now: datetime,
                  account_id: str, owner_epoch: str,
-                 intent: SupervisedIntent, canary_blockers: tuple[str, ...] | list[str],
+                 intent: SupervisedIntent, canary_blockers: Sequence[str],
                  effect_payload: bytes, screening_sha256: str,
                  ttl_seconds: int = MAX_PERMIT_TTL_S) -> EffectPermit:
     """Spend one mandate order on a hash-bound permit, or refuse.
 
     Refusal reasons: canary blockers, a passed send deadline, an inactive
     or exhausted mandate, or a permit that already exists for the intent.
+    The permit expires at the earlier of its TTL and the send deadline.
     """
     _require_aware(now, "now")
     if canary_blockers:
         raise SupervisedRefused("canary_blockers", ",".join(canary_blockers))
-    if (now - intent.send_deadline).total_seconds() >= 0:
+    if _reached(now, intent.send_deadline):
         raise SupervisedRefused("intent_deadline_passed")
     if not 1 <= ttl_seconds <= MAX_PERMIT_TTL_S:
         raise SupervisedRefused("permit_ttl_out_of_bounds")
-    # The intent's emitting source must equal the granted strategy scope;
-    # a mismatch refuses here as mandate_scope_mismatch.
-    mandate = active_mandate(paths, now=now, account_id=account_id,
-                             owner_epoch=owner_epoch,
-                             strategy_version=intent.intent.source)
-    if mandate.orders_used >= mandate.max_orders:
-        raise SupervisedRefused("mandate_budget_exhausted")
-    permits_dir = paths.root / "permits"
-    for path in sorted(permits_dir.glob("*.json")) if permits_dir.exists() else ():
-        document = _read_model(path)
-        if document.get("intent_id") == intent.intent.intent_id:
-            raise SupervisedRefused("permit_already_issued", path.name)
-    effect_sha = hashlib.sha256(effect_payload).hexdigest()
-    permit_id = "permit-" + hashlib.sha256(
-        canonical_bytes({"intent_id": intent.intent.intent_id,
-                         "effect_sha256": effect_sha})).hexdigest()[:16]
-    permit = EffectPermit(
-        permit_id=permit_id, mandate_id=mandate.mandate_id,
-        intent_id=intent.intent.intent_id,
-        package_intent_sha256=intent.package_intent_sha256,
-        effect_sha256=effect_sha, account_id=account_id, owner_epoch=owner_epoch,
-        strategy_version=mandate.strategy_version, screening_sha256=screening_sha256,
-        issued_at=now, expires_at=shift_instant(now, ttl_seconds))
-    spent = mandate.model_copy(update={"orders_used": mandate.orders_used + 1})
-    _atomic_write(paths.mandate(), _dump(spent))
-    _atomic_write(paths.permit(permit_id), _dump(permit))
-    return permit
+    with _locked(paths):
+        # The intent's emitting source must equal the granted strategy
+        # scope; a mismatch refuses here as mandate_scope_mismatch.
+        mandate = active_mandate(paths, now=now, account_id=account_id,
+                                 owner_epoch=owner_epoch,
+                                 strategy_version=intent.intent.source)
+        if mandate.orders_used >= mandate.max_orders:
+            raise SupervisedRefused("mandate_budget_exhausted")
+        for path in sorted((paths.root / "permits").glob("*.json")):
+            if _read_model(path).get("intent_id") == intent.intent.intent_id:
+                raise SupervisedRefused("permit_already_issued", path.name)
+        effect_sha = hashlib.sha256(effect_payload).hexdigest()
+        permit_id = "permit-" + hashlib.sha256(
+            canonical_bytes({"intent_id": intent.intent.intent_id,
+                             "effect_sha256": effect_sha})).hexdigest()[:16]
+        expires_at = min(shift_instant(now, ttl_seconds), intent.send_deadline)
+        permit = EffectPermit(
+            permit_id=permit_id, mandate_id=mandate.mandate_id,
+            intent_id=intent.intent.intent_id,
+            package_intent_sha256=intent.package_intent_sha256,
+            effect_sha256=effect_sha, account_id=account_id, owner_epoch=owner_epoch,
+            strategy_version=mandate.strategy_version, screening_sha256=screening_sha256,
+            issued_at=now, expires_at=expires_at)
+        # Budget first: a crash between the writes wastes an order, never
+        # mints one.
+        spent = mandate.model_copy(update={"orders_used": mandate.orders_used + 1})
+        _atomic_write(paths.mandate(), _dump(spent))
+        _atomic_write(paths.permit(permit_id), _dump(permit))
+        return permit
 
 
 # ----------------------------------------------------------------- send
 
 
 def _journal_append(paths: SupervisedPaths, record: StoredExecutionRecord) -> None:
-    path = paths.journal(record.intent_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as stream:
-        stream.write(canonical_bytes(_dump(record)).decode("utf-8"))
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
+    _append_line(paths.journal(record.intent_id), _dump(record))
 
 
 def load_journal(paths: SupervisedPaths, intent_id: str) -> list[StoredExecutionRecord]:
@@ -500,15 +593,28 @@ def load_journal(paths: SupervisedPaths, intent_id: str) -> list[StoredExecution
     return records
 
 
+def _fold(lifecycle: ExecutionLifecycle,
+          records: Sequence[ExecutionRecord]) -> ExecutionLifecycle:
+    for record in records:
+        lifecycle = lifecycle.apply(record)
+    return lifecycle
+
+
 def project_intent(paths: SupervisedPaths, intent_id: str) -> ExecutionLifecycle:
     """Fold the journal through the pure lifecycle projection."""
     records = load_journal(paths, intent_id)
     if not records or not isinstance(records[0], OrderIntent):
         raise SupervisedRefused("journal_empty", intent_id)
-    lifecycle = ExecutionLifecycle.start(records[0])
-    for record in records[1:]:
-        lifecycle = lifecycle.apply(record)  # type: ignore[arg-type]
-    return lifecycle
+    tail = [r for r in records[1:] if not isinstance(r, OrderIntent)]
+    return _fold(ExecutionLifecycle.start(records[0]), tail)
+
+
+def _uncertain_receipt(permit: EffectPermit, now: datetime, reason: str,
+                       detail: str) -> dict[str, Any]:
+    return {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
+            "outcome": "uncertain", "reason": reason, "detail": detail,
+            "package_intent_sha256": permit.package_intent_sha256,
+            "permit_id": permit.permit_id, "at": now.isoformat()}
 
 
 def send(paths: SupervisedPaths, *, now: datetime, permit_id: str,
@@ -520,88 +626,91 @@ def send(paths: SupervisedPaths, *, now: datetime, permit_id: str,
     point leaves an uncertain effect that only reconciliation can clear.
     """
     _require_aware(now, "now")
-    issued = paths.permit(permit_id)
-    consumed = paths.permit_consumed(permit_id)
-    if not issued.exists():
-        if consumed.exists():
-            raise SupervisedRefused("permit_consumed", permit_id)
-        raise SupervisedRefused("permit_absent", permit_id)
-    permit = EffectPermit.model_validate(_read_model(issued))
-    if (now - permit.expires_at).total_seconds() >= 0:
-        raise SupervisedRefused("permit_expired", permit_id)
-    if hashlib.sha256(effect_payload).hexdigest() != permit.effect_sha256:
-        raise SupervisedRefused("effect_hash_mismatch", permit_id)
-    active_mandate(paths, now=now, account_id=permit.account_id,
-                   owner_epoch=permit.owner_epoch, strategy_version=permit.strategy_version)
-    pending = paths.pending(permit.intent_id)
-    if not pending.exists():
-        if paths.terminal(permit.intent_id).exists() or paths.reconciled(permit.intent_id).exists():
-            raise SupervisedRefused("intent_terminal", permit.intent_id)
-        if paths.sending(permit.intent_id).exists():
-            raise SupervisedRefused("intent_in_flight", permit.intent_id)
-        raise SupervisedRefused("intent_absent", permit.intent_id)
-    intent = SupervisedIntent.model_validate(_read_model(pending))
-    if intent.package_intent_sha256 != permit.package_intent_sha256:
-        raise SupervisedRefused("intent_permit_binding_mismatch", permit.intent_id)
-    # Durable claim before any broker contact: the rename IS the claim, so
-    # a concurrent sender or a crash can never double-claim the intent.
-    try:
-        os.rename(pending, paths.sending(permit.intent_id))
-    except FileNotFoundError:
-        raise SupervisedRefused("intent_in_flight", permit.intent_id) from None
-    claim = _dump(intent)
-    claim["claimed_at"] = now.isoformat()
-    claim["permit_id"] = permit_id
-    claim["effect_sha256"] = permit.effect_sha256
-    _atomic_write(paths.sending(permit.intent_id), claim)
-    # Consume the permit before submitting: authority is spent, never
-    # doubled. The rename IS the consumption; the enriched record follows.
-    try:
-        os.rename(issued, consumed)
-    except FileNotFoundError:
-        raise SupervisedRefused("permit_consumed", permit_id) from None
-    consumed_doc = _dump(permit)
-    consumed_doc["consumed_at"] = now.isoformat()
-    _atomic_write(consumed, consumed_doc)
-    attempt = SubmitAttempt(
-        record_id=f"sup-send-{permit_id}", intent_id=permit.intent_id,
-        send_attempt_at=now, source="supervised", source_sequence_id=permit_id)
-    _journal_append(paths, intent.intent)
-    _journal_append(paths, attempt)
-    receipt: dict[str, Any]
-    try:
-        outcome = broker.submit(attempt)
-    except Exception as error:  # preserved as an uncertain effect, never swallowed
-        outcome = Uncertain("broker_transport_error", repr(error))
-    if isinstance(outcome, Acknowledged):
-        _journal_append(paths, outcome.acknowledgement)
-        for fact in outcome.facts:
+    with _locked(paths):
+        issued = paths.permit(permit_id)
+        consumed = paths.permit_consumed(permit_id)
+        if not issued.exists():
+            if consumed.exists():
+                raise SupervisedRefused("permit_consumed", permit_id)
+            raise SupervisedRefused("permit_absent", permit_id)
+        permit = EffectPermit.model_validate(_read_model(issued))
+        if _reached(now, permit.expires_at):
+            raise SupervisedRefused("permit_expired", permit_id)
+        if hashlib.sha256(effect_payload).hexdigest() != permit.effect_sha256:
+            raise SupervisedRefused("effect_hash_mismatch", permit_id)
+        active_mandate(paths, now=now, account_id=permit.account_id,
+                       owner_epoch=permit.owner_epoch,
+                       strategy_version=permit.strategy_version)
+        pending = paths.pending(permit.intent_id)
+        if not pending.exists():
+            if paths.terminal(permit.intent_id).exists() or paths.reconciled(permit.intent_id).exists():
+                raise SupervisedRefused("intent_terminal", permit.intent_id)
+            if paths.sending(permit.intent_id).exists():
+                raise SupervisedRefused("intent_in_flight", permit.intent_id)
+            raise SupervisedRefused("intent_absent", permit.intent_id)
+        intent = SupervisedIntent.model_validate(_read_model(pending))
+        if intent.package_intent_sha256 != permit.package_intent_sha256:
+            raise SupervisedRefused("intent_permit_binding_mismatch", permit.intent_id)
+        if _reached(now, intent.send_deadline):
+            raise SupervisedRefused("intent_deadline_passed", permit.intent_id)
+        # Durable claim before any broker contact: the rename IS the claim.
+        _durable_rename(pending, paths.sending(permit.intent_id))
+        claim = _dump(intent)
+        claim["claimed_at"] = now.isoformat()
+        claim["permit_id"] = permit_id
+        claim["effect_sha256"] = permit.effect_sha256
+        _atomic_write(paths.sending(permit.intent_id), claim)
+        # Consume the permit before submitting: the rename IS the consumption.
+        _durable_rename(issued, consumed)
+        consumed_doc = _dump(permit)
+        consumed_doc["consumed_at"] = now.isoformat()
+        _atomic_write(consumed, consumed_doc)
+        attempt = SubmitAttempt(
+            record_id=f"sup-send-{permit_id}", intent_id=permit.intent_id,
+            send_attempt_at=now, source="supervised", source_sequence_id=permit_id)
+        _journal_append(paths, intent.intent)
+        _journal_append(paths, attempt)
+        base = _fold(ExecutionLifecycle.start(intent.intent), [attempt])
+        outcome: SubmissionOutcome
+        try:
+            outcome = broker.submit(attempt)
+        except Exception as error:  # preserved as an uncertain effect, never swallowed
+            outcome = Uncertain("broker_transport_error", repr(error))
+        facts: list[ExecutionRecord] = []
+        if isinstance(outcome, Acknowledged):
+            facts = [outcome.acknowledgement, *outcome.facts]
+        elif isinstance(outcome, Refused):
+            facts = [outcome.reject]
+        if facts:
+            try:
+                _fold(base, facts)
+            except ExecutionLifecycleError as error:
+                outcome = Uncertain("broker_facts_rejected", repr(error))
+                facts = []
+        for fact in facts:
             _journal_append(paths, fact)
-        receipt = {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
-                   "outcome": "acknowledged",
-                   "broker_order_id": outcome.acknowledgement.broker_order_id,
-                   "package_intent_sha256": permit.package_intent_sha256,
-                   "permit_id": permit_id, "at": now.isoformat()}
-    elif isinstance(outcome, Refused):
-        _journal_append(paths, outcome.reject)
-        receipt = {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
-                   "outcome": "rejected", "reason_code": outcome.reject.reason_code,
-                   "package_intent_sha256": permit.package_intent_sha256,
-                   "permit_id": permit_id, "at": now.isoformat()}
-    else:
-        timeout = TimeoutObserved(
-            record_id=f"sup-timeout-{permit_id}", intent_id=permit.intent_id,
-            attempt_id=attempt.record_id, locally_received_at=now,
-            source="supervised", source_sequence_id=f"timeout-{permit_id}")
-        _journal_append(paths, timeout)
-        receipt = {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
-                   "outcome": "uncertain", "reason": outcome.reason,
-                   "detail": outcome.detail,
-                   "package_intent_sha256": permit.package_intent_sha256,
-                   "permit_id": permit_id, "at": now.isoformat()}
-    _atomic_write(paths.terminal(permit.intent_id), receipt)
-    paths.sending(permit.intent_id).unlink(missing_ok=True)
-    return receipt
+        receipt: dict[str, Any]
+        if isinstance(outcome, Acknowledged):
+            receipt = {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
+                       "outcome": "acknowledged",
+                       "broker_order_id": outcome.acknowledgement.broker_order_id,
+                       "package_intent_sha256": permit.package_intent_sha256,
+                       "permit_id": permit_id, "at": now.isoformat()}
+        elif isinstance(outcome, Refused):
+            receipt = {"schema": "supervised-send-receipt/1", "intent_id": permit.intent_id,
+                       "outcome": "rejected", "reason_code": outcome.reject.reason_code,
+                       "package_intent_sha256": permit.package_intent_sha256,
+                       "permit_id": permit_id, "at": now.isoformat()}
+        else:
+            _journal_append(paths, TimeoutObserved(
+                record_id=f"sup-timeout-{permit_id}", intent_id=permit.intent_id,
+                attempt_id=attempt.record_id, locally_received_at=now,
+                source="supervised", source_sequence_id=f"timeout-{permit_id}"))
+            receipt = _uncertain_receipt(permit, now, outcome.reason, outcome.detail)
+        _atomic_write(paths.terminal(permit.intent_id), receipt)
+        paths.sending(permit.intent_id).unlink(missing_ok=True)
+        _fsync_dir(paths.outbox_dir())
+        return receipt
 
 
 # ------------------------------------------------------------ reconcile
@@ -609,43 +718,62 @@ def send(paths: SupervisedPaths, *, now: datetime, permit_id: str,
 
 def reconcile_intent(paths: SupervisedPaths, *, now: datetime, intent_id: str,
                      broker: SupervisedBroker) -> dict[str, Any]:
-    """Clear an uncertain effect with broker evidence, or keep it held."""
+    """Clear an uncertain effect with broker evidence, or keep it held.
+
+    Confirmed verdicts are persisted once and never change; a conflicting
+    later confirmation is refused. An inconclusive lookup is appended to
+    the intent's reconcile audit only, so the package stays held and the
+    reconciliation can be retried.
+    """
     _require_aware(now, "now")
-    recover(paths, now=now)
-    terminal_path = paths.terminal(intent_id)
-    if not terminal_path.exists():
-        raise SupervisedRefused("intent_not_terminal", intent_id)
-    terminal = _read_model(terminal_path)
-    if terminal.get("outcome") != "uncertain":
-        raise SupervisedRefused("intent_not_uncertain", intent_id)
-    existing_reconciled = paths.reconciled(intent_id)
-    verdict_record: dict[str, Any]
-    verdict = broker.lookup(intent_id)
-    if isinstance(verdict, NotSubmitted):
-        outcome = "confirmed_not_submitted"
-    elif isinstance(verdict, Submitted):
-        outcome = "confirmed_submitted"
-        for fact in verdict.facts:
+    with _locked(paths):
+        _recover(paths, now=now)
+        terminal_path = paths.terminal(intent_id)
+        if not terminal_path.exists():
+            raise SupervisedRefused("intent_not_terminal", intent_id)
+        terminal = _read_model(terminal_path)
+        if terminal.get("outcome") != "uncertain":
+            raise SupervisedRefused("intent_not_uncertain", intent_id)
+        settle_at = shift_instant(datetime.fromisoformat(str(terminal["at"])),
+                                  RECONCILE_SETTLE_S)
+        if not _reached(now, settle_at):
+            raise SupervisedRefused("reconcile_too_early", f"settles at {settle_at.isoformat()}")
+        prior_path = paths.reconciled(intent_id)
+        prior = _read_model(prior_path) if prior_path.exists() else None
+        verdict = broker.lookup(intent_id)
+        detail = ""
+        facts: list[ExecutionRecord] = []
+        if isinstance(verdict, NotSubmitted):
+            outcome = "confirmed_not_submitted"
+        elif isinstance(verdict, Submitted):
+            outcome = "confirmed_submitted"
+            facts = list(verdict.facts)
+            try:
+                _fold(project_intent(paths, intent_id), facts)
+            except (ExecutionLifecycleError, SupervisedRefused) as error:
+                outcome, detail, facts = "still_uncertain", f"facts_rejected: {error!r}", []
+        else:
+            outcome, detail = "still_uncertain", verdict.reason
+        record = {"schema": "supervised-reconciliation/1", "intent_id": intent_id,
+                  "verdict": outcome, "detail": detail, "at": now.isoformat(),
+                  "package_intent_sha256": terminal.get("package_intent_sha256"),
+                  "broker_order_id": getattr(verdict, "broker_order_id", None)}
+        if outcome == "still_uncertain":
+            _append_line(paths.reconcile_audit(intent_id), record)
+            return {**record, "persisted": False}
+        if prior is not None:
+            if prior.get("verdict") != outcome:
+                raise SupervisedRefused("reconcile_verdict_conflict",
+                                        f"{prior.get('verdict')} -> {outcome}")
+            return prior
+        for fact in facts:
             _journal_append(paths, fact)
-    else:
-        outcome = "still_uncertain"
-    verdict_record = {"schema": "supervised-reconciliation/1", "intent_id": intent_id,
-                      "verdict": outcome, "at": now.isoformat(),
-                      "package_intent_sha256": terminal.get("package_intent_sha256"),
-                      "broker_order_id": getattr(verdict, "broker_order_id", None)}
-    if existing_reconciled.exists():
-        prior = _read_model(existing_reconciled)
-        if prior.get("verdict") != outcome:
-            raise SupervisedRefused("reconcile_verdict_conflict",
-                                    f"{prior.get('verdict')} -> {outcome}")
-        return prior
-    _atomic_write(existing_reconciled, verdict_record)
-    return verdict_record
+        _append_line(paths.reconcile_audit(intent_id), record)
+        _atomic_write(prior_path, record)
+        return record
 
 
-def recover(paths: SupervisedPaths, *, now: datetime) -> list[str]:
-    """Reclassify orphan sending claims as uncertain; idempotent."""
-    _require_aware(now, "now")
+def _recover(paths: SupervisedPaths, *, now: datetime) -> list[str]:
     recovered: list[str] = []
     if not paths.outbox_dir().exists():
         return recovered
@@ -655,8 +783,7 @@ def recover(paths: SupervisedPaths, *, now: datetime) -> list[str]:
             path.unlink(missing_ok=True)
             continue
         try:
-            claim = _read_model(path)
-            package_sha = claim.get("package_intent_sha256")
+            package_sha = _read_model(path).get("package_intent_sha256")
         except (OSError, ValueError):
             package_sha = None
         receipt = {"schema": "supervised-send-receipt/1", "intent_id": intent_id,
@@ -670,8 +797,15 @@ def recover(paths: SupervisedPaths, *, now: datetime) -> list[str]:
     return recovered
 
 
+def recover(paths: SupervisedPaths, *, now: datetime) -> list[str]:
+    """Reclassify orphan sending claims as uncertain; idempotent."""
+    _require_aware(now, "now")
+    with _locked(paths):
+        return _recover(paths, now=now)
+
+
 def status(paths: SupervisedPaths, *, now: datetime) -> dict[str, Any]:
-    """Read-only inventory for the operator."""
+    """Read-only inventory for the operator (never raises on bad journals)."""
     _require_aware(now, "now")
     report: dict[str, Any] = {"schema": "supervised-status/1", "at": now.isoformat()}
     if paths.mandate_revoked().exists():
@@ -692,10 +826,12 @@ def status(paths: SupervisedPaths, *, now: datetime) -> dict[str, Any]:
         elif state != _OutboxState.SENDING:
             entry["outcome"] = document.get("outcome")
         try:
-            lifecycle = project_intent(paths, intent_id)
-            entry["execution_state"] = lifecycle.state.value
+            entry["execution_state"] = project_intent(paths, intent_id).state.value
         except SupervisedRefused:
             entry["execution_state"] = None
+        except (ExecutionLifecycleError, ValueError) as error:
+            entry["execution_state"] = "projection_error"
+            entry["projection_error"] = repr(error)
         entries.append(entry)
     report["outbox"] = entries
     return report
@@ -743,6 +879,9 @@ def _cli() -> int:
             print(json.dumps(status(paths, now=now), indent=2, sort_keys=True))
     except SupervisedRefused as refused:
         print(f"refused: {refused.reason} {refused.detail}", file=sys.stderr)
+        return 2
+    except ValueError as invalid:
+        print(f"refused: invalid_input {invalid}", file=sys.stderr)
         return 2
     return 0
 
