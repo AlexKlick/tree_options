@@ -421,3 +421,77 @@ class FakeDeskBroker:
         ref.trade.orderStatus.status = "Filled"
         ref.trade.orderStatus.filled = qty
         ref.trade.orderStatus.avgFillPrice = float(price)
+
+
+class SupervisedGateway(FakeGateway):
+    """FakeGateway plus what the supervised adapter and canary collector read:
+    connection state, managed accounts, account values, the all-client
+    views (open orders across clients, completed orders, executions) and
+    a scripted order-status walk advanced by each ``sleep``."""
+
+    def __init__(self, con_ids: dict[ContractKey, int], account: str = "DU1234567") -> None:
+        super().__init__(con_ids=con_ids)
+        self.is_connected = True
+        self.accounts = [account]
+        self.account_values: dict[str, str] = {
+            "NetLiquidation": "1000000.00", "TotalCashValue": "1000000.00",
+            "BuyingPower": "4000000.00"}
+        self.status_script: list[str] = ["Submitted"]
+        self.reject_code = 0
+        self.foreign_open: list[Any] = []
+        self.completed: list[Any] = []
+        self.executions: list[Any] = []
+        self.views_error: BaseException | None = None
+        self._perm = 7000
+        self._walk: dict[int, list[str]] = {}
+
+    def isConnected(self) -> bool:
+        return self.is_connected
+
+    def managedAccounts(self) -> list[str]:
+        return list(self.accounts)
+
+    def accountValues(self) -> list[Any]:
+        return [SimpleNamespace(tag=tag, value=value, account=self.accounts[0])
+                for tag, value in self.account_values.items()]
+
+    def placeOrder(self, contract: Any, order: Any) -> FakeTrade:
+        trade = super().placeOrder(contract, order)
+        self._perm += 1
+        order.permId = self._perm
+        trade.log = []  # type: ignore[attr-defined]
+        walk = list(self.status_script)
+        trade.orderStatus.status = walk.pop(0)
+        self._walk[id(trade)] = walk
+        self._log(trade)
+        return trade
+
+    def _log(self, trade: Any) -> None:
+        code = self.reject_code if trade.orderStatus.status in ("Inactive", "Cancelled") else 0
+        trade.log.append(SimpleNamespace(time=None, status=trade.orderStatus.status,
+                                         message="", errorCode=code))
+
+    def sleep(self, seconds: float) -> None:
+        super().sleep(seconds)
+        for trade in self.trades:
+            walk = self._walk.get(id(trade))
+            if walk:
+                trade.orderStatus.status = walk.pop(0)
+                self._log(trade)
+
+    def _views(self) -> None:
+        if self.views_error is not None:
+            raise self.views_error
+
+    def reqAllOpenOrders(self) -> list[Any]:
+        self._views()
+        return [*self.openTrades(), *self.foreign_open]
+
+    def reqCompletedOrders(self, api_only: bool) -> list[Any]:
+        self._views()
+        done = [t for t in self.trades if t not in self.openTrades()]
+        return [*done, *self.completed]
+
+    def reqExecutions(self) -> list[Any]:
+        self._views()
+        return list(self.executions)
