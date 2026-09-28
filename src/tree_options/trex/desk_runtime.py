@@ -207,6 +207,22 @@ def declared_dividend(snapshot: DividendSnapshot | None, as_of: date,
 
 SpotSource = Callable[[Sequence[str], datetime], Mapping[str, Decimal]]
 DividendSource = Callable[[str, date], DividendSnapshot | None]
+#: (title, message, priority) — the ntfy shape from trex.notify.send
+NotifyFn = Callable[[str, str, str], None]
+
+#: events worth a push, with their priority. Risk events are urgent;
+#: lifecycle events are default. Everything else stays in events.jsonl only.
+_NOTIFY_EVENTS: dict[str, str] = {
+    "unknown_exposure": "urgent",
+    "legs_mismatch": "urgent",
+    "exit_flat_unexplained": "urgent",
+    "entry_uncertain_held": "urgent",
+    "gateway_lost": "urgent",
+    "entry_request": "default",
+    "entry_filled": "default",
+    "exit_begin": "default",
+    "closed": "default",
+}
 
 
 class DeskRuntime:
@@ -217,13 +233,15 @@ class DeskRuntime:
                  spots: SpotSource | None = None,
                  dividends: DividendSource | None = None,
                  config: EngineConfig | None = None,
-                 clock: Callable[[], datetime] | None = None) -> None:
+                 clock: Callable[[], datetime] | None = None,
+                 notify: NotifyFn | None = None) -> None:
         self.ib = ib
         self.paths = paths
         self.supervised = supervised or SupervisedPaths.default()
         self.spots = spots
         self.dividends = dividends
         self.clock = clock or (lambda: datetime.now(ET))
+        self.notify = notify
         configure(config or EngineConfig(entry_window=DEFAULT_ENTRY_WINDOW))
         self.orders: dict[str, Any] = {}  # structure id -> the last ib_async Trade seen
         self._lock_handle: Any = None
@@ -278,6 +296,14 @@ class DeskRuntime:
         record = {"ts": self._now().isoformat(), "event": event, **payload}
         with self.paths.events().open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, default=str, sort_keys=True) + "\n")
+        priority = _NOTIFY_EVENTS.get(event)
+        if priority is not None and self.notify is not None:
+            try:  # a push failure must never break the trading loop
+                self.notify(f"trex-desk {event}",
+                            json.dumps(payload, default=str, sort_keys=True)[:300],
+                            priority)
+            except Exception:  # notifications are best-effort
+                pass
 
     def _note_once(self, sid: str, what: str, *, key: str = "", **payload: Any) -> None:
         """One event per (structure, what, key) per process: a condition that

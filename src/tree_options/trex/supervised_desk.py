@@ -51,6 +51,7 @@ from tree_options.action_graph.capital import CapitalProfile
 from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.execution import OrderIntent
 from tree_options.schemas.common import IdStr, StrictModel
+from tree_options.trex import notify
 from tree_options.trex.clock import ET, is_session
 from tree_options.trex.desk_runtime import (
     DeskPaths,
@@ -442,9 +443,17 @@ def main(argv: list[str] | None = None) -> int:
             return {sym: r.px for sym, r in feed.readings(list(symbols), now).items()}
 
     dividends = _dividend_source()
+    notify_fn: Callable[[str, str, str], None] | None = None
+    notify_cfg = notify.load_config()
+    if notify_cfg is not None:
+        def _push(title: str, message: str, priority: str = "default") -> None:
+            notify.send(notify_cfg, title, message, priority)
+
+        notify_fn = _push
     paths = DeskPaths.default()
     supervised = SupervisedPaths.default()
-    runtime = DeskRuntime(ib, paths, supervised=supervised, spots=spots, dividends=dividends)
+    runtime = DeskRuntime(ib, paths, supervised=supervised, spots=spots,
+                          dividends=dividends, notify=notify_fn)
     runtime.acquire()
     epoch = f"desk{SUPERVISED_CLIENT_ID}-{int(wall.time()):x}"
     desk = SupervisedDesk(ib, runtime, IbkrSupervisedBroker(ib), supervised=supervised,

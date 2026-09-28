@@ -122,6 +122,9 @@ class Desk:
         self.sup.prepare()
         self.rt = DeskRuntime(self.ib, self.paths, supervised=self.sup, clock=self.clock)
         self.rt.acquire()
+        self.notified: list[tuple[str, str, str]] = []
+        self.rt.notify = lambda title, message, priority="default": self.notified.append(
+            (title, message, priority))
         self.broker = IbkrSupervisedBroker(self.ib, clock=self.clock)
 
     def send_entry(self, effect: SupervisedEffect) -> Any:
@@ -153,6 +156,8 @@ class Desk:
         self.rt.release()
         self.rt = DeskRuntime(self.ib, self.paths, supervised=self.sup, clock=self.clock)
         self.rt.acquire()
+        self.rt.notify = lambda title, message, priority="default": self.notified.append(
+            (title, message, priority))
 
     def exit_while_down(self, *, status: str, executed: int = 0, qty: int = 1) -> Any:
         """Open ``qty``, place the time-stop exit, then the exit order leaves
@@ -469,6 +474,27 @@ def test_leg_mismatch_alerts_once_while_it_persists(desk):
     desk.hold_legs(2)  # a different mismatch alerts again
     desk.rt.tick()
     assert desk.events().count("legs_mismatch") == 2
+
+
+def test_risk_events_push_urgently_and_benign_ones_do_not_push(desk):
+    desk.rt.register(_effect())  # benign lifecycle: no push
+    assert desk.notified == []
+    desk.exit_while_down(status="Cancelled")
+    desk.hold_legs(3)
+    desk.rt.tick()
+    urgent = [n for n in desk.notified if n[2] == "urgent"]
+    assert any("legs_mismatch" in n[0] for n in urgent)
+    assert any("held=3" in n[1] for n in urgent), "the push carries the facts"
+
+
+def test_a_broken_notify_never_breaks_the_trading_loop(desk):
+    def boom(title: str, message: str, priority: str = "default") -> None:
+        raise RuntimeError("ntfy down")
+
+    desk.rt.notify = boom
+    desk.exit_while_down(status="Cancelled")
+    desk.hold_legs(3)
+    desk.rt.tick()  # must not raise: notifications are best-effort
 
 
 # ------------------------------------------------------------ kill files

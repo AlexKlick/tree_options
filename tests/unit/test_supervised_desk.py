@@ -113,6 +113,8 @@ class Rig:
         self.paths = DeskPaths(tmp / "desk")
         self.runtime = DeskRuntime(self.ib, self.paths, supervised=self.sup, clock=self.clock)
         self.runtime.acquire()
+        self.notified: list[tuple[str, str, str]] = []
+        self.runtime.notify = lambda t, m, p="default": self.notified.append((t, m, p))
         self.desk = SupervisedDesk(self.ib, self.runtime,
                                    IbkrSupervisedBroker(self.ib, clock=self.clock),
                                    supervised=self.sup, owner_epoch=EPOCH,
@@ -178,6 +180,8 @@ def test_a_clean_request_is_sent_and_owned_by_e5(rig):
     rig.runtime.tick()
     book = json.loads(rig.paths.book().read_text())["structures"]["dv1"]
     assert (book["status"], book["entry_order"]) == ("enter_working", str(trade.order.orderId))
+    pushed = [n for n in rig.notified if "entry_request" in n[0]]
+    assert pushed and "sent" in pushed[-1][1], "the request result is pushed"
 
 
 def test_a_request_is_processed_exactly_once(rig):
