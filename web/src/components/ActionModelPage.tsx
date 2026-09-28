@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { getActionModelExample, getHistoricalReplays, getIntradayGraphs, getPlans, getPortfolioScenarios } from '../lib/api'
-import type { ActionNode } from '../lib/types'
+import { getActionModelExample, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getPlans, getPortfolioScenarios, getSupervisedDesk } from '../lib/api'
+import type { ActionNode, LabScoreboard, SupervisedDeskStatus } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
 
@@ -27,9 +27,63 @@ function NodeInspector({ node }: { node: ActionNode }) {
   )
 }
 
+function DeskStatusLines({ status }: { status: SupervisedDeskStatus }) {
+  const mandate = status.supervised.mandate
+  const authority = mandate.state === 'active' || mandate.state === 'expired'
+    ? `Mandate ${mandate.state} · ${mandate.orders_used ?? 0}/${mandate.max_orders ?? '?'} orders used · ${mandate.days_left ?? 0} day${mandate.days_left === 1 ? '' : 's'} left · ${mandate.long_running ? 'long-running grant' : 'single-session grant'}`
+    : mandate.state === 'revoked'
+      ? 'Mandate revoked — the tombstone is permanent; re-arming is an operator action.'
+      : 'No mandate installed — the supervised chain currently holds no trading authority.'
+  const killFiles = status.kill_files.length > 0
+    ? `Kill files: ${status.kill_files.join(', ')} — the desk refuses new entries while these stand.`
+    : 'Kill files: none.'
+  const entries = Object.entries(status.book ?? {})
+  const book = status.book === null
+    ? 'Book: no structures recorded yet.'
+    : entries.length === 0
+      ? 'Book: flat.'
+      : `Book: ${entries.length} structure${entries.length === 1 ? '' : 's'} — ${entries.map(([id, row]) => `${id} ${row.status ?? 'unknown'} (qty ${row.open_qty})`).join(', ')}.`
+  return (
+    <>
+      <p>{authority}</p>
+      <p>{killFiles}</p>
+      <p>Entry requests pending: {status.inbox.length}</p>
+      <p>{book}</p>
+      {status.last_results.length === 0
+        ? <p className="muted">No entry request has been processed yet.</p>
+        : <ul>{status.last_results.map((result) => (
+          <li key={result.request ?? result.intent_id}>
+            <code>{result.request ?? result.intent_id}</code>: {result.status}
+            {result.reason ? ` — ${result.reason}` : ''}
+            {result.blockers && result.blockers.length > 0 ? ` — ${result.blockers.join(', ')}` : ''}
+          </li>
+        ))}</ul>}
+    </>
+  )
+}
+
+function LabScoreboardBlock({ board }: { board: LabScoreboard }) {
+  const policies = Object.entries(board.policies)
+  return (
+    <>
+      <h3>Lab scoreboard</h3>
+      {policies.length === 0
+        ? <p className="muted">No lab run has completed yet.</p>
+        : <ul>{policies.map(([name, stats]) => (
+          <li key={name}>{name}: {stats.runs} runs · {stats.entered} entered · {stats.modeled_wins}W/{stats.modeled_losses}L · closed-pnl proxy ${stats.closed_pnl_sum}</li>
+        ))}</ul>}
+      {board.advisory
+        ? <p className="muted">Advisory: {board.advisory.policy} leads — {board.advisory.basis}. Advisory only, never promoted.</p>
+        : <p className="muted">No policy has enough runs for an advisory yet.</p>}
+    </>
+  )
+}
+
 export function ActionModelPage() {
   const poll = usePoll(getActionModelExample, 0)
   const accountPoll = usePoll(getPlans, 30_000)
+  const desk = usePoll(getSupervisedDesk, 30_000)
+  const lab = usePoll(getLabScoreboard, 60_000)
   const replays = usePoll(getHistoricalReplays, 60_000)
   const portfolios = usePoll(getPortfolioScenarios, 60_000)
   const intraday = usePoll(getIntradayGraphs, 60_000)
@@ -39,10 +93,14 @@ export function ActionModelPage() {
 
   return (
     <AppShell title="Action model" poll={poll}>
-      <section className="card" aria-label="Trading system observations">
+      <section className="card" aria-label="Supervised paper desk">
         <div className="eyebrow">Existing TREX paper system · local observations</div>
-        <h2>Trading boundary</h2>
-        <p>Governed entry: disabled. No mandate, effect permit, or broker dispatch path is installed for this action model.</p>
+        <h2>Supervised desk (paper)</h2>
+        <p>Governed entry runs on the supervised desk — a separate armed path with its own operator mandate, effect permits, and IBKR paper broker session. This cockpit only reads the desk's on-disk state; it never contacts the broker. The synthetic action-model plan on this page remains unhooked: no mandate, permit, or dispatch path is installed for it.</p>
+        {desk.error && <p role="alert">Supervised desk status unavailable: {desk.error}</p>}
+        {desk.data && <DeskStatusLines status={desk.data} />}
+        {lab.error && <p role="alert">Lab scoreboard unavailable: {lab.error}</p>}
+        {lab.data && <LabScoreboardBlock board={lab.data} />}
         {accountPoll.data?.account ? (
           <p>Broker account snapshot: <code>{accountPoll.data.account.account_id}</code> · observed {accountPoll.data.account.ts} · age {accountPoll.data.account.age_seconds ?? 'unknown'} seconds. Snapshot equity does not set a strategy budget.</p>
         ) : (
