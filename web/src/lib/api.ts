@@ -58,6 +58,31 @@ export const getSupervisedDesk = (): Promise<import('./types').SupervisedDeskSta
 export const getLabScoreboard = (): Promise<import('./types').LabScoreboard> =>
   fetchJson('api/desk/lab')
 
+/** Timer settings + kill-file states for the desk's own units. */
+export const getAutomation = (): Promise<import('./types').AutomationStatus> =>
+  fetchJson('api/desk/automation')
+
+/** Enable/disable a whitelisted desk timer, or run its service now.
+ * The unit whitelist is the whole surface (unknown key/action -> 4xx). */
+export const postAutomationAction = (
+  key: string,
+  action: 'enable' | 'disable' | 'run',
+): Promise<{ key: string; action: string; unit: string }> =>
+  fetch(`api/desk/automation/${key}/${action}`, { method: 'POST' }).then((r) => {
+    if (!r.ok) throw new Error(`automation ${key}/${action} failed (${r.status})`)
+    return r.json()
+  })
+
+/** HALT / FLATTEN / resume for the supervised desk (kill files only;
+ * the running desk observes them on its next tick). */
+export const postSupervisedControl = (
+  action: 'halt' | 'flatten' | 'resume',
+): Promise<{ kill_files: string[] }> =>
+  fetch(`api/desk/supervised/${action}`, { method: 'POST' }).then((r) => {
+    if (!r.ok) throw new Error(`supervised ${action} failed (${r.status})`)
+    return r.json()
+  })
+
 export const getPlan = (id: string): Promise<PlanDetailResponse> =>
   fetchJson(`api/plans/${encodeURIComponent(id)}`)
 

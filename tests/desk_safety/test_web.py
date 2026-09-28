@@ -220,3 +220,82 @@ def test_lab_scoreboard_aggregates_runs_and_never_promotes(world, monkeypatch):
     assert doc['advisory']['promoted'] is False
     assert c.post('/api/desk/lab', json={}).status_code == 405
     assert not run_dir.exists()  # reading the lab never touches the desk run dir
+
+
+# ---------------------------------------------------- automation controls
+
+
+class FakeSystemctl:
+    """Records every call; answers `show` from a scripted state map."""
+
+    def __init__(self, state=None):
+        self.state = state or {}
+        self.calls = []
+
+    def __call__(self, args):
+        self.calls.append(list(args))
+        if args[:1] == ['show']:
+            prop = args[args.index('--property') + 1]
+            return self.state.get((args[1], prop), '')
+        return ''
+
+
+def _automation_world(world, monkeypatch, state=None):
+    import tree_options.trex_web.automation as automation_mod
+    import tree_options.trex_web.desk_view as desk_view_mod
+    run_dir = world.root / 'desk-paper'
+    run_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv('TREX_DESK_RUN_DIR', str(run_dir))
+    fake = FakeSystemctl(state)
+    monkeypatch.setattr(desk_view_mod, 'automation_status',
+                        lambda root: automation_mod.automation_status(root, systemctl=fake))
+    monkeypatch.setattr(desk_view_mod, 'automation_action',
+                        lambda root, key, action: automation_mod.automation_action(
+                            root, key, action, systemctl=fake))
+    return run_dir, fake
+
+
+def test_automation_status_lists_whitelisted_timers_and_kill_files(world, monkeypatch):
+    _run_dir, _fake = _automation_world(world, monkeypatch, state={
+        ('desk-lab.timer', 'UnitFileState'): 'enabled',
+        ('desk-lab.timer', 'ActiveState'): 'active',
+        ('desk-lab.timer', 'NextElapseUSecRealtime'): 'Mon 2026-09-28 18:17:00 MDT',
+        ('desk-lab.service', 'Result'): 'success',
+    })
+    c = client(world)
+    doc = c.get('/api/desk/automation').json()
+    keys = {t['key'] for t in doc['timers']}
+    assert keys == {'desk-lab', 'desk-lab-overnight', 'desk-challenge',
+                    'desk-supervised-preview'}
+    lab = next(t for t in doc['timers'] if t['key'] == 'desk-lab')
+    assert lab['enabled'] and lab['active']
+    assert lab['next_elapse'].startswith('Mon 2026')
+    assert doc['kill_files'] == []
+
+
+def test_automation_actions_are_whitelisted_and_audited(world, monkeypatch):
+    run_dir, fake = _automation_world(world, monkeypatch)
+    c = client(world)
+    assert c.post('/api/desk/automation/desk-lab/disable').status_code == 200
+    assert ['disable', '--now', 'desk-lab.timer'] in fake.calls
+    assert c.post('/api/desk/automation/desk-lab/run').status_code == 200
+    assert ['start', 'desk-lab.service'] in fake.calls
+    # unknown unit / unknown action: refused, no systemctl call for them
+    before = len(fake.calls)
+    assert c.post('/api/desk/automation/trex-monitor/disable').status_code == 404
+    assert c.post('/api/desk/automation/desk-lab/restart').status_code == 422
+    assert len(fake.calls) == before
+    audit = [json.loads(line) for line in (run_dir / 'automation.jsonl').read_text().splitlines()]
+    assert [a['action'] for a in audit] == ['disable', 'run']
+    assert all(a['actor'] == 'cockpit' for a in audit)
+
+
+def test_supervised_control_toggles_kill_files(world, monkeypatch):
+    run_dir, _ = _automation_world(world, monkeypatch)
+    c = client(world)
+    assert c.post('/api/desk/supervised/halt').json()['kill_files'] == ['HALT']
+    assert (run_dir / 'HALT').exists()
+    assert c.post('/api/desk/supervised/flatten').json()['kill_files'] == ['FLATTEN', 'HALT']
+    assert c.post('/api/desk/supervised/resume').json()['kill_files'] == []
+    assert not (run_dir / 'HALT').exists()
+    assert c.post('/api/desk/supervised/arm').status_code == 422

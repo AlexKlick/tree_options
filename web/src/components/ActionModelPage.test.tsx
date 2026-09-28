@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ActionModelPage } from './ActionModelPage'
-import { getActionModelExample, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getPlans, getPortfolioScenarios, getSupervisedDesk } from '../lib/api'
+import { getActionModelExample, getAutomation, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
 
 vi.mock('../lib/api', () => ({
   getActionModelExample: vi.fn(),
@@ -11,6 +11,9 @@ vi.mock('../lib/api', () => ({
   getPortfolioScenarios: vi.fn(),
   getSupervisedDesk: vi.fn(),
   getLabScoreboard: vi.fn(),
+  getAutomation: vi.fn(),
+  postAutomationAction: vi.fn(),
+  postSupervisedControl: vi.fn(),
   getGateway: () => new Promise(() => {}),
   getExitMachine: () => new Promise(() => {}),
 }))
@@ -124,4 +127,27 @@ it('shows proposal status and inspects guards without a trade control', async ()
   expect(screen.getByText(/Guards: input_hash_match/)).toBeTruthy()
   expect(screen.getByText(/No attempt, grant, permit, broker effect/)).toBeTruthy()
   expect(screen.queryByRole('button', { name: /submit|approve|trade/i })).toBeNull()
+})
+
+it('renders the automation card and issues whitelisted controls', async () => {
+  vi.mocked(getAutomation).mockResolvedValue({
+    schema: 'desk-automation/1',
+    kill_files: [],
+    timers: [{
+      key: 'desk-lab', what: 'hourly flash boards', timer: 'desk-lab.timer',
+      service: 'desk-lab.service', enabled: true, active: true,
+      next_elapse: 'Mon 2026-09-28 18:17:00 MDT', last_result: 'success',
+      last_exit: '',
+    }],
+  })
+  vi.mocked(postAutomationAction).mockResolvedValue({
+    key: 'desk-lab', action: 'disable', unit: 'desk-lab.timer' })
+  vi.mocked(postSupervisedControl).mockResolvedValue({ kill_files: ['HALT'] })
+  render(<ActionModelPage />)
+  expect(await screen.findByTestId('timer-desk-lab')).toBeTruthy()
+  expect(screen.getByText(/enabled · active/)).toBeTruthy()
+  fireEvent.click(screen.getByRole('button', { name: 'Disable' }))
+  await waitFor(() => expect(postAutomationAction).toHaveBeenCalledWith('desk-lab', 'disable'))
+  fireEvent.click(screen.getByRole('button', { name: 'HALT' }))
+  await waitFor(() => expect(postSupervisedControl).toHaveBeenCalledWith('halt'))
 })

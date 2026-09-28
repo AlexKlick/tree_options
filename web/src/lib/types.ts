@@ -169,6 +169,24 @@ export interface SupervisedDeskStatus {
   events?: Record<string, unknown>[]
 }
 
+// GET /api/desk/automation: timer settings + kill-file states for the
+// desk's own user units (the whitelist is the whole surface).
+export interface AutomationStatus {
+  schema: 'desk-automation/1'
+  kill_files: string[]
+  timers: {
+    key: string
+    what: string
+    timer: string
+    service: string
+    enabled: boolean
+    active: boolean
+    next_elapse: string
+    last_result: string
+    last_exit: string
+  }[]
+}
+
 // GET /api/desk/lab: per-policy fold of the lab's run summaries plus the
 // annotation-only advisory (promoted is false by construction).
 export interface LabScoreboard {

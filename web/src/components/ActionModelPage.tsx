@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getActionModelExample, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getPlans, getPortfolioScenarios, getSupervisedDesk } from '../lib/api'
+import { getActionModelExample, getAutomation, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
 import type { ActionNode, LabScoreboard, SupervisedDeskStatus } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
@@ -79,6 +79,84 @@ function LabScoreboardBlock({ board }: { board: LabScoreboard }) {
   )
 }
 
+function AutomationCard() {
+  const automation = usePoll(getAutomation, 30_000)
+  const [busy, setBusy] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const act = async (key: string, action: 'enable' | 'disable' | 'run') => {
+    setBusy(`${key}/${action}`)
+    setError(null)
+    try {
+      await postAutomationAction(key, action)
+      await automation.refresh?.()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const control = async (action: 'halt' | 'flatten' | 'resume') => {
+    setBusy(`supervised/${action}`)
+    setError(null)
+    try {
+      await postSupervisedControl(action)
+      await automation.refresh?.()
+    } catch (e) {
+      setError(String(e))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  return (
+    <section className="card" aria-label="Desk automation settings and controls">
+      <div className="eyebrow">Desk automation · operator controls</div>
+      <h2>Automation</h2>
+      <p className="muted">The desk's own timers, plus the supervised desk's stop files. Every action goes through a fixed unit whitelist and is audited to automation.jsonl; nothing here contacts the broker.</p>
+      {automation.error && <p role="alert">Automation status unavailable: {automation.error}</p>}
+      {error && <p role="alert">{error}</p>}
+      {automation.data && (
+        <>
+          <p>
+            Stop files:{' '}
+            {automation.data.kill_files.length > 0
+              ? automation.data.kill_files.join(', ')
+              : 'none — the desk is live'}{' '}
+            <button type="button" onClick={() => control('halt')} disabled={busy !== null}>HALT</button>{' '}
+            <button type="button" onClick={() => control('flatten')} disabled={busy !== null}>FLATTEN</button>{' '}
+            <button type="button" onClick={() => control('resume')} disabled={busy !== null}>Resume</button>
+          </p>
+          <div className="table-scroll">
+            <table>
+              <thead>
+                <tr><th scope="col">Timer</th><th scope="col">State</th><th scope="col">Next fire</th><th scope="col">Last run</th><th scope="col">Controls</th></tr>
+              </thead>
+              <tbody>
+                {automation.data.timers.map((t) => (
+                  <tr key={t.key} data-testid={`timer-${t.key}`}>
+                    <th scope="row">{t.key}</th>
+                    <td>{t.enabled ? 'enabled' : 'disabled'}{t.active ? ' · active' : ''}</td>
+                    <td>{t.next_elapse || '—'}</td>
+                    <td>{t.last_result || 'never'}{t.last_exit ? ` (${t.last_exit})` : ''}</td>
+                    <td>
+                      <button type="button" onClick={() => act(t.key, t.enabled ? 'disable' : 'enable')} disabled={busy !== null}>
+                        {t.enabled ? 'Disable' : 'Enable'}
+                      </button>{' '}
+                      <button type="button" onClick={() => act(t.key, 'run')} disabled={busy !== null}>Run now</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </section>
+  )
+}
+
 export function ActionModelPage() {
   const poll = usePoll(getActionModelExample, 0)
   const accountPoll = usePoll(getPlans, 30_000)
@@ -93,6 +171,7 @@ export function ActionModelPage() {
 
   return (
     <AppShell title="Action model" poll={poll}>
+      <AutomationCard />
       <section className="card" aria-label="Supervised paper desk">
         <div className="eyebrow">Existing TREX paper system · local observations</div>
         <h2>Supervised desk (paper)</h2>

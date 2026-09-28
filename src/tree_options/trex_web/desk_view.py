@@ -20,6 +20,11 @@ from tree_options.trex.clock import now_et, session_calendar
 from tree_options.trex.desk_cli import collect_status
 from tree_options.trex.desk_runtime import DeskPaths
 from tree_options.trex.supervised import SupervisedPaths
+from tree_options.trex_web.automation import (
+    automation_action,
+    automation_status,
+    kill_file_action,
+)
 
 _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 
@@ -181,6 +186,45 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
             doc = collect_status(DeskPaths.default(), SupervisedPaths.default(),
                                  now=now_et(), events=20)
         except (*_ERRORS, OSError, ValueError, KeyError, TypeError):
+            return _unavailable()
+        return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/desk/automation')
+    def automation() -> JSONResponse:
+        """Timer settings + kill-file states for the desk's own units."""
+        try:
+            doc = automation_status(DeskPaths.default().root)
+        except OSError:
+            return _unavailable()
+        return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
+
+    @app.post('/api/desk/automation/{key}/{action}')
+    def automation_control(key: str, action: str) -> JSONResponse:
+        """Enable/disable a whitelisted desk timer, or run its service now.
+
+        The unit whitelist is the whole surface: an unknown key or action
+        is a 404/422, never a shell. Every action is audited to
+        automation.jsonl (actor: cockpit)."""
+        if action not in ('enable', 'disable', 'run'):
+            return JSONResponse({'error': 'unknown_action'}, status_code=422)
+        try:
+            doc = automation_action(DeskPaths.default().root, key, action)
+        except KeyError:
+            return JSONResponse({'error': 'unknown_unit'}, status_code=404)
+        except OSError:
+            return _unavailable()
+        return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
+
+    @app.post('/api/desk/supervised/{action}')
+    def supervised_control(action: str) -> JSONResponse:
+        """HALT / FLATTEN / resume for the supervised desk (the desk_cli
+        verbs, surfaced; the running desk observes the files on its next
+        tick - nothing here contacts the broker)."""
+        if action not in ('halt', 'flatten', 'resume'):
+            return JSONResponse({'error': 'unknown_action'}, status_code=422)
+        try:
+            doc = kill_file_action(DeskPaths.default().root, action)
+        except OSError:
             return _unavailable()
         return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
 
