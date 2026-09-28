@@ -129,6 +129,74 @@ export interface TradeFloorReplay {
   }[]
 }
 
+// GET /api/desk/supervised: the desk CLI's files-only status dump. The
+// desk process owns the broker session; this payload is what it left on
+// disk (kill files, book, inbox, mandate, outbox, events).
+export interface SupervisedDeskStatus {
+  schema: 'desk-cli-status/1'
+  at: string
+  run_dir: string
+  kill_files: string[]
+  owner: Record<string, unknown> | null
+  book: Record<string, { status: string | null; open_qty: number }> | null
+  inbox: string[]
+  last_results: {
+    schema?: string
+    at?: string
+    request?: string
+    intent_id?: string
+    status: string
+    reason?: string
+    detail?: unknown
+    blockers?: string[]
+    permit_id?: string
+  }[]
+  supervised: {
+    schema: 'supervised-status/1'
+    at: string
+    mandate: {
+      state: 'active' | 'expired' | 'revoked' | 'absent'
+      days_left?: number
+      account_id?: string
+      max_orders?: number
+      orders_used?: number
+      long_running?: boolean | null
+      expires_at?: string
+      [key: string]: unknown
+    }
+    outbox: { intent_id: string; state: string; [key: string]: unknown }[]
+  }
+  events?: Record<string, unknown>[]
+}
+
+// GET /api/desk/lab: per-policy fold of the lab's run summaries plus the
+// annotation-only advisory (promoted is false by construction).
+export interface LabScoreboard {
+  schema: 'desk-lab-scoreboard/1'
+  execution_enabled: false
+  policies: Record<string, LabPolicyStats>
+  advisory: {
+    policy: string
+    stats: LabPolicyStats
+    promoted: false
+    basis: string
+  } | null
+}
+
+export interface LabPolicyStats {
+  runs: number
+  boards: number
+  model_calls: number
+  model_failures: number
+  entered: number
+  modeled_wins: number
+  modeled_losses: number
+  closed_pnl_sum: string
+  worst_minimum_capital: string | null
+  last_run: string
+  kinds: string[]
+}
+
 // Plain numbers + ISO strings from the server; this app formats.
 
 // GET /api/gateway: the gateway watchdog's verdict (epoch seconds).

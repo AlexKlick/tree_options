@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { ActionModelPage } from './ActionModelPage'
-import { getActionModelExample, getHistoricalReplays, getIntradayGraphs, getPlans, getPortfolioScenarios } from '../lib/api'
+import { getActionModelExample, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getPlans, getPortfolioScenarios, getSupervisedDesk } from '../lib/api'
 
 vi.mock('../lib/api', () => ({
   getActionModelExample: vi.fn(),
@@ -9,6 +9,8 @@ vi.mock('../lib/api', () => ({
   getHistoricalReplays: vi.fn(),
   getIntradayGraphs: vi.fn(),
   getPortfolioScenarios: vi.fn(),
+  getSupervisedDesk: vi.fn(),
+  getLabScoreboard: vi.fn(),
   getGateway: () => new Promise(() => {}),
   getExitMachine: () => new Promise(() => {}),
 }))
@@ -70,10 +72,47 @@ it('shows proposal status and inspects guards without a trade control', async ()
       limitations: ['modeled prices'],
     }],
   })
+  vi.mocked(getSupervisedDesk).mockResolvedValue({
+    schema: 'desk-cli-status/1', at: '2026-09-28T15:00:00+00:00',
+    run_dir: '/tmp/desk-paper', kill_files: ['HALT'], owner: null,
+    book: { 'canary-2026-09-28-a': { status: 'open', open_qty: 1 } },
+    inbox: ['canary-2026-09-28-b.json'],
+    last_results: [{
+      schema: 'desk-entry-result/1', at: '2026-09-28T15:00:00+00:00',
+      request: 'canary-2026-09-28-a.json', intent_id: 'canary-2026-09-28-a',
+      status: 'refused', reason: 'kill_file_present',
+    }],
+    supervised: {
+      schema: 'supervised-status/1', at: '2026-09-28T15:00:00+00:00',
+      mandate: { state: 'active', days_left: 2, account_id: 'DU1234567',
+        max_orders: 5, orders_used: 2, long_running: true,
+        expires_at: '2026-10-01T14:30:00+00:00' },
+      outbox: [],
+    },
+    events: [],
+  })
+  vi.mocked(getLabScoreboard).mockResolvedValue({
+    schema: 'desk-lab-scoreboard/1', execution_enabled: false,
+    policies: { 'model:zai': { runs: 3, boards: 12, model_calls: 12, model_failures: 0,
+      entered: 4, modeled_wins: 2, modeled_losses: 2, closed_pnl_sum: '-5',
+      worst_minimum_capital: '4970', last_run: 'run-c', kinds: ['model'] } },
+    advisory: { policy: 'model:zai', promoted: false,
+      basis: 'highest summed closed-pnl proxy over >= 3 runs',
+      stats: { runs: 3, boards: 12, model_calls: 12, model_failures: 0,
+        entered: 4, modeled_wins: 2, modeled_losses: 2, closed_pnl_sum: '-5',
+        worst_minimum_capital: '4970', last_run: 'run-c', kinds: ['model'] } },
+  })
   render(<ActionModelPage />)
   await waitFor(() => expect(screen.getByText('Compare a version')).toBeTruthy())
   expect(screen.getByText(/execution authorized: no/)).toBeTruthy()
-  expect(screen.getByText(/Governed entry: disabled/)).toBeTruthy()
+  expect(screen.getByRole('region', { name: 'Supervised paper desk' })).toBeTruthy()
+  expect(screen.getByText(/Mandate active · 2\/5 orders used · 2 days left · long-running grant/)).toBeTruthy()
+  expect(screen.getByText(/Kill files: HALT/)).toBeTruthy()
+  expect(screen.getByText('canary-2026-09-28-a.json')).toBeTruthy()
+  expect(screen.getByText(/refused — kill_file_present/)).toBeTruthy()
+  expect(screen.getByText(/model:zai: 3 runs · 4 entered · 2W\/2L · closed-pnl proxy \$-5/)).toBeTruthy()
+  expect(screen.getByText(/Advisory only, never promoted/)).toBeTruthy()
+  expect(screen.queryByText(/Governed entry: disabled/)).toBeNull()
   expect(screen.getByText(/1 modeled wins; too few trades for a rate/)).toBeTruthy()
   expect(screen.queryByText(/100\.0% modeled wins/)).toBeNull()
   expect(screen.getByRole('region', { name: 'Trading system graph' })).toBeTruthy()

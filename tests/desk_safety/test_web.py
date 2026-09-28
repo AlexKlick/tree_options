@@ -1,8 +1,10 @@
 """Read-only evidence routes on the existing cockpit, not a second server."""
 import json
+from datetime import UTC, datetime
 
 from fastapi.testclient import TestClient
 
+from tree_options.trex.supervised import SupervisedPaths, grant_mandate
 from tree_options.trex_web.app import create_app
 
 
@@ -120,3 +122,101 @@ def test_intraday_graphs_project_only_summary_and_never_actions(world):
     assert 'private_actions' not in doc['reports'][0]['windows'][0]
     assert 'private_bars' not in doc['reports'][0]
     assert c.post('/api/desk/intraday-graphs').status_code == 405
+
+
+def _supervised_world(world, monkeypatch):
+    """Point the env-defaulted desk/supervised/lab roots at tmp dirs."""
+    run_dir = world.root / 'desk-paper-run'
+    supervised_dir = world.root / 'supervised'
+    monkeypatch.setenv('TREX_DESK_RUN_DIR', str(run_dir))
+    monkeypatch.setenv('TREX_SUPERVISED_DIR', str(supervised_dir))
+    monkeypatch.setenv('DESK_STORE', str(world.root / 'desk-store'))
+    return run_dir, supervised_dir
+
+
+def test_supervised_status_is_a_read_only_dump(world, monkeypatch):
+    run_dir, supervised_dir = _supervised_world(world, monkeypatch)
+    run_dir.mkdir(parents=True)
+    (run_dir / 'owner.json').write_text(json.dumps({'pid': 4242}))
+    (run_dir / 'book.json').write_text(json.dumps({'structures': {
+        'canary-2026-09-28-a': {'status': 'open', 'filled_qty': 1,
+                                'exit_filled_qty': 0}}}))
+    (run_dir / 'HALT').write_text('')
+    (run_dir / 'events.jsonl').write_text(
+        json.dumps({'kind': 'entry_request', 'status': 'refused'}) + '\n')
+    inbox = run_dir / 'requests'
+    inbox.mkdir()
+    (inbox / 'canary-2026-09-28-b.json').write_text('{}')
+    (inbox / 'canary-2026-09-28-a.result.json').write_text(json.dumps({
+        'schema': 'desk-entry-result/1', 'at': '2026-09-28T15:00:00+00:00',
+        'request': 'canary-2026-09-28-a.json', 'intent_id': 'canary-2026-09-28-a',
+        'status': 'refused', 'reason': 'kill_file_present'}))
+    grant_mandate(SupervisedPaths(supervised_dir), now=datetime.now(UTC),
+        account_id='DU1234567', owner_epoch='gateway-epoch-1',
+        strategy_version='operational-canary/1', profile_digest='c' * 64,
+        max_orders=5, ttl_seconds=3 * 24 * 60 * 60,
+        granted_by='operator-terminal')
+    c = client(world)
+    response = c.get('/api/desk/supervised')
+    assert response.status_code == 200
+    doc = response.json()
+    assert doc['schema'] == 'desk-cli-status/1'
+    assert doc['kill_files'] == ['HALT']
+    assert doc['book']['canary-2026-09-28-a'] == {'status': 'open', 'open_qty': 1}
+    assert doc['inbox'] == ['canary-2026-09-28-b.json']
+    assert doc['last_results'][0]['status'] == 'refused'
+    assert doc['events'][0]['kind'] == 'entry_request'
+    mandate = doc['supervised']['mandate']
+    assert mandate['state'] == 'active' and mandate['orders_used'] == 0 \
+        and mandate['max_orders'] == 5 and mandate['long_running'] is True
+    assert mandate['days_left'] in (2, 3)  # the route stamps its own now
+    assert c.post('/api/desk/supervised', json={}).status_code == 405
+    assert (run_dir / 'book.json').read_text().startswith('{"structures"')
+
+
+def test_supervised_status_is_unavailable_when_the_book_is_corrupt(world, monkeypatch):
+    run_dir, _ = _supervised_world(world, monkeypatch)
+    run_dir.mkdir(parents=True)
+    (run_dir / 'book.json').write_text('not json')
+    response = client(world).get('/api/desk/supervised')
+    assert response.status_code == 503
+    assert response.json()['error'] == 'evidence_unavailable'
+    assert (run_dir / 'book.json').read_text() == 'not json'
+    assert str(world.root) not in response.text
+
+
+def test_lab_scoreboard_aggregates_runs_and_never_promotes(world, monkeypatch):
+    run_dir, _ = _supervised_world(world, monkeypatch)
+    lab = world.root / 'desk-store' / 'evaluations' / 'lab'
+    runs = {'run-a': ('5010', 2, 1, 1), 'run-b': ('4980', 1, 0, 1),
+            'run-c': ('5005', 1, 1, 0)}
+    for name, (closed, entered, wins, losses) in runs.items():
+        out = lab / name
+        out.mkdir(parents=True)
+        (out / 'summary.json').write_text(json.dumps({
+            'schema': 'desk-lab-run/1', 'policy': 'model:zai', 'status': 'ok',
+            'boards_shown': 4, 'model_calls': 4, 'model_failures': 0,
+            'summary': {'entered': entered, 'modeled_wins': wins,
+                        'modeled_losses': losses, 'closed_capital_proxy': closed,
+                        'minimum_closed_capital_proxy': '4970'}}))
+    flat = lab / 'run-flat'
+    flat.mkdir(parents=True)
+    (flat / 'summary.json').write_text(json.dumps({
+        'schema': 'desk-lab-run/1', 'policy': 'no_trade', 'status': 'ok',
+        'boards_shown': 0, 'model_calls': 0, 'model_failures': 0,
+        'summary': {'entered': 0, 'modeled_wins': 0, 'modeled_losses': 0,
+                    'closed_capital_proxy': '5000'}}))
+    c = client(world)
+    response = c.get('/api/desk/lab')
+    assert response.status_code == 200
+    doc = response.json()
+    assert doc['schema'] == 'desk-lab-scoreboard/1'
+    assert doc['execution_enabled'] is False
+    policy = doc['policies']['model:zai']
+    assert policy['runs'] == 3 and policy['entered'] == 4
+    assert policy['modeled_wins'] == 2 and policy['modeled_losses'] == 2
+    assert policy['closed_pnl_sum'] == '-5'
+    assert doc['advisory']['policy'] == 'model:zai'
+    assert doc['advisory']['promoted'] is False
+    assert c.post('/api/desk/lab', json={}).status_code == 405
+    assert not run_dir.exists()  # reading the lab never touches the desk run dir

@@ -14,8 +14,12 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from tree_options.desk import production, scorecards
 from tree_options.desk.contracts import ContractError
 from tree_options.desk.evidence import EvidenceError
+from tree_options.desk.lab_scoreboard import aggregate, best_advisory
 from tree_options.desk.trade_floor import project_replay
 from tree_options.trex.clock import now_et, session_calendar
+from tree_options.trex.desk_cli import collect_status
+from tree_options.trex.desk_runtime import DeskPaths
+from tree_options.trex.supervised import SupervisedPaths
 
 _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 
@@ -165,6 +169,37 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
             return _unavailable()
         return JSONResponse({'schema': 'desk-trade-floor-list/1', 'replays': replays,
                              'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/desk/supervised')
+    def supervised_status() -> JSONResponse:
+        """One read-only dump of the supervised desk's on-disk paper state.
+
+        The desk process owns the broker session; this never contacts it —
+        it serves the files as they stand (kill files, book, inbox,
+        mandate, outbox)."""
+        try:
+            doc = collect_status(DeskPaths.default(), SupervisedPaths.default(),
+                                 now=now_et(), events=20)
+        except (*_ERRORS, OSError, ValueError, KeyError, TypeError):
+            return _unavailable()
+        return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/desk/lab')
+    def lab_scoreboard() -> JSONResponse:
+        """Fold the lab's run summaries into a per-policy scoreboard.
+
+        The advisory is an annotation, never a promotion: no rule is
+        registered, so ``promoted`` is False by construction."""
+        from tree_options.desk.lab import default_root
+
+        try:
+            scoreboard = aggregate(default_root())
+            advisory = best_advisory(scoreboard)
+        except (*_ERRORS, OSError, ValueError, KeyError, TypeError):
+            return _unavailable()
+        return JSONResponse({**scoreboard, 'advisory': advisory,
+                             'execution_enabled': False},
+                            headers={'Cache-Control': 'no-store'})
 
     @app.get('/desk/evidence')
     def page() -> HTMLResponse:

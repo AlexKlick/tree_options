@@ -48,6 +48,16 @@ export const getIntradayGraphs = (): Promise<import('./types').IntradayGraphList
 export const getTradeFloorReplays = (): Promise<import('./types').TradeFloorReplayList> =>
   fetchJson('api/desk/trade-floor')
 
+/** The supervised desk's on-disk paper state (kill files, book, inbox,
+ * mandate, outbox) — files only, never a broker round trip. */
+export const getSupervisedDesk = (): Promise<import('./types').SupervisedDeskStatus> =>
+  fetchJson('api/desk/supervised')
+
+/** Lab scoreboard: cumulative per-policy run stats + the annotation-only
+ * advisory (promoted is false by construction). */
+export const getLabScoreboard = (): Promise<import('./types').LabScoreboard> =>
+  fetchJson('api/desk/lab')
+
 export const getPlan = (id: string): Promise<PlanDetailResponse> =>
   fetchJson(`api/plans/${encodeURIComponent(id)}`)
 
