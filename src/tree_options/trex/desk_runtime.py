@@ -139,6 +139,10 @@ class DeskPaths:
     def flatten(self) -> Path:
         return self.root / "FLATTEN"
 
+    def resolve_flat(self, structure_id: str) -> Path:
+        """Operator confirmation that a structure is flat at the broker."""
+        return self.root / f"RESOLVE-FLAT-{structure_id}"
+
 
 class RuntimeLocked(RuntimeError):
     """Another desk runtime holds the run dir."""
@@ -275,9 +279,11 @@ class DeskRuntime:
         with self.paths.events().open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, default=str, sort_keys=True) + "\n")
 
-    def _note_once(self, sid: str, what: str, **payload: Any) -> None:
-        if (sid, what) not in self._noted:
-            self._noted.add((sid, what))
+    def _note_once(self, sid: str, what: str, *, key: str = "", **payload: Any) -> None:
+        """One event per (structure, what, key) per process: a condition that
+        persists across ticks alerts once, a changed one (new key) again."""
+        if (sid, what + key) not in self._noted:
+            self._noted.add((sid, what + key))
             self._event(what, structure=sid, **payload)
 
     # -- registration --------------------------------------------------------
@@ -400,6 +406,10 @@ class DeskRuntime:
             self._resolve_entry_without_trade(spec, st, now)
             if st.status is not Status.OPEN:
                 return
+        if trade is None and st.status is Status.EXIT_WORKING and st.exit_order:
+            if not self._resolve_exit_without_trade(spec, st, now) or \
+                    st.status is Status.CLOSED:
+                return
         working = self._working(spec, st, trade) if trade is not None else None
         if trade is not None and working is None:
             return  # unknown exposure: noted, never acted on
@@ -517,22 +527,97 @@ class DeskRuntime:
 
     # -- exits -----------------------------------------------------------------
 
-    def _legs_held(self, spec: DeskSpec, st: StructureState) -> bool:
-        """The bound account holds exactly ``open_qty`` of every leg."""
+    def _leg_positions(self, spec: DeskSpec) -> dict[int, Decimal] | None:
+        """The bound account's position in each leg (by conId); None when
+        the broker's positions cannot be read."""
         sid = spec.structure.id
-        con_ids = self.ib.leg_con_ids(sid)
         try:
             held = {p.con_id: p.qty for p in self.ib.positions(spec.account_id)}
         except Exception as error:
-            self._event("legs_unverifiable", structure=sid, error=repr(error))
-            return False
-        for con_id, leg in zip(con_ids, spec.structure.legs, strict=True):
-            want = Decimal(st.open_qty * leg.ratio) * (1 if leg.action == "BUY" else -1)
+            self._note_once(sid, "legs_unverifiable", key=type(error).__name__,
+                            error=repr(error))
+            return None
+        return {con: held.get(con, Decimal(0)) for con in self.ib.leg_con_ids(sid)}
+
+    def _mismatch(self, spec: DeskSpec, held: Mapping[int, Decimal],
+                  qty: int) -> list[str]:
+        """Legs whose position is not ``qty`` packages (BUY long, SELL short)."""
+        out: list[str] = []
+        for con_id, leg in zip(self.ib.leg_con_ids(spec.structure.id), spec.structure.legs,
+                               strict=True):
+            want = Decimal(qty * leg.ratio) * (1 if leg.action == "BUY" else -1)
             if held.get(con_id, Decimal(0)) != want:
-                self._event("legs_mismatch", structure=sid, con_id=con_id,
-                            held=str(held.get(con_id, 0)), expected=str(want))
-                return False
+                out.append(f"{con_id}:held={held.get(con_id, 0)}:expected={want}")
+        return out
+
+    def _legs_held(self, spec: DeskSpec, st: StructureState) -> bool:
+        """The bound account holds exactly ``open_qty`` of every leg."""
+        held = self._leg_positions(spec)
+        if held is None:
+            return False
+        wrong = self._mismatch(spec, held, st.open_qty)
+        if wrong:
+            self._note_once(spec.structure.id, "legs_mismatch", key="|".join(wrong),
+                            legs=wrong, open_qty=st.open_qty)
+            return False
         return True
+
+    def _resolve_exit_without_trade(self, spec: DeskSpec, st: StructureState,
+                                    now: datetime) -> bool:
+        """The exit order left the live view (filled or expired, maybe while
+        this process was down). Record what the broker PROVES filled, then
+        cross-check the legs. True: the book agrees with the broker (closed
+        now, or a remainder the normal flow re-places). False: held, with an
+        alert; nothing is sent.
+
+        Legs flat beyond what today's executions of the exit order explain
+        is ambiguous (a fill on an earlier day, or positions not loaded): an
+        automatic close could abandon a real position, so it waits for the
+        operator's ``RESOLVE-FLAT-<sid>`` file (the unexplained packages
+        close UNPRICED)."""
+        sid = spec.structure.id
+        # IbkrTrex.entry_fill_evidence reads ANY order's executions today, in
+        # debit orientation (BUY-leg prices minus SELL-leg prices)
+        evidence = self.ib.entry_fill_evidence(sid, st.exit_order)
+        executed = evidence[0] if evidence is not None else 0
+        if evidence is not None and executed:
+            avg = evidence[1]
+            if drain(st, WorkingOrder(role="exit", filled=executed,
+                                      avg_fill_price=avg or Decimal(0),
+                                      order_id=str(st.exit_order))):
+                self._event("exit_fill", structure=sid, filled=st.exit_filled_qty,
+                            avg=str(st.exit_fill), via="evidence")
+        held = self._leg_positions(spec)
+        if held is None:
+            return False
+        wrong = self._mismatch(spec, held, st.open_qty)
+        if not wrong:
+            if st.open_qty <= 0:
+                st.to(Status.CLOSED, now)
+                st.close_reason = st.exit_reason or "flat"
+                self._event("closed", structure=sid, reason=st.close_reason,
+                            exit_fill=str(st.exit_fill), via="evidence")
+            return True
+        flat = all(q == 0 for q in held.values())
+        if flat and st.open_qty > 0:  # flat beyond what today's executions explain
+            resolve = self.paths.resolve_flat(sid)
+            if resolve.exists():
+                unpriced = st.open_qty
+                st.exit_filled_qty += unpriced
+                st.exit_unpriced_qty += unpriced
+                st.to(Status.CLOSED, now)
+                st.close_reason = "operator_confirmed_flat"
+                os.replace(resolve, resolve.with_name(resolve.name + ".applied"))
+                self._event("closed", structure=sid, reason=st.close_reason,
+                            unpriced_packages=unpriced)
+                return True
+            self._note_once(sid, "exit_flat_unexplained", open_qty=st.open_qty,
+                            exit_order=st.exit_order,
+                            operator=f"verify flat at the broker, then touch {resolve.name}")
+            return False
+        self._note_once(sid, "legs_mismatch", key="|".join(wrong), legs=wrong,
+                        open_qty=st.open_qty)
+        return False
 
     def _place_close(self, spec: DeskSpec, st: StructureState, side: str, qty: int,
                      limit: Decimal) -> Any:

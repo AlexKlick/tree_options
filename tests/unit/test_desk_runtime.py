@@ -148,6 +148,41 @@ class Desk:
         trade.orderStatus.filled = qty
         trade.orderStatus.avgFillPrice = price
 
+    def restart(self) -> None:
+        """A fresh process: no in-memory trades; the book and outbox on disk."""
+        self.rt.release()
+        self.rt = DeskRuntime(self.ib, self.paths, supervised=self.sup, clock=self.clock)
+        self.rt.acquire()
+
+    def exit_while_down(self, *, status: str, executed: int = 0, qty: int = 1) -> Any:
+        """Open ``qty``, place the time-stop exit, then the exit order leaves
+        the live view (``status``) with ``executed`` packages filled today
+        (long leg sold at 2.10, short leg bought at 1.20: 0.90 a package)."""
+        if qty == 1:
+            self.open_position()
+        else:
+            two = _put_vertical().model_copy(update={"quantity": qty})
+            effect = _effect(two).model_copy(update={"quantity": qty})
+            self.rt.register(effect)
+            entry = self.send_entry(effect)
+            self.rt.tick()
+            self.fill(entry, qty, 0.90)
+            self.hold_legs(qty)
+            self.rt.tick()
+        self.clock.now = EXIT_DAY
+        self.rt.tick()
+        exit_trade = self.trades_placed()[-1]
+        oid = exit_trade.order.orderId
+        exit_trade.orderStatus.status = status
+        if executed:
+            self.gw.fill_rows[:] = [fill_row(100, executed, 2.10, oid, SUPERVISED_CLIENT_ID),
+                                    fill_row(95, executed, 1.20, oid, SUPERVISED_CLIENT_ID)]
+        self.restart()
+        return exit_trade
+
+    def trades_placed(self) -> list[Any]:
+        return list(self.gw.trades)
+
     def open_position(self) -> Any:
         """Register, send, fill the entry, tick to OPEN; returns the entry trade."""
         effect = _effect()
@@ -360,6 +395,80 @@ def test_unknown_exposure_is_never_acted_on(desk):
     desk.rt.tick()
     assert len(desk.gw.trades) == placed
     assert "unknown_exposure" in desk.events()
+
+
+# ------------------------------------- the exit left the view while down
+
+
+def test_exit_filled_while_down_closes_from_todays_executions(desk):
+    desk.exit_while_down(status="Filled", executed=1)
+    desk.gw.position_rows.clear()
+    placed = len(desk.gw.trades)
+    desk.rt.tick()
+    book = desk.book()["dv1"]
+    assert (book["status"], book["close_reason"]) == ("closed", "time_stop")
+    assert Decimal(book["exit_fill"]) == Decimal("0.90")
+    assert len(desk.gw.trades) == placed, "a filled exit is never re-sent"
+
+
+def test_partial_exit_then_expiry_while_down_replaces_only_the_remainder(desk):
+    desk.exit_while_down(status="Cancelled", executed=1, qty=2)
+    desk.hold_legs(1)
+    placed = len(desk.gw.trades)
+    desk.rt.tick()
+    book = desk.book()["dv1"]
+    assert (book["status"], book["exit_filled_qty"]) == ("exit_working", 1)
+    assert len(desk.gw.trades) == placed + 1
+    replacement = desk.gw.trades[-1]
+    assert (replacement.order.action, replacement.order.totalQuantity) == ("SELL", 1)
+
+
+def test_unfilled_exit_expired_while_down_is_replaced(desk):
+    desk.exit_while_down(status="Cancelled")
+    desk.hold_legs(1)
+    placed = len(desk.gw.trades)
+    desk.rt.tick()
+    assert len(desk.gw.trades) == placed + 1
+    assert desk.gw.trades[-1].order.orderRef == "trex:desk:dv1"
+
+
+def test_flat_without_todays_executions_waits_for_the_operator(desk):
+    """An earlier-day fill and unloaded positions look the same: never guess."""
+    desk.exit_while_down(status="Filled")
+    desk.gw.position_rows.clear()
+    placed = len(desk.gw.trades)
+    desk.rt.tick()
+    desk.rt.tick()
+    assert desk.book()["dv1"]["status"] == Status.EXIT_WORKING.value
+    assert desk.events().count("exit_flat_unexplained") == 1
+    assert len(desk.gw.trades) == placed, "nothing is sent into a flat account"
+    desk.paths.resolve_flat("dv1").touch()
+    desk.rt.tick()
+    book = desk.book()["dv1"]
+    assert (book["status"], book["close_reason"]) == ("closed", "operator_confirmed_flat")
+    assert book["exit_unpriced_qty"] == 1
+    assert not desk.paths.resolve_flat("dv1").exists()
+    assert desk.paths.resolve_flat("dv1").with_name("RESOLVE-FLAT-dv1.applied").exists()
+
+
+def test_resolve_file_never_closes_a_held_position(desk):
+    desk.exit_while_down(status="Cancelled")
+    desk.hold_legs(1)
+    desk.paths.resolve_flat("dv1").touch()
+    desk.rt.tick()
+    assert desk.book()["dv1"]["status"] == Status.EXIT_WORKING.value
+    assert desk.paths.resolve_flat("dv1").exists(), "not consumed: the legs are held"
+
+
+def test_leg_mismatch_alerts_once_while_it_persists(desk):
+    desk.exit_while_down(status="Cancelled")
+    desk.hold_legs(3)
+    desk.rt.tick()
+    desk.rt.tick()
+    assert desk.events().count("legs_mismatch") == 1
+    desk.hold_legs(2)  # a different mismatch alerts again
+    desk.rt.tick()
+    assert desk.events().count("legs_mismatch") == 2
 
 
 # ------------------------------------------------------------ kill files
