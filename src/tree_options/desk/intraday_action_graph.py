@@ -13,12 +13,13 @@ from bisect import bisect_right
 from calendar import monthrange
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, date, datetime, time, timedelta
+from datetime import UTC, date, datetime, time
 from decimal import Decimal
 from itertools import pairwise
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from tree_options.time.sessions import shift_instant
 from tree_options.trex.clock import session_calendar
 
 ET = ZoneInfo("America/New_York")
@@ -100,30 +101,33 @@ def _read_bars(raw: Mapping[str, Any]) -> dict[str, list[tuple[datetime, Decimal
     return result
 
 
+# Ages are whole seconds between UTC instants (the calendar guard bans naive
+# timedelta arithmetic outside time/; every instant here is UTC).
 def _latest(points: list[tuple[datetime, Decimal]], now: datetime,
-            max_age: timedelta) -> Decimal | None:
+            max_age_s: int) -> Decimal | None:
     index = bisect_right(points, (now, Decimal("Infinity"))) - 1
     if index >= 0:
         stamp, price = points[index]
-        if stamp.astimezone(ET).date() == now.astimezone(ET).date() and now-stamp <= max_age:
+        if (stamp.astimezone(ET).date() == now.astimezone(ET).date()
+                and (now - stamp).total_seconds() <= max_age_s):
             return price
     return None
 
 
 def _next(points: list[tuple[datetime, Decimal]], now: datetime,
-          max_delay: timedelta) -> Decimal | None:
+          max_delay_s: int) -> Decimal | None:
     index = bisect_right(points, (now, Decimal("Infinity")))
     if index < len(points):
         stamp, price = points[index]
-        return price if stamp-now <= max_delay else None
+        return price if (stamp - now).total_seconds() <= max_delay_s else None
     return None
 
 
 def _recent_option_move(points: list[tuple[datetime, Decimal]], now: datetime) -> str | None:
     """Mean absolute return across recent observed trades, not implied vol."""
     end = bisect_right(points, (now, Decimal("Infinity")))
-    sample = [(t, p) for t, p in points[max(0, end-21):end]
-              if t >= now-timedelta(days=5)]
+    since = shift_instant(now, -5 * 86400)
+    sample = [(t, p) for t, p in points[max(0, end-21):end] if t >= since]
     if len(sample) < 6:
         return None
     moves = [abs(new/old-1) for (_, old), (_, new) in pairwise(sample)]
@@ -131,7 +135,7 @@ def _recent_option_move(points: list[tuple[datetime, Decimal]], now: datetime) -
 
 
 def _candidates(contracts: dict[str, Contract], bars: dict[str, list[tuple[datetime, Decimal]]],
-                now: datetime, max_age: timedelta) -> list[dict[str, Any]]:
+                now: datetime, max_age_s: int) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, date, str], list[Contract]] = {}
     for contract in contracts.values():
         if 7 <= (contract.expiry - now.astimezone(ET).date()).days <= 60:
@@ -140,8 +144,8 @@ def _candidates(contracts: dict[str, Contract], bars: dict[str, list[tuple[datet
     for group in sorted(grouped):
         chain = sorted(grouped[group], key=lambda c: c.strike)
         for low, high in pairwise(chain):
-            low_price = _latest(bars[low.ticker], now, max_age)
-            high_price = _latest(bars[high.ticker], now, max_age)
+            low_price = _latest(bars[low.ticker], now, max_age_s)
+            high_price = _latest(bars[high.ticker], now, max_age_s)
             if low_price is None or high_price is None:
                 continue
             width = high.strike - low.strike
@@ -181,7 +185,7 @@ def decision_packet(raw: Mapping[str, Any], day: date, clock: str) -> dict[str, 
     bars = _read_bars(raw)
     now = _instant(day, clock)
     contracts = {ticker: parse_contract(ticker) for ticker in bars}
-    candidates = _candidates(contracts, bars, now, timedelta(minutes=15))
+    candidates = _candidates(contracts, bars, now, 15 * 60)
     return {"schema": "desk-intraday-decision/1", "snapshot_id": f"s:{day}T{clock}",
             "as_of": now.isoformat(), "candidates": candidates,
             "allowed_actions": ["skip", "enter_one_candidate"],
@@ -207,7 +211,7 @@ def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str,
     contracts = {ticker: parse_contract(ticker) for ticker in bars}
     if sessions != sorted(set(sessions)):
         raise ValueError("sessions must be sorted and unique")
-    age = timedelta(minutes=max_age_minutes)
+    age = max_age_minutes * 60  # seconds
     external_decisions = decisions is not None
     decisions = {} if decisions is None else decisions
     nodes: list[dict[str, Any]] = []

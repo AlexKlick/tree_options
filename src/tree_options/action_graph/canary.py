@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from decimal import Decimal
 from hashlib import sha256
 
@@ -18,8 +18,9 @@ from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.trex.plan import LegStructure
 
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
-ACCOUNT_MAX_AGE = timedelta(seconds=60)
-QUOTE_MAX_AGE = timedelta(seconds=30)
+# Ages in whole seconds (the calendar guard bans timedelta arithmetic outside time/).
+ACCOUNT_MAX_AGE_S = 60
+QUOTE_MAX_AGE_S = 30
 
 
 @dataclass(frozen=True)
@@ -77,11 +78,11 @@ def review_canary(profile: CapitalProfile, facts: CanaryFacts) -> tuple[str, ...
     if not facts.paper_gateway_verified or facts.observed_account_id != facts.mandate_account_id:
         blockers.append("paper_account_mismatch_or_unverified")
     for name, observed, limit in (
-        ("account", facts.account_observed_at, ACCOUNT_MAX_AGE),
-        ("quote", facts.quote_observed_at, QUOTE_MAX_AGE),
+        ("account", facts.account_observed_at, ACCOUNT_MAX_AGE_S),
+        ("quote", facts.quote_observed_at, QUOTE_MAX_AGE_S),
     ):
-        age = facts.checked_at - observed
-        if age < timedelta(0) or age > limit:
+        age = (facts.checked_at - observed).total_seconds()
+        if age < 0 or age > limit:
             blockers.append(f"{name}_stale_or_future")
     if not facts.owner_healthy:
         blockers.append("broker_owner_unhealthy")
