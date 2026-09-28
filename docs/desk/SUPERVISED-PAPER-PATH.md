@@ -12,7 +12,7 @@ of the guards the proposal surface declares for `paper_effect` nodes
 
 | Declared guard | Runtime enforcement |
 | --- | --- |
-| `mandate_active` | `grant_mandate` / `active_mandate`: operator-granted, expiring (60 s .. 8 h), account- and owner-epoch- and strategy-bound; one active; revoke is a permanent tombstone |
+| `mandate_active` | `grant_mandate` / `active_mandate`: operator-granted, expiring (60 s .. 7 days; ruling 2026-09-28 relaxed the 8 h ceiling — grants beyond 8 h are flagged `long_running` and status shows `days_left`), account- and owner-epoch- and strategy-bound; one active; revoke is a permanent tombstone |
 | `permit_active` | `issue_permit`: single-use `EffectPermit`, spent from the mandate budget at issue, consumed (atomically renamed) BEFORE the broker call |
 | `account_bound` / `current_owner` | re-checked by `active_mandate` at issue AND at the send boundary |
 | `fresh_risk_snapshot` / `fresh_quotes` | upstream of the permit: `issue_permit` refuses on ANY canary blocker (`action_graph.canary.review_canary_package` output is the gate); the send boundary refuses a stale permit/intent |
@@ -244,6 +244,18 @@ CLI. `python -m tree_options.trex.supervised_desk run [--legacy-plan P]`:
   the fact unknown, which the canary refuses.
 - v1 is debit kinds only (`OrderIntent` represents BUY-to-open).
 
+### The daily grant (ruling 2026-09-28: base + extra when quota is spare)
+
+`python -m tree_options.trex.grant_policy` computes the day's order budget:
+BASE 1 order, +1 per subscription window currently UNDER-USING (more left
+than planned at this point in its reset window), capped at the rails' 3.
+The input is `desk-paper/quota-windows.json` (schema `desk-quota-windows/1`;
+refresh from the quota dashboard — the :8019 broker exposes raw tokens,
+the planned-vs-actual comparison lives in the flow controller). Unknown
+plan earns NO extra (fail closed); dry windows neither add nor block.
+`--apply --owner-epoch <epoch> --profile-digest <digest>` runs the grant
+(authorized agent sessions; default ttl 12 h).
+
 ### Arming runbook (operator)
 
 1. Author `~/.local/state/trex/desk-paper/profile.json` (the handoff's
@@ -252,14 +264,21 @@ CLI. `python -m tree_options.trex.supervised_desk run [--legacy-plan P]`:
    operator's; `allowed_strategy_versions` ["operational-canary/1"]).
 2. Install + start `deploy/trex/trex-desk.service` (not installed by any
    landing). Read `desk-paper/owner.json` for the owner epoch.
-3. Grant: `python -m tree_options.trex.supervised grant --account <DU...>
+3. Grant — either by policy (preferred):
+   refresh `desk-paper/quota-windows.json` from the dashboard, then
+   `python -m tree_options.trex.grant_policy --apply --owner-epoch <epoch>
+   --profile-digest <digest>`; or by hand:
+   `python -m tree_options.trex.supervised grant --account <DU...>
    --owner-epoch <epoch> --strategy operational-canary/1 --profile-digest
    <digest> --max-orders 1 --ttl-seconds 3600 --granted-by <you>`, the
    digest from `python -m tree_options.trex.supervised_desk profile-digest`.
    A restarted process has a new epoch: re-grant.
-4. Drop an entry request; read its `.result.json`; watch `events.jsonl`.
-5. Stop: `HALT` (no new orders) / `FLATTEN` (close everything) in
-   `desk-paper/`, `supervised revoke` (permanent), or stop the unit.
+4. Drop an entry request (`python -m tree_options.trex.desk_cli request
+   --buy-strike 744 --sell-strike 742 --expiry 2026-11-20 --debit 0.90
+   --exit-deadline 2026-10-23`); read its `.result.json`; watch
+   `events.jsonl` (`desk_cli status` / `desk_cli events`).
+5. Stop: `desk_cli halt` / `desk_cli flatten` (or the files in
+   `desk-paper/`), `supervised revoke` (permanent), or stop the unit.
 
 ## What is deliberately NOT here yet
 

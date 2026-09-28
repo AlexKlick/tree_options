@@ -162,13 +162,28 @@ def test_expired_mandate_is_replaceable(paths):
     assert list(paths.root.glob("mandate.expired-*.json")), "archive must remain"
 
 
-@pytest.mark.parametrize("ttl", [59, 8 * 60 * 60 + 1])
+@pytest.mark.parametrize("ttl", [59, 7 * 24 * 60 * 60 + 1])
 def test_mandate_ttl_bounds(paths, ttl):
     with pytest.raises(SupervisedRefused) as caught:
         grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
                       strategy_version=STRATEGY, profile_digest="c" * 64,
                       max_orders=1, ttl_seconds=ttl, granted_by="operator-terminal")
     assert caught.value.reason == "mandate_ttl_out_of_bounds"
+
+
+@pytest.mark.parametrize("ttl, long_running", [
+    (3600, False),                                   # a session grant
+    (3 * 24 * 60 * 60, True),                        # ruling 09-28: multi-day
+    (7 * 24 * 60 * 60, True),                        # the new ceiling
+])
+def test_long_grants_are_flagged(paths, ttl, long_running):
+    mandate = grant_mandate(paths, now=T0, account_id=ACCOUNT, owner_epoch=OWNER,
+                            strategy_version=STRATEGY, profile_digest="c" * 64,
+                            max_orders=1, ttl_seconds=ttl, granted_by="operator-terminal")
+    assert mandate.long_running is long_running
+    assert mandate.days_left(shift_instant(T0, 60)) >= (2 if long_running else 0)
+    report = status(paths, now=shift_instant(T0, 60))
+    assert report["mandate"]["days_left"] == mandate.days_left(shift_instant(T0, 60))
 
 
 @pytest.mark.parametrize("kwargs, reason", [

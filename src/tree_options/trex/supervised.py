@@ -73,10 +73,14 @@ MANDATE_SCHEMA = "supervised-mandate/1"
 INTENT_SCHEMA = "supervised-intent/1"
 PERMIT_SCHEMA = "supervised-permit/1"
 
-#: Operator rulings bound the mandate lifetime: long enough to work a
-#: session, short enough that a forgotten grant cannot outlive attention.
+#: Operator rulings bound the mandate lifetime. Ruling 2026-09-28: multi-day
+#: grants are allowed (a long-running desk survives gateway restarts without
+#: re-granting); the original 8h ceiling became the LONG_GRANT threshold —
+#: beyond it the mandate is flagged long_running and status shows days left,
+#: so a forgotten grant stays visible.
 MIN_MANDATE_TTL_S = 60
-MAX_MANDATE_TTL_S = 8 * 60 * 60
+MAX_MANDATE_TTL_S = 7 * 24 * 60 * 60
+LONG_GRANT_S = 8 * 60 * 60
 
 #: A permit lives only inside its intent's send deadline and this bound.
 MAX_PERMIT_TTL_S = 15 * 60
@@ -125,6 +129,9 @@ class SupervisedMandate(StrictModel):
     granted_at: datetime
     expires_at: datetime
     granted_by: IdStr
+    #: set by grant_mandate when the grant outlives a session day; a plain
+    #: field (not derived) so the persisted record says what was ruled
+    long_running: bool | None = None
 
     def model_post_init(self, __context: Any) -> None:
         _require_aware(self.granted_at, "granted_at")
@@ -138,6 +145,10 @@ class SupervisedMandate(StrictModel):
 
     def expired_at(self, now: datetime) -> bool:
         return _reached(now, self.expires_at)
+
+    def days_left(self, now: datetime) -> int:
+        """Whole days of authority remaining (>= 0)."""
+        return max(0, int((self.expires_at - now).total_seconds() // 86400))
 
 
 class SupervisedIntent(StrictModel):
@@ -405,7 +416,8 @@ def grant_mandate(paths: SupervisedPaths, *, now: datetime, account_id: str,
             account_id=account_id, owner_epoch=owner_epoch,
             strategy_version=strategy_version, profile_digest=profile_digest,
             max_orders=max_orders, granted_at=now,
-            expires_at=shift_instant(now, ttl_seconds), granted_by=granted_by)
+            expires_at=shift_instant(now, ttl_seconds), granted_by=granted_by,
+            long_running=ttl_seconds > LONG_GRANT_S)
         _atomic_write(paths.mandate(), _dump(mandate))
         return mandate
 
@@ -826,6 +838,7 @@ def status(paths: SupervisedPaths, *, now: datetime) -> dict[str, Any]:
     elif paths.mandate().exists():
         mandate = SupervisedMandate.model_validate(_read_model(paths.mandate()))
         report["mandate"] = {"state": "expired" if mandate.expired_at(now) else "active",
+                             "days_left": mandate.days_left(now),
                              **_dump(mandate)}
     else:
         report["mandate"] = {"state": "absent"}
