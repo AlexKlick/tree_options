@@ -127,7 +127,7 @@ def _recent_option_move(points: list[tuple[datetime, Decimal]], now: datetime) -
     if len(sample) < 6:
         return None
     moves = [abs(new/old-1) for (_, old), (_, new) in pairwise(sample)]
-    return str((sum(moves)/len(moves)).quantize(Decimal("0.0001")))
+    return str((sum(moves, Decimal(0))/len(moves)).quantize(Decimal("0.0001")))
 
 
 def _candidates(contracts: dict[str, Contract], bars: dict[str, list[tuple[datetime, Decimal]]],
