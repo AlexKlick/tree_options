@@ -1,0 +1,12 @@
+[Unit]
+Description=Options desk: challenge game cadence (one challenge, 19:00 Denver)
+
+[Timer]
+# after the session close and the desk's own day is done, before the
+# overnight lab's 22:17 slot; Persistent catches a machine that was asleep
+OnCalendar=*-*-* 19:00:00 America/Denver
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

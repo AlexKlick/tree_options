@@ -1,0 +1,34 @@
+[Unit]
+Description=Options desk: end-to-end challenge game (every policy, every frozen bundle)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/DESK-LAB.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# Import the main checkout's code whatever the shared .venv's editable pointer
+# says (on 2026-09-23 an unknown writer repointed it to a worktree).
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+# SHIPS UNINSTALLED: nothing here is installed into ~/.config/systemd or any
+# other unit path; the operator installs it (or not) by hand.
+# Lane A of the agent trading desk: one automated challenge over every frozen
+# minute-bar bundle in artifacts/desk-store/evaluations/intraday-graph/ — the
+# archive's pareto front (max 3) plus the no_trade honest control, every
+# policy on the same three deterministic session thirds, scored ONLY by the
+# mechanical replay accounting, with hindsight gap samples from each policy's
+# own receipts and one digest under
+# artifacts/desk-store/evaluations/challenge/<UTCts>/. HARD CAPS in code:
+# <= 200 board calls and <= 8 reflection calls per bundle (round), <= 1000
+# board calls per challenge. A FRESH (< 6 h) quota-windows snapshot with no
+# under-using window skips the model policies (reason quota_dry, exit 0; the
+# rules control still scores); a stale or missing snapshot runs the model
+# policies under the standing conservative budget (the caps). Places no
+# orders, touches no broker; nothing the models write is ever promoted.
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk challenge run \
+  --bundles-from artifacts/desk-store \
+  --windows /home/alexk/.local/state/trex/desk-paper/quota-windows.json
+# one challenge is a few hundred flash board calls plus ~15 replay scorings
+# of the multi-month bundles: bounded but not fast
+TimeoutStartSec=7200

@@ -164,14 +164,19 @@ def latest_sessions(raw: dict[str, Any], count: int) -> list[Any]:
 
 
 def run_lab(config: LabConfig, *, windows: tuple[QuotaWindow, ...] = (),
-            transport: Any = None, now: datetime | None = None) -> dict[str, Any]:
-    """One scored run. Model policies are quota-gated; rules policies are not."""
+            transport: Any = None, now: datetime | None = None,
+            burn_gate: bool = True) -> dict[str, Any]:
+    """One scored run. Model policies are quota-gated; rules policies are not.
+
+    ``burn_gate=False`` is for a caller that gates the burn itself and holds
+    its own hard caps (the challenge game's standing budget): the windows are
+    still recorded verbatim in the run document either way."""
     now = now or datetime.now(UTC)
     raw = json.loads(config.bundle.read_bytes())
     sessions = latest_sessions(raw, config.sessions)
     policy = config.policy
     model = is_model_policy(policy)
-    if model and not burn_allowed(windows):
+    if model and burn_gate and not burn_allowed(windows):
         return {"schema": LAB_SCHEMA, "policy": policy, "at": now.isoformat(),
                 "status": "skipped", "reason": BURN_NOTE}
 

@@ -78,6 +78,19 @@
         the next slot retries; 1 a conflict with the written queue or a
         failure, 2 bad arguments. Places no orders.
 
+    challenge run --bundles-from DIR [--windows FILE] [--lab-root DIR]
+                  [--rounds N] [--dry-run]
+        The end-to-end challenge game: every policy (the archive pareto
+        front plus the no_trade control) scored on every frozen bundle in
+        DESK_STORE/evaluations/intraday-graph through the same mechanical
+        replay accounting, with hindsight gap samples and one digest under
+        evaluations/challenge/<UTCts>/. Hard caps: <= 200 board calls and
+        <= 8 reflection calls per bundle, <= 1000 board calls per
+        challenge. A FRESH (< 6 h) quota snapshot with no under-using
+        window skips the model policies (reason quota_dry, exit 0); rules
+        policies always run. --dry-run computes the plan and writes
+        nothing. Exit 0 done/gated, 2 bad arguments or a refused plan.
+
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes; a second concurrent run exits 3. No secrets are printed
 (the chain, index and calendar feeds are keyless; fetch_ohlc.py reads its
@@ -230,6 +243,20 @@ def _parser() -> argparse.ArgumentParser:
     ovn.add_argument("--bundle", required=True, type=Path)
     ovn.add_argument("--windows", type=Path)
     ovn.add_argument("--lab-root", type=Path)
+    ch = sub.add_parser("challenge",
+                        help="the end-to-end challenge game over the frozen bundles")
+    ch_sub = ch.add_subparsers(dest="challenge_command", required=True)
+    ch_run = ch_sub.add_parser(
+        "run", help="score every policy on every frozen bundle, one digest")
+    ch_run.add_argument("--bundles-from", type=Path,
+                        help="the desk store holding evaluations/intraday-graph "
+                             "(default DESK_STORE)")
+    ch_run.add_argument("--windows", type=Path,
+                        help="quota snapshot (a FRESH snapshot gates model policies)")
+    ch_run.add_argument("--lab-root", type=Path)
+    ch_run.add_argument("--rounds", type=int, help="play only the newest N bundles")
+    ch_run.add_argument("--dry-run", action="store_true",
+                        help="compute and print the plan; write nothing")
     sup = sub.add_parser("supervised-previews",
                          help="E6 shadow: request previews from the deal queue (never the inbox)")
     sup.add_argument("--session", type=date.fromisoformat)
@@ -621,6 +648,18 @@ def run_cli(
                 ["--bundle", str(args.bundle)]
                 + (["--windows", str(args.windows)] if args.windows else [])
                 + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
+        if args.command == "challenge":
+            from tree_options.desk.challenge import _cli as _challenge_cli
+
+            return _challenge_cli(
+                ["run"]
+                + (["--bundles-from", str(args.bundles_from)]
+                   if args.bundles_from else [])
+                + (["--windows", str(args.windows)] if args.windows else [])
+                + (["--lab-root", str(args.lab_root)] if args.lab_root else [])
+                + (["--rounds", str(args.rounds)]
+                   if args.rounds is not None else [])
+                + (["--dry-run"] if args.dry_run else []))
         if args.command == "supervised-previews":
             from tree_options.desk import enter_supervised
 
