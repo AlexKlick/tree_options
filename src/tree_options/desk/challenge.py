@@ -158,12 +158,26 @@ def challenge_root(store_root: Path) -> Path:
 
 
 def discover_bundles(store_root: Path) -> list[Path]:
-    """Every frozen minute-bar vintage in the store, in a deterministic order
-    (vintage directory, then file name): ``evaluations/intraday-graph/*/minute-bars*.json``."""
+    """The frozen minute-bar vintage to challenge per directory: the LARGEST
+    ``minute-bars*.json`` file under each ``evaluations/intraday-graph/<vintage>/``
+    (size desc, name asc tiebreak). The first real run (20260928T224926Z)
+    picked the 14 KB ``minute-bars-probe.json`` by alphabetical-last choice
+    and scored 0 boards while the 69 MB bundle sat beside it; probe/cache
+    shards are smaller than the real vintage by construction, so largest-
+    per-vintage excludes them without a name denylist."""
     root = Path(store_root).joinpath(*BUNDLE_REL)
     if not root.is_dir():
         return []
-    return sorted(path for path in root.glob("*/minute-bars*.json") if path.is_file())
+    found: dict[Path, Path] = {}
+    for path in root.glob("*/minute-bars*.json"):
+        if not path.is_file():
+            continue
+        vintage = path.parent
+        best = found.get(vintage)
+        key = (path.stat().st_size, path.name)
+        if best is None or key > (best.stat().st_size, best.name):
+            found[vintage] = path
+    return [found[vintage] for vintage in sorted(found)]
 
 
 def partition_sessions(raw: Mapping[str, Any],
@@ -463,8 +477,14 @@ def run_challenge(*, store_root: Path, now: datetime,
     archive_after = [{"id": record["id"], "generation": record["generation"],
                       "stats": record["stats"]}
                      for record in gepa.load_archive(root)]
+    # an honest status: a challenge whose every round showed zero boards
+    # (a probe shard, an empty vintage) executed nothing measurable — say
+    # so instead of a plain ok (the first real run shipped exactly that)
+    total_boards = sum(int(sc.get("boards", 0) or 0)
+                       for rnd in round_entries for sc in rnd["scorecards"])
+    status = QUOTA_DRY if gated else ("empty_bundles" if total_boards == 0 else "ok")
     document = {
-        "schema": CHALLENGE_SCHEMA, "status": QUOTA_DRY if gated else "ok",
+        "schema": CHALLENGE_SCHEMA, "status": status,
         "at": now.isoformat(), "mode": mode, "seed": DEFAULT_SEED,
         "store_root": str(store),
         "bundles": [path.name for path, _raw, _s in prepared],

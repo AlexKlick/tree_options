@@ -105,6 +105,22 @@ def test_discovery_finds_every_frozen_vintage(tmp_path: Path) -> None:
     assert discover_bundles(empty) == []
 
 
+def test_discovery_picks_the_largest_bundle_per_vintage_not_probe_shards(tmp_path):
+    """The first real run (20260928T224926Z) challenged a 14 KB probe shard
+    beside the 69 MB vintage: alphabetical-last selection is wrong. The
+    LARGEST file per vintage dir is the bundle."""
+
+    store = _store(tmp_path, {VINTAGE: multi_day_bundle(*DAYS3)})
+    directory = _bundle_path(store).parent
+    real_bytes = _bundle_path(store).read_bytes()
+    for shard, blob in [("minute-bars-probe.json", b'{"schema": "desk-option-minute-bars/1", "contracts": {}}'),
+                        ("minute-bars-cache-only.json", b"{}")]:
+        (directory / shard).write_bytes(blob)
+    bundles = discover_bundles(store)
+    assert [p.name for p in bundles] == [BUNDLE_NAME], "the real vintage, not shards"
+    assert bundles[0].read_bytes() == real_bytes
+
+
 # --------------------------------------------------------------- partition
 
 
@@ -221,10 +237,6 @@ def test_one_round_end_to_end(tmp_path: Path) -> None:
                              lab_root=tmp_path / "lab", transport=transport)
     assert document["status"] == "ok"
     assert document["mode"] == "standing_budget"  # no fresh windows snapshot
-    assert [p["policy"] for p in document["policies"]] == ["no_trade", "model:zai"]
-    assert document["budget"]["boards_used"] == len(transport.calls) >= 1
-    assert document["budget"]["boards_used"] <= HARD_ROUND_BOARDS
-
     # the digest is evidence on disk with the untrusted-prose note UP FRONT
     digest_dir = Path(document["digest_dir"])
     assert digest_dir == (store / "evaluations" / "challenge"
@@ -277,6 +289,33 @@ def test_one_round_end_to_end(tmp_path: Path) -> None:
     for sample in round_entry["gap_samples"]:
         assert len(sample["snapshots"]) <= 2  # first + middle of the slice
         assert sample["boards"] or sample.get("reason")
+
+
+def test_a_challenge_with_zero_boards_everywhere_is_not_ok(tmp_path):
+    """A probe shard (sessions present, nothing evaluable) must not claim a
+    plain ok — the digest says empty_bundles so a rerun investigates instead
+    of trusting a nothing-run (the first real run shipped exactly that)."""
+    from tests.unit.test_desk_intraday_action_graph import _bundle
+
+    store = _store(tmp_path, {VINTAGE: multi_day_bundle(*DAYS3)})
+    transport = BoardTransport()
+    # drop one leg of every vertical pair: sessions survive (the remaining
+    # ticker still has bars) but no candidate ever has both sides quoted
+    # -> zero candidates -> zero boards everywhere
+    doc = _bundle(date(2026, 9, 22))
+    tickers = sorted(doc["contracts"])
+    assert len(tickers) >= 2
+    del doc["contracts"][tickers[-1]]
+    _bundle_path(store).write_text(json.dumps(doc))
+    document = run_challenge(store_root=store, now=T0,
+                             lab_root=tmp_path / "lab", transport=transport)
+    assert document["status"] == "empty_bundles"
+    assert sum(sc.get("boards", 0) for rnd in document["rounds"]
+               for sc in rnd["scorecards"]) == 0
+    assert [p["policy"] for p in document["policies"]] == ["no_trade", "model:zai"]
+    # zero candidates -> zero boards -> the model is never called: no burn
+    assert len(transport.calls) == 0
+    assert document["budget"]["boards_used"] <= HARD_ROUND_BOARDS
 
 
 def test_two_rounds_play_every_bundle_and_rounds_n_the_newest(
