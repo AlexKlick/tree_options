@@ -216,6 +216,13 @@ def _parser() -> argparse.ArgumentParser:
     from tree_options.desk import production
 
     production.register(sub)
+    lab = sub.add_parser("lab-run", help="the historical theory lab: one quota-gated policy run")
+    lab.add_argument("--bundle", required=True, type=Path)
+    lab.add_argument("--policy", required=True)
+    lab.add_argument("--sessions", type=int, default=3)
+    lab.add_argument("--boards-cap", type=int, default=24)
+    lab.add_argument("--windows", type=Path)
+    lab.add_argument("--lab-root", type=Path)
     return ap
 
 
@@ -578,6 +585,14 @@ def run_cli(
             return _seal_macro(args, get=get or http.urllib_get, clock=clock, cal=cal)
         if args.command == "mine":
             return _mine(args, clock=clock, cal=cal)
+        if args.command == "lab-run":
+            from tree_options.desk.lab import _cli as _lab_cli
+
+            return _lab_cli(
+                ["--bundle", str(args.bundle), "--policy", args.policy,
+                 "--sessions", str(args.sessions), "--boards-cap", str(args.boards_cap)]
+                + (["--windows", str(args.windows)] if args.windows else [])
+                + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
         return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 

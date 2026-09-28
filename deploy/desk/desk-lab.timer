@@ -1,0 +1,12 @@
+[Unit]
+Description=Options desk: the historical theory lab cadence (hourly, quota-gated)
+
+[Timer]
+# hourly while subscription windows are typically open; the service itself
+# skips when no window is under-using, so off-window ticks are cheap no-ops
+OnCalendar=Mon..Sun *-*-* 07..21:17:00 America/Denver
+Persistent=false
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

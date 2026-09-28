@@ -1,0 +1,24 @@
+[Unit]
+Description=Options desk: the historical theory lab (one quota-gated burn batch)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/DESK-LAB.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+# Mode H of the agent trading desk: LLM traders choose on as-of boards from the
+# frozen minute-bar bundle; every run is scored evidence under
+# artifacts/desk-store/evaluations/lab/ (receipts per model call). Places no
+# orders, touches no broker. Model runs are QUOTA-GATED: no under-using window
+# in desk-paper/quota-windows.json -> the run skips (exit 0, reason logged).
+# exit 3 = the bundle or the windows snapshot is missing: retry next tick.
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk lab-run \
+  --bundle artifacts/desk-store/evaluations/intraday-graph/20260927-v1/minute-bars-4mo-expanded.json \
+  --policy model:zai --windows /home/alexk/.local/state/trex/desk-paper/quota-windows.json \
+  --sessions 2 --boards-cap 12
+SuccessExitStatus=3
+# one flash batch is ~12 calls x ~5s; bounded hard regardless
+TimeoutStartSec=900
