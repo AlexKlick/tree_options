@@ -1,0 +1,32 @@
+[Unit]
+Description=trex supervised desk (E5: supervised entries + their exits, IBKR clientId 83)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/SUPERVISED-PAPER-PATH.md
+# NOT INSTALLED BY DEFAULT. Installing and starting this unit is the operator's
+# arming step. Nothing trades without a mandate the operator grants for the
+# owner epoch this process writes to ~/.local/state/trex/desk-paper/owner.json.
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/alexk/documents/tree_options
+# Import the main checkout's code whatever the shared .venv's editable pointer
+# says, and never sync the shared venv from a unit (a group-subset sync strips
+# the other groups: 2026-09-28 it removed ib_async for ~9h).
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+Environment=UV_NO_SYNC=1
+# Start the moment the gateway API answers (real IB handshake) instead of
+# crash-looping against a logged-out gateway.
+ExecStartPre=/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.gateway_watch --wait-api 300
+TimeoutStartSec=360
+# The legacy put-spread book counts toward the open/day-loss caps (ruling 3b).
+ExecStart=/home/alexk/.local/bin/uv run --group trex --no-sync python -m tree_options.trex.supervised_desk run --legacy-plan plans/2026-09-22.toml
+# Exit 6 = lost gateway connection: restart and re-adopt from the book + broker.
+Restart=on-failure
+RestartSec=15
+# SIGTERM: finish the tick, release the run-dir lock, disconnect.
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+[Install]
+WantedBy=default.target

@@ -462,7 +462,8 @@ def record_intent(paths: SupervisedPaths, intent: SupervisedIntent) -> Path:
                      paths.reconciled(intent_id)):
             if used.exists():
                 raise SupervisedRefused("intent_id_reused", used.name)
-        blocked = _in_flight_reason(paths, intent.package_intent_sha256)
+        # the new intent's creation time is the reference "now"
+        blocked = _in_flight_reason(paths, intent.package_intent_sha256, intent.created_at)
         if blocked is not None:
             raise SupervisedRefused(blocked[0], blocked[1])
         _atomic_write(path, _dump(intent))
@@ -497,14 +498,21 @@ def _outbox_states(paths: SupervisedPaths) -> list[tuple[str, _OutboxState, dict
     return found
 
 
-def _in_flight_reason(paths: SupervisedPaths,
-                      package_sha: str) -> tuple[str, str] | None:
-    """The refusal for a NEW intent on a package that is not cleared."""
+def _in_flight_reason(paths: SupervisedPaths, package_sha: str,
+                      now: datetime) -> tuple[str, str] | None:
+    """The refusal for a NEW intent on a package that is not cleared.
+
+    A PENDING intent past its send deadline is not in flight: ``send``
+    refuses it, so it can never reach the broker."""
     verdicts: dict[str, str] = {}
     entries: dict[str, _OutboxState] = {}
     for intent_id, state, document in _outbox_states(paths):
         if document.get("package_intent_sha256") != package_sha:
             continue
+        if state == _OutboxState.PENDING:
+            deadline = datetime.fromisoformat(str(document["send_deadline"]))
+            if _reached(now, deadline):
+                continue
         if state == _OutboxState.RECONCILED:
             verdicts[intent_id] = str(document.get("verdict", ""))
         else:

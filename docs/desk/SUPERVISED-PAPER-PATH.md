@@ -72,7 +72,8 @@ permit hashed, and the adapter builds its order FROM those bytes:
   bounds, DAY limit), then `orderRef = trex:sup:<intent_id>` and an
   EXPLICIT `order.account` (carry-forward E5 item).
 - Guards before `placeOrder`: connected; paper gateway port 4002; the
-  dedicated clientId **83** (monitor 77, discovery 74, desk 81 - IBKR
+  dedicated clientId **83** (legacy monitor 71, entry runner 72,
+  discovery 74, `IbkrTrex` default 77; the E5 runtime shares 83 - IBKR
   lets only the placing client cancel); the account is managed by the
   session and carries the paper prefix `D`; the effect is for this
   intent; no order with this tag already exists in ANY view (an
@@ -97,7 +98,7 @@ structure `sup:<id>` (never prepared by a book; effects refuse `sup:`
 structure ids). The legacy put-spread adoption path (`open_combo_trades`
 + `structure_for_bag`) matches BAGs by leg conIds WITHOUT reading the
 tag; it is kept off supervised orders only by clientId isolation
-(`openTrades()` on clientId 77 lists that client's orders). FOLLOW-UP:
+(`openTrades()` on the monitor's clientId 71 lists that client's orders). FOLLOW-UP:
 make that legacy adoption skip `trex:sup:` refs (a characterization-
 pinned legacy change, its own lane).
 
@@ -206,19 +207,65 @@ cancel-confirm, exit tag, exit account, HALT, unknown exposure, uncertain
 receipt, send deadline, inconclusive evidence, heartbeat, lock, short-call
 mids, projected dividend, entry reprice).
 
+### The exit left the live view while E5 was down (gap review, fixed)
+
+| While E5 was down, the exit order... | Broker evidence | E5 now |
+| --- | --- | --- |
+| filled fully, same day | today's executions of that order | records the fill (price in debit orientation) -> CLOSED |
+| filled partly, then expired (DAY) | partial executions; legs = remainder | records the partial -> re-places ONLY the remainder |
+| expired unfilled | no executions; legs = book | re-places |
+| filled on an EARLIER day | no executions today; legs flat | ambiguous (vs. positions not loaded): alerts once (`exit_flat_unexplained`), sends nothing, waits for the operator's `RESOLVE-FLAT-<sid>` file (honoured only while the legs are flat; closes the unexplained packages UNPRICED, so the day loss reads unknown and blocks new entries that day) |
+
+Leg-mismatch alerts are deduped per condition. Mutation 7/7 KILLED,
+including the pre-fix runtime (the tests reproduce the gap).
+
+## The supervised desk process (`trex/supervised_desk.py`)
+
+One process, one IBKR session (clientId 83): IBKR refuses a second
+connection with the same clientId, so entries cannot come from a separate
+CLI. `python -m tree_options.trex.supervised_desk run [--legacy-plan P]`:
+
+- **Loop:** inside the session (NYSE session day, 09:30-16:15 ET) one
+  `DeskRuntime.tick()` THEN the entry inbox (the tick's beat arms the gate
+  the inbox's screening reads); outside it, a heartbeat only. A lost
+  gateway exits 6 (systemd restarts; the book + broker re-adopt).
+- **Entry inbox:** `desk-paper/requests/<intent_id>.json`
+  (`trex-desk-entry-request/1`: `strategy_version`, `send_deadline`,
+  `requested_by`, the `SupervisedEffect`) is claimed by an atomic rename
+  and processed exactly once: mandate (this process's owner epoch AND
+  the `profile.json` digest) -> adapter preflight -> canary screening
+  (owner health, `exit_owner_ready`, `assignment_plan`, open/day loss of
+  the E5 book + every `--legacy-plan` book) -> intent -> permit ->
+  `register` -> `send`. The outcome is `<intent_id>.result.json`
+  (`sent` / `blocked` + blockers / `refused` + reason / `invalid`).
+- **Loss facts:** open-loss reservation = open packages at the debit paid
+  (cap/floor when unpriced) + live entries at full size; realized day
+  loss = today's losing exits; any unreadable book or unpriced exit makes
+  the fact unknown, which the canary refuses.
+- v1 is debit kinds only (`OrderIntent` represents BUY-to-open).
+
+### Arming runbook (operator)
+
+1. Author `~/.local/state/trex/desk-paper/profile.json` (the handoff's
+   envelope: `intended_capital` 5000, `max_loss_per_trade` 300,
+   `max_open_loss` 1500; `max_daily_loss` and `horizon_days` are the
+   operator's; `allowed_strategy_versions` ["operational-canary/1"]).
+2. Install + start `deploy/trex/trex-desk.service` (not installed by any
+   landing). Read `desk-paper/owner.json` for the owner epoch.
+3. Grant: `python -m tree_options.trex.supervised grant --account <DU...>
+   --owner-epoch <epoch> --strategy operational-canary/1 --profile-digest
+   <digest> --max-orders 1 --ttl-seconds 3600 --granted-by <you>`, the
+   digest from `python -m tree_options.trex.supervised_desk profile-digest`.
+   A restarted process has a new epoch: re-grant.
+4. Drop an entry request; read its `.result.json`; watch `events.jsonl`.
+5. Stop: `HALT` (no new orders) / `FLATTEN` (close everything) in
+   `desk-paper/`, `supervised revoke` (permanent), or stop the unit.
+
 ## What is deliberately NOT here yet
 
-- The loop and the service: nothing runs `DeskRuntime.tick()` on a
-  cadence yet, and no unit is installed. Next: `python -m
-  tree_options.trex.desk_runtime` (connect clientId 83, acquire, tick
-  every N s in session, the Polygon spot feed like the monitor, the desk
-  dividend store), then an operator-armed `trex-desk.service`.
-- The entry orchestrator: one call that runs preflight -> screening
-  (with `exit_owner_ready` and `assignment_plan` as inputs) -> permit ->
-  `register` -> `send` inside the runtime process.
-- An exit order that FILLED while the runtime was down leaves the book
-  EXIT_WORKING and the legs-held guard refusing (alert, operator
-  resolves); exit-side fill evidence is a follow-up.
+- Credit kinds (the execution records cannot represent SELL-to-open).
+- The E6 desk-enter queue writing entry requests automatically (today an
+  operator writes the request).
 - Paper environment only: the mandate and the effect both refuse
   anything else.
 

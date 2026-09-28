@@ -25,8 +25,10 @@ Fills after the acknowledgement are not reported here (v1): the receipt
 proves the order exists; watching it is the runtime's job.
 
 IBKR lets only the placing clientId cancel an order: the supervised path
-uses its own clientId (``SUPERVISED_CLIENT_ID``), distinct from the monitor
-(77), discovery (74) and the desk runtime (81).
+uses its own clientId (``SUPERVISED_CLIENT_ID``), distinct from the legacy
+monitor (71) and entry runner (72), discovery (74) and ``IbkrTrex``'s
+default (77). The E5 desk runtime shares it: one process sends supervised
+entries and owns their exits.
 """
 
 from __future__ import annotations

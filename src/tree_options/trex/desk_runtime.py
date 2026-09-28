@@ -339,6 +339,14 @@ class DeskRuntime:
         book.heartbeat = now
         self._save(book)
 
+    def beat(self) -> None:
+        """Heartbeat only (outside the session: no decisions, no orders)."""
+        if self._lock_handle is None:
+            raise RuntimeLocked("beat requires the runtime lock")
+        book = self._book(self.specs())
+        book.heartbeat = self._now()
+        self._save(book)
+
     def _snapshot(self, specs: Mapping[str, DeskSpec], now: datetime) -> Snapshot:
         structures = [s.structure for s in specs.values()]
         snap = self.ib.snapshot(structures, now)

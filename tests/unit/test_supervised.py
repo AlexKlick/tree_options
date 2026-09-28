@@ -240,6 +240,16 @@ def test_intent_deadline_must_follow_creation():
                          created_at=T0, send_deadline=T0)
 
 
+def test_expired_pending_intent_does_not_hold_the_package(paths):
+    """send() refuses a passed deadline, so that intent can never go out."""
+    record_intent(paths, _sup_intent("sup-001"))  # deadline T0+120
+    later = SupervisedIntent(intent=_order_intent("sup-002"), package_intent_sha256=PACKAGE_SHA,
+                             created_at=shift_instant(T0, 121),
+                             send_deadline=shift_instant(T0, 300))
+    record_intent(paths, later)
+    assert paths.pending("sup-002").exists()
+
+
 def test_second_intent_same_package_refused_while_in_flight(paths):
     record_intent(paths, _sup_intent("sup-001"))
     with pytest.raises(SupervisedRefused) as caught:
