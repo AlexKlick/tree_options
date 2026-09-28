@@ -29,11 +29,15 @@ export function AppShell({
   title,
   poll,
   footerExtra,
+  footerSource,
+  showRuntimeBanners = true,
   children,
 }: {
   title: string
   poll?: PollState<unknown>
   footerExtra?: ReactNode
+  footerSource?: ReactNode
+  showRuntimeBanners?: boolean
   children: ReactNode
 }) {
   return (
@@ -70,6 +74,12 @@ export function AppShell({
             >
               Action model
             </a>
+            <a
+              href="#/trade-floor"
+              aria-current={title === 'Trade floor' ? 'page' : undefined}
+            >
+              Trade floor
+            </a>
           </nav>
         </div>
         <div className="header-right">
@@ -78,14 +88,14 @@ export function AppShell({
         </div>
       </header>
       <main>
-        <GatewayBanner />
-        <ExitMachineBanner />
+        {showRuntimeBanners && <GatewayBanner />}
+        {showRuntimeBanners && <ExitMachineBanner />}
         {children}
       </main>
       <footer>
-        <span>
+        <span>{footerSource ?? <>
           broker-free · reads <code>~/.local/state/trex/&lt;plan&gt;/</code> + plan TOML
-        </span>
+        </>}</span>
         {footerExtra ? <span>{footerExtra}</span> : null}
       </footer>
     </div>

@@ -45,6 +45,9 @@ export const getPortfolioScenarios = (): Promise<import('./types').PortfolioScen
 export const getIntradayGraphs = (): Promise<import('./types').IntradayGraphList> =>
   fetchJson('api/desk/intraday-graphs')
 
+export const getTradeFloorReplays = (): Promise<import('./types').TradeFloorReplayList> =>
+  fetchJson('api/desk/trade-floor')
+
 export const getPlan = (id: string): Promise<PlanDetailResponse> =>
   fetchJson(`api/plans/${encodeURIComponent(id)}`)
 

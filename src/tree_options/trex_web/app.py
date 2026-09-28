@@ -493,7 +493,8 @@ def create_app(
     attach_desk_evidence(app, database=desk_state_root / "evidence" / "desk.sqlite3",
                          replay_dir=desk_store_root / "evaluations" / "historical-replay",
                          portfolio_dir=desk_store_root / "evaluations" / "portfolio-scenario",
-                         intraday_dir=desk_store_root / "evaluations" / "intraday-graph")
+                         intraday_dir=desk_store_root / "evaluations" / "intraday-graph",
+                         trade_floor_dir=desk_store_root / "evaluations" / "trade-floor")
 
     # Research lane routes: RL-1 catalog + comparisons + evidence
     # drawer; RL-2 scenario branching (GET/POST /api/research/

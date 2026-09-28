@@ -91,6 +91,44 @@ export interface IntradayGraphList {
   }[]
 }
 
+export interface TradeFloorReplayList {
+  schema: 'desk-trade-floor-list/1'
+  execution_enabled: false
+  replays: TradeFloorReplay[]
+}
+
+export interface TradeFloorReplay {
+  schema: 'desk-trade-floor-replay/1'
+  id: string
+  source_head: string
+  source_manifest_sha256: string
+  sample_manifest_sha256: string
+  provider_manifest_sha256: string
+  replay_manifest_sha256: string
+  starting_capital: string
+  excluded_calibration_snapshot: string
+  execution_enabled: false
+  research_only: true
+  limitations: string[]
+  windows: {
+    id: string; start: string; end: string; series: number
+    traded_minute_bars: number; rounds: number
+    final_scores: { id: string; label: string; entered: number; wins: number
+      losses: number; closed_capital_proxy: string }[]
+  }[]
+  rounds: {
+    id: string; window: string; snapshot_id: string; as_of: string
+    all_as_of_candidates: number
+    candidates: { id: string; symbol: string; structure: string; dte: number
+      width: string; premium_proxy: string; max_loss_proxy: string
+      max_gain_proxy: string; reward_to_risk_proxy: string }[]
+    traders: { id: 'zai' | 'flash' | 'minimax'; label: string
+      selected_id: string | null; action: 'skip' | 'blocked' | 'entered'
+      action_reason: string; model_reason: string
+      entry_loss_proxy: string | null; eventual_pnl_proxy: string | null }[]
+  }[]
+}
+
 // Plain numbers + ISO strings from the server; this app formats.
 
 // GET /api/gateway: the gateway watchdog's verdict (epoch seconds).

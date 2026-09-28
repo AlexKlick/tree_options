@@ -72,7 +72,8 @@ export function ActionModelPage() {
       <section className="card" aria-label="Intraday action graphs">
         <div className="eyebrow">Historical minute bars · research only</div>
         <h2>Intraday action graphs</h2>
-        <p className="muted">Each window has scheduled snapshots, available spread candidates, and a separate chosen-action path. Option trade prices are valuation proxies, not executable quotes or broker fills. Overlapping windows reuse some sessions.</p>
+        <p className="muted">Each window has scheduled snapshots, available spread candidates, and a separate chosen-action path. Option trade prices are valuation proxies, not executable quotes or broker fills. Check each run's dates before pooling windows.</p>
+        <p><a href="#/trade-floor">Watch the three model traders on the virtual floor</a></p>
         {intraday.error && <p role="alert">Intraday graph summaries unavailable: {intraday.error}</p>}
         {intraday.data?.reports.length === 0 && <p>No intraday action graph has completed in this cockpit store.</p>}
         {intraday.data?.reports.map((run) => (
