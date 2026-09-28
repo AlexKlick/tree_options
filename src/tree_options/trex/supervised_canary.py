@@ -13,7 +13,13 @@ What is observed here (never assumed):
   observation time = the OLDEST leg tick time (a leg without a tick time
   is not a fresh quote);
 - the account's non-zero positions and ALL clients' working option/BAG
-  orders (the monitor's included; supervised-tagged orders excluded);
+  orders (the monitor's included; supervised-tagged orders excluded).
+  OPERATOR RULING 2026-09-28 (3b): only those on the canary's OWN
+  underlying count as a non-flat book; the whole account stays in the
+  evidence, and other books' risk still enters through the open-loss cap;
+- temporary assignment exposure = width x 100 x quantity (OPERATOR RULING
+  2026-09-28, 1a): the gap loss if the short leg is assigned before the
+  long one is exercised, never the short leg's notional;
 - margin: OUR modeled margin (debit kinds = the debit at the cap; credit
   verticals = width x 100 x quantity). The paper gateway answers what-if
   with all-zero margins (probe 2026-09-25), so IBKR's number is vacuous
@@ -21,8 +27,9 @@ What is observed here (never assumed):
 
 What this module must NOT infer is an explicit ``OperatorCanaryInputs``:
 the owner epoch and health, whether the assignment plan and a protective
-exit exist, the temporary assignment exposure, and the reconciled open and
-day loss. Each is a ruling or a runtime fact the operator/runtime supplies.
+exit exist (OPERATOR RULING 2026-09-28, 2b: the E5 desk runtime owns the
+exits of supervised positions), and the reconciled open and day loss.
+Each is a runtime fact the runtime supplies.
 
 Any broker view that cannot be read yields ``facts=None`` and a
 ``broker_view_unreadable:<view>`` blocker: nothing is defaulted.
@@ -50,7 +57,12 @@ from tree_options.trex.supervised_ibkr import (
     SupervisedEffect,
 )
 
-SCREENING_SCHEMA = "supervised-canary-screening/1"
+SCREENING_SCHEMA = "supervised-canary-screening/2"
+RULINGS = {
+    "assignment_exposure": "2026-09-28 1a: width x 100 x quantity",
+    "flat_book_scope": "2026-09-28 3b: the canary's own underlying only",
+    "protective_exit_owner": "2026-09-28 2b: the E5 desk runtime",
+}
 _VERTICALS = ("debit_vertical", "credit_vertical")
 
 
@@ -62,7 +74,6 @@ class OperatorCanaryInputs:
     owner_healthy: bool
     assignment_plan_verified: bool
     protective_exit_ready: bool
-    temporary_assignment_exposure: Decimal
     current_open_loss: Decimal | None
     realized_daily_loss: Decimal | None
 
@@ -93,6 +104,14 @@ def modeled_margin(effect: SupervisedEffect) -> Decimal:
             raise ValueError(f"{structure.kind}: no width to margin")
         return width * 100 * effect.quantity
     return structure.limit * 100 * effect.quantity
+
+
+def assignment_exposure(effect: SupervisedEffect) -> Decimal:
+    """Ruling 1a: the gap loss if the short leg is assigned early."""
+    width = effect.structure.width
+    if width is None:
+        raise ValueError(f"{effect.structure.kind}: no width, exposure undefined")
+    return width * 100 * effect.quantity
 
 
 def _quote_time(broker: IbkrSupervisedBroker, structure_id: str) -> datetime | None:
@@ -135,16 +154,20 @@ def collect_canary_screening(
     except Exception as error:
         return _unreadable("account_snapshot", error, blockers, evidence)
     try:
-        positions = [p for p in ib.positions(effect.account_id) if p.qty != 0]
+        held = [p for p in ib.positions(effect.account_id) if p.qty != 0]
     except Exception as error:
         return _unreadable("positions", error, blockers, evidence)
     try:
-        working = [t for t in ib._ib.reqAllOpenOrders()
+        foreign = [t for t in ib._ib.reqAllOpenOrders()
                    if getattr(t.contract, "secType", "") in ("BAG", "OPT")
                    and not str(getattr(t.order, "orderRef", "") or "").startswith(
                        SUPERVISED_REF_PREFIX)]
     except Exception as error:
         return _unreadable("all_client_open_orders", error, blockers, evidence)
+    # Ruling 3b: the flat-book rule covers the canary's own underlying only.
+    positions = [p for p in held if p.symbol == structure.underlying]
+    working = [t for t in foreign
+               if str(getattr(t.contract, "symbol", "") or "") == structure.underlying]
 
     contract_verified = True
     try:
@@ -166,11 +189,15 @@ def collect_canary_screening(
         "checked_at": now.isoformat(),
         "observed_account_id": observed_account,
         "account_observed_at": account_at.isoformat(),
+        "rulings": RULINGS,
+        "account_positions": sorted(f"{p.symbol}:{p.sec_type}:{p.con_id}:{p.qty}" for p in held),
         "positions": sorted(f"{p.symbol}:{p.sec_type}:{p.con_id}:{p.qty}" for p in positions),
+        "account_working_orders": sorted(str(getattr(t.order, "orderId", "?")) for t in foreign),
         "working_orders": sorted(str(getattr(t.order, "orderId", "?")) for t in working),
         "package_quote": None if quote is None else [str(quote.bid), str(quote.ask)],
         "quote_observed_at": None if quote_at is None else quote_at.isoformat(),
         "modeled_margin": str(modeled_margin(effect)),
+        "assignment_exposure": str(assignment_exposure(effect)),
     })
 
     facts = CanaryFacts(
@@ -193,7 +220,7 @@ def collect_canary_screening(
         assignment_plan_verified=inputs.assignment_plan_verified,
         protective_exit_ready=inputs.protective_exit_ready,
         worst_case_loss=structure.max_loss(),
-        temporary_assignment_exposure=inputs.temporary_assignment_exposure,
+        temporary_assignment_exposure=assignment_exposure(effect),
         broker_margin_change=modeled_margin(effect),
         current_open_loss=inputs.current_open_loss,
         realized_daily_loss=inputs.realized_daily_loss,

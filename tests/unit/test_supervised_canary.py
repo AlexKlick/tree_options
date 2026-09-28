@@ -34,6 +34,7 @@ from tree_options.trex.supervised import (
 )
 from tree_options.trex.supervised_canary import (
     OperatorCanaryInputs,
+    assignment_exposure,
     collect_canary_screening,
     modeled_margin,
 )
@@ -85,8 +86,8 @@ def _effect(structure: LegStructure | None = None, **overrides: Any) -> Supervis
 
 INPUTS = OperatorCanaryInputs(
     owner_epoch="sup-83-epoch-1", owner_healthy=True, assignment_plan_verified=True,
-    protective_exit_ready=True, temporary_assignment_exposure=Decimal("0"),
-    current_open_loss=Decimal("0"), realized_daily_loss=Decimal("0"))
+    protective_exit_ready=True, current_open_loss=Decimal("0"),
+    realized_daily_loss=Decimal("0"))
 
 
 def _live(tick_age_s: int | None = 5, client_id: int = SUPERVISED_CLIENT_ID
@@ -134,14 +135,16 @@ def test_screening_digest_moves_with_the_evidence():
 # ------------------------------------------------- observations -> blockers
 
 
-def test_legacy_positions_and_foreign_working_orders_block():
+def _bag(symbol: str, order_ref: str, order_id: int) -> SimpleNamespace:
+    return SimpleNamespace(contract=SimpleNamespace(secType="BAG", symbol=symbol),
+                           order=SimpleNamespace(orderRef=order_ref, orderId=order_id))
+
+
+def test_same_underlying_positions_and_working_orders_block():
     broker, gw = _live()
-    gw.position_rows.append(position_row(11, -3, account=ACCOUNT, symbol="NVDA"))
-    gw.foreign_open.append(SimpleNamespace(
-        contract=SimpleNamespace(secType="BAG"), order=SimpleNamespace(orderRef="", orderId=41)))
-    gw.foreign_open.append(SimpleNamespace(
-        contract=SimpleNamespace(secType="BAG"),
-        order=SimpleNamespace(orderRef=supervised_order_ref("other"), orderId=42)))
+    gw.position_rows.append(position_row(12, -2, account=ACCOUNT, symbol="SPY"))
+    gw.foreign_open.append(_bag("SPY", "", 41))
+    gw.foreign_open.append(_bag("SPY", supervised_order_ref("other"), 42))
     screening = _screen(broker)
     assert "legacy_book_not_flat" in screening.blockers
     assert screening.facts is not None
@@ -149,9 +152,23 @@ def test_legacy_positions_and_foreign_working_orders_block():
     assert screening.evidence["working_orders"] == ["41"], "supervised orders are not legacy"
 
 
+def test_other_underlyings_do_not_block_but_stay_in_evidence():
+    """Ruling 3b: the NVDA book does not block a SPY canary; it is still recorded."""
+    broker, gw = _live()
+    gw.position_rows.append(position_row(11, -3, account=ACCOUNT, symbol="NVDA"))
+    gw.foreign_open.append(_bag("NVDA", "", 43))
+    screening = _screen(broker)
+    assert screening.clear
+    assert screening.facts is not None
+    assert (screening.facts.legacy_positions, screening.facts.legacy_working_orders) == (0, 0)
+    assert screening.evidence["account_positions"] == ["NVDA:OPT:11:-3"]
+    assert screening.evidence["account_working_orders"] == ["43"]
+    assert screening.evidence["rulings"]["flat_book_scope"].startswith("2026-09-28 3b")
+
+
 def test_other_accounts_positions_do_not_count():
     broker, gw = _live()
-    gw.position_rows.append(position_row(11, -3, account="DU7777777", symbol="NVDA"))
+    gw.position_rows.append(position_row(11, -3, account="DU7777777", symbol="SPY"))
     assert _screen(broker).clear
 
 
@@ -174,8 +191,9 @@ def test_quote_age_is_the_oldest_leg_tick():
     assert "quote_stale_or_future" in _screen(broker).blockers
 
 
-def test_modeled_margin_above_capital_blocks():
-    """Paper what-if margins are vacuous (all zero), so OUR model must bind."""
+def test_wide_vertical_margin_and_assignment_exposure_block():
+    """Paper what-if margins are vacuous (all zero), so OUR model must bind;
+    ruling 1a prices early assignment at the 60-wide gap (6000 > 5000)."""
     broker, gw = _live()
     gw.con_ids[("OPT", "SPY", F, 40.0, "P")] = 40
     gw.quote(40, 0.05, 0.10)
@@ -188,7 +206,9 @@ def test_modeled_margin_above_capital_blocks():
         limit="1.00", exits={"touch": False, "breach": False})
     screening = _screen(broker, _effect(wide, limit=Decimal("1.10")))
     assert screening.evidence["modeled_margin"] == "6000"
+    assert screening.evidence["assignment_exposure"] == "6000"
     assert "broker_margin_exceeds_budget" in screening.blockers
+    assert "assignment_exposure_exceeds_budget" in screening.blockers
 
 
 def test_one_sided_quote_blocks():
@@ -237,7 +257,6 @@ def test_limit_above_the_cap_is_an_unverified_contract():
     ({"assignment_plan_verified": False}, "package_or_assignment_risk_unverified"),
     ({"current_open_loss": None}, "open_exposure_unknown"),
     ({"realized_daily_loss": Decimal("550")}, "daily_loss_cap_exceeded"),
-    ({"temporary_assignment_exposure": Decimal("50000")}, "assignment_exposure_exceeds_budget"),
 ])
 def test_operator_inputs_are_never_inferred(change, blocker):
     broker, _ = _live()
@@ -245,10 +264,21 @@ def test_operator_inputs_are_never_inferred(change, blocker):
     assert blocker in _screen(broker, inputs=inputs).blockers
 
 
-def test_modeled_margin_by_kind():
+def test_margin_and_assignment_exposure_models():
     assert modeled_margin(_effect()) == Decimal("100.00")
     credit = _vertical(kind="credit_vertical", limit="1.00")
     assert modeled_margin(_effect(credit, limit=Decimal("1.10"))) == Decimal("500")
+    # Ruling 1a: the 5-wide gap, not the ~$10k short-put notional at the 100 strike.
+    assert assignment_exposure(_effect()) == Decimal("500")
+    assert assignment_exposure(_effect(credit, limit=Decimal("1.10"))) == Decimal("500")
+
+
+def test_assignment_exposure_is_computed_not_supplied():
+    assert "temporary_assignment_exposure" not in OperatorCanaryInputs.__dataclass_fields__
+    broker, _ = _live()
+    screening = _screen(broker)
+    assert screening.facts is not None
+    assert screening.facts.temporary_assignment_exposure == Decimal("500")
 
 
 # ------------------------------------------------------- the whole chain
@@ -275,8 +305,8 @@ def test_supervised_chain_rehearsal_on_fakes(tmp_path):
         created_at=now, send_deadline=shift_instant(now, 120))
     record_intent(paths, intent)
 
-    # A blocked screening cannot mint a permit.
-    gw.position_rows.append(position_row(11, -3, account=ACCOUNT, symbol="NVDA"))
+    # A blocked screening (a SPY position: same underlying) cannot mint a permit.
+    gw.position_rows.append(position_row(12, -2, account=ACCOUNT, symbol="SPY"))
     blocked = _screen(broker)
     with pytest.raises(SupervisedRefused) as caught:
         issue_permit(paths, now=now, account_id=ACCOUNT, owner_epoch=INPUTS.owner_epoch,

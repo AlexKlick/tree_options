@@ -134,9 +134,20 @@ the observations. Any unreadable broker view -> `facts=None` +
 
 Required inputs, never inferred (`OperatorCanaryInputs`): owner epoch
 and health, `assignment_plan_verified`, `protective_exit_ready`,
-`temporary_assignment_exposure`, reconciled open loss and day loss.
+reconciled open loss and day loss.
 
-Tests: `tests/unit/test_supervised_canary.py` (23), including
+### Operator rulings (2026-09-28), recorded in every screening's evidence
+
+| Id | Question | Ruling | Effect |
+| --- | --- | --- | --- |
+| 1a | `temporary_assignment_exposure` | **width x 100 x quantity** (the gap loss if the short leg is assigned before the long is exercised) | computed by `assignment_exposure(effect)`, no longer an input; a 5-wide SPY vertical = $500 < $5,000 capital (short-leg notional would have blocked every real underlying) |
+| 2b | who owns a supervised position's protective exit | **the E5 desk runtime** | `protective_exit_ready` stays an input and is True only once E5 owns the position's exits; until then every live screening is blocked by design |
+| 3b | flat-book scope | **the canary's own underlying only** | positions and working orders on other underlyings do not block (the NVDA book no longer blocks a SPY canary); the whole account stays in the evidence (`account_positions`, `account_working_orders`) and other books' risk still enters through the open-loss cap |
+
+Mutation for the rulings: 6/6 KILLED (whole-account scope, no scope,
+notional exposure, zero exposure).
+
+Tests: `tests/unit/test_supervised_canary.py` (27), including
 `test_supervised_chain_rehearsal_on_fakes`: mandate -> intent -> live
 screening (a non-flat book refuses the permit) -> permit bound to the
 screening digest -> send through the real `IbkrTrex` adapter ->
@@ -146,15 +157,11 @@ vouch for a leg that never ticked).
 
 ## What is deliberately NOT here yet
 
-- OPERATOR RULINGS the canary needs before it can clear live:
-  (a) `temporary_assignment_exposure`: the canary compares it with the
-  intended capital ($5,000), so its definition decides whether ANY
-  real underlying can pass (short-leg notional for SPY is ~$70k; the
-  width x 100 gap loss is ~$500). (b) the protective-exit owner:
-  nothing watches a supervised position after its acknowledgement, so
-  `protective_exit_ready` is honestly False today. (c) the legacy book
-  must be flat (`legacy_book_not_flat`): the paper account still holds
-  the NVDA spreads (time stops 10-09 / 11-06).
+- E5 exit ownership (ruling 2b): the E5 desk runtime must adopt every
+  acknowledged supervised position (by its `trex:sup:` tag) and run its
+  exits (time stop, touch/breach per kind, expiry safety, assignment
+  risk) before `protective_exit_ready` may be True. Until then no live
+  screening clears.
 - No timer/service: nothing schedules sends. E5-style arming is a later,
   operator-gated change that composes this module with desk rails.
 - Paper environment only: the mandate and the effect both refuse
