@@ -1,0 +1,32 @@
+[Unit]
+Description=Options desk: overnight lab (hindsight gaps + GEPA policy evolution)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/DESK-LAB.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+# Import the main checkout's code whatever the shared .venv's editable pointer
+# says (on 2026-09-23 an unknown writer repointed it to a worktree).
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+# SHIPS UNINSTALLED: nothing here is installed into ~/.config/systemd or any
+# other unit path; the operator installs it (or not) by hand.
+# Lane L7 of the agent trading desk: one idempotent-per-date night step over
+# the frozen minute-bar bundle — champion policy runs on as-of boards,
+# mechanical hindsight-gap analysis, one flash-tier reflection per provider
+# (glm-5.3-flash on zai AND MiniMax-M3.1-Flash-Preview on minimax-flash),
+# held-out evaluation of every proposal by the same replay accounting, and a
+# research digest under artifacts/desk-store/evaluations/lab/overnight/<D>/.
+# HARD CAPS in code: <= 200 board calls and <= 8 reflection calls per run.
+# A FRESH (< 6 h) quota-windows snapshot gates like desk-lab (no under-using
+# window -> skip, exit 0); a stale or missing snapshot falls back to the
+# standing conservative budget (the caps). Places no orders, touches no
+# broker; nothing the models write is ever promoted.
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk lab-overnight \
+  --bundle artifacts/desk-store/evaluations/intraday-graph/20260927-v1/minute-bars-4mo-expanded.json \
+  --windows /home/alexk/.local/state/trex/desk-paper/quota-windows.json
+# a night is a few hundred flash calls plus ~10 replay scorings of the
+# multi-month bundle: bounded but not fast
+TimeoutStartSec=7200

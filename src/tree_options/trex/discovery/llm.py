@@ -65,6 +65,17 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "timeout": 45.0,
         "extra": {},
     },
+    # L7's overnight reflection lane: M3.1-Flash thinks inline like M3 (no
+    # think-toggle), so extra stays empty; a finish_reason=length reply is
+    # still a failure in chat_json (never a partial proposal).
+    "minimax-flash": {
+        "base_url": "https://api.minimax.io/v1",
+        "model": "MiniMax-M3.1-Flash-Preview",
+        "key_env": ("ANTHROPIC_AUTH_TOKEN_MINIMAX2", "MINIMAX_API_KEY"),
+        "max_tokens": 4000,
+        "timeout": 60.0,
+        "extra": {},
+    },
 }
 
 # (url, body, headers, timeout) -> (status, body)

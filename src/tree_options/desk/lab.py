@@ -43,6 +43,13 @@ from tree_options.trex.grant_policy import QuotaWindow, load_windows
 LAB_SCHEMA = "desk-lab-run/1"
 BOARD_ROWS = 12  # the board a model sees: top candidates by reward/risk
 BURN_NOTE = "quota gate: no under-using window in the snapshot"
+#: archive policies (GEPA lane) run as model policies under this prefix
+GEPA_PREFIX = "gepa:"
+#: the default policy sentence of the board task; the GEPA lane evolves it
+POLICY_SENTENCE = (
+    "You are a paper-trading policy choosing ONE defined-risk option "
+    "spread board row, or skipping."
+)
 
 _POLICY_RE = re.compile(r"^[a-z0-9:_-]+$")
 
@@ -58,6 +65,7 @@ class LabConfig:
     sessions: int = 3
     boards_cap: int = 24
     lab_root: Path | None = None
+    policy_prompt: str | None = None
 
     def __post_init__(self) -> None:
         if not _POLICY_RE.fullmatch(self.policy):
@@ -67,10 +75,12 @@ class LabConfig:
 
 
 def is_model_policy(policy: str) -> bool:
-    return policy.startswith("model:")
+    return policy.startswith("model:") or policy.startswith(GEPA_PREFIX)
 
 
 def model_provider(policy: str) -> str:
+    if policy.startswith(GEPA_PREFIX):
+        return "zai"  # archive policies burn the flash volume lane
     if not is_model_policy(policy):
         raise ValueError("not a model policy")
     provider = policy.split(":", 1)[1]
@@ -99,10 +109,14 @@ def board_rows(packet: dict[str, Any]) -> list[dict[str, Any]]:
              "data_kind": c["data_kind"]} for c in candidates]
 
 
-def board_prompt(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+def board_prompt(rows: list[dict[str, Any]],
+                 policy_prompt: str | None = None) -> list[dict[str, str]]:
+    """The board task. ``policy_prompt`` (the GEPA lane) replaces ONLY the
+    policy sentence; the risk caps and the JSON reply contract never move."""
+    sentence = POLICY_SENTENCE if policy_prompt is None else policy_prompt
     task = (
-        "You are a paper-trading policy choosing ONE defined-risk option "
-        "spread board row, or skipping. Capital 5000, max loss per trade 300, "
+        sentence
+        + " Capital 5000, max loss per trade 300, "
         "max combined open loss 1500. Prices are last-traded-minute closes "
         "(valuation proxies, not executable quotes). Return STRICT JSON "
         '{"choice": "<row id>" | null, "note": "<=40 chars"}. No other text.')
@@ -121,14 +135,15 @@ def parse_choice(reply: dict[str, Any], valid_ids: set[str]) -> tuple[str | None
 
 
 def ask_board(provider: str, rows: list[dict[str, Any]], *,
-              transport: Any = None, model: str | None = None) -> dict[str, Any]:
+              transport: Any = None, model: str | None = None,
+              policy_prompt: str | None = None) -> dict[str, Any]:
     """One model call; raises LlmError on failure (the caller records it)."""
     kwargs: dict[str, Any] = {}
     if transport is not None:
         kwargs["transport"] = transport
     if model is not None:
         kwargs["model"] = model
-    reply, _used_model = chat_json(provider, board_prompt(rows), **kwargs)
+    reply, _used_model = chat_json(provider, board_prompt(rows, policy_prompt), **kwargs)
     return reply
 
 
@@ -179,7 +194,8 @@ def run_lab(config: LabConfig, *, windows: tuple[QuotaWindow, ...] = (),
                 receipt = {"snapshot": snapshot, "provider": provider,
                            "board_rows": len(rows)}
                 try:
-                    reply = ask_board(provider, rows, transport=transport)
+                    reply = ask_board(provider, rows, transport=transport,
+                                      policy_prompt=config.policy_prompt)
                     choice, note = parse_choice(reply, {r["id"] for r in rows})
                     receipt.update({"ok": True, "choice": choice, "note": note,
                                     "prompt_sha256": hashlib.sha256(
@@ -196,13 +212,18 @@ def run_lab(config: LabConfig, *, windows: tuple[QuotaWindow, ...] = (),
 
     summary = iag.replay(raw, sessions, decisions if model else None,
                          policy="no_trade" if model else policy)
-    document = {"schema": LAB_SCHEMA, "policy": policy, "at": now.isoformat(),
-                "status": "ok", "sessions": [str(d) for d in sessions],
+    document: dict[str, Any] = {"schema": LAB_SCHEMA, "policy": policy,
+                                "at": now.isoformat(),
+                                "status": "ok", "sessions": [str(d) for d in sessions],
                 "boards_shown": boards, "model_calls": len(receipts),
                 "model_failures": sum(1 for r in receipts if not r.get("ok")),
                 "windows": [{"name": w.name, "under_using": w.under_using}
                             for w in windows],
                 "summary": summary, "receipts": receipts}
+    if config.policy_prompt is not None:
+        # provenance: which evolved policy instruction produced the choices
+        document["policy_prompt_sha256"] = hashlib.sha256(
+            config.policy_prompt.encode()).hexdigest()
     out_dir = (config.lab_root or default_root()) / (
         f"{now.strftime('%Y%m%dT%H%M%SZ')}-{slug(policy)}")
     suffix = 0

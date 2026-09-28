@@ -224,6 +224,12 @@ def _parser() -> argparse.ArgumentParser:
     lab.add_argument("--windows", type=Path)
     lab.add_argument("--lab-root", type=Path)
     sub.add_parser("lab-scoreboard", help="aggregate lab runs into a per-policy scoreboard")
+    ovn = sub.add_parser(
+        "lab-overnight",
+        help="the overnight lab: hindsight gaps + GEPA policy evolution + digest")
+    ovn.add_argument("--bundle", required=True, type=Path)
+    ovn.add_argument("--windows", type=Path)
+    ovn.add_argument("--lab-root", type=Path)
     sup = sub.add_parser("supervised-previews",
                          help="E6 shadow: request previews from the deal queue (never the inbox)")
     sup.add_argument("--session", type=date.fromisoformat)
@@ -608,6 +614,13 @@ def run_cli(
 
             print(json.dumps(aggregate(_lab_root()), indent=2))
             return 0
+        if args.command == "lab-overnight":
+            from tree_options.desk.lab_overnight import _cli as _overnight_cli
+
+            return _overnight_cli(
+                ["--bundle", str(args.bundle)]
+                + (["--windows", str(args.windows)] if args.windows else [])
+                + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
         if args.command == "supervised-previews":
             from tree_options.desk import enter_supervised
 

@@ -1,0 +1,12 @@
+[Unit]
+Description=Options desk: overnight lab cadence (one night step, 22:17 Denver)
+
+[Timer]
+# after the session close and the evening data settles, before the desk's
+# next trading day; Persistent catches a machine that was asleep at 22:17
+OnCalendar=*-*-* 22:17:00 America/Denver
+Persistent=true
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target
