@@ -14,13 +14,15 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from tree_options.desk import production, scorecards
 from tree_options.desk.contracts import ContractError
 from tree_options.desk.evidence import EvidenceError
+from tree_options.desk.trade_floor import project_replay
 from tree_options.trex.clock import now_et, session_calendar
 
 _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 
 
 def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
-           portfolio_dir: Path | None = None, intraday_dir: Path | None = None) -> None:
+           portfolio_dir: Path | None = None, intraday_dir: Path | None = None,
+           trade_floor_dir: Path | None = None) -> None:
     @app.get('/api/desk/health')
     def health() -> JSONResponse:
         try:
@@ -146,6 +148,22 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
         except (OSError, ValueError, json.JSONDecodeError):
             return _unavailable()
         return JSONResponse({'schema': 'desk-intraday-graph-list/1', 'reports': reports,
+                             'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/desk/trade-floor')
+    def trade_floor() -> JSONResponse:
+        """Serve compact historical spectator rounds; never launch model or broker work."""
+        root = trade_floor_dir or database.parent.parent / 'evaluations' / 'trade-floor'
+        replays: list[dict[str, Any]] = []
+        try:
+            for path in sorted(root.glob('*.json'), reverse=True)[:4]:
+                if (path.is_symlink() or path.parent.is_symlink()
+                        or path.stat().st_size > 2_000_000):
+                    return _unavailable()
+                replays.append(project_replay(json.loads(path.read_text(encoding='utf-8'))))
+        except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return _unavailable()
+        return JSONResponse({'schema': 'desk-trade-floor-list/1', 'replays': replays,
                              'execution_enabled': False}, headers={'Cache-Control': 'no-store'})
 
     @app.get('/desk/evidence')

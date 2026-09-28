@@ -10,6 +10,11 @@ describe('router with discover route', () => {
     expect(serialize({ view: 'discover' })).toBe('#/discover')
   })
 
+  it('keeps the spectator floor on a document-relative hash route', () => {
+    expect(parseHash('#/trade-floor')).toEqual({ view: 'trade-floor' })
+    expect(serialize({ view: 'trade-floor' })).toBe('#/trade-floor')
+  })
+
   it('plan and list routes still parse', () => {
     expect(parseHash('#/plan/x')).toEqual({ view: 'plan', id: 'x' })
     expect(parseHash('')).toEqual({ view: 'list' })
