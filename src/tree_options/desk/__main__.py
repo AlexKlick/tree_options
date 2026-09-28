@@ -223,6 +223,15 @@ def _parser() -> argparse.ArgumentParser:
     lab.add_argument("--boards-cap", type=int, default=24)
     lab.add_argument("--windows", type=Path)
     lab.add_argument("--lab-root", type=Path)
+    sub.add_parser("lab-scoreboard", help="aggregate lab runs into a per-policy scoreboard")
+    sup = sub.add_parser("supervised-previews",
+                         help="E6 shadow: request previews from the deal queue (never the inbox)")
+    sup.add_argument("--session", type=date.fromisoformat)
+    sup.add_argument("--queue-dir", type=Path)
+    sup.add_argument("--run-dir", type=Path, help="the desk run dir (HALT/AUTO_OFF, previews)")
+    sup.add_argument("--database", type=Path)
+    sup.add_argument("--account", default="DUT143714")
+    sup.add_argument("--dry-run", action="store_true")
     return ap
 
 
@@ -593,6 +602,25 @@ def run_cli(
                  "--sessions", str(args.sessions), "--boards-cap", str(args.boards_cap)]
                 + (["--windows", str(args.windows)] if args.windows else [])
                 + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
+        if args.command == "lab-scoreboard":
+            from tree_options.desk.lab import default_root as _lab_root
+            from tree_options.desk.lab_scoreboard import aggregate
+
+            print(json.dumps(aggregate(_lab_root()), indent=2))
+            return 0
+        if args.command == "supervised-previews":
+            from tree_options.desk import enter_supervised
+
+            try:
+                doc = enter_supervised.write_previews(
+                    now=clock(), cal=cal, session=args.session, queue_dir=args.queue_dir,
+                    run_dir=args.run_dir, database=args.database, account_id=args.account,
+                    dry_run=args.dry_run)
+            except ValueError as error:
+                print(f"supervised-previews: {error}", file=sys.stderr)
+                return 2
+            print(json.dumps(doc, indent=2, default=str))
+            return 3 if doc["status"] == "queue_not_ready" else 0
         return _eod_equity(args, clock=clock, cal=cal, fetch=fetch, notify=notify)
 
 

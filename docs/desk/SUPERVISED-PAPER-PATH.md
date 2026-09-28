@@ -324,3 +324,20 @@ Mutation pass (`~/.local/state/trex-supervised-mutation/`): 9 KILLED /
 1 SURVIVED. The survivor (send-side deadline re-check) is a deliberate
 second lock behind the permit clamp; the combined mutant removing both is
 KILLED.
+
+## E6 shadow previews (`desk/enter_supervised.py`, lane L4)
+
+The miner's admissible deals become complete `trex-desk-entry-request/1`
+files under `desk-paper/requests-preview/` — a directory the live desk
+NEVER reads. Fail-closed by construction: previews carry
+`strategy_version = desk-row/<R>` which no mandate covers, so a preview
+hand-copied into `requests/` refuses at `active_mandate` (scope mismatch).
+Debit deals produce a pure desk-parseable request (limit = the deal's
+modeled fill); credit kinds write a `.BLOCKED.json` diagnostic instead.
+Each preview + its lab advice (lane L5: `desk/lab_scoreboard.py`, the
+best >= 3-run policy's stats, `promoted: false` always) is an evidence
+row (`supervised_preview`). CLI `desk supervised-previews`; unit
+`deploy/desk/desk-supervised-preview.{service,timer}` (main checkout, the
+frozen desk-wave3-safety-rc1 admission-preview unit untouched), installed
+at landing, active in the 09:50-11:29 ET window. Live auto-entry stays
+gated on the operator's selection-rule ruling (PROPOSED today).

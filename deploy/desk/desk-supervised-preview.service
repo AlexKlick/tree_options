@@ -1,0 +1,31 @@
+[Unit]
+Description=TREX E6 shadow: supervised entry-request previews from the deal queue (never the inbox)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/SUPERVISED-PAPER-PATH.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+Environment=UV_NO_SYNC=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+Environment=DESK_STORE=/home/alexk/documents/tree_options/artifacts/desk-store
+Environment=TREX_DESK_STATE=/home/alexk/.local/state/trex-desk
+WorkingDirectory=/home/alexk/documents/tree_options
+# SHADOW ONLY: writes desk-paper/requests-preview/<deal>.json (a directory the
+# live desk never reads) + evidence rows. Previews carry strategy_version
+# desk-row/<R>, which no mandate covers: a hand-copied preview still refuses at
+# the mandate gate. The frozen desk-wave3-safety-rc1 release keeps its own
+# admission-preview unit untouched.
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk supervised-previews
+SuccessExitStatus=3
+TimeoutStartSec=120
+MemoryHigh=384M
+MemoryMax=512M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/alexk/.local/state/trex-desk/evidence /home/alexk/.local/state/trex/desk-paper
+RestrictAddressFamilies=AF_UNIX

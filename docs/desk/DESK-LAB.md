@@ -62,3 +62,20 @@ scoreboard number alone promotes nothing.
   independent samples.
 - glm-5.3-flash answers the boards; per the standing tiering rule it is
   never a judge, never a scorer, never quoted as must-be-right.
+
+## Promotion rule DRAFT (not registered)
+
+An advisory policy may be promoted to ADVISORY-LIVE (its advice shown on
+REAL entry requests, still never binding) only when a rule like this is
+REGISTERED by the operator, run SEALED, and RULED on by the operator:
+
+- >= 500 boards across >= 20 distinct sessions, no window overlapping the
+  registration sample;
+- summed closed-capital proxy above the no_trade baseline under the SAME
+  capital/open-cap constraints (5000/300/1500);
+- worst minimum closed capital never below 4500;
+- model-failure rate below 5% across the sample.
+
+Nothing in this repo implements promotion: `best_advisory` returns
+`promoted: false` by construction, and the register -> seal -> rule steps
+are operator acts on pre-registered artifacts.

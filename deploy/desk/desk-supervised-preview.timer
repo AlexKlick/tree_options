@@ -1,0 +1,15 @@
+[Unit]
+Description=TREX E6 shadow: supervised preview cadence (the entry window)
+
+[Timer]
+# the same window the admission previews use: every minute 09:50-11:29 ET
+# on session days; the service itself no-ops off-window and on an empty
+# or not-yet-mined queue (exit 3 retries within the window)
+OnCalendar=Mon..Fri *-*-* 09:50..59:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 10:00..59:00 America/New_York
+OnCalendar=Mon..Fri *-*-* 11:00..29:00 America/New_York
+Persistent=false
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
