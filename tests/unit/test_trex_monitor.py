@@ -524,6 +524,25 @@ class TestAdoption:
         mon._tick()
         assert st.status is Status.CLOSED
 
+    def test_supervised_tagged_sell_is_never_adopted(self, tmp_path: Path) -> None:
+        """The supervised lane's exits (trex:desk:) are not ours, even on a
+        BAG whose legs match a legacy structure."""
+        fake = FakeIbkr(spot="184.50")
+        mon = _monitor(tmp_path, fake, _at(13, 0))
+        st = mon.book.structures["nvda-oct"]
+        st.to(Status.ENTER_WORKING, _at(10, 5))
+        st.to(Status.OPEN, _at(10, 5))
+        st.filled_qty = 5
+        st.to(Status.EXIT_WORKING, _at(12, 0))
+        st.exit_reason = "touch"
+
+        orphan = fake.place_combo(mon.plan.structures[0], "SELL", 5, Decimal("0.44"))
+        orphan.trade.order.orderRef = "trex:desk:canary-a"
+        mon.adopt_open_exits()
+
+        assert "nvda-oct" not in mon.orders
+        assert st.exit_order is None  # untouched: the supervised lane owns it
+
 
 class TestComputeMarks:
     """Observation-only mark-to-mid payload for the status panel."""

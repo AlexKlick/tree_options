@@ -76,6 +76,19 @@ def tagged_structure(order_ref: object) -> str | None:
     return ref[len(ORDER_REF_PREFIX) :] or None
 
 
+#: orderRef prefixes owned by the SUPERVISED lane (clientId 83): its
+#: entries (`trex:sup:<intent>`) and exits (`trex:desk:<sid>`). The legacy
+#: runners never adopt these; defined HERE (not imported from their owners)
+#: because those modules import this one - a test pins them against the
+#: owners' constants so they cannot drift.
+SUPERVISED_REF_PREFIXES = ("trex:sup:", "trex:desk:")
+
+
+def is_supervised_ref(order_ref: object) -> bool:
+    """True when an order reference belongs to the supervised lane."""
+    return str(order_ref or "").startswith(SUPERVISED_REF_PREFIXES)
+
+
 def bag_signature(combo_legs: Any) -> tuple[tuple[int, str, int], ...]:
     """Order-free identity of a BAG: (conId, action, ratio) per leg."""
     return tuple(sorted((int(g.conId), str(g.action), int(g.ratio)) for g in combo_legs))

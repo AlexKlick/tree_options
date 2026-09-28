@@ -350,6 +350,19 @@ class TestRestartReconciliation:
         fake.fill(ent.orders["nvda-oct"], 5, "0.44")  # fills: gone from openTrades
         return ent, fake
 
+    def test_supervised_tagged_buy_is_never_adopted(self, tmp_path: Path) -> None:
+        """A supervised entry working at the broker (trex:sup:) is not ours:
+        skipped before adoption or any fill-evidence query."""
+        fake = FakeEntryIbkr()
+        ent = _enterer(tmp_path, fake, _at(10, 0))
+        ent._tick()  # a legacy BUY is working at the broker
+        # re-tag it as the supervised lane's (same BAG shape by legs)
+        working = fake.open_trades[0]
+        working.order.orderRef = "trex:sup:canary-a"
+        again = _restart(ent, fake, _at(10, 5))
+        assert "nvda-oct" not in again.orders
+        assert fake.evidence_asked == []  # skipped before the evidence path
+
     def test_flatten_after_a_downtime_fill_goes_open_not_closed(self, tmp_path: Path) -> None:
         ent, fake = self._filled_while_down(tmp_path)
         fake.evidence = (5, Decimal("0.44"))

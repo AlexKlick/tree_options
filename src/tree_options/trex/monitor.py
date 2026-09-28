@@ -66,7 +66,7 @@ from tree_options.trex.engine import (
     decide,
     drain,
 )
-from tree_options.trex.ibkr import IbkrTrex, OrderRef, Snapshot
+from tree_options.trex.ibkr import IbkrTrex, OrderRef, Snapshot, is_supervised_ref
 from tree_options.trex.plan import PutSpread, TradePlan, cents, load_legacy_plan
 from tree_options.trex.spot import SpotFeed, polygon_fetcher, touch_window
 from tree_options.trex.state import ENTRY_LANE, BookState, Status
@@ -515,6 +515,8 @@ class Monitor:
         nothing is re-counted either way.
         """
         for trade in self.ib.open_combo_trades():
+            if is_supervised_ref(getattr(trade.order, "orderRef", "")):
+                continue  # the supervised lane's exits (clientId 83) are not ours
             sid = self.ib.structure_for_bag(trade.contract)
             if sid is None or trade.order.action != "SELL":
                 continue

@@ -41,7 +41,7 @@ from tree_options.trex.engine import (
     decide,
     drain,
 )
-from tree_options.trex.ibkr import IbkrTrex, OrderRef, OrderStatusInfo
+from tree_options.trex.ibkr import IbkrTrex, OrderRef, OrderStatusInfo, is_supervised_ref
 from tree_options.trex.monitor import (
     HEARTBEAT_FRESH_SECONDS,
     _engine_config,
@@ -107,6 +107,8 @@ class Enterer:
 
     def adopt_open_entries(self) -> None:
         for trade in self.ib.open_combo_trades():
+            if is_supervised_ref(getattr(trade.order, "orderRef", "")):
+                continue  # the supervised lane's entries (clientId 83) are not ours
             sid = self.ib.structure_for_bag(trade.contract)
             if sid is None or trade.order.action != "BUY":
                 continue
