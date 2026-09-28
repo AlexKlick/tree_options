@@ -350,6 +350,14 @@ class SupervisedDesk:
             package_intent_sha256=screening.facts.intent_sha256,
             created_at=now, send_deadline=request.send_deadline)
         record_intent(self.supervised, intent)
+        # Account-id pre-check: refuse BEFORE spending a permit. The mandate
+        # already passed (the screening gate verified it); if the effect's
+        # account diverged from that mandate (operator typo, replay, etc.)
+        # we leak neither a permit nor a spec file.
+        if mandate.account_id != effect.account_id:
+            return {"status": "blocked", "blockers": ["register_account_mismatch"],
+                    "account_id": effect.account_id,
+                    "mandate_account_id": mandate.account_id, **facts}
         permit = issue_permit(self.supervised, now=now, account_id=effect.account_id,
                               owner_epoch=self.owner_epoch, intent=intent,
                               canary_blockers=screening.blockers, effect_payload=payload,

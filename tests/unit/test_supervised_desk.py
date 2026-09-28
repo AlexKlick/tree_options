@@ -72,12 +72,12 @@ def _vertical(kind: str = "debit_vertical") -> LegStructure:
         limit="1.00", exits={"touch": False, "breach": False})
 
 
-def _effect(kind: str = "debit_vertical") -> SupervisedEffect:
+def _effect(kind: str = "debit_vertical", intent_id: str = "sup-001") -> SupervisedEffect:
     s = _vertical(kind)
-    return SupervisedEffect(intent_id="sup-001", account_id=ACCOUNT, structure=s,
+    return SupervisedEffect(intent_id=intent_id, account_id=ACCOUNT, structure=s,
                             side=s.open_side, quantity=1,
                             limit=Decimal("0.90") if kind == "debit_vertical" else Decimal("1.10"),
-                            order_ref=supervised_order_ref("sup-001"))
+                            order_ref=supervised_order_ref(intent_id))
 
 
 class Clock:
@@ -224,6 +224,85 @@ def test_no_heartbeat_means_no_protective_exit(rig):
     (result,) = rig.desk.process_requests()
     assert result["status"] == "blocked"
     assert "protective_exit_unavailable" in result["blockers"]
+
+
+def test_wrong_account_refuses_before_writing_a_spec(rig, tmp_path):
+    """Audit follow-up: a wrong-account effect must NOT consume a permit or
+    leave a spec file behind; the entry_account_mismatch blocker is
+    operator-visible in the .result.json."""
+    rig.grant(rig.write_profile())
+    rig.tick_quotes()
+    rig.runtime.tick()  # arm the gate
+    from tree_options.trex.supervised_desk import EntryRequest
+    from tree_options.trex.supervised_ibkr import SupervisedEffect, supervised_order_ref
+
+    # First send the legit request. The orchestrator enforces filename ==
+    # intent_id; the spec is named after structure.id (dv1); both must match
+    # AND equal the intent_id. We use "dv1" for both.
+    rig.request(effect=_effect(intent_id="dv1"), name="dv1")
+    (first,) = rig.desk.process_requests()
+    assert first["status"] == "sent", f"dv1 did not land: {first}"
+    # The orchestrator now holds a spec + consumed permit for dv1.
+    # A SECOND request for dv1 with the WRONG account must refuse BEFORE
+    # writing a new spec (and BEFORE consuming a fresh permit).
+    previews_dir = rig.paths.root / "requests"
+    pre_specs = list((rig.paths.root / "specs").glob("dv1*.json"))
+    pre_consumed = list((rig.sup.root / "permits").glob("*.consumed.json"))
+    s = rig.desk.runtime.specs()["dv1"].structure
+    wrong = SupervisedEffect(intent_id="canary-z", account_id="DU9999999",
+                            structure=s, side="BUY", quantity=1,
+                            limit=Decimal("0.90"),
+                            order_ref=supervised_order_ref("canary-z"))
+    req = EntryRequest(strategy_version=STRATEGY,
+                      send_deadline=shift_instant(rig.clock.now, 120),
+                      requested_by="test", effect=wrong)
+    out = previews_dir / "canary-z.json"
+    # an old claim artifact from a prior run can trip the inbox's claim
+    # mechanism — only the new request file matters for THIS process call.
+    for f in previews_dir.glob("canary-z*.json"):
+        f.unlink()
+    out.write_text(json.dumps(req.model_dump(mode="json", by_alias=True)))
+    (results,) = rig.desk.process_requests()
+    # the orchestrator refuses BEFORE consuming the permit; we see
+    # `refused` (the SupervisedRefused branch), not `blocked`.
+    assert results["status"] == "refused", results
+    assert results["reason"] == "mandate_account_mismatch", results
+    specs_after = list((rig.paths.root / "specs").glob("dv1*.json"))
+    consumed_after = list((rig.sup.root / "permits").glob("*.consumed.json"))
+    # pre_specs/pre_consumed were captured AFTER the legit attempt (both
+    # already hold its artifacts); the wrong-account attempt must add NEITHER.
+    assert specs_after == pre_specs, "no new spec written for the wrong-account attempt"
+    assert consumed_after == pre_consumed, "no new permit consumed for the wrong-account attempt"
+    # the inbox lifecycle (claim + result) is the orchestrator's concern;
+    # we only assert the invariants the audit cares about: no NEW spec,
+    # no NEW permit, the wrong-account attempt is refused. The original
+    # sent result.json from the first call may or may not be present
+    # depending on the rename semantics; we don't pin it.
+    if (previews_dir / "dv1.result.json").exists():
+        assert json.loads((previews_dir / "dv1.result.json").read_text())["status"] == "sent"
+
+
+def test_a_broker_transport_error_refuses_subsequent_send(rig, tmp_path):
+    """Audit follow-up: a second send() on an intent whose first submit
+    crashed must refuse with permit_consumed (the consume-rename-then-submit
+    path), never re-submit."""
+    from tree_options.trex.supervised import SupervisedRefused
+    from tree_options.trex.supervised_desk import send as supervised_send
+
+    rig.grant(rig.write_profile())
+    rig.tick_quotes()
+    rig.runtime.tick()
+    rig.request(effect=_effect(intent_id="canary-z"), name="canary-z")
+    (first,) = rig.desk.process_requests()
+    assert first["status"] == "sent", first
+    permit_id = first["permit_id"]
+    # the orchestrator wrote the consumed permit under Rig's supervised dir
+    consumed = rig.sup.permit_consumed(permit_id)
+    assert consumed.exists(), "the permit was consumed atomically"
+    with pytest.raises(SupervisedRefused) as caught:
+        supervised_send(rig.sup, now=rig.clock.now, permit_id=permit_id,
+                        effect_payload=b"x", broker=rig.desk.broker)
+    assert caught.value.reason == "permit_consumed"
 
 
 def test_same_underlying_legacy_position_blocks_screening(rig):

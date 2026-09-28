@@ -603,3 +603,40 @@ def test_short_call_mids_reach_the_engine_snapshot(desk):
 def test_lock_file_is_what_the_arm_gate_probes(desk):
     with open(desk.paths.lock(), "a+b") as probe, pytest.raises(BlockingIOError):
         fcntl.flock(probe.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def test_register_same_intent_different_structure_raises(desk, tmp_path):
+    """Audit follow-up: same intent_id, different structure -> ValueError.
+
+    The idempotency path tests the same-structure case; this pins that any
+    actual change to the structure (strikes, quantity, kind) refuses to
+    overwrite a registered spec."""
+    desk.open_position()  # registers sup-001 at the default _effect()
+    new_structure = _effect().structure.model_copy(update={"quantity": 2,
+                                                           "limit": Decimal("1.50")})
+    new_effect = _effect(new_structure, intent_id="sup-001")
+    with pytest.raises(ValueError, match="already registered for sup-001"):
+        desk.rt.register(new_effect)
+
+
+def test_cancel_confirm_legs_hold_at_place_time(desk):
+    """Audit follow-up: legs must be re-verified RIGHT before _place_close,
+    not just on entry. Simulate the broker letting legs move during the
+    cancel-confirm-poll window (a flapping market), then prove _close
+    refuses to send a SELL the runtime can no longer cover."""
+    desk.open_position()  # OPEN with the entry filled + legs held
+    desk.clock.now = EXIT_DAY
+    desk.rt.tick()
+    sells_before = [t for t in desk.gw.trades
+                    if t.order.action == "SELL" and t.order.orderRef == "trex:desk:dv1"]
+    assert len(sells_before) == 1, "the original exit was placed"
+    exit_trade = sells_before[0]
+    # The broker accepts the cancel, but the live book drifted: legs gone.
+    desk.gw.position_rows.clear()
+    exit_trade.orderStatus.status = "Cancelled"
+    desk.notified.clear()
+    desk.rt.tick()
+    sells_after = [t for t in desk.gw.trades
+                   if t.order.action == "SELL" and t.order.orderRef == "trex:desk:dv1"]
+    assert len(sells_after) == 1, "no second sell after legs mismatch"
+    assert any("legs_mismatch" in evt[0] for evt in desk.notified)
