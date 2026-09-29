@@ -837,3 +837,146 @@ def test_v2_ask_budget_overrides_timeout_and_max_tokens(
         plain.write_text(json.dumps({**base, "ask": {"plugin": "v2", **bad}}))
         with pytest.raises(ValueError, match="timeout must be in"):
             longrun.run_from_config(plain, shared={"transport": transport}, limit=1)
+
+
+# ----------------------------------------- truncation self-heal + failure tally
+
+
+class TruncatingTransport:
+    """Answers like HorizonTransport(0, 'eod') but the first ``truncate``
+    calls return a cut-off reply (finish_reason=length): M3.1-Flash's
+    always-on thinking can eat the whole max_tokens window."""
+
+    def __init__(self, truncate: int = 1) -> None:
+        self.truncate, self.seen = truncate, 0
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, url: str, body: bytes, headers: dict[str, str],
+                 timeout: float) -> tuple[int, bytes]:
+        self.calls.append({"body": json.loads(body), "timeout": timeout})
+        self.seen += 1
+        rows = json.loads(json.loads(body)["messages"][0]["content"])["board"]
+        if self.seen <= self.truncate:
+            cut = '{"choice": "trunc'  # a parseable-looking prefix, still refused
+            return 200, json.dumps(
+                {"choices": [{"message": {"content": cut}, "finish_reason": "length"}]}
+            ).encode()
+        content = json.dumps({"choice": rows[0]["id"], "horizon": "eod", "note": "healed"})
+        return 200, json.dumps(
+            {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
+        ).encode()
+
+
+def test_v2_ask_self_heals_one_truncation_from_the_provider_budget(
+        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    from tree_options.trex.discovery.llm import PROVIDERS
+
+    path, _ = v1_bundle
+    config = tmp_path / "heal.json"
+    config.write_text(json.dumps({
+        "out_root": str(tmp_path / "out"), "incumbent": "m31",
+        "boards": {"plugin": "v2", "bundle": str(path)},
+        "outcome": {"plugin": "v2", "sync": 2},
+        "ask": {"plugin": "v2", "provider": "minimax-flash"},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "m31", "kind": "model"}]}))
+    transport = TruncatingTransport(truncate=1)
+    result = longrun.run_from_config(config, shared={"transport": transport}, limit=1)
+    assert result["status"] == "finished" and result["complete"] is True
+    spec = PROVIDERS["minimax-flash"]
+    assert 2 * spec["max_tokens"] <= 48000  # else this case silently tests the cap
+    assert len(transport.calls) == 2  # one escalating retry, never more
+    first, second = transport.calls
+    assert first["body"]["max_tokens"] == spec["max_tokens"]  # the spec start
+    assert first["timeout"] == float(spec["timeout"])
+    assert second["body"]["max_tokens"] == 2 * spec["max_tokens"]
+    assert second["timeout"] == 2 * float(spec["timeout"])
+    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
+                     .read_text().splitlines()[0])
+    assert rec["ok"] is True and rec["choice"]
+    assert rec["escalated"] is True
+    assert rec["max_tokens"] == 2 * spec["max_tokens"]
+    assert rec["timeout"] == 2 * float(spec["timeout"])
+    # a healed run is a clean run: no failure tally anywhere
+    doc = json.loads((Path(result["run_dir"]) / "digest.json").read_text())
+    assert all("failure_reasons" not in row for row in doc["standings"])
+    assert "Failure tally" not in (Path(result["run_dir"]) / "digest.md").read_text()
+
+
+def test_v2_ask_escalation_is_capped_and_a_second_truncation_still_fails(
+        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    path, _ = v1_bundle
+    base = {"out_root": str(tmp_path / "out"), "incumbent": "m31",
+            "boards": {"plugin": "v2", "bundle": str(path)},
+            "outcome": {"plugin": "v2", "sync": 2},
+            "ask": {"plugin": "v2", "provider": "minimax-flash",
+                    "timeout": 300, "max_tokens": 30000},
+            "protocol": {"draws": 1000, "random_seeds": 200},
+            "policies": [{"name": "m31", "kind": "model"}]}
+    config = tmp_path / "cap.json"
+    config.write_text(json.dumps(base))
+    transport = TruncatingTransport(truncate=1)
+    result = longrun.run_from_config(config, shared={"transport": transport}, limit=1)
+    assert result["status"] == "finished" and result["complete"] is True
+    first, second = transport.calls
+    assert (first["body"]["max_tokens"], first["timeout"]) == (30000, 300.0)
+    assert (second["body"]["max_tokens"], second["timeout"]) == (48000, 600.0)  # the cap
+    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
+                     .read_text().splitlines()[0])
+    assert rec["ok"] is True and rec["escalated"] is True and rec["max_tokens"] == 48000
+
+    # truncated at the escalated budget too: exactly one retry, then the failure stands
+    always = tmp_path / "always.json"
+    always.write_text(json.dumps(base))
+    transport = TruncatingTransport(truncate=99)
+    result = longrun.run_from_config(always, shared={"transport": transport}, limit=1)
+    assert result["status"] == "finished"
+    assert len(transport.calls) == 2
+    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
+                     .read_text().splitlines()[0])
+    assert rec["ok"] is False and "truncated" in rec["error"]
+    assert rec.get("escalated") is None  # a failed retry never claims the flag
+    run_dir = Path(result["run_dir"])
+    doc = json.loads((run_dir / "digest.json").read_text())
+    rows = {r["arm"]: r for r in doc["standings"]}
+    assert rows["m31"]["failures"] == 1
+    assert rows["m31"]["failure_reasons"] == {"truncated": 1}
+    assert doc["complete"] is False  # the board never got an ok receipt
+    md = (run_dir / "digest.md").read_text()
+    assert "Failure tally" in md and "truncated 1" in md
+    assert "PARTIAL RUN" in md  # the tally says the run is incomplete
+    view = {r["arm"]: r for r in longrun._project_digest(doc)["standings"]}
+    assert view["m31"]["failure_reasons"] == {"truncated": 1}
+
+
+def test_score_run_tallies_failure_reasons_per_arm() -> None:
+    boards = boards_for(["2026-06-01", "2026-06-02"])  # 4 boards
+    arms = longrun.arms_of([PolicySpec("m", "model", repeats=2)])
+    sids = [b.snapshot for b in boards]
+
+    def failed(error: str) -> dict[str, Any]:
+        return {"ok": False, "error": error}
+
+    receipts = {
+        "m#1": {sids[0]: failed("LlmError: minimax-flash: reply truncated at max_tokens"),
+                sids[1]: failed("LlmError: minimax-flash: TimeoutError"),
+                sids[2]: failed("LlmError: minimax-flash: HTTP 429"),
+                sids[3]: failed("LlmError: minimax-flash: no JSON object in model output")},
+        "m#2": {s: ok("w") for s in sids},
+    }
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), PROTO)
+    rows = {r["arm"]: r for r in doc["standings"]}
+    tally = rows["m#1"]["failure_reasons"]
+    assert tally == {"truncated": 1, "timeout": 1, "http": 1, "other": 1}
+    assert sum(tally.values()) == rows["m#1"]["failures"] == 4  # never disagree
+    assert "failure_reasons" not in rows["m#2"]  # a clean arm shows none
+    md = longrun.digest_markdown(doc)
+    assert "Failure tally" in md
+    section = md.split("## Failure tally", 1)[1].split("\n## ", 1)[0]
+    assert "- m#1: http 1, other 1, timeout 1, truncated 1" in section  # sorted reasons
+    assert "m#2" not in section  # a clean arm is not tallied
+    assert "PARTIAL RUN" not in md  # complete run: no partial label
+    partial = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), PROTO,
+                                complete=False)
+    assert "PARTIAL RUN" in longrun.digest_markdown(partial)
+    assert "receipts incomplete" in longrun.digest_markdown(partial)

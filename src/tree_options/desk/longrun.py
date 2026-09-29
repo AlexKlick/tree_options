@@ -731,9 +731,11 @@ class _Executor:
                 unevaluable += 1
             else:
                 net += value[1]
+        reasons = failure_reasons(self.receipts[arm.name], self.boards)
         return {"policy": arm.policy.name, "repeat": arm.repeat, "kind": arm.policy.kind,
                 "done": len(recs), "total": len(self.boards), "entered": entered,
-                "failures": failures, "unevaluable": unevaluable, "net": round(net, 2)}
+                "failures": failures, "unevaluable": unevaluable, "net": round(net, 2),
+                **({"failure_reasons": reasons} if reasons else {})}
 
     def write_progress(self) -> None:
         self._since_progress = 0
@@ -1069,6 +1071,30 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
                      "figures are the single confirmatory look")}
 
 
+def failure_reasons(arm_receipts: Mapping[str, Mapping[str, Any]],
+                    boards: Sequence[Board]) -> dict[str, int]:
+    """Per-arm failure tally from the receipts on disk: truncated / timeout /
+    http / other (an unknown reason buckets to other). Counts the same
+    failed receipts as the standings ``failures`` column (the latest receipt
+    per board snapshot), so the two never disagree."""
+    counts: dict[str, int] = {}
+    for board in boards:
+        rec = arm_receipts.get(board.snapshot)
+        if rec is None or rec.get("ok"):
+            continue
+        text = str(rec.get("error") or "")
+        if "truncated at max_tokens" in text:
+            reason = "truncated"
+        elif "timeout" in text.lower() or "timed out" in text.lower():
+            reason = "timeout"
+        elif "HTTP " in text:
+            reason = "http"
+        else:
+            reason = "other"
+        counts[reason] = counts.get(reason, 0) + 1
+    return counts
+
+
 def score_run(boards: Sequence[Board], arms: Sequence[Arm],
               receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
               outcomes: OutcomeCache, protocol: Protocol, *,
@@ -1105,7 +1131,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "gross_total": float(sum(gross)),
             "failures": sum(1 for b in boards if b.snapshot in mine
                             and not mine[b.snapshot].get("ok")),
-            "excluded": sum(1 for b in boards if not mine.get(b.snapshot, {}).get("ok"))}
+            "excluded": sum(1 for b in boards if not mine.get(b.snapshot, {}).get("ok")),
+            "failure_reasons": failure_reasons(mine, boards)}
 
     incumbent_arms = [a.name for a in arms if a.policy.name == protocol.incumbent]
     model_arms = [a.name for a in arms if a.policy.kind == "model"]
@@ -1168,6 +1195,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
                                    seed=seed),
             "stability_vs_random": stability(series - expected, sessions),
             "receipts": (receipts_files or {}).get(arm.name),
+            **({"failure_reasons": data["failure_reasons"]}
+               if data["failure_reasons"] else {}),  # additive: a clean arm shows none
         })
     standings.sort(key=lambda r: (-r["vs_random"]["ci95"][0], r["arm"]))
 
@@ -1362,6 +1391,18 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
             add(f"| {bench['name']} buy-and-hold | benchmark | - | - | - | "
                 f"{bench['net_total']:+.2f} {_ci(bench['net_ci95'])} | - | - | - | - | - |")
     add("")
+    tallies = [(row["arm"], row["failure_reasons"]) for row in doc["standings"]
+               if row.get("failure_reasons")]
+    if tallies:  # failure transparency: what each arm's failures were, not just how many
+        add("## Failure tally (per arm, from the receipts on disk)")
+        add("")
+        if not doc.get("complete"):
+            add("PARTIAL RUN - receipts incomplete; these counts can still grow.")
+            add("")
+        for arm, reasons in tallies:
+            add(f"- {arm}: " + ", ".join(f"{reason} {count}" for reason, count
+                                         in sorted(reasons.items())))
+        add("")
     aa = doc["aa"]
     add("## A/A check")
     add("")
@@ -1884,10 +1925,18 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     reasoning_effort (absent = the provider default, max); ``timeout`` (s)
     and ``max_tokens`` override the provider's budget per call - thinking at
     max effort times out on the hardest boards, and a failed receipt is
-    missing-not-at-random, so a resume retry pass may give it more room."""
+    missing-not-at-random, so a resume retry pass may give it more room.
+    A truncated reply self-heals once: the retry doubles the effective
+    budget (llm.escalation_budget, capped 48000 tokens / 900 s) and an
+    escalated success lands on the receipt as escalated: true."""
     from tree_options.desk import lab
     from tree_options.desk.forecast import EFFORTS
-    from tree_options.trex.discovery.llm import chat_json
+    from tree_options.trex.discovery.llm import (
+        TRUNCATED_NOTE,
+        LlmError,
+        chat_json,
+        escalation_budget,
+    )
 
     default = str(params.get("provider", "minimax-flash"))
     effort = params.get("effort")
@@ -1908,8 +1957,9 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     if state is None:
         raise ValueError("the v2 ask plug-in needs the v2 boards plug-in")
 
-    def ask(spec: PolicySpec, board: Board) -> tuple[str | None, str | None, str]:
+    def ask(spec: PolicySpec, board: Board) -> tuple[Any, ...]:
         context = state["contexts"][board.snapshot]
+        provider = spec.provider or default
         kwargs: dict[str, Any] = {}
         if transport is not None:
             kwargs["transport"] = transport
@@ -1917,9 +1967,20 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
             kwargs["extra"] = dict(extra)
         if timeout is not None:
             kwargs["timeout"] = timeout
-        reply, _model = chat_json(spec.provider or default,
-                                  lab.board_prompt_v2(board.rows, context, spec.prompt),
-                                  **kwargs)
+        try:
+            reply, _model = chat_json(
+                provider, lab.board_prompt_v2(board.rows, context, spec.prompt), **kwargs)
+        except LlmError as error:  # one escalating retry, then the failure stands
+            if TRUNCATED_NOTE not in str(error):
+                raise
+            retry_extra, seconds, tokens = escalation_budget(
+                provider, max_tokens=max_tokens, timeout=timeout,
+                extra=kwargs.get("extra"))
+            reply, _model = chat_json(
+                provider, lab.board_prompt_v2(board.rows, context, spec.prompt),
+                **{**kwargs, "extra": retry_extra, "timeout": seconds})
+            return (*lab.parse_choice_v2(reply, set(board.ids)),
+                    {"escalated": True, "max_tokens": tokens, "timeout": seconds})
         return lab.parse_choice_v2(reply, set(board.ids))
     return ask
 
@@ -2159,7 +2220,7 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("a digest must carry promoted: false")
     keep = ("arm", "policy", "repeat", "kind", "boards", "entered", "entry_rate",
             "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_first_row",
-            "vs_incumbent", "vs_regime", "null_percentile")
+            "vs_incumbent", "vs_regime", "null_percentile", "failure_reasons")
     wf = doc.get("walk_forward") or {}
     return {"headline": doc.get("headline"), "untrusted_note": doc.get("untrusted_note"),
             "evaluation_valid": doc.get("evaluation_valid"), "complete": doc.get("complete"),
@@ -2275,8 +2336,11 @@ def dispatch_cli(args: argparse.Namespace) -> int:
              f"{(progress['quota'] or {}).get('reason')}"]
     for name, arm in (progress.get("arms") or {}).items():
         lines.append(f"  {name}: {arm.get('done')}/{arm.get('total')} entered="
-                     f"{arm.get('entered')} failures={arm.get('failures')} net="
-                     f"{arm.get('net')}")
+                     f"{arm.get('entered')} failures={arm.get('failures')}"
+                     + (f" ({', '.join(f'{k} {v}' for k, v in sorted(
+                         arm['failure_reasons'].items()))})"
+                        if arm.get("failure_reasons") else "")
+                     + f" net={arm.get('net')}")
     if view["digest"] is not None:
         lines.append(f"  digest: {view['digest']['headline']}")
     print("\n".join(lines))

@@ -32,6 +32,12 @@ from tree_options.trex.discovery.watchlist import SYMBOL_RE
 REQUEST_TIMEOUT = 20.0
 MAX_TOKENS = 900
 RATIONALE_MAX = 140
+# The single self-healing retry a desk caller makes on a truncated reply:
+# double the effective budget, capped (an M3.1-Flash finish_reason=length at
+# max effort usually means the always-on thinking ate the window).
+TRUNCATED_NOTE = "reply truncated at max_tokens"
+ESCALATE_TOKENS_CAP = 48_000
+ESCALATE_TIMEOUT_CAP = 900.0
 
 PROVIDERS: dict[str, dict[str, Any]] = {
     "local": {
@@ -221,11 +227,30 @@ def chat_json(
             f"{provider}: served model {str(served)[:60]!r} != requested {used_model!r}"
         )
     if finish == "length":  # a cut-off list can still hold a parseable inner object
-        raise LlmError(f"{provider}: reply truncated at max_tokens")
+        raise LlmError(f"{provider}: {TRUNCATED_NOTE}")
     try:
         return _extract_json_object(str(content)), used_model
     except LlmError as exc:
         raise LlmError(f"{provider}: {exc}") from None
+
+
+def escalation_budget(
+    provider: str, *, max_tokens: int | None, timeout: float | None,
+    extra: dict[str, Any] | None,
+) -> tuple[dict[str, Any], float, int]:
+    """The budget of the ONE retry a caller makes after TRUNCATED_NOTE:
+    double the call's effective starting budget - its own override, else the
+    provider spec's - capped at 48000 tokens / 900 s. Returns the retry's
+    (extra body fields, timeout, max_tokens); the caller's other extra
+    fields (e.g. reasoning_effort) are preserved and max_tokens is set."""
+    spec = PROVIDERS.get(provider, {})
+    start_tokens = int(max_tokens if max_tokens is not None
+                       else spec.get("max_tokens", MAX_TOKENS))
+    start_timeout = float(timeout if timeout is not None
+                          else spec.get("timeout", REQUEST_TIMEOUT))
+    tokens = min(2 * start_tokens, ESCALATE_TOKENS_CAP)
+    seconds = min(2 * start_timeout, ESCALATE_TIMEOUT_CAP)
+    return {**(extra or {}), "max_tokens": tokens}, seconds, tokens
 
 
 SYSTEM_PROMPT = (

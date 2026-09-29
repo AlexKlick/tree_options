@@ -391,6 +391,100 @@ def test_the_ask_sends_the_effort_keeps_raw_p_and_decides_on_capped_views(
                              decision="none", tau=0.0, payoff=None, effort="none")
 
 
+# --------------------------------------- budget params + truncation self-heal
+
+
+_FC_CONTEXT = {"time_of_day": "midday", "session_ordinal": 9,
+               "underlyings": {"U1": {"ret_1s_pct": "9.99"},
+                               "U2": {"ret_1s_pct": "0.10"}}}
+
+
+def _fc_board() -> Board:
+    return Board("s:2026-08-03T13:00", "2026-08-03", "13:00", [ROWS[0]], _FC_CONTEXT)
+
+
+class TruncatingForecastTransport:
+    """The first ``truncate`` calls cut off mid-reply (finish_reason=length);
+    the rest answer a full p_up over the shown labels."""
+
+    def __init__(self, truncate: int = 1) -> None:
+        self.truncate, self.seen = truncate, 0
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, url: str, body: bytes, headers: dict[str, str],
+                 timeout: float) -> tuple[int, bytes]:
+        payload = json.loads(body)
+        self.calls.append({"body": payload, "timeout": timeout})
+        shown = json.loads(payload["messages"][0]["content"])["context"]["underlyings"]
+        self.seen += 1
+        if self.seen <= self.truncate:
+            cut = '{"p_up": {"U'
+            return 200, json.dumps(
+                {"choices": [{"message": {"content": cut}, "finish_reason": "length"}]}
+            ).encode()
+        p_up = {label: {h: 0.6 for h in H} for label in shown}
+        return 200, json.dumps({"choices": [{"message": {"content": json.dumps({"p_up": p_up})},
+                                             "finish_reason": "stop"}]}).encode()
+
+
+def _fc_ask(transport: Any, **overrides: Any) -> forecast.ForecastAsk:
+    kwargs: dict[str, Any] = dict(provider="minimax-flash", transport=transport, seed=5,
+                                  decision="none", tau=0.0, payoff=None)
+    kwargs.update(overrides)
+    return forecast.ForecastAsk(**kwargs)
+
+
+def test_forecast_budget_params_override_the_call_and_validate(
+        key_env: None, tmp_path: Path) -> None:
+    transport = TruncatingForecastTransport(truncate=0)
+    _fc_ask(transport, max_tokens=20000, timeout=300.0)(
+        PolicySpec("fc", "model"), _fc_board(), Arm("fc", PolicySpec("fc", "model"), 1))
+    assert (transport.calls[0]["body"]["max_tokens"],
+            transport.calls[0]["timeout"]) == (20000, 300.0)
+    for bad in ({"max_tokens": 0}, {"max_tokens": 64001}, {"timeout": 0},
+                {"timeout": 901.0}):
+        with pytest.raises(ValueError, match="timeout must be in"):
+            _fc_ask(None, **bad)
+    built = forecast.ask_plugin({"decision": "none", "max_tokens": 5000, "timeout": 60.0},
+                                longrun.PluginContext(config_dir=tmp_path))
+    assert (built.max_tokens, built.timeout) == (5000, 60.0)
+    with pytest.raises(ValueError, match="timeout must be in"):
+        forecast.ask_plugin({"decision": "none", "timeout": 901.0},
+                            longrun.PluginContext(config_dir=tmp_path))
+
+
+def test_forecast_ask_self_heals_one_truncation(key_env: None) -> None:
+    from tree_options.trex.discovery.llm import LlmError
+
+    arm = Arm("fc", PolicySpec("fc", "model"), 1)
+    transport = TruncatingForecastTransport(truncate=1)
+    _choice, _horizon, _note, extra = _fc_ask(transport)(
+        PolicySpec("fc", "model"), _fc_board(), arm)
+    spec = PROVIDERS["minimax-flash"]
+    assert 2 * spec["max_tokens"] <= 48000 and 2 * spec["timeout"] <= 900.0
+    assert len(transport.calls) == 2  # one escalating retry, never more
+    first, second = transport.calls
+    assert first["body"]["max_tokens"] == spec["max_tokens"]  # the spec start
+    assert second["body"]["max_tokens"] == 2 * spec["max_tokens"]
+    assert second["timeout"] == 2 * float(spec["timeout"])
+    assert extra["escalated"] is True
+    assert extra["max_tokens"] == 2 * spec["max_tokens"]
+    assert extra["forecast"]["p_up"]  # the raw forecast still rides the receipt
+
+    # escalation from a per-call override hits both caps
+    transport = TruncatingForecastTransport(truncate=1)
+    _fc_ask(transport, max_tokens=30000, timeout=480.0)(
+        PolicySpec("fc", "model"), _fc_board(), arm)
+    assert (transport.calls[1]["body"]["max_tokens"],
+            transport.calls[1]["timeout"]) == (48000, 900.0)  # 960 s capped at 900
+
+    # truncated at the escalated budget too: exactly one retry, then it fails
+    transport = TruncatingForecastTransport(truncate=99)
+    with pytest.raises(LlmError, match="truncated"):
+        _fc_ask(transport)(PolicySpec("fc", "model"), _fc_board(), arm)
+    assert len(transport.calls) == 2
+
+
 def _board(rows: list[dict[str, Any]]) -> Board:
     return Board("s:2026-08-03T10:00", "2026-08-03", "10:00", rows)
 

@@ -693,17 +693,22 @@ class ForecastAsk:
     def __init__(self, *, provider: str, transport: Any, seed: int, decision: str,
                  tau: float | None, payoff: Mapping[str, Any] | None, key: str = "board_order",
                  cost: float | None = None, edge_cap: float = EDGE_CAP,
-                 effort: str | None = None) -> None:
+                 effort: str | None = None, max_tokens: int | None = None,
+                 timeout: float | None = None) -> None:
         if decision not in DECISIONS:
             raise ValueError(f"decision must be one of {DECISIONS}")
         if decision == "ev" and payoff is None:
             raise ValueError("decision 'ev' needs the payoff map (an outcome plug-in)")
         if effort is not None and effort not in EFFORTS:
             raise ValueError(f"effort must be one of {EFFORTS}")
+        if (timeout is not None and not 0 < timeout <= 900) or (
+                max_tokens is not None and not 0 < max_tokens <= 64000):
+            raise ValueError("timeout must be in (0, 900] s and max_tokens in (0, 64000]")
         self.provider, self.transport, self.seed = provider, transport, seed
         self.decision, self.tau, self.payoff, self.key = decision, tau, payoff, key
         self.cost = round_trip_cost() if cost is None else cost
         self.edge_cap, self.effort = edge_cap, effort
+        self.max_tokens, self.timeout = max_tokens, timeout
 
     def decide(self, board: Board, p_up: Mapping[str, Mapping[str, float]]
                ) -> tuple[str | None, str | None, dict[str, Any]]:
@@ -727,9 +732,29 @@ class ForecastAsk:
         kwargs: dict[str, Any] = {}
         if self.transport is not None:
             kwargs["transport"] = self.transport
+        extra: dict[str, Any] = {}
         if self.effort is not None:
-            kwargs["extra"] = {"reasoning_effort": self.effort}
-        reply, model = llm.chat_json(spec.provider or self.provider, messages, **kwargs)
+            extra["reasoning_effort"] = self.effort
+        if self.max_tokens is not None:
+            extra["max_tokens"] = self.max_tokens
+        if extra:
+            kwargs["extra"] = extra
+        if self.timeout is not None:
+            kwargs["timeout"] = self.timeout
+        provider = spec.provider or self.provider
+        escalated: dict[str, Any] | None = None
+        try:
+            reply, model = llm.chat_json(provider, messages, **kwargs)
+        except llm.LlmError as error:  # one escalating retry, then the failure stands
+            if llm.TRUNCATED_NOTE not in str(error):
+                raise
+            retry_extra, seconds, tokens = llm.escalation_budget(
+                provider, max_tokens=self.max_tokens, timeout=self.timeout,
+                extra=kwargs.get("extra"))
+            reply, model = llm.chat_json(provider, messages,
+                                         **{**kwargs, "extra": retry_extra,
+                                            "timeout": seconds})
+            escalated = {"escalated": True, "max_tokens": tokens, "timeout": seconds}
         p_up, exp = parse_forecast(reply, perm)
         choice, horizon, detail = self.decide(board, p_up)
         forecast = {"schema": FORECAST_SCHEMA, "model": model, "seed": self.seed,
@@ -737,7 +762,10 @@ class ForecastAsk:
                     "perm": perm, "p_up": p_up, "exp_ret_bps": exp, "decision": detail,
                     "prompt_sha256": hashlib.sha256(
                         messages[0]["content"].encode()).hexdigest()}
-        return choice, horizon, str(reply.get("note", ""))[:60], {"forecast": forecast}
+        receipt_extra = {"forecast": forecast}
+        if escalated is not None:
+            receipt_extra = {**escalated, "forecast": forecast}
+        return choice, horizon, str(reply.get("note", ""))[:60], receipt_extra
 
 
 def _tau_param(value: Any) -> float | None:
@@ -748,7 +776,8 @@ def ask_plugin(params: Mapping[str, Any], ctx: PluginContext) -> ForecastAsk:
     """Params: provider (minimax-flash), effort (M3.1 reasoning_effort; None
     = the provider default, max), decision (ev | direction | none), tau
     (pre-registered edge threshold), edge_cap, seed, cutoff (the payoff
-    map's TRAIN split), key (the direction variant's row order)."""
+    map's TRAIN split), key (the direction variant's row order), timeout (s)
+    and max_tokens (per-call budget overrides over the provider spec)."""
     decision = str(params.get("decision", "ev"))
     cutoff = str(params.get("cutoff", DEFAULT_CUTOFF))
     payoff = fit_state(ctx, cutoff)["payoff"] if decision == "ev" else None
@@ -759,7 +788,11 @@ def ask_plugin(params: Mapping[str, Any], ctx: PluginContext) -> ForecastAsk:
                        tau=_tau_param(params.get("tau", DEFAULT_TAU)), payoff=payoff,
                        key=str(params.get("key", "board_order")),
                        edge_cap=float(params.get("edge_cap", EDGE_CAP)),
-                       effort=None if effort is None else str(effort))
+                       effort=None if effort is None else str(effort),
+                       max_tokens=(None if params.get("max_tokens") is None
+                                   else int(params["max_tokens"])),
+                       timeout=(None if params.get("timeout") is None
+                                else float(params["timeout"])))
 
 
 # ------------------------------------------------------------------ report
