@@ -107,6 +107,11 @@
         paired, resumable, quota-aware; one digest under
         evaluations/longrun/<UTCts>/. Never promotes. Exit 0 finished, 3
         stopped (resumable) or the run dir is locked, 2 a refused config.
+    longrun redigest --run-dir DIR [--table FILE.jsonl] [--out DIR]
+        Re-score a run dir from its receipts + the outcome table with the
+        exact counterfactual skill section (desk.skill): ZERO model calls,
+        no bundle parse. In place only when the run's lock is free (exit 3
+        while it is live); --out writes elsewhere and never touches it.
 
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes (outcome-table excepted: it writes only --out); a second

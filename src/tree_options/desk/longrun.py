@@ -535,6 +535,7 @@ class _Executor:
         self.outcome_errors = 0
         self.t0 = monotonic()
         self._since_progress = 0
+        self._skill_memo: dict[str, Any] = {}  # desk.skill's live counterfactual cache
 
     def _prior_progress(self) -> dict[str, Any]:
         path = self.run_dir / "progress.json"
@@ -712,6 +713,13 @@ class _Executor:
                "quota": self.quota, "calls_per_s": round(rate, 4),
                "eta_s": None if eta is None else round(eta, 1),
                "arms": arms, "digest": self.digest}
+        try:  # "skill significant yet?" (desk.skill); the live view never kills the run
+            from tree_options.desk import skill
+
+            doc["skill"] = skill.progress_skill(self.boards, self.arms, self.receipts,
+                                                self.outcomes.get, self._skill_memo)
+        except Exception as error:
+            doc["skill"] = {"error": f"{type(error).__name__}: {str(error)[:120]}"}
         _write_json(self.run_dir / "progress.json", doc)
 
 
@@ -1015,7 +1023,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
               benchmarks: Mapping[str, Mapping[Any, float]] | None = None,
               receipts_files: Mapping[str, str] | None = None, run_id: str = "",
               plan_created: str | None = None, complete: bool = True,
-              clock: Clock = _utcnow) -> dict[str, Any]:
+              clock: Clock = _utcnow,
+              skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The digest document. Pure over its inputs (fixed seeds throughout)."""
     draws, seed = protocol.draws, protocol.seed
     scored = [b for b in boards
@@ -1126,6 +1135,13 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
     eligible = [f["policy"] for f in wf.get("finalists", [])
                 if f.get("eligible_for_operator_review")]
     headline = _headline(aa, wf, eligible, complete)
+    try:  # exact counterfactual accounting (desk.skill): descriptive, never fatal
+        from tree_options.desk import skill
+
+        skill_doc = skill.skill_section(boards, arms, receipts, outcomes, protocol,
+                                        options=skill_options)
+    except Exception as error:
+        skill_doc = {"status": "error", "error": f"{type(error).__name__}: {str(error)[:200]}"}
     return {
         "schema": DIGEST_SCHEMA,
         "untrusted_note": UNTRUSTED_NOTE,
@@ -1158,6 +1174,7 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         "standings": standings,
         "walk_forward": wf,
         "benchmarks": bench,
+        "skill": skill_doc,
         "receipts": dict(receipts_files or {}),
     }
 
@@ -1315,6 +1332,10 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
             f"{stab['half_split']['first']:+.2f} / {stab['half_split']['second']:+.2f} "
             f"(agree: {stab['half_split']['signs_agree']})")
     add("")
+    if doc.get("skill"):
+        from tree_options.desk import skill
+
+        lines.extend(skill.skill_markdown(doc["skill"]))
     add("## Receipts")
     add("")
     for arm, path in doc["receipts"].items():
@@ -1383,7 +1404,8 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
                 meta: Mapping[str, Any] | None = None, score_only: bool = False,
                 sleep: Callable[[float], None] = time.sleep,
                 monotonic: Callable[[], float] = time.monotonic,
-                clock: Clock = _utcnow) -> dict[str, Any]:
+                clock: Clock = _utcnow,
+                skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Execute (or resume) every missing (arm, board), then score and digest.
 
     Returns {"status": "finished" | "stopped:<why>", ...}. A stopped run is
@@ -1424,7 +1446,7 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
             digest = score_run(boards, arms, executor.receipts, outcomes, protocol,
                                benchmarks=benchmarks, receipts_files=files,
                                run_id=run_dir.name, plan_created=plan.get("created"),
-                               complete=complete, clock=clock)
+                               complete=complete, clock=clock, skill_options=skill_options)
         except Exception:
             executor.status = "scoring_failed"
             executor.write_progress()
@@ -1891,7 +1913,7 @@ def run_from_config(config_path: Path, *, run_dir: Path | None = None,
     return run_longrun(run_dir, boards=boards, policies=policies, outcome=outcome, ask=ask,
                        quota_ok=quota_ok, protocol=protocol, settings=settings,
                        benchmarks=benchmarks, meta=meta, score_only=score_only,
-                       sleep=sleep, clock=clock)
+                       sleep=sleep, clock=clock, skill_options=cfg.get("skill"))
 
 
 # ------------------------------------------------------------------ cockpit
@@ -1922,7 +1944,8 @@ def _read_json(path: Path, max_bytes: int) -> dict[str, Any]:
 
 
 _PROGRESS_KEYS = ("status", "at", "started", "boards", "sessions", "total", "finished",
-                  "failures", "paused_s", "quota", "calls_per_s", "eta_s", "arms", "digest")
+                  "failures", "paused_s", "quota", "calls_per_s", "eta_s", "arms", "digest",
+                  "skill")
 
 
 def _project_progress(doc: Mapping[str, Any]) -> dict[str, Any]:
@@ -1975,7 +1998,14 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
                               "eligible_for_operator_review":
                                   f.get("eligible_for_operator_review")}
                              for f in wf.get("finalists", [])]},
-            "benchmarks": doc.get("benchmarks", [])}
+            "benchmarks": doc.get("benchmarks", []),
+            "skill": _skill_projection(doc.get("skill"))}
+
+
+def _skill_projection(section: Any) -> dict[str, Any] | None:
+    from tree_options.desk import skill
+
+    return skill.cockpit_projection(section)
 
 
 def cockpit_view(root: Path) -> dict[str, Any]:
@@ -2011,9 +2041,22 @@ def register_cli(sub: Any) -> None:
     status.add_argument("--dir", type=Path,
                         help="a run dir or a root of run dirs (default "
                              "DESK_STORE/evaluations/longrun)")
+    redigest = commands.add_parser(
+        "redigest", help="re-score a run dir from its receipts + the outcome table, with the "
+                         "skill section (zero model calls; desk.skill)")
+    redigest.add_argument("--run-dir", type=Path, required=True)
+    redigest.add_argument("--table", type=Path,
+                          help="outcome table JSONL (default: the config's outcome.table)")
+    redigest.add_argument("--out", type=Path,
+                          help="write digest.json/.md here, never touching the run dir "
+                               "(required while the run is live)")
 
 
 def dispatch_cli(args: argparse.Namespace) -> int:
+    if args.longrun_command == "redigest":
+        from tree_options.desk import skill
+
+        return skill.redigest_cli(args)
     if args.longrun_command == "run":
         try:
             result = run_from_config(args.config, run_dir=args.run_dir, limit=args.limit,
