@@ -15,12 +15,20 @@ import socket
 import struct
 import subprocess
 import threading
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 import pytest
 
-from tree_options.trex.alert_policy import NOTIFY_RETRY_S, REMIND_EVERY_S, REMIND_MARKET_S, Urgency
+from tree_options.trex.alert_policy import (
+    NOTIFY_RETRY_S,
+    REMIND_EVERY_S,
+    REMIND_MARKET_S,
+    Urgency,
+    settle_push,
+)
 from tree_options.trex.gateway_watch import (
     API_DOWN_AFTER_S,
     NEEDS_LOGIN_AFTER_S,
@@ -30,7 +38,9 @@ from tree_options.trex.gateway_watch import (
     VNC_STATE_SCRIPT,
     IbcState,
     Observation,
+    cold_restart_due,
     decide,
+    next_cold_restart,
     parse_ibc_log,
     parse_ts,
     probe_api,
@@ -592,3 +602,140 @@ class TestUrgency:
         _, actions = decide(_obs(api_ok=True, ibc=parse_ibc_log(COMPLETED)), prior,
                             urgency=self.DAY)
         assert actions == []
+
+
+# ------------------------------------------------- the Sunday cold restart
+
+
+LOUD = Urgency("high", REMIND_EVERY_S, quiet=False)
+
+
+def _sunday(iso_day: str, hh: int = 0, mm: int = 0) -> float:
+    return datetime.fromisoformat(f"{iso_day}T{hh:02d}:{mm:02d}:00").replace(
+        tzinfo=ZoneInfo("America/New_York")
+    ).timestamp()
+
+
+class TestColdRestartPreAlert:
+    """The weekly cold restart is the one planned outage the operator can
+    prepare for. It gets ONE reminder an hour ahead, once per Sunday, with a
+    lookback so a machine that was off at 11:00 ET still says it."""
+
+    SUNDAY = "2026-10-04"  # a Sunday
+    NEXT_SUNDAY = "2026-10-11"
+
+    def _healthy(self, now: float) -> Observation:
+        return _obs(now=now, api_ok=True, ibc=parse_ibc_log(COMPLETED))
+
+    def test_the_helper_picks_the_next_sunday_noon_et(self) -> None:
+        # Monday -> the coming Sunday, DST-correct
+        assert next_cold_restart(
+            datetime(2026, 9, 28, 9, 0, tzinfo=ZoneInfo("America/New_York"))
+        ).isoformat() == "2026-10-04T12:00:00-04:00"
+        # Sunday before noon -> today; Sunday after noon -> next Sunday
+        assert next_cold_restart(
+            datetime(2026, 10, 4, 9, 0, tzinfo=ZoneInfo("America/New_York"))
+        ).date().isoformat() == self.SUNDAY
+        assert next_cold_restart(
+            datetime(2026, 10, 4, 12, 0, 1, tzinfo=ZoneInfo("America/New_York"))
+        ).date().isoformat() == self.NEXT_SUNDAY
+        # Saturday evening -> tomorrow
+        assert next_cold_restart(
+            datetime(2026, 10, 3, 20, 0, tzinfo=ZoneInfo("America/New_York"))
+        ).date().isoformat() == self.SUNDAY
+
+    def test_it_fires_an_hour_ahead_and_not_before(self) -> None:
+        assert cold_restart_due({}, _sunday(self.SUNDAY, 10, 59)) is None
+        due = cold_restart_due({}, _sunday(self.SUNDAY, 11, 0))
+        assert due is not None and due.hour == 12 and due.minute == 0
+
+    def test_decide_emits_exactly_one_notify_action(self) -> None:
+        state, actions = decide(self._healthy(_sunday(self.SUNDAY, 11, 0)), {}, urgency=LOUD)
+        notes = [a for a in actions if a.kind == "notify"]
+        assert len(notes) == 1
+        assert notes[0].detail == "cold_restart_prealert"
+        assert notes[0].priority == LOUD.priority
+        assert "12:00 ET" in notes[0].message
+        assert state["cold_restart_notified_for"] == self.SUNDAY
+
+    def test_consecutive_ticks_never_double_fire(self) -> None:
+        """The hard case: the watchdog ticks every 60 s for a whole hour."""
+        prior: dict[str, Any] = {}
+        fired = 0
+        for minute in range(11 * 60, 12 * 60 + 1):  # 11:00 -> 13:00 inclusive
+            now = _sunday(self.SUNDAY, minute // 60, minute % 60)
+            _, actions = decide(self._healthy(now), prior, urgency=LOUD)
+            fired += sum(1 for a in actions if a.detail == "cold_restart_prealert")
+            prior = decide(self._healthy(now), prior, urgency=LOUD)[0]
+        assert fired == 1, f"the pre-alert fired {fired} times in the window"
+
+    def test_a_missed_window_still_fires_on_the_next_tick(self) -> None:
+        """Machine off at 11:00 (asleep, timer backlog, admission wait): the
+        lookback keeps the window open an hour past the restart, so the first
+        tick after it wakes up still tells the operator."""
+        woke = _sunday(self.SUNDAY, 12, 30)
+        assert cold_restart_due({}, woke) is not None
+        _, actions = decide(self._healthy(woke), {}, urgency=LOUD)
+        note = next(a for a in actions if a.detail == "cold_restart_prealert")
+        assert "just happened" in note.title
+        # and the window really is small: two hours later it has gone
+        assert cold_restart_due({}, _sunday(self.SUNDAY, 14, 0)) is None
+
+    def test_a_failed_push_is_owed_and_retried(self) -> None:
+        failed = _sunday(self.SUNDAY, 11, 0)
+        state = decide(self._healthy(failed), {}, urgency=LOUD)[0]
+        assert settle_push(state, {}, False, failed) is None  # mutates in place
+        assert state["notify_failed_at"] == failed
+        settled = state
+        assert cold_restart_due(settled, failed + 60) is not None
+        assert cold_restart_due(settled, failed + NOTIFY_RETRY_S + 1) is None
+
+    def test_next_sunday_gets_its_own_reminder(self) -> None:
+        prior = decide(self._healthy(_sunday(self.SUNDAY, 11, 0)), {}, urgency=LOUD)[0]
+        assert cold_restart_due(prior, _sunday(self.NEXT_SUNDAY, 11, 0)) is not None
+
+    def test_quiet_hours_hold_it_and_the_next_tick_delivers(self) -> None:
+        """11:00 ET is outside the default 22:00-07:00 America/Denver window,
+        which is the whole reason the lead is an hour and not, say, 06:00."""
+        hush = Urgency("default", REMIND_EVERY_S, quiet=True)
+        day = Urgency("default", REMIND_EVERY_S, quiet=False)
+        held, actions = decide(self._healthy(_sunday(self.SUNDAY, 11, 0)), {}, urgency=hush)
+        assert "cold_restart_prealert" not in [a.detail for a in actions]
+        assert held["cold_restart_notified_for"] is None, "a held push booked the week"
+        fired, actions = decide(
+            self._healthy(_sunday(self.SUNDAY, 11, 0)), held, urgency=day
+        )
+        assert "cold_restart_prealert" in [a.detail for a in actions]
+        assert fired["cold_restart_notified_for"] == self.SUNDAY
+
+    def test_a_gateway_alarm_still_wins_and_is_not_displaced(self) -> None:
+        """The pre-alert is additive: a gateway outage at 11:00 Sunday
+        produces both the alarm and the reminder."""
+        now = _sunday(self.SUNDAY, 11, 0)
+        stuck = _obs(now=now, api_ok=False)
+        state, actions = decide(stuck, {}, urgency=LOUD)
+        details = [a.detail for a in actions if a.kind == "notify"]
+        assert "cold_restart_prealert" in details
+        assert state["status"] == "needs_login"
+
+    def test_the_restart_budget_is_untouched(self) -> None:
+        """Owner decisions, not this lane's: the pre-alert starts nothing."""
+        now = _sunday(self.SUNDAY, 11, 0)
+        state, actions = decide(self._healthy(now), {}, urgency=LOUD)
+        assert [a.kind for a in actions] == ["notify"]
+        assert state["restarts"] == [] and state["restarts_left"] == RESTARTS_PER_DAY
+        assert state["restart_hold_until"] is None
+        assert state["next_restart_at"] is None
+
+    def test_the_recovery_ping_is_not_duplicated(self) -> None:
+        """The "IB Gateway back" ping already exists in decide's recovery
+        arm; the pre-alert must not add a second one for the restart."""
+        prior = decide(self._healthy(_sunday(self.SUNDAY, 11, 0)), {}, urgency=LOUD)[0]
+        back = decide(
+            self._healthy(_sunday(self.SUNDAY, 12, 30)),
+            {**prior, "last_notified_status": "api_down", "last_notified_at":
+             _sunday(self.SUNDAY, 11, 0)},
+            urgency=LOUD,
+        )[1]
+        titles = [a.title for a in back if a.kind == "notify"]
+        assert titles == ["trex: IB Gateway back"]

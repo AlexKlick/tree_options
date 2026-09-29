@@ -1,0 +1,20 @@
+[Unit]
+Description=Check the newest closed desk session for lost chains (operator alert)
+
+[Timer]
+# Two slots, and the second is the one that usually speaks. The default quiet
+# window is 22:00-07:00 America/Denver, so 07:05 ET is 05:05 MDT -- inside it.
+# A run then can only ARM the alarm (alert_policy holds the push and records
+# it as owed); 09:05 ET is 09:05 MDT, outside the default window and before
+# the 09:30 ET open, which is where alert_policy says a still-open alarm goes
+# out. Two slots rather than one because a job that only ever runs inside
+# quiet hours would never notify at all -- the exact failure this alarm
+# exists to end. Deduplicated by <TREX_DESK_STATE>/gap-check.json: the second
+# run of a clean day sends nothing.
+OnCalendar=Mon..Sat *-*-* 07:05:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 09:05:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target

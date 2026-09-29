@@ -38,11 +38,17 @@
         CPI/NFP items; --gap-note words the todo for years without them.
         Exit 0 sealed, 1 source unreadable/incomplete, 2 bad arguments.
 
-    features --session D
+    features [--session D] [--idempotent]
         Vol-surface features (ATM term, constant maturity, 25d skew, term
         slope, implied earnings move, liquidity, IV rank, VRP) from the
-        recorded chains of D into DESK_STORE/features/<D>.json. Exit 0
-        written, 1 no chains for D, 2 bad arguments.
+        recorded chains of D into DESK_STORE/features/<D>.json (default D:
+        the latest completed session). Exit 0 written, 1 no chains for D,
+        2 bad arguments. --idempotent is the timer mode
+        (deploy/desk/desk-features.service): 0 when features/<D>.json is
+        already there (nothing to do) or when D has no chains yet, 3 while
+        D's manifest still has symbols outside ok|exists|conflict (the
+        chain recorder has not closed D; the next slot retries, and the
+        document is never frozen from a half-recorded session).
 
     ivhist-build [--massive-cache P] [--start D] [--end D] [--names A,B]
                  [--raw-snapshots]
@@ -219,7 +225,17 @@ def _parser() -> argparse.ArgumentParser:
         help="todo wording for a CPI/NFP year without items (e.g. 'not yet published by BLS')",
     )
     fe = sub.add_parser("features", help="vol-surface features of a recorded session")
-    fe.add_argument("--session", type=date.fromisoformat, required=True)
+    fe.add_argument(
+        "--session",
+        type=date.fromisoformat,
+        help="default: the latest session whose 16:15 ET cutoff has passed",
+    )
+    fe.add_argument(
+        "--idempotent",
+        action="store_true",
+        help="timer mode: exit 0 when features/<D>.json is already there, exit 3 while D "
+        "is still being recorded (never rewrite a document from a partial chain set)",
+    )
     ib = sub.add_parser("ivhist-build", help="IVHIST-001 VWAP IV history from the Polygon cache")
     ib.add_argument("--massive-cache", type=Path)
     ib.add_argument("--start", type=date.fromisoformat, default=ivhist.WINDOW[0])
@@ -626,7 +642,14 @@ def run_cli(
                 cal=cal,
             )
         if args.command == "features":
-            return econ_jobs.run_features(args.session, cal)
+            if args.session is None:
+                return econ_jobs.run_features(
+                    latest_completed_session(clock(), cal), cal, idempotent=args.idempotent
+                )
+            if not cal.is_session(args.session):
+                print(f"features: {args.session} is not an NYSE session", file=sys.stderr)
+                return 2
+            return econ_jobs.run_features(args.session, cal, idempotent=args.idempotent)
         if args.command == "ivhist-build":
             names = (
                 [s.strip() for s in args.names.split(",") if s.strip()]

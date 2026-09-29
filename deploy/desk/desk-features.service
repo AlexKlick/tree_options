@@ -1,0 +1,45 @@
+[Unit]
+Description=Options desk: vol-surface features for the latest closed session (independent of the miner)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+# never re-sync the shared .venv, never write .pyc into the checkout
+Environment=UV_NO_SYNC=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Import the main checkout's code whatever the shared .venv's editable pointer
+# says (on 2026-09-23 an unknown writer repointed it to a worktree).
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+Environment=DESK_STORE=/home/alexk/documents/tree_options/artifacts/desk-store
+Environment=TREX_DESK_STATE=/home/alexk/.local/state/trex-desk
+WorkingDirectory=/home/alexk/documents/tree_options
+# The shared .venv's editable install is the main checkout (never re-synced here).
+# features/<D>.json used to be written ONLY as a side effect of the deal
+# miner (miner.py -> econ_jobs.run_features), so a missed mine slot cost a
+# features day on top of the missed chain day. This is the same entry point,
+# on its own timer. --session defaults to the latest completed session.
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk features --idempotent
+# exit 3 = D's books are not closed yet (no chains, or its manifest still has
+# symbols outside ok|exists|conflict): benign, the next slot retries. 0 =
+# written, or features/<D>.json was already there and there was nothing to
+# do. 1 = a real failure: see the journal. 2 = bad arguments.
+SuccessExitStatus=3
+# 37 chain files to gunzip plus the pure surface build: seconds of CPU, well
+# inside this even under a loaded host.
+TimeoutStartSec=900
+MemoryHigh=768M
+MemoryMax=1536M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# features/<D>.json (the one write) + locks/ (every desk CLI command takes
+# <state>/locks/<command>.lock before doing anything). Everything else is
+# read: the chains, the indices, the panel and the earnings files on disk.
+ReadWritePaths=/home/alexk/documents/tree_options/artifacts/desk-store/features /home/alexk/.local/state/trex-desk/locks
+# No network, no pushes, no keys: every input is an on-disk file under
+# DESK_STORE or the research lane. (No RestrictAddressFamilies here on
+# purpose -- the day this job stops is the day a features day is lost.)
