@@ -772,7 +772,11 @@ def test_v2_end_to_end_scores_the_chosen_horizon(v1_bundle: tuple[Path, dict[str
     receipts = [json.loads(line) for line in
                 longrun.receipts_path(run_dir, "m31#1").read_text().splitlines()]
     assert receipts and all(r.get("horizon") == "eod" for r in receipts if r.get("choice"))
-    assert all("reasoning_effort" not in call["body"] for call in transport.calls)
+    from tree_options.trex.discovery.llm import PROVIDERS
+
+    provider_default = PROVIDERS["minimax-flash"]["extra"].get("reasoning_effort")
+    assert all(call["body"].get("reasoning_effort") == provider_default
+               for call in transport.calls)  # no override without an effort param
 
 
 def test_v2_ask_effort_is_a_per_policy_override(v1_bundle: tuple[Path, dict[str, Any]],
@@ -791,8 +795,12 @@ def test_v2_ask_effort_is_a_per_policy_override(v1_bundle: tuple[Path, dict[str,
     transport = HorizonTransport(0, "eod")
     result = longrun.run_from_config(config, shared={"transport": transport}, limit=2)
     assert result["status"] == "finished"
+    from tree_options.trex.discovery.llm import PROVIDERS
+
+    default = str(PROVIDERS["minimax-flash"]["extra"].get("reasoning_effort"))
+    assert default != "low"  # else this test cannot tell the override from the default
     efforts = sorted(str(call["body"].get("reasoning_effort")) for call in transport.calls)
-    assert efforts == ["None", "None", "low", "low"]  # 2 boards x (default, low)
+    assert efforts == sorted([default, default, "low", "low"])  # 2 boards x (default, low)
     bad = json.loads(config.read_text())
     bad["policies"][1]["ask"]["effort"] = "extreme"
     config.write_text(json.dumps(bad))

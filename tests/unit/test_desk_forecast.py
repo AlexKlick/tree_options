@@ -22,6 +22,7 @@ from tree_options.desk import forecast, longrun, outcomes
 from tree_options.desk import intraday_action_graph as iag
 from tree_options.desk.forecast import Label
 from tree_options.desk.longrun import Arm, Board, PolicySpec
+from tree_options.trex.discovery.llm import PROVIDERS
 
 DAYS = parity_days(12)          # 2026-08-03 .. 2026-08-18
 CUTOFF = "2026-08-07"           # TRAIN = the first five sessions
@@ -383,7 +384,8 @@ def test_the_ask_sends_the_effort_keeps_raw_p_and_decides_on_capped_views(
     default = forecast.ForecastAsk(provider="minimax-flash", transport=transport, seed=5,
                                    decision="none", tau=0.0, payoff=None)
     default(PolicySpec("fc", "model"), board, Arm("fc", PolicySpec("fc", "model"), 1))
-    assert "reasoning_effort" not in transport.bodies[1]  # the provider default stands
+    provider_default = PROVIDERS["minimax-flash"]["extra"].get("reasoning_effort")
+    assert transport.bodies[1].get("reasoning_effort") == provider_default  # not overridden
     with pytest.raises(ValueError):
         forecast.ForecastAsk(provider="minimax-flash", transport=None, seed=5,
                              decision="none", tau=0.0, payoff=None, effort="none")
