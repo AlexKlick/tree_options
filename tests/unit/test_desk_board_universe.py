@@ -39,7 +39,9 @@ def _bar(day: date, hour: int, minute: int, price: str) -> dict[str, Any]:
 
 
 def _raw(prices: dict[str, str], days: tuple[date, ...] = (D1,), **extra: Any) -> dict[str, Any]:
-    return {"schema": "desk-option-minute-bars/1", **extra, "contracts": {
+    rules = "candidate_pairing" in extra or "listing" in extra
+    schema = "desk-option-minute-bars/2" if rules else "desk-option-minute-bars/1"
+    return {"schema": schema, **extra, "contracts": {
         ticker: {"ticker": ticker, "timespan": "minute",
                  "results": [_bar(day, 13, 59, price) for day in days]}
         for ticker, price in prices.items()}}
@@ -97,6 +99,19 @@ def test_listing_gates_each_board_day_on_both_board_paths() -> None:
 def test_malformed_candidate_rules_are_refused(extra: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         iag.decision_packet(_raw(PRICES, **extra), D1, "10:00")
+
+
+def test_candidate_rules_need_the_v2_schema_and_v2_needs_no_rules() -> None:
+    # a /1 bundle is what pre-v3 readers accept: it must never carry rules
+    ruled = {**_raw(PRICES, candidate_pairing={"rule": "widths", "widths": ["1"]}),
+             "schema": "desk-option-minute-bars/1"}
+    with pytest.raises(ValueError, match="require"):
+        iag.decision_packet(ruled, D1, "10:00")
+    plain_v2 = {**_raw(PRICES), "schema": "desk-option-minute-bars/2"}
+    assert _legs(iag.decision_packet(plain_v2, D1, "10:00")["candidates"]) == _legs(
+        iag.decision_packet(_raw(PRICES), D1, "10:00")["candidates"])
+    with pytest.raises(ValueError):
+        iag.decision_packet({**_raw(PRICES), "schema": "desk-option-minute-bars/3"}, D1, "10:00")
 
 
 def test_parity_spot_uses_listed_pairs_only() -> None:
@@ -239,6 +254,7 @@ def test_assemble_drops_bars_before_listing_and_records_gaps() -> None:
     assert bundle["missing_tickers"] == [C] and bundle["empty_after_listing"] == [B]
     assert bundle["listing"] == {A: {"from": "2026-09-24", "until": None}}
     assert bundle["candidate_pairing"] == {"rule": "widths", "widths": ["1", "5"]}
+    assert bundle["schema"] == "desk-option-minute-bars/2"  # pre-v3 readers refuse it
     universe = iag.bundle_contracts(bundle, bundle["contracts"])
     assert universe.widths == frozenset({Decimal(1), Decimal(5)})
     adjacent = bu.assemble_bundle(_selection("adjacent"), series, None, selection_sha256="x",

@@ -56,7 +56,7 @@ from tree_options.desk import intraday_action_graph as iag
 
 SELECTION_SCHEMA = "desk-board-universe-selection/1"
 RULE = "otm-delta-wings/1"
-BUNDLE_SCHEMA = "desk-option-minute-bars/1"  # iag's reader; extra keys are additive
+BUNDLE_SCHEMA = iag.BARS_V2  # carries candidate rules: pre-v3 readers refuse it
 IV_INDEX = {"SPY": "VIX", "QQQ": "VXN", "IWM": "RVX"}
 #: the 20260929-otm vintage: one 0.20-delta proxy short (about 0.17-0.25 true
 #: delta once skew is counted) and 1/2/5-wide wings, sized to a ~1 h free-tier

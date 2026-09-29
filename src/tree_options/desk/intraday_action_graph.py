@@ -27,6 +27,11 @@ SCHEMA = "desk-intraday-action-graph/1"
 SCHEDULE = ("10:00", "10:45", "11:30", "12:15", "13:00", "13:45", "14:30", "15:15")
 EARLY_SCHEDULE = ("10:00", "10:40", "11:20", "12:00", "12:40")
 OPTION = re.compile(r"^O:([A-Z]+)(\d{2})(\d{2})(\d{2})([CP])(\d{8})$")
+#: /2 (board universe v3) may carry candidate rules; a reader older than
+#: v3 knows only /1 and so refuses a /2 bundle instead of mis-pairing it
+BARS_V1 = "desk-option-minute-bars/1"
+BARS_V2 = "desk-option-minute-bars/2"
+BAR_SCHEMAS = frozenset({BARS_V1, BARS_V2})
 
 
 @dataclass(frozen=True)
@@ -65,6 +70,8 @@ class ContractUniverse(dict[str, Contract]):
 def bundle_contracts(raw: Mapping[str, Any], tickers: Any) -> ContractUniverse:
     """The parsed contracts of ``tickers`` with the bundle's candidate rules."""
     universe = ContractUniverse((ticker, parse_contract(ticker)) for ticker in tickers)
+    if raw.get("schema") != BARS_V2 and ("candidate_pairing" in raw or "listing" in raw):
+        raise ValueError(f"candidate rules require a {BARS_V2} bundle")
     pairing = raw.get("candidate_pairing")
     if pairing is not None:
         widths = pairing.get("widths") if isinstance(pairing, Mapping) else None
@@ -148,7 +155,7 @@ def schedule_for(day: date) -> tuple[str, ...]:
 
 
 def _read_bars(raw: Mapping[str, Any]) -> dict[str, list[tuple[datetime, Decimal]]]:
-    if raw.get("schema") != "desk-option-minute-bars/1":
+    if raw.get("schema") not in BAR_SCHEMAS:
         raise ValueError("minute-bar bundle schema required")
     result = {}
     for ticker, body in raw.get("contracts", {}).items():

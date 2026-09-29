@@ -80,8 +80,8 @@ def main() -> int:
         raw_bytes = seed.read_bytes()
         seed_files[seed.name] = hashlib.sha256(raw_bytes).hexdigest()
         raw = json.loads(raw_bytes)
-        if raw.get("schema") != bu.BUNDLE_SCHEMA:
-            parser.error(f"seed {seed} is not a minute-bar bundle")
+        if raw.get("schema") != iag.BARS_V1:  # a plain capture, never a v3 vintage
+            parser.error(f"seed {seed} is not a {iag.BARS_V1} capture")
         for ticker, body in raw["contracts"].items():
             if body.get("ticker") != ticker or body.get("timespan") != "minute":
                 raise ValueError(f"seed identity mismatch: {ticker}")
