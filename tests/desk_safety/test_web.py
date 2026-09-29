@@ -301,6 +301,35 @@ def test_supervised_control_toggles_kill_files(world, monkeypatch):
     assert c.post('/api/desk/supervised/arm').status_code == 422
 
 
+def test_flatten_under_halt_carries_the_desk_cli_warning(world, monkeypatch, capsys):
+    """The cockpit touches kill files directly, so it must not be quieter
+    than desk_cli about the footgun: a FLATTEN beside a HALT closes nothing
+    until resume. The response carries desk_cli's wording verbatim (oracle:
+    the CLI's own stderr on the same run dir)."""
+    from tree_options.trex.desk_cli import _cli
+
+    run_dir, _ = _automation_world(world, monkeypatch)
+    c = client(world)
+    c.post('/api/desk/supervised/halt')
+    doc = c.post('/api/desk/supervised/flatten').json()
+    assert doc['kill_files'] == ['FLATTEN', 'HALT']
+
+    # the oracle: desk_cli flatten over the SAME run dir, HALT present
+    assert _cli(['--dir', str(run_dir), 'flatten']) == 0
+    cli_warning = capsys.readouterr().err.strip()
+    assert cli_warning.startswith('WARNING: ')
+    assert doc['warning'] == cli_warning[len('WARNING: '):]
+    assert 'HALT' in doc['warning'] and 'resume' in doc['warning']
+
+    # flatten with no HALT: no warning field at all (additive only)
+    c.post('/api/desk/supervised/resume')
+    doc = c.post('/api/desk/supervised/flatten').json()
+    assert doc['kill_files'] == ['FLATTEN'] and 'warning' not in doc
+    # halt/resume responses never carry the flatten warning
+    assert 'warning' not in c.post('/api/desk/supervised/halt').json()
+    assert 'warning' not in c.post('/api/desk/supervised/resume').json()
+
+
 def test_a_failed_systemctl_is_unavailable_not_silent_false(world, monkeypatch):
     """Live defect 09-28: the serving unit blocked the session bus (AF_UNIX)
     and every timer showed 'disabled'. A failing systemctl must surface as

@@ -7,3 +7,9 @@ def calendar_days(n: int):
     from datetime import timedelta
 
     return timedelta(days=n)
+
+
+def weekday_index(d) -> int:
+    """``d``'s weekday as Monday=0 .. Sunday=6 — the sanctioned accessor
+    (the no-naive-arithmetic tripwire bans .weekday() outside time/)."""
+    return d.weekday()

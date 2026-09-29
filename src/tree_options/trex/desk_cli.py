@@ -27,6 +27,16 @@ from tree_options.trex.supervised_ibkr import SupervisedEffect, supervised_order
 
 DEFAULT_ACCOUNT = "DUT143714"
 
+#: The runtime gates EXIT orders on HALT too (desk_runtime._close), so a
+#: FLATTEN placed beside a HALT closes nothing until the HALT is gone.
+#: Shared word-for-word with the cockpit's flatten response (trex_web
+#: automation): one text, two surfaces, no drift.
+HALT_FLATTEN_WARNING = (
+    "HALT is also present. The desk runtime gates EXIT orders on HALT too, "
+    "so this FLATTEN will not close anything until the HALT file is gone. "
+    "To flatten now: `resume` (removes HALT and FLATTEN), then `flatten` "
+    "again.")
+
 
 def _write_atomic(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +139,16 @@ def _cli(argv: list[str] | None = None) -> int:
     sub.add_parser("halt", help="place HALT (no new orders)")
     sub.add_parser("flatten", help="place FLATTEN (close everything)")
     sub.add_parser("resume", help="remove HALT and FLATTEN")
+    drill = sub.add_parser(
+        "drill-check", help="read-only Stage-B drill readiness gates (G2-G6)")
+    drill.add_argument("--buy-strike", type=Decimal, default=None,
+                       help="with --sell-strike/--expiry: probe this leg's quote rail")
+    drill.add_argument("--sell-strike", type=Decimal, default=None)
+    drill.add_argument("--expiry", type=date.fromisoformat, default=None)
+    drill.add_argument("--underlying", default="SPY")
+    drill.add_argument("--gateway-state", type=Path, default=None,
+                       help="gateway watch state (default ~/.local/state/trex/gateway.json)")
+    drill.add_argument("--exit-watch-state", type=Path, default=None)
     req = sub.add_parser("request", help="compose+validate an entry request file")
     req.add_argument("--underlying", default="SPY")
     req.add_argument("--buy-strike", required=True, type=Decimal)
@@ -184,17 +204,24 @@ def _cli(argv: list[str] | None = None) -> int:
         paths.flatten().touch()
         print("FLATTEN placed")
         if paths.halt().exists():  # the same kill-file read `status` reports
-            print("WARNING: HALT is also present. The desk runtime gates EXIT "
-                  "orders on HALT too, so this FLATTEN will not close anything "
-                  "until the HALT file is gone. To flatten now: `resume` "
-                  "(removes HALT and FLATTEN), then `flatten` again.",
-                  file=sys.stderr)
+            print(f"WARNING: {HALT_FLATTEN_WARNING}", file=sys.stderr)
         return 0
     if args.command == "resume":
         for flag in (paths.halt(), paths.flatten()):
             flag.unlink(missing_ok=True)
         print("HALT/FLATTEN removed")
         return 0
+    if args.command == "drill-check":
+        from tree_options.trex import drill_check
+
+        try:
+            pair = drill_check.parse_pair(args)
+        except ValueError as error:
+            print(f"usage error: {error}", file=sys.stderr)
+            return 2
+        return drill_check.run_drill_check(
+            paths, supervised, pair=pair,
+            gateway_state=args.gateway_state, exit_watch_state=args.exit_watch_state)
 
     # request
     entry_date = args.entry_date or now.date()
