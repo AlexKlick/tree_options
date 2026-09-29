@@ -3,6 +3,7 @@ import { getActionModelExample, getAutomation, getHistoricalReplays, getIntraday
 import type { ActionNode, LabScoreboard, LongRunDigest, LongRunPaired, SupervisedDeskStatus } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
+import { AccountExposureBanner } from './AccountExposureBanner'
 
 function NodeInspector({ node }: { node: ActionNode }) {
   return (
@@ -267,6 +268,7 @@ export function ActionModelPage() {
         <h2>Supervised desk (paper)</h2>
         <p>Governed entry runs on the supervised desk — a separate armed path with its own operator mandate, effect permits, and IBKR paper broker session. This cockpit only reads the desk's on-disk state; it never contacts the broker. The synthetic action-model plan on this page remains unhooked: no mandate, permit, or dispatch path is installed for it.</p>
         {desk.error && <p role="alert">Supervised desk status unavailable: {desk.error}</p>}
+        {desk.data && <AccountExposureBanner exposure={desk.data.account_exposure} />}
         {desk.data && <DeskStatusLines status={desk.data} />}
         {lab.error && <p role="alert">Lab scoreboard unavailable: {lab.error}</p>}
         {lab.data && <LabScoreboardBlock board={lab.data} />}
@@ -275,7 +277,7 @@ export function ActionModelPage() {
         ) : (
           <p className="muted">Broker account snapshot unavailable in this view.</p>
         )}
-        {accountPoll.data?.net_positions && <p>Existing TREX positions: {accountPoll.data.net_positions.length} underlying rows. Their legacy monitor remains the owner; this action model does not claim or control them. {accountPoll.data.net_positions.length > 0 && 'The supervised governed canary remains blocked until the legacy book is flat.'}</p>}
+        {accountPoll.data?.net_positions && <p>Existing TREX positions: {accountPoll.data.net_positions.length} underlying rows{desk.data?.account_exposure && <> ({desk.data.account_exposure.outside_desk_book.structures} structure{desk.data.account_exposure.outside_desk_book.structures === 1 ? '' : 's'}, {desk.data.account_exposure.outside_desk_book.legs ?? 'unknown'} option legs, {desk.data.account_exposure.max_loss_usd === null ? 'uncountable' : `$${desk.data.account_exposure.max_loss_usd}`} max loss)</>}. Their legacy monitor remains the owner; this action model does not claim or control them. {accountPoll.data.net_positions.length > 0 && 'The supervised canary blocks an entry only on the candidate’s own underlying (Ruling 3b), so a candidate on another underlying is admitted into this non-flat account; their open loss still counts against the account open-loss budget.'}</p>}
         {accountPoll.error && <p className="muted">Account observation unavailable: {accountPoll.error}</p>}
       </section>
       <section className="card" aria-label="Historical options replay">

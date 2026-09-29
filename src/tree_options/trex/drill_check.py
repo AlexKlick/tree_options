@@ -8,8 +8,14 @@ one command: ``python -m tree_options.trex.desk_cli drill-check``.
   FRESH epoch (started after the nightly gateway logoff, 17:45
   America/Denver — a new epoch each morning) with a live pid, the book
   heartbeats inside ``HEARTBEAT_MAX_AGE_S``, ``monitor.json`` is fresh +
-  connected + clean, and ``trex.exit_watch`` (the same ``--dry-run``
-  verdict the runbook names) says the book is guarded.
+  connected + clean, ``trex.exit_watch`` (the same ``--dry-run``
+  verdict the runbook names) says the book is guarded, AND the ACCOUNT's
+  exposure is stated: the desk book and every other book under the same
+  scan root (the legacy trex books), with their leg/structure counts, max
+  loss and exit deadlines. A flat desk book is never reported as a flat
+  account, and unreadable books say they are unreadable.
+  ``--max-account-open-loss USD`` is the operator's opt-in rail over that
+  account total; unset it is printed and never enforced.
 - **G3** the gateway is settled-ok and the drill is > 30 min from the
   Sunday 12:00 ET cold-restart instant.
 - **G4** a mandate is granted for the CURRENT owner epoch (read the way
@@ -48,6 +54,8 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from tree_options.desk import book as desk_book
+from tree_options.desk.book import AccountExposure, BookSlice
 from tree_options.time import calendar_days, weekday_index
 from tree_options.trex import exit_watch, gateway_watch
 from tree_options.trex.alert_policy import market_hours, span_label, urgency
@@ -331,9 +339,115 @@ def _span_days(seconds: float) -> str:
     return span_label(seconds)
 
 
+# ------------------------------------------------------------- account truth
+
+#: the G2 evidence segment: the ACCOUNT's exposure, not just the desk book's
+_ACCOUNT_HEAD = "account:"
+
+
+def _legs_phrase(slice_: BookSlice) -> str:
+    legs = slice_.legs
+    if legs is None:
+        return "leg count unknown"  # a structure did not validate: never say 0
+    return f"{legs} leg{'' if legs == 1 else 's'}"
+
+
+def _slice_phrase(slice_: BookSlice) -> str:
+    """``no exposure`` or ``N legs / M structures - $X max loss``."""
+    if slice_.structures == 0:
+        return "no exposure"
+    loss = slice_.max_loss_usd
+    money = "uncountable" if loss is None else f"${loss:.2f}"
+    return f"{_legs_phrase(slice_)} / {slice_.structures} structure" \
+           f"{'' if slice_.structures == 1 else 's'} - {money} max loss"
+
+
+def _slice_detail(slice_: BookSlice) -> str:
+    """The structures with their time stops, soonest deadline first, a book
+    named once per book: ``legacy:putspread-20260922/nvda-oct @2026-10-09,
+    nvda-nov @2026-11-06``."""
+    parts: list[str] = []
+    source: str | None = None
+    for position in sorted(slice_.positions, key=lambda p: (
+            p.exit_deadline or date.max, p.source, p.id)):
+        label = position.id if position.source != source \
+            else position.id.split("/", 1)[-1]
+        source = position.source
+        deadline = position.exit_deadline
+        parts.append(f"{label} @{'exit deadline unknown' if deadline is None
+                                else deadline.isoformat()}")
+    return ", ".join(parts)
+
+
+def account_line(exposure: AccountExposure) -> str:
+    """G2's account segment. The desk book and the rest of the ACCOUNT are
+    named separately and never one for the other: a flat desk book on an
+    account a legacy book still holds is the state this exists to make
+    visible. An uncountable book says so and never reads as flat."""
+    outside = exposure.outside
+    if not exposure.countable:
+        counted = outside.structures + exposure.desk.structures
+        reason = exposure.problems[0] if exposure.problems else \
+            "a position has no countable max loss"
+        return (f"{_ACCOUNT_HEAD} exposure NOT COUNTABLE - {counted} structure"
+                f"{'' if counted == 1 else 's'} read but the books are not fully "
+                f"readable ({reason}); no total can be claimed, least of all none")
+    if outside.structures == 0:
+        head = f"{_ACCOUNT_HEAD} no positions outside the desk book"
+    else:
+        head = (f"{_ACCOUNT_HEAD} {_slice_phrase(outside)} outside the desk book"
+                f" ({_slice_detail(outside)})")
+    return f"{head}; desk book: {_slice_phrase(exposure.desk)}"
+
+
+def account_rail(exposure: AccountExposure, rail: Decimal | None) -> str | None:
+    """The G2 problem a ``--max-account-open-loss`` rail produces, else None.
+
+    UNSET is today's behavior exactly (this drill's default can never be
+    blocked by a rail the operator did not set). SET, the total must be
+    countable and at or under it: an account whose books cannot be read
+    against a rail the operator DID set fails closed, never passes.
+    Exactly at the rail passes (only exceeding it is a NO-GO)."""
+    if rail is None:
+        return None
+    if not exposure.countable:
+        return (f"account open loss NOT COUNTABLE against the "
+                f"--max-account-open-loss rail ${rail:.2f} (fail closed)")
+    outside = exposure.outside
+    total = (outside.max_loss_usd or Decimal(0)) + (exposure.desk.max_loss_usd or Decimal(0))
+    if total > rail:
+        return (f"account open loss ${total:.2f} exceeds the "
+                f"--max-account-open-loss rail ${rail:.2f}")
+    return None
+
+
+def account_tail(exposure: AccountExposure, rail: Decimal | None) -> str:
+    """The account total on the final summary line, set or not."""
+    if not exposure.countable:
+        counted = exposure.outside.structures + exposure.desk.structures
+        return (f"account open loss NOT COUNTABLE ({counted} structure"
+                f"{'' if counted == 1 else 's'} read, {len(exposure.problems)} book "
+                f"problem{'' if len(exposure.problems) == 1 else 's'})"
+                + (f" against a ${rail:.2f} rail" if rail is not None else ""))
+    total = (exposure.outside.max_loss_usd or Decimal(0)) \
+        + (exposure.desk.max_loss_usd or Decimal(0))
+    deadline = exposure.outside.earliest_exit_deadline
+    when = f", earliest exit {deadline.isoformat()}" if deadline is not None else ""
+    verdict = "rail UNSET (informational, no exposure gate)" if rail is None \
+        else (f"rail ${rail:.2f} EXCEEDED" if total > rail
+              else f"within the ${rail:.2f} rail")
+    return (f"account open loss ${total:.2f} account-wide "
+            f"({exposure.outside.structures} structure"
+            f"{'' if exposure.outside.structures == 1 else 's'} outside the desk book"
+            f"{when}; desk book: {_slice_phrase(exposure.desk)}) - {verdict}")
+
+
 def _gate_desk(paths: DeskPaths, deps: Deps, *, now: datetime, root: Path,
-               exit_watch_state: Path, gateway_state: Path) -> tuple[Gate, DeskState]:
-    """G2: the desk unit, epoch, heartbeat, monitor.json, exit_watch."""
+               exit_watch_state: Path, gateway_state: Path,
+               account: AccountExposure, rail: Decimal | None) -> tuple[Gate, DeskState]:
+    """G2: the desk unit, epoch, heartbeat, monitor.json, exit_watch, and
+    the ACCOUNT's exposure (the desk book AND the other books under the
+    same scan root: the desk book alone is not the account)."""
     state = DeskState()
     unit = deps.unit_state(DESK_UNIT)
     if unit == "active":
@@ -402,18 +516,41 @@ def _gate_desk(paths: DeskPaths, deps: Deps, *, now: datetime, root: Path,
             urgency=urgency(now.timestamp(), exposed=False, quiet=None),
             unit_state=deps.unit_state(exit_watch.UNIT), dry_run=True)
         status = str(verdict.get("status"))
-        row = next((r for r in verdict.get("books", [])
-                    if isinstance(r, dict) and r.get("plan") == paths.root.name), None)
+        rows = [r for r in verdict.get("books", []) if isinstance(r, dict)]
+        row = next((r for r in rows if r.get("plan") == paths.root.name), None)
+        # the other books under the SAME scan root are exposure on the same
+        # account: naming only the desk row used to print "no exposure" while
+        # a legacy book held legs (verified live 2026-09-29).
+        others = sorted(str(r.get("plan")) for r in rows
+                        if r.get("plan") != paths.root.name)
         if status in exit_watch.HEALTHY:
-            guarded = "desk book guarded" if row is not None else "no exposure"
+            guarded = "desk book guarded" if row is not None else "desk book: no exposure"
+            if others:
+                guarded += (f"; other book(s) under the scan root with exposure: "
+                            f"{', '.join(others)}")
             state.notes.append(f"exit_watch {status} ({guarded})")
         else:
-            detail = row.get("detail") if isinstance(row, dict) else verdict.get("detail")
+            detail = row.get("detail") if row is not None else verdict.get("detail")
             state.problems.append(f"exit_watch {status}: {detail}")
+            if row is None and others:
+                state.problems[-1] += (f" (the desk book has no row here; books under "
+                                       f"the scan root: {', '.join(others)})")
     except (OSError, ValueError, KeyError, TypeError) as error:
         state.problems.append(f"exit_watch unreadable: {type(error).__name__}")
 
-    evidence = "; ".join(state.problems) if state.problems else "; ".join(state.notes)
+    # the account segment is EVIDENCE, never a reason to hide other evidence:
+    # it is printed on a red G2 too (an operator reading a NO-GO still has to
+    # see what the account holds, and an uncountable book must never go quiet).
+    segment = account_line(account)
+    breach = account_rail(account, rail)
+    if breach is not None:
+        state.problems.append(breach)
+    if state.problems:
+        state.problems.append(segment)
+        evidence = "; ".join(state.problems)
+    else:
+        state.notes.append(segment)
+        evidence = "; ".join(state.notes)
     return Gate("G2", "desk", NO_GO if state.problems else GO, evidence), state
 
 
@@ -531,19 +668,36 @@ def run_drill_check(paths: DeskPaths, supervised: SupervisedPaths, *,
                     deps: Deps | None = None, pair: StrikePair | None = None,
                     gateway_state: Path | None = None,
                     exit_watch_state: Path | None = None,
+                    max_account_open_loss: Decimal | None = None,
+                    plans_root: Path | None = None,
                     out: Callable[[str], None] = print) -> int:
-    """Print one line per gate + the DRILL verdict; 0 pass-or-skipped, 1 NO-GO."""
+    """Print one line per gate + the DRILL verdict; 0 pass-or-skipped, 1 NO-GO.
+
+    ``max_account_open_loss`` is the operator's opt-in exposure rail over
+    the WHOLE account (desk book + every other book under the scan root).
+    Unset it is reported and never enforced, so this run cannot fail a
+    drill the operator did not set a limit for.
+    ``plans_root`` defaults to the repo's ``plans/``; the account's books
+    are read from the desk run dir's PARENT (the same root exit_watch
+    scans), never from the desk book alone."""
     deps = deps or Deps()
     now = deps.clock()
     if now.utcoffset() is None:
         raise ValueError("clock must return timezone-aware datetimes")
     now = now.astimezone(ET)
+    if max_account_open_loss is not None and max_account_open_loss < 0:
+        raise ValueError("--max-account-open-loss must be >= 0")
     gateway_state = gateway_state or gateway_watch.DEFAULT_STATE
     exit_watch_state = exit_watch_state or exit_watch.DEFAULT_STATE
+    scan_root = paths.root.parent
+    account = desk_book.account_exposure(
+        as_of=now.date(), plans_root=plans_root or desk_book.default_plans_root(),
+        state_root=scan_root, desk_specs=paths.specs(), desk_book=paths.book())
 
-    desk_gate, desk = _gate_desk(paths, deps, now=now, root=paths.root.parent,
+    desk_gate, desk = _gate_desk(paths, deps, now=now, root=scan_root,
                                  exit_watch_state=exit_watch_state,
-                                 gateway_state=gateway_state)
+                                 gateway_state=gateway_state,
+                                 account=account, rail=max_account_open_loss)
     gates = [
         desk_gate,
         _gate_gateway(now=now, gateway_state=gateway_state),
@@ -557,12 +711,13 @@ def run_drill_check(paths: DeskPaths, supervised: SupervisedPaths, *,
         out(gate.line)
     failed = [g.gate for g in gates if g.verdict == NO_GO]
     summary = ", ".join(f"{g.gate} {g.verdict}" for g in gates)
+    tail = account_tail(account, max_account_open_loss)
     if failed:
-        out(f"DRILL: NO-GO ({', '.join(failed)} failed) [{summary}]")
+        out(f"DRILL: NO-GO ({', '.join(failed)} failed) [{summary}]; {tail}")
         return 1
     skipped = [g.gate for g in gates if g.verdict == SKIPPED]
     note = f" ({', '.join(skipped)} skipped)" if skipped else ""
-    out(f"DRILL: GO{note} [{summary}]")
+    out(f"DRILL: GO{note} [{summary}]; {tail}")
     return 0
 
 

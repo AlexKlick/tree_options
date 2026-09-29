@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -127,6 +128,7 @@ def _held(
         detail=how,
         spec=_as_spec(struct),
         quantity=qty,
+        exit_deadline=struct.exit_deadline,
     )
 
 
@@ -344,3 +346,104 @@ def load_book(
     )
     desk, desk_problems = _desk(desk_specs, desk_book, as_of)
     return BookView(positions=tuple(legacy + desk), problems=tuple(legacy_problems + desk_problems))
+
+
+#: the source every DESK-book position carries; anything else belongs to a
+#: legacy trex book (another service's owner) on the same account.
+DESK_SOURCE = "desk"
+
+
+@dataclass(frozen=True)
+class BookSlice:
+    """One owner's positions, with the counts evidence needs.
+
+    ``legs`` is None when any position's structure did not validate into a
+    :class:`LegStructure` (the adapter's fail-closed path): the leg count
+    is then UNKNOWN, never zero. ``max_loss_usd`` is None for the same
+    reason as :class:`BookView` above: a position whose loss is None makes
+    the total uncountable rather than quietly smaller.
+    ``unknown_deadlines`` counts positions whose structure carried no exit
+    deadline, so a caller can say "earliest known" honestly."""
+
+    positions: tuple[BookPosition, ...]
+
+    @property
+    def structures(self) -> int:
+        return len(self.positions)
+
+    @property
+    def legs(self) -> int | None:
+        if any(p.spec is None for p in self.positions):
+            return None
+        return sum(len(p.spec.legs) for p in self.positions if p.spec is not None)
+
+    @property
+    def max_loss_usd(self) -> Decimal | None:
+        losses = [p.max_loss_usd for p in self.positions]
+        if any(loss is None for loss in losses):
+            return None
+        return sum((loss for loss in losses if loss is not None), _ZERO)
+
+    @property
+    def earliest_exit_deadline(self) -> date | None:
+        deadlines = [p.exit_deadline for p in self.positions if p.exit_deadline is not None]
+        return min(deadlines) if deadlines else None
+
+    @property
+    def unknown_deadlines(self) -> int:
+        return sum(1 for p in self.positions if p.exit_deadline is None)
+
+    @property
+    def books(self) -> tuple[str, ...]:
+        """The books (sources) this slice spans, in first-seen order."""
+        seen: dict[str, None] = {}
+        for position in self.positions:
+            seen.setdefault(position.source, None)
+        return tuple(seen)
+
+
+@dataclass(frozen=True)
+class AccountExposure:
+    """The ACCOUNT's exposure split by owner: the desk book against every
+    other book on the same account, over one :func:`load_book` call.
+
+    An operator reading only the desk book sees an empty account while a
+    legacy trex book (another service's owner) holds defined-risk legs.
+    Both halves are reported here so neither can be mistaken for the
+    whole. ``problems`` are :class:`BookView`'s, verbatim: any makes every
+    total here uncountable, which callers must say out loud rather than
+    degrade to "no exposure"."""
+
+    desk: BookSlice
+    outside: BookSlice
+    problems: tuple[str, ...] = ()
+
+    @property
+    def countable(self) -> bool:
+        """False when any book problem or any uncountable position makes a
+        total unknowable (the fail-closed rail: never assume flat)."""
+        return (not self.problems
+                and self.outside.max_loss_usd is not None
+                and self.desk.max_loss_usd is not None)
+
+
+def account_exposure(
+    *,
+    as_of: date,
+    plans_root: Path | None = None,
+    state_root: Path | None = None,
+    desk_specs: Path | None = None,
+    desk_book: Path | None = None,
+) -> AccountExposure:
+    """:func:`load_book`'s positions split by owner (desk vs everything
+    else), on the same state root. Read-only, like it. The desk partition
+    is the ``desk:`` source exactly as :func:`load_book` ids it."""
+    view = load_book(as_of=as_of, plans_root=plans_root, state_root=state_root,
+                     desk_specs=desk_specs, desk_book=desk_book)
+    desk = tuple(p for p in view.positions if p.source == DESK_SOURCE)
+    outside = tuple(p for p in view.positions if p.source != DESK_SOURCE)
+    return AccountExposure(
+        desk=BookSlice(positions=desk),
+        outside=BookSlice(positions=outside),
+        problems=view.problems,
+    )

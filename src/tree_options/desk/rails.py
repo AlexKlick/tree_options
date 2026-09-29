@@ -432,7 +432,10 @@ class BookPosition:
     ``max_loss_usd`` is at its cap). ``id`` is unique across books.
     ``spec`` and ``quantity`` (the packages at risk: open for "open", the
     whole entry for "working") let a caller price the position's greeks;
-    the rules never read them (None / 0 when unknown)."""
+    the rules never read them (None / 0 when unknown). ``exit_deadline``
+    is the structure's own time stop, carried for evidence: the rules
+    never read it and it is None only for a position built outside the
+    book adapter."""
 
     id: str
     source: str
@@ -443,6 +446,7 @@ class BookPosition:
     detail: str = ""
     spec: LegStructure | None = None
     quantity: int = 0
+    exit_deadline: date | None = None
 
 
 @dataclass(frozen=True)
