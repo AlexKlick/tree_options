@@ -1779,6 +1779,9 @@ def _builtin_rule(entry: Mapping[str, Any]) -> RuleFn:
         return rule_fixed_structure(str(entry.get("structure")), horizon, key)
     if builtin == "always_bullish":
         return rule_always_bullish(horizon, key)
+    if builtin == "theory":  # the theory lane's parameterized rules (own module)
+        from tree_options.desk.theory_rules import rule_theory
+        return rule_theory(entry)
     raise ValueError(f"{entry.get('name')}: unknown builtin {builtin!r}")
 
 
