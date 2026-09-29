@@ -53,24 +53,32 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         # (past REQUEST_TIMEOUT); without it 5.2s (live 2026-09-23)
         "extra": {"thinking": {"type": "disabled"}},
     },
+    # MiniMax-M3.1-Flash-Preview replaced MiniMax-M3 here on 2026-09-28
+    # (operator: "switch literally everything from m3 to m3.1"). M3.1 always
+    # thinks: never send thinking disabled or effort "none" (HTTP 400). The
+    # effort is explicit: "high" for this judgement lane (discovery
+    # proposals, model:minimax board choices). Its reasoning arrives in
+    # reasoning_content, not inline; the content is the JSON (the <think>
+    # stripper stays for older replies). Live 2026-09-28 on a discovery-
+    # shaped prompt: effort high 8 s / 336 completion tokens, max 14 s /
+    # 706, so 4000 tokens / 45 s keeps the old chain bound (local 20 +
+    # minimax 45 + zai 20 = 85 s, at most every few hours).
     "minimax": {
         "base_url": "https://api.minimax.io/v1",
-        "model": "MiniMax-M3",
+        "model": "MiniMax-M3.1-Flash-Preview",
         "key_env": ("ANTHROPIC_AUTH_TOKEN_MINIMAX2", "MINIMAX_API_KEY"),
-        # M3 always reasons inline (<think>) before the JSON; 900 tokens
-        # cut the list off mid-proposal, and replies took 6-20s+ (live
-        # 2026-09-23). Worst chain local 20 + minimax 45 + zai 20 = 85s,
-        # at most every few hours: one serve-loop market tick slips.
         "max_tokens": 4000,
         "timeout": 45.0,
-        "extra": {},
+        "extra": {"reasoning_effort": "high"},
+        "verify_model": True,
     },
-    # L7's overnight reflection lane: M3.1-Flash thinks inline like M3 (no
-    # think-toggle), so extra stays empty; a finish_reason=length reply is
-    # still a failure in chat_json (never a partial proposal). The v2
-    # board's richer context lengthens the always-on thinking: at 4000
-    # tokens / 60 s the first live v2 run (20260929T012836Z) lost 13 of
-    # 126 calls to finish_reason=length and 6 to timeouts (p90 latency
+    # L7's overnight reflection + long-run lane: the same model at effort
+    # "max" (M3.1's server default, now sent explicitly so the lane's
+    # behaviour does not move with this change). A finish_reason=length
+    # reply is still a failure in chat_json (never a partial proposal).
+    # The v2 board's richer context lengthens the always-on thinking: at
+    # 4000 tokens / 60 s the first live v2 run (20260929T012836Z) lost 13
+    # of 126 calls to finish_reason=length and 6 to timeouts (p90 latency
     # 49 s), so the budget is 12000 tokens / 120 s.
     "minimax-flash": {
         "base_url": "https://api.minimax.io/v1",
@@ -78,7 +86,8 @@ PROVIDERS: dict[str, dict[str, Any]] = {
         "key_env": ("ANTHROPIC_AUTH_TOKEN_MINIMAX2", "MINIMAX_API_KEY"),
         "max_tokens": 12000,
         "timeout": 120.0,
-        "extra": {},
+        "extra": {"reasoning_effort": "max"},
+        "verify_model": True,
     },
 }
 
@@ -193,11 +202,20 @@ def chat_json(
     if status != 200:
         raise LlmError(f"{provider}: HTTP {status}")
     try:
-        choice = json.loads(raw)["choices"][0]
+        envelope = json.loads(raw)
+        choice = envelope["choices"][0]
         content = choice["message"].get("content") or ""
         finish = choice.get("finish_reason")
+        served = envelope.get("model")
     except (ValueError, KeyError, IndexError, TypeError, AttributeError):
         raise LlmError(f"{provider}: malformed completion envelope") from None
+    # MiniMax answers an unknown model id with HTTP 200 served by another
+    # model, so a 200 proves nothing: the envelope's model must echo the
+    # requested id (M3.1-Flash is not listed in GET /v1/models).
+    if spec.get("verify_model") and served is not None and served != used_model:
+        raise LlmError(
+            f"{provider}: served model {str(served)[:60]!r} != requested {used_model!r}"
+        )
     if finish == "length":  # a cut-off list can still hold a parseable inner object
         raise LlmError(f"{provider}: reply truncated at max_tokens")
     try:

@@ -40,9 +40,13 @@ EVALUABLE rows), never silently degrades.
 ## Watchlist proposals (LLM)
 
 `llm_provider` is a chain tried in order, default `local,minimax,zai`:
-the loopback Qwen 27B (no key, no quota), then MiniMax-M3, then Z.AI
+the loopback Qwen 27B (no key, no quota), then MiniMax-M3.1-Flash-Preview
+(`reasoning_effort` high; it replaced MiniMax-M3 on 2026-09-28), then Z.AI
 glm-5.3-flash last (its coding plan is shared with every claude-zai
-session and Study Forge, and hits the 5-hour wall). Hosted keys come
+session and Study Forge, and hits the 5-hour wall). MiniMax answers an
+unknown model id with HTTP 200 from another model, so a minimax reply
+whose envelope `model` does not echo the requested id is a failure note,
+never a proposal run. Hosted keys come
 from the env var NAMES in `discovery/llm.py`: the launcher names
 `ANTHROPIC_AUTH_TOKEN_ZAI` / `ANTHROPIC_AUTH_TOKEN_MINIMAX2` first, then
 `ZAI_CODING_API_KEY` / `MINIMAX_API_KEY`. The unit loads them from

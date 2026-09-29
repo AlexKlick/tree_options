@@ -11,7 +11,7 @@ replay accounting the desk's own baselines use.
 ```
 python -m tree_options.desk lab-run \
   --bundle artifacts/desk-store/evaluations/intraday-graph/20260927-v1/minute-bars-4mo-expanded.json \
-  --policy model:zai \        # or model:minimax, model:local,
+  --policy model:zai \        # or model:minimax, model:minimax-flash, model:local,
                               # or the rules baselines: no_trade, put_credit, ...
   --sessions 2 --boards-cap 12 \
   --windows ~/.local/state/trex/desk-paper/quota-windows.json
@@ -23,9 +23,15 @@ python -m tree_options.desk lab-run \
   as-of features only — no lookahead by construction), aliased (no
   tickers, no dates) and capped at 12 rows.
 - A model policy answers once per board (STRICT JSON `{choice, note}`
-  through `discovery.llm.chat_json`: glm-5.3-flash on zai, MiniMax-M3 on
-  minimax, loopback Qwen on local; keys by env name only, never in
-  artifacts). An unknown choice id is REJECTED, not adopted; a provider
+  through `discovery.llm.chat_json`: glm-5.3-flash on zai,
+  MiniMax-M3.1-Flash-Preview on minimax (effort high) and on minimax-flash
+  (effort max), loopback Qwen on local; keys by env name only, never in
+  artifacts). MiniMax-M3 was retired from both minimax lanes on
+  2026-09-28; no recorded lab run used `model:minimax` before that, so
+  the arm id carries no M3 history. A minimax reply whose envelope
+  `model` does not echo the requested id is a provider failure (MiniMax
+  answers unknown ids with HTTP 200 from another model). An unknown
+  choice id is REJECTED, not adopted; a provider
   failure is recorded and the run continues; flash never scores or judges.
 - The window is scored by `intraday_action_graph.replay` — the same
   capital/open-cap accounting as the desk's fixed-policy baselines.

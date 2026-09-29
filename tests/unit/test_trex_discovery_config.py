@@ -105,8 +105,10 @@ class TestLlmKeys:
         assert cfg.llm_provider == "local,minimax,zai" and cfg.llm_max_proposals == 5
 
     def test_valid_overrides(self, tmp_path: Path) -> None:
-        cfg = self._load(tmp_path, 'llm_provider = "minimax"\nllm_model = "MiniMax-M3"\n')
-        assert cfg.llm_provider == "minimax" and cfg.llm_model == "MiniMax-M3"
+        cfg = self._load(
+            tmp_path, 'llm_provider = "minimax"\nllm_model = "MiniMax-M3.1-Flash-Preview"\n'
+        )
+        assert cfg.llm_provider == "minimax" and cfg.llm_model == "MiniMax-M3.1-Flash-Preview"
 
     @pytest.mark.parametrize(
         "extra",

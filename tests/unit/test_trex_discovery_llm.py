@@ -169,7 +169,7 @@ class TestLauncherKeys:
         chat_json("zai", [], transport=t)
         assert t.calls[0][2]["Authorization"] == f"Bearer {SECRET}"
 
-    def test_minimax_uses_the_claude_minimax2_key_and_m3(
+    def test_minimax_uses_the_claude_minimax2_key_and_m31(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
@@ -179,8 +179,60 @@ class TestLauncherKeys:
         url, body, headers = t.calls[0]
         assert obj == {"proposals": []}
         assert headers["Authorization"] == f"Bearer {SECRET}"
-        assert model == "MiniMax-M3" and body["model"] == "MiniMax-M3"
+        m31 = "MiniMax-M3.1-Flash-Preview"  # M3 retired 2026-09-28
+        assert model == m31 and body["model"] == m31
         assert url == "https://api.minimax.io/v1/chat/completions"
+
+    @pytest.mark.parametrize(("provider", "effort"), [("minimax", "high"),
+                                                      ("minimax-flash", "max")])
+    def test_minimax_lanes_send_an_explicit_effort_and_never_disable_thinking(
+        self, monkeypatch: pytest.MonkeyPatch, provider: str, effort: str
+    ) -> None:
+        # M3.1 always thinks: thinking disabled / effort "none" is HTTP 400
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
+        t = FakeTransport([(200, _completion("{}"))])
+        chat_json(provider, [], transport=t)
+        body = t.calls[0][1]
+        assert body["reasoning_effort"] == effort
+        assert "thinking" not in body
+
+    @pytest.mark.parametrize("provider", ["minimax", "minimax-flash"])
+    def test_minimax_substituted_model_is_a_failure(
+        self, monkeypatch: pytest.MonkeyPatch, provider: str
+    ) -> None:
+        # MiniMax serves an unknown id with HTTP 200 from another model
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
+        served = json.dumps({"model": "MiniMax-M3",
+                             "choices": [{"message": {"content": "{}"}}]}).encode()
+        t = FakeTransport([(200, served)])
+        with pytest.raises(LlmError, match="served model 'MiniMax-M3' != requested"):
+            chat_json(provider, [], transport=t)
+
+    def test_minimax_matching_echo_passes_and_substitution_falls_through(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_MINIMAX2", SECRET)
+        monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN_ZAI", SECRET)
+        echo = json.dumps({"model": "MiniMax-M3.1-Flash-Preview",
+                           "choices": [{"message": {"content": '{"proposals": []}'}}]})
+        t = FakeTransport([(200, echo.encode())])
+        obj, model = chat_json("minimax", [], transport=t)
+        assert obj == {"proposals": []} and model == "MiniMax-M3.1-Flash-Preview"
+        swapped = json.dumps({"model": "MiniMax-M3",
+                              "choices": [{"message": {"content": '{"proposals": []}'}}]})
+        good = '{"proposals": [{"symbol": "XLF", "action": "add"}]}'
+        t = FakeTransport([(200, swapped.encode()), (200, _completion(good))])
+        run = propose(["minimax", "zai"], {}, watched=set(), blocked=set(), max_n=3,
+                      transport=t)
+        assert run["provider"] == "zai"
+        assert any(n.startswith("minimax: served model") for n in run["notes"])
+
+    def test_non_minimax_lanes_do_not_check_the_echo(self) -> None:
+        # llama.cpp may echo a gguf file name; only the minimax lanes verify
+        served = json.dumps({"model": "Qwen3.8-27B-UD-Q4_K_XL.gguf",
+                             "choices": [{"message": {"content": "{}"}}]}).encode()
+        obj, _ = chat_json("local", [], transport=FakeTransport([(200, served)]))
+        assert obj == {}
 
     def test_minimax_has_room_to_think(self, monkeypatch: pytest.MonkeyPatch) -> None:
         # live 2026-09-23: M3's inline <think> plus the JSON hit 900 tokens

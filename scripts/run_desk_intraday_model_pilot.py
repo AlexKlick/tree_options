@@ -18,10 +18,13 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from tree_options.desk.intraday_action_graph import decision_packet  # noqa: E402
 
+# alias -> (launcher, model, effort or None). The 2026-09-27 pilot receipts
+# record MiniMax-M3 in their own manifests; new pilots ask M3.1-Flash (M3
+# retired 2026-09-28), which always thinks, so its effort is explicit.
 MODELS = {
-    "zai": ("/home/alexk/.local/bin/claude-zai", "glm-5.3"),
-    "flash": ("/home/alexk/.local/bin/claude-zai", "glm-5.3-flash"),
-    "minimax": ("/home/alexk/.local/bin/claude-minimax2", "MiniMax-M3"),
+    "zai": ("/home/alexk/.local/bin/claude-zai", "glm-5.3", None),
+    "flash": ("/home/alexk/.local/bin/claude-zai", "glm-5.3-flash", None),
+    "minimax": ("/home/alexk/.local/bin/claude-minimax2", "MiniMax-M3.1-Flash-Preview", "high"),
 }
 
 
@@ -77,10 +80,12 @@ def main() -> int:
                 "bundle_sha256": sha(source), "prompt_sha256": prompt_sha,
                 "candidate_ids": [c["id"] for c in candidates], "models": {},
                 "execution_authorized": False}
-    for alias, (executable, model) in MODELS.items():
+    for alias, (executable, model, effort) in MODELS.items():
         cmd = [executable, "--model", model, "-p", prompt, "--tools", "",
                "--output-format", "json", "--no-session-persistence",
                "--max-turns", "1", "--max-budget-usd", "0.30"]
+        if effort is not None:
+            cmd += ["--effort", effort]
         try:
             response = subprocess.run(cmd, cwd=ROOT, capture_output=True, timeout=240)
             raw, stderr, rc = response.stdout, response.stderr, response.returncode
@@ -88,7 +93,7 @@ def main() -> int:
             raw, stderr, rc = exc.stdout or b"", exc.stderr or b"", 124
         (args.out_dir / f"{alias}.raw.json").write_bytes(raw)
         (args.out_dir / f"{alias}.stderr.log").write_bytes(stderr)
-        receipt: dict[str, Any] = {"model": model, "exit_code": rc,
+        receipt: dict[str, Any] = {"model": model, "effort": effort, "exit_code": rc,
                                    "raw_sha256": sha(raw), "stderr_sha256": sha(stderr),
                                    "prompt_sha256": prompt_sha}
         try:

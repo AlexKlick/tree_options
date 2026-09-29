@@ -133,9 +133,12 @@ def test_minimax_flash_provider_entry_is_additive() -> None:
     assert spec["key_env"] == PROVIDERS["minimax"]["key_env"]
     assert spec["max_tokens"] == 12000  # thinking-heavy v2 boards truncated at 4000
     assert spec["timeout"] == 120.0
-    assert spec["extra"] == {}
-    # the existing entries are untouched
-    assert PROVIDERS["minimax"]["model"] == "MiniMax-M3"
+    # M3.1's server default, sent explicitly (never thinking-disabled)
+    assert spec["extra"] == {"reasoning_effort": "max"}
+    assert spec["verify_model"] is True
+    # minimax moved from M3 to M3.1 (2026-09-28) at effort high; zai untouched
+    assert PROVIDERS["minimax"]["model"] == "MiniMax-M3.1-Flash-Preview"
+    assert PROVIDERS["minimax"]["extra"] == {"reasoning_effort": "high"}
     assert PROVIDERS["zai"]["model"] == "glm-5.3-flash"
 
 
