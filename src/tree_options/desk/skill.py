@@ -943,6 +943,7 @@ def load_boards(run_dir: Path) -> list[Board]:
 
 def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = None,
              sessions: tuple[str | None, str | None] | None = None,
+             arms: Sequence[str] | None = None,
              clock: Callable[[], datetime] = _utcnow) -> dict[str, Any]:
     """Re-score a run dir from its receipts + the outcome table: the full
     digest plus the skill section. ZERO model calls (no ask plug-in is ever
@@ -950,7 +951,23 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
     lock is free); ``out`` writes elsewhere and never touches the run dir.
     ``sessions`` (first, last; inclusive ISO dates, either open) re-scores
     only that window's boards - e.g. a period no prompt, rule or agent ever
-    saw - and needs ``out`` (a window digest never replaces the run's)."""
+    saw - and needs ``out`` (a window digest never replaces the run's).
+    ``arms`` names an arm SUBSET (duplicates deduped; config order kept):
+    only those arms are scored - the built-in controls are NOT forced in -
+    paired on the boards where every named arm has an ok receipt, which is
+    what a mid-run partial read needs (the executor shuffles its worklist,
+    so the full pairing stays empty until the run is nearly done). It needs
+    ``out`` (a subset digest never replaces the run's) and is labelled
+    ARM SUBSET in the headline, the markdown and ``redigest["arms"]``."""
+    if arms is not None and out is None:
+        raise ValueError("an arm-subset redigest needs --out")
+    named = []  # deduped, order-preserving, empty entries dropped
+    for name in arms or ():
+        if name and name not in named:
+            named.append(str(name))
+    if arms is not None and not named:
+        raise ValueError("--arms names at least one arm (comma-separated; the built-in "
+                         "controls are only included when named)")
     cfg = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
     plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
     boards = load_boards(run_dir)
@@ -967,7 +984,17 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
     policies = longrun.policies_from_config(cfg["policies"],
                                             builtin=bool(cfg.get("builtin_controls", True)),
                                             horizon=cfg.get("control_horizon"))
-    arms = longrun.arms_of(policies)
+    every = longrun.arms_of(policies)
+    if named:
+        known = {a.name for a in every}
+        unknown = [name for name in named if name not in known]
+        if unknown:
+            raise ValueError(f"unknown arm(s) {', '.join(unknown)}; the config's arms are: "
+                             + ", ".join(a.name for a in every))
+        keep = set(named)
+        arms_used = [a for a in every if a.name in keep]  # config order, once each
+    else:
+        arms_used = every
     protocol = _protocol_from_plan(plan, cfg)
     outcome_cfg = dict(cfg.get("outcome") or {})
     table_path = table or (Path(str(outcome_cfg["table"])) if outcome_cfg.get("table") else None)
@@ -990,19 +1017,27 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
         benchmarks = {}
         notes.append(f"benchmarks unavailable: {type(error).__name__}")
     receipts = {a.name: longrun.load_receipts(longrun.receipts_path(run_dir, a.name))
-                for a in arms}
-    complete = all(receipts[a.name].get(b.snapshot, {}).get("ok") for a in arms for b in boards)
-    files = {a.name: str(longrun.receipts_path(run_dir, a.name)) for a in arms}
+                for a in arms_used}
+    if named and not any(all(receipts[a.name].get(b.snapshot, {}).get("ok") for a in arms_used)
+                         for b in boards):
+        raise ValueError("no board has an ok receipt for every named arm; nothing to pair")
+    complete = all(receipts[a.name].get(b.snapshot, {}).get("ok")
+                   for a in arms_used for b in boards)
+    files = {a.name: str(longrun.receipts_path(run_dir, a.name)) for a in arms_used}
 
     def score() -> dict[str, Any]:
-        doc = longrun.score_run(boards, arms, receipts, OutcomeCache(outcome), protocol,
+        doc = longrun.score_run(boards, arms_used, receipts, OutcomeCache(outcome), protocol,
                                 benchmarks=benchmarks, receipts_files=files,
                                 run_id=run_dir.name, plan_created=plan.get("created"),
                                 complete=complete, clock=clock, skill_options=cfg.get("skill"))
+        if named:  # a subset digest is never mistaken for the full pairing
+            doc["headline"] = (f"ARM SUBSET ({doc['boards']['scored']} boards where all "
+                               f"{len(arms_used)} arms answered) - {doc['headline']}")
         doc["redigest"] = {"at": clock().isoformat(), "model_calls": 0,
                            "source": "receipts on disk + the outcome table (no model, no bundle)",
                            "table": str(table_path), "notes": notes,
                            "written_to": str(out if out is not None else run_dir),
+                           "arms": [a.name for a in arms_used] if named else None,
                            "sessions": None if sessions is None else {
                                "first": sessions[0], "last": sessions[1],
                                "boards": len(boards)}}
@@ -1035,8 +1070,12 @@ def redigest_cli(args: argparse.Namespace) -> int:
                   file=sys.stderr)
             return 2
         window = (first or None, last or None)
+    arm_names: list[str] | None = None
+    if getattr(args, "arms", None) is not None:  # '' or 'a,b' given: never silently "all"
+        arm_names = [name.strip() for name in str(args.arms).split(",")]
     try:
-        doc = redigest(args.run_dir, table=args.table, out=args.out, sessions=window)
+        doc = redigest(args.run_dir, table=args.table, out=args.out, sessions=window,
+                       arms=arm_names)
     except longrun.RunLocked as error:
         print(f"longrun redigest: {error}", file=sys.stderr)
         return 3

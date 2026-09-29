@@ -520,3 +520,304 @@ def test_partial_arms_are_labelled_and_scored_on_their_own_boards() -> None:
     assert m["verdict"].startswith("PARTIAL (1/4 boards): ")
     assert m["cs_in_sample"]["population"] == 4
     assert doc["skill"]["arms"]["first_row"]["boards"] == 4
+
+# ------------------------------------------------------ redigest --arms subset
+
+
+def _subset_run(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[Path, list[Board]]:
+    """A finished 2-repeat model run (FakeAsk picks w everywhere) to redigest
+    a subset of; the caller trims receipts to simulate a mid-run arm."""
+    from tree_options.desk.__main__ import run_cli
+
+    boards = boards_for(SESSIONS6[:3])
+    ask = FakeAsk()
+    monkeypatch.setitem(longrun.PLUGINS["boards"], "pytest", lambda p, c: boards)
+    monkeypatch.setitem(longrun.PLUGINS["ask"], "pytest", lambda p, c: ask)
+    _table_file(tmp_path / "table.jsonl", boards)
+    config = tmp_path / "longrun.json"
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": "out",
+                "incumbent": "m",
+                "concurrency": 2,
+                "boards": {"plugin": "pytest"},
+                "outcome": {"plugin": "v2", "table": str(tmp_path / "table.jsonl")},
+                "ask": {"plugin": "pytest"},
+                "quota": {"plugin": "always"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [{"name": "m", "kind": "model", "repeats": 2}],
+            }
+        )
+    )
+    assert run_cli(["longrun", "run", "--config", str(config)]) == 0
+    run_dir = Path(json.loads(capsys.readouterr().out)["run_dir"])
+    return run_dir, boards
+
+
+def _trim_receipts(run_dir: Path, arm: str, drop: set[str]) -> None:
+    """Simulate a mid-run arm: the dropped boards were never answered yet."""
+    path = longrun.receipts_path(run_dir, arm)
+    lines = [
+        line
+        for line in path.read_text().splitlines()
+        if line and json.loads(line)["snapshot"] not in drop
+    ]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_redigest_arms_subset_scores_the_intersection_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tree_options.desk.__main__ import run_cli
+
+    run_dir, boards = _subset_run(tmp_path, monkeypatch, capsys)
+    snaps = [b.snapshot for b in boards]
+    _trim_receipts(run_dir, "m#1", {snaps[5]})  # m#1 answered 5 of 6 boards
+    _trim_receipts(run_dir, "m#2", {snaps[4], snaps[5]})  # m#2 answered only 4
+    out = tmp_path / "subset"
+    assert (
+        run_cli(
+            [
+                "longrun",
+                "redigest",
+                "--run-dir",
+                str(run_dir),
+                "--out",
+                str(out),
+                "--arms",
+                "m#2,m#1,m#2",
+            ]
+        )
+        == 0
+    )  # duplicates deduped
+    capsys.readouterr()
+    doc = json.loads((out / "digest.json").read_text())
+    # hand oracle: the pairing is boards 1-4 (m#2's coverage); every m#1 pick is
+    # w (net +10 per board), so the intersection scores 4 boards at +40
+    assert doc["boards"]["scored"] == 4
+    assert doc["redigest"]["arms"] == ["m#1", "m#2"]  # the config's order, deduped
+    assert [r["arm"] for r in doc["standings"]] == ["m#1", "m#2"]  # no builtins forced in
+    assert sorted(doc["receipts"]) == ["m#1", "m#2"]
+    m1 = next(r for r in doc["standings"] if r["arm"] == "m#1")
+    assert (m1["boards"], m1["entered"], m1["net_total"]) == (4, 4, 40.0)
+    # the skill section scores each arm on its OWN coverage (a within-board
+    # contrast, no pairing): m#1 covered 5 boards, m#2 covered 4 - both at
+    # 8 per board (pick w = 10 vs the board mean 2)
+    assert doc["skill"]["arms"]["m#1"]["excess_total"] == 40.0
+    assert doc["skill"]["arms"]["m#2"]["excess_total"] == 32.0
+    assert doc["skill"]["arms"]["m#2"]["boards"] == 4  # its own ok coverage, nothing padded
+    # the label travels in the headline, the markdown and the redigest block
+    assert doc["headline"].startswith("ARM SUBSET (4 boards where all 2 arms answered) - ")
+    assert doc["complete"] is False  # m#2 still owes boards even on the subset
+    md = (out / "digest.md").read_text()
+    assert "ARM SUBSET (4 boards where all 2 arms answered)" in md
+    assert "not the full policy pairing" in md
+    # the run's own digest is untouched by a subset read
+    live = json.loads((run_dir / "digest.json").read_text())
+    assert live["boards"]["scored"] == 6 and "redigest" not in live
+
+
+def test_redigest_arms_subset_refusal_cases(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tree_options.desk.__main__ import run_cli
+
+    run_dir, _boards = _subset_run(tmp_path, monkeypatch, capsys)
+    out = tmp_path / "subset"
+    # a subset digest never replaces the run's own: --out is required
+    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--arms", "m#1"]) == 2
+    assert "needs --out" in capsys.readouterr().err
+    # an unknown arm is refused with the config's arm names listed
+    assert (
+        run_cli(
+            [
+                "longrun",
+                "redigest",
+                "--run-dir",
+                str(run_dir),
+                "--out",
+                str(out),
+                "--arms",
+                "m#1,nope",
+            ]
+        )
+        == 2
+    )
+    err = capsys.readouterr().err
+    assert "nope" in err and "m#2" in err and "first_row" in err and "no_trade" in err
+    # an empty --arms is refused, never silently read as "all arms"
+    assert (
+        run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(out), "--arms", ""])
+        == 2
+    )
+    assert "at least one arm" in capsys.readouterr().err
+    # no board where every named arm answered: refused, not an empty digest
+    snaps = {b.snapshot for b in skill.load_boards(run_dir)}
+    _trim_receipts(run_dir, "m#1", snaps)
+    assert (
+        run_cli(
+            [
+                "longrun",
+                "redigest",
+                "--run-dir",
+                str(run_dir),
+                "--out",
+                str(out),
+                "--arms",
+                "m#1,m#2",
+            ]
+        )
+        == 2
+    )
+    assert "no board has an ok receipt for every named arm" in capsys.readouterr().err
+    assert not out.exists()
+
+
+def test_redigest_arms_subset_composes_with_the_session_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tree_options.desk.__main__ import run_cli
+
+    run_dir, boards = _subset_run(tmp_path, monkeypatch, capsys)
+    snaps = [b.snapshot for b in boards]
+    _trim_receipts(run_dir, "m#1", {snaps[5]})
+    _trim_receipts(run_dir, "m#2", {snaps[4], snaps[5]})
+    out = tmp_path / "window-subset"
+    s2 = boards[2].session  # the window keeps this session and later: 4 boards
+    assert (
+        run_cli(
+            [
+                "longrun",
+                "redigest",
+                "--run-dir",
+                str(run_dir),
+                "--out",
+                str(out),
+                "--arms",
+                "m#1,m#2",
+                "--sessions",
+                f"{s2}:",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    doc = json.loads((out / "digest.json").read_text())
+    # window (4 boards) AND intersection (the first 4) -> the 2 boards of s2:
+    # hand oracle 2 boards, both m#1 picks w -> +20
+    assert doc["redigest"]["arms"] == ["m#1", "m#2"]
+    assert doc["redigest"]["sessions"] == {"first": s2, "last": None, "boards": 4}
+    assert doc["boards"]["scored"] == 2
+    m1 = next(r for r in doc["standings"] if r["arm"] == "m#1")
+    assert (m1["boards"], m1["net_total"]) == (2, 20.0)
+    md = (out / "digest.md").read_text()
+    assert "ARM SUBSET (2 boards where all 2 arms answered)" in md
+    assert f"session window {s2}.." in md
+
+
+# -------------------------------------------------------- self-heal tally
+
+
+def test_score_run_tallies_self_heals_per_arm() -> None:
+    boards = boards_for(SESSIONS6[:2])  # 4 boards
+    arms = longrun.arms_of(
+        [
+            PolicySpec("m", "model", repeats=2, provider="minimax-flash"),
+            PolicySpec("z", "model"),  # no policy provider: not discoverable
+            PolicySpec("first_row", "control", rule=longrun.rule_first_row()),
+        ]
+    )
+    healed = {
+        boards[0].snapshot: {**ok("w"), "provider": "minimax-flash"},
+        boards[1].snapshot: {**ok("w"), "provider": "minimax-flash", "escalated": True},
+        boards[2].snapshot: {**ok("l"), "provider": "zai", "fallback": True},
+        boards[3].snapshot: {
+            **ok("w"),
+            "provider": "minimax-flash",
+            "escalated": True,
+            "timeout_escalated": True,
+        },
+    }
+    old_style = {b.snapshot: {**ok("w"), "escalated": True} for b in boards[:2]}
+    old_style.update({b.snapshot: ok("w") for b in boards[2:]})  # no provider field
+    z_recs = {b.snapshot: ok("w") for b in boards}
+    z_recs[boards[3].snapshot] = {**ok("w"), "fallback": True}  # heals, no provider
+    receipts = {
+        "m#1": healed,
+        "m#2": old_style,
+        "z": z_recs,
+        "first_row": {b.snapshot: ok("l") for b in boards},
+    }
+    doc = longrun.score_run(
+        boards, arms, receipts, OutcomeCache(table_outcome), Protocol(draws=1000, random_seeds=200)
+    )
+    rows = {r["arm"]: r for r in doc["standings"]}
+    # exact counts from the receipts on disk; providers count who answered
+    assert rows["m#1"]["heals"] == {
+        "escalated": 2,
+        "timeout_escalated": 1,
+        "fallback": 1,
+        "providers": {"minimax-flash": 3, "zai": 1},
+    }
+    # pre-provider receipts fall back to the policy's provider when it names one
+    assert rows["m#2"]["heals"] == {
+        "escalated": 2,
+        "timeout_escalated": 0,
+        "fallback": 0,
+        "providers": {"minimax-flash": 4},
+    }
+    # no policy provider and receipts without one: providers omitted, not guessed
+    assert rows["z"]["heals"] == {"escalated": 0, "timeout_escalated": 0, "fallback": 1}
+    assert "heals" not in rows["first_row"]  # a clean arm shows no tally
+    md = longrun.digest_markdown(doc)
+    assert "## Self-heals" in md
+    assert (
+        "- m#1: escalated 2, timeout_escalated 1, fallback 1; answered by minimax-flash 3, zai 1"
+    ) in md
+    assert "- z: escalated 0, timeout_escalated 0, fallback 1" in md
+    assert "unattributed" in md
+    # the cockpit projection carries the tally through
+    view = longrun._project_digest(doc)
+    projected = {r["arm"]: r for r in view["standings"]}
+    assert projected["m#1"]["heals"] == rows["m#1"]["heals"]
+
+
+def test_score_run_clean_receipts_carry_no_heals_anywhere() -> None:
+    boards, arms, receipts = _score_case()
+    doc = longrun.score_run(
+        boards,
+        arms,
+        receipts,
+        OutcomeCache(table_outcome),
+        Protocol(draws=2000, random_seeds=200, incumbent="m"),
+    )
+    assert "heals" not in json.dumps(doc)
+    assert "Self-heals" not in longrun.digest_markdown(doc)
+    view = longrun._project_digest(doc)
+    assert all("heals" not in r for r in view["standings"])
+
+
+def test_status_line_surfaces_the_self_heal_tally(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    from tree_options.desk.__main__ import run_cli
+
+    run_dir, _boards = _subset_run(tmp_path, monkeypatch, capsys)
+    capsys.readouterr()
+    doc = json.loads((run_dir / "digest.json").read_text())
+    row = next(r for r in doc["standings"] if r["arm"] == "m#1")
+    row["heals"] = {
+        "escalated": 1,
+        "timeout_escalated": 0,
+        "fallback": 2,
+        "providers": {"minimax-flash": 3, "zai": 2},
+    }
+    (run_dir / "digest.json").write_text(json.dumps(doc))
+    assert run_cli(["longrun", "status", "--dir", str(run_dir)]) == 0
+    out = capsys.readouterr().out
+    assert (
+        "self-heals: m#1 escalated=1 timeout=0 fallback=2 providers=minimax-flash:3,zai:2"
+    ) in out

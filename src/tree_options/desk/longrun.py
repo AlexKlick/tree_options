@@ -1095,6 +1095,45 @@ def failure_reasons(arm_receipts: Mapping[str, Mapping[str, Any]],
     return counts
 
 
+def heal_tally(arm: Arm, arm_receipts: Mapping[str, Mapping[str, Any]],
+               boards: Sequence[Board]) -> dict[str, Any] | None:
+    """Per-arm self-heal tally from the receipts on disk: how many of the
+    arm's answered boards needed the truncation escalation, the timeout
+    escalation or the fallback provider, and who answered (``provider``
+    counts). ``None`` for a clean arm - no ``heals`` key anywhere.
+
+    Provider attribution choice (documented, not guessed silently): receipts
+    written before 2026-09-29 (the failover lane) carry no ``provider`` field;
+    such a receipt is counted under the arm's policy provider when the policy
+    names one, and when it does not (a model policy relying on the ask
+    plug-in's default), ``providers`` is omitted for that arm rather than
+    padded with a guess."""
+    escalated = timeout_escalated = fallback = 0
+    providers: dict[str, int] = {}
+    unattributed = False
+    for board in boards:
+        rec = arm_receipts.get(board.snapshot)
+        if rec is None:
+            continue
+        escalated += bool(rec.get("escalated"))
+        timeout_escalated += bool(rec.get("timeout_escalated"))
+        fallback += bool(rec.get("fallback"))
+        who = rec.get("provider")
+        if who is None and arm.policy.provider is not None:
+            who = arm.policy.provider  # an old receipt: the policy's primary answered
+        if who is None:
+            unattributed = True
+        else:
+            providers[str(who)] = providers.get(str(who), 0) + 1
+    if not (escalated or timeout_escalated or fallback):
+        return None
+    heals: dict[str, Any] = {"escalated": escalated, "timeout_escalated": timeout_escalated,
+                             "fallback": fallback}
+    if not unattributed:
+        heals["providers"] = providers
+    return heals
+
+
 def score_run(boards: Sequence[Board], arms: Sequence[Arm],
               receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
               outcomes: OutcomeCache, protocol: Protocol, *,
@@ -1132,7 +1171,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "failures": sum(1 for b in boards if b.snapshot in mine
                             and not mine[b.snapshot].get("ok")),
             "excluded": sum(1 for b in boards if not mine.get(b.snapshot, {}).get("ok")),
-            "failure_reasons": failure_reasons(mine, boards)}
+            "failure_reasons": failure_reasons(mine, boards),
+            "heals": heal_tally(arm, mine, boards)}
 
     incumbent_arms = [a.name for a in arms if a.policy.name == protocol.incumbent]
     model_arms = [a.name for a in arms if a.policy.kind == "model"]
@@ -1197,6 +1237,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "receipts": (receipts_files or {}).get(arm.name),
             **({"failure_reasons": data["failure_reasons"]}
                if data["failure_reasons"] else {}),  # additive: a clean arm shows none
+            **({"heals": data["heals"]}
+               if data["heals"] else {}),  # additive: a clean arm shows no heal tally
         })
     standings.sort(key=lambda r: (-r["vs_random"]["ci95"][0], r["arm"]))
 
@@ -1346,6 +1388,20 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
     add("")
     add(f"**{doc['headline']}**")
     add("")
+    again = doc.get("redigest")
+    if again is not None:  # what this document is NOT (never mistaken for the run's own)
+        said = [f"re-scored from receipts on disk + the outcome table "
+                f"({again['model_calls']} model calls)"]
+        if again.get("arms") is not None:
+            said.append(f"ARM SUBSET ({doc['boards']['scored']} boards where all "
+                        f"{len(again['arms'])} arms answered: "
+                        f"{', '.join(again['arms'])}) - not the full policy pairing")
+        if again.get("sessions"):
+            window = again["sessions"]
+            said.append(f"session window {window['first'] or '..'}..{window['last'] or '..'} "
+                        f"({window['boards']} boards)")
+        add("> Redigest: " + "; ".join(said) + ".")
+        add("")
     promotion = doc["promotion"]
     add("## Pre-registered promotion rule (text only - this harness never promotes)")
     add("")
@@ -1402,6 +1458,22 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         for arm, reasons in tallies:
             add(f"- {arm}: " + ", ".join(f"{reason} {count}" for reason, count
                                          in sorted(reasons.items())))
+        add("")
+    healed = [(row["arm"], row["heals"]) for row in doc["standings"] if row.get("heals")]
+    if healed:  # who actually answered: the self-heal ladder in full view
+        add("## Self-heals (per arm, from the receipts on disk)")
+        add("")
+        for arm, tally in healed:
+            line = (f"- {arm}: escalated {tally['escalated']}, timeout_escalated "
+                    f"{tally['timeout_escalated']}, fallback {tally['fallback']}")
+            who = tally.get("providers")
+            if who:
+                line += ("; answered by "
+                         + ", ".join(f"{provider} {count}"
+                                     for provider, count in sorted(who.items())))
+            else:
+                line += "; answered by: unattributed (receipts predate the provider field)"
+            add(line)
         add("")
     aa = doc["aa"]
     add("## A/A check")
@@ -2208,15 +2280,21 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError("a digest must carry promoted: false")
     keep = ("arm", "policy", "repeat", "kind", "boards", "entered", "entry_rate",
             "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_first_row",
-            "vs_incumbent", "vs_regime", "null_percentile", "failure_reasons")
+            "vs_incumbent", "vs_regime", "null_percentile", "failure_reasons", "heals")
     wf = doc.get("walk_forward") or {}
+    standings = []
+    for row in doc.get("standings", []):
+        projected = {k: row.get(k) for k in keep}
+        if not projected.get("heals"):
+            projected.pop("heals", None)  # additive: a clean arm carries no heals key
+        standings.append(projected)
     return {"headline": doc.get("headline"), "untrusted_note": doc.get("untrusted_note"),
             "evaluation_valid": doc.get("evaluation_valid"), "complete": doc.get("complete"),
             "at": doc.get("at"),
             "promotion": {"promoted": False, "rule": promotion.get("rule")},
             "boards": doc.get("boards"), "aa": doc.get("aa"),
             "random_null": doc.get("random_null"),
-            "standings": [{k: row.get(k) for k in keep} for row in doc.get("standings", [])],
+            "standings": standings,
             "walk_forward": {k: wf.get(k) for k in ("status", "cutoff", "metric",
                                                      "max_finalists", "tune_sessions",
                                                      "test_sessions", "reason")}
@@ -2282,6 +2360,10 @@ def register_cli(sub: Any) -> None:
     redigest.add_argument("--sessions", metavar="FIRST:LAST",
                           help="re-score only boards whose session is in [FIRST, LAST] "
                                "(ISO dates, either may be empty; needs --out)")
+    redigest.add_argument("--arms", metavar="A,B,...",
+                          help="score only these arms (e.g. the model arms mid-run), paired "
+                               "on the boards where ALL of them have ok receipts; the "
+                               "built-in controls are not forced in (needs --out)")
     from tree_options.desk import reflect  # `longrun reflect` (desk.reflect owns it)
 
     reflect.register_cli(commands)
@@ -2331,5 +2413,14 @@ def dispatch_cli(args: argparse.Namespace) -> int:
                      + f" net={arm.get('net')}")
     if view["digest"] is not None:
         lines.append(f"  digest: {view['digest']['headline']}")
+        healed = [(row["arm"], row["heals"]) for row in view["digest"].get("standings", [])
+                  if row.get("heals")]
+        if healed:  # the self-heal ladder: how much of the run the backups carried
+            lines.append("  self-heals: " + "; ".join(
+                f"{arm} escalated={t['escalated']} timeout={t['timeout_escalated']} "
+                f"fallback={t['fallback']}"
+                + (f" providers={','.join(f'{p}:{n}' for p, n in sorted(t['providers'].items()))}"
+                   if t.get("providers") else "")
+                for arm, t in healed))
     print("\n".join(lines))
     return 0
