@@ -707,7 +707,7 @@ class HorizonTransport:
 
     def __call__(self, url: str, body: bytes, headers: dict[str, str],
                  timeout: float) -> tuple[int, bytes]:
-        self.calls.append({"url": url, "body": json.loads(body)})
+        self.calls.append({"url": url, "body": json.loads(body), "timeout": timeout})
         prompt = json.loads(json.loads(body)["messages"][0]["content"])
         rows = prompt["board"]
         choice = rows[self.index]["id"] if self.index < len(rows) else None
@@ -798,3 +798,34 @@ def test_v2_ask_effort_is_a_per_policy_override(v1_bundle: tuple[Path, dict[str,
     config.write_text(json.dumps(bad))
     with pytest.raises(ValueError, match="effort must be one of"):
         longrun.run_from_config(config, shared={"transport": transport}, limit=2)
+
+
+def test_v2_ask_budget_overrides_timeout_and_max_tokens(
+        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    from tree_options.trex.discovery.llm import PROVIDERS
+
+    path, _ = v1_bundle
+    base = {"out_root": str(tmp_path / "out"), "incumbent": "m31",
+            "boards": {"plugin": "v2", "bundle": str(path)},
+            "outcome": {"plugin": "v2", "sync": 2},
+            "protocol": {"draws": 1000, "random_seeds": 200},
+            "policies": [{"name": "m31", "kind": "model"}]}
+    config = tmp_path / "budget.json"
+    config.write_text(json.dumps({**base, "ask": {
+        "plugin": "v2", "provider": "minimax-flash", "timeout": 300, "max_tokens": 20000}}))
+    transport = HorizonTransport(0, "eod")
+    assert longrun.run_from_config(config, shared={"transport": transport},
+                                   limit=2)["status"] == "finished"
+    assert [c["timeout"] for c in transport.calls] == [300.0, 300.0]
+    assert [c["body"]["max_tokens"] for c in transport.calls] == [20000, 20000]
+    plain = tmp_path / "plain.json"
+    plain.write_text(json.dumps({**base, "ask": {"plugin": "v2", "provider": "minimax-flash"}}))
+    transport = HorizonTransport(0, "eod")
+    longrun.run_from_config(plain, shared={"transport": transport}, limit=1)
+    spec = PROVIDERS["minimax-flash"]
+    assert transport.calls[0]["timeout"] == float(spec["timeout"])
+    assert transport.calls[0]["body"]["max_tokens"] == spec["max_tokens"]
+    for bad in ({"timeout": 0}, {"timeout": 901}, {"max_tokens": 0}):
+        plain.write_text(json.dumps({**base, "ask": {"plugin": "v2", **bad}}))
+        with pytest.raises(ValueError, match="timeout must be in"):
+            longrun.run_from_config(plain, shared={"transport": transport}, limit=1)

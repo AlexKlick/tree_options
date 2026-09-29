@@ -1881,7 +1881,10 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     menu) through discovery.llm.chat_json; parse_choice_v2 rejects an unknown
     id or horizon outright. Provider from the policy spec (default
     ``params.provider``, minimax-flash); ``effort`` sets M3.1's
-    reasoning_effort (absent = the provider default, max)."""
+    reasoning_effort (absent = the provider default, max); ``timeout`` (s)
+    and ``max_tokens`` override the provider's budget per call - thinking at
+    max effort times out on the hardest boards, and a failed receipt is
+    missing-not-at-random, so a resume retry pass may give it more room."""
     from tree_options.desk import lab
     from tree_options.desk.forecast import EFFORTS
     from tree_options.trex.discovery.llm import chat_json
@@ -1890,6 +1893,16 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     effort = params.get("effort")
     if effort is not None and effort not in EFFORTS:
         raise ValueError(f"effort must be one of {EFFORTS}")
+    timeout = None if params.get("timeout") is None else float(params["timeout"])
+    max_tokens = None if params.get("max_tokens") is None else int(params["max_tokens"])
+    if (timeout is not None and not 0 < timeout <= 900) or (
+            max_tokens is not None and not 0 < max_tokens <= 64000):
+        raise ValueError("timeout must be in (0, 900] s and max_tokens in (0, 64000]")
+    extra: dict[str, Any] = {}
+    if effort is not None:
+        extra["reasoning_effort"] = effort
+    if max_tokens is not None:
+        extra["max_tokens"] = max_tokens
     transport = ctx.shared.get("transport")
     state = ctx.shared.get("v2")
     if state is None:
@@ -1900,8 +1913,10 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
         kwargs: dict[str, Any] = {}
         if transport is not None:
             kwargs["transport"] = transport
-        if effort is not None:
-            kwargs["extra"] = {"reasoning_effort": effort}
+        if extra:
+            kwargs["extra"] = dict(extra)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
         reply, _model = chat_json(spec.provider or default,
                                   lab.board_prompt_v2(board.rows, context, spec.prompt),
                                   **kwargs)
