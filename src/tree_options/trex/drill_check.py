@@ -42,12 +42,13 @@ import math
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import date, datetime, timedelta
+from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from tree_options.time import calendar_days, weekday_index
 from tree_options.trex import exit_watch, gateway_watch
 from tree_options.trex.alert_policy import market_hours, span_label, urgency
 from tree_options.trex.clock import ET
@@ -308,18 +309,18 @@ def last_nightly_logoff(now: datetime) -> datetime:
     candidate = local.replace(hour=LOGOFF_HOUR, minute=LOGOFF_MINUTE,
                               second=0, microsecond=0)
     if candidate > local:
-        candidate -= timedelta(days=1)
+        candidate -= calendar_days(1)
     return candidate.astimezone(ET)
 
 
 def next_sunday_noon_et(now: datetime) -> datetime:
     """The next Sunday 12:00 ET strictly after ``now`` (the cold restart)."""
     local = now.astimezone(ET)
-    days_ahead = (6 - local.weekday()) % 7  # Monday=0 .. Sunday=6
-    candidate = (local + timedelta(days=days_ahead)).replace(
+    days_ahead = (6 - weekday_index(local)) % 7  # Monday=0 .. Sunday=6
+    candidate = (local + calendar_days(days_ahead)).replace(
         hour=12, minute=0, second=0, microsecond=0)
     if candidate <= local:
-        candidate += timedelta(days=7)
+        candidate += calendar_days(7)
     return candidate
 
 
