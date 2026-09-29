@@ -46,9 +46,10 @@ def all_sessions(raw: Mapping[str, Any]) -> list[date]:
 
 
 def parse_bundle(raw: Mapping[str, Any]) -> tuple[_Bars, dict[str, iag.Contract]]:
-    """The bundle's verified bars and parsed contracts (iag's own reader)."""
+    """The bundle's verified bars and parsed contracts (iag's own reader),
+    carrying the bundle's candidate rules (``iag.ContractUniverse``)."""
     bars = iag._read_bars(raw)
-    contracts = {ticker: iag.parse_contract(ticker) for ticker in bars}
+    contracts = iag.bundle_contracts(raw, bars)
     return bars, contracts
 
 

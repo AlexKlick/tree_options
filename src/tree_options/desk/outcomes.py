@@ -117,6 +117,9 @@ class OutcomeIndex:
     underlyings: tuple[str, ...]
     #: (underlying, expiry, strike) -> (call ticker, put ticker)
     parity_pairs: dict[tuple[str, date, Decimal], tuple[str, str]]
+    #: underlying -> {date: implied-vol index close} (the bundle's
+    #: ``iv_context``; empty for a bundle without one)
+    iv: dict[str, dict[date, Decimal]] = field(default_factory=dict)
     _boards: dict[int, list[dict[str, Any]]] = field(default_factory=dict, repr=False,
                                                      compare=False)
     _spot: dict[str, dict[date, Decimal]] = field(default_factory=dict, repr=False,
@@ -148,7 +151,24 @@ def prepare_index(raw: Mapping[str, Any], sessions: list[date] | None = None) ->
                         timeline=tuple(timeline), slots=slots, last_slot=last_slot,
                         session_pos={day: i for i, day in enumerate(window)},
                         underlyings=tuple(sorted({c.underlying for c in contracts.values()})),
-                        parity_pairs=pairs)
+                        parity_pairs=pairs, iv=_iv_context(raw))
+
+
+def _iv_context(raw: Mapping[str, Any]) -> dict[str, dict[date, Decimal]]:
+    """The bundle's implied-vol index closes {underlying: {date: close}}."""
+    context = raw.get("iv_context")
+    if context is None:
+        return {}
+    closes = context.get("closes") if isinstance(context, Mapping) else None
+    if not isinstance(closes, Mapping):
+        raise ValueError("iv_context must carry closes {underlying: {date: close}}")
+    parsed: dict[str, dict[date, Decimal]] = {}
+    for underlying, series in closes.items():
+        values = {date.fromisoformat(day): Decimal(str(close)) for day, close in series.items()}
+        if any(not v.is_finite() or v <= 0 for v in values.values()):
+            raise ValueError(f"invalid iv close for {underlying}")
+        parsed[str(underlying)] = values
+    return parsed
 
 
 def _slot(index: OutcomeIndex, day: date, clock: str) -> int:
@@ -387,7 +407,8 @@ def _parity_spot(index: OutcomeIndex, at: datetime) -> dict[str, Decimal]:
     today = at.astimezone(iag.ET).date()
     by: dict[str, dict[date, list[Decimal]]] = {}
     for (underlying, expiry, strike), (call, put) in index.parity_pairs.items():
-        if expiry < today:
+        if (expiry < today or not iag.is_listed(index.contracts, call, today)
+                or not iag.is_listed(index.contracts, put, today)):
             continue
         call_price = iag._latest(index.bars[call], at, SPOT_AGE_S)
         put_price = iag._latest(index.bars[put], at, SPOT_AGE_S)
