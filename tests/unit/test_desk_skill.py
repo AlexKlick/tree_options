@@ -475,6 +475,29 @@ def test_redigest_rescores_from_receipts_with_zero_model_calls(
     capsys.readouterr()
     assert (out / "digest.json").is_file() and (out / "digest.md").is_file()
     assert (run_dir / "digest.json").stat().st_mtime_ns == stamp
+    # a session window re-scores only its boards (2 per session here, +8 excess each),
+    # needs --out, and refuses an empty window or a malformed spec
+    s0, s1, s2 = sorted({b.session for b in boards})
+    window = tmp_path / "window"
+    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(window),
+                    "--sessions", f"{s1}:"]) == 0
+    capsys.readouterr()
+    doc = json.loads((window / "digest.json").read_text())
+    assert doc["redigest"]["sessions"] == {"first": s1, "last": None, "boards": 4}
+    assert doc["skill"]["arms"]["m#1"]["excess_total"] == 32.0
+    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(window),
+                    "--sessions", f":{s0}"]) == 0
+    capsys.readouterr()
+    assert json.loads((window / "digest.json").read_text())["skill"]["arms"]["m#1"][
+        "excess_total"] == 16.0
+    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir),
+                    "--sessions", f"{s1}:{s2}"]) == 2  # no --out
+    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(window),
+                    "--sessions", "2001-01-01:2001-01-02"]) == 2  # empty window
+    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(window),
+                    "--sessions", s1]) == 2  # not FIRST:LAST
+    capsys.readouterr()
+    assert (run_dir / "digest.json").stat().st_mtime_ns == stamp
     # no table anywhere: refused, never a bundle parse
     cfg = json.loads((run_dir / "config.json").read_text())
     cfg["outcome"] = {"plugin": "v2"}

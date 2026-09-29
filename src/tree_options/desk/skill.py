@@ -942,16 +942,28 @@ def load_boards(run_dir: Path) -> list[Board]:
 
 
 def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = None,
+             sessions: tuple[str | None, str | None] | None = None,
              clock: Callable[[], datetime] = _utcnow) -> dict[str, Any]:
     """Re-score a run dir from its receipts + the outcome table: the full
     digest plus the skill section. ZERO model calls (no ask plug-in is ever
     built) and no bundle parse. In place only when the run is not live (its
-    lock is free); ``out`` writes elsewhere and never touches the run dir."""
+    lock is free); ``out`` writes elsewhere and never touches the run dir.
+    ``sessions`` (first, last; inclusive ISO dates, either open) re-scores
+    only that window's boards - e.g. a period no prompt, rule or agent ever
+    saw - and needs ``out`` (a window digest never replaces the run's)."""
     cfg = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
     plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
     boards = load_boards(run_dir)
     if plan.get("boards_fingerprint") not in (None, longrun.boards_fingerprint(boards)):
         raise ValueError("boards.jsonl does not match the plan's boards fingerprint")
+    if sessions is not None:
+        if out is None:
+            raise ValueError("a session-window redigest needs --out")
+        first, last = sessions
+        boards = [b for b in boards if (first is None or b.session >= first)
+                  and (last is None or b.session <= last)]
+        if not boards:
+            raise ValueError(f"no boards in the session window {first}..{last}")
     policies = longrun.policies_from_config(cfg["policies"],
                                             builtin=bool(cfg.get("builtin_controls", True)),
                                             horizon=cfg.get("control_horizon"))
@@ -990,7 +1002,10 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
         doc["redigest"] = {"at": clock().isoformat(), "model_calls": 0,
                            "source": "receipts on disk + the outcome table (no model, no bundle)",
                            "table": str(table_path), "notes": notes,
-                           "written_to": str(out if out is not None else run_dir)}
+                           "written_to": str(out if out is not None else run_dir),
+                           "sessions": None if sessions is None else {
+                               "first": sessions[0], "last": sessions[1],
+                               "boards": len(boards)}}
         return doc
 
     if out is not None:
@@ -1012,8 +1027,16 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
 
 
 def redigest_cli(args: argparse.Namespace) -> int:
+    window: tuple[str | None, str | None] | None = None
+    if getattr(args, "sessions", None):
+        first, sep, last = str(args.sessions).partition(":")
+        if not sep:
+            print("longrun redigest: refused: --sessions is FIRST:LAST (either may be empty)",
+                  file=sys.stderr)
+            return 2
+        window = (first or None, last or None)
     try:
-        doc = redigest(args.run_dir, table=args.table, out=args.out)
+        doc = redigest(args.run_dir, table=args.table, out=args.out, sessions=window)
     except longrun.RunLocked as error:
         print(f"longrun redigest: {error}", file=sys.stderr)
         return 3

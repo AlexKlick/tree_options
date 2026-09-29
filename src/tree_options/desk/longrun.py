@@ -2230,6 +2230,9 @@ def register_cli(sub: Any) -> None:
     redigest.add_argument("--out", type=Path,
                           help="write digest.json/.md here, never touching the run dir "
                                "(required while the run is live)")
+    redigest.add_argument("--sessions", metavar="FIRST:LAST",
+                          help="re-score only boards whose session is in [FIRST, LAST] "
+                               "(ISO dates, either may be empty; needs --out)")
     from tree_options.desk import reflect  # `longrun reflect` (desk.reflect owns it)
 
     reflect.register_cli(commands)
