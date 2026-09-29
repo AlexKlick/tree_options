@@ -56,6 +56,7 @@ TIMES_OF_DAY = ("open", "morning", "midday", "afternoon", "close")
 BOUNDED = ("dte", "otm", "rv", "max_loss")
 ALTERNATES = ("slot",)
 SLOT_MINUTES = 45
+_EPOCH = date(1970, 1, 1)  # day index by subtraction (no ordinal arithmetic in src)
 _ENTRY_KEYS = frozenset({"name", "kind", "builtin", "repeats", "structures", "horizon",
                          "direction", "alternate", "require_all", "time_of_day", "key",
                          *(f"{b}_{end}" for b in BOUNDED for end in ("min", "max"))})
@@ -89,8 +90,8 @@ def slot_index(session: str, clock: str) -> int:
     """Calendar ordinal + 45-minute clock index: consecutive decision clocks of a day
     are consecutive integers, and the same clock moves by one per calendar day."""
     hours, minutes = clock.split(":")
-    return date.fromisoformat(session).toordinal() + (int(hours) * 60 + int(minutes)) \
-        // SLOT_MINUTES
+    return (date.fromisoformat(session) - _EPOCH).days \
+        + (int(hours) * 60 + int(minutes)) // SLOT_MINUTES
 
 
 def _context(board: Board, row: Mapping[str, Any], field: str) -> float | None:
