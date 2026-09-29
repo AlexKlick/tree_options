@@ -2011,9 +2011,16 @@ def register_cli(sub: Any) -> None:
     status.add_argument("--dir", type=Path,
                         help="a run dir or a root of run dirs (default "
                              "DESK_STORE/evaluations/longrun)")
+    from tree_options.desk import reflect  # `longrun reflect` (desk.reflect owns it)
+
+    reflect.register_cli(commands)
 
 
 def dispatch_cli(args: argparse.Namespace) -> int:
+    if args.longrun_command == "reflect":
+        from tree_options.desk import reflect
+
+        return reflect.dispatch_cli(args)
     if args.longrun_command == "run":
         try:
             result = run_from_config(args.config, run_dir=args.run_dir, limit=args.limit,
