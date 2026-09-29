@@ -101,6 +101,13 @@
         network, no store writes; it takes no state lock. Exit 0 written,
         2 bad arguments or an unreadable bundle.
 
+    longrun run --config FILE.json [--run-dir DIR] [--limit N] [--score-only]
+    longrun status [--dir DIR]
+        The desk lab long run (desk.longrun): every policy on every board,
+        paired, resumable, quota-aware; one digest under
+        evaluations/longrun/<UTCts>/. Never promotes. Exit 0 finished, 3
+        stopped (resumable) or the run dir is locked, 2 a refused config.
+
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
 while it writes (outcome-table excepted: it writes only --out); a second
 concurrent run exits 3. No secrets are printed
@@ -283,6 +290,9 @@ def _parser() -> argparse.ArgumentParser:
     sup.add_argument("--database", type=Path)
     sup.add_argument("--account", default="DUT143714")
     sup.add_argument("--dry-run", action="store_true")
+    from tree_options.desk import longrun  # `longrun run|status` (desk.longrun owns it)
+
+    longrun.register_cli(sub)
     return ap
 
 
@@ -594,6 +604,10 @@ def run_cli(
         return _outcomes_cli(["--bundle", str(args.bundle), "--out", str(args.out),
                               "--sync", args.sync, "--half-spread", args.half_spread,
                               "--commission", args.commission])
+    if args.command == "longrun":  # its own per-run-dir lock; `status` is read-only
+        from tree_options.desk import longrun
+
+        return longrun.dispatch_cli(args)
     with _single_run(args.command, enabled=not getattr(args, "dry_run", False)) as owned:
         if not owned:
             print(f"{args.command}: another run holds the lock; retry later", file=sys.stderr)

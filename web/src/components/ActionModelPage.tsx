@@ -1,6 +1,6 @@
 import { useState } from 'react'
-import { getActionModelExample, getAutomation, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
-import type { ActionNode, LabScoreboard, SupervisedDeskStatus } from '../lib/types'
+import { getActionModelExample, getAutomation, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getLongRun, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
+import type { ActionNode, LabScoreboard, LongRunDigest, LongRunPaired, SupervisedDeskStatus } from '../lib/types'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
 
@@ -157,6 +157,95 @@ function AutomationCard() {
   )
 }
 
+const money = (value: number) => `${value < 0 ? '−' : '+'}$${Math.abs(value).toFixed(2)}`
+const ciText = (ci: [number, number]) => `[${money(ci[0])}, ${money(ci[1])}]`
+const pairText = (pair: LongRunPaired | null | undefined) =>
+  pair ? `${money(pair.diff_total)} ${ciText(pair.ci95)}` : '—'
+const duration = (seconds: number | null) =>
+  seconds === null ? 'unknown'
+    : seconds < 90 ? `${Math.round(seconds)} s`
+      : seconds < 5400 ? `${Math.round(seconds / 60)} min` : `${(seconds / 3600).toFixed(1)} h`
+
+function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
+  const { aa, random_null: rn, walk_forward: wf } = digest
+  return (
+    <>
+      <p><strong>{digest.headline}</strong></p>
+      <p data-testid="longrun-aa">
+        {aa.status === 'not_run'
+          ? `A/A not run — ${aa.reason ?? 'no incumbent pair'}; every comparison is unvalidated.`
+          : `A/A ${aa.status === 'valid' ? 'valid' : 'INVALID'}: ${(aa.pair ?? []).join(' vs ')} agree on ${aa.agreement === undefined ? '?' : (aa.agreement * 100).toFixed(1)}% of ${aa.boards ?? '?'} boards · diff ${pairText(aa.diff)}`}
+      </p>
+      <p data-testid="longrun-random-band">Random picker at the incumbent's entry rate ({(rn.p_enter * 100).toFixed(1)}%, {rn.seeds} seeds on the same boards): expected {money(rn.expected_total)} {ciText(rn.expected_ci95)} · 95% null band {ciText(rn.band95)}</p>
+      <p className="muted">{digest.boards.scored} of {digest.boards.total} boards scored ({digest.boards.excluded} excluded for a missing or failed decision in some arm) · {digest.boards.sessions.count} sessions. Totals are net modeled dollars with session-bootstrap 95% ranges.</p>
+      <div className="table-scroll">
+        <table>
+          <thead>
+            <tr><th scope="col">Arm</th><th scope="col">Kind</th><th scope="col">Entered</th><th scope="col">Failed</th><th scope="col">Net total [95% CI]</th><th scope="col">vs random</th><th scope="col">vs incumbent</th><th scope="col">vs bullish regime</th></tr>
+          </thead>
+          <tbody>
+            {digest.standings.map((row) => (
+              <tr key={row.arm} data-testid={`longrun-standing-${row.arm}`}>
+                <th scope="row">{row.arm}</th>
+                <td>{row.kind}</td>
+                <td>{row.entered}{row.unevaluable > 0 ? ` (${row.unevaluable} no fill)` : ''}</td>
+                <td>{row.failures}</td>
+                <td>{money(row.net_total)} {ciText(row.net_ci95)}</td>
+                <td>{pairText(row.vs_random)}</td>
+                <td>{pairText(row.vs_incumbent)}</td>
+                <td>{pairText(row.vs_regime)}</td>
+              </tr>
+            ))}
+            <tr data-testid="longrun-random">
+              <th scope="row">random (matched)</th><td>control</td><td>—</td><td>—</td>
+              <td>{money(rn.expected_total)} {ciText(rn.expected_ci95)}</td><td>—</td><td>—</td><td>—</td>
+            </tr>
+            {digest.benchmarks.map((bench) => bench.status === 'ok' && bench.net_total !== undefined && bench.net_ci95 ? (
+              <tr key={bench.name} data-testid={`longrun-benchmark-${bench.name}`}>
+                <th scope="row">{bench.name} buy-and-hold</th><td>benchmark</td><td>—</td><td>—</td>
+                <td>{money(bench.net_total)} {ciText(bench.net_ci95)}</td><td>—</td><td>—</td><td>—</td>
+              </tr>
+            ) : null)}
+          </tbody>
+        </table>
+      </div>
+      {wf.status === 'ok'
+        ? <p>Walk-forward (cutoff {wf.cutoff}, {wf.tune_sessions} tune / {wf.test_sessions} test sessions, at most {wf.max_finalists} finalists tested once): {wf.finalists.length === 0 ? 'no finalists.' : wf.finalists.map((f) => `${f.policy} test ${money(f.test.net_total)} ${ciText(f.test.net_ci95)}, vs random ${pairText(f.test.vs_random)}, Holm p ${f.holm_p.toFixed(3)}${f.eligible_for_operator_review ? ' — eligible for operator review' : ''}`).join('; ')}</p>
+        : <p className="muted">Walk-forward not applicable{wf.reason ? ` — ${wf.reason}` : ''}.</p>}
+      <p className="muted">Never promoted: the pre-registered rule is text for the operator. {digest.promotion.rule}</p>
+    </>
+  )
+}
+
+function LongRunCard() {
+  const longrun = usePoll(getLongRun, 30_000)
+  const view = longrun.data
+  const progress = view?.progress
+  return (
+    <section className="card" aria-label="Desk long run">
+      <div className="eyebrow">Desk lab · long run · evidence only</div>
+      <h2>Long run</h2>
+      <p className="muted">{view?.digest?.untrusted_note ?? 'Every policy decides on the same boards; totals carry session-bootstrap 95% ranges, never bare point totals. Nothing here is ever promoted — promotion stays the operator\'s pre-registered-rule decision.'}</p>
+      {longrun.error && <p role="alert">Long run unavailable: {longrun.error}</p>}
+      {view && view.run === null && <p>No long run has started in this cockpit store.</p>}
+      {view?.run && progress && (
+        <>
+          <p>Run <code>{view.run}</code> · {progress.status} · {progress.finished ?? 0}/{progress.total ?? 0} decisions · {progress.failures ?? 0} failed · paused {duration(progress.paused_s ?? 0)} · ETA {duration(progress.eta_s)}{progress.quota ? ` · quota: ${progress.quota.reason}` : ''}{progress.legacy ? ` · prototype (${progress.legacy}) progress` : ''}</p>
+          <ul>
+            {Object.entries(progress.arms).map(([name, arm]) => (
+              <li key={name} data-testid={`longrun-arm-${name}`}>
+                <progress value={arm.done ?? 0} max={arm.total ?? 1} aria-label={`${name} progress`} />{' '}
+                {name} ({arm.kind}): {arm.done ?? 0}/{arm.total ?? '?'} · {arm.entered ?? 0} entered · {arm.failures ?? 0} failed{arm.net !== null ? ` · running isolated net ${money(arm.net)}` : ''}
+              </li>
+            ))}
+          </ul>
+        </>
+      )}
+      {view?.digest && <LongRunDigestBlock digest={view.digest} />}
+    </section>
+  )
+}
+
 export function ActionModelPage() {
   const poll = usePoll(getActionModelExample, 0)
   const accountPoll = usePoll(getPlans, 30_000)
@@ -172,6 +261,7 @@ export function ActionModelPage() {
   return (
     <AppShell title="Action model" poll={poll}>
       <AutomationCard />
+      <LongRunCard />
       <section className="card" aria-label="Supervised paper desk">
         <div className="eyebrow">Existing TREX paper system · local observations</div>
         <h2>Supervised desk (paper)</h2>

@@ -215,6 +215,144 @@ export interface LabPolicyStats {
   kinds: string[]
 }
 
+// GET /api/desk/longrun: the latest desk long run — live progress, plus the
+// digest's standings once finished. Every total carries its session-bootstrap
+// 95% CI; promoted is false by construction (the route refuses otherwise).
+export interface LongRunPaired {
+  diff_total: number
+  ci95: [number, number]
+  p_one_sided: number
+  sessions: number
+}
+
+export interface LongRunArmProgress {
+  policy: string
+  repeat: number
+  kind: string
+  done: number | null
+  total: number | null
+  entered: number | null
+  failures: number | null
+  unevaluable: number | null
+  net: number | null
+}
+
+export interface LongRunProgress {
+  schema: 'desk-longrun-progress/1'
+  legacy?: string
+  status: string
+  at: string | null
+  started: string | null
+  boards: number | null
+  sessions: number | null
+  total: number | null
+  finished: number | null
+  failures: number | null
+  paused_s: number | null
+  quota: { ok: boolean | null; reason: string; checked_at: string | null } | null
+  calls_per_s: number | null
+  eta_s: number | null
+  arms: Record<string, LongRunArmProgress>
+  digest: string | null
+}
+
+export interface LongRunStanding {
+  arm: string
+  policy: string
+  repeat: number
+  kind: string
+  boards: number
+  entered: number
+  entry_rate: number | null
+  unevaluable: number
+  failures: number
+  net_total: number
+  net_ci95: [number, number]
+  vs_random: LongRunPaired
+  vs_first_row: LongRunPaired | null
+  vs_incumbent: LongRunPaired | null
+  // vs the always_bullish regime baseline (null for that arm itself)
+  vs_regime?: LongRunPaired | null
+  null_percentile: number
+}
+
+export interface LongRunBenchmark {
+  name: string
+  status: 'ok' | 'unavailable'
+  net_total?: number
+  net_ci95?: [number, number]
+  base_date?: string
+  missing_sessions?: number
+  reason?: string
+}
+
+export interface LongRunFinalist {
+  policy: string
+  holm_p: number
+  test: {
+    net_total: number
+    net_ci95: [number, number]
+    vs_random: LongRunPaired
+    vs_incumbent: LongRunPaired | null
+  }
+  eligible_for_operator_review: boolean
+}
+
+export interface LongRunDigest {
+  headline: string
+  untrusted_note: string
+  evaluation_valid: boolean
+  complete: boolean
+  at: string
+  promotion: { promoted: false; rule: string }
+  boards: {
+    total: number
+    scored: number
+    excluded: number
+    sessions: { count: number; first: string | null; last: string | null }
+  }
+  aa: {
+    status: 'valid' | 'INVALID' | 'not_run'
+    valid: boolean
+    rule: string
+    pair?: string[]
+    boards?: number
+    agreement?: number
+    diff?: LongRunPaired
+    reason?: string
+  }
+  random_null: {
+    p_enter: number
+    matched_to: string[]
+    horizons: (string | null)[]
+    seeds: number
+    expected_total: number
+    expected_ci95: [number, number]
+    simulated_mean_total: number
+    band95: [number, number]
+  }
+  standings: LongRunStanding[]
+  walk_forward: {
+    status: string
+    cutoff?: string | null
+    metric?: string | null
+    max_finalists?: number | null
+    tune_sessions?: number | null
+    test_sessions?: number | null
+    reason?: string | null
+    finalists: LongRunFinalist[]
+  }
+  benchmarks: LongRunBenchmark[]
+}
+
+export interface LongRunView {
+  schema: 'desk-longrun-view/1'
+  run: string | null
+  progress: LongRunProgress | null
+  digest: LongRunDigest | null
+  execution_enabled: false
+}
+
 // Plain numbers + ISO strings from the server; this app formats.
 
 // GET /api/gateway: the gateway watchdog's verdict (epoch seconds).
