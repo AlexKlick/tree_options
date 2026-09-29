@@ -27,5 +27,8 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/home/alexk/.local/state/trex-desk/evidence /home/alexk/.local/state/trex/desk-paper
+# locks/ is required: every desk CLI command (dry-run aside) takes
+# <state>/locks/<command>.lock before doing anything, inside or outside
+# the entry window — without it the unit dies with EROFS on the lock file.
+ReadWritePaths=/home/alexk/.local/state/trex-desk/evidence /home/alexk/.local/state/trex-desk/locks /home/alexk/.local/state/trex/desk-paper
 RestrictAddressFamilies=AF_UNIX

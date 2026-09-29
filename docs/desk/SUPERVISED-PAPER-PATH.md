@@ -241,8 +241,28 @@ CLI. `python -m tree_options.trex.supervised_desk run [--legacy-plan P]`:
 - **Loss facts:** open-loss reservation = open packages at the debit paid
   (cap/floor when unpriced) + live entries at full size; realized day
   loss = today's losing exits; any unreadable book or unpriced exit makes
-  the fact unknown, which the canary refuses.
+  the fact unknown, which the canary refuses. A second reservation exists
+  (the rails' book view, `desk/book.py`); the two agree on their common
+  subset and their intentional differences are documented on
+  `open_loss_reservation` and pinned by the parity tests in
+  `tests/unit/test_supervised_desk.py` (the screen is the conservative one
+  for priced credit kinds and unpriced averages; the book view is the
+  conservative one for a desk PLANNED structure past its entry date).
 - v1 is debit kinds only (`OrderIntent` represents BUY-to-open).
+
+### The two loss caps (different scopes — do not conflate)
+
+`profile.json`'s `max_open_loss` (canary, 1500) and the rails'
+`max_book_loss_usd` (5000, `OPERATOR_LIMITS`-bound) are NOT two views of
+one number. The canary cap is the supervised path's open-loss SCREEN:
+`current_open_loss` (this reservation, E5 book + legacy books) + the new
+trade's worst case vs the profile cap, enforced at permit issue
+(`action_graph/canary.py`, blocker `open_loss_cap_exceeded`). The rails
+cap is the desk book ADMISSION cap the miner applies to its candidates:
+the whole account's working-at-cap + open book (a broader position set,
+credit kinds refined to width − fill) + the candidate vs 5000. A trade
+can pass one and be refused by the other; both are binding at their own
+layer.
 
 ### The daily grant (ruling 2026-09-28: base + extra when quota is spare)
 
@@ -257,6 +277,10 @@ plan earns NO extra (fail closed); dry windows neither add nor block.
 (authorized agent sessions; default ttl 12 h).
 
 ### Arming runbook (operator)
+
+The desk's exits live only while the IB Gateway is logged in; the weekly
+Sunday-12:00-ET cold restart and the Monday-morning checklist are
+[GATEWAY-COLD-RESTART.md](GATEWAY-COLD-RESTART.md).
 
 1. Author `~/.local/state/trex/desk-paper/profile.json` (the handoff's
    envelope: `intended_capital` 5000, `max_loss_per_trade` 300,
@@ -276,9 +300,20 @@ plan earns NO extra (fail closed); dry windows neither add nor block.
 4. Drop an entry request (`python -m tree_options.trex.desk_cli request
    --buy-strike 744 --sell-strike 742 --expiry 2026-11-20 --debit 0.90
    --exit-deadline 2026-10-23`); read its `.result.json`; watch
-   `events.jsonl` (`desk_cli status` / `desk_cli events`).
+   `events.jsonl` (`desk_cli status` / `desk_cli events`). The take-profit
+   basis is explicit (`--tp-basis`, operator ruling 2026-09-29): the
+   default `gain_frac` reads `--tp-frac` as a share of the debit paid
+   (0.5 = +50% of entry); `width_frac` reads it as a share of the
+   structure WIDTH — on a cheap, wide vertical that targets a large
+   multiple of entry (the 744/742 at $0.44, width 2.00, tp-frac 0.5 put
+   TP at $1.00, +127%), so say the basis out loud when quoting a request.
 5. Stop: `desk_cli halt` / `desk_cli flatten` (or the files in
    `desk-paper/`), `supervised revoke` (permanent), or stop the unit.
+   FOOTGUN: HALT gates the desk's EXIT lane too, not just entries — a
+   FLATTEN placed while HALT is present closes NOTHING until the HALT
+   file is gone. To flatten out of a halt: `desk_cli resume` (removes
+   both) then `desk_cli flatten` again. The CLI prints this warning
+   whenever `flatten` sees a HALT kill file.
 
 ## What is deliberately NOT here yet
 

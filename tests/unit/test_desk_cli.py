@@ -41,13 +41,22 @@ def test_composed_request_is_exactly_what_the_desk_consumes():
     legs = effect.structure.legs
     assert (legs[0].action, legs[0].strike) == ("BUY", Decimal("744"))
     assert (legs[1].action, legs[1].strike) == ("SELL", Decimal("742"))
-    assert effect.structure.exits.take_profit is not None
-    assert effect.structure.exits.take_profit.basis == "width_frac"
+    # the operator ruling of 2026-09-29: the DEFAULT take-profit basis is
+    # gain_frac — 0.5 means +50% of the debit paid, not half the width
+    tp = effect.structure.exits.take_profit
+    assert tp is not None and (tp.basis, tp.value) == ("gain_frac", Decimal("0.5"))
+
+
+def test_take_profit_basis_is_explicit_and_honored():
+    tp = _compose(tp_basis="width_frac").effect.structure.exits.take_profit
+    assert tp is not None and (tp.basis, tp.value) == ("width_frac", Decimal("0.5"))
 
 
 @pytest.mark.parametrize("overrides", [
     {"debit": Decimal("1.50")},          # above the cap: refused
-    {"tp_frac": Decimal("1.5")},          # take-profit bound
+    {"tp_frac": Decimal("1.5"), "tp_basis": "width_frac"},  # width bound 0..1
+    {"tp_frac": Decimal("0")},           # gain_frac needs value > 0
+    {"tp_basis": "nope"},                # unknown basis refuses (not silently widened)
     {"sell_strike": Decimal("745")},      # not a debit vertical by strikes
 ])
 def test_invalid_parameters_refuse_before_any_file(overrides, tmp_path):
@@ -88,6 +97,46 @@ def test_kill_file_round_trip(tmp_path):
     rc = _cli(["--dir", str(tmp_path), "resume"])
     assert rc == 0 and not (tmp_path / "HALT").exists()
     assert not (tmp_path / "FLATTEN").exists()
+
+
+def test_cli_defaults_write_a_gain_frac_take_profit(tmp_path, monkeypatch):
+    monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
+    rc = _cli(["--dir", str(tmp_path / "desk"), "request",
+               "--buy-strike", "744", "--sell-strike", "742",
+               "--expiry", "2026-11-20", "--debit", "0.90",
+               "--exit-deadline", "2026-10-23", "--intent-id", "canary-tp"])
+    assert rc == 0
+    raw = json.loads((tmp_path / "desk" / "requests" / "canary-tp.json").read_text())
+    request = EntryRequest.model_validate(raw)
+    tp = request.effect.structure.exits.take_profit
+    assert tp is not None and tp.basis == "gain_frac"
+
+
+def test_cli_refuses_an_unknown_take_profit_basis(tmp_path, monkeypatch):
+    monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
+    with pytest.raises(SystemExit) as caught:
+        _cli(["--dir", str(tmp_path / "desk"), "request",
+              "--buy-strike", "744", "--sell-strike", "742",
+              "--expiry", "2026-11-20", "--debit", "0.90",
+              "--exit-deadline", "2026-10-23", "--tp-basis", "half_width"])
+    assert caught.value.code == 2
+    assert not (tmp_path / "desk" / "requests").exists()
+
+
+def test_flatten_under_halt_warns_that_exits_are_gated(tmp_path, capsys):
+    """The footgun, out loud: HALT gates the close lane too, so a FLATTEN
+    placed beside it closes nothing until the operator clears the HALT."""
+    (tmp_path / "HALT").touch()
+    rc = _cli(["--dir", str(tmp_path), "flatten"])
+    assert rc == 0 and (tmp_path / "FLATTEN").exists()
+    err = capsys.readouterr().err
+    assert "WARNING" in err and "HALT" in err and "resume" in err
+
+
+def test_flatten_without_halt_stays_quiet(tmp_path, capsys):
+    rc = _cli(["--dir", str(tmp_path), "flatten"])
+    assert rc == 0 and (tmp_path / "FLATTEN").exists()
+    assert "WARNING" not in capsys.readouterr().err
 
 
 def test_status_reads_the_desk_state(tmp_path):

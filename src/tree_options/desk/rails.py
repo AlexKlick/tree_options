@@ -1,8 +1,13 @@
 """Desk rails (plan E4 + D6): the ONE admission check for the options desk.
 
-:func:`check` is pure (no I/O, no clock, no environment): the deal miner
-pre-checks every candidate with it, and desk-enter and the desk runtime
-re-check authoritatively with it before the first order. Every rule in
+:func:`check` is pure (no I/O, no clock, no environment). Its only
+callers today are in the deal miner (``desk/miner.py``): every candidate
+is pre-checked once in ``_rails_and_decide`` and re-checked in ``_select``
+against the book as higher-ranked deals queue ahead of it. Nothing
+downstream re-runs it: neither desk-enter nor the desk runtime re-checks
+with it before the first order (the supervised path's own gates — canary
+screening, ``validate_package_order`` — stand between a request and the
+broker). Every rule in
 :data:`RULES` yields exactly one :class:`RuleResult` with status PASS, FAIL
 or NOT_EVALUABLE and a detail string; the report is ``ok`` only if EVERY
 rule is PASS. Missing, malformed or incoherent data is NOT_EVALUABLE
