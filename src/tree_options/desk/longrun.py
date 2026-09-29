@@ -6,6 +6,12 @@ Protocol (the statistics investigation of 2026-09-28,
 
 - PAIRED: every arm (policy x repeat) decides on the SAME boards; a board any
   arm lacks an ok receipt for is excluded from ALL arms when scoring.
+- TWO-LEG PACKAGES (rule arms only): a rule's choice may name two board rows
+  as one position, ``"idA+idB"`` (the beta-neutral short-vol trade the theory
+  lane wanted: put_credit + call_credit on one underlying). Both legs pay
+  their own round-trip cost, a no-fill on either leg is unevaluable, and the
+  package resolves at the LATER leg's exit; the random null and the controls
+  stay single-row (see the digest's ``pair_arms`` protocol note).
 - CONTROLS on those boards: ``no_trade``, ``first_row``, the four
   fixed-structure rules, an ``always_bullish`` regime baseline, and a
   ``random`` picker at the incumbent's entry rate (an exact null over the
@@ -115,6 +121,11 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,47}$")
 
 Choice = tuple[str | None, str | None]
 RuleFn = Callable[["Board"], Choice]
+#: a rule arm may name TWO board rows as one package: ``"idA+idB"`` (exactly
+#: two DISTINCT ids, '+'-joined, no whitespace; rule arms ONLY - the model
+#: parsers reject a pair, and this module keeps that contract: one row per
+#: model reply)
+PAIR_SEP = "+"
 #: (PolicySpec, Board[, Arm when ``wants_arm``]) -> (choice, horizon, note[, receipt extras])
 AskFn = Callable[..., tuple[Any, ...]]
 OutcomeFn = Callable[[str, str, str | None], Mapping[str, Any] | None]
@@ -124,6 +135,29 @@ Clock = Callable[[], datetime]
 
 def _utcnow() -> datetime:
     return datetime.now(UTC)
+
+
+def pair_legs(choice: Any) -> list[str] | None:
+    """The two legs of a ``"idA+idB"`` pair choice (exactly two non-empty
+    '+'-joined parts); None when the choice is not of that shape. Board
+    membership and distinctness are the validator's job (``_validated``)."""
+    if not isinstance(choice, str):
+        return None
+    parts = choice.split(PAIR_SEP)
+    return parts if len(parts) == 2 and all(parts) else None
+
+
+def _later_exit(a: str | None, b: str | None) -> str | None:
+    """The later of two exit instants (a pair resolves when its last leg
+    does). None-safe; compared as instants when both parse, else lexically."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    try:
+        return a if datetime.fromisoformat(a) >= datetime.fromisoformat(b) else b
+    except ValueError:
+        return max(a, b)
 
 
 # ------------------------------------------------------------------ inputs
@@ -425,18 +459,30 @@ def _write_json(path: Path, doc: Mapping[str, Any]) -> None:
 
 
 def _validated(board: Board, choice: Any, horizon: Any, note: Any) -> dict[str, Any]:
-    """The receipt fields of one decision; an unknown row id is never trusted."""
+    """The receipt fields of one decision; an unknown row id is never trusted.
+
+    A choice is either one board row id, or a PAIR ``"idA+idB"``: exactly two
+    DISTINCT ids, both on the board, '+'-joined (a whole choice that matches a
+    row id wins first, so an id containing ``+`` keeps its single-row meaning).
+    A pair receipt records the choice verbatim plus ``legs`` and both ``rows``
+    (``row`` stays None: there is no one row)."""
     ids = board.ids
     out: dict[str, Any] = {"note": str(note or "")[:80]}
     if choice is not None and str(choice) not in ids:
-        out["rejected_choice"] = str(choice)[:40]
-        choice = None
+        legs = pair_legs(choice)
+        if legs is None or legs[0] == legs[1] or any(leg not in ids for leg in legs):
+            out["rejected_choice"] = str(choice)[:40]
+            choice = None
     if choice is None:
         out.update(choice=None, horizon=None, row=None)
+        return out
+    horizon = None if horizon is None else str(horizon)[:40]
+    legs = pair_legs(choice)
+    if legs is None:
+        out.update(choice=str(choice), horizon=horizon, row=ids.index(str(choice)))
     else:
-        out.update(choice=str(choice),
-                   horizon=None if horizon is None else str(horizon)[:40],
-                   row=ids.index(str(choice)))
+        out.update(choice=str(choice), horizon=horizon, row=None,
+                   rows=[ids.index(leg) for leg in legs], legs=legs)
     return out
 
 
@@ -497,7 +543,15 @@ def decide(arm: Arm, board: Board, ask: AskFn | None,
 
 
 class OutcomeCache:
-    """Memoized outcome lookups -> (gross, net) or None (no fill/not evaluable)."""
+    """Memoized outcome lookups -> (gross, net) or None (no fill/not evaluable).
+
+    A PAIR candidate ``"idA+idB"`` (rule arms; :func:`pair_legs`) resolves
+    through the SAME outcome fn: each leg at the same horizon, gross and net
+    summed (each leg's net already carries its own round-trip cost, so both
+    legs pay by construction), a no-fill on EITHER leg -> None (unevaluable,
+    exactly like a single no-fill), and ``exit_at`` the LATER of the legs'
+    exits (a package resolves when its last leg does; desk.purge stays
+    correct)."""
 
     def __init__(self, outcome: OutcomeFn) -> None:
         self._outcome = outcome
@@ -506,6 +560,27 @@ class OutcomeCache:
         self._lock = threading.Lock()
 
     def get(self, snapshot: str, candidate: str, horizon: str | None) -> tuple[float, float] | None:
+        legs = pair_legs(candidate)
+        if legs is None:
+            return self._single(snapshot, candidate, horizon)
+        key = (snapshot, candidate, horizon)
+        with self._lock:
+            if key in self._memo:
+                return self._memo[key]
+        first = self._single(snapshot, legs[0], horizon)
+        second = self._single(snapshot, legs[1], horizon)
+        value: tuple[float, float] | None = (
+            None if first is None or second is None
+            else (first[0] + second[0], first[1] + second[1]))
+        with self._lock:
+            self._memo[key] = value
+            self._exits[key] = None if value is None else _later_exit(
+                self._exits.get((snapshot, legs[0], horizon)),
+                self._exits.get((snapshot, legs[1], horizon)))
+        return value
+
+    def _single(self, snapshot: str, candidate: str,
+                horizon: str | None) -> tuple[float, float] | None:
         key = (snapshot, candidate, horizon)
         with self._lock:
             if key in self._memo:
@@ -1266,6 +1341,12 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "pairing": ("every arm is scored on the same boards: a board any arm lacks "
                         "an ok receipt for is excluded from all arms"),
             "unevaluable": "a chosen row with no outcome (no fill) scores 0, counted apart",
+            "pair_arms": ("a rule arm may choose a two-leg package 'idA+idB' (both rows on "
+                          "the board; gross/net summed over the legs, each leg pays its own "
+                          "round-trip cost; a no-fill on either leg is unevaluable); the "
+                          "random null and the controls stay single-row, so a pair arm is "
+                          "scored against the SINGLE-ROW random null - a documented "
+                          "comparison, never a silently mixed one"),
             "standings_scope": ("standings cover the whole window (descriptive); only "
                                 "the walk-forward test section is confirmatory"),
         },
@@ -1362,7 +1443,7 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         f"({boards['excluded']} excluded for a missing/failed receipt in some arm); "
         f"sessions: {boards['sessions']['count']} ({boards['sessions']['first']} .. "
         f"{boards['sessions']['last']})")
-    for key in ("resampling_unit", "ci", "p_value", "pairing", "unevaluable",
+    for key in ("resampling_unit", "ci", "p_value", "pairing", "unevaluable", "pair_arms",
                 "standings_scope"):
         add(f"- {key}: {protocol[key]}")
     add(f"- draws {protocol['draws']}, seed {protocol['seed']}, random seeds "

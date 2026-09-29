@@ -749,6 +749,50 @@ NOTE = ("Descriptive and mechanical; nothing promoted. excess = pnl - the mean o
         "walk-forward section). The forward CS is the superpopulation monitor; the in-sample "
         "CS only forecasts this run's own total excess.")
 
+PAIR_NA = ("two-leg package arm ('idA+idB' rule choice): the exact single-row counterfactual "
+           "decomposition does not apply (one leg is bullish, the other bearish: DIRECTION "
+           "and the structure/row split are not defined for a package), so it is marked "
+           "n/a here rather than approximated; the arm's net is on the same paired "
+           "scoreboard, scored against the single-row random null")
+
+
+def _any_pair(receipts: Mapping[str, Mapping[str, Any]]) -> bool:
+    """The arm ever held a two-leg package (an ok receipt with a pair choice)."""
+    return any(longrun.pair_legs(rec.get("choice")) is not None
+               for rec in receipts.values() if rec.get("ok"))
+
+
+def pair_arm_skill(outcomes: OutcomeCache, covered: Sequence[Board],
+                   mine: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+    """A package arm's reduced skill doc: realized net/gross and entry
+    accounting only; the six-part decomposition is explicitly n/a (PAIR_NA),
+    never silently approximated."""
+    entered = unevaluable = 0
+    net = gross = 0.0
+    horizons: dict[str, int] = {}
+    for board in covered:
+        rec = mine.get(board.snapshot, {})
+        choice, horizon = rec.get("choice"), rec.get("horizon")
+        if choice is None:
+            continue
+        entered += 1
+        horizons[str(horizon)] = horizons.get(str(horizon), 0) + 1
+        value = outcomes.get(board.snapshot, choice, horizon)
+        if value is None:
+            unevaluable += 1
+            continue
+        gross, net = gross + value[0], net + value[1]
+    return {"boards": len(covered), "entered": entered, "unevaluable": unevaluable,
+            "entry_rate": round(entered / len(covered), 4) if covered else 0.0,
+            "horizon_mix": dict(sorted(horizons.items())),
+            "net_total": round(net, 2), "gross_total": round(gross, 2),
+            "cost_drag": round(gross - net, 2),
+            "decomposition": "n/a", "decomposition_note": PAIR_NA,
+            "verdict": (f"PAIR ARM: {entered} two-leg package(s), net {net:+.2f} "
+                        f"({unevaluable} unevaluable); the single-row counterfactual "
+                        "decomposition is n/a; scored against the single-row random null. "
+                        "Descriptive; nothing promoted.")}
+
 
 def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
                   receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
@@ -767,6 +811,12 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
     for arm in arms:
         mine = receipts.get(arm.name, {})
         covered = [b for b in boards if mine.get(b.snapshot, {}).get("ok")]
+        complete = len(covered) == len(boards)
+        if _any_pair(mine):
+            doc_arms[arm.name] = {"policy": arm.policy.name, "complete": complete,
+                                  "kind": arm.policy.kind,
+                                  **pair_arm_skill(outcomes, covered, mine)}
+            continue
         decisions = [(mine[b.snapshot].get("choice"), mine[b.snapshot].get("horizon"))
                      for b in covered]
         where = {b.snapshot: i for i, b in enumerate(covered)}
@@ -774,7 +824,6 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
         doc = arm_skill(book, covered, decisions, window=boards, order=order, options=opts,
                         draws=protocol.draws, seed=protocol.seed, bound=bound,
                         base_block=base_block, population=len(boards), kind=arm.policy.kind)
-        complete = len(covered) == len(boards)
         doc = {"policy": arm.policy.name, "complete": complete, **doc}
         if not complete:
             doc["verdict"] = verdict(doc, f"PARTIAL ({len(covered)}/{len(boards)} boards): ")
@@ -802,6 +851,16 @@ def progress_skill(boards: Sequence[Board], arms: Sequence[Arm],
     out: dict[str, Any] = {}
     for arm in arms:
         mine = receipts.get(arm.name, {})
+        if _any_pair(mine):
+            decided = _ordered_ok(mine, set(by_snapshot))
+            out[arm.name] = {
+                "decided": len(decided),
+                "entered": sum(1 for s in decided if mine[s].get("choice") is not None),
+                "excess": None, "in_sample_significant": None,
+                "cs_total_excess": None, "cs_total_excess_asymptotic": None,
+                "note": "pair arm: the single-row excess and decomposition are n/a "
+                        "(see the digest's skill section)"}
+            continue
         values: list[float] = []
         entered = 0
         for snap in _ordered_ok(mine, set(by_snapshot)):
@@ -865,11 +924,19 @@ def skill_markdown(section: Mapping[str, Any]) -> list[str]:
         "bootstrap 95% CIs).")
     add("")
     width = max([len(str(n)) for n in section["arms"]] + [4])
+    singles = [name for name, a in section["arms"].items()
+               if a.get("decomposition") != "n/a"]
+    if len(singles) != len(section["arms"]):
+        pairs = [str(n) for n in section["arms"] if n not in singles]
+        add(f"Two-leg package arm(s) {', '.join(pairs)}: decomposition n/a (the single-row "
+            "counterfactual does not apply to a package); net on the paired scoreboard.")
+        add("")
     add("```text")
     add(f"{'arm':<{width}} {'boards':>6} {'enter':>5} {'net':>8} {'base':>8} {'partic':>7} "
         f"{'horizon':>8} {'dirTilt':>8} {'dirTime':>8} {'select':>8} {'struct':>8} "
         f"{'undl':>7} {'row':>7} {'cost':>7} residual")
-    for name, a in section["arms"].items():
+    for name in singles:
+        a = section["arms"][name]
         c, s = a["components"], a["selection_split"]
         add(f"{name:<{width}} {a['boards']:>6} {a['entered']:>5} {a['net_total']:>+8.0f} "
             f"{c['base']:>+8.0f} {c['participation']:>+7.0f} {c['horizon']:>+8.0f} "
@@ -882,7 +949,8 @@ def skill_markdown(section: Mapping[str, Any]) -> list[str]:
     add(f"{'arm':<{width}} {'L':>2} {'blk':>5} {'net session CI':>17} {'net block CI':>17} "
         f"{'ratio':>6} {'ESS':>5}  {'excess [block CI]':<26} {'alpha [block CI]':<26} "
         "forward CS (total excess)")
-    for name, a in section["arms"].items():
+    for name in singles:
+        a = section["arms"][name]
         iv = a["intervals"]
         fwd = a["cs_forward"]
         excess = f"{iv['excess']['total']:+.0f} {_ci(iv['excess']['block_ci95'])}"
