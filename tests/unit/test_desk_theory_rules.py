@@ -87,6 +87,47 @@ def test_momentum_follows_the_20_session_sign_of_the_rows_underlying() -> None:
     assert pick(direction="momentum_20s", structures=["put_debit"]) == (None, None)
 
 
+def test_cross_sectional_trades_the_weakest_bearish_and_the_strongest_bullish() -> None:
+    # 20s: U1 -2.00 < U2 3.10; 5s: U1 -1.00 < U2 1.20
+    assert pick(direction="xs_weak_20s") == ("b", None)  # the only bearish U1 row
+    assert pick(direction="xs_strong_20s") == ("c", None)  # bullish U2 rows c, e
+    assert pick(direction="xs_strong_20s", structures=["put_credit"]) == ("e", None)
+    assert pick(direction="xs_weak_5s", horizon="hold:5") == ("b", "hold:5")
+    assert pick(direction="xs_strong_5s") == ("c", None)
+    assert pick(direction="xs_weak_20s", structures=["put_debit"]) == (None, None)  # d is U2
+    # a third, weaker underlying takes the weak side; the strong side is unchanged
+    three = {**CONTEXT, "underlyings": {**CONTEXT["underlyings"],
+                                        "U3": {"ret_5s_pct": "-0.50", "ret_20s_pct": "-5.00"}}}
+    rows = [*ROWS, {"id": "g", "structure": "put_debit", "direction": "bearish",
+                    "underlying": "U3", "dte": 30}]
+    weak = rule_theory({"structures": list(STRUCTURES), "direction": "xs_weak_20s"})
+    strong = rule_theory({"structures": list(STRUCTURES), "direction": "xs_strong_20s"})
+    assert weak(board(context=three, rows=rows)) == ("g", None)
+    assert strong(board(context=three, rows=rows)) == ("c", None)
+    # 5s: U1 -1.00 is still the weakest of (-1.00, 1.20, -0.50)
+    assert rule_theory({"structures": list(STRUCTURES), "direction": "xs_weak_5s"})(
+        board(context=three, rows=rows)) == ("b", None)
+
+
+def test_cross_sectional_ties_and_missing_returns_are_ineligible() -> None:
+    tie = {**CONTEXT, "underlyings": {"U1": {"ret_20s_pct": "1.00"},
+                                      "U2": {"ret_20s_pct": "1.00"}}}
+    lone = {**CONTEXT, "underlyings": {"U1": {"ret_20s_pct": "-2.00"},
+                                       "U2": {"ret_20s_pct": None}}}
+    top_tie = {**CONTEXT, "underlyings": {"U1": {"ret_20s_pct": "-2.00"},
+                                          "U2": {"ret_20s_pct": "3.10"},
+                                          "U3": {"ret_20s_pct": "3.10"}}}
+    for direction in ("xs_weak_20s", "xs_strong_20s"):
+        rule = rule_theory({"structures": list(STRUCTURES), "direction": direction})
+        assert rule(board(context=tie)) == (None, None)
+        assert rule(board(context=lone)) == (None, None)
+        assert rule(board(context=None)) == (None, None)
+    assert rule_theory({"structures": list(STRUCTURES), "direction": "xs_strong_20s"})(
+        board(context=top_tie)) == (None, None)
+    assert rule_theory({"structures": list(STRUCTURES), "direction": "xs_weak_20s"})(
+        board(context=top_tie)) == ("b", None)
+
+
 def test_reversal_fades_the_one_session_sign() -> None:
     # U1 up yesterday -> fade with bearish U1 rows (b); U2 down -> bullish U2 rows (c, e)
     assert pick(direction="reversal_1s") == ("b", None)

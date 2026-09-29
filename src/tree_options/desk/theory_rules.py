@@ -14,7 +14,13 @@ Knobs (only ``structures`` is required):
 - ``structures``: the structures a row may have (a subset of the four);
 - ``direction``: ``any`` | ``bullish`` | ``bearish`` | ``momentum_20s`` (the row's direction
   agrees with the sign of its underlying's ``ret_20s_pct``) | ``reversal_1s`` (it disagrees
-  with the sign of ``ret_1s_pct``); a null or zero return makes the row ineligible;
+  with the sign of ``ret_1s_pct``); a null or zero return makes the row ineligible.
+  Cross-sectional (relative strength across the board's underlyings, 2026-09-29: the v2
+  long run's M3.1 alpha was mostly WHICH underlying it traded): ``xs_weak_20s`` /
+  ``xs_weak_5s`` (a bearish row on the underlying with the strictly lowest ``ret_20s_pct``
+  / ``ret_5s_pct``) and ``xs_strong_20s`` / ``xs_strong_5s`` (a bullish row on the strictly
+  highest); fewer than two underlyings with that return, or a tie at the extreme, makes
+  every row ineligible;
 - entry filters: ``time_of_day`` (a list of the context's buckets) and inclusive bounds
   ``dte_min``/``dte_max``, ``otm_min``/``otm_max`` (short-strike distance signed toward out
   of the money, percent: +moneyness for call spreads, -moneyness for put spreads),
@@ -50,7 +56,8 @@ STRUCTURES = ("put_credit", "call_debit", "put_debit", "call_credit")
 BULLISH = frozenset({"put_credit", "call_debit"})
 #: outcomes.EXIT_MODES (kept local: this module must not import the outcome engine)
 HORIZONS = ("intraday", "eod", "hold:1", "hold:3", "hold:5", "hold:10", "expiry")
-DIRECTIONS = ("any", "bullish", "bearish", "momentum_20s", "reversal_1s")
+DIRECTIONS = ("any", "bullish", "bearish", "momentum_20s", "reversal_1s",
+              "xs_weak_20s", "xs_strong_20s", "xs_weak_5s", "xs_strong_5s")
 KEYS = ("board_order", "max_reward_risk", "min_max_loss", "max_max_loss", "max_otm", "min_otm")
 TIMES_OF_DAY = ("open", "morning", "midday", "afternoon", "close")
 BOUNDED = ("dte", "otm", "rv", "max_loss")
@@ -168,6 +175,18 @@ def _field(board: Board, row: Mapping[str, Any], field: str) -> float | None:
     return _num(row.get("max_loss"))
 
 
+def xs_extreme(board: Board, field: str, *, lowest: bool) -> str | None:
+    """The underlying with the strictly lowest (highest) ``field`` across the board's
+    context; None with fewer than two known values or a tie at the extreme."""
+    per = (board.context or {}).get("underlyings") or {}
+    known = sorted((v, u) for u, doc in per.items()
+                   if (v := _num((doc or {}).get(field))) is not None)
+    if len(known) < 2:
+        return None
+    first, second = (known[0], known[1]) if lowest else (known[-1], known[-2])
+    return None if first[0] == second[0] else str(first[1])
+
+
 def _direction_ok(board: Board, row: Mapping[str, Any], direction: str) -> bool:
     if direction == "any":
         return True
@@ -176,6 +195,12 @@ def _direction_ok(board: Board, row: Mapping[str, Any], direction: str) -> bool:
         return bullish
     if direction == "bearish":
         return not bullish
+    if direction.startswith("xs_"):
+        _, side, window = direction.split("_")
+        weak = side == "weak"
+        if bullish == weak:  # weak -> bearish rows only; strong -> bullish rows only
+            return False
+        return row.get("underlying") == xs_extreme(board, f"ret_{window}_pct", lowest=weak)
     ret = _context(board, row, "ret_20s_pct" if direction == "momentum_20s" else "ret_1s_pct")
     if ret is None or ret == 0:
         return False
