@@ -22,6 +22,7 @@ from tree_options.desk import forecast, longrun, outcomes
 from tree_options.desk import intraday_action_graph as iag
 from tree_options.desk.forecast import Label
 from tree_options.desk.longrun import Arm, Board, PolicySpec
+from tree_options.trex.discovery import llm
 from tree_options.trex.discovery.llm import PROVIDERS
 
 DAYS = parity_days(12)          # 2026-08-03 .. 2026-08-18
@@ -401,6 +402,54 @@ _FC_CONTEXT = {"time_of_day": "midday", "session_ordinal": 9,
 
 def _fc_board() -> Board:
     return Board("s:2026-08-03T13:00", "2026-08-03", "13:00", [ROWS[0]], _FC_CONTEXT)
+
+
+class FailoverForecastTransport:
+    """Raises (a transport outage the caller sees as LlmError TimeoutError) for
+    every host in ``fail_hosts``; answers a full p_up for any other provider."""
+
+    def __init__(self, fail_hosts: tuple[str, ...] = ("api.minimax.io",)) -> None:
+        self.fail_hosts, self.calls = fail_hosts, []
+
+    def __call__(self, url: str, body: bytes, headers: dict[str, str],
+                 timeout: float) -> tuple[int, bytes]:
+        payload = json.loads(body)
+        self.calls.append({"url": url, "body": payload, "timeout": timeout})
+        if any(host in url for host in self.fail_hosts):
+            raise TimeoutError("simulated provider outage")
+        shown = json.loads(payload["messages"][0]["content"])["context"]["underlyings"]
+        p_up = {label: {h: 0.6 for h in H} for label in shown}
+        return 200, json.dumps({"choices": [{"message": {"content": json.dumps({"p_up": p_up})},
+                                             "finish_reason": "stop"}]}).encode()
+
+
+def test_forecast_ask_falls_over_once_and_records_who_answered() -> None:
+    transport = FailoverForecastTransport()
+    ask = _fc_ask(transport, effort="low", max_tokens=20000, timeout=300.0,
+                  fallback_provider="zai")
+    choice, _horizon, note, extra = ask(
+        PolicySpec("fc", "model"), _fc_board(), Arm("fc", PolicySpec("fc", "model"), 1))
+    assert [c["url"].split("/chat")[0] for c in transport.calls] == [
+        "https://api.minimax.io/v1", "https://api.z.ai/api/coding/paas/v4"]
+    backup = transport.calls[1]
+    assert backup["body"]["max_tokens"] == 20000  # the generic budget rides along
+    assert "reasoning_effort" not in backup["body"]  # never the primary's extras
+    assert backup["timeout"] == 300.0
+    assert extra["provider"] == "zai" and extra["fallback"] is True
+    assert "escalated" not in extra  # the backup answered without escalation
+    assert extra["forecast"]["p_up"]
+    assert note == "" and choice is None  # decision "none"
+
+    # both providers down: exactly two calls, the failure stands, no fallback flag
+    both = FailoverForecastTransport(("api.minimax.io", "api.z.ai"))
+    with pytest.raises(llm.LlmError, match="zai: TimeoutError"):
+        _fc_ask(both, fallback_provider="zai")(
+            PolicySpec("fc", "model"), _fc_board(), Arm("fc", PolicySpec("fc", "model"), 1))
+    assert len(both.calls) == 2
+    with pytest.raises(ValueError, match="fallback_provider must be one of"):
+        _fc_ask(None, fallback_provider="nonexistent")
+    with pytest.raises(ValueError, match="fallback_provider must differ"):
+        _fc_ask(None, fallback_provider="minimax-flash")
 
 
 class TruncatingForecastTransport:

@@ -253,6 +253,66 @@ def escalation_budget(
     return {**(extra or {}), "max_tokens": tokens}, seconds, tokens
 
 
+#: per-call ``extra`` keys that are safe on ANY provider (pure budgets);
+#: everything else (e.g. minimax reasoning_effort) is primary-provider-only
+GENERIC_EXTRA_KEYS = frozenset({"max_tokens"})
+
+
+def ask_json(
+    provider: str, messages: list[dict[str, str]], *, fallback: str | None = None,
+    transport: PostTransport | None = None, extra: dict[str, Any] | None = None,
+    timeout: float | None = None, max_tokens: int | None = None,
+) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    """chat_json for one decision with the two self-heals the desk lanes share:
+
+    1. ONE escalating retry when the reply is truncated (escalation_budget);
+    2. when ``fallback`` names a different provider, ONE attempt on it after
+       the primary's final failure (any LlmError: timeout, HTTP, truncation
+       that survived its escalation). The fallback call carries only generic
+       per-call fields (max_tokens/timeout) - never the primary's
+       provider-specific extras such as reasoning_effort.
+
+    Returns (reply, model, meta); ``meta`` records who answered and how -
+    ``{"provider": name}`` always, plus ``escalated``/``max_tokens``/``timeout``
+    when the escalation fired and ``fallback: True`` when the backup answered -
+    so receipts never hide which model made a call. A failure on both providers
+    raises the fallback's LlmError (the primary's when no fallback applies)."""
+    base: dict[str, Any] = {}
+    if transport is not None:
+        base["transport"] = transport
+
+    def call(name: str, call_extra: dict[str, Any] | None
+             ) -> tuple[dict[str, Any], str, dict[str, Any]]:
+        kwargs = dict(base)
+        if call_extra:
+            kwargs["extra"] = dict(call_extra)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        try:
+            reply, model = chat_json(name, messages, **kwargs)
+            return reply, model, {}
+        except LlmError as error:  # one escalating retry, then the failure stands
+            if TRUNCATED_NOTE not in str(error):
+                raise
+            retry_extra, seconds, tokens = escalation_budget(
+                name, max_tokens=max_tokens, timeout=timeout, extra=call_extra)
+            reply, model = chat_json(
+                name, messages, **{**kwargs, "extra": retry_extra, "timeout": seconds})
+            return reply, model, {"escalated": True, "max_tokens": tokens,
+                                  "timeout": seconds}
+
+    try:
+        reply, model, meta = call(provider, extra)
+        return reply, model, {**meta, "provider": provider}
+    except LlmError:
+        if not fallback or fallback == provider:
+            raise
+        backup_extra = {key: value for key, value in (extra or {}).items()
+                        if key in GENERIC_EXTRA_KEYS}
+        reply, model, meta = call(fallback, backup_extra or None)
+        return reply, model, {**meta, "provider": fallback, "fallback": True}
+
+
 SYSTEM_PROMPT = (
     "You assist a paper-trading options cockpit. Its scanner looks for "
     "put-debit-spread opportunities (bearish or hedging structures) on a "

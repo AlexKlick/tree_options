@@ -694,7 +694,7 @@ class ForecastAsk:
                  tau: float | None, payoff: Mapping[str, Any] | None, key: str = "board_order",
                  cost: float | None = None, edge_cap: float = EDGE_CAP,
                  effort: str | None = None, max_tokens: int | None = None,
-                 timeout: float | None = None) -> None:
+                 timeout: float | None = None, fallback_provider: str | None = None) -> None:
         if decision not in DECISIONS:
             raise ValueError(f"decision must be one of {DECISIONS}")
         if decision == "ev" and payoff is None:
@@ -704,11 +704,18 @@ class ForecastAsk:
         if (timeout is not None and not 0 < timeout <= 900) or (
                 max_tokens is not None and not 0 < max_tokens <= 64000):
             raise ValueError("timeout must be in (0, 900] s and max_tokens in (0, 64000]")
+        if fallback_provider is not None:
+            if fallback_provider not in llm.PROVIDERS:
+                raise ValueError(
+                    f"fallback_provider must be one of {sorted(llm.PROVIDERS)}")
+            if fallback_provider == provider:
+                raise ValueError("fallback_provider must differ from provider")
         self.provider, self.transport, self.seed = provider, transport, seed
         self.decision, self.tau, self.payoff, self.key = decision, tau, payoff, key
         self.cost = round_trip_cost() if cost is None else cost
         self.edge_cap, self.effort = edge_cap, effort
         self.max_tokens, self.timeout = max_tokens, timeout
+        self.fallback_provider = fallback_provider
 
     def decide(self, board: Board, p_up: Mapping[str, Mapping[str, float]]
                ) -> tuple[str | None, str | None, dict[str, Any]]:
@@ -729,32 +736,18 @@ class ForecastAsk:
             raise ForecastError("the board carries no public context")
         perm = permutation(self.seed, board.snapshot, arm.repeat, sorted(context["underlyings"]))
         messages = forecast_prompt(context, perm, spec.prompt)
-        kwargs: dict[str, Any] = {}
-        if self.transport is not None:
-            kwargs["transport"] = self.transport
         extra: dict[str, Any] = {}
         if self.effort is not None:
             extra["reasoning_effort"] = self.effort
         if self.max_tokens is not None:
             extra["max_tokens"] = self.max_tokens
-        if extra:
-            kwargs["extra"] = extra
-        if self.timeout is not None:
-            kwargs["timeout"] = self.timeout
         provider = spec.provider or self.provider
-        escalated: dict[str, Any] | None = None
-        try:
-            reply, model = llm.chat_json(provider, messages, **kwargs)
-        except llm.LlmError as error:  # one escalating retry, then the failure stands
-            if llm.TRUNCATED_NOTE not in str(error):
-                raise
-            retry_extra, seconds, tokens = llm.escalation_budget(
-                provider, max_tokens=self.max_tokens, timeout=self.timeout,
-                extra=kwargs.get("extra"))
-            reply, model = llm.chat_json(provider, messages,
-                                         **{**kwargs, "extra": retry_extra,
-                                            "timeout": seconds})
-            escalated = {"escalated": True, "max_tokens": tokens, "timeout": seconds}
+        fallback = None
+        if self.fallback_provider is not None and self.fallback_provider != provider:
+            fallback = self.fallback_provider
+        reply, model, meta = llm.ask_json(
+            provider, messages, fallback=fallback, transport=self.transport,
+            extra=extra or None, timeout=self.timeout, max_tokens=self.max_tokens)
         p_up, exp = parse_forecast(reply, perm)
         choice, horizon, detail = self.decide(board, p_up)
         forecast = {"schema": FORECAST_SCHEMA, "model": model, "seed": self.seed,
@@ -762,10 +755,7 @@ class ForecastAsk:
                     "perm": perm, "p_up": p_up, "exp_ret_bps": exp, "decision": detail,
                     "prompt_sha256": hashlib.sha256(
                         messages[0]["content"].encode()).hexdigest()}
-        receipt_extra = {"forecast": forecast}
-        if escalated is not None:
-            receipt_extra = {**escalated, "forecast": forecast}
-        return choice, horizon, str(reply.get("note", ""))[:60], receipt_extra
+        return choice, horizon, str(reply.get("note", ""))[:60], {**meta, "forecast": forecast}
 
 
 def _tau_param(value: Any) -> float | None:
@@ -777,11 +767,14 @@ def ask_plugin(params: Mapping[str, Any], ctx: PluginContext) -> ForecastAsk:
     = the provider default, max), decision (ev | direction | none), tau
     (pre-registered edge threshold), edge_cap, seed, cutoff (the payoff
     map's TRAIN split), key (the direction variant's row order), timeout (s)
-    and max_tokens (per-call budget overrides over the provider spec)."""
+    and max_tokens (per-call budget overrides over the provider spec), and
+    fallback_provider (ONE attempt on it after the primary's final failure;
+    must differ from provider)."""
     decision = str(params.get("decision", "ev"))
     cutoff = str(params.get("cutoff", DEFAULT_CUTOFF))
     payoff = fit_state(ctx, cutoff)["payoff"] if decision == "ev" else None
     effort = params.get("effort")
+    fallback = params.get("fallback_provider")
     return ForecastAsk(provider=str(params.get("provider", "minimax-flash")),
                        transport=ctx.shared.get("transport"),
                        seed=int(params.get("seed", DEFAULT_SEED)), decision=decision,
@@ -792,7 +785,8 @@ def ask_plugin(params: Mapping[str, Any], ctx: PluginContext) -> ForecastAsk:
                        max_tokens=(None if params.get("max_tokens") is None
                                    else int(params["max_tokens"])),
                        timeout=(None if params.get("timeout") is None
-                                else float(params["timeout"])))
+                                else float(params["timeout"])),
+                       fallback_provider=None if fallback is None else str(fallback))
 
 
 # ------------------------------------------------------------------ report

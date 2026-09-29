@@ -949,6 +949,96 @@ def test_v2_ask_escalation_is_capped_and_a_second_truncation_still_fails(
     assert view["m31"]["failure_reasons"] == {"truncated": 1}
 
 
+class FailoverTransport:
+    """Raises for the primary provider's URL (a transport outage the caller
+    sees as LlmError TimeoutError) and answers like HorizonTransport(0, eod)
+    for every other provider."""
+
+    def __init__(self, fail_hosts: tuple[str, ...] = ("api.minimax.io",)) -> None:
+        self.fail_hosts, self.calls = fail_hosts, []
+
+    def __call__(self, url: str, body: bytes, headers: dict[str, str],
+                 timeout: float) -> tuple[int, bytes]:
+        self.calls.append({"url": url, "body": json.loads(body), "timeout": timeout})
+        if any(host in url for host in self.fail_hosts):
+            raise TimeoutError("simulated provider outage")
+        rows = json.loads(json.loads(body)["messages"][0]["content"])["board"]
+        content = json.dumps({"choice": rows[0]["id"], "horizon": "eod", "note": "backup"})
+        return 200, json.dumps(
+            {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
+        ).encode()
+
+
+def test_v2_ask_falls_over_to_the_backup_provider_once(
+        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    path, _ = v1_bundle
+    config = tmp_path / "failover.json"
+    config.write_text(json.dumps({
+        "out_root": str(tmp_path / "out"), "incumbent": "m31",
+        "boards": {"plugin": "v2", "bundle": str(path)},
+        "outcome": {"plugin": "v2", "sync": 2},
+        "ask": {"plugin": "v2", "provider": "minimax-flash", "effort": "low",
+                "timeout": 300, "max_tokens": 20000, "fallback_provider": "zai"},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "m31", "kind": "model"}]}))
+    transport = FailoverTransport()
+    result = longrun.run_from_config(config, shared={"transport": transport}, limit=1)
+    assert result["status"] == "finished" and result["complete"] is True
+    assert [c["url"].split("/chat")[0] for c in transport.calls] == [
+        "https://api.minimax.io/v1", "https://api.z.ai/api/coding/paas/v4"]
+    backup = transport.calls[1]
+    assert backup["body"]["max_tokens"] == 20000  # the generic budget rides along
+    assert "reasoning_effort" not in backup["body"]  # never the primary's extras
+    assert backup["timeout"] == 300.0
+    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
+                     .read_text().splitlines()[0])
+    assert rec["ok"] is True and rec["choice"]
+    assert rec["provider"] == "zai" and rec["fallback"] is True
+    assert rec.get("escalated") is None
+    # both providers down: exactly two calls, the failure stands as the backup's error
+    both = FailoverTransport(("api.minimax.io", "api.z.ai"))
+    down = tmp_path / "down.json"
+    down.write_text(config.read_text())
+    result = longrun.run_from_config(down, shared={"transport": both}, limit=1)
+    assert result["status"] == "finished"
+    assert len(both.calls) == 2
+    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
+                     .read_text().splitlines()[0])
+    assert rec["ok"] is False and "zai: TimeoutError" in rec["error"]
+    doc = json.loads((Path(result["run_dir"]) / "digest.json").read_text())
+    rows = {r["arm"]: r for r in doc["standings"]}
+    assert rows["m31"]["failure_reasons"] == {"timeout": 1}
+
+
+def test_v2_ask_refuses_a_bad_fallback_provider(
+        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    path, _ = v1_bundle
+    base = {"out_root": str(tmp_path / "out"), "incumbent": "m31",
+            "boards": {"plugin": "v2", "bundle": str(path)},
+            "outcome": {"plugin": "v2", "sync": 2},
+            "protocol": {"draws": 1000, "random_seeds": 200},
+            "policies": [{"name": "m31", "kind": "model"}]}
+    transport = HorizonTransport(0, "eod")
+    for bad, match in (("nonexistent", "fallback_provider must be one of"),
+                       ("minimax-flash", "fallback_provider must differ")):
+        config = tmp_path / f"bad-{bad}.json"
+        config.write_text(json.dumps({**base, "ask": {
+            "plugin": "v2", "provider": "minimax-flash", "fallback_provider": bad}}))
+        with pytest.raises(ValueError, match=match):
+            longrun.run_from_config(config, shared={"transport": transport}, limit=1)
+    # a policy whose own provider equals the fallback simply never falls over
+    same = tmp_path / "same.json"
+    same.write_text(json.dumps({
+        **base, "incumbent": "zz",
+        "ask": {"plugin": "v2", "provider": "minimax-flash",
+                "fallback_provider": "zai"},
+        "policies": [{"name": "zz", "kind": "model", "provider": "zai"}]}))
+    transport = FailoverTransport(("api.minimax.io",))  # zai answers directly
+    assert longrun.run_from_config(same, shared={"transport": transport},
+                                   limit=1)["status"] == "finished"
+    assert len(transport.calls) == 1 and "api.z.ai" in transport.calls[0]["url"]
+
+
 def test_score_run_tallies_failure_reasons_per_arm() -> None:
     boards = boards_for(["2026-06-01", "2026-06-02"])  # 4 boards
     arms = longrun.arms_of([PolicySpec("m", "model", repeats=2)])

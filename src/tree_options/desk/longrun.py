@@ -1926,22 +1926,27 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     and ``max_tokens`` override the provider's budget per call - thinking at
     max effort times out on the hardest boards, and a failed receipt is
     missing-not-at-random, so a resume retry pass may give it more room.
-    A truncated reply self-heals once: the retry doubles the effective
-    budget (llm.escalation_budget, capped 48000 tokens / 900 s) and an
-    escalated success lands on the receipt as escalated: true."""
+    A truncated reply self-heals once (doubled budget, capped 48000 tokens /
+    900 s). ``fallback_provider`` (e.g. "zai" when the primary is
+    minimax-flash) takes ONE attempt after the primary's final failure - the
+    desk burns both subscriptions and a provider outage stops costing boards.
+    llm.ask_json records who answered (provider / escalated / fallback) on
+    every receipt; the fallback call never carries the primary's
+    provider-specific extras (reasoning_effort)."""
     from tree_options.desk import lab
     from tree_options.desk.forecast import EFFORTS
-    from tree_options.trex.discovery.llm import (
-        TRUNCATED_NOTE,
-        LlmError,
-        chat_json,
-        escalation_budget,
-    )
+    from tree_options.trex.discovery.llm import PROVIDERS, ask_json
 
     default = str(params.get("provider", "minimax-flash"))
     effort = params.get("effort")
     if effort is not None and effort not in EFFORTS:
         raise ValueError(f"effort must be one of {EFFORTS}")
+    fallback = params.get("fallback_provider")
+    if fallback is not None:
+        if fallback not in PROVIDERS:
+            raise ValueError(f"fallback_provider must be one of {sorted(PROVIDERS)}")
+        if fallback == default:
+            raise ValueError("fallback_provider must differ from provider")
     timeout = None if params.get("timeout") is None else float(params["timeout"])
     max_tokens = None if params.get("max_tokens") is None else int(params["max_tokens"])
     if (timeout is not None and not 0 < timeout <= 900) or (
@@ -1960,28 +1965,11 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     def ask(spec: PolicySpec, board: Board) -> tuple[Any, ...]:
         context = state["contexts"][board.snapshot]
         provider = spec.provider or default
-        kwargs: dict[str, Any] = {}
-        if transport is not None:
-            kwargs["transport"] = transport
-        if extra:
-            kwargs["extra"] = dict(extra)
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        try:
-            reply, _model = chat_json(
-                provider, lab.board_prompt_v2(board.rows, context, spec.prompt), **kwargs)
-        except LlmError as error:  # one escalating retry, then the failure stands
-            if TRUNCATED_NOTE not in str(error):
-                raise
-            retry_extra, seconds, tokens = escalation_budget(
-                provider, max_tokens=max_tokens, timeout=timeout,
-                extra=kwargs.get("extra"))
-            reply, _model = chat_json(
-                provider, lab.board_prompt_v2(board.rows, context, spec.prompt),
-                **{**kwargs, "extra": retry_extra, "timeout": seconds})
-            return (*lab.parse_choice_v2(reply, set(board.ids)),
-                    {"escalated": True, "max_tokens": tokens, "timeout": seconds})
-        return lab.parse_choice_v2(reply, set(board.ids))
+        reply, _model, meta = ask_json(
+            provider, lab.board_prompt_v2(board.rows, context, spec.prompt),
+            fallback=fallback, transport=transport, extra=extra or None,
+            timeout=timeout, max_tokens=max_tokens)
+        return (*lab.parse_choice_v2(reply, set(board.ids)), meta)
     return ask
 
 
