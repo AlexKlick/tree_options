@@ -16,7 +16,7 @@ import sys
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from tree_options.trex.desk_runtime import DeskPaths
 from tree_options.trex.plan import ExitRules, Leg, LegStructure, TakeProfit, validate_package_order
@@ -81,12 +81,23 @@ def compose_request(*, intent_id: str, account_id: str, underlying: str,
                     buy_strike: Decimal, sell_strike: Decimal, expiry: date,
                     debit: Decimal, cap: Decimal, entry_date: date,
                     exit_deadline: date, tp_frac: Decimal | None,
-                    send_deadline: datetime, requested_by: str) -> EntryRequest:
-    """Build a validated put debit-vertical entry request (never sends)."""
+                    send_deadline: datetime, requested_by: str,
+                    tp_basis: Literal["width_frac", "gain_frac",
+                                      "credit_frac"] = "gain_frac") -> EntryRequest:
+    """Build a validated put debit-vertical entry request (never sends).
+
+    The take-profit basis is explicit (operator ruling 2026-09-29): the
+    default ``gain_frac`` reads the fraction as a share of the DEBIT PAID
+    (0.5 = take profit at +50% of entry); the former implicit
+    ``width_frac`` read it as a share of the structure WIDTH, which on a
+    cheap, wide vertical targets an enormous multiple of entry (the
+    744/742 at $0.44 with width 2.00 put TP at $1.00, +127%). An unknown
+    basis or a value out of the basis's range refuses (pydantic
+    ValidationError is a ValueError)."""
     legs = (Leg(right="P", action="BUY", strike=buy_strike, expiry=expiry),
             Leg(right="P", action="SELL", strike=sell_strike, expiry=expiry))
     exits = ExitRules(touch=False, breach=False, take_profit=(
-        TakeProfit(basis="width_frac", value=tp_frac) if tp_frac is not None else None))
+        TakeProfit(basis=tp_basis, value=tp_frac) if tp_frac is not None else None))
     structure = LegStructure(
         id=intent_id, underlying=underlying, kind="debit_vertical", legs=legs,
         quantity=1, entry_date=entry_date, exit_deadline=exit_deadline,
@@ -129,7 +140,16 @@ def _cli(argv: list[str] | None = None) -> int:
                      help="the structure cap (default 1.20)")
     req.add_argument("--entry-date", type=date.fromisoformat, default=None)
     req.add_argument("--exit-deadline", required=True, type=date.fromisoformat)
-    req.add_argument("--tp-frac", type=Decimal, default=Decimal("0.5"))
+    req.add_argument("--tp-frac", type=Decimal, default=Decimal("0.5"),
+                     help="take-profit threshold in the basis's units (default 0.5)")
+    req.add_argument("--tp-basis", default="gain_frac",
+                     choices=("width_frac", "gain_frac", "credit_frac"),
+                     help="take-profit basis (default gain_frac: TP at entry x "
+                          "(1 + tp_frac), i.e. +50%% of the debit paid at the "
+                          "default 0.5; width_frac: TP at tp_frac x the structure "
+                          "width - on a cheap wide vertical that targets a large "
+                          "multiple of entry; credit_frac: that fraction of the "
+                          "entry credit captured)")
     req.add_argument("--intent-id", default=None,
                      help="also the structure id and file name (default canary-<date>-<n>)")
     req.add_argument("--account", default=DEFAULT_ACCOUNT)
@@ -163,6 +183,12 @@ def _cli(argv: list[str] | None = None) -> int:
         paths.root.mkdir(parents=True, exist_ok=True)
         paths.flatten().touch()
         print("FLATTEN placed")
+        if paths.halt().exists():  # the same kill-file read `status` reports
+            print("WARNING: HALT is also present. The desk runtime gates EXIT "
+                  "orders on HALT too, so this FLATTEN will not close anything "
+                  "until the HALT file is gone. To flatten now: `resume` "
+                  "(removes HALT and FLATTEN), then `flatten` again.",
+                  file=sys.stderr)
         return 0
     if args.command == "resume":
         for flag in (paths.halt(), paths.flatten()):
@@ -191,7 +217,8 @@ def _cli(argv: list[str] | None = None) -> int:
             buy_strike=args.buy_strike, sell_strike=args.sell_strike,
             expiry=args.expiry, debit=args.debit, cap=args.cap,
             entry_date=entry_date, exit_deadline=args.exit_deadline,
-            tp_frac=args.tp_frac, send_deadline=now.replace(
+            tp_frac=args.tp_frac, tp_basis=args.tp_basis,
+            send_deadline=now.replace(
                 hour=11, minute=15, second=0) if now.hour < 11 else now,
             requested_by=args.requested_by)
     except ValueError as error:

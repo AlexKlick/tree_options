@@ -17,12 +17,13 @@ from typing import Any
 import pytest
 
 from tests.unit.trex_fakes import SupervisedGateway, position_row
+from tree_options.desk import book as desk_book
 from tree_options.time.sessions import shift_instant
 from tree_options.trex.account import AccountSnapshot
 from tree_options.trex.clock import ET
 from tree_options.trex.desk_runtime import DeskPaths, DeskRuntime
 from tree_options.trex.ibkr import IbkrTrex
-from tree_options.trex.plan import LegStructure
+from tree_options.trex.plan import ExitRules, Leg, LegStructure
 from tree_options.trex.state import BookState, Status, StructureState
 from tree_options.trex.supervised import SupervisedPaths, grant_mandate
 from tree_options.trex.supervised_desk import (
@@ -402,6 +403,124 @@ def test_an_unpriced_exit_today_makes_the_day_loss_unknown():
     book.structures["s"] = StructureState(Status.CLOSED, filled_qty=1, entry_fill=Decimal("0.90"),
                                           exit_filled_qty=1, exit_unpriced_qty=1, updated_at=T0)
     assert realized_day_loss(book, {"s": RISK}, T0.date()) is None
+
+
+# ------------------------------------------- reservation parity (two views)
+
+# Two "$477" implementations exist by design and must not silently drift:
+# the canary's screen (supervised_desk.open_loss_reservation, A) and the
+# rails' book view (desk.book._position, B; load_book's per-position
+# max_loss_usd). On the DOCUMENTED COMMON SUBSET they must agree exactly;
+# where they differ the difference is intentional and its direction is
+# asserted, so a future edit to either side that changes the totals fails.
+
+
+def _struct(sid: str, *, kind: str = "debit_vertical", quantity: int = 2,
+            limit: Decimal = Decimal("1.00"), entry: date = date(2026, 10, 1)) -> LegStructure:
+    hi, lo = ((Decimal("744"), Decimal("742")) if kind == "debit_vertical"
+              else (Decimal("155"), Decimal("150")))
+    # a debit vertical BUYs the strike nearer the view (the higher put);
+    # a credit vertical SELLs it
+    buy, sell = (hi, lo) if kind == "debit_vertical" else (lo, hi)
+    return LegStructure(
+        id=sid, underlying="SPY" if kind == "debit_vertical" else "NVDA", kind=kind,
+        legs=(Leg(right="P", action="BUY", strike=buy, expiry=date(2026, 11, 20)),
+              Leg(right="P", action="SELL", strike=sell, expiry=date(2026, 11, 20))),
+        quantity=quantity, entry_date=entry, exit_deadline=date(2026, 11, 1),
+        limit=limit,
+        exits=ExitRules(touch=kind == "debit_vertical", breach=kind != "debit_vertical"))
+
+
+PARITY_TODAY = date(2026, 9, 24)
+# (sid, structure, state, today, expected A, expected B, common subset?)
+# A = open_loss_reservation (the canary screen), B = desk.book._position
+# with the LEGACY planned-dormant flag (the desk lane's flag is covered by
+# test_planned_past_date_divergence_between_screen_and_desk_book below).
+PARITY_CASES = [
+    # -- the common subset: exact agreement -------------------------------
+    ("debit-open-priced", _struct("d1"),
+     StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80")),
+     PARITY_TODAY, "160.00", "160.00", True),
+    ("debit-open-no-fill", _struct("d2"),
+     StructureState(Status.OPEN, filled_qty=2),
+     PARITY_TODAY, "200.00", "200.00", True),
+    ("debit-exit-working-partial", _struct("d3", quantity=3),
+     StructureState(Status.EXIT_WORKING, filled_qty=3, exit_filled_qty=1,
+                    entry_fill=Decimal("0.80")),
+     PARITY_TODAY, "160.00", "160.00", True),
+    ("debit-enter-working-full-quantity", _struct("d4", quantity=3),
+     StructureState(Status.ENTER_WORKING),
+     PARITY_TODAY, "300.00", "300.00", True),
+    ("debit-planned-before-entry", _struct("d5"),
+     StructureState(Status.PLANNED),
+     PARITY_TODAY, "200.00", "200.00", True),
+    ("debit-planned-past-entry", _struct("d6"),
+     StructureState(Status.PLANNED),
+     date(2026, 10, 2), "0", "0", True),
+    ("credit-planned-working", _struct("c1", kind="credit_vertical", quantity=2,
+                                       limit=Decimal("1.00")),
+     StructureState(Status.PLANNED),
+     PARITY_TODAY, "800.00", "800.00", True),  # (width 5 - floor 1) x 100 x 2
+    # -- the intentional differences: A is the more conservative screen ----
+    ("credit-open-priced", _struct("c2", kind="credit_vertical", quantity=1,
+                                   limit=Decimal("1.00")),
+     StructureState(Status.OPEN, filled_qty=1, entry_fill=Decimal("2.50")),
+     PARITY_TODAY, "400.00", "250.00", False),  # A: floor-based max loss; B: width - fill
+    ("debit-open-unpriced-partial", _struct("d7"),
+     StructureState(Status.OPEN, filled_qty=2, entry_fill=Decimal("0.80"),
+                    entry_unpriced_qty=1),
+     PARITY_TODAY, "200.00", "160.00", False),  # A: no refine on an unpriced average
+]
+
+
+@pytest.mark.parametrize("sid,struct,state,today,a,b,common", PARITY_CASES)
+def test_open_loss_reservation_parities_with_the_desk_book_view(
+        sid, struct, state, today, a, b, common):
+    book = BookState([sid])
+    book.structures[sid] = state
+    screen = open_loss_reservation(book, {sid: RiskView.of(struct)}, today)
+    view = desk_book._position(f"fixture:{sid}", "fixture", struct, state,
+                               as_of=today, planned_dormant_after_entry=True)
+    held = Decimal(0) if view is None else view.max_loss_usd
+    assert screen == Decimal(a), f"{sid}: the screen moved"
+    assert held == Decimal(b), f"{sid}: the book view moved"
+    if common:
+        assert screen == held, f"{sid}: the two reservations disagree"
+    else:
+        assert screen > held, f"{sid}: the screen must be the conservative one"
+
+
+def test_planned_past_date_divergence_between_screen_and_desk_book():
+    """The desk lane keeps a PLANNED structure at its cap even past its
+    entry date (desk.book passes planned_dormant_after_entry=False), while
+    the screen drops it (it can no longer enter). Opposite direction from
+    the credit/unpriced differences: this is the ONE case where the book
+    view reserves MORE than the screen."""
+    struct = _struct("d8")
+    state = StructureState(Status.PLANNED)
+    today = date(2026, 10, 2)
+    book = BookState(["d8"])
+    book.structures["d8"] = state
+    screen = open_loss_reservation(book, {"d8": RiskView.of(struct)}, today)
+    view = desk_book._position("fixture:d8", "fixture", struct, state,
+                               as_of=today, planned_dormant_after_entry=False)
+    assert screen == Decimal(0)
+    assert view is not None and view.max_loss_usd == Decimal("200.00")
+
+
+def test_an_impossible_credit_fill_fails_closed_in_the_book_view_only():
+    """B refuses a position whose recorded fill leaves no loss (its whole
+    position is dropped into load_book's problems); the screen still counts
+    the package at its floor-based max loss rather than trusting the fill."""
+    struct = _struct("c3", kind="credit_vertical", quantity=1, limit=Decimal("1.00"))
+    state = StructureState(Status.OPEN, filled_qty=1, entry_fill=Decimal("5.00"))
+    with pytest.raises(desk_book._Inconsistent):
+        desk_book._position("fixture:c3", "fixture", struct, state,
+                            as_of=PARITY_TODAY, planned_dormant_after_entry=True)
+    book = BookState(["c3"])
+    book.structures["c3"] = state
+    assert open_loss_reservation(book, {"c3": RiskView.of(struct)},
+                                 PARITY_TODAY) == Decimal("400.00")
 
 
 # ---------------------------------------------------------------- the loop

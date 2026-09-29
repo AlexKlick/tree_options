@@ -147,7 +147,23 @@ def open_loss_reservation(book: BookState, risks: Mapping[str, RiskView],
                           today: date) -> Decimal:
     """Worst-case loss still at risk: open packages at the debit paid (or the
     cap/floor when unpriced), entries at their full size; a PLANNED entry
-    whose date has passed can no longer enter."""
+    whose date has passed can no longer enter.
+
+    A SECOND reservation exists — the rails' book view
+    (``desk.book._position`` behind ``load_book``) — and the two agree on
+    their common subset (pinned by ``test_supervised_desk.py``'s parity
+    cases: debit kinds priced or unpriced, ENTER_WORKING at full quantity,
+    planned-before-date at cap, planned-past-date dropped). The intentional
+    differences, all making THIS screen the more conservative one except
+    the last: (1) a priced credit kind stays at its floor-based max loss
+    here while the book view refines to width - fill; (2) an entry average
+    spanning unpriced packages is NOT trusted here (cap), while the book
+    view prices at the recorded average; (3) opposite direction: a desk
+    PLANNED structure past its entry date is dropped here (it can no
+    longer enter) but held at cap by the desk book view; (4) a state the
+    book view proves incoherent (e.g. a fill leaving no loss) raises there
+    and fail-closes into load_book's problems, while here it still counts
+    at the cap."""
     total = Decimal(0)
     for sid, risk in risks.items():
         st = book.structures.get(sid)
