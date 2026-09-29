@@ -618,6 +618,7 @@ def test_smoke_reports_transport_stats_and_respects_the_quota(
                              concurrency=2, transport=fake, quota=lambda: (True, "left=90"),
                              now=datetime(2026, 9, 29, tzinfo=UTC))
     assert summary["status"] == "finished" and summary["calls"] == 12
+    assert summary["receipts"] == 12  # the model arm's receipts only, never the derived arms'
     assert summary["parse_rate"] == 1.0 and summary["truncated"] == 0
     assert summary["tokens"]["completion_mean"] == 900.0
     calls = (Path(summary["run_dir"]) / "transport-calls.jsonl").read_text()

@@ -49,6 +49,11 @@ direction + horizon, the harness's own row choice (``longrun._best``) picks
 the row. In the model arm tau is pre-registered; the report's DERIVED arms
 fit tau on TRAIN forecasts only and sit on the same paired scoreboard.
 
+Cost (live smokes 2026-09-29, 24 boards x 2 repeats): at the provider
+default reasoning_effort (max) the ~700-token prompt drew ~4,600 completion
+tokens, p50 62 s and 16/27 timeouts at 120 s; at ``effort: low`` 48/48
+parsed, p50 7.6 s / p90 13.5 s, ~470 completion tokens. Use effort low.
+
 Evidence, not authority: PAPER research only; nothing here promotes.
 """
 
@@ -1187,7 +1192,8 @@ def smoke(*, bundle: Path, table: Path, out_root: Path, boards: int = 24, repeat
     usage = [c["usage"] for c in calls if isinstance(c.get("usage"), dict)]
     completion = [float(u.get("completion_tokens", 0)) for u in usage]
     prompt = [float(u.get("prompt_tokens", 0)) for u in usage]
-    receipts = [json.loads(line) for path in sorted((run_dir / "receipts").glob(f"{name}*.jsonl"))
+    model_files = [longrun.receipts_path(run_dir, arm) for arm in policies[0].arm_names()]
+    receipts = [json.loads(line) for path in model_files if path.is_file()  # model arm only
                 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
     failures = [r.get("error", "") for r in receipts if not r.get("ok")]
     digest = (json.loads((run_dir / "digest.json").read_text(encoding="utf-8"))
