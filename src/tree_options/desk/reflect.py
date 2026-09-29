@@ -73,12 +73,22 @@ MAX_CONCURRENCY = 3
 MAX_ATTEMPTS = 5
 #: word-bigram Jaccard at or above which two prompts are "near-identical"
 DUP_THRESHOLD = 0.6
-#: token estimate: compact-JSON characters per token (no tokenizer dependency)
-CHARS_PER_TOKEN = 4
+#: token estimate: compact-JSON characters per token (no tokenizer
+#: dependency), calibrated on the first live call: 132,420 characters of
+#: dossier JSON were 60,336 MiniMax-M3.1-Flash prompt tokens (numbers-heavy
+#: JSON tokenizes far denser than prose's ~4 characters per token)
+CHARS_PER_TOKEN = 2.2
 DEFAULT_SAMPLES = 8
-DEFAULT_MAX_PACK_TOKENS = 48_000
+DEFAULT_MAX_PACK_TOKENS = 36_000
 DEFAULT_ATTEMPTS = 3
-DEFAULT_TIMEOUT_S = 240.0
+#: M3.1-Flash always thinks and defaults to effort "max": on a 60k-token pack
+#: every call of the first live panel spent its whole 12000-token budget
+#: reasoning (finish_reason=length, ~170 s) and never emitted the JSON. The
+#: reflection call therefore sets its own effort and output budget.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+DEFAULT_EFFORT = "high"
+DEFAULT_MAX_TOKENS = 32_000
+DEFAULT_TIMEOUT_S = 480.0
 POLICY_PLACEHOLDER = "<POLICY>"
 
 #: (key, lens) of the seed theorists; K > 6 cycles them as second takes
@@ -791,18 +801,30 @@ def theorist_messages(pack: Mapping[str, Any], persona: tuple[str, str]) -> list
 
 
 class _Recorder:
-    """Wraps a transport to keep the raw reply (content, finish, usage) for
-    the transcript. Request headers (the key) are never recorded."""
+    """Wraps a transport: applies the reflection call's own output budget and
+    reasoning effort to the request body (the shared provider spec stays
+    untouched) and keeps the raw reply (content, finish, usage) for the
+    transcript. Request headers (the key) are never recorded."""
 
-    def __init__(self, base: PostTransport) -> None:
+    def __init__(self, base: PostTransport, *, max_tokens: int | None = None,
+                 effort: str | None = None) -> None:
         self.base = base
+        self.max_tokens, self.effort = max_tokens, effort
         self.last: dict[str, Any] | None = None
 
     def __call__(self, url: str, body: bytes, headers: dict[str, str],
                  timeout: float) -> tuple[int, bytes]:
         self.last = None
+        if self.max_tokens is not None or self.effort is not None:
+            request = json.loads(body)
+            if self.max_tokens is not None:
+                request["max_tokens"] = self.max_tokens
+            if self.effort is not None:
+                request["reasoning_effort"] = self.effort
+            body = json.dumps(request).encode()
         status, raw = self.base(url, body, headers, timeout)
-        record: dict[str, Any] = {"http_status": status}
+        record: dict[str, Any] = {"http_status": status, "max_tokens": self.max_tokens,
+                                  "reasoning_effort": self.effort}
         try:
             envelope = json.loads(raw)
             choice = envelope["choices"][0]
@@ -828,6 +850,8 @@ class Accepted:
 def run_panel(pack: Mapping[str, Any], *, k: int, provider: str = DEFAULT_PROVIDER,
               transport: PostTransport | None = None, concurrency: int = 2,
               max_attempts: int = DEFAULT_ATTEMPTS, timeout: float = DEFAULT_TIMEOUT_S,
+              max_tokens: int | None = DEFAULT_MAX_TOKENS,
+              effort: str | None = DEFAULT_EFFORT,
               tickers: frozenset[str] = frozenset(),
               existing: Mapping[str, str] | None = None,
               sink: Callable[[dict[str, Any]], None] | None = None,
@@ -840,6 +864,10 @@ def run_panel(pack: Mapping[str, Any], *, k: int, provider: str = DEFAULT_PROVID
         raise ValueError(f"concurrency must be 1..{MAX_CONCURRENCY}")
     if not 1 <= max_attempts <= MAX_ATTEMPTS:
         raise ValueError(f"max_attempts must be 1..{MAX_ATTEMPTS}")
+    if effort is not None and effort not in EFFORTS:
+        raise ValueError(f"effort must be one of {EFFORTS}")
+    if max_tokens is not None and max_tokens < 1000:
+        raise ValueError("max_tokens must be >= 1000")
     base = transport or urllib_post
     lock = threading.Lock()
     taken: dict[str, str] = dict(existing or {})
@@ -850,7 +878,7 @@ def run_panel(pack: Mapping[str, Any], *, k: int, provider: str = DEFAULT_PROVID
         first = theorist_messages(pack, persona)
         messages = first
         for attempt in range(1, max_attempts + 1):
-            recorder = _Recorder(base)
+            recorder = _Recorder(base, max_tokens=max_tokens, effort=effort)
             started = monotonic()
             reply: dict[str, Any] | None = None
             model: str | None = None
@@ -961,6 +989,8 @@ def run_reflect(run_dir: Path, *, cutoff: str | None = None, k: int = 6,
                 concurrency: int = 2, samples_per_arm: int = DEFAULT_SAMPLES,
                 max_pack_tokens: int = DEFAULT_MAX_PACK_TOKENS,
                 max_attempts: int = DEFAULT_ATTEMPTS, timeout: float = DEFAULT_TIMEOUT_S,
+                max_tokens: int | None = DEFAULT_MAX_TOKENS,
+                effort: str | None = DEFAULT_EFFORT,
                 seed: int = 20260929, only: Sequence[str] | None = None,
                 dry_run: bool = False, quota_ok: QuotaFn | None = None,
                 clock: Callable[[], datetime] = _utcnow,
@@ -1019,7 +1049,8 @@ def run_reflect(run_dir: Path, *, cutoff: str | None = None, k: int = 6,
     existing = {p.name: p.prompt or lab.POLICY_SENTENCE for p in view.policies}
     accepted, calls = run_panel(pack, k=k, provider=provider, transport=transport,
                                 concurrency=concurrency, max_attempts=max_attempts,
-                                timeout=timeout, tickers=outcome_table.tickers,
+                                timeout=timeout, max_tokens=max_tokens, effort=effort,
+                                tickers=outcome_table.tickers,
                                 existing=existing, sink=sink, monotonic=monotonic, clock=clock)
     stats = call_stats(calls, k, accepted)
     models = sorted({c["model"] for c in calls if c.get("model")})
@@ -1040,6 +1071,7 @@ def run_reflect(run_dir: Path, *, cutoff: str | None = None, k: int = 6,
             "dossier_policies": [d["policy"] for d in pack["dossiers"]],
             "dossiers": str(dossier_path), "dossier_sha256": meta["pack_sha256"],
             "transcript": str(transcript), "provider": provider, "models": models,
+            "reasoning_effort": effort, "max_tokens": max_tokens,
             "at": clock().isoformat(), "k": k,
             "per_policy": {a.name: {"theorist": a.persona, "slot": a.slot,
                                     "attempt": a.attempt, "model": a.model,
@@ -1079,6 +1111,10 @@ def register_cli(commands: Any) -> None:
     parser.add_argument("--max-pack-tokens", type=int, default=DEFAULT_MAX_PACK_TOKENS)
     parser.add_argument("--max-attempts", type=int, default=DEFAULT_ATTEMPTS)
     parser.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
+    parser.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS,
+                        help="the reflection call's output budget (thinking included)")
+    parser.add_argument("--effort", choices=EFFORTS, default=DEFAULT_EFFORT,
+                        help="reasoning_effort of the reflection call")
     parser.add_argument("--seed", type=int, default=20260929)
     parser.add_argument("--policies", help="comma list of model policies (default: all)")
     parser.add_argument("--dry-run", action="store_true",
@@ -1094,6 +1130,7 @@ def dispatch_cli(args: argparse.Namespace) -> int:
                               samples_per_arm=args.samples_per_arm,
                               max_pack_tokens=args.max_pack_tokens,
                               max_attempts=args.max_attempts, timeout=args.timeout,
+                              max_tokens=args.max_tokens, effort=args.effort,
                               seed=args.seed, only=only, dry_run=args.dry_run)
     except (ValueError, OSError, KeyError, TypeError) as error:
         print(f"longrun reflect: refused: {error}", file=sys.stderr)

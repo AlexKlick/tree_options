@@ -397,7 +397,9 @@ class PanelTransport:
         attempt = self.seen.get(persona, 0)
         self.seen[persona] = attempt + 1
         self.calls.append({"persona": persona, "messages": request["messages"],
-                           "timeout": timeout})
+                           "timeout": timeout, "max_tokens": request.get("max_tokens"),
+                           "effort": request.get("reasoning_effort"),
+                           "model": request.get("model")})
         step = self.SCRIPT[persona][attempt]
         if isinstance(step, int):
             return step, b""
@@ -419,7 +421,10 @@ def test_panel_regenerates_rejects_and_dedupes(monkeypatch: pytest.MonkeyPatch) 
     assert [a.name for a in accepted] == ["refl-trend-trend-hold", "refl-meanrev-fade",
                                           "refl-volprem-sell-premium"]
     assert len(transport.calls) == len(calls) == 1 + 2 + 3 + 3
-    assert all(c["timeout"] == 99.0 for c in transport.calls)
+    # the reflection call's own budget/effort reach the wire; the model does not change
+    assert {(c["timeout"], c["max_tokens"], c["effort"], c["model"])
+            for c in transport.calls} == {(99.0, 32000, "high", "MiniMax-M3.1-Flash-Preview")}
+    assert calls[0]["response"]["reasoning_effort"] == "high"
     retry = transport.calls[2]  # meanrev, attempt 2: the rejection is fed back
     assert [m["role"] for m in retry["messages"]] == ["user", "assistant", "user"]
     assert "ticker:prompt" in retry["messages"][2]["content"]
@@ -445,8 +450,11 @@ def test_run_reflect_writes_fragment_and_transcript_read_only(
     run_dir = make_run(tmp_path)
     before = {p: p.stat().st_mtime_ns for p in run_dir.rglob("*")}
     out = tmp_path / "out" / "frag.json"
-    summary = reflect.run_reflect(run_dir, k=4, out=out, transport=PanelTransport(),
-                                  concurrency=1, quota_ok=lambda: (True, "ok"))
+    transport = PanelTransport()
+    summary = reflect.run_reflect(run_dir, k=4, out=out, transport=transport,
+                                  concurrency=1, quota_ok=lambda: (True, "ok"),
+                                  effort="medium", max_tokens=20000)
+    assert {(c["max_tokens"], c["effort"]) for c in transport.calls} == {(20000, "medium")}
     assert {p: p.stat().st_mtime_ns for p in run_dir.rglob("*")} == before
     assert summary["status"] == "ok" and summary["stats"]["accepted"] == 3
     fragment = json.loads(out.read_text())
@@ -456,6 +464,7 @@ def test_run_reflect_writes_fragment_and_transcript_read_only(
     prov = fragment["provenance"]
     assert prov["cutoff"] == CUTOFF and prov["dossier_policies"] == ["m-a", "m-b"]
     assert prov["models"] == ["MiniMax-M3.1-Flash-Preview"]
+    assert (prov["reasoning_effort"], prov["max_tokens"]) == ("medium", 20000)
     assert set(prov["per_policy"]) == {p["name"] for p in fragment["policies"]}
     dossiers = json.loads(Path(prov["dossiers"]).read_text())
     assert dossiers["meta"]["pack_sha256"] == prov["dossier_sha256"]
@@ -487,3 +496,5 @@ def test_quota_refusal_and_dry_run_make_no_calls(tmp_path: Path,
     assert Path(summary["dossiers"]).is_file() and not out.exists()
     assert run_cli(["longrun", "reflect", "--run-dir", str(run_dir), "--k", "0",
                     "--dry-run"]) == 2
+    with pytest.raises(ValueError, match="effort"):
+        reflect.run_panel({}, k=1, effort="none", transport=forbidden)
