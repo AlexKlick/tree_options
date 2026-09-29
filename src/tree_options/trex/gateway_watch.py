@@ -27,7 +27,13 @@ Each run:
    recovery; priority, reminder cadence and quiet hours follow
    trex.alert_policy; a failed push is retried every 5 minutes. Push text
    carries no URLs, hostnames, account ids or money;
-5. writes ``~/.local/state/trex/gateway.json`` for the cockpit banner.
+5. reminds once, an hour ahead, of the operator's weekly Sunday 12:00 ET
+   cold restart (once per Sunday across the 60 s ticks, with a lookback so a
+   machine that was off at 11:00 still says it on its next tick). It is a
+   reminder only: it starts nothing and books no restart budget. The
+   "IB Gateway back" ping that follows the restart is the recovery arm
+   above, not a second pre-alert;
+6. writes ``~/.local/state/trex/gateway.json`` for the cockpit banner.
 
 Raw log lines are parsed in memory and never persisted.
 """
@@ -49,9 +55,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from tree_options.trex.alert_policy import REMIND_EVERY_S, Urgency, next_push, settle_push
+from tree_options.time import calendar_days, weekday_index
+from tree_options.trex.alert_policy import (
+    NOTIFY_RETRY_S,
+    REMIND_EVERY_S,
+    Urgency,
+    next_push,
+    settle_push,
+)
 from tree_options.trex.alert_policy import et_label as _et
 from tree_options.trex.alert_policy import span_label as _span
+from tree_options.trex.clock import ET
 
 CONTAINER = "trex-ib-gateway"
 API_HOST = "127.0.0.1"
@@ -68,6 +82,18 @@ VNC_RETRY_S = 300
 DAY_S = 86_400
 LOG_WINDOW_S = 26 * 3600
 MAX_EVENTS = 30
+
+# The weekly cold restart (Sunday 12:00 ET, TWS_COLD_RESTART on the operator's
+# side) is a planned outage the operator can prepare for, so it gets one
+# pre-alert an hour ahead. It is a REMINDER, not an alarm: it re-arms nothing,
+# starts nothing, and changes no restart budget. The "IB Gateway back" ping
+# that follows the actual restart already exists (decide's recovery arm) --
+# there is deliberately no second one here.
+COLD_RESTART_HOUR = 12
+COLD_RESTART_LEAD_S = 3600  # the pre-alert window opens 60 min ahead
+COLD_RESTART_LOOKBACK_S = 3600  # and stays open 60 min past it: a machine
+# that was off at 11:00 ET still gets the ping on its next tick instead of
+# staying silent until the next Sunday
 
 # Per-call deadlines. A worst-case run (every call timing out) must finish
 # inside the unit's TimeoutStartSec, or systemd can kill it between docker
@@ -291,6 +317,69 @@ def _budget(restarts: list[float]) -> tuple[int, float | None]:
     return left, (restarts[-1] + RESTART_COOLDOWN_S if left > 0 and restarts else None)
 
 
+def next_cold_restart(now: datetime) -> datetime:
+    """The next Sunday 12:00 ET strictly after ``now`` (the weekly cold
+    restart). Date math goes through the time layer, never ``dt.weekday()``
+    (handoff convention, commit bc337ec)."""
+    local = now.astimezone(ET)
+    days_ahead = (6 - weekday_index(local)) % 7  # Monday=0 .. Sunday=6
+    candidate = (local + calendar_days(days_ahead)).replace(
+        hour=COLD_RESTART_HOUR, minute=0, second=0, microsecond=0
+    )
+    if candidate <= local:
+        candidate += calendar_days(7)
+    return candidate
+
+
+def cold_restart_due(prior: dict[str, Any], now: float, *, quiet: bool = False) -> datetime | None:
+    """The Sunday 12:00 ET whose pre-alert is owed at ``now`` (epoch), or
+    None.
+
+    The window is :data:`COLD_RESTART_LEAD_S` before the restart through
+    :data:`COLD_RESTART_LOOKBACK_S` after it -- 11:00-13:00 ET on the
+    Sunday. The lookback is what makes a machine that was off at 11:00 still
+    tell the operator on its next tick instead of staying silent for a week;
+    it is deliberately small, so the ping never lands hours late. The restart
+    is looked up from ``now - LOOKBACK`` so that a tick AFTER noon still
+    resolves to the Sunday that just happened rather than to the next one.
+
+    Once per restart, via the ``cold_restart_notified_for`` date key, so the
+    60 s tick cannot double-fire. A push that failed inside
+    :data:`NOTIFY_RETRY_S` re-arms the pre-alert rather than booking a
+    reminder that never arrived. Inside configured quiet hours it waits: the
+    window opens long after the default window ends, so the same tick that
+    leaves quiet hours fires it.
+    """
+    if quiet:
+        return None
+    restart = next_cold_restart(datetime.fromtimestamp(now - COLD_RESTART_LOOKBACK_S, ET))
+    lead = restart.timestamp() - now
+    if not (-COLD_RESTART_LOOKBACK_S <= lead <= COLD_RESTART_LEAD_S):
+        return None
+    if restart.date().isoformat() == prior.get("cold_restart_notified_for"):
+        failed_at = _num(prior.get("notify_failed_at"))
+        if failed_at is None or now - failed_at >= NOTIFY_RETRY_S:
+            return None  # already booked for this restart
+    return restart
+
+
+def _cold_restart_message(restart: datetime, now: float) -> tuple[str, str]:
+    when = _et(restart.timestamp())
+    if restart.timestamp() <= now:
+        return (
+            "trex: IB Gateway cold restart just happened",
+            f"The weekly cold restart at {when} was due now; this host was not "
+            "watching at 11:00 ET. Open positions have no exit machine until the "
+            "gateway logs back in.",
+        )
+    return (
+        "trex: IB Gateway cold restart in 1 hour",
+        f"The gateway restarts weekly at {when}. Open positions have no exit machine "
+        "until it logs back in. Nothing to do unless the API is still down 15 "
+        "minutes after the restart.",
+    )
+
+
 # without a computed urgency (tests, --dry-run callers): loud, 4 h reminders
 LOUD = Urgency("high", REMIND_EVERY_S, quiet=False)
 
@@ -357,6 +446,16 @@ def decide(
     if push is not None:
         actions.append(Action("notify", push.status, push.title, push.message, push.priority))
 
+    # the weekly cold restart, one reminder an hour ahead (see
+    # cold_restart_due). The key is booked in the state the caller persists,
+    # so the 60 s tick fires it exactly once per Sunday.
+    cold = cold_restart_due(prior, obs.now, quiet=urgency.quiet)
+    cold_for = None
+    if cold is not None:
+        title, text = _cold_restart_message(cold, obs.now)
+        actions.append(Action("notify", "cold_restart_prealert", title, text, urgency.priority))
+        cold_for = cold.date().isoformat()
+
     events: list[dict[str, Any]] = list(prior.get("events", []))[-MAX_EVENTS:]
     if prev != status:
         events.append({"at": obs.now, "kind": "status", "detail": f"{prev} -> {status}"})
@@ -379,6 +478,7 @@ def decide(
         "next_restart_at": next_restart,
         "restart_hold_until": hold if held else None,
         "vnc_restarts": vnc_restarts,
+        "cold_restart_notified_for": cold_for or prior.get("cold_restart_notified_for"),
         **notified,
         "events": events,
     }

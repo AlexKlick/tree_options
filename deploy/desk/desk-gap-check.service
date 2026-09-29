@@ -1,0 +1,43 @@
+[Unit]
+Description=Options desk: alarm when the most recent closed session lost a chain
+Documentation=file:///home/alexk/documents/tree_options/docs/desk-runbook.md
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+# never re-sync the shared .venv, never write .pyc into the checkout
+Environment=UV_NO_SYNC=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+# Import the main checkout's code whatever the shared .venv's editable pointer
+# says (on 2026-09-23 an unknown writer repointed it to a worktree).
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+Environment=DESK_STORE=/home/alexk/documents/tree_options/artifacts/desk-store
+Environment=TREX_DESK_STATE=/home/alexk/.local/state/trex-desk
+WorkingDirectory=/home/alexk/documents/tree_options
+# The shared .venv's editable install is the main checkout (never re-synced here).
+# Reads <store>/manifest/<D>.json for the newest CLOSED session D (the session
+# the recorder is still working on is skipped) and exits 1 if any symbol is
+# outside ok|exists|conflict, or D has no readable manifest at all. A closed
+# session is permanent: store.finalize_prior() already wrote it into
+# gaps.jsonl and store.validate() will never repair a past session, so the
+# only defence left is being told. On 2026-09-24 the 38 gaps.jsonl rows from
+# the 2026-09-23 loss sat unread until 2026-09-29.
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk.gap_check
+# exit 1 = a permanent gap (the push names the session and the symbols);
+# exit 0 = clean, or no closed session yet. Nothing is "benign" here: this
+# job has no retry state to protect, so a non-zero status is the real result.
+TimeoutStartSec=120
+MemoryHigh=256M
+MemoryMax=384M
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+# State: <TREX_DESK_STATE>/gap-check.json (the notification bookkeeping: a
+# gap is pushed once, re-pushed on the alert_policy cadence while it lasts,
+# and pushed once more when it recovers). Push: %h/.config/trex/notify.env
+# (NTFY_URL, QUIET_HOURS, OPERATOR_TZ); absent = journal only. The store is
+# read-only here, so no ReadWritePaths beyond the state file's directory.
+ReadWritePaths=/home/alexk/.local/state/trex-desk

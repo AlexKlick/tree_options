@@ -6,13 +6,19 @@ Description=Record the desk option chains (evening retries, early-morning catch)
 # 2026-09-23 = 23:49 EDT) and serves it all the next day, so the evening
 # slots usually exit 3 and the 06:30 slot records the prior session
 # (Saturday 06:30 catches Friday). The 12:30 slot is a catch-up for a late
-# publication: until 16:15 ET the target is still the prior session. Every
-# slot is idempotent: a recorded (session, symbol) is never refetched.
+# publication: until 16:15 ET the target is still the prior session. The
+# 14:30 slot is the LAST chance to record: the next 17:45 slot runs
+# finalize_prior, which closes anything still unrecorded as a permanent
+# `missing` gap that store.validate() will never repair (2026-09-23 was
+# lost exactly this way -- 37 symbols, "never recorded (last status
+# stale)"). Every slot is idempotent: a recorded (session, symbol) is
+# never refetched.
 OnCalendar=Mon..Fri *-*-* 17:45:00 America/New_York
 OnCalendar=Mon..Fri *-*-* 20:45:00 America/New_York
 OnCalendar=Mon..Fri *-*-* 23:45:00 America/New_York
 OnCalendar=Mon..Sat *-*-* 06:30:00 America/New_York
 OnCalendar=Mon..Sat *-*-* 12:30:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 14:30:00 America/New_York
 Persistent=true
 AccuracySec=1min
 

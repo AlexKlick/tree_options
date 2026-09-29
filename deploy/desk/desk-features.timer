@@ -1,0 +1,19 @@
+[Unit]
+Description=Build the desk's vol-surface features for the latest closed session
+
+[Timer]
+# 14:30 ET, after the chain recorder's 12:30 catch-up and its 14:30 last-
+# chance slot, and before D's 16:15 roll. The day is deliberately covered
+# Mon..Sat: on Saturday the latest completed session is still Friday.
+# Idempotent by construction: --idempotent exits 0 when features/<D>.json is
+# already there, and exits 3 (benign) while D's manifest still has symbols
+# outside ok|exists|conflict, so a document is never frozen from a partial
+# chain set. If the 14:30 chain slot overran and this one waits, the miner
+# still builds the same document on its 07:15 slot the next morning -- the
+# point is that no day depends on the miner running at all.
+OnCalendar=Mon..Sat *-*-* 14:30:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
