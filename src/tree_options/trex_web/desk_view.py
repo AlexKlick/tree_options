@@ -194,7 +194,7 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
         """Timer settings + kill-file states for the desk's own units."""
         try:
             doc = automation_status(DeskPaths.default().root)
-        except OSError:
+        except (OSError, RuntimeError):
             return _unavailable()
         return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
 
@@ -211,7 +211,7 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
             doc = automation_action(DeskPaths.default().root, key, action)
         except KeyError:
             return JSONResponse({'error': 'unknown_unit'}, status_code=404)
-        except OSError:
+        except (OSError, RuntimeError):
             return _unavailable()
         return JSONResponse(doc, headers={'Cache-Control': 'no-store'})
 

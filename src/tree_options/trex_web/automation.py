@@ -41,9 +41,16 @@ SystemctlRunner = Callable[[list[str]], str]
 
 
 def real_systemctl(args: list[str]) -> str:
-    """One bounded ``systemctl --user`` call; returns stdout (may be empty)."""
+    """One bounded ``systemctl --user`` call; stdout, or raise on failure.
+
+    A failed call must never look like empty state: the first live deploy
+    showed every timer "disabled" because the unit sandbox blocked the
+    session bus (AF_UNIX) and the empty stdout was displayed as fact."""
     result = subprocess.run(["systemctl", "--user", *args],
                             capture_output=True, text=True, timeout=30, check=False)
+    if result.returncode != 0:
+        raise RuntimeError(f"systemctl {' '.join(args[:2])}: rc={result.returncode} "
+                           f"{result.stderr.strip()[:120]}")
     return result.stdout
 
 

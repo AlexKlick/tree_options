@@ -299,3 +299,18 @@ def test_supervised_control_toggles_kill_files(world, monkeypatch):
     assert c.post('/api/desk/supervised/resume').json()['kill_files'] == []
     assert not (run_dir / 'HALT').exists()
     assert c.post('/api/desk/supervised/arm').status_code == 422
+
+
+def test_a_failed_systemctl_is_unavailable_not_silent_false(world, monkeypatch):
+    """Live defect 09-28: the serving unit blocked the session bus (AF_UNIX)
+    and every timer showed 'disabled'. A failing systemctl must surface as
+    503, never as empty state."""
+    import tree_options.trex_web.automation as automation_mod
+    import tree_options.trex_web.desk_view as desk_view_mod
+
+    def broken(args):
+        raise RuntimeError('systemctl show: rc=1 Failed to connect to bus')
+
+    monkeypatch.setattr(desk_view_mod, 'automation_status',
+                        lambda root: automation_mod.automation_status(root, systemctl=broken))
+    assert client(world).get('/api/desk/automation').status_code == 503
