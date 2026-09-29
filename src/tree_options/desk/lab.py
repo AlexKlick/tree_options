@@ -11,7 +11,9 @@ Policies:
 - rules baselines: the replay() policies (no_trade, put_credit, ...);
 - model policies: ``model:<provider>`` — one JSON choice per board via
   ``discovery.llm.chat_json`` (glm-5.3-flash on zai for volume boards,
-  MiniMax-M3 on minimax; flash never scores or judges anything).
+  MiniMax-M3.1-Flash-Preview on minimax at effort high and on
+  minimax-flash at effort max — M3 retired 2026-09-28; flash never scores
+  or judges anything).
 
 Quota discipline (the burn is a CONSUMER): a model policy runs only while
 a subscription window is under-using (``grant_policy`` windows snapshot,
