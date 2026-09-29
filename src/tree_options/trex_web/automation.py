@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from tree_options.trex.clock import ET
+from tree_options.trex.desk_cli import HALT_FLATTEN_WARNING
 
 #: the desk's own timers -> their oneshot services (the whole surface)
 AUTOMATION_UNITS: dict[str, dict[str, str]] = {
@@ -101,7 +102,12 @@ def automation_action(run_dir: Path, key: str, action: str, *,
 
 def kill_file_action(run_dir: Path, action: str) -> dict[str, Any]:
     """HALT/FLATTEN/resume for the supervised desk (the desk_cli verbs;
-    the file verbs are case-insensitive, resume clears both)."""
+    the file verbs are case-insensitive, resume clears both).
+
+    A FLATTEN placed while HALT is active carries the same warning
+    desk_cli prints, verbatim (HALT_FLATTEN_WARNING): the runtime gates
+    exits on HALT too, so the cockpit must not look quieter than the CLI
+    about a flatten that will close nothing."""
     verb = action.lower()
     if verb == "resume":
         for flag in KILL_FILES:
@@ -113,4 +119,7 @@ def kill_file_action(run_dir: Path, action: str) -> dict[str, Any]:
         _audit(run_dir, "kill_file", verb)
     else:
         raise ValueError(action)
-    return {"kill_files": sorted(f for f in KILL_FILES if (run_dir / f).exists())}
+    doc: dict[str, Any] = {"kill_files": sorted(f for f in KILL_FILES if (run_dir / f).exists())}
+    if verb == "flatten" and (run_dir / "HALT").exists():
+        doc["warning"] = HALT_FLATTEN_WARNING
+    return doc
