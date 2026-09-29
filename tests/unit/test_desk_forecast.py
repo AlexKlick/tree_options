@@ -317,6 +317,16 @@ def test_decide_ev_hand_case() -> None:
     assert no_edge[:2] == (None, None) and no_edge[2]["reason"] == "ev_not_positive"
 
 
+def test_the_edge_gate_is_symmetric_around_one_half() -> None:
+    # 0.5 - 0.3 is exactly 0.2 in binary floating point, 0.7 - 0.5 is not
+    assert forecast.edge(0.7) == forecast.edge(0.3) == 0.2
+    payoff = {"put_credit": {h: {"a": 0.8, "b": 0.3} for h in H}}
+    views = {"U1": {"intraday": 0.5, "eod": 0.7, "hold:5": 0.5}}
+    # EV = 0.7*0.8*100 - 0.3*0.3*200 - 14.6 = 23.4
+    choice, horizon, detail = forecast.decide_ev(ROWS[:1], views, payoff, 0.2, 14.6)
+    assert (choice, horizon, detail["ev"]) == ("A", "eod", pytest.approx(23.4))
+
+
 def _board(rows: list[dict[str, Any]]) -> Board:
     return Board("s:2026-08-03T10:00", "2026-08-03", "10:00", rows)
 
