@@ -67,13 +67,17 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     },
     # L7's overnight reflection lane: M3.1-Flash thinks inline like M3 (no
     # think-toggle), so extra stays empty; a finish_reason=length reply is
-    # still a failure in chat_json (never a partial proposal).
+    # still a failure in chat_json (never a partial proposal). The v2
+    # board's richer context lengthens the always-on thinking: at 4000
+    # tokens / 60 s the first live v2 run (20260929T012836Z) lost 13 of
+    # 126 calls to finish_reason=length and 6 to timeouts (p90 latency
+    # 49 s), so the budget is 12000 tokens / 120 s.
     "minimax-flash": {
         "base_url": "https://api.minimax.io/v1",
         "model": "MiniMax-M3.1-Flash-Preview",
         "key_env": ("ANTHROPIC_AUTH_TOKEN_MINIMAX2", "MINIMAX_API_KEY"),
-        "max_tokens": 4000,
-        "timeout": 60.0,
+        "max_tokens": 12000,
+        "timeout": 120.0,
         "extra": {},
     },
 }

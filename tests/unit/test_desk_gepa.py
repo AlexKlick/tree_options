@@ -131,8 +131,8 @@ def test_minimax_flash_provider_entry_is_additive() -> None:
     assert spec["base_url"] == "https://api.minimax.io/v1"
     assert spec["model"] == "MiniMax-M3.1-Flash-Preview"
     assert spec["key_env"] == PROVIDERS["minimax"]["key_env"]
-    assert spec["max_tokens"] == 4000
-    assert spec["timeout"] == 60.0
+    assert spec["max_tokens"] == 12000  # thinking-heavy v2 boards truncated at 4000
+    assert spec["timeout"] == 120.0
     assert spec["extra"] == {}
     # the existing entries are untouched
     assert PROVIDERS["minimax"]["model"] == "MiniMax-M3"
