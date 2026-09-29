@@ -772,3 +772,29 @@ def test_v2_end_to_end_scores_the_chosen_horizon(v1_bundle: tuple[Path, dict[str
     receipts = [json.loads(line) for line in
                 longrun.receipts_path(run_dir, "m31#1").read_text().splitlines()]
     assert receipts and all(r.get("horizon") == "eod" for r in receipts if r.get("choice"))
+    assert all("reasoning_effort" not in call["body"] for call in transport.calls)
+
+
+def test_v2_ask_effort_is_a_per_policy_override(v1_bundle: tuple[Path, dict[str, Any]],
+                                                tmp_path: Path) -> None:
+    path, _ = v1_bundle
+    config = tmp_path / "v2e.json"
+    config.write_text(json.dumps({
+        "out_root": str(tmp_path / "out"), "incumbent": "m31",
+        "boards": {"plugin": "v2", "bundle": str(path)},
+        "outcome": {"plugin": "v2", "sync": 2},
+        "ask": {"plugin": "v2", "provider": "minimax-flash"},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "m31", "kind": "model"},
+                     {"name": "m31-low", "kind": "model",
+                      "ask": {"plugin": "v2", "provider": "minimax-flash", "effort": "low"}}]}))
+    transport = HorizonTransport(0, "eod")
+    result = longrun.run_from_config(config, shared={"transport": transport}, limit=2)
+    assert result["status"] == "finished"
+    efforts = sorted(str(call["body"].get("reasoning_effort")) for call in transport.calls)
+    assert efforts == ["None", "None", "low", "low"]  # 2 boards x (default, low)
+    bad = json.loads(config.read_text())
+    bad["policies"][1]["ask"]["effort"] = "extreme"
+    config.write_text(json.dumps(bad))
+    with pytest.raises(ValueError, match="effort must be one of"):
+        longrun.run_from_config(config, shared={"transport": transport}, limit=2)

@@ -1880,11 +1880,16 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     """lab.board_prompt_v2 (public context + whitelisted row fields + horizon
     menu) through discovery.llm.chat_json; parse_choice_v2 rejects an unknown
     id or horizon outright. Provider from the policy spec (default
-    ``params.provider``, minimax-flash)."""
+    ``params.provider``, minimax-flash); ``effort`` sets M3.1's
+    reasoning_effort (absent = the provider default, max)."""
     from tree_options.desk import lab
+    from tree_options.desk.forecast import EFFORTS
     from tree_options.trex.discovery.llm import chat_json
 
     default = str(params.get("provider", "minimax-flash"))
+    effort = params.get("effort")
+    if effort is not None and effort not in EFFORTS:
+        raise ValueError(f"effort must be one of {EFFORTS}")
     transport = ctx.shared.get("transport")
     state = ctx.shared.get("v2")
     if state is None:
@@ -1895,6 +1900,8 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
         kwargs: dict[str, Any] = {}
         if transport is not None:
             kwargs["transport"] = transport
+        if effort is not None:
+            kwargs["extra"] = {"reasoning_effort": effort}
         reply, _model = chat_json(spec.provider or default,
                                   lab.board_prompt_v2(board.rows, context, spec.prompt),
                                   **kwargs)
