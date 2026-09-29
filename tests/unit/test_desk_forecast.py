@@ -327,6 +327,68 @@ def test_the_edge_gate_is_symmetric_around_one_half() -> None:
     assert (choice, horizon, detail["ev"]) == ("A", "eod", pytest.approx(23.4))
 
 
+def test_the_close_clock_prompt_names_the_next_morning_exit() -> None:
+    def task(time_of_day: str) -> str:
+        context = {"time_of_day": time_of_day, "session_ordinal": 4, "underlyings": {"U1": {}}}
+        return str(json.loads(forecast.forecast_prompt(context, ["U1"])[0]["content"])["task"])
+
+    assert "intraday and eod both = the next session's first decision clock" in task("close")
+    assert "eod = this session's last decision clock (later today)" in task("midday")
+    assert "later today" not in task("close")
+
+
+def test_cap_views_bounds_the_decision_side_only() -> None:
+    assert forecast.cap_views({"U1": {"eod": 0.0, "intraday": 0.6}}, 0.25) == {
+        "U1": {"eod": 0.25, "intraday": 0.6}}
+    with pytest.raises(ValueError):
+        forecast.cap_views({}, 0.0)
+
+
+class ExtremeTransport:
+    """U1's shown features carry a marker; it gets p = 1.0, the rest 0.5."""
+
+    def __init__(self) -> None:
+        self.bodies: list[dict[str, Any]] = []
+
+    def __call__(self, url: str, body: bytes, headers: dict[str, str],
+                 timeout: float) -> tuple[int, bytes]:
+        payload = json.loads(body)
+        self.bodies.append(payload)
+        shown = json.loads(payload["messages"][0]["content"])["context"]["underlyings"]
+        p_up = {label: {h: 1.0 if feats.get("ret_1s_pct") == "9.99" else 0.5 for h in H}
+                for label, feats in shown.items()}
+        content = json.dumps({"p_up": p_up})
+        return 200, json.dumps({"choices": [{"message": {"content": content},
+                                             "finish_reason": "stop"}]}).encode()
+
+
+def test_the_ask_sends_the_effort_keeps_raw_p_and_decides_on_capped_views(
+        key_env: None) -> None:
+    transport = ExtremeTransport()
+    payoff = {"put_credit": {h: {"a": 0.8, "b": 0.9} for h in H},
+              "call_credit": {h: {"a": 0.5, "b": 0.5} for h in H}}
+    ask = forecast.ForecastAsk(provider="minimax-flash", transport=transport, seed=5,
+                               decision="ev", tau=0.0, payoff=payoff, effort="low")
+    context = {"time_of_day": "midday", "session_ordinal": 9,
+               "underlyings": {"U1": {"ret_1s_pct": "9.99"}, "U2": {"ret_1s_pct": "0.10"}}}
+    board = Board("s:2026-08-03T13:00", "2026-08-03", "13:00", [ROWS[0]], context)
+    choice, _horizon, _note, extra = ask(PolicySpec("fc", "model"), board,
+                                         Arm("fc", PolicySpec("fc", "model"), 1))
+    assert transport.bodies[0]["reasoning_effort"] == "low"
+    fc = extra["forecast"]
+    assert fc["p_up"]["U1"] == {h: 1.0 for h in H} and fc["effort"] == "low"
+    # capped at 0.75: 0.75*0.8*100 - 0.25*0.9*200 - 14.6 = 0.4 (raw p = 1 would claim 65.4)
+    assert (choice, fc["decision"]["ev"]) == ("A", pytest.approx(0.4))
+    assert fc["decision"]["edge_cap"] == forecast.EDGE_CAP
+    default = forecast.ForecastAsk(provider="minimax-flash", transport=transport, seed=5,
+                                   decision="none", tau=0.0, payoff=None)
+    default(PolicySpec("fc", "model"), board, Arm("fc", PolicySpec("fc", "model"), 1))
+    assert "reasoning_effort" not in transport.bodies[1]  # the provider default stands
+    with pytest.raises(ValueError):
+        forecast.ForecastAsk(provider="minimax-flash", transport=None, seed=5,
+                             decision="none", tau=0.0, payoff=None, effort="none")
+
+
 def _board(rows: list[dict[str, Any]]) -> Board:
     return Board("s:2026-08-03T10:00", "2026-08-03", "10:00", rows)
 
@@ -488,7 +550,8 @@ def test_forecaster_end_to_end_on_the_paired_scoreboard(
     for snapshot, rec in recs.items():
         fc = rec["forecast"]
         assert fc["schema"] == forecast.FORECAST_SCHEMA and sorted(fc["perm"]) == ["U1", "U2"]
-        choice, horizon, _ = forecast.decide_ev(rows_by[snapshot], fc["p_up"],
+        views = forecast.cap_views(fc["p_up"], fc["decision"]["edge_cap"])
+        choice, horizon, _ = forecast.decide_ev(rows_by[snapshot], views,
                                                 section["payoff_map"], 0.0, 14.6)
         assert (rec["choice"], rec["horizon"]) == (choice, horizon)
         if snapshot.split("T")[0].removeprefix("s:") > CUTOFF:

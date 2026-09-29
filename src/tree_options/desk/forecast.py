@@ -92,6 +92,11 @@ TAU_GRID = tuple(i / 100 for i in range(21))
 BLOCKS = {"intraday": 1, "eod": 1, "hold:5": 5, "all": 5}
 MOMENTUM_K_MAX = 0.45
 BPS_MAX = 10_000.0
+#: decisions use p clipped to [0.5 - cap, 0.5 + cap]: one degenerate reply
+#: (a 0.0 / 1.0) cannot buy an outsized EV; scoring always uses the raw p
+EDGE_CAP = 0.25
+#: MiniMax-M3.1 reasoning_effort values (always-on thinking; the default is max)
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
 FORECAST_SENTENCE = (
     "You are a calibrated probabilistic forecaster for a paper-trading research desk.")
 _INF = Decimal("Infinity")
@@ -269,15 +274,19 @@ def forecast_prompt(context: Mapping[str, Any], perm: Sequence[str],
     per = context["underlyings"]
     shown = {label: per[canonical] for label, canonical in zip(shown_labels(len(perm)), perm,
                                                                 strict=True)}
+    if context.get("time_of_day") == "close":  # lab's bucket for the session's LAST clock
+        exits = ("Exits for THIS question (it is the session's last decision clock): intraday "
+                 "and eod both = the next session's first decision clock (tomorrow morning); ")
+    else:
+        exits = ("Exits: intraday = the next decision clock (about 45 minutes later); eod = "
+                 "this session's last decision clock (later today); ")
     task = (
         (sentence or FORECAST_SENTENCE)
         + " The underlyings are broad US equity index ETFs under arbitrary aliases (U1, U2, "
         "...), relabelled and reordered for every question. For EACH underlying and EACH "
         "exit give the probability that its price at the exit is STRICTLY HIGHER than now. "
-        "Exits: intraday = the next decision clock (about 45 minutes later; from the "
-        "session's last clock, the next session's first clock); eod = this session's last "
-        "decision clock (from the last clock, the next session's first clock); hold:5 = the "
-        "last decision clock of the fifth following session. The context gives each "
+        + exits + "hold:5 = the last decision clock of the fifth following session. "
+        "The context gives each "
         "underlying's as-of returns over 1/5/20 sessions and its 20-session annualized "
         "realized vol, in percent (null = not enough history), and the time of day. You are "
         "scored by Brier score and log loss over thousands of such questions: 0.5 means no "
@@ -342,6 +351,15 @@ def parse_forecast(reply: Mapping[str, Any], perm: Sequence[str],
 def edge(p: float) -> float:
     """|p - 0.5|, rounded so 0.45 and 0.55 carry the same edge."""
     return round(abs(p - 0.5), 9)
+
+
+def cap_views(p_up: Mapping[str, Mapping[str, float]],
+              cap: float) -> dict[str, dict[str, float]]:
+    """The decision-side views: every p clipped to [0.5 - cap, 0.5 + cap]."""
+    if not 0 < cap <= 0.5:
+        raise ValueError("edge_cap must be in (0, 0.5]")
+    return {u: {h: min(0.5 + cap, max(0.5 - cap, float(p))) for h, p in by_h.items()}
+            for u, by_h in p_up.items()}
 
 
 def fit_payoff_map(index: outcomes.OutcomeIndex,
@@ -669,22 +687,30 @@ class ForecastAsk:
 
     def __init__(self, *, provider: str, transport: Any, seed: int, decision: str,
                  tau: float | None, payoff: Mapping[str, Any] | None, key: str = "board_order",
-                 cost: float | None = None) -> None:
+                 cost: float | None = None, edge_cap: float = EDGE_CAP,
+                 effort: str | None = None) -> None:
         if decision not in DECISIONS:
             raise ValueError(f"decision must be one of {DECISIONS}")
         if decision == "ev" and payoff is None:
             raise ValueError("decision 'ev' needs the payoff map (an outcome plug-in)")
+        if effort is not None and effort not in EFFORTS:
+            raise ValueError(f"effort must be one of {EFFORTS}")
         self.provider, self.transport, self.seed = provider, transport, seed
         self.decision, self.tau, self.payoff, self.key = decision, tau, payoff, key
         self.cost = round_trip_cost() if cost is None else cost
+        self.edge_cap, self.effort = edge_cap, effort
 
     def decide(self, board: Board, p_up: Mapping[str, Mapping[str, float]]
                ) -> tuple[str | None, str | None, dict[str, Any]]:
+        views = cap_views(p_up, self.edge_cap)
         if self.decision == "ev" and self.payoff is not None:
-            return decide_ev(board.rows, p_up, self.payoff, self.tau, self.cost)
-        if self.decision == "direction":
-            return decide_direction(board, p_up, self.tau, key=self.key)
-        return None, None, {"rule": "none"}
+            choice, horizon, detail = decide_ev(board.rows, views, self.payoff, self.tau,
+                                                self.cost)
+        elif self.decision == "direction":
+            choice, horizon, detail = decide_direction(board, views, self.tau, key=self.key)
+        else:
+            choice, horizon, detail = None, None, {"rule": "none"}
+        return choice, horizon, {**detail, "edge_cap": self.edge_cap}
 
     def __call__(self, spec: PolicySpec, board: Board, arm: Arm
                  ) -> tuple[str | None, str | None, str, dict[str, Any]]:
@@ -696,10 +722,13 @@ class ForecastAsk:
         kwargs: dict[str, Any] = {}
         if self.transport is not None:
             kwargs["transport"] = self.transport
+        if self.effort is not None:
+            kwargs["extra"] = {"reasoning_effort": self.effort}
         reply, model = llm.chat_json(spec.provider or self.provider, messages, **kwargs)
         p_up, exp = parse_forecast(reply, perm)
         choice, horizon, detail = self.decide(board, p_up)
         forecast = {"schema": FORECAST_SCHEMA, "model": model, "seed": self.seed,
+                    "effort": self.effort,
                     "perm": perm, "p_up": p_up, "exp_ret_bps": exp, "decision": detail,
                     "prompt_sha256": hashlib.sha256(
                         messages[0]["content"].encode()).hexdigest()}
@@ -711,17 +740,21 @@ def _tau_param(value: Any) -> float | None:
 
 
 def ask_plugin(params: Mapping[str, Any], ctx: PluginContext) -> ForecastAsk:
-    """Params: provider (minimax-flash), decision (ev | direction | none),
-    tau (pre-registered edge threshold), seed, cutoff (the payoff map's
-    TRAIN split), key (the direction variant's row order)."""
+    """Params: provider (minimax-flash), effort (M3.1 reasoning_effort; None
+    = the provider default, max), decision (ev | direction | none), tau
+    (pre-registered edge threshold), edge_cap, seed, cutoff (the payoff
+    map's TRAIN split), key (the direction variant's row order)."""
     decision = str(params.get("decision", "ev"))
     cutoff = str(params.get("cutoff", DEFAULT_CUTOFF))
     payoff = fit_state(ctx, cutoff)["payoff"] if decision == "ev" else None
+    effort = params.get("effort")
     return ForecastAsk(provider=str(params.get("provider", "minimax-flash")),
                        transport=ctx.shared.get("transport"),
                        seed=int(params.get("seed", DEFAULT_SEED)), decision=decision,
                        tau=_tau_param(params.get("tau", DEFAULT_TAU)), payoff=payoff,
-                       key=str(params.get("key", "board_order")))
+                       key=str(params.get("key", "board_order")),
+                       edge_cap=float(params.get("edge_cap", EDGE_CAP)),
+                       effort=None if effort is None else str(effort))
 
 
 # ------------------------------------------------------------------ report
@@ -835,8 +868,10 @@ def order_check(a: Mapping[str, np.ndarray], b: Mapping[str, np.ndarray],
 def _derive(source_arms: Sequence[Arm], variant: str, boards: Sequence[Board],
             receipts: Mapping[str, Mapping[str, Mapping[str, Any]]], state: Mapping[str, Any],
             net: Callable[[str, str, str | None], float], grid: Sequence[float],
-            run_dir: Path | None, key: str) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """One derived deterministic arm per source repeat, tau fit on TRAIN."""
+            run_dir: Path | None, key: str, edge_cap: float = EDGE_CAP
+            ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """One derived deterministic arm per source repeat, tau fit on TRAIN
+    (decisions see the capped views, like the model arm's)."""
     cost = round_trip_cost()
     payoff = state.get("payoff")
     if variant == "ev":
@@ -863,7 +898,8 @@ def _derive(source_arms: Sequence[Arm], variant: str, boards: Sequence[Board],
     for arm_obj, source in zip(longrun.arms_of([spec]), source_arms, strict=True):
         mine = receipts.get(source.name, {})
         forecasts = [(board, forecast_receipt(mine.get(board.snapshot))) for board in boards]
-        usable = [(board, f["p_up"]) for board, f in forecasts if f is not None]
+        usable = [(board, cap_views(f["p_up"], edge_cap)) for board, f in forecasts
+                  if f is not None]
         fit = fit_tau([(b, p) for b, p in usable if b.session <= state["cutoff"]], decide, net,
                       grid)
         fits[arm_obj.name] = {k: fit[k] for k in fit if k != "grid"} | {"grid": fit["grid"]}
@@ -947,7 +983,7 @@ def report_markdown(section: Mapping[str, Any]) -> str:
 
 def report_plugin(params: Mapping[str, Any], ctx: PluginContext) -> Callable[..., dict[str, Any]]:
     """Params: source (the forecast policy name), cutoff, derived (["ev",
-    "direction"]), tau_grid, key, draws (default: the protocol's)."""
+    "direction"]), tau_grid, key, edge_cap, draws (default: the protocol's)."""
     source = str(params.get("source") or "")
     if not source:
         raise ValueError("the forecast report needs 'source' (the forecast policy name)")
@@ -955,6 +991,7 @@ def report_plugin(params: Mapping[str, Any], ctx: PluginContext) -> Callable[...
     variants = tuple(str(v) for v in params.get("derived", ("ev", "direction")))
     grid = tuple(float(t) for t in params.get("tau_grid", TAU_GRID))
     key = str(params.get("key", "board_order"))
+    edge_cap = float(params.get("edge_cap", EDGE_CAP))
     state = fit_state(ctx, cutoff)
 
     def report(*, run_dir: Path | None, boards: Sequence[Board], arms: Sequence[Arm],
@@ -988,7 +1025,7 @@ def report_plugin(params: Mapping[str, Any], ctx: PluginContext) -> Callable[...
         derived: dict[str, Any] = {}
         for variant in variants:
             items, info = _derive(sources, variant, paired, receipts, state, outcomes.net,
-                                  grid, run_dir, key)
+                                  grid, run_dir, key, edge_cap)
             derived_items.extend(items)
             derived[info["policy"]] = info
         section = {"schema": REPORT_SCHEMA, "status": "ok", "source": source,
@@ -1110,7 +1147,7 @@ def _pct(values: Sequence[float], q: float) -> float | None:
 
 
 def smoke(*, bundle: Path, table: Path, out_root: Path, boards: int = 24, repeats: int = 2,
-          concurrency: int = 3, provider: str = "minimax-flash",
+          concurrency: int = 3, provider: str = "minimax-flash", effort: str | None = None,
           transport: llm.PostTransport | None = None,
           quota: longrun.QuotaFn | None = None, now: datetime | None = None) -> dict[str, Any]:
     """A small live run of the forecaster (``boards`` boards spread evenly
@@ -1131,7 +1168,8 @@ def smoke(*, bundle: Path, table: Path, out_root: Path, boards: int = 24, repeat
     outcome = longrun.plugin("outcome", "v2")({"table": str(table)}, ctx)
     ctx.shared["outcome"] = outcome
     name = "m31-fc"
-    ask = longrun.PolicyAsk(None, {name: ask_plugin({"provider": provider}, ctx)})
+    ask = longrun.PolicyAsk(None, {name: ask_plugin({"provider": provider, "effort": effort},
+                                                    ctx)})
     report = report_plugin({"source": name, "draws": 2000}, ctx)
     run_dir = longrun.new_run_dir(out_root, now or datetime.now(UTC))
     policies = [PolicySpec(name, "model", repeats=repeats),
@@ -1157,7 +1195,7 @@ def smoke(*, bundle: Path, table: Path, out_root: Path, boards: int = 24, repeat
     section = (digest.get("reports") or {}).get("forecast") or {}
     summary = {
         "schema": "desk-forecast-smoke/1", "run_dir": str(run_dir), "status": result["status"],
-        "provider": provider, "boards": len(chosen), "repeats": repeats,
+        "provider": provider, "effort": effort, "boards": len(chosen), "repeats": repeats,
         "calls": len(calls), "http_200": sum(1 for c in calls if c.get("status") == 200),
         "transport_errors": sum(1 for c in calls if c.get("status") is None),
         "truncated": sum(1 for c in calls if c.get("finish_reason") == "length"),
@@ -1200,6 +1238,8 @@ def _cli(argv: list[str] | None = None) -> int:
     run.add_argument("--repeats", type=int, default=2)
     run.add_argument("--concurrency", type=int, default=3)
     run.add_argument("--provider", default="minimax-flash")
+    run.add_argument("--effort", choices=EFFORTS, default=None,
+                     help="M3.1 reasoning_effort (default: the provider's, max)")
     args = parser.parse_args(argv)
     if args.command == "labels":
         index = outcomes.prepare_index(json.loads(args.bundle.read_bytes()))
@@ -1222,7 +1262,7 @@ def _cli(argv: list[str] | None = None) -> int:
         return 0
     summary = smoke(bundle=args.bundle, table=args.table, out_root=args.out_root,
                     boards=args.boards, repeats=args.repeats, concurrency=args.concurrency,
-                    provider=args.provider)
+                    provider=args.provider, effort=args.effort)
     print(json.dumps(summary, indent=2, default=str))
     return 0 if summary.get("status") == "finished" else 3
 
