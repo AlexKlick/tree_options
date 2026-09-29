@@ -495,7 +495,8 @@ def create_app(
                          portfolio_dir=desk_store_root / "evaluations" / "portfolio-scenario",
                          intraday_dir=desk_store_root / "evaluations" / "intraday-graph",
                          trade_floor_dir=desk_store_root / "evaluations" / "trade-floor",
-                         longrun_dir=desk_store_root / "evaluations" / "longrun")
+                         longrun_dir=desk_store_root / "evaluations" / "longrun",
+                         plans_root=plans_root, state_root=state_root)
 
     # Research lane routes: RL-1 catalog + comparisons + evidence
     # drawer; RL-2 scenario branching (GET/POST /api/research/

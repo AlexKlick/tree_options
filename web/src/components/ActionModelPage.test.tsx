@@ -2,7 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, expect, it, vi } from 'vitest'
 import { ActionModelPage } from './ActionModelPage'
 import { getActionModelExample, getAutomation, getHistoricalReplays, getIntradayGraphs, getLabScoreboard, getLongRun, getPlans, getPortfolioScenarios, getSupervisedDesk, postAutomationAction, postSupervisedControl } from '../lib/api'
-import type { LongRunView } from '../lib/types'
+import type { AccountExposure, LongRunView, PlansResponse } from '../lib/types'
 
 vi.mock('../lib/api', () => ({
   getActionModelExample: vi.fn(),
@@ -228,4 +228,74 @@ it('flags an invalid A/A pair and the empty store', async () => {
   vi.mocked(getLongRun).mockResolvedValue({ schema: 'desk-longrun-view/1', run: null, progress: null, digest: null, execution_enabled: false })
   render(<ActionModelPage />)
   expect(await screen.findByText('No long run has started in this cockpit store.')).toBeTruthy()
+})
+
+// The account is not the desk book, and the canary's flat-book rule
+// covers the CANDIDATE'S OWN UNDERLYING (Ruling 3b), not the whole
+// account: a SPY candidate is admitted into an account holding NVDA legs.
+const NON_FLAT_ACCOUNT: AccountExposure = {
+  schema: 'desk-account-exposure/1', as_of: '2026-09-30',
+  state_root: '/home/x/.local/state/trex', desk_run_dir: '/home/x/.local/state/trex/desk-paper',
+  countable: true, max_loss_usd: '477.00', problems: [],
+  desk_book: { structures: 0, legs: 0, max_loss_usd: '0.00', earliest_exit_deadline: null,
+    exit_deadlines_unknown: 0, owners: [], books: [], positions: [] },
+  outside_desk_book: { structures: 2, legs: 4, max_loss_usd: '477.00',
+    earliest_exit_deadline: '2026-10-09', exit_deadlines_unknown: 0,
+    owners: ['trex-monitor'], books: ['legacy:putspread-20260922'], positions: [] },
+}
+
+function _nonFlatMocks() {
+  vi.mocked(getSupervisedDesk).mockResolvedValue({
+    schema: 'desk-cli-status/1', at: '2026-09-30T13:00:00+00:00', run_dir: '/tmp/desk-paper',
+    kill_files: [], owner: null, book: {}, inbox: [], last_results: [],
+    account_exposure: NON_FLAT_ACCOUNT,
+    supervised: { schema: 'supervised-status/1', at: '2026-09-30T13:00:00+00:00',
+      mandate: { state: 'active', days_left: 1, account_id: 'DU1234567', orders_used: 0, max_orders: 3 },
+      outbox: [] },
+    events: [],
+  })
+  vi.mocked(getPlans).mockResolvedValue({
+    now: '2026-09-30T13:00:00+00:00', gateway_reachable: true, plans: [],
+    portfolio: {
+      plans_count: 0, plans_with_state: 0, open_qty: 0, committed_at_caps: 0,
+      committed_filled: 0, committed_known: 0, cost_unknown: false, unpriced_qty: 0,
+      unrealized_open: 0, unrealized_filled: 0, short_floor: 0, long_ceiling: 0,
+      legs: [],
+    } as unknown as PlansResponse['portfolio'],
+    account: null, accounts_seen: [],
+    net_positions: [{
+      underlying: 'NVDA', structure_count: 2, open_qty: 8, avg_entry: 0.64,
+      committed: 477, committed_known: 477, cost_unknown: false, unpriced_qty: 0,
+      max_gain: null, max_loss: 477, unrealized: null,
+      short_floor: 150, long_ceiling: 185, legs: [],
+    }],
+  })
+}
+
+it('stands a red account banner over the desk book when the account is not flat', async () => {
+  _nonFlatMocks()
+  const { container } = render(<ActionModelPage />)
+  const banner = await screen.findByTestId('account-exposure-banner')
+  expect(banner.getAttribute('role')).toBe('alert')
+  expect(banner.textContent).toMatch(/OUTSIDE the desk book/)
+  expect(banner.textContent).toMatch(/4 legs \/ 2 structures/)
+  expect(banner.textContent).toMatch(/trex-monitor/)
+  expect(banner.textContent).toMatch(/earliest exit 2026-10-09/)
+  // standing: no dismiss control, and it sits before the desk book lines
+  expect(banner.querySelector('button')).toBeNull()
+  const html = container.innerHTML
+  expect(html.indexOf('account-exposure-banner')).toBeLessThan(html.indexOf('Kill files: none'))
+})
+
+it('does not claim the canary is blocked by the whole legacy book', async () => {
+  _nonFlatMocks()
+  render(<ActionModelPage />)
+  await screen.findByTestId('account-exposure-banner')
+  const text = document.body.textContent ?? ''
+  expect(text).not.toMatch(/remains blocked until the legacy book is flat/)
+  expect(text).toMatch(/only on the candidate’s own underlying \(Ruling 3b\)/)
+  expect(text).toMatch(/admitted into this non-flat account/)
+  // the account's real shape, not one underlying row
+  expect(text).toMatch(/2 structures, 4 option legs, \$477\.00 max loss/)
+  expect(text).toMatch(/underlying rows/)
 })

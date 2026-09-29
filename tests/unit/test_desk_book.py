@@ -661,6 +661,108 @@ class TestWithRisk:
         assert out["legacy:putspread-20260922/nvda-nov"].risk == PositionRisk()
 
 
+class TestExitDeadline:
+    """``BookPosition.exit_deadline``: the structure's own time stop, so
+    evidence can NAME the date an exposure must be gone by (the drill
+    check's account line and the cockpit banner both quote it)."""
+
+    def test_legacy_and_desk_positions_carry_their_own_time_stop(self, legacy, tmp_path) -> None:
+        plans, state = legacy
+        specs = tmp_path / "desk" / "specs"
+        specs.mkdir(parents=True)
+        (specs / "d1.json").write_text(_spec().model_dump_json())
+        pos = _by_id(desk_book.load_book(
+            as_of=AS_OF, plans_root=plans, state_root=state, desk_specs=specs))
+        # hand-read from the fixture's plan TOMLs, not from the code under test
+        assert pos["legacy:putspread-20260922/nvda-oct"].exit_deadline == date(2026, 10, 9)
+        assert pos["legacy:putspread-20260922/nvda-nov"].exit_deadline == date(2026, 11, 6)
+        assert pos["desk:d1"].exit_deadline == date(2026, 10, 22)
+
+    def test_it_is_optional_and_defaults_to_none(self) -> None:
+        """Backward compatible by construction: every existing caller that
+        builds a BookPosition positionally keeps working."""
+        bare = rails.BookPosition("x:1", "x", "SPY", "open", D("10"))
+        assert bare.exit_deadline is None
+        assert bare.quantity == 0 and bare.spec is None  # unchanged defaults
+
+    def test_load_books_own_signature_is_unchanged(self, legacy) -> None:
+        """load_book takes only ``as_of`` positionally/by keyword; every
+        root is optional, so an old call site still reads the same books."""
+        import inspect
+
+        params = inspect.signature(desk_book.load_book).parameters
+        assert list(params) == ["as_of", "plans_root", "state_root",
+                                "desk_specs", "desk_book"]
+        assert params["as_of"].kind is inspect.Parameter.KEYWORD_ONLY
+        for name in ("plans_root", "state_root", "desk_specs", "desk_book"):
+            assert params[name].default is None
+
+    def test_the_adapter_never_rewrites_a_deadline(self, legacy, tmp_path) -> None:
+        plans, state = legacy
+        before = _tree_digest(tmp_path)
+        desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state)
+        assert _tree_digest(tmp_path) == before
+
+
+class TestAccountExposure:
+    """``account_exposure``: the same load_book, split by OWNER. A flat
+    desk book is not a flat account (verified live 2026-09-29: $477 in a
+    legacy book while the desk book was empty)."""
+
+    def test_the_legacy_book_and_the_desk_book_are_separate_slices(self, legacy, tmp_path) -> None:
+        plans, state = legacy
+        specs = tmp_path / "desk" / "specs"
+        specs.mkdir(parents=True)
+        (specs / "d1.json").write_text(_spec().model_dump_json())
+        run = tmp_path / "desk"
+        exposure = desk_book.account_exposure(
+            as_of=AS_OF, plans_root=plans, state_root=state,
+            desk_specs=specs, desk_book=run / "book.json")
+        assert exposure.problems == ()
+        assert exposure.outside.structures == 2
+        assert exposure.outside.books == ("legacy:putspread-20260922",)
+        assert exposure.desk.structures == 1
+        assert exposure.desk.books == ("desk",)
+        assert exposure.countable is True
+
+    def test_counts_totals_and_the_earliest_time_stop(self, legacy) -> None:
+        plans, state = legacy
+        exposure = desk_book.account_exposure(
+            as_of=AS_OF, plans_root=plans, state_root=state)
+        # hand-computed: 0.21 x 5 x 100 = 105 and 1.24 x 3 x 100 = 372
+        assert exposure.outside.max_loss_usd == D("477.00")
+        assert exposure.outside.legs == 4  # two 2-leg spreads
+        assert exposure.outside.earliest_exit_deadline == date(2026, 10, 9)
+        assert exposure.outside.unknown_deadlines == 0
+        assert exposure.desk.max_loss_usd == D(0)  # an empty desk is zero, not unknown
+
+    def test_an_empty_desk_book_leaves_the_legacy_books_outside(self, legacy) -> None:
+        plans, state = legacy
+        exposure = desk_book.account_exposure(
+            as_of=AS_OF, plans_root=plans, state_root=state,
+            desk_specs=None, desk_book=None)
+        assert exposure.desk.structures == 0
+        assert exposure.outside.structures == 2
+        assert exposure.countable is True
+
+    def test_an_unreadable_book_makes_the_whole_account_uncountable(self, legacy) -> None:
+        plans, state = legacy
+        (state / "putspread-20260922" / "book.json").write_text("{not json")
+        exposure = desk_book.account_exposure(
+            as_of=AS_OF, plans_root=plans, state_root=state)
+        assert exposure.countable is False
+        assert any("putspread-20260922/book.json unreadable" in p
+                   for p in exposure.problems)
+        # counted positions may still show, but no total is claimable
+        assert exposure.outside.max_loss_usd == D(0)
+
+    def test_it_writes_nothing(self, legacy, tmp_path) -> None:
+        plans, state = legacy
+        before = _tree_digest(tmp_path)
+        desk_book.account_exposure(as_of=AS_OF, plans_root=plans, state_root=state)
+        assert _tree_digest(tmp_path) == before
+
+
 class TestDefaults:
     def test_default_roots_follow_the_environment(self, monkeypatch, tmp_path) -> None:
         monkeypatch.setenv("TREX_STATE", str(tmp_path / "s"))

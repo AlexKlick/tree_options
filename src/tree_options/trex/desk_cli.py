@@ -149,6 +149,14 @@ def _cli(argv: list[str] | None = None) -> int:
     drill.add_argument("--gateway-state", type=Path, default=None,
                        help="gateway watch state (default ~/.local/state/trex/gateway.json)")
     drill.add_argument("--exit-watch-state", type=Path, default=None)
+    drill.add_argument("--plans-dir", type=Path, default=None,
+                       help="legacy plan TOMLs for the ACCOUNT's other books "
+                            "(default the repo's plans/)")
+    drill.add_argument("--max-account-open-loss", type=Decimal, default=None,
+                       metavar="USD",
+                       help="operator rail: NO-GO when the ACCOUNT's open loss "
+                            "(desk book + every other book under the scan root) "
+                            "exceeds USD. Unset = reported, never enforced.")
     req = sub.add_parser("request", help="compose+validate an entry request file")
     req.add_argument("--underlying", default="SPY")
     req.add_argument("--buy-strike", required=True, type=Decimal)
@@ -216,12 +224,16 @@ def _cli(argv: list[str] | None = None) -> int:
 
         try:
             pair = drill_check.parse_pair(args)
+            if args.max_account_open_loss is not None and args.max_account_open_loss < 0:
+                raise ValueError("--max-account-open-loss must be >= 0")
         except ValueError as error:
             print(f"usage error: {error}", file=sys.stderr)
             return 2
         return drill_check.run_drill_check(
             paths, supervised, pair=pair,
-            gateway_state=args.gateway_state, exit_watch_state=args.exit_watch_state)
+            gateway_state=args.gateway_state, exit_watch_state=args.exit_watch_state,
+            max_account_open_loss=args.max_account_open_loss,
+            plans_root=args.plans_dir)
 
     # request
     entry_date = args.entry_date or now.date()
