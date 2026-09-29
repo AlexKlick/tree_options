@@ -91,8 +91,19 @@
         policies always run. --dry-run computes the plan and writes
         nothing. Exit 0 done/gated, 2 bad arguments or a refused plan.
 
+    outcome-table --bundle FILE --out FILE.jsonl [--sync 2|off]
+                  [--half-spread 0.03] [--commission 0.65]
+        Environment v2 (desk.outcomes): one row per (board, candidate,
+        exit mode) of a frozen minute-bar bundle — gross and net of the
+        round-trip cost, leg-synced fills and marks (default 2 min),
+        status closed / marked_at_end / no_fill — plus the summary
+        FILE.jsonl.summary.json (printed too). Pure mechanics: no model, no
+        network, no store writes; it takes no state lock. Exit 0 written,
+        2 bad arguments or an unreadable bundle.
+
 Each command holds a per-command lock (``<state>/locks/<command>.lock``)
-while it writes; a second concurrent run exits 3. No secrets are printed
+while it writes (outcome-table excepted: it writes only --out); a second
+concurrent run exits 3. No secrets are printed
 (the chain, index and calendar feeds are keyless; fetch_ohlc.py reads its
 own key file and redacts it; the SEC contact User-Agent is read from
 DESK_SEC_UA and never echoed).
@@ -257,6 +268,13 @@ def _parser() -> argparse.ArgumentParser:
     ch_run.add_argument("--rounds", type=int, help="play only the newest N bundles")
     ch_run.add_argument("--dry-run", action="store_true",
                         help="compute and print the plan; write nothing")
+    ot = sub.add_parser("outcome-table",
+                        help="environment v2: per-candidate outcomes x exit modes, gross/net")
+    ot.add_argument("--bundle", required=True, type=Path)
+    ot.add_argument("--out", required=True, type=Path)
+    ot.add_argument("--sync", default="2")
+    ot.add_argument("--half-spread", default="0.03")
+    ot.add_argument("--commission", default="0.65")
     sup = sub.add_parser("supervised-previews",
                          help="E6 shadow: request previews from the deal queue (never the inbox)")
     sup.add_argument("--session", type=date.fromisoformat)
@@ -570,6 +588,12 @@ def run_cli(
         # SQLite serializes all evidence writes across command names. Read-only
         # commands and dry runs must not create the old per-command lock files.
         return production.dispatch(args, now=clock(), cal=cal)
+    if args.command == "outcome-table":  # pure mechanics: writes only --out, no state lock
+        from tree_options.desk.outcomes import _cli as _outcomes_cli
+
+        return _outcomes_cli(["--bundle", str(args.bundle), "--out", str(args.out),
+                              "--sync", args.sync, "--half-spread", args.half_spread,
+                              "--commission", args.commission])
     with _single_run(args.command, enabled=not getattr(args, "dry_run", False)) as owned:
         if not owned:
             print(f"{args.command}: another run holds the lock; retry later", file=sys.stderr)
