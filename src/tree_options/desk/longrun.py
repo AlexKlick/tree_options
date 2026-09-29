@@ -115,7 +115,8 @@ _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,47}$")
 
 Choice = tuple[str | None, str | None]
 RuleFn = Callable[["Board"], Choice]
-AskFn = Callable[["PolicySpec", "Board"], tuple[str | None, str | None, str]]
+#: (PolicySpec, Board[, Arm when ``wants_arm``]) -> (choice, horizon, note[, receipt extras])
+AskFn = Callable[..., tuple[Any, ...]]
 OutcomeFn = Callable[[str, str, str | None], Mapping[str, Any] | None]
 QuotaFn = Callable[[], tuple[bool, str]]
 Clock = Callable[[], datetime]
@@ -439,6 +440,30 @@ def _validated(board: Board, choice: Any, horizon: Any, note: Any) -> dict[str, 
     return out
 
 
+def call_ask(ask: AskFn, arm: Arm, board: Board) -> tuple[Any, ...]:
+    """An ask that sets ``wants_arm`` also gets the arm (e.g. its repeat
+    seeds the forecaster's display permutation)."""
+    if getattr(ask, "wants_arm", False):
+        return tuple(ask(arm.policy, board, arm))
+    return tuple(ask(arm.policy, board))
+
+
+class PolicyAsk:
+    """Per-policy ask overrides (config ``policies[].ask``); the rest use
+    the default ask."""
+
+    wants_arm = True
+
+    def __init__(self, default: AskFn | None, overrides: Mapping[str, AskFn]) -> None:
+        self.default, self.overrides = default, dict(overrides)
+
+    def __call__(self, spec: PolicySpec, board: Board, arm: Arm) -> tuple[Any, ...]:
+        ask = self.overrides.get(spec.name, self.default)
+        if ask is None:
+            raise RuntimeError(f"{spec.name}: no ask plug-in configured")
+        return call_ask(ask, arm, board)
+
+
 def decide(arm: Arm, board: Board, ask: AskFn | None,
            monotonic: Callable[[], float] = time.monotonic) -> dict[str, Any]:
     """One arm's decision on one board as a receipt. Failures are recorded,
@@ -449,16 +474,21 @@ def decide(arm: Arm, board: Board, ask: AskFn | None,
                            "kind": arm.policy.kind, "snapshot": board.snapshot,
                            "session": board.session, "board_rows": len(board.rows)}
     try:
+        extra: Any = None
         if arm.policy.kind == "model":
             if ask is None:
                 raise RuntimeError("no ask plug-in configured")
-            choice, horizon, note = ask(arm.policy, board)
+            reply = call_ask(ask, arm, board)
+            choice, horizon, note = reply[:3]
+            extra = reply[3] if len(reply) > 3 else None
         else:
             if arm.policy.rule is None:
                 raise RuntimeError("rule missing")
             choice, horizon = arm.policy.rule(board)
             note = ""
         rec.update(_validated(board, choice, horizon, note), ok=True)
+        for key, value in dict(extra or {}).items():
+            rec.setdefault(key, value)  # extra receipt fields (raw forecasts); core keys never move
     except Exception as error:  # recorded, the run continues
         rec.update(ok=False, choice=None, horizon=None, row=None, note="",
                    error=f"{type(error).__name__}: {str(error)[:160]}")
@@ -1393,6 +1423,11 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         from tree_options.desk import skill
 
         lines.extend(skill.skill_markdown(doc["skill"]))
+    for name, section in (doc.get("reports") or {}).items():
+        add(f"## Report: {name}")
+        add("")
+        add(str((section or {}).get("markdown") or json.dumps(section, default=str)[:4000]))
+        add("")
     add("## Receipts")
     add("")
     for arm, path in doc["receipts"].items():
@@ -1454,6 +1489,32 @@ def _plan(run_dir: Path, boards: Sequence[Board], policies: Sequence[PolicySpec]
     return plan
 
 
+def _run_reports(reports: Mapping[str, Callable[..., Mapping[str, Any]]], arms: Sequence[Arm],
+                 receipts: Mapping[str, dict[str, dict[str, Any]]], files: dict[str, str],
+                 **inputs: Any) -> tuple[list[Arm], dict[str, Any], dict[str, Any]]:
+    """Post-execution report plug-ins: each returns a digest ``section`` and
+    may add DERIVED deterministic arms (``derived``: [{arm, receipts, file}])
+    scored on the same paired scoreboard. A failing report is recorded."""
+    all_arms, all_receipts = list(arms), dict(receipts)
+    sections: dict[str, Any] = {}
+    for name, report in reports.items():
+        try:
+            out = report(arms=list(arms), receipts=receipts, **inputs)
+            added = list(out.get("derived") or ())
+            if any(item["arm"].name in all_receipts for item in added):
+                raise ValueError("a derived arm name collides with an existing arm")
+        except Exception as error:  # the digest still gets written
+            sections[name] = {"status": "failed",
+                              "error": f"{type(error).__name__}: {str(error)[:200]}"}
+            continue
+        for item in added:
+            all_arms.append(item["arm"])
+            all_receipts[item["arm"].name] = item["receipts"]
+            files[item["arm"].name] = str(item.get("file") or "derived")
+        sections[name] = out.get("section")
+    return all_arms, all_receipts, sections
+
+
 def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[PolicySpec],
                 outcome: OutcomeFn, ask: AskFn | None, quota_ok: QuotaFn,
                 protocol: Protocol, settings: ExecSettings | None = None,
@@ -1462,7 +1523,9 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
                 sleep: Callable[[float], None] = time.sleep,
                 monotonic: Callable[[], float] = time.monotonic,
                 clock: Clock = _utcnow,
-                skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
+                skill_options: Mapping[str, Any] | None = None,
+                reports: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None
+                ) -> dict[str, Any]:
     """Execute (or resume) every missing (arm, board), then score and digest.
 
     Returns {"status": "finished" | "stopped:<why>", ...}. A stopped run is
@@ -1500,7 +1563,10 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
         executor.write_progress()
         files = {a.name: str(receipts_path(run_dir, a.name)) for a in arms}
         try:
-            digest = score_run(boards, arms, executor.receipts, outcomes, protocol,
+            scored_arms, scored_receipts, sections = _run_reports(
+                reports or {}, arms, executor.receipts, files, run_dir=run_dir, boards=boards,
+                outcomes=outcomes, protocol=protocol)
+            digest = score_run(boards, scored_arms, scored_receipts, outcomes, protocol,
                                benchmarks=benchmarks, receipts_files=files,
                                run_id=run_dir.name, plan_created=plan.get("created"),
                                complete=complete, clock=clock, skill_options=skill_options)
@@ -1508,6 +1574,8 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
             executor.status = "scoring_failed"
             executor.write_progress()
             raise
+        if sections:
+            digest["reports"] = sections
         write_digest(run_dir, digest)
         executor.status = "finished"
         executor.digest = "digest.json"
@@ -1536,8 +1604,10 @@ class PluginContext:
 #:   ask:        -> AskFn (PolicySpec, Board) -> (choice | None, horizon | None, note)
 #:   quota:      -> QuotaFn () -> (ok, reason)
 #:   benchmarks: -> {name: {ISO date: close}}
+#:   report:     -> (run_dir=, boards=, arms=, receipts=, outcomes=, protocol=) ->
+#:                  {"section": digest section, "derived": [{arm, receipts, file}]}
 PLUGINS: dict[str, dict[str, Callable[[Mapping[str, Any], PluginContext], Any]]] = {
-    "boards": {}, "outcome": {}, "ask": {}, "quota": {}, "benchmarks": {}}
+    "boards": {}, "outcome": {}, "ask": {}, "quota": {}, "benchmarks": {}, "report": {}}
 
 
 def register_plugin(kind: str, name: str,
@@ -1845,6 +1915,18 @@ register_plugin("benchmarks", "file", _bench_file)
 register_plugin("benchmarks", "panel", _bench_panel)
 
 
+def _forecast_plugin(kind: str) -> Callable[[Mapping[str, Any], PluginContext], Any]:
+    """desk.forecast's plug-ins, imported on first use (it imports this module)."""
+    def factory(params: Mapping[str, Any], ctx: PluginContext) -> Any:
+        from tree_options.desk import forecast
+        return getattr(forecast, f"{kind}_plugin")(params, ctx)
+    return factory
+
+
+register_plugin("ask", "forecast", _forecast_plugin("ask"))
+register_plugin("report", "forecast", _forecast_plugin("report"))
+
+
 # ------------------------------------------------------------------ config
 
 
@@ -1951,11 +2033,21 @@ def run_from_config(config_path: Path, *, run_dir: Path | None = None,
         boards = boards[:limit]
     ctx.boards = boards
     outcome = plugin("outcome", str(cfg["outcome"].get("plugin")))(cfg["outcome"], ctx)
+    ctx.shared.setdefault("outcome", outcome)  # the forecast plug-ins fit on it (TRAIN only)
     policies = policies_from_config(cfg["policies"], builtin=bool(cfg.get("builtin_controls", True)),
                                     horizon=cfg.get("control_horizon"))
-    ask = None
+    ask: AskFn | None = None
     if cfg.get("ask") is not None:
         ask = plugin("ask", str(cfg["ask"].get("plugin")))(cfg["ask"], ctx)
+    overrides = {str(e["name"]): plugin("ask", str(e["ask"].get("plugin")))(e["ask"], ctx)
+                 for e in cfg["policies"] if isinstance(e.get("ask"), Mapping)}
+    if overrides:
+        missing = [p.name for p in policies if p.kind == "model" and p.name not in overrides]
+        if missing and ask is None:
+            raise ValueError(f"model policies without an ask plug-in: {missing}")
+        ask = PolicyAsk(ask, overrides)
+    reports = {str(e.get("name") or e.get("plugin")): plugin("report", str(e.get("plugin")))(e, ctx)
+               for e in cfg.get("reports") or ()}
     quota_cfg = cfg.get("quota") or {"plugin": "always"}
     quota_ok = plugin("quota", str(quota_cfg.get("plugin", "always")))(quota_cfg, ctx)
     bench_cfg = cfg.get("benchmarks") or {"plugin": "none"}
@@ -1972,11 +2064,14 @@ def run_from_config(config_path: Path, *, run_dir: Path | None = None,
     meta = {"config_sha256": hashlib.sha256(raw_config).hexdigest(),
             "plugins": {k: (cfg.get(k) or {}).get("plugin")
                         for k in ("boards", "outcome", "ask", "quota", "benchmarks")},
-            "limit": limit}
+            "ask_overrides": {str(e["name"]): e["ask"].get("plugin") for e in cfg["policies"]
+                              if isinstance(e.get("ask"), Mapping)},
+            "reports": sorted(reports), "limit": limit}
     return run_longrun(run_dir, boards=boards, policies=policies, outcome=outcome, ask=ask,
                        quota_ok=quota_ok, protocol=protocol, settings=settings,
                        benchmarks=benchmarks, meta=meta, score_only=score_only,
-                       sleep=sleep, clock=clock, skill_options=cfg.get("skill"))
+                       sleep=sleep, clock=clock, skill_options=cfg.get("skill"),
+                       reports=reports)
 
 
 # ------------------------------------------------------------------ cockpit

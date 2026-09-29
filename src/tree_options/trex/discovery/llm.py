@@ -153,8 +153,11 @@ def chat_json(
     model: str | None = None,
     transport: PostTransport = urllib_post,
     timeout: float | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any], str]:
-    """One chat completion parsed to a JSON object -> (object, model used)."""
+    """One chat completion parsed to a JSON object -> (object, model used).
+    ``extra`` adds per-call body fields (e.g. M3.1-Flash ``reasoning_effort``,
+    which defaults to max) over the provider's own."""
     spec = PROVIDERS.get(provider)
     if spec is None:
         raise LlmError(f"unknown provider {provider!r}")
@@ -182,6 +185,7 @@ def chat_json(
             "temperature": 0.2,
             "max_tokens": spec.get("max_tokens", MAX_TOKENS),
             **spec["extra"],
+            **(extra or {}),
         }
     ).encode()
     try:
