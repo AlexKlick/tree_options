@@ -263,20 +263,25 @@ def ask_json(
     transport: PostTransport | None = None, extra: dict[str, Any] | None = None,
     timeout: float | None = None, max_tokens: int | None = None,
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
-    """chat_json for one decision with the two self-heals the desk lanes share:
+    """chat_json for one decision with the three self-heals the desk lanes share:
 
     1. ONE escalating retry when the reply is truncated (escalation_budget);
-    2. when ``fallback`` names a different provider, ONE attempt on it after
-       the primary's final failure (any LlmError: timeout, HTTP, truncation
-       that survived its escalation). The fallback call carries only generic
+    2. ONE escalating retry when the call times out (a read timeout usually
+       means still-thinking, not stuck: the retry doubles the window, capped
+       at ESCALATE_TIMEOUT_CAP). Other transport errors (URLError, resets)
+       do NOT retry - they go straight to the fallback;
+    3. when ``fallback`` names a different provider, ONE attempt on it after
+       the primary's final failure. The fallback call carries only generic
        per-call fields (max_tokens/timeout) - never the primary's
        provider-specific extras such as reasoning_effort.
 
     Returns (reply, model, meta); ``meta`` records who answered and how -
     ``{"provider": name}`` always, plus ``escalated``/``max_tokens``/``timeout``
-    when the escalation fired and ``fallback: True`` when the backup answered -
-    so receipts never hide which model made a call. A failure on both providers
-    raises the fallback's LlmError (the primary's when no fallback applies)."""
+    when the truncation escalation fired, ``timeout_escalated``/``timeout``
+    when the timeout escalation fired, and ``fallback: True`` when the backup
+    answered - so receipts never hide which model made a call. A failure on
+    both providers raises the fallback's LlmError (the primary's when no
+    fallback applies)."""
     base: dict[str, Any] = {}
     if transport is not None:
         base["transport"] = transport
@@ -292,14 +297,23 @@ def ask_json(
             reply, model = chat_json(name, messages, **kwargs)
             return reply, model, {}
         except LlmError as error:  # one escalating retry, then the failure stands
-            if TRUNCATED_NOTE not in str(error):
+            text = str(error)
+            if TRUNCATED_NOTE in text:
+                retry_extra, seconds, tokens = escalation_budget(
+                    name, max_tokens=max_tokens, timeout=timeout, extra=call_extra)
+                retry_kwargs: dict[str, Any] = {**kwargs, "extra": retry_extra,
+                                                "timeout": seconds}
+                meta = {"escalated": True, "max_tokens": tokens, "timeout": seconds}
+            elif text.endswith("TimeoutError"):
+                start = float(timeout if timeout is not None
+                              else PROVIDERS.get(name, {}).get("timeout", REQUEST_TIMEOUT))
+                seconds = min(2 * start, ESCALATE_TIMEOUT_CAP)
+                retry_kwargs = {**kwargs, "timeout": seconds}
+                meta = {"timeout_escalated": True, "timeout": seconds}
+            else:
                 raise
-            retry_extra, seconds, tokens = escalation_budget(
-                name, max_tokens=max_tokens, timeout=timeout, extra=call_extra)
-            reply, model = chat_json(
-                name, messages, **{**kwargs, "extra": retry_extra, "timeout": seconds})
-            return reply, model, {"escalated": True, "max_tokens": tokens,
-                                  "timeout": seconds}
+        reply, model = chat_json(name, messages, **retry_kwargs)
+        return reply, model, meta
 
     try:
         reply, model, meta = call(provider, extra)

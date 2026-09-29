@@ -405,8 +405,9 @@ def _fc_board() -> Board:
 
 
 class FailoverForecastTransport:
-    """Raises (a transport outage the caller sees as LlmError TimeoutError) for
-    every host in ``fail_hosts``; answers a full p_up for any other provider."""
+    """Raises (a NON-timeout transport outage - ConnectionError never triggers
+    the timeout escalation) for every host in ``fail_hosts``; answers a full
+    p_up for any other provider."""
 
     def __init__(self, fail_hosts: tuple[str, ...] = ("api.minimax.io",)) -> None:
         self.fail_hosts, self.calls = fail_hosts, []
@@ -416,7 +417,7 @@ class FailoverForecastTransport:
         payload = json.loads(body)
         self.calls.append({"url": url, "body": payload, "timeout": timeout})
         if any(host in url for host in self.fail_hosts):
-            raise TimeoutError("simulated provider outage")
+            raise ConnectionError("simulated provider outage")
         shown = json.loads(payload["messages"][0]["content"])["context"]["underlyings"]
         p_up = {label: {h: 0.6 for h in H} for label in shown}
         return 200, json.dumps({"choices": [{"message": {"content": json.dumps({"p_up": p_up})},
@@ -442,7 +443,7 @@ def test_forecast_ask_falls_over_once_and_records_who_answered() -> None:
 
     # both providers down: exactly two calls, the failure stands, no fallback flag
     both = FailoverForecastTransport(("api.minimax.io", "api.z.ai"))
-    with pytest.raises(llm.LlmError, match="zai: TimeoutError"):
+    with pytest.raises(llm.LlmError, match="zai: ConnectionError"):
         _fc_ask(both, fallback_provider="zai")(
             PolicySpec("fc", "model"), _fc_board(), Arm("fc", PolicySpec("fc", "model"), 1))
     assert len(both.calls) == 2

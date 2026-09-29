@@ -950,9 +950,10 @@ def test_v2_ask_escalation_is_capped_and_a_second_truncation_still_fails(
 
 
 class FailoverTransport:
-    """Raises for the primary provider's URL (a transport outage the caller
-    sees as LlmError TimeoutError) and answers like HorizonTransport(0, eod)
-    for every other provider."""
+    """Raises for the primary provider's URL (a NON-timeout transport outage -
+    ConnectionError, not TimeoutError, so it never triggers the timeout
+    escalation and goes straight to the fallback) and answers like
+    HorizonTransport(0, eod) for every other provider."""
 
     def __init__(self, fail_hosts: tuple[str, ...] = ("api.minimax.io",)) -> None:
         self.fail_hosts, self.calls = fail_hosts, []
@@ -961,7 +962,7 @@ class FailoverTransport:
                  timeout: float) -> tuple[int, bytes]:
         self.calls.append({"url": url, "body": json.loads(body), "timeout": timeout})
         if any(host in url for host in self.fail_hosts):
-            raise TimeoutError("simulated provider outage")
+            raise ConnectionError("simulated provider outage")
         rows = json.loads(json.loads(body)["messages"][0]["content"])["board"]
         content = json.dumps({"choice": rows[0]["id"], "horizon": "eod", "note": "backup"})
         return 200, json.dumps(
@@ -1004,10 +1005,80 @@ def test_v2_ask_falls_over_to_the_backup_provider_once(
     assert len(both.calls) == 2
     rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
                      .read_text().splitlines()[0])
-    assert rec["ok"] is False and "zai: TimeoutError" in rec["error"]
+    assert rec["ok"] is False and "zai: ConnectionError" in rec["error"]
     doc = json.loads((Path(result["run_dir"]) / "digest.json").read_text())
     rows = {r["arm"]: r for r in doc["standings"]}
-    assert rows["m31"]["failure_reasons"] == {"timeout": 1}
+    assert rows["m31"]["failure_reasons"] == {"other": 1}
+
+
+class TimeoutThenAnswerTransport(FailoverTransport):
+    """Times out (a read timeout = still-thinking, not stuck) for the first
+    ``timeouts`` calls to the minimax host, then answers normally."""
+
+    def __init__(self, timeouts: int = 1) -> None:
+        super().__init__(fail_hosts=())
+        self.timeouts, self.seen_minimax = timeouts, 0
+
+    def __call__(self, url: str, body: bytes, headers: dict[str, str],
+                 timeout: float) -> tuple[int, bytes]:
+        if "api.minimax.io" in url:
+            self.seen_minimax += 1
+            if self.seen_minimax <= self.timeouts:
+                self.calls.append({"url": url, "body": json.loads(body),
+                                   "timeout": timeout})
+                raise TimeoutError("still thinking")
+        return super().__call__(url, body, headers, timeout)
+
+
+def test_v2_ask_escalates_a_timeout_once_then_answers(
+        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    path, _ = v1_bundle
+    config = tmp_path / "slow.json"
+    config.write_text(json.dumps({
+        "out_root": str(tmp_path / "out"), "incumbent": "m31",
+        "boards": {"plugin": "v2", "bundle": str(path)},
+        "outcome": {"plugin": "v2", "sync": 2},
+        "ask": {"plugin": "v2", "provider": "minimax-flash", "timeout": 300},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "m31", "kind": "model"}]}))
+    transport = TimeoutThenAnswerTransport(timeouts=1)
+    result = longrun.run_from_config(config, shared={"transport": transport}, limit=1)
+    assert result["status"] == "finished" and result["complete"] is True
+    assert len(transport.calls) == 2  # one escalating retry, never more
+    assert [c["timeout"] for c in transport.calls] == [300.0, 600.0]
+    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
+                     .read_text().splitlines()[0])
+    assert rec["ok"] is True and rec["choice"]
+    assert rec["timeout_escalated"] is True and rec["timeout"] == 600.0
+    assert rec["provider"] == "minimax-flash"
+    assert rec.get("escalated") is None  # distinct from the truncation escalation
+
+    # always timing out: ONE retry, then the failure stands
+    stuck = TimeoutThenAnswerTransport(timeouts=99)
+    slow = tmp_path / "stuck.json"
+    slow.write_text(config.read_text())
+    result = longrun.run_from_config(slow, shared={"transport": stuck}, limit=1)
+    assert result["status"] == "finished"
+    assert len(stuck.calls) == 2
+    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
+                     .read_text().splitlines()[0])
+    assert rec["ok"] is False and "TimeoutError" in rec["error"]
+
+    # with a fallback: two timed-out minimax attempts, then zai answers
+    both = tmp_path / "fb.json"
+    both.write_text(json.dumps({
+        **json.loads(config.read_text()),
+        "ask": {"plugin": "v2", "provider": "minimax-flash", "timeout": 300,
+                "fallback_provider": "zai"}}))
+    chain = TimeoutThenAnswerTransport(timeouts=99)
+    result = longrun.run_from_config(both, shared={"transport": chain}, limit=1)
+    assert result["status"] == "finished" and result["complete"] is True
+    assert [c["url"].split("/chat")[0] for c in chain.calls] == [
+        "https://api.minimax.io/v1", "https://api.minimax.io/v1",
+        "https://api.z.ai/api/coding/paas/v4"]
+    rec = json.loads(longrun.receipts_path(Path(result["run_dir"]), "m31")
+                     .read_text().splitlines()[0])
+    assert rec["ok"] is True and rec["fallback"] is True and rec["provider"] == "zai"
 
 
 def test_v2_ask_refuses_a_bad_fallback_provider(
