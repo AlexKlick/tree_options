@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import fcntl
 import json
+import os
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -20,6 +22,7 @@ import pytest
 from tests.unit.trex_fakes import SupervisedGateway, fill_row, position_row
 from tree_options.desk.dividends import DividendRecord, DividendSnapshot
 from tree_options.execution import SubmitAttempt
+from tree_options.trex import exit_watch
 from tree_options.trex.clock import ET
 from tree_options.trex.desk_runtime import (
     DeskPaths,
@@ -30,7 +33,7 @@ from tree_options.trex.desk_runtime import (
     desk_order_ref,
     exit_owner_ready,
 )
-from tree_options.trex.ibkr import IbkrTrex
+from tree_options.trex.ibkr import GATEWAY_PAPER_PORT, IbkrTrex
 from tree_options.trex.plan import LegStructure
 from tree_options.trex.state import Status
 from tree_options.trex.supervised import SupervisedPaths
@@ -640,3 +643,244 @@ def test_cancel_confirm_legs_hold_at_place_time(desk):
                    if t.order.action == "SELL" and t.order.orderRef == "trex:desk:dv1"]
     assert len(sells_after) == 1, "no second sell after legs mismatch"
     assert any("legs_mismatch" in evt[0] for evt in desk.notified)
+
+
+# ---------------------------------------------------- exit guards (Stage A)
+#
+# Ruling 2b: closes are PERMIT-EXEMPT (the runtime is the exit owner; an
+# expired mandate must never block an exit). The guards below check only the
+# SESSION and the broker's open-order view, and every refusal is
+# fail-closed-with-retry: nothing is sent, one deduped urgent push, the next
+# tick re-enters the lane.
+
+
+def _sells(desk) -> list[Any]:
+    return [t for t in desk.gw.trades if t.order.action == "SELL"]
+
+
+def _records(desk) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in desk.paths.events().read_text().splitlines()]
+
+
+def test_exit_refused_off_paper_session_then_places_after_restore(desk):
+    desk.open_position()
+    desk.ib.port = 7496  # the live gateway port: no close order leaves from there
+    desk.clock.now = EXIT_DAY
+    desk.rt.tick()
+    desk.rt.tick()  # the refusal repeats; the alert fires once (deduped)
+    assert not _sells(desk), "no close order left the desk off the paper session"
+    blocked = [r for r in _records(desk) if r["event"] == "exit_blocked"]
+    assert len(blocked) == 1, "one record and one push while the blocker persists"
+    assert blocked[0]["blockers"] == ["not_paper_gateway_port"]
+    assert blocked[0]["reason"] == "time_stop"
+    urgent = [n for n in desk.notified if n[2] == "urgent"]
+    assert any("exit_blocked" in n[0] and "not_paper_gateway_port" in n[1] for n in urgent)
+    desk.ib.port = GATEWAY_PAPER_PORT  # restored: the lane is retried, not stuck
+    desk.rt.tick()
+    assert [t.order.orderRef for t in _sells(desk)] == ["trex:desk:dv1"]
+    assert desk.book()["dv1"]["status"] == Status.EXIT_WORKING.value
+
+
+def test_exit_refused_when_the_account_is_not_managed_by_the_session(desk):
+    desk.open_position()
+    desk.gw.accounts = ["DU7654321"]
+    desk.clock.now = EXIT_DAY
+    desk.rt.tick()
+    assert not _sells(desk), "the account the session does not manage is never traded"
+    blocked = [r for r in _records(desk) if r["event"] == "exit_blocked"]
+    assert blocked[0]["blockers"] == ["account_not_managed_by_session"]
+
+
+def test_exit_refused_when_the_duplicate_check_cannot_read_the_broker(desk):
+    desk.open_position()
+    desk.gw.views_error = RuntimeError("views down")  # absence is unproven
+    desk.clock.now = EXIT_DAY
+    desk.rt.tick()
+    assert not _sells(desk), "an unreadable open-order view refuses the close"
+    blocked = [r for r in _records(desk) if r["event"] == "exit_blocked"]
+    assert blocked[0]["reason"] == "duplicate_check_unreadable"
+    assert "blockers" not in blocked[0]
+
+
+def test_exit_refused_when_the_desk_tag_is_already_working(desk):
+    desk.open_position()
+    foreign = SimpleNamespace(order=SimpleNamespace(orderId=888, permId=88001,
+                                                    orderRef=desk_order_ref("dv1")))
+    desk.gw.foreign_open.append(foreign)  # an open order carrying OUR exit tag
+    desk.clock.now = EXIT_DAY
+    desk.rt.tick()
+    assert not _sells(desk), "never a second close order over a working one"
+    blocked = [r for r in _records(desk) if r["event"] == "exit_blocked"]
+    assert blocked[0]["reason"] == "exit_tag_already_open"
+    assert blocked[0]["orders"] == ["888"]
+
+
+def test_a_filled_desk_order_same_day_does_not_block_the_reprice(desk):
+    """The duplicate check reads OPEN orders only: a same-day EXECUTED desk
+    order is the legal remainder case a reprice cycle must serve."""
+    desk.exit_while_down(status="Cancelled", executed=1, qty=2)
+    desk.hold_legs(1)
+    placed = len(desk.gw.trades)
+    desk.rt.tick()
+    assert len(desk.gw.trades) == placed + 1, "the remainder is replaced"
+    assert [t.order.totalQuantity for t in _sells(desk)] == [2, 1]
+    assert "exit_blocked" not in desk.events()
+
+
+def test_exit_authority_event_and_exit_order_carry_the_owner_epoch(desk):
+    (desk.paths.root / "owner.json").write_text(json.dumps(
+        {"owner_epoch": "desk83-ab", "client_id": SUPERVISED_CLIENT_ID, "pid": 4242,
+         "started_at": "2026-10-01T09:00:00-04:00"}))
+    desk.open_position()
+    desk.clock.now = EXIT_DAY
+    desk.rt.tick()
+    records = _records(desk)
+    authority = [r for r in records if r["event"] == "exit_authority"]
+    assert len(authority) == 1
+    a = authority[0]
+    assert (a["structure"], a["owner_epoch"], a["client_id"], a["port"], a["account"],
+            a["halt"]) == ("dv1", "desk83-ab", SUPERVISED_CLIENT_ID, GATEWAY_PAPER_PORT,
+                           ACCOUNT, False)
+    assert isinstance(a["pid"], int) and a["pid"] == os.getpid()
+    order = [r for r in records if r["event"] == "exit_order"][-1]
+    assert order["owner_epoch"] == "desk83-ab"
+    assert all("exit_authority" not in n[0] for n in desk.notified), "jsonl only"
+
+
+def test_exit_authority_without_an_owner_file_still_exits(desk):
+    """No owner.json (a bare runtime, not launched by the desk process): the
+    exit is NOT blocked — the evidence just records owner_epoch=None."""
+    assert not (desk.paths.root / "owner.json").exists()
+    desk.open_position()
+    desk.clock.now = EXIT_DAY
+    desk.rt.tick()
+    a = next(r for r in _records(desk) if r["event"] == "exit_authority")
+    assert a["owner_epoch"] is None
+    assert len(_sells(desk)) == 1
+
+
+# ------------------------------------------------- monitor.json (exit watch)
+#
+# The schema is EXACTLY the nine keys below (the canary structures are
+# touch=False: no spot_blind/touch_guarded/calendar_* — exit_watch reads this
+# file through the same code path as trex-monitor's).
+
+HEALTH_KEYS = {"at", "started_at", "pid", "connected", "tick_failures",
+               "last_tick_ok_at", "last_error", "halt", "flatten"}
+
+
+def _health(desk) -> dict[str, Any]:
+    return json.loads(desk.paths.health().read_text())
+
+
+def test_acquire_writes_health_with_the_exact_schema_and_claims_no_tick(desk):
+    doc = _health(desk)
+    assert set(doc) == HEALTH_KEYS
+    assert doc["pid"] == os.getpid()
+    assert doc["connected"] is True
+    assert doc["tick_failures"] == 0
+    assert doc["last_error"] is None
+    assert doc["last_tick_ok_at"] is None, "acquire never claims a good tick"
+    assert doc["halt"] is False and doc["flatten"] is False
+    assert doc["started_at"] == ENTRY_DAY.timestamp()
+    assert doc["at"] == ENTRY_DAY.timestamp()
+
+
+def test_a_good_tick_stamps_last_tick_ok_at(desk):
+    desk.open_position()
+    doc = _health(desk)
+    assert (doc["last_error"], doc["tick_failures"]) == (None, 0)
+    assert doc["last_tick_ok_at"] == doc["at"] == ENTRY_DAY.timestamp()
+    desk.paths.halt().touch()
+    desk.clock.now = HOLD_DAY
+    desk.rt.tick()  # a tick that decides nothing is still a good tick
+    doc = _health(desk)
+    assert (doc["last_tick_ok_at"], doc["halt"]) == (HOLD_DAY.timestamp(), True)
+
+
+def test_beat_refreshes_health_without_claiming_a_good_tick(desk):
+    desk.open_position()
+    before = _health(desk)
+    desk.clock.now = ENTRY_DAY.replace(hour=15)
+    desk.rt.beat()
+    after = _health(desk)
+    assert after["at"] == ENTRY_DAY.replace(hour=15).timestamp() > before["at"], \
+        "the beat touches at: stale-at alarms fire at any hour"
+    assert after["last_tick_ok_at"] == before["last_tick_ok_at"], "no tick claimed"
+    assert after["tick_failures"] == before["tick_failures"]
+
+
+def test_a_failing_tick_records_the_error_class_and_reraises(desk):
+    desk.open_position()
+    good = _health(desk)
+    desk.paths.spec("dv1").write_text("{ not json")  # the next tick cannot load specs
+    with pytest.raises(Exception) as caught:  # propagate-and-restart is unchanged
+        desk.rt.tick()
+    doc = _health(desk)
+    assert doc["last_error"] == type(caught.value).__name__, \
+        "the error class only, never the message"
+    assert doc["tick_failures"] == 1
+    assert doc["last_tick_ok_at"] == good["last_tick_ok_at"], "the good tick survives"
+    with pytest.raises(type(caught.value)):  # the same failure, counted again
+        desk.rt.tick()
+    assert _health(desk)["tick_failures"] == 2
+
+
+def test_a_health_write_failure_never_breaks_the_trading_loop(desk, tmp_path, monkeypatch):
+    blocker = tmp_path / "not-a-dir"
+    blocker.write_text("x")  # a parent that cannot hold monitor.json
+    real = desk.paths.root / "monitor.json"
+    real.unlink()
+    monkeypatch.setattr(DeskPaths, "health", lambda self: blocker / "monitor.json")
+    desk.rt.tick()  # completes despite the unwritable health path
+    desk.open_position()  # the full entry flow too
+    assert not real.exists(), "nothing was written and nothing raised"
+
+
+def test_restart_carries_last_tick_ok_at_forward(desk):
+    desk.open_position()
+    good = _health(desk)
+    desk.clock.now = ENTRY_DAY.replace(minute=30)
+    desk.rt.release()
+    restarted = DeskRuntime(desk.ib, desk.paths, supervised=desk.sup, clock=desk.clock)
+    restarted.acquire()
+    doc = _health(desk)
+    assert doc["last_tick_ok_at"] == good["last_tick_ok_at"], "crash-loop safety"
+    assert doc["started_at"] > good["started_at"], "but the run is honestly new"
+    restarted.tick()  # a fresh good tick replaces the carried stamp
+    assert _health(desk)["last_tick_ok_at"] == ENTRY_DAY.replace(minute=30).timestamp()
+    restarted.release()
+
+
+def test_monitor_json_feeds_exit_watch_through_the_real_file(desk):
+    """Producer-vs-consumer pin: the file this runtime writes is the file
+    trex.exit_watch classifies — fresh+connected ok, stale-at failing at any
+    hour, absent on grace then aged to failing."""
+    desk.open_position()
+    at = _health(desk)["at"]
+    plan = desk.paths.root.name
+
+    def obs(now: float, books: list[Any], *, market: bool = True) -> exit_watch.ExitObs:
+        return exit_watch.ExitObs(now=now, books=books, gateway_status=None,
+                                  gateway_since=None, market=market, unit_state=None)
+
+    books = exit_watch.scan_books(desk.paths.root.parent)
+    assert [b.plan for b in books] == [plan]
+    status, _, detail = exit_watch.classify(obs(at + 5, books))
+    assert (status, detail) == ("ok", f"{plan}: heartbeat 5s ago")
+
+    stale = json.loads(desk.paths.health().read_text())
+    stale["at"] = at - exit_watch.HEALTH_STALE_S - 1
+    desk.paths.health().write_text(json.dumps(stale))
+    books = exit_watch.scan_books(desk.paths.root.parent)
+    assert exit_watch.classify(obs(at + 5, books, market=False))[0] == "monitor_failing"
+
+    desk.clock.now = ENTRY_DAY.replace(minute=10)
+    desk.rt.tick()  # a fresh beat-side heartbeat, then the health file dies
+    fresh = ENTRY_DAY.replace(minute=10).timestamp()
+    desk.paths.health().unlink()
+    books = exit_watch.scan_books(desk.paths.root.parent)
+    assert exit_watch.classify(obs(fresh + 5, books))[0] == "ok"  # not-reported grace
+    aged = obs(fresh + 5, books)
+    assert exit_watch.classify(
+        aged, {plan: fresh - exit_watch.HEALTH_STALE_S - 60})[0] == "monitor_failing"

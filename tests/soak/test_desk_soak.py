@@ -508,6 +508,7 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
         "registered", "entry_request", "entry_adopted", "entry_filled",
         "entry_uncertain_held", "entry_reprice_not_sent", "exit_begin", "exit_order",
         "exit_fill", "closed", "halt_no_new_orders", "exit_flat_unexplained",
+        "exit_authority",
     }
     names = [str(r["event"]) for r in records]
     assert set(names) <= allowed, sorted(set(names) - allowed)
@@ -545,3 +546,96 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
     permits = soak.sup.root / "permits"
     assert list(permits.glob("*.issued.json")) == []  # every permit was consumed once
     assert len(list(permits.glob("*.consumed.json"))) == 4
+
+
+# ------------------------------------------------------- the Stage A drill
+
+
+def test_entry_to_time_stop_exit_end_to_end_drill(soak: Soak) -> None:
+    """Stage A drill: ONE session day, the whole protected path — inbox
+    entry to a time-stop exit — with the exit guards and the health file
+    exercised exactly as production runs them (write_owner first, run_loop
+    for the request, runtime ticks for the exits)."""
+    from tree_options.trex import exit_watch
+
+    drill = "drill-1"
+    soak.desk.write_owner()  # main() writes owner.json before the first pass
+
+    # ---- arm and enter through the REAL inbox -----------------------------
+    soak.arm(A_ENTRY_AT)  # mandate, fresh quotes, a heartbeat tick
+    soak.request(_vertical(drill, entry_date=date(2026, 10, 1),
+                           exit_deadline=date(2026, 10, 5)), drill)
+    assert run_loop(soak.desk, interval_s=0, stop=lambda: False, max_ticks=1) == 0
+    sent = soak.result(drill)
+    assert (sent["status"], sent["receipt"]["outcome"]) == ("sent", "acknowledged")
+    entry = soak.gw.trades[-1]
+    assert (entry.order.orderRef, entry.order.account) == ("trex:sup:drill-1", ACCOUNT)
+    soak.rt.tick()
+    assert soak.book()[drill]["status"] == "enter_working"
+    soak.fill(entry, 1, 0.90)
+    soak.hold_legs()
+    soak.rt.tick()
+    assert (soak.book()[drill]["status"], soak.book()[drill]["entry_fill"]) == ("open", "0.9")
+
+    # ---- monitor.json is present and classifies ok while the book is guarded
+    health = json.loads(soak.paths.health().read_text())
+    books = exit_watch.scan_books(soak.paths.root.parent)
+    assert [b.plan for b in books] == [soak.paths.root.name]
+    obs = exit_watch.ExitObs(now=health["at"] + 5, books=books, gateway_status=None,
+                             gateway_since=None, market=True, unit_state=None)
+    status, _, detail = exit_watch.classify(obs)
+    assert (status, detail) == ("ok", f"{soak.paths.root.name}: heartbeat 5s ago")
+
+    # ---- the deadline day, past the 09:45 time stop: the exit goes out -----
+    soak.clock.now = datetime(2026, 10, 5, 10, 0, tzinfo=ET)
+    soak.rt.tick()
+    book = soak.book()[drill]
+    assert (book["status"], book["exit_reason"]) == ("exit_working", "time_stop")
+    exit_trade = soak.gw.trades[-1]
+    assert exit_trade.order.orderRef == desk_order_ref(drill) == "trex:desk:drill-1"
+    assert exit_trade.order.account == ACCOUNT
+    assert (exit_trade.order.action, exit_trade.order.totalQuantity) == ("SELL", 1)
+    soak.fill(exit_trade, 1, 0.85)
+    # the runtime dies; while it is down the exit fills (long sold 2.05,
+    # short bought 1.20 = 0.85 a package) and the legs go flat
+    oid = exit_trade.order.orderId
+    soak.gw.fill_rows[:] = [fill_row(100, 1, 2.05, oid, SUPERVISED_CLIENT_ID),
+                            fill_row(95, 1, 1.20, oid, SUPERVISED_CLIENT_ID)]
+    soak.gw.position_rows.clear()
+    soak.kill_runtime()
+    soak.restart()
+    soak.rt.tick()
+    book = soak.book()[drill]
+    assert (book["status"], book["close_reason"], book["exit_fill"]) == (
+        "closed", "time_stop", "0.85")
+
+    # ---- the FULL chain, in order, through the real event log --------------
+    # (entry_reprice_not_sent is the pinned supervised-entry discipline: the
+    # engine always asks to reprice an unfilled entry; the permit binds one
+    # limit, so the runtime never sends it)
+    records = [json.loads(line) for line in soak.event_lines()]
+    mine = [r["event"] for r in records
+            if r.get("structure") == drill or r.get("intent") == drill]
+    assert mine == ["registered", "entry_request", "entry_adopted",
+                    "entry_reprice_not_sent", "entry_filled",
+                    "exit_begin", "exit_authority", "exit_order", "exit_fill", "closed"]
+    chain = ["entry_request", "entry_filled", "exit_begin", "exit_authority",
+             "exit_order", "exit_fill", "closed"]
+    scan = iter(mine)
+    assert [e for e in chain if e in scan] == chain, "the approved chain, in order"
+    begin = next(r for r in records if r["event"] == "exit_begin")
+    assert begin["reason"] == "time_stop"
+    authority = next(r for r in records if r["event"] == "exit_authority")
+    assert authority["owner_epoch"] == EPOCH  # owner.json wired into the evidence
+    assert (authority["account"], authority["halt"]) == (ACCOUNT, False)
+    assert "exit_blocked" not in mine  # nothing refused on the clean path
+    assert all("exit_authority" not in n[0] for n in soak.notified)  # jsonl only
+
+    # ---- exactly one entry order and one exit order at the broker ----------
+    assert Counter(soak.refs()) == {"trex:sup:drill-1": 1, "trex:desk:drill-1": 1}
+
+    # ---- closed: the watchdog has nothing left to guard ---------------------
+    assert exit_watch.scan_books(soak.paths.root.parent) == []
+    obs = exit_watch.ExitObs(now=soak.clock.now.timestamp(), books=[], gateway_status=None,
+                             gateway_since=None, market=True, unit_state=None)
+    assert exit_watch.classify(obs)[0] == "idle"

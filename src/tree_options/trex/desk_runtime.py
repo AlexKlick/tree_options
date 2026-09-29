@@ -26,6 +26,20 @@ working order's fills, then decide); this module is only I/O around it:
   in the bound account must equal the book's open quantity (BUY legs
   long, SELL legs short). Anything else refuses and alerts: a double
   close (a reversed position) cannot be sent, across restarts too.
+- **Exit guards (Stage A).** Before every close order leaves the desk the
+  session must be the supervised paper session (``paper_blockers`` over
+  the SAME connection), and the broker's OPEN-order view must show no
+  other order carrying the desk tag (an unreadable view refuses: absence
+  is unproven; a same-day EXECUTED desk order is legal in a reprice
+  cycle). Guards passing is the ``exit_authority`` evidence event; every
+  refusal is fail-closed-with-retry — nothing is sent, one urgent
+  ``exit_blocked`` push, the next tick re-enters the lane. An expired
+  mandate NEVER blocks an exit (ruling 2b: the runtime is the exit
+  owner, not a permit holder).
+- **Health.** ``monitor.json`` (``DeskPaths.health``) feeds the exit
+  machine watchdog (``trex.exit_watch``): the tick outcome the heartbeat
+  cannot show. Written at acquire, after every tick and on every beat;
+  failure-isolated so it can never break the trading loop.
 - **Kill files** in the run dir: ``HALT`` places no new orders (fills
   still drain); ``FLATTEN`` cancels working entries and closes open
   structures at marketable prices.
@@ -79,7 +93,11 @@ from tree_options.trex.ibkr import DONE_STATES, ORDER_REF_PREFIX, IbkrTrex, Orde
 from tree_options.trex.plan import LegStructure, cents
 from tree_options.trex.state import BookState, Status, StructureState
 from tree_options.trex.supervised import SupervisedPaths
-from tree_options.trex.supervised_ibkr import SupervisedEffect, supervised_order_ref
+from tree_options.trex.supervised_ibkr import (
+    IbkrSupervisedBroker,
+    SupervisedEffect,
+    supervised_order_ref,
+)
 
 log = logging.getLogger("trex.desk_runtime")
 
@@ -126,6 +144,10 @@ class DeskPaths:
 
     def book(self) -> Path:
         return self.root / "book.json"
+
+    def health(self) -> Path:
+        """``monitor.json``: what trex.exit_watch reads (tick outcome)."""
+        return self.root / "monitor.json"
 
     def events(self) -> Path:
         return self.root / "events.jsonl"
@@ -211,13 +233,15 @@ DividendSource = Callable[[str, date], DividendSnapshot | None]
 NotifyFn = Callable[[str, str, str], None]
 
 #: events worth a push, with their priority. Risk events are urgent;
-#: lifecycle events are default. Everything else stays in events.jsonl only.
+#: lifecycle events are default. Everything else stays in events.jsonl only
+#: (``exit_authority`` included: evidence, not an alert).
 _NOTIFY_EVENTS: dict[str, str] = {
     "unknown_exposure": "urgent",
     "legs_mismatch": "urgent",
     "exit_flat_unexplained": "urgent",
     "entry_uncertain_held": "urgent",
     "gateway_lost": "urgent",
+    "exit_blocked": "urgent",
     "entry_request": "default",
     "entry_filled": "default",
     "exit_begin": "default",
@@ -246,6 +270,12 @@ class DeskRuntime:
         self.orders: dict[str, Any] = {}  # structure id -> the last ib_async Trade seen
         self._lock_handle: Any = None
         self._noted: set[tuple[str, str]] = set()
+        # the exit guards' read-only broker view (paper_blockers) over the
+        # SAME session: no new connection, no order routing
+        self._guard = IbkrSupervisedBroker(ib)
+        self._started_at: float | None = None
+        self._tick_failures = 0
+        self._last_tick_ok_at: float | None = None
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -259,12 +289,62 @@ class DeskRuntime:
             handle.close()
             raise RuntimeLocked(str(self.paths.lock())) from None
         self._lock_handle = handle
+        self._start_health()  # the lock holder is the health writer
 
     def release(self) -> None:
         if self._lock_handle is not None:
             fcntl.flock(self._lock_handle.fileno(), fcntl.LOCK_UN)
             self._lock_handle.close()
             self._lock_handle = None
+
+    # -- health ---------------------------------------------------------------
+
+    def _start_health(self) -> None:
+        """Mark this run and carry the last good tick across restarts: a
+        runtime killed mid-tick and restarted must not look freshly
+        healthy, and its loop may never reach its own write."""
+        try:
+            prior = json.loads(self.paths.health().read_bytes())
+            ok_at = prior.get("last_tick_ok_at")
+            if isinstance(ok_at, (int, float)):
+                self._last_tick_ok_at = float(ok_at)
+        except (OSError, ValueError, AttributeError):
+            pass  # no (readable) prior health: nothing to carry
+        self._started_at = self._now().timestamp()
+        self._write_health(None, tick_ran=False)
+
+    def _write_health(self, tick_error: str | None, *, tick_ran: bool = True) -> None:
+        """``monitor.json`` for the exit-machine watchdog (trex.exit_watch):
+        the tick outcome, which the heartbeat cannot show (a runtime whose
+        every tick fails still beats). Error class only, never the message:
+        broker errors can carry account details. Failure-isolated: a health
+        write can never raise into the trading loop. ``tick_ran=False``
+        (acquire, beat) touches ``at`` without claiming a good tick —
+        load-bearing overnight, where stale-at alarms fire at any hour."""
+        try:
+            now = self._now().timestamp()
+            if tick_ran and tick_error is None:
+                self._tick_failures = 0
+                self._last_tick_ok_at = now
+            elif tick_ran:
+                self._tick_failures += 1
+            payload = {
+                "at": now,
+                "started_at": self._started_at,
+                "pid": os.getpid(),
+                "connected": bool(self.ib.connected),
+                "tick_failures": self._tick_failures,
+                "last_tick_ok_at": self._last_tick_ok_at,
+                "last_error": tick_error,
+                "halt": self.paths.halt().exists(),
+                "flatten": self.paths.flatten().exists(),
+            }
+            path = self.paths.health()
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(payload))
+            os.replace(tmp, path)
+        except Exception:
+            log.exception("desk health write failed (exit watch unaffected)")
 
     # -- state ---------------------------------------------------------------
 
@@ -345,6 +425,16 @@ class DeskRuntime:
     def tick(self) -> None:
         if self._lock_handle is None:
             raise RuntimeLocked("tick requires the runtime lock")
+        try:
+            self._tick()
+        except Exception as error:
+            # the error class only: broker errors can carry account details.
+            # Re-raised: the loop propagates and the unit restarts (unchanged).
+            self._write_health(type(error).__name__)
+            raise
+        self._write_health(None)
+
+    def _tick(self) -> None:
         now = self._now()
         specs = self.specs()
         book = self._book(specs)
@@ -366,12 +456,14 @@ class DeskRuntime:
         self._save(book)
 
     def beat(self) -> None:
-        """Heartbeat only (outside the session: no decisions, no orders)."""
+        """Heartbeat only (outside the session: no decisions, no orders).
+        Also refreshes ``monitor.json`` without claiming a good tick."""
         if self._lock_handle is None:
             raise RuntimeLocked("beat requires the runtime lock")
         book = self._book(self.specs())
         book.heartbeat = self._now()
         self._save(book)
+        self._write_health(None, tick_ran=False)
 
     def _snapshot(self, specs: Mapping[str, DeskSpec], now: datetime) -> Snapshot:
         structures = [s.structure for s in specs.values()]
@@ -653,9 +745,66 @@ class DeskRuntime:
                         open_qty=st.open_qty)
         return False
 
+    def _owner_epoch(self) -> str | None:
+        """This run dir's owner epoch from ``owner.json`` (the desk process
+        writes it at startup); None when absent or unreadable."""
+        try:
+            doc = json.loads((self.paths.root / "owner.json").read_bytes())
+        except (OSError, ValueError):
+            return None
+        epoch = doc.get("owner_epoch") if isinstance(doc, dict) else None
+        return epoch if isinstance(epoch, str) else None
+
+    def _open_tagged(self, order_ref: str) -> dict[str, str] | None:
+        """The broker's OPEN orders carrying ``order_ref``, keyed by identity
+        (permId, else the session orderId) with the best order id each; None
+        when the open-order view could not be read (absence is unproven).
+
+        Open orders ONLY: a same-day EXECUTED desk order is legal in a
+        reprice cycle (the completed-order and execution views would flag
+        the very remainder this lane is about to replace)."""
+        try:
+            trades = self.ib._ib.reqAllOpenOrders()
+        except Exception:  # any failed read: absence is not proven
+            return None
+        found: dict[str, str] = {}
+        for trade in trades:
+            if str(getattr(trade.order, "orderRef", "") or "") != order_ref:
+                continue
+            perm = int(getattr(trade.order, "permId", 0) or 0)
+            oid = int(getattr(trade.order, "orderId", 0) or 0)
+            key = f"perm:{perm}" if perm else f"oid:{oid}"
+            found[key] = str(oid) if oid else key
+        return found
+
     def _place_close(self, spec: DeskSpec, st: StructureState, side: str, qty: int,
-                     limit: Decimal) -> Any:
+                     limit: Decimal, *, halt: bool = False) -> Any:
+        """Send one close order, guarded. Every guard refuses BEFORE the
+        order exists and is fail-closed-with-retry: nothing is sent, one
+        deduped urgent ``exit_blocked`` push, the next tick re-enters the
+        lane. An expired mandate NEVER blocks an exit (ruling 2b): the
+        supervised mandate covers entries only, so it is not consulted."""
         s = spec.structure
+        blockers = self._guard.paper_blockers(spec.account_id)
+        if blockers:
+            self._note_once(s.id, "exit_blocked", key=",".join(blockers),
+                            blockers=blockers, reason=st.exit_reason)
+            return None
+        existing = self._open_tagged(desk_order_ref(s.id))
+        if existing is None:
+            self._note_once(s.id, "exit_blocked", key="duplicate_check_unreadable",
+                            reason="duplicate_check_unreadable", exit_reason=st.exit_reason)
+            return None
+        if existing:
+            self._note_once(s.id, "exit_blocked",
+                            key="duplicate:" + ",".join(sorted(existing)),
+                            reason="exit_tag_already_open", orders=sorted(existing.values()),
+                            exit_reason=st.exit_reason)
+            return None
+        owner_epoch = self._owner_epoch()
+        self._note_once(s.id, "exit_authority", owner_epoch=owner_epoch, pid=os.getpid(),
+                        client_id=self.ib.client_id, port=self.ib.port,
+                        account=spec.account_id, halt=halt)
         contract, order = self.ib._order(s, side, qty, limit)
         order.orderRef = desk_order_ref(s.id)
         order.account = spec.account_id
@@ -664,7 +813,7 @@ class DeskRuntime:
         st.exit_order = str(trade.order.orderId)
         st.exit_order_seen, st.exit_order_notional, st.exit_order_unpriced = 0, None, 0
         self._event("exit_order", structure=s.id, side=side, qty=qty, limit=str(limit),
-                    order=st.exit_order, reason=st.exit_reason)
+                    order=st.exit_order, reason=st.exit_reason, owner_epoch=owner_epoch)
         return trade
 
     def _cancel(self, sid: str, trade: Any, *, why: str) -> bool:
@@ -696,7 +845,7 @@ class DeskRuntime:
             st.exit_reason = action.reason.value
             self._event("exit_begin", structure=sid, reason=action.reason.value,
                         qty=st.open_qty)
-            self._place_close(spec, st, action.side, st.open_qty, action.limit)
+            self._place_close(spec, st, action.side, st.open_qty, action.limit, halt=halt)
             return
         if st.status is not Status.EXIT_WORKING:
             return
@@ -715,7 +864,7 @@ class DeskRuntime:
             return  # the final fills flattened it: the next tick closes the book
         if not self._legs_held(spec, st):
             return
-        self._place_close(spec, st, action.side, st.open_qty, action.limit)
+        self._place_close(spec, st, action.side, st.open_qty, action.limit, halt=halt)
 
     def _flatten(self, spec: DeskSpec, st: StructureState, trade: Any, snap: Snapshot, *,
                  halt: bool, now: datetime) -> None:
