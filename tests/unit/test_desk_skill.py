@@ -821,3 +821,73 @@ def test_status_line_surfaces_the_self_heal_tally(
     assert (
         "self-heals: m#1 escalated=1 timeout=0 fallback=2 providers=minimax-flash:3,zai:2"
     ) in out
+
+
+# ------------------------------------------------------------ pair arms
+
+
+def test_pair_arms_get_an_explicit_n_a_decomposition_not_a_crash() -> None:
+    boards = boards_for(SESSIONS6[:3])
+    specs = [PolicySpec("shortvol_pair", "rule", rule=lambda b: ("w+l", None)),
+             *longrun.builtin_controls()]
+    arms = longrun.arms_of(specs)
+    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards}
+                for arm in arms}
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome),
+                            Protocol(draws=1000, random_seeds=200))
+    assert "error" not in doc["skill"]
+    arm = doc["skill"]["arms"]["shortvol_pair"]
+    assert arm["decomposition"] == "n/a" and "package" in arm["decomposition_note"]
+    assert arm["entered"] == 6 and arm["unevaluable"] == 0
+    assert arm["net_total"] == 36.0 and arm["gross_total"] == 48.0
+    assert "PAIR ARM" in arm["verdict"] and "n/a" in arm["verdict"]
+    # the single-row arms around it keep their exact decomposition
+    assert "components" in doc["skill"]["arms"]["first_row"]
+    md = longrun.digest_markdown(doc)
+    assert "decomposition n/a" in md and "shortvol_pair: PAIR ARM" in md
+
+
+def test_progress_skill_marks_a_pair_arm_n_a_instead_of_a_silent_zero() -> None:
+    boards = boards_for(SESSIONS6[:3])
+    specs = [PolicySpec("shortvol_pair", "rule", rule=lambda b: ("w+l", None))]
+    arms = longrun.arms_of(specs)
+    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards}
+                for arm in arms}
+    live = skill.progress_skill(boards, arms, receipts, OutcomeCache(table_outcome).get, {})
+    entry = live["arms"]["shortvol_pair"]
+    assert entry["decided"] == 6 and entry["entered"] == 6
+    assert entry["excess"] is None and entry["in_sample_significant"] is None
+    assert entry["cs_total_excess"] is None and "pair arm" in entry["note"]
+
+
+def test_redigest_rescores_a_run_with_a_pair_arm_with_zero_model_calls(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        capsys: pytest.CaptureFixture[str]) -> None:
+    from tree_options.desk.__main__ import run_cli
+
+    boards = boards_for(SESSIONS6[:3])
+    monkeypatch.setitem(longrun.PLUGINS["boards"], "pytest", lambda p, c: boards)
+    _table_file(tmp_path / "table.jsonl", boards)
+    config = tmp_path / "pair.json"
+    config.write_text(json.dumps({
+        "out_root": "out", "concurrency": 2, "boards": {"plugin": "pytest"},
+        "outcome": {"plugin": "v2", "table": str(tmp_path / "table.jsonl")},
+        "quota": {"plugin": "always"},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "shortvol_pair_h5", "kind": "control", "builtin": "theory",
+                      "structures": ["put_credit", "call_credit"], "require_all": True,
+                      "pair": True, "horizon": "hold:5"}]}))
+    assert run_cli(["longrun", "run", "--config", str(config)]) == 0
+    run_dir = Path(json.loads(capsys.readouterr().out)["run_dir"])
+    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir)]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    assert printed["model_calls"] == 0 and printed["complete"] is True
+    assert "PAIR ARM" in printed["skill_verdicts"]["shortvol_pair_h5"]
+    doc = json.loads((run_dir / "digest.json").read_text())
+    row = next(r for r in doc["standings"] if r["arm"] == "shortvol_pair_h5")
+    # the boards' rows carry no underlying, so the pair joins w (put_credit)
+    # with l (call_credit): 6 boards x (10 + -4), both legs' costs
+    assert row["entered"] == 6 and row["net_total"] == 36.0 and row["gross_total"] == 48.0
+    arm = doc["skill"]["arms"]["shortvol_pair_h5"]
+    assert arm["decomposition"] == "n/a" and arm["net_total"] == 36.0
+    assert "SINGLE-ROW random null" in doc["protocol"]["pair_arms"]

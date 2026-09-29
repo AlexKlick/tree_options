@@ -1141,3 +1141,144 @@ def test_score_run_tallies_failure_reasons_per_arm() -> None:
                                 complete=False)
     assert "PARTIAL RUN" in longrun.digest_markdown(partial)
     assert "receipts incomplete" in longrun.digest_markdown(partial)
+
+
+# ------------------------------------------------------------ pair arms
+#
+# A rule arm may name TWO board rows as one package, "idA+idB" (the beta-neutral
+# short-vol trade). Grammar, outcome resolution, scoring, purge and end-to-end.
+
+
+def test_pair_receipt_accepts_exactly_two_distinct_board_ids() -> None:
+    board = boards_for(["2026-06-01"])[0]  # ids: l, w, n
+    rec = longrun._validated(board, "w+l", "hold:5", "")
+    assert rec["choice"] == "w+l" and rec["horizon"] == "hold:5"
+    assert rec["legs"] == ["w", "l"] and rec["rows"] == [1, 0] and rec["row"] is None
+    for bad in ("w+w", "w+zz", "w+l+n", "w +l", "w+", "+w", "l+n+w"):
+        refused = longrun._validated(board, bad, None, "")
+        assert refused["choice"] is None and refused["row"] is None, bad
+        assert "rejected_choice" in refused and "legs" not in refused, bad
+    # a single row id keeps its exact pre-pair receipt shape (backward compatible)
+    assert longrun._validated(board, "w", None, "") == {
+        "note": "", "choice": "w", "horizon": None, "row": 1}
+
+
+def test_decide_records_a_rule_pair_receipt() -> None:
+    board = boards_for(["2026-06-01"])[0]
+    arm = longrun.arms_of([PolicySpec("pair", "rule", rule=lambda b: ("w+l", "hold:5"))])[0]
+    rec = longrun.decide(arm, board, None)
+    assert rec["ok"] is True and rec["choice"] == "w+l" and rec["legs"] == ["w", "l"]
+    assert rec["rows"] == [1, 0] and rec["horizon"] == "hold:5" and rec["row"] is None
+
+
+def test_pair_outcome_sums_legs_both_costs_and_either_no_fill_is_none() -> None:
+    # hand oracle over TABLE: w gross 12 net 10 (cost 2), l gross -4 net -4 (cost 0)
+    cache = OutcomeCache(table_outcome)
+    snap = "s:2026-06-01T10:00"
+    assert cache.get(snap, "w+l", None) == (8.0, 6.0)  # gross and net both summed
+    assert cache.get(snap, "l+w", None) == (8.0, 6.0)  # leg order does not matter
+    assert cache.get(snap, "w+n", None) is None  # n never fills -> the pair is unevaluable
+    assert cache.net(snap, "w+n", None) == 0.0
+    assert cache.get(snap, "w", None) == (12.0, 10.0)  # singles still resolve unchanged
+
+
+def test_pair_exit_at_is_the_later_leg() -> None:
+    def outcome(snapshot: str, cid: str, horizon: str | None) -> dict[str, float] | None:
+        value = table_outcome(snapshot, cid, horizon)
+        if value is None:
+            return None
+        # l exits on the entry day, w one day later, n never
+        day = f"2026-06-0{1 + ['l', 'w', 'n'].index(cid)}"
+        return {**value, "exit_at": f"{day}T20:00:00+00:00"}
+
+    cache = OutcomeCache(outcome)
+    snap = "s:2026-06-01T10:00"
+    assert cache.exit_at(snap, "l", None) == "2026-06-01T20:00:00+00:00"
+    assert cache.exit_at(snap, "w", None) == "2026-06-02T20:00:00+00:00"
+    # the later leg decides even when it is the SECOND one named
+    assert cache.exit_at(snap, "l+w", None) == "2026-06-02T20:00:00+00:00"
+    assert cache.exit_at(snap, "w+l", None) == "2026-06-02T20:00:00+00:00"
+    assert cache.exit_at(snap, "w+n", None) is None  # unevaluable: no exit
+
+
+def test_single_choice_receipts_keep_their_exact_pre_pair_shape(tmp_path: Path) -> None:
+    # old receipts (no legs) load and score exactly as before; the format is
+    # additive only, so a resume with an unchanged config behaves identically
+    board = boards_for(["2026-06-01"])[0]
+    arm = longrun.arms_of([PolicySpec("r", "rule", rule=lambda b: ("w", None))])[0]
+    rec = longrun.decide(arm, board, None)
+    assert set(rec) == {"schema", "arm", "policy", "repeat", "kind", "snapshot", "session",
+                        "board_rows", "note", "choice", "horizon", "row", "ok", "latency_s"}
+    path = tmp_path / "r.jsonl"
+    path.write_text(json.dumps(rec) + "\n")
+    assert longrun.load_receipts(path) == {board.snapshot: rec}
+
+
+def test_pair_arm_scores_on_the_paired_scoreboard() -> None:
+    boards = boards_for(SESSIONS6[:3])
+    specs = [PolicySpec("pair", "rule", rule=lambda b: ("w+l", None)),
+             *longrun.builtin_controls()]
+    arms = longrun.arms_of(specs)
+    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards}
+                for arm in arms}
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome),
+                            Protocol(draws=1000, random_seeds=200))
+    row = next(r for r in doc["standings"] if r["arm"] == "pair")
+    assert row["entered"] == 6 and row["unevaluable"] == 0
+    assert row["net_total"] == 36.0  # 6 boards x (10 + -4): both legs, both costs
+    assert row["gross_total"] == 48.0
+    # the protocol note documents the single-row null comparison, never mixes it
+    assert "SINGLE-ROW random null" in doc["protocol"]["pair_arms"]
+    assert "pair_arms" in longrun.digest_markdown(doc)
+
+
+def test_theory_pair_rule_runs_end_to_end_on_the_v1_bundle(
+        v1_bundle: tuple[Path, dict[str, Any]], tmp_path: Path) -> None:
+    # the tiny v1 fixture's boards carry only call-side structures, so this
+    # plumbing check pairs call_debit with call_credit; the beta-neutral
+    # put_credit+call_credit config itself is pinned in the theory and
+    # redigest tests
+    path, _ = v1_bundle
+    config = tmp_path / "pair-v1.json"
+    config.write_text(json.dumps({
+        "out_root": str(tmp_path / "out"), "incumbent": "m31",
+        "boards": {"plugin": "v1", "bundle": str(path)}, "outcome": {"plugin": "v1"},
+        "ask": {"plugin": "v1", "provider": "minimax-flash"},
+        "protocol": {"draws": 1000, "random_seeds": 200},
+        "policies": [{"name": "m31", "kind": "model", "repeats": 2},
+                     {"name": "call_pair_h5", "kind": "control", "builtin": "theory",
+                      "structures": ["call_debit", "call_credit"], "require_all": True,
+                      "pair": True, "horizon": "hold:5"}]}))
+    result = longrun.run_from_config(config, shared={"transport": ChoosingTransport(0)},
+                                     limit=4)
+    assert result["status"] == "finished" and result["complete"] is True
+    run_dir = Path(result["run_dir"])
+    ctx = longrun.PluginContext(config_dir=tmp_path, shared={"transport": None})
+    boards = longrun.plugin("boards", "v1")({"bundle": str(path)}, ctx)
+    boards = boards[:4]
+    outcome = longrun.plugin("outcome", "v1")({}, ctx)
+    receipts = [json.loads(line) for line in
+                longrun.receipts_path(run_dir, "call_pair_h5").read_text().splitlines()]
+    by_snapshot = {r["snapshot"]: r for r in receipts if r.get("ok")}
+    # independent oracle from the boards alone: the v1 rows carry no underlying, so the
+    # pair joins the FIRST row of each listed structure of every board that holds both
+    # (board_order key), else the arm skips
+    expected_net = 0.0
+    for board in boards:
+        firsts = {s: next((r["id"] for r in board.rows if r["structure"] == s), None)
+                  for s in ("call_debit", "call_credit")}
+        rec = by_snapshot.get(board.snapshot)
+        if any(v is None for v in firsts.values()):
+            assert rec is None or rec["choice"] is None
+            continue
+        legs = [firsts["call_debit"], firsts["call_credit"]]
+        assert rec is not None and rec["choice"] == "+".join(legs)
+        assert rec["legs"] == legs
+        values = [outcome(board.snapshot, leg, "hold:5") for leg in legs]
+        if any(v is None for v in values):
+            continue  # a no-fill on either leg scores 0, counted unevaluable
+        expected_net += sum(float(v["net"]) for v in values if v is not None)
+    doc = json.loads((run_dir / "digest.json").read_text())
+    row = next(r for r in doc["standings"] if r["arm"] == "call_pair_h5")
+    assert row["net_total"] == round(expected_net, 2)
+    assert row["kind"] == "control" and row["entered"] > 0

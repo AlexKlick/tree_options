@@ -9,6 +9,12 @@ context. A config entry names the knobs, e.g. the direction-balanced short-vol s
      "structures": ["put_credit", "call_credit"], "require_all": true,
      "alternate": "slot", "horizon": "hold:5"}
 
+or the beta-neutral short-vol PACKAGE itself (both legs as ONE position)::
+
+    {"name": "shortvol_pair_h5", "kind": "control", "builtin": "theory",
+     "structures": ["put_credit", "call_credit"], "require_all": true,
+     "pair": true, "horizon": "hold:5"}
+
 Knobs (only ``structures`` is required):
 
 - ``structures``: the structures a row may have (a subset of the four);
@@ -31,14 +37,20 @@ Knobs (only ``structures`` is required):
 - ``alternate``: ``slot`` rotates the traded structure through ``structures`` by the board's
   slot (calendar ordinal + 45-minute clock index): with ``require_all`` the arm is
   direction-balanced in aggregate by construction, never by the board's content;
+- ``pair``: with ``require_all`` and exactly two ``structures``, trade the best row of EACH
+  structure on the best underlying as ONE ``"idA+idB"`` position (the beta-neutral
+  short-vol trade: put_credit + call_credit on one underlying; legs joined in
+  ``structures`` order, both pay their own costs, either leg's no-fill is unevaluable -
+  the harness's pair grammar). The best underlying is ranked by its best-ordered leg
+  under ``key``; refused together with ``alternate`` (a pair trades both structures every
+  board, there is nothing to rotate);
 - ``key``: the row order among eligible rows (``board_order``, ``max_reward_risk``,
   ``min_max_loss``, ``max_max_loss``, ``max_otm``, ``min_otm``; missing values last, ties
   by board order);
 - ``horizon``: the exit mode the rule asks for (``None``: the outcome plug-in's default).
 
-An unknown knob is refused (a typo must not silently become a different arm). A multi-leg
-package (put_credit + call_credit on one underlying, the beta-neutral short-vol trade
-itself) is NOT expressible: the harness takes one row per board.
+An unknown knob is refused (a typo must not silently become a different arm). A pair
+choice is a RULE-arm facility: the model contract is unchanged (one row per reply).
 """
 
 from __future__ import annotations
@@ -63,10 +75,13 @@ TIMES_OF_DAY = ("open", "morning", "midday", "afternoon", "close")
 BOUNDED = ("dte", "otm", "rv", "max_loss")
 ALTERNATES = ("slot",)
 SLOT_MINUTES = 45
+#: joins a package's two row ids; equals longrun.PAIR_SEP (kept local: this
+#: module imports nothing from the harness; a test pins the equality)
+PAIR_SEP = "+"
 _EPOCH = date(1970, 1, 1)  # day index by subtraction (no ordinal arithmetic in src)
 _ENTRY_KEYS = frozenset({"name", "kind", "builtin", "repeats", "structures", "horizon",
-                         "direction", "alternate", "require_all", "time_of_day", "key",
-                         *(f"{b}_{end}" for b in BOUNDED for end in ("min", "max"))})
+                         "direction", "alternate", "require_all", "pair", "time_of_day",
+                         "key", *(f"{b}_{end}" for b in BOUNDED for end in ("min", "max"))})
 
 
 def _num(value: Any) -> float | None:
@@ -113,6 +128,7 @@ class TheoryParams:
     direction: str = "any"
     alternate: str | None = None
     require_all: bool = False
+    pair: bool = False
     time_of_day: tuple[str, ...] | None = None
     #: (field, low, high) inclusive bounds, field in BOUNDED
     bounds: tuple[tuple[str, float | None, float | None], ...] = ()
@@ -128,6 +144,11 @@ class TheoryParams:
             raise ValueError(f"direction must be one of {DIRECTIONS}")
         if self.alternate is not None and self.alternate not in ALTERNATES:
             raise ValueError(f"alternate must be one of {ALTERNATES}")
+        if self.pair and (not self.require_all or len(self.structures) != 2):
+            raise ValueError("pair needs require_all and exactly two structures")
+        if self.pair and self.alternate is not None:
+            raise ValueError("pair trades both structures every board; alternate "
+                             "rotates one")
         if self.key not in KEYS:
             raise ValueError(f"key must be one of {KEYS}")
         if self.time_of_day is not None and (
@@ -161,6 +182,7 @@ class TheoryParams:
                    direction=str(entry.get("direction", "any")),
                    alternate=None if alternate is None else str(alternate),
                    require_all=bool(entry.get("require_all", False)),
+                   pair=bool(entry.get("pair", False)),
                    time_of_day=None if tod is None else tuple(str(t) for t in tod),
                    bounds=tuple(bounds), key=str(entry.get("key", "board_order")))
 
@@ -253,6 +275,24 @@ def rule_theory(entry: Mapping[str, Any] | TheoryParams) -> Callable[[Board], Ch
                 held.setdefault(row.get("underlying"), set()).add(str(row["structure"]))
             full = {u for u, have in held.items() if set(params.structures) <= have}
             rows = [(i, row) for i, row in rows if row.get("underlying") in full]
+        if params.pair:
+            # best row per (underlying, structure); the best underlying is its
+            # best-ordered leg; the package joins one row per structure, in
+            # ``structures`` order, as "idA+idB" (the harness's pair grammar)
+            best: dict[Any, dict[str, tuple[tuple[float, int], dict[str, Any]]]] = {}
+            for i, row in rows:
+                structure, rank = str(row["structure"]), order((i, row))
+                legs = best.setdefault(row.get("underlying"), {})
+                if structure not in legs or rank < legs[structure][0]:
+                    legs[structure] = (rank, row)
+            full_legs = [legs for legs in best.values()
+                         if set(legs) >= set(params.structures)]
+            if not full_legs:
+                return None, None
+            chosen = min(full_legs,
+                         key=lambda per: min(rank for rank, _ in per.values()))
+            return PAIR_SEP.join(str(chosen[s][1]["id"]) for s in params.structures), \
+                params.horizon
         if params.alternate == "slot":
             target = params.structures[slot_index(board.session, board.clock)
                                        % len(params.structures)]

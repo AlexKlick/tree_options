@@ -172,6 +172,31 @@ def test_require_all_needs_every_structure_on_one_underlying() -> None:
     assert rule(board(rows=no_pair)) == (None, None)
 
 
+def test_pair_trades_both_structures_of_the_best_underlying_as_one_choice() -> None:
+    # U1 holds a (put_credit) + b (call_credit); U2 holds e + f. Under
+    # board_order each underlying is ranked by its best-ordered leg: U1's best
+    # is a (index 0), U2's is e (index 4) -> U1, legs joined in structures order
+    assert pick(structures=CREDITS, require_all=True, pair=True) == ("a+b", None)
+    assert pick(structures=CREDITS, require_all=True, pair=True,
+                horizon="hold:5") == ("a+b", "hold:5")
+    # a cheaper-risk U2 put_credit (g, max_loss 50) makes U2 the best underlying
+    # under min_max_loss (U1's best-ordered leg b = 180, U2's g = 50): g+f
+    rows = [*ROWS, {"id": "g", "structure": "put_credit", "direction": "bullish",
+                    "underlying": "U2", "dte": 20, "max_loss": "50", "reward_risk": "2.0"}]
+    cheap = rule_theory({"structures": CREDITS, "require_all": True, "pair": True,
+                         "key": "min_max_loss"})
+    assert cheap(board(rows=rows)) == ("g+f", None)
+    # entry filters apply to both legs: otm >= 1 drops a, so U1 holds only b ->
+    # no underlying with both structures -> no trade
+    assert pick(structures=CREDITS, require_all=True, pair=True, otm_min=1.0) == (None, None)
+    no_pair = [r for r in ROWS if r["id"] in ("a", "c", "d", "f")]  # pc on U1, cc on U2
+    assert cheap(board(rows=no_pair)) == (None, None)
+    # the separator is the harness's pair grammar, kept in sync deliberately
+    from tree_options.desk.theory_rules import PAIR_SEP
+
+    assert PAIR_SEP == longrun.PAIR_SEP and "a+b" == "a" + PAIR_SEP + "b"
+
+
 def test_slot_alternation_is_balanced_and_flips_day_to_day() -> None:
     rule = rule_theory({"structures": CREDITS, "require_all": True, "alternate": "slot",
                         "horizon": "hold:5"})
@@ -204,6 +229,10 @@ def test_rules_are_deterministic_and_read_only_the_board() -> None:
     ({"structures": CREDITS, "time_of_day": ["noon"]}, "time_of_day"),
     ({"structures": CREDITS, "time_of_day": []}, "time_of_day"),
     ({"structures": CREDITS, "dte_min": 30, "dte_max": 10}, "min above max"),
+    ({"structures": CREDITS, "pair": True}, "pair needs require_all"),
+    ({"structures": list(STRUCTURES), "require_all": True, "pair": True}, "pair needs"),
+    ({"structures": CREDITS, "require_all": True, "pair": True, "alternate": "slot"},
+     "alternate"),
 ])
 def test_invalid_entries_are_refused(entry: dict[str, Any], match: str) -> None:
     with pytest.raises(ValueError, match=match):
@@ -219,13 +248,18 @@ def test_longrun_config_registers_the_theory_builtin() -> None:
     entries = [{"name": "theory_shortvol_alt_h5", "kind": "control", "builtin": "theory",
                 "structures": CREDITS, "require_all": True, "alternate": "slot",
                 "horizon": "hold:5"},
+               {"name": "shortvol_pair_h5", "kind": "control", "builtin": "theory",
+                "structures": CREDITS, "require_all": True, "pair": True,
+                "horizon": "hold:5"},
                {"name": "theory_bear_h5", "kind": "rule", "builtin": "theory",
                 "structures": list(STRUCTURES), "direction": "bearish", "horizon": "hold:5"}]
     specs = longrun.policies_from_config(entries, builtin=False)
-    assert [s.name for s in specs] == ["theory_shortvol_alt_h5", "theory_bear_h5"]
-    assert specs[1].rule is not None and specs[1].rule(board()) == ("b", "hold:5")
+    assert [s.name for s in specs] == ["theory_shortvol_alt_h5", "shortvol_pair_h5",
+                                       "theory_bear_h5"]
+    assert specs[2].rule is not None and specs[2].rule(board()) == ("b", "hold:5")
     assert specs[0].rule is not None and specs[0].rule(board()) in (("a", "hold:5"),
                                                                     ("b", "hold:5"))
+    assert specs[1].rule is not None and specs[1].rule(board()) == ("a+b", "hold:5")
     with pytest.raises(ValueError, match="unknown theory knobs"):
         longrun.policies_from_config([{**entries[0], "otm_mni": 1}], builtin=False)
 
