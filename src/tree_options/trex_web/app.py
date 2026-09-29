@@ -494,7 +494,8 @@ def create_app(
                          replay_dir=desk_store_root / "evaluations" / "historical-replay",
                          portfolio_dir=desk_store_root / "evaluations" / "portfolio-scenario",
                          intraday_dir=desk_store_root / "evaluations" / "intraday-graph",
-                         trade_floor_dir=desk_store_root / "evaluations" / "trade-floor")
+                         trade_floor_dir=desk_store_root / "evaluations" / "trade-floor",
+                         longrun_dir=desk_store_root / "evaluations" / "longrun")
 
     # Research lane routes: RL-1 catalog + comparisons + evidence
     # drawer; RL-2 scenario branching (GET/POST /api/research/

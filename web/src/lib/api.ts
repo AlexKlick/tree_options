@@ -58,6 +58,11 @@ export const getSupervisedDesk = (): Promise<import('./types').SupervisedDeskSta
 export const getLabScoreboard = (): Promise<import('./types').LabScoreboard> =>
   fetchJson('api/desk/lab')
 
+/** The latest desk long run: live progress, plus the digest's standings
+ * (session-bootstrap CIs) once finished. Evidence only; never promoted. */
+export const getLongRun = (): Promise<import('./types').LongRunView> =>
+  fetchJson('api/desk/longrun')
+
 /** Timer settings + kill-file states for the desk's own units. */
 export const getAutomation = (): Promise<import('./types').AutomationStatus> =>
   fetchJson('api/desk/automation')

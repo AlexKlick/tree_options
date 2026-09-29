@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -31,7 +32,7 @@ _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 
 def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
            portfolio_dir: Path | None = None, intraday_dir: Path | None = None,
-           trade_floor_dir: Path | None = None) -> None:
+           trade_floor_dir: Path | None = None, longrun_dir: Path | None = None) -> None:
     @app.get('/api/desk/health')
     def health() -> JSONResponse:
         try:
@@ -243,6 +244,23 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
             return _unavailable()
         return JSONResponse({**scoreboard, 'advisory': advisory,
                              'execution_enabled': False},
+                            headers={'Cache-Control': 'no-store'})
+
+    @app.get('/api/desk/longrun')
+    def longrun_view() -> JSONResponse:
+        """The latest long run: live progress, plus the digest's standings once
+        finished. Read-only; ``TREX_DESK_LONGRUN_DIR`` (a run dir or a root of
+        run dirs) overrides the store default. Never promotes, never launches."""
+        from tree_options.desk import longrun
+
+        override = os.environ.get(longrun.DIR_ENV, '').strip()
+        root = (Path(override).expanduser() if override
+                else longrun_dir or database.parent.parent / 'evaluations' / 'longrun')
+        try:
+            doc = longrun.cockpit_view(root)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return _unavailable()
+        return JSONResponse({**doc, 'execution_enabled': False},
                             headers={'Cache-Control': 'no-store'})
 
     @app.get('/desk/evidence')
