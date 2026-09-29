@@ -323,8 +323,13 @@ class Protocol:
     metric: str = "ci_low_diff_vs_random"
     max_finalists: int = MAX_FINALISTS
     alpha: float = 0.05
+    #: the test split counts decisions entered >= this many sessions after the cutoff
+    #: session (desk.purge); 1 = the first session after it (the pre-embargo split)
+    embargo_sessions: int = 1
 
     def __post_init__(self) -> None:
+        if not 1 <= self.embargo_sessions <= 60:
+            raise ValueError("embargo_sessions must be 1..60")
         if not self.capital > 0:
             raise ValueError("capital must be positive")
         if self.draws < 1000:
@@ -344,6 +349,8 @@ class Protocol:
         doc = asdict(self)
         if self.random_horizons is not None:
             doc["random_horizons"] = list(self.random_horizons)
+        if self.embargo_sessions == 1:  # the default keeps older plan.json files resumable
+            doc.pop("embargo_sessions")
         return doc
 
 
@@ -465,6 +472,7 @@ class OutcomeCache:
     def __init__(self, outcome: OutcomeFn) -> None:
         self._outcome = outcome
         self._memo: dict[tuple[str, str, str | None], tuple[float, float] | None] = {}
+        self._exits: dict[tuple[str, str, str | None], str | None] = {}
         self._lock = threading.Lock()
 
     def get(self, snapshot: str, candidate: str, horizon: str | None) -> tuple[float, float] | None:
@@ -481,11 +489,18 @@ class OutcomeCache:
             value = (gross, net)
         with self._lock:
             self._memo[key] = value
+            self._exits[key] = None if raw is None or not raw.get("exit_at") \
+                else str(raw["exit_at"])
         return value
 
     def net(self, snapshot: str, candidate: str, horizon: str | None) -> float:
         value = self.get(snapshot, candidate, horizon)
         return 0.0 if value is None else value[1]
+
+    def exit_at(self, snapshot: str, candidate: str, horizon: str | None) -> str | None:
+        """The outcome's exit instant when the plug-in reports one (desk.purge)."""
+        self.get(snapshot, candidate, horizon)
+        return self._exits.get((snapshot, candidate, horizon))
 
 
 # ---------------------------------------------------------------- executor
@@ -535,6 +550,7 @@ class _Executor:
         self.outcome_errors = 0
         self.t0 = monotonic()
         self._since_progress = 0
+        self._skill_memo: dict[str, Any] = {}  # desk.skill's live counterfactual cache
 
     def _prior_progress(self) -> dict[str, Any]:
         path = self.run_dir / "progress.json"
@@ -712,6 +728,13 @@ class _Executor:
                "quota": self.quota, "calls_per_s": round(rate, 4),
                "eta_s": None if eta is None else round(eta, 1),
                "arms": arms, "digest": self.digest}
+        try:  # "skill significant yet?" (desk.skill); the live view never kills the run
+            from tree_options.desk import skill
+
+            doc["skill"] = skill.progress_skill(self.boards, self.arms, self.receipts,
+                                                self.outcomes.get, self._skill_memo)
+        except Exception as error:
+            doc["skill"] = {"error": f"{type(error).__name__}: {str(error)[:120]}"}
         _write_json(self.run_dir / "progress.json", doc)
 
 
@@ -935,21 +958,28 @@ def _horizon_key(h: str | None) -> tuple[bool, str]:
     return h is not None, h or ""
 
 
+def default_cutoff(sessions: Sequence[str]) -> str | None:
+    """The declared default cutoff: the first two thirds of the sessions tune."""
+    return sessions[max(0, (2 * len(sessions)) // 3 - 1)] if sessions else None
+
+
 def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
                  sessions: Sequence[str], *, incumbent: str | None, cutoff: str | None,
                  metric: str, max_finalists: int, draws: int, seed: int,
-                 alpha: float, aa_valid: bool) -> dict[str, Any]:
+                 alpha: float, aa_valid: bool, embargo: int = 1) -> dict[str, Any]:
     """Rank candidates on tune sessions (<= cutoff) by the pre-declared metric,
-    keep at most MAX_FINALISTS, test them ONCE on sessions > cutoff."""
+    keep at most MAX_FINALISTS, test them ONCE on the sessions >= ``embargo``
+    sessions after the cutoff session (score_run passes purged series)."""
     if not sessions:
         return {"status": "not_applicable", "reason": "no scored sessions"}
-    if cutoff is None:  # declared default: the first two thirds tune
-        cutoff = sessions[max(0, (2 * len(sessions)) // 3 - 1)]
-    tune = np.array([s <= cutoff for s in sessions])
-    test = ~tune
+    cutoff = cutoff or default_cutoff(sessions)
+    tune = np.array([s <= str(cutoff) for s in sessions])
+    test = np.arange(len(sessions)) - (int(tune.sum()) - 1) >= max(1, embargo)
     test_sessions = [s for s, t in zip(sessions, test, strict=True) if t]
     base = {"cutoff": cutoff, "metric": metric,
-            "tune_sessions": int(tune.sum()), "test_sessions": int(test.sum())}
+            "tune_sessions": int(tune.sum()), "test_sessions": int(test.sum()),
+            "embargo_sessions": max(1, embargo),
+            "embargoed_sessions": int((~tune & ~test).sum())}
     if not tune.any() or not test.any() or not pooled:
         return {"status": "not_applicable", **base,
                 "reason": "the cutoff leaves no tune or no test sessions, or no candidates"}
@@ -1015,7 +1045,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
               benchmarks: Mapping[str, Mapping[Any, float]] | None = None,
               receipts_files: Mapping[str, str] | None = None, run_id: str = "",
               plan_created: str | None = None, complete: bool = True,
-              clock: Clock = _utcnow) -> dict[str, Any]:
+              clock: Clock = _utcnow,
+              skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The digest document. Pure over its inputs (fixed seeds throughout)."""
     draws, seed = protocol.draws, protocol.seed
     scored = [b for b in boards
@@ -1111,21 +1142,53 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
     standings.sort(key=lambda r: (-r["vs_random"]["ci95"][0], r["arm"]))
 
     aa = aa_check(per_arm, incumbent_arms, draws=draws, seed=seed)
+    # purged walk-forward (desk.purge): selection never sees post-cutoff prices
+    from tree_options.desk import purge
+
+    cutoff = protocol.cutoff or default_cutoff(sessions)
+    window = sorted({b.session for b in boards})
+    selection = {a.name: per_arm[a.name]["sessions"] for a in arms}
+    sel_expected, purge_doc = expected, None
+    if cutoff is not None:
+        by_arm: dict[str, dict[str, int]] = {}
+        for arm in arms:
+            values, by_arm[arm.name] = purge.purge_decisions(
+                scored, per_arm[arm.name]["decisions"], per_arm[arm.name]["net"], outcomes.get,
+                outcomes.exit_at, cutoff, window)
+            selection[arm.name] = session_sums(board_sessions, values, sessions)
+        sel_expected, null_counts = purge.purged_null(scored, sessions, horizons, outcomes.get,
+                                                      outcomes.exit_at, cutoff, null.p_enter,
+                                                      window)
+        purge_doc = {"rule": purge.RULE, "cutoff": cutoff, "by_arm": by_arm,
+                     "random_null": null_counts,
+                     "own_coverage": {a.name: purge.own_coverage(
+                         boards, receipts.get(a.name, {}), outcomes.get, outcomes.exit_at,
+                         cutoff, window) for a in arms}}
     pooled: dict[str, np.ndarray] = {}
     for policy_name in sorted({a.policy.name for a in arms
                                if a.policy.kind in ("model", "rule")}):
-        members = [per_arm[a.name]["sessions"] for a in arms if a.policy.name == policy_name]
+        members = [selection[a.name] for a in arms if a.policy.name == policy_name]
         pooled[policy_name] = np.mean(np.vstack(members), axis=0) if sessions \
             else np.zeros(0)
-    wf = walk_forward(pooled, expected, sessions, incumbent=protocol.incumbent,
-                      cutoff=protocol.cutoff, metric=protocol.metric,
+    wf = walk_forward(pooled, sel_expected, sessions, incumbent=protocol.incumbent,
+                      cutoff=cutoff, metric=protocol.metric,
                       max_finalists=protocol.max_finalists, draws=draws, seed=seed,
-                      alpha=protocol.alpha, aa_valid=bool(aa["valid"]))
+                      alpha=protocol.alpha, aa_valid=bool(aa["valid"]),
+                      embargo=protocol.embargo_sessions)
+    if purge_doc is not None:
+        wf["purge"] = purge_doc
     bench = benchmark_rows(benchmarks or {}, sessions, capital=protocol.capital,
                            draws=draws, seed=seed)
     eligible = [f["policy"] for f in wf.get("finalists", [])
                 if f.get("eligible_for_operator_review")]
     headline = _headline(aa, wf, eligible, complete)
+    try:  # exact counterfactual accounting (desk.skill): descriptive, never fatal
+        from tree_options.desk import skill
+
+        skill_doc = skill.skill_section(boards, arms, receipts, outcomes, protocol,
+                                        options=skill_options)
+    except Exception as error:
+        skill_doc = {"status": "error", "error": f"{type(error).__name__}: {str(error)[:200]}"}
     return {
         "schema": DIGEST_SCHEMA,
         "untrusted_note": UNTRUSTED_NOTE,
@@ -1158,6 +1221,7 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         "standings": standings,
         "walk_forward": wf,
         "benchmarks": bench,
+        "skill": skill_doc,
         "receipts": dict(receipts_files or {}),
     }
 
@@ -1305,6 +1369,16 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
                 f"{_pair(test['vs_random'])}; Holm p {f['holm_p']:.4f}; vs incumbent "
                 f"{_pair(test['vs_incumbent'])}; eligible for operator review: "
                 f"{f['eligible_for_operator_review']}")
+    purged = wf.get("purge")
+    if purged:
+        add("")
+        add(f"Purge + embargo (selection scoring changed 2026-09-28): {purged['rule']}. "
+            f"Embargo {wf.get('embargo_sessions', 1)} session(s), "
+            f"{wf.get('embargoed_sessions', 0)} embargoed. Purged train decisions (paired "
+            "boards): " + (", ".join(f"{a} {c['purged']}/{c['train_entered']}"
+                                     for a, c in purged["by_arm"].items()) or "none")
+            + f"; random-null options purged {purged['random_null']['purged_options']}/"
+              f"{purged['random_null']['train_options']}.")
     add("")
     add("## Stability (paired diff vs the random expectation)")
     add("")
@@ -1315,6 +1389,10 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
             f"{stab['half_split']['first']:+.2f} / {stab['half_split']['second']:+.2f} "
             f"(agree: {stab['half_split']['signs_agree']})")
     add("")
+    if doc.get("skill"):
+        from tree_options.desk import skill
+
+        lines.extend(skill.skill_markdown(doc["skill"]))
     add("## Receipts")
     add("")
     for arm, path in doc["receipts"].items():
@@ -1383,7 +1461,8 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
                 meta: Mapping[str, Any] | None = None, score_only: bool = False,
                 sleep: Callable[[float], None] = time.sleep,
                 monotonic: Callable[[], float] = time.monotonic,
-                clock: Clock = _utcnow) -> dict[str, Any]:
+                clock: Clock = _utcnow,
+                skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """Execute (or resume) every missing (arm, board), then score and digest.
 
     Returns {"status": "finished" | "stopped:<why>", ...}. A stopped run is
@@ -1424,7 +1503,7 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
             digest = score_run(boards, arms, executor.receipts, outcomes, protocol,
                                benchmarks=benchmarks, receipts_files=files,
                                run_id=run_dir.name, plan_created=plan.get("created"),
-                               complete=complete, clock=clock)
+                               complete=complete, clock=clock, skill_options=skill_options)
         except Exception:
             executor.status = "scoring_failed"
             executor.write_progress()
@@ -1686,18 +1765,19 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
         raise ValueError(f"default_horizon must be one of {outcomes.EXIT_MODES}")
     table_path = params.get("table")
     if table_path:
-        table: dict[tuple[str, str, str], dict[str, float] | None] = {}
+        table: dict[tuple[str, str, str], dict[str, Any] | None] = {}
         with _resolve_path(ctx, table_path).open(encoding="utf-8") as stream:
             for line in stream:
                 row = json.loads(line)
                 if row.get("status") == "no_fill" or row.get("net") is None:
-                    value: dict[str, float] | None = None
-                else:
-                    value = {"gross": float(row["gross"]), "net": float(row["net"])}
+                    value: dict[str, Any] | None = None
+                else:  # exit_at feeds the purged walk-forward (desk.purge)
+                    value = {"gross": float(row["gross"]), "net": float(row["net"]),
+                             "exit_at": row.get("exit_at")}
                 table[(row["snapshot"], row["candidate_id"], row["exit_mode"])] = value
 
         def lookup(snapshot: str, candidate_id: str,
-                   horizon: str | None) -> dict[str, float] | None:
+                   horizon: str | None) -> dict[str, Any] | None:
             return table.get((snapshot, candidate_id, horizon or default_horizon))
         return lookup
 
@@ -1706,10 +1786,10 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
         raise ValueError("the v2 outcome plug-in needs a table or the v2 boards plug-in")
     costs = outcomes.CostModel()
     sync = params.get("sync", 2)
-    memo: dict[tuple[str, str, str], dict[str, float] | None] = {}
+    memo: dict[tuple[str, str, str], dict[str, Any] | None] = {}
 
     def live(snapshot: str, candidate_id: str,
-             horizon: str | None) -> dict[str, float] | None:
+             horizon: str | None) -> dict[str, Any] | None:
         mode = horizon or default_horizon
         key = (snapshot, candidate_id, mode)
         if key not in memo:
@@ -1720,7 +1800,8 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
                 leg_sync_minutes=None if sync in (None, "off") else int(sync))
             memo[key] = (None if doc is None or doc.get("status") == "no_fill"
                          or doc.get("net") is None
-                         else {"gross": float(doc["gross"]), "net": float(doc["net"])})
+                         else {"gross": float(doc["gross"]), "net": float(doc["net"]),
+                               "exit_at": doc.get("exit_at")})
         return memo[key]
     return live
 
@@ -1815,7 +1896,8 @@ def protocol_from_config(cfg: Mapping[str, Any]) -> Protocol:
         incumbent=cfg.get("incumbent"), cutoff=doc.get("cutoff"),
         metric=str(doc.get("metric", "ci_low_diff_vs_random")),
         max_finalists=int(doc.get("max_finalists", MAX_FINALISTS)),
-        alpha=float(doc.get("alpha", 0.05)))
+        alpha=float(doc.get("alpha", 0.05)),
+        embargo_sessions=int(doc.get("embargo_sessions", 1)))
 
 
 def settings_from_config(cfg: Mapping[str, Any], concurrency: int | None = None) -> ExecSettings:
@@ -1894,7 +1976,7 @@ def run_from_config(config_path: Path, *, run_dir: Path | None = None,
     return run_longrun(run_dir, boards=boards, policies=policies, outcome=outcome, ask=ask,
                        quota_ok=quota_ok, protocol=protocol, settings=settings,
                        benchmarks=benchmarks, meta=meta, score_only=score_only,
-                       sleep=sleep, clock=clock)
+                       sleep=sleep, clock=clock, skill_options=cfg.get("skill"))
 
 
 # ------------------------------------------------------------------ cockpit
@@ -1925,7 +2007,8 @@ def _read_json(path: Path, max_bytes: int) -> dict[str, Any]:
 
 
 _PROGRESS_KEYS = ("status", "at", "started", "boards", "sessions", "total", "finished",
-                  "failures", "paused_s", "quota", "calls_per_s", "eta_s", "arms", "digest")
+                  "failures", "paused_s", "quota", "calls_per_s", "eta_s", "arms", "digest",
+                  "skill")
 
 
 def _project_progress(doc: Mapping[str, Any]) -> dict[str, Any]:
@@ -1978,7 +2061,14 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
                               "eligible_for_operator_review":
                                   f.get("eligible_for_operator_review")}
                              for f in wf.get("finalists", [])]},
-            "benchmarks": doc.get("benchmarks", [])}
+            "benchmarks": doc.get("benchmarks", []),
+            "skill": _skill_projection(doc.get("skill"))}
+
+
+def _skill_projection(section: Any) -> dict[str, Any] | None:
+    from tree_options.desk import skill
+
+    return skill.cockpit_projection(section)
 
 
 def cockpit_view(root: Path) -> dict[str, Any]:
@@ -2014,9 +2104,22 @@ def register_cli(sub: Any) -> None:
     status.add_argument("--dir", type=Path,
                         help="a run dir or a root of run dirs (default "
                              "DESK_STORE/evaluations/longrun)")
+    redigest = commands.add_parser(
+        "redigest", help="re-score a run dir from its receipts + the outcome table, with the "
+                         "skill section (zero model calls; desk.skill)")
+    redigest.add_argument("--run-dir", type=Path, required=True)
+    redigest.add_argument("--table", type=Path,
+                          help="outcome table JSONL (default: the config's outcome.table)")
+    redigest.add_argument("--out", type=Path,
+                          help="write digest.json/.md here, never touching the run dir "
+                               "(required while the run is live)")
 
 
 def dispatch_cli(args: argparse.Namespace) -> int:
+    if args.longrun_command == "redigest":
+        from tree_options.desk import skill
+
+        return skill.redigest_cli(args)
     if args.longrun_command == "run":
         try:
             result = run_from_config(args.config, run_dir=args.run_dir, limit=args.limit,
