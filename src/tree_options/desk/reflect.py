@@ -90,6 +90,13 @@ DEFAULT_EFFORT = "high"
 DEFAULT_MAX_TOKENS = 32_000
 DEFAULT_TIMEOUT_S = 480.0
 POLICY_PLACEHOLDER = "<POLICY>"
+#: every arm's policy sentence opens with this role framing (lab.POLICY_SENTENCE
+#: plus a style descriptor); a reflected prompt must too, so arms differ only
+#: in their rule, never in the framing
+ROLE_TAIL = "paper-trading policy choosing ONE defined-risk option spread board row, or skipping."
+ROLE_TEMPLATE = f"You are a <style> {ROLE_TAIL}"
+_ROLE = re.compile(r"You are an? (?P<style>[^.{}]{1,60}?) " + re.escape(ROLE_TAIL))
+ROLE_RULE_MIN = 20  # characters of actual rule after the role sentence
 
 #: (key, lens) of the seed theorists; K > 6 cycles them as second takes
 PERSONAS: tuple[tuple[str, str], ...] = (
@@ -120,13 +127,15 @@ REFLECT_TASK = (
     "that generalizes over one fitted to these boards. Rules: the sentence replaces "
     f"{POLICY_PLACEHOLDER} in board_task and nothing else - the caps, costs, horizon menu and "
     "the JSON reply contract stay fixed, so never describe a reply format and never use "
-    "braces; name only the horizons intraday, eod, hold:5, expiry; use only what the board "
+    "braces; it MUST begin with the role sentence every policy uses, "
+    f"\"{ROLE_TEMPLATE}\" (<style> names your policy's style in a few words), followed by "
+    "your rule; name only the horizons intraday, eod, hold:5, expiry; use only what the board "
     "shows (aliased underlyings, their returns and realized vol, time of day, the row "
     "fields); never mention dates, months, years, the session ordinal or real ticker "
     "symbols. Return STRICT JSON {\"name\": \"<2-4 word kebab-case label>\", \"hypothesis\": "
     "\"<ONE falsifiable sentence: what beats the random-row baseline and why>\", "
     "\"evidence\": \"<the dossier statistics it rests on, citing policy names and numbers>\", "
-    f"\"prompt\": \"<the policy sentence, at most {PROMPT_MAX} characters>\", "
+    f"\"prompt\": \"<the role sentence, then the rule; at most {PROMPT_MAX} characters>\", "
     "\"expected_effect\": \"<the entry rate, horizon and direction mix you expect, and the "
     "held-out result that would FALSIFY the hypothesis>\"}. No other text.")
 
@@ -640,10 +649,18 @@ def build_pack(view: RunView, table: OutcomeTable, *, samples_per_arm: int = DEF
             "aggregate": aggregate(decisions, train_boards=len(boards),
                                    failed=sum(view.failed.get(a, 0) for a in policy.arms)),
             "samples": rendered})
+    base_rates = universe(boards, table, view.cutoff)
+    expiry = [v for k, v in base_rates["by_structure_horizon"].items() if k.endswith("|expiry")]
+    options = sum(v["realized"] + v["no_fill"] + v["withheld"] for v in expiry)
+    withheld_pct = round(100 * sum(v["withheld"] for v in expiry) / options) if options else 0
     pack: dict[str, Any] = {
-        "schema": DOSSIER_SCHEMA, "legend": LEGEND,
+        "schema": DOSSIER_SCHEMA,
+        "caveat": (f"Outcomes exiting after the train split are withheld (x): {withheld_pct}% "
+                   "of the expiry options here, so the visible expiry stats skew to "
+                   "short-dated rows - discount them."),
+        "legend": LEGEND,
         "split": {"train_sessions": len(view.sessions), "train_boards": len(boards)},
-        "universe": universe(boards, table, view.cutoff), "dossiers": dossiers}
+        "universe": base_rates, "dossiers": dossiers}
     trimmed = 0
     while estimate_tokens(pack) > max_tokens:
         fattest = max(dossiers, key=lambda d: (len(d["samples"]), d["policy"]), default=None)
@@ -728,6 +745,11 @@ def validate_reply(reply: Mapping[str, Any], *,
             reasons.append("contract:prompt_redefines_reply")
         if POLICY_PLACEHOLDER in prompt:
             reasons.append("contract:placeholder_in_prompt")
+        role = _ROLE.match(prompt)
+        if role is None:
+            reasons.append("contract:role_framing")
+        elif len(prompt[role.end():].strip()) < ROLE_RULE_MIN:
+            reasons.append("contract:no_rule_after_role")
         bad = sorted({f"hold:{n}" for n in _HOLD.findall(prompt) if n != "5"})
         if bad:
             reasons.append(f"horizon:{','.join(bad)}")

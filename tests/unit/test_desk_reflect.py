@@ -54,8 +54,8 @@ NETS: dict[tuple[str, str], dict[str, Any]] = {
                    for m in ("intraday", "eod", "hold:5", "expiry")}
        for cid in ("c1", "c2", "c3")},
 }
-M_B_PROMPT = ("You are a test policy choosing ONE defined-risk option spread board row, or "
-              "skipping; prefer the eod horizon and skip when unsure.")
+ROLE = "paper-trading policy choosing ONE defined-risk option spread board row, or skipping."
+M_B_PROMPT = f"You are a test {ROLE} Prefer the eod horizon and skip when unsure."
 
 
 def _row(cid: str, structure: str, direction: str) -> dict[str, Any]:
@@ -237,6 +237,10 @@ def test_aggregate_behavior_and_universe(tmp_path: Path) -> None:
     assert m_b["aggregate"]["failed_receipts"] == 1 and m_b["aggregate"]["decided"] == 1
     assert m_b["policy_sentence"] == M_B_PROMPT and not m_b["default_sentence"]
     assert _dossier(pack, "m-a")["default_sentence"]
+    # expiry options: a1 +40, a2 -60 realized, a3 no fill, b1..b3 withheld -> 3 of 6
+    assert list(pack)[:2] == ["schema", "caveat"]  # the header, before any statistic
+    assert "withheld" in pack["caveat"] and "50% of the expiry options" in pack["caveat"]
+    assert "short-dated" in pack["caveat"]
     uni = pack["universe"]
     assert (uni["boards"], uni["sessions"]) == (2, 2)
     assert uni["random_row_baseline_mean_per_board"] == pytest.approx(
@@ -286,9 +290,8 @@ GOOD = {
     "hypothesis": ("Bullish rows held hold:5 on aliases with positive 20-session returns beat "
                    "the random-row baseline because multi-session drift persists."),
     "evidence": "m31-base lost -22.4 per entry at hold:5 while bullish|hold:5 averaged +49.1.",
-    "prompt": ("You are a paper-trading policy choosing ONE defined-risk option spread board "
-               "row, or skipping. Prefer bullish rows when ret_20s_pct is positive and hold "
-               "them hold:5; skip otherwise."),
+    "prompt": (f"You are a trend-following {ROLE} Prefer bullish rows when ret_20s_pct is "
+               "positive and hold them hold:5; skip otherwise."),
     "expected_effect": "Entry near 40%, mostly bullish hold:5; falsified if net vs random <= 0.",
 }
 
@@ -296,6 +299,11 @@ GOOD = {
 def test_validate_reply_accepts_a_clean_proposal() -> None:
     proposal, reasons = reflect.validate_reply(GOOD)
     assert reasons == [] and proposal is not None and proposal.prompt == GOOD["prompt"]
+    an, why = reflect.validate_reply(
+        {**GOOD, "prompt": f"You are an adaptive trend {ROLE} Enter bullish rows at hold:5."})
+    assert an is not None, why
+    # the role sentence the validator demands is the one the task text asks for
+    assert f"You are a <style> {ROLE}" in reflect.REFLECT_TASK
     # dollar totals in the evidence are statistics, not years
     ok, why = reflect.validate_reply({**GOOD, "evidence": "net +2031.4 over 85 entries"})
     assert ok is not None, why
@@ -317,6 +325,13 @@ def test_validate_reply_accepts_a_clean_proposal() -> None:
     ({"prompt": "Skip."}, "too_short:prompt"),
     ({"hypothesis": "Trends persist. Reversals do not."}, "hypothesis:not_one_sentence"),
     ({"evidence": "the base policy lost money"}, "evidence:no_statistics"),
+    ({"prompt": "Prefer bullish rows when ret_20s_pct is positive; hold them hold:5."},
+     "contract:role_framing"),
+    ({"prompt": f"You are a {ROLE} Prefer bullish rows; hold them hold:5."},
+     "contract:role_framing"),  # the style descriptor is required
+    ({"prompt": f"Trend first. You are a trend {ROLE} Prefer bullish rows at hold:5."},
+     "contract:role_framing"),  # the framing must open the prompt
+    ({"prompt": f"You are a trend {ROLE} Skip."}, "contract:no_rule_after_role"),
     ({"prompt": None}, "missing:prompt"),
     ({"name": ""}, "missing:name"),
 ])
@@ -363,11 +378,11 @@ def test_personas_cycle_beyond_the_seed_schools() -> None:
 # -------------------------------------------------------------------- panel
 
 P_TREND = GOOD["prompt"]
-P_MEANREV = ("You are a mean-reversion paper-trading policy choosing ONE row or skipping: "
-             "when an alias is stretched over 5 sessions take the opposite direction at eod.")
-P_VOLPREM = ("You are a premium-selling paper-trading policy choosing ONE row or skipping: "
-             "prefer credit rows whose short strike is out of the money when realized vol is "
-             "high, held hold:5.")
+P_MEANREV = (f"You are a mean-reversion {ROLE} When an alias is stretched over 5 sessions "
+             "take the opposite direction at eod.")
+P_VOLPREM = (f"You are a premium-selling {ROLE} Prefer credit rows whose short strike is out "
+             "of the money when realized vol is high, held hold:5.")
+P_UNFRAMED = "Prefer bullish rows when ret_20s_pct is positive and hold them hold:5."
 
 
 def _reply(name: str, prompt: str) -> dict[str, Any]:
@@ -378,7 +393,7 @@ class PanelTransport:
     """Scripted theorists keyed by persona and attempt; records every call."""
 
     SCRIPT: ClassVar[dict[str, list[Any]]] = {
-        "trend": [_reply("trend hold", P_TREND)],
+        "trend": [_reply("unframed", P_UNFRAMED), _reply("trend hold", P_TREND)],
         "meanrev": [_reply("fade SPY", P_MEANREV + " Avoid SPY."), _reply("fade", P_MEANREV)],
         "volprem": [_reply("near copy", P_TREND.replace("otherwise", "else")), 500,
                     _reply("sell premium", P_VOLPREM)],
@@ -417,26 +432,29 @@ def test_panel_regenerates_rejects_and_dedupes(monkeypatch: pytest.MonkeyPatch) 
                                         existing={"m-b": M_B_PROMPT}, timeout=99.0)
     assert [a.persona for a in accepted] == ["trend", "meanrev", "volprem"]
     assert [a.proposal.prompt for a in accepted] == [P_TREND, P_MEANREV, P_VOLPREM]
-    assert [a.attempt for a in accepted] == [1, 2, 3]
+    assert [a.attempt for a in accepted] == [2, 2, 3]
     assert [a.name for a in accepted] == ["refl-trend-trend-hold", "refl-meanrev-fade",
                                           "refl-volprem-sell-premium"]
-    assert len(transport.calls) == len(calls) == 1 + 2 + 3 + 3
+    assert len(transport.calls) == len(calls) == 2 + 2 + 3 + 3
     # the reflection call's own budget/effort reach the wire; the model does not change
     assert {(c["timeout"], c["max_tokens"], c["effort"], c["model"])
             for c in transport.calls} == {(99.0, 32000, "high", "MiniMax-M3.1-Flash-Preview")}
     assert calls[0]["response"]["reasoning_effort"] == "high"
-    retry = transport.calls[2]  # meanrev, attempt 2: the rejection is fed back
-    assert [m["role"] for m in retry["messages"]] == ["user", "assistant", "user"]
+    unframed = transport.calls[1]  # trend, attempt 2: the missing role framing is fed back
+    assert [m["role"] for m in unframed["messages"]] == ["user", "assistant", "user"]
+    assert "contract:role_framing" in unframed["messages"][2]["content"]
+    retry = transport.calls[3]  # meanrev, attempt 2: the rejection is fed back
     assert "ticker:prompt" in retry["messages"][2]["content"]
     stats = reflect.call_stats(calls, 4, accepted)
     assert (stats["calls"], stats["parse_ok"], stats["contract_ok"], stats["accepted"]) == \
-        (9, 8, 7, 3)
+        (10, 9, 7, 3)
     assert stats["reasons"]["near_duplicate"] == 4
     assert stats["reasons"]["ticker:prompt"] == 1
+    assert stats["reasons"]["contract:role_framing"] == 1
     assert stats["reasons"]["call:minimax-flash: HTTP 500"] == 1
-    assert stats["first_attempt_accepted"] == 1
-    assert stats["usage"] == {"prompt_tokens": 8000, "completion_tokens": 400,
-                              "calls_with_usage": 8}
+    assert stats["first_attempt_accepted"] == 0
+    assert stats["usage"] == {"prompt_tokens": 9000, "completion_tokens": 450,
+                              "calls_with_usage": 9}
     assert calls[0]["response"]["content"].startswith("<think>")
     fragment = [{"name": a.name, "kind": "model", "prompt": a.proposal.prompt}
                 for a in accepted]
@@ -469,7 +487,7 @@ def test_run_reflect_writes_fragment_and_transcript_read_only(
     dossiers = json.loads(Path(prov["dossiers"]).read_text())
     assert dossiers["meta"]["pack_sha256"] == prov["dossier_sha256"]
     transcript = Path(prov["transcript"]).read_text()
-    assert len(transcript.splitlines()) == 9
+    assert len(transcript.splitlines()) == 10
     assert "sk-test-secret" not in transcript and "Authorization" not in transcript
 
 
