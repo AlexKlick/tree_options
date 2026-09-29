@@ -2113,6 +2113,9 @@ def register_cli(sub: Any) -> None:
     redigest.add_argument("--out", type=Path,
                           help="write digest.json/.md here, never touching the run dir "
                                "(required while the run is live)")
+    from tree_options.desk import reflect  # `longrun reflect` (desk.reflect owns it)
+
+    reflect.register_cli(commands)
 
 
 def dispatch_cli(args: argparse.Namespace) -> int:
@@ -2120,6 +2123,10 @@ def dispatch_cli(args: argparse.Namespace) -> int:
         from tree_options.desk import skill
 
         return skill.redigest_cli(args)
+    if args.longrun_command == "reflect":
+        from tree_options.desk import reflect
+
+        return reflect.dispatch_cli(args)
     if args.longrun_command == "run":
         try:
             result = run_from_config(args.config, run_dir=args.run_dir, limit=args.limit,
