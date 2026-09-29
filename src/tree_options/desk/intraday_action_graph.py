@@ -47,6 +47,75 @@ def parse_contract(ticker: str) -> Contract:
                     right, Decimal(int(strike)) / Decimal(1000))
 
 
+class ContractUniverse(dict[str, Contract]):
+    """A bundle's parsed contracts plus its candidate rules (board universe v3).
+
+    ``widths`` None is the v1 pairing (adjacent strikes of each
+    underlying/expiry/right chain); a set pairs every two strikes whose
+    width is in it. ``listing`` None lists every contract on every board;
+    otherwise a contract is on the boards of ET session days
+    ``from <= day <= until`` (``until`` None = through expiry) and nowhere
+    else. A bundle without ``candidate_pairing`` / ``listing`` keys (every
+    v1 vintage) builds exactly the v1 boards."""
+
+    widths: frozenset[Decimal] | None = None
+    listing: dict[str, tuple[date, date | None]] | None = None
+
+
+def bundle_contracts(raw: Mapping[str, Any], tickers: Any) -> ContractUniverse:
+    """The parsed contracts of ``tickers`` with the bundle's candidate rules."""
+    universe = ContractUniverse((ticker, parse_contract(ticker)) for ticker in tickers)
+    pairing = raw.get("candidate_pairing")
+    if pairing is not None:
+        widths = pairing.get("widths") if isinstance(pairing, Mapping) else None
+        if (not isinstance(pairing, Mapping) or pairing.get("rule") != "widths"
+                or not isinstance(widths, list) or not widths):
+            raise ValueError("candidate_pairing must be {rule: widths, widths: [...]}")
+        parsed = frozenset(Decimal(str(w)) for w in widths)
+        if any(not w.is_finite() or w <= 0 for w in parsed):
+            raise ValueError("pairing widths must be positive")
+        universe.widths = parsed
+    listing = raw.get("listing")
+    if listing is not None:
+        if not isinstance(listing, Mapping) or set(listing) != set(universe):
+            raise ValueError("listing must name exactly the bundle's contracts")
+        spans: dict[str, tuple[date, date | None]] = {}
+        for ticker, span in listing.items():
+            start = date.fromisoformat(span["from"])
+            end = None if span.get("until") is None else date.fromisoformat(span["until"])
+            if end is not None and end < start:
+                raise ValueError(f"listing ends before it starts: {ticker}")
+            spans[ticker] = (start, end)
+        universe.listing = spans
+    return universe
+
+
+def is_listed(contracts: Mapping[str, Contract], ticker: str, day: date) -> bool:
+    """Whether ``ticker`` may be on a board of ET session ``day``."""
+    listing = getattr(contracts, "listing", None)
+    if listing is None:
+        return True
+    start, end = listing[ticker]
+    return start <= day and (end is None or day <= end)
+
+
+def _strike_pairs(chain: list[Contract], widths: frozenset[Decimal] | None
+                  ) -> list[tuple[Contract, Contract]]:
+    """(low, high) strike pairs of one strike-sorted chain."""
+    if widths is None:
+        return list(pairwise(chain))
+    top = max(widths)
+    pairs = []
+    for position, low in enumerate(chain):
+        for high in chain[position + 1:]:
+            width = high.strike - low.strike
+            if width > top:
+                break
+            if width in widths:
+                pairs.append((low, high))
+    return pairs
+
+
 def windows(sessions: list[date], *, months: int = 3, stride_sessions: int = 21
             ) -> list[tuple[date, date]]:
     """Rolling calendar-month windows, stepped by a fixed number of sessions."""
@@ -137,13 +206,16 @@ def _recent_option_move(points: list[tuple[datetime, Decimal]], now: datetime) -
 def _candidates(contracts: dict[str, Contract], bars: dict[str, list[tuple[datetime, Decimal]]],
                 now: datetime, max_age_s: int) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, date, str], list[Contract]] = {}
+    today = now.astimezone(ET).date()
     for contract in contracts.values():
-        if 7 <= (contract.expiry - now.astimezone(ET).date()).days <= 60:
+        if (7 <= (contract.expiry - today).days <= 60
+                and is_listed(contracts, contract.ticker, today)):
             grouped.setdefault((contract.underlying, contract.expiry, contract.right), []).append(contract)
     candidates = []
+    widths = getattr(contracts, "widths", None)
     for group in sorted(grouped):
         chain = sorted(grouped[group], key=lambda c: c.strike)
-        for low, high in pairwise(chain):
+        for low, high in _strike_pairs(chain, widths):
             low_price = _latest(bars[low.ticker], now, max_age_s)
             high_price = _latest(bars[high.ticker], now, max_age_s)
             if low_price is None or high_price is None:
@@ -184,7 +256,7 @@ def decision_packet(raw: Mapping[str, Any], day: date, clock: str) -> dict[str, 
         raise ValueError("clock is not a scheduled decision point")
     bars = _read_bars(raw)
     now = _instant(day, clock)
-    contracts = {ticker: parse_contract(ticker) for ticker in bars}
+    contracts = bundle_contracts(raw, bars)
     candidates = _candidates(contracts, bars, now, 15 * 60)
     return {"schema": "desk-intraday-decision/1", "snapshot_id": f"s:{day}T{clock}",
             "as_of": now.isoformat(), "candidates": candidates,
@@ -208,7 +280,7 @@ def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str,
     if decisions is not None and policy != "no_trade":
         raise ValueError("decisions and policy cannot both select actions")
     bars = _read_bars(raw)
-    contracts = {ticker: parse_contract(ticker) for ticker in bars}
+    contracts = bundle_contracts(raw, bars)
     if sessions != sorted(set(sessions)):
         raise ValueError("sessions must be sorted and unique")
     age = max_age_minutes * 60  # seconds

@@ -249,6 +249,12 @@ def board_context(index: OutcomeIndex, day: date, clock: str) -> BoardContext:
             "ret_20s_pct": _pct_change(now, back(20)),
             "rv_20s_ann_pct": (f"{statistics.stdev(logs) * math.sqrt(252) * 100:.1f}"
                                if len(logs) >= 5 else None)}
+        if index.iv:  # board universe v3: the 30-day implied-vol index, prior close
+            from tree_options.desk.board_universe import iv_prev_close
+
+            iv = iv_prev_close(index.iv.get(underlying, {}), day)
+            per[aliases[underlying]]["iv30_prev_close_pct"] = (
+                None if iv is None else str(iv.quantize(Decimal("0.01"))))
     public = {"time_of_day": _time_of_day(clock, iag.schedule_for(day)),
               "session_ordinal": position + 1, "underlyings": per}
     return BoardContext(public=public, aliases=aliases, spot=spot, as_of=as_of)
@@ -295,6 +301,11 @@ def board_rows_v2(packet: dict[str, Any], context: BoardContext) -> list[dict[st
     return rows
 
 
+def _has_iv(context: BoardContext) -> bool:
+    underlyings = context.public.get("underlyings", {})
+    return any("iv30_prev_close_pct" in values for values in underlyings.values())
+
+
 def board_prompt_v2(rows: list[dict[str, Any]], context: BoardContext,
                     policy_prompt: str | None = None) -> list[dict[str, str]]:
     """The v2 board task: the (GEPA-swappable) policy sentence, the caps, the
@@ -310,7 +321,10 @@ def board_prompt_v2(rows: list[dict[str, Any]], context: BoardContext,
         f"quotes); every round trip is charged {CostModel().round_trip()} in "
         "commissions and half-spreads. Underlyings are aliased (U1, U2, ...); the "
         "context gives each one's as-of returns over 1/5/20 sessions and 20-session "
-        "realized vol. Choose a holding horizon: intraday = the next decision clock, "
+        "realized vol"
+        + (" and the prior session's close of its 30-day implied-vol index "
+           "(iv30_prev_close_pct)" if _has_iv(context) else "")
+        + ". Choose a holding horizon: intraday = the next decision clock, "
         "eod = this session's last clock, hold:5 = five sessions, expiry = the last "
         "mark before expiry. Return STRICT JSON "
         '{"choice": "<row id>" | null, "horizon": "intraday" | "eod" | "hold:5" | '
