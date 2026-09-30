@@ -544,7 +544,7 @@ def ibkr_receipt(output):
                 broker_event_at=None,
                 request_id="fixture-" + operation,
             )
-            for operation in ("balances", "positions", "orders")
+            for operation in ("balances", "positions", "orders", "completed_orders")
         ],
     }
 
@@ -602,7 +602,7 @@ def test_ibkr_receipt_without_complete_account_observations_is_not_qualified(tmp
     output.mkdir()
     receipt = ibkr_receipt(output)
     path = output / "read-only-qualification.json"
-    for observations in (None, [], receipt["observations"][:-1], [receipt["observations"][0]] * 3):
+    for observations in (None, [], receipt["observations"][:-1], [receipt["observations"][0]] * 4):
         altered = dict(receipt)
         if observations is None:
             altered.pop("observations")
@@ -647,3 +647,28 @@ def test_ibkr_observation_timestamp_digest_counts_and_expiry_are_admissible(tmp_
     )
     path.write_text(json.dumps(admissible))
     assert workspace.accounts()["accounts"][0]["qualification_status"] == "QUALIFIED_AT_ASSESSMENT"
+
+
+def test_ibkr_private_account_identity_cannot_be_used_as_public_alias(tmp_path):
+    workspace, _output = ibkr_catalog(tmp_path)
+    catalog = json.loads(workspace.catalog.read_text())
+    for alias in ("DU123456", "du123456"):
+        catalog["accounts"][0]["account_alias"] = alias
+        workspace.catalog.write_text(json.dumps(catalog))
+        projected = workspace.accounts()
+        assert projected["accounts"] == []
+        assert projected["blockers"] == ["private_catalog_unavailable"]
+        assert "DU123456" not in json.dumps(projected)
+
+
+def test_ibkr_completed_orders_observation_is_required(tmp_path):
+    workspace, output = ibkr_catalog(tmp_path)
+    output.mkdir()
+    receipt = ibkr_receipt(output)
+    receipt["observations"] = [
+        observation
+        for observation in receipt["observations"]
+        if observation["operation"] != "completed_orders"
+    ]
+    (output / "read-only-qualification.json").write_text(json.dumps(receipt))
+    assert workspace.accounts()["accounts"][0]["qualification_status"] == "BLOCKED"

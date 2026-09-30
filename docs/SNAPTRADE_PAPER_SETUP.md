@@ -11,8 +11,8 @@ is an operator provisioning step; Personal API access does not register users.
 
 The user selected **both providers, with IBKR qualification first**. Reuse the
 existing supervised IBKR paper owner and its broker session. The qualification
-hook reads account balances, positions and open orders on that owner's serialized
-thread and persists a 30-second read-only receipt. It does not create another
+hook reads account balances, positions, open orders and completed orders on that
+owner's serialized thread and persists a 30-second read-only receipt. It does not create another
 IBKR client, grant a mandate, alter orders or authorize the quant workspace to
 execute equities.
 
@@ -50,7 +50,11 @@ qualification status:
 
 `state_root/read-only-qualification.json` must positively match the private
 account ID hash, alias, output root, owner epoch, paper environment and ownership
-assessment. Old, future-dated or contradictory receipts fail closed. A valid
+assessment. All four completed read observations must be present and fresh. The
+completed-order source covers only the current gateway session; qualification
+does not claim complete historical orders or an authoritative fill/fee ledger.
+The public alias must be a private-safe label and cannot equal the actual account
+identifier. Old, future-dated or contradictory receipts fail closed. A valid
 receipt is labeled `QUALIFIED_AT_ASSESSMENT`, rather than asserting a continuing
 lease from a historical read. The new quant workspace's IBKR rows explicitly
 report `tradeable=false` and `equity_execution_ready=false`: they describe this

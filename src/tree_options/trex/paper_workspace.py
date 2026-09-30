@@ -140,6 +140,8 @@ class PaperWorkspace:
                 if not all(isinstance(value, str) and value for value in entry.values()):
                     raise ValueError
                 alias = entry["account_alias"]
+                if provider == "ibkr" and alias.casefold() == entry["account_id"].casefold():
+                    raise ValueError
                 if not re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}", alias):
                     raise ValueError
                 state_root = str(Path(entry["state_root"]).resolve())
@@ -290,12 +292,13 @@ class PaperWorkspace:
             observations = receipt["observations"]
             if (
                 not isinstance(observations, list)
-                or len(observations) != 3
+                or len(observations) != 4
                 or any(not isinstance(observation, dict) for observation in observations)
             ):
                 raise ValueError
             if sorted(observation["operation"] for observation in observations) != [
                 "balances",
+                "completed_orders",
                 "orders",
                 "positions",
             ]:

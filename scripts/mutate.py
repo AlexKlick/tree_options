@@ -7471,6 +7471,30 @@ MUTANTS.extend(
 )
 
 
+MUTANTS.extend(
+    [
+        {
+            "id": "RW14-ibkr-request-correlation",
+            "owner": "test_foreign_subscription_callbacks_cannot_qualify_missing_own_request",
+            "file": "src/tree_options/trex/ibkr_paper_qualification.py",
+            "anchor": "if req_id == request_id:",
+            "replacement": "if req_id != -1:",
+            "selectors": ["tests/unit/test_ibkr_paper_qualification.py"],
+            "invariant": "Existing subscription callbacks cannot supply a new qualification request's balances",
+        },
+        {
+            "id": "RW15-ibkr-paper-preflight",
+            "owner": "test_owner_and_paper_guards_block_before_read_requests",
+            "file": "src/tree_options/trex/ibkr_paper_qualification.py",
+            "anchor": "findings.extend(desk.broker.paper_blockers(account_id))",
+            "replacement": "findings.extend([])",
+            "selectors": ["tests/unit/test_ibkr_paper_qualification.py"],
+            "invariant": "Paper-port and owner preflight must pass before any IBKR account read request",
+        },
+    ]
+)
+
+
 def registry_digest() -> str:
     """sha256 over the canonical MUTANTS list — the PRODUCER side of
     criterion 6's registry binding: stamped into every report this runner

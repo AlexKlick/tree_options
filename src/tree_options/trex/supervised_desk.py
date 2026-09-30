@@ -498,6 +498,27 @@ def _dividend_source() -> DividendSource:
     return lambda symbol, as_of: load_snapshot(symbol, as_of, cal)
 
 
+def qualify_owned_account(
+    desk: SupervisedDesk,
+    fences: Sequence[Any],
+    *,
+    account_id: str,
+    account_alias: str | None,
+    output: Path,
+) -> dict[str, Any]:
+    """One explicit read-only assessment using this owner's held account fence."""
+    from tree_options.trex.ibkr_paper_qualification import qualify_read_only
+
+    if not account_alias or account_alias.casefold() == account_id.casefold():
+        raise ValueError("qualification requires a private configured account alias")
+    matching = [fence for fence in fences if fence.alias == account_alias and fence.held]
+    if len(matching) != 1:
+        raise ValueError("qualification requires exactly one held alias fence")
+    return qualify_read_only(
+        desk, matching[0], account_id=account_id, account_alias=account_alias, output=output
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="python -m tree_options.trex.supervised_desk")
     sub = ap.add_subparsers(dest="command", required=True)
@@ -505,6 +526,17 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--host", default="127.0.0.1")
     run.add_argument("--port", type=int, default=GATEWAY_PAPER_PORT)
     run.add_argument("--interval", type=float, default=5.0)
+    run.add_argument(
+        "--qualification-receipt",
+        type=Path,
+        default=None,
+        help="explicit one-shot read-only receipt output directory (separate from owner state)",
+    )
+    run.add_argument(
+        "--qualification-account",
+        default=None,
+        help="exact existing paper account for the optional owner-process qualification",
+    )
     run.add_argument(
         "--legacy-plan",
         type=Path,
@@ -542,6 +574,10 @@ def main(argv: list[str] | None = None) -> int:
             )
         )
         return 0
+    if bool(args.qualification_receipt) != bool(args.qualification_account):
+        ap.error("--qualification-receipt and --qualification-account must be supplied together")
+    if args.qualification_receipt and not os.environ.get("TREX_IBKR_ACCOUNT_ALIAS"):
+        ap.error("qualification requires TREX_IBKR_ACCOUNT_ALIAS on the existing owner")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
     ib = IbkrTrex(host=args.host, port=args.port, client_id=SUPERVISED_CLIENT_ID)
@@ -619,6 +655,20 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
     try:
+        if args.qualification_receipt is not None:
+            try:
+                receipt = qualify_owned_account(
+                    desk,
+                    account_fences,
+                    account_id=args.qualification_account,
+                    account_alias=alias,
+                    output=args.qualification_receipt,
+                )
+                log.info("IBKR read-only qualification: %s", receipt["verdict"])
+            except Exception as error:
+                # Qualification cannot take exit ownership down; no raw provider
+                # exception/account information is written to service logs.
+                log.warning("IBKR read-only qualification unavailable: %s", type(error).__name__)
         return run_loop(desk, interval_s=args.interval, stop=lambda: stopping)
     finally:
         for fence in account_fences:
