@@ -119,6 +119,8 @@ it('distinguishes IBKR read-only qualification from equity execution', async () 
   vi.mocked(api.getPaperAccounts).mockResolvedValue({accounts: [{account_alias: 'ibkr-paper', provider: 'ibkr', configured: true, qualification_status: 'BLOCKED', assessed_at: null, expires_at: null, owner_held: true, equity_execution_ready: false, blockers: ['ibkr_equity_execution_not_qualified']}], setup_required: true, blockers: [], controls_enabled: true})
   render(<ResearchWorkspacePage />)
   expect(await screen.findByText(/IBKR equity execution: not qualified/)).toBeTruthy()
+  expect(screen.getByText('Current runtime ownership must be rechecked before execution.')).toBeTruthy()
+  expect(screen.queryByText(/owner (held|not held)/)).toBeNull()
   expect(screen.queryByRole('button', {name: /submit order|trade now/i})).toBeNull()
 })
 
