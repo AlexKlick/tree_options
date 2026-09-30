@@ -127,7 +127,7 @@ No service has been installed or restarted by this implementation.
 
 ## Action model and cockpit
 
-`action_graph/research-to-broker-paper.plan.json` substitutes the provider behind
+`src/tree_options/action_graph/research-to-broker-paper.plan.json` substitutes the provider behind
 the same governed effect guards as deterministic paper. It remains a validated
 design fixture with execution_authorized=false; actual effects use the existing
 supervised kernel rather than treating the JSON example as authority. Durable
@@ -158,7 +158,7 @@ The final M0 receipt and engineering handback belong in ignored `artifacts/`,
 bound to the exact committed source HEAD; this document does not predict their
 results.
 
-## External qualification still required
+## External qualification still required (BLOCKED)
 
 1. Provision a private SnapTrade binding and positively identify the dedicated
    Alpaca Paper account through the read-only interface; validate entitlement,

@@ -74,6 +74,7 @@ ignore = [
 ]
 
 [tool.pytest.ini_options]
+markers = ["soak: hermetic multi-session supervised desk recovery exercise"]
 testpaths = ["tests"]
 addopts = "-q"
 # Fail-closed default: strict about unexpected warnings would be nice, but the
