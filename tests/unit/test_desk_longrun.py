@@ -389,7 +389,8 @@ def test_run_digest_leads_with_the_note_and_never_promotes(tmp_path: Path) -> No
     doc = json.loads((run_dir / "digest.json").read_text())
     assert list(doc)[:3] == ["schema", "untrusted_note", "promotion"]
     assert doc["promotion"] == {"promoted": False, "rule": PREREGISTERED_RULE,
-                                "pre_registered_at": doc["promotion"]["pre_registered_at"]}
+                                "pre_registered_at": doc["promotion"]["pre_registered_at"],
+                                "amendments": []}
     for path in run_dir.rglob("*"):
         if path.is_file():
             assert not re.search(r'"promoted"\s*:\s*true', path.read_text(), re.I), path
@@ -536,6 +537,101 @@ def test_resume_refuses_changed_boards_or_protocol(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="pre-registered"):
         run(run_dir, FakeAsk(), protocol=Protocol(draws=2000, random_seeds=200,
                                                   incumbent="m", cutoff="2026-06-02"))
+
+
+def run_roster(run_dir: Path, pols: list[PolicySpec], ask: FakeAsk) -> dict[str, Any]:
+    """``run_longrun`` with an explicit arm roster (the default helper pins it)."""
+    return longrun.run_longrun(
+        run_dir, boards=boards_for(SESSIONS6[:3]), policies=pols, outcome=table_outcome,
+        ask=ask, quota_ok=always_ok, protocol=PROTO,
+        settings=ExecSettings(concurrency=3, pause_s=60.0), sleep=lambda s: None)
+
+
+def test_resume_with_an_unchanged_roster_is_accepted_and_amendments_stay_empty(
+        tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_roster(run_dir, policies(), FakeAsk())
+    first = json.loads((run_dir / "plan.json").read_text())
+    assert first["amendments"] == []
+    assert "resumed_at" not in first
+
+    again = FakeAsk()
+    assert run_roster(run_dir, policies(), again)["status"] == "finished"
+    assert again.calls == []  # nothing re-asked: the run was already decided
+    second = json.loads((run_dir / "plan.json").read_text())
+    assert second["resumed_at"] and second["amendments"] == []
+    # the pre-registered roster itself is never rewritten by a resume
+    assert second["policies"] == first["policies"]
+    assert second["created"] == first["created"]
+
+
+def test_resume_refuses_a_changed_arm_roster_and_records_it_append_only(
+        tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_roster(run_dir, policies(), FakeAsk())
+    first = json.loads((run_dir / "plan.json").read_text())
+
+    grown = [*policies(), PolicySpec("m31-base", "model", repeats=1)]
+    with pytest.raises(ValueError, match="roster is pre-registered"):
+        run_roster(run_dir, grown, FakeAsk())
+    after_add = json.loads((run_dir / "plan.json").read_text())
+    # refused AND unchanged: the roster written before any scoring still stands
+    assert after_add["policies"] == first["policies"]
+    assert after_add["created"] == first["created"]
+    assert [sorted(entry) for entry in after_add["amendments"]] == [
+        ["added_at", "arm", "pre_registered_before_any_scoring", "reason"]]
+    entry = after_add["amendments"][0]
+    assert entry["arm"] == "m31-base" and "added" in entry["reason"]
+    assert entry["pre_registered_before_any_scoring"] is False
+    assert entry["added_at"] >= first["created"]
+
+    # append-only: a second refused attempt keeps the first record verbatim
+    shrunk = [p for p in policies() if p.name != "no_trade"]
+    with pytest.raises(ValueError, match="roster is pre-registered"):
+        run_roster(run_dir, shrunk, FakeAsk())
+    after_drop = json.loads((run_dir / "plan.json").read_text())
+    assert after_drop["amendments"][0] == entry
+    assert [a["arm"] for a in after_drop["amendments"]] == ["m31-base", "no_trade"]
+    assert "removed" in after_drop["amendments"][1]["reason"]
+    assert after_drop["policies"] == first["policies"]
+
+    # a changed arm (same name, different repeats) is a mutation too
+    retuned = [PolicySpec("m", "model", repeats=2), *longrun.builtin_controls()]
+    assert retuned != policies()
+    with pytest.raises(ValueError, match="roster is pre-registered"):
+        run_roster(run_dir, [PolicySpec("m", "model", repeats=3),
+                             *longrun.builtin_controls()], FakeAsk())
+    final = json.loads((run_dir / "plan.json").read_text())
+    assert [a["arm"] for a in final["amendments"]] == ["m31-base", "no_trade", "m"]
+    assert "changed" in final["amendments"][2]["reason"]
+
+
+def test_digest_says_so_when_the_roster_was_amended_before_scoring(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    run_roster(run_dir, policies(), FakeAsk())
+    # a pre-fix run dir: an earlier resume rewrote the roster in place and the
+    # plan carries no record of it, so the roster cannot be shown to be the
+    # one the run started with
+    plan_path = run_dir / "plan.json"
+    plan = json.loads(plan_path.read_text())
+    plan.pop("amendments")
+    plan["policies"] = [*plan["policies"], {"name": "m31-base", "kind": "model",
+                                            "repeats": 1, "provider": None,
+                                            "prompt_sha256": None}]
+    plan_path.write_text(json.dumps(plan))
+    grown = [*policies(), PolicySpec("m31-base", "model", repeats=1)]
+    assert run_roster(run_dir, grown, FakeAsk())["status"] == "finished"
+    doc = json.loads((run_dir / "digest.json").read_text())
+    marked = {e["arm"]: e for e in doc["promotion"]["amendments"]}
+    assert set(marked) == {str(p.name) for p in grown}
+    assert all(e["pre_registered_before_any_scoring"] is False for e in marked.values())
+    assert all("unverifiable" in e["reason"] for e in marked.values())
+    md = (run_dir / "digest.md").read_text()
+    assert "WEAK PROVENANCE" in md and "m31-base" in md and "no_trade" in md
+    # and the record is not lost: a second resume keeps it, it does not grow
+    assert run_roster(run_dir, grown, FakeAsk())["status"] == "finished"
+    again = json.loads(plan_path.read_text())
+    assert again["amendments"] == doc["promotion"]["amendments"]
 
 
 def test_progress_reports_per_arm_state(tmp_path: Path) -> None:
