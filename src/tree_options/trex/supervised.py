@@ -48,6 +48,7 @@ import time
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Protocol
@@ -125,6 +126,7 @@ class SupervisedMandate(StrictModel):
     strategy_version: IdStr
     profile_digest: Sha256Hex
     max_orders: int = Field(strict=True, ge=1)
+    max_gross_notional_usd: Decimal | None = None
     orders_used: int = Field(strict=True, ge=0, default=0)
     granted_at: datetime
     expires_at: datetime
@@ -140,8 +142,15 @@ class SupervisedMandate(StrictModel):
             raise ValueError("expires_at must be after granted_at")
         if self.orders_used > self.max_orders:
             raise ValueError("orders_used cannot exceed max_orders")
-        if self.environment != "ibkr-paper":
+        if self.environment not in {"ibkr-paper", "broker_paper"}:
             raise ValueError("this build supervises the paper environment only")
+        if self.environment == "broker_paper":
+            if self.max_orders != 1 or self.strategy_version != "operational-canary/1":
+                raise ValueError("broker paper is bounded to one operational canary")
+            if self.max_gross_notional_usd is None or not self.max_gross_notional_usd.is_finite() or not Decimal("0") < self.max_gross_notional_usd <= Decimal("100"):
+                raise ValueError("broker paper requires an explicit notional cap at most 100 USD")
+            if (self.expires_at - self.granted_at).total_seconds() > 900:
+                raise ValueError("broker paper mandate TTL exceeds 900 seconds")
 
     def expired_at(self, now: datetime) -> bool:
         return _reached(now, self.expires_at)
@@ -394,7 +403,8 @@ def _dump(model: StrictModel) -> dict[str, Any]:
 def grant_mandate(paths: SupervisedPaths, *, now: datetime, account_id: str,
                   owner_epoch: str, strategy_version: str, profile_digest: str,
                   max_orders: int, ttl_seconds: int, granted_by: str,
-                  mandate_id: str | None = None) -> SupervisedMandate:
+                  mandate_id: str | None = None, environment: str = "ibkr-paper",
+                  max_gross_notional_usd: Decimal | None = None) -> SupervisedMandate:
     """Grant a new mandate; an unexpired one must be revoked or expire first."""
     _require_aware(now, "now")
     if not MIN_MANDATE_TTL_S <= ttl_seconds <= MAX_MANDATE_TTL_S:
@@ -413,6 +423,7 @@ def grant_mandate(paths: SupervisedPaths, *, now: datetime, account_id: str,
                             paths.root / f"mandate.expired-{existing.mandate_id}.json")
         mandate = SupervisedMandate(
             mandate_id=mandate_id or f"mandate-{int(now.timestamp()):x}",
+            environment=environment, max_gross_notional_usd=max_gross_notional_usd,
             account_id=account_id, owner_epoch=owner_epoch,
             strategy_version=strategy_version, profile_digest=profile_digest,
             max_orders=max_orders, granted_at=now,
@@ -663,9 +674,12 @@ def send(paths: SupervisedPaths, *, now: datetime, permit_id: str,
             raise SupervisedRefused("permit_expired", permit_id)
         if hashlib.sha256(effect_payload).hexdigest() != permit.effect_sha256:
             raise SupervisedRefused("effect_hash_mismatch", permit_id)
-        active_mandate(paths, now=now, account_id=permit.account_id,
+        mandate = active_mandate(paths, now=now, account_id=permit.account_id,
                        owner_epoch=permit.owner_epoch,
                        strategy_version=permit.strategy_version)
+        broker_environment = getattr(broker, "execution_environment", "ibkr-paper")
+        if mandate.environment != broker_environment:
+            raise SupervisedRefused("broker_environment_mismatch")
         pending = paths.pending(permit.intent_id)
         if not pending.exists():
             if paths.terminal(permit.intent_id).exists() or paths.reconciled(permit.intent_id).exists():
@@ -678,7 +692,12 @@ def send(paths: SupervisedPaths, *, now: datetime, permit_id: str,
             raise SupervisedRefused("intent_permit_binding_mismatch", permit.intent_id)
         if _reached(now, intent.send_deadline):
             raise SupervisedRefused("intent_deadline_passed", permit.intent_id)
-        # Durable claim before any broker contact: the rename IS the claim.
+        preflight = getattr(broker, "validate_effect", None)
+        if mandate.environment == "broker_paper" and not callable(preflight):
+            raise SupervisedRefused("broker_paper_preflight_absent")
+        if callable(preflight):
+            preflight(effect_payload, intent.intent, permit)
+        # Durable claim before any broker effect: the rename IS the claim.
         _durable_rename(pending, paths.sending(permit.intent_id))
         claim = _dump(intent)
         claim["claimed_at"] = now.isoformat()
@@ -883,6 +902,8 @@ def _cli() -> int:
     grant.add_argument("--max-orders", type=int, default=1)
     grant.add_argument("--ttl-seconds", type=int, default=3600)
     grant.add_argument("--granted-by", required=True)
+    grant.add_argument("--environment", choices=("ibkr-paper", "broker_paper"), default="ibkr-paper")
+    grant.add_argument("--max-gross-notional-usd", type=Decimal, default=None)
     sub.add_parser("revoke", help="revoke the active mandate").add_argument("--reason", default="")
     sub.add_parser("status", help="read-only inventory")
     sub.add_parser("recover", help="reclassify orphan sending claims")
@@ -894,7 +915,8 @@ def _cli() -> int:
                 paths, now=now, account_id=args.account, owner_epoch=args.owner_epoch,
                 strategy_version=args.strategy, profile_digest=args.profile_digest,
                 max_orders=args.max_orders, ttl_seconds=args.ttl_seconds,
-                granted_by=args.granted_by)
+                granted_by=args.granted_by, environment=args.environment,
+                max_gross_notional_usd=args.max_gross_notional_usd)
             print(json.dumps(_dump(mandate), indent=2, sort_keys=True))
         elif args.command == "revoke":
             revoke_mandate(paths, now=now, reason=args.reason)

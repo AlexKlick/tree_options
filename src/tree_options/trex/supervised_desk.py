@@ -480,6 +480,27 @@ def main(argv: list[str] | None = None) -> int:
                           dividends=dividends, notify=notify_fn)
     runtime.acquire()
     epoch = f"desk{SUPERVISED_CLIENT_ID}-{int(wall.time()):x}"
+    # One process-lifetime alias fence across execution providers. Existing
+    # managed IBKR paper accounts remain the broker binding; an operator may
+    # give a single account a common alias when another runtime uses that alias.
+    from tree_options.trex.account_ownership import AccountOwnership, ownership_root
+
+    account_fences: list[AccountOwnership] = []
+    try:
+        accounts = [str(a) for a in ib._ib.managedAccounts()]
+        alias = os.environ.get("TREX_IBKR_ACCOUNT_ALIAS")
+        if alias and len(accounts) != 1:
+            raise ValueError("an account alias requires exactly one managed account")
+        for account in accounts:
+            fence = AccountOwnership(ownership_root(), alias or account, epoch=epoch)
+            fence.acquire()
+            account_fences.append(fence)
+    except Exception:
+        for fence in account_fences:
+            fence.close()
+        runtime.release()
+        ib.disconnect()
+        raise
     desk = SupervisedDesk(ib, runtime, IbkrSupervisedBroker(ib), supervised=supervised,
                           owner_epoch=epoch, dividends=dividends,
                           legacy=[LegacyBook(p, Path(os.environ.get(
@@ -498,6 +519,8 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return run_loop(desk, interval_s=args.interval, stop=lambda: stopping)
     finally:
+        for fence in account_fences:
+            fence.close()
         runtime.release()
         ib.disconnect()
 
