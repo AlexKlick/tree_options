@@ -70,7 +70,7 @@ def test_heldout_horizon_cannot_change_tune_null():
 
 def wf(net=10.0, entries=30, **kwargs):
     sessions = [f"d{i:02d}" for i in range(24)]
-    own = {"candidate": np.zeros(24), "inc": np.zeros(24)}
+    own = {"candidate": np.full(24, -30.0), "inc": np.zeros(24)}
     return longrun.walk_forward(
         {"candidate": np.full(24, net), "inc": np.full(24, -20.0)},
         np.full(24, -30.0),

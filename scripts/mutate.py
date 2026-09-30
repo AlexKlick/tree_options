@@ -7525,6 +7525,101 @@ DISPOSABLE_COPY_IGNORE = (
 FAILING = ("FAILED",)
 
 
+# Registered measurement governance: keep historical replay descriptive and selection PIT.
+MUTANTS.extend(
+    [
+        dict(
+            id="MG01-tune-rate-holdout-leak",
+            owner="test_heldout_participation_cannot_change_tune_ranking",
+            file="src/tree_options/desk/longrun.py",
+            anchor="if keep\n",
+            replacement="if True\n",
+            selectors=[
+                "tests/unit/test_desk_measurement_governance.py::test_heldout_participation_cannot_change_tune_ranking"
+            ],
+            invariant="tune null participation depends only on tune decisions",
+        ),
+        dict(
+            id="MG02-tune-horizon-holdout-leak",
+            owner="test_heldout_horizon_cannot_change_tune_null",
+            file="src/tree_options/desk/longrun.py",
+            anchor="if c is not None and b.session <= str(cutoff)",
+            replacement="if c is not None",
+            selectors=[
+                "tests/unit/test_desk_measurement_governance.py::test_heldout_horizon_cannot_change_tune_null"
+            ],
+            invariant="held-out horizon changes cannot alter training selection null",
+        ),
+        dict(
+            id="MG03-review-floor-inclusive",
+            owner="test_positive_net_and_independent_entry_floor",
+            file="src/tree_options/desk/longrun.py",
+            anchor='result["test_entries"] >= min_test_entries',
+            replacement='result["test_entries"] > min_test_entries',
+            selectors=[
+                "tests/unit/test_desk_measurement_governance.py::test_positive_net_and_independent_entry_floor"
+            ],
+            invariant="the registered 30-entry floor is inclusive",
+        ),
+        dict(
+            id="MG04-review-floor-required",
+            owner="test_positive_net_and_independent_entry_floor",
+            file="src/tree_options/desk/longrun.py",
+            anchor='result["test_entries"] >= min_test_entries',
+            replacement="True",
+            selectors=[
+                "tests/unit/test_desk_measurement_governance.py::test_positive_net_and_independent_entry_floor"
+            ],
+            invariant="statistical review requires sufficient distinct evaluated entries",
+        ),
+        dict(
+            id="MG05-review-own-net-positive",
+            owner="test_positive_net_and_independent_entry_floor",
+            file="src/tree_options/desk/longrun.py",
+            anchor='"test_net_positive": test_doc["net_total"] > 0',
+            replacement='"test_net_positive": True',
+            selectors=[
+                "tests/unit/test_desk_measurement_governance.py::test_positive_net_and_independent_entry_floor"
+            ],
+            invariant="a zero or negative-net strategy cannot qualify by beating a worse null",
+        ),
+        dict(
+            id="MG06-repeat-count-inflation",
+            owner="test_repeat_copies_do_not_inflate_independent_test_entry_count",
+            file="src/tree_options/desk/longrun.py",
+            anchor='np.max(np.array([m["evaluated_flags"] for m in policy_members]), axis=0)',
+            replacement='np.sum(np.array([m["evaluated_flags"] for m in policy_members]), axis=0)',
+            selectors=[
+                "tests/unit/test_desk_measurement_governance.py::test_repeat_copies_do_not_inflate_independent_test_entry_count"
+            ],
+            invariant="copies of one board decision do not multiply independent coverage",
+        ),
+        dict(
+            id="MG07-retrospective-confirmation",
+            owner="test_redigest_rescores_from_receipts_with_zero_model_calls",
+            file="src/tree_options/desk/skill.py",
+            anchor="retrospective=True,",
+            replacement="retrospective=False,",
+            selectors=[
+                "tests/unit/test_desk_skill.py::test_redigest_rescores_from_receipts_with_zero_model_calls"
+            ],
+            invariant="retrospective rescoring cannot reuse preregistration and review eligibility",
+        ),
+        dict(
+            id="MG08-duplicate-board-coverage",
+            owner="test_duplicate_snapshot_cannot_inflate_decision_coverage",
+            file="src/tree_options/desk/longrun.py",
+            anchor='if len({b.snapshot for b in boards}) != len(boards):\n        raise ValueError("duplicate board snapshot ids cannot inflate review coverage")',
+            replacement='if False:\n        raise ValueError("duplicate board snapshot ids cannot inflate review coverage")',
+            selectors=[
+                "tests/unit/test_desk_measurement_governance.py::test_duplicate_snapshot_cannot_inflate_decision_coverage"
+            ],
+            invariant="duplicate snapshot identities cannot inflate review coverage or totals",
+        ),
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout
