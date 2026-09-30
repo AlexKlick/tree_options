@@ -210,8 +210,8 @@ it('renders the long-run card: progress bars, CI standings, A/A, random band, be
   expect(screen.getByTestId('longrun-benchmark-SPY').textContent).toMatch(/SPY buy-and-hold.*\+\$118\.20 \[−\$40\.00, \+\$260\.00\]/)
   expect(screen.queryByTestId('longrun-benchmark-EW')).toBeNull()
   expect(card.textContent).toMatch(/UNTRUSTED \/ NEVER PROMOTED/)
-  expect(card.textContent).toMatch(/Never promoted: the pre-registered rule is text for the operator/)
-  expect(card.textContent).toMatch(/at most 2 finalists tested once/)
+  expect(card.textContent).toMatch(/Never promoted: the recorded rule is historical text for the operator/)
+  expect(card.textContent).toMatch(/at most 2 finalists; descriptive reconstruction/)
   expect(card.textContent).not.toMatch(/eligible for operator review —/)
   expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
 })
@@ -248,16 +248,17 @@ function registeredLongRun(): LongRunView {
   Object.assign(current.digest!.walk_forward, {
     scoring_version: 'split-local-own-rate/v2', null_scope: 'split_local_own_entry_rate',
     min_test_entries: 30, entry_count_unit: 'distinct_evaluated_decision_boards',
-    assessment_class: 'registered_protocol',
+    assessment_class: 'registered_protocol', alpha: 0.05,
   })
   Object.assign(current.digest!.walk_forward.finalists[0], {
-    test_entries: 30, eligible_for_operator_review: true,
+    test_entries: 30, eligible_for_operator_review: true, holm_p: 0.01,
     rule_check: { test_net_positive: true, test_entries_at_least_floor: true,
       split_local_null_known: true, confirmatory_assessment: true,
       aa_valid: true, holm_p_below_alpha: true, vs_random_ci_low_above_0: true,
       vs_incumbent_ci_low_above_0: true, half_split_signs_agree: true,
       no_drop_one_sign_flip: true },
   })
+  current.digest!.walk_forward.finalists[0].test.vs_incumbent = pair(6, 1, 10)
   return current
 }
 
@@ -312,6 +313,37 @@ it.each(['string-false', 'failed-holm', 'missing-stability'])(
     const card = await screen.findByRole('region', { name: 'Desk long run' })
     expect(card.textContent).not.toContain('— eligible for operator review')
     expect(card.textContent).toContain('review conditions not met')
+  },
+)
+
+it.each(['missing-status', 'missing-ledger', 'negative-total'])(
+  'blocks derived costs without complete pricing proof: %s', async (mode) => {
+    const current = registeredLongRun()
+    Object.assign(current.digest!, { cost_model: 'derived-spread/1', pricing_status: 'PRICED_SIMULATION',
+      no_price: { total: 0, by_arm: {}, by_reason: {} } })
+    if (mode === 'missing-status') delete current.digest!.pricing_status
+    if (mode === 'missing-ledger') delete current.digest!.no_price
+    if (mode === 'negative-total') current.digest!.no_price!.total = -1
+    vi.mocked(getLongRun).mockResolvedValue(current)
+    render(<ActionModelPage />)
+    const card = await screen.findByRole('region', { name: 'Desk long run' })
+    expect(card.textContent).not.toContain('— eligible for operator review')
+    expect(card.textContent).toContain('pricing proof is incomplete')
+  },
+)
+
+it.each(['missing-incumbent', 'nonpositive-incumbent', 'failed-numeric-holm', 'unknown-alpha'])(
+  'refuses numeric review contradictions despite affirmative flags: %s', async (mode) => {
+    const current = registeredLongRun()
+    const finalist = current.digest!.walk_forward.finalists[0]
+    if (mode === 'missing-incumbent') finalist.test.vs_incumbent = null
+    if (mode === 'nonpositive-incumbent') finalist.test.vs_incumbent = pair(6, 0, 10)
+    if (mode === 'failed-numeric-holm') finalist.holm_p = 0.5
+    if (mode === 'unknown-alpha') delete (current.digest!.walk_forward as { alpha?: number }).alpha
+    vi.mocked(getLongRun).mockResolvedValue(current)
+    render(<ActionModelPage />)
+    const card = await screen.findByRole('region', { name: 'Desk long run' })
+    expect(card.textContent).not.toContain('— eligible for operator review')
   },
 )
 

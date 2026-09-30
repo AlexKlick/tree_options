@@ -384,6 +384,7 @@ export interface LongRunDigest {
   }
   standings: LongRunStanding[]
   walk_forward: {
+    alpha?: number
     scoring_version?: string
     null_scope?: string
     min_test_entries?: number
