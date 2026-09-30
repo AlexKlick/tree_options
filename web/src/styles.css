@@ -696,3 +696,5 @@ footer {
 @media (max-width: 950px) { .trade-floor-seats { grid-template-columns: 1fr; } .trade-floor-seat { display: grid; grid-template-columns: 1fr 1fr; gap: 0 18px; } .trade-floor-seat-top, .trade-floor-capital, .trade-floor-record { grid-column: 1; } .trade-floor-choice, .trade-floor-reason, .trade-floor-outcome { grid-column: 2; } }
 @media (max-width: 610px) { .trade-floor-hero { display: block; padding: 22px; } .trade-floor-live-mark { display: inline-block; margin-top: 18px; } .trade-floor-seat { display: block; } .trade-floor-tape-label { width: 100%; border-right: 0; } .trade-floor-window-tabs button { min-width: 0; } }
 @media (prefers-reduced-motion: reduce) { .trade-floor-controls *, .trade-floor-seats * { scroll-behavior: auto; animation: none; transition: none; } }
+
+.research-workspace pre { max-height: 24rem; overflow: auto; }

@@ -121,3 +121,20 @@ it('distinguishes IBKR read-only qualification from equity execution', async () 
   expect(await screen.findByText(/IBKR equity execution: not qualified/)).toBeTruthy()
   expect(screen.queryByRole('button', {name: /submit order|trade now/i})).toBeNull()
 })
+
+it('shows compact control comparison and selects the actual recorded strategy version', async () => {
+  const job = {run_id: 'job-final', status: 'completed', hypothesis: 'Compare a recorded momentum theory', dataset_id: 'fixture', capital: '50000', max_candidates: 4, generations: 0, strategy_id: 'momentum_12_1', top_n: null, reflect_glm53: false, data_class: 'synthetic_fixture'}
+  const version = `momentum_12_1/v1/${'a'.repeat(64)}`
+  vi.mocked(api.getResearchJobs).mockResolvedValue({jobs: [job], controls_enabled: true})
+  vi.mocked(api.getResearchJob).mockResolvedValue({job, result: {disposition: 'NOT_PROMOTABLE', data_class: 'synthetic_fixture', evidence_kind: 'BACKTEST', winner: {strategy_id: 'momentum_12_1', version_id: version}, holdout: {candidate: {mean_net_return: '0.02', fees: '50', period_count: 12}, control: {mean_net_return: '0.01', fees: '45', period_count: 12}}}, provenance: []})
+  render(<ResearchWorkspacePage />)
+  await screen.findByText(job.hypothesis)
+  fireEvent.change(screen.getByLabelText('Research evidence'), {target: {value: job.run_id}})
+  await screen.findByText('NOT_PROMOTABLE')
+  expect(screen.getByText('2.00%')).toBeTruthy()
+  expect(screen.getByText('1.00%')).toBeTruthy()
+  expect((screen.getByLabelText('Strategy version') as HTMLSelectElement).value).toBe(version)
+  const raw = screen.getByText('Full recorded result').closest('details')
+  expect(raw?.hasAttribute('open')).toBe(false)
+  expect(api.proposePaperDeployment).not.toHaveBeenCalled()
+})

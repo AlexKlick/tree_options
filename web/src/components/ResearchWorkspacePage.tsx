@@ -5,6 +5,8 @@ import type { PaperAccount, PaperAllocation, PaperDeployment, ResearchDataset, R
 import { AppShell } from './AppShell'
 
 const usd = (value: string) => Number(value).toLocaleString('en-US', {style: 'currency', currency: 'USD', maximumFractionDigits: 0})
+const percent = (value?: string | null) => value != null && Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(2)}%` : 'Unavailable'
+type RecordedResult = {disposition?: string; winner?: {strategy_id?: string; version_id?: unknown}; holdout?: {candidate?: {mean_net_return?: string | null; fees?: string; period_count?: number}; control?: {mean_net_return?: string | null; fees?: string; period_count?: number}}}
 const message = (error: unknown) => error instanceof Error ? error.message : 'Request failed'
 
 async function snapshot(previous?: {jobs: ResearchJob[]; accounts: PaperAccount[]; plans: PaperAllocation[]; deployments: PaperDeployment[]; datasets: ResearchDataset[]; paperControls: boolean} | null) {
@@ -55,6 +57,7 @@ export function ResearchWorkspacePage() {
   const [detail, setDetail] = useState<Awaited<ReturnType<typeof api.getResearchJob>> | null>(null)
   const [allocationKey] = useState(() => crypto.randomUUID())
   const [proposalKey, setProposalKey] = useState(() => crypto.randomUUID())
+  const recordedResult = detail?.result as RecordedResult | null
   const sleeves = data?.plans.flatMap(p => p.sleeves) ?? []
   const selectedSleeve = sleeves.find(s => s.sleeve_id === sleeve)
   const selectedDataset = data?.datasets.find(d => d.dataset_id === dataset)
@@ -84,7 +87,7 @@ export function ResearchWorkspacePage() {
       if (selection !== evidenceSelection.current) return
       const result = evidence.result as {winner?: {version_id?: unknown}} | null
       const version = result?.winner?.version_id
-      if (typeof version === 'string' && /^[a-f0-9]{64}$/.test(version)) {
+      if (typeof version === 'string' && /^[a-z0-9_]+\/v[1-9][0-9]*\/[a-f0-9]{64}$/.test(version)) {
         setCandidateVersion(version); setStrategyVersion(version)
       }
       setDetail(evidence)
@@ -149,7 +152,18 @@ export function ResearchWorkspacePage() {
             {job.status === 'stopped' && <button type="button" disabled={!researchEnabled} onClick={() => void act(() => api.controlResearchJob(job.run_id, 'resume'), 'Resume queued with the same frozen inputs.')}>Resume research {job.run_id}</button>}
           </div>
         </article>)}
-        {detail && <details open><summary>Recorded evidence: {detail.job.run_id}</summary><p>Evidence remains research; no trading authority is granted.</p><pre>{JSON.stringify(detail.result ?? {status: detail.job.status, result: 'not yet published'}, null, 2)}</pre><details><summary>Provenance</summary><pre>{JSON.stringify(detail.provenance, null, 2)}</pre></details></details>}
+        {detail && <details open><summary>Recorded evidence: {detail.job.run_id}</summary>
+          <p>Evidence remains research; no trading authority is granted.</p>
+          <p>{detail.job.data_class === 'synthetic_fixture' ? 'SYNTHETIC BACKTEST' : 'UNQUALIFIED BACKTEST'} · <span>{recordedResult?.disposition ?? detail.job.status}</span></p>
+          {recordedResult?.winner && <p>Selected research candidate: {recordedResult.winner.strategy_id}</p>}
+          {recordedResult?.holdout && <div className="table-scroll"><table aria-label="Recorded control comparison"><thead><tr><th>Held-out comparison</th><th>Mean net per roundtrip</th><th>Modeled fees (USD)</th><th>Periods</th></tr></thead><tbody>
+            <tr><td>Candidate</td><td>{percent(recordedResult.holdout.candidate?.mean_net_return)}</td><td>{recordedResult.holdout.candidate?.fees ?? 'Unavailable'}</td><td>{recordedResult.holdout.candidate?.period_count ?? 'Unavailable'}</td></tr>
+            <tr><td>Control</td><td>{percent(recordedResult.holdout.control?.mean_net_return)}</td><td>{recordedResult.holdout.control?.fees ?? 'Unavailable'}</td><td>{recordedResult.holdout.control?.period_count ?? 'Unavailable'}</td></tr>
+          </tbody></table></div>}
+          <p>These independent modeled roundtrips do not establish a persistent portfolio return or exact broker P&amp;L.</p>
+          <details><summary>Full recorded result</summary><pre>{JSON.stringify(detail.result ?? {status: detail.job.status, result: 'not yet published'}, null, 2)}</pre></details>
+          <details><summary>Provenance</summary><pre>{JSON.stringify(detail.provenance, null, 2)}</pre></details>
+        </details>}
       </section>
 
       <section className="card">
