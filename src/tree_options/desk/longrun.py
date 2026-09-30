@@ -2040,21 +2040,36 @@ def longrun_engine_identity() -> str:
     Injected callbacks still require an explicit identity in caller metadata.
     This does not infer arbitrary closure identity or freeze third-party code.
     """
-    root = Path(__file__).resolve().parent
-    modules = {}
-    for name in (
-        "longrun.py",
-        "purge.py",
-        "skill.py",
-        "outcomes.py",
-        "hindsight.py",
-        "intraday_action_graph.py",
-        "lab.py",
-        "theory_rules.py",
-        "forecast.py",
+    from tree_options.desk import (
+        forecast,
+        hindsight,
+        intraday_action_graph,
+        lab,
+        outcomes,
+        purge,
+        skill,
+        theory_rules,
+    )
+
+    # Bind the actual statically imported helpers, rather than naming script
+    # paths that could be confused with the desk's subprocess entrypoints.
+    sources = {__name__: Path(__file__)}
+    for module in (
+        forecast,
+        hindsight,
+        intraday_action_graph,
+        lab,
+        outcomes,
+        purge,
+        skill,
+        theory_rules,
     ):
-        source = (root / name).read_bytes()
-        modules[name] = hashlib.sha256(source).hexdigest()
+        if module.__file__ is None:
+            raise RuntimeError(f"desk helper source unavailable: {module.__name__}")
+        sources[module.__name__] = Path(module.__file__)
+    modules = {
+        name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in sources.items()
+    }
     return hashlib.sha256(
         json.dumps(
             {"modules": modules, "python": sys.version, "numpy": np.__version__},

@@ -286,6 +286,23 @@ def test_engine_identity_binds_runtime_versions(monkeypatch):
     assert longrun.longrun_engine_identity() != before
 
 
+def test_engine_identity_binds_actual_helper_source_without_executing_it(tmp_path, monkeypatch):
+    from tree_options.desk import skill
+
+    before = longrun.longrun_engine_identity()
+    source = tmp_path / "helper-source"
+    source.write_text("raise RuntimeError('source must only be hashed')")
+    monkeypatch.setattr(skill, "__file__", str(source))
+    assert longrun.longrun_engine_identity() != before
+    source.write_text("raise RuntimeError('changed source must only be hashed')")
+    changed = longrun.longrun_engine_identity()
+    source.write_text("raise RuntimeError('source must only be hashed')")
+    assert longrun.longrun_engine_identity() != changed
+    monkeypatch.setattr(skill, "__file__", None)
+    with pytest.raises(RuntimeError, match="source unavailable"):
+        longrun.longrun_engine_identity()
+
+
 def test_whole_plus_skill_keeps_single_row_decomposition_and_live_excess():
     from tree_options.desk import skill
 

@@ -125,8 +125,7 @@ One campaign owns one research workspace under an exclusive process lock. The
 operator can touch `<workspace>/STOP` to halt progression at a candidate,
 reflection or holdout boundary independently of the browser or LLM. Removing it
 and repeating the same command resumes from durable artifacts.
-The
-existing `RunstateStore` verifies content/audit integrity before resume. The
+The existing `RunstateStore` verifies content/audit integrity before resume. The
 binding includes the full spec, all period data, calendar content, frozen
 protocol, relevant engine modules and proposer identity. Changed input or code
 requires a new workspace; incomplete terminal holdout results stay immutable.
