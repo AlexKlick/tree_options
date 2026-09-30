@@ -1501,6 +1501,8 @@ def score_run(
     retrospective: bool = False,
 ) -> dict[str, Any]:
     """The digest document. Pure over its inputs (fixed seeds throughout)."""
+    if len({b.snapshot for b in boards}) != len(boards):
+        raise ValueError("duplicate board snapshot ids cannot inflate review coverage")
     outcomes.bind_boards(boards)
     draws, seed = protocol.draws, protocol.seed
     scored = [
