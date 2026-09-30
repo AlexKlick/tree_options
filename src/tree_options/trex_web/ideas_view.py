@@ -2,7 +2,9 @@
 
 The Ideas tab is context, never a trading instruction. It assembles what
 the desk already knows about one name — the signals file (xsmom rank +
-PEAD events + the next known report), the deal miner's entry queue
+PEAD events + the next known report, with the report after next riding
+along in ``signals.after_next_report`` when one is known), the deal
+miner's entry queue
 (``trex.deal/1``, filtered to the name), the paper book's structures on
 the name, the sealed scratch lane's LEDGER.md rows that mention it, and
 the RESEARCH-LEDGER.md sections that mention it — and hands the protocol
@@ -114,6 +116,31 @@ def _next_report(store_root: Path, paper_dir: Path, sym: str, now: datetime) -> 
     return future[0] if future else dates[-1]
 
 
+def _after_next_report(store_root: Path, paper_dir: Path, sym: str, now: datetime) -> str | None:
+    """The report after next when one is KNOWN, else None (additive key:
+    absent from the signals section when null — the estimated horizon may
+    legitimately stop after the first). Same sources as ``next_report``:
+    the newest features card that carries one, else the sealed calendar's
+    second future date."""
+    features_dir = store_root / "features"
+    for d in _feature_sessions(features_dir)[:FEATURES_LOOKBACK]:
+        doc = _read_features(features_dir / f"{d}.json")
+        names = doc.get("names", {}) if doc else {}
+        name = names.get(sym) if isinstance(names, dict) else None
+        earnings = name.get("earnings") if isinstance(name, dict) else None
+        rep = earnings.get("after_next_report") if isinstance(earnings, dict) else None
+        if isinstance(rep, str) and rep:
+            return rep
+    cal = _read_json_dict(paper_dir / "earnings-calendar.json")
+    raw = cal.get(sym) if cal is not None else None
+    if not isinstance(raw, list):
+        return None
+    future = [
+        x for x in sorted(y for y in raw if isinstance(y, str)) if x > now.date().isoformat()
+    ]
+    return future[1] if len(future) > 1 else None
+
+
 def _signals_section(
     signals_dir: Path, store_root: Path, paper_dir: Path, sym: str, now: datetime
 ) -> dict[str, Any] | None:
@@ -149,7 +176,7 @@ def _signals_section(
         for e in eval_raw
         if isinstance(e, dict) and e.get("name") == sym
     ][-EVALUATED_KEEP:]
-    return {
+    out: dict[str, Any] = {
         "session": doc.get("session"),
         "age_seconds": _age(provenance.get("generated_at"), now),
         "xsmom": {
@@ -173,6 +200,11 @@ def _signals_section(
         },
         "next_report": _next_report(store_root, paper_dir, sym, now),
     }
+    # additive: the report after next rides along only when one is known
+    after_next = _after_next_report(store_root, paper_dir, sym, now)
+    if after_next is not None:
+        out["after_next_report"] = after_next
+    return out
 
 
 # -------------------------------------------------------------------- queue

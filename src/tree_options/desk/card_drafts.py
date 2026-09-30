@@ -48,7 +48,9 @@ def _next_reports(names: list[str], earnings: Mapping[str, list[str]], session: 
     parts = []
     for n in names:
         upcoming = sorted(r for r in earnings.get(n, []) if r > session.isoformat())
-        parts.append(f"{n} {upcoming[0] if upcoming else 'none listed'}")
+        # next, and the report after next when the calendar lists one
+        shown = " then ".join(upcoming[:2]) if upcoming else "none listed"
+        parts.append(f"{n} {shown}")
     return ", ".join(parts)
 
 

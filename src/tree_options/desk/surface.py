@@ -17,8 +17,9 @@ iv/delta columns are recorded, never used. Per name:
   and at 30/90 days linearly in days-to-expiry;
 * term slope IV90/IV30 - 1;
 * implied earnings move by the two-expiry variance split over the first two
-  expiries on/after the event pair of the next report, with the historical
-  two-session event moves beside it;
+  expiries on/after the event pair of the next report (the block also
+  carries the report after next, ``after_next_report``, when one is known),
+  with the historical two-session event moves beside it;
 * liquidity score: contracts 30..240 DTE with |delta| 0.2..0.8, OI >= 500
   and spread <= 5% of mid;
 * IV rank/percentile of IV30 against the VWAP IV history (trailing 252
@@ -280,7 +281,11 @@ def implied_event_move(
     move (``implied_move: None`` with the reason) when another known report
     lands before the second expiry, when s^2 is materially negative, or
     when J^2 is. A reporter with no known report ahead is ``schedule:
-    incomplete`` (unknown), never "no event"."""
+    incomplete`` (unknown), never "no event". The block also carries
+    ``after_next_report`` (the first known report past the anchor) when
+    one is scheduled: multi-report spans are already handled — the split
+    refuses to price through the following report rather than anchor past
+    it — so the after-next is exposure, never a second anchor."""
     known = sorted(set(reports))
     upcoming = None
     for rep in known:
@@ -302,6 +307,14 @@ def implied_event_move(
         "event_sessions": [s.isoformat(), nxt.isoformat()],
         "in_progress": s <= session,
     }
+    # the report AFTER next (exposure only, additive): the first known
+    # report past the anchor — the split itself still refuses to price
+    # through it (both expiries must hold the same single event)
+    after_next = next(
+        (r for r in known[known.index(rep) + 1 :] if _event_pair(r, cal) is not None), None
+    )
+    if after_next is not None:
+        out["after_next_report"] = after_next
     after = sorted((p for p in term if p.expiry >= nxt), key=lambda p: p.dte)
     if len(after) < 2:
         out.update(implied_move=None, reason="fewer than two expiries after the event")

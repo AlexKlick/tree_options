@@ -714,7 +714,8 @@ def create_app(
     @app.get("/api/market/{sym}/ideas")
     def api_market_symbol_ideas(sym: str) -> dict[str, object]:
         """The advisory idea-context payload for the symbol's Ideas tab:
-        desk signals (xsmom + PEAD + next report), the miner's entry queue
+        desk signals (xsmom + PEAD + next report, plus the report after
+        next when one is known), the miner's entry queue
         filtered to the name, the paper positions on it, the sealed
         scratch ledger rows and research-ledger context that mention it,
         plus the protocol boundary itself. Read-only and nullable — the

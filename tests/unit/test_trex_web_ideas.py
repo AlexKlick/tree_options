@@ -491,6 +491,60 @@ class TestIdeasNextReport:
         )
 
 
+class TestIdeasAfterNextReport:
+    """signals.after_next_report (additive: present only when known)."""
+
+    def test_the_newest_features_card_wins(self, tmp_path: Path) -> None:
+        _write_json(tmp_path / "desk-state" / "signals" / f"{SESSION}.json", _signals_doc())
+        _write_json(
+            tmp_path / "store" / "features" / f"{SESSION}.json",
+            {
+                "schema": "desk-features/1",
+                "session": SESSION,
+                "names": {
+                    SYM: {
+                        "earnings": {
+                            "next_report": "2026-10-29",
+                            "after_next_report": "2027-01-28",
+                        }
+                    }
+                },
+            },
+        )
+        # a calendar that would say otherwise loses to the features card
+        _write_json(
+            tmp_path / "paper" / "earnings-calendar.json", {SYM: ["2026-10-29", "2099-01-01"]}
+        )
+        sig = _client(tmp_path).get(f"/api/market/{SYM}/ideas").json()["signals"]
+        assert sig["next_report"] == "2026-10-29"
+        assert sig["after_next_report"] == "2027-01-28"
+
+    def test_calendar_fallback_second_future_date(self, tmp_path: Path) -> None:
+        _write_json(tmp_path / "desk-state" / "signals" / f"{SESSION}.json", _signals_doc())
+        _write_json(
+            tmp_path / "paper" / "earnings-calendar.json",
+            {SYM: ["2026-01-15", "2099-11-15", "2100-02-15"]},
+        )
+        sig = _client(tmp_path).get(f"/api/market/{SYM}/ideas").json()["signals"]
+        assert sig["next_report"] == "2099-11-15"  # first future
+        assert sig["after_next_report"] == "2100-02-15"  # second future
+
+    def test_absent_when_no_second_report_is_known(self, tmp_path: Path) -> None:
+        _write_json(tmp_path / "desk-state" / "signals" / f"{SESSION}.json", _signals_doc())
+        _write_json(
+            tmp_path / "paper" / "earnings-calendar.json",
+            {SYM: ["2099-12-15"], "OLD": ["2025-01-01", "2025-06-01"]},
+        )
+        client = _client(tmp_path)
+        # one future date only (and a features card that carries no
+        # after-next): the key is absent, never a null or an invention
+        one = client.get(f"/api/market/{SYM}/ideas").json()["signals"]
+        assert one["next_report"] == "2099-12-15" and "after_next_report" not in one
+        # a schedule that ends in the past has no after-next either
+        past = client.get("/api/market/OLD/ideas").json()["signals"]
+        assert past["next_report"] == "2025-06-01" and "after_next_report" not in past
+
+
 class TestIdeasPurePayload:
     """Direct ideas_payload calls with a pinned clock."""
 

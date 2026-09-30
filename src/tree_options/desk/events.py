@@ -41,8 +41,11 @@ Earnings timing (``<paper>/earnings-timing.json``, gitignored artifacts)::
 
 The sealed ``earnings-calendar.json`` is read-only here. Readers:
 :func:`upcoming_earnings` (sealed dates first; estimated dates are
-``blocker_only``: they may block a trade, never trigger PEAD),
-:func:`macro_events`, :func:`etf_holding_reports`.
+``blocker_only``: they may block a trade, never trigger PEAD) and
+:func:`upcoming_earnings_pair` (the same merge for the next TWO reports:
+the after-next inherits the confirmed/estimated semantics, and a missing
+second report is ``None``, never invented — the estimated horizon may
+legitimately not cover it), :func:`macro_events`, :func:`etf_holding_reports`.
 """
 
 from __future__ import annotations
@@ -796,6 +799,20 @@ def upcoming_earnings(
     sealed = _sealed_calendar(paper)
     timing = load_timing(paper / TIMING_FILE)
     return _upcoming(name, from_session, to_session, sealed, timing)
+
+
+def upcoming_earnings_pair(
+    name: str, from_session: date, to_session: date, *, paper: Path | None = None
+) -> tuple[EarningsEvent | None, EarningsEvent | None]:
+    """``(next, after_next)``: the first TWO of :func:`upcoming_earnings`
+    for ``name`` in the window, each ``None`` when the sealed calendar and
+    timing file do not carry one (never invented; the estimated horizon
+    may legitimately stop after the first). The after-next inherits the
+    same merge and semantics: sealed dates first, and an estimated
+    after-next is ``blocker_only`` — it may block a trade, never trigger
+    PEAD, at position 2 exactly as at position 1."""
+    upcoming = iter(upcoming_earnings(name, from_session, to_session, paper=paper))
+    return next(upcoming, None), next(upcoming, None)
 
 
 @dataclass(frozen=True)

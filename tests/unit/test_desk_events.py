@@ -836,6 +836,120 @@ class TestReaders:
         assert all(1 <= len(v) <= 7 for v in events.ETF_HOLDINGS.values())
 
 
+class TestUpcomingEarningsPair:
+    """upcoming_earnings_pair: the next TWO reports per name, hand-built
+    fixtures (sealed calendar + timing file written directly), the oracle
+    written out entry by entry — never derived from _upcoming."""
+
+    W = (date(2026, 7, 1), date(2027, 6, 30))
+
+    def _pair_paper(self, tmp_path: Path) -> Path:
+        paper = tmp_path / "paper"
+        paper.mkdir(parents=True, exist_ok=True)
+        (paper / "earnings-calendar.json").write_text(
+            json.dumps(
+                {
+                    "MSFT": ["2026-07-30", "2026-10-29"],  # two sealed dates ahead
+                    "XOM": ["2026-10-30"],  # next only: no second anywhere
+                    "TSLA": ["2026-07-30", "2026-10-29"],  # the timing file also
+                    #                    estimates the SAME after-next date
+                    "SPY": [],
+                }
+            )
+        )
+        (paper / "earnings-timing.json").write_text(
+            json.dumps(
+                {
+                    # next confirmed (EDGAR), after-next estimated (Nasdaq)
+                    "LLY": {
+                        "2026-11-10": {
+                            "timing": "bmo",
+                            "source": "sec-edgar 8-K 2.02 0001 accepted 2026-11-10T07:00 (read as ET)",
+                            "fetched_at": "t",
+                            "status": "confirmed",
+                        },
+                        "2027-02-10": {
+                            "timing": "amc",
+                            "source": "nasdaq earnings calendar (time-after-hours)",
+                            "fetched_at": "t",
+                            "status": "estimated",
+                        },
+                    },
+                    # an estimate for a date the sealed calendar also carries
+                    "TSLA": {
+                        "2026-10-29": {
+                            "timing": "amc",
+                            "source": "nasdaq earnings calendar (time-after-hours)",
+                            "fetched_at": "t",
+                            "status": "estimated",
+                        }
+                    },
+                }
+            )
+        )
+        return paper
+
+    def test_two_sealed_dates(self, tmp_path: Path) -> None:
+        self._pair_paper(tmp_path)
+        nxt, after = events.upcoming_earnings_pair("MSFT", *self.W)
+        assert (nxt.date.isoformat(), nxt.status, nxt.timing, nxt.blocker_only) == (
+            "2026-07-30",
+            "sealed",
+            "unknown",
+            False,
+        )
+        assert (after.date.isoformat(), after.status, after.timing, after.blocker_only) == (
+            "2026-10-29",
+            "sealed",
+            "unknown",
+            False,
+        )
+
+    def test_next_only_missing_second_is_none_never_invented(self, tmp_path: Path) -> None:
+        self._pair_paper(tmp_path)
+        nxt, after = events.upcoming_earnings_pair("XOM", *self.W)
+        assert (nxt.date.isoformat(), nxt.status) == ("2026-10-30", "sealed")
+        assert after is None  # the horizon legitimately stops after the first
+        empty, empty_after = events.upcoming_earnings_pair("SPY", *self.W)
+        assert empty is None and empty_after is None
+
+    def test_next_confirmed_after_next_estimated_stays_blocker_only(self, tmp_path: Path) -> None:
+        self._pair_paper(tmp_path)
+        nxt, after = events.upcoming_earnings_pair("LLY", *self.W)
+        # a confirmed next may carry a trade-window PEAD expectation
+        assert (nxt.date.isoformat(), nxt.status, nxt.timing, nxt.blocker_only) == (
+            "2026-11-10",
+            "confirmed",
+            "bmo",
+            False,
+        )
+        # ...an estimated after-next may not, at position 2 exactly as at 1
+        assert (after.date.isoformat(), after.status, after.timing, after.blocker_only) == (
+            "2027-02-10",
+            "estimated",
+            "amc",
+            True,
+        )
+
+    def test_sealed_wins_the_same_date_at_position_2(self, tmp_path: Path) -> None:
+        self._pair_paper(tmp_path)
+        _nxt, after = events.upcoming_earnings_pair("TSLA", *self.W)
+        # the timing file's estimate for 2026-10-29 times the sealed date
+        # but never demotes it: sealed first, blocker_only stays False
+        assert (after.date.isoformat(), after.status, after.timing, after.blocker_only) == (
+            "2026-10-29",
+            "sealed",
+            "amc",
+            False,
+        )
+
+    def test_window_bounds_apply_to_both_positions(self, tmp_path: Path) -> None:
+        self._pair_paper(tmp_path)
+        # a window that ends before MSFT's second date drops it, not invents
+        nxt, after = events.upcoming_earnings_pair("MSFT", date(2026, 7, 1), date(2026, 9, 30))
+        assert (nxt.date.isoformat(), after) == ("2026-07-30", None)
+
+
 # --------------------------------------------------------------- CLI
 
 

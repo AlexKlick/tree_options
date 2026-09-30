@@ -449,6 +449,10 @@ def _vol_state(obj: Any) -> VolStatePolicy:
         unvalidated=unvalidated,
         validated_names=frozenset(names),
         validated_basis=_str(t["validated_basis"], f"{w} validated_basis"),
+        # DISPOSITION (operator ruling 2026-09-30): the global stays
+        # "validated" by design; if name starvation is observed, the path is
+        # an explicit per-policy opt-in (e.g. har_status_fallback) or fixing
+        # HAR validation itself — never editing the global.
         har_status_required=_str(
             t["har_status_required"], f"{w} har_status_required", frozenset({"validated"})
         ),
