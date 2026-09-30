@@ -186,11 +186,11 @@ class ChainFailingSource:
 class TestLock:
     def test_double_runner_refused_by_flock(self, tmp_path: Path) -> None:
         lock = tmp_path / "discovery.lock"
-        first = ensure_lock(lock)
-        assert first is not None
-        with pytest.raises(OSError):
-            ensure_lock(lock)
-        fcntl.flock(first, fcntl.LOCK_UN)
+        with ensure_lock(lock) as first:
+            assert first is not None
+            with pytest.raises(OSError):
+                ensure_lock(lock)
+            fcntl.flock(first, fcntl.LOCK_UN)
 
 
 class TestAccountHistory:
