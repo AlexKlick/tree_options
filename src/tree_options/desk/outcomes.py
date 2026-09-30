@@ -50,20 +50,29 @@ import statistics
 import sys
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from tree_options.desk import hindsight
 from tree_options.desk import intraday_action_graph as iag
+from tree_options.desk.cost import (
+    TRADEABLE_SYMBOLS,
+    CostProvenance,
+    Leg,
+    LegRef,
+    SpreadCostModel,
+    UnpricedCostError,
+)
+from tree_options.desk.sessions import calendar_days_between
 from tree_options.trex.clock import session_calendar
 
 TABLE_SCHEMA = "desk-outcome-table/1"
 EXIT_MODES = ("intraday", "eod", "hold:1", "hold:3", "hold:5", "hold:10", "expiry")
-STATUSES = ("closed", "marked_at_end", "no_fill")
+STATUSES = ("closed", "marked_at_end", "no_fill", "no_price")
 STRUCTURES = ("put_credit", "put_debit", "call_credit", "call_debit")
 BULLISH = frozenset({"put_credit", "call_debit"})
 AGE_S = 15 * 60  # replay's freshness / entry-delay limit (seconds)
@@ -376,19 +385,146 @@ def _no_fill(reason: str) -> dict[str, Any]:
     }
 
 
+def _cost_legs(candidate: Mapping[str, Any], decision_at: datetime) -> tuple[Leg, ...]:
+    """Bind both package legs to explicit, available delta inputs.
+
+    Minute closes do not supply delta or quotes. No delta reconstruction or
+    EOD-source inference occurs here. Source timestamps describe delta inputs,
+    separately from the EOD-derived cost calibration. DTE uses the actual
+    package expiry and decision session, rather than a copied calibration DTE.
+    """
+    reference = LegRef(str(candidate.get("underlying", "")), None, 0)
+
+    def refuse(reason: str) -> NoReturn:
+        raise UnpricedCostError(reason, reference)
+
+    supplied = candidate.get("cost_legs")
+    if supplied is None:
+        refuse("delta_unavailable")
+    if (
+        not isinstance(supplied, Sequence)
+        or isinstance(supplied, (str, bytes))
+        or len(supplied) != 2
+        or not all(isinstance(row, Mapping) for row in supplied)
+    ):
+        refuse("incomplete_package")
+    assert isinstance(supplied, Sequence)
+    identities = (candidate.get("long"), candidate.get("short"))
+    if not all(isinstance(ticker, str) and ticker for ticker in identities):
+        refuse("incomplete_package")
+    expected = (str(identities[0]), str(identities[1]))
+    if (
+        len(set(expected)) != 2
+        or not all(isinstance(row.get("ticker"), str) for row in supplied)
+        or {row["ticker"] for row in supplied} != set(expected)
+    ):
+        refuse("incomplete_package")
+    if (
+        not isinstance(candidate.get("underlying"), str)
+        or candidate["underlying"] not in TRADEABLE_SYMBOLS
+    ):
+        refuse("unknown_symbol")
+    try:
+        expiry = date.fromisoformat(candidate["expiry"])
+        dte = int(
+            calendar_days_between(
+                decision_at.astimezone(iag.ET).date().isoformat(), expiry.isoformat()
+            )
+        )
+        if any(
+            iag.parse_contract(ticker).expiry != expiry
+            or iag.parse_contract(ticker).underlying != candidate.get("underlying")
+            for ticker in expected
+        ):
+            refuse("incomplete_package")
+    except (TypeError, ValueError, KeyError):
+        refuse("incomplete_package")
+    legs = []
+    by_ticker = {row["ticker"]: row for row in supplied}
+    for ticker in expected:
+        row = by_ticker[ticker]
+        if type(row.get("dte")) is not int or row["dte"] != dte:
+            refuse("inconsistent_dte")
+        if row.get("symbol") != candidate.get("underlying"):
+            refuse("incomplete_package")
+        try:
+            event = datetime.fromisoformat(row["source_timestamp_et"])
+            available = datetime.fromisoformat(row["available_at"])
+            session = date.fromisoformat(row["source_session"])
+            if (
+                event.tzinfo is None
+                or available.tzinfo is None
+                or event.utcoffset() is None
+                or available.utcoffset() is None
+                or event.astimezone(iag.ET).date() != session
+                or available < event
+                or type(row["is_eod_snapshot"]) is not bool
+            ):
+                refuse("invalid_provenance")
+            if event > decision_at or available > decision_at:
+                refuse("future_cost_input")
+        except UnpricedCostError:
+            raise
+        except (TypeError, ValueError, KeyError):
+            refuse("invalid_provenance")
+        try:
+            delta = None if row.get("abs_delta") is None else Decimal(str(row["abs_delta"]))
+        except ArithmeticError:
+            refuse("invalid_delta")
+        legs.append(
+            Leg(
+                row["symbol"],
+                delta,
+                dte,
+                row["source_session"],
+                row["source_timestamp_et"],
+                row["is_eod_snapshot"],
+            )
+        )
+    return tuple(legs)
+
+
+def _no_price(error: UnpricedCostError) -> dict[str, Any]:
+    return {
+        **_no_fill(error.reason),
+        "status": "no_price",
+        "pricing_status": "NO_PRICE",
+        "pricing_reason": error.reason,
+        "pricing_key": error.key.to_json(),
+        "cost_model": "derived-spread/1",
+        "cost_provenance": CostProvenance.measured_corpus().as_dict(),
+    }
+
+
 def _evaluate(
     index: OutcomeIndex,
     slot: int,
     candidate: Mapping[str, Any],
     modes: Iterable[str],
-    costs: CostModel | None,
+    costs: CostModel | SpreadCostModel | None,
     sync_s: int | None,
 ) -> dict[str, dict[str, Any]]:
     """Every requested mode's outcome from ONE entry (shared across modes)."""
     entry = _enter(index, slot, candidate, sync_s)
     if isinstance(entry, str):
         return {mode: _no_fill(entry) for mode in modes}
-    cost = costs.round_trip() if costs is not None else None
+    metadata: dict[str, Any] = {}
+    cost: Decimal | None
+    if isinstance(costs, SpreadCostModel):
+        try:
+            quote = costs.price(_cost_legs(candidate, index.timeline[slot][2]))
+        except UnpricedCostError as error:
+            return {mode: _no_price(error) for mode in modes}
+        cost = quote.total_round_trip
+        metadata = {
+            "pricing_status": "PRICED_SIMULATION",
+            "cost_model": "derived-spread/1",
+            "cost_provenance": CostProvenance.measured_corpus().as_dict(),
+            "modeled_round_trip_cost": str(cost),
+            "cost_quote": quote.to_json(),
+        }
+    else:
+        cost = costs.round_trip() if costs is not None else None
     answer: dict[str, dict[str, Any]] = {}
     for mode in modes:
         exit_slot, mark, status, reason = _exit(index, slot, candidate, sync_s, mode)
@@ -399,6 +535,7 @@ def _evaluate(
         pnl = (mark - entry.debit) * 100
         gross = min(entry.max_gain, max(-entry.max_loss, pnl))
         answer[mode] = {
+            **metadata,
             "gross": gross,
             "net": gross if cost is None else gross - cost,
             "entry_at": entry.at.isoformat(),
@@ -437,7 +574,7 @@ def candidate_outcome(
     candidate_id: str,
     *,
     exit_mode: str = "intraday",
-    costs: CostModel | None = None,
+    costs: CostModel | SpreadCostModel | None = None,
     leg_sync_minutes: int | None = None,
 ) -> dict[str, Any] | None:
     """The outcome of entering ``candidate_id`` on the (day, clock) board.
@@ -508,7 +645,7 @@ def outcome_table(
     index: OutcomeIndex,
     *,
     modes: Iterable[str] = EXIT_MODES,
-    costs: CostModel | None = None,
+    costs: CostModel | SpreadCostModel | None = None,
     leg_sync_minutes: int | None = None,
 ) -> Iterator[dict[str, Any]]:
     """One JSON-ready row per (board, candidate, exit mode), every board of
@@ -559,7 +696,7 @@ class _Summary:
         mode["rows"] += 1
         mode["status"][row["status"]] += 1
         mode["reasons"][row["exit_reason"]] += 1
-        if row["status"] == "no_fill":
+        if row["status"] in {"no_fill", "no_price"}:
             return
         gross, net = Decimal(str(row["gross"])), Decimal(str(row["net"]))
         mode["gross"].append(gross)
@@ -580,6 +717,7 @@ class _Summary:
                 "status": dict(mode["status"]),
                 "reasons": dict(sorted(mode["reasons"].items())),
                 "no_fill_share": round(mode["status"]["no_fill"] / mode["rows"], 4),
+                "no_price_share": round(mode["status"]["no_price"] / mode["rows"], 4),
                 "filled": len(mode["gross"]),
                 "mean_gross": mean(mode["gross"]),
                 "mean_net": mean(mode["net"]),
@@ -616,15 +754,25 @@ def _cli(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--half-spread", default="0.03", help="per share, per leg fill")
     parser.add_argument("--commission", default="0.65", help="per leg fill")
+    parser.add_argument(
+        "--cost-model",
+        choices=("flat", "derived"),
+        default="flat",
+        help="flat compatibility control or opt-in EOD-derived sensitivity model",
+    )
     args = parser.parse_args(argv)
     try:
         sync = None if args.sync == "off" else int(args.sync)
         if sync is not None and sync < 0:
             raise ValueError("--sync must be >= 0 or 'off'")
-        costs = CostModel(
-            commission_per_leg=Decimal(args.commission),
-            half_spread_per_share=Decimal(args.half_spread),
-        )
+        costs: CostModel | SpreadCostModel
+        if args.cost_model == "derived":
+            costs = SpreadCostModel(commission_per_leg=Decimal(args.commission))
+        else:
+            costs = CostModel(
+                commission_per_leg=Decimal(args.commission),
+                half_spread_per_share=Decimal(args.half_spread),
+            )
         raw = json.loads(args.bundle.read_bytes())
         index = prepare_index(raw)
     except (ValueError, ArithmeticError, OSError, KeyError) as error:
@@ -642,6 +790,19 @@ def _cli(argv: list[str] | None = None) -> int:
             stream.write(json.dumps(row, separators=(",", ":")) + "\n")
             summary.add(row)
     partial.replace(args.out)
+    summary_result = summary.result()
+    incomplete = any(mode["status"].get("no_price", 0) for mode in summary_result["modes"].values())
+    cost_facts: dict[str, Any] = {
+        "cost_model": "derived-spread/1" if isinstance(costs, SpreadCostModel) else "flat-spread/1",
+        "commission_per_leg": str(costs.commission_per_leg),
+        "multiplier": costs.multiplier,
+        "exact_execution_economics": False,
+        "execution_authorized": False,
+    }
+    if isinstance(costs, SpreadCostModel):
+        cost_facts["cost_provenance"] = CostProvenance.measured_corpus().as_dict()
+    else:
+        cost_facts["half_spread_per_share"] = str(costs.half_spread_per_share)
     document = {
         "schema": TABLE_SCHEMA,
         "bundle": str(args.bundle),
@@ -655,13 +816,10 @@ def _cli(argv: list[str] | None = None) -> int:
         "candidates": candidates,
         "exit_modes": list(EXIT_MODES),
         "sync_minutes": sync,
-        "round_trip_cost": str(costs.round_trip()),
-        "costs": {
-            "commission_per_leg": str(costs.commission_per_leg),
-            "half_spread_per_share": str(costs.half_spread_per_share),
-            "multiplier": costs.multiplier,
-        },
-        **summary.result(),
+        "round_trip_cost": None if isinstance(costs, SpreadCostModel) else str(costs.round_trip()),
+        "costs": cost_facts,
+        "assessment": "DATA_GATED" if incomplete else "SIMULATED_RESEARCH",
+        **summary_result,
     }
     Path(f"{args.out}.summary.json").write_text(json.dumps(document, indent=2))
     print(json.dumps(document, indent=2))
