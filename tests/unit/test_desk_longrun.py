@@ -175,6 +175,26 @@ def test_pick_null_places_the_realized_pick() -> None:
     assert 0.6 < doc["percentile"] < 0.9  # only the best-of-both draw ties 20
 
 
+def test_own_entry_rate_null_is_matched_not_the_incumbents() -> None:
+    """The per-arm null enters at THAT arm's rate, not the incumbent's.
+
+    The regression: one global null at the incumbent's entry rate was
+    subtracted from every arm, so a low-entry-rate arm was measured against a
+    picker that traded far more of the window than it did.
+    """
+    sessions = ["s1", "s2"]
+    options = [np.array([10.0, 0.0]), np.array([4.0])]
+    half = longrun.random_null(sessions, sessions, options, 0.5, seeds=400, seed=9)
+    full = longrun.random_null(sessions, sessions, options, 1.0, seeds=400, seed=9)
+    # per-board option means are 5 and 4, so p=0.5 -> [2.5, 2.0] and p=1 -> [5, 4]
+    assert half.expected_sessions.tolist() == [2.5, 2.0]
+    assert full.expected_sessions.tolist() == [5.0, 4.0]
+    # a zero-entry arm's own null expects exactly zero, whatever the incumbent does
+    never = longrun.random_null(sessions, sessions, options, 0.0, seeds=400, seed=9)
+    assert never.expected_sessions.tolist() == [0.0, 0.0]
+    assert never.totals.tolist() == [0.0] * 400
+
+
 def test_benchmark_rows_buy_and_hold_dollars_hand_case() -> None:
     rows = longrun.benchmark_rows(
         {"SPY": {"2026-05-29": 100.0, "2026-06-01": 110.0, "2026-06-03": 99.0},
@@ -326,6 +346,66 @@ def test_aa_flags_the_evaluation_invalid_when_the_repeats_differ() -> None:
     same = {"m#1": receipts["m#1"], "m#2": receipts["m#1"]}
     valid = longrun.score_run(boards, arms, same, OutcomeCache(table_outcome), PROTO)
     assert valid["aa"]["status"] == "valid" and valid["aa"]["agreement"] == 1.0
+
+
+def test_vs_random_is_matched_to_each_arms_own_entry_rate() -> None:
+    """The regression: the load-bearing vs-random column must be matched.
+
+    The single global null (at the incumbent's entry rate) was subtracted from
+    every arm, so the ranking column was net minus one shared constant. The
+    per-arm column ``vs_random_own`` is rebuilt at each arm's own entry rate;
+    the legacy ``vs_random`` is kept for continuity and is allowed to stay
+    degenerate.
+    """
+    boards, arms, receipts = _score_case()
+    proto = Protocol(draws=2000, random_seeds=200, incumbent="m", cutoff="2026-06-01")
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), proto)
+    rows = {r["arm"]: r for r in doc["standings"]}
+    null_total = doc["random_null"]["expected_total"]
+
+    # the legacy column IS the degenerate shape, and stays that way on purpose
+    for row in doc["standings"]:
+        assert row["vs_random"]["diff_total"] == pytest.approx(
+            row["net_total"] - null_total, abs=0.01)
+
+    # the matched column is not: it varies with each arm's own entry rate
+    assert rows["m#1"]["vs_random_own"]["p_enter"] == 1.0
+    assert rows["m#2"]["vs_random_own"]["p_enter"] == 0.75
+    assert rows["no_trade"]["vs_random_own"]["p_enter"] == 0.0
+    # a zero-entry arm's own null expects zero, so its diff is its own net
+    assert rows["no_trade"]["vs_random_own"]["diff_total"] == rows["no_trade"]["net_total"] == 0.0
+    # the arms that enter less are no longer handed the incumbent's constant credit:
+    # m#2 enters 3 of 4 boards, so its own null expects less than the global 7.0
+    assert rows["m#2"]["vs_random_own"]["diff_total"] == pytest.approx(30.0 - 6.0)
+    assert rows["m#2"]["vs_random"]["diff_total"] == pytest.approx(30.0 - 7.0)
+    # the incumbent's own rate still drives the documented global null
+    assert doc["random_null"]["p_enter"] == 0.875
+
+
+def test_a_zero_entry_arm_is_not_credited_with_the_incumbents_null() -> None:
+    """A zero-entry arm earns 0 and must be measured against a 0-expectation null.
+
+    Regression: the shared null handed every arm the incumbent's large negative
+    expectation, so a zero-entry arm scored a positive "vs random" purely by
+    entering less. Its OWN null expects 0, so its diff is exactly its net.
+    """
+    boards, arms, receipts = _score_case()
+    proto = Protocol(draws=2000, random_seeds=200, incumbent="m", cutoff="2026-06-01")
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), proto)
+    rows = {r["arm"]: r for r in doc["standings"]}
+    # the legacy column keeps its shape: net minus the one shared null total
+    null_total = doc["random_null"]["expected_total"]
+    assert rows["no_trade"]["vs_random"]["diff_total"] == pytest.approx(0.0 - null_total)
+    # the matched column removes the shared credit entirely
+    assert rows["no_trade"]["vs_random_own"]["diff_total"] == 0.0
+    assert rows["no_trade"]["vs_random_own"]["p_enter"] == 0.0
+    # and an arm that genuinely trades is separated from it by the matched null
+    assert rows["always_bullish"]["vs_random_own"]["diff_total"] > 0.0
+    assert rows["first_row"]["vs_random_own"]["diff_total"] < 0.0
+    # the sign of the zero-entry arm's advantage flips between the two columns
+    # whenever the shared null is negative, which is the production case
+    assert (rows["no_trade"]["vs_random_own"]["diff_total"]
+            > rows["no_trade"]["vs_random"]["diff_total"])
 
 
 def test_aa_not_run_leaves_the_evaluation_unvalidated() -> None:
