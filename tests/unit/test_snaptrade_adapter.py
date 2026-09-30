@@ -220,3 +220,39 @@ def test_provider_total_must_match_intent():
     )
     with pytest.raises(SnapTradeNormalizationError, match="intent quantity"):
         readback_from_snapshot(intent(), snap, locally_received_at=NOW + timedelta(seconds=1))
+
+
+def test_unknown_state_preserves_known_source_identity_without_accepting_order():
+    row = snapshot_from_mapping(
+        {
+            "status": "PROVIDER_NEW_STATE",
+            "brokerage_order_id": "known-id",
+            "total_quantity": 2,
+            "filled_quantity": 0,
+            "time_updated": NOW.isoformat(),
+        }
+    )
+    fact = readback_from_snapshot(intent(), row, locally_received_at=NOW)
+    assert fact.status is BrokerReadbackStatus.AMBIGUOUS
+    assert fact.broker_order_id is None and fact.total_quantity is None
+    assert fact.observed_order_id == "known-id"
+    assert fact.observed_total_quantity == 2
+    assert fact.observed_status == "PROVIDER_NEW_STATE"
+
+
+def test_observed_and_accepted_facts_cannot_contradict():
+    from pydantic import ValidationError
+
+    row = snapshot_from_mapping(
+        {
+            "status": "ACCEPTED",
+            "brokerage_order_id": "known-id",
+            "total_quantity": 2,
+            "filled_quantity": 0,
+            "time_updated": NOW.isoformat(),
+        }
+    )
+    fact = readback_from_snapshot(intent(), row, locally_received_at=NOW)
+    for changes in ({"observed_order_id": "other-id"}, {"observed_total_quantity": 3}):
+        with pytest.raises(ValidationError, match="disagree"):
+            type(fact).model_validate({**fact.model_dump(), **changes})

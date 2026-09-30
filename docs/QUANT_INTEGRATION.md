@@ -82,7 +82,10 @@ is currently wired through the supervised effect permit; cancel/replace remain
 internal provider capabilities pending reviewed domain effect contracts. No
 browser endpoint exposes them. Unknown/contradictory order facts fail closed;
 provider order identity reuse is refused; cumulative readbacks never create
-fills. `UncertaintyObserved` extends the execution domain for unknown outcomes
+fills. `BrokerReadback.observed_order_id`, `observed_total_quantity` and
+`observed_status` retain known provider facts separately from accepted-order
+identity/quantity when a state is ambiguous or rejected. They do not grant
+accepted order status or exact execution economics. `UncertaintyObserved` extends the execution domain for unknown outcomes
 that do not faithfully mean timeout or disconnect, while those specific transport
 facts retain `TimeoutObserved`/`DisconnectObserved`.
 

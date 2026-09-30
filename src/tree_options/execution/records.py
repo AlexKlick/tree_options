@@ -230,6 +230,11 @@ class BrokerReadback(StrictModel):
     intent_id: IdStr
     status: BrokerReadbackStatus
     broker_order_id: IdStr | None
+    # Provider observation fields preserve known source facts even when the
+    # accepted-order projection cannot truthfully assert identity or quantity.
+    observed_order_id: IdStr | None = None
+    observed_total_quantity: int | None = Field(default=None, strict=True, ge=1)
+    observed_status: IdStr | None = None
     total_quantity: int | None = Field(default=None, strict=True, ge=1)
     cumulative_quantity: int = Field(strict=True, ge=0)
     broker_snapshot_at: ExecutionUTCDatetime
@@ -240,6 +245,18 @@ class BrokerReadback(StrictModel):
 
     @model_validator(mode="after")
     def _validate_readback(self) -> Self:
+        if (
+            self.observed_order_id is not None
+            and self.broker_order_id is not None
+            and self.observed_order_id != self.broker_order_id
+        ):
+            raise ValueError("observed and accepted broker identities disagree")
+        if (
+            self.observed_total_quantity is not None
+            and self.total_quantity is not None
+            and self.observed_total_quantity != self.total_quantity
+        ):
+            raise ValueError("observed and accepted total quantities disagree")
         if self.broker_snapshot_at > self.locally_received_at:
             raise ValueError("broker_snapshot_at must be <= locally_received_at")
         order_required = {
