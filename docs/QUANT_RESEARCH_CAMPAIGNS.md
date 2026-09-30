@@ -151,12 +151,19 @@ knowledge, or a global budget across unrelated workspaces.
 The existing `desk.longrun` remains the paired options replay owner. This phase
 binds full board row/context bytes, policy identities, source/config metadata and
 loaded bundle/outcome-table bytes before reusing receipts.
-Shipped scoring, outcome, rule and policy helper source bytes are also bound;
+Shipped scoring, outcome, rule and policy helper source bytes and Python/NumPy
+runtime versions are also bound;
 changed engine code requires a new run directory. Contradictory duplicate
 outcome identities refuse loading. Legacy plans without the custody marker are
 preserved and refused for adoption; use a new run directory after code promotion.
 Direct Python custom-rule callers must explicitly bind their rule parameters in
 metadata; callable closure identity is not inferred.
+
+Whole board row IDs containing `+` retain their single-row meaning. Package
+interpretation is bound to the frozen board membership; conflicting cached
+interpretations refuse adoption. Pair completion requires both exit times to be
+known aware instants. A missing exit remains unknown; contradictory or malformed
+timestamps refuse ordering instead of falling back to a lexical comparison.
 
 Do not replace a running long-run process's files or upgrade the supervised
 options desk to demonstrate these checks. This branch is isolated. Its source

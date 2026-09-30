@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { getQuantLab } from '../lib/api'
 import { QuantPage } from './QuantPage'
@@ -87,4 +87,21 @@ it('keeps incomplete holdout metrics unavailable', async () => {
   await waitFor(() => expect(screen.getByText(/HOLDOUT_INCOMPLETE/)).toBeTruthy())
   expect(screen.getByText('2/3 · INCOMPLETE')).toBeTruthy()
   expect(screen.getAllByText('unavailable')).toHaveLength(3)
+})
+
+it('follows a DAG parent without replacing the hash route', async () => {
+  vi.mocked(getQuantLab).mockResolvedValue({
+    strategies: [], versions: [], experiments: [], comparisons: [], theory_campaigns: [campaign('synthetic_fixture')],
+    evidence_classes: ['BACKTEST'], execution: {state: 'NOT_OBSERVED', environment: 'BROKER PAPER'},
+    live_money: false, execution_authorized: false,
+  })
+  window.location.hash = '#/quant'
+  render(<QuantPage />)
+  await waitFor(() => expect(screen.getByText('Compare strategies on frozen inputs')).toBeTruthy())
+  const target = document.getElementById(`theory-${'a'.repeat(64)}-${'b'.repeat(64)}`)!
+  target.scrollIntoView = vi.fn()
+  fireEvent.click(screen.getByRole('link', {name: 'b'.repeat(64)}))
+  expect(target.scrollIntoView).toHaveBeenCalledWith({block: 'center'})
+  expect(document.activeElement).toBe(target)
+  expect(window.location.hash).toBe('#/quant')
 })

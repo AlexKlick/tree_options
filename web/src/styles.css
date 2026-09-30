@@ -389,6 +389,8 @@ footer {
    where the table already fits). TableScroll adds .has-more while columns
    are hidden: the cut edge fades so a clipped value reads as continuing. */
 .table-scroll { overflow-x: auto; }
+.quant-lab { min-width: 0; overflow-wrap: anywhere; }
+.quant-lab pre { max-width: 100%; overflow-x: auto; }
 .table-scroll.has-more {
   -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);
   mask-image: linear-gradient(to right, #000 calc(100% - 36px), transparent);

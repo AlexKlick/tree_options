@@ -240,7 +240,12 @@ def attach(
                     store.verify()
                     results = list(store.all("quant_experiment"))
                     versions = list(store.all("quant_version"))
-                    campaigns = list(store.all("quant_provenance"))
+                    campaigns = [
+                        row
+                        for row in store.all("quant_provenance")
+                        if row.get("schema")
+                        in {"quant-campaign-proposal/1", "quant-execution-link/1"}
+                    ]
                     theory_campaigns = [
                         _theory_campaign(row, store)
                         for row in store.all("result")

@@ -78,6 +78,17 @@ def test_theory_campaign_projects_persisted_metrics_and_graph_without_recompute(
     result = theory_result()
     result["holdout"]["candidate"]["periods"] = [{"private_metadata": "not-for-the-cockpit"}]
     persist_theory(workspace, result)
+    from tree_options.research.runstate.store import open_runstate_store
+
+    with open_runstate_store(workspace) as store:
+        store.put(
+            "quant_provenance",
+            {
+                "schema": "quant-research-payload/1",
+                "payload": {"private_metadata": "RAW_INPUT_MUST_STAY_IN_RUNSTATE"},
+            },
+            key="private-input",
+        )
     app = FastAPI()
     attach(app, workspace=workspace, execution_state=tmp_path / "broker")
     client = TestClient(app)
@@ -88,6 +99,7 @@ def test_theory_campaign_projects_persisted_metrics_and_graph_without_recompute(
     assert row["holdout"]["candidate"]["mean_net_return"] == "0.012"
     assert row["graph"] == result["graph"]
     assert "not-for-the-cockpit" not in response.text
+    assert "RAW_INPUT_MUST_STAY_IN_RUNSTATE" not in response.text
     assert client.post("/api/research/quant").status_code == 405
 
 

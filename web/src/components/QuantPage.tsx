@@ -19,7 +19,7 @@ function TheoryCampaign({ campaign }: { campaign: QuantTheoryCampaign }) {
     <p>Candidates: {campaign.candidate_count} · Reflection calls: {campaign.reflection_calls}</p>
     <p>Winner: {campaign.winner.strategy_id} · Version: {campaign.winner.version_id}</p>
     <pre aria-label="Winner parameters">{JSON.stringify(campaign.winner.parameters, null, 2)}</pre>
-    <table aria-label="Held-out comparison"><thead><tr>
+    <div className="table-scroll"><table aria-label="Held-out comparison"><thead><tr>
       <th>Held-out lane</th><th>Periods scored</th><th>Mean net return</th><th>Endpoint loss</th><th>Turnover / starting capital</th>
     </tr></thead><tbody>{(['candidate', 'control'] as const).map(lane => {
       const metric = campaign.holdout[lane]
@@ -27,17 +27,22 @@ function TheoryCampaign({ campaign }: { campaign: QuantTheoryCampaign }) {
         <td>{metric.scored_period_count}/{metric.period_count} · {metric.disposition}</td>
         <td>{ratio(metric.mean_net_return, true)}</td><td>{ratio(metric.max_drawdown, true)}</td><td>{ratio(metric.turnover, false)}</td>
       </tr>
-    })}</tbody></table>
+    })}</tbody></table></div>
     <p>Endpoint loss measures the worst completed roundtrip loss, not intraday drawdown. Turnover counts gross buy and sell notional.</p>
     <ul aria-label="Campaign limitations">{campaign.limitations.map((text, index) => <li key={index}>{text}</li>)}</ul>
     <details><summary>Durable theory DAG · {campaign.campaign_id}</summary>
       <p>Persisted research nodes; no execution authority.</p>
-      <table><thead><tr><th>Stage</th><th>Node</th><th>Payload digest</th><th>Parents</th></tr></thead>
-        <tbody>{campaign.graph.map(node => <tr key={node.node_id} id={nodeAnchor(node.node_id)}>
+      <div className="table-scroll"><table><thead><tr><th>Stage</th><th>Node</th><th>Payload digest</th><th>Parents</th></tr></thead>
+        <tbody>{campaign.graph.map(node => <tr key={node.node_id} id={nodeAnchor(node.node_id)} tabIndex={-1}>
           <th>{node.stage}</th><td>{node.node_id}</td><td>{node.payload_sha256}{node.payload_ref && <p>{node.payload_ref}</p>}</td>
-          <td>{node.parents.length === 0 ? 'root' : node.parents.map(parent => <a key={parent} href={`#${nodeAnchor(parent)}`}>{parent}</a>)}</td>
+          <td>{node.parents.length === 0 ? 'root' : node.parents.map(parent => <a key={parent} href={`#${nodeAnchor(parent)}`} onClick={event => {
+            event.preventDefault()
+            const target = document.getElementById(nodeAnchor(parent))
+            target?.scrollIntoView({block: 'center'})
+            target?.focus({preventScroll: true})
+          }}>{parent}</a>)}</td>
         </tr>)}</tbody>
-      </table>
+      </table></div>
     </details>
   </article>
 }
@@ -46,6 +51,7 @@ export function QuantPage() {
   const poll = usePoll(getQuantLab, 15_000)
   const lab = poll.data
   return <AppShell title="Quant lab" poll={poll} showRuntimeBanners={false} footerSource="Research and broker-paper evidence">
+    <div className="quant-lab">
     <h1>Strategy → Experiment → Execution</h1>
     <p>Research targets require a separate mandate and permit before execution.</p>
     {!lab && <p role="status">{poll.error ? 'Quant evidence unavailable' : 'Loading quant evidence…'}</p>}
@@ -91,5 +97,6 @@ export function QuantPage() {
         </details>)}
       </section>
     </>}
+    </div>
   </AppShell>
 }

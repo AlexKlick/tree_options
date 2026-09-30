@@ -235,3 +235,13 @@ def test_spec_roundtrip_and_empty_parameters_contract(inputs):
         ).top_n
         is None
     )
+
+
+def test_holdout_outcomes_never_select_winner(tmp_path, inputs):
+    spec, calendar = inputs
+    original = run_campaign(tmp_path / "original", spec, calendar)
+    poisoned = replace(spec.holdout[0], closes={"A": Decimal("1"), "B": Decimal("10000")})
+    changed = run_campaign(tmp_path / "changed", replace(spec, holdout=(poisoned,)), calendar)
+    assert changed["winner"] == original["winner"]
+    assert Decimal(original["holdout"]["candidate"]["mean_net_return"]) > 0
+    assert Decimal(changed["holdout"]["candidate"]["mean_net_return"]) < 0

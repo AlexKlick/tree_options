@@ -7302,6 +7302,42 @@ MUTANTS = [
         "selectors": ["tests/unit/test_desk_longrun_custody.py"],
         "invariant": "new evaluation code cannot reuse old replay receipts",
     },
+    {
+        "id": "QC11-full-board-payload-custody",
+        "owner": "test_resume_refuses_changed_payload_under_unchanged_board_ids",
+        "file": "src/tree_options/desk/longrun.py",
+        "anchor": 'asdict(board), sort_keys=True, separators=(",", ":"), default=str, allow_nan=False',
+        "replacement": '{"snapshot": board.snapshot, "ids": board.ids}, sort_keys=True, separators=(",", ":"), default=str, allow_nan=False',
+        "selectors": ["tests/unit/test_desk_longrun_custody.py"],
+        "invariant": "changed numeric row and context bytes cannot reuse replay receipts",
+    },
+    {
+        "id": "QC12-separate-outer-evaluation",
+        "owner": "test_holdout_outcomes_never_select_winner",
+        "file": "src/tree_options/research/quant_campaign.py",
+        "anchor": "                spec.holdout,\n                calendar=calendar,",
+        "replacement": "                spec.validation,\n                calendar=calendar,",
+        "selectors": ["tests/research/test_quant_campaign.py"],
+        "invariant": "sealed outer results cannot substitute validation outcomes",
+    },
+    {
+        "id": "QC13-whole-row-choice-identity",
+        "owner": "test_whole_plus_row_keeps_single_choice_receipt",
+        "file": "src/tree_options/desk/longrun.py",
+        "anchor": "legs = None if str(choice) in ids else pair_legs(choice)",
+        "replacement": "legs = pair_legs(choice)",
+        "selectors": ["tests/unit/test_desk_longrun_custody.py"],
+        "invariant": "a valid whole board identity retains single-row meaning",
+    },
+    {
+        "id": "QC14-pair-completion-uncertainty",
+        "owner": "test_pair_completion_stays_unknown_if_either_exit_is_missing",
+        "file": "src/tree_options/desk/longrun.py",
+        "anchor": "if left is None or right is None:\n        return None",
+        "replacement": "if left is None or right is None:\n        return a or b",
+        "selectors": ["tests/unit/test_desk_longrun_custody.py"],
+        "invariant": "one leg exit cannot identify exact package completion time",
+    },
 ]
 
 
