@@ -219,4 +219,4 @@ def test_invalid_entry_counts_refuse_normalization(counts):
 def test_duplicate_snapshot_cannot_inflate_decision_coverage():
     boards, arms, receipts, outcomes, protocol = fixture()
     with pytest.raises(ValueError, match="duplicate board snapshot"):
-        longrun.score_run(boards + [boards[-1]], arms, receipts, outcomes, protocol)
+        longrun.score_run([*boards, boards[-1]], arms, receipts, outcomes, protocol)
