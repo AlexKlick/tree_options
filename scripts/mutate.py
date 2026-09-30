@@ -7022,7 +7022,7 @@ MUTANTS = [
     # Quant integration invariants; all require behavioral kills.
     {
         "id": "Q01-future-data",
-        "owner": "quant_boundary_tests",
+        "owner": "test_manifest_refuses_today_universe_and_future_observation",
         "file": "src/tree_options/research/quant.py",
         "anchor": "if obs.available_at > self.cutoff:",
         "replacement": "if False:",
@@ -7031,7 +7031,7 @@ MUTANTS = [
     },
     {
         "id": "Q02-filing-cutoff",
-        "owner": "quant_boundary_tests",
+        "owner": "test_financials_filter_future_filing_date_and_use_pit_query",
         "file": "src/tree_options/data/massive_equities.py",
         "anchor": '"filing_date.lte": decision_date.isoformat(),',
         "replacement": '"period_end.lte": decision_date.isoformat(),',
@@ -7040,7 +7040,7 @@ MUTANTS = [
     },
     {
         "id": "Q03-historical-universe",
-        "owner": "quant_boundary_tests",
+        "owner": "test_universe_explicitly_queries_names_active_on_historical_date",
         "file": "src/tree_options/data/massive_equities.py",
         "anchor": '"date": as_of.isoformat(),',
         "replacement": '"date": date.today().isoformat(),',
@@ -7049,7 +7049,7 @@ MUTANTS = [
     },
     {
         "id": "Q04-value-direction",
-        "owner": "quant_boundary_tests",
+        "owner": "test_value_lower_positive_ratios_score_better_and_missing_is_excluded",
         "file": "src/tree_options/strategy_lab/ranking.py",
         "anchor": "higher_is_better=False,",
         "replacement": "higher_is_better=True,",
@@ -7058,7 +7058,7 @@ MUTANTS = [
     },
     {
         "id": "Q05-momentum-last-month",
-        "owner": "quant_boundary_tests",
+        "owner": "test_momentum_skip_no_signal_and_replay_identity",
         "file": "src/tree_options/research/quant.py",
         "anchor": "price_t_minus_1=prices[month - 1]",
         "replacement": "price_t_minus_1=prices[month]",
@@ -7067,7 +7067,7 @@ MUTANTS = [
     },
     {
         "id": "Q06-volatility-signal-lag",
-        "owner": "quant_boundary_tests",
+        "owner": "test_signal_uses_next_period_return_not_same_period_future_return",
         "file": "src/tree_options/strategy_lab/volatility.py",
         "anchor": "lagged = (None, *signals[:-1])",
         "replacement": "lagged = tuple(signals)",
@@ -7076,7 +7076,7 @@ MUTANTS = [
     },
     {
         "id": "Q07-unknown-status-open",
-        "owner": "quant_boundary_tests",
+        "owner": "test_unknown_and_pending_mutation_states_fail_closed",
         "file": "src/tree_options/execution/snaptrade_adapter.py",
         "anchor": "    return BrokerReadbackStatus.AMBIGUOUS",
         "replacement": "    return BrokerReadbackStatus.OPEN",
@@ -7085,7 +7085,7 @@ MUTANTS = [
     },
     {
         "id": "Q08-timeout-resubmit",
-        "owner": "quant_boundary_tests",
+        "owner": "test_timeout_no_retry_restart_readback_fences_effect",
         "file": "src/tree_options/trex/snaptrade_runtime.py",
         "anchor": "        except TimeoutError:\n"
         '            return Uncertain("provider_timeout", "readback required; no '
@@ -7102,7 +7102,7 @@ MUTANTS = [
     },
     {
         "id": "Q09-fabricated-snapshot-fill",
-        "owner": "quant_boundary_tests",
+        "owner": "test_real_lifecycle_readback_never_admits_fabricated_economics",
         "file": "src/tree_options/execution/snaptrade_adapter.py",
         "anchor": "    return BrokerReadback(\n"
         '        record_id=_record_id(intent.intent_id, token, "readback"),',
@@ -7124,7 +7124,7 @@ MUTANTS = [
     },
     {
         "id": "Q10-missing-fees-zero",
-        "owner": "quant_boundary_tests",
+        "owner": "test_missing_fees_cannot_be_exact_zero",
         "file": "src/tree_options/execution/records.py",
         "anchor": "    fees: ExactMoney",
         "replacement": '    fees: ExactMoney = Decimal("0")',
@@ -7133,7 +7133,7 @@ MUTANTS = [
     },
     {
         "id": "Q11-shared-broker-order-id",
-        "owner": "quant_boundary_tests",
+        "owner": "test_order_id_cannot_be_reused_across_economic_intents",
         "file": "src/tree_options/trex/snaptrade_runtime.py",
         "anchor": "if broker_order_id in identities and identities[broker_order_id] != intent_id:",
         "replacement": "if False:",
@@ -7142,7 +7142,7 @@ MUTANTS = [
     },
     {
         "id": "Q12-evidence-attribution-bypass",
-        "owner": "quant_boundary_tests",
+        "owner": "test_partial_fill_cannot_bypass_attribution_evidence_gate",
         "file": "src/tree_options/research/quant.py",
         "anchor": "if not receipt.is_admissible or receipt.economics is None:",
         "replacement": "if False:",
