@@ -353,7 +353,11 @@ def test_actual_owner_receipt_projects_as_qualified_read_only_account(owned):
 def test_raw_account_identifier_cannot_be_persisted_as_public_alias(owned, public_alias):
     with pytest.raises(SupervisedRefused, match="requires_private_label"):
         qualify_read_only(
-            owned.desk, owned.fence, account_id=ACCOUNT, account_alias=public_alias, output=owned.output
+            owned.desk,
+            owned.fence,
+            account_id=ACCOUNT,
+            account_alias=public_alias,
+            output=owned.output,
         )
     assert not owned.output.exists() and owned.state.reads == []
 
