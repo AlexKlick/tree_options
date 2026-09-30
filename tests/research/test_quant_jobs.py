@@ -163,8 +163,11 @@ def test_sleeves_are_distinct_research_identity_without_authority(tmp_path):
     assert one["execution_authorized"] is False
 
 
-def test_private_frozen_dataset_metadata_and_drift(tmp_path):
-    from tree_options.research.quant_campaign_io import make_fixture
+@pytest.mark.parametrize("mutation_stage", ["registered", "queued"])
+@pytest.mark.parametrize("revision", ["serialization", "outcome"])
+def test_private_frozen_dataset_metadata_and_drift(tmp_path, monkeypatch, mutation_stage, revision):
+    import tree_options.research.quant_jobs as jobs
+    from tree_options.research.quant_campaign_io import make_fixture, spec_from_dict
     from tree_options.research.quant_jobs import dataset_catalog
     from tree_options.time.calendar import StaticSessionCalendar
 
@@ -194,12 +197,50 @@ def test_private_frozen_dataset_metadata_and_drift(tmp_path):
     assert catalog[1]["universe_count"] == 2
     assert "input_file" not in catalog[1] and "train" not in catalog[1]
     workspace = tmp_path / "research"
-    job, _ = enqueue(workspace, {**request(), "dataset_id": "frozen-one"}, datasets_dir=data)
-    with open_runstate_store(workspace) as store:
-        assert store.get("spec", job["run_id"])["dataset"]["source_code_sha"] == "a" * 40
-    (data / "panel.json").write_text("{}")
+    assignment = {**request(), "dataset_id": "frozen-one"}
+    if mutation_stage == "queued":
+        job, _ = enqueue(workspace, assignment, datasets_dir=data)
+        with open_runstate_store(workspace) as store:
+            frozen = store.get("spec", job["run_id"])
+            assert frozen["dataset"]["source_code_sha"] == "a" * 40
+            assert frozen["dataset"]["input_sha256"] == row["input_sha256"]
+
+    manifest_bytes = (data / "manifest.json").read_bytes()
+    revised = spec.to_dict()
+    if revision == "outcome":
+        revised["train"][0]["closes"]["FIXTURE_A"] = "106"
+    # Both revisions remain valid campaigns with unchanged time splits and
+    # source identities. Removing the checksum must therefore remove the only
+    # reason they are refused; malformed JSON is not a byte-custody oracle.
+    parsed = spec_from_dict(revised)
+    assert parsed.code_sha == spec.code_sha and parsed.lock_sha == spec.lock_sha
+    (data / "panel.json").write_text(json.dumps(revised, indent=2) + "\n")
+    assert hashlib.sha256((data / "panel.json").read_bytes()).hexdigest() != row["input_sha256"]
+    assert (data / "manifest.json").read_bytes() == manifest_bytes
+
+    if mutation_stage == "registered":
+        with pytest.raises(ValueError, match="frozen dataset checksum changed"):
+            enqueue(workspace, assignment, datasets_dir=data)
+        assert not (workspace / "runstate.sqlite3").exists()
+        return
+
+    calls = []
+    original_engine = jobs.run_campaign
+
+    def observe_engine(*args, **kwargs):
+        calls.append(args)
+        return original_engine(*args, **kwargs)
+
+    monkeypatch.setattr(jobs, "run_campaign", observe_engine)
     assert ResearchWorker(workspace=workspace, catalog_provider=lambda: []).step()
-    assert job_detail(workspace, job["run_id"])["job"]["status"] == "failed"
+    detail = job_detail(workspace, job["run_id"])
+    assert detail["job"]["status"] == "failed"
+    assert detail["job"]["error"] == "research_dataset_changed"
+    assert detail["result"] is None and detail["provenance"] == []
+    assert not calls
+    with open_runstate_store(workspace) as store:
+        assert store.verify()["ok"]
+        assert store.get("spec", job["run_id"]) == frozen
 
 
 def test_uncertain_reflection_is_not_repeated_on_resume(tmp_path, monkeypatch):
