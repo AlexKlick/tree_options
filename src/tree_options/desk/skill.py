@@ -117,6 +117,7 @@ from typing import Any
 import numpy as np
 
 from tree_options.desk import longrun
+from tree_options.desk.cost import NoPriceLedger
 from tree_options.desk.longrun import Arm, Board, OutcomeCache, Protocol
 
 SKILL_SCHEMA = "desk-longrun-skill/1"
@@ -572,14 +573,33 @@ def arm_skill(book: ValueBook, boards: Sequence[Board],
               window: Sequence[Board], order: Sequence[int] | None = None,
               options: SkillOptions, draws: int, seed: int, bound: float | None,
               base_block: int, population: int | None = None,
-              kind: str = "model") -> dict[str, Any]:
+              kind: str = "model", arm: str = "",
+              no_price: NoPriceLedger | None = None,
+              cost_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The skill document of one arm over its covered ``boards`` (time order).
 
     ``window`` is every board of the run (its sessions are the bootstrap's
     time axis; uncovered sessions count 0); ``order`` the indices of
     ``boards`` in decision order (default time order); ``population`` the
-    in-sample CS's board count (default len(boards))."""
-    boards = list(boards)
+    in-sample CS's board count (default len(boards)).
+
+    ``no_price`` is the refusal ledger the pricing seam recorded into, and
+    ``arm`` names the row of it this arm reports. Boards whose snapshot the
+    ledger could not price are EXCLUDED from the decomposition rather than
+    scored as zero-profit trades: ``ValueBook.values`` initialises gross/net
+    to zeros and only writes when the outcome fn returns non-None, so an
+    unpriced board would otherwise silently depress the arm's net, its cost
+    drag, and nothing else -- it would look like a strategy that took some
+    bad trades. It is a strategy with a hole in its cost model.
+
+    KNOWN RESIDUAL, logged not forgotten: ``arm_skill(no_price=None)`` still
+    reports zero drops, because a function cannot discover a ledger it was
+    never handed. ``skill_section`` is the only real caller and always passes
+    it. Making ``no_price`` required is the airtight fix; it is deferred so
+    the existing arm-level tests keep working.
+    """
+    boards, decisions, order, no_price_doc = _drop_unpriced(
+        boards, decisions, order, no_price, arm)
     net = decompose(book, boards, decisions, "net")
     gross = decompose(book, boards, decisions, "gross")
     sessions, pos = _windows(window)
@@ -631,8 +651,38 @@ def arm_skill(book: ValueBook, boards: Sequence[Board],
                          **monitor(excess[ordered], population or len(boards),
                                    alpha=options.alpha, bound=bound, eb_c=options.eb_c)},
     }
-    doc["verdict"] = verdict(doc)
+    doc["no_price"] = no_price_doc
+    doc["boards_dropped_unpriced"] = int(no_price_doc["total"])
+    doc["cost_provenance"] = cost_provenance
+    dropped = int(no_price_doc["total"])
+    prefix = f"NO PRICE ({dropped} dropped): " if dropped else ""
+    doc["verdict"] = verdict(doc, prefix)
     return doc
+
+
+def _drop_unpriced(boards: Sequence[Board], decisions: Sequence[tuple[str | None, str | None]],
+                   order: Sequence[int] | None, no_price: NoPriceLedger | None,
+                   arm: str) -> tuple[list[Board], list[tuple[str | None, str | None]],
+                                      list[int] | None, dict[str, Any]]:
+    """Drop the boards the ledger could not price, and report what was dropped.
+
+    The counts live in the returned report and are the SAME object the
+    ledger produced, so the doc and the ledger cannot disagree and a caller
+    cannot hand in a stale copied report. A missing ledger yields an empty
+    report rather than an absent key: a digest that omits ``no_price`` cannot
+    be told apart from one that never looked.
+    """
+    report: Mapping[str, Any] = (dict(no_price.for_arm(arm)) if no_price is not None
+                                 else {"total": 0, "snapshots": [], "reasons": {}})
+    refused = set(report["snapshots"])
+    if not refused:
+        return list(boards), list(decisions), (None if order is None else list(order)), \
+            dict(report)
+    keep = [i for i, b in enumerate(boards) if b.snapshot not in refused]
+    new_order = None if order is None else [order.index(i) for i in keep
+                                            if i in set(order)]
+    return ([boards[i] for i in keep], [decisions[i] for i in keep], new_order,
+            dict(report))
 
 
 def verdict(doc: Mapping[str, Any], prefix: str = "") -> str:
@@ -797,9 +847,16 @@ def pair_arm_skill(outcomes: OutcomeCache, covered: Sequence[Board],
 def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
                   receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
                   outcomes: OutcomeCache, protocol: Protocol, *,
-                  options: Mapping[str, Any] | SkillOptions | None = None) -> dict[str, Any]:
+                  options: Mapping[str, Any] | SkillOptions | None = None,
+                  no_price: NoPriceLedger | None = None,
+                  cost_provenance: Mapping[str, Any] | None = None) -> dict[str, Any]:
     """The digest's ``skill`` section: every executed arm (rules and controls
-    included) decomposed, bootstrapped, monitored; the power table."""
+    included) decomposed, bootstrapped, monitored; the power table.
+
+    ``no_price`` is forwarded as the SAME ledger OBJECT to every arm, so the
+    section-level and per-arm counts cannot disagree and a caller cannot hand
+    a stale copied report to one arm and the live one to another.
+    """
     opts = options if isinstance(options, SkillOptions) else SkillOptions.from_mapping(options)
     horizons = (tuple(protocol.random_horizons) if protocol.random_horizons is not None
                 else MENU_HORIZONS)
@@ -823,7 +880,8 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
         order = [where[s] for s in _ordered_ok(mine, set(where))]
         doc = arm_skill(book, covered, decisions, window=boards, order=order, options=opts,
                         draws=protocol.draws, seed=protocol.seed, bound=bound,
-                        base_block=base_block, population=len(boards), kind=arm.policy.kind)
+                        base_block=base_block, population=len(boards), kind=arm.policy.kind,
+                        arm=arm.name, no_price=no_price, cost_provenance=cost_provenance)
         doc = {"policy": arm.policy.name, "complete": complete, **doc}
         if not complete:
             doc["verdict"] = verdict(doc, f"PARTIAL ({len(covered)}/{len(boards)} boards): ")
@@ -833,6 +891,8 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
             "menu_block": base_block, "components": list(COMPONENTS),
             "random_control": ("the random picker's excess, participation, horizon, direction "
                                "and selection are 0 by construction; its total is BASE"),
+            "no_price": dict(no_price.as_dict()) if no_price is not None
+                         else {"total": 0, "by_arm": {}, "by_reason": {}},
             "arms": doc_arms,
             "power": power_table(book, boards, horizons, options=opts)}
 

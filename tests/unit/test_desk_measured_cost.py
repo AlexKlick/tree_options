@@ -60,7 +60,7 @@ REQUIRED_SYMBOLS = (
     "CostModelError",
     "LegOutsideTradeableUniverseError",
     "ProvenanceError",
-    "ObservationProvenance",
+    "Leg",
     "LegQuote",
     "SpreadCostModel",
     "SpreadQuote",
@@ -123,7 +123,14 @@ CENTRES = (D("0.05"), D("0.15"), D("0.275"), D("0.425"), D("0.60"))
 
 #: (dte_band, delta_bucket) -> (half_spread_per_share, two_leg_round_trip).
 #: Hand-computed, not read back from the implementation.
-GRID = {
+#:
+#: These cells are DERIVED, not measured. The corpus publishes the |delta|
+#: marginals and the dte marginals; it does not publish their joint. The
+#: construction is ``half = MEASURED_MEDIAN_FULL_SPREAD[b] / 2 * DTE_BAND
+#: _MULTIPLIER[t]``, which reproduces the |delta| marginals exactly at dte
+#: 7-21 and reproduces the dte ratio exactly. The joint is an approximation
+#: and the implementation's docstring says so.
+DERIVED_GRID = {
     (0, 0): (D("0.010000"), D("6.600000")),
     (0, 1): (D("0.015000"), D("8.600000")),
     (0, 2): (D("0.025000"), D("12.600000")),
@@ -165,7 +172,7 @@ def prov(
     The model does NOT know anything about the corpus; it is told. Everything
     it emits, it emits because the caller said so.
     """
-    return cost_module().ObservationProvenance(
+    return cost_module().Leg(
         symbol=symbol,
         abs_delta=D(abs_delta),
         dte=dte,
@@ -206,7 +213,7 @@ def test_every_grid_cell_is_the_hand_computed_measurement(
     dte_band: int, dte: int, bucket: int
 ) -> None:
     """All 15 cells, each a 2-leg vertical priced with two legs in one bucket."""
-    half_expected, round_trip_expected = GRID[(dte_band, bucket)]
+    half_expected, round_trip_expected = DERIVED_GRID[(dte_band, bucket)]
     quote = two_leg_quote(str(CENTRES[bucket]), dte)
 
     assert len(quote.legs) == 2
@@ -241,18 +248,18 @@ def test_flat_model_number_is_reproduced_at_its_own_price_point() -> None:
     wrong everywhere else. It is not a scalar error.
     """
     assert FLAT_ROUND_TRIP == D("14.600")
-    assert GRID[(0, 3)][1] == FLAT_ROUND_TRIP
+    assert DERIVED_GRID[(0, 3)][1] == FLAT_ROUND_TRIP
     assert two_leg_quote("0.42", 14).total_round_trip == FLAT_ROUND_TRIP
 
 
 def test_the_win_is_the_shape_not_a_scalar() -> None:
     """Cheap wings cost LESS than flat, expensive bodies cost MORE."""
-    assert GRID[(0, 0)][1] == D("6.600") < FLAT_ROUND_TRIP   # |delta| < 0.10
-    assert GRID[(0, 1)][1] == D("8.600") < FLAT_ROUND_TRIP   # |delta| 0.10-0.20
-    assert GRID[(0, 4)][1] == D("40.600") > FLAT_ROUND_TRIP  # |delta| 0.50-0.70, ~2.8x
+    assert DERIVED_GRID[(0, 0)][1] == D("6.600") < FLAT_ROUND_TRIP   # |delta| < 0.10
+    assert DERIVED_GRID[(0, 1)][1] == D("8.600") < FLAT_ROUND_TRIP   # |delta| 0.10-0.20
+    assert DERIVED_GRID[(0, 4)][1] == D("40.600") > FLAT_ROUND_TRIP  # |delta| 0.50-0.70, ~2.8x
     # and the spread of the shape is ~6x, not the 10x of the raw quoted medians
     # (commission damps it, which is correct: commission is not moneyness-blind)
-    assert GRID[(0, 4)][1] / GRID[(0, 0)][1] > 5
+    assert DERIVED_GRID[(0, 4)][1] / DERIVED_GRID[(0, 0)][1] > 5
 
 
 def test_bucket_edges_are_inclusive_at_the_top() -> None:
@@ -337,7 +344,7 @@ def test_is_eod_snapshot_has_no_default() -> None:
     price a cost and forget where it came from."""
     cost = cost_module()
     with pytest.raises(TypeError):
-        cost.ObservationProvenance(  # type: ignore[call-arg]
+        cost.Leg(  # type: ignore[call-arg]
             symbol="IWM",
             abs_delta=D("0.40"),
             dte=14,
@@ -359,7 +366,7 @@ def test_provenance_refuses_blank_identifiers(field: str) -> None:
     }
     kwargs[field] = "   "
     with pytest.raises(cost.ProvenanceError):
-        cost.ObservationProvenance(**kwargs)
+        cost.Leg(**kwargs)
     assert issubclass(cost.ProvenanceError, cost.CostModelError)
 
 

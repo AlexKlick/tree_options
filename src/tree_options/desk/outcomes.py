@@ -7,7 +7,15 @@ noise). Environment v2 keeps that accounting and makes each assumption an
 explicit knob, per candidate:
 
 * ``costs`` — a :class:`CostModel` round trip (commission + half-spread
-  on every leg fill) is charged to ``net``; ``None`` means net == gross;
+  on every leg fill) is charged to ``net``; ``None`` means net == gross.
+  A :class:`tree_options.desk.cost.SpreadCostModel` is also accepted and
+  prices PER-MONEYNESS instead of a constant, selected explicitly at the
+  call site (``--cost-model measured``) and never by a default that changes
+  silently. THE WIRING GAP: a board candidate carries no ``|delta``, so
+  under the measured model every candidate is REFUSED with the reason
+  ``delta_unavailable``, is written with ``status="no_price"`` and a null
+  net, and is COUNTED in ``costs.no_price`` — never back-filled with the
+  flat constant, which would silently re-flatten the model;
 * ``leg_sync_minutes`` — both legs' prints must be within N minutes of
   each other, at entry (walk FORWARD inside the 15-minute entry window to
   the first synced pair, else ``no_fill``) and at every mark (the most
@@ -59,11 +67,20 @@ from typing import Any
 
 from tree_options.desk import hindsight
 from tree_options.desk import intraday_action_graph as iag
+from tree_options.desk.cost import (
+    DELTA_BUCKET_LABELS,
+    DTE_BAND_LABELS,
+    CostProvenance,
+    Leg,
+    NoPriceLedger,
+    SpreadCostModel,
+    UnpricedCostError,
+)
 from tree_options.trex.clock import session_calendar
 
 TABLE_SCHEMA = "desk-outcome-table/1"
 EXIT_MODES = ("intraday", "eod", "hold:1", "hold:3", "hold:5", "hold:10", "expiry")
-STATUSES = ("closed", "marked_at_end", "no_fill")
+STATUSES = ("closed", "marked_at_end", "no_fill", "no_price")
 STRUCTURES = ("put_credit", "put_debit", "call_credit", "call_debit")
 BULLISH = frozenset({"put_credit", "call_debit"})
 AGE_S = 15 * 60  # replay's freshness / entry-delay limit (seconds)
@@ -339,14 +356,105 @@ def _no_fill(reason: str) -> dict[str, Any]:
             "hold_minutes": None, "status": "no_fill", "exit_reason": reason}
 
 
+def _no_price(reason: str) -> dict[str, Any]:
+    """A candidate the cost model REFUSED, not one that failed to fill.
+
+    These are different events and must not share a status: ``no_fill`` means
+    the market did not give us a price, ``no_price`` means OUR cost model
+    could not say what crossing would cost. The second is a hole in the
+    measurement, and a row scored as a zero-profit trade would hide it.
+    """
+    return {"gross": None, "net": None, "entry_at": None, "exit_at": None,
+            "hold_minutes": None, "status": "no_price", "exit_reason": reason}
+
+
+def _price_candidate(costs: SpreadCostModel, candidate: Mapping[str, Any],
+                     no_price: NoPriceLedger | None, arm: str,
+                     snapshot: str) -> Decimal | None:
+    """The per-candidate cost under the MEASURED model, or ``None``.
+
+    THE WIRING GAP. A board candidate carries no ``|delta`` -- its full field
+    set is id, structure, underlying, expiry, long, short, width,
+    observed_premium, the three proxies, two recent_trade_moves and
+    data_kind. There is no delta, no iv, and no per-leg object to derive one
+    from. So there is nothing to hand the measured model, and asking it to
+    price this candidate is a measurement gap.
+
+    The gap is RECORDED (reason ``delta_unavailable``) and the candidate is
+    dropped from scoring. It is NOT back-filled with the flat constant: that
+    would silently re-flatten the model in the one artifact a human reads.
+    Closing the gap is a separately-versioned delta-derivation component and
+    its own re-rating; until it lands the measured branch of this CLI
+    deliberately prices nothing, and says how much.
+    """
+    legs = _candidate_legs(candidate)
+    if legs is None:
+        if no_price is not None:
+            no_price.record(arm=arm, snapshot=snapshot,
+                            key=_unpriced_leg(candidate), reason="delta_unavailable")
+        return None
+    try:
+        return costs.round_trip(legs)
+    except UnpricedCostError as refused:
+        if no_price is not None:
+            no_price.record(arm=arm, snapshot=snapshot,
+                            key=refused.key, reason=refused.reason)
+        return None
+
+
+def _candidate_legs(candidate: Mapping[str, Any]) -> list[Leg] | None:
+    """The candidate's measured legs, or ``None`` when it has no delta.
+
+    A board row that DOES carry a per-leg ``delta`` (a future producer, or a
+    miner quote) is priced. Today none does, and returning ``None`` is the
+    honest answer rather than a synthesised one.
+    """
+    delta = candidate.get("delta")
+    if delta is None:
+        return None
+    expiry = candidate.get("expiry")
+    session = candidate.get("session")
+    stamp = candidate.get("source_timestamp_et")
+    if expiry is None or session is None or stamp is None:
+        return None
+    return [Leg(symbol=str(candidate.get("underlying") or ""),
+                abs_delta=Decimal(str(delta)), dte=int(expiry),
+                source_session=str(session), source_timestamp_et=str(stamp),
+                is_eod_snapshot=bool(candidate.get("is_eod_snapshot", True)))]
+
+
+def _unpriced_leg(candidate: Mapping[str, Any]) -> Leg:
+    """A constructible stand-in naming WHY the candidate could not be priced.
+
+    ``abs_delta`` is ``None`` -- constructible, never priceable -- which is
+    exactly the state the refusal is about.
+    """
+    return Leg(symbol=str(candidate.get("underlying") or ""), abs_delta=None,
+               dte=int(candidate.get("dte") or 0),
+               source_session=str(candidate.get("session") or "unrecorded"),
+               source_timestamp_et=str(candidate.get("source_timestamp_et")
+                                       or "unrecorded"),
+               is_eod_snapshot=True)
+
+
 def _evaluate(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
-              modes: Iterable[str], costs: CostModel | None,
-              sync_s: int | None) -> dict[str, dict[str, Any]]:
+              modes: Iterable[str], costs: CostModel | SpreadCostModel | None,
+              sync_s: int | None,
+              no_price: NoPriceLedger | None = None,
+              snapshot: str = "",
+              arm: str = "outcome-table") -> dict[str, dict[str, Any]]:
     """Every requested mode's outcome from ONE entry (shared across modes)."""
     entry = _enter(index, slot, candidate, sync_s)
     if isinstance(entry, str):
         return {mode: _no_fill(entry) for mode in modes}
-    cost = costs.round_trip() if costs is not None else None
+    cost: Decimal | None
+    if isinstance(costs, SpreadCostModel):
+        priced = _price_candidate(costs, candidate, no_price, arm, snapshot)
+        if priced is None:
+            return {mode: _no_price("delta_unavailable") for mode in modes}
+        cost = priced
+    else:
+        cost = costs.round_trip() if costs is not None else None
     answer: dict[str, dict[str, Any]] = {}
     for mode in modes:
         exit_slot, mark, status, reason = _exit(index, slot, candidate, sync_s, mode)
@@ -381,13 +489,18 @@ def _check_modes(modes: Iterable[str]) -> tuple[str, ...]:
 
 
 def candidate_outcome(index: OutcomeIndex, day: date, clock: str, candidate_id: str, *,
-                      exit_mode: str = "intraday", costs: CostModel | None = None,
-                      leg_sync_minutes: int | None = None) -> dict[str, Any] | None:
+                      exit_mode: str = "intraday",
+                      costs: CostModel | SpreadCostModel | None = None,
+                      leg_sync_minutes: int | None = None,
+                      no_price: NoPriceLedger | None = None) -> dict[str, Any] | None:
     """The outcome of entering ``candidate_id`` on the (day, clock) board.
 
     Returns {gross, net, entry_at, exit_at, hold_minutes, status,
     exit_reason}; ``None`` when the id is not on that as-of board (an
-    unknown or stale id, as replay treats it)."""
+    unknown or stale id, as replay treats it). Under the MEASURED cost model
+    a candidate with no ``|delta`` returns ``status="no_price"`` -- distinct
+    from ``no_fill``, which means the market did not give us a price.
+    """
     (mode,) = _check_modes((exit_mode,))
     sync_s = _sync_seconds(leg_sync_minutes)
     slot = _slot(index, day, clock)
@@ -395,7 +508,8 @@ def candidate_outcome(index: OutcomeIndex, day: date, clock: str, candidate_id: 
                       if c["id"] == candidate_id), None)
     if candidate is None:
         return None
-    return _evaluate(index, slot, candidate, (mode,), costs, sync_s)[mode]
+    return _evaluate(index, slot, candidate, (mode,), costs, sync_s,
+                     no_price, snapshot=f"s:{day.isoformat()}T{clock}")[mode]
 
 
 # ------------------------------------------------------------------ spot
@@ -444,16 +558,23 @@ def spot_series(index: OutcomeIndex) -> dict[str, dict[date, Decimal]]:
 
 
 def outcome_table(index: OutcomeIndex, *, modes: Iterable[str] = EXIT_MODES,
-                  costs: CostModel | None = None,
-                  leg_sync_minutes: int | None = None) -> Iterator[dict[str, Any]]:
+                  costs: CostModel | SpreadCostModel | None = None,
+                  leg_sync_minutes: int | None = None,
+                  no_price: NoPriceLedger | None = None) -> Iterator[dict[str, Any]]:
     """One JSON-ready row per (board, candidate, exit mode), every board of
-    the window in time order."""
+    the window in time order.
+
+    ``no_price`` is the ledger the MEASURED branch records its refusals into.
+    It is only read for its counts; a refusal is already materialised in the
+    row as ``status="no_price"``.
+    """
     chosen = _check_modes(modes)
     sync_s = _sync_seconds(leg_sync_minutes)
     for slot, (day, clock, _at) in enumerate(index.timeline):
         snapshot = f"s:{day.isoformat()}T{clock}"
         for candidate in board_candidates(index, day, clock):
-            results = _evaluate(index, slot, candidate, chosen, costs, sync_s)
+            results = _evaluate(index, slot, candidate, chosen, costs, sync_s,
+                                no_price, snapshot)
             for mode in chosen:
                 outcome = results[mode]
                 yield {"snapshot": snapshot, "candidate_id": candidate["id"], "exit_mode": mode,
@@ -480,7 +601,7 @@ class _Summary:
         mode["rows"] += 1
         mode["status"][row["status"]] += 1
         mode["reasons"][row["exit_reason"]] += 1
-        if row["status"] == "no_fill":
+        if row["status"] in ("no_fill", "no_price"):
             return
         gross, net = Decimal(str(row["gross"])), Decimal(str(row["net"]))
         mode["gross"].append(gross)
@@ -529,13 +650,21 @@ def _cli(argv: list[str] | None = None) -> int:
                         help="leg sync minutes at entry and marks (default 2; 'off' = v1)")
     parser.add_argument("--half-spread", default="0.03", help="per share, per leg fill")
     parser.add_argument("--commission", default="0.65", help="per leg fill")
+    parser.add_argument("--cost-model", default="flat", metavar="{flat,measured}",
+                        help="flat: the frozen $14.60 baseline every digest is calibrated "
+                             "on. measured: per-moneyness, from the CBOE EOD corpus. "
+                             "Explicit, never defaulted silently (default flat).")
     args = parser.parse_args(argv)
     try:
         sync = None if args.sync == "off" else int(args.sync)
         if sync is not None and sync < 0:
             raise ValueError("--sync must be >= 0 or 'off'")
-        costs = CostModel(commission_per_leg=Decimal(args.commission),
-                          half_spread_per_share=Decimal(args.half_spread))
+        measured = _cost_model(args.cost_model)
+        costs: CostModel | SpreadCostModel
+        no_price = NoPriceLedger()
+        costs = (SpreadCostModel.measured() if measured
+                 else CostModel(commission_per_leg=Decimal(args.commission),
+                                half_spread_per_share=Decimal(args.half_spread)))
         raw = json.loads(args.bundle.read_bytes())
         index = prepare_index(raw)
     except (ValueError, ArithmeticError, OSError, KeyError) as error:
@@ -549,7 +678,8 @@ def _cli(argv: list[str] | None = None) -> int:
         for day, clock, _at in index.timeline:
             boards += 1
             candidates += len(board_candidates(index, day, clock))
-        for row in outcome_table(index, costs=costs, leg_sync_minutes=sync):
+        for row in outcome_table(index, costs=costs, leg_sync_minutes=sync,
+                                 no_price=no_price):
             stream.write(json.dumps(row, separators=(",", ":")) + "\n")
             summary.add(row)
     partial.replace(args.out)
@@ -557,14 +687,79 @@ def _cli(argv: list[str] | None = None) -> int:
                 "sessions": [index.sessions[0].isoformat(), index.sessions[-1].isoformat(),
                              len(index.sessions)],
                 "boards": boards, "candidates": candidates, "exit_modes": list(EXIT_MODES),
-                "sync_minutes": sync, "round_trip_cost": str(costs.round_trip()),
-                "costs": {"commission_per_leg": str(costs.commission_per_leg),
-                          "half_spread_per_share": str(costs.half_spread_per_share),
-                          "multiplier": costs.multiplier},
+                "sync_minutes": sync,
+                "round_trip_cost": _round_trip_field(costs),
+                "costs": _costs_block(costs, no_price, measured),
                 **summary.result()}
     Path(f"{args.out}.summary.json").write_text(json.dumps(document, indent=2))
     print(json.dumps(document, indent=2))
     return 0
+
+
+def _cost_model(name: str) -> bool:
+    """``"measured"`` selects the per-moneyness model; ``"flat"`` the frozen
+    baseline. Validated here rather than by ``choices=`` so a bad value takes
+    the existing ``refused: ... / return 2`` path instead of argparse's exit."""
+    if name == "measured":
+        return True
+    if name == "flat":
+        return False
+    raise ValueError(f"--cost-model must be 'flat' or 'measured', not {name!r}")
+
+
+def _round_trip_field(costs: CostModel | SpreadCostModel) -> Any:
+    """The round trip as a SCALAR under the flat model, a TABLE under the
+    measured one.
+
+    A measured scalar would re-flatten the whole exercise in the one field a
+    reader is most likely to quote, so it is not offered: the field holds all
+    fifteen cells or it is not there.
+    """
+    if isinstance(costs, SpreadCostModel):
+        return {label: {band: str(costs.round_trip(
+            [Leg(symbol="SPY", abs_delta=_BUCKET_PROBE[i], dte=_BAND_DAY[t],
+                 source_session="derived", source_timestamp_et="derived",
+                 is_eod_snapshot=True)] * 2))
+            for t, band in enumerate(DTE_BAND_LABELS)}
+            for i, label in enumerate(DELTA_BUCKET_LABELS)}
+    return str(costs.round_trip())
+
+
+def _costs_block(costs: CostModel | SpreadCostModel, no_price: NoPriceLedger,
+                 measured: bool) -> dict[str, Any]:
+    if measured:
+        return {
+            "model": "measured-spread/1",
+            "commission_per_leg": str(costs.commission_per_leg),
+            "multiplier": costs.multiplier,
+            "round_trip_by_moneyness": _round_trip_field(costs),
+            # the key is renamed: on the flat model ``half_spread_per_share``
+            # is a Decimal FIELD, on the measured one it is a two-argument
+            # METHOD. Publishing the flat key here would be ambiguous.
+            "half_spread_basis": ("derived: measured |delta| marginal / 2 * dte multiplier"),
+            "provenance": _CORPUS_PROVENANCE.as_dict(),
+            "no_price": dict(no_price.as_dict()),
+            "boards_dropped_unpriced": int(no_price.as_dict()["total"]),
+        }
+    return {"model": "flat",
+            "commission_per_leg": str(costs.commission_per_leg),
+            "half_spread_per_share": str(costs.half_spread_per_share),
+            "multiplier": costs.multiplier}
+
+
+#: one interior |delta| per band and one day per dte band, used only to read
+#: the fifteen cells back OUT of the model for the summary table. The table
+#: itself is computed by the model; these are the keys to ask it with.
+_BUCKET_PROBE = (Decimal("0.05"), Decimal("0.15"), Decimal("0.25"),
+                 Decimal("0.40"), Decimal("0.60"))
+_BAND_DAY = (14, 30, 53)
+_CORPUS_PROVENANCE = CostProvenance(
+    source="cboe-delayed-eod-chains",
+    snapshot_window_et="17:45-06:30",
+    universe_filter="|delta|<=0.70, 7<=dte<=60, volume>0, oi>0, symbol in IWM/QQQ/SPY",
+    n_rows=18783,
+    decision_clocks_et=("10:00", "10:15", "15:15"),
+)
 
 
 if __name__ == "__main__":

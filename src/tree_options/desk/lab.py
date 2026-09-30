@@ -70,6 +70,13 @@ POLICY_SENTENCE = (
     "spread board row, or skipping."
 )
 
+#: The measured 2-leg round trip, in dollars, at the two ends of the tradeable
+#: moneyness range. Quoted in the board prompt so the agent is not told a
+#: constant the model no longer uses: the flat $14.60 is exactly the
+#: (|delta| 0.35-0.50, dte 7-21) cell of a fifteen-cell measured surface.
+COST_LOW = "$6.60"    # |delta| < 0.10, dte 7-21
+COST_HIGH = "$40.60"  # |delta| 0.50-0.70, dte 7-21
+
 _POLICY_RE = re.compile(r"^[a-z0-9:_-]+$")
 
 
@@ -320,8 +327,14 @@ def board_prompt_v2(rows: list[dict[str, Any]], context: BoardContext,
         sentence
         + " Capital 5000, max loss per trade 300, max combined open loss 1500. "
         "Prices are last-traded-minute closes (valuation proxies, not executable "
-        f"quotes); every round trip is charged {CostModel().round_trip()} in "
-        "commissions and half-spreads. Underlyings are aliased (U1, U2, ...); the "
+        "quotes). Execution cost is PER-MONEYNESS, not a constant: measured against "
+        "CBOE delayed end-of-day chain snapshots (captured 17:45-06:30 ET, which are "
+        f"NOT the decision clocks you trade on), a 2-leg round trip runs from about "
+        f"{COST_LOW} deep out of the money to about {COST_HIGH} near the money, against "
+        f"the flat {CostModel().round_trip()} the desk's historical digests used. Treat "
+        "the flat figure as one price point, not the rule: a wing-heavy book and a "
+        "delta-heavy book of the same width and tenor cost very differently. Underlyings "
+        "are aliased (U1, U2, ...); the "
         "context gives each one's as-of returns over 1/5/20 sessions and 20-session "
         "realized vol"
         + (" and the prior session's close of its 30-day implied-vol index "

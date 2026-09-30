@@ -30,9 +30,13 @@ KNOWN LIMITATIONS, stated rather than hidden
 2. A vertical's two legs are $1-$2 apart; the test prices both at the SHORT
    leg's proxy. Stated here because it is a real simplification.
 3. The longrun boards are heavily near-the-money, so a material fraction of
-   entries land above |delta| 0.70 - outside the measured universe. The model
-   refuses them; the test substitutes the boundary bucket's hand-written price
-   and REPORTS the count. It is an extrapolation and it is counted, not hidden.
+   entries land above |delta| 0.70 - outside the measured universe. Under the
+   fail-closed degradation rule (desk.cost spec 3.1) those entries are a
+   REFUSAL carrying the reason token ``delta_unavailable``, not a boundary
+   price. The test substitutes the boundary bucket's hand-written price ONLY
+   so the re-rating can still be computed, and it COUNTS the substitutions
+   under that reason name. The count is the honest measure of the wiring gap
+   (desk.cost spec 0.1: the board carries no delta), and it is never hidden.
 """
 
 from __future__ import annotations
@@ -77,10 +81,16 @@ FLAT_ROUND_TRIP = 4 * D("0.03") * 100 + 4 * D("0.65")
 assert FLAT_ROUND_TRIP == D("14.60")
 
 #: Hand-written price of the outermost MEASURED bucket (|delta| 0.50-0.70), used
-#: ONLY for entries the measured universe excludes. From the same table as
-#: test_desk_measured_cost.GRID; written out again so this file's oracle is
-#: readable without importing the other test.
+#: ONLY for entries the measured universe excludes. From the same DERIVED table
+#: as test_desk_measured_cost.DERIVED_GRID; written out again so this file's
+#: oracle is readable without importing the other test.
 BOUNDARY_ROUND_TRIP = {7: D("40.600000"), 22: D("53.254000"), 46: D("65.946000")}
+
+#: The reason token desk.cost.UnpricedCostError carries when a leg is refused
+#: because no |delta| was available at the decision clock and the proxy
+#: derivation declined. Named here (not imported) so this file's oracle stays
+#: independent of the implementation it is grading.
+DELTA_UNAVAILABLE = "delta_unavailable"
 
 
 def _boundary_cost(dte: int) -> Decimal:
@@ -242,7 +252,7 @@ def measured_model() -> Any:
 def provenance(symbol: str, abs_delta: float, dte: int) -> Any:
     from tree_options.desk import cost
 
-    return cost.ObservationProvenance(
+    return cost.Leg(
         symbol=symbol or "UNKNOWN",
         abs_delta=D(repr(round(abs_delta, 6))),
         dte=dte,
@@ -420,7 +430,7 @@ def rerating(run: dict[str, Any]) -> dict[str, Any]:
     priced = 0
     no_board = 0
     no_moneyness = 0
-    #: per sigma: {delta_bucket_or_"clamped": count}
+    #: per sigma: {delta_bucket_or_DELTA_UNAVAILABLE: count}
     buckets: dict[float, dict[str, int]] = {sigma: {} for sigma in SIGMAS}
     bands: dict[float, dict[int, int]] = {sigma: {} for sigma in SIGMAS}
 
@@ -447,9 +457,13 @@ def rerating(run: dict[str, Any]) -> dict[str, Any]:
                     row["structure"], float(moneyness), row["dte"], sigma
                 )
                 if estimate > 0.70:
-                    # outside the measured universe: the model refuses it, so
-                    # the test substitutes the boundary price and COUNTS it.
-                    key = "clamped>0.70"
+                    # OUTSIDE the measured universe. The model REFUSES this leg
+                    # (fail-closed, spec 3.1); the reason it refuses is that no
+                    # |delta| source exists at the decision clock and the proxy
+                    # has fallen out of its domain -> ``delta_unavailable``.
+                    # The test substitutes the boundary price so the re-rating
+                    # can still be computed, and COUNTS the substitution.
+                    key = DELTA_UNAVAILABLE
                     cost_dollars = _boundary_cost(row["dte"])
                 else:
                     legs = [
@@ -507,7 +521,7 @@ def test_the_shape_is_actually_exercised_by_this_run(rerating: dict[str, Any]) -
     assert differing, "every entry priced at exactly the flat baseline; nothing was re-rated"
 
     for sigma in SIGMAS:
-        occupied = [k for k in rerating["buckets"][sigma] if k != "clamped>0.70"]
+        occupied = [k for k in rerating["buckets"][sigma] if k != DELTA_UNAVAILABLE]
         occupied_bands = [b for b, n in rerating["bands"][sigma].items() if n]
         accounted = sum(rerating["buckets"][sigma].values())
         print(f"\nsigma={sigma} |delta| buckets: {rerating['buckets'][sigma]}")
@@ -528,7 +542,7 @@ def test_the_shape_is_actually_exercised_by_this_run(rerating: dict[str, Any]) -
         k
         for sigma in SIGMAS
         for k, n in rerating["buckets"][sigma].items()
-        if n and k != "clamped>0.70"
+        if n and k != DELTA_UNAVAILABLE
     }
     assert occupied_any, "no leg of the run landed inside the measured universe at any sigma"
 
@@ -563,12 +577,13 @@ def test_rerating_of_the_finished_run(rerating: dict[str, Any]) -> None:
     ]
     for sigma in SIGMAS:
         v = verdicts[sigma]
-        clamped = rerating["buckets"][sigma].get("clamped>0.70", 0)
+        clamped = rerating["buckets"][sigma].get(DELTA_UNAVAILABLE, 0)
         lines.append(
             f"  sigma={sigma:.2f}  arms={len(v['arms'])}  "
             f"order flips={len(v['order_flips'])}  sign flips={len(v['sign_flips'])}  "
             f"identical={v['identical']}  "
-            f"clamped={clamped} ({100.0 * clamped / max(rerating['priced'], 1):.1f}% EXTRAPOLATED)"
+            f"refused ({DELTA_UNAVAILABLE})={clamped} "
+            f"({100.0 * clamped / max(rerating['priced'], 1):.1f}% PRICED AT THE BOUNDARY)"
         )
     sigma = SIGMAS[2]
     arms = per_sigma[sigma]
@@ -587,7 +602,7 @@ def test_rerating_of_the_finished_run(rerating: dict[str, Any]) -> None:
         k
         for sigma in SIGMAS
         for k, n in rerating["buckets"][sigma].items()
-        if n and k != "clamped>0.70"
+        if n and k != DELTA_UNAVAILABLE
     }
     if changed:
         lines.append("")

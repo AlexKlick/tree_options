@@ -2020,8 +2020,12 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     """Net-of-cost, leg-synced outcomes per horizon. With ``table`` (an
     ``desk outcome-table`` JSONL) the lookup is free; otherwise each
     (snapshot, candidate, horizon) is computed live from the v2 index with
-    the default CostModel and ``sync`` minutes, memoized. A missing horizon
-    (rules that do not choose one) uses ``default_horizon``."""
+    the cost model named by ``params["cost_model"]`` -- ``flat`` (the frozen
+    $14.60 baseline) or ``measured`` (per moneyness) -- and ``sync`` minutes,
+    memoized. Under ``measured`` a candidate the model cannot price is
+    REFUSED and recorded in the shared ``NoPriceLedger`` rather than scored as
+    a zero-profit trade. A missing horizon (rules that do not choose one)
+    uses ``default_horizon``."""
     from tree_options.desk import outcomes
 
     default_horizon = str(params.get("default_horizon", "intraday"))
@@ -2048,7 +2052,21 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     state = ctx.shared.get("v2")
     if state is None:
         raise ValueError("the v2 outcome plug-in needs a table or the v2 boards plug-in")
-    costs = outcomes.CostModel()
+    # The cost model is an EXPLICIT choice, never a silent default. `flat` is
+    # the frozen $14.60 baseline the 25-arm digest is calibrated on;
+    # `measured` prices per moneyness from the measured surface.
+    model_name = str(params.get("cost_model", "flat"))
+    if model_name == "flat":
+        costs: Any = outcomes.CostModel()
+    elif model_name == "measured":
+        from tree_options.desk.cost import NoPriceLedger, SpreadCostModel
+        costs = SpreadCostModel.measured()
+        # A refusal must be COUNTED here, not swallowed: the live path is the
+        # one place the measured model will actually run, and an uncounted
+        # refusal scores as a zero-profit trade.
+        ctx.shared.setdefault("no_price", NoPriceLedger())
+    else:
+        raise ValueError(f"cost_model must be 'flat' or 'measured', not {model_name!r}")
     sync = params.get("sync", 2)
     memo: dict[tuple[str, str, str], dict[str, Any] | None] = {}
 
@@ -2061,8 +2079,9 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
             doc = outcomes.candidate_outcome(
                 state["index"], date.fromisoformat(day_text), clock, candidate_id,
                 exit_mode=mode, costs=costs,
-                leg_sync_minutes=None if sync in (None, "off") else int(sync))
-            memo[key] = (None if doc is None or doc.get("status") == "no_fill"
+                leg_sync_minutes=None if sync in (None, "off") else int(sync),
+                no_price=ctx.shared.get("no_price"))
+            memo[key] = (None if doc is None or doc.get("status") in ("no_fill", "no_price")
                          or doc.get("net") is None
                          else {"gross": float(doc["gross"]), "net": float(doc["net"]),
                                "exit_at": doc.get("exit_at")})

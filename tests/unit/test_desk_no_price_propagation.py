@@ -42,9 +42,11 @@ Neither cost_drag is an exact multiple of the old flat $14.60 (6.60 and
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from decimal import Decimal
 from typing import Any
+from unittest import mock
 
 import pytest
 
@@ -52,7 +54,7 @@ from tree_options.desk import skill
 from tree_options.desk.longrun import Board
 
 try:  # pragma: no cover - the RED path is the point
-    from tree_options.desk import measured_costs
+    from tree_options.desk import cost as measured_costs
     _IMPORT_ERROR: Exception | None = None
 except Exception as exc:  # any import failure is the RED
     measured_costs = None  # type: ignore[assignment]
@@ -84,7 +86,7 @@ EXPECTED_REASONS = {
 def mc() -> Any:
     if measured_costs is None:
         pytest.fail(
-            "tree_options.desk.measured_costs does not exist yet "
+            "tree_options.desk.cost does not exist yet "
             f"(import error: {_IMPORT_ERROR!r}). The NO_PRICE ledger that this "
             "file demands is part of the measured cost model; until it exists "
             "these tests must fail, not skip."
@@ -98,19 +100,34 @@ def boards() -> list[Board]:
             for index, (s, (symbol, _, _)) in enumerate(FIXTURE.items())]
 
 
-def model(sources: tuple[str, ...]) -> Any:
-    """A model whose table measures exactly ``sources`` at the cheap cell."""
-    cells = {(s, "0.00-0.10", "7-21"): CHEAP_HALF for s in sources}
+@contextlib.contextmanager
+def measured_symbols(sources: tuple[str, ...]):
+    """Narrow the shipped tradeable-symbol pool to exactly ``sources``.
+
+    The measured model has no per-symbol table (the corpus marginals are
+    POOLED across IWM/QQQ/SPY, so there is nothing to differentiate), and it
+    refuses any symbol outside its declared pool. Overriding the module
+    constant is therefore the ONLY way to run the strict-vs-extended A/B, and
+    it changes nothing about the arithmetic: the cheap cell is the same
+    measured cell either way.
+    """
+    with mock.patch.object(mc(), "TRADEABLE_SYMBOLS", frozenset(sources)):
+        yield
+
+
+def model() -> Any:
+    """The shipped measured model, unmodified."""
+    return mc().SpreadCostModel.measured()
+
+
+def provenance() -> Any:
     m = mc()
-    return m.MeasuredCostModel(
-        table=m.SpreadTable(cells=cells),
-        provenance=m.CostProvenance(
-            source="cboe-delayed-eod-chains",
-            snapshot_window_et="17:45-06:30",
-            universe_filter="|delta|<=0.70, 7<=dte<=60, volume>0, oi>0, symbol in IWM/QQQ/SPY",
-            n_rows=18783,
-            decision_clocks_et=("10:00", "15:15"),
-        ),
+    return m.CostProvenance(
+        source="cboe-delayed-eod-chains",
+        snapshot_window_et="17:45-06:30",
+        universe_filter="|delta|<=0.70, 7<=dte<=60, volume>0, oi>0, symbol in IWM/QQQ/SPY",
+        n_rows=18783,
+        decision_clocks_et=("10:00", "15:15"),
     )
 
 
@@ -121,9 +138,12 @@ def price_every_board(the_model: Any, ledger: Any) -> Any:
     """
     def get(snapshot: str, row_id: str, horizon: str | None) -> tuple[float, float] | None:
         symbol, abs_delta, gross = FIXTURE[snapshot]
-        legs = [mc().SpreadKey(symbol=symbol,
-                               abs_delta=None if abs_delta is None else Decimal(abs_delta),
-                               dte=14)]
+        legs = [mc().Leg(symbol=symbol,
+                         abs_delta=None if abs_delta is None else Decimal(abs_delta),
+                         dte=14,
+                         source_session="2026-06-01",
+                         source_timestamp_et="2026-06-01T18:05:00-04:00",
+                         is_eod_snapshot=True)]
         try:
             cost = the_model.round_trip(legs)
         except mc().UnpricedCostError as exc:
@@ -136,17 +156,48 @@ def price_every_board(the_model: Any, ledger: Any) -> Any:
 
 def run_digest(sources: tuple[str, ...]) -> tuple[dict[str, Any], Any]:
     """Price every board, then digest the arm with the ledger's own report."""
-    the_model = model(sources)
-    ledger = mc().NoPriceLedger()
-    get = price_every_board(the_model, ledger)
-    for snapshot in FIXTURE:                  # drive the refusals into the ledger
-        get(snapshot, f"{snapshot}R", "h1")
-    book = skill.ValueBook(get, HORIZONS)
-    doc = skill.arm_skill(
-        book, boards(), DECISIONS, window=boards(),
-        options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1,
-        arm=ARM, no_price=ledger,
-        cost_provenance=the_model.provenance.as_dict())
+    with measured_symbols(sources):
+        the_model = model()
+        ledger = mc().NoPriceLedger()
+        get = price_every_board(the_model, ledger)
+        for snapshot in FIXTURE:              # drive the refusals into the ledger
+            get(snapshot, f"{snapshot}R", "h1")
+        book = skill.ValueBook(get, HORIZONS)
+        doc = skill.arm_skill(
+            book, boards(), DECISIONS, window=boards(),
+            options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1,
+            arm=ARM, no_price=ledger,
+            cost_provenance=provenance().as_dict())
+    return doc, ledger
+
+
+#: the only two fixture boards that price on every symbol pool, so a run over
+#: them is genuinely CLEAN -- zero refusals, zero drops. The prefix assertion
+#: below needs a run that really dropped nothing; the five-board fixture never
+#: is one, because s4 has no delta and s5 is out of the measured universe at
+#: every pool.
+CLEAN = ("s1", "s2")
+
+
+def clean_boards() -> list[Board]:
+    return [b for b in boards() if b.snapshot in CLEAN]
+
+
+def run_clean_digest() -> tuple[dict[str, Any], Any]:
+    """Digest only the priceable boards, with the ledger driven empty."""
+    with measured_symbols(("SPY", "XLF")):
+        the_model = model()
+        ledger = mc().NoPriceLedger()
+        get = price_every_board(the_model, ledger)
+        for snapshot in CLEAN:
+            assert get(snapshot, f"{snapshot}R", "h1") is not None, \
+                f"{snapshot} is supposed to price; if it does not, the fixture is wrong"
+        kept = clean_boards()
+        book = skill.ValueBook(get, HORIZONS)
+        doc = skill.arm_skill(
+            book, kept, [(f"{s}R", "h1") for s in CLEAN], window=kept,
+            options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1,
+            arm=ARM, no_price=ledger, cost_provenance=provenance().as_dict())
     return doc, ledger
 
 
@@ -215,10 +266,14 @@ def test_the_drop_is_named_in_the_verdict_a_human_reads() -> None:
     doc, _ = run_digest(("SPY",))
     assert doc["verdict"].startswith("NO PRICE (3 dropped): ")
     assert "Descriptive; nothing promoted." in doc["verdict"]
-    # a clean run carries no such prefix
-    clean, _ = run_digest(("SPY", "XLF"))
+    # a run where NOTHING was refused carries no such prefix
+    clean, ledger = run_clean_digest()
+    assert ledger.for_arm(ARM)["total"] == 0
+    assert clean["verdict"].startswith("NO SKILL DETECTED") or \
+        clean["verdict"].startswith("NO TRADES")
     assert not clean["verdict"].startswith("NO PRICE")
-    assert clean["no_price"]["total"] == 2          # the residual count is still reported
+    assert clean["no_price"]["total"] == 0
+    assert clean["boards_dropped_unpriced"] == 0
 
 
 def test_pricing_one_more_source_moves_both_the_count_and_the_total() -> None:
@@ -263,9 +318,10 @@ def test_provenance_reaches_the_digest_and_still_disclaims_the_fill_clock() -> N
 def test_a_digest_with_no_ledger_reports_zero_drops_rather_than_omitting_the_key() -> None:
     """The key is ALWAYS present. A digest that omits it when nothing went
     wrong cannot be told apart from one that never looked."""
-    the_model = model(("SPY", "XLF"))
-    book = skill.ValueBook(price_every_board(the_model, mc().NoPriceLedger()),
-                           HORIZONS)
+    with measured_symbols(("SPY", "XLF")):
+        the_model = model()
+        book = skill.ValueBook(price_every_board(the_model, mc().NoPriceLedger()),
+                               HORIZONS)
     doc = skill.arm_skill(
         book, boards(), DECISIONS, window=boards(),
         options=skill.SkillOptions(), draws=200, seed=1, bound=None, base_block=1)

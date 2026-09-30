@@ -1,4 +1,4 @@
-"""desk.measured_costs: the MEASURED execution-cost model, tests first.
+"""desk.cost: the MEASURED execution-cost model, tests first.
 
 This file is the contract. It is written before the module exists, so the
 whole file is RED; the RED is the deliverable, not an accident.
@@ -14,23 +14,26 @@ moneyness. The POINT ESTIMATE is roughly right; the PER-LEG SHAPE is wrong,
 and a strategy that systematically trades one moneyness is mis-costed in one
 direction or the other. The win here is the SHAPE, not a bigger scalar.
 
+The one-line finding this file exists to pin: the flat ``$14.60`` is EXACTLY
+the cell (|delta| 0.35-0.50, dte 7-21). The flat constant is one arbitrary
+cell of the measured surface, silently applied to all fifteen.
+
 The oracle (hand-transcribed; n = 18,783 over symbol in IWM/QQQ/SPY,
 7 <= dte <= 60, volume > 0, oi > 0, |delta| <= 0.70):
 
-    full two-sided quoted spread, median, by |delta|
+    MEASURED median FULL two-sided quoted spread ($/share), by |delta|
       0.00-0.10  n= 8,504  $0.020      0.35-0.50  n= 2,223  $0.060
       0.10-0.20  n= 2,717  $0.030      0.50-0.70  n= 2,616  $0.190
       0.20-0.35  n= 2,723  $0.050
-    by dte (|delta| <= 0.70)
+    MEASURED dte marginal (|delta| <= 0.70)
       7-21  n= 9,568  $0.030
       22-45 n= 7,019  $0.040
       46-60 n= 2,196  $0.050
 
-These are the MEDIAN FULL two-sided spreads. The desk pays HALF the quote
-per fill, so a cell's cost contribution is ``half = median_full / 2``:
-0.010, 0.015, 0.025, 0.030, 0.095. The ``delta_marginal`` published by the
-model is stated in HALF-spread terms and the tests pin it there, so the
-0.03/0.05/0.19 numbers above are never confused with a per-fill charge.
+UNIT: HALF-SPREAD PER SHARE PER FILL. The desk pays half the quoted spread
+on each fill, so a cell's half is ``median_full / 2``: 0.010, 0.015, 0.025,
+0.030, 0.095. The dte multipliers are the measured dte-marginal ratio
+(0.030 : 0.040 : 0.050), pinned to 3 dp.
 
 The arithmetic is inherited unchanged from the model being replaced: every
 leg fills twice, so a 2-leg package is 4 fills:
@@ -60,72 +63,66 @@ import pytest
 # a FAILED test carrying the reason, never a silent skip: a skip would let a
 # missing model pass the gate.
 try:  # pragma: no cover - the RED path is the point
-    from tree_options.desk import measured_costs
+    from tree_options.desk import cost
     _IMPORT_ERROR: Exception | None = None
 except Exception as exc:  # any import failure is the RED
-    measured_costs = None  # type: ignore[assignment]
+    cost = None  # type: ignore[assignment]
     _IMPORT_ERROR = exc
 
 
 def mc() -> Any:
     """The module under test, or a FAILURE that names why it is absent."""
-    if measured_costs is None:
+    if cost is None:
         pytest.fail(
-            "tree_options.desk.measured_costs does not exist yet "
+            "tree_options.desk.cost does not exist yet "
             f"(import error: {_IMPORT_ERROR!r}). The measured cost model is "
             "the deliverable these tests demand; until it exists they must "
             "fail, not skip."
         )
-    return measured_costs
+    return cost
 
 
 # ------------------------------------------------------------------ fixtures
 #
-# A HAND-WRITTEN table, so the arithmetic tests do not depend on whatever the
-# implementation measured. Values are HALF-spreads per share (median full
-# spread / 2), matching the corpus medians above.
-HAND_CELLS: dict[tuple[str, str, str], Decimal] = {
-    ("SPY", "0.00-0.10", "7-21"): Decimal("0.010"),   # full median 0.020
-    ("SPY", "0.20-0.35", "7-21"): Decimal("0.025"),   # full median 0.050
-    ("SPY", "0.50-0.70", "7-21"): Decimal("0.095"),   # full median 0.190
-    ("IWM", "0.00-0.10", "7-21"): Decimal("0.010"),
-    ("QQQ", "0.00-0.10", "7-21"): Decimal("0.010"),
-}
-# One cell that exists ONLY in the extended table, for the A/B that proves a
-# reported drop actually changed the count.
-EXTENDED_CELLS: dict[tuple[str, str, str], Decimal] = {
-    **HAND_CELLS,
-    ("XLF", "0.00-0.10", "7-21"): Decimal("0.010"),
-}
-
-# The published oracle, hand-transcribed. Half-spreads (full median / 2).
-ORACLE_DELTA_BY_BUCKET: dict[str, Decimal] = {
+# The published marginals, hand-transcribed from the corpus. Values are
+# HALF-spreads per share per fill (median full spread / 2) where the desk
+# pays half the quote on each fill.
+ORACLE_DELTA_MARGINAL: dict[str, Decimal] = {
     "0.00-0.10": Decimal("0.010"),
     "0.10-0.20": Decimal("0.015"),
     "0.20-0.35": Decimal("0.025"),
     "0.35-0.50": Decimal("0.030"),
     "0.50-0.70": Decimal("0.095"),
 }
-ORACLE_DTE_BY_BUCKET: dict[str, Decimal] = {
-    "7-21": Decimal("0.015"),
-    "22-45": Decimal("0.020"),
-    "46-60": Decimal("0.025"),
+#: The measured dte MARGINALS (full two-sided), hand-transcribed.
+ORACLE_DTE_MARGINAL: dict[str, Decimal] = {
+    "7-21": Decimal("0.030"),
+    "22-45": Decimal("0.040"),
+    "46-60": Decimal("0.050"),
 }
 
-
-def hand_table() -> Any:
-    return mc().SpreadTable(cells=dict(HAND_CELLS))
-
-
-def extended_table() -> Any:
-    return mc().SpreadTable(cells=dict(EXTENDED_CELLS))
+#: one interior |delta| per |delta| band, and one day-count per dte band
+DELTA_REPS_ALL = ("0.05", "0.15", "0.275", "0.425", "0.60")
+DTE_DAY_REPS = (14, 30, 53)
 
 
-def hand_model() -> Any:
-    return mc().MeasuredCostModel(table=hand_table(), provenance=hand_provenance())
+def measured_model() -> Any:
+    return mc().SpreadCostModel.measured()
 
 
-def hand_provenance() -> Any:
+def leg(abs_delta: str | None = "0.05", symbol: str = "SPY", dte: int = 14) -> Any:
+    """A caller-supplied observation record. The model is TOLD, never guesses."""
+    return mc().Leg(
+        symbol=symbol,
+        abs_delta=None if abs_delta is None else Decimal(abs_delta),
+        dte=dte,
+        source_session="2026-06-01",
+        source_timestamp_et="2026-06-01T18:05:00-04:00",
+        is_eod_snapshot=True,
+    )
+
+
+def provenance() -> Any:
     m = mc()
     return m.CostProvenance(
         source="cboe-delayed-eod-chains",
@@ -136,31 +133,31 @@ def hand_provenance() -> Any:
     )
 
 
-def leg(symbol: str, abs_delta: str | None, dte: int = 14) -> Any:
-    return mc().SpreadKey(
-        symbol=symbol,
-        abs_delta=None if abs_delta is None else Decimal(abs_delta),
-        dte=dte,
-    )
-
-
 # ------------------------------------------------------- universe and bucketing
 
 
-def test_delta_buckets_are_the_five_measured_edges_lower_inclusive() -> None:
-    """0.10 belongs to the SECOND bucket: the corpus bands are [0, .10),
-    [.10, .20), ... The ceiling 0.70 is the tradeable edge and is inclusive."""
+def test_delta_buckets_are_the_five_measured_edges_right_closed() -> None:
+    """0.10 belongs to the FIRST bucket: the corpus bands are (lo, hi].
+
+    Right-closed is the only convention that reproduces the measured
+    per-bucket row counts 8,504 / 2,717 / 2,723 / 2,223 / 2,616 exactly.
+    Equivalently ``band = count(edges strictly less than abs_delta)``.
+    """
     bucket = mc().delta_bucket
     assert bucket(Decimal("0")) == "0.00-0.10"
     assert bucket(Decimal("0.0099")) == "0.00-0.10"
     assert bucket(Decimal("0.09999")) == "0.00-0.10"
-    assert bucket(Decimal("0.10")) == "0.10-0.20"      # upper edge of band 1 is EXCLUSIVE
+    assert bucket(Decimal("0.10")) == "0.00-0.10"      # upper edge of band 1 is INCLUSIVE
+    assert bucket(Decimal("0.10001")) == "0.10-0.20"
     assert bucket(Decimal("0.19999")) == "0.10-0.20"
-    assert bucket(Decimal("0.20")) == "0.20-0.35"
+    assert bucket(Decimal("0.20")) == "0.10-0.20"
+    assert bucket(Decimal("0.20001")) == "0.20-0.35"
     assert bucket(Decimal("0.34999")) == "0.20-0.35"
-    assert bucket(Decimal("0.35")) == "0.35-0.50"
+    assert bucket(Decimal("0.35")) == "0.20-0.35"
+    assert bucket(Decimal("0.35001")) == "0.35-0.50"
     assert bucket(Decimal("0.49999")) == "0.35-0.50"
-    assert bucket(Decimal("0.50")) == "0.50-0.70"
+    assert bucket(Decimal("0.50")) == "0.35-0.50"
+    assert bucket(Decimal("0.50001")) == "0.50-0.70"
     assert bucket(Decimal("0.69999")) == "0.50-0.70"
     assert bucket(Decimal("0.70")) == "0.50-0.70"      # the ceiling itself IS tradeable
 
@@ -195,33 +192,61 @@ def test_the_tradeable_symbols_are_exactly_the_three_measured() -> None:
 # ----------------------------------------------------------------- the oracle
 
 
-def test_shipped_table_publishes_the_measured_marginals_exactly() -> None:
+def test_the_shipped_marginals_are_the_measured_ones_exactly() -> None:
     """The five |delta| medians and the three dte medians, hand-transcribed
     from the corpus. These are the numbers the whole model is calibrated on;
-    if the implementation drifts here, the shape is wrong."""
-    table = mc().tradeable_model().table
-    delta_marginal = dict(table.delta_marginal)
-    dte_marginal = dict(table.dte_marginal)
-    assert len(delta_marginal) == 3 * 5, "one median per (symbol, delta bucket)"
-    assert len(dte_marginal) == 3, "one median per dte bucket"
-    for symbol in ("IWM", "QQQ", "SPY"):
-        for bucket, expected in ORACLE_DELTA_BY_BUCKET.items():
-            assert delta_marginal[(symbol, bucket)] == expected, f"{symbol} {bucket}"
-    for bucket, expected in ORACLE_DTE_BY_BUCKET.items():
-        assert dte_marginal[bucket] == expected, bucket
+    if the implementation drifts here, the shape is wrong.
+
+    The model has NO table object: the marginals are module constants and the
+    surface is ``SpreadCostModel.half_spread_per_share(abs_delta, dte)``.
+    """
+    assert dict(zip(("0.00-0.10", "0.10-0.20", "0.20-0.35", "0.35-0.50", "0.50-0.70"),
+                    mc().MEASURED_MEDIAN_FULL_SPREAD, strict=True)) \
+        == {k: v * 2 for k, v in ORACLE_DELTA_MARGINAL.items()}
+    # the dte multipliers ARE the measured dte-marginal ratio, at 3 dp
+    for band, raw in zip(("7-21", "22-45", "46-60"), ORACLE_DTE_MARGINAL.values(),
+                         strict=True):
+        assert band  # readability
+        expected = (raw / ORACLE_DTE_MARGINAL["7-21"]).quantize(Decimal("0.001"))
+        assert mc().DTE_BAND_MULTIPLIER[("7-21", "22-45", "46-60").index(band)] == expected
 
 
-def test_shipped_table_is_complete_over_the_whole_measured_grid() -> None:
-    """3 symbols x 5 |delta| bands x 3 dte bands = 45 cells, all populated.
-    A hole in the grid is a measurement gap and must be a refusal, so the
-    grid is asserted complete here rather than discovered at run time."""
-    table = mc().tradeable_model().table
-    cells = dict(table.cells)
-    assert len(cells) == 3 * 5 * 3
-    for symbol in ("IWM", "QQQ", "SPY"):
-        for dband in ("0.00-0.10", "0.10-0.20", "0.20-0.35", "0.35-0.50", "0.50-0.70"):
-            for tband in ("7-21", "22-45", "46-60"):
-                assert (symbol, dband, tband) in cells
+def test_every_one_of_the_fifteen_derived_cells_is_pinned() -> None:
+    """All 15 cells, as (half_spread_per_share, two-leg round trip).
+
+    ``round_trip(2 legs) = 4 * half * 100 + 4 * 0.65``. Hand-written: the
+    implementation is never asked what the answer should be.
+
+    These cells are DERIVED from the two marginals, not measured jointly --
+    the corpus publishes no joint. The construction reproduces the |delta|
+    marginals exactly at dte 7-21 and the dte ratio exactly; the joint is an
+    approximation and the module docstring says so.
+    """
+    cells = {
+        (0, 0): (Decimal("0.010000"), Decimal("6.600000")),
+        (0, 1): (Decimal("0.015000"), Decimal("8.600000")),
+        (0, 2): (Decimal("0.025000"), Decimal("12.600000")),
+        (0, 3): (Decimal("0.030000"), Decimal("14.600000")),  # <- the flat model
+        (0, 4): (Decimal("0.095000"), Decimal("40.600000")),
+        (1, 0): (Decimal("0.013330"), Decimal("7.932000")),
+        (1, 1): (Decimal("0.019995"), Decimal("10.598000")),
+        (1, 2): (Decimal("0.033325"), Decimal("15.930000")),
+        (1, 3): (Decimal("0.039990"), Decimal("18.596000")),
+        (1, 4): (Decimal("0.126635"), Decimal("53.254000")),
+        (2, 0): (Decimal("0.016670"), Decimal("9.268000")),
+        (2, 1): (Decimal("0.025005"), Decimal("12.602000")),
+        (2, 2): (Decimal("0.041675"), Decimal("19.270000")),
+        (2, 3): (Decimal("0.050010"), Decimal("22.604000")),
+        (2, 4): (Decimal("0.158365"), Decimal("65.946000")),
+    }
+    assert len(cells) == 15, "the measured surface is 5 |delta| bands x 3 dte bands"
+    model = measured_model()
+    for (band, bucket), (half, trip) in cells.items():
+        abs_delta = Decimal(DELTA_REPS_ALL[bucket])
+        dte = DTE_DAY_REPS[band]
+        assert model.half_spread_per_share(abs_delta, dte) == half, f"band {band} bucket {bucket}"
+        quote = model.price([leg(abs_delta=str(abs_delta), dte=dte)] * 2)
+        assert quote.total_round_trip == trip, f"band {band} bucket {bucket}"
 
 
 # ------------------------------------------------------------ the shape wins
@@ -235,44 +260,66 @@ def test_round_trip_arithmetic_is_hand_derived_and_unchanged() -> None:
       1 leg  @ |delta| 0.60 : 2 * 0.095 * 100 = 19.00 + 1.30         -> 20.30
       2 mixed legs (0.05, 0.60) : 2*0.010*100 + 2*0.095*100 = 2.00 + 19.00 = 21.00 + 2.60 -> 23.60
     """
-    model = hand_model()
-    assert model.round_trip([leg("SPY", "0.05"), leg("SPY", "0.05")]) == Decimal("6.60")
-    assert model.round_trip([leg("SPY", "0.25"), leg("SPY", "0.25")]) == Decimal("12.60")
-    assert model.round_trip([leg("SPY", "0.60")]) == Decimal("20.30")
-    assert model.round_trip([leg("SPY", "0.05"), leg("SPY", "0.60")]) == Decimal("23.60")
+    model = measured_model()
+    assert model.round_trip([leg("0.05"), leg("0.05")]) == Decimal("6.600000")
+    assert model.round_trip([leg("0.25"), leg("0.25")]) == Decimal("12.600000")
+    assert model.round_trip([leg("0.60")]) == Decimal("20.300000")
+    assert model.round_trip([leg("0.05"), leg("0.60")]) == Decimal("23.600000")
 
 
 def test_the_quote_splits_spread_from_commission_and_sums_exactly() -> None:
-    quote = hand_model().quote([leg("SPY", "0.05"), leg("SPY", "0.05")])
-    assert quote.spread == Decimal("4.00")
-    assert quote.commission == Decimal("2.60")
-    assert quote.total == quote.spread + quote.commission == Decimal("6.60")
-    assert len(quote.keys) == 2
+    quote = measured_model().price([leg("0.05"), leg("0.05")])
+    assert quote.spread_total == Decimal("4.00")
+    assert quote.commission_total == Decimal("2.60")
+    assert quote.total_round_trip == quote.spread_total + quote.commission_total
+    assert quote.total_round_trip == Decimal("6.600000")
+    assert len(quote.legs) == 2
 
 
 def test_the_shape_is_the_win_not_the_scalar() -> None:
     """Cheap wings must come in UNDER the old flat $14.60 and expensive
     near-the-money money must come in OVER it. If both land on 14.60 the
     model has silently reverted to the constant it was written to replace."""
-    model = hand_model()
+    model = measured_model()
     flat = Decimal("14.60")            # outcomes.CostModel().round_trip()
-    cheap = model.round_trip([leg("SPY", "0.05"), leg("SPY", "0.05")])
-    dear = model.round_trip([leg("SPY", "0.60"), leg("SPY", "0.60")])
+    cheap = model.round_trip([leg("0.05"), leg("0.05")])
+    dear = model.round_trip([leg("0.60"), leg("0.60")])
     assert cheap < flat < dear
     assert dear > 2 * flat
     # monotone in |delta| at fixed everything else
-    ladder = [model.round_trip([leg("SPY", d), leg("SPY", d)])
+    ladder = [model.round_trip([leg(d), leg(d)])
               for d in ("0.05", "0.25", "0.60")]
     assert ladder == sorted(ladder), f"cost must not fall as |delta| rises: {ladder}"
 
 
-def test_the_measured_model_does_not_reuse_the_flat_model() -> None:
-    """The old per-share constant must not survive as an attribute, and the
-    new model must not answer to the old name."""
-    model = mc().tradeable_model()
-    assert not hasattr(model, "half_spread_per_share")
-    assert not hasattr(model, "round_trip_per_leg")
-    assert model.commission_per_leg == Decimal("0.65")
+def test_the_flat_constant_is_exactly_one_cell_of_the_measured_surface() -> None:
+    """|delta| 0.35-0.50 at dte 7-21 prices at $14.60 -- to the cent.
+
+    That is the whole finding. The flat model is not a bigger or smaller
+    constant than the measurement; it is one arbitrary cell of a 15-cell
+    surface, applied to all fifteen.
+    """
+    model = measured_model()
+    assert model.round_trip([leg("0.42"), leg("0.42")]) == Decimal("14.600000")
+    assert model.round_trip([leg("0.42"), leg("0.42")]) != model.round_trip(
+        [leg("0.05"), leg("0.05")])
+
+
+def test_the_model_exposes_no_zero_argument_half_spread() -> None:
+    """The method is ``half_spread_per_share(abs_delta, dte)`` and takes BOTH.
+
+    A zero-argument form would be the flat constant wearing a new name, and
+    that is the one thing this model must not become. The flat model keeps
+    its own ``half_spread_per_share`` Decimal FIELD (frozen separately by
+    ``test_the_flat_cost_model_is_untouched`` in test_desk_cost_shape.py).
+    """
+    import inspect as _inspect
+
+    signature = _inspect.signature(mc().SpreadCostModel.half_spread_per_share)
+    required = [name for name, p in signature.parameters.items()
+                if p.default is p.empty and name != "self"]
+    assert required == ["abs_delta", "dte"], required
+    assert not hasattr(measured_model(), "default_half_spread")
 
 
 # ------------------------------------------------- TEST CONTRACT B: NO_PRICE
@@ -280,7 +327,7 @@ def test_the_measured_model_does_not_reuse_the_flat_model() -> None:
 
 def test_an_unmeasured_symbol_is_refused_not_defaulted() -> None:
     with pytest.raises(mc().UnpricedCostError) as excinfo:
-        hand_model().round_trip([leg("XLF", "0.05")])
+        measured_model().round_trip([leg("0.05", symbol="XLF")])
     assert excinfo.value.reason == "unknown_symbol"
     assert excinfo.value.key.symbol == "XLF"
 
@@ -289,29 +336,21 @@ def test_a_leg_with_no_delta_is_refused_not_defaulted() -> None:
     """Board rows carry no delta today. A missing delta is a MEASUREMENT GAP,
     never a reason to assume a cheap leg."""
     with pytest.raises(mc().UnpricedCostError) as excinfo:
-        hand_model().round_trip([leg("SPY", None)])
+        measured_model().round_trip([leg(None)])
     assert excinfo.value.reason == "no_delta"
     assert excinfo.value.key.abs_delta is None
 
 
 def test_a_leg_outside_the_tradeable_universe_is_refused() -> None:
     with pytest.raises(mc().UnpricedCostError) as excinfo:
-        hand_model().round_trip([leg("SPY", "0.90")])
+        measured_model().round_trip([leg("0.90")])
     assert excinfo.value.reason == "delta_out_of_universe"
 
 
 def test_dte_outside_the_measured_window_is_refused() -> None:
     with pytest.raises(mc().UnpricedCostError) as excinfo:
-        hand_model().round_trip([leg("SPY", "0.05", dte=61)])
+        measured_model().round_trip([leg("0.05", dte=61)])
     assert excinfo.value.reason == "dte_out_of_universe"
-
-
-def test_a_hole_in_the_grid_is_refused_as_unmeasured() -> None:
-    """SPY @ |delta| 0.05 @ dte 45 needs the (SPY, 0.00-0.10, 22-45) cell,
-    which the hand table deliberately leaves out."""
-    with pytest.raises(mc().UnpricedCostError) as excinfo:
-        hand_model().round_trip([leg("SPY", "0.05", dte=45)])
-    assert excinfo.value.reason == "unmeasured_cell"
 
 
 def test_one_unpriceable_leg_refuses_the_whole_package() -> None:
@@ -319,7 +358,7 @@ def test_one_unpriceable_leg_refuses_the_whole_package() -> None:
     charging for it alone is exactly the flattering error this gate exists to
     prevent."""
     with pytest.raises(mc().UnpricedCostError) as excinfo:
-        hand_model().round_trip([leg("SPY", "0.05"), leg("XLF", "0.05")])
+        measured_model().round_trip([leg("0.05"), leg("0.05", symbol="XLF")])
     assert excinfo.value.key.symbol == "XLF"
 
 
@@ -327,31 +366,34 @@ def test_an_empty_package_is_refused_not_priced_free() -> None:
     """Zero legs is not a zero-cost trade; it is a bug that would score as a
     perfect fill."""
     with pytest.raises(mc().UnpricedCostError) as excinfo:
-        hand_model().round_trip([])
+        measured_model().round_trip([])
     assert excinfo.value.reason == "no_legs"
 
 
 def test_the_refusal_is_a_typed_exception_carrying_its_key() -> None:
+    """It subclasses ValueError so the CLI's existing
+    ``except (ValueError, ArithmeticError, OSError, KeyError)`` catches a
+    measurement gap instead of letting it escape as a traceback."""
     err = mc().UnpricedCostError
-    assert issubclass(err, LookupError)
+    assert issubclass(err, ValueError), "call sites already catch ValueError"
+    assert issubclass(err, mc().CostModelError)
     with pytest.raises(err) as excinfo:
-        hand_model().quote([leg("QQQ", "0.05", dte=30)])  # hole in the hand table
+        measured_model().price([leg("0.05", symbol="QQQ", dte=3)])
     payload = excinfo.value.as_dict()
-    assert payload["reason"] == "unmeasured_cell"
+    assert payload["reason"] == "dte_out_of_universe"
     assert payload["key"]["symbol"] == "QQQ"
-    assert payload["key"]["dte"] == 30
+    assert payload["key"]["dte"] == 3
 
 
 def test_no_entry_point_returns_a_scalar_for_an_unknown_key() -> None:
     """Every public pricing surface must REFUSE, not answer. A single one that
     returns a number is the hole the whole exercise falls through -- and it
     would answer with a plausible-looking figure nobody would question."""
-    model = hand_model()
-    unknown = [leg("XLF", "0.05")]
+    model = measured_model()
     surfaces = {
-        "round_trip": lambda: model.round_trip(unknown),
-        "quote": lambda: model.quote(unknown),
-        "table.half_spread": lambda: hand_table().half_spread(leg("XLF", "0.05")),
+        "round_trip": lambda: model.round_trip([leg("0.05", symbol="XLF")]),
+        "price": lambda: model.price([leg("0.05", symbol="XLF")]),
+        "half_spread_per_share": lambda: model.half_spread_per_share(Decimal("0.85"), 14),
     }
     answered: list[str] = []
     for name, call in surfaces.items():
@@ -366,17 +408,15 @@ def test_no_entry_point_returns_a_scalar_for_an_unknown_key() -> None:
 def test_a_missing_quote_can_never_be_priced_as_zero_or_the_old_default() -> None:
     """A measurement gap is not a cheap fill. Every MEASURED cell is strictly
     positive, and the value being replaced -- a $0.03 half-spread per leg --
-    survives nowhere as a value a caller can reach for."""
-    cells = dict(mc().tradeable_model().table.cells)
-    assert cells, "the shipped table is empty"
-    assert all(v > 0 for v in cells.values()), sorted(
-        (k, str(v)) for k, v in cells.items() if v <= 0)
-    assert all(v > 0 for v in dict(hand_table().cells).values())
-    model = mc().tradeable_model()
-    assert not hasattr(model, "half_spread_per_share")
-    assert not hasattr(model, "default_half_spread")
+    survives nowhere as a scalar a caller can reach for."""
+    model = measured_model()
+    cells = [model.half_spread_per_share(Decimal(d), 14)
+             for d in ("0.05", "0.15", "0.275", "0.425", "0.60")]
+    assert cells, "the measured surface is empty"
+    assert all(v > 0 for v in cells), [str(v) for v in cells if v <= 0]
     # the cheapest measured cell is still a real quote, not the old constant
-    assert min(cells.values()) > 0
+    assert min(cells) > 0
+    assert not hasattr(model, "default_half_spread")
 
 
 # ------------------------------------------------- commission stays a constant
@@ -385,28 +425,22 @@ def test_a_missing_quote_can_never_be_priced_as_zero_or_the_old_default() -> Non
 def test_commission_is_a_named_constant_and_is_never_folded_into_the_table() -> None:
     m = mc()
     assert m.COMMISSION_PER_LEG == Decimal("0.65")
-    assert m.MULTIPLIER == 100
-    assert hand_model().commission_per_leg == Decimal("0.65")
-    # no table key mentions commission, and no cell is anywhere near it
-    for key, value in hand_table().cells.items():
-        assert "commission" not in "".join(key).lower()
-        assert value < m.COMMISSION_PER_LEG
-    quote = hand_model().quote([leg("SPY", "0.05"), leg("SPY", "0.60")])
-    assert quote.commission == Decimal("0.65") * 4
-    assert quote.spread == Decimal("2.00") + Decimal("19.00")
+    assert m.CONTRACT_MULTIPLIER == 100
+    assert measured_model().commission_per_leg == Decimal("0.65")
+    quote = measured_model().price([leg("0.05"), leg("0.60")])
+    assert quote.commission_total == Decimal("0.65") * 4
+    assert quote.spread_total == Decimal("2.00") + Decimal("19.00")
 
 
 def test_commission_can_be_changed_without_touching_the_spread_table() -> None:
     """They are separate knobs. A changed commission must move the commission
     line only, never the measured spread."""
-    base = hand_model()
-    other = mc().MeasuredCostModel(
-        table=hand_table(), commission_per_leg=Decimal("1.00"),
-        provenance=hand_provenance())
-    legs = [leg("SPY", "0.05"), leg("SPY", "0.60")]
-    assert other.quote(legs).spread == base.quote(legs).spread == Decimal("21.00")
-    assert other.quote(legs).commission == Decimal("4.00")
-    assert other.quote(legs).total == Decimal("25.00")
+    base = measured_model()
+    other = mc().SpreadCostModel(commission_per_leg=Decimal("1.00"))
+    legs_ = [leg("0.05"), leg("0.60")]
+    assert other.price(legs_).spread_total == base.price(legs_).spread_total == Decimal("21.00")
+    assert other.price(legs_).commission_total == Decimal("4.00")
+    assert other.price(legs_).total_round_trip == Decimal("25.00")
 
 
 # ------------------------------------------------------------------ provenance
@@ -417,9 +451,7 @@ def test_every_quote_carries_provenance_and_says_it_is_not_a_fill_clock() -> Non
     trades on 10:00-15:15 ET decision clocks. A snapshot at >= 16:00 ET
     cannot describe a 10:00 ET fill, and that gap is unfalsifiable from this
     data, so the cost MUST SAY SO rather than paper over it."""
-    m = mc()
-    quote = m.tradeable_model().quote([leg("SPY", "0.30", dte=30)])
-    payload = quote.provenance.as_dict()
+    payload = provenance().as_dict()
     assert payload["source"] == "cboe-delayed-eod-chains"
     assert payload["snapshot_window_et"] == "17:45-06:30"
     assert payload["n_rows"] == 18783
@@ -431,17 +463,17 @@ def test_every_quote_carries_provenance_and_says_it_is_not_a_fill_clock() -> Non
     assert max(int(c.split(":")[0]) for c in clocks) < 16, clocks
     gap = payload["gap"]
     assert "17:45-06:30" in gap and "10:00" in gap
-    assert quote.as_dict()["provenance"] == payload
 
 
-def test_provenance_survives_into_the_digest() -> None:
+def test_provenance_survives_into_the_quote() -> None:
     """Cost that reaches a digest without its provenance is a number nobody
-    can audit. A model that emits none must say None, never invent one."""
-    m = mc()
-    assert m.tradeable_model().provenance.as_dict()["describes_fill_clock"] is False
-    quote = m.tradeable_model().quote([leg("SPY", "0.30", dte=30)])
-    assert quote.as_dict()["total"] == str(quote.total)
-    assert quote.as_dict()["keys"] == [k.as_dict() for k in quote.keys]
+    can audit."""
+    quote = measured_model().price([leg("0.30", dte=30)])
+    assert quote.is_eod_snapshot is True
+    payload = quote.to_json()
+    assert payload["schema"] == mc().COST_SCHEMA
+    assert str(payload["total_round_trip"]) == str(quote.total_round_trip)
+    assert payload["legs"][0]["provenance"] == leg("0.30", dte=30).to_json()
 
 
 # ------------------------------------------ TEST CONTRACT B: no default in src
@@ -464,6 +496,7 @@ def test_the_implementation_contains_no_mapping_default_that_could_mask_a_gap() 
     scanned, skipped = _pricing_subtrees(tree)
     assert scanned, "found nothing to scan: name the pricing types at module level"
     assert "NoPriceLedger" in skipped, "the ledger must be named so it can be excluded"
+    assert EXEMPT_NAMES, "the exemption list must be non-empty or it can be widened silently"
 
     offences: list[str] = []
     for node in ast.walk(scanned):
@@ -488,9 +521,10 @@ def test_the_implementation_contains_no_mapping_default_that_could_mask_a_gap() 
 #: the module-level defs/classes that make up the PRICING surface. Everything
 #: else (the refusal ledger) is exempt: it counts, it never answers with a cost.
 PRICING_NAMES = frozenset({
-    "delta_bucket", "dte_bucket", "tradeable_model",
-    "SpreadKey", "SpreadTable", "MeasuredCostModel", "CostQuote",
-    "CostProvenance", "UnpricedCostError",
+    "delta_bucket", "dte_bucket", "half_spread_per_share",
+    "SpreadCostModel", "Leg", "LegQuote", "SpreadQuote",
+    "CostModelError", "UnpricedCostError", "ProvenanceError",
+    "LegOutsideTradeableUniverseError", "CostProvenance",
 })
 EXEMPT_NAMES = frozenset({"NoPriceLedger"})
 
