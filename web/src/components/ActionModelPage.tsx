@@ -4,6 +4,7 @@ import type { ActionNode, LabScoreboard, LongRunDigest, LongRunPaired, Supervise
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
 import { AccountExposureBanner } from './AccountExposureBanner'
+import { TableScroll } from './TableScroll'
 
 function NodeInspector({ node }: { node: ActionNode }) {
   return (
@@ -129,8 +130,8 @@ function AutomationCard() {
             <button type="button" onClick={() => control('flatten')} disabled={busy !== null}>FLATTEN</button>{' '}
             <button type="button" onClick={() => control('resume')} disabled={busy !== null}>Resume</button>
           </p>
-          <div className="table-scroll">
-            <table>
+          <TableScroll label="Automation timer columns">
+            <table className="retain-row-identity">
               <thead>
                 <tr><th scope="col">Timer</th><th scope="col">State</th><th scope="col">Next fire</th><th scope="col">Last run</th><th scope="col">Controls</th></tr>
               </thead>
@@ -151,7 +152,7 @@ function AutomationCard() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
         </>
       )}
     </section>
@@ -225,8 +226,8 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
       <p data-testid="longrun-random-band">Random picker at the incumbent's entry rate ({(rn.p_enter * 100).toFixed(1)}%, {rn.seeds} seeds on the same boards): expected {money(rn.expected_total)} {ciText(rn.expected_ci95)} · 95% null band {ciText(rn.band95)}</p>
       <p className="muted">Legacy incumbent comparison is descriptive; own-rate evidence is shown separately. Neither grants execution authority.</p>
       <p className="muted">{digest.boards.scored} of {digest.boards.total} boards scored ({digest.boards.excluded} excluded for a missing or failed decision in some arm) · {digest.boards.sessions.count} sessions. Totals are net modeled dollars with session-bootstrap 95% ranges.</p>
-      <div className="table-scroll">
-        <table>
+      <TableScroll label="Long-run standings columns">
+        <table className="retain-row-identity">
           <thead>
             <tr><th scope="col">Arm</th><th scope="col">Kind</th><th scope="col">Entered</th><th scope="col">Failed</th><th scope="col">Net total [95% CI]</th><th scope="col">vs random (own entry rate)</th><th scope="col">vs random (legacy incumbent)</th><th scope="col">vs incumbent</th><th scope="col">vs bullish regime</th></tr>
           </thead>
@@ -258,7 +259,7 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
             ) : null)}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
       {wf.status === 'ok'
         ? <p>Walk-forward (cutoff {wf.cutoff}, {wf.tune_sessions} tune / {wf.test_sessions} test sessions, at most {wf.max_finalists} finalists{currentContract ? ' tested once under the registered protocol' : '; descriptive reconstruction'}): {wf.finalists.length === 0 ? 'no finalists.' : wf.finalists.map(finalistText).join('; ')}</p>
         : <p className="muted">Walk-forward not applicable{wf.reason ? ` — ${wf.reason}` : ''}.</p>}

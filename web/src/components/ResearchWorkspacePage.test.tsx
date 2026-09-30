@@ -37,7 +37,9 @@ it('queues a bounded assignment with an explicit synthetic data label', async ()
   fireEvent.click(screen.getByRole('button', {name: 'Assign research'}))
   await waitFor(() => expect(api.assignResearch).toHaveBeenCalledWith(expect.objectContaining({dataset_id: 'fixture', capital: '50000', strategy_id: 'momentum_12_1', max_candidates: 8, reflect_glm53: false})))
   expect(api.proposePaperDeployment).not.toHaveBeenCalled()
-  expect(screen.getByText(/SYNTHETIC BACKTEST/)).toBeTruthy()
+  const evidenceLabel = screen.getByText('SYNTHETIC BACKTEST', {selector: 'strong'})
+  expect(evidenceLabel.closest('p')?.textContent).toContain('Machinery fixture')
+  expect(screen.getByLabelText('Frozen dataset').getAttribute('aria-describedby')).toBe(evidenceLabel.closest('p')?.id)
 })
 
 it('retains the requested 29 sleeve plan and separate capital scales', async () => {

@@ -3,6 +3,7 @@ import { usePoll } from '../hooks/usePoll'
 import * as api from '../lib/workspaceApi'
 import type { PaperAccount, PaperAllocation, PaperDeployment, ResearchDataset, ResearchJob } from '../lib/workspaceTypes'
 import { AppShell } from './AppShell'
+import { TableScroll } from './TableScroll'
 
 const usd = (value: string) => Number(value).toLocaleString('en-US', {style: 'currency', currency: 'USD', maximumFractionDigits: 0})
 const percent = (value?: string | null) => value != null && Number.isFinite(Number(value)) ? `${(Number(value) * 100).toFixed(2)}%` : 'Unavailable'
@@ -117,7 +118,7 @@ export function ResearchWorkspacePage() {
         }}>
           <label>Research hypothesis<textarea required minLength={8} maxLength={2000} value={hypothesis} onChange={e => setHypothesis(e.target.value)} placeholder="Does 12-minus-1 momentum beat equal weight after costs on a protected holdout?" /></label>
           <div className="workspace-fields">
-            <label>Frozen dataset<select required value={dataset} onChange={e => setDataset(e.target.value)}>
+            <label>Frozen dataset<select aria-describedby="workspace-selected-dataset" required value={dataset} onChange={e => setDataset(e.target.value)}>
               <option value="">Choose a dataset</option>
               {data?.datasets.map(d => <option key={d.dataset_id} value={d.dataset_id}>{d.label} · {d.data_class === 'synthetic_fixture' ? 'SYNTHETIC BACKTEST' : 'UNQUALIFIED DATA'}</option>)}
             </select></label>
@@ -131,6 +132,9 @@ export function ResearchWorkspacePage() {
             <label>Candidate budget<input type="number" min={2} max={32} required value={candidates} onChange={e => setCandidates(Number(e.target.value))} /></label>
             <label>Reflection generations<input type="number" min={0} max={4} required value={generations} onChange={e => setGenerations(Number(e.target.value))} /></label>
           </div>
+          <p id="workspace-selected-dataset">{selectedDataset
+            ? <><strong>{selectedDataset.data_class === 'synthetic_fixture' ? 'SYNTHETIC BACKTEST' : 'UNQUALIFIED DATA'}</strong> · {selectedDataset.label}</>
+            : 'Select a frozen dataset to see its evidence class.'}</p>
           <label className="workspace-check"><input type="checkbox" checked={reflect} onChange={e => setReflect(e.target.checked)} />Use bounded GLM-5.3 research reflection (provider calls)</label>
           {selectedDataset?.splits && <p>Frozen decision windows: {Object.entries(selectedDataset.splits).map(([name, split]) => `${name}: ${split.decision_start} to ${split.decision_end} (${split.period_count} periods)`).join(' · ')} · {selectedDataset.universe_count} universe members.</p>}
           <p>Costs and portfolio mechanics are fixed by the registered protocol. Current campaigns model independent next-session roundtrips; they do not establish a persistent portfolio return.</p>
@@ -156,10 +160,10 @@ export function ResearchWorkspacePage() {
           <p>Evidence remains research; no trading authority is granted.</p>
           <p>{detail.job.data_class === 'synthetic_fixture' ? 'SYNTHETIC BACKTEST' : 'UNQUALIFIED BACKTEST'} · <span>{recordedResult?.disposition ?? detail.job.status}</span></p>
           {recordedResult?.winner && <p>Selected research candidate: {recordedResult.winner.strategy_id}</p>}
-          {recordedResult?.holdout && <div className="table-scroll"><table aria-label="Recorded control comparison"><thead><tr><th>Held-out comparison</th><th>Mean net per roundtrip</th><th>Modeled fees (USD)</th><th>Periods</th></tr></thead><tbody>
+          {recordedResult?.holdout && <TableScroll label="Research comparison columns"><table className="retain-row-identity" aria-label="Recorded control comparison"><thead><tr><th>Held-out comparison</th><th>Modeled mean net per roundtrip</th><th>Modeled fees (USD)</th><th>Periods</th></tr></thead><tbody>
             <tr><td>Candidate</td><td>{percent(recordedResult.holdout.candidate?.mean_net_return)}</td><td>{recordedResult.holdout.candidate?.fees ?? 'Unavailable'}</td><td>{recordedResult.holdout.candidate?.period_count ?? 'Unavailable'}</td></tr>
             <tr><td>Control</td><td>{percent(recordedResult.holdout.control?.mean_net_return)}</td><td>{recordedResult.holdout.control?.fees ?? 'Unavailable'}</td><td>{recordedResult.holdout.control?.period_count ?? 'Unavailable'}</td></tr>
-          </tbody></table></div>}
+          </tbody></table></TableScroll>}
           <p>These independent modeled roundtrips do not establish a persistent portfolio return or exact broker P&amp;L.</p>
           <details><summary>Full recorded result</summary><pre>{JSON.stringify(detail.result ?? {status: detail.job.status, result: 'not yet published'}, null, 2)}</pre></details>
           <details><summary>Provenance</summary><pre>{JSON.stringify(detail.provenance, null, 2)}</pre></details>
@@ -174,14 +178,14 @@ export function ResearchWorkspacePage() {
         <button type="button" disabled={!paperEnabled || Boolean(data?.plans.length)} onClick={() => void act(() => api.createPaperAllocation(account || null, allocationKey), '29 experiment sleeves created. No orders authorized.')}>Create allocation plan</button>
         {data?.plans.map(plan => <div key={plan.plan_id}>
           <p>Total assigned: {usd(plan.total_capital_usd)} · {plan.sleeves.length} sleeves</p>
-          <div className="table-scroll"><table><thead><tr><th>Experiment</th><th>Capital</th><th>Reserved</th><th>Account</th><th>Modeled research</th><th>Exact broker P&amp;L</th><th>Research</th></tr></thead><tbody>
+          <TableScroll label="Paper allocation columns"><table className="retain-row-identity"><thead><tr><th>Experiment</th><th>Capital</th><th>Reserved</th><th>Account</th><th>Modeled research</th><th>Exact broker P&amp;L</th><th>Research</th></tr></thead><tbody>
             {plan.sleeves.map(s => {
               const related = data?.jobs.filter(j => j.sleeve_id === s.sleeve_id) ?? []
               const completed = related.filter(j => j.result_summary)
               const latest = completed[completed.length - 1]
               return <tr key={s.sleeve_id}><td>{s.label}</td><td>{usd(s.capital_usd)}</td><td>{usd(s.reserved_usd)}</td><td>{s.account_alias ?? 'Unbound'}<br /><button type="button" disabled={!paperEnabled || !account || Number(s.reserved_usd) !== 0 || s.account_alias === account} onClick={() => void act(() => api.bindPaperSleeve(plan.plan_id, s.sleeve_id, account), 'Sleeve account binding recorded. No orders authorized.')}>Bind {s.label} to selected account</button></td><td>{latest?.result_summary ? <>{latest.result_summary.data_class === 'synthetic_fixture' ? 'SYNTHETIC' : 'UNQUALIFIED'} · {latest.result_summary.disposition} · mean net {latest.result_summary.mean_net_return === null ? 'unavailable' : `${(Number(latest.result_summary.mean_net_return) * 100).toFixed(2)}%`}</> : `${related.length} assignments · no completed result`}</td><td>Unavailable</td><td><button type="button" onClick={() => chooseSleeve(s.sleeve_id)}>Use {s.label}</button></td></tr>
             })}
-          </tbody></table></div>
+          </tbody></table></TableScroll>
         </div>)}
       </section>
 
@@ -214,9 +218,11 @@ export function ResearchWorkspacePage() {
           <p>Account: {account || 'not connected'} · sleeve: {selectedSleeve?.label ?? 'not selected'} · intended capital: {usd(capital)}.</p>
           <button type="submit" disabled={!paperEnabled || !account || !sleeve}>Create paper proposal</button>
         </form>
+        {(data?.deployments.length ?? 0) > 0 && <h3>Recorded paper proposals and deployments</h3>}
         {data?.deployments.map(d => <article className="workspace-item" key={d.deployment_id}>
           <h3>{d.strategy_version} · {d.account_alias}</h3><p>{d.status} · {d.execution_status}</p><p>Sleeve: {d.sleeve_id ?? 'unassigned'} · cap {usd(d.max_gross_notional_usd)} · {d.max_orders} order · TTL {d.ttl_seconds}s</p>
           {d.blockers.map(b => <p key={b}>{b}</p>)}
+          {['UNKNOWN', 'OBSERVED'].includes(d.execution_status) && <p>Reserved capital stays held until the existing owner reconciles the broker effect, including after HALT.</p>}
           <p>Exact external fill economics remain unavailable until the fill source is validated. Live money is disabled.</p>
           <button type="button" disabled={!haltEnabled || d.status === 'HALTED'} onClick={() => void act(() => api.haltPaperDeployment(d.deployment_id), 'Halt recorded. Existing broker orders still require reconciliation.')}>Halt paper deployment {d.deployment_id}</button>
         </article>)}

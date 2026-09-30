@@ -389,6 +389,8 @@ footer {
    where the table already fits). TableScroll adds .has-more while columns
    are hidden: the cut edge fades so a clipped value reads as continuing. */
 .table-scroll { overflow-x: auto; }
+.table-scroll:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.retain-row-identity tr > :first-child { position: sticky; left: 0; z-index: 1; background: var(--card); max-width: 180px; overflow-wrap: anywhere; }
 .quant-lab { min-width: 0; overflow-wrap: anywhere; }
 .quant-lab pre { max-width: 100%; overflow-x: auto; }
 .research-workspace { min-width: 0; overflow-wrap: anywhere; }
