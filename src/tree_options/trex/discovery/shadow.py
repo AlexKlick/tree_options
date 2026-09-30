@@ -214,7 +214,7 @@ def _apply_mark(pos: ShadowPosition, value: float, now: datetime, source: str) -
 
 
 def _intrinsic(pos: ShadowPosition, spot: float) -> float:
-    return (max(0.0, pos.long_strike - spot) - max(0.0, pos.short_strike - spot))
+    return max(0.0, pos.long_strike - spot) - max(0.0, pos.short_strike - spot)
 
 
 def mark_from_chain(

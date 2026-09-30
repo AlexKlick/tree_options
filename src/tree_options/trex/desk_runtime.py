@@ -170,8 +170,7 @@ class RuntimeLocked(RuntimeError):
     """Another desk runtime holds the run dir."""
 
 
-def exit_owner_ready(paths: DeskPaths, now: datetime,
-                     max_age_s: int = HEARTBEAT_MAX_AGE_S) -> bool:
+def exit_owner_ready(paths: DeskPaths, now: datetime, max_age_s: int = HEARTBEAT_MAX_AGE_S) -> bool:
     """The canary's ``protective_exit_ready``: a fresh heartbeat AND the
     runtime lock held (a heartbeat alone can outlive a dead process)."""
     if not paths.book().exists():
@@ -196,8 +195,9 @@ def exit_owner_ready(paths: DeskPaths, now: datetime,
     return False
 
 
-def assignment_plan(structure: LegStructure, snapshot: DividendSnapshot | None,
-                    as_of: date) -> tuple[bool, str]:
+def assignment_plan(
+    structure: LegStructure, snapshot: DividendSnapshot | None, as_of: date
+) -> tuple[bool, str]:
     """The canary's ``assignment_plan_verified`` input, with the reason."""
     short_calls = [g for g in structure.legs if g.action == "SELL" and g.right == "C"]
     if not short_calls:
@@ -214,16 +214,20 @@ def assignment_plan(structure: LegStructure, snapshot: DividendSnapshot | None,
     return True, f"{len(found)} declared ex-dividend(s) fed to the assignment exit"
 
 
-def declared_dividend(snapshot: DividendSnapshot | None, as_of: date,
-                      hold_end: date) -> DividendCalendar | None:
+def declared_dividend(
+    snapshot: DividendSnapshot | None, as_of: date, hold_end: date
+) -> DividendCalendar | None:
     """The next DECLARED ex-dividend in [as_of, hold_end] as the engine's input."""
     if snapshot is None:
         return None
     found = ex_dividends(snapshot, as_of=as_of, start=as_of, end=hold_end)
     for ex in sorted(found or (), key=lambda d: d.ex_date):
         if ex.status == "declared" and ex.cash_amount is not None and ex.cash_amount > 0:
-            return DividendCalendar(ex_date=ex.ex_date, prev_session=last_hold_session(ex.ex_date),
-                                    amount=ex.cash_amount)
+            return DividendCalendar(
+                ex_date=ex.ex_date,
+                prev_session=last_hold_session(ex.ex_date),
+                amount=ex.cash_amount,
+            )
     return None
 
 
@@ -252,13 +256,18 @@ _NOTIFY_EVENTS: dict[str, str] = {
 class DeskRuntime:
     """Owns supervised structures from registration to CLOSED."""
 
-    def __init__(self, ib: IbkrTrex, paths: DeskPaths, *,
-                 supervised: SupervisedPaths | None = None,
-                 spots: SpotSource | None = None,
-                 dividends: DividendSource | None = None,
-                 config: EngineConfig | None = None,
-                 clock: Callable[[], datetime] | None = None,
-                 notify: NotifyFn | None = None) -> None:
+    def __init__(
+        self,
+        ib: IbkrTrex,
+        paths: DeskPaths,
+        *,
+        supervised: SupervisedPaths | None = None,
+        spots: SpotSource | None = None,
+        dividends: DividendSource | None = None,
+        config: EngineConfig | None = None,
+        clock: Callable[[], datetime] | None = None,
+        notify: NotifyFn | None = None,
+    ) -> None:
         self.ib = ib
         self.paths = paths
         self.supervised = supervised or SupervisedPaths.default()
@@ -379,9 +388,11 @@ class DeskRuntime:
         priority = _NOTIFY_EVENTS.get(event)
         if priority is not None and self.notify is not None:
             try:  # a push failure must never break the trading loop
-                self.notify(f"trex-desk {event}",
-                            json.dumps(payload, default=str, sort_keys=True)[:300],
-                            priority)
+                self.notify(
+                    f"trex-desk {event}",
+                    json.dumps(payload, default=str, sort_keys=True)[:300],
+                    priority,
+                )
             except Exception:  # notifications are best-effort
                 pass
 
@@ -399,10 +410,13 @@ class DeskRuntime:
         if self._lock_handle is None:
             raise RuntimeLocked("register requires the runtime lock")
         sid = effect.structure.id
-        spec = DeskSpec(intent_id=effect.intent_id, account_id=effect.account_id,
-                        structure=effect.structure,
-                        entry_order_ref=supervised_order_ref(effect.intent_id),
-                        registered_at=self._now())
+        spec = DeskSpec(
+            intent_id=effect.intent_id,
+            account_id=effect.account_id,
+            structure=effect.structure,
+            entry_order_ref=supervised_order_ref(effect.intent_id),
+            registered_at=self._now(),
+        )
         path = self.paths.spec(sid)
         if path.exists():
             existing = DeskSpec.model_validate(json.loads(path.read_bytes()))
@@ -477,8 +491,11 @@ class DeskRuntime:
         for spec in specs.values():
             s = spec.structure
             if self.dividends is not None:
-                div = declared_dividend(self.dividends(s.underlying, now.date()), now.date(),
-                                        last_hold_session(s.first_expiry))
+                div = declared_dividend(
+                    self.dividends(s.underlying, now.date()),
+                    now.date(),
+                    last_hold_session(s.first_expiry),
+                )
                 if div is not None:
                     dividends[s.underlying] = div
             for i, leg in enumerate(s.legs):
@@ -486,8 +503,9 @@ class DeskRuntime:
                     quote = self.ib.leg_quote(s.id, i)
                     mid = None if quote is None else cents((quote[0] + quote[1]) / 2)
                     short_call_mids[short_call_key(s.id, leg.strike, leg.expiry)] = mid
-        return replace(snap, spots=dict(spots), dividends=dividends,
-                       short_call_mids=short_call_mids)
+        return replace(
+            snap, spots=dict(spots), dividends=dividends, short_call_mids=short_call_mids
+        )
 
     def _trade_for(self, spec: DeskSpec, st: StructureState, live: Mapping[str, Any]) -> Any:
         sid = spec.structure.id
@@ -502,26 +520,49 @@ class DeskRuntime:
         if held is None:
             return None
         order_id = str(getattr(held.order, "orderId", ""))
-        expected = st.entry_order if st.status in (Status.PLANNED, Status.ENTER_WORKING) \
-            else st.exit_order
+        expected = (
+            st.entry_order if st.status in (Status.PLANNED, Status.ENTER_WORKING) else st.exit_order
+        )
         return held if order_id == expected else None
 
     def _working(self, spec: DeskSpec, st: StructureState, trade: Any) -> WorkingOrder | None:
         role = adopted_role(spec.structure, st, str(trade.order.action))
         if role is None:
-            self._note_once(spec.structure.id, "unknown_exposure",
-                            order=str(getattr(trade.order, "orderId", "?")),
-                            side=str(trade.order.action), status=st.status.value)
+            self._note_once(
+                spec.structure.id,
+                "unknown_exposure",
+                order=str(getattr(trade.order, "orderId", "?")),
+                side=str(trade.order.action),
+                status=st.status.value,
+            )
             return None
-        info = self.ib.order_status(OrderRef(spec.structure.id, str(trade.order.action),
-                                             int(trade.order.totalQuantity),
-                                             Decimal(str(trade.order.lmtPrice)), trade))
-        return WorkingOrder(role=role, filled=info.filled, avg_fill_price=info.avg_fill_price,
-                            order_id=str(trade.order.orderId))
+        info = self.ib.order_status(
+            OrderRef(
+                spec.structure.id,
+                str(trade.order.action),
+                int(trade.order.totalQuantity),
+                Decimal(str(trade.order.lmtPrice)),
+                trade,
+            )
+        )
+        return WorkingOrder(
+            role=role,
+            filled=info.filled,
+            avg_fill_price=info.avg_fill_price,
+            order_id=str(trade.order.orderId),
+        )
 
-    def _structure_tick(self, spec: DeskSpec, st: StructureState, snap: Snapshot,
-                        live: Mapping[str, Any], *, halt: bool, flatten: bool,
-                        now: datetime) -> None:
+    def _structure_tick(
+        self,
+        spec: DeskSpec,
+        st: StructureState,
+        snap: Snapshot,
+        live: Mapping[str, Any],
+        *,
+        halt: bool,
+        flatten: bool,
+        now: datetime,
+    ) -> None:
         sid = spec.structure.id
         if st.status is Status.PLANNED:
             self._resolve_planned(spec, st, live, now)
@@ -533,8 +574,7 @@ class DeskRuntime:
             if st.status is not Status.OPEN:
                 return
         if trade is None and st.status is Status.EXIT_WORKING and st.exit_order:
-            if not self._resolve_exit_without_trade(spec, st, now) or \
-                    st.status is Status.CLOSED:
+            if not self._resolve_exit_without_trade(spec, st, now) or st.status is Status.CLOSED:
                 return
         working = self._working(spec, st, trade) if trade is not None else None
         if trade is not None and working is None:
@@ -556,16 +596,18 @@ class DeskRuntime:
                 self._cancel(sid, trade, why=action.reason)
             return
         if isinstance(action, EntryOrder):
-            self._note_once(sid, "entry_reprice_not_sent",
-                            reason="a supervised permit binds one limit")
+            self._note_once(
+                sid, "entry_reprice_not_sent", reason="a supervised permit binds one limit"
+            )
             return
         if isinstance(action, CloseOrder):
             self._close(spec, st, action, trade, halt=halt, now=now)
 
     # -- entry lane ----------------------------------------------------------
 
-    def _resolve_planned(self, spec: DeskSpec, st: StructureState,
-                         live: Mapping[str, Any], now: datetime) -> None:
+    def _resolve_planned(
+        self, spec: DeskSpec, st: StructureState, live: Mapping[str, Any], now: datetime
+    ) -> None:
         sid = spec.structure.id
         trade = live.get(spec.entry_order_ref)
         if trade is not None:
@@ -584,8 +626,9 @@ class DeskRuntime:
             elif verdict.get("verdict") == "confirmed_submitted" and verdict.get("broker_order_id"):
                 st.entry_order = str(verdict["broker_order_id"])
                 st.to(Status.ENTER_WORKING, now)
-                self._event("entry_adopted", structure=sid, order=st.entry_order,
-                            via="reconciliation")
+                self._event(
+                    "entry_adopted", structure=sid, order=st.entry_order, via="reconciliation"
+                )
             return
         if terminal.exists():
             receipt = json.loads(terminal.read_bytes())
@@ -606,14 +649,14 @@ class DeskRuntime:
                 # send() refuses a passed deadline: this intent can never go out
                 self._close_unentered(st, "not_sent_by_deadline", now, sid)
 
-    def _close_unentered(self, st: StructureState, reason: str, now: datetime,
-                         sid: str) -> None:
+    def _close_unentered(self, st: StructureState, reason: str, now: datetime, sid: str) -> None:
         st.to(Status.CLOSED, now)
         st.close_reason = reason
         self._event("closed", structure=sid, reason=reason)
 
-    def _resolve_entry_without_trade(self, spec: DeskSpec, st: StructureState,
-                                     now: datetime) -> None:
+    def _resolve_entry_without_trade(
+        self, spec: DeskSpec, st: StructureState, now: datetime
+    ) -> None:
         """The entry order left the live view (filled or died, maybe while
         this process was down): only broker evidence moves the book."""
         sid = spec.structure.id
@@ -623,33 +666,47 @@ class DeskRuntime:
             return
         qty, avg = evidence
         if qty:
-            drain(st, WorkingOrder(role="entry", filled=qty,
-                                   avg_fill_price=avg or Decimal(0),
-                                   order_id=str(st.entry_order)))
+            drain(
+                st,
+                WorkingOrder(
+                    role="entry",
+                    filled=qty,
+                    avg_fill_price=avg or Decimal(0),
+                    order_id=str(st.entry_order),
+                ),
+            )
             st.to(Status.OPEN, now)
-            self._event("entry_filled", structure=sid, filled=st.filled_qty,
-                        avg=str(st.entry_fill), via="evidence")
+            self._event(
+                "entry_filled",
+                structure=sid,
+                filled=st.filled_qty,
+                avg=str(st.entry_fill),
+                via="evidence",
+            )
         else:
             self._close_unentered(st, "entry_unfilled", now, sid)
 
     # -- transitions -----------------------------------------------------------
 
-    def _transitions(self, spec: DeskSpec, st: StructureState, order_status: str,
-                     now: datetime) -> None:
+    def _transitions(
+        self, spec: DeskSpec, st: StructureState, order_status: str, now: datetime
+    ) -> None:
         sid = spec.structure.id
         done = order_status in DONE_STATES
         if st.status is Status.ENTER_WORKING:
             if st.filled_qty >= spec.structure.quantity or (done and st.filled_qty > 0):
                 st.to(Status.OPEN, now)
-                self._event("entry_filled", structure=sid, filled=st.filled_qty,
-                            avg=str(st.entry_fill))
+                self._event(
+                    "entry_filled", structure=sid, filled=st.filled_qty, avg=str(st.entry_fill)
+                )
             elif done:
                 self._close_unentered(st, "entry_unfilled", now, sid)
         elif st.status is Status.EXIT_WORKING and st.open_qty <= 0 and (done or not order_status):
             st.to(Status.CLOSED, now)
             st.close_reason = st.exit_reason or "flat"
-            self._event("closed", structure=sid, reason=st.close_reason,
-                        exit_fill=str(st.exit_fill))
+            self._event(
+                "closed", structure=sid, reason=st.close_reason, exit_fill=str(st.exit_fill)
+            )
 
     # -- exits -----------------------------------------------------------------
 
@@ -660,17 +717,16 @@ class DeskRuntime:
         try:
             held = {p.con_id: p.qty for p in self.ib.positions(spec.account_id)}
         except Exception as error:
-            self._note_once(sid, "legs_unverifiable", key=type(error).__name__,
-                            error=repr(error))
+            self._note_once(sid, "legs_unverifiable", key=type(error).__name__, error=repr(error))
             return None
         return {con: held.get(con, Decimal(0)) for con in self.ib.leg_con_ids(sid)}
 
-    def _mismatch(self, spec: DeskSpec, held: Mapping[int, Decimal],
-                  qty: int) -> list[str]:
+    def _mismatch(self, spec: DeskSpec, held: Mapping[int, Decimal], qty: int) -> list[str]:
         """Legs whose position is not ``qty`` packages (BUY long, SELL short)."""
         out: list[str] = []
-        for con_id, leg in zip(self.ib.leg_con_ids(spec.structure.id), spec.structure.legs,
-                               strict=True):
+        for con_id, leg in zip(
+            self.ib.leg_con_ids(spec.structure.id), spec.structure.legs, strict=True
+        ):
             want = Decimal(qty * leg.ratio) * (1 if leg.action == "BUY" else -1)
             if held.get(con_id, Decimal(0)) != want:
                 out.append(f"{con_id}:held={held.get(con_id, 0)}:expected={want}")
@@ -683,13 +739,19 @@ class DeskRuntime:
             return False
         wrong = self._mismatch(spec, held, st.open_qty)
         if wrong:
-            self._note_once(spec.structure.id, "legs_mismatch", key="|".join(wrong),
-                            legs=wrong, open_qty=st.open_qty)
+            self._note_once(
+                spec.structure.id,
+                "legs_mismatch",
+                key="|".join(wrong),
+                legs=wrong,
+                open_qty=st.open_qty,
+            )
             return False
         return True
 
-    def _resolve_exit_without_trade(self, spec: DeskSpec, st: StructureState,
-                                    now: datetime) -> bool:
+    def _resolve_exit_without_trade(
+        self, spec: DeskSpec, st: StructureState, now: datetime
+    ) -> bool:
         """The exit order left the live view (filled or expired, maybe while
         this process was down). Record what the broker PROVES filled, then
         cross-check the legs. True: the book agrees with the broker (closed
@@ -708,11 +770,22 @@ class DeskRuntime:
         executed = evidence[0] if evidence is not None else 0
         if evidence is not None and executed:
             avg = evidence[1]
-            if drain(st, WorkingOrder(role="exit", filled=executed,
-                                      avg_fill_price=avg or Decimal(0),
-                                      order_id=str(st.exit_order))):
-                self._event("exit_fill", structure=sid, filled=st.exit_filled_qty,
-                            avg=str(st.exit_fill), via="evidence")
+            if drain(
+                st,
+                WorkingOrder(
+                    role="exit",
+                    filled=executed,
+                    avg_fill_price=avg or Decimal(0),
+                    order_id=str(st.exit_order),
+                ),
+            ):
+                self._event(
+                    "exit_fill",
+                    structure=sid,
+                    filled=st.exit_filled_qty,
+                    avg=str(st.exit_fill),
+                    via="evidence",
+                )
         held = self._leg_positions(spec)
         if held is None:
             return False
@@ -721,8 +794,13 @@ class DeskRuntime:
             if st.open_qty <= 0:
                 st.to(Status.CLOSED, now)
                 st.close_reason = st.exit_reason or "flat"
-                self._event("closed", structure=sid, reason=st.close_reason,
-                            exit_fill=str(st.exit_fill), via="evidence")
+                self._event(
+                    "closed",
+                    structure=sid,
+                    reason=st.close_reason,
+                    exit_fill=str(st.exit_fill),
+                    via="evidence",
+                )
             return True
         flat = all(q == 0 for q in held.values())
         if flat and st.open_qty > 0:  # flat beyond what today's executions explain
@@ -734,15 +812,19 @@ class DeskRuntime:
                 st.to(Status.CLOSED, now)
                 st.close_reason = "operator_confirmed_flat"
                 os.replace(resolve, resolve.with_name(resolve.name + ".applied"))
-                self._event("closed", structure=sid, reason=st.close_reason,
-                            unpriced_packages=unpriced)
+                self._event(
+                    "closed", structure=sid, reason=st.close_reason, unpriced_packages=unpriced
+                )
                 return True
-            self._note_once(sid, "exit_flat_unexplained", open_qty=st.open_qty,
-                            exit_order=st.exit_order,
-                            operator=f"verify flat at the broker, then touch {resolve.name}")
+            self._note_once(
+                sid,
+                "exit_flat_unexplained",
+                open_qty=st.open_qty,
+                exit_order=st.exit_order,
+                operator=f"verify flat at the broker, then touch {resolve.name}",
+            )
             return False
-        self._note_once(sid, "legs_mismatch", key="|".join(wrong), legs=wrong,
-                        open_qty=st.open_qty)
+        self._note_once(sid, "legs_mismatch", key="|".join(wrong), legs=wrong, open_qty=st.open_qty)
         return False
 
     def _owner_epoch(self) -> str | None:
@@ -777,8 +859,16 @@ class DeskRuntime:
             found[key] = str(oid) if oid else key
         return found
 
-    def _place_close(self, spec: DeskSpec, st: StructureState, side: str, qty: int,
-                     limit: Decimal, *, halt: bool = False) -> Any:
+    def _place_close(
+        self,
+        spec: DeskSpec,
+        st: StructureState,
+        side: str,
+        qty: int,
+        limit: Decimal,
+        *,
+        halt: bool = False,
+    ) -> Any:
         """Send one close order, guarded. Every guard refuses BEFORE the
         order exists and is fail-closed-with-retry: nothing is sent, one
         deduped urgent ``exit_blocked`` push, the next tick re-enters the
@@ -787,24 +877,45 @@ class DeskRuntime:
         s = spec.structure
         blockers = self._guard.paper_blockers(spec.account_id)
         if blockers:
-            self._note_once(s.id, "exit_blocked", key=",".join(blockers),
-                            blockers=blockers, reason=st.exit_reason)
+            self._note_once(
+                s.id,
+                "exit_blocked",
+                key=",".join(blockers),
+                blockers=blockers,
+                reason=st.exit_reason,
+            )
             return None
         existing = self._open_tagged(desk_order_ref(s.id))
         if existing is None:
-            self._note_once(s.id, "exit_blocked", key="duplicate_check_unreadable",
-                            reason="duplicate_check_unreadable", exit_reason=st.exit_reason)
+            self._note_once(
+                s.id,
+                "exit_blocked",
+                key="duplicate_check_unreadable",
+                reason="duplicate_check_unreadable",
+                exit_reason=st.exit_reason,
+            )
             return None
         if existing:
-            self._note_once(s.id, "exit_blocked",
-                            key="duplicate:" + ",".join(sorted(existing)),
-                            reason="exit_tag_already_open", orders=sorted(existing.values()),
-                            exit_reason=st.exit_reason)
+            self._note_once(
+                s.id,
+                "exit_blocked",
+                key="duplicate:" + ",".join(sorted(existing)),
+                reason="exit_tag_already_open",
+                orders=sorted(existing.values()),
+                exit_reason=st.exit_reason,
+            )
             return None
         owner_epoch = self._owner_epoch()
-        self._note_once(s.id, "exit_authority", owner_epoch=owner_epoch, pid=os.getpid(),
-                        client_id=self.ib.client_id, port=self.ib.port,
-                        account=spec.account_id, halt=halt)
+        self._note_once(
+            s.id,
+            "exit_authority",
+            owner_epoch=owner_epoch,
+            pid=os.getpid(),
+            client_id=self.ib.client_id,
+            port=self.ib.port,
+            account=spec.account_id,
+            halt=halt,
+        )
         contract, order = self.ib._order(s, side, qty, limit)
         order.orderRef = desk_order_ref(s.id)
         order.account = spec.account_id
@@ -812,8 +923,16 @@ class DeskRuntime:
         self.orders[s.id] = trade
         st.exit_order = str(trade.order.orderId)
         st.exit_order_seen, st.exit_order_notional, st.exit_order_unpriced = 0, None, 0
-        self._event("exit_order", structure=s.id, side=side, qty=qty, limit=str(limit),
-                    order=st.exit_order, reason=st.exit_reason, owner_epoch=owner_epoch)
+        self._event(
+            "exit_order",
+            structure=s.id,
+            side=side,
+            qty=qty,
+            limit=str(limit),
+            order=st.exit_order,
+            reason=st.exit_reason,
+            owner_epoch=owner_epoch,
+        )
         return trade
 
     def _cancel(self, sid: str, trade: Any, *, why: str) -> bool:
@@ -829,8 +948,16 @@ class DeskRuntime:
         self._event("cancel_unconfirmed", structure=sid, order=str(trade.order.orderId))
         return False
 
-    def _close(self, spec: DeskSpec, st: StructureState, action: CloseOrder, trade: Any, *,
-               halt: bool, now: datetime) -> None:
+    def _close(
+        self,
+        spec: DeskSpec,
+        st: StructureState,
+        action: CloseOrder,
+        trade: Any,
+        *,
+        halt: bool,
+        now: datetime,
+    ) -> None:
         sid = spec.structure.id
         if action.limit is None:
             self._note_once(sid, "exit_pending_no_quote", reason=action.reason.value)
@@ -843,8 +970,7 @@ class DeskRuntime:
                 return
             st.to(Status.EXIT_WORKING, now)
             st.exit_reason = action.reason.value
-            self._event("exit_begin", structure=sid, reason=action.reason.value,
-                        qty=st.open_qty)
+            self._event("exit_begin", structure=sid, reason=action.reason.value, qty=st.open_qty)
             self._place_close(spec, st, action.side, st.open_qty, action.limit, halt=halt)
             return
         if st.status is not Status.EXIT_WORKING:
@@ -866,8 +992,16 @@ class DeskRuntime:
             return
         self._place_close(spec, st, action.side, st.open_qty, action.limit, halt=halt)
 
-    def _flatten(self, spec: DeskSpec, st: StructureState, trade: Any, snap: Snapshot, *,
-                 halt: bool, now: datetime) -> None:
+    def _flatten(
+        self,
+        spec: DeskSpec,
+        st: StructureState,
+        trade: Any,
+        snap: Snapshot,
+        *,
+        halt: bool,
+        now: datetime,
+    ) -> None:
         sid = spec.structure.id
         s = spec.structure
         if st.status is Status.ENTER_WORKING:

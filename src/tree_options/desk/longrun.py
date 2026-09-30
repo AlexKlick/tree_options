@@ -99,7 +99,8 @@ UNTRUSTED_NOTE = (
     "plug-in (historical valuation proxies, not executable fills). Nothing in "
     "this digest is promoted and this harness has no promotion path: the "
     "pre-registered rule below is text for the operator, checked mechanically "
-    "at most to mark a policy eligible for operator review.")
+    "at most to mark a policy eligible for operator review."
+)
 
 PREREGISTERED_RULE = (
     "Pre-registered in plan.json before any scoring (desk long-run protocol "
@@ -115,7 +116,8 @@ PREREGISTERED_RULE = (
     "vs the incumbent has a 95% CI lower bound > 0; (5) stability on the test "
     "sessions: the two halves agree in sign and no single dropped session "
     "flips the sign of the diff vs random. Promotion itself stays the "
-    "operator's decision.")
+    "operator's decision."
+)
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,47}$")
 
@@ -245,8 +247,7 @@ def arms_of(policies: Sequence[PolicySpec]) -> list[Arm]:
             raise ValueError(f"duplicate policy {policy.name!r}")
         seen.add(policy.name)
         if policy.executed:
-            arms.extend(Arm(name, policy, i)
-                        for i, name in enumerate(policy.arm_names(), start=1))
+            arms.extend(Arm(name, policy, i) for i, name in enumerate(policy.arm_names(), start=1))
     return arms
 
 
@@ -260,6 +261,7 @@ def rule_no_trade(board: Board) -> Choice:
 def rule_first_row(horizon: str | None = None) -> RuleFn:
     def rule(board: Board) -> Choice:
         return board.ids[0], horizon
+
     return rule
 
 
@@ -287,8 +289,11 @@ def _order_key(key: str) -> Callable[[tuple[int, dict[str, Any]]], tuple[float, 
         value = _num(item[1], "max_loss")
         return (value if value is not None else math.inf), item[0]
 
-    return {"board_order": board_order, "max_reward_risk": max_reward_risk,
-            "min_max_loss": min_max_loss}[key]
+    return {
+        "board_order": board_order,
+        "max_reward_risk": max_reward_risk,
+        "min_max_loss": min_max_loss,
+    }[key]
 
 
 def _best(board: Board, keep: Callable[[dict[str, Any]], bool], key: str) -> str | None:
@@ -298,8 +303,9 @@ def _best(board: Board, keep: Callable[[dict[str, Any]], bool], key: str) -> str
     return str(min(eligible, key=_order_key(key))[1]["id"])
 
 
-def rule_fixed_structure(structure: str, horizon: str | None = None,
-                         key: str = "board_order") -> RuleFn:
+def rule_fixed_structure(
+    structure: str, horizon: str | None = None, key: str = "board_order"
+) -> RuleFn:
     """Always the best-by-``key`` row of ``structure`` (skip when absent)."""
     if structure not in STRUCTURES:
         raise ValueError(f"structure must be one of {STRUCTURES}")
@@ -308,6 +314,7 @@ def rule_fixed_structure(structure: str, horizon: str | None = None,
     def rule(board: Board) -> Choice:
         choice = _best(board, lambda row: row.get("structure") == structure, key)
         return choice, (horizon if choice is not None else None)
+
     return rule
 
 
@@ -326,6 +333,7 @@ def rule_always_bullish(horizon: str | None = None, key: str = "board_order") ->
     def rule(board: Board) -> Choice:
         choice = _best(board, is_bullish, key)
         return choice, (horizon if choice is not None else None)
+
     return rule
 
 
@@ -334,8 +342,10 @@ def builtin_controls(horizon: str | None = None) -> list[PolicySpec]:
     return [
         PolicySpec("no_trade", "control", rule=rule_no_trade),
         PolicySpec(FIRST_ROW, "control", rule=rule_first_row(horizon)),
-        *(PolicySpec(f"always_{s}", "rule", rule=rule_fixed_structure(s, horizon))
-          for s in STRUCTURES),
+        *(
+            PolicySpec(f"always_{s}", "rule", rule=rule_fixed_structure(s, horizon))
+            for s in STRUCTURES
+        ),
         PolicySpec(REGIME, "control", rule=rule_always_bullish(horizon)),
         PolicySpec(RANDOM, "control"),
     ]
@@ -481,8 +491,13 @@ def _validated(board: Board, choice: Any, horizon: Any, note: Any) -> dict[str, 
     if legs is None:
         out.update(choice=str(choice), horizon=horizon, row=ids.index(str(choice)))
     else:
-        out.update(choice=str(choice), horizon=horizon, row=None,
-                   rows=[ids.index(leg) for leg in legs], legs=legs)
+        out.update(
+            choice=str(choice),
+            horizon=horizon,
+            row=None,
+            rows=[ids.index(leg) for leg in legs],
+            legs=legs,
+        )
     return out
 
 
@@ -510,15 +525,22 @@ class PolicyAsk:
         return call_ask(ask, arm, board)
 
 
-def decide(arm: Arm, board: Board, ask: AskFn | None,
-           monotonic: Callable[[], float] = time.monotonic) -> dict[str, Any]:
+def decide(
+    arm: Arm, board: Board, ask: AskFn | None, monotonic: Callable[[], float] = time.monotonic
+) -> dict[str, Any]:
     """One arm's decision on one board as a receipt. Failures are recorded,
     never raised: a model outage must not end the run."""
     started = monotonic()
-    rec: dict[str, Any] = {"schema": RECEIPT_SCHEMA, "arm": arm.name,
-                           "policy": arm.policy.name, "repeat": arm.repeat,
-                           "kind": arm.policy.kind, "snapshot": board.snapshot,
-                           "session": board.session, "board_rows": len(board.rows)}
+    rec: dict[str, Any] = {
+        "schema": RECEIPT_SCHEMA,
+        "arm": arm.name,
+        "policy": arm.policy.name,
+        "repeat": arm.repeat,
+        "kind": arm.policy.kind,
+        "snapshot": board.snapshot,
+        "session": board.session,
+        "board_rows": len(board.rows),
+    }
     try:
         extra: Any = None
         if arm.policy.kind == "model":
@@ -536,8 +558,14 @@ def decide(arm: Arm, board: Board, ask: AskFn | None,
         for key, value in dict(extra or {}).items():
             rec.setdefault(key, value)  # extra receipt fields (raw forecasts); core keys never move
     except Exception as error:  # recorded, the run continues
-        rec.update(ok=False, choice=None, horizon=None, row=None, note="",
-                   error=f"{type(error).__name__}: {str(error)[:160]}")
+        rec.update(
+            ok=False,
+            choice=None,
+            horizon=None,
+            row=None,
+            note="",
+            error=f"{type(error).__name__}: {str(error)[:160]}",
+        )
     rec["latency_s"] = round(monotonic() - started, 3)
     return rec
 
@@ -570,17 +598,25 @@ class OutcomeCache:
         first = self._single(snapshot, legs[0], horizon)
         second = self._single(snapshot, legs[1], horizon)
         value: tuple[float, float] | None = (
-            None if first is None or second is None
-            else (first[0] + second[0], first[1] + second[1]))
+            None
+            if first is None or second is None
+            else (first[0] + second[0], first[1] + second[1])
+        )
         with self._lock:
             self._memo[key] = value
-            self._exits[key] = None if value is None else _later_exit(
-                self._exits.get((snapshot, legs[0], horizon)),
-                self._exits.get((snapshot, legs[1], horizon)))
+            self._exits[key] = (
+                None
+                if value is None
+                else _later_exit(
+                    self._exits.get((snapshot, legs[0], horizon)),
+                    self._exits.get((snapshot, legs[1], horizon)),
+                )
+            )
         return value
 
-    def _single(self, snapshot: str, candidate: str,
-                horizon: str | None) -> tuple[float, float] | None:
+    def _single(
+        self, snapshot: str, candidate: str, horizon: str | None
+    ) -> tuple[float, float] | None:
         key = (snapshot, candidate, horizon)
         with self._lock:
             if key in self._memo:
@@ -594,8 +630,9 @@ class OutcomeCache:
             value = (gross, net)
         with self._lock:
             self._memo[key] = value
-            self._exits[key] = None if raw is None or not raw.get("exit_at") \
-                else str(raw["exit_at"])
+            self._exits[key] = (
+                None if raw is None or not raw.get("exit_at") else str(raw["exit_at"])
+            )
         return value
 
     def net(self, snapshot: str, candidate: str, horizon: str | None) -> float:
@@ -630,18 +667,29 @@ class _Executor:
     """Thread-pool executor. Workers only run ``decide``; the main thread owns
     receipts, running stats and progress.json (no shared mutable state)."""
 
-    def __init__(self, run_dir: Path, boards: Sequence[Board], arms: Sequence[Arm], *,
-                 ask: AskFn | None, quota_ok: QuotaFn, outcomes: OutcomeCache,
-                 settings: ExecSettings, sleep: Callable[[float], None],
-                 monotonic: Callable[[], float], clock: Clock) -> None:
+    def __init__(
+        self,
+        run_dir: Path,
+        boards: Sequence[Board],
+        arms: Sequence[Arm],
+        *,
+        ask: AskFn | None,
+        quota_ok: QuotaFn,
+        outcomes: OutcomeCache,
+        settings: ExecSettings,
+        sleep: Callable[[float], None],
+        monotonic: Callable[[], float],
+        clock: Clock,
+    ) -> None:
         self.run_dir, self.boards, self.arms = run_dir, list(boards), list(arms)
         self.board_ids = {board.snapshot for board in self.boards}
         self.ask, self.quota_ok, self.outcomes = ask, quota_ok, outcomes
         self.settings, self.sleep, self.monotonic, self.clock = settings, sleep, monotonic, clock
         for arm in self.arms:
             _heal_torn_tail(receipts_path(run_dir, arm.name))
-        self.receipts = {arm.name: load_receipts(receipts_path(run_dir, arm.name))
-                         for arm in self.arms}
+        self.receipts = {
+            arm.name: load_receipts(receipts_path(run_dir, arm.name)) for arm in self.arms
+        }
         prior = self._prior_progress()
         self.paused_before = float(prior.get("paused_s", 0.0) or 0.0)
         self.started = str(prior.get("started") or clock().isoformat())
@@ -713,12 +761,14 @@ class _Executor:
             ok, why = self.quota_ok()
         except Exception as error:  # a broken meter must not stall the run
             ok, why = True, f"quota_check_error:{type(error).__name__}"
-        self.quota = {"ok": bool(ok), "reason": str(why)[:120],
-                      "checked_at": self.clock().isoformat()}
+        self.quota = {
+            "ok": bool(ok),
+            "reason": str(why)[:120],
+            "checked_at": self.clock().isoformat(),
+        }
         return bool(ok)
 
-    def _pause(self, pending: dict[Future[dict[str, Any]], tuple[Arm, Board]],
-               status: str) -> bool:
+    def _pause(self, pending: dict[Future[dict[str, Any]], tuple[Arm, Board]], status: str) -> bool:
         """Drain in-flight calls, record the pause, sleep one interval.
         False when the configured pause budget is spent (stop, resumable)."""
         self.drain(pending)
@@ -807,39 +857,59 @@ class _Executor:
             else:
                 net += value[1]
         reasons = failure_reasons(self.receipts[arm.name], self.boards)
-        return {"policy": arm.policy.name, "repeat": arm.repeat, "kind": arm.policy.kind,
-                "done": len(recs), "total": len(self.boards), "entered": entered,
-                "failures": failures, "unevaluable": unevaluable, "net": round(net, 2),
-                **({"failure_reasons": reasons} if reasons else {})}
+        return {
+            "policy": arm.policy.name,
+            "repeat": arm.repeat,
+            "kind": arm.policy.kind,
+            "done": len(recs),
+            "total": len(self.boards),
+            "entered": entered,
+            "failures": failures,
+            "unevaluable": unevaluable,
+            "net": round(net, 2),
+            **({"failure_reasons": reasons} if reasons else {}),
+        }
 
     def write_progress(self) -> None:
         self._since_progress = 0
         arms = {arm.name: self.arm_stats(arm) for arm in self.arms}
         remaining_model = sum(
-            1 for arm in self.arms if arm.policy.kind == "model" for board in self.boards
-            if not self.receipts[arm.name].get(board.snapshot, {}).get("ok"))
+            1
+            for arm in self.arms
+            if arm.policy.kind == "model"
+            for board in self.boards
+            if not self.receipts[arm.name].get(board.snapshot, {}).get("ok")
+        )
         active = max(1e-9, self.monotonic() - self.t0 - self.paused_process)
         rate = self.model_calls / active
         eta = 0.0 if remaining_model == 0 else (remaining_model / rate if rate > 0 else None)
-        doc = {"schema": PROGRESS_SCHEMA, "run_id": self.run_dir.name, "status": self.status,
-               "at": self.clock().isoformat(), "started": self.started,
-               "boards": len(self.boards),
-               "sessions": len({board.session for board in self.boards}),
-               "total": len(self.boards) * len(self.arms),
-               "finished": sum(v["done"] for v in arms.values()),
-               "failures": sum(v["failures"] for v in arms.values()),
-               "failed_attempts_this_process": self.failed_attempts,
-               "model_calls_this_process": self.model_calls,
-               "outcome_errors": self.outcome_errors,
-               "paused_s": round(self.paused_before + self.paused_process, 1),
-               "quota": self.quota, "calls_per_s": round(rate, 4),
-               "eta_s": None if eta is None else round(eta, 1),
-               "arms": arms, "digest": self.digest}
+        doc = {
+            "schema": PROGRESS_SCHEMA,
+            "run_id": self.run_dir.name,
+            "status": self.status,
+            "at": self.clock().isoformat(),
+            "started": self.started,
+            "boards": len(self.boards),
+            "sessions": len({board.session for board in self.boards}),
+            "total": len(self.boards) * len(self.arms),
+            "finished": sum(v["done"] for v in arms.values()),
+            "failures": sum(v["failures"] for v in arms.values()),
+            "failed_attempts_this_process": self.failed_attempts,
+            "model_calls_this_process": self.model_calls,
+            "outcome_errors": self.outcome_errors,
+            "paused_s": round(self.paused_before + self.paused_process, 1),
+            "quota": self.quota,
+            "calls_per_s": round(rate, 4),
+            "eta_s": None if eta is None else round(eta, 1),
+            "arms": arms,
+            "digest": self.digest,
+        }
         try:  # "skill significant yet?" (desk.skill); the live view never kills the run
             from tree_options.desk import skill
 
-            doc["skill"] = skill.progress_skill(self.boards, self.arms, self.receipts,
-                                                self.outcomes.get, self._skill_memo)
+            doc["skill"] = skill.progress_skill(
+                self.boards, self.arms, self.receipts, self.outcomes.get, self._skill_memo
+            )
         except Exception as error:
             doc["skill"] = {"error": f"{type(error).__name__}: {str(error)[:120]}"}
         _write_json(self.run_dir / "progress.json", doc)
@@ -848,8 +918,9 @@ class _Executor:
 # -------------------------------------------------------------- statistics
 
 
-def session_sums(board_sessions: Sequence[str], values: Sequence[float],
-                 sessions: Sequence[str]) -> np.ndarray:
+def session_sums(
+    board_sessions: Sequence[str], values: Sequence[float], sessions: Sequence[str]
+) -> np.ndarray:
     """Per-session sums aligned to ``sessions`` (sessions without entries are 0)."""
     index = {s: i for i, s in enumerate(sessions)}
     out = np.zeros(len(sessions))
@@ -858,8 +929,9 @@ def session_sums(board_sessions: Sequence[str], values: Sequence[float],
     return out
 
 
-def bootstrap_ci(session_values: Sequence[float] | np.ndarray, *, draws: int,
-                 seed: int) -> tuple[float, float]:
+def bootstrap_ci(
+    session_values: Sequence[float] | np.ndarray, *, draws: int, seed: int
+) -> tuple[float, float]:
     """95% percentile CI of the SESSION-SUM, resampling sessions (fixed seed)."""
     arr = np.asarray(session_values, dtype=float)
     n = arr.size
@@ -869,7 +941,7 @@ def bootstrap_ci(session_values: Sequence[float] | np.ndarray, *, draws: int,
     sums = np.empty(draws)
     for start in range(0, draws, 1000):
         k = min(1000, draws - start)
-        sums[start:start + k] = arr[rng.integers(0, n, size=(k, n))].sum(axis=1)
+        sums[start : start + k] = arr[rng.integers(0, n, size=(k, n))].sum(axis=1)
     lo, hi = np.percentile(sums, [2.5, 97.5])
     return round(float(lo), 2), round(float(hi), 2)
 
@@ -883,7 +955,7 @@ def sign_flip_p(diffs: Sequence[float] | np.ndarray, *, draws: int, seed: int) -
         return 1.0
     observed = float(d.sum()) - 1e-9
     if n <= EXACT_SIGN_FLIP_MAX:
-        codes = np.arange(2 ** n)
+        codes = np.arange(2**n)
         signs = ((codes[:, None] >> np.arange(n)) & 1) * 2 - 1
         return float(np.mean(signs @ d >= observed))
     rng = np.random.default_rng(seed)
@@ -895,14 +967,18 @@ def sign_flip_p(diffs: Sequence[float] | np.ndarray, *, draws: int, seed: int) -
     return (1 + count) / (draws + 1)
 
 
-def paired(a: Sequence[float] | np.ndarray, b: Sequence[float] | np.ndarray, *,
-           draws: int, seed: int) -> dict[str, Any]:
+def paired(
+    a: Sequence[float] | np.ndarray, b: Sequence[float] | np.ndarray, *, draws: int, seed: int
+) -> dict[str, Any]:
     """Session-level paired difference a - b: total, 95% CI, one-sided p."""
     d = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
     lo, hi = bootstrap_ci(d, draws=draws, seed=seed)
-    return {"diff_total": round(float(d.sum()), 2), "ci95": [lo, hi],
-            "p_one_sided": round(sign_flip_p(d, draws=draws, seed=seed + 1), 4),
-            "sessions": int(d.size)}
+    return {
+        "diff_total": round(float(d.sum()), 2),
+        "ci95": [lo, hi],
+        "p_one_sided": round(sign_flip_p(d, draws=draws, seed=seed + 1), 4),
+        "sessions": int(d.size),
+    }
 
 
 def holm(pvalues: Mapping[str, float]) -> dict[str, float]:
@@ -917,27 +993,39 @@ def holm(pvalues: Mapping[str, float]) -> dict[str, float]:
     return adjusted
 
 
-def stability(session_values: Sequence[float] | np.ndarray,
-              sessions: Sequence[str]) -> dict[str, Any]:
+def stability(
+    session_values: Sequence[float] | np.ndarray, sessions: Sequence[str]
+) -> dict[str, Any]:
     """Drop-one-session range/sign flips and half-split sign agreement."""
     arr = np.asarray(session_values, dtype=float)
     total = float(arr.sum())
     if arr.size == 0:
-        return {"total": 0.0, "drop_one_min": 0.0, "drop_one_max": 0.0,
-                "drop_one_sign_flips": 0, "most_influential_session": None,
-                "half_split": {"first": 0.0, "second": 0.0, "split_after": None,
-                               "signs_agree": False}}
+        return {
+            "total": 0.0,
+            "drop_one_min": 0.0,
+            "drop_one_max": 0.0,
+            "drop_one_sign_flips": 0,
+            "most_influential_session": None,
+            "half_split": {"first": 0.0, "second": 0.0, "split_after": None, "signs_agree": False},
+        }
     drops = total - arr
     flips = int(np.sum(np.sign(drops) != np.sign(total)))
     influence = arr * (1.0 if total >= 0 else -1.0)
     half = arr.size // 2
     first, second = float(arr[:half].sum()), float(arr[half:].sum())
-    return {"total": round(total, 2), "drop_one_min": round(float(drops.min()), 2),
-            "drop_one_max": round(float(drops.max()), 2), "drop_one_sign_flips": flips,
-            "most_influential_session": sessions[int(np.argmax(influence))],
-            "half_split": {"first": round(first, 2), "second": round(second, 2),
-                           "split_after": sessions[half - 1] if half else None,
-                           "signs_agree": (first > 0 and second > 0) or (first < 0 and second < 0)}}
+    return {
+        "total": round(total, 2),
+        "drop_one_min": round(float(drops.min()), 2),
+        "drop_one_max": round(float(drops.max()), 2),
+        "drop_one_sign_flips": flips,
+        "most_influential_session": sessions[int(np.argmax(influence))],
+        "half_split": {
+            "first": round(first, 2),
+            "second": round(second, 2),
+            "split_after": sessions[half - 1] if half else None,
+            "signs_agree": (first > 0 and second > 0) or (first < 0 and second < 0),
+        },
+    }
 
 
 @dataclass
@@ -947,21 +1035,31 @@ class NullResult:
     expected_sessions: np.ndarray
     totals: np.ndarray
 
-    def to_json(self, *, draws: int, seed: int, matched_to: Sequence[str],
-                horizons: Sequence[str | None]) -> dict[str, Any]:
+    def to_json(
+        self, *, draws: int, seed: int, matched_to: Sequence[str], horizons: Sequence[str | None]
+    ) -> dict[str, Any]:
         lo, hi = np.percentile(self.totals, [2.5, 97.5])
-        return {"p_enter": round(self.p_enter, 4), "matched_to": list(matched_to),
-                "horizons": list(horizons), "seeds": self.seeds,
-                "expected_total": round(float(self.expected_sessions.sum()), 2),
-                "expected_ci95": list(bootstrap_ci(self.expected_sessions, draws=draws,
-                                                   seed=seed)),
-                "simulated_mean_total": round(float(self.totals.mean()), 2),
-                "band95": [round(float(lo), 2), round(float(hi), 2)]}
+        return {
+            "p_enter": round(self.p_enter, 4),
+            "matched_to": list(matched_to),
+            "horizons": list(horizons),
+            "seeds": self.seeds,
+            "expected_total": round(float(self.expected_sessions.sum()), 2),
+            "expected_ci95": list(bootstrap_ci(self.expected_sessions, draws=draws, seed=seed)),
+            "simulated_mean_total": round(float(self.totals.mean()), 2),
+            "band95": [round(float(lo), 2), round(float(hi), 2)],
+        }
 
 
-def random_null(board_sessions: Sequence[str], sessions: Sequence[str],
-                options: Sequence[np.ndarray], p_enter: float, *, seeds: int,
-                seed: int) -> NullResult:
+def random_null(
+    board_sessions: Sequence[str],
+    sessions: Sequence[str],
+    options: Sequence[np.ndarray],
+    p_enter: float,
+    *,
+    seeds: int,
+    seed: int,
+) -> NullResult:
     """The random picker on the SAME boards: enter with probability
     ``p_enter``, then a uniform (row, horizon) option. Exact per-session
     expectation plus ``seeds`` simulated totals for the null band."""
@@ -988,13 +1086,19 @@ def random_null(board_sessions: Sequence[str], sessions: Sequence[str],
     return NullResult(p, seeds, expected, totals)
 
 
-def pick_null(realized: float, options: Sequence[np.ndarray], *, seeds: int,
-              seed: int) -> dict[str, Any]:
+def pick_null(
+    realized: float, options: Sequence[np.ndarray], *, seeds: int, seed: int
+) -> dict[str, Any]:
     """Within-board pick skill (random_null.py): on the arm's OWN entered
     boards, a uniform row at the chosen horizon. Where does it sit?"""
     if not options:
-        return {"entered_boards": 0, "expected": 0.0, "band95": [0.0, 0.0],
-                "percentile": None, "p_one_sided_ge": None}
+        return {
+            "entered_boards": 0,
+            "expected": 0.0,
+            "band95": [0.0, 0.0],
+            "percentile": None,
+            "p_one_sided_ge": None,
+        }
     sizes = np.array([len(o) for o in options], dtype=int)
     flat = np.concatenate(list(options))
     offsets = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(int)
@@ -1004,15 +1108,23 @@ def pick_null(realized: float, options: Sequence[np.ndarray], *, seeds: int,
         picks = np.minimum((rng.random(len(options)) * sizes).astype(int), sizes - 1)
         sims[k] = float(flat[offsets + picks].sum())
     lo, hi = np.percentile(sims, [2.5, 97.5])
-    return {"entered_boards": len(options),
-            "expected": round(float(sum(float(np.mean(o)) for o in options)), 2),
-            "band95": [round(float(lo), 2), round(float(hi), 2)],
-            "percentile": round(float(np.mean(sims < realized)), 4),
-            "p_one_sided_ge": round(float(np.mean(sims >= realized)), 4)}
+    return {
+        "entered_boards": len(options),
+        "expected": round(float(sum(float(np.mean(o)) for o in options)), 2),
+        "band95": [round(float(lo), 2), round(float(hi), 2)],
+        "percentile": round(float(np.mean(sims < realized)), 4),
+        "p_one_sided_ge": round(float(np.mean(sims >= realized)), 4),
+    }
 
 
-def benchmark_rows(benchmarks: Mapping[str, Mapping[Any, float]], sessions: Sequence[str], *,
-                   capital: float, draws: int, seed: int) -> list[dict[str, Any]]:
+def benchmark_rows(
+    benchmarks: Mapping[str, Mapping[Any, float]],
+    sessions: Sequence[str],
+    *,
+    capital: float,
+    draws: int,
+    seed: int,
+) -> list[dict[str, Any]]:
     """Buy-and-hold in dollars on ``capital`` over the same sessions: bought
     at the last close before the first session (else that session's close),
     per-session PnL = shares x close change (sessions without a close: 0)."""
@@ -1020,13 +1132,21 @@ def benchmark_rows(benchmarks: Mapping[str, Mapping[Any, float]], sessions: Sequ
     if not sessions:
         return rows
     for name in sorted(benchmarks):
-        closes = {str(d): float(v) for d, v in benchmarks[name].items()
-                  if v is not None and math.isfinite(float(v)) and float(v) > 0}
+        closes = {
+            str(d): float(v)
+            for d, v in benchmarks[name].items()
+            if v is not None and math.isfinite(float(v)) and float(v) > 0
+        }
         before = [d for d in closes if d < sessions[0]]
         base_date = max(before) if before else (sessions[0] if sessions[0] in closes else None)
         if base_date is None:
-            rows.append({"name": name, "status": "unavailable",
-                         "reason": "no close at or before the first session"})
+            rows.append(
+                {
+                    "name": name,
+                    "status": "unavailable",
+                    "reason": "no close at or before the first session",
+                }
+            )
             continue
         shares = capital / closes[base_date]
         prev = closes[base_date]
@@ -1041,19 +1161,27 @@ def benchmark_rows(benchmarks: Mapping[str, Mapping[Any, float]], sessions: Sequ
             per_session.append(shares * (close - prev))
             prev = close
         lo, hi = bootstrap_ci(per_session, draws=draws, seed=seed)
-        rows.append({"name": name, "status": "ok", "kind": "buy_and_hold",
-                     "capital": capital, "base_date": base_date,
-                     "base_close": closes[base_date], "end_close": prev,
-                     "net_total": round(sum(per_session), 2), "net_ci95": [lo, hi],
-                     "missing_sessions": missing})
+        rows.append(
+            {
+                "name": name,
+                "status": "ok",
+                "kind": "buy_and_hold",
+                "capital": capital,
+                "base_date": base_date,
+                "base_close": closes[base_date],
+                "end_close": prev,
+                "net_total": round(sum(per_session), 2),
+                "net_ci95": [lo, hi],
+                "missing_sessions": missing,
+            }
+        )
     return rows
 
 
 # ----------------------------------------------------------------- scoring
 
 
-def _decisions(receipts: Mapping[str, Mapping[str, Any]],
-               boards: Sequence[Board]) -> list[Choice]:
+def _decisions(receipts: Mapping[str, Mapping[str, Any]], boards: Sequence[Board]) -> list[Choice]:
     out: list[Choice] = []
     for board in boards:
         rec = receipts.get(board.snapshot, {})
@@ -1070,10 +1198,21 @@ def default_cutoff(sessions: Sequence[str]) -> str | None:
     return sessions[max(0, (2 * len(sessions)) // 3 - 1)] if sessions else None
 
 
-def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
-                 sessions: Sequence[str], *, incumbent: str | None, cutoff: str | None,
-                 metric: str, max_finalists: int, draws: int, seed: int,
-                 alpha: float, aa_valid: bool, embargo: int = 1) -> dict[str, Any]:
+def walk_forward(
+    pooled: Mapping[str, np.ndarray],
+    expected: np.ndarray,
+    sessions: Sequence[str],
+    *,
+    incumbent: str | None,
+    cutoff: str | None,
+    metric: str,
+    max_finalists: int,
+    draws: int,
+    seed: int,
+    alpha: float,
+    aa_valid: bool,
+    embargo: int = 1,
+) -> dict[str, Any]:
     """Rank candidates on tune sessions (<= cutoff) by the pre-declared metric,
     keep at most MAX_FINALISTS, test them ONCE on the sessions >= ``embargo``
     sessions after the cutoff session (score_run passes purged series)."""
@@ -1083,13 +1222,20 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
     tune = np.array([s <= str(cutoff) for s in sessions])
     test = np.arange(len(sessions)) - (int(tune.sum()) - 1) >= max(1, embargo)
     test_sessions = [s for s, t in zip(sessions, test, strict=True) if t]
-    base = {"cutoff": cutoff, "metric": metric,
-            "tune_sessions": int(tune.sum()), "test_sessions": int(test.sum()),
-            "embargo_sessions": max(1, embargo),
-            "embargoed_sessions": int((~tune & ~test).sum())}
+    base = {
+        "cutoff": cutoff,
+        "metric": metric,
+        "tune_sessions": int(tune.sum()),
+        "test_sessions": int(test.sum()),
+        "embargo_sessions": max(1, embargo),
+        "embargoed_sessions": int((~tune & ~test).sum()),
+    }
     if not tune.any() or not test.any() or not pooled:
-        return {"status": "not_applicable", **base,
-                "reason": "the cutoff leaves no tune or no test sessions, or no candidates"}
+        return {
+            "status": "not_applicable",
+            **base,
+            "reason": "the cutoff leaves no tune or no test sessions, or no candidates",
+        }
     cap = min(max_finalists, MAX_FINALISTS)
     ranking: list[dict[str, Any]] = []
     for name in sorted(pooled):
@@ -1101,9 +1247,14 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
             value = float(diff.sum())
         else:
             value = bootstrap_ci(diff, draws=draws, seed=seed)[0]
-        ranking.append({"policy": name, "metric_value": round(value, 2),
-                        "tune_total": round(float(series[tune].sum()), 2),
-                        "tune_diff_vs_random": round(float(diff.sum()), 2)})
+        ranking.append(
+            {
+                "policy": name,
+                "metric_value": round(value, 2),
+                "tune_total": round(float(series[tune].sum()), 2),
+                "tune_diff_vs_random": round(float(diff.sum()), 2),
+            }
+        )
     ranking.sort(key=lambda r: (-r["metric_value"], r["policy"]))
     finalists = ranking[:cap]
     results: list[dict[str, Any]] = []
@@ -1112,16 +1263,26 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
         name = entry["policy"]
         series, exp = pooled[name][test], expected[test]
         vs_random = paired(series, exp, draws=draws, seed=seed)
-        vs_incumbent = (paired(series, pooled[incumbent][test], draws=draws, seed=seed)
-                        if incumbent is not None and incumbent in pooled and name != incumbent
-                        else None)
+        vs_incumbent = (
+            paired(series, pooled[incumbent][test], draws=draws, seed=seed)
+            if incumbent is not None and incumbent in pooled and name != incumbent
+            else None
+        )
         lo, hi = bootstrap_ci(series, draws=draws, seed=seed)
         pvalues[name] = vs_random["p_one_sided"]
-        results.append({"policy": name, "tune_metric": entry["metric_value"],
-                        "test": {"net_total": round(float(series.sum()), 2),
-                                 "net_ci95": [lo, hi], "vs_random": vs_random,
-                                 "vs_incumbent": vs_incumbent,
-                                 "stability": stability(series - exp, test_sessions)}})
+        results.append(
+            {
+                "policy": name,
+                "tune_metric": entry["metric_value"],
+                "test": {
+                    "net_total": round(float(series.sum()), 2),
+                    "net_ci95": [lo, hi],
+                    "vs_random": vs_random,
+                    "vs_incumbent": vs_incumbent,
+                    "stability": stability(series - exp, test_sessions),
+                },
+            }
+        )
     adjusted = holm(pvalues)
     for result in results:
         name = result["policy"]
@@ -1132,22 +1293,34 @@ def walk_forward(pooled: Mapping[str, np.ndarray], expected: np.ndarray,
             "aa_valid": aa_valid,
             "holm_p_below_alpha": adjusted[name] < alpha,
             "vs_random_ci_low_above_0": test_doc["vs_random"]["ci95"][0] > 0,
-            "vs_incumbent_ci_low_above_0": (None if test_doc["vs_incumbent"] is None
-                                            else test_doc["vs_incumbent"]["ci95"][0] > 0),
+            "vs_incumbent_ci_low_above_0": (
+                None
+                if test_doc["vs_incumbent"] is None
+                else test_doc["vs_incumbent"]["ci95"][0] > 0
+            ),
             "half_split_signs_agree": bool(stab["half_split"]["signs_agree"]),
             "no_drop_one_sign_flip": stab["drop_one_sign_flips"] == 0,
         }
         result["rule_check"] = checks
-        result["eligible_for_operator_review"] = (
-            name != incumbent and all(v is True for v in checks.values()))
-    return {"status": "ok", **base, "max_finalists": cap, "ranking": ranking,
-            "finalists": results,
-            "note": ("finalists were chosen on the tune sessions only; the test "
-                     "figures are the single confirmatory look")}
+        result["eligible_for_operator_review"] = name != incumbent and all(
+            v is True for v in checks.values()
+        )
+    return {
+        "status": "ok",
+        **base,
+        "max_finalists": cap,
+        "ranking": ranking,
+        "finalists": results,
+        "note": (
+            "finalists were chosen on the tune sessions only; the test "
+            "figures are the single confirmatory look"
+        ),
+    }
 
 
-def failure_reasons(arm_receipts: Mapping[str, Mapping[str, Any]],
-                    boards: Sequence[Board]) -> dict[str, int]:
+def failure_reasons(
+    arm_receipts: Mapping[str, Mapping[str, Any]], boards: Sequence[Board]
+) -> dict[str, int]:
     """Per-arm failure tally from the receipts on disk: truncated / timeout /
     http / other (an unknown reason buckets to other). Counts the same
     failed receipts as the standings ``failures`` column (the latest receipt
@@ -1170,8 +1343,9 @@ def failure_reasons(arm_receipts: Mapping[str, Mapping[str, Any]],
     return counts
 
 
-def heal_tally(arm: Arm, arm_receipts: Mapping[str, Mapping[str, Any]],
-               boards: Sequence[Board]) -> dict[str, Any] | None:
+def heal_tally(
+    arm: Arm, arm_receipts: Mapping[str, Mapping[str, Any]], boards: Sequence[Board]
+) -> dict[str, Any] | None:
     """Per-arm self-heal tally from the receipts on disk: how many of the
     arm's answered boards needed the truncation escalation, the timeout
     escalation or the fallback provider, and who answered (``provider``
@@ -1202,25 +1376,38 @@ def heal_tally(arm: Arm, arm_receipts: Mapping[str, Mapping[str, Any]],
             providers[str(who)] = providers.get(str(who), 0) + 1
     if not (escalated or timeout_escalated or fallback):
         return None
-    heals: dict[str, Any] = {"escalated": escalated, "timeout_escalated": timeout_escalated,
-                             "fallback": fallback}
+    heals: dict[str, Any] = {
+        "escalated": escalated,
+        "timeout_escalated": timeout_escalated,
+        "fallback": fallback,
+    }
     if not unattributed:
         heals["providers"] = providers
     return heals
 
 
-def score_run(boards: Sequence[Board], arms: Sequence[Arm],
-              receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
-              outcomes: OutcomeCache, protocol: Protocol, *,
-              benchmarks: Mapping[str, Mapping[Any, float]] | None = None,
-              receipts_files: Mapping[str, str] | None = None, run_id: str = "",
-              plan_created: str | None = None, complete: bool = True,
-              clock: Clock = _utcnow,
-              skill_options: Mapping[str, Any] | None = None) -> dict[str, Any]:
+def score_run(
+    boards: Sequence[Board],
+    arms: Sequence[Arm],
+    receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    outcomes: OutcomeCache,
+    protocol: Protocol,
+    *,
+    benchmarks: Mapping[str, Mapping[Any, float]] | None = None,
+    receipts_files: Mapping[str, str] | None = None,
+    run_id: str = "",
+    plan_created: str | None = None,
+    complete: bool = True,
+    clock: Clock = _utcnow,
+    skill_options: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """The digest document. Pure over its inputs (fixed seeds throughout)."""
     draws, seed = protocol.draws, protocol.seed
-    scored = [b for b in boards
-              if all(receipts.get(a.name, {}).get(b.snapshot, {}).get("ok") for a in arms)]
+    scored = [
+        b
+        for b in boards
+        if all(receipts.get(a.name, {}).get(b.snapshot, {}).get("ok") for a in arms)
+    ]
     sessions = sorted({b.session for b in scored})
     board_sessions = [b.session for b in scored]
     per_arm: dict[str, dict[str, Any]] = {}
@@ -1239,15 +1426,20 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             net.append(0.0 if value is None else value[1])
         mine = receipts.get(arm.name, {})
         per_arm[arm.name] = {
-            "arm": arm, "decisions": decisions, "net": net, "entered": entered,
+            "arm": arm,
+            "decisions": decisions,
+            "net": net,
+            "entered": entered,
             "unevaluable": unevaluable,
             "sessions": session_sums(board_sessions, net, sessions),
             "gross_total": float(sum(gross)),
-            "failures": sum(1 for b in boards if b.snapshot in mine
-                            and not mine[b.snapshot].get("ok")),
+            "failures": sum(
+                1 for b in boards if b.snapshot in mine and not mine[b.snapshot].get("ok")
+            ),
             "excluded": sum(1 for b in boards if not mine.get(b.snapshot, {}).get("ok")),
             "failure_reasons": failure_reasons(mine, boards),
-            "heals": heal_tally(arm, mine, boards)}
+            "heals": heal_tally(arm, mine, boards),
+        }
 
     incumbent_arms = [a.name for a in arms if a.policy.name == protocol.incumbent]
     model_arms = [a.name for a in arms if a.policy.kind == "model"]
@@ -1262,10 +1454,13 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
     else:
         used = {h for n in matched for c, h in per_arm[n]["decisions"] if c is not None}
         horizons = sorted(used, key=_horizon_key) or [None]
-    options = [np.array([outcomes.net(b.snapshot, rid, h) for rid in b.ids for h in horizons])
-               for b in scored]
-    null = random_null(board_sessions, sessions, options, p_enter,
-                       seeds=protocol.random_seeds, seed=seed)
+    options = [
+        np.array([outcomes.net(b.snapshot, rid, h) for rid in b.ids for h in horizons])
+        for b in scored
+    ]
+    null = random_null(
+        board_sessions, sessions, options, p_enter, seeds=protocol.random_seeds, seed=seed
+    )
     expected = null.expected_sessions
 
     first_row = next((a.name for a in arms if a.policy.name == FIRST_ROW), None)
@@ -1279,42 +1474,60 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         evaluated = data["entered"] - data["unevaluable"]
         chosen_options: list[np.ndarray] = []
         realized = 0.0
-        for board, (choice, horizon), value in zip(scored, data["decisions"], data["net"],
-                                                   strict=True):
+        for board, (choice, horizon), value in zip(
+            scored, data["decisions"], data["net"], strict=True
+        ):
             if choice is not None:
                 chosen_options.append(
-                    np.array([outcomes.net(board.snapshot, rid, horizon) for rid in board.ids]))
+                    np.array([outcomes.net(board.snapshot, rid, horizon) for rid in board.ids])
+                )
                 realized += value
-        standings.append({
-            "arm": arm.name, "policy": arm.policy.name, "repeat": arm.repeat,
-            "kind": arm.policy.kind, "boards": len(scored), "entered": data["entered"],
-            "entry_rate": round(data["entered"] / len(scored), 4) if scored else None,
-            "unevaluable": data["unevaluable"], "failures": data["failures"],
-            "excluded_boards": data["excluded"],
-            "net_total": round(total, 2),
-            "net_ci95": list(bootstrap_ci(series, draws=draws, seed=seed)),
-            "gross_total": round(data["gross_total"], 2),
-            "net_per_evaluated_entry": round(total / evaluated, 2) if evaluated else None,
-            "vs_random": paired(series, expected, draws=draws, seed=seed),
-            "vs_first_row": (paired(series, per_arm[first_row]["sessions"], draws=draws,
-                                    seed=seed)
-                             if first_row is not None and arm.name != first_row else None),
-            "vs_incumbent": (paired(series, per_arm[incumbent_ref]["sessions"], draws=draws,
-                                    seed=seed)
-                             if incumbent_ref is not None and arm.name != incumbent_ref
-                             else None),
-            "vs_regime": (paired(series, per_arm[regime]["sessions"], draws=draws, seed=seed)
-                          if regime is not None and arm.name != regime else None),
-            "null_percentile": round(float(np.mean(null.totals < total)), 4),
-            "pick_null": pick_null(realized, chosen_options, seeds=protocol.random_seeds,
-                                   seed=seed),
-            "stability_vs_random": stability(series - expected, sessions),
-            "receipts": (receipts_files or {}).get(arm.name),
-            **({"failure_reasons": data["failure_reasons"]}
-               if data["failure_reasons"] else {}),  # additive: a clean arm shows none
-            **({"heals": data["heals"]}
-               if data["heals"] else {}),  # additive: a clean arm shows no heal tally
-        })
+        standings.append(
+            {
+                "arm": arm.name,
+                "policy": arm.policy.name,
+                "repeat": arm.repeat,
+                "kind": arm.policy.kind,
+                "boards": len(scored),
+                "entered": data["entered"],
+                "entry_rate": round(data["entered"] / len(scored), 4) if scored else None,
+                "unevaluable": data["unevaluable"],
+                "failures": data["failures"],
+                "excluded_boards": data["excluded"],
+                "net_total": round(total, 2),
+                "net_ci95": list(bootstrap_ci(series, draws=draws, seed=seed)),
+                "gross_total": round(data["gross_total"], 2),
+                "net_per_evaluated_entry": round(total / evaluated, 2) if evaluated else None,
+                "vs_random": paired(series, expected, draws=draws, seed=seed),
+                "vs_first_row": (
+                    paired(series, per_arm[first_row]["sessions"], draws=draws, seed=seed)
+                    if first_row is not None and arm.name != first_row
+                    else None
+                ),
+                "vs_incumbent": (
+                    paired(series, per_arm[incumbent_ref]["sessions"], draws=draws, seed=seed)
+                    if incumbent_ref is not None and arm.name != incumbent_ref
+                    else None
+                ),
+                "vs_regime": (
+                    paired(series, per_arm[regime]["sessions"], draws=draws, seed=seed)
+                    if regime is not None and arm.name != regime
+                    else None
+                ),
+                "null_percentile": round(float(np.mean(null.totals < total)), 4),
+                "pick_null": pick_null(
+                    realized, chosen_options, seeds=protocol.random_seeds, seed=seed
+                ),
+                "stability_vs_random": stability(series - expected, sessions),
+                "receipts": (receipts_files or {}).get(arm.name),
+                **(
+                    {"failure_reasons": data["failure_reasons"]} if data["failure_reasons"] else {}
+                ),  # additive: a clean arm shows none
+                **(
+                    {"heals": data["heals"]} if data["heals"] else {}
+                ),  # additive: a clean arm shows no heal tally
+            }
+        )
     standings.sort(key=lambda r: (-r["vs_random"]["ci95"][0], r["arm"]))
 
     aa = aa_check(per_arm, incumbent_arms, draws=draws, seed=seed)
@@ -1329,47 +1542,73 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         by_arm: dict[str, dict[str, int]] = {}
         for arm in arms:
             values, by_arm[arm.name] = purge.purge_decisions(
-                scored, per_arm[arm.name]["decisions"], per_arm[arm.name]["net"], outcomes.get,
-                outcomes.exit_at, cutoff, window)
+                scored,
+                per_arm[arm.name]["decisions"],
+                per_arm[arm.name]["net"],
+                outcomes.get,
+                outcomes.exit_at,
+                cutoff,
+                window,
+            )
             selection[arm.name] = session_sums(board_sessions, values, sessions)
-        sel_expected, null_counts = purge.purged_null(scored, sessions, horizons, outcomes.get,
-                                                      outcomes.exit_at, cutoff, null.p_enter,
-                                                      window)
-        purge_doc = {"rule": purge.RULE, "cutoff": cutoff, "by_arm": by_arm,
-                     "random_null": null_counts,
-                     "own_coverage": {a.name: purge.own_coverage(
-                         boards, receipts.get(a.name, {}), outcomes.get, outcomes.exit_at,
-                         cutoff, window) for a in arms}}
+        sel_expected, null_counts = purge.purged_null(
+            scored, sessions, horizons, outcomes.get, outcomes.exit_at, cutoff, null.p_enter, window
+        )
+        purge_doc = {
+            "rule": purge.RULE,
+            "cutoff": cutoff,
+            "by_arm": by_arm,
+            "random_null": null_counts,
+            "own_coverage": {
+                a.name: purge.own_coverage(
+                    boards, receipts.get(a.name, {}), outcomes.get, outcomes.exit_at, cutoff, window
+                )
+                for a in arms
+            },
+        }
     pooled: dict[str, np.ndarray] = {}
-    for policy_name in sorted({a.policy.name for a in arms
-                               if a.policy.kind in ("model", "rule")}):
+    for policy_name in sorted({a.policy.name for a in arms if a.policy.kind in ("model", "rule")}):
         members = [selection[a.name] for a in arms if a.policy.name == policy_name]
-        pooled[policy_name] = np.mean(np.vstack(members), axis=0) if sessions \
-            else np.zeros(0)
-    wf = walk_forward(pooled, sel_expected, sessions, incumbent=protocol.incumbent,
-                      cutoff=cutoff, metric=protocol.metric,
-                      max_finalists=protocol.max_finalists, draws=draws, seed=seed,
-                      alpha=protocol.alpha, aa_valid=bool(aa["valid"]),
-                      embargo=protocol.embargo_sessions)
+        pooled[policy_name] = np.mean(np.vstack(members), axis=0) if sessions else np.zeros(0)
+    wf = walk_forward(
+        pooled,
+        sel_expected,
+        sessions,
+        incumbent=protocol.incumbent,
+        cutoff=cutoff,
+        metric=protocol.metric,
+        max_finalists=protocol.max_finalists,
+        draws=draws,
+        seed=seed,
+        alpha=protocol.alpha,
+        aa_valid=bool(aa["valid"]),
+        embargo=protocol.embargo_sessions,
+    )
     if purge_doc is not None:
         wf["purge"] = purge_doc
-    bench = benchmark_rows(benchmarks or {}, sessions, capital=protocol.capital,
-                           draws=draws, seed=seed)
-    eligible = [f["policy"] for f in wf.get("finalists", [])
-                if f.get("eligible_for_operator_review")]
+    bench = benchmark_rows(
+        benchmarks or {}, sessions, capital=protocol.capital, draws=draws, seed=seed
+    )
+    eligible = [
+        f["policy"] for f in wf.get("finalists", []) if f.get("eligible_for_operator_review")
+    ]
     headline = _headline(aa, wf, eligible, complete)
     try:  # exact counterfactual accounting (desk.skill): descriptive, never fatal
         from tree_options.desk import skill
 
-        skill_doc = skill.skill_section(boards, arms, receipts, outcomes, protocol,
-                                        options=skill_options)
+        skill_doc = skill.skill_section(
+            boards, arms, receipts, outcomes, protocol, options=skill_options
+        )
     except Exception as error:
         skill_doc = {"status": "error", "error": f"{type(error).__name__}: {str(error)[:200]}"}
     return {
         "schema": DIGEST_SCHEMA,
         "untrusted_note": UNTRUSTED_NOTE,
-        "promotion": {"promoted": False, "rule": PREREGISTERED_RULE,
-                      "pre_registered_at": plan_created},
+        "promotion": {
+            "promoted": False,
+            "rule": PREREGISTERED_RULE,
+            "pre_registered_at": plan_created,
+        },
         "headline": headline,
         "evaluation_valid": bool(aa["valid"]),
         "complete": complete,
@@ -1380,26 +1619,36 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "resampling_unit": "session",
             "ci": "95% percentile bootstrap of the session sum (fixed seed)",
             "p_value": "one-sided session sign-flip permutation (exact <= 16 sessions)",
-            "pairing": ("every arm is scored on the same boards: a board any arm lacks "
-                        "an ok receipt for is excluded from all arms"),
+            "pairing": (
+                "every arm is scored on the same boards: a board any arm lacks "
+                "an ok receipt for is excluded from all arms"
+            ),
             "unevaluable": "a chosen row with no outcome (no fill) scores 0, counted apart",
-            "pair_arms": ("a rule arm may choose a two-leg package 'idA+idB' (both rows on "
-                          "the board; gross/net summed over the legs, each leg pays its own "
-                          "round-trip cost; a no-fill on either leg is unevaluable); the "
-                          "random null and the controls stay single-row, so a pair arm is "
-                          "scored against the SINGLE-ROW random null - a documented "
-                          "comparison, never a silently mixed one"),
-            "standings_scope": ("standings cover the whole window (descriptive); only "
-                                "the walk-forward test section is confirmatory"),
+            "pair_arms": (
+                "a rule arm may choose a two-leg package 'idA+idB' (both rows on "
+                "the board; gross/net summed over the legs, each leg pays its own "
+                "round-trip cost; a no-fill on either leg is unevaluable); the "
+                "random null and the controls stay single-row, so a pair arm is "
+                "scored against the SINGLE-ROW random null - a documented "
+                "comparison, never a silently mixed one"
+            ),
+            "standings_scope": (
+                "standings cover the whole window (descriptive); only "
+                "the walk-forward test section is confirmatory"
+            ),
         },
-        "boards": {"total": len(boards), "scored": len(scored),
-                   "excluded": len(boards) - len(scored),
-                   "sessions": {"count": len(sessions),
-                                "first": sessions[0] if sessions else None,
-                                "last": sessions[-1] if sessions else None}},
+        "boards": {
+            "total": len(boards),
+            "scored": len(scored),
+            "excluded": len(boards) - len(scored),
+            "sessions": {
+                "count": len(sessions),
+                "first": sessions[0] if sessions else None,
+                "last": sessions[-1] if sessions else None,
+            },
+        },
         "aa": aa,
-        "random_null": null.to_json(draws=draws, seed=seed, matched_to=matched,
-                                    horizons=horizons),
+        "random_null": null.to_json(draws=draws, seed=seed, matched_to=matched, horizons=horizons),
         "standings": standings,
         "walk_forward": wf,
         "benchmarks": bench,
@@ -1408,43 +1657,71 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
     }
 
 
-def aa_check(per_arm: Mapping[str, Mapping[str, Any]], incumbent_arms: Sequence[str], *,
-             draws: int, seed: int) -> dict[str, Any]:
+def aa_check(
+    per_arm: Mapping[str, Mapping[str, Any]],
+    incumbent_arms: Sequence[str],
+    *,
+    draws: int,
+    seed: int,
+) -> dict[str, Any]:
     """Incumbent repeat 1 vs repeat 2 on the same boards. A paired CI that
     excludes 0 means the harness noise alone looks like an edge: INVALID."""
     rule = "INVALID when the paired session-bootstrap 95% CI of the A/A diff excludes 0"
     if len(incumbent_arms) < 2:
-        return {"status": "not_run", "valid": False, "rule": rule,
-                "reason": "the incumbent needs repeats >= 2 on the same boards"}
+        return {
+            "status": "not_run",
+            "valid": False,
+            "rule": rule,
+            "reason": "the incumbent needs repeats >= 2 on the same boards",
+        }
     a, b = incumbent_arms[0], incumbent_arms[1]
     dec_a, dec_b = per_arm[a]["decisions"], per_arm[b]["decisions"]
     if not dec_a:
-        return {"status": "not_run", "valid": False, "rule": rule, "pair": [a, b],
-                "reason": "no scored boards for the A/A pair"}
+        return {
+            "status": "not_run",
+            "valid": False,
+            "rule": rule,
+            "pair": [a, b],
+            "reason": "no scored boards for the A/A pair",
+        }
     agreement = sum(1 for x, y in zip(dec_a, dec_b, strict=True) if x == y) / len(dec_a)
     diff = paired(per_arm[a]["sessions"], per_arm[b]["sessions"], draws=draws, seed=seed)
     lo, hi = diff["ci95"]
     significant = lo > 0 or hi < 0
-    return {"status": "INVALID" if significant else "valid", "valid": not significant,
-            "pair": [a, b], "boards": len(dec_a), "agreement": round(agreement, 4),
-            "diff": diff, "significant": significant, "rule": rule}
+    return {
+        "status": "INVALID" if significant else "valid",
+        "valid": not significant,
+        "pair": [a, b],
+        "boards": len(dec_a),
+        "agreement": round(agreement, 4),
+        "diff": diff,
+        "significant": significant,
+        "rule": rule,
+    }
 
 
-def _headline(aa: Mapping[str, Any], wf: Mapping[str, Any], eligible: Sequence[str],
-              complete: bool) -> str:
+def _headline(
+    aa: Mapping[str, Any], wf: Mapping[str, Any], eligible: Sequence[str], complete: bool
+) -> str:
     prefix = "" if complete else "PARTIAL (scored from incomplete receipts): "
     if aa["status"] == "INVALID":
-        return (prefix + "EVALUATION INVALID - the A/A pair differs significantly; no "
-                "comparison in this digest is interpretable. Nothing promoted.")
+        return (
+            prefix + "EVALUATION INVALID - the A/A pair differs significantly; no "
+            "comparison in this digest is interpretable. Nothing promoted."
+        )
     if aa["status"] != "valid":
-        return (prefix + "UNVALIDATED - no A/A pair (incumbent repeats < 2); treat every "
-                "comparison as unvalidated. Nothing promoted.")
+        return (
+            prefix + "UNVALIDATED - no A/A pair (incumbent repeats < 2); treat every "
+            "comparison as unvalidated. Nothing promoted."
+        )
     agreement = aa.get("agreement")
     agree = "n/a" if agreement is None else f"{100 * agreement:.1f}%"
     finalists = len(wf.get("finalists", []))
-    return (prefix + f"A/A valid (choice agreement {agree}); {finalists} walk-forward "
-            f"finalist(s) tested once; {len(eligible)} eligible for operator review; "
-            "nothing promoted.")
+    return (
+        prefix + f"A/A valid (choice agreement {agree}); {finalists} walk-forward "
+        f"finalist(s) tested once; {len(eligible)} eligible for operator review; "
+        "nothing promoted."
+    )
 
 
 # ------------------------------------------------------------------ digest
@@ -1471,16 +1748,22 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
     add("")
     again = doc.get("redigest")
     if again is not None:  # what this document is NOT (never mistaken for the run's own)
-        said = [f"re-scored from receipts on disk + the outcome table "
-                f"({again['model_calls']} model calls)"]
+        said = [
+            f"re-scored from receipts on disk + the outcome table "
+            f"({again['model_calls']} model calls)"
+        ]
         if again.get("arms") is not None:
-            said.append(f"ARM SUBSET ({doc['boards']['scored']} boards where all "
-                        f"{len(again['arms'])} arms answered: "
-                        f"{', '.join(again['arms'])}) - not the full policy pairing")
+            said.append(
+                f"ARM SUBSET ({doc['boards']['scored']} boards where all "
+                f"{len(again['arms'])} arms answered: "
+                f"{', '.join(again['arms'])}) - not the full policy pairing"
+            )
         if again.get("sessions"):
             window = again["sessions"]
-            said.append(f"session window {window['first'] or '..'}..{window['last'] or '..'} "
-                        f"({window['boards']} boards)")
+            said.append(
+                f"session window {window['first'] or '..'}..{window['last'] or '..'} "
+                f"({window['boards']} boards)"
+            )
         add("> Redigest: " + "; ".join(said) + ".")
         add("")
     promotion = doc["promotion"]
@@ -1488,48 +1771,74 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
     add("")
     add(promotion["rule"])
     add("")
-    add(f"Promoted: {promotion['promoted']} (pre-registered at "
-        f"{promotion.get('pre_registered_at')})")
+    add(
+        f"Promoted: {promotion['promoted']} (pre-registered at "
+        f"{promotion.get('pre_registered_at')})"
+    )
     add("")
     protocol = doc["protocol"]
     boards = doc["boards"]
     add("## Protocol")
     add("")
-    add(f"- boards: {boards['scored']} scored of {boards['total']} "
+    add(
+        f"- boards: {boards['scored']} scored of {boards['total']} "
         f"({boards['excluded']} excluded for a missing/failed receipt in some arm); "
         f"sessions: {boards['sessions']['count']} ({boards['sessions']['first']} .. "
-        f"{boards['sessions']['last']})")
-    for key in ("resampling_unit", "ci", "p_value", "pairing", "unevaluable", "pair_arms",
-                "standings_scope"):
+        f"{boards['sessions']['last']})"
+    )
+    for key in (
+        "resampling_unit",
+        "ci",
+        "p_value",
+        "pairing",
+        "unevaluable",
+        "pair_arms",
+        "standings_scope",
+    ):
         add(f"- {key}: {protocol[key]}")
-    add(f"- draws {protocol['draws']}, seed {protocol['seed']}, random seeds "
-        f"{protocol['random_seeds']}, capital ${protocol['capital']:.0f}")
-    add(f"- incumbent: {protocol['incumbent']}; walk-forward cutoff "
+    add(
+        f"- draws {protocol['draws']}, seed {protocol['seed']}, random seeds "
+        f"{protocol['random_seeds']}, capital ${protocol['capital']:.0f}"
+    )
+    add(
+        f"- incumbent: {protocol['incumbent']}; walk-forward cutoff "
         f"{protocol['cutoff'] or 'default (first two thirds tune)'}; metric "
         f"{protocol['metric']}; max finalists {protocol['max_finalists']}; "
-        f"alpha {protocol['alpha']}")
+        f"alpha {protocol['alpha']}"
+    )
     add("")
     add("## Standings (net $, 95% session-bootstrap CI; ordered by the vs-random CI low)")
     add("")
-    add("| arm | kind | entered | unevaluable | failures | net total [95% CI] | "
-        f"vs random | vs first_row | vs incumbent | vs {REGIME} | null pctile |")
+    add(
+        "| arm | kind | entered | unevaluable | failures | net total [95% CI] | "
+        f"vs random | vs first_row | vs incumbent | vs {REGIME} | null pctile |"
+    )
     add("|---|---|---|---|---|---|---|---|---|---|---|")
     for row in doc["standings"]:
-        add(f"| {row['arm']} | {row['kind']} | {row['entered']} | {row['unevaluable']} | "
+        add(
+            f"| {row['arm']} | {row['kind']} | {row['entered']} | {row['unevaluable']} | "
             f"{row['failures']} | {row['net_total']:+.2f} {_ci(row['net_ci95'])} | "
             f"{_pair(row['vs_random'])} | {_pair(row['vs_first_row'])} | "
             f"{_pair(row['vs_incumbent'])} | {_pair(row.get('vs_regime'))} | "
-            f"{row['null_percentile']:.3f} |")
+            f"{row['null_percentile']:.3f} |"
+        )
     null = doc["random_null"]
-    add(f"| random (p_enter {null['p_enter']:.3f}) | control | - | - | - | "
-        f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])} | - | - | - | - | - |")
+    add(
+        f"| random (p_enter {null['p_enter']:.3f}) | control | - | - | - | "
+        f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])} | - | - | - | - | - |"
+    )
     for bench in doc["benchmarks"]:
         if bench.get("status") == "ok":
-            add(f"| {bench['name']} buy-and-hold | benchmark | - | - | - | "
-                f"{bench['net_total']:+.2f} {_ci(bench['net_ci95'])} | - | - | - | - | - |")
+            add(
+                f"| {bench['name']} buy-and-hold | benchmark | - | - | - | "
+                f"{bench['net_total']:+.2f} {_ci(bench['net_ci95'])} | - | - | - | - | - |"
+            )
     add("")
-    tallies = [(row["arm"], row["failure_reasons"]) for row in doc["standings"]
-               if row.get("failure_reasons")]
+    tallies = [
+        (row["arm"], row["failure_reasons"])
+        for row in doc["standings"]
+        if row.get("failure_reasons")
+    ]
     if tallies:  # failure transparency: what each arm's failures were, not just how many
         add("## Failure tally (per arm, from the receipts on disk)")
         add("")
@@ -1537,21 +1846,25 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
             add("PARTIAL RUN - receipts incomplete; these counts can still grow.")
             add("")
         for arm, reasons in tallies:
-            add(f"- {arm}: " + ", ".join(f"{reason} {count}" for reason, count
-                                         in sorted(reasons.items())))
+            add(
+                f"- {arm}: "
+                + ", ".join(f"{reason} {count}" for reason, count in sorted(reasons.items()))
+            )
         add("")
     healed = [(row["arm"], row["heals"]) for row in doc["standings"] if row.get("heals")]
     if healed:  # who actually answered: the self-heal ladder in full view
         add("## Self-heals (per arm, from the receipts on disk)")
         add("")
         for arm, tally in healed:
-            line = (f"- {arm}: escalated {tally['escalated']}, timeout_escalated "
-                    f"{tally['timeout_escalated']}, fallback {tally['fallback']}")
+            line = (
+                f"- {arm}: escalated {tally['escalated']}, timeout_escalated "
+                f"{tally['timeout_escalated']}, fallback {tally['fallback']}"
+            )
             who = tally.get("providers")
             if who:
-                line += ("; answered by "
-                         + ", ".join(f"{provider} {count}"
-                                     for provider, count in sorted(who.items())))
+                line += "; answered by " + ", ".join(
+                    f"{provider} {count}" for provider, count in sorted(who.items())
+                )
             else:
                 line += "; answered by: unattributed (receipts predate the provider field)"
             add(line)
@@ -1563,18 +1876,22 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         add(f"NOT RUN - {aa['reason']}.")
     else:
         agreement = aa["agreement"]
-        add(f"{aa['status'].upper()}: {aa['pair'][0]} vs {aa['pair'][1]} on "
+        add(
+            f"{aa['status'].upper()}: {aa['pair'][0]} vs {aa['pair'][1]} on "
             f"{aa['boards']} boards; choice agreement "
             f"{'n/a' if agreement is None else f'{100 * agreement:.1f}%'}; diff "
-            f"{_pair(aa['diff'])}. Rule: {aa['rule']}.")
+            f"{_pair(aa['diff'])}. Rule: {aa['rule']}."
+        )
     add("")
     add("## Random null")
     add("")
-    add(f"Uniform (row, horizon) at entry rate {null['p_enter']:.3f} matched to "
+    add(
+        f"Uniform (row, horizon) at entry rate {null['p_enter']:.3f} matched to "
         f"{', '.join(null['matched_to']) or 'no model arm (always enter)'}; "
         f"{null['seeds']} seeds on the same boards: expected "
         f"{null['expected_total']:+.2f} {_ci(null['expected_ci95'])}, simulated 95% band "
-        f"{_ci(null['band95'])}.")
+        f"{_ci(null['band95'])}."
+    )
     add("")
     wf = doc["walk_forward"]
     add("## Walk-forward (confirmatory)")
@@ -1582,36 +1899,49 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
     if wf.get("status") != "ok":
         add(f"Not applicable - {wf.get('reason')}.")
     else:
-        add(f"Cutoff {wf['cutoff']} ({wf['tune_sessions']} tune / {wf['test_sessions']} "
+        add(
+            f"Cutoff {wf['cutoff']} ({wf['tune_sessions']} tune / {wf['test_sessions']} "
             f"test sessions); metric {wf['metric']}; at most {wf['max_finalists']} "
-            "finalists.")
+            "finalists."
+        )
         add("")
         for f in wf["finalists"]:
             test = f["test"]
-            add(f"- {f['policy']}: tune metric {f['tune_metric']:+.2f}; test net "
+            add(
+                f"- {f['policy']}: tune metric {f['tune_metric']:+.2f}; test net "
                 f"{test['net_total']:+.2f} {_ci(test['net_ci95'])}; vs random "
                 f"{_pair(test['vs_random'])}; Holm p {f['holm_p']:.4f}; vs incumbent "
                 f"{_pair(test['vs_incumbent'])}; eligible for operator review: "
-                f"{f['eligible_for_operator_review']}")
+                f"{f['eligible_for_operator_review']}"
+            )
     purged = wf.get("purge")
     if purged:
         add("")
-        add(f"Purge + embargo (selection scoring changed 2026-09-28): {purged['rule']}. "
+        add(
+            f"Purge + embargo (selection scoring changed 2026-09-28): {purged['rule']}. "
             f"Embargo {wf.get('embargo_sessions', 1)} session(s), "
             f"{wf.get('embargoed_sessions', 0)} embargoed. Purged train decisions (paired "
-            "boards): " + (", ".join(f"{a} {c['purged']}/{c['train_entered']}"
-                                     for a, c in purged["by_arm"].items()) or "none")
+            "boards): "
+            + (
+                ", ".join(
+                    f"{a} {c['purged']}/{c['train_entered']}" for a, c in purged["by_arm"].items()
+                )
+                or "none"
+            )
             + f"; random-null options purged {purged['random_null']['purged_options']}/"
-              f"{purged['random_null']['train_options']}.")
+            f"{purged['random_null']['train_options']}."
+        )
     add("")
     add("## Stability (paired diff vs the random expectation)")
     add("")
     for row in doc["standings"]:
         stab = row["stability_vs_random"]
-        add(f"- {row['arm']}: drop-one range [{stab['drop_one_min']:+.2f}, "
+        add(
+            f"- {row['arm']}: drop-one range [{stab['drop_one_min']:+.2f}, "
             f"{stab['drop_one_max']:+.2f}], sign flips {stab['drop_one_sign_flips']}; halves "
             f"{stab['half_split']['first']:+.2f} / {stab['half_split']['second']:+.2f} "
-            f"(agree: {stab['half_split']['signs_agree']})")
+            f"(agree: {stab['half_split']['signs_agree']})"
+        )
     add("")
     if doc.get("skill"):
         from tree_options.desk import skill
@@ -1641,51 +1971,84 @@ def write_digest(run_dir: Path, doc: Mapping[str, Any]) -> None:
 def boards_fingerprint(boards: Sequence[Board]) -> str:
     digest = hashlib.sha256()
     for board in boards:
-        digest.update(json.dumps([board.snapshot, board.session, board.clock,
-                                  board.ids]).encode())
+        digest.update(json.dumps([board.snapshot, board.session, board.clock, board.ids]).encode())
     return digest.hexdigest()
 
 
-def _plan(run_dir: Path, boards: Sequence[Board], policies: Sequence[PolicySpec],
-          protocol: Protocol, meta: Mapping[str, Any] | None, clock: Clock) -> dict[str, Any]:
+def _plan(
+    run_dir: Path,
+    boards: Sequence[Board],
+    policies: Sequence[PolicySpec],
+    protocol: Protocol,
+    meta: Mapping[str, Any] | None,
+    clock: Clock,
+) -> dict[str, Any]:
     """Write plan.json + boards.jsonl on first start; on resume refuse changed
     boards (the pairing) or a changed protocol (the pre-registration)."""
     path = run_dir / "plan.json"
     fingerprint = boards_fingerprint(boards)
-    policy_docs = [{"name": p.name, "kind": p.kind, "repeats": p.repeats,
-                    "provider": p.provider,
-                    "prompt_sha256": (hashlib.sha256(p.prompt.encode()).hexdigest()
-                                      if p.prompt else None)} for p in policies]
+    policy_docs = [
+        {
+            "name": p.name,
+            "kind": p.kind,
+            "repeats": p.repeats,
+            "provider": p.provider,
+            "prompt_sha256": (hashlib.sha256(p.prompt.encode()).hexdigest() if p.prompt else None),
+        }
+        for p in policies
+    ]
     if path.is_file():
         plan = json.loads(path.read_text(encoding="utf-8"))
         if plan.get("boards_fingerprint") != fingerprint:
             raise ValueError("the boards changed since this run started; start a new run dir")
         if plan.get("protocol") != protocol.to_json():
-            raise ValueError("the protocol is pre-registered in plan.json and cannot change "
-                             "on resume")
+            raise ValueError(
+                "the protocol is pre-registered in plan.json and cannot change on resume"
+            )
         plan["policies"] = policy_docs
         plan["resumed_at"] = clock().isoformat()
         _write_json(path, plan)
         return dict(plan)
     sessions = sorted({b.session for b in boards})
-    plan = {"schema": PLAN_SCHEMA, "run_id": run_dir.name, "created": clock().isoformat(),
-            "boards": len(boards), "boards_fingerprint": fingerprint,
-            "sessions": {"count": len(sessions), "first": sessions[0], "last": sessions[-1]},
-            "policies": policy_docs, "protocol": protocol.to_json(),
-            "preregistered_rule": PREREGISTERED_RULE, "untrusted_note": UNTRUSTED_NOTE,
-            "meta": dict(meta or {})}
+    plan = {
+        "schema": PLAN_SCHEMA,
+        "run_id": run_dir.name,
+        "created": clock().isoformat(),
+        "boards": len(boards),
+        "boards_fingerprint": fingerprint,
+        "sessions": {"count": len(sessions), "first": sessions[0], "last": sessions[-1]},
+        "policies": policy_docs,
+        "protocol": protocol.to_json(),
+        "preregistered_rule": PREREGISTERED_RULE,
+        "untrusted_note": UNTRUSTED_NOTE,
+        "meta": dict(meta or {}),
+    }
     with (run_dir / "boards.jsonl").open("w", encoding="utf-8") as stream:
         for board in boards:
-            stream.write(json.dumps({"snapshot": board.snapshot, "session": board.session,
-                                     "clock": board.clock, "rows": board.rows,
-                                     "context": board.context}, default=str) + "\n")
+            stream.write(
+                json.dumps(
+                    {
+                        "snapshot": board.snapshot,
+                        "session": board.session,
+                        "clock": board.clock,
+                        "rows": board.rows,
+                        "context": board.context,
+                    },
+                    default=str,
+                )
+                + "\n"
+            )
     _write_json(path, plan)
     return plan
 
 
-def _run_reports(reports: Mapping[str, Callable[..., Mapping[str, Any]]], arms: Sequence[Arm],
-                 receipts: Mapping[str, dict[str, dict[str, Any]]], files: dict[str, str],
-                 **inputs: Any) -> tuple[list[Arm], dict[str, Any], dict[str, Any]]:
+def _run_reports(
+    reports: Mapping[str, Callable[..., Mapping[str, Any]]],
+    arms: Sequence[Arm],
+    receipts: Mapping[str, dict[str, dict[str, Any]]],
+    files: dict[str, str],
+    **inputs: Any,
+) -> tuple[list[Arm], dict[str, Any], dict[str, Any]]:
     """Post-execution report plug-ins: each returns a digest ``section`` and
     may add DERIVED deterministic arms (``derived``: [{arm, receipts, file}])
     scored on the same paired scoreboard. A failing report is recorded."""
@@ -1698,8 +2061,10 @@ def _run_reports(reports: Mapping[str, Callable[..., Mapping[str, Any]]], arms: 
             if any(item["arm"].name in all_receipts for item in added):
                 raise ValueError("a derived arm name collides with an existing arm")
         except Exception as error:  # the digest still gets written
-            sections[name] = {"status": "failed",
-                              "error": f"{type(error).__name__}: {str(error)[:200]}"}
+            sections[name] = {
+                "status": "failed",
+                "error": f"{type(error).__name__}: {str(error)[:200]}",
+            }
             continue
         for item in added:
             all_arms.append(item["arm"])
@@ -1709,17 +2074,25 @@ def _run_reports(reports: Mapping[str, Callable[..., Mapping[str, Any]]], arms: 
     return all_arms, all_receipts, sections
 
 
-def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[PolicySpec],
-                outcome: OutcomeFn, ask: AskFn | None, quota_ok: QuotaFn,
-                protocol: Protocol, settings: ExecSettings | None = None,
-                benchmarks: Mapping[str, Mapping[Any, float]] | None = None,
-                meta: Mapping[str, Any] | None = None, score_only: bool = False,
-                sleep: Callable[[float], None] = time.sleep,
-                monotonic: Callable[[], float] = time.monotonic,
-                clock: Clock = _utcnow,
-                skill_options: Mapping[str, Any] | None = None,
-                reports: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None
-                ) -> dict[str, Any]:
+def run_longrun(
+    run_dir: Path,
+    *,
+    boards: Sequence[Board],
+    policies: Sequence[PolicySpec],
+    outcome: OutcomeFn,
+    ask: AskFn | None,
+    quota_ok: QuotaFn,
+    protocol: Protocol,
+    settings: ExecSettings | None = None,
+    benchmarks: Mapping[str, Mapping[Any, float]] | None = None,
+    meta: Mapping[str, Any] | None = None,
+    score_only: bool = False,
+    sleep: Callable[[float], None] = time.sleep,
+    monotonic: Callable[[], float] = time.monotonic,
+    clock: Clock = _utcnow,
+    skill_options: Mapping[str, Any] | None = None,
+    reports: Mapping[str, Callable[..., Mapping[str, Any]]] | None = None,
+) -> dict[str, Any]:
     """Execute (or resume) every missing (arm, board), then score and digest.
 
     Returns {"status": "finished" | "stopped:<why>", ...}. A stopped run is
@@ -1743,27 +2116,54 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
             raise RunLocked(f"{run_dir.name}: another process holds this run")
         plan = _plan(run_dir, boards, policies, protocol, meta, clock)
         outcomes = OutcomeCache(outcome)
-        executor = _Executor(run_dir, boards, arms, ask=ask, quota_ok=quota_ok,
-                             outcomes=outcomes, settings=settings, sleep=sleep,
-                             monotonic=monotonic, clock=clock)
+        executor = _Executor(
+            run_dir,
+            boards,
+            arms,
+            ask=ask,
+            quota_ok=quota_ok,
+            outcomes=outcomes,
+            settings=settings,
+            sleep=sleep,
+            monotonic=monotonic,
+            clock=clock,
+        )
         stop = "" if score_only else executor.run()
         if stop:
             executor.status = f"stopped:{stop}"
             executor.write_progress()
             return {"status": executor.status, "run_dir": str(run_dir)}
-        complete = all(executor.receipts[a.name].get(b.snapshot, {}).get("ok")
-                       for a in arms for b in boards)
+        complete = all(
+            executor.receipts[a.name].get(b.snapshot, {}).get("ok") for a in arms for b in boards
+        )
         executor.status = "scoring"
         executor.write_progress()
         files = {a.name: str(receipts_path(run_dir, a.name)) for a in arms}
         try:
             scored_arms, scored_receipts, sections = _run_reports(
-                reports or {}, arms, executor.receipts, files, run_dir=run_dir, boards=boards,
-                outcomes=outcomes, protocol=protocol)
-            digest = score_run(boards, scored_arms, scored_receipts, outcomes, protocol,
-                               benchmarks=benchmarks, receipts_files=files,
-                               run_id=run_dir.name, plan_created=plan.get("created"),
-                               complete=complete, clock=clock, skill_options=skill_options)
+                reports or {},
+                arms,
+                executor.receipts,
+                files,
+                run_dir=run_dir,
+                boards=boards,
+                outcomes=outcomes,
+                protocol=protocol,
+            )
+            digest = score_run(
+                boards,
+                scored_arms,
+                scored_receipts,
+                outcomes,
+                protocol,
+                benchmarks=benchmarks,
+                receipts_files=files,
+                run_id=run_dir.name,
+                plan_created=plan.get("created"),
+                complete=complete,
+                clock=clock,
+                skill_options=skill_options,
+            )
         except Exception:
             executor.status = "scoring_failed"
             executor.write_progress()
@@ -1774,8 +2174,12 @@ def run_longrun(run_dir: Path, *, boards: Sequence[Board], policies: Sequence[Po
         executor.status = "finished"
         executor.digest = "digest.json"
         executor.write_progress()
-        return {"status": "finished", "run_dir": str(run_dir),
-                "headline": digest["headline"], "complete": complete}
+        return {
+            "status": "finished",
+            "run_dir": str(run_dir),
+            "headline": digest["headline"],
+            "complete": complete,
+        }
 
 
 # ----------------------------------------------------------------- plug-ins
@@ -1801,12 +2205,22 @@ class PluginContext:
 #:   report:     -> (run_dir=, boards=, arms=, receipts=, outcomes=, protocol=) ->
 #:                  {"section": digest section, "derived": [{arm, receipts, file}]}
 PLUGINS: dict[str, dict[str, Callable[[Mapping[str, Any], PluginContext], Any]]] = {
-    "boards": {}, "outcome": {}, "ask": {}, "quota": {}, "benchmarks": {}, "report": {}}
+    "boards": {},
+    "outcome": {},
+    "ask": {},
+    "quota": {},
+    "benchmarks": {},
+    "report": {},
+}
 
 
-def register_plugin(kind: str, name: str,
-                    factory: Callable[[Mapping[str, Any], PluginContext], Any], *,
-                    replace: bool = False) -> None:
+def register_plugin(
+    kind: str,
+    name: str,
+    factory: Callable[[Mapping[str, Any], PluginContext], Any],
+    *,
+    replace: bool = False,
+) -> None:
     if kind not in PLUGINS:
         raise ValueError(f"plug-in kind must be one of {sorted(PLUGINS)}")
     if not replace and name in PLUGINS[kind]:
@@ -1818,8 +2232,9 @@ def plugin(kind: str, name: str) -> Callable[[Mapping[str, Any], PluginContext],
     try:
         return PLUGINS[kind][name]
     except KeyError:
-        raise ValueError(f"unknown {kind} plug-in {name!r} "
-                         f"(registered: {sorted(PLUGINS.get(kind, {}))})") from None
+        raise ValueError(
+            f"unknown {kind} plug-in {name!r} (registered: {sorted(PLUGINS.get(kind, {}))})"
+        ) from None
 
 
 def _resolve_path(ctx: PluginContext, value: Any) -> Path:
@@ -1852,10 +2267,14 @@ def _v1_boards(params: Mapping[str, Any], ctx: PluginContext) -> list[Board]:
             snapshot = f"s:{day.isoformat()}T{clock}"
             ids = {row["id"] for row in rows}
             shown[snapshot] = {c["id"]: c for c in candidates if c["id"] in ids}
-            boards.append(Board(snapshot, day.isoformat(), clock, rows,
-                                {"bundle": bundle.name}))
-    ctx.shared["v1"] = {"bars": bars, "sessions": sessions, "shown": shown, "age_s": age_s,
-                        "underlyings": sorted({c.underlying for c in contracts.values()})}
+            boards.append(Board(snapshot, day.isoformat(), clock, rows, {"bundle": bundle.name}))
+    ctx.shared["v1"] = {
+        "bars": bars,
+        "sessions": sessions,
+        "shown": shown,
+        "age_s": age_s,
+        "underlyings": sorted({c.underlying for c in contracts.values()}),
+    }
     return boards
 
 
@@ -1873,13 +2292,19 @@ def _v1_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
         if candidate is None:
             return None
         day_text, _, clock = snapshot.removeprefix("s:").rpartition("T")
-        pnl = hindsight._candidate_outcome(state["bars"], state["sessions"],
-                                           date.fromisoformat(day_text), clock, candidate,
-                                           state["age_s"])
+        pnl = hindsight._candidate_outcome(
+            state["bars"],
+            state["sessions"],
+            date.fromisoformat(day_text),
+            clock,
+            candidate,
+            state["age_s"],
+        )
         if pnl is None:
             return None
         value = float(pnl)
         return {"gross": value, "net": value}
+
     return outcome
 
 
@@ -1892,15 +2317,21 @@ def _v1_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     transport = ctx.shared.get("transport")
 
     def ask(spec: PolicySpec, board: Board) -> tuple[str | None, str | None, str]:
-        reply = lab.ask_board(spec.provider or default, board.rows, transport=transport,
-                              policy_prompt=spec.prompt)
+        reply = lab.ask_board(
+            spec.provider or default, board.rows, transport=transport, policy_prompt=spec.prompt
+        )
         choice, note = lab.parse_choice(reply, set(board.ids))
         return choice, None, note
+
     return ask
 
 
-def broker_quota(url: str = BROKER_URL, provider: str = "minimax", margin: float = 2.0,
-                 opener: Callable[..., Any] | None = None) -> QuotaFn:
+def broker_quota(
+    url: str = BROKER_URL,
+    provider: str = "minimax",
+    margin: float = 2.0,
+    opener: Callable[..., Any] | None = None,
+) -> QuotaFn:
     """Burn only while the provider's 5h window is under-using (left >=
     planned - margin). A meter that is down does not stall the run, and says so."""
     open_url = opener or urllib.request.urlopen
@@ -1913,13 +2344,16 @@ def broker_quota(url: str = BROKER_URL, provider: str = "minimax", margin: float
             return left >= planned - margin, f"left={left:.1f} planned={planned:.1f}"
         except Exception as error:
             return True, f"meter_unavailable:{type(error).__name__}"
+
     return quota_ok
 
 
 def _quota_broker(params: Mapping[str, Any], ctx: PluginContext) -> QuotaFn:
-    return broker_quota(str(params.get("url", BROKER_URL)),
-                        str(params.get("provider", "minimax")),
-                        float(params.get("margin", 2.0)))
+    return broker_quota(
+        str(params.get("url", BROKER_URL)),
+        str(params.get("provider", "minimax")),
+        float(params.get("margin", 2.0)),
+    )
 
 
 def _quota_always(params: Mapping[str, Any], ctx: PluginContext) -> QuotaFn:
@@ -1934,8 +2368,11 @@ def _bench_file(params: Mapping[str, Any], ctx: PluginContext) -> dict[str, dict
     doc = json.loads(_resolve_path(ctx, params.get("path")).read_text(encoding="utf-8"))
     if not isinstance(doc, dict):
         raise ValueError("benchmarks file must map name -> {date: close}")
-    return {str(name): {str(d): float(v) for d, v in series.items()}
-            for name, series in doc.items() if isinstance(series, dict)}
+    return {
+        str(name): {str(d): float(v) for d, v in series.items()}
+        for name, series in doc.items()
+        if isinstance(series, dict)
+    }
 
 
 def _panel_closes(series: Mapping[str, Any]) -> dict[str, float]:
@@ -1948,8 +2385,9 @@ def _panel_closes(series: Mapping[str, Any]) -> dict[str, float]:
     return out
 
 
-def equal_weight_index(closes: Mapping[str, Mapping[str, float]],
-                       first_session: str) -> dict[str, float]:
+def equal_weight_index(
+    closes: Mapping[str, Mapping[str, float]], first_session: str
+) -> dict[str, float]:
     """An un-rebalanced equal-weight basket bought at the last common date
     before ``first_session``: index(d) = mean_i close_i(d) / close_i(base)."""
     common = sorted(set.intersection(*(set(c) for c in closes.values()))) if closes else []
@@ -1957,8 +2395,9 @@ def equal_weight_index(closes: Mapping[str, Mapping[str, float]],
     if not common:
         return {}
     base = before[-1] if before else common[0]
-    return {d: float(np.mean([c[d] / c[base] for c in closes.values()]))
-            for d in common if d >= base}
+    return {
+        d: float(np.mean([c[d] / c[base] for c in closes.values()])) for d in common if d >= base
+    }
 
 
 def _bench_panel(params: Mapping[str, Any], ctx: PluginContext) -> dict[str, dict[str, float]]:
@@ -1967,8 +2406,11 @@ def _bench_panel(params: Mapping[str, Any], ctx: PluginContext) -> dict[str, dic
     (a symbol list, or "bundle" = the v1 bundle's underlyings)."""
     from tree_options.desk import paths
 
-    path = (_resolve_path(ctx, params["path"]) if params.get("path")
-            else paths.paper_dir() / "ohlc-panel.json")
+    path = (
+        _resolve_path(ctx, params["path"])
+        if params.get("path")
+        else paths.paper_dir() / "ohlc-panel.json"
+    )
     panel = json.loads(path.read_text(encoding="utf-8"))
     out: dict[str, dict[str, float]] = {}
     for symbol in params.get("symbols", ["SPY", "QQQ"]):
@@ -1976,8 +2418,9 @@ def _bench_panel(params: Mapping[str, Any], ctx: PluginContext) -> dict[str, dic
             out[str(symbol)] = _panel_closes(panel[symbol])
     basket = params.get("equal_weight")
     if basket and ctx.boards:
-        names = (ctx.shared.get("v1", {}).get("underlyings", []) if basket == "bundle"
-                 else list(basket))
+        names = (
+            ctx.shared.get("v1", {}).get("underlyings", []) if basket == "bundle" else list(basket)
+        )
         closes = {n: _panel_closes(panel[n]) for n in names if isinstance(panel.get(n), dict)}
         if closes:
             first = min(b.session for b in ctx.boards)
@@ -2004,8 +2447,7 @@ def _v2_boards(params: Mapping[str, Any], ctx: PluginContext) -> list[Board]:
             if not candidates:
                 continue
             context = lab.board_context(index, day, clock)
-            packet = {"as_of": iag._instant(day, clock).isoformat(),
-                      "candidates": candidates}
+            packet = {"as_of": iag._instant(day, clock).isoformat(), "candidates": candidates}
             rows = lab.board_rows_v2(packet, context)
             if not rows:
                 continue
@@ -2036,13 +2478,16 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
                 if row.get("status") == "no_fill" or row.get("net") is None:
                     value: dict[str, Any] | None = None
                 else:  # exit_at feeds the purged walk-forward (desk.purge)
-                    value = {"gross": float(row["gross"]), "net": float(row["net"]),
-                             "exit_at": row.get("exit_at")}
+                    value = {
+                        "gross": float(row["gross"]),
+                        "net": float(row["net"]),
+                        "exit_at": row.get("exit_at"),
+                    }
                 table[(row["snapshot"], row["candidate_id"], row["exit_mode"])] = value
 
-        def lookup(snapshot: str, candidate_id: str,
-                   horizon: str | None) -> dict[str, Any] | None:
+        def lookup(snapshot: str, candidate_id: str, horizon: str | None) -> dict[str, Any] | None:
             return table.get((snapshot, candidate_id, horizon or default_horizon))
+
         return lookup
 
     state = ctx.shared.get("v2")
@@ -2052,21 +2497,31 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     sync = params.get("sync", 2)
     memo: dict[tuple[str, str, str], dict[str, Any] | None] = {}
 
-    def live(snapshot: str, candidate_id: str,
-             horizon: str | None) -> dict[str, Any] | None:
+    def live(snapshot: str, candidate_id: str, horizon: str | None) -> dict[str, Any] | None:
         mode = horizon or default_horizon
         key = (snapshot, candidate_id, mode)
         if key not in memo:
             day_text, _, clock = snapshot.removeprefix("s:").rpartition("T")
             doc = outcomes.candidate_outcome(
-                state["index"], date.fromisoformat(day_text), clock, candidate_id,
-                exit_mode=mode, costs=costs,
-                leg_sync_minutes=None if sync in (None, "off") else int(sync))
-            memo[key] = (None if doc is None or doc.get("status") == "no_fill"
-                         or doc.get("net") is None
-                         else {"gross": float(doc["gross"]), "net": float(doc["net"]),
-                               "exit_at": doc.get("exit_at")})
+                state["index"],
+                date.fromisoformat(day_text),
+                clock,
+                candidate_id,
+                exit_mode=mode,
+                costs=costs,
+                leg_sync_minutes=None if sync in (None, "off") else int(sync),
+            )
+            memo[key] = (
+                None
+                if doc is None or doc.get("status") == "no_fill" or doc.get("net") is None
+                else {
+                    "gross": float(doc["gross"]),
+                    "net": float(doc["net"]),
+                    "exit_at": doc.get("exit_at"),
+                }
+            )
         return memo[key]
+
     return live
 
 
@@ -2103,7 +2558,8 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
     timeout = None if params.get("timeout") is None else float(params["timeout"])
     max_tokens = None if params.get("max_tokens") is None else int(params["max_tokens"])
     if (timeout is not None and not 0 < timeout <= 900) or (
-            max_tokens is not None and not 0 < max_tokens <= 64000):
+        max_tokens is not None and not 0 < max_tokens <= 64000
+    ):
         raise ValueError("timeout must be in (0, 900] s and max_tokens in (0, 64000]")
     extra: dict[str, Any] = {}
     if effort is not None:
@@ -2119,10 +2575,16 @@ def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
         context = state["contexts"][board.snapshot]
         provider = spec.provider or default
         reply, _model, meta = ask_json(
-            provider, lab.board_prompt_v2(board.rows, context, spec.prompt),
-            fallback=fallback, transport=transport, extra=extra or None,
-            timeout=timeout, max_tokens=max_tokens)
+            provider,
+            lab.board_prompt_v2(board.rows, context, spec.prompt),
+            fallback=fallback,
+            transport=transport,
+            extra=extra or None,
+            timeout=timeout,
+            max_tokens=max_tokens,
+        )
         return (*lab.parse_choice_v2(reply, set(board.ids)), meta)
+
     return ask
 
 
@@ -2141,9 +2603,12 @@ register_plugin("benchmarks", "panel", _bench_panel)
 
 def _forecast_plugin(kind: str) -> Callable[[Mapping[str, Any], PluginContext], Any]:
     """desk.forecast's plug-ins, imported on first use (it imports this module)."""
+
     def factory(params: Mapping[str, Any], ctx: PluginContext) -> Any:
         from tree_options.desk import forecast
+
         return getattr(forecast, f"{kind}_plugin")(params, ctx)
+
     return factory
 
 
@@ -2168,20 +2633,28 @@ def _builtin_rule(entry: Mapping[str, Any]) -> RuleFn:
         return rule_always_bullish(horizon, key)
     if builtin == "theory":  # the theory lane's parameterized rules (own module)
         from tree_options.desk.theory_rules import rule_theory
+
         return rule_theory(entry)
     raise ValueError(f"{entry.get('name')}: unknown builtin {builtin!r}")
 
 
-def policies_from_config(entries: Sequence[Mapping[str, Any]], *, builtin: bool = True,
-                         horizon: str | None = None) -> list[PolicySpec]:
+def policies_from_config(
+    entries: Sequence[Mapping[str, Any]], *, builtin: bool = True, horizon: str | None = None
+) -> list[PolicySpec]:
     specs: list[PolicySpec] = []
     for entry in entries:
         name, kind = str(entry.get("name")), str(entry.get("kind"))
         repeats = int(entry.get("repeats", 1))
         if kind == "model":
-            specs.append(PolicySpec(name, "model", repeats=repeats,
-                                    provider=entry.get("provider"),
-                                    prompt=entry.get("prompt")))
+            specs.append(
+                PolicySpec(
+                    name,
+                    "model",
+                    repeats=repeats,
+                    provider=entry.get("provider"),
+                    prompt=entry.get("prompt"),
+                )
+            )
         elif entry.get("builtin") == RANDOM or name == RANDOM:
             specs.append(PolicySpec(RANDOM, "control"))
         else:
@@ -2196,14 +2669,18 @@ def protocol_from_config(cfg: Mapping[str, Any]) -> Protocol:
     doc = dict(cfg.get("protocol", {}))
     horizons = doc.get("random_horizons")
     return Protocol(
-        capital=float(doc.get("capital", CAPITAL)), draws=int(doc.get("draws", 10_000)),
-        seed=int(doc.get("seed", 20260928)), random_seeds=int(doc.get("random_seeds", 1000)),
+        capital=float(doc.get("capital", CAPITAL)),
+        draws=int(doc.get("draws", 10_000)),
+        seed=int(doc.get("seed", 20260928)),
+        random_seeds=int(doc.get("random_seeds", 1000)),
         random_horizons=None if horizons is None else tuple(horizons),
-        incumbent=cfg.get("incumbent"), cutoff=doc.get("cutoff"),
+        incumbent=cfg.get("incumbent"),
+        cutoff=doc.get("cutoff"),
         metric=str(doc.get("metric", "ci_low_diff_vs_random")),
         max_finalists=int(doc.get("max_finalists", MAX_FINALISTS)),
         alpha=float(doc.get("alpha", 0.05)),
-        embargo_sessions=int(doc.get("embargo_sessions", 1)))
+        embargo_sessions=int(doc.get("embargo_sessions", 1)),
+    )
 
 
 def settings_from_config(cfg: Mapping[str, Any], concurrency: int | None = None) -> ExecSettings:
@@ -2215,7 +2692,8 @@ def settings_from_config(cfg: Mapping[str, Any], concurrency: int | None = None)
         quota_every=int(quota.get("check_every", 20)),
         pause_s=float(quota.get("pause_s", 300.0)),
         max_pause_s=None if max_pause is None else float(max_pause),
-        retry_failed=bool(cfg.get("retry_failed", True)))
+        retry_failed=bool(cfg.get("retry_failed", True)),
+    )
 
 
 def default_root() -> Path:
@@ -2236,11 +2714,17 @@ def new_run_dir(root: Path, now: datetime) -> Path:
             suffix += 1
 
 
-def run_from_config(config_path: Path, *, run_dir: Path | None = None,
-                    limit: int | None = None, score_only: bool = False,
-                    concurrency: int | None = None, shared: Mapping[str, Any] | None = None,
-                    sleep: Callable[[float], None] = time.sleep,
-                    clock: Clock = _utcnow) -> dict[str, Any]:
+def run_from_config(
+    config_path: Path,
+    *,
+    run_dir: Path | None = None,
+    limit: int | None = None,
+    score_only: bool = False,
+    concurrency: int | None = None,
+    shared: Mapping[str, Any] | None = None,
+    sleep: Callable[[float], None] = time.sleep,
+    clock: Clock = _utcnow,
+) -> dict[str, Any]:
     """Resolve the config's plug-ins and run (or resume) the long run."""
     raw_config = config_path.read_bytes()
     cfg = json.loads(raw_config)
@@ -2258,20 +2742,28 @@ def run_from_config(config_path: Path, *, run_dir: Path | None = None,
     ctx.boards = boards
     outcome = plugin("outcome", str(cfg["outcome"].get("plugin")))(cfg["outcome"], ctx)
     ctx.shared.setdefault("outcome", outcome)  # the forecast plug-ins fit on it (TRAIN only)
-    policies = policies_from_config(cfg["policies"], builtin=bool(cfg.get("builtin_controls", True)),
-                                    horizon=cfg.get("control_horizon"))
+    policies = policies_from_config(
+        cfg["policies"],
+        builtin=bool(cfg.get("builtin_controls", True)),
+        horizon=cfg.get("control_horizon"),
+    )
     ask: AskFn | None = None
     if cfg.get("ask") is not None:
         ask = plugin("ask", str(cfg["ask"].get("plugin")))(cfg["ask"], ctx)
-    overrides = {str(e["name"]): plugin("ask", str(e["ask"].get("plugin")))(e["ask"], ctx)
-                 for e in cfg["policies"] if isinstance(e.get("ask"), Mapping)}
+    overrides = {
+        str(e["name"]): plugin("ask", str(e["ask"].get("plugin")))(e["ask"], ctx)
+        for e in cfg["policies"]
+        if isinstance(e.get("ask"), Mapping)
+    }
     if overrides:
         missing = [p.name for p in policies if p.kind == "model" and p.name not in overrides]
         if missing and ask is None:
             raise ValueError(f"model policies without an ask plug-in: {missing}")
         ask = PolicyAsk(ask, overrides)
-    reports = {str(e.get("name") or e.get("plugin")): plugin("report", str(e.get("plugin")))(e, ctx)
-               for e in cfg.get("reports") or ()}
+    reports = {
+        str(e.get("name") or e.get("plugin")): plugin("report", str(e.get("plugin")))(e, ctx)
+        for e in cfg.get("reports") or ()
+    }
     quota_cfg = cfg.get("quota") or {"plugin": "always"}
     quota_ok = plugin("quota", str(quota_cfg.get("plugin", "always")))(quota_cfg, ctx)
     bench_cfg = cfg.get("benchmarks") or {"plugin": "none"}
@@ -2279,23 +2771,43 @@ def run_from_config(config_path: Path, *, run_dir: Path | None = None,
     protocol = protocol_from_config(cfg)
     settings = settings_from_config(cfg, concurrency)
     if run_dir is None:
-        root = (_resolve_path(ctx, cfg["out_root"]) if cfg.get("out_root") else default_root())
+        root = _resolve_path(ctx, cfg["out_root"]) if cfg.get("out_root") else default_root()
         run_dir = new_run_dir(root, clock())
     run_dir.mkdir(parents=True, exist_ok=True)
     config_copy = run_dir / "config.json"
     if not config_copy.exists():
         config_copy.write_bytes(raw_config)
-    meta = {"config_sha256": hashlib.sha256(raw_config).hexdigest(),
-            "plugins": {k: (cfg.get(k) or {}).get("plugin")
-                        for k in ("boards", "outcome", "ask", "quota", "benchmarks")},
-            "ask_overrides": {str(e["name"]): e["ask"].get("plugin") for e in cfg["policies"]
-                              if isinstance(e.get("ask"), Mapping)},
-            "reports": sorted(reports), "limit": limit}
-    return run_longrun(run_dir, boards=boards, policies=policies, outcome=outcome, ask=ask,
-                       quota_ok=quota_ok, protocol=protocol, settings=settings,
-                       benchmarks=benchmarks, meta=meta, score_only=score_only,
-                       sleep=sleep, clock=clock, skill_options=cfg.get("skill"),
-                       reports=reports)
+    meta = {
+        "config_sha256": hashlib.sha256(raw_config).hexdigest(),
+        "plugins": {
+            k: (cfg.get(k) or {}).get("plugin")
+            for k in ("boards", "outcome", "ask", "quota", "benchmarks")
+        },
+        "ask_overrides": {
+            str(e["name"]): e["ask"].get("plugin")
+            for e in cfg["policies"]
+            if isinstance(e.get("ask"), Mapping)
+        },
+        "reports": sorted(reports),
+        "limit": limit,
+    }
+    return run_longrun(
+        run_dir,
+        boards=boards,
+        policies=policies,
+        outcome=outcome,
+        ask=ask,
+        quota_ok=quota_ok,
+        protocol=protocol,
+        settings=settings,
+        benchmarks=benchmarks,
+        meta=meta,
+        score_only=score_only,
+        sleep=sleep,
+        clock=clock,
+        skill_options=cfg.get("skill"),
+        reports=reports,
+    )
 
 
 # ------------------------------------------------------------------ cockpit
@@ -2307,8 +2819,11 @@ def find_run_dir(root: Path) -> Path | None:
         return root
     if not root.is_dir():
         return None
-    runs = [p for p in root.iterdir()
-            if p.is_dir() and not p.is_symlink() and (p / "progress.json").is_file()]
+    runs = [
+        p
+        for p in root.iterdir()
+        if p.is_dir() and not p.is_symlink() and (p / "progress.json").is_file()
+    ]
     if not runs:
         return None
     return max(runs, key=lambda p: ((p / "progress.json").stat().st_mtime, p.name))
@@ -2325,9 +2840,23 @@ def _read_json(path: Path, max_bytes: int) -> dict[str, Any]:
     return doc
 
 
-_PROGRESS_KEYS = ("status", "at", "started", "boards", "sessions", "total", "finished",
-                  "failures", "paused_s", "quota", "calls_per_s", "eta_s", "arms", "digest",
-                  "skill")
+_PROGRESS_KEYS = (
+    "status",
+    "at",
+    "started",
+    "boards",
+    "sessions",
+    "total",
+    "finished",
+    "failures",
+    "paused_s",
+    "quota",
+    "calls_per_s",
+    "eta_s",
+    "arms",
+    "digest",
+    "skill",
+)
 
 
 def _project_progress(doc: Mapping[str, Any]) -> dict[str, Any]:
@@ -2336,20 +2865,38 @@ def _project_progress(doc: Mapping[str, Any]) -> dict[str, Any]:
     policies = doc.get("policies")
     if doc.get("schema") is None and isinstance(policies, dict):  # the run_v1.py prototype
         eta_min = doc.get("eta_min")
-        return {"schema": PROGRESS_SCHEMA, "legacy": "run_v1", "status": "unknown",
-                "at": doc.get("at"), "started": None, "boards": None, "sessions": None,
-                "total": doc.get("total"), "finished": doc.get("finished"),
-                "failures": doc.get("failures"), "paused_s": doc.get("paused_s"),
-                "quota": {"ok": None, "reason": str(doc.get("quota", ""))[:120],
-                          "checked_at": None},
-                "calls_per_s": doc.get("calls_per_s"),
-                "eta_s": None if eta_min is None else float(eta_min) * 60,
-                "arms": {str(name): {"policy": str(name), "repeat": 1, "kind": "model",
-                                     "done": v.get("done"), "total": v.get("of"),
-                                     "entered": v.get("entered"), "failures": v.get("fail"),
-                                     "unevaluable": None, "net": None}
-                         for name, v in policies.items() if isinstance(v, dict)},
-                "digest": None}
+        return {
+            "schema": PROGRESS_SCHEMA,
+            "legacy": "run_v1",
+            "status": "unknown",
+            "at": doc.get("at"),
+            "started": None,
+            "boards": None,
+            "sessions": None,
+            "total": doc.get("total"),
+            "finished": doc.get("finished"),
+            "failures": doc.get("failures"),
+            "paused_s": doc.get("paused_s"),
+            "quota": {"ok": None, "reason": str(doc.get("quota", ""))[:120], "checked_at": None},
+            "calls_per_s": doc.get("calls_per_s"),
+            "eta_s": None if eta_min is None else float(eta_min) * 60,
+            "arms": {
+                str(name): {
+                    "policy": str(name),
+                    "repeat": 1,
+                    "kind": "model",
+                    "done": v.get("done"),
+                    "total": v.get("of"),
+                    "entered": v.get("entered"),
+                    "failures": v.get("fail"),
+                    "unevaluable": None,
+                    "net": None,
+                }
+                for name, v in policies.items()
+                if isinstance(v, dict)
+            },
+            "digest": None,
+        }
     raise ValueError("unrecognized progress document")
 
 
@@ -2359,9 +2906,26 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
     promotion = doc.get("promotion")
     if not isinstance(promotion, dict) or promotion.get("promoted") is not False:
         raise ValueError("a digest must carry promoted: false")
-    keep = ("arm", "policy", "repeat", "kind", "boards", "entered", "entry_rate",
-            "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_first_row",
-            "vs_incumbent", "vs_regime", "null_percentile", "failure_reasons", "heals")
+    keep = (
+        "arm",
+        "policy",
+        "repeat",
+        "kind",
+        "boards",
+        "entered",
+        "entry_rate",
+        "unevaluable",
+        "failures",
+        "net_total",
+        "net_ci95",
+        "vs_random",
+        "vs_first_row",
+        "vs_incumbent",
+        "vs_regime",
+        "null_percentile",
+        "failure_reasons",
+        "heals",
+    )
     wf = doc.get("walk_forward") or {}
     standings = []
     for row in doc.get("standings", []):
@@ -2369,25 +2933,46 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
         if not projected.get("heals"):
             projected.pop("heals", None)  # additive: a clean arm carries no heals key
         standings.append(projected)
-    return {"headline": doc.get("headline"), "untrusted_note": doc.get("untrusted_note"),
-            "evaluation_valid": doc.get("evaluation_valid"), "complete": doc.get("complete"),
-            "at": doc.get("at"),
-            "promotion": {"promoted": False, "rule": promotion.get("rule")},
-            "boards": doc.get("boards"), "aa": doc.get("aa"),
-            "random_null": doc.get("random_null"),
-            "standings": standings,
-            "walk_forward": {k: wf.get(k) for k in ("status", "cutoff", "metric",
-                                                     "max_finalists", "tune_sessions",
-                                                     "test_sessions", "reason")}
-            | {"finalists": [{"policy": f.get("policy"), "holm_p": f.get("holm_p"),
-                              "test": {k: f.get("test", {}).get(k)
-                                       for k in ("net_total", "net_ci95", "vs_random",
-                                                 "vs_incumbent")},
-                              "eligible_for_operator_review":
-                                  f.get("eligible_for_operator_review")}
-                             for f in wf.get("finalists", [])]},
-            "benchmarks": doc.get("benchmarks", []),
-            "skill": _skill_projection(doc.get("skill"))}
+    return {
+        "headline": doc.get("headline"),
+        "untrusted_note": doc.get("untrusted_note"),
+        "evaluation_valid": doc.get("evaluation_valid"),
+        "complete": doc.get("complete"),
+        "at": doc.get("at"),
+        "promotion": {"promoted": False, "rule": promotion.get("rule")},
+        "boards": doc.get("boards"),
+        "aa": doc.get("aa"),
+        "random_null": doc.get("random_null"),
+        "standings": standings,
+        "walk_forward": {
+            k: wf.get(k)
+            for k in (
+                "status",
+                "cutoff",
+                "metric",
+                "max_finalists",
+                "tune_sessions",
+                "test_sessions",
+                "reason",
+            )
+        }
+        | {
+            "finalists": [
+                {
+                    "policy": f.get("policy"),
+                    "holm_p": f.get("holm_p"),
+                    "test": {
+                        k: f.get("test", {}).get(k)
+                        for k in ("net_total", "net_ci95", "vs_random", "vs_incumbent")
+                    },
+                    "eligible_for_operator_review": f.get("eligible_for_operator_review"),
+                }
+                for f in wf.get("finalists", [])
+            ]
+        },
+        "benchmarks": doc.get("benchmarks", []),
+        "skill": _skill_projection(doc.get("skill")),
+    }
 
 
 def _skill_projection(section: Any) -> dict[str, Any] | None:
@@ -2404,10 +2989,8 @@ def cockpit_view(root: Path) -> dict[str, Any]:
         return {"schema": VIEW_SCHEMA, "run": None, "progress": None, "digest": None}
     progress = _project_progress(_read_json(run_dir / "progress.json", 5_000_000))
     digest_path = run_dir / "digest.json"
-    digest = (_project_digest(_read_json(digest_path, 50_000_000))
-              if digest_path.is_file() else None)
-    return {"schema": VIEW_SCHEMA, "run": run_dir.name, "progress": progress,
-            "digest": digest}
+    digest = _project_digest(_read_json(digest_path, 50_000_000)) if digest_path.is_file() else None
+    return {"schema": VIEW_SCHEMA, "run": run_dir.name, "progress": progress, "digest": digest}
 
 
 # --------------------------------------------------------------------- CLI
@@ -2415,36 +2998,53 @@ def cockpit_view(root: Path) -> dict[str, Any]:
 
 def register_cli(sub: Any) -> None:
     """``desk longrun run|status`` on the desk CLI's subparsers."""
-    parser = sub.add_parser("longrun", help="the desk lab long run (paired, resumable, "
-                                            "quota-aware evaluation; never promotes)")
+    parser = sub.add_parser(
+        "longrun",
+        help="the desk lab long run (paired, resumable, quota-aware evaluation; never promotes)",
+    )
     commands = parser.add_subparsers(dest="longrun_command", required=True)
     run = commands.add_parser("run", help="run (or resume with --run-dir) from a config")
     run.add_argument("--config", type=Path, required=True)
     run.add_argument("--run-dir", type=Path, help="resume this run dir")
     run.add_argument("--limit", type=int, help="smoke: the first N boards only")
     run.add_argument("--concurrency", type=int)
-    run.add_argument("--score-only", action="store_true",
-                     help="score the receipts on disk now; no model calls")
+    run.add_argument(
+        "--score-only", action="store_true", help="score the receipts on disk now; no model calls"
+    )
     status = commands.add_parser("status", help="progress of the latest (or a given) run")
-    status.add_argument("--dir", type=Path,
-                        help="a run dir or a root of run dirs (default "
-                             "DESK_STORE/evaluations/longrun)")
+    status.add_argument(
+        "--dir",
+        type=Path,
+        help="a run dir or a root of run dirs (default DESK_STORE/evaluations/longrun)",
+    )
     redigest = commands.add_parser(
-        "redigest", help="re-score a run dir from its receipts + the outcome table, with the "
-                         "skill section (zero model calls; desk.skill)")
+        "redigest",
+        help="re-score a run dir from its receipts + the outcome table, with the "
+        "skill section (zero model calls; desk.skill)",
+    )
     redigest.add_argument("--run-dir", type=Path, required=True)
-    redigest.add_argument("--table", type=Path,
-                          help="outcome table JSONL (default: the config's outcome.table)")
-    redigest.add_argument("--out", type=Path,
-                          help="write digest.json/.md here, never touching the run dir "
-                               "(required while the run is live)")
-    redigest.add_argument("--sessions", metavar="FIRST:LAST",
-                          help="re-score only boards whose session is in [FIRST, LAST] "
-                               "(ISO dates, either may be empty; needs --out)")
-    redigest.add_argument("--arms", metavar="A,B,...",
-                          help="score only these arms (e.g. the model arms mid-run), paired "
-                               "on the boards where ALL of them have ok receipts; the "
-                               "built-in controls are not forced in (needs --out)")
+    redigest.add_argument(
+        "--table", type=Path, help="outcome table JSONL (default: the config's outcome.table)"
+    )
+    redigest.add_argument(
+        "--out",
+        type=Path,
+        help="write digest.json/.md here, never touching the run dir "
+        "(required while the run is live)",
+    )
+    redigest.add_argument(
+        "--sessions",
+        metavar="FIRST:LAST",
+        help="re-score only boards whose session is in [FIRST, LAST] "
+        "(ISO dates, either may be empty; needs --out)",
+    )
+    redigest.add_argument(
+        "--arms",
+        metavar="A,B,...",
+        help="score only these arms (e.g. the model arms mid-run), paired "
+        "on the boards where ALL of them have ok receipts; the "
+        "built-in controls are not forced in (needs --out)",
+    )
     from tree_options.desk import reflect  # `longrun reflect` (desk.reflect owns it)
 
     reflect.register_cli(commands)
@@ -2461,9 +3061,13 @@ def dispatch_cli(args: argparse.Namespace) -> int:
         return reflect.dispatch_cli(args)
     if args.longrun_command == "run":
         try:
-            result = run_from_config(args.config, run_dir=args.run_dir, limit=args.limit,
-                                     score_only=args.score_only,
-                                     concurrency=args.concurrency)
+            result = run_from_config(
+                args.config,
+                run_dir=args.run_dir,
+                limit=args.limit,
+                score_only=args.score_only,
+                concurrency=args.concurrency,
+            )
         except RunLocked as error:
             print(f"longrun: {error}", file=sys.stderr)
             return 3
@@ -2481,27 +3085,43 @@ def dispatch_cli(args: argparse.Namespace) -> int:
         print("longrun status: no run found")
         return 1
     progress = view["progress"]
-    lines = [f"run {view['run']}: {progress['status']} {progress['finished']}/"
-             f"{progress['total']} failures={progress['failures']} paused_s="
-             f"{progress['paused_s']} eta_s={progress['eta_s']} quota="
-             f"{(progress['quota'] or {}).get('reason')}"]
+    lines = [
+        f"run {view['run']}: {progress['status']} {progress['finished']}/"
+        f"{progress['total']} failures={progress['failures']} paused_s="
+        f"{progress['paused_s']} eta_s={progress['eta_s']} quota="
+        f"{(progress['quota'] or {}).get('reason')}"
+    ]
     for name, arm in (progress.get("arms") or {}).items():
-        lines.append(f"  {name}: {arm.get('done')}/{arm.get('total')} entered="
-                     f"{arm.get('entered')} failures={arm.get('failures')}"
-                     + (f" ({', '.join(f'{k} {v}' for k, v in sorted(
-                         arm['failure_reasons'].items()))})"
-                        if arm.get("failure_reasons") else "")
-                     + f" net={arm.get('net')}")
+        lines.append(
+            f"  {name}: {arm.get('done')}/{arm.get('total')} entered="
+            f"{arm.get('entered')} failures={arm.get('failures')}"
+            + (
+                f" ({', '.join(f'{k} {v}' for k, v in sorted(arm['failure_reasons'].items()))})"
+                if arm.get("failure_reasons")
+                else ""
+            )
+            + f" net={arm.get('net')}"
+        )
     if view["digest"] is not None:
         lines.append(f"  digest: {view['digest']['headline']}")
-        healed = [(row["arm"], row["heals"]) for row in view["digest"].get("standings", [])
-                  if row.get("heals")]
+        healed = [
+            (row["arm"], row["heals"])
+            for row in view["digest"].get("standings", [])
+            if row.get("heals")
+        ]
         if healed:  # the self-heal ladder: how much of the run the backups carried
-            lines.append("  self-heals: " + "; ".join(
-                f"{arm} escalated={t['escalated']} timeout={t['timeout_escalated']} "
-                f"fallback={t['fallback']}"
-                + (f" providers={','.join(f'{p}:{n}' for p, n in sorted(t['providers'].items()))}"
-                   if t.get("providers") else "")
-                for arm, t in healed))
+            lines.append(
+                "  self-heals: "
+                + "; ".join(
+                    f"{arm} escalated={t['escalated']} timeout={t['timeout_escalated']} "
+                    f"fallback={t['fallback']}"
+                    + (
+                        f" providers={','.join(f'{p}:{n}' for p, n in sorted(t['providers'].items()))}"
+                        if t.get("providers")
+                        else ""
+                    )
+                    for arm, t in healed
+                )
+            )
     print("\n".join(lines))
     return 0

@@ -38,13 +38,29 @@ def _client(tmp_path: Path, state: dict[str, object] | None) -> TestClient:
 
 def test_monitor_down_carries_since_detail_and_books(tmp_path: Path) -> None:
     now = time.time()
-    body = _client(tmp_path, {
-        "status": "monitor_down", "since": now - 900, "detail": "no heartbeat for 15m",
-        "checked_at": now - 10,
-        "books": [{"plan": "putspread-20260922", "status": "monitor_down",
-                   "heartbeat_age": 900, "detail": "x"}],
-        "events": [{"at": now, "kind": "notify"}], "last_notified_at": now,
-    }).get("/api/exit-machine").json()
+    body = (
+        _client(
+            tmp_path,
+            {
+                "status": "monitor_down",
+                "since": now - 900,
+                "detail": "no heartbeat for 15m",
+                "checked_at": now - 10,
+                "books": [
+                    {
+                        "plan": "putspread-20260922",
+                        "status": "monitor_down",
+                        "heartbeat_age": 900,
+                        "detail": "x",
+                    }
+                ],
+                "events": [{"at": now, "kind": "notify"}],
+                "last_notified_at": now,
+            },
+        )
+        .get("/api/exit-machine")
+        .json()
+    )
     assert body["status"] == "monitor_down"
     assert body["since"] == pytest.approx(now - 900)
     assert body["books"][0]["plan"] == "putspread-20260922"
@@ -56,6 +72,7 @@ def test_missing_or_stale_is_not_healthy(tmp_path: Path) -> None:
     body = _client(tmp_path, None).get("/api/exit-machine").json()
     assert body["status"] == "unknown" and body["watch_stale"] is True
     now = time.time()
-    body = _client(tmp_path, {"status": "ok", "checked_at": now - 900}).get(
-        "/api/exit-machine").json()
+    body = (
+        _client(tmp_path, {"status": "ok", "checked_at": now - 900}).get("/api/exit-machine").json()
+    )
     assert body["status"] == "ok" and body["watch_stale"] is True

@@ -28,13 +28,20 @@ from tree_options.trex.grant_policy import QuotaWindow
 
 T0 = datetime(2026, 9, 29, 4, 17, tzinfo=UTC)  # 22:17 MDT = 04:17 UTC next day
 DAYS3 = [date(2026, 9, 22), date(2026, 9, 23), date(2026, 9, 24)]
-DAYS5 = [date(2026, 9, 18), date(2026, 9, 21), date(2026, 9, 22),
-         date(2026, 9, 23), date(2026, 9, 24)]
+DAYS5 = [
+    date(2026, 9, 18),
+    date(2026, 9, 21),
+    date(2026, 9, 22),
+    date(2026, 9, 23),
+    date(2026, 9, 24),
+]
 
-UNDER = (QuotaWindow(name="zai", actual_left_pct=Decimal("94.0"),
-                     planned_left_pct=Decimal("51.9")),)
-ON_PLAN = (QuotaWindow(name="zai", actual_left_pct=Decimal("40.0"),
-                       planned_left_pct=Decimal("50.0")),)
+UNDER = (
+    QuotaWindow(name="zai", actual_left_pct=Decimal("94.0"), planned_left_pct=Decimal("51.9")),
+)
+ON_PLAN = (
+    QuotaWindow(name="zai", actual_left_pct=Decimal("40.0"), planned_left_pct=Decimal("50.0")),
+)
 
 ZAI_URL = "https://api.z.ai/api/coding/paas/v4/chat/completions"
 MM_URL = "https://api.minimax.io/v1/chat/completions"
@@ -44,15 +51,21 @@ class NightTransport:
     """Serves board prompts (a fixed choice) and reflection prompts."""
 
     def __init__(self, reflection: dict[str, Any] | None = None) -> None:
-        self.reflection = reflection if reflection is not None else {
-            "diagnosis": "The policy skips boards where the premium moved.",
-            "revised_prompt": "Enter only when the premium is fresh and wide.",
-            "variants": ["Skip after two consecutive losses."]}
+        self.reflection = (
+            reflection
+            if reflection is not None
+            else {
+                "diagnosis": "The policy skips boards where the premium moved.",
+                "revised_prompt": "Enter only when the premium is fresh and wide.",
+                "variants": ["Skip after two consecutive losses."],
+            }
+        )
         self.fail_reflections = False
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         self.calls.append({"url": url, "body": json.loads(body)})
         payload = json.loads(json.loads(body)["messages"][0]["content"])
         if "gap_boards" in payload:
@@ -61,21 +74,24 @@ class NightTransport:
             reply: dict[str, Any] = dict(self.reflection)
         else:
             reply = {"choice": payload["board"][0]["id"], "note": "top rr"}
-        envelope = {"choices": [{"message": {"content": json.dumps(reply)},
-                                 "finish_reason": "stop"}]}
+        envelope = {
+            "choices": [{"message": {"content": json.dumps(reply)}, "finish_reason": "stop"}]
+        }
         return 200, json.dumps(envelope).encode()
 
     @property
     def board_calls(self) -> list[dict[str, Any]]:
-        return [c for c in self.calls
-                if "gap_boards" not in json.loads(
-                    c["body"]["messages"][0]["content"])]
+        return [
+            c
+            for c in self.calls
+            if "gap_boards" not in json.loads(c["body"]["messages"][0]["content"])
+        ]
 
     @property
     def reflection_calls(self) -> list[dict[str, Any]]:
-        return [c for c in self.calls
-                if "gap_boards" in json.loads(
-                    c["body"]["messages"][0]["content"])]
+        return [
+            c for c in self.calls if "gap_boards" in json.loads(c["body"]["messages"][0]["content"])
+        ]
 
 
 @pytest.fixture(autouse=True)
@@ -101,18 +117,20 @@ def bundle5(tmp_path: Path) -> Path:
 def _night(bundle: Path, tmp_path: Path, **kwargs: Any) -> dict[str, Any]:
     zai = kwargs.pop("zai", NightTransport())
     minimax = kwargs.pop("minimax", NightTransport())
-    document = run_overnight(bundle=bundle, now=kwargs.pop("now", T0),
-                             budget=kwargs.pop("budget", OvernightBudget()),
-                             lab_root=kwargs.pop("lab_root", tmp_path / "lab"),
-                             transports={"zai": zai, "minimax-flash": minimax},
-                             **kwargs)
+    document = run_overnight(
+        bundle=bundle,
+        now=kwargs.pop("now", T0),
+        budget=kwargs.pop("budget", OvernightBudget()),
+        lab_root=kwargs.pop("lab_root", tmp_path / "lab"),
+        transports={"zai": zai, "minimax-flash": minimax},
+        **kwargs,
+    )
     document["_zai"], document["_minimax"] = zai, minimax
     return document
 
 
 def _run_document(entry: dict[str, Any]) -> dict[str, Any]:
-    return json.loads(
-        Path(str(entry["run"]["run_dir"]), "summary.json").read_bytes())
+    return json.loads(Path(str(entry["run"]["run_dir"]), "summary.json").read_bytes())
 
 
 # ------------------------------------------------------------------- e2e
@@ -145,7 +163,8 @@ def test_one_night_end_to_end(bundle3: Path, tmp_path: Path) -> None:
     archive = gepa.load_archive(tmp_path / "lab")
     seed = next(p for p in archive if p["id"] == champion["id"])
     assert seed["stats"]["closed_pnl_sum"] == str(
-        Decimal(champion["run"]["closed_capital_proxy"]) - Decimal(5000))
+        Decimal(champion["run"]["closed_capital_proxy"]) - Decimal(5000)
+    )
     assert seed["stats"]["entered"] == champion["run"]["entered"]
 
     # gaps were computed mechanically for the champion
@@ -175,8 +194,7 @@ def test_one_night_end_to_end(bundle3: Path, tmp_path: Path) -> None:
     assert document["pareto_front_after"]
 
     # the night's sessions are marked used
-    assert set(gepa.load_state(tmp_path / "lab")["used_sessions"]) == set(
-        document["sessions"])
+    assert set(gepa.load_state(tmp_path / "lab")["used_sessions"]) == set(document["sessions"])
 
     # the digest exists and says exactly what it is
     night = T0.astimezone(ET).date().isoformat()
@@ -193,25 +211,23 @@ def test_one_night_end_to_end(bundle3: Path, tmp_path: Path) -> None:
 
 
 def test_a_failed_reflection_is_recorded_and_the_night_continues(
-        bundle3: Path, tmp_path: Path) -> None:
+    bundle3: Path, tmp_path: Path
+) -> None:
     minimax = NightTransport()
     minimax.fail_reflections = True
     document = _night(bundle3, tmp_path, minimax=minimax)
     assert document["status"] == "ok"
-    failed = next(r for r in document["reflections"]
-                  if r["provider"] == "minimax-flash")
+    failed = next(r for r in document["reflections"] if r["provider"] == "minimax-flash")
     assert failed["status"] == "failed"
     assert "HTTP 500" in failed["error"]
     healthy = next(r for r in document["reflections"] if r["provider"] == "zai")
     assert healthy["status"] == "ok"
     # candidates still came from the healthy reflection
     assert any(c["created_by"] == "reflect:zai" for c in document["candidates"])
-    assert all(c["created_by"] != "reflect:minimax-flash"
-               for c in document["candidates"])
+    assert all(c["created_by"] != "reflect:minimax-flash" for c in document["candidates"])
 
 
-def test_second_invocation_the_same_night_is_a_noop(bundle3: Path,
-                                                    tmp_path: Path) -> None:
+def test_second_invocation_the_same_night_is_a_noop(bundle3: Path, tmp_path: Path) -> None:
     first = _night(bundle3, tmp_path)
     zai, minimax = first["_zai"], first["_minimax"]
     burned = len(zai.calls) + len(minimax.calls)
@@ -220,8 +236,7 @@ def test_second_invocation_the_same_night_is_a_noop(bundle3: Path,
     assert len(zai.calls) + len(minimax.calls) == burned
 
 
-def test_nights_rotate_to_not_yet_used_sessions(bundle5: Path,
-                                                tmp_path: Path) -> None:
+def test_nights_rotate_to_not_yet_used_sessions(bundle5: Path, tmp_path: Path) -> None:
     first = _night(bundle5, tmp_path)
     second = _night(bundle5, tmp_path, now=T0 + timedelta(hours=24))
     assert first["status"] == "ok" and second["status"] == "ok"
@@ -234,13 +249,17 @@ def test_nights_rotate_to_not_yet_used_sessions(bundle5: Path,
 
 
 def test_a_night_that_cannot_fit_the_reflections_refuses_before_any_burn(
-        bundle3: Path, tmp_path: Path) -> None:
+    bundle3: Path, tmp_path: Path
+) -> None:
     zai, minimax = NightTransport(), NightTransport()
     with pytest.raises(BudgetRefused):
-        run_overnight(bundle=bundle3, now=T0,
-                      budget=OvernightBudget(boards=6, reflections=1),
-                      lab_root=tmp_path / "lab",
-                      transports={"zai": zai, "minimax-flash": minimax})
+        run_overnight(
+            bundle=bundle3,
+            now=T0,
+            budget=OvernightBudget(boards=6, reflections=1),
+            lab_root=tmp_path / "lab",
+            transports={"zai": zai, "minimax-flash": minimax},
+        )
     assert zai.calls == [] and minimax.calls == []
 
 
@@ -267,7 +286,8 @@ def test_the_counter_refuses_before_exceeding() -> None:
 
 
 def test_a_tiny_board_budget_never_exceeds_one_call_per_board(
-        bundle3: Path, tmp_path: Path) -> None:
+    bundle3: Path, tmp_path: Path
+) -> None:
     document = _night(bundle3, tmp_path, budget=OvernightBudget(boards=1))
     zai = document["_zai"]
     assert document["status"] == "ok"
@@ -280,31 +300,30 @@ def test_a_tiny_board_budget_never_exceeds_one_call_per_board(
 # ------------------------------------------------------------- the gate
 
 
-def test_fresh_on_plan_windows_skip_the_burn(bundle3: Path,
-                                             tmp_path: Path) -> None:
+def test_fresh_on_plan_windows_skip_the_burn(bundle3: Path, tmp_path: Path) -> None:
     zai, minimax = NightTransport(), NightTransport()
-    document = run_overnight(bundle=bundle3, now=T0, windows=ON_PLAN,
-                             budget=OvernightBudget(),
-                             lab_root=tmp_path / "lab",
-                             transports={"zai": zai, "minimax-flash": minimax},
-                             windows_age_s=60.0)
-    assert (document["status"], document["mode"]) == ("skipped",
-                                                      "under_using_gate")
+    document = run_overnight(
+        bundle=bundle3,
+        now=T0,
+        windows=ON_PLAN,
+        budget=OvernightBudget(),
+        lab_root=tmp_path / "lab",
+        transports={"zai": zai, "minimax-flash": minimax},
+        windows_age_s=60.0,
+    )
+    assert (document["status"], document["mode"]) == ("skipped", "under_using_gate")
     assert zai.calls == [] and minimax.calls == []
     assert not (tmp_path / "lab" / "overnight").exists()
 
 
-def test_fresh_under_using_windows_burn_through_the_gate(
-        bundle3: Path, tmp_path: Path) -> None:
+def test_fresh_under_using_windows_burn_through_the_gate(bundle3: Path, tmp_path: Path) -> None:
     document = _night(bundle3, tmp_path, windows=UNDER, windows_age_s=60.0)
     assert document["status"] == "ok"
     assert document["mode"] == "under_using_gate"
     assert document["budget"]["boards_used"] >= 1
 
 
-def test_stale_windows_fall_back_to_the_standing_budget(
-        bundle3: Path, tmp_path: Path) -> None:
-    document = _night(bundle3, tmp_path, windows=ON_PLAN,
-                      windows_age_s=7 * 3600.0)
+def test_stale_windows_fall_back_to_the_standing_budget(bundle3: Path, tmp_path: Path) -> None:
+    document = _night(bundle3, tmp_path, windows=ON_PLAN, windows_age_s=7 * 3600.0)
     assert document["status"] == "ok"
     assert document["mode"] == "standing_budget"

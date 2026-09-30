@@ -184,16 +184,26 @@ def live_quote_probe(pair: StrikePair) -> ProbeOutcome:
         ib.reqMarketDataType(3)
         month = pair.expiry.strftime("%Y%m%d")
         for strike in (pair.buy_strike, pair.sell_strike):
-            contract = Option(symbol=pair.underlying, lastTradeDateOrContractMonth=month,
-                              strike=float(strike), right="P", exchange="SMART",
-                              tradingClass=pair.underlying)
+            contract = Option(
+                symbol=pair.underlying,
+                lastTradeDateOrContractMonth=month,
+                strike=float(strike),
+                right="P",
+                exchange="SMART",
+                tradingClass=pair.underlying,
+            )
             ib.qualifyContracts(contract)
             tickers.append((strike, contract, ib.reqMktData(contract, "", False, False)))
         ib.sleep(PROBE_SETTLE_S)
         legs = tuple(
-            LegQuote(strike=strike, bid=_dec(ticker.bid), ask=_dec(ticker.ask),
-                     open_interest=_oi(getattr(ticker, "openInterest", None)))
-            for strike, _contract, ticker in tickers)
+            LegQuote(
+                strike=strike,
+                bid=_dec(ticker.bid),
+                ask=_dec(ticker.ask),
+                open_interest=_oi(getattr(ticker, "openInterest", None)),
+            )
+            for strike, _contract, ticker in tickers
+        )
         return ProbeOutcome(available=True, legs=legs)
     except Exception as error:
         return ProbeOutcome(available=False, reason=type(error).__name__)
@@ -216,15 +226,16 @@ def leg_verdict(leg: LegQuote) -> tuple[bool, str]:
     OPTION_OPEN_INTEREST history and regulatory snapshots both refused),
     and a venue that cannot report a datum must neither pass nor fail
     its gate silently."""
-    if leg.bid is None or leg.ask is None or leg.bid <= 0 or leg.ask <= 0 \
-            or leg.ask < leg.bid:
+    if leg.bid is None or leg.ask is None or leg.bid <= 0 or leg.ask <= 0 or leg.ask < leg.bid:
         return False, f"{leg.strike}: not two-sided (bid={leg.bid}, ask={leg.ask})"
     mid = (leg.bid + leg.ask) / 2
     spread_pct = (leg.ask - leg.bid) / mid * Decimal("100")
     ok = spread_pct <= MAX_SPREAD_PCT_OF_MID
-    evidence = (f"{leg.strike} {leg.bid}/{leg.ask} spread "
-                f"{spread_pct.quantize(Decimal('0.1'))}% of mid"
-                + ("" if ok else f" > {MAX_SPREAD_PCT_OF_MID}%"))
+    evidence = (
+        f"{leg.strike} {leg.bid}/{leg.ask} spread "
+        f"{spread_pct.quantize(Decimal('0.1'))}% of mid"
+        + ("" if ok else f" > {MAX_SPREAD_PCT_OF_MID}%")
+    )
     return ok, evidence
 
 
@@ -245,8 +256,7 @@ def quote_gate(legs: tuple[LegQuote, ...]) -> Gate:
         else:
             oi = f"OI {leg.open_interest}"
             if leg.open_interest < MIN_OPEN_INTEREST:
-                problems.append(f"{leg.strike} OI {leg.open_interest} < "
-                                f"{MIN_OPEN_INTEREST}")
+                problems.append(f"{leg.strike} OI {leg.open_interest} < {MIN_OPEN_INTEREST}")
         segments.append(f"{spread}, {oi}")
         if not ok:
             problems.append(spread)
@@ -254,10 +264,14 @@ def quote_gate(legs: tuple[LegQuote, ...]) -> Gate:
     if problems:
         return Gate("G5", "quotes", NO_GO, f"{detail}; " + "; ".join(problems))
     if unverified:
-        return Gate("G5", "quotes", SKIPPED,
-                    f"{detail}; OI not reported by the paper API for "
-                    f"{', '.join(unverified)} (spread ok): verify OI >= "
-                    f"{MIN_OPEN_INTEREST} in TWS before entry")
+        return Gate(
+            "G5",
+            "quotes",
+            SKIPPED,
+            f"{detail}; OI not reported by the paper API for "
+            f"{', '.join(unverified)} (spread ok): verify OI >= "
+            f"{MIN_OPEN_INTEREST} in TWS before entry",
+        )
     return Gate("G5", "quotes", GO, detail)
 
 
@@ -314,8 +328,7 @@ def last_nightly_logoff(now: datetime) -> datetime:
     predates the latest logoff is yesterday's session (runbook G2: the
     epoch must be fresh, a new one each morning)."""
     local = now.astimezone(DENVER_TZ)
-    candidate = local.replace(hour=LOGOFF_HOUR, minute=LOGOFF_MINUTE,
-                              second=0, microsecond=0)
+    candidate = local.replace(hour=LOGOFF_HOUR, minute=LOGOFF_MINUTE, second=0, microsecond=0)
     if candidate > local:
         candidate -= calendar_days(1)
     return candidate.astimezone(ET)
@@ -326,7 +339,8 @@ def next_sunday_noon_et(now: datetime) -> datetime:
     local = now.astimezone(ET)
     days_ahead = (6 - weekday_index(local)) % 7  # Monday=0 .. Sunday=6
     candidate = (local + calendar_days(days_ahead)).replace(
-        hour=12, minute=0, second=0, microsecond=0)
+        hour=12, minute=0, second=0, microsecond=0
+    )
     if candidate <= local:
         candidate += calendar_days(7)
     return candidate
@@ -358,8 +372,10 @@ def _slice_phrase(slice_: BookSlice) -> str:
         return "no exposure"
     loss = slice_.max_loss_usd
     money = "uncountable" if loss is None else f"${loss:.2f}"
-    return f"{_legs_phrase(slice_)} / {slice_.structures} structure" \
-           f"{'' if slice_.structures == 1 else 's'} - {money} max loss"
+    return (
+        f"{_legs_phrase(slice_)} / {slice_.structures} structure"
+        f"{'' if slice_.structures == 1 else 's'} - {money} max loss"
+    )
 
 
 def _slice_detail(slice_: BookSlice) -> str:
@@ -368,14 +384,15 @@ def _slice_detail(slice_: BookSlice) -> str:
     nvda-nov @2026-11-06``."""
     parts: list[str] = []
     source: str | None = None
-    for position in sorted(slice_.positions, key=lambda p: (
-            p.exit_deadline or date.max, p.source, p.id)):
-        label = position.id if position.source != source \
-            else position.id.split("/", 1)[-1]
+    for position in sorted(
+        slice_.positions, key=lambda p: (p.exit_deadline or date.max, p.source, p.id)
+    ):
+        label = position.id if position.source != source else position.id.split("/", 1)[-1]
         source = position.source
         deadline = position.exit_deadline
-        parts.append(f"{label} @{'exit deadline unknown' if deadline is None
-                                else deadline.isoformat()}")
+        parts.append(
+            f"{label} @{'exit deadline unknown' if deadline is None else deadline.isoformat()}"
+        )
     return ", ".join(parts)
 
 
@@ -387,16 +404,21 @@ def account_line(exposure: AccountExposure) -> str:
     outside = exposure.outside
     if not exposure.countable:
         counted = outside.structures + exposure.desk.structures
-        reason = exposure.problems[0] if exposure.problems else \
-            "a position has no countable max loss"
-        return (f"{_ACCOUNT_HEAD} exposure NOT COUNTABLE - {counted} structure"
-                f"{'' if counted == 1 else 's'} read but the books are not fully "
-                f"readable ({reason}); no total can be claimed, least of all none")
+        reason = (
+            exposure.problems[0] if exposure.problems else "a position has no countable max loss"
+        )
+        return (
+            f"{_ACCOUNT_HEAD} exposure NOT COUNTABLE - {counted} structure"
+            f"{'' if counted == 1 else 's'} read but the books are not fully "
+            f"readable ({reason}); no total can be claimed, least of all none"
+        )
     if outside.structures == 0:
         head = f"{_ACCOUNT_HEAD} no positions outside the desk book"
     else:
-        head = (f"{_ACCOUNT_HEAD} {_slice_phrase(outside)} outside the desk book"
-                f" ({_slice_detail(outside)})")
+        head = (
+            f"{_ACCOUNT_HEAD} {_slice_phrase(outside)} outside the desk book"
+            f" ({_slice_detail(outside)})"
+        )
     return f"{head}; desk book: {_slice_phrase(exposure.desk)}"
 
 
@@ -411,13 +433,16 @@ def account_rail(exposure: AccountExposure, rail: Decimal | None) -> str | None:
     if rail is None:
         return None
     if not exposure.countable:
-        return (f"account open loss NOT COUNTABLE against the "
-                f"--max-account-open-loss rail ${rail:.2f} (fail closed)")
+        return (
+            f"account open loss NOT COUNTABLE against the "
+            f"--max-account-open-loss rail ${rail:.2f} (fail closed)"
+        )
     outside = exposure.outside
     total = (outside.max_loss_usd or Decimal(0)) + (exposure.desk.max_loss_usd or Decimal(0))
     if total > rail:
-        return (f"account open loss ${total:.2f} exceeds the "
-                f"--max-account-open-loss rail ${rail:.2f}")
+        return (
+            f"account open loss ${total:.2f} exceeds the --max-account-open-loss rail ${rail:.2f}"
+        )
     return None
 
 
@@ -425,26 +450,41 @@ def account_tail(exposure: AccountExposure, rail: Decimal | None) -> str:
     """The account total on the final summary line, set or not."""
     if not exposure.countable:
         counted = exposure.outside.structures + exposure.desk.structures
-        return (f"account open loss NOT COUNTABLE ({counted} structure"
-                f"{'' if counted == 1 else 's'} read, {len(exposure.problems)} book "
-                f"problem{'' if len(exposure.problems) == 1 else 's'})"
-                + (f" against a ${rail:.2f} rail" if rail is not None else ""))
-    total = (exposure.outside.max_loss_usd or Decimal(0)) \
-        + (exposure.desk.max_loss_usd or Decimal(0))
+        return (
+            f"account open loss NOT COUNTABLE ({counted} structure"
+            f"{'' if counted == 1 else 's'} read, {len(exposure.problems)} book "
+            f"problem{'' if len(exposure.problems) == 1 else 's'})"
+            + (f" against a ${rail:.2f} rail" if rail is not None else "")
+        )
+    total = (exposure.outside.max_loss_usd or Decimal(0)) + (
+        exposure.desk.max_loss_usd or Decimal(0)
+    )
     deadline = exposure.outside.earliest_exit_deadline
     when = f", earliest exit {deadline.isoformat()}" if deadline is not None else ""
-    verdict = "rail UNSET (informational, no exposure gate)" if rail is None \
-        else (f"rail ${rail:.2f} EXCEEDED" if total > rail
-              else f"within the ${rail:.2f} rail")
-    return (f"account open loss ${total:.2f} account-wide "
-            f"({exposure.outside.structures} structure"
-            f"{'' if exposure.outside.structures == 1 else 's'} outside the desk book"
-            f"{when}; desk book: {_slice_phrase(exposure.desk)}) - {verdict}")
+    verdict = (
+        "rail UNSET (informational, no exposure gate)"
+        if rail is None
+        else (f"rail ${rail:.2f} EXCEEDED" if total > rail else f"within the ${rail:.2f} rail")
+    )
+    return (
+        f"account open loss ${total:.2f} account-wide "
+        f"({exposure.outside.structures} structure"
+        f"{'' if exposure.outside.structures == 1 else 's'} outside the desk book"
+        f"{when}; desk book: {_slice_phrase(exposure.desk)}) - {verdict}"
+    )
 
 
-def _gate_desk(paths: DeskPaths, deps: Deps, *, now: datetime, root: Path,
-               exit_watch_state: Path, gateway_state: Path,
-               account: AccountExposure, rail: Decimal | None) -> tuple[Gate, DeskState]:
+def _gate_desk(
+    paths: DeskPaths,
+    deps: Deps,
+    *,
+    now: datetime,
+    root: Path,
+    exit_watch_state: Path,
+    gateway_state: Path,
+    account: AccountExposure,
+    rail: Decimal | None,
+) -> tuple[Gate, DeskState]:
     """G2: the desk unit, epoch, heartbeat, monitor.json, exit_watch, and
     the ACCOUNT's exposure (the desk book AND the other books under the
     same scan root: the desk book alone is not the account)."""
@@ -457,8 +497,7 @@ def _gate_desk(paths: DeskPaths, deps: Deps, *, now: datetime, root: Path,
 
     owner = _read_json(paths.root / "owner.json")
     epoch = owner.get("owner_epoch") if owner else None
-    started, pid = owner.get("started_at") if owner else None, \
-        owner.get("pid") if owner else None
+    started, pid = owner.get("started_at") if owner else None, owner.get("pid") if owner else None
     if not isinstance(epoch, str) or not epoch:
         state.problems.append("owner.json has no owner_epoch")
     else:
@@ -472,10 +511,10 @@ def _gate_desk(paths: DeskPaths, deps: Deps, *, now: datetime, root: Path,
             if started_dt <= fresh_since:
                 state.problems.append(
                     f"epoch {epoch} stale: started {started_dt:%a %H:%M ET}, before the "
-                    f"nightly gateway logoff {fresh_since:%a %H:%M ET}")
+                    f"nightly gateway logoff {fresh_since:%a %H:%M ET}"
+                )
             else:
-                state.notes.append(
-                    f"epoch {epoch} (started {started_dt:%a %H:%M ET}, fresh)")
+                state.notes.append(f"epoch {epoch} (started {started_dt:%a %H:%M ET}, fresh)")
         if not isinstance(pid, int):
             state.problems.append(f"epoch {epoch}: owner.json has no pid")
         elif deps.pid_alive(pid):
@@ -490,15 +529,15 @@ def _gate_desk(paths: DeskPaths, deps: Deps, *, now: datetime, root: Path,
         state.notes.append(f"heartbeat {int(age)}s")
     else:
         state.problems.append(
-            "heartbeat " + ("absent" if age is None else f"stale {span_label(age)}"))
+            "heartbeat " + ("absent" if age is None else f"stale {span_label(age)}")
+        )
 
     monitor = _read_json(paths.health())
     at = _num_or_none(monitor.get("at")) if monitor else None
     if monitor is None or at is None:
         state.problems.append("monitor.json absent/unreadable")
     elif now.timestamp() - at > exit_watch.HEALTH_STALE_S:
-        state.problems.append(
-            f"monitor.json stale ({span_label(now.timestamp() - at)} old)")
+        state.problems.append(f"monitor.json stale ({span_label(now.timestamp() - at)} old)")
     else:
         state.notes.append(f"monitor {int(now.timestamp() - at)}s old")
         if monitor.get("connected") is not True:
@@ -511,30 +550,35 @@ def _gate_desk(paths: DeskPaths, deps: Deps, *, now: datetime, root: Path,
     # writes no state file and sends no push: the read is the whole effect.
     try:
         verdict = exit_watch.watch_once(
-            exit_watch_state, root=root, gateway_state=gateway_state,
-            notify=lambda *_args, **_kw: False, now=now.timestamp(),
+            exit_watch_state,
+            root=root,
+            gateway_state=gateway_state,
+            notify=lambda *_args, **_kw: False,
+            now=now.timestamp(),
             urgency=urgency(now.timestamp(), exposed=False, quiet=None),
-            unit_state=deps.unit_state(exit_watch.UNIT), dry_run=True)
+            unit_state=deps.unit_state(exit_watch.UNIT),
+            dry_run=True,
+        )
         status = str(verdict.get("status"))
         rows = [r for r in verdict.get("books", []) if isinstance(r, dict)]
         row = next((r for r in rows if r.get("plan") == paths.root.name), None)
         # the other books under the SAME scan root are exposure on the same
         # account: naming only the desk row used to print "no exposure" while
         # a legacy book held legs (verified live 2026-09-29).
-        others = sorted(str(r.get("plan")) for r in rows
-                        if r.get("plan") != paths.root.name)
+        others = sorted(str(r.get("plan")) for r in rows if r.get("plan") != paths.root.name)
         if status in exit_watch.HEALTHY:
             guarded = "desk book guarded" if row is not None else "desk book: no exposure"
             if others:
-                guarded += (f"; other book(s) under the scan root with exposure: "
-                            f"{', '.join(others)}")
+                guarded += f"; other book(s) under the scan root with exposure: {', '.join(others)}"
             state.notes.append(f"exit_watch {status} ({guarded})")
         else:
             detail = row.get("detail") if row is not None else verdict.get("detail")
             state.problems.append(f"exit_watch {status}: {detail}")
             if row is None and others:
-                state.problems[-1] += (f" (the desk book has no row here; books under "
-                                       f"the scan root: {', '.join(others)})")
+                state.problems[-1] += (
+                    f" (the desk book has no row here; books under "
+                    f"the scan root: {', '.join(others)})"
+                )
     except (OSError, ValueError, KeyError, TypeError) as error:
         state.problems.append(f"exit_watch unreadable: {type(error).__name__}")
 
@@ -569,22 +613,30 @@ def _gate_gateway(*, now: datetime, gateway_state: Path) -> Gate:
             problems.append(
                 f"gateway ok but not settled (recovered "
                 f"{span_label(now.timestamp() - since)} ago, needs "
-                f"{exit_watch.GATEWAY_SETTLE_S:.0f}s)")
+                f"{exit_watch.GATEWAY_SETTLE_S:.0f}s)"
+            )
         else:
-            settled = f", settled {span_label(now.timestamp() - since)}" \
-                if since is not None else ""
+            settled = (
+                f", settled {span_label(now.timestamp() - since)}" if since is not None else ""
+            )
             notes.append(f"gateway ok{settled}")
 
     restart = next_sunday_noon_et(now)
     distance = (restart - now).total_seconds()
     if distance < COLD_RESTART_MARGIN_S:
-        problems.append(f"Sunday cold-restart window in {_span_days(distance)} "
-                        f"(< {COLD_RESTART_MARGIN_S // 60} min)")
+        problems.append(
+            f"Sunday cold-restart window in {_span_days(distance)} "
+            f"(< {COLD_RESTART_MARGIN_S // 60} min)"
+        )
     else:
         notes.append(f"cold-restart in {_span_days(distance)}")
 
-    return Gate("G3", "gateway", NO_GO if problems else GO,
-                "; ".join(problems) if problems else "; ".join(notes))
+    return Gate(
+        "G3",
+        "gateway",
+        NO_GO if problems else GO,
+        "; ".join(problems) if problems else "; ".join(notes),
+    )
 
 
 def _grant_hint(paths: DeskPaths, epoch: str | None, *, now: datetime) -> str:
@@ -603,74 +655,122 @@ def _grant_hint(paths: DeskPaths, epoch: str | None, *, now: datetime) -> str:
     except (OSError, ValueError, KeyError, TypeError):
         pass
     return "grant: " + grant_command(
-        plan, account=DEFAULT_ACCOUNT, owner_epoch=epoch or "<epoch from owner.json>",
-        strategy="operational-canary/1", profile_digest=digest,
-        ttl_seconds=DEFAULT_TTL_S, granted_by="operator-terminal")
+        plan,
+        account=DEFAULT_ACCOUNT,
+        owner_epoch=epoch or "<epoch from owner.json>",
+        strategy="operational-canary/1",
+        profile_digest=digest,
+        ttl_seconds=DEFAULT_TTL_S,
+        granted_by="operator-terminal",
+    )
 
 
-def _gate_mandate(supervised: SupervisedPaths, desk: DeskState, *,
-                  now: datetime, paths: DeskPaths) -> Gate:
+def _gate_mandate(
+    supervised: SupervisedPaths, desk: DeskState, *, now: datetime, paths: DeskPaths
+) -> Gate:
     """G4: a mandate for the CURRENT epoch, read the way ``supervised status``
     reads it (the same mandate.json / mandate.revoked.json files)."""
     epoch = desk.epoch
     if epoch is None:
-        return Gate("G4", "mandate", NO_GO,
-                    "no owner epoch (G2 failed); a grant must bind the live epoch",
-                    hint=_grant_hint(paths, None, now=now))
+        return Gate(
+            "G4",
+            "mandate",
+            NO_GO,
+            "no owner epoch (G2 failed); a grant must bind the live epoch",
+            hint=_grant_hint(paths, None, now=now),
+        )
     revoked = supervised.mandate_revoked().exists()
     raw = _read_json(supervised.mandate())
     if revoked or raw is None:
-        return Gate("G4", "mandate", NO_GO,
-                    f"mandate {'revoked' if revoked else 'absent'} (epoch {epoch})",
-                    hint=_grant_hint(paths, epoch, now=now))
+        return Gate(
+            "G4",
+            "mandate",
+            NO_GO,
+            f"mandate {'revoked' if revoked else 'absent'} (epoch {epoch})",
+            hint=_grant_hint(paths, epoch, now=now),
+        )
     from tree_options.trex.supervised import SupervisedMandate
 
     try:
         mandate = SupervisedMandate.model_validate(raw)
     except ValueError:
-        return Gate("G4", "mandate", NO_GO, f"mandate unreadable (epoch {epoch})",
-                    hint=_grant_hint(paths, epoch, now=now))
+        return Gate(
+            "G4",
+            "mandate",
+            NO_GO,
+            f"mandate unreadable (epoch {epoch})",
+            hint=_grant_hint(paths, epoch, now=now),
+        )
     if mandate.owner_epoch != epoch:
-        return Gate("G4", "mandate", NO_GO,
-                    f"mandate binds OLD epoch {mandate.owner_epoch}; current epoch {epoch}",
-                    hint=_grant_hint(paths, epoch, now=now))
+        return Gate(
+            "G4",
+            "mandate",
+            NO_GO,
+            f"mandate binds OLD epoch {mandate.owner_epoch}; current epoch {epoch}",
+            hint=_grant_hint(paths, epoch, now=now),
+        )
     if mandate.expired_at(now):
-        return Gate("G4", "mandate", NO_GO,
-                    f"mandate {mandate.mandate_id} expired for epoch {epoch}",
-                    hint=_grant_hint(paths, epoch, now=now))
+        return Gate(
+            "G4",
+            "mandate",
+            NO_GO,
+            f"mandate {mandate.mandate_id} expired for epoch {epoch}",
+            hint=_grant_hint(paths, epoch, now=now),
+        )
     if mandate.account_id != DEFAULT_ACCOUNT:
-        return Gate("G4", "mandate", NO_GO,
-                    f"mandate binds account {mandate.account_id}, not {DEFAULT_ACCOUNT}",
-                    hint=_grant_hint(paths, epoch, now=now))
-    return Gate("G4", "mandate", GO,
-                f"granted for epoch {epoch}: {mandate.mandate_id}, "
-                f"{mandate.days_left(now)} day(s) left, "
-                f"{mandate.max_orders - mandate.orders_used} order(s) left")
+        return Gate(
+            "G4",
+            "mandate",
+            NO_GO,
+            f"mandate binds account {mandate.account_id}, not {DEFAULT_ACCOUNT}",
+            hint=_grant_hint(paths, epoch, now=now),
+        )
+    return Gate(
+        "G4",
+        "mandate",
+        GO,
+        f"granted for epoch {epoch}: {mandate.mandate_id}, "
+        f"{mandate.days_left(now)} day(s) left, "
+        f"{mandate.max_orders - mandate.orders_used} order(s) left",
+    )
 
 
 def _gate_quotes(pair: StrikePair | None, deps: Deps, *, now: datetime) -> Gate:
     """G5: the quote rail on the candidate strikes (SKIPPED, never faked)."""
     if pair is None:
-        return Gate("G5", "quotes", SKIPPED,
-                    "no candidate strikes given (--buy-strike/--sell-strike/--expiry)")
+        return Gate(
+            "G5",
+            "quotes",
+            SKIPPED,
+            "no candidate strikes given (--buy-strike/--sell-strike/--expiry)",
+        )
     if not market_hours(now.timestamp()):
-        return Gate("G5", "quotes", SKIPPED,
-                    f"no live quotes outside RTH ({now:%a %H:%M ET}); "
-                    "probe again inside the session")
+        return Gate(
+            "G5",
+            "quotes",
+            SKIPPED,
+            f"no live quotes outside RTH ({now:%a %H:%M ET}); probe again inside the session",
+        )
     outcome = deps.probe(pair)
     if not outcome.available:
-        return Gate("G5", "quotes", SKIPPED,
-                    f"no live quotes: probe unavailable ({outcome.reason})")
+        return Gate(
+            "G5", "quotes", SKIPPED, f"no live quotes: probe unavailable ({outcome.reason})"
+        )
     return quote_gate(outcome.legs)
 
 
-def run_drill_check(paths: DeskPaths, supervised: SupervisedPaths, *,
-                    deps: Deps | None = None, pair: StrikePair | None = None,
-                    gateway_state: Path | None = None,
-                    exit_watch_state: Path | None = None,
-                    max_account_open_loss: Decimal | None = None,
-                    plans_root: Path | None = None,
-                    out: Callable[[str], None] = print) -> int:
+def run_drill_check(
+    paths: DeskPaths,
+    supervised: SupervisedPaths,
+    *,
+    deps: Deps | None = None,
+    pair: StrikePair | None = None,
+    gateway_state: Path | None = None,
+    exit_watch_state: Path | None = None,
+    max_account_open_loss: Decimal | None = None,
+    plans_root: Path | None = None,
+    out: Callable[[str], None] = print,
+) -> int:
     """Print one line per gate + the DRILL verdict; 0 pass-or-skipped, 1 NO-GO.
 
     ``max_account_open_loss`` is the operator's opt-in exposure rail over
@@ -691,21 +791,34 @@ def run_drill_check(paths: DeskPaths, supervised: SupervisedPaths, *,
     exit_watch_state = exit_watch_state or exit_watch.DEFAULT_STATE
     scan_root = paths.root.parent
     account = desk_book.account_exposure(
-        as_of=now.date(), plans_root=plans_root or desk_book.default_plans_root(),
-        state_root=scan_root, desk_specs=paths.specs(), desk_book=paths.book())
+        as_of=now.date(),
+        plans_root=plans_root or desk_book.default_plans_root(),
+        state_root=scan_root,
+        desk_specs=paths.specs(),
+        desk_book=paths.book(),
+    )
 
-    desk_gate, desk = _gate_desk(paths, deps, now=now, root=scan_root,
-                                 exit_watch_state=exit_watch_state,
-                                 gateway_state=gateway_state,
-                                 account=account, rail=max_account_open_loss)
+    desk_gate, desk = _gate_desk(
+        paths,
+        deps,
+        now=now,
+        root=scan_root,
+        exit_watch_state=exit_watch_state,
+        gateway_state=gateway_state,
+        account=account,
+        rail=max_account_open_loss,
+    )
     gates = [
         desk_gate,
         _gate_gateway(now=now, gateway_state=gateway_state),
         _gate_mandate(supervised, desk, now=now, paths=paths),
         _gate_quotes(pair, deps, now=now),
-        Gate("G6", "rehearsal", MANUAL,
-             "halt -> inspect -> resume by hand (resume removes HALT; flatten "
-             "only closes after it)"),
+        Gate(
+            "G6",
+            "rehearsal",
+            MANUAL,
+            "halt -> inspect -> resume by hand (resume removes HALT; flatten only closes after it)",
+        ),
     ]
     for gate in gates:
         out(gate.line)
@@ -724,12 +837,17 @@ def run_drill_check(paths: DeskPaths, supervised: SupervisedPaths, *,
 def parse_pair(args: argparse.Namespace) -> StrikePair | None:
     """The three strike args together, or none of them; anything else is a
     usage error (raised) so the CLI can exit 2 before reading anything."""
-    given = (args.buy_strike is not None, args.sell_strike is not None,
-             args.expiry is not None)
+    given = (args.buy_strike is not None, args.sell_strike is not None, args.expiry is not None)
     if all(given):
-        return StrikePair(underlying=args.underlying, buy_strike=args.buy_strike,
-                          sell_strike=args.sell_strike, expiry=args.expiry)
+        return StrikePair(
+            underlying=args.underlying,
+            buy_strike=args.buy_strike,
+            sell_strike=args.sell_strike,
+            expiry=args.expiry,
+        )
     if any(given):
-        raise ValueError("drill-check needs --buy-strike, --sell-strike and "
-                         "--expiry together (or none: G5 skips)")
+        raise ValueError(
+            "drill-check needs --buy-strike, --sell-strike and "
+            "--expiry together (or none: G5 skips)"
+        )
     return None

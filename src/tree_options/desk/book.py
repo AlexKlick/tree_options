@@ -422,9 +422,11 @@ class AccountExposure:
     def countable(self) -> bool:
         """False when any book problem or any uncountable position makes a
         total unknowable (the fail-closed rail: never assume flat)."""
-        return (not self.problems
-                and self.outside.max_loss_usd is not None
-                and self.desk.max_loss_usd is not None)
+        return (
+            not self.problems
+            and self.outside.max_loss_usd is not None
+            and self.desk.max_loss_usd is not None
+        )
 
 
 def account_exposure(
@@ -438,8 +440,13 @@ def account_exposure(
     """:func:`load_book`'s positions split by owner (desk vs everything
     else), on the same state root. Read-only, like it. The desk partition
     is the ``desk:`` source exactly as :func:`load_book` ids it."""
-    view = load_book(as_of=as_of, plans_root=plans_root, state_root=state_root,
-                     desk_specs=desk_specs, desk_book=desk_book)
+    view = load_book(
+        as_of=as_of,
+        plans_root=plans_root,
+        state_root=state_root,
+        desk_specs=desk_specs,
+        desk_book=desk_book,
+    )
     desk = tuple(p for p in view.positions if p.source == DESK_SOURCE)
     outside = tuple(p for p in view.positions if p.source != DESK_SOURCE)
     return AccountExposure(

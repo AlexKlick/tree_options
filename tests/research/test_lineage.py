@@ -48,11 +48,14 @@ def workspace(tmp_path: Path) -> Path:
     return ws
 
 
-def _ref(*, parent_run_id: str = "p1",
-         engine: str = "a" * 64,
-         input_sha: str = "b" * 64,
-         calendar_sha: str = "c" * 64,
-         spec_hash: str = "x" * 64) -> ParentRef:
+def _ref(
+    *,
+    parent_run_id: str = "p1",
+    engine: str = "a" * 64,
+    input_sha: str = "b" * 64,
+    calendar_sha: str = "c" * 64,
+    spec_hash: str = "x" * 64,
+) -> ParentRef:
     return ParentRef(
         parent_run_id=parent_run_id,
         parent_spec_hash=spec_hash,
@@ -100,19 +103,27 @@ def test_attach_child_refuses_conflicting_content(workspace):
 def test_list_children_walks_lineage_in_insertion_order(workspace):
     with open_runstate_store(workspace) as store:
         for cid in ("c1", "c2", "c3"):
-            attach_child(store, ChildRef(
-                child_run_id=cid,
-                parent_run_id="parent_X",
+            attach_child(
+                store,
+                ChildRef(
+                    child_run_id=cid,
+                    parent_run_id="parent_X",
+                    scenario_kind="contribution_planning",
+                    scenario_diff_sha256="d" * 64,
+                ),
+                at=datetime.now(),
+            )
+        # And one to a different parent, which must be filtered out.
+        attach_child(
+            store,
+            ChildRef(
+                child_run_id="c4",
+                parent_run_id="parent_Y",
                 scenario_kind="contribution_planning",
                 scenario_diff_sha256="d" * 64,
-            ), at=datetime.now())
-        # And one to a different parent, which must be filtered out.
-        attach_child(store, ChildRef(
-            child_run_id="c4",
-            parent_run_id="parent_Y",
-            scenario_kind="contribution_planning",
-            scenario_diff_sha256="d" * 64,
-        ), at=datetime.now())
+            ),
+            at=datetime.now(),
+        )
         kids = list_children(store, "parent_X")
     assert kids == ("c1", "c2", "c3")
 
@@ -150,8 +161,7 @@ def test_store_parent_ref_refuses_conflicting_content(workspace):
     with open_runstate_store(workspace) as store:
         store_parent_ref(store, _ref(engine="a" * 64), at=datetime.now())
         with pytest.raises(RunstateStoreError):
-            store_parent_ref(store, _ref(engine="z" * 64),
-                             at=datetime.now())
+            store_parent_ref(store, _ref(engine="z" * 64), at=datetime.now())
 
 
 # -- parent_changed + parent_missing oracle surfaces -----------------

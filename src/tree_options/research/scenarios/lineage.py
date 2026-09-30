@@ -28,6 +28,7 @@ write) keeps the lineage honest. The keys are SCOPED INSIDE the run
 records' namespace — children look up by ``child.run.parent_run_id``
 stored in the result's wire envelope.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -50,6 +51,7 @@ class ParentRef:
     forked from it. The four shas are the *effective* identity: what
     produced the parent as a function of its inputs, not whatever the
     parent happens to look like today."""
+
     parent_run_id: str
     parent_spec_hash: str
     parent_engine_sha256: str
@@ -71,6 +73,7 @@ class ChildRef:
     """A child's pointer back to its parent. Stored as a wire-visible
     field on the child's stored ``result`` so any reader can resolve
     the lineage without traversing the store."""
+
     child_run_id: str
     parent_run_id: str
     scenario_kind: str
@@ -88,8 +91,7 @@ class ChildRef:
 # -- operations -------------------------------------------------------------
 
 
-def attach_child(store: Any, child: ChildRef,
-                 *, at: Any) -> str:
+def attach_child(store: Any, child: ChildRef, *, at: Any) -> str:
     """Persist the parent → child pointer. Idempotent: re-attaching with
     the same content returns the existing sha; conflicting content
     raises ``RunstateStoreError`` (the lineage is immutable)."""
@@ -100,16 +102,12 @@ def attach_child(store: Any, child: ChildRef,
         if existing == child.to_dict():
             sha = store.get_kind_payload_sha("child", child.child_run_id)
             if sha is None:
-                raise RunstateStoreError(
-                    "child pointer present but sha unavailable")
+                raise RunstateStoreError("child pointer present but sha unavailable")
             return sha
-        raise RunstateStoreError(
-            "child_run_id already attached to a different parent"
-        )
+        raise RunstateStoreError("child_run_id already attached to a different parent")
     from datetime import datetime as _dt
-    return store.put("child", child.to_dict(),
-                     key=child.child_run_id,
-                     at=at or _dt.now())
+
+    return store.put("child", child.to_dict(), key=child.child_run_id, at=at or _dt.now())
 
 
 def list_children(store: Any, parent_run_id: str) -> tuple[str, ...]:
@@ -118,8 +116,7 @@ def list_children(store: Any, parent_run_id: str) -> tuple[str, ...]:
     order)."""
     out: list[str] = []
     for payload, _at in store.all_at("child"):
-        if (isinstance(payload, dict)
-                and payload.get("parent_run_id") == parent_run_id):
+        if isinstance(payload, dict) and payload.get("parent_run_id") == parent_run_id:
             cid = payload.get("child_run_id")
             if isinstance(cid, str):
                 out.append(cid)
@@ -139,40 +136,40 @@ def load_parent_ref(store: Any, parent_run_id: str) -> ParentRef | None:
     )
 
 
-def store_parent_ref(store: Any, ref: ParentRef,
-                     *, at: Any) -> str:
+def store_parent_ref(store: Any, ref: ParentRef, *, at: Any) -> str:
     """Persist a parent's effective identity. Idempotent on identical
     content; conflicting content raises (the parent identity is
     immutable once attached for the first time, mirroring the run
     records' audit chain)."""
     from datetime import datetime as _dt
-    return store.put(PARENT_KIND, ref.to_dict(),
-                     key=ref.parent_run_id,
-                     at=at or _dt.now())
+
+    return store.put(PARENT_KIND, ref.to_dict(), key=ref.parent_run_id, at=at or _dt.now())
 
 
-def parent_changed(current_result: dict[str, Any],
-                   ref: ParentRef) -> ScenarioRefusal | None:
+def parent_changed(current_result: dict[str, Any], ref: ParentRef) -> ScenarioRefusal | None:
     """Compare a parent's *currently-stored* identity (the sha fields
     bound into its result envelope) against the ``ParentRef`` recorded
     at attach-time. A mismatch is a refused scenario: the parent's
     source or inputs shifted, the child cannot honestly inherit."""
     checks = (
-        ("engine_sha256", ref.parent_engine_sha256,
-         current_result.get("engine_sha256")),
-        ("input_snapshot_sha256", ref.parent_input_snapshot_sha256,
-         current_result.get("input_snapshot_sha256")),
-        ("calendar_sha256", ref.parent_calendar_sha256,
-         current_result.get("calendar_sha256")),
+        ("engine_sha256", ref.parent_engine_sha256, current_result.get("engine_sha256")),
+        (
+            "input_snapshot_sha256",
+            ref.parent_input_snapshot_sha256,
+            current_result.get("input_snapshot_sha256"),
+        ),
+        ("calendar_sha256", ref.parent_calendar_sha256, current_result.get("calendar_sha256")),
     )
     for name, expected, actual in checks:
         if not isinstance(actual, str) or actual != expected:
             return ScenarioRefusal(
                 code=SCENARIO_PARENT_CHANGED,
-                message=(f"parent {name} changed: expected "
-                         f"{expected!r}, parent currently reports "
-                         f"{actual!r}; refuse to publish a scenario "
-                         "inheriting from a re-run parent"),
+                message=(
+                    f"parent {name} changed: expected "
+                    f"{expected!r}, parent currently reports "
+                    f"{actual!r}; refuse to publish a scenario "
+                    "inheriting from a re-run parent"
+                ),
             )
     return None
 
@@ -186,14 +183,15 @@ def parent_missing(parent_result: dict[str, Any] | None) -> ScenarioRefusal | No
         return ScenarioRefusal(
             code=SCENARIO_PARENT_MISSING,
             message="parent run has no stored result record; refusing "
-                    "to publish an unanchored scenario fork",
+            "to publish an unanchored scenario fork",
         )
     status = parent_result.get("status")
     if status != "completed":
         return ScenarioRefusal(
             code=SCENARIO_PARENT_MISSING,
-            message=(f"parent run status is {status!r}; only completed "
-                     "parent results can be forked"),
+            message=(
+                f"parent run status is {status!r}; only completed parent results can be forked"
+            ),
         )
     return None
 

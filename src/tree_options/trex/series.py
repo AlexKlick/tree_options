@@ -9,16 +9,12 @@ stride-picked, output never exceeds ``max_points``.
 from __future__ import annotations
 
 
-def decimate_pairs(
-    pts: list[tuple[int, float]], max_points: int = 600
-) -> list[tuple[int, float]]:
+def decimate_pairs(pts: list[tuple[int, float]], max_points: int = 600) -> list[tuple[int, float]]:
     """Stride-decimate (ts_ms, value) pairs; first/last kept exactly."""
     if len(pts) <= max_points:
         return pts
     stride = len(pts) / max_points
-    keep = sorted(
-        {0, len(pts) - 1} | {int(i * stride) for i in range(max_points - 1)}
-    )
+    keep = sorted({0, len(pts) - 1} | {int(i * stride) for i in range(max_points - 1)})
     return [pts[i] for i in keep]
 
 

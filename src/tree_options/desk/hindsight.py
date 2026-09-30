@@ -53,8 +53,9 @@ def parse_bundle(raw: Mapping[str, Any]) -> tuple[_Bars, dict[str, iag.Contract]
     return bars, contracts
 
 
-def _candidate_outcome(bars: _Bars, sessions: list[date], day: date, clock: str,
-                       candidate: dict[str, Any], age_s: int) -> Decimal | None:
+def _candidate_outcome(
+    bars: _Bars, sessions: list[date], day: date, clock: str, candidate: dict[str, Any], age_s: int
+) -> Decimal | None:
     """The later-modeled PnL of entering ``candidate`` on this board, with
     replay's exact entry/exit valuation; None when replay would produce no
     closed trade (no fill, a refused entry, or open at window end)."""
@@ -94,17 +95,21 @@ def _candidate_outcome(bars: _Bars, sessions: list[date], day: date, clock: str,
     return None  # open at window end: no final PnL, so no outcome
 
 
-def board_outcomes(raw: Mapping[str, Any], day: date, clock: str, *,
-                   sessions: list[date] | None = None,
-                   max_age_minutes: int = 15) -> dict[str, Decimal]:
+def board_outcomes(
+    raw: Mapping[str, Any],
+    day: date,
+    clock: str,
+    *,
+    sessions: list[date] | None = None,
+    max_age_minutes: int = 15,
+) -> dict[str, Decimal]:
     """Per-candidate later-modeled PnL of entering that candidate on this
     board. Boards/candidates with no evaluable outcome are absent."""
     if max_age_minutes < 1 or max_age_minutes > 30:
         raise ValueError("invalid freshness limit")
     if clock not in iag.schedule_for(day):
         raise ValueError("clock is not a scheduled decision point")
-    window = ([d for d in all_sessions(raw) if d >= day]
-              if sessions is None else list(sessions))
+    window = [d for d in all_sessions(raw) if d >= day] if sessions is None else list(sessions)
     if day not in window:
         raise ValueError("board day is outside the window")
     if window != sorted(set(window)):
@@ -115,8 +120,8 @@ def board_outcomes(raw: Mapping[str, Any], day: date, clock: str, *,
     return {
         candidate["id"]: pnl
         for candidate in candidates
-        if (pnl := _candidate_outcome(bars, window, day, clock, candidate,
-                                      max_age_minutes * 60)) is not None
+        if (pnl := _candidate_outcome(bars, window, day, clock, candidate, max_age_minutes * 60))
+        is not None
     }
 
 
@@ -125,8 +130,9 @@ def _row_map(candidates: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
     return {row["id"]: row for row in lab.board_rows({"candidates": candidates})}
 
 
-def gap_report(run_document: Mapping[str, Any], raw: Mapping[str, Any], *,
-               max_age_minutes: int = 15) -> dict[str, Any]:
+def gap_report(
+    run_document: Mapping[str, Any], raw: Mapping[str, Any], *, max_age_minutes: int = 15
+) -> dict[str, Any]:
     """Per board the run actually showed (boards with receipts): the chosen
     id or skip, the chosen outcome, the hindsight best (argmax of
     board_outcomes on that board) and the gap, with the aliased feature rows
@@ -147,8 +153,7 @@ def gap_report(run_document: Mapping[str, Any], raw: Mapping[str, Any], *,
         outcomes = {
             candidate["id"]: pnl
             for candidate in candidates
-            if (pnl := _candidate_outcome(bars, sessions, day, clock,
-                                          candidate, age_s)) is not None
+            if (pnl := _candidate_outcome(bars, sessions, day, clock, candidate, age_s)) is not None
         }
         if not outcomes:
             continue  # a no-outcome board is excluded, never zeroed
@@ -158,17 +163,22 @@ def gap_report(run_document: Mapping[str, Any], raw: Mapping[str, Any], *,
         best = max(sorted(outcomes), key=lambda cid: outcomes[cid])
         best_outcome = outcomes[best]
         realized = chosen_outcome if chosen_outcome is not None else Decimal(0)
-        boards.append({
-            "snapshot": snapshot, "session": day.isoformat(), "clock_et": clock,
-            "board_rows": len(rows),
-            "chosen": chosen,
-            "chosen_outcome": (None if chosen_outcome is None else str(chosen_outcome)),
-            "best": best, "best_outcome": str(best_outcome),
-            "best_in_shown_rows": best in rows,
-            "gap": str(best_outcome - realized),
-            "chosen_row": rows.get(str(chosen)) if chosen is not None else None,
-            "best_row": rows.get(best),
-        })
+        boards.append(
+            {
+                "snapshot": snapshot,
+                "session": day.isoformat(),
+                "clock_et": clock,
+                "board_rows": len(rows),
+                "chosen": chosen,
+                "chosen_outcome": (None if chosen_outcome is None else str(chosen_outcome)),
+                "best": best,
+                "best_outcome": str(best_outcome),
+                "best_in_shown_rows": best in rows,
+                "gap": str(best_outcome - realized),
+                "chosen_row": rows.get(str(chosen)) if chosen is not None else None,
+                "best_row": rows.get(best),
+            }
+        )
     return {
         "schema": HINDSIGHT_SCHEMA,
         "policy": run_document.get("policy"),
@@ -184,12 +194,20 @@ def gap_report(run_document: Mapping[str, Any], raw: Mapping[str, Any], *,
 
 def top_gaps(report: Mapping[str, Any], limit: int = 12) -> list[dict[str, Any]]:
     """The highest-gap boards first (deterministic), bounded for prompts."""
-    ranked = sorted(report.get("boards", []),
-                    key=lambda b: (-Decimal(str(b["gap"])), str(b["snapshot"])))
+    ranked = sorted(
+        report.get("boards", []), key=lambda b: (-Decimal(str(b["gap"])), str(b["snapshot"]))
+    )
     return [
-        {"snapshot": b["snapshot"], "clock_et": b["clock_et"],
-         "chosen": b["chosen"], "chosen_outcome": b["chosen_outcome"],
-         "best": b["best"], "best_outcome": b["best_outcome"],
-         "gap": b["gap"], "chosen_row": b["chosen_row"], "best_row": b["best_row"]}
+        {
+            "snapshot": b["snapshot"],
+            "clock_et": b["clock_et"],
+            "chosen": b["chosen"],
+            "chosen_outcome": b["chosen_outcome"],
+            "best": b["best"],
+            "best_outcome": b["best_outcome"],
+            "gap": b["gap"],
+            "chosen_row": b["chosen_row"],
+            "best_row": b["best_row"],
+        }
         for b in ranked[:limit]
     ]

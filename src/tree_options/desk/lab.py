@@ -66,8 +66,7 @@ BURN_NOTE = "quota gate: no under-using window in the snapshot"
 GEPA_PREFIX = "gepa:"
 #: the default policy sentence of the board task; the GEPA lane evolves it
 POLICY_SENTENCE = (
-    "You are a paper-trading policy choosing ONE defined-risk option "
-    "spread board row, or skipping."
+    "You are a paper-trading policy choosing ONE defined-risk option spread board row, or skipping."
 )
 
 _POLICY_RE = re.compile(r"^[a-z0-9:_-]+$")
@@ -105,7 +104,7 @@ def model_provider(policy: str) -> str:
     """``model:<provider>``; ``gepa:<id>`` burns zai (the flash volume lane);
     ``gepa:<provider>:<id>`` names its provider explicitly."""
     if policy.startswith(GEPA_PREFIX):
-        rest = policy[len(GEPA_PREFIX):]
+        rest = policy[len(GEPA_PREFIX) :]
         if ":" not in rest:
             return "zai"  # archive policies burn the flash volume lane
         provider = rest.split(":", 1)[0]
@@ -128,27 +127,38 @@ def burn_allowed(windows: tuple[QuotaWindow, ...] = ()) -> bool:
 
 def board_rows(packet: dict[str, Any]) -> list[dict[str, Any]]:
     """The compact, aliased board a model chooses from (no tickers, no dates)."""
-    candidates = sorted(packet["candidates"],
-                        key=lambda c: -float(c["reward_to_risk_proxy"]))[:BOARD_ROWS]
-    return [{"id": c["id"], "structure": c["structure"], "width": c["width"],
-             "premium": c["observed_premium"], "max_loss": c["max_loss_proxy"],
-             "max_gain": c["max_gain_proxy"], "reward_risk": c["reward_to_risk_proxy"],
-             "long_recent_move": c["long_recent_trade_move"],
-             "short_recent_move": c["short_recent_trade_move"],
-             "data_kind": c["data_kind"]} for c in candidates]
+    candidates = sorted(packet["candidates"], key=lambda c: -float(c["reward_to_risk_proxy"]))[
+        :BOARD_ROWS
+    ]
+    return [
+        {
+            "id": c["id"],
+            "structure": c["structure"],
+            "width": c["width"],
+            "premium": c["observed_premium"],
+            "max_loss": c["max_loss_proxy"],
+            "max_gain": c["max_gain_proxy"],
+            "reward_risk": c["reward_to_risk_proxy"],
+            "long_recent_move": c["long_recent_trade_move"],
+            "short_recent_move": c["short_recent_trade_move"],
+            "data_kind": c["data_kind"],
+        }
+        for c in candidates
+    ]
 
 
-def board_prompt(rows: list[dict[str, Any]],
-                 policy_prompt: str | None = None) -> list[dict[str, str]]:
+def board_prompt(
+    rows: list[dict[str, Any]], policy_prompt: str | None = None
+) -> list[dict[str, str]]:
     """The board task. ``policy_prompt`` (the GEPA lane) replaces ONLY the
     policy sentence; the risk caps and the JSON reply contract never move."""
     sentence = POLICY_SENTENCE if policy_prompt is None else policy_prompt
     task = (
-        sentence
-        + " Capital 5000, max loss per trade 300, "
+        sentence + " Capital 5000, max loss per trade 300, "
         "max combined open loss 1500. Prices are last-traded-minute closes "
         "(valuation proxies, not executable quotes). Return STRICT JSON "
-        '{"choice": "<row id>" | null, "note": "<=40 chars"}. No other text.')
+        '{"choice": "<row id>" | null, "note": "<=40 chars"}. No other text.'
+    )
     return [{"role": "user", "content": json.dumps({"task": task, "board": rows})}]
 
 
@@ -163,9 +173,14 @@ def parse_choice(reply: dict[str, Any], valid_ids: set[str]) -> tuple[str | None
     return str(choice), note
 
 
-def ask_board(provider: str, rows: list[dict[str, Any]], *,
-              transport: Any = None, model: str | None = None,
-              policy_prompt: str | None = None) -> dict[str, Any]:
+def ask_board(
+    provider: str,
+    rows: list[dict[str, Any]],
+    *,
+    transport: Any = None,
+    model: str | None = None,
+    policy_prompt: str | None = None,
+) -> dict[str, Any]:
     """One model call; raises LlmError on failure (the caller records it)."""
     kwargs: dict[str, Any] = {}
     if transport is not None:
@@ -183,9 +198,21 @@ V2_HORIZONS = ("intraday", "eod", "hold:5", "expiry")
 V2_STRUCTURES = ("put_credit", "put_debit", "call_credit", "call_debit")
 V2_ROWS_PER_STRUCTURE = 4
 #: the only row fields a v2 prompt ever renders
-V2_ROW_FIELDS = ("id", "structure", "direction", "underlying", "width", "observed_premium",
-                 "max_loss", "max_gain", "reward_risk", "dte", "short_strike_moneyness_pct",
-                 "long_recent_move", "short_recent_move")
+V2_ROW_FIELDS = (
+    "id",
+    "structure",
+    "direction",
+    "underlying",
+    "width",
+    "observed_premium",
+    "max_loss",
+    "max_gain",
+    "reward_risk",
+    "dte",
+    "short_strike_moneyness_pct",
+    "long_recent_move",
+    "short_recent_move",
+)
 
 
 @dataclass(frozen=True)
@@ -243,22 +270,31 @@ def board_context(index: OutcomeIndex, day: date, clock: str) -> BoardContext:
             return series.get(prior[-n]) if len(prior) >= n else None
 
         window = [series.get(d) for d in prior[-21:]]
-        logs = [math.log(float(b) / float(a)) for a, b in pairwise(window)
-                if a is not None and b is not None and a > 0 and b > 0]
+        logs = [
+            math.log(float(b) / float(a))
+            for a, b in pairwise(window)
+            if a is not None and b is not None and a > 0 and b > 0
+        ]
         per[aliases[underlying]] = {
             "ret_1s_pct": _pct_change(now, back(1)),
             "ret_5s_pct": _pct_change(now, back(5)),
             "ret_20s_pct": _pct_change(now, back(20)),
-            "rv_20s_ann_pct": (f"{statistics.stdev(logs) * math.sqrt(252) * 100:.1f}"
-                               if len(logs) >= 5 else None)}
+            "rv_20s_ann_pct": (
+                f"{statistics.stdev(logs) * math.sqrt(252) * 100:.1f}" if len(logs) >= 5 else None
+            ),
+        }
         if index.iv:  # board universe v3: the 30-day implied-vol index, prior close
             from tree_options.desk.board_universe import iv_prev_close
 
             iv = iv_prev_close(index.iv.get(underlying, {}), day)
             per[aliases[underlying]]["iv30_prev_close_pct"] = (
-                None if iv is None else str(iv.quantize(Decimal("0.01"))))
-    public = {"time_of_day": _time_of_day(clock, iag.schedule_for(day)),
-              "session_ordinal": position + 1, "underlyings": per}
+                None if iv is None else str(iv.quantize(Decimal("0.01")))
+            )
+    public = {
+        "time_of_day": _time_of_day(clock, iag.schedule_for(day)),
+        "session_ordinal": position + 1,
+        "underlyings": per,
+    }
     return BoardContext(public=public, aliases=aliases, spot=spot, as_of=as_of)
 
 
@@ -287,19 +323,28 @@ def board_rows_v2(packet: dict[str, Any], context: BoardContext) -> list[dict[st
             raise ValueError("a board underlying has no alias")  # never fall back to a ticker
         spot = context.spot.get(candidate["underlying"])
         strike = iag.parse_contract(candidate["short"]).strike
-        moneyness = (None if spot is None or spot == 0
-                     else str(((strike / spot - 1) * 100).quantize(Decimal("0.01"))))
-        rows.append({"id": candidate["id"], "structure": candidate["structure"],
-                     "direction": outcomes.direction(candidate["structure"]),
-                     "underlying": alias, "width": candidate["width"],
-                     "observed_premium": candidate["observed_premium"],
-                     "max_loss": candidate["max_loss_proxy"],
-                     "max_gain": candidate["max_gain_proxy"],
-                     "reward_risk": candidate["reward_to_risk_proxy"],
-                     "dte": (date.fromisoformat(candidate["expiry"]) - today).days,
-                     "short_strike_moneyness_pct": moneyness,
-                     "long_recent_move": candidate["long_recent_trade_move"],
-                     "short_recent_move": candidate["short_recent_trade_move"]})
+        moneyness = (
+            None
+            if spot is None or spot == 0
+            else str(((strike / spot - 1) * 100).quantize(Decimal("0.01")))
+        )
+        rows.append(
+            {
+                "id": candidate["id"],
+                "structure": candidate["structure"],
+                "direction": outcomes.direction(candidate["structure"]),
+                "underlying": alias,
+                "width": candidate["width"],
+                "observed_premium": candidate["observed_premium"],
+                "max_loss": candidate["max_loss_proxy"],
+                "max_gain": candidate["max_gain_proxy"],
+                "reward_risk": candidate["reward_to_risk_proxy"],
+                "dte": (date.fromisoformat(candidate["expiry"]) - today).days,
+                "short_strike_moneyness_pct": moneyness,
+                "long_recent_move": candidate["long_recent_trade_move"],
+                "short_recent_move": candidate["short_recent_trade_move"],
+            }
+        )
     return rows
 
 
@@ -308,8 +353,9 @@ def _has_iv(context: BoardContext) -> bool:
     return any("iv30_prev_close_pct" in values for values in underlyings.values())
 
 
-def board_prompt_v2(rows: list[dict[str, Any]], context: BoardContext,
-                    policy_prompt: str | None = None) -> list[dict[str, str]]:
+def board_prompt_v2(
+    rows: list[dict[str, Any]], context: BoardContext, policy_prompt: str | None = None
+) -> list[dict[str, str]]:
     """The v2 board task: the (GEPA-swappable) policy sentence, the caps, the
     cost, the horizon menu and the strict JSON contract; renders only the
     public context and the whitelisted row fields."""
@@ -317,27 +363,35 @@ def board_prompt_v2(rows: list[dict[str, Any]], context: BoardContext,
 
     sentence = POLICY_SENTENCE if policy_prompt is None else policy_prompt
     task = (
-        sentence
-        + " Capital 5000, max loss per trade 300, max combined open loss 1500. "
+        sentence + " Capital 5000, max loss per trade 300, max combined open loss 1500. "
         "Prices are last-traded-minute closes (valuation proxies, not executable "
         f"quotes); every round trip is charged {CostModel().round_trip()} in "
         "commissions and half-spreads. Underlyings are aliased (U1, U2, ...); the "
         "context gives each one's as-of returns over 1/5/20 sessions and 20-session "
         "realized vol"
-        + (" and the prior session's close of its 30-day implied-vol index "
-           "(iv30_prev_close_pct)" if _has_iv(context) else "")
+        + (
+            " and the prior session's close of its 30-day implied-vol index (iv30_prev_close_pct)"
+            if _has_iv(context)
+            else ""
+        )
         + ". Choose a holding horizon: intraday = the next decision clock, "
         "eod = this session's last clock, hold:5 = five sessions, expiry = the last "
         "mark before expiry. Return STRICT JSON "
         '{"choice": "<row id>" | null, "horizon": "intraday" | "eod" | "hold:5" | '
-        '"expiry", "note": "<=40 chars"}. No other text.')
+        '"expiry", "note": "<=40 chars"}. No other text.'
+    )
     board = [{key: row.get(key) for key in V2_ROW_FIELDS} for row in rows]
-    return [{"role": "user", "content": json.dumps(
-        {"task": task, "context": context.public, "board": board})}]
+    return [
+        {
+            "role": "user",
+            "content": json.dumps({"task": task, "context": context.public, "board": board}),
+        }
+    ]
 
 
-def parse_choice_v2(reply: dict[str, Any],
-                    valid_ids: set[str]) -> tuple[str | None, str | None, str]:
+def parse_choice_v2(
+    reply: dict[str, Any], valid_ids: set[str]
+) -> tuple[str | None, str | None, str]:
     """(choice, horizon, note). An unknown id or an unknown horizon rejects
     the whole reply (None, None, reason); nothing is ever repaired."""
     choice = reply.get("choice")
@@ -368,9 +422,14 @@ def latest_sessions(raw: dict[str, Any], count: int) -> list[Any]:
     return sorted(days)[-count:]
 
 
-def run_lab(config: LabConfig, *, windows: tuple[QuotaWindow, ...] = (),
-            transport: Any = None, now: datetime | None = None,
-            burn_gate: bool = True) -> dict[str, Any]:
+def run_lab(
+    config: LabConfig,
+    *,
+    windows: tuple[QuotaWindow, ...] = (),
+    transport: Any = None,
+    now: datetime | None = None,
+    burn_gate: bool = True,
+) -> dict[str, Any]:
     """One scored run. Model policies are quota-gated; rules policies are not.
 
     ``burn_gate=False`` is for a caller that gates the burn itself and holds
@@ -382,8 +441,13 @@ def run_lab(config: LabConfig, *, windows: tuple[QuotaWindow, ...] = (),
     policy = config.policy
     model = is_model_policy(policy)
     if model and burn_gate and not burn_allowed(windows):
-        return {"schema": LAB_SCHEMA, "policy": policy, "at": now.isoformat(),
-                "status": "skipped", "reason": BURN_NOTE}
+        return {
+            "schema": LAB_SCHEMA,
+            "policy": policy,
+            "at": now.isoformat(),
+            "status": "skipped",
+            "reason": BURN_NOTE,
+        }
 
     decisions: dict[str, str | None] = {}
     receipts: list[dict[str, Any]] = []
@@ -401,16 +465,22 @@ def run_lab(config: LabConfig, *, windows: tuple[QuotaWindow, ...] = (),
                 boards += 1
                 snapshot = packet["snapshot_id"]
                 started = time.monotonic()
-                receipt = {"snapshot": snapshot, "provider": provider,
-                           "board_rows": len(rows)}
+                receipt = {"snapshot": snapshot, "provider": provider, "board_rows": len(rows)}
                 try:
-                    reply = ask_board(provider, rows, transport=transport,
-                                      policy_prompt=config.policy_prompt)
+                    reply = ask_board(
+                        provider, rows, transport=transport, policy_prompt=config.policy_prompt
+                    )
                     choice, note = parse_choice(reply, {r["id"] for r in rows})
-                    receipt.update({"ok": True, "choice": choice, "note": note,
-                                    "prompt_sha256": hashlib.sha256(
-                                        json.dumps(rows, sort_keys=True).encode()
-                                    ).hexdigest()})
+                    receipt.update(
+                        {
+                            "ok": True,
+                            "choice": choice,
+                            "note": note,
+                            "prompt_sha256": hashlib.sha256(
+                                json.dumps(rows, sort_keys=True).encode()
+                            ).hexdigest(),
+                        }
+                    )
                     if choice is not None:
                         decisions[snapshot] = choice
                 except LlmError as error:
@@ -420,22 +490,28 @@ def run_lab(config: LabConfig, *, windows: tuple[QuotaWindow, ...] = (),
             if boards >= config.boards_cap:
                 break
 
-    summary = iag.replay(raw, sessions, decisions if model else None,
-                         policy="no_trade" if model else policy)
-    document: dict[str, Any] = {"schema": LAB_SCHEMA, "policy": policy,
-                                "at": now.isoformat(),
-                                "status": "ok", "sessions": [str(d) for d in sessions],
-                "boards_shown": boards, "model_calls": len(receipts),
-                "model_failures": sum(1 for r in receipts if not r.get("ok")),
-                "windows": [{"name": w.name, "under_using": w.under_using}
-                            for w in windows],
-                "summary": summary, "receipts": receipts}
+    summary = iag.replay(
+        raw, sessions, decisions if model else None, policy="no_trade" if model else policy
+    )
+    document: dict[str, Any] = {
+        "schema": LAB_SCHEMA,
+        "policy": policy,
+        "at": now.isoformat(),
+        "status": "ok",
+        "sessions": [str(d) for d in sessions],
+        "boards_shown": boards,
+        "model_calls": len(receipts),
+        "model_failures": sum(1 for r in receipts if not r.get("ok")),
+        "windows": [{"name": w.name, "under_using": w.under_using} for w in windows],
+        "summary": summary,
+        "receipts": receipts,
+    }
     if config.policy_prompt is not None:
         # provenance: which evolved policy instruction produced the choices
-        document["policy_prompt_sha256"] = hashlib.sha256(
-            config.policy_prompt.encode()).hexdigest()
+        document["policy_prompt_sha256"] = hashlib.sha256(config.policy_prompt.encode()).hexdigest()
     out_dir = (config.lab_root or default_root()) / (
-        f"{now.strftime('%Y%m%dT%H%M%SZ')}-{slug(policy)}")
+        f"{now.strftime('%Y%m%dT%H%M%SZ')}-{slug(policy)}"
+    )
     suffix = 0
     while True:
         target = out_dir if suffix == 0 else out_dir.with_name(f"{out_dir.name}-{suffix}")
@@ -466,29 +542,40 @@ def default_root() -> Path:
 def _cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tree_options.desk lab-run",
-        description="One lab run: a policy on the bundle's latest sessions.")
+        description="One lab run: a policy on the bundle's latest sessions.",
+    )
     parser.add_argument("--bundle", required=True, type=Path)
-    parser.add_argument("--policy", required=True,
-                        help="model:zai | model:minimax | model:minimax-flash | "
-                             "model:local | no_trade | "
-                             "put_credit | call_credit | put_debit | call_debit")
+    parser.add_argument(
+        "--policy",
+        required=True,
+        help="model:zai | model:minimax | model:minimax-flash | "
+        "model:local | no_trade | "
+        "put_credit | call_credit | put_debit | call_debit",
+    )
     parser.add_argument("--sessions", type=int, default=3)
     parser.add_argument("--boards-cap", type=int, default=24)
-    parser.add_argument("--windows", type=Path, default=None,
-                        help="quota snapshot (required in effect for model policies)")
+    parser.add_argument(
+        "--windows",
+        type=Path,
+        default=None,
+        help="quota snapshot (required in effect for model policies)",
+    )
     parser.add_argument("--lab-root", type=Path, default=None)
     args = parser.parse_args(argv)
     try:
         windows = load_windows(args.windows) if args.windows and args.windows.exists() else ()
-        config = LabConfig(bundle=args.bundle, policy=args.policy,
-                           sessions=args.sessions, boards_cap=args.boards_cap,
-                           lab_root=args.lab_root)
+        config = LabConfig(
+            bundle=args.bundle,
+            policy=args.policy,
+            sessions=args.sessions,
+            boards_cap=args.boards_cap,
+            lab_root=args.lab_root,
+        )
         document = run_lab(config, windows=windows)
     except (ValueError, OSError, KeyError) as error:
         print(f"refused: {error}", file=sys.stderr)
         return 2
-    print(json.dumps({k: document[k] for k in document if k != "receipts"},
-                     indent=2, default=str))
+    print(json.dumps({k: document[k] for k in document if k != "receipts"}, indent=2, default=str))
     return 0
 
 

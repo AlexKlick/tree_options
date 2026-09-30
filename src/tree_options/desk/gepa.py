@@ -47,7 +47,8 @@ REFLECTION_TASK = (
     '{"diagnosis": "<=600 chars", "revised_prompt": "<one COMPLETE standalone '
     'policy instruction>", "variants": ["<COMPLETE standalone policy '
     'instruction>", ...]} with at most 2 variants. revised_prompt and each '
-    "variant replace the policy sentence of the board task. No other text.")
+    "variant replace the policy sentence of the board task. No other text."
+)
 
 
 def policy_id_for(prompt: str) -> str:
@@ -62,22 +63,36 @@ def prompt_tokens(prompt: str) -> int:
 
 
 def empty_stats() -> dict[str, Any]:
-    return {"runs": 0, "boards": 0, "entered": 0, "wins": 0, "losses": 0,
-            "closed_pnl_sum": "0", "worst_minimum_capital": None,
-            "last_run": ""}
+    return {
+        "runs": 0,
+        "boards": 0,
+        "entered": 0,
+        "wins": 0,
+        "losses": 0,
+        "closed_pnl_sum": "0",
+        "worst_minimum_capital": None,
+        "last_run": "",
+    }
 
 
 def _archive_dir(lab_root: Path) -> Path:
     return Path(lab_root) / ARCHIVE_DIRNAME
 
 
-def new_policy(prompt: str, *, generation: int, parents: list[str],
-               created_by: str) -> dict[str, Any]:
+def new_policy(
+    prompt: str, *, generation: int, parents: list[str], created_by: str
+) -> dict[str, Any]:
     if not isinstance(prompt, str) or not prompt.strip():
         raise ValueError("a policy prompt must be a non-empty string")
-    return {"schema": POLICY_SCHEMA, "id": policy_id_for(prompt),
-            "generation": generation, "parents": list(parents),
-            "prompt": prompt, "stats": empty_stats(), "created_by": created_by}
+    return {
+        "schema": POLICY_SCHEMA,
+        "id": policy_id_for(prompt),
+        "generation": generation,
+        "parents": list(parents),
+        "prompt": prompt,
+        "stats": empty_stats(),
+        "created_by": created_by,
+    }
 
 
 def load_archive(lab_root: Path) -> list[dict[str, Any]]:
@@ -93,9 +108,12 @@ def load_archive(lab_root: Path) -> list[dict[str, Any]]:
             record = json.loads(path.read_bytes())
         except (OSError, ValueError):
             continue  # a torn or foreign file never poisons the archive
-        if (isinstance(record, dict) and record.get("schema") == POLICY_SCHEMA
-                and isinstance(record.get("id"), str)
-                and isinstance(record.get("prompt"), str)):
+        if (
+            isinstance(record, dict)
+            and record.get("schema") == POLICY_SCHEMA
+            and isinstance(record.get("id"), str)
+            and isinstance(record.get("prompt"), str)
+        ):
             policies.append(record)
     return policies
 
@@ -125,7 +143,8 @@ def save_state(lab_root: Path, state: Mapping[str, Any]) -> None:
     directory.mkdir(parents=True, exist_ok=True)
     used = list(dict.fromkeys(str(s) for s in state.get("used_sessions", ())))
     (directory / STATE_FILENAME).write_text(
-        json.dumps({"schema": STATE_SCHEMA, "used_sessions": used[-200:]}))
+        json.dumps({"schema": STATE_SCHEMA, "used_sessions": used[-200:]})
+    )
 
 
 # ----------------------------------------------------------------- mechanics
@@ -150,8 +169,11 @@ def _objectives(policy: Mapping[str, Any]) -> tuple[Decimal, Decimal, int]:
     except (TypeError, ValueError):
         runs = 0
     if runs <= 0:
-        return (Decimal("-Infinity"), Decimal("-Infinity"),
-                prompt_tokens(str(policy.get("prompt", ""))))
+        return (
+            Decimal("-Infinity"),
+            Decimal("-Infinity"),
+            prompt_tokens(str(policy.get("prompt", ""))),
+        )
     worst = stats.get("worst_minimum_capital")
     return (
         _decimal(stats.get("closed_pnl_sum", "0"), Decimal(0)),
@@ -160,8 +182,7 @@ def _objectives(policy: Mapping[str, Any]) -> tuple[Decimal, Decimal, int]:
     )
 
 
-def _dominates(a: tuple[Decimal, Decimal, int],
-               b: tuple[Decimal, Decimal, int]) -> bool:
+def _dominates(a: tuple[Decimal, Decimal, int], b: tuple[Decimal, Decimal, int]) -> bool:
     """a dominates b: at least as good on every objective, strictly better
     on at least one. Exact ties dominate nobody (both stay on the front)."""
     if a[0] < b[0] or a[1] < b[1] or a[2] > b[2]:
@@ -173,12 +194,15 @@ def pareto_front(policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The non-dominated policies, deterministic order (equal objectives keep
     the lower id first)."""
     keyed = [(policy, _objectives(policy)) for policy in policies]
-    front = [policy for policy, objectives in keyed
-             if not any(other is not policy and _dominates(score, objectives)
-                        for other, score in keyed)]
+    front = [
+        policy
+        for policy, objectives in keyed
+        if not any(other is not policy and _dominates(score, objectives) for other, score in keyed)
+    ]
     front.sort(key=lambda p: str(p.get("id")))
-    front.sort(key=lambda p: (_objectives(p)[0], _objectives(p)[1],
-                              -_objectives(p)[2]), reverse=True)
+    front.sort(
+        key=lambda p: (_objectives(p)[0], _objectives(p)[1], -_objectives(p)[2]), reverse=True
+    )
     return front
 
 
@@ -195,13 +219,19 @@ def _stats_of(record: Mapping[str, Any]) -> PolicyStats:
         return 0
 
     return PolicyStats(
-        runs=count("runs"), boards=count("boards"), entered=count("entered"),
-        wins=count("wins", "modeled_wins"), losses=count("losses", "modeled_losses"),
+        runs=count("runs"),
+        boards=count("boards"),
+        entered=count("entered"),
+        wins=count("wins", "modeled_wins"),
+        losses=count("losses", "modeled_losses"),
         closed_pnl_sum=_decimal(stats.get("closed_pnl_sum", "0"), Decimal(0)),
         worst_minimum_capital=(
-            None if stats.get("worst_minimum_capital") in (None, "")
-            else _decimal(stats.get("worst_minimum_capital"), Decimal(0))),
-        last_run=str(stats.get("last_run", "") or ""))
+            None
+            if stats.get("worst_minimum_capital") in (None, "")
+            else _decimal(stats.get("worst_minimum_capital"), Decimal(0))
+        ),
+        last_run=str(stats.get("last_run", "") or ""),
+    )
 
 
 def fold_run(record: dict[str, Any], run_document: Mapping[str, Any]) -> None:
@@ -212,8 +242,11 @@ def fold_run(record: dict[str, Any], run_document: Mapping[str, Any]) -> None:
     stats.fold(dict(run_document), str(run_document.get("at", "")))
     worst = stats.worst_minimum_capital
     record["stats"] = {
-        "runs": stats.runs, "boards": stats.boards, "entered": stats.entered,
-        "wins": stats.wins, "losses": stats.losses,
+        "runs": stats.runs,
+        "boards": stats.boards,
+        "entered": stats.entered,
+        "wins": stats.wins,
+        "losses": stats.losses,
         "closed_pnl_sum": str(stats.closed_pnl_sum),
         "worst_minimum_capital": None if worst is None else str(worst),
         "last_run": stats.last_run,
@@ -223,30 +256,41 @@ def fold_run(record: dict[str, Any], run_document: Mapping[str, Any]) -> None:
 # --------------------------------------------------------------- reflection
 
 
-def reflect(provider: str, gap_report_batch: list[dict[str, Any]],
-            champion_prompt: str, *, transport: Any = None) -> dict[str, Any]:
+def reflect(
+    provider: str,
+    gap_report_batch: list[dict[str, Any]],
+    champion_prompt: str,
+    *,
+    transport: Any = None,
+) -> dict[str, Any]:
     """One flash reflection call: a diagnosis plus up to 2 evolved prompt
     proposals. STRICT JSON; a variant that is not a string or is empty is
     DROPPED, never repaired; a provider failure is recorded, never raised."""
-    payload = {"task": REFLECTION_TASK, "champion_prompt": champion_prompt,
-               "gap_boards": gap_report_batch}
+    payload = {
+        "task": REFLECTION_TASK,
+        "champion_prompt": champion_prompt,
+        "gap_boards": gap_report_batch,
+    }
     messages = [{"role": "user", "content": json.dumps(payload)}]
     try:
         reply, used_model = chat_json(
-            provider, messages,
-            **({"transport": transport} if transport is not None else {}))
+            provider, messages, **({"transport": transport} if transport is not None else {})
+        )
     except LlmError as error:
         return {"status": "failed", "provider": provider, "error": str(error)[:200]}
     diagnosis = reply.get("diagnosis")
     revised = reply.get("revised_prompt")
     offered = reply.get("variants")
-    variants = ([item for item in offered
-                 if isinstance(item, str) and item.strip()][:MAX_VARIANTS]
-                if isinstance(offered, list) else [])
+    variants = (
+        [item for item in offered if isinstance(item, str) and item.strip()][:MAX_VARIANTS]
+        if isinstance(offered, list)
+        else []
+    )
     return {
-        "status": "ok", "provider": provider, "model": used_model,
+        "status": "ok",
+        "provider": provider,
+        "model": used_model,
         "diagnosis": diagnosis if isinstance(diagnosis, str) else "",
-        "revised_prompt": (revised
-                           if isinstance(revised, str) and revised.strip() else None),
+        "revised_prompt": (revised if isinstance(revised, str) and revised.strip() else None),
         "variants": variants,
     }

@@ -97,11 +97,12 @@ import statistics
 import subprocess
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 for _name in (
     "OPENBLAS_NUM_THREADS",
@@ -388,9 +389,10 @@ def load_and_bind() -> Inputs:
     if tuple(slot["config_ids"]) != CONFIG_IDS_E + CONFIG_IDS_O:
         raise Refused("menu config ids are not the sealed 24 (20 scope E + 4 scope O) in order")
     scopes = {sc["scope_id"]: sc for sc in slot["scope_ids"]}
-    if scopes.get(SCOPE_E, {}).get("config_count") != 20 or scopes.get(SCOPE_O, {}).get(
-        "config_count"
-    ) != 4:
+    if (
+        scopes.get(SCOPE_E, {}).get("config_count") != 20
+        or scopes.get(SCOPE_O, {}).get("config_count") != 4
+    ):
         raise Refused("menu scope counts are not 20 (c09-vrp-e) + 4 (c09-vrp-o)")
     if tuple(slot["fold_mapping"][k] for k in ("inner_v1", "inner_v2")) != (
         "253..378 = 2025-08-28..2026-02-27 (126 = validation default)",
@@ -400,9 +402,10 @@ def load_and_bind() -> Inputs:
         raise Refused("menu fold_mapping inner folds are not the sealed V1/V2 rows")
     if not slot["fold_mapping"]["sealed"].startswith("443..505 = 2026-06-02..2026-08-31"):
         raise Refused("menu fold_mapping sealed row is not the sealed 443..505 window")
-    if "ordinal <= 417" not in slot["fold_mapping"]["purge"] and "ordinal<=417" not in slot[
-        "fold_mapping"
-    ]["purge"]:
+    if (
+        "ordinal <= 417" not in slot["fold_mapping"]["purge"]
+        and "ordinal<=417" not in slot["fold_mapping"]["purge"]
+    ):
         raise Refused("menu fold_mapping purge row does not carry the ordinal<=417 restriction")
 
     # protocol: raw bytes must equal the menu pin; canonical hash re-stamped (INV-14)
@@ -427,7 +430,9 @@ def load_and_bind() -> Inputs:
         got = _sha256_file(path)
         want = pinning.get(label)
         if want is None or want != got:
-            raise Refused(f"{label}: sha256 {got} != the menu's pinned {want} -- swapped inputs refuse")
+            raise Refused(
+                f"{label}: sha256 {got} != the menu's pinned {want} -- swapped inputs refuse"
+            )
 
     # the panel is read under the writers' shared flock; sha256 of the exact bytes
     panel, panel_sha256 = read_panel_with_sha256(PANEL_PATH)
@@ -574,9 +579,7 @@ def build_features(inputs: Inputs) -> Features:
     if not origins:
         raise Refused("the HAR walk-forward produced no forecasts -- machinery defect")
     if data.sessions[origins[0]] != HAR_START:
-        raise Refused(
-            f"first HAR origin is {data.sessions[origins[0]]}, expected {HAR_START}"
-        )
+        raise Refused(f"first HAR origin is {data.sessions[origins[0]]}, expected {HAR_START}")
     r: dict[str, dict[date, float]] = {}
     n_r = 0
     for name in inputs.chain35:
@@ -608,7 +611,9 @@ def build_features(inputs: Inputs) -> Features:
     )
 
 
-def schedule_withheld(inputs: Inputs, feats: Features, name: str, session: date) -> tuple[bool, str]:
+def schedule_withheld(
+    inputs: Inputs, feats: Features, name: str, session: date
+) -> tuple[bool, str]:
     """(withheld, why): a reporter whose forward schedule does not pin the
     event count through session+20 has the condition withheld at that session
     (registration risk 5, surface.forecast_block semantics)."""
@@ -627,7 +632,9 @@ def schedule_withheld(inputs: Inputs, feats: Features, name: str, session: date)
     return out
 
 
-def percentile(inputs: Inputs, feats: Features, name: str, session: date) -> tuple[float | None, str]:
+def percentile(
+    inputs: Inputs, feats: Features, name: str, session: date
+) -> tuple[float | None, str]:
     """p_i(session): fraction of strictly-lower evaluable r over the trailing
     252 sessions ending AT session (window-inclusive), n >= 126 required; the
     condition is withheld for a degraded reporter schedule at session."""
@@ -682,9 +689,7 @@ class Trade:
     detail: str
 
 
-def _complete_trade(
-    inputs: Inputs, name: str, entry: date, weight: float, detail: str
-) -> Trade:
+def _complete_trade(inputs: Inputs, name: str, entry: date, weight: float, detail: str) -> Trade:
     """House path: Decimal closes, hold 20 close-to-close, every session of
     (t, t+20] present in the name's bars, else dropped-and-counted."""
     cal, panel = inputs.calendar, inputs.panel
@@ -708,10 +713,7 @@ def _tuning_sessions(inputs: Inputs) -> list[date]:
     """Entry sessions allowed in round 1: IV-window ordinals 253..417 (the
     pooled V1+V2 union under the INV-06 restriction at the desk hold length).
     NEVER a session at window ordinal >= 443 (the sealed window)."""
-    return [
-        inputs.window_sessions[o - 1]
-        for o in range(ORD_V1[0], ORD_TUNE_MAX_ENTRY + 1)
-    ]
+    return [inputs.window_sessions[o - 1] for o in range(ORD_V1[0], ORD_TUNE_MAX_ENTRY + 1)]
 
 
 def xsmom_base(inputs: Inputs) -> list[dict[str, Any]]:
@@ -866,7 +868,7 @@ def xe_decisions(
     base: Sequence[Mapping[str, Any]],
     config_id: str,
 ) -> list[Decision]:
-    cal = inputs.calendar
+    _cal = inputs.calendar
     picks_of: dict[date, list[str]] = {}
     for row in base:
         picks_of.setdefault(row["session"], []).append(row["name"])
@@ -897,9 +899,13 @@ def xe_decisions(
                 Decision(pbar is not None and TER_LO < pbar < TER_HI, 1.0, 0, "pbar", pbar, why_bar)
             )
         elif config_id == "xe-mkt-lo":
-            out.append(Decision(p_iwm is not None and p_iwm <= TER_LO, 1.0, 0, "p_IWM", p_iwm, why_iwm))
+            out.append(
+                Decision(p_iwm is not None and p_iwm <= TER_LO, 1.0, 0, "p_IWM", p_iwm, why_iwm)
+            )
         elif config_id == "xe-mkt-hi":
-            out.append(Decision(p_iwm is not None and p_iwm >= TER_HI, 1.0, 0, "p_IWM", p_iwm, why_iwm))
+            out.append(
+                Decision(p_iwm is not None and p_iwm >= TER_HI, 1.0, 0, "p_IWM", p_iwm, why_iwm)
+            )
         elif config_id == "xe-playbook":
             out.append(Decision(r_iwm is not None and r_iwm < 1.0, 1.0, 0, "r_IWM", r_iwm, why_r))
         elif config_id == "xe-size-mkt":
@@ -942,9 +948,9 @@ def xp_decisions(
             p, why = percentile(inputs, feats, row["name"], prev)
             vals.append((p, why))
         perm = list(range(len(vals)))
-        random.Random(
-            int.from_bytes(hashlib.sha256(SHUFFLE_SEED_BYTES).digest(), "big")
-        ).shuffle(perm)
+        random.Random(int.from_bytes(hashlib.sha256(SHUFFLE_SEED_BYTES).digest(), "big")).shuffle(
+            perm
+        )
         shuffled = {perm[i]: vals[i] for i in range(len(vals))}
     out: list[Decision] = []
     for idx, row in enumerate(base):
@@ -965,7 +971,9 @@ def xp_decisions(
             out.append(Decision(fire, 1.0, 0, "p_IWM(t-1)", p, why))
         elif config_id == "xp-playbook":
             r_iwm, why = raw_ratio(inputs, feats, "IWM", prev)
-            out.append(Decision(r_iwm is not None and r_iwm < 1.0, 1.0, 0, "r_IWM(t-1)", r_iwm, why))
+            out.append(
+                Decision(r_iwm is not None and r_iwm < 1.0, 1.0, 0, "r_IWM(t-1)", r_iwm, why)
+            )
         elif config_id == "xp-size-name":
             p, why = percentile(inputs, feats, row["name"], prev)
             half = p is not None and p >= TER_HI
@@ -1053,7 +1061,9 @@ def _hyperparameters(inputs: Inputs, config_id: str) -> dict[str, Any]:
         "placebo": config_id in PLACEBOS,
         "gate_rule": GATE_RULES[config_id],
         "model_family": MODEL_FAMILY_E if scope == SCOPE_E else MODEL_FAMILY_O,
-        "lane": "card-lane (equity close-to-close)" if scope == SCOPE_E else "options expression (data-gated)",
+        "lane": "card-lane (equity close-to-close)"
+        if scope == SCOPE_E
+        else "options expression (data-gated)",
         "hold_sessions": HOLD_SESSIONS,
         "rt_primary_bp": 5,
         "rt_robust_bp": 15,
@@ -1107,8 +1117,10 @@ def phase_plan() -> int:
     inputs = load_and_bind()
     feats = build_features(inputs)
     print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified)")
-    print(f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}...")
-    print(f"tnull calibration-v3: CALIBRATED (family scoring unfrozen)")
+    print(
+        f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}..."
+    )
+    print("tnull calibration-v3: CALIBRATED (family scoring unfrozen)")
     print(
         f"IV window: {IV_SESSIONS} sessions {IV_START}..{IV_END}; "
         f"tuning entries = window ordinals {ORD_V1[0]}..{ORD_TUNE_MAX_ENTRY}"
@@ -1171,9 +1183,7 @@ def phase_register() -> int:
                 scope_key=_scope(inputs, config_id).scope_key(),
             )
             registry.register(record, _scope(inputs, config_id))
-            print(
-                f"registered {_trial_id(config_id)} ({GATE_RULES[config_id].split(':')[0]})"
-            )
+            print(f"registered {_trial_id(config_id)} ({GATE_RULES[config_id].split(':')[0]})")
     finally:
         registry.close()
     print(
@@ -1221,7 +1231,9 @@ def _execute_config(
                 ne_notes[key] = ne_notes.get(key, 0) + 1
             continue
         entry_session = (
-            row["session"] if dec.entry_shift == 0 else cal.nth_after(row["session"], dec.entry_shift)
+            row["session"]
+            if dec.entry_shift == 0
+            else cal.nth_after(row["session"], dec.entry_shift)
         )
         # sealed-window guard: a shifted entry must still clear the purge
         if inputs.window_ordinal(entry_session) > ORD_TUNE_MAX_ENTRY:
@@ -1273,8 +1285,12 @@ def _execute_config(
         on_time = [t for t in on_complete if (t["name"], t["entry"]) in base_keys]
         on_off = {
             "meaning": "deferred entries vs on-time entries (config trades)",
-            "on_mean": statistics.fmean(t["gross"] - RT_PRIMARY for t in deferred) if deferred else None,
-            "off_mean": statistics.fmean(t["gross"] - RT_PRIMARY for t in on_time) if on_time else None,
+            "on_mean": statistics.fmean(t["gross"] - RT_PRIMARY for t in deferred)
+            if deferred
+            else None,
+            "off_mean": statistics.fmean(t["gross"] - RT_PRIMARY for t in on_time)
+            if on_time
+            else None,
             "n_on": len(deferred),
             "n_off": len(on_time),
         }
@@ -1283,7 +1299,9 @@ def _execute_config(
     else:
         fired_keys = {(t["name"], t["entry"]) for t in on_complete}
         off = [t for t in base_complete if (t["name"], t["entry"]) not in fired_keys]
-        on_mean = statistics.fmean(t["gross"] - RT_PRIMARY for t in on_complete) if on_complete else None
+        on_mean = (
+            statistics.fmean(t["gross"] - RT_PRIMARY for t in on_complete) if on_complete else None
+        )
         off_mean = statistics.fmean(t["gross"] - RT_PRIMARY for t in off) if off else None
         on_off = {
             "meaning": "fired (ON) vs base-not-fired (OFF) complete trades, matched region",
@@ -1346,7 +1364,9 @@ def phase_execute() -> int:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise Refused("another vrp-cond execution holds the lock -- one run at a time") from None
+            raise Refused(
+                "another vrp-cond execution holds the lock -- one run at a time"
+            ) from None
 
         # scope O: data-gated, WITHDRAWN without running (no proxy)
         gates = _scope_o_gate_facts()
@@ -1369,7 +1389,9 @@ def phase_execute() -> int:
             json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         for config_id in CONFIG_IDS_O:
-            print(f"{_trial_id(config_id)}: WITHDRAWN (data-gated, not run) -> {SCOPE_O_RECORD_PATH}")
+            print(
+                f"{_trial_id(config_id)}: WITHDRAWN (data-gated, not run) -> {SCOPE_O_RECORD_PATH}"
+            )
 
         registry = _open_registry()
         try:
@@ -1499,9 +1521,7 @@ def phase_select() -> int:
                 if payload["condition_tallies"]["base_entries"]
                 else None
             ),
-            "verdict": (
-                "EVALUABLE" if fl["met_on_fired"] else "NOT_EVALUABLE"
-            ),
+            "verdict": ("EVALUABLE" if fl["met_on_fired"] else "NOT_EVALUABLE"),
             "abstained_ne": payload["condition_tallies"]["abstained_condition_not_evaluable"],
         }
     families: dict[str, Any] = {}
@@ -1562,7 +1582,9 @@ def phase_select() -> int:
             "Nothing is adopted: nomination at most (>= 20 forward sealed cards govern promotion).",
         ],
     }
-    SELECTION_PATH.write_text(json.dumps(selection, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    SELECTION_PATH.write_text(
+        json.dumps(selection, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
     for family in ("xe", "xp"):
         blk = families[family]
         print(

@@ -618,8 +618,7 @@ class TradePlan(BaseModel):
         committed = self.committed_at_caps
         if committed > self.total_debit_cap:
             raise ValueError(
-                f"sum of per-structure caps {committed} exceeds book cap "
-                f"{self.total_debit_cap}"
+                f"sum of per-structure caps {committed} exceeds book cap {self.total_debit_cap}"
             )
         if self.account_mode == "live" and committed > Decimal(5000):
             # Guard rail, not a policy: a live book above this size needs a

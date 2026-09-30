@@ -36,12 +36,16 @@ from tree_options.research.contracts import (
 )
 
 
-def _candidate(*, family="vix_term", disposition=ResearchDisposition.PASS,
-               registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
-               evidence=ResearchEvidenceKind.SEALED_CAMPAIGN,
-               supported_start=date(2024, 1, 1),
-               supported_end=date(2026, 9, 25),
-               id=None) -> ResearchCandidate:
+def _candidate(
+    *,
+    family="vix_term",
+    disposition=ResearchDisposition.PASS,
+    registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
+    evidence=ResearchEvidenceKind.SEALED_CAMPAIGN,
+    supported_start=date(2024, 1, 1),
+    supported_end=date(2026, 9, 25),
+    id=None,
+) -> ResearchCandidate:
     cid = id or f"{family}-v2"
     return ResearchCandidate(
         id=cid,
@@ -56,8 +60,9 @@ def _candidate(*, family="vix_term", disposition=ResearchDisposition.PASS,
     )
 
 
-def _spec(candidates=("vix_term-v2", "hold-20-v2"),
-          starting_capital=Decimal("10000")) -> ComparisonSpec:
+def _spec(
+    candidates=("vix_term-v2", "hold-20-v2"), starting_capital=Decimal("10000")
+) -> ComparisonSpec:
     return ComparisonSpec(
         candidate_ids=candidates,
         starting_capital=starting_capital,
@@ -70,13 +75,14 @@ def _spec(candidates=("vix_term-v2", "hold-20-v2"),
 
 
 def test_engine_refuses_broker_paper_with_reason() -> None:
-    c = _candidate(evidence=ResearchEvidenceKind.BROKER_PAPER,
-                  disposition=ResearchDisposition.PASS)
+    c = _candidate(evidence=ResearchEvidenceKind.BROKER_PAPER, disposition=ResearchDisposition.PASS)
     spec = _spec()
     res = run_comparison(spec, (c,), baseline=_candidate(family="bh"))
     assert res.candidates[0].rejection_reason is not None
-    assert "broker_paper" in res.candidates[0].rejection_reason or \
-           "research.broker_paper" == res.candidates[0].rejection_reason
+    assert (
+        "broker_paper" in res.candidates[0].rejection_reason
+        or "research.broker_paper" == res.candidates[0].rejection_reason
+    )
 
 
 def test_engine_no_longer_refuses_retrospective_wholesale() -> None:
@@ -89,8 +95,10 @@ def test_engine_no_longer_refuses_retrospective_wholesale() -> None:
     assert res.candidates[0].rejection_reason is None  # data speaks
     assert res.candidates[0].candidate.registration.value == "retrospective_backfill"
 
-    no_data = _candidate(registration=ResearchRegistration.RETROSPECTIVE_BACKFILL,
-                         disposition=ResearchDisposition.WITHDRAWN)
+    no_data = _candidate(
+        registration=ResearchRegistration.RETROSPECTIVE_BACKFILL,
+        disposition=ResearchDisposition.WITHDRAWN,
+    )
     res2 = run_comparison(_spec(), (no_data,))
     assert res2.candidates[0].rejection_reason is not None
     assert "no funded history" in res2.candidates[0].rejection_reason
@@ -132,10 +140,8 @@ def test_engine_sealed_candidate_returns_zero_fills_until_adapter_filled() -> No
 def test_engine_paired_diff_only_for_plot_eligible_candidates() -> None:
     """Ineligible candidates never enter the paired diff."""
     eligible = _candidate(family="vix_term")
-    ineligible = _candidate(family="term-gate",
-                            disposition=ResearchDisposition.WITHDRAWN)
-    baseline = _candidate(family="bh",
-                         disposition=ResearchDisposition.HOLD_STANDS)
+    ineligible = _candidate(family="term-gate", disposition=ResearchDisposition.WITHDRAWN)
+    baseline = _candidate(family="bh", disposition=ResearchDisposition.HOLD_STANDS)
     spec = _spec(candidates=(eligible.id, ineligible.id))
     res = run_comparison(spec, (eligible, ineligible), baseline=baseline)
     assert eligible.id in res.paired_diff

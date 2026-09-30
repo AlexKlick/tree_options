@@ -88,10 +88,18 @@ CON = {
     ("OPT", "SPY", FL, 100.0, "P"): 102,
     ("OPT", "SPY", FL, 95.0, "P"): 97,
 }
-PROFILE = {"profile_id": "canary-5k", "revision": 1, "intended_capital": "5000",
-           "risk_style": "defined-risk", "goals": ["operational-canary"],
-           "allowed_strategy_versions": [STRATEGY], "max_loss_per_trade": "300",
-           "max_open_loss": "1500", "max_daily_loss": "600", "horizon_days": 30}
+PROFILE = {
+    "profile_id": "canary-5k",
+    "revision": 1,
+    "intended_capital": "5000",
+    "risk_style": "defined-risk",
+    "goals": ["operational-canary"],
+    "allowed_strategy_versions": [STRATEGY],
+    "max_loss_per_trade": "300",
+    "max_open_loss": "1500",
+    "max_daily_loss": "600",
+    "horizon_days": 30,
+}
 
 #: every leg is a 100/95 put vertical (package mid exactly 0.90: the exit
 #: limit equals the working order's, so nothing is ever repriced)
@@ -109,20 +117,35 @@ E_EXIT_AT = datetime(2026, 10, 15, 10, 0, tzinfo=ET)
 E_RESOLVE_AT = datetime(2026, 10, 15, 10, 50, tzinfo=ET)
 
 
-def _vertical(sid: str, *, qty: int = 1, entry_date: date, exit_deadline: date,
-              expiry: date = EXPIRY) -> LegStructure:
+def _vertical(
+    sid: str, *, qty: int = 1, entry_date: date, exit_deadline: date, expiry: date = EXPIRY
+) -> LegStructure:
     return LegStructure(
-        id=sid, underlying="SPY", kind="debit_vertical",
-        legs=[{"right": "P", "action": "BUY", "strike": "100", "expiry": expiry},
-              {"right": "P", "action": "SELL", "strike": "95", "expiry": expiry}],
-        quantity=qty, entry_date=entry_date, exit_deadline=exit_deadline,
-        limit="1.00", exits={"touch": False, "breach": False})
+        id=sid,
+        underlying="SPY",
+        kind="debit_vertical",
+        legs=[
+            {"right": "P", "action": "BUY", "strike": "100", "expiry": expiry},
+            {"right": "P", "action": "SELL", "strike": "95", "expiry": expiry},
+        ],
+        quantity=qty,
+        entry_date=entry_date,
+        exit_deadline=exit_deadline,
+        limit="1.00",
+        exits={"touch": False, "breach": False},
+    )
 
 
 def _effect(structure: LegStructure, intent_id: str) -> SupervisedEffect:
-    return SupervisedEffect(intent_id=intent_id, account_id=ACCOUNT, structure=structure,
-                            side=structure.open_side, quantity=structure.quantity,
-                            limit=Decimal("0.90"), order_ref=supervised_order_ref(intent_id))
+    return SupervisedEffect(
+        intent_id=intent_id,
+        account_id=ACCOUNT,
+        structure=structure,
+        side=structure.open_side,
+        quantity=structure.quantity,
+        limit=Decimal("0.90"),
+        order_ref=supervised_order_ref(intent_id),
+    )
 
 
 class Clock:
@@ -140,9 +163,14 @@ class ClockedIbkr(IbkrTrex):
     clock: Clock
 
     def account_snapshot(self) -> AccountSnapshot | None:
-        return AccountSnapshot(account_id=ACCOUNT, net_liquidation=Decimal("1000000"),
-                               cash=Decimal("1000000"), buying_power=Decimal("4000000"),
-                               currency="USD", ts=self.clock())
+        return AccountSnapshot(
+            account_id=ACCOUNT,
+            net_liquidation=Decimal("1000000"),
+            cash=Decimal("1000000"),
+            buying_power=Decimal("4000000"),
+            currency="USD",
+            ts=self.clock(),
+        )
 
 
 class Soak:
@@ -155,8 +183,12 @@ class Soak:
     def __init__(self, tmp: Path) -> None:
         self.clock = Clock(A_ENTRY_AT)
         self.gw = SupervisedGateway(CON, ACCOUNT)
-        for con, bid, ask in ((100, 2.00, 2.20), (95, 1.10, 1.30),
-                              (102, 2.00, 2.20), (97, 1.10, 1.30)):
+        for con, bid, ask in (
+            (100, 2.00, 2.20),
+            (95, 1.10, 1.30),
+            (102, 2.00, 2.20),
+            (97, 1.10, 1.30),
+        ):
             self.gw.quote(con, bid, ask)  # package 0.70 / 1.10, mid exactly 0.90
         self.ib = ClockedIbkr(client_id=SUPERVISED_CLIENT_ID)
         self.ib.clock = self.clock
@@ -180,12 +212,14 @@ class Soak:
         rt = DeskRuntime(self.ib, self.paths, supervised=self.sup, clock=self.clock)
         rt.acquire()
         rt.notify = lambda title, message, priority="default": self.notified.append(
-            (title, message, priority))
+            (title, message, priority)
+        )
         return rt
 
     def _new_desk(self) -> SupervisedDesk:
-        return SupervisedDesk(self.ib, self.rt, self.broker, supervised=self.sup,
-                              owner_epoch=EPOCH, clock=self.clock)
+        return SupervisedDesk(
+            self.ib, self.rt, self.broker, supervised=self.sup, owner_epoch=EPOCH, clock=self.clock
+        )
 
     def restart(self) -> None:
         self.rt.release()
@@ -198,9 +232,17 @@ class Soak:
     # -- request-day helpers ---------------------------------------------------
 
     def grant(self) -> None:
-        grant_mandate(self.sup, now=self.clock.now, account_id=ACCOUNT, owner_epoch=EPOCH,
-                      strategy_version=STRATEGY, profile_digest=self.profile_digest,
-                      max_orders=3, ttl_seconds=600, granted_by="operator-terminal")
+        grant_mandate(
+            self.sup,
+            now=self.clock.now,
+            account_id=ACCOUNT,
+            owner_epoch=EPOCH,
+            strategy_version=STRATEGY,
+            profile_digest=self.profile_digest,
+            max_orders=3,
+            ttl_seconds=600,
+            granted_by="operator-terminal",
+        )
 
     def tick_quotes(self) -> None:
         for con in (100, 95, 102, 97):
@@ -217,10 +259,13 @@ class Soak:
         effect = _effect(structure, name)
         inbox = self.desk.requests_dir()
         inbox.mkdir(parents=True, exist_ok=True)
-        doc = {"schema": "trex-desk-entry-request/1", "strategy_version": STRATEGY,
-               "send_deadline": shift_instant(self.clock.now, 300).isoformat(),
-               "requested_by": "operator-terminal",
-               "effect": effect.model_dump(mode="json", by_alias=True)}
+        doc = {
+            "schema": "trex-desk-entry-request/1",
+            "strategy_version": STRATEGY,
+            "send_deadline": shift_instant(self.clock.now, 300).isoformat(),
+            "requested_by": "operator-terminal",
+            "effect": effect.model_dump(mode="json", by_alias=True),
+        }
         path = inbox / f"{name}.json"
         path.write_text(json.dumps(doc))
         return path
@@ -232,9 +277,13 @@ class Soak:
 
     def send_entry(self, effect: SupervisedEffect) -> Any:
         """The runtime's own entry send (no inbox): register + submit."""
-        attempt = SubmitAttempt(record_id=f"sup-send-{effect.intent_id}",
-                                intent_id=effect.intent_id, send_attempt_at=self.clock.now,
-                                source="supervised", source_sequence_id=effect.intent_id)
+        attempt = SubmitAttempt(
+            record_id=f"sup-send-{effect.intent_id}",
+            intent_id=effect.intent_id,
+            send_attempt_at=self.clock.now,
+            source="supervised",
+            source_sequence_id=effect.intent_id,
+        )
         self.broker.submit(attempt, effect_bytes(effect))
         return self.gw.trades[-1]
 
@@ -245,8 +294,10 @@ class Soak:
 
     def hold_legs(self, qty: int = 1, cons: tuple[int, int] = (100, 95)) -> None:
         """The account holds ``qty`` packages: long the BUY leg, short the SELL."""
-        self.gw.position_rows[:] = [position_row(cons[0], qty, account=ACCOUNT, symbol="SPY"),
-                                    position_row(cons[1], -qty, account=ACCOUNT, symbol="SPY")]
+        self.gw.position_rows[:] = [
+            position_row(cons[0], qty, account=ACCOUNT, symbol="SPY"),
+            position_row(cons[1], -qty, account=ACCOUNT, symbol="SPY"),
+        ]
 
     def book(self) -> dict[str, Any]:
         return json.loads(self.paths.book().read_text())["structures"]
@@ -281,8 +332,10 @@ def soak(tmp_path: Path) -> Soak:
 def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> None:
     # ---- Day 1: canary-a through the real request inbox -------------------
     soak.arm(A_ENTRY_AT)  # mandate, fresh quotes, a heartbeat beat
-    soak.request(_vertical("canary-a", entry_date=date(2026, 10, 1),
-                           exit_deadline=date(2026, 10, 9)), "canary-a")
+    soak.request(
+        _vertical("canary-a", entry_date=date(2026, 10, 1), exit_deadline=date(2026, 10, 9)),
+        "canary-a",
+    )
     assert run_loop(soak.desk, interval_s=0, stop=lambda: False, max_ticks=1) == 0
     sent = soak.result("canary-a")
     assert (sent["status"], sent["receipt"]["outcome"]) == ("sent", "acknowledged")
@@ -304,25 +357,34 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
     exit_a = soak.gw.trades[-1]
     assert exit_a.order.orderRef == desk_order_ref("canary-a") == "trex:desk:canary-a"
     assert (exit_a.order.account, exit_a.order.action, exit_a.order.lmtPrice) == (
-        ACCOUNT, "SELL", 0.90)
+        ACCOUNT,
+        "SELL",
+        0.90,
+    )
     soak.kill_runtime()
     # while down: the exit fills (long sold 2.05, short bought 1.20 = 0.85)
     oid = exit_a.order.orderId
     soak.fill(exit_a, 1, 0.85)
-    soak.gw.fill_rows[:] = [fill_row(100, 1, 2.05, oid, SUPERVISED_CLIENT_ID),
-                            fill_row(95, 1, 1.20, oid, SUPERVISED_CLIENT_ID)]
+    soak.gw.fill_rows[:] = [
+        fill_row(100, 1, 2.05, oid, SUPERVISED_CLIENT_ID),
+        fill_row(95, 1, 1.20, oid, SUPERVISED_CLIENT_ID),
+    ]
     soak.gw.position_rows.clear()
     soak.restart()
     soak.rt.tick()
     book_a = soak.book()["canary-a"]
     assert (book_a["status"], book_a["close_reason"], book_a["exit_fill"]) == (
-        "closed", "time_stop", "0.85")
+        "closed",
+        "time_stop",
+        "0.85",
+    )
     soak.assert_one_order_per_lane()
 
     # ---- same day: canary-b (2 packages) via the runtime's own send --------
     soak.clock.now = B_ENTRY_AT
-    structure_b = _vertical("canary-b", qty=2, entry_date=date(2026, 10, 9),
-                            exit_deadline=date(2026, 10, 13))
+    structure_b = _vertical(
+        "canary-b", qty=2, entry_date=date(2026, 10, 9), exit_deadline=date(2026, 10, 13)
+    )
     effect_b = _effect(structure_b, "canary-b")
     soak.rt.register(effect_b)
     entry_b = soak.send_entry(effect_b)
@@ -332,8 +394,7 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
     soak.fill(entry_b, 2, 0.90)
     soak.hold_legs(2)
     soak.rt.tick()
-    assert (soak.book()["canary-b"]["status"], soak.book()["canary-b"]["filled_qty"]) == (
-        "open", 2)
+    assert (soak.book()["canary-b"]["status"], soak.book()["canary-b"]["filled_qty"]) == ("open", 2)
 
     # ---- Day 11 (10-13): partial exit, kill, the remainder fills while down
     soak.clock.now = B_EXIT_AT
@@ -352,28 +413,36 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
     # while down the SAME order finishes: today's executions of it are two
     oid = exit_b.order.orderId
     soak.fill(exit_b, 2, 0.90)
-    soak.gw.fill_rows[:] = [fill_row(100, 2, 2.10, oid, SUPERVISED_CLIENT_ID),
-                            fill_row(95, 2, 1.20, oid, SUPERVISED_CLIENT_ID)]
+    soak.gw.fill_rows[:] = [
+        fill_row(100, 2, 2.10, oid, SUPERVISED_CLIENT_ID),
+        fill_row(95, 2, 1.20, oid, SUPERVISED_CLIENT_ID),
+    ]
     soak.gw.position_rows.clear()
     soak.restart()
     soak.rt.tick()
     book_b = soak.book()["canary-b"]
     assert (book_b["status"], book_b["close_reason"], book_b["exit_filled_qty"]) == (
-        "closed", "time_stop", 2)
+        "closed",
+        "time_stop",
+        2,
+    )
     assert Decimal(book_b["exit_fill"]) == Decimal("0.90")
     assert len(soak.gw.trades) == placed, "a filling exit is never re-sent"
     soak.assert_one_order_per_lane()
 
     # ---- same day: canary-c's send is uncertain, then reconciled -----------
     soak.arm(C_REQUEST_AT)
-    structure_c = _vertical("canary-c", entry_date=date(2026, 10, 13),
-                            exit_deadline=date(2026, 10, 14))
+    structure_c = _vertical(
+        "canary-c", entry_date=date(2026, 10, 13), exit_deadline=date(2026, 10, 14)
+    )
     soak.gw.status_script = ["PendingSubmit"]  # the gateway never acknowledges
     soak.request(structure_c, "canary-c")
     (uncertain,) = soak.desk.process_requests()
     assert uncertain["status"] == "sent"
     assert (uncertain["receipt"]["outcome"], uncertain["receipt"]["reason"]) == (
-        "uncertain", "ack_timeout")
+        "uncertain",
+        "ack_timeout",
+    )
     unsure = soak.gw.trades[-1]
     assert unsure.order.orderRef == "trex:sup:canary-c"
     # the truth: the order never reached the broker (the gateway's views show
@@ -392,29 +461,48 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
     assert len(soak.gw.trades) == placed
     # after the settle window the broker evidence clears the package
     soak.clock.now = shift_instant(C_REQUEST_AT, 240)
-    verdict = reconcile_intent(soak.sup, now=soak.clock.now, intent_id="canary-c",
-                               broker=soak.broker)
+    verdict = reconcile_intent(
+        soak.sup, now=soak.clock.now, intent_id="canary-c", broker=soak.broker
+    )
     assert verdict["verdict"] == "confirmed_not_submitted"
     soak.rt.tick()
     assert (soak.book()["canary-c"]["status"], soak.book()["canary-c"]["close_reason"]) == (
-        "closed", "not_submitted")
+        "closed",
+        "not_submitted",
+    )
     # ... and the package is admissible again: a fresh intent records
     sha = json.loads(soak.sup.terminal("canary-c").read_text())["package_intent_sha256"]
-    record_intent(soak.sup, SupervisedIntent(
-        intent=OrderIntent(intent_id="canary-c2", contract_id="BAG:canary-c", side="BUY",
-                           position_effect="OPEN_LONG", quantity=1, order_type="LIMIT",
-                           limit_price=Decimal("0.90"), execution_style="package",
-                           package_id="canary-c", intent_created_at=soak.clock.now,
-                           source=STRATEGY, source_sequence_id="desk-canary-c2"),
-        package_intent_sha256=sha, created_at=soak.clock.now,
-        send_deadline=shift_instant(soak.clock.now, 300)))
+    record_intent(
+        soak.sup,
+        SupervisedIntent(
+            intent=OrderIntent(
+                intent_id="canary-c2",
+                contract_id="BAG:canary-c",
+                side="BUY",
+                position_effect="OPEN_LONG",
+                quantity=1,
+                order_type="LIMIT",
+                limit_price=Decimal("0.90"),
+                execution_style="package",
+                package_id="canary-c",
+                intent_created_at=soak.clock.now,
+                source=STRATEGY,
+                source_sequence_id="desk-canary-c2",
+            ),
+            package_intent_sha256=sha,
+            created_at=soak.clock.now,
+            send_deadline=shift_instant(soak.clock.now, 300),
+        ),
+    )
     assert soak.sup.pending("canary-c2").exists()
     soak.assert_one_order_per_lane()
 
     # ---- canary-d enters, then Day 12 is a HALT and a resume ---------------
     soak.arm(D_REQUEST_AT)
-    soak.request(_vertical("canary-d", entry_date=date(2026, 10, 13),
-                           exit_deadline=date(2026, 10, 14)), "canary-d")
+    soak.request(
+        _vertical("canary-d", entry_date=date(2026, 10, 13), exit_deadline=date(2026, 10, 14)),
+        "canary-d",
+    )
     (sent_d,) = soak.desk.process_requests()
     assert (sent_d["status"], sent_d["receipt"]["outcome"]) == ("sent", "acknowledged")
     entry_d = soak.gw.trades[-1]
@@ -440,14 +528,23 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
     soak.rt.tick()
     book_d = soak.book()["canary-d"]
     assert (book_d["status"], book_d["close_reason"], book_d["exit_fill"]) == (
-        "closed", "time_stop", "0.85")
+        "closed",
+        "time_stop",
+        "0.85",
+    )
     soak.assert_one_order_per_lane()
 
     # ---- canary-e (a later expiry, its own legs): an exit that vanishes flat
     soak.arm(E_REQUEST_AT)
-    soak.request(_vertical("canary-e", entry_date=date(2026, 10, 14),
-                           exit_deadline=date(2026, 10, 15), expiry=EXPIRY_LATE),
-                 "canary-e")
+    soak.request(
+        _vertical(
+            "canary-e",
+            entry_date=date(2026, 10, 14),
+            exit_deadline=date(2026, 10, 15),
+            expiry=EXPIRY_LATE,
+        ),
+        "canary-e",
+    )
     (sent_e,) = soak.desk.process_requests()
     assert sent_e["status"] == "sent"
     entry_e = soak.gw.trades[-1]
@@ -481,10 +578,12 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
     soak.rt.tick()
     book_e = soak.book()["canary-e"]
     assert (book_e["status"], book_e["close_reason"], book_e["exit_unpriced_qty"]) == (
-        "closed", "operator_confirmed_flat", 1)
+        "closed",
+        "operator_confirmed_flat",
+        1,
+    )
     assert not soak.paths.resolve_flat("canary-e").exists()
-    assert soak.paths.resolve_flat("canary-e").with_name(
-        "RESOLVE-FLAT-canary-e.applied").exists()
+    assert soak.paths.resolve_flat("canary-e").with_name("RESOLVE-FLAT-canary-e.applied").exists()
 
     # ------------------------------------------------ the end-state invariants
     book = soak.book()
@@ -497,17 +596,25 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
         "canary-d": ("closed", "time_stop"),
         "canary-e": ("closed", "operator_confirmed_flat"),
     }
-    assert all(st.get("exit_unpriced_qty", 0) == 0
-               for sid, st in book.items() if sid != "canary-e")
+    assert all(st.get("exit_unpriced_qty", 0) == 0 for sid, st in book.items() if sid != "canary-e")
 
     # the event log is a coherent ordered history
     records = [json.loads(line) for line in soak.event_lines()]
     stamps = [datetime.fromisoformat(str(r["ts"])) for r in records]
     assert stamps == sorted(stamps), "event time never runs backwards"
     allowed = {
-        "registered", "entry_request", "entry_adopted", "entry_filled",
-        "entry_uncertain_held", "entry_reprice_not_sent", "exit_begin", "exit_order",
-        "exit_fill", "closed", "halt_no_new_orders", "exit_flat_unexplained",
+        "registered",
+        "entry_request",
+        "entry_adopted",
+        "entry_filled",
+        "entry_uncertain_held",
+        "entry_reprice_not_sent",
+        "exit_begin",
+        "exit_order",
+        "exit_fill",
+        "closed",
+        "halt_no_new_orders",
+        "exit_flat_unexplained",
         "exit_authority",
     }
     names = [str(r["event"]) for r in records]
@@ -516,19 +623,27 @@ def test_one_desk_across_sessions_restarts_and_operator_verdicts(soak: Soak) -> 
     assert "legs_mismatch" not in names
     assert names.count("closed") == 5
     closes = {r["structure"]: r["reason"] for r in records if r["event"] == "closed"}
-    assert closes == {"canary-a": "time_stop", "canary-b": "time_stop",
-                      "canary-c": "not_submitted", "canary-d": "time_stop",
-                      "canary-e": "operator_confirmed_flat"}
+    assert closes == {
+        "canary-a": "time_stop",
+        "canary-b": "time_stop",
+        "canary-c": "not_submitted",
+        "canary-d": "time_stop",
+        "canary-e": "operator_confirmed_flat",
+    }
 
     # one broker order per lane, per structure, for the whole run
     counts = Counter(soak.all_refs())
     assert max(counts.values()) == 1, counts
     assert set(counts) == {
-        "trex:sup:canary-a", "trex:desk:canary-a",
-        "trex:sup:canary-b", "trex:desk:canary-b",
+        "trex:sup:canary-a",
+        "trex:desk:canary-a",
+        "trex:sup:canary-b",
+        "trex:desk:canary-b",
         "trex:sup:canary-c",  # the uncertain send: never re-sent, never adopted
-        "trex:sup:canary-d", "trex:desk:canary-d",
-        "trex:sup:canary-e", "trex:desk:canary-e",
+        "trex:sup:canary-d",
+        "trex:desk:canary-d",
+        "trex:sup:canary-e",
+        "trex:desk:canary-e",
     }
     for trade in soak.gw.trades:
         if str(trade.order.orderRef).startswith("trex:desk:"):
@@ -563,8 +678,9 @@ def test_entry_to_time_stop_exit_end_to_end_drill(soak: Soak) -> None:
 
     # ---- arm and enter through the REAL inbox -----------------------------
     soak.arm(A_ENTRY_AT)  # mandate, fresh quotes, a heartbeat tick
-    soak.request(_vertical(drill, entry_date=date(2026, 10, 1),
-                           exit_deadline=date(2026, 10, 5)), drill)
+    soak.request(
+        _vertical(drill, entry_date=date(2026, 10, 1), exit_deadline=date(2026, 10, 5)), drill
+    )
     assert run_loop(soak.desk, interval_s=0, stop=lambda: False, max_ticks=1) == 0
     sent = soak.result(drill)
     assert (sent["status"], sent["receipt"]["outcome"]) == ("sent", "acknowledged")
@@ -581,8 +697,14 @@ def test_entry_to_time_stop_exit_end_to_end_drill(soak: Soak) -> None:
     health = json.loads(soak.paths.health().read_text())
     books = exit_watch.scan_books(soak.paths.root.parent)
     assert [b.plan for b in books] == [soak.paths.root.name]
-    obs = exit_watch.ExitObs(now=health["at"] + 5, books=books, gateway_status=None,
-                             gateway_since=None, market=True, unit_state=None)
+    obs = exit_watch.ExitObs(
+        now=health["at"] + 5,
+        books=books,
+        gateway_status=None,
+        gateway_since=None,
+        market=True,
+        unit_state=None,
+    )
     status, _, detail = exit_watch.classify(obs)
     assert (status, detail) == ("ok", f"{soak.paths.root.name}: heartbeat 5s ago")
 
@@ -599,28 +721,48 @@ def test_entry_to_time_stop_exit_end_to_end_drill(soak: Soak) -> None:
     # the runtime dies; while it is down the exit fills (long sold 2.05,
     # short bought 1.20 = 0.85 a package) and the legs go flat
     oid = exit_trade.order.orderId
-    soak.gw.fill_rows[:] = [fill_row(100, 1, 2.05, oid, SUPERVISED_CLIENT_ID),
-                            fill_row(95, 1, 1.20, oid, SUPERVISED_CLIENT_ID)]
+    soak.gw.fill_rows[:] = [
+        fill_row(100, 1, 2.05, oid, SUPERVISED_CLIENT_ID),
+        fill_row(95, 1, 1.20, oid, SUPERVISED_CLIENT_ID),
+    ]
     soak.gw.position_rows.clear()
     soak.kill_runtime()
     soak.restart()
     soak.rt.tick()
     book = soak.book()[drill]
     assert (book["status"], book["close_reason"], book["exit_fill"]) == (
-        "closed", "time_stop", "0.85")
+        "closed",
+        "time_stop",
+        "0.85",
+    )
 
     # ---- the FULL chain, in order, through the real event log --------------
     # (entry_reprice_not_sent is the pinned supervised-entry discipline: the
     # engine always asks to reprice an unfilled entry; the permit binds one
     # limit, so the runtime never sends it)
     records = [json.loads(line) for line in soak.event_lines()]
-    mine = [r["event"] for r in records
-            if r.get("structure") == drill or r.get("intent") == drill]
-    assert mine == ["registered", "entry_request", "entry_adopted",
-                    "entry_reprice_not_sent", "entry_filled",
-                    "exit_begin", "exit_authority", "exit_order", "exit_fill", "closed"]
-    chain = ["entry_request", "entry_filled", "exit_begin", "exit_authority",
-             "exit_order", "exit_fill", "closed"]
+    mine = [r["event"] for r in records if r.get("structure") == drill or r.get("intent") == drill]
+    assert mine == [
+        "registered",
+        "entry_request",
+        "entry_adopted",
+        "entry_reprice_not_sent",
+        "entry_filled",
+        "exit_begin",
+        "exit_authority",
+        "exit_order",
+        "exit_fill",
+        "closed",
+    ]
+    chain = [
+        "entry_request",
+        "entry_filled",
+        "exit_begin",
+        "exit_authority",
+        "exit_order",
+        "exit_fill",
+        "closed",
+    ]
     scan = iter(mine)
     assert [e for e in chain if e in scan] == chain, "the approved chain, in order"
     begin = next(r for r in records if r["event"] == "exit_begin")
@@ -636,6 +778,12 @@ def test_entry_to_time_stop_exit_end_to_end_drill(soak: Soak) -> None:
 
     # ---- closed: the watchdog has nothing left to guard ---------------------
     assert exit_watch.scan_books(soak.paths.root.parent) == []
-    obs = exit_watch.ExitObs(now=soak.clock.now.timestamp(), books=[], gateway_status=None,
-                             gateway_since=None, market=True, unit_state=None)
+    obs = exit_watch.ExitObs(
+        now=soak.clock.now.timestamp(),
+        books=[],
+        gateway_status=None,
+        gateway_since=None,
+        market=True,
+        unit_state=None,
+    )
     assert exit_watch.classify(obs)[0] == "idle"

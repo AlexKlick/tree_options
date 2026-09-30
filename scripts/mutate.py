@@ -173,16 +173,10 @@ MUTANTS = [
         # publication check for bars, so the bare line matches twice. The
         # two-sided variant is pinned by its own message text.
         anchor=(
-            "if q.received_timestamp > execution_at:\n"
-            "        raise StaleQuoteError(\n"
-            '            f"quote received {q.received_timestamp} after execution {execution_at}"\n'
-            "        )"
+            'if q.received_timestamp > execution_at:\n        raise StaleQuoteError(\n            f"quote received {q.received_timestamp} after execution {execution_at}"\n        )'
         ),
         replacement=(
-            "if False:\n"
-            "        raise StaleQuoteError(\n"
-            '            f"quote received {q.received_timestamp} after execution {execution_at}"\n'
-            "        )"
+            'if False:\n        raise StaleQuoteError(\n            f"quote received {q.received_timestamp} after execution {execution_at}"\n        )'
         ),
         selectors=[f"{G}/test_fill_integrity_v2.py"],
         invariant="quote from the future rejected",
@@ -420,20 +414,10 @@ MUTANTS = [
         # cost_basis-reduction site, so the anchor now spans the
         # fill-path-specific block (fill.contract_id) to stay unique
         anchor=(
-            "                head = self._lots[fill.contract_id][0]\n"
-            "                take = min(head.quantity, remaining)\n"
-            "                removed = (head.unit_price * take * head.multiplier).quantize(FEE_TICK)\n"
-            "                cost_removed += removed\n"
-            "                head.quantity -= take\n"
-            "                head.cost_basis = (head.cost_basis - removed).quantize(FEE_TICK)"
+            "                head = self._lots[fill.contract_id][0]\n                take = min(head.quantity, remaining)\n                removed = (head.unit_price * take * head.multiplier).quantize(FEE_TICK)\n                cost_removed += removed\n                head.quantity -= take\n                head.cost_basis = (head.cost_basis - removed).quantize(FEE_TICK)"
         ),
         replacement=(
-            "                head = self._lots[fill.contract_id][0]\n"
-            "                take = min(head.quantity, remaining)\n"
-            "                removed = (head.unit_price * take * head.multiplier).quantize(FEE_TICK)\n"
-            "                cost_removed += removed\n"
-            "                head.quantity -= take\n"
-            "                head.cost_basis = head.cost_basis"
+            "                head = self._lots[fill.contract_id][0]\n                take = min(head.quantity, remaining)\n                removed = (head.unit_price * take * head.multiplier).quantize(FEE_TICK)\n                cost_removed += removed\n                head.quantity -= take\n                head.cost_basis = head.cost_basis"
         ),
         selectors=[f"{P}/test_ledger_properties.py"],
         invariant="partial closes reduce lot basis",
@@ -452,14 +436,10 @@ MUTANTS = [
         owner="test_january_decision_cannot_see_march_rename",
         file="src/tree_options/schemas/security.py",
         anchor=(
-            "        for m in self.ticker_mappings:\n"
-            "            if as_of is not None and m.available_at > as_of:\n"
-            "                continue"
+            "        for m in self.ticker_mappings:\n            if as_of is not None and m.available_at > as_of:\n                continue"
         ),
         replacement=(
-            "        for m in self.ticker_mappings:\n"
-            "            if False:\n"
-            "                continue"
+            "        for m in self.ticker_mappings:\n            if False:\n                continue"
         ),
         selectors=[f"{U}/test_leakage_v2.py"],
         invariant="point-in-time security master hides future mappings (anchor re-pinned M2: sector_on now carries the same single-line shape)",
@@ -531,8 +511,8 @@ MUTANTS = [
         id="M51-snapshot-incoherence-accepted",
         owner="test_mismatched_expiration_not_evaluable",
         file="src/tree_options/candidates/filters.py",
-        anchor="snap.expiration != snap.contract.expiration",
-        replacement="False",
+        anchor="        if snap.expiration != snap.contract.expiration or snap.underlying_security_id != (\n            snap.contract.underlying_security_id\n        ):\n",
+        replacement="        if False or snap.underlying_security_id != (snap.contract.underlying_security_id):\n",
         selectors=[f"{U}/test_leakage_v2.py"],
         invariant="snapshot fields must agree with the contract object",
     ),
@@ -685,8 +665,8 @@ MUTANTS = [
         id="M67-universe-survivorship-gutted",
         owner="test_universe_is_point_in_time_not_survivors",
         file="src/tree_options/data/authority.py",
-        anchor="if record.listed_on(decision_at.date(), as_of=decision_at)",
-        replacement="if True",
+        anchor="        members = [\n            record.security_id\n            for record in self._snapshot.master\n            if record.listed_on(decision_at.date(), as_of=decision_at)\n        ]\n",
+        replacement="        members = [record.security_id for record in self._snapshot.master if True]\n",
         selectors=[f"{U}/test_data_authority.py"],
         invariant="M1-C universe membership is point-in-time (delisted names leave, pre-IPO names never enter — no current-survivor filtering)",
     ),
@@ -722,16 +702,10 @@ MUTANTS = [
         owner="test_leak_window_returns_prior_sector",
         file="src/tree_options/schemas/security.py",
         anchor=(
-            "        best: SectorMappingRecord | None = None\n"
-            "        for m in self.sector_mappings:\n"
-            "            if as_of is not None and m.available_at > as_of:\n"
-            "                continue"
+            "        best: SectorMappingRecord | None = None\n        for m in self.sector_mappings:\n            if as_of is not None and m.available_at > as_of:\n                continue"
         ),
         replacement=(
-            "        best: SectorMappingRecord | None = None\n"
-            "        for m in self.sector_mappings:\n"
-            "            if False:\n"
-            "                continue"
+            "        best: SectorMappingRecord | None = None\n        for m in self.sector_mappings:\n            if False:\n                continue"
         ),
         selectors=[f"{U}/test_sector_pit.py"],
         invariant="M2-A sector classifications are availability-gated: a reclassification between effective_from and available_at must stay invisible",
@@ -868,9 +842,7 @@ MUTANTS = [
         owner="test_h1_label_across_split_is_total_return",
         file="src/tree_options/labels/build.py",
         anchor=(
-            "ratio_factor *= Decimal(act.ratio_numerator) / Decimal(\n"
-            "                            act.ratio_denominator\n"
-            "                        )"
+            "ratio_factor *= Decimal(act.ratio_numerator) / Decimal(\n                            act.ratio_denominator\n                        )"
         ),
         replacement="ratio_factor *= Decimal(1)",
         selectors=[f"{U}/test_labels_build.py"],
@@ -1117,12 +1089,9 @@ MUTANTS = [
         id="M114-oi-plumbed-from-wrong-instant",
         owner="test_in_band_candidate_is_accepted_by_the_filter",
         file="src/tree_options/data/options_pit.py",
-        anchor="open_interest=AsOf(value=entry.open_interest, available_at=received),",
+        anchor="            open_interest=AsOf(value=entry.open_interest, available_at=received),\n",
         replacement=(
-            "open_interest=AsOf(\n"
-            "                    value=entry.open_interest,\n"
-            "                    available_at=self._overlay.calendar.nth_after(decision_session, 1),\n"
-            "                ),"
+            "            open_interest=AsOf(\n                value=entry.open_interest,\n                available_at=self._overlay.calendar.nth_after(decision_session, 1),\n            ),\n"
         ),
         selectors=[f"{U}/test_data_options_surface.py"],
         invariant="M3-B every candidate input is AsOf-wrapped at the file's receipt instant; OI stamped a session ahead is future-available and must go NOT_EVALUABLE",
@@ -1150,16 +1119,10 @@ MUTANTS = [
         owner="test_partial_settlement_then_sell",
         file="src/tree_options/ledger/book.py",
         anchor=(
-            "remaining = settlement.quantity\n"
-            '        cost_removed = Decimal("0")\n'
-            "        while remaining > 0:\n"
-            "            head = self._lots[settlement.contract_id][0]"
+            'remaining = settlement.quantity\n        cost_removed = Decimal("0")\n        while remaining > 0:\n            head = self._lots[settlement.contract_id][0]'
         ),
         replacement=(
-            "remaining = 0\n"
-            '        cost_removed = Decimal("0")\n'
-            "        while remaining > 0:\n"
-            "            head = self._lots[settlement.contract_id][0]"
+            'remaining = 0\n        cost_removed = Decimal("0")\n        while remaining > 0:\n            head = self._lots[settlement.contract_id][0]'
         ),
         selectors=[f"{U}/test_options_settlement.py"],
         invariant="M3-C apply_settlement closes FIFO lots; leaving them open corrupts quantity and realized PnL",
@@ -1249,19 +1212,9 @@ MUTANTS = [
         id="M127-dte-in-sessions",
         owner="test_pick_expiry_uses_calendar_days",
         file="src/tree_options/options/strategy.py",
-        anchor="return min(in_band, key=lambda e: (abs((e - decision_session).days - config.target_dte), e))",
+        anchor="    return min(in_band, key=lambda e: (abs((e - decision_session).days - config.target_dte), e))\n",
         replacement=(
-            "return min(\n"
-            "            in_band,\n"
-            "            key=lambda e: (\n"
-            "                abs(\n"
-            "                    (surface.overlay.calendar.ordinal(e)\n"
-            "                     - surface.overlay.calendar.ordinal(decision_session))\n"
-            "                    - config.target_dte\n"
-            "                ),\n"
-            "                e,\n"
-            "            ),\n"
-            "        )"
+            "    return min(\n        in_band,\n        key=lambda e: (\n            abs(\n                (\n                    surface.overlay.calendar.ordinal(e)\n                    - surface.overlay.calendar.ordinal(decision_session)\n                )\n                - config.target_dte\n            ),\n            e,\n        ),\n    )\n"
         ),
         selectors=[f"{U}/test_options_strategy.py"],
         invariant="M3-D the expiry pick targets 45 CALENDAR days' DTE (re-anchored round 2 to the nearest-target key itself — widening only the band was dominated by the days-based tie-break and semantically equivalent)",
@@ -1289,14 +1242,10 @@ MUTANTS = [
         owner="test_candidate_snapshot_carries_file_receipt_and_truthful_earnings",
         file="src/tree_options/data/options_pit.py",
         anchor=(
-            "ask=AsOf(value=entry.quote_eod.ask, available_at=received),\n"
-            "            underlying_20d_median_dollar_volume=AsOf(value=dollar_volume, available_at=received),\n"
-            "            spans_earnings=AsOf(value=False, available_at=received),"
+            "ask=AsOf(value=entry.quote_eod.ask, available_at=received),\n            underlying_20d_median_dollar_volume=AsOf(value=dollar_volume, available_at=received),\n            spans_earnings=AsOf(value=False, available_at=received),"
         ),
         replacement=(
-            "ask=AsOf(value=entry.quote_eod.ask, available_at=received),\n"
-            "            underlying_20d_median_dollar_volume=AsOf(value=dollar_volume, available_at=received),\n"
-            "            spans_earnings=None,"
+            "ask=AsOf(value=entry.quote_eod.ask, available_at=received),\n            underlying_20d_median_dollar_volume=AsOf(value=dollar_volume, available_at=received),\n            spans_earnings=None,"
         ),
         selectors=[f"{U}/test_data_options_surface.py", f"{U}/test_backtest_options.py"],
         invariant="M3-B spans_earnings is fed AsOf(False, receipt) - the worlds contain no earnings; None collapses every candidate to NOT_EVALUABLE (empty backtest)",
@@ -1430,8 +1379,8 @@ MUTANTS = [
         id="M142-early-close-1545-forced-present",
         owner="test_calendar_protocol",
         file="src/tree_options/data/real_overlay.py",
-        anchor="if file.entries and all(e.quote_1545 is None for e in file.entries)",
-        replacement="if False",
+        anchor="        early = frozenset(\n            session\n            for session, file in day_files.items()\n            if file.entries and all(e.quote_1545 is None for e in file.entries)\n        )\n",
+        replacement="        early = frozenset(session for session, file in day_files.items() if False)\n",
         selectors=[f"{U}/test_real_overlay.py"],
         invariant=(
             "M4-A an early close is detected from the files (every entry lacks the"
@@ -1541,15 +1490,10 @@ MUTANTS = [
         owner="test_transport_failure_is_retried_then_raises_with_attempts",
         file="src/tree_options/data/massive_client.py",
         anchor=(
-            "            except Exception as exc:  # redact before wrapping: exc may echo the URL\n"
-            "                transport_failure = MassiveTransportError(\n"
-            '                    f"{endpoint}: {redact(str(exc), self._api_key)}"\n'
-            "                )\n"
-            "                failed_transport = True"
+            '            except Exception as exc:  # redact before wrapping: exc may echo the URL\n                transport_failure = MassiveTransportError(\n                    f"{endpoint}: {redact(str(exc), self._api_key)}"\n                )\n                failed_transport = True'
         ),
         replacement=(
-            "            except Exception as exc:  # redact before wrapping: exc may echo the URL\n"
-            "                raise"
+            "            except Exception as exc:  # redact before wrapping: exc may echo the URL\n                raise"
         ),
         selectors=[f"{U}/test_massive_client.py"],
         invariant=(
@@ -1666,8 +1610,7 @@ MUTANTS = [
         owner="test_a_fully_failed_run_exits_nonzero",
         file="scripts/capture_massive_structural.py",
         anchor=(
-            'if not (any(m["pages"] for m in masters) or manifest["bars"]'
-            ' or manifest["spot_proxy"]):'
+            'if not (any(m["pages"] for m in masters) or manifest["bars"] or manifest["spot_proxy"]):'
         ),
         replacement="if False:",
         selectors=[f"{U}/test_capture_massive_structural.py"],
@@ -1929,16 +1872,10 @@ MUTANTS = [
         # elif since the review hardening: a SUPPLIED-OI incoherence branch
         # now precedes the disclosure branch.
         anchor=(
-            '        elif self.liquidity_regime == "volume_flow":\n'
-            "            results.append(\n"
-            "                RuleResult(\n"
-            '                    "open_interest",'
+            '        elif self.liquidity_regime == "volume_flow":\n            results.append(\n                RuleResult(\n                    "open_interest",'
         ),
         replacement=(
-            "        elif False:\n"
-            "            results.append(\n"
-            "                RuleResult(\n"
-            '                    "open_interest",'
+            '        elif False:\n            results.append(\n                RuleResult(\n                    "open_interest",'
         ),
         selectors=[f"{U}/test_candidate_volume_flow.py"],
         invariant=(
@@ -1998,12 +1935,10 @@ MUTANTS = [
         owner="test_float_vwap_refused_at_the_boundary",
         file="src/tree_options/schemas/market.py",
         anchor=(
-            "        if isinstance(v, float):\n"
-            '            raise ValueError(f"vwap must be Decimal, got float {v!r}")'
+            '        if isinstance(v, float):\n            raise ValueError(f"vwap must be Decimal, got float {v!r}")'
         ),
         replacement=(
-            "        if False:\n"
-            '            raise ValueError(f"vwap must be Decimal, got float {v!r}")'
+            '        if False:\n            raise ValueError(f"vwap must be Decimal, got float {v!r}")'
         ),
         selectors=[f"{G}/test_fill_vwap.py"],
         invariant=(
@@ -2032,19 +1967,10 @@ MUTANTS = [
         owner="test_failed_cannot_reach_sealed_lane",
         file="src/tree_options/runstate/states.py",
         anchor=(
-            "    RunState.FAILED: frozenset(\n"
-            "        {RunState.CAPTURING, RunState.INSPECTION_RUNNING, RunState.BARS_CAPTURING}\n"
-            "    ),"
+            "    RunState.FAILED: frozenset(\n        {RunState.CAPTURING, RunState.INSPECTION_RUNNING, RunState.BARS_CAPTURING}\n    ),"
         ),
         replacement=(
-            "    RunState.FAILED: frozenset(\n"
-            "        {\n"
-            "            RunState.CAPTURING,\n"
-            "            RunState.INSPECTION_RUNNING,\n"
-            "            RunState.BARS_CAPTURING,\n"
-            "            RunState.SEALED_RUNNING,\n"
-            "        }\n"
-            "    ),"
+            "    RunState.FAILED: frozenset(\n        {\n            RunState.CAPTURING,\n            RunState.INSPECTION_RUNNING,\n            RunState.BARS_CAPTURING,\n            RunState.SEALED_RUNNING,\n        }\n    ),"
         ),
         selectors=[f"{U}/test_runstate_lifecycle.py"],
         invariant=(
@@ -2093,14 +2019,10 @@ MUTANTS = [
         owner="test_truncated_final_line_is_tail_damaged_never_corrupt",
         file="src/tree_options/runstate/journal.py",
         anchor=(
-            "            if is_final:\n"
-            "                damaged_tail = True\n"
-            "                continue  # a torn tail was never acknowledged; exclude it"
+            "            if is_final:\n                damaged_tail = True\n                continue  # a torn tail was never acknowledged; exclude it"
         ),
         replacement=(
-            "            if is_final:\n"
-            "                damaged_tail = False\n"
-            "                continue  # a torn tail was never acknowledged; exclude it"
+            "            if is_final:\n                damaged_tail = False\n                continue  # a torn tail was never acknowledged; exclude it"
         ),
         selectors=[f"{U}/test_runstate_journal.py"],
         invariant=(
@@ -2114,10 +2036,7 @@ MUTANTS = [
         owner="test_single_record_hash_tamper_detected_midfile",
         file="src/tree_options/runstate/journal.py",
         anchor=(
-            "            raise JournalCorruptError(\n"
-            "                run_id,\n"
-            '                f"journal line {_index + 1} failed decode/hash/chain verification",\n'
-            "            )"
+            '            raise JournalCorruptError(\n                run_id,\n                f"journal line {_index + 1} failed decode/hash/chain verification",\n            )'
         ),
         replacement="            continue",
         selectors=[f"{U}/test_runstate_journal.py"],
@@ -2144,8 +2063,7 @@ MUTANTS = [
         owner="test_live_owner_not_adopted_even_when_stale_adoption_is_allowed",
         file="src/tree_options/runstate/lease.py",
         anchor=(
-            "                if classification is LeaseClassification.HELD or not "
-            "allow_stale_adopt:"
+            "                if classification is LeaseClassification.HELD or not allow_stale_adopt:"
         ),
         replacement="                if not allow_stale_adopt:",
         selectors=[f"{U}/test_runstate_lease.py"],
@@ -2160,8 +2078,7 @@ MUTANTS = [
         owner="test_pid_reuse_detected_by_starttime",
         file="src/tree_options/runstate/lease.py",
         anchor=(
-            "    if live_ticks is None or live_ticks != owner.pid_start_ticks:\n"
-            "        return LeaseClassification.STALE_PID_REUSED"
+            "    if live_ticks is None or live_ticks != owner.pid_start_ticks:\n        return LeaseClassification.STALE_PID_REUSED"
         ),
         replacement=("    if False:\n        return LeaseClassification.STALE_PID_REUSED"),
         selectors=[f"{U}/test_runstate_lease.py"],
@@ -2202,14 +2119,10 @@ MUTANTS = [
         owner="test_dead_process_in_resumable_state_is_unknown_resumable",
         file="src/tree_options/runstate/heartbeat.py",
         anchor=(
-            "    if state in RESUMABLE_STATES:\n"
-            "        return HeartbeatClass.UNKNOWN_RESUMABLE\n"
-            "    return HeartbeatClass.DEAD_TERMINAL"
+            "    if state in RESUMABLE_STATES:\n        return HeartbeatClass.UNKNOWN_RESUMABLE\n    return HeartbeatClass.DEAD_TERMINAL"
         ),
         replacement=(
-            "    if False:\n"
-            "        return HeartbeatClass.UNKNOWN_RESUMABLE\n"
-            "    return HeartbeatClass.DEAD_TERMINAL"
+            "    if False:\n        return HeartbeatClass.UNKNOWN_RESUMABLE\n    return HeartbeatClass.DEAD_TERMINAL"
         ),
         selectors=[f"{U}/test_runstate_heartbeat.py"],
         invariant=(
@@ -2236,14 +2149,10 @@ MUTANTS = [
         owner="test_torn_projection_reported_not_repaired",
         file="scripts/era_status.py",
         anchor=(
-            "    except rs_errors.ProjectionTornError as exc:\n"
-            '        print(f"PROJECTION TORN: {exc}", file=sys.stderr)\n'
-            "        return 2"
+            '    except rs_errors.ProjectionTornError as exc:\n        print(f"PROJECTION TORN: {exc}", file=sys.stderr)\n        return 2'
         ),
         replacement=(
-            "    except rs_errors.ProjectionTornError:\n"
-            "        store.rebuild_projection(now_epoch=now_epoch)\n"
-            "        return 0"
+            "    except rs_errors.ProjectionTornError:\n        store.rebuild_projection(now_epoch=now_epoch)\n        return 0"
         ),
         selectors=[f"{U}/test_era_status.py"],
         invariant=(
@@ -2282,11 +2191,7 @@ MUTANTS = [
         owner="test_registry_disagreement_refused",
         file="src/tree_options/data/coverage_census.py",
         anchor=(
-            "        if placed != declared_class:\n"
-            "            raise CensusTaxonomyError(\n"
-            '                f"fact {fact_id!r} registry says {declared_class!r}'
-            ' but it sits in {placed!r}"\n'
-            "            )"
+            '        if placed != declared_class:\n            raise CensusTaxonomyError(\n                f"fact {fact_id!r} registry says {declared_class!r} but it sits in {placed!r}"\n            )'
         ),
         replacement=(
             "        if placed != declared_class:\n            pass  # taxonomy drift accepted"
@@ -2455,11 +2360,10 @@ MUTANTS = [
         owner="test_content_identity_stable_across_code_sha_change_while_run_id_changes",
         file="src/tree_options/seal/identity.py",
         anchor=(
-            'blanked = identity.model_copy(update={"code_sha": "", "verified_packet_sha256": ""})'
+            '    blanked = identity.model_copy(update={"code_sha": "", "verified_packet_sha256": ""})\n'
         ),
         replacement=(
-            'blanked = identity.model_copy(update={"code_sha": identity.code_sha, '
-            '"verified_packet_sha256": ""})'
+            '    blanked = identity.model_copy(\n        update={"code_sha": identity.code_sha, "verified_packet_sha256": ""}\n    )\n'
         ),
         selectors=[f"{U}/test_seal_identity.py"],
         invariant=(
@@ -2482,8 +2386,7 @@ MUTANTS = [
         owner="test_forged_consumption_stored_ids_refused_as_corrupt",
         file="scripts/g4_seal.py",
         anchor=(
-            "        if record.sealed_run_id != record_run_id"
-            " or record.content_identity != record_content_id:"
+            "        if record.sealed_run_id != record_run_id or record.content_identity != record_content_id:"
         ),
         replacement="        if False:",
         selectors=[f"{U}/test_g4_seal.py"],
@@ -2514,20 +2417,10 @@ MUTANTS = [
         owner="test_preflight_all_verified_verdict_is_null_and_not_computed",
         file="scripts/g4_seal.py",
         anchor=(
-            "    report = PreflightReport(\n"
-            "        verdict=None,\n"
-            "        verdict_computed=False,\n"
-            "        criteria_inputs=statuses,\n"
-            "        verified_inputs=packet,\n"
-            "    )"
+            "    report = PreflightReport(\n        verdict=None,\n        verdict_computed=False,\n        criteria_inputs=statuses,\n        verified_inputs=packet,\n    )"
         ),
         replacement=(
-            "    report = PreflightReport(\n"
-            "        verdict=None,\n"
-            "        verdict_computed=any(s.available for s in statuses.values()),\n"
-            "        criteria_inputs=statuses,\n"
-            "        verified_inputs=packet,\n"
-            "    )"
+            "    report = PreflightReport(\n        verdict=None,\n        verdict_computed=any(s.available for s in statuses.values()),\n        criteria_inputs=statuses,\n        verified_inputs=packet,\n    )"
         ),
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
@@ -2555,12 +2448,10 @@ MUTANTS = [
         owner="test_first_execution_consumption_durable_before_runner_gets_same_held_bytes",
         file="scripts/g4_seal.py",
         anchor=(
-            "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)\n"
-            "    outcome = runner(current)"
+            "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)\n    outcome = runner(current)"
         ),
         replacement=(
-            "    outcome = runner(current)\n"
-            "    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)"
+            "    outcome = runner(current)\n    consumption_sha = seal_ledger.append_record(ledger_root, consumption_record)"
         ),
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
@@ -2576,8 +2467,7 @@ MUTANTS = [
         owner="test_preflight_exit_2_wrong_version_even_with_matching_record",
         file="scripts/launch_bars_era.py",
         anchor=(
-            "if protocol.meta.protocol_version != REQUIRED_BARS_PROTOCOL_VERSION"
-            " or approval is None:"
+            "if protocol.meta.protocol_version != REQUIRED_BARS_PROTOCOL_VERSION or approval is None:"
         ),
         replacement="if False:",
         selectors=[f"{U}/test_launch_bars_era.py"],
@@ -2647,8 +2537,7 @@ MUTANTS = [
         owner="test_create_refuses_noncanonical_run_id_before_filesystem_mutation",
         file="src/tree_options/runstate/store.py",
         anchor=(
-            "        _validate_canonical_run_id(root, identity)\n"
-            "        root_fd = custody.open_directory("
+            "        _validate_canonical_run_id(root, identity)\n        root_fd = custody.open_directory("
         ),
         replacement="        root_fd = custody.open_directory(",
         selectors=[f"{U}/test_runstate_store.py"],
@@ -2661,8 +2550,8 @@ MUTANTS = [
         id="M231-universe-source-id-host-contaminated",
         owner="test_two_physical_checkout_roots_render_byte_identical_universe",
         file="scripts/gen_coverage_universe.py",
-        anchor="    return validate_source_id(relative.as_posix())",
-        replacement="    return physical.as_posix().lstrip('/')",
+        anchor="    return validate_source_id(relative.as_posix())\n",
+        replacement='    return physical.as_posix().lstrip("/")\n',
         selectors=[f"{U}/test_gen_coverage_universe.py"],
         invariant=(
             "PR13 the universe records the wrapper's repo-relative logical id;"
@@ -2710,9 +2599,7 @@ MUTANTS = [
         owner="test_open_refuses_run_json_hard_link",
         file="src/tree_options/runstate/custody.py",
         anchor=(
-            "    if st.st_nlink != 1:\n"
-            '        _refuse(run_id, f"{purpose} has unexpected link count '
-            '{st.st_nlink}, expected 1")'
+            '    if st.st_nlink != 1:\n        _refuse(run_id, f"{purpose} has unexpected link count {st.st_nlink}, expected 1")'
         ),
         replacement="    if False:\n        pass",
         selectors=[f"{U}/test_runstate_custody.py"],
@@ -2726,26 +2613,10 @@ MUTANTS = [
         owner="test_projection_final_symlink_refuses_without_mutating_repo_target",
         file="src/tree_options/runstate/custody.py",
         anchor=(
-            "def _safe_existing_name(\n"
-            "    parent_fd: int,\n"
-            "    name: str,\n"
-            "    *,\n"
-            "    run_id: str,\n"
-            "    purpose: str,\n"
-            ") -> os.stat_result | None:\n"
-            "    try:\n"
-            "        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)"
+            "def _safe_existing_name(\n    parent_fd: int,\n    name: str,\n    *,\n    run_id: str,\n    purpose: str,\n) -> os.stat_result | None:\n    try:\n        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)"
         ),
         replacement=(
-            "def _safe_existing_name(\n"
-            "    parent_fd: int,\n"
-            "    name: str,\n"
-            "    *,\n"
-            "    run_id: str,\n"
-            "    purpose: str,\n"
-            ") -> os.stat_result | None:\n"
-            "    try:\n"
-            "        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=True)"
+            "def _safe_existing_name(\n    parent_fd: int,\n    name: str,\n    *,\n    run_id: str,\n    purpose: str,\n) -> os.stat_result | None:\n    try:\n        existing = os.stat(name, dir_fd=parent_fd, follow_symlinks=True)"
         ),
         selectors=[f"{U}/test_runstate_custody.py"],
         invariant=(
@@ -2794,9 +2665,7 @@ MUTANTS = [
         owner="test_projection_parent_rename_and_substitution_is_refused",
         file="src/tree_options/runstate/custody.py",
         anchor=(
-            "        finally:\n"
-            "            os.close(published_fd)\n"
-            "        verify_directory_identity(directory_path, directory_fd, run_id=run_id)"
+            "        finally:\n            os.close(published_fd)\n        verify_directory_identity(directory_path, directory_fd, run_id=run_id)"
         ),
         replacement="        finally:\n            os.close(published_fd)",
         selectors=[f"{U}/test_runstate_custody.py"],
@@ -2810,15 +2679,7 @@ MUTANTS = [
         owner="test_lease_lock_deletion_recreation_refuses_before_owner_publish",
         file="src/tree_options/runstate/lease.py",
         anchor=(
-            "        try:\n"
-            "            custody.verify_name_identity(\n"
-            "                lease_fd,\n"
-            '                "adopt.lock",\n'
-            "                lock_fd,\n"
-            "                run_id=run_id,\n"
-            '                purpose="lease adopt.lock",\n'
-            "            )\n"
-            "            raw = custody.read_named_bytes("
+            '        try:\n            custody.verify_name_identity(\n                lease_fd,\n                "adopt.lock",\n                lock_fd,\n                run_id=run_id,\n                purpose="lease adopt.lock",\n            )\n            raw = custody.read_named_bytes('
         ),
         replacement="        try:\n            raw = custody.read_named_bytes(",
         selectors=[f"{U}/test_runstate_custody.py"],
@@ -2832,15 +2693,7 @@ MUTANTS = [
         owner="test_journal_name_clone_swap_during_append_is_refused",
         file="src/tree_options/runstate/journal.py",
         anchor=(
-            "                os.fsync(fd)\n"
-            "                custody.verify_name_identity(\n"
-            "                    dir_fd,\n"
-            "                    JOURNAL_FILENAME,\n"
-            "                    fd,\n"
-            "                    run_id=run_id,\n"
-            '                    purpose="journal.jsonl authority",\n'
-            "                )\n"
-            "                post = _locked_tail_view(fd)"
+            '                os.fsync(fd)\n                custody.verify_name_identity(\n                    dir_fd,\n                    JOURNAL_FILENAME,\n                    fd,\n                    run_id=run_id,\n                    purpose="journal.jsonl authority",\n                )\n                post = _locked_tail_view(fd)'
         ),
         replacement="                os.fsync(fd)\n                post = _locked_tail_view(fd)",
         selectors=[f"{U}/test_runstate_custody.py"],
@@ -2876,12 +2729,7 @@ MUTANTS = [
         owner="test_missing_or_tampered_referenced_payload_refuses",
         file="src/tree_options/seal/verified_inputs.py",
         anchor=(
-            "        verify_real_options_manifest(\n"
-            "            manifest,\n"
-            "            result,\n"
-            "            overlay=overlay,\n"
-            "            source_bytes=source_raw,\n"
-            "        )"
+            "        verify_real_options_manifest(\n            manifest,\n            result,\n            overlay=overlay,\n            source_bytes=source_raw,\n        )"
         ),
         replacement="        pass  # MUTATED: Cboe semantic verifier bypassed",
         selectors=[f"{U}/test_g4_verified_inputs.py"],
@@ -2910,13 +2758,7 @@ MUTANTS = [
         owner="test_massive_unlisted_json_is_reconciled_from_held_directory",
         file="src/tree_options/seal/verified_inputs.py",
         anchor=(
-            "            verify_massive_capture_manifest(\n"
-            "                manifest,\n"
-            "                paths.lane2_manifest.parent,\n"
-            "                capture_version=EXPECTED_MASSIVE_CAPTURE_VERSION,\n"
-            "                captured_files=held_by_path,\n"
-            "                observed_json_files=observed,\n"
-            "            )"
+            "            verify_massive_capture_manifest(\n                manifest,\n                paths.lane2_manifest.parent,\n                capture_version=EXPECTED_MASSIVE_CAPTURE_VERSION,\n                captured_files=held_by_path,\n                observed_json_files=observed,\n            )"
         ),
         replacement="            pass  # MUTATED: Massive reconciliation bypassed",
         selectors=[f"{U}/test_g4_verified_inputs.py"],
@@ -2954,8 +2796,7 @@ MUTANTS = [
         owner="test_calendar_decision_content_hash_rejects_typed_body_tamper",
         file="src/tree_options/seal/verified_inputs.py",
         anchor=(
-            "        if self.content_sha256 != expected:\n"
-            '            raise ValueError("calendar decision content_sha256 does not bind the typed body")'
+            '        if self.content_sha256 != expected:\n            raise ValueError("calendar decision content_sha256 does not bind the typed body")'
         ),
         replacement='        if False:\n            raise ValueError("MUTATED")',
         selectors=[f"{U}/test_g4_verified_inputs.py"],
@@ -2966,8 +2807,7 @@ MUTANTS = [
         owner="test_packet_self_hash_rejects_caller_tamper",
         file="src/tree_options/seal/verified_inputs.py",
         anchor=(
-            "        if self.packet_content_sha256 != expected:\n"
-            '            raise ValueError("packet_content_sha256 does not bind the verified-input body")'
+            '        if self.packet_content_sha256 != expected:\n            raise ValueError("packet_content_sha256 does not bind the verified-input body")'
         ),
         replacement='        if False:\n            raise ValueError("MUTATED")',
         selectors=[f"{U}/test_g4_verified_inputs.py"],
@@ -2996,8 +2836,7 @@ MUTANTS = [
         owner="test_in_place_rewrite_during_single_read_is_refused",
         file="src/tree_options/seal/input_custody.py",
         anchor=(
-            "if _stable_file_fields(before) != _stable_file_fields(after) "
-            "or len(raw) != after.st_size:"
+            "if _stable_file_fields(before) != _stable_file_fields(after) or len(raw) != after.st_size:"
         ),
         replacement="if False:",
         selectors=[f"{U}/test_g4_verified_inputs.py"],
@@ -3062,12 +2901,10 @@ MUTANTS = [
         owner="test_verified_packet_comes_only_from_real_typed_verifiers",
         file="src/tree_options/seal/verified_inputs.py",
         anchor=(
-            "        manifest_version=manifest.schema_version,\n"
-            "        referenced_payload_set_hash=_payload_set_hash(payloads),"
+            "        manifest_version=manifest.schema_version,\n        referenced_payload_set_hash=_payload_set_hash(payloads),"
         ),
         replacement=(
-            "        manifest_version=manifest.schema_version,\n"
-            "        referenced_payload_set_hash=sha256_hex(manifest_raw),"
+            "        manifest_version=manifest.schema_version,\n        referenced_payload_set_hash=sha256_hex(manifest_raw),"
         ),
         selectors=[f"{U}/test_g4_verified_inputs.py"],
         invariant="Lane 1 packet binding separately hashes its referenced payload set",
@@ -3077,12 +2914,10 @@ MUTANTS = [
         owner="test_verified_packet_comes_only_from_real_typed_verifiers",
         file="src/tree_options/seal/verified_inputs.py",
         anchor=(
-            "        manifest_version=MASSIVE_MANIFEST_SCHEMA_VERSION,\n"
-            "        referenced_payload_set_hash=_payload_set_hash(payloads),"
+            "        manifest_version=MASSIVE_MANIFEST_SCHEMA_VERSION,\n        referenced_payload_set_hash=_payload_set_hash(payloads),"
         ),
         replacement=(
-            "        manifest_version=MASSIVE_MANIFEST_SCHEMA_VERSION,\n"
-            "        referenced_payload_set_hash=sha256_hex(manifest_raw),"
+            "        manifest_version=MASSIVE_MANIFEST_SCHEMA_VERSION,\n        referenced_payload_set_hash=sha256_hex(manifest_raw),"
         ),
         selectors=[f"{U}/test_g4_verified_inputs.py"],
         invariant="Lane 2 packet binding separately hashes every master/bar/spot payload",
@@ -3103,9 +2938,7 @@ MUTANTS = [
         ),
         file="scripts/g4_seal.py",
         anchor=(
-            "    # tail while holding the ledger lock.\n"
-            "    view = read_ledger(ledger_root)\n"
-            "    _check_authority(view, identity)"
+            "    # tail while holding the ledger lock.\n    view = read_ledger(ledger_root)\n    _check_authority(view, identity)"
         ),
         replacement=(
             "    # tail while holding the ledger lock.\n    view = read_ledger(ledger_root)"
@@ -3118,14 +2951,7 @@ MUTANTS = [
         owner="test_execute_revalidates_packet_self_hash_before_ledger_access",
         file="scripts/g4_seal.py",
         anchor=(
-            "    try:\n"
-            "        expected_packet = VerifiedSealedInputs.model_validate_json(\n"
-            "            expected_packet.model_dump_json()\n"
-            "        )\n"
-            "    except Exception as exc:\n"
-            "        raise VerifiedInputsError(\n"
-            '            "packet", f"expected packet self-validation failed: {exc}"\n'
-            "        ) from None"
+            '    try:\n        expected_packet = VerifiedSealedInputs.model_validate_json(\n            expected_packet.model_dump_json()\n        )\n    except Exception as exc:\n        raise VerifiedInputsError(\n            "packet", f"expected packet self-validation failed: {exc}"\n        ) from None'
         ),
         replacement="    expected_packet = expected_packet  # MUTATED: self-check bypassed",
         selectors=[f"{U}/test_g4_seal.py"],
@@ -3152,24 +2978,10 @@ MUTANTS = [
         owner="test_execution_tail_seal_consumption_is_tagged_not_refused",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            "    sealed_test_intersections = sorted(\n"
-            "        {\n"
-            "            session.isoformat()\n"
-            "            for fold in folds\n"
-            "            for session in fold.test_sessions\n"
-            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS\n"
-            "        }\n"
-            "    )"
+            "    sealed_test_intersections = sorted(\n        {\n            session.isoformat()\n            for fold in folds\n            for session in fold.test_sessions\n            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS\n        }\n    )"
         ),
         replacement=(
-            "    sealed_test_intersections = sorted(\n"
-            "        {\n"
-            "            session.isoformat()\n"
-            "            for fold in folds\n"
-            "            for session in fold.test_sessions\n"
-            "            if session.isoformat() not in _SEALED_HOLDOUT_SESSIONS\n"
-            "        }\n"
-            "    )"
+            "    sealed_test_intersections = sorted(\n        {\n            session.isoformat()\n            for fold in folds\n            for session in fold.test_sessions\n            if session.isoformat() not in _SEALED_HOLDOUT_SESSIONS\n        }\n    )"
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
@@ -3186,24 +2998,10 @@ MUTANTS = [
         owner="test_sealed_test_sessions_are_refused_before_registration",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            "    sealed_test_intersections = sorted(\n"
-            "        {\n"
-            "            session.isoformat()\n"
-            "            for fold in folds\n"
-            "            for session in fold.test_sessions\n"
-            "            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS\n"
-            "        }\n"
-            "    )"
+            "    sealed_test_intersections = sorted(\n        {\n            session.isoformat()\n            for fold in folds\n            for session in fold.test_sessions\n            if session.isoformat() in _SEALED_HOLDOUT_SESSIONS\n        }\n    )"
         ),
         replacement=(
-            "    sealed_test_intersections = sorted(\n"
-            "        {\n"
-            "            session.isoformat()\n"
-            "            for fold in folds\n"
-            "            if all(s.isoformat() in _SEALED_HOLDOUT_SESSIONS for s in fold.test_sessions)\n"
-            "            for session in fold.test_sessions\n"
-            "        }\n"
-            "    )"
+            "    sealed_test_intersections = sorted(\n        {\n            session.isoformat()\n            for fold in folds\n            if all(s.isoformat() in _SEALED_HOLDOUT_SESSIONS for s in fold.test_sessions)\n            for session in fold.test_sessions\n        }\n    )"
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
@@ -3231,12 +3029,10 @@ MUTANTS = [
         owner="test_dollar_volume_median_is_exact_over_distinct_values",
         file="src/tree_options/data/vwap_pit_surface.py",
         anchor=(
-            "        median = statistics.median("
-            "[rows[session][0] * rows[session][1] for session in window])"
+            "        median = statistics.median([rows[session][0] * rows[session][1] for session in window])"
         ),
         replacement=(
-            "        median = sum(rows[session][0] * rows[session][1] for session in window)"
-            " / len(window)"
+            "        median = sum(rows[session][0] * rows[session][1] for session in window) / len(window)"
         ),
         selectors=[f"{U}/test_vwap_pit_surface.py"],
         invariant=(
@@ -3263,11 +3059,9 @@ MUTANTS = [
         id="M274-w3-dollar-volume-holes-tolerated",
         owner="test_dollar_volume_requires_a_contiguous_20_session_window",
         file="src/tree_options/data/vwap_pit_surface.py",
-        anchor="        window = calendar.sessions()[start_ordinal : end_ordinal + 1]",
+        anchor="        window = calendar.sessions()[start_ordinal : end_ordinal + 1]\n",
         replacement=(
-            "        window = tuple(\n"
-            "            s for s in calendar.sessions()[start_ordinal : end_ordinal + 1] if s in rows\n"
-            "        )"
+            "        window = tuple(s for s in calendar.sessions()[start_ordinal : end_ordinal + 1] if s in rows)\n"
         ),
         selectors=[f"{U}/test_vwap_pit_surface.py"],
         invariant=(
@@ -3295,16 +3089,10 @@ MUTANTS = [
         owner="test_dollar_volume_refuses_a_non_calendar_visible_session",
         file="src/tree_options/data/vwap_pit_surface.py",
         anchor=(
-            "        try:\n"
-            "            end_ordinal = calendar.ordinal(visible_session)\n"
-            "        except NotASessionError:\n"
-            "            return None"
+            "        try:\n            end_ordinal = calendar.ordinal(visible_session)\n        except NotASessionError:\n            return None"
         ),
         replacement=(
-            "        try:\n"
-            "            end_ordinal = calendar.ordinal(visible_session)\n"
-            "        except NotASessionError:\n"
-            "            end_ordinal = len(calendar.sessions()) - 1"
+            "        try:\n            end_ordinal = calendar.ordinal(visible_session)\n        except NotASessionError:\n            end_ordinal = len(calendar.sessions()) - 1"
         ),
         selectors=[f"{U}/test_vwap_pit_surface.py"],
         invariant=(
@@ -3319,10 +3107,7 @@ MUTANTS = [
         file="src/tree_options/data/vwap_pit_surface.py",
         anchor='            close, volume = cell["close"], cell["volume"]',
         replacement=(
-            "            close, volume = (\n"
-            '                cell["close"] if isinstance(cell["close"], str) else str(cell["close"]),\n'
-            '                cell["volume"],\n'
-            "            )"
+            '            close, volume = (\n                cell["close"] if isinstance(cell["close"], str) else str(cell["close"]),\n                cell["volume"],\n            )'
         ),
         selectors=[f"{U}/test_vwap_pit_surface.py"],
         invariant=(
@@ -3369,10 +3154,7 @@ MUTANTS = [
         owner="test_load_spot_proxy_v2_refuses_everything_else",
         file="src/tree_options/data/vwap_pit_surface.py",
         anchor=(
-            "            except ValueError as exc:\n"
-            "                raise MassiveOverlayError(\n"
-            '                    f"{where}: key {raw_session!r} is not an ISO date"\n'
-            "                ) from exc"
+            '            except ValueError as exc:\n                raise MassiveOverlayError(\n                    f"{where}: key {raw_session!r} is not an ISO date"\n                ) from exc'
         ),
         replacement=("            except ValueError:\n                continue"),
         selectors=[f"{U}/test_vwap_pit_surface.py"],
@@ -3429,8 +3211,7 @@ MUTANTS = [
         owner="test_unknown_term_token_refuses_at_the_constructor",
         file="src/tree_options/candidates/filters.py",
         anchor=(
-            '        if underlying_liquidity_term not in {"evaluated",'
-            ' "dropped_no_equity_aggregates"}:'
+            '        if underlying_liquidity_term not in {"evaluated", "dropped_no_equity_aggregates"}:'
         ),
         replacement="        if False:",
         selectors=[f"{U}/test_candidate_volume_flow.py"],
@@ -3481,14 +3262,10 @@ MUTANTS = [
         owner="test_score_seed_rides_the_config_hash",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            "        # G5: the null-score generator's REQUIRED seed is a first-class\n"
-            "        # config key — the declared score model's input rides the hash\n"
-            '        **({"score_seed": score_seed} if score_seed is not None else {}),'
+            "        # G5: the null-score generator's REQUIRED seed is a first-class\n        # config key — the declared score model's input rides the hash\n        **({\"score_seed\": score_seed} if score_seed is not None else {}),"
         ),
         replacement=(
-            "        # G5: the null-score generator's REQUIRED seed is a first-class\n"
-            "        # config key — the declared score model's input rides the hash\n"
-            "        **{},"
+            "        # G5: the null-score generator's REQUIRED seed is a first-class\n        # config key — the declared score model's input rides the hash\n        **{},"
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
@@ -3542,12 +3319,10 @@ MUTANTS = [
         owner="test_the_pinned_021_fixture_hashes_to_the_pre_flip_identity",
         file="src/tree_options/protocol/loader.py",
         anchor=(
-            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
-            ' == "evaluated":'
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term") == "evaluated":'
         ),
         replacement=(
-            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
-            ' == "__never__":'
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term") == "__never__":'
         ),
         selectors=[f"{U}/test_protocol_loader.py"],
         invariant=(
@@ -3564,8 +3339,7 @@ MUTANTS = [
         owner="test_a_declared_dropped_term_rides_the_hash",
         file="src/tree_options/protocol/loader.py",
         anchor=(
-            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term")'
-            ' == "evaluated":'
+            '    if isinstance(liquidity, dict) and liquidity.get("underlying_liquidity_term") == "evaluated":'
         ),
         replacement=(
             '    if isinstance(liquidity, dict) and "underlying_liquidity_term" in liquidity:'
@@ -3777,10 +3551,7 @@ MUTANTS = [
         file="src/tree_options/data/vwap_pit_surface.py",
         anchor="            dollar_volume: AsOf | None = None",
         replacement=(
-            "            dollar_volume: AsOf | None = AsOf(\n"
-            "                value=self._overlay.median_dollar_volume(underlying, session),\n"
-            "                available_at=received,\n"
-            "            )"
+            "            dollar_volume: AsOf | None = AsOf(\n                value=self._overlay.median_dollar_volume(underlying, session),\n                available_at=received,\n            )"
         ),
         selectors=[f"{U}/test_vwap_pit_surface.py"],
         invariant=(
@@ -3812,8 +3583,7 @@ MUTANTS = [
         owner="test_a_subclassed_exchange_calendar_with_identical_data_refuses",
         file="src/tree_options/time/calendar.py",
         anchor=(
-            '            "calendar_class": f"{type(calendar).__module__}'
-            '.{type(calendar).__qualname__}",'
+            '            "calendar_class": f"{type(calendar).__module__}.{type(calendar).__qualname__}",'
         ),
         replacement=(
             '            "calendar_class": "tree_options.time.calendar.StaticSessionCalendar",'
@@ -3835,12 +3605,10 @@ MUTANTS = [
         owner="test_an_action_published_after_the_true_close_is_not_yet_known",
         file="src/tree_options/options/strategy.py",
         anchor=(
-            "    decision_at = surface.decision_close(decision_session)\n"
-            "    eligible = frozenset(surface.eligible_as_of(decision_session))"
+            "    decision_at = surface.decision_close(decision_session)\n    eligible = frozenset(surface.eligible_as_of(decision_session))"
         ),
         replacement=(
-            "    decision_at = surface.overlay.calendar.session_close(decision_session)\n"
-            "    eligible = frozenset(surface.eligible_as_of(decision_session))"
+            "    decision_at = surface.overlay.calendar.session_close(decision_session)\n    eligible = frozenset(surface.eligible_as_of(decision_session))"
         ),
         selectors=[f"{U}/test_vwap_pit_surface.py"],
         invariant=(
@@ -3858,9 +3626,7 @@ MUTANTS = [
         owner="test_an_action_published_after_the_true_close_is_not_yet_known",
         file="src/tree_options/data/vwap_pit_surface.py",
         anchor=(
-            "        if self._decision_calendar is not None:\n"
-            "            return self._decision_calendar.session_close(decision_session)\n"
-            "        return self._overlay.calendar.session_close(decision_session)"
+            "        if self._decision_calendar is not None:\n            return self._decision_calendar.session_close(decision_session)\n        return self._overlay.calendar.session_close(decision_session)"
         ),
         replacement="        return self._overlay.calendar.session_close(decision_session)",
         selectors=[f"{U}/test_vwap_pit_surface.py", f"{U}/test_trials_options_run.py"],
@@ -3895,14 +3661,10 @@ MUTANTS = [
         owner="test_a_subclassed_decision_calendar_is_a_different_trial_identity",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            "        disclosed = surface.decision_calendar\n"
-            "        surface_identity = calendar_content_sha256(disclosed)\n"
-            "        stamped_identity = calendar_content_sha256(calendar)"
+            "        disclosed = surface.decision_calendar\n        surface_identity = calendar_content_sha256(disclosed)\n        stamped_identity = calendar_content_sha256(calendar)"
         ),
         replacement=(
-            "        disclosed = surface.decision_calendar\n"
-            '        surface_identity = getattr(disclosed, "name", type(disclosed).__name__)\n'
-            '        stamped_identity = getattr(calendar, "name", type(calendar).__name__)'
+            '        disclosed = surface.decision_calendar\n        surface_identity = getattr(disclosed, "name", type(disclosed).__name__)\n        stamped_identity = getattr(calendar, "name", type(calendar).__name__)'
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
@@ -4039,8 +3801,7 @@ MUTANTS = [
         owner="test_a_flat_form_spot_proxy_covers_every_session_friday",
         file="scripts/build_coverage_census.py",
         anchor=(
-            "            spot_present = friday_date in spot_sessions"
-            " or SPOT_SENTINEL_SESSION in spot_sessions"
+            "            spot_present = friday_date in spot_sessions or SPOT_SENTINEL_SESSION in spot_sessions"
         ),
         replacement="            spot_present = friday_date in spot_sessions",
         selectors=[f"{U}/test_coverage_census.py"],
@@ -4192,8 +3953,7 @@ MUTANTS = [
         owner="test_a_same_object_execution_calendar_is_the_none_form_at_runtime",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            "            execution_calendar=None if execution_calendar is"
-            " calendar else execution_calendar,"
+            "            execution_calendar=None if execution_calendar is calendar else execution_calendar,"
         ),
         replacement="            execution_calendar=execution_calendar,",
         selectors=[f"{U}/test_trials_options_run.py"],
@@ -4223,11 +3983,7 @@ MUTANTS = [
         owner="test_a_stateful_descriptor_surface_is_refused_before_registration",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            "        if seam_attr is not None and any(\n"
-            '            "__set__" in seam_type.__dict__ or'
-            ' "__delete__" in seam_type.__dict__\n'
-            "            for seam_type in type(seam_attr).__mro__\n"
-            "        ):"
+            '        if seam_attr is not None and any(\n            "__set__" in seam_type.__dict__ or "__delete__" in seam_type.__dict__\n            for seam_type in type(seam_attr).__mro__\n        ):'
         ),
         replacement="        if False:",
         selectors=[f"{U}/test_trials_options_run.py"],
@@ -4364,17 +4120,10 @@ MUTANTS = [
         owner="test_an_introspection_hiding_descriptor_is_refused_by_name",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            "        if seam_attr is not None and any(\n"
-            '            "__set__" in seam_type.__dict__ or'
-            ' "__delete__" in seam_type.__dict__\n'
-            "            for seam_type in type(seam_attr).__mro__\n"
-            "        ):"
+            '        if seam_attr is not None and any(\n            "__set__" in seam_type.__dict__ or "__delete__" in seam_type.__dict__\n            for seam_type in type(seam_attr).__mro__\n        ):'
         ),
         replacement=(
-            "        if seam_attr is not None and (\n"
-            '            hasattr(seam_attr, "__set__") or'
-            ' hasattr(seam_attr, "__delete__")\n'
-            "        ):"
+            '        if seam_attr is not None and (\n            hasattr(seam_attr, "__set__") or hasattr(seam_attr, "__delete__")\n        ):'
         ),
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
@@ -4465,21 +4214,10 @@ MUTANTS = [
         owner="test_the_strict_lane2_class_map_never_counts_no_bar",
         file="src/tree_options/seal/g4_gate.py",
         anchor=(
-            "    lane2_counted = (\n"
-            '        int(lane2_classes.get("zero_volume_bar_refusals", 0))\n'
-            '        + int(lane2_classes.get("massive_derivation_error_refusals", 0))\n'
-            '        + int(lane2_classes.get("master_row_refusals", 0))\n'
-            "        + flow_fails\n"
-            "    )"
+            '    lane2_counted = (\n        int(lane2_classes.get("zero_volume_bar_refusals", 0))\n        + int(lane2_classes.get("massive_derivation_error_refusals", 0))\n        + int(lane2_classes.get("master_row_refusals", 0))\n        + flow_fails\n    )'
         ),
         replacement=(
-            "    lane2_counted = (\n"
-            '        int(lane2_classes.get("zero_volume_bar_refusals", 0))\n'
-            '        + int(lane2_classes.get("massive_derivation_error_refusals", 0))\n'
-            '        + int(lane2_classes.get("master_row_refusals", 0))\n'
-            "        + flow_fails\n"
-            '        + int(lane2_classes.get("no_bar_not_evaluable_disclosed", 0))\n'
-            "    )"
+            '    lane2_counted = (\n        int(lane2_classes.get("zero_volume_bar_refusals", 0))\n        + int(lane2_classes.get("massive_derivation_error_refusals", 0))\n        + int(lane2_classes.get("master_row_refusals", 0))\n        + flow_fails\n        + int(lane2_classes.get("no_bar_not_evaluable_disclosed", 0))\n    )'
         ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -4530,11 +4268,7 @@ MUTANTS = [
         owner="test_the_trial_payload_discloses_the_fee_model",
         file="src/tree_options/trials/options_run.py",
         anchor=(
-            '    payload["fee_model"] = {\n'
-            '        "model": "PerContractFeeModel",\n'
-            '        "fee_per_contract": str(PerContractFeeModel.DEFAULT_FEE_PER_CONTRACT),\n'
-            '        "minimum_per_order": str(PerContractFeeModel.DEFAULT_MINIMUM_PER_ORDER),\n'
-            "    }"
+            '    payload["fee_model"] = {\n        "model": "PerContractFeeModel",\n        "fee_per_contract": str(PerContractFeeModel.DEFAULT_FEE_PER_CONTRACT),\n        "minimum_per_order": str(PerContractFeeModel.DEFAULT_MINIMUM_PER_ORDER),\n    }'
         ),
         replacement=('    payload["fee_model"] = {}'),
         selectors=[f"{U}/test_g4_event_machinery.py"],
@@ -4549,8 +4283,12 @@ MUTANTS = [
         id="M382-momentum-lookahead-accepted",
         owner="test_momentum_uses_only_pit_visible_closes",
         file="scripts/run_lane2_wave.py",
-        anchor=("                if bar.available_at <= close_at\n            )"),
-        replacement=("                if bar.session <= session\n            )"),
+        anchor=(
+            "                bar.session\n                for bar in by_security[security_id].values()\n                if bar.available_at <= close_at\n"
+        ),
+        replacement=(
+            "                bar.session for bar in by_security[security_id].values() if bar.session <= session\n"
+        ),
         selectors=[f"{U}/test_run_lane2_wave.py"],
         invariant=(
             "T-MOM (Agenda C re-denomination): mom_20 reads only closes whose"
@@ -4579,9 +4317,7 @@ MUTANTS = [
         owner="test_the_sequencing_guard_requires_a_wellformed_calibration",
         file="scripts/run_lane2_wave.py",
         anchor=(
-            "    if not isinstance(calibration, dict) or not isinstance(\n"
-            '        calibration.get("prior_stride4_cohort_ic_sd"), (int, float)\n'
-            "    ):"
+            '    if not isinstance(calibration, dict) or not isinstance(\n        calibration.get("prior_stride4_cohort_ic_sd"), (int, float)\n    ):'
         ),
         replacement=("    if False:"),
         selectors=[f"{U}/test_run_lane2_wave.py"],
@@ -4702,28 +4438,8 @@ MUTANTS = [
         id="M392-holdout-authority-not-trial-identity",
         owner="test_holdout_authority_is_trial_identity",
         file="src/tree_options/trials/options_run.py",
-        anchor="""        # (P4) an authorized window-A evaluation is TRIAL IDENTITY: the
-        # authority block rides the config hash so two artifacts can never
-        # differ by authorization status under one config hash
-        **(
-            {
-                "holdout_evaluation": {
-                    "window_id": holdout_evaluation.window_id,
-                    "world_id": holdout_evaluation.world_id,
-                    "protocol_hash": holdout_evaluation.protocol_hash_value,
-                    "permitted_test_sessions": [
-                        d.isoformat() for d in holdout_evaluation.permitted_test_sessions
-                    ],
-                    "registration_sha256": holdout_evaluation.registration_sha256,
-                    "authority_record_sha256": holdout_evaluation.authority_record_sha256,
-                    "declared_head": holdout_evaluation.declared_head,
-                }
-            }
-            if holdout_evaluation is not None
-            else {}
-        ),""",
-        replacement="""        # (P4-mutant) the authority block no longer rides the config hash
-        **({} if holdout_evaluation is None else {"holdout_evaluation": {"mutant": True}}),""",
+        anchor='        # (P4) an authorized window-A evaluation is TRIAL IDENTITY: the\n        # authority block rides the config hash so two artifacts can never\n        # differ by authorization status under one config hash\n        **(\n            {\n                "holdout_evaluation": {\n                    "window_id": holdout_evaluation.window_id,\n                    "world_id": holdout_evaluation.world_id,\n                    "protocol_hash": holdout_evaluation.protocol_hash_value,\n                    "permitted_test_sessions": [\n                        d.isoformat() for d in holdout_evaluation.permitted_test_sessions\n                    ],\n                    "registration_sha256": holdout_evaluation.registration_sha256,\n                    "authority_record_sha256": holdout_evaluation.authority_record_sha256,\n                    "declared_head": holdout_evaluation.declared_head,\n                }\n            }\n            if holdout_evaluation is not None\n            else {}\n        ),',
+        replacement='        # (P4-mutant) the authority block no longer rides the config hash\n        **({} if holdout_evaluation is None else {"holdout_evaluation": {"mutant": True}}),',
         selectors=[f"{U}/test_trials_options_run.py"],
         invariant=(
             "P4: authorization status is TRIAL IDENTITY — stripping the"
@@ -4779,14 +4495,10 @@ MUTANTS = [
         owner="test_the_locked_consume_is_one_act",
         file="scripts/run_p4_holdout.py",
         anchor=(
-            "        existing = _read_consumptions()\n"
-            "        for record in existing:\n"
-            '            if record.get("content_identity") == identity:'
+            '        existing = _read_consumptions()\n        for record in existing:\n            if record.get("content_identity") == identity:'
         ),
         replacement=(
-            "        existing = _read_consumptions()\n"
-            "        for record in existing:\n"
-            "            if False:"
+            "        existing = _read_consumptions()\n        for record in existing:\n            if False:"
         ),
         selectors=[f"{U}/test_run_p4_holdout.py"],
         invariant=(
@@ -4895,40 +4607,10 @@ MUTANTS = [
         owner="test_a_symlink_dotted_out_root_commits_the_actual_parents_exit_0",
         file="scripts/build_coverage_census.py",
         anchor=(
-            "    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape)"
-            " bind ONE\n"
-            "    # canonical resolved out_root BEFORE any classification,"
-            " mkdir,\n"
-            "    # emission, or durability walk. A symlink- or `..`-laden"
-            " spelling made\n"
-            "    # the kernel-resolved EMISSION land on the real chain while"
-            " the lexical\n"
-            "    # abspath the no-follow walks traversed committed the DECOY"
-            " chain — the\n"
-            "    # real hierarchy's entries stayed uncommitted at attestation."
-            " Every\n"
-            "    # downstream consumer now sees the same resolved path, so"
-            " there is no\n"
-            "    # second spelling left to walk.\n"
-            "    args.out_root = Path(os.path.realpath(args.out_root))"
+            "    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape) bind ONE\n    # canonical resolved out_root BEFORE any classification, mkdir,\n    # emission, or durability walk. A symlink- or `..`-laden spelling made\n    # the kernel-resolved EMISSION land on the real chain while the lexical\n    # abspath the no-follow walks traversed committed the DECOY chain — the\n    # real hierarchy's entries stayed uncommitted at attestation. Every\n    # downstream consumer now sees the same resolved path, so there is no\n    # second spelling left to walk.\n    args.out_root = Path(os.path.realpath(args.out_root))"
         ),
         replacement=(
-            "    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape)"
-            " bind ONE\n"
-            "    # canonical resolved out_root BEFORE any classification,"
-            " mkdir,\n"
-            "    # emission, or durability walk. A symlink- or `..`-laden"
-            " spelling made\n"
-            "    # the kernel-resolved EMISSION land on the real chain while"
-            " the lexical\n"
-            "    # abspath the no-follow walks traversed committed the DECOY"
-            " chain — the\n"
-            "    # real hierarchy's entries stayed uncommitted at attestation."
-            " Every\n"
-            "    # downstream consumer now sees the same resolved path, so"
-            " there is no\n"
-            "    # second spelling left to walk.\n"
-            "    args.out_root = Path(os.path.abspath(args.out_root))"
+            "    # 0. (PR #13's round-16 KNOWN DEBT, repaired — the R18 shape) bind ONE\n    # canonical resolved out_root BEFORE any classification, mkdir,\n    # emission, or durability walk. A symlink- or `..`-laden spelling made\n    # the kernel-resolved EMISSION land on the real chain while the lexical\n    # abspath the no-follow walks traversed committed the DECOY chain — the\n    # real hierarchy's entries stayed uncommitted at attestation. Every\n    # downstream consumer now sees the same resolved path, so there is no\n    # second spelling left to walk.\n    args.out_root = Path(os.path.abspath(args.out_root))"
         ),
         selectors=[f"{U}/test_coverage_census.py"],
         invariant=(
@@ -4960,15 +4642,10 @@ MUTANTS = [
         owner="test_a_harness_error_clears_the_baseline_cache",
         file="scripts/mutate.py",
         anchor=(
-            "            r = run_mutant(wt, m, baseline_cache=cache)\n"
-            '            if r["verdict"] == "HARNESS_ERROR":\n'
-            "                cache.clear()"
+            '            r = run_mutant(wt, m, baseline_cache=cache)\n            if r["verdict"] == "HARNESS_ERROR":\n                cache.clear()'
         ),
         replacement=(
-            "            r = run_mutant(wt, m, baseline_cache=cache)\n"
-            '            if r["verdict"] == "HARNESS_ERROR":\n'
-            "                pass  # cache-clear dropped: a damaged tree keeps"
-            " stale baselines"
+            '            r = run_mutant(wt, m, baseline_cache=cache)\n            if r["verdict"] == "HARNESS_ERROR":\n                pass  # cache-clear dropped: a damaged tree keeps stale baselines'
         ),
         selectors=[f"{U}/test_mutate_harness.py"],
         invariant=(
@@ -4984,8 +4661,7 @@ MUTANTS = [
         owner="test_the_extension_scope_is_the_unconsumed_remainder",
         file="scripts/run_p4_holdout.py",
         anchor=(
-            "    if not _ACTIVE_WINDOW.extends_window_a:\n"
-            "        return frozenset(FINAL_HOLDOUT_DATES)"
+            "    if not _ACTIVE_WINDOW.extends_window_a:\n        return frozenset(FINAL_HOLDOUT_DATES)"
         ),
         replacement=("    if True:\n        return frozenset(FINAL_HOLDOUT_DATES)"),
         selectors=[f"{U}/test_p4_window_extension.py"],
@@ -5276,10 +4952,11 @@ MUTANTS = [
         owner="test_approval_of_the_same_protocol_over_a_new_work_manifest_appends",
         file="src/tree_options/data/bars_manifest.py",
         anchor=(
-            "                and record.protocol_hash == protocol_hash\n"
-            "                and record.work_manifest_sha256 == work_manifest_sha256"
+            "            if (\n                record.kind == KIND_BARS_LAUNCH_APPROVAL\n                and record.protocol_hash == protocol_hash\n                and record.work_manifest_sha256 == work_manifest_sha256\n            ):\n"
         ),
-        replacement=("                and record.protocol_hash == protocol_hash"),
+        replacement=(
+            "            if record.kind == KIND_BARS_LAUNCH_APPROVAL and record.protocol_hash == protocol_hash:\n"
+        ),
         selectors=[f"{U}/test_bars_manifest.py"],
         invariant=(
             "the duplicate-approval guard keys on the TUPLE, never the"
@@ -5320,12 +4997,7 @@ MUTANTS = [
         owner="test_the_wrapper_verify_mode_is_read_only",
         file="scripts/build_bars_work_manifest.py",
         anchor=(
-            "    verify_bars_work_manifest(\n"
-            "        manifest,\n"
-            "        profile=profile,\n"
-            "        capture_manifest_sha256=capture_manifest_sha,\n"
-            "        capture_dir=args.capture_dir,\n"
-            "    )"
+            "    verify_bars_work_manifest(\n        manifest,\n        profile=profile,\n        capture_manifest_sha256=capture_manifest_sha,\n        capture_dir=args.capture_dir,\n    )"
         ),
         replacement=(
             "    _ = (profile, capture_manifest_sha, args.capture_dir)  # mutant: verify skipped"
@@ -5425,8 +5097,8 @@ MUTANTS = [
         id="M437-standing-series-overwritten",
         owner="test_bars_from_manifest_fetches_exactly_the_approved_work",
         file="scripts/capture_massive_structural.py",
-        anchor="                if ticker not in set(standing)",
-        replacement="                if True",
+        anchor="            picks = [\n                (ticker, start, end)\n                for ticker, start, end in manifest_picks\n                if ticker not in set(standing)\n            ]\n",
+        replacement="            picks = [(ticker, start, end) for ticker, start, end in manifest_picks if True]\n",
         selectors=[f"{U}/test_capture_massive_structural.py"],
         invariant=(
             "a manifest series already on disk is left standing and never"
@@ -5439,14 +5111,10 @@ MUTANTS = [
         owner="test_bars_from_manifest_reports_an_inventory_mismatch",
         file="scripts/capture_massive_structural.py",
         anchor=(
-            "        if missing:\n"
-            "            print(\n"
-            '                f"INVENTORY MISMATCH: {len(missing)} work-manifest entries have no"'
+            '        if missing:\n            print(\n                f"INVENTORY MISMATCH: {len(missing)} work-manifest entries have no"'
         ),
         replacement=(
-            "        if False:\n"
-            "            print(\n"
-            '                f"INVENTORY MISMATCH: {len(missing)} work-manifest entries have no"'
+            '        if False:\n            print(\n                f"INVENTORY MISMATCH: {len(missing)} work-manifest entries have no"'
         ),
         selectors=[f"{U}/test_capture_massive_structural.py"],
         invariant=(
@@ -5460,16 +5128,10 @@ MUTANTS = [
         owner="test_bars_from_manifest_refuses_a_tampered_manifest",
         file="scripts/capture_massive_structural.py",
         anchor=(
-            "            verify_bars_work_manifest(\n"
-            "                work_manifest,\n"
-            "                profile=load_selection_profile(args.selection_profile),\n"
-            "                capture_manifest_sha256=sha256_hex(capture_manifest_raw),\n"
-            "                capture_dir=args.out_dir,\n"
-            "            )"
+            "            verify_bars_work_manifest(\n                work_manifest,\n                profile=load_selection_profile(args.selection_profile),\n                capture_manifest_sha256=sha256_hex(capture_manifest_raw),\n                capture_dir=args.out_dir,\n            )\n"
         ),
         replacement=(
-            "            _ = (work_manifest, args.selection_profile,\n"
-            "                 capture_manifest_raw, args.out_dir)  # mutant: verify skipped"
+            "            _ = (\n                work_manifest,\n                args.selection_profile,\n                capture_manifest_raw,\n                args.out_dir,\n            )  # mutant: verify skipped\n"
         ),
         selectors=[f"{U}/test_capture_massive_structural.py"],
         invariant=(
@@ -5741,10 +5403,7 @@ MUTANTS = [
         owner="test_an_aliased_replay_cannot_certify_determinism_by_self_comparison",
         file="src/tree_options/seal/g4_gate.py",
         anchor=(
-            "        replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(\n"
-            "            _symlinked(path) or _shares_inode(path, stamped_paths[name])\n"
-            "            for name, path in replay_map.items()\n"
-            "        )"
+            "        replay_aliased = paths.replay_artifacts.resolve() == run.artifacts_dir.resolve() or any(\n            _symlinked(path) or _shares_inode(path, stamped_paths[name])\n            for name, path in replay_map.items()\n        )"
         ),
         replacement="        replay_aliased = False  # mutant: alias check dropped",
         selectors=[f"{U}/test_g4_event_machinery.py"],
@@ -5790,14 +5449,10 @@ MUTANTS = [
         owner="test_a_replay_payload_vanishing_mid_check_never_raises",
         file="src/tree_options/seal/g4_gate.py",
         anchor=(
-            "            except OSError:\n"
-            "                return False\n"
-            "            return (replay_stat.st_dev, replay_stat.st_ino) == ("
+            "            except OSError:\n                return False\n            return (replay_stat.st_dev, replay_stat.st_ino) == ("
         ),
         replacement=(
-            "            except AssertionError:\n"
-            "                return False\n"
-            "            return (replay_stat.st_dev, replay_stat.st_ino) == ("
+            "            except AssertionError:\n                return False\n            return (replay_stat.st_dev, replay_stat.st_ino) == ("
         ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -5825,21 +5480,10 @@ MUTANTS = [
         owner="test_reconciliation_re_arms_consumed_content_for_exactly_one_successor",
         file="scripts/g4_seal.py",
         anchor=(
-            "            if reconciliation_content_id == content_id:\n"
-            "                reconciliations += 1\n"
-            "                if reconciliations > content_consumptions:\n"
-            "                    raise LedgerCorruptError(\n"
-            '                        f"RECONCILIATION record {record.record_sha256[:12]}… is"\n'
-            '                        " credited AHEAD of any consumption of this content"\n'
-            '                        f" (prefix holds {reconciliations} reconciliation(s)"\n'
-            '                        f" against {content_consumptions} consumption(s)) —"\n'
-            '                        " authority is never granted ahead of the spend it"\n'
-            '                        " names, not even in a hash-valid hand-chained ledger"\n'
-            "                    )"
+            '            if reconciliation_content_id == content_id:\n                reconciliations += 1\n                if reconciliations > content_consumptions:\n                    raise LedgerCorruptError(\n                        f"RECONCILIATION record {record.record_sha256[:12]}… is"\n                        " credited AHEAD of any consumption of this content"\n                        f" (prefix holds {reconciliations} reconciliation(s)"\n                        f" against {content_consumptions} consumption(s)) —"\n                        " authority is never granted ahead of the spend it"\n                        " names, not even in a hash-valid hand-chained ledger"\n                    )'
         ),
         replacement=(
-            "            pass  # mutant: the reconciliation budget is never"
-            " credited and the prefix order rule never raises"
+            "            pass  # mutant: the reconciliation budget is never credited and the prefix order rule never raises"
         ),
         selectors=[f"{U}/test_g4_seal.py"],
         invariant=(
@@ -5853,10 +5497,7 @@ MUTANTS = [
         owner="test_the_exact_consumed_checkout_stays_refused_even_after_reconciliation",
         file="scripts/g4_seal.py",
         anchor=(
-            "        if record_run_id == run_id:\n"
-            "            raise SecondExecutionRefusedError(\n"
-            '                run_id, "a CONSUMPTION record already matches this exact sealed run"\n'
-            "            )"
+            '        if record_run_id == run_id:\n            raise SecondExecutionRefusedError(\n                run_id, "a CONSUMPTION record already matches this exact sealed run"\n            )'
         ),
         replacement=(
             "        content_consumptions += 1  # mutant: the exact-run arm counted, never refused"
@@ -5925,10 +5566,7 @@ MUTANTS = [
         owner="test_forged_reconciliation_stored_ids_refused_as_corrupt",
         file="scripts/g4_seal.py",
         anchor=(
-            "            if (\n"
-            "                record.content_identity != reconciliation_content_id\n"
-            "                or record.sealed_run_id != sealed_run_id(record.identity)\n"
-            "            ):"
+            "            if (\n                record.content_identity != reconciliation_content_id\n                or record.sealed_run_id != sealed_run_id(record.identity)\n            ):"
         ),
         replacement="            if False:  # mutant: forged reconciliation stored ids trusted",
         selectors=[f"{U}/test_g4_seal.py"],
@@ -5984,8 +5622,7 @@ MUTANTS = [
         owner="test_a_reconciliation_credited_ahead_of_its_consumption_is_corrupt",
         file="scripts/g4_seal.py",
         anchor=(
-            "                if reconciliations > content_consumptions:\n"
-            "                    raise LedgerCorruptError("
+            "                if reconciliations > content_consumptions:\n                    raise LedgerCorruptError("
         ),
         replacement="                if False:\n                    raise LedgerCorruptError(",
         selectors=[f"{U}/test_g4_seal.py"],
@@ -6013,14 +5650,10 @@ MUTANTS = [
         owner="test_a_symlinked_run_workspace_component_refuses",
         file="src/tree_options/trials/g4_event.py",
         anchor=(
-            "            if stat.S_ISLNK(mode):\n"
-            '                raise RuntimeError(f"refusing a symlinked sealed workspace'
-            ' component: {component}")'
+            '            if stat.S_ISLNK(mode):\n                raise RuntimeError(f"refusing a symlinked sealed workspace component: {component}")'
         ),
         replacement=(
-            "            if False:  # mutant: a symlinked workspace component is"
-            " accepted\n"
-            "                pass"
+            "            if False:  # mutant: a symlinked workspace component is accepted\n                pass"
         ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -6036,8 +5669,7 @@ MUTANTS = [
         file="src/tree_options/seal/g4_gate.py",
         anchor=("    if verified_series + master_row_refusals != era_contracts:"),
         replacement=(
-            "    if verified_series != era_contracts:  # mutant: the raw"
-            " equality, refused custody invisible"
+            "    if verified_series != era_contracts:  # mutant: the raw equality, refused custody invisible"
         ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -6092,14 +5724,10 @@ MUTANTS = [
         owner="test_the_daily_spot_source_unblocks_the_non_friday_session",
         file="src/tree_options/data/massive_overlay.py",
         anchor=(
-            "        daily = self._spot_v2.get(sid)\n"
-            "        if daily and session in daily:\n"
-            "            return daily[session]"
+            "        daily = self._spot_v2.get(sid)\n        if daily and session in daily:\n            return daily[session]"
         ),
         replacement=(
-            "        daily = self._spot_v2.get(sid)\n"
-            "        if False and daily and session in daily:\n"
-            "            return daily[session]  # mutant: the daily source is ignored"
+            "        daily = self._spot_v2.get(sid)\n        if False and daily and session in daily:\n            return daily[session]  # mutant: the daily source is ignored"
         ),
         selectors=[f"{U}/test_massive_overlay.py"],
         invariant=(
@@ -6116,8 +5744,7 @@ MUTANTS = [
         file="src/tree_options/data/massive_overlay.py",
         anchor="                v2_rows[v2_session] = _validated_spot_token(v2_where, v2_session, v2_close)",
         replacement=(
-            "                v2_rows[v2_session] = v2_close  # mutant: the copy"
-            " loop launders what a file cannot"
+            "                v2_rows[v2_session] = v2_close  # mutant: the copy loop launders what a file cannot"
         ),
         selectors=[f"{U}/test_massive_overlay.py"],
         invariant=(
@@ -6132,42 +5759,10 @@ MUTANTS = [
         owner="test_the_sidecar_binds_into_the_packet",
         file="src/tree_options/seal/verified_inputs.py",
         anchor=(
-            '        "spot_proxy_v2_sha256": spot_v2_sha,\n'
-            "    }\n"
-            "    core = VerifiedSealedInputs.model_construct(\n"
-            "        schema_version=VERIFIED_INPUTS_SCHEMA_VERSION,\n"
-            "        code_sha=code_sha,\n"
-            "        protocol_hash=protocol_sha,\n"
-            "        lane1_manifest=lane1,\n"
-            "        lane2_manifest=lane2,\n"
-            "        calendar_decision_artifact_sha256=calendar_sha,\n"
-            "        criteria_artifact_sha256=criteria_sha,\n"
-            "        criteria_source_document_sha256=criteria_source_sha,\n"
-            "        runner_version=RUNNER_VERSION,\n"
-            "        runner_implementation_sha256=registered.implementation_sha256,\n"
-            "        runner_implementation_qualname=registered.implementation_qualname,\n"
-            "        runner_config_digest=registered.config_digest,\n"
-            "        spot_proxy_v2_sha256=spot_v2_sha,\n"
-            '        packet_content_sha256="",'
+            '        "spot_proxy_v2_sha256": spot_v2_sha,\n    }\n    core = VerifiedSealedInputs.model_construct(\n        schema_version=VERIFIED_INPUTS_SCHEMA_VERSION,\n        code_sha=code_sha,\n        protocol_hash=protocol_sha,\n        lane1_manifest=lane1,\n        lane2_manifest=lane2,\n        calendar_decision_artifact_sha256=calendar_sha,\n        criteria_artifact_sha256=criteria_sha,\n        criteria_source_document_sha256=criteria_source_sha,\n        runner_version=RUNNER_VERSION,\n        runner_implementation_sha256=registered.implementation_sha256,\n        runner_implementation_qualname=registered.implementation_qualname,\n        runner_config_digest=registered.config_digest,\n        spot_proxy_v2_sha256=spot_v2_sha,\n        packet_content_sha256="",'
         ),
         replacement=(
-            '        "spot_proxy_v2_sha256": None,  # mutant: the sidecar rides nothing\n'
-            "    }\n"
-            "    core = VerifiedSealedInputs.model_construct(\n"
-            "        schema_version=VERIFIED_INPUTS_SCHEMA_VERSION,\n"
-            "        code_sha=code_sha,\n"
-            "        protocol_hash=protocol_sha,\n"
-            "        lane1_manifest=lane1,\n"
-            "        lane2_manifest=lane2,\n"
-            "        calendar_decision_artifact_sha256=calendar_sha,\n"
-            "        criteria_artifact_sha256=criteria_sha,\n"
-            "        criteria_source_document_sha256=criteria_source_sha,\n"
-            "        runner_version=RUNNER_VERSION,\n"
-            "        runner_implementation_sha256=registered.implementation_sha256,\n"
-            "        runner_implementation_qualname=registered.implementation_qualname,\n"
-            "        runner_config_digest=registered.config_digest,\n"
-            "        spot_proxy_v2_sha256=None,  # mutant: both sites, the packet stays self-consistent\n"
-            '        packet_content_sha256="",'
+            '        "spot_proxy_v2_sha256": None,  # mutant: the sidecar rides nothing\n    }\n    core = VerifiedSealedInputs.model_construct(\n        schema_version=VERIFIED_INPUTS_SCHEMA_VERSION,\n        code_sha=code_sha,\n        protocol_hash=protocol_sha,\n        lane1_manifest=lane1,\n        lane2_manifest=lane2,\n        calendar_decision_artifact_sha256=calendar_sha,\n        criteria_artifact_sha256=criteria_sha,\n        criteria_source_document_sha256=criteria_source_sha,\n        runner_version=RUNNER_VERSION,\n        runner_implementation_sha256=registered.implementation_sha256,\n        runner_implementation_qualname=registered.implementation_qualname,\n        runner_config_digest=registered.config_digest,\n        spot_proxy_v2_sha256=None,  # mutant: both sites, the packet stays self-consistent\n        packet_content_sha256="",'
         ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -6182,16 +5777,10 @@ MUTANTS = [
         owner="test_the_run_consumes_the_held_sidecar_bytes_not_the_path",
         file="src/tree_options/trials/g4_event.py",
         anchor=(
-            "    spot_v2_path: Path | None = None\n"
-            "    if held.spot_proxy_v2_bytes is not None:\n"
-            '        spot_v2_path = scratch / "spot-proxy-v2.json"\n'
-            "        spot_v2_path.write_bytes(held.spot_proxy_v2_bytes)"
+            '    spot_v2_path: Path | None = None\n    if held.spot_proxy_v2_bytes is not None:\n        spot_v2_path = scratch / "spot-proxy-v2.json"\n        spot_v2_path.write_bytes(held.spot_proxy_v2_bytes)'
         ),
         replacement=(
-            "    spot_v2_path: Path | None = None\n"
-            "    if False and held.spot_proxy_v2_bytes is not None:\n"
-            '        spot_v2_path = scratch / "spot-proxy-v2.json"\n'
-            "        spot_v2_path.write_bytes(held.spot_proxy_v2_bytes)  # mutant: held sidecar dropped"
+            '    spot_v2_path: Path | None = None\n    if False and held.spot_proxy_v2_bytes is not None:\n        spot_v2_path = scratch / "spot-proxy-v2.json"\n        spot_v2_path.write_bytes(held.spot_proxy_v2_bytes)  # mutant: held sidecar dropped'
         ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -6208,8 +5797,7 @@ MUTANTS = [
         file="src/tree_options/seal/g4_gate.py",
         anchor="        if starved > 0 and arm_failures:",
         replacement=(
-            "        if False and starved > 0 and arm_failures:  # mutant: the"
-            " counter is never named"
+            "        if False and starved > 0 and arm_failures:  # mutant: the counter is never named"
         ),
         selectors=[f"{U}/test_g4_event_machinery.py"],
         invariant=(
@@ -6224,19 +5812,10 @@ MUTANTS = [
         owner="test_build_candidates_counts_and_skips_a_non_monotone_ladder",
         file="src/tree_options/options/strategy.py",
         anchor=(
-            "        except NonMonotoneLadderError:\n"
-            "            # (remediation-3) counted per-name refusal, never a run abort:\n"
-            "            # on the real lane this is a data property of one underlying's\n"
-            "            # derived ladder (META/2025-12-19 surfaced it live), and a fatal\n"
-            "            # raise here would spend the sealed authority and record no\n"
-            "            # verdict — the exact 2026-08-31 crash class\n"
-            "            if audit is not None:\n"
-            "                audit.non_monotone_ladder += 1\n"
-            "            continue"
+            "        except NonMonotoneLadderError:\n            # (remediation-3) counted per-name refusal, never a run abort:\n            # on the real lane this is a data property of one underlying's\n            # derived ladder (META/2025-12-19 surfaced it live), and a fatal\n            # raise here would spend the sealed authority and record no\n            # verdict — the exact 2026-08-31 crash class\n            if audit is not None:\n                audit.non_monotone_ladder += 1\n            continue"
         ),
         replacement=(
-            "        except NonMonotoneLadderError:\n"
-            "            raise  # mutant: one name's data condition aborts the run"
+            "        except NonMonotoneLadderError:\n            raise  # mutant: one name's data condition aborts the run"
         ),
         selectors=[f"{U}/test_options_strategy.py"],
         invariant=(
@@ -6431,9 +6010,7 @@ MUTANTS = [
         owner="test_cscv_test_rank_ties_break_to_the_lower_index",
         file="src/tree_options/evaluation/controls.py",
         anchor=(
-            "        rank = sum(\n"
-            "            1 for other in range(n) if (test_means[other], -other) > (test_means[best], -best)\n"
-            "        )"
+            "        rank = sum(\n            1 for other in range(n) if (test_means[other], -other) > (test_means[best], -best)\n        )"
         ),
         replacement="        rank = sum(1 for value in test_means if value > test_means[best])",
         selectors=[f"{U}/test_evaluation_controls.py"],
@@ -6492,8 +6069,7 @@ MUTANTS = [
         file="src/tree_options/evaluation/portfolio.py",
         anchor="        math.fsum(max(target_return - value, 0.0) ** 2 for value in sample) / len(sample)",
         replacement=(
-            "        math.fsum(max(target_return - value, 0.0) ** 2 for value in sample)\n"
-            "        / max(1, sum(1 for value in sample if value < target_return))"
+            "        math.fsum(max(target_return - value, 0.0) ** 2 for value in sample)\n        / max(1, sum(1 for value in sample if value < target_return))"
         ),
         selectors=[f"{U}/test_evaluation_portfolio.py"],
         invariant=(
@@ -6586,10 +6162,7 @@ MUTANTS = [
         file="src/tree_options/evaluation/portfolio.py",
         anchor="    log_total = math.fsum(math.log(1.0 + value) for value in sample)",
         replacement=(
-            "    compounded = math.fsum(0.0)\n"
-            "    for value in sample:\n"
-            "        compounded += math.log(1.0 + value)\n"
-            "    _ = compounded  # discarded; revert to multiplicative form"
+            "    compounded = math.fsum(0.0)\n    for value in sample:\n        compounded += math.log(1.0 + value)\n    _ = compounded  # discarded; revert to multiplicative form"
         ),
         selectors=[f"{U}/test_evaluation_portfolio.py"],
         invariant=(
@@ -6620,18 +6193,10 @@ MUTANTS = [
         owner="test_max_drawdown_depth_location_and_recovery",
         file="src/tree_options/evaluation/portfolio.py",
         anchor=(
-            '    sample = _finite(session_returns, name="session return")\n'
-            "    if sessions is not None and len(sessions) != len(sample):\n"
-            '        raise ValueError("sessions must align with the returns")\n'
-            "    if not sample:\n"
-            "        return None"
+            '    sample = _finite(session_returns, name="session return")\n    if sessions is not None and len(sessions) != len(sample):\n        raise ValueError("sessions must align with the returns")\n    if not sample:\n        return None'
         ),
         replacement=(
-            '    sample = _finite(session_returns, name="session return")\n'
-            "    if not sample:\n"
-            "        return None\n"
-            "    if sessions is not None and len(sessions) != len(sample):\n"
-            '        raise ValueError("sessions must align with the returns")'
+            '    sample = _finite(session_returns, name="session return")\n    if not sample:\n        return None\n    if sessions is not None and len(sessions) != len(sample):\n        raise ValueError("sessions must align with the returns")'
         ),
         selectors=[f"{U}/test_evaluation_portfolio.py"],
         invariant=(
@@ -6646,8 +6211,7 @@ MUTANTS = [
         owner="test_attribute_position_exact_legs_and_residual",
         file="src/tree_options/evaluation/attribution.py",
         anchor=(
-            "    vega_pnl = vega * iv\n"
-            "    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
+            "    vega_pnl = vega * iv\n    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
         ),
         replacement=("    vega_pnl = vega * iv\n    residual = 0.0"),
         selectors=[f"{U}/test_evaluation_attribution.py"],
@@ -6701,13 +6265,10 @@ MUTANTS = [
         owner="test_aggregate_recomputes_residual_on_aggregate_numbers",
         file="src/tree_options/evaluation/attribution.py",
         anchor=(
-            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
-            "    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
         ),
         replacement=(
-            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
-            "    delta_pnl += total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)\n"
-            "    residual = 0.0"
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n    delta_pnl += total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)\n    residual = 0.0"
         ),
         selectors=[f"{U}/test_evaluation_attribution.py"],
         invariant=(
@@ -6748,14 +6309,10 @@ MUTANTS = [
         owner="test_same_close_fills_collapses_execution_onto_decision",
         file="src/tree_options/evaluation/pipeline_controls.py",
         anchor=(
-            "    if not decision_sessions:\n"
-            '        raise ValueError("decision_sessions must be non-empty")\n'
-            "    return tuple(decision_sessions)"
+            '    if not decision_sessions:\n        raise ValueError("decision_sessions must be non-empty")\n    return tuple(decision_sessions)'
         ),
         replacement=(
-            "    if not decision_sessions:\n"
-            '        raise ValueError("decision_sessions must be non-empty")\n'
-            "    return tuple(reversed(decision_sessions))"
+            '    if not decision_sessions:\n        raise ValueError("decision_sessions must be non-empty")\n    return tuple(reversed(decision_sessions))'
         ),
         selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
         invariant=(
@@ -6770,18 +6327,10 @@ MUTANTS = [
         owner="test_perfect_foresight_feature_scores_exactly_one",
         file="src/tree_options/evaluation/pipeline_controls.py",
         anchor=(
-            "        raise ValueError(\n"
-            '            "labels must have at least two DISTINCT values "\n'
-            '            "(a constant vector has no rank information)"\n'
-            "        )\n"
-            "    return series"
+            '        raise ValueError(\n            "labels must have at least two DISTINCT values "\n            "(a constant vector has no rank information)"\n        )\n    return series'
         ),
         replacement=(
-            "        raise ValueError(\n"
-            '            "labels must have at least two DISTINCT values "\n'
-            '            "(a constant vector has no rank information)"\n'
-            "        )\n"
-            "    return tuple(reversed(series))"
+            '        raise ValueError(\n            "labels must have at least two DISTINCT values "\n            "(a constant vector has no rank information)"\n        )\n    return tuple(reversed(series))'
         ),
         selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
         invariant=(
@@ -6795,12 +6344,7 @@ MUTANTS = [
         owner="test_perfect_foresight_feature_scores_exactly_one",
         file="src/tree_options/evaluation/pipeline_controls.py",
         anchor=(
-            "    if len(set(series)) < 2:\n"
-            "        raise ValueError(\n"
-            '            "labels must have at least two DISTINCT values "\n'
-            '            "(a constant vector has no rank information)"\n'
-            "        )\n"
-            "    return series"
+            '    if len(set(series)) < 2:\n        raise ValueError(\n            "labels must have at least two DISTINCT values "\n            "(a constant vector has no rank information)"\n        )\n    return series'
         ),
         replacement="    return series",
         selectors=[f"{U}/test_evaluation_pipeline_controls.py"],
@@ -6816,12 +6360,10 @@ MUTANTS = [
         owner="test_aggregate_residual_is_recomputed_not_summed",
         file="src/tree_options/evaluation/attribution.py",
         anchor=(
-            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
-            "    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n    residual = total - (delta_pnl + gamma_pnl + theta_pnl + vega_pnl)"
         ),
         replacement=(
-            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n"
-            "    residual = math.fsum(row.residual for row in materialized)"
+            "    vega_pnl = math.fsum(row.vega_pnl for row in materialized)\n    residual = math.fsum(row.residual for row in materialized)"
         ),
         selectors=[f"{U}/test_evaluation_attribution.py"],
         invariant=(
@@ -6849,8 +6391,7 @@ MUTANTS = [
         owner="test_every_timestamp_role_rejects_naive_datetime",
         file="src/tree_options/execution/records.py",
         anchor=(
-            "    if parsed.tzinfo is None or parsed.utcoffset() is None:\n"
-            '        raise ValueError("naive datetime rejected")'
+            '    if parsed.tzinfo is None or parsed.utcoffset() is None:\n        raise ValueError("naive datetime rejected")'
         ),
         replacement=('    if False:\n        raise ValueError("naive datetime rejected")'),
         selectors=[f"{U}/test_execution_records.py"],
@@ -6976,14 +6517,10 @@ MUTANTS = [
         owner="test_same_instant_chained_replace_resolves_superseded_request_via_its_basis",
         file="src/tree_options/execution/lifecycle.py",
         anchor=(
-            "            pending is not None\n"
-            "            and record.record_id == pending_basis_id\n"
-            "            and superseded_pending is not None"
+            "        if (\n            pending is not None\n            and record.record_id == pending_basis_id\n            and superseded_pending is not None\n        ):\n"
         ),
         replacement=(
-            "            pending is not None\n"
-            "            and record.record_id == pending_basis_id\n"
-            "            and False"
+            "        if pending is not None and record.record_id == pending_basis_id and False:\n"
         ),
         selectors=[f"{U}/test_execution_lifecycle_remediation.py"],
         invariant=(
@@ -7027,16 +6564,10 @@ MUTANTS = [
         owner="test_lifecycle_clean_fill_path",
         file="src/tree_options/execution/paper.py",
         anchor=(
-            '            record_id=f"paper-ack-{self.intent.intent_id}-{attempt.record_id}",\n'
-            "            intent_id=self.intent.intent_id,\n"
-            '            broker_order_id=f"paper-order-{self.intent.intent_id}",'
+            '            intent_id=self.intent.intent_id,\n            broker_order_id=f"paper-order-{self.intent.intent_id}",\n'
         ),
         replacement=(
-            '            record_id=f"paper-ack-{self.intent.intent_id}-{attempt.record_id}",\n'
-            "            intent_id=self.intent.intent_id,\n"
-            "            broker_order_id=(\n"
-            '                f"paper-order-{self.intent.intent_id}-{attempt.record_id}"\n'
-            "            ),"
+            '            intent_id=self.intent.intent_id,\n            broker_order_id=(f"paper-order-{self.intent.intent_id}-{attempt.record_id}"),\n'
         ),
         selectors=[f"{U}/test_execution_paper.py"],
         invariant=(
@@ -7093,14 +6624,10 @@ MUTANTS = [
         owner="test_retry_answers_with_identical_economics_not_duplicates",
         file="src/tree_options/execution/paper.py",
         anchor=(
-            "        if attempt.intent_id != self.intent.intent_id:\n"
-            '            raise ValueError("attempt belongs to a different intent")\n'
-            "        if self._anchor_attempt is None:"
+            '        if attempt.intent_id != self.intent.intent_id:\n            raise ValueError("attempt belongs to a different intent")\n        if self._anchor_attempt is None:'
         ),
         replacement=(
-            "        if attempt.intent_id != self.intent.intent_id:\n"
-            '            raise ValueError("attempt belongs to a different intent")\n'
-            "        if True:"
+            '        if attempt.intent_id != self.intent.intent_id:\n            raise ValueError("attempt belongs to a different intent")\n        if True:'
         ),
         selectors=[f"{U}/test_execution_paper.py"],
         invariant=(
@@ -7116,10 +6643,7 @@ MUTANTS = [
         owner="test_fills_require_acknowledgement_and_refuse_foreign_intents",
         file="src/tree_options/execution/paper.py",
         anchor=(
-            "    def _require_anchor(self) -> SubmitAttempt:\n"
-            "        if self._anchor_attempt is None:\n"
-            '            raise ValueError("acknowledge a submit before requesting broker facts")\n'
-            "        return self._anchor_attempt"
+            '    def _require_anchor(self) -> SubmitAttempt:\n        if self._anchor_attempt is None:\n            raise ValueError("acknowledge a submit before requesting broker facts")\n        return self._anchor_attempt'
         ),
         replacement=(
             "    def _require_anchor(self) -> SubmitAttempt:\n        return self._anchor_attempt"
@@ -7165,17 +6689,10 @@ MUTANTS = [
         owner="test_quote_and_lag_validations",
         file="src/tree_options/execution/paper.py",
         anchor=(
-            "        if (\n"
-            "            not isinstance(self.fee_per_contract, Decimal)\n"
-            "            or not self.fee_per_contract.is_finite()\n"
-            "            or self.fee_per_contract < 0\n"
-            "        ):"
+            "        if (\n            not isinstance(self.fee_per_contract, Decimal)\n            or not self.fee_per_contract.is_finite()\n            or self.fee_per_contract < 0\n        ):\n"
         ),
         replacement=(
-            "        if (\n"
-            "            not isinstance(self.fee_per_contract, Decimal)\n"
-            "            or self.fee_per_contract < 0\n"
-            "        ):"
+            "        if not isinstance(self.fee_per_contract, Decimal) or self.fee_per_contract < 0:\n"
         ),
         selectors=[f"{U}/test_execution_paper.py"],
         invariant=(
@@ -7274,11 +6791,7 @@ MUTANTS = [
         owner="test_findings_sort_worst_severity_first_then_reason_name",
         file="src/tree_options/execution/reconciliation.py",
         anchor=(
-            "        return tuple(\n"
-            "            finding\n"
-            "            for finding in self.findings\n"
-            "            if finding.severity is ReconciliationSeverity.ECONOMIC\n"
-            "        )"
+            "        return tuple(\n            finding\n            for finding in self.findings\n            if finding.severity is ReconciliationSeverity.ECONOMIC\n        )"
         ),
         replacement="        return self.findings",
         selectors=[f"{U}/test_execution_reconciliation.py"],
@@ -7394,16 +6907,10 @@ MUTANTS = [
         owner="test_non_terminal_states_are_refused_without_economics",
         file="src/tree_options/execution/evidence.py",
         anchor=(
-            "            verdict=EvidenceVerdict.REFUSED,\n"
-            "            state=lifecycle.state,\n"
-            "            economically_covered_quantity=covered,\n"
-            "            economics=None,"
+            "            verdict=EvidenceVerdict.REFUSED,\n            state=lifecycle.state,\n            economically_covered_quantity=covered,\n            economics=None,"
         ),
         replacement=(
-            "            verdict=EvidenceVerdict.REFUSED,\n"
-            "            state=lifecycle.state,\n"
-            "            economically_covered_quantity=covered,\n"
-            "            economics=economics,"
+            "            verdict=EvidenceVerdict.REFUSED,\n            state=lifecycle.state,\n            economically_covered_quantity=covered,\n            economics=economics,"
         ),
         selectors=[f"{U}/test_execution_evidence.py"],
         invariant=(
@@ -7417,16 +6924,10 @@ MUTANTS = [
         owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
         file="src/tree_options/execution/evidence.py",
         anchor=(
-            "        gross = sum(\n"
-            "            (Decimal(fill.fill_quantity) * fill.unit_price for fill in fills),\n"
-            '            Decimal("0"),\n'
-            "        )"
+            '        gross = sum(\n            (Decimal(fill.fill_quantity) * fill.unit_price for fill in fills),\n            Decimal("0"),\n        )'
         ),
         replacement=(
-            "        gross = sum(\n"
-            "            (Decimal(1) * fill.unit_price for fill in fills),\n"
-            '            Decimal("0"),\n'
-            "        )"
+            '        gross = sum(\n            (Decimal(1) * fill.unit_price for fill in fills),\n            Decimal("0"),\n        )'
         ),
         selectors=[f"{U}/test_execution_evidence.py"],
         invariant=(
@@ -7465,14 +6966,10 @@ MUTANTS = [
         owner="test_clean_filled_lifecycle_is_admissible_with_exact_economics",
         file="src/tree_options/execution/evidence.py",
         anchor=(
-            "        verdict=EvidenceVerdict.ADMISSIBLE,\n"
-            "        state=lifecycle.state,\n"
-            "        economically_covered_quantity=covered,"
+            "        verdict=EvidenceVerdict.ADMISSIBLE,\n        state=lifecycle.state,\n        economically_covered_quantity=covered,"
         ),
         replacement=(
-            "        verdict=EvidenceVerdict.ADMISSIBLE,\n"
-            "        state=lifecycle.state,\n"
-            "        economically_covered_quantity=0,"
+            "        verdict=EvidenceVerdict.ADMISSIBLE,\n        state=lifecycle.state,\n        economically_covered_quantity=0,"
         ),
         selectors=[f"{U}/test_execution_evidence.py"],
         invariant=(
@@ -7522,6 +7019,136 @@ MUTANTS = [
             " demands ((0, 3)) (Codex round-1 P1)"
         ),
     ),
+    # Quant integration invariants; all require behavioral kills.
+    {
+        "id": "Q01-future-data",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/research/quant.py",
+        "anchor": "if obs.available_at > self.cutoff:",
+        "replacement": "if False:",
+        "selectors": ["tests/research/test_quant_integration.py"],
+        "invariant": "future observations excluded",
+    },
+    {
+        "id": "Q02-filing-cutoff",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/data/massive_equities.py",
+        "anchor": '"filing_date.lte": decision_date.isoformat(),',
+        "replacement": '"period_end.lte": decision_date.isoformat(),',
+        "selectors": ["tests/unit/test_massive_equities.py"],
+        "invariant": "filing dated PIT request",
+    },
+    {
+        "id": "Q03-historical-universe",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/data/massive_equities.py",
+        "anchor": '"date": as_of.isoformat(),',
+        "replacement": '"date": date.today().isoformat(),',
+        "selectors": ["tests/unit/test_massive_equities.py"],
+        "invariant": "historical universe never current",
+    },
+    {
+        "id": "Q04-value-direction",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/strategy_lab/ranking.py",
+        "anchor": "higher_is_better=False,",
+        "replacement": "higher_is_better=True,",
+        "selectors": ["tests/unit/test_strategy_lab_ranking.py"],
+        "invariant": "low ratios higher value score",
+    },
+    {
+        "id": "Q05-momentum-last-month",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/research/quant.py",
+        "anchor": "price_t_minus_1=prices[month - 1]",
+        "replacement": "price_t_minus_1=prices[month]",
+        "selectors": ["tests/research/test_quant_integration.py"],
+        "invariant": "12-1 excludes latest month",
+    },
+    {
+        "id": "Q06-volatility-signal-lag",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/strategy_lab/volatility.py",
+        "anchor": "lagged = (None, *signals[:-1])",
+        "replacement": "lagged = tuple(signals)",
+        "selectors": ["tests/unit/test_strategy_lab_volatility.py"],
+        "invariant": "signal lag excludes future return",
+    },
+    {
+        "id": "Q07-unknown-status-open",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/execution/snaptrade_adapter.py",
+        "anchor": "    return BrokerReadbackStatus.AMBIGUOUS",
+        "replacement": "    return BrokerReadbackStatus.OPEN",
+        "selectors": ["tests/unit/test_snaptrade_adapter.py"],
+        "invariant": "unknown status fails closed",
+    },
+    {
+        "id": "Q08-timeout-resubmit",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/trex/snaptrade_runtime.py",
+        "anchor": "        except TimeoutError:\n"
+        '            return Uncertain("provider_timeout", "readback required; no '
+        'resubmit")',
+        "replacement": "        except TimeoutError:\n"
+        "            self.provider._submit(symbol=effect.symbol, side=effect.side, "
+        "quantity=effect.quantity,\n"
+        "                                  limit=effect.limit, "
+        "client_order_id=stable_client_order_id(attempt.intent_id))\n"
+        '            return Uncertain("provider_timeout", "readback required; no '
+        'resubmit")',
+        "selectors": ["tests/unit/test_snaptrade_runtime.py"],
+        "invariant": "timeout never duplicates effects",
+    },
+    {
+        "id": "Q09-fabricated-snapshot-fill",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/execution/snaptrade_adapter.py",
+        "anchor": "    return BrokerReadback(\n"
+        '        record_id=_record_id(intent.intent_id, token, "readback"),',
+        "replacement": "    if status is BrokerReadbackStatus.FILLED:\n"
+        "        from tree_options.execution.records import CompleteFill\n"
+        "        return CompleteFill(record_id=_record_id(intent.intent_id, token, "
+        '"readback"),\n'
+        "            intent_id=intent.intent_id, broker_order_id=broker_order_id,\n"
+        "            fill_quantity=cumulative, cumulative_quantity=cumulative,\n"
+        '            unit_price=intent.limit_price, fees=Decimal("0"),\n'
+        "            exchange_event_at=snapshot.broker_snapshot_at, "
+        "locally_received_at=locally_received_at,\n"
+        '            source=SOURCE, source_sequence_id=f"fill:{token}", '
+        'broker_sequence_id=f"fill:{token}")\n'
+        "    return BrokerReadback(\n"
+        '        record_id=_record_id(intent.intent_id, token, "readback"),',
+        "selectors": ["tests/unit/test_snaptrade_adapter.py"],
+        "invariant": "order snapshots cannot fabricate fill economics",
+    },
+    {
+        "id": "Q10-missing-fees-zero",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/execution/records.py",
+        "anchor": "    fees: ExactMoney",
+        "replacement": '    fees: ExactMoney = Decimal("0")',
+        "selectors": ["tests/unit/test_snaptrade_runtime.py"],
+        "invariant": "absent exact fees unknown",
+    },
+    {
+        "id": "Q11-shared-broker-order-id",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/trex/snaptrade_runtime.py",
+        "anchor": "if broker_order_id in identities and identities[broker_order_id] != intent_id:",
+        "replacement": "if False:",
+        "selectors": ["tests/unit/test_snaptrade_runtime.py"],
+        "invariant": "broker economic identity unique across intents",
+    },
+    {
+        "id": "Q12-evidence-attribution-bypass",
+        "owner": "quant_boundary_tests",
+        "file": "src/tree_options/research/quant.py",
+        "anchor": "if not receipt.is_admissible or receipt.economics is None:",
+        "replacement": "if False:",
+        "selectors": ["tests/research/test_quant_integration.py"],
+        "invariant": "assess_evidence mandatory before attribution",
+    },
 ]
 
 

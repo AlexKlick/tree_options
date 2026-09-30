@@ -116,9 +116,10 @@ import random
 import statistics
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]  # the EXECUTION worktree
 R1_PATH = REPO_ROOT / "scripts" / "campaign" / "term_gate_run.py"
@@ -159,9 +160,7 @@ def _bind_frozen_root() -> tuple[Path, dict[str, Any]]:
     )
     missing = [rel for rel in required if not (frozen / rel).exists()]
     if missing:
-        raise SystemExit(
-            f"REFUSED: the frozen root {frozen} is missing required inputs: {missing}"
-        )
+        raise SystemExit(f"REFUSED: the frozen root {frozen} is missing required inputs: {missing}")
     import tomllib
 
     frozen_universe_path = frozen / "desk-universe.toml"
@@ -256,12 +255,18 @@ BOOTSTRAP_SEED_BYTES = b"term-gate-sealed-bootstrap-1"
 # regimes) this runner must reproduce (copy-faithfulness anchor, full era)
 EXITGRID_ANCHOR_FULL = {
     "60-skip5-tercile": {
-        "hold60_n": 5364, "hold60_days": 447,
-        "hold1": -0.04953, "tp100c": -0.04167, "oco100_150": -0.05019,
+        "hold60_n": 5364,
+        "hold60_days": 447,
+        "hold1": -0.04953,
+        "tp100c": -0.04167,
+        "oco100_150": -0.05019,
     },
     "252-skip21-top3": {
-        "hold60_n": 1341, "hold60_days": 447,
-        "hold1": -0.15748, "tp100c": -0.13617, "oco100_150": -0.15936,
+        "hold60_n": 1341,
+        "hold60_days": 447,
+        "hold1": -0.15748,
+        "tp100c": -0.13617,
+        "oco100_150": -0.15936,
     },
 }
 ANCHOR_TOL = 6e-4  # published at 1e-5 precision; absorbs nothing larger
@@ -314,9 +319,7 @@ def _artifact_path(config_id: str) -> Path:
 
 def _verify_frozen_inputs() -> dict[str, Any]:
     if _sha256_file(R1_PATH) != R1_RUNNER_SHA256:
-        raise r1.Refused(
-            "the round-1 runner's sha256 moved — the identical-path guarantee is void"
-        )
+        raise r1.Refused("the round-1 runner's sha256 moved — the identical-path guarantee is void")
     cal_sha = _sha256_file(r1.CALIBRATION_V3_PATH)
     if cal_sha != CALIBRATION_V3_SHA256:
         raise r1.Refused(
@@ -332,7 +335,8 @@ def _verify_frozen_inputs() -> dict[str, Any]:
     if ranking["stamp"]["registration_menu_sha256"] != _sha256_file(r1.REGISTRATION_PATH):
         raise r1.Refused("the frozen inner-ranking.json does not bind this menu sha")
     if (
-        ranking["inner_fold_best"]["config_id"] != INNER_RANKING_PINS["inner_fold_best"]["config_id"]
+        ranking["inner_fold_best"]["config_id"]
+        != INNER_RANKING_PINS["inner_fold_best"]["config_id"]
         or ranking["inner_fold_best"]["value"] != INNER_RANKING_PINS["inner_fold_best"]["value"]
     ):
         raise r1.Refused("the frozen inner-ranking.json best-new pin drifted")
@@ -355,7 +359,9 @@ def _verify_frozen_inputs() -> dict[str, Any]:
 # ---- sealed card sets (signal-set facts; NO returns computed here) ------------------------
 
 
-def _sealed_xsmom_cards(inputs: r1.Inputs) -> tuple[list[tuple[str, tuple[str, ...]]], dict[str, Any]]:  # type: ignore[name-defined]
+def _sealed_xsmom_cards(
+    inputs: r1.Inputs,
+) -> tuple[list[tuple[str, tuple[str, ...]]], dict[str, Any]]:  # type: ignore[name-defined]
     from tree_options.desk.signals import xsmom_top3
 
     cal, panel = inputs.calendar, inputs.panel
@@ -446,7 +452,11 @@ def _sealed_pead_cards(inputs: r1.Inputs) -> tuple[list[dict[str, Any]], dict[st
                 )
             else:
                 incomplete += 1
-    if len(cards) != N_PEAD_CARDS or cards[0]["entry"] != "2024-10-16" or cards[-1]["entry"] != "2026-08-06":
+    if (
+        len(cards) != N_PEAD_CARDS
+        or cards[0]["entry"] != "2024-10-16"
+        or cards[-1]["entry"] != "2026-08-06"
+    ):
         raise r1.Refused(
             f"sealed PEAD cards are not the registered 141 with completed holds"
             f" (2024-10-16..2026-08-06): got {len(cards)}"
@@ -688,7 +698,12 @@ def run_t1_sealed(
             "gated_total_pnl_usd_per_2500_leg": 2500.0 * gated_total,
             "ungated_total_pnl_usd_per_2500_leg": 2500.0 * ungated_total,
         },
-        "off_floor": {"required_off_cards": floor, "off_cards": off_cards, "off_days_complete": off["days"], "off_legs_complete": off["n_complete"]},
+        "off_floor": {
+            "required_off_cards": floor,
+            "off_cards": off_cards,
+            "off_days_complete": off["days"],
+            "off_legs_complete": off["n_complete"],
+        },
         "criteria": crit,
         "index_outage_sealed_sessions": outage,
         "index_gap_readings": n_gap_readings,
@@ -751,11 +766,10 @@ def _t2_core_sealed(inputs: r1.Inputs) -> tuple[dict[str, Any], dict[str, Any]]:
             " the panel drifted"
         )
     pub_last = solutions[0]
-    for label, lb, sk, tk in frozen.CONSTRUCTIONS:
+    for label, _lb, _sk, _tk in frozen.CONSTRUCTIONS:
         leg = legs[label]
         h60 = {
-            (d, n): series[n][1][p + frozen.HOLD] / entry - 1 - frozen.RT
-            for d, n, p, entry in leg
+            (d, n): series[n][1][p + frozen.HOLD] / entry - 1 - frozen.RT for d, n, p, entry in leg
         }
         regimes = {d: r1.regime_of(inputs, date.fromisoformat(d)) for d, _n, _p, _e in leg}
         per_variant: dict[str, Any] = {}
@@ -848,7 +862,9 @@ def run_t2_sealed(
             and stressed["t_cons"] >= r1.T2_FLIP_T
             and calm["d_mean"] <= 0
         )
-        verdict = "DESCRIPTIVE-ONLY:REGIME-SIGN-FLIP" if flips else "DESCRIPTIVE-ONLY:NO-REGIME-SIGNAL"
+        verdict = (
+            "DESCRIPTIVE-ONLY:REGIME-SIGN-FLIP" if flips else "DESCRIPTIVE-ONLY:NO-REGIME-SIGNAL"
+        )
         reason = (
             "paired mean > 0 with conservative t >= 2 in STRESSED while <= 0 in CALM"
             if flips
@@ -876,7 +892,9 @@ def run_t2_sealed(
 # ---- family bootstrap -----------------------------------------------------------------------
 
 
-def _spread_of_gate(card_nets_by_entry: Mapping[str, list[float]], off_flag: Mapping[str, bool]) -> float | None:
+def _spread_of_gate(
+    card_nets_by_entry: Mapping[str, list[float]], off_flag: Mapping[str, bool]
+) -> float | None:
     on_vals: list[float] = []
     off_vals: list[float] = []
     for e, nets in card_nets_by_entry.items():
@@ -1164,13 +1182,21 @@ def phase_plan() -> int:
     cards = _load_card_sets(inputs)
     gaps = _sealed_index_gaps(inputs)
     print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified)")
-    print(f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}...")
-    print(f"tnull calibration-v3: {inputs.calibration['verdict']['slot']} (sha {frozen['calibration_v3_sha256'][:16]}...)")
+    print(
+        f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}..."
+    )
+    print(
+        f"tnull calibration-v3: {inputs.calibration['verdict']['slot']} (sha {frozen['calibration_v3_sha256'][:16]}...)"
+    )
     for shape in ("xsmom", "event"):
         b = inputs.B[shape]
-        print(f"B[card-era,{shape:5s}] = {b['B_net_per_trade_mean']:+.9f} se={b['per_trade_mean_sd_day_clustered']}")
+        print(
+            f"B[card-era,{shape:5s}] = {b['B_net_per_trade_mean']:+.9f} se={b['per_trade_mean_sd_day_clustered']}"
+        )
     print(f"round-1 runner sha256 {frozen['round1_runner_sha256'][:16]}... (identical-path pin)")
-    print(f"inner-ranking sha256 {frozen['inner_ranking_sha256'][:16]}... (frozen pre-seal selection)")
+    print(
+        f"inner-ranking sha256 {frozen['inner_ranking_sha256'][:16]}... (frozen pre-seal selection)"
+    )
     print(
         f"sealed XSMOM cards: {len(cards['xsmom'])}"
         f" ({cards['xsmom'][0][0]}..{cards['xsmom'][-1][0]}); excluded incomplete FOM:"
@@ -1185,7 +1211,9 @@ def phase_plan() -> int:
     )
     print(f"missing index sessions in the sealed window: {len(gaps)} {gaps[:8]}")
     print(f"registry db: {r1.REGISTRY_PATH}")
-    print(f"sealed rows land under sealed scope_key (outer fold {OUTER_FOLD_SEALED}); round-1 scope holds 24/32")
+    print(
+        f"sealed rows land under sealed scope_key (outer fold {OUTER_FOLD_SEALED}); round-1 scope holds 24/32"
+    )
     print("NO sealed outcome computed or viewed by this phase")
     print(f"elapsed {time.monotonic() - t0:.1f}s")
     return 0
@@ -1194,7 +1222,7 @@ def phase_plan() -> int:
 def phase_register() -> int:
     frozen = _verify_frozen_inputs()
     inputs = r1.load_and_bind()
-    cards = _load_card_sets(inputs)  # signal-set verification only (no outcomes)
+    _cards = _load_card_sets(inputs)  # signal-set verification only (no outcomes)
     gaps = _sealed_index_gaps(inputs)
     if len(gaps) > MAX_INDEX_OUTAGE:
         raise r1.Refused(
@@ -1258,7 +1286,9 @@ def phase_execute() -> int:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise r1.Refused("another term-gate execution holds the lock -- one run at a time") from None
+            raise r1.Refused(
+                "another term-gate execution holds the lock -- one run at a time"
+            ) from None
         registry = _open_registry()
         try:
             t2_stats: tuple[dict[str, Any], dict[str, Any]] | None = None
@@ -1341,7 +1371,9 @@ def phase_execute() -> int:
 
 
 def _read_sealed_artifact(
-    inputs: r1.Inputs, frozen: Mapping[str, Any], cell: Mapping[str, Any]  # type: ignore[name-defined]
+    inputs: r1.Inputs,
+    frozen: Mapping[str, Any],
+    cell: Mapping[str, Any],  # type: ignore[name-defined]
 ) -> Mapping[str, Any]:
     artifact = _artifact_path(cell["id"])
     body = json.loads(artifact.read_text(encoding="utf-8"))
@@ -1419,17 +1451,15 @@ def phase_stamp() -> int:
             family["verdict_reason"] = "no CANDIDATE on either rule"
     else:
         # best new-quantity candidate by spread (tie -> config id lexicographic)
-        best_new_id = sorted(
-            new_cands, key=lambda k: (-(new_cands[k]["spread_on_minus_off"]), k)
-        )[0]
+        best_new_id = sorted(new_cands, key=lambda k: (-(new_cands[k]["spread_on_minus_off"]), k))[
+            0
+        ]
         best_new = new_cands[best_new_id]
         rule = best_new["rule"]
         inc_on_rule = {
             k: v for k, v in t1.items() if "incumbent" in v["role"] and v["rule"] == rule
         }
-        defined_inc = {
-            k: v for k, v in inc_on_rule.items() if v["spread_on_minus_off"] is not None
-        }
+        defined_inc = {k: v for k, v in inc_on_rule.items() if v["spread_on_minus_off"] is not None}
         family["best_new_quantity"] = {
             "config_id": best_new_id,
             "gate_spec": best_new["gate_spec"],
@@ -1437,7 +1467,10 @@ def phase_stamp() -> int:
             "spread_on_minus_off": best_new["spread_on_minus_off"],
         }
         family["incumbents_on_rule"] = {
-            k: {"spread_on_minus_off": v["spread_on_minus_off"], "sealed_verdict": v["sealed_verdict"]}
+            k: {
+                "spread_on_minus_off": v["spread_on_minus_off"],
+                "sealed_verdict": v["sealed_verdict"],
+            }
             for k, v in inc_on_rule.items()
         }
         if not defined_inc:
@@ -1462,7 +1495,7 @@ def phase_stamp() -> int:
                 "spread_on_minus_off": best_inc["spread_on_minus_off"],
             }
             # build the card-level streams for the bootstrap
-            rule_key = "xsmom" if rule == "xsmom_top3" else "pead"
+            _rule_key = "xsmom" if rule == "xsmom_top3" else "pead"
             entries = [c["entry"] for c in artifacts[best_new_id]["payload"]["cards"]]
             # per-card leg nets are not stored in the artifacts; rebuild them
             # from the card set + _complete_trade (deterministic, same machinery,
@@ -1485,14 +1518,12 @@ def phase_stamp() -> int:
                     t = r1._complete_trade(inputs, c["name"], date.fromisoformat(c["entry"]))
                     if t.gross is not None:
                         nets_by_entry.setdefault(c["entry"], []).append(t.gross - r1.RT_PRIMARY)
-            off_new = {
-                c["entry"]: c["off"] for c in artifacts[best_new_id]["payload"]["cards"]
-            }
-            off_inc = {
-                c["entry"]: c["off"] for c in artifacts[best_inc_id]["payload"]["cards"]
-            }
+            off_new = {c["entry"]: c["off"] for c in artifacts[best_new_id]["payload"]["cards"]}
+            off_inc = {c["entry"]: c["off"] for c in artifacts[best_inc_id]["payload"]["cards"]}
             if set(off_new) != set(off_inc) or set(off_new) != set(entries):
-                raise r1.Refused("card sets across cells on the same rule disagree -- machinery defect")
+                raise r1.Refused(
+                    "card sets across cells on the same rule disagree -- machinery defect"
+                )
             boot = _family_bootstrap(rule, entries, nets_by_entry, off_new, off_inc)
             boot["new_gate"] = best_new["gate_spec"]
             boot["incumbent_gate"] = best_inc["gate_spec"]
@@ -1702,7 +1733,9 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--plan", action="store_true", help="read-only bind + sealed card-set verification")
+    parser.add_argument(
+        "--plan", action="store_true", help="read-only bind + sealed card-set verification"
+    )
     parser.add_argument(
         "--register",
         action="store_true",

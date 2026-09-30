@@ -163,17 +163,19 @@ def engine_identity_sha() -> str:
     return h.hexdigest()
 
 
-def input_snapshot_sha(candidates: tuple[ResearchCandidate, ...],
-                       baseline: ResearchCandidate | None,
-                       calendar_sha: str) -> tuple[dict[str, Any], str]:
+def input_snapshot_sha(
+    candidates: tuple[ResearchCandidate, ...], baseline: ResearchCandidate | None, calendar_sha: str
+) -> tuple[dict[str, Any], str]:
     """The resolved input identity of a computation: each candidate's
     artifact hashes and source, plus the calendar the plan pinned."""
     snapshot: dict[str, Any] = {
         "candidates": {
-            c.id: {"artifact_hashes": dict(c.artifact_hashes),
-                   "source_url": c.source_url,
-                   "evidence_kind": c.evidence_kind.value,
-                   "version": c.version}
+            c.id: {
+                "artifact_hashes": dict(c.artifact_hashes),
+                "source_url": c.source_url,
+                "evidence_kind": c.evidence_kind.value,
+                "version": c.version,
+            }
             for c in candidates
         },
         "calendar_sha256": calendar_sha,
@@ -235,32 +237,32 @@ class ResearchWorker:
 
     def _process(self, store: Any, run_id: str, run: dict[str, Any]) -> None:
         now = datetime.now().isoformat()
-        store.replace("run", {**run, "status": "running", "started_at": now},
-                      key=run_id)
+        store.replace("run", {**run, "status": "running", "started_at": now}, key=run_id)
         try:
             spec_payload = store.get("spec", run_id)
             if spec_payload is None:
                 raise RunstateStoreError(f"run {run_id} has no stored spec")
             kind = run.get("kind", "comparison")
             if kind == "scenario":
-                result_payload = self._compute_scenario(
-                    store, run_id, spec_payload, run)
+                result_payload = self._compute_scenario(store, run_id, spec_payload, run)
             elif kind == "forecast":
-                result_payload = self._compute_forecast(
-                    run_id, spec_payload, run)
+                result_payload = self._compute_forecast(run_id, spec_payload, run)
             elif kind == "comparison":
                 result_payload = self._compute(run_id, spec_payload)
             else:
                 # An unknown kind must FAIL loudly — pre-RL-3 it fell
                 # through to the comparison engine, computing a
                 # different job than the record describes.
-                raise RunstateStoreError(
-                    f"unknown run kind {kind!r} for run {run_id}")
+                raise RunstateStoreError(f"unknown run kind {kind!r} for run {run_id}")
         except Exception as exc:
             store.replace(
                 "run",
-                {**run, "status": "failed", "error": f"{type(exc).__name__}: {exc}",
-                 "completed_at": datetime.now().isoformat()},
+                {
+                    **run,
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "completed_at": datetime.now().isoformat(),
+                },
                 key=run_id,
             )
             return
@@ -274,11 +276,9 @@ class ResearchWorker:
         # envelopes (no parent / typed refusal) don't bind an input
         # snapshot — they're honest "no computation happened" records.
         if "input_snapshot_sha256" in result_payload:
-            replace_fields["input_snapshot_sha256"] = (
-                result_payload["input_snapshot_sha256"])
+            replace_fields["input_snapshot_sha256"] = result_payload["input_snapshot_sha256"]
         if "scenario_diff_sha256" in result_payload:
-            replace_fields["scenario_diff_sha256"] = (
-                result_payload["scenario_diff_sha256"])
+            replace_fields["scenario_diff_sha256"] = result_payload["scenario_diff_sha256"]
         if "parent_run_id" in result_payload:
             replace_fields["parent_run_id"] = result_payload["parent_run_id"]
         store.replace(
@@ -295,26 +295,24 @@ class ResearchWorker:
         catalog = {c.id: c for c in self.catalog_provider()}
         missing = [cid for cid in spec.candidate_ids if cid not in catalog]
         if missing:
-            raise RunstateStoreError(
-                f"candidates left the catalog since submission: {missing}")
+            raise RunstateStoreError(f"candidates left the catalog since submission: {missing}")
         cands = tuple(catalog[cid] for cid in spec.candidate_ids)
         baseline = None
         if spec.benchmark_candidate_id:
             if spec.benchmark_candidate_id not in catalog:
                 raise RunstateStoreError(
-                    f"benchmark left the catalog: {spec.benchmark_candidate_id}")
+                    f"benchmark left the catalog: {spec.benchmark_candidate_id}"
+                )
             baseline = catalog[spec.benchmark_candidate_id]
         plan = resolve_plan(spec)
         if plan.refused:
-            raise RunstateStoreError(
-                f"plan refused at compute time: {plan.refusal_reason}")
+            raise RunstateStoreError(f"plan refused at compute time: {plan.refusal_reason}")
         result = self.engine_fn(spec, cands, baseline=baseline)
         wire = result.to_wire()
         result_sha = hashlib.sha256(
             json.dumps(wire, sort_keys=True, default=str).encode("utf-8")
         ).hexdigest()
-        snapshot, snapshot_sha = input_snapshot_sha(
-            cands, baseline, plan.calendar_sha256)
+        snapshot, snapshot_sha = input_snapshot_sha(cands, baseline, plan.calendar_sha256)
         return {
             "run_id": run_id,
             "spec_hash": make_spec_hash(spec),
@@ -327,8 +325,9 @@ class ResearchWorker:
             "wire": wire,
         }
 
-    def _compute_forecast(self, run_id: str, spec_payload: dict[str, Any],
-                          run: dict[str, Any]) -> dict[str, Any]:
+    def _compute_forecast(
+        self, run_id: str, spec_payload: dict[str, Any], run: dict[str, Any]
+    ) -> dict[str, Any]:
         """Evaluate a forecast run with execution-bound identity (RL-3).
 
         Refusal order (checkpoint B-prime): engine identity, then BOTH
@@ -348,44 +347,58 @@ class ResearchWorker:
         expected_engine = run.get("engine_sha256_at_submission")
         if isinstance(expected_engine, str) and expected_engine != engine_now:
             return _forecast_refusal_result(
-                run_id, spec, ForecastRefusal(
+                run_id,
+                spec,
+                ForecastRefusal(
                     code=FORECAST_ENGINE_CHANGED,
-                    message=("engine identity moved between submission "
-                             f"and compute: submitted {expected_engine}, "
-                             f"now {engine_now}; refusing to execute new "
-                             "code under the submission's run id"),
-                    payload={"engine_sha256_at_submission": expected_engine,
-                             "engine_sha256_at_compute": engine_now}),
-                engine_sha256=expected_engine)
+                    message=(
+                        "engine identity moved between submission "
+                        f"and compute: submitted {expected_engine}, "
+                        f"now {engine_now}; refusing to execute new "
+                        "code under the submission's run id"
+                    ),
+                    payload={
+                        "engine_sha256_at_submission": expected_engine,
+                        "engine_sha256_at_compute": engine_now,
+                    },
+                ),
+                engine_sha256=expected_engine,
+            )
 
         calendar_now = calendar_sha256()
         authority_now = session_authority_sha256()
         calendar_moved = (
-            (isinstance(run.get("calendar_sha256_at_submission"), str)
-             and run["calendar_sha256_at_submission"] != calendar_now)
-            or (isinstance(
-                run.get("session_authority_sha256_at_submission"), str)
-                and run["session_authority_sha256_at_submission"]
-                != authority_now))
+            isinstance(run.get("calendar_sha256_at_submission"), str)
+            and run["calendar_sha256_at_submission"] != calendar_now
+        ) or (
+            isinstance(run.get("session_authority_sha256_at_submission"), str)
+            and run["session_authority_sha256_at_submission"] != authority_now
+        )
         if calendar_moved:
             return _forecast_refusal_result(
-                run_id, spec, ForecastRefusal(
+                run_id,
+                spec,
+                ForecastRefusal(
                     code=FORECAST_CALENDAR_CHANGED,
-                    message=("a calendar bound into this run's identity "
-                             "moved between submission and compute "
-                             "(comparison calendar and/or closure-"
-                             "corrected session authority); refusing to "
-                             "re-grade the grid under the submission's "
-                             "run id"),
+                    message=(
+                        "a calendar bound into this run's identity "
+                        "moved between submission and compute "
+                        "(comparison calendar and/or closure-"
+                        "corrected session authority); refusing to "
+                        "re-grade the grid under the submission's "
+                        "run id"
+                    ),
                     payload={
-                        "calendar_sha256_at_submission":
-                            run.get("calendar_sha256_at_submission"),
+                        "calendar_sha256_at_submission": run.get("calendar_sha256_at_submission"),
                         "calendar_sha256_at_compute": calendar_now,
-                        "session_authority_sha256_at_submission":
-                            run.get("session_authority_sha256_at_submission"),
+                        "session_authority_sha256_at_submission": run.get(
+                            "session_authority_sha256_at_submission"
+                        ),
                         "session_authority_sha256_at_compute": authority_now,
-                    }),
-                engine_sha256=engine_now)
+                    },
+                ),
+                engine_sha256=engine_now,
+            )
 
         series = _load_forecast_series(spec)
         if isinstance(series, ForecastRefusal):
@@ -401,49 +414,61 @@ class ResearchWorker:
         # calendar divergence with its three values (sol final P2).
         # Absent for sources whose grid does not intersect the
         # authority (synthetic lane).
-        grid_authority = series.provenance.get(
-            "session_authority_sha256")
-        if isinstance(grid_authority, str) \
-                and grid_authority != authority_now:
+        grid_authority = series.provenance.get("session_authority_sha256")
+        if isinstance(grid_authority, str) and grid_authority != authority_now:
             return _forecast_refusal_result(
-                run_id, spec, ForecastRefusal(
+                run_id,
+                spec,
+                ForecastRefusal(
                     code=FORECAST_CALENDAR_CHANGED,
-                    message=("the closure-corrected session authority "
-                             "moved between the identity check and the "
-                             "series load: the loaded grid was shaped by "
-                             "different authority bytes than the checked "
-                             "binding — refusing to publish that grid "
-                             "under this run id"),
+                    message=(
+                        "the closure-corrected session authority "
+                        "moved between the identity check and the "
+                        "series load: the loaded grid was shaped by "
+                        "different authority bytes than the checked "
+                        "binding — refusing to publish that grid "
+                        "under this run id"
+                    ),
                     payload={
-                        "session_authority_sha256_at_submission":
-                            run.get("session_authority_sha256_at_submission"),
+                        "session_authority_sha256_at_submission": run.get(
+                            "session_authority_sha256_at_submission"
+                        ),
                         "session_authority_sha256_at_check": authority_now,
-                        "session_authority_sha256_that_shaped_the_grid":
-                            grid_authority,
-                    }),
-                engine_sha256=engine_now)
+                        "session_authority_sha256_that_shaped_the_grid": grid_authority,
+                    },
+                ),
+                engine_sha256=engine_now,
+            )
 
         expected_series = run.get("series_sha256_at_submission")
-        if isinstance(expected_series, str) \
-                and expected_series != series.series_sha256:
+        if isinstance(expected_series, str) and expected_series != series.series_sha256:
             return _forecast_refusal_result(
-                run_id, spec, ForecastRefusal(
+                run_id,
+                spec,
+                ForecastRefusal(
                     code=FORECAST_SOURCE_DRIFT,
-                    message=("source data drifted between submission and "
-                             f"compute: submitted {expected_series}, live "
-                             f"resolves to {series.series_sha256}; "
-                             "refusing to publish revised bytes under the "
-                             "submission's run id"),
-                    payload={"series_sha256_at_submission": expected_series,
-                             "series_sha256_at_compute":
-                                 series.series_sha256}),
-                engine_sha256=engine_now)
+                    message=(
+                        "source data drifted between submission and "
+                        f"compute: submitted {expected_series}, live "
+                        f"resolves to {series.series_sha256}; "
+                        "refusing to publish revised bytes under the "
+                        "submission's run id"
+                    ),
+                    payload={
+                        "series_sha256_at_submission": expected_series,
+                        "series_sha256_at_compute": series.series_sha256,
+                    },
+                ),
+                engine_sha256=engine_now,
+            )
 
         recomputed = forecast_run_id(
-            spec, series_sha256=series.series_sha256,
+            spec,
+            series_sha256=series.series_sha256,
             calendar_sha256=calendar_now,
             session_authority_sha256=authority_now,
-            engine_sha256=engine_now)
+            engine_sha256=engine_now,
+        )
         if recomputed != run_id:
             # The bindings that passed every specific drift check still
             # do not hash back to this run id: the record was spooled
@@ -451,25 +476,28 @@ class ResearchWorker:
             # execution is refused — never published under an id it
             # does not bind.
             return _forecast_refusal_result(
-                run_id, spec, ForecastRefusal(
+                run_id,
+                spec,
+                ForecastRefusal(
                     code=FORECAST_IDENTITY_MISMATCH,
-                    message=("the run record's bindings do not reproduce "
-                             "its run id: recomputing the id from the "
-                             "stored spec and the current series / "
-                             "calendar / engine bindings yields a "
-                             "different id — refusing to publish under "
-                             "an identity the execution does not bind"),
-                    payload={"run_id": run_id,
-                             "recomputed_run_id": recomputed}),
-                engine_sha256=engine_now)
+                    message=(
+                        "the run record's bindings do not reproduce "
+                        "its run id: recomputing the id from the "
+                        "stored spec and the current series / "
+                        "calendar / engine bindings yields a "
+                        "different id — refusing to publish under "
+                        "an identity the execution does not bind"
+                    ),
+                    payload={"run_id": run_id, "recomputed_run_id": recomputed},
+                ),
+                engine_sha256=engine_now,
+            )
 
         outcome = evaluate_forecast(
-            spec, series=series,
-            calendar_sha256=calendar_now,
-            engine_sha256=engine_now)
+            spec, series=series, calendar_sha256=calendar_now, engine_sha256=engine_now
+        )
         if isinstance(outcome, ForecastRefusal):
-            return _forecast_refusal_result(
-                run_id, spec, outcome, engine_sha256=engine_now)
+            return _forecast_refusal_result(run_id, spec, outcome, engine_sha256=engine_now)
 
         wire = outcome.to_wire()
         result_sha = hashlib.sha256(canonical(wire)).hexdigest()
@@ -483,8 +511,7 @@ class ResearchWorker:
             "horizon": spec.horizon,
             "evaluation_window": {
                 "start": spec.evaluation_start.isoformat(),
-                "end": (spec.evaluation_end.isoformat()
-                        if spec.evaluation_end else None),
+                "end": (spec.evaluation_end.isoformat() if spec.evaluation_end else None),
             },
             "calendar_sha256": calendar_now,
             "session_authority_sha256": authority_now,
@@ -503,9 +530,9 @@ class ResearchWorker:
             "wire": wire,
         }
 
-    def _compute_scenario(self, store: Any, run_id: str,
-                          spec_payload: dict[str, Any],
-                          run: dict[str, Any]) -> dict[str, Any]:
+    def _compute_scenario(
+        self, store: Any, run_id: str, spec_payload: dict[str, Any], run: dict[str, Any]
+    ) -> dict[str, Any]:
         """Fork the parent run, replay the diff via the scenario
         engine, persist the parent_ref on first fork, and publish the
         child's content-bound result.
@@ -518,8 +545,7 @@ class ResearchWorker:
         """
         parent_run_id = run.get("parent_run_id")
         if not isinstance(parent_run_id, str) or not parent_run_id:
-            raise RunstateStoreError(
-                "scenario run is missing parent_run_id")
+            raise RunstateStoreError("scenario run is missing parent_run_id")
         spec = scenario_from_dict(parent_run_id, spec_payload)
         # The parent's stored result envelope — the source of truth
         # for identity matching (the parent's wire payload carries
@@ -534,7 +560,9 @@ class ResearchWorker:
                 message="parent run has no stored result record",
             )
             return _refusal_result(
-                run_id, spec, refusal,
+                run_id,
+                spec,
+                refusal,
                 spec_hash=scenario_spec_hash(spec),
                 format_version=RUN_FORMAT_VERSION,
                 engine_sha256=engine_identity_sha(),
@@ -542,10 +570,12 @@ class ResearchWorker:
         parent_envelope = parent_envelope_payload.get("wire")
         if not isinstance(parent_envelope, dict):
             refusal = ScenarioRefusal(
-                code=SCENARIO_PARENT_MISSING,
-                message="parent run result envelope is malformed")
+                code=SCENARIO_PARENT_MISSING, message="parent run result envelope is malformed"
+            )
             return _refusal_result(
-                run_id, spec, refusal,
+                run_id,
+                spec,
+                refusal,
                 spec_hash=scenario_spec_hash(spec),
                 format_version=RUN_FORMAT_VERSION,
                 engine_sha256=engine_identity_sha(),
@@ -555,21 +585,18 @@ class ResearchWorker:
         # decide whether the fork can proceed.
         parent_run_record = store.get("run", parent_run_id)
         parent_status = (
-            parent_run_record.get("status")
-            if isinstance(parent_run_record, dict) else None)
+            parent_run_record.get("status") if isinstance(parent_run_record, dict) else None
+        )
         # Parent envelope identity fields are read off the parent's
         # top-level result record (where the worker writes them via
         # the ``result`` kind), not inside ``wire``.
         parent_identity = {
             "engine_sha256": parent_envelope_payload.get("engine_sha256"),
-            "input_snapshot_sha256":
-                parent_envelope_payload.get("input_snapshot_sha256"),
-            "calendar_sha256":
-                parent_envelope_payload.get("calendar_sha256"),
+            "input_snapshot_sha256": parent_envelope_payload.get("input_snapshot_sha256"),
+            "calendar_sha256": parent_envelope_payload.get("calendar_sha256"),
             "spec_hash": parent_envelope_payload.get("spec_hash"),
         }
-        parent_envelope_for_engine = {**parent_envelope, **parent_identity,
-                                    "status": parent_status}
+        parent_envelope_for_engine = {**parent_envelope, **parent_identity, "status": parent_status}
         # P1-1 enforcement: the attach-time ParentRef (written on the
         # first fork of this parent) is READ BACK and handed to the
         # engine as the lineage baseline. First fork (no stored ref)
@@ -585,7 +612,9 @@ class ResearchWorker:
         )
         if outcome.refusal is not None:
             return _refusal_result(
-                run_id, spec, outcome.refusal,
+                run_id,
+                spec,
+                outcome.refusal,
                 spec_hash=scenario_spec_hash(spec),
                 format_version=RUN_FORMAT_VERSION,
                 engine_sha256=engine_identity_sha(),
@@ -594,8 +623,7 @@ class ResearchWorker:
             )
         # Persist parent_ref (idempotent), then child pointer.
         if outcome.parent_ref is not None:
-            store_parent_ref(store, outcome.parent_ref,
-                             at=datetime.now())
+            store_parent_ref(store, outcome.parent_ref, at=datetime.now())
         child = ChildRef(
             child_run_id=run_id,
             parent_run_id=parent_run_id,
@@ -603,6 +631,7 @@ class ResearchWorker:
             scenario_diff_sha256=scenario_diff_sha256(spec),
         )
         from tree_options.research.scenarios.lineage import attach_child
+
         attach_child(store, child, at=datetime.now())
         # P1-2 enforcement: the child's input identity is RECOMPUTED
         # from the live catalog for the rewritten spec — never
@@ -615,11 +644,14 @@ class ResearchWorker:
         live_plan = resolve_plan(outcome.rewritten_spec)
         if live_plan.refused:
             return _refusal_result(
-                run_id, spec,
+                run_id,
+                spec,
                 ScenarioRefusal(
                     code=SCENARIO_PARENT_CHANGED,
-                    message=("the scenario diff made the plan unresolvable "
-                             f"at compute time: {live_plan.refusal_reason}"),
+                    message=(
+                        "the scenario diff made the plan unresolvable "
+                        f"at compute time: {live_plan.refusal_reason}"
+                    ),
                 ),
                 spec_hash=scenario_spec_hash(spec),
                 format_version=RUN_FORMAT_VERSION,
@@ -628,34 +660,38 @@ class ResearchWorker:
                 scenario_diff_sha256=scenario_diff_sha256(spec),
             )
         catalog_now = {c.id: c for c in self.catalog_provider()}
-        live_cands = tuple(catalog_now[cid]
-                           for cid in outcome.rewritten_spec.candidate_ids)
+        live_cands = tuple(catalog_now[cid] for cid in outcome.rewritten_spec.candidate_ids)
         live_baseline = (
             catalog_now.get(outcome.rewritten_spec.benchmark_candidate_id)
-            if outcome.rewritten_spec.benchmark_candidate_id else None)
+            if outcome.rewritten_spec.benchmark_candidate_id
+            else None
+        )
         live_snapshot, live_snapshot_sha = input_snapshot_sha(
-            live_cands, live_baseline, live_plan.calendar_sha256)
-        parent_input_sha = parent_envelope_payload.get(
-            "input_snapshot_sha256")
+            live_cands, live_baseline, live_plan.calendar_sha256
+        )
+        parent_input_sha = parent_envelope_payload.get("input_snapshot_sha256")
         if live_snapshot_sha != parent_input_sha:
             refusal = ScenarioRefusal(
                 code=SCENARIO_PARENT_CHANGED,
-                message=(f"parent input_snapshot_sha256 drifted: parent "
-                         f"record claims {parent_input_sha}, live catalog "
-                         f"resolves to {live_snapshot_sha}; refuse to "
-                         "publish a child whose receipt would misrepresent "
-                         "its inputs"),
+                message=(
+                    f"parent input_snapshot_sha256 drifted: parent "
+                    f"record claims {parent_input_sha}, live catalog "
+                    f"resolves to {live_snapshot_sha}; refuse to "
+                    "publish a child whose receipt would misrepresent "
+                    "its inputs"
+                ),
             )
             refusal_payload = _refusal_result(
-                run_id, spec, refusal,
+                run_id,
+                spec,
+                refusal,
                 spec_hash=scenario_spec_hash(spec),
                 format_version=RUN_FORMAT_VERSION,
                 engine_sha256=engine_identity_sha(),
                 parent_run_id=parent_run_id,
                 scenario_diff_sha256=scenario_diff_sha256(spec),
             )
-            refusal_payload["wire"][
-                "live_input_snapshot_sha256"] = live_snapshot_sha
+            refusal_payload["wire"]["live_input_snapshot_sha256"] = live_snapshot_sha
             return refusal_payload
         wire = outcome.result.to_wire()
         # Append scenario-specific metadata to the wire envelope so
@@ -693,8 +729,11 @@ class ResearchWorker:
         self._stop.clear()
         self._requeue_interrupted()
         self._thread = threading.Thread(
-            target=self._loop, kwargs={"poll_seconds": poll_seconds},
-            name="research-worker", daemon=True)
+            target=self._loop,
+            kwargs={"poll_seconds": poll_seconds},
+            name="research-worker",
+            daemon=True,
+        )
         self._thread.start()
 
     def stop(self) -> None:
@@ -718,15 +757,15 @@ class ResearchWorker:
         are idempotent, so this is honest recovery, not silent reuse."""
         with open_runstate_store(self.workspace) as store:
             for payload, _at in store.all_at("run"):
-                if (isinstance(payload, dict)
-                        and payload.get("status") == "running"):
-                    store.replace("run", {**payload, "status": "queued",
-                                          "requeued_at": datetime.now().isoformat()},
-                                  key=payload["run_id"])
+                if isinstance(payload, dict) and payload.get("status") == "running":
+                    store.replace(
+                        "run",
+                        {**payload, "status": "queued", "requeued_at": datetime.now().isoformat()},
+                        key=payload["run_id"],
+                    )
 
 
-__all__ = ["RUN_FORMAT_VERSION", "ResearchWorker", "engine_identity_sha",
-           "input_snapshot_sha"]
+__all__ = ["RUN_FORMAT_VERSION", "ResearchWorker", "engine_identity_sha", "input_snapshot_sha"]
 
 
 # -- module-scope helpers --------------------------------------------------
@@ -738,8 +777,7 @@ def _refusal_result(run_id: str, spec: Any, refusal: Any, **extra: Any) -> dict[
     SPA can render the honest blocker — never a 404 from a missing
     row. The result_sha binds the canonical refusal text so
     downstream readers can replay why."""
-    wire = {"refusal": refusal.code, "message": refusal.message,
-            "scenario_kind": spec.kind.value}
+    wire = {"refusal": refusal.code, "message": refusal.message, "scenario_kind": spec.kind.value}
     if "parent_run_id" in extra:
         wire["parent_run_id"] = extra["parent_run_id"]
     if "scenario_diff_sha256" in extra:
@@ -748,11 +786,13 @@ def _refusal_result(run_id: str, spec: Any, refusal: Any, **extra: Any) -> dict[
         json.dumps(wire, sort_keys=True, default=str).encode("utf-8")
     ).hexdigest()
     payload = dict(extra)
-    payload.update({
-        "run_id": run_id,
-        "result_sha256": result_sha,
-        "wire": wire,
-    })
+    payload.update(
+        {
+            "run_id": run_id,
+            "result_sha256": result_sha,
+            "wire": wire,
+        }
+    )
     return payload
 
 
@@ -763,13 +803,12 @@ def _load_forecast_series(spec: Any) -> ForecastSeries | ForecastRefusal:
         return load_synthetic()
     if spec.source is ForecastSourceId.INDEX_VIX:
         return load_index("VIX")
-    raise RunstateStoreError(
-        f"no source loader for {spec.source.value!r}")
+    raise RunstateStoreError(f"no source loader for {spec.source.value!r}")
 
 
-def _forecast_refusal_result(run_id: str, spec: Any,
-                             refusal: ForecastRefusal,
-                             **extra: Any) -> dict[str, Any]:
+def _forecast_refusal_result(
+    run_id: str, spec: Any, refusal: ForecastRefusal, **extra: Any
+) -> dict[str, Any]:
     """A forecast that refused still gets a content-bound result record
     (the scenario discipline): the wire carries the machine-readable
     code, the message, AND the refusal's structured payload — the
@@ -785,10 +824,12 @@ def _forecast_refusal_result(run_id: str, spec: Any,
     }
     result_sha = hashlib.sha256(canonical(wire)).hexdigest()
     payload = dict(extra)
-    payload.update({
-        "run_id": run_id,
-        "engine_sha256": extra.get("engine_sha256", engine_identity_sha()),
-        "result_sha256": result_sha,
-        "wire": wire,
-    })
+    payload.update(
+        {
+            "run_id": run_id,
+            "engine_sha256": extra.get("engine_sha256", engine_identity_sha()),
+            "result_sha256": result_sha,
+            "wire": wire,
+        }
+    )
     return payload

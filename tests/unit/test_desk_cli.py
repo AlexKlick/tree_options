@@ -22,12 +22,21 @@ ACCOUNT = "DUT143714"
 
 
 def _compose(**overrides):
-    kwargs = dict(intent_id="canary-x", account_id=ACCOUNT, underlying="SPY",
-                  buy_strike=Decimal("744"), sell_strike=Decimal("742"),
-                  expiry=date(2026, 11, 20), debit=Decimal("0.90"),
-                  cap=Decimal("1.20"), entry_date=date(2026, 9, 29),
-                  exit_deadline=date(2026, 10, 23), tp_frac=Decimal("0.5"),
-                  send_deadline=T0, requested_by="test")
+    kwargs = dict(
+        intent_id="canary-x",
+        account_id=ACCOUNT,
+        underlying="SPY",
+        buy_strike=Decimal("744"),
+        sell_strike=Decimal("742"),
+        expiry=date(2026, 11, 20),
+        debit=Decimal("0.90"),
+        cap=Decimal("1.20"),
+        entry_date=date(2026, 9, 29),
+        exit_deadline=date(2026, 10, 23),
+        tp_frac=Decimal("0.5"),
+        send_deadline=T0,
+        requested_by="test",
+    )
     kwargs.update(overrides)
     return compose_request(**kwargs)
 
@@ -52,13 +61,16 @@ def test_take_profit_basis_is_explicit_and_honored():
     assert tp is not None and (tp.basis, tp.value) == ("width_frac", Decimal("0.5"))
 
 
-@pytest.mark.parametrize("overrides", [
-    {"debit": Decimal("1.50")},          # above the cap: refused
-    {"tp_frac": Decimal("1.5"), "tp_basis": "width_frac"},  # width bound 0..1
-    {"tp_frac": Decimal("0")},           # gain_frac needs value > 0
-    {"tp_basis": "nope"},                # unknown basis refuses (not silently widened)
-    {"sell_strike": Decimal("745")},      # not a debit vertical by strikes
-])
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"debit": Decimal("1.50")},  # above the cap: refused
+        {"tp_frac": Decimal("1.5"), "tp_basis": "width_frac"},  # width bound 0..1
+        {"tp_frac": Decimal("0")},  # gain_frac needs value > 0
+        {"tp_basis": "nope"},  # unknown basis refuses (not silently widened)
+        {"sell_strike": Decimal("745")},  # not a debit vertical by strikes
+    ],
+)
 def test_invalid_parameters_refuse_before_any_file(overrides, tmp_path):
     with pytest.raises(ValueError):
         _compose(**overrides)
@@ -66,10 +78,27 @@ def test_invalid_parameters_refuse_before_any_file(overrides, tmp_path):
 
 def test_cli_writes_a_request_the_desk_will_accept(tmp_path, monkeypatch):
     monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
-    rc = _cli(["--dir", str(tmp_path / "desk"), "request",
-               "--buy-strike", "744", "--sell-strike", "742",
-               "--expiry", "2026-11-20", "--debit", "0.90", "--cap", "1.20",
-               "--exit-deadline", "2026-10-23", "--intent-id", "canary-t1"])
+    rc = _cli(
+        [
+            "--dir",
+            str(tmp_path / "desk"),
+            "request",
+            "--buy-strike",
+            "744",
+            "--sell-strike",
+            "742",
+            "--expiry",
+            "2026-11-20",
+            "--debit",
+            "0.90",
+            "--cap",
+            "1.20",
+            "--exit-deadline",
+            "2026-10-23",
+            "--intent-id",
+            "canary-t1",
+        ]
+    )
     assert rc == 0
     raw = json.loads((tmp_path / "desk" / "requests" / "canary-t1.json").read_text())
     request = EntryRequest.model_validate(raw)  # the desk's own parser
@@ -79,14 +108,28 @@ def test_cli_writes_a_request_the_desk_will_accept(tmp_path, monkeypatch):
 
 def test_cli_refuses_a_bad_request_and_writes_nothing(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
-    rc = _cli(["--dir", str(tmp_path / "desk"), "request",
-               "--buy-strike", "744", "--sell-strike", "742",
-               "--expiry", "2026-11-20", "--debit", "9.00",
-               "--exit-deadline", "2026-10-23"])
+    rc = _cli(
+        [
+            "--dir",
+            str(tmp_path / "desk"),
+            "request",
+            "--buy-strike",
+            "744",
+            "--sell-strike",
+            "742",
+            "--expiry",
+            "2026-11-20",
+            "--debit",
+            "9.00",
+            "--exit-deadline",
+            "2026-10-23",
+        ]
+    )
     assert rc == 2
     assert "refused" in capsys.readouterr().err
-    assert not (tmp_path / "desk" / "requests").exists() or \
-        not list((tmp_path / "desk" / "requests").glob("*.json"))
+    assert not (tmp_path / "desk" / "requests").exists() or not list(
+        (tmp_path / "desk" / "requests").glob("*.json")
+    )
 
 
 def test_kill_file_round_trip(tmp_path):
@@ -101,10 +144,25 @@ def test_kill_file_round_trip(tmp_path):
 
 def test_cli_defaults_write_a_gain_frac_take_profit(tmp_path, monkeypatch):
     monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
-    rc = _cli(["--dir", str(tmp_path / "desk"), "request",
-               "--buy-strike", "744", "--sell-strike", "742",
-               "--expiry", "2026-11-20", "--debit", "0.90",
-               "--exit-deadline", "2026-10-23", "--intent-id", "canary-tp"])
+    rc = _cli(
+        [
+            "--dir",
+            str(tmp_path / "desk"),
+            "request",
+            "--buy-strike",
+            "744",
+            "--sell-strike",
+            "742",
+            "--expiry",
+            "2026-11-20",
+            "--debit",
+            "0.90",
+            "--exit-deadline",
+            "2026-10-23",
+            "--intent-id",
+            "canary-tp",
+        ]
+    )
     assert rc == 0
     raw = json.loads((tmp_path / "desk" / "requests" / "canary-tp.json").read_text())
     request = EntryRequest.model_validate(raw)
@@ -115,10 +173,25 @@ def test_cli_defaults_write_a_gain_frac_take_profit(tmp_path, monkeypatch):
 def test_cli_refuses_an_unknown_take_profit_basis(tmp_path, monkeypatch):
     monkeypatch.setenv("TREX_SUPERVISED_DIR", str(tmp_path / "supervised"))
     with pytest.raises(SystemExit) as caught:
-        _cli(["--dir", str(tmp_path / "desk"), "request",
-              "--buy-strike", "744", "--sell-strike", "742",
-              "--expiry", "2026-11-20", "--debit", "0.90",
-              "--exit-deadline", "2026-10-23", "--tp-basis", "half_width"])
+        _cli(
+            [
+                "--dir",
+                str(tmp_path / "desk"),
+                "request",
+                "--buy-strike",
+                "744",
+                "--sell-strike",
+                "742",
+                "--expiry",
+                "2026-11-20",
+                "--debit",
+                "0.90",
+                "--exit-deadline",
+                "2026-10-23",
+                "--tp-basis",
+                "half_width",
+            ]
+        )
     assert caught.value.code == 2
     assert not (tmp_path / "desk" / "requests").exists()
 
@@ -142,13 +215,23 @@ def test_flatten_without_halt_stays_quiet(tmp_path, capsys):
 def test_status_reads_the_desk_state(tmp_path):
     paths = DeskPaths(tmp_path)
     paths.root.mkdir(parents=True, exist_ok=True)
-    (paths.root / "owner.json").write_text(json.dumps(
-        {"owner_epoch": "desk83-x", "client_id": 83, "pid": 1, "started_at": "t"}))
+    (paths.root / "owner.json").write_text(
+        json.dumps({"owner_epoch": "desk83-x", "client_id": 83, "pid": 1, "started_at": "t"})
+    )
     (paths.root / "requests").mkdir()
-    (paths.root / "requests" / "canary-t1.result.json").write_text(json.dumps(
-        {"status": "sent", "intent_id": "canary-t1"}))
-    paths.book().write_text(json.dumps({"heartbeat": "t", "structures": {
-        "canary-t1": {"status": "open", "filled_qty": 1, "exit_filled_qty": 0}}}))
+    (paths.root / "requests" / "canary-t1.result.json").write_text(
+        json.dumps({"status": "sent", "intent_id": "canary-t1"})
+    )
+    paths.book().write_text(
+        json.dumps(
+            {
+                "heartbeat": "t",
+                "structures": {
+                    "canary-t1": {"status": "open", "filled_qty": 1, "exit_filled_qty": 0}
+                },
+            }
+        )
+    )
     paths.events().write_text(json.dumps({"event": "entry_filled"}) + "\n")
     paths.halt().touch()
     supervised = SupervisedPaths(tmp_path / "supervised")

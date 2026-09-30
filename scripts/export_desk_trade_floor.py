@@ -32,10 +32,18 @@ def main() -> None:
         os.link(temporary, out)
     finally:
         Path(temporary).unlink(missing_ok=True)
-    print(json.dumps({"out": str(out), "rounds": len(game["rounds"]),
-                      "windows": len(game["windows"]),
-                      "sha256": hashlib.sha256(raw).hexdigest(),
-                      "execution_enabled": game["execution_enabled"]}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "out": str(out),
+                "rounds": len(game["rounds"]),
+                "windows": len(game["windows"]),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "execution_enabled": game["execution_enabled"],
+            },
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

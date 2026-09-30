@@ -54,7 +54,9 @@ class FakeChainSource:
             [140.0, 145.0, 150.0, 155.0, 160.0],
         )
 
-    def put_rows(self, symbol: str, expiry: str, strikes: list[float], limit: int) -> list[ChainRow]:
+    def put_rows(
+        self, symbol: str, expiry: str, strikes: list[float], limit: int
+    ) -> list[ChainRow]:
         return [r for r in _rows() if r.strike in strikes][:limit]
 
     def account(self) -> AccountSnapshot | None:
@@ -84,7 +86,9 @@ def _account() -> AccountSnapshot:
 class TestRunOnce:
     def test_writes_artifact_from_source_rows(self, tmp_path: Path) -> None:
         state = tmp_path / "state"
-        path = run_once(FakeChainSource(account=_account()), _cfg(), state, "manual", repo=None, now=NOW)
+        path = run_once(
+            FakeChainSource(account=_account()), _cfg(), state, "manual", repo=None, now=NOW
+        )
         doc = read_latest(state)
         assert doc is not None
         assert doc["payload"]["data_quality"]["underlyings_scanned"] == 2
@@ -252,7 +256,7 @@ class TestShadowHook:
         spool = state / "spool"
         write_scan_request(spool, "req-s1", NOW)
         serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
-        book = (state / "shadow_book.json")
+        book = state / "shadow_book.json"
         assert book.exists()
         doc = json.loads(book.read_text())
         assert doc["version"] == 1
@@ -299,8 +303,13 @@ class TestMarketTick:
         body = _json.dumps(
             {
                 "timestamp": "2026-09-22 22:08:55",
-                "data": {"bid": 1.0, "ask": 1.1, "close": 1.05, "iv30": 12.0,
-                          "price_change_percent": 0.1},
+                "data": {
+                    "bid": 1.0,
+                    "ask": 1.1,
+                    "close": 1.05,
+                    "iv30": 12.0,
+                    "price_change_percent": 0.1,
+                },
             }
         ).encode()
         serve_tick(
@@ -326,9 +335,7 @@ class TestMarketTick:
         body = _json.dumps(
             {"timestamp": "t", "data": {"bid": 1.0, "ask": 1.1, "close": 1.0}}
         ).encode()
-        write_request(
-            state / "spool", "market", "req-m1", {"request_ts": NOW.isoformat()}
-        )
+        write_request(state / "spool", "market", "req-m1", {"request_ts": NOW.isoformat()})
         serve_tick(
             FakeChainSource(), _cfg(), state, now=NOW, market_transport=self._transport(body)
         )
@@ -435,27 +442,46 @@ class TestBacktestTick:
         import json as _json
 
         state.mkdir(parents=True, exist_ok=True)
-        (state / "latest.json").write_text(_json.dumps({"payload": {
-            "candidates": [{"underlying": "QQQ", "expiry": "20261016", "dte": 24,
-                            "short_strike": 642.0, "long_strike": 657.0,
-                            "debit_mid": 0.195, "debit_ask": 0.23}],
-            "rejected": [],
-        }}))
+        (state / "latest.json").write_text(
+            _json.dumps(
+                {
+                    "payload": {
+                        "candidates": [
+                            {
+                                "underlying": "QQQ",
+                                "expiry": "20261016",
+                                "dte": 24,
+                                "short_strike": 642.0,
+                                "long_strike": 657.0,
+                                "debit_mid": 0.195,
+                                "debit_ask": 0.23,
+                            }
+                        ],
+                        "rejected": [],
+                    }
+                }
+            )
+        )
         if quote:
-            (state / "market.json").write_text(_json.dumps({
-                "last_refresh": NOW.isoformat(),
-                "symbols": {"QQQ": {"bid": 747.97, "ask": 748.0, "iv30": 17.5}},
-                "errors": {},
-            }))
+            (state / "market.json").write_text(
+                _json.dumps(
+                    {
+                        "last_refresh": NOW.isoformat(),
+                        "symbols": {"QQQ": {"bid": 747.97, "ask": 748.0, "iv30": 17.5}},
+                        "errors": {},
+                    }
+                )
+            )
         if bars:
             base = 1_760_000_000_000
             rows = [{"t": base + i * 86_400_000, "c": 700.0 + i * 0.2} for i in range(120)]
             cache = state / "market" / "cache" / "bars"
             cache.mkdir(parents=True, exist_ok=True)
-            (cache / "QQQ.json").write_text(_json.dumps(
-                {"fetched_at": NOW.isoformat(), "ttl_seconds": 86400,
-                 "payload": {"bars": rows}}
-            ))
+            (cache / "QQQ.json").write_text(
+                _json.dumps(
+                    {"fetched_at": NOW.isoformat(), "ttl_seconds": 86400, "payload": {"bars": rows}}
+                )
+            )
 
     def test_materializes_labeled_artifact(self, tmp_path: Path) -> None:
         from tree_options.trex.discovery.artifact import read_result, write_request
@@ -463,8 +489,9 @@ class TestBacktestTick:
 
         state = tmp_path / "state"
         self._seed(state)
-        write_request(state / "spool", "backtest", "bt-1",
-                      {"request_ts": NOW.isoformat(), "key": self.KEY})
+        write_request(
+            state / "spool", "backtest", "bt-1", {"request_ts": NOW.isoformat(), "key": self.KEY}
+        )
         serve_tick(FakeChainSource(), _cfg(), state, now=NOW, broker_ready=False)
         doc = read_artifact(state, self.KEY)
         assert doc is not None and doc["error"] is None
@@ -482,8 +509,9 @@ class TestBacktestTick:
 
         state = tmp_path / "state"
         self._seed(state, quote=False)
-        write_request(state / "spool", "backtest", "bt-2",
-                      {"request_ts": NOW.isoformat(), "key": self.KEY})
+        write_request(
+            state / "spool", "backtest", "bt-2", {"request_ts": NOW.isoformat(), "key": self.KEY}
+        )
         serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
         doc = read_artifact(state, self.KEY)
         assert doc is not None and "quote" in doc["error"]
@@ -496,8 +524,12 @@ class TestBacktestTick:
 
         state = tmp_path / "state"
         self._seed(state)
-        write_request(state / "spool", "backtest", "bt-3",
-                      {"request_ts": NOW.isoformat(), "key": "SPY|20261016|500|510"})
+        write_request(
+            state / "spool",
+            "backtest",
+            "bt-3",
+            {"request_ts": NOW.isoformat(), "key": "SPY|20261016|500|510"},
+        )
         serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
         doc = read_artifact(state, "SPY|20261016|500|510")
         assert doc is not None and "not found" in doc["error"]
@@ -525,8 +557,9 @@ class TestProposals:
         def t(url: str, *, timeout: float = 10.0):
             if "FAKEX" in url:
                 return 404, b""
-            return 200, json.dumps({"timestamp": "2026-09-22 20:00:00",
-                                    "data": {"bid": 1.0, "ask": 1.1, "close": 1.0}}).encode()
+            return 200, json.dumps(
+                {"timestamp": "2026-09-22 20:00:00", "data": {"bid": 1.0, "ask": 1.1, "close": 1.0}}
+            ).encode()
 
         return t
 
@@ -537,12 +570,28 @@ class TestProposals:
         state = tmp_path / "state"
         load_watchlist(state, seed=["NVDA", "QQQ"], now=NOW)
         write_request(state / "spool", "propose", "p-1", {"request_ts": NOW.isoformat()})
-        reply = json.dumps({"proposals": [
-            {"symbol": "TSM", "action": "add", "rationale": "semis breadth", "confidence": 0.6},
-            {"symbol": "FAKEX", "action": "add", "rationale": "hallucinated"},
-        ]})
-        serve_tick(FakeChainSource(), _cfg(), state, now=NOW, broker_ready=False,
-                   market_transport=self._market(), llm_transport=self._llm(reply))
+        reply = json.dumps(
+            {
+                "proposals": [
+                    {
+                        "symbol": "TSM",
+                        "action": "add",
+                        "rationale": "semis breadth",
+                        "confidence": 0.6,
+                    },
+                    {"symbol": "FAKEX", "action": "add", "rationale": "hallucinated"},
+                ]
+            }
+        )
+        serve_tick(
+            FakeChainSource(),
+            _cfg(),
+            state,
+            now=NOW,
+            broker_ready=False,
+            market_transport=self._market(),
+            llm_transport=self._llm(reply),
+        )
         doc = load_watchlist(state)
         pending = [p for p in doc["proposals"] if p["status"] == "pending"]
         assert [p["symbol"] for p in pending] == ["TSM"]
@@ -598,8 +647,9 @@ class TestCodexM456Runner:
         snap = json.loads((state / "market.json").read_text())
         snap["last_refresh"] = "2026-09-20T16:00:00-04:00"  # two days old
         (state / "market.json").write_text(json.dumps(snap))
-        write_request(state / "spool", "backtest", "bt-s", {"request_ts": NOW.isoformat(),
-                                                             "key": self.KEY})
+        write_request(
+            state / "spool", "backtest", "bt-s", {"request_ts": NOW.isoformat(), "key": self.KEY}
+        )
         serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
         doc = read_artifact(state, self.KEY)
         assert doc is not None and "no fresh QQQ quote" in doc["error"]
@@ -610,8 +660,9 @@ class TestCodexM456Runner:
 
         state = tmp_path / "state"
         TestBacktestTick()._seed(state)
-        write_request(state / "spool", "backtest", "bt-f", {"request_ts": NOW.isoformat(),
-                                                             "key": self.KEY})
+        write_request(
+            state / "spool", "backtest", "bt-f", {"request_ts": NOW.isoformat(), "key": self.KEY}
+        )
         serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
         doc = read_artifact(state, self.KEY)
         assert doc is not None and doc["structure"]["spot_source"] == "market snapshot"
@@ -627,8 +678,12 @@ class TestCodexM456Runner:
 
         monkeypatch.setattr(backtest, "write_artifact", boom)
         state = tmp_path / "state"
-        write_request(state / "spool", "backtest", "bt-x", {"request_ts": NOW.isoformat(),
-                                                             "key": "SPY|20261016|1|2"})
+        write_request(
+            state / "spool",
+            "backtest",
+            "bt-x",
+            {"request_ts": NOW.isoformat(), "key": "SPY|20261016|1|2"},
+        )
         serve_tick(FakeChainSource(), _cfg(), state, now=NOW)
         result = read_result(state / "spool", "backtest")
         assert result is not None and result["status"] == "error"

@@ -52,7 +52,9 @@ from tree_options.research.scenarios.spec_io import scenario_from_dict
 
 def _candidate() -> ResearchCandidate:
     return ResearchCandidate(
-        id="c1", family="f", version="v1",
+        id="c1",
+        family="f",
+        version="v1",
         evidence_kind=ResearchEvidenceKind.SYNTHETIC_BACKTEST,
         registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         disposition=ResearchDisposition.PASS,
@@ -91,11 +93,18 @@ def _spawn_comparison_run(workspace: Path) -> str:
     run_id = spec_hash(spec)
     with open_runstate_store(workspace) as store:
         store.put("spec", spec.to_dict(), key=run_id, at=datetime.now())
-        store.put("run",
-                  {"run_id": run_id, "spec_hash": run_id,
-                   "kind": "comparison", "status": "queued",
-                   "format_version": RUN_FORMAT_VERSION},
-                  key=run_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": run_id,
+                "spec_hash": run_id,
+                "kind": "comparison",
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=run_id,
+            at=datetime.now(),
+        )
     return run_id
 
 
@@ -136,11 +145,16 @@ def test_interrupted_run_requeues_on_start(tmp_path):
     # First claim pushes the run to ``running``.
     with open_runstate_store(ws) as store:
         run = store.get("run", run_id)
-        store.replace("run",
-                      {**run, "status": "running",
-                       "started_at": datetime.now().isoformat(),
-                       "requeued_at": datetime.now().isoformat()},
-                      key=run_id)
+        store.replace(
+            "run",
+            {
+                **run,
+                "status": "running",
+                "started_at": datetime.now().isoformat(),
+                "requeued_at": datetime.now().isoformat(),
+            },
+            key=run_id,
+        )
     # A fresh worker start requeues ``running`` and processes it.
     # start() performs the REQUEUE synchronously (the discipline under
     # test); the daemon's loop then takes ONE IMMEDIATE step before its
@@ -174,34 +188,53 @@ def test_interrupted_scenario_requeues_on_restart(tmp_path):
     parent_id = spec_hash(spec)
     with open_runstate_store(ws) as store:
         store.put("spec", spec.to_dict(), key=parent_id, at=datetime.now())
-        store.put("run",
-                  {"run_id": parent_id, "spec_hash": parent_id,
-                   "kind": "comparison", "status": "queued",
-                   "format_version": RUN_FORMAT_VERSION},
-                  key=parent_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": parent_id,
+                "spec_hash": parent_id,
+                "kind": "comparison",
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=parent_id,
+            at=datetime.now(),
+        )
     worker.step()  # complete the parent
     with open_runstate_store(ws) as store:
         parent = store.get("run", parent_id)
         assert parent["status"] == "completed"
-    scn = scenario_from_dict(parent_id, {
-        "kind": "contribution_planning", "access_mode": "exploratory",
-        "diff": {"contribution_per_period": "500"},
-    })
+    scn = scenario_from_dict(
+        parent_id,
+        {
+            "kind": "contribution_planning",
+            "access_mode": "exploratory",
+            "diff": {"contribution_per_period": "500"},
+        },
+    )
     child_id = scenario_spec_hash(scn)
     with open_runstate_store(ws) as store:
         store.put("spec", scn.to_dict(), key=child_id, at=datetime.now())
-        store.put("run",
-                  {"run_id": child_id, "spec_hash": child_id,
-                   "kind": "scenario", "parent_run_id": parent_id,
-                   "status": "queued",
-                   "format_version": RUN_FORMAT_VERSION},
-                  key=child_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": child_id,
+                "spec_hash": child_id,
+                "kind": "scenario",
+                "parent_run_id": parent_id,
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=child_id,
+            at=datetime.now(),
+        )
     with open_runstate_store(ws) as store:
         run = store.get("run", child_id)
-        store.replace("run",
-                      {**run, "status": "running",
-                       "started_at": datetime.now().isoformat()},
-                      key=child_id)
+        store.replace(
+            "run",
+            {**run, "status": "running", "started_at": datetime.now().isoformat()},
+            key=child_id,
+        )
     worker.start(poll_seconds=3600.0)
     # same sequencing as the comparison requeue test: join the daemon's
     # one immediate step before driving manually (no double claims)

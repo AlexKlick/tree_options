@@ -62,7 +62,8 @@ def test_shadow_marks_convert_to_hand_calculable_funded_inputs():
         ),
     ]
     executions, marks_out = convert_shadow_to_funded_inputs(
-        marks, [date(2024, 1, 2), date(2024, 1, 3)],
+        marks,
+        [date(2024, 1, 2), date(2024, 1, 3)],
         starting_capital=Decimal("10000"),
     )
     # First mark -> one execution (25 SPY @ 400.00, fee=0)
@@ -128,12 +129,19 @@ def test_defense_with_partial_coverage_marks_gap_rate():
     rounded-down 0%."""
     defense = ShadowDefense(
         total_sessions_with_marks=50,
-        missing_sessions=(date(2024, 1, 15), date(2024, 1, 31),
-                          date(2024, 2, 1), date(2024, 2, 6),
-                          date(2024, 2, 7), date(2024, 2, 8),
-                          date(2024, 2, 9), date(2024, 2, 10),
-                          date(2024, 2, 11), date(2024, 2, 12),
-                          date(2024, 2, 13)),
+        missing_sessions=(
+            date(2024, 1, 15),
+            date(2024, 1, 31),
+            date(2024, 2, 1),
+            date(2024, 2, 6),
+            date(2024, 2, 7),
+            date(2024, 2, 8),
+            date(2024, 2, 9),
+            date(2024, 2, 10),
+            date(2024, 2, 11),
+            date(2024, 2, 12),
+            date(2024, 2, 13),
+        ),
         gap_rate=Decimal("11") / Decimal("61"),
         can_defend_daily_nav=False,
         rationale="11-day gap; nav=null on missing sessions",
@@ -160,7 +168,8 @@ def test_vix_term_candidate_when_defended():
         artifacts={"chain": "sha:abc"},
     )
     cand = build_vix_term_candidate(
-        FundedHistorySupport.RECONSTRUCTED, defense,
+        FundedHistorySupport.RECONSTRUCTED,
+        defense,
         supported_start=date(2024, 1, 2),
         supported_end=date(2024, 3, 28),
     )
@@ -180,8 +189,10 @@ def test_vix_term_candidate_when_no_defense():
     defense. ``plot_funded_account`` is False; the candidate is
     inspectable but not plottable (RL-1 invariant)."""
     cand = build_vix_term_candidate(
-        FundedHistorySupport.UNAVAILABLE, None,
-        supported_start=None, supported_end=None,
+        FundedHistorySupport.UNAVAILABLE,
+        None,
+        supported_start=None,
+        supported_end=None,
     )
     assert cand.funded_history is FundedHistorySupport.UNAVAILABLE
     assert cand.plot_funded_account is False
@@ -200,7 +211,8 @@ def test_hold_20_candidate_mirrors_vix_term():
         rationale="20-session hold observed",
     )
     cand = build_hold_20_candidate(
-        FundedHistorySupport.RECONSTRUCTED, defense,
+        FundedHistorySupport.RECONSTRUCTED,
+        defense,
         supported_start=date(2024, 1, 2),
         supported_end=date(2024, 1, 31),
     )
@@ -209,7 +221,6 @@ def test_hold_20_candidate_mirrors_vix_term():
     assert cand.evidence_kind is ResearchEvidenceKind.SHADOW_PROXY
     assert cand.plot_funded_account is True
     assert "can_defend_daily_nav=True" in cand.funded_history_reason
-
 
 
 # -- 4. Shadow fixture integration (oracle 4 of RL-2) ----------------------
@@ -226,7 +237,8 @@ def test_full_shadow_funded_engine_pipeline_hand_calculable():
         ShadowMark(date(2024, 1, 4), "d1", "SPY", 10, Decimal("103"), Decimal("0")),
     ]
     executions, _marks = convert_shadow_to_funded_inputs(
-        marks, [m.session for m in marks],
+        marks,
+        [m.session for m in marks],
         starting_capital=Decimal("1000"),
     )
     # The engine applies executions + marks: 1 buy (10 * $100 = $1000)

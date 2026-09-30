@@ -47,9 +47,7 @@ class ChainUnavailable(RuntimeError):
 
 class ChainSource(Protocol):
     def chain(self, symbol: str) -> tuple[list[str], list[float]] | None: ...
-    def put_rows(
-        self, symbol: str, expiry: str, strikes: list[float], limit: int
-    ) -> list[Any]: ...
+    def put_rows(self, symbol: str, expiry: str, strikes: list[float], limit: int) -> list[Any]: ...
     def account(self) -> AccountSnapshot | None: ...
     def cancel_all(self) -> None: ...
 
@@ -186,7 +184,9 @@ def _candidate_dicts(candidates: list[Any]) -> list[dict[str, Any]]:
                 "target_mode_used": c.target_mode_used,
                 "rank": c.rank,
                 "accepted": c.accepted,
-                "rules": [{"rule": r.rule, "status": r.status, "detail": r.detail} for r in c.rules],
+                "rules": [
+                    {"rule": r.rule, "status": r.status, "detail": r.detail} for r in c.rules
+                ],
                 "reasons": list(c.reasons),
             }
         )
@@ -283,7 +283,10 @@ def _post_scan_shadow(state_dir: Path, repo: Path | None, now: datetime) -> None
     payload = doc.get("payload", {})
     book = load_shadow(state_dir) or ShadowBook()
     book = open_from_scan(
-        book, payload, run_id=str(doc.get("run_id", "?")), now=now,
+        book,
+        payload,
+        run_id=str(doc.get("run_id", "?")),
+        now=now,
         excluded=_live_plan_identities(repo),
     )
     marked_from_chain = False
@@ -319,7 +322,9 @@ def _post_scan_shadow(state_dir: Path, repo: Path | None, now: datetime) -> None
     stats = shadow_stats(book)
     log.info(
         "shadow: %d open / %d expired, mean pnl %s",
-        stats["open"], stats["expired"], stats["mean_pnl"],
+        stats["open"],
+        stats["expired"],
+        stats["mean_pnl"],
     )
 
 
@@ -345,9 +350,7 @@ def _market_tick(
 
     try:
         plans_dir = (repo / "plans") if repo is not None else None
-        wl = load_watchlist(
-            state_dir, seed=seed_symbols(cfg, plans_dir), now=now
-        )
+        wl = load_watchlist(state_dir, seed=seed_symbols(cfg, plans_dir), now=now)
         watch_symbols = [row["symbol"] for row in wl.get("symbols", [])]
         watch = claim_request(state_dir / "spool", ["watch"], now=now)
         if watch is not None:
@@ -372,9 +375,7 @@ def _market_tick(
         if forced is not None:
             _kind, req_id, payload = forced
             raw = payload.get("symbols")
-            force_symbols = (
-                [str(s).upper() for s in raw] if isinstance(raw, list) and raw else None
-            )
+            force_symbols = [str(s).upper() for s in raw] if isinstance(raw, list) and raw else None
         # market.json mtime gates the cadence; force bypasses it
         marker = state_dir / "market.json"
         due = not marker.exists()
@@ -459,15 +460,26 @@ def _backtest_tick(
             backtest.write_artifact(
                 state_dir,
                 key,
-                {"key": key, "generated_at": now.isoformat(), "label": backtest.LABEL,
-                 "error": detail},
+                {
+                    "key": key,
+                    "generated_at": now.isoformat(),
+                    "label": backtest.LABEL,
+                    "error": detail,
+                },
             )
         except OSError as exc:
             detail = f"{detail} (artifact unwritable: {type(exc).__name__})"
         complete_request(
-            spool, "backtest", req_id,
-            {"request_id": req_id, "key": key, "status": "error", "detail": detail,
-             "finished_at": now_et().isoformat()},
+            spool,
+            "backtest",
+            req_id,
+            {
+                "request_id": req_id,
+                "key": key,
+                "status": "error",
+                "detail": detail,
+                "finished_at": now_et().isoformat(),
+            },
         )
 
     try:
@@ -524,10 +536,16 @@ def _backtest_tick(
             state_dir, key, now, structure, spot_now, bars, (quote or {}).get("iv30")
         )
         complete_request(
-            spool, "backtest", req_id,
-            {"request_id": req_id, "key": key,
-             "status": "error" if doc.get("error") else "ok",
-             "detail": doc.get("error"), "finished_at": now_et().isoformat()},
+            spool,
+            "backtest",
+            req_id,
+            {
+                "request_id": req_id,
+                "key": key,
+                "status": "error" if doc.get("error") else "ok",
+                "detail": doc.get("error"),
+                "finished_at": now_et().isoformat(),
+            },
         )
     except Exception as exc:
         log.exception("backtest %s failed", key)
@@ -566,10 +584,18 @@ def _proposal_context(state_dir: Path, symbols: list[str], now: datetime) -> dic
         payload = json.loads((state_dir / "latest.json").read_text()).get("payload", {})
         for row in payload.get("candidates", [])[:8]:
             top.append(
-                {k: row.get(k) for k in (
-                    "underlying", "expiry", "dte", "long_strike", "short_strike",
-                    "debit_mid", "yield_ratio",
-                )}
+                {
+                    k: row.get(k)
+                    for k in (
+                        "underlying",
+                        "expiry",
+                        "dte",
+                        "long_strike",
+                        "short_strike",
+                        "debit_mid",
+                        "yield_ratio",
+                    )
+                }
             )
     except (OSError, ValueError):
         pass
@@ -663,13 +689,18 @@ def _propose_tick(
         run = _run_proposals(
             state_dir, cfg, now, "operator", req_id, llm_transport, market_transport
         )
-        result = {"status": run["status"], "provider": run["provider"],
-                  "count": len(run["proposals"])}
+        result = {
+            "status": run["status"],
+            "provider": run["provider"],
+            "count": len(run["proposals"]),
+        }
     except Exception as exc:
         log.exception("proposal pass failed")
         result = {"status": "error", "detail": f"{type(exc).__name__}"}
     complete_request(
-        state_dir / "spool", "propose", req_id,
+        state_dir / "spool",
+        "propose",
+        req_id,
         {"request_id": req_id, **result, "finished_at": now_et().isoformat()},
     )
 

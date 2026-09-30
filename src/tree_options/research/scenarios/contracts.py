@@ -38,6 +38,7 @@ knowledge cutoff, currency, price basis) is NOT a scenario diff — those
 are base-spec changes and a new comparison, NOT a fork. (See
 ``SCENARIO_NOT_A_FORK``.)
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -91,6 +92,7 @@ class ScenarioDiff:
     small enough that "scenario" cannot accidentally mean "new base
     comparison".
     """
+
     contribution_per_period: Decimal | None = None
     cashflow_timing: CashflowTiming | None = None
     cost_model_kind: CostModelKind | None = None
@@ -113,23 +115,18 @@ class ScenarioDiff:
         return {
             "contribution_per_period": (
                 str(self.contribution_per_period)
-                if self.contribution_per_period is not None else None
+                if self.contribution_per_period is not None
+                else None
             ),
             "cashflow_timing": (
-                self.cashflow_timing.value
-                if self.cashflow_timing is not None else None
+                self.cashflow_timing.value if self.cashflow_timing is not None else None
             ),
             "cost_model_kind": (
-                self.cost_model_kind.value
-                if self.cost_model_kind is not None else None
+                self.cost_model_kind.value if self.cost_model_kind is not None else None
             ),
-            "rebalancing": (
-                self.rebalancing.value
-                if self.rebalancing is not None else None
-            ),
+            "rebalancing": (self.rebalancing.value if self.rebalancing is not None else None),
             "position_sizing": (
-                self.position_sizing.value
-                if self.position_sizing is not None else None
+                self.position_sizing.value if self.position_sizing is not None else None
             ),
         }
 
@@ -143,6 +140,7 @@ class ScenarioSpec:
     diff) and is the run_id of the child scenario. Same as RL1-03:
     immutable canonical payload, no server metadata inside.
     """
+
     parent_run_id: str
     kind: ScenarioKind
     access_mode: ScenarioAccessMode

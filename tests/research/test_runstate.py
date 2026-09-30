@@ -89,8 +89,7 @@ def test_verify_returns_ok_envelope(tmp_path: Path) -> None:
 # -- RL1-04: the verifier must actually verify -------------------------------
 
 
-def test_verify_allows_a_legitimate_append_after_a_previous_verification(
-        tmp_path: Path) -> None:
+def test_verify_allows_a_legitimate_append_after_a_previous_verification(tmp_path: Path) -> None:
     """The pre-correction verifier cached a head that later valid
     writes never updated, so append-after-verify FAILED with an
     audit_head mismatch. The head now commits in the same transaction
@@ -103,8 +102,7 @@ def test_verify_allows_a_legitimate_append_after_a_previous_verification(
         assert head["objects"] == 2
 
 
-def test_verify_rejects_payload_tampering_without_rewritten_hash(
-        tmp_path: Path) -> None:
+def test_verify_rejects_payload_tampering_without_rewritten_hash(tmp_path: Path) -> None:
     """Changing only ``payload_json`` while leaving the claimed hash
     untouched used to pass verification. The verifier now rehashes the
     stored bytes."""
@@ -136,19 +134,20 @@ def test_verify_rejects_a_broken_audit_chain(tmp_path: Path) -> None:
             store.verify()
 
 
-def test_replace_appends_state_and_keeps_every_version_audited(
-        tmp_path: Path) -> None:
+def test_replace_appends_state_and_keeps_every_version_audited(tmp_path: Path) -> None:
     """Mutable run records: replace() supersedes the payload but the
     audit trail keeps every version (put + replaces)."""
     with open_runstate_store(tmp_path) as store:
         store.put("run", {"status": "queued"}, key="r", at=datetime(2026, 9, 25))
-        store.replace("run", {"status": "running"}, key="r",
-                      at=datetime(2026, 9, 25, 12, 0))
-        store.replace("run", {"status": "completed"}, key="r",
-                      at=datetime(2026, 9, 25, 13, 0))
+        store.replace("run", {"status": "running"}, key="r", at=datetime(2026, 9, 25, 12, 0))
+        store.replace("run", {"status": "completed"}, key="r", at=datetime(2026, 9, 25, 13, 0))
         assert store.get("run", "r") == {"status": "completed"}
-        actions = [r["action"] for r in store.conn.execute(
-            "SELECT action FROM audit WHERE kind = 'run' ORDER BY audit_seq")]
+        actions = [
+            r["action"]
+            for r in store.conn.execute(
+                "SELECT action FROM audit WHERE kind = 'run' ORDER BY audit_seq"
+            )
+        ]
         assert actions == ["put", "replace", "replace"]
         head = store.verify()  # head agrees with the replaced content
         assert head["objects"] == 1
@@ -171,8 +170,7 @@ def test_concurrent_duplicate_puts_land_idempotently(tmp_path: Path) -> None:
     def writer() -> None:
         barrier.wait()
         with open_runstate_store(tmp_path) as store:
-            store.put("run", {"run_id": "r", "status": "queued"}, key="r",
-                      at=datetime(2026, 9, 25))
+            store.put("run", {"run_id": "r", "status": "queued"}, key="r", at=datetime(2026, 9, 25))
 
     threads = [threading.Thread(target=writer) for _ in range(2)]
     for t in threads:
@@ -185,7 +183,8 @@ def test_concurrent_duplicate_puts_land_idempotently(tmp_path: Path) -> None:
 
 
 def test_open_runstate_store_refuses_a_descendant_of_desk_state(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """RL1-04: the old guard compared EXACT equality only — a research
     workspace INSIDE the desk evidence directory passed. Containment is
     now checked in both directions, on the explicit argument."""
@@ -198,8 +197,7 @@ def test_open_runstate_store_refuses_a_descendant_of_desk_state(
             pass
 
 
-def test_open_runstate_store_refuses_a_workspace_containing_desk_state(
-        tmp_path: Path) -> None:
+def test_open_runstate_store_refuses_a_workspace_containing_desk_state(tmp_path: Path) -> None:
     from tree_options.desk.paths import state_root
 
     with pytest.raises(RuntimeError, match="collides"):

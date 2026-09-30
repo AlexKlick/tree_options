@@ -92,11 +92,12 @@ import os
 import statistics
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 for _name in (
     "OPENBLAS_NUM_THREADS",
@@ -385,7 +386,9 @@ def load_and_bind() -> Inputs:
     ):
         want = pinning.get(label)
         if want is None or want != got:
-            raise Refused(f"{label}: sha256 {got} != the menu's pinned {want} -- swapped inputs refuse")
+            raise Refused(
+                f"{label}: sha256 {got} != the menu's pinned {want} -- swapped inputs refuse"
+            )
 
     # the panel is read under the shared flock (slot doc section 3)
     PANEL_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -443,11 +446,7 @@ def load_and_bind() -> Inputs:
         raise Refused(
             f"inner/sealed era-ordinals moved: inner={inner_ord} (want 406), sealed={sealed_ord} (want 452)"
         )
-    inner_population_sessions = sum(
-        1
-        for s in calendar.sessions()
-        if era_start <= s <= inner_end
-    )
+    inner_population_sessions = sum(1 for s in calendar.sessions() if era_start <= s <= inner_end)
 
     manifest_body = "".join(
         f"{label}\0{pinning[label]}\n"
@@ -570,13 +569,15 @@ def _window_clean_iter002(ds: list[str], i: int, hold: int) -> bool:
     """iter002 window_clean(ds, 5, i, hold): no calendar-day hole > 10 over
     [i-5, i+hold] on the name's own bar index."""
     lo, hi = max(0, i - PEAD_CLEAN_BACK), min(len(ds) - 1, i + hold)
-    for a, b in zip(ds[lo:hi], ds[lo + 1 : hi + 1]):
+    for a, b in zip(ds[lo:hi], ds[lo + 1 : hi + 1], strict=True):
         if (date.fromisoformat(b) - date.fromisoformat(a)).days > HOLE_DAYS:
             return False
     return True
 
 
-def trade_rows_for_hold(inputs: Inputs, events: Sequence[BeatEvent], hold: int) -> dict[int, TradeRow]:
+def trade_rows_for_hold(
+    inputs: Inputs, events: Sequence[BeatEvent], hold: int
+) -> dict[int, TradeRow]:
     """The per-event trade rows at one hold. House hold filter: the name must
     carry every calendar session in (s, s+hold]; misses are dropped (the
     event key is the index into ``events``). The iter002 window_clean
@@ -782,9 +783,7 @@ def compute_lattice(inputs: Inputs) -> dict[str, Any]:
         ),
     }
 
-    rows_by_hold = {
-        h: trade_rows_for_hold(inputs, events, h) for h in HOLD_SESSIONS
-    }
+    rows_by_hold = {h: trade_rows_for_hold(inputs, events, h) for h in HOLD_SESSIONS}
     disclosures = {str(h): hold_disclosures(inputs, events, h) for h in HOLD_SESSIONS}
 
     specs = cell_specs()
@@ -830,7 +829,10 @@ def compute_lattice(inputs: Inputs) -> dict[str, Any]:
     sealed_start = date.fromisoformat(SEALED_START)
     for hold in HOLD_SESSIONS:
         for row in rows_by_hold[hold].values():
-            if date.fromisoformat(row.entry) >= sealed_start or date.fromisoformat(row.exit) >= sealed_start:
+            if (
+                date.fromisoformat(row.entry) >= sealed_start
+                or date.fromisoformat(row.exit) >= sealed_start
+            ):
                 raise Refused(
                     f"trade row {row.entry}->{row.exit} touches the sealed window"
                     " -- the inner-only guard fired"
@@ -1053,9 +1055,11 @@ def phase_plan() -> int:
         f"protocol raw {inputs.protocol_raw_sha256[:16]}..."
         f" canonical {inputs.protocol_canonical_sha256[:16]}..."
     )
-    print(f"B({B_WINDOW}, {B_SHAPE}): day-clustered {inputs.B['B_net_day_clustered_mean']:+.6f}"
-          f" per-trade {inputs.B['B_net_per_trade_mean']:+.6f}"
-          f" (NOT_EVALUABLE window: {inputs.b_not_evaluable})")
+    print(
+        f"B({B_WINDOW}, {B_SHAPE}): day-clustered {inputs.B['B_net_day_clustered_mean']:+.6f}"
+        f" per-trade {inputs.B['B_net_per_trade_mean']:+.6f}"
+        f" (NOT_EVALUABLE window: {inputs.b_not_evaluable})"
+    )
     cal = inputs.calendar
     print(
         f"era {ERA_START}..{ERA_END} = {cal.ordinal(date.fromisoformat(ERA_END)) - cal.ordinal(date.fromisoformat(ERA_START)) + 1} sessions;"
@@ -1077,7 +1081,7 @@ def phase_register() -> int:
         existing = [s for s in specs if registry.is_registered(_trial_id(s.config_id))]
         if existing:
             raise Refused(
-                f"registration is one-shot: {[ _trial_id(s.config_id) for s in existing ]} already registered"
+                f"registration is one-shot: {[_trial_id(s.config_id) for s in existing]} already registered"
             )
         for spec in specs:
             hyper = _hyperparameters(inputs, spec)
@@ -1118,7 +1122,9 @@ def phase_execute() -> int:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise Refused("another pead-deep-2 execution holds the lock -- one run at a time") from None
+            raise Refused(
+                "another pead-deep-2 execution holds the lock -- one run at a time"
+            ) from None
 
         # pre-flight: every trial REGISTERED, no artifact yet (one-shot)
         registry = _open_registry()
@@ -1357,7 +1363,7 @@ def timing_arm_note(inputs: Inputs) -> dict[str, Any]:
     for name, reports in sorted(inputs.timing.items()):
         if name not in inputs.chain35 or name not in inputs.panel:
             continue  # e.g. JNJ: timed but not in the calendar/panel universe
-        for report_date, rec in sorted(reports.items()):
+        for _report_date, rec in sorted(reports.items()):
             in_universe += 1
             timing = str(rec.get("timing", "unknown"))
             counts[timing if timing in counts else "unknown"] += 1

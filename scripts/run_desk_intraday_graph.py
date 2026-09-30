@@ -28,13 +28,20 @@ def main() -> int:
     parser.add_argument("--end", required=True, type=date.fromisoformat)
     parser.add_argument("--stride-sessions", type=int, default=21)
     parser.add_argument("--decisions", type=Path)
-    parser.add_argument("--policy", choices=("no_trade", "put_credit", "call_credit",
-                                             "put_debit", "call_debit"), default="no_trade")
+    parser.add_argument(
+        "--policy",
+        choices=("no_trade", "put_credit", "call_credit", "put_debit", "call_debit"),
+        default="no_trade",
+    )
     parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     summary_path = args.out.with_suffix(".summary.json")
-    if (args.start > args.end or args.out.exists() or summary_path.exists()
-            or (args.decisions and args.policy != "no_trade")):
+    if (
+        args.start > args.end
+        or args.out.exists()
+        or summary_path.exists()
+        or (args.decisions and args.policy != "no_trade")
+    ):
         parser.error("invalid date range or output already exists")
     source = args.bundle.read_bytes()
     bundle = json.loads(source)
@@ -43,68 +50,123 @@ def main() -> int:
         source_end = date.fromisoformat(bundle["end"])
         selected_as_of = date.fromisoformat(bundle["selected_as_of"])
         contracts = bundle["contracts"]
-        if (bundle.get("schema") != "desk-option-minute-bars/1"
-                or source_start > args.start or source_end < args.end
-                or selected_as_of > args.start or not isinstance(contracts, dict)
-                or bundle.get("found") != len(contracts)
-                or bundle.get("requested", -1) < len(contracts)
-                or not isinstance(bundle.get("contract_source_sha256"), str)
-                or len(bundle["contract_source_sha256"]) != 64):
+        if (
+            bundle.get("schema") != "desk-option-minute-bars/1"
+            or source_start > args.start
+            or source_end < args.end
+            or selected_as_of > args.start
+            or not isinstance(contracts, dict)
+            or bundle.get("found") != len(contracts)
+            or bundle.get("requested", -1) < len(contracts)
+            or not isinstance(bundle.get("contract_source_sha256"), str)
+            or len(bundle["contract_source_sha256"]) != 64
+        ):
             raise ValueError("incomplete or mismatched minute source")
     except (KeyError, TypeError, ValueError) as exc:
         parser.error(f"minute source custody failed: {exc}")
     choices = json.loads(args.decisions.read_text()) if args.decisions else None
-    if choices is not None and (not isinstance(choices, dict) or any(
-            not isinstance(key, str) or not key.startswith("s:")
-            or not isinstance(value, (str, type(None))) for key, value in choices.items())):
+    if choices is not None and (
+        not isinstance(choices, dict)
+        or any(
+            not isinstance(key, str)
+            or not key.startswith("s:")
+            or not isinstance(value, (str, type(None)))
+            for key, value in choices.items()
+        )
+    ):
         parser.error("decisions must map snapshot IDs to candidate IDs or null")
     sessions = [d for d in session_calendar().sessions() if args.start <= d <= args.end]
     spans = windows(sessions, stride_sessions=args.stride_sessions)
     if not spans:
         parser.error("range does not contain a complete three-month window")
-    if choices is not None and any(not any(
-            start.isoformat() <= key[2:12] <= end.isoformat() for start, end in spans)
-            for key in choices):
+    if choices is not None and any(
+        not any(start.isoformat() <= key[2:12] <= end.isoformat() for start, end in spans)
+        for key in choices
+    ):
         parser.error("decision outside all replay windows")
     results = []
     for start, end in spans:
         selected = [day for day in sessions if start <= day <= end]
-        choices_in_span = ({key: value for key, value in choices.items()
-                            if start.isoformat() <= key[2:12] <= end.isoformat()}
-                           if choices is not None else None)
+        choices_in_span = (
+            {
+                key: value
+                for key, value in choices.items()
+                if start.isoformat() <= key[2:12] <= end.isoformat()
+            }
+            if choices is not None
+            else None
+        )
         graph = replay(bundle, selected, choices_in_span, policy=args.policy)
         results.append({"start": start.isoformat(), "end": end.isoformat(), "graph": graph})
-    report = {"schema": "desk-intraday-rolling-replay/1", "source_sha256": hashlib.sha256(source).hexdigest(),
-              "engine_sha256": hashlib.sha256((ROOT / "src/tree_options/desk/intraday_action_graph.py").read_bytes()).hexdigest(),
-              "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
-              "decisions_sha256": hashlib.sha256(args.decisions.read_bytes()).hexdigest()
-              if args.decisions else None, "policy": args.policy if not args.decisions else "external_decisions",
-              "windows": results, "execution_authorized": False}
+    report = {
+        "schema": "desk-intraday-rolling-replay/1",
+        "source_sha256": hashlib.sha256(source).hexdigest(),
+        "engine_sha256": hashlib.sha256(
+            (ROOT / "src/tree_options/desk/intraday_action_graph.py").read_bytes()
+        ).hexdigest(),
+        "runner_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+        "decisions_sha256": hashlib.sha256(args.decisions.read_bytes()).hexdigest()
+        if args.decisions
+        else None,
+        "policy": args.policy if not args.decisions else "external_decisions",
+        "windows": results,
+        "execution_authorized": False,
+    }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     with args.out.open("x") as stream:
         json.dump(report, stream, indent=2, sort_keys=True, allow_nan=False)
         stream.write("\n")
-    summary = {"schema": "desk-intraday-graph-summary/1", "policy": report["policy"],
-               "source_sha256": report["source_sha256"], "engine_sha256": report["engine_sha256"],
-               "requested_contracts": bundle.get("requested"), "captured_contracts": bundle.get("found"),
-               "traded_minute_bars": sum(len(body.get("results", [])) for body in bundle.get("contracts", {}).values()),
-               "windows": [{"start": row["start"], "end": row["end"],
-                            **{key: row["graph"][key] for key in (
-                                "sessions", "scheduled_snapshots", "potential_trades", "entered",
-                                "modeled_wins", "modeled_losses", "open_at_end",
-                                "closed_capital_proxy", "minimum_closed_capital_proxy",
-                                "peak_open_loss_reserved")}}
-                           for row in results],
-               "limitations": results[0]["graph"]["limitations"],
-               "execution_authorized": False}
+    summary = {
+        "schema": "desk-intraday-graph-summary/1",
+        "policy": report["policy"],
+        "source_sha256": report["source_sha256"],
+        "engine_sha256": report["engine_sha256"],
+        "requested_contracts": bundle.get("requested"),
+        "captured_contracts": bundle.get("found"),
+        "traded_minute_bars": sum(
+            len(body.get("results", [])) for body in bundle.get("contracts", {}).values()
+        ),
+        "windows": [
+            {
+                "start": row["start"],
+                "end": row["end"],
+                **{
+                    key: row["graph"][key]
+                    for key in (
+                        "sessions",
+                        "scheduled_snapshots",
+                        "potential_trades",
+                        "entered",
+                        "modeled_wins",
+                        "modeled_losses",
+                        "open_at_end",
+                        "closed_capital_proxy",
+                        "minimum_closed_capital_proxy",
+                        "peak_open_loss_reserved",
+                    )
+                },
+            }
+            for row in results
+        ],
+        "limitations": results[0]["graph"]["limitations"],
+        "execution_authorized": False,
+    }
     with summary_path.open("x") as stream:
         json.dump(summary, stream, indent=2, sort_keys=True, allow_nan=False)
         stream.write("\n")
-    print(json.dumps({"out": str(args.out), "windows": len(results),
-                      "summary": str(summary_path),
-                      "snapshots": sum(w["graph"]["scheduled_snapshots"] for w in results),
-                      "potential_trades": sum(w["graph"]["potential_trades"] for w in results),
-                      "entered": sum(w["graph"]["entered"] for w in results)}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "windows": len(results),
+                "summary": str(summary_path),
+                "snapshots": sum(w["graph"]["scheduled_snapshots"] for w in results),
+                "potential_trades": sum(w["graph"]["potential_trades"] for w in results),
+                "entered": sum(w["graph"]["entered"] for w in results),
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

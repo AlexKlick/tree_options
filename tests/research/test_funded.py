@@ -57,7 +57,8 @@ def test_buy_and_hold_at_unchanged_mark_preserves_nav() -> None:
     $9,950 (cash labeled as wealth)."""
     cal = (date(2024, 1, 2), date(2024, 1, 3))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[TradeExecution(date(2024, 1, 2), "SPY", 10, D("5.00"))],
         marks=[MarkObservation(date(2024, 1, 2), "SPY", D("5.00"))],
     )
@@ -84,7 +85,8 @@ def test_roundtrip_and_contribution_do_not_double_count_profit() -> None:
     realized (proceeds 60 - cost 50)."""
     cal = (date(2024, 1, 2), date(2024, 1, 15), date(2024, 6, 1))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[
             TradeExecution(date(2024, 1, 2), "SPY", 10, D("5.00")),
             TradeExecution(date(2024, 6, 1), "SPY", -10, D("6.00")),
@@ -114,7 +116,8 @@ def test_explicit_fees_reduce_account_value_exactly_once() -> None:
     gain = realized (10) - fees (2) = $8."""
     cal = (date(2024, 1, 2), date(2024, 6, 1))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[
             TradeExecution(date(2024, 1, 2), "SPY", 10, D("5.00"), fees=D("1.00")),
             TradeExecution(date(2024, 6, 1), "SPY", -10, D("6.00"), fees=D("1.00")),
@@ -138,7 +141,8 @@ def test_cashflow_only_history_is_not_empty() -> None:
     rows and a null final value."""
     cal = (date(2024, 1, 2), date(2024, 1, 3))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         cashflows=[CashflowEvent(date(2024, 1, 3), D("500"))],
     )
     assert run.refusal_reason is None
@@ -155,7 +159,8 @@ def test_withdrawal_after_last_trade_is_counted() -> None:
     the flow and kept $10,000."""
     cal = (date(2024, 1, 2), date(2024, 2, 1), date(2024, 2, 2))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[
             TradeExecution(date(2024, 1, 2), "SPY", 10, D("5.00")),
             TradeExecution(date(2024, 2, 1), "SPY", -10, D("5.00")),
@@ -176,7 +181,8 @@ def test_withdrawal_after_last_trade_is_counted() -> None:
 def test_flat_zero_pnl_roundtrip_control() -> None:
     cal = (date(2024, 1, 2), date(2024, 6, 1))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[
             TradeExecution(date(2024, 1, 2), "SPY", 10, D("5.00")),
             TradeExecution(date(2024, 6, 1), "SPY", -10, D("5.00")),
@@ -198,7 +204,8 @@ def test_insufficient_capital_refuses_instead_of_borrowing() -> None:
     reason; no rows, no fills, no negative cash anywhere."""
     cal = (date(2024, 1, 2),)
     run = _run(
-        "100", cal,
+        "100",
+        cal,
         executions=[TradeExecution(date(2024, 1, 2), "SPY", 2, D("100.00"))],
         marks=[MarkObservation(date(2024, 1, 2), "SPY", D("100.00"))],
     )
@@ -213,7 +220,8 @@ def test_contribution_counts_toward_buying_power() -> None:
     buy is affordable on day 3 (account cash 10 + inventory 100)."""
     cal = (date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4))
     run = _run(
-        "60", cal,
+        "60",
+        cal,
         executions=[TradeExecution(date(2024, 1, 4), "SPY", 1, D("100.00"))],
         marks=[MarkObservation(date(2024, 1, 4), "SPY", D("100.00"))],
         cashflows=[CashflowEvent(date(2024, 1, 3), D("50"))],
@@ -226,7 +234,8 @@ def test_contribution_counts_toward_buying_power() -> None:
 def test_withdrawal_below_zero_refuses() -> None:
     cal = (date(2024, 1, 2), date(2024, 1, 3))
     run = _run(
-        "100", cal,
+        "100",
+        cal,
         cashflows=[CashflowEvent(date(2024, 1, 3), D("-500"))],
     )
     assert run.refusal_reason == "research.funded.insufficient_cash_for_flow"
@@ -235,7 +244,8 @@ def test_withdrawal_below_zero_refuses() -> None:
 def test_sell_more_than_held_refuses() -> None:
     cal = (date(2024, 1, 2), date(2024, 1, 3))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[TradeExecution(date(2024, 1, 3), "SPY", -5, D("5.00"))],
         marks=[MarkObservation(date(2024, 1, 3), "SPY", D("5.00"))],
     )
@@ -248,7 +258,8 @@ def test_execution_off_calendar_refuses() -> None:
     a non-session date is a refused input, never an invented session."""
     cal = (date(2024, 1, 2),)
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[TradeExecution(date(2024, 1, 7), "SPY", 1, D("5.00"))],  # Sunday
         marks=[MarkObservation(date(2024, 1, 7), "SPY", D("5.00"))],
     )
@@ -266,7 +277,8 @@ def test_missing_mark_is_a_gap_not_a_zero() -> None:
     carries the last observed one (standard close-carry convention)."""
     cal = (date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4), date(2024, 1, 5))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[TradeExecution(date(2024, 1, 2), "SPY", 10, D("5.00"))],
         marks=[
             MarkObservation(date(2024, 1, 4), "SPY", D("7.00")),
@@ -289,7 +301,8 @@ def test_no_trade_sessions_carry_cash_and_inventory_forward() -> None:
     carried mark until a new observation arrives."""
     cal = (date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[TradeExecution(date(2024, 1, 2), "SPY", 4, D("25.00"))],
         marks=[
             MarkObservation(date(2024, 1, 2), "SPY", D("25.00")),
@@ -306,7 +319,8 @@ def test_overlapping_positions_marked_independently() -> None:
     A leaves B marked alone."""
     cal = (date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[
             TradeExecution(date(2024, 1, 2), "A", 10, D("10.00")),
             TradeExecution(date(2024, 1, 3), "B", 5, D("20.00")),
@@ -340,8 +354,7 @@ def test_fee_model_fees_applied_when_declared() -> None:
     cal = (date(2024, 1, 2),)
     executions = [TradeExecution(date(2024, 1, 2), "SPY", 1, D("200.00"))]
     marks = [MarkObservation(date(2024, 1, 2), "SPY", D("200.00"))]
-    run = _run("10000", cal, executions=executions, marks=marks,
-               fee_model=FiveBasisPointFeeModel())
+    run = _run("10000", cal, executions=executions, marks=marks, fee_model=FiveBasisPointFeeModel())
     assert run.refusal_reason is None
     assert run.rows[0].fees_cum == D("0.10")
     assert run.rows[0].cash == D("9799.90")
@@ -362,7 +375,8 @@ def test_returned_ledger_passes_assert_conservation() -> None:
     check — invoking it failed with CASH_MISMATCH."""
     cal = (date(2024, 1, 2), date(2024, 1, 15), date(2024, 6, 1))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         executions=[
             TradeExecution(date(2024, 1, 2), "SPY", 10, D("5.00"), fees=D("1.00")),
             TradeExecution(date(2024, 6, 1), "SPY", -10, D("6.00"), fees=D("1.00")),
@@ -388,7 +402,8 @@ def test_flow_between_sessions_applies_on_the_next_session() -> None:
     the next declared session, not never."""
     cal = (date(2024, 1, 2), date(2024, 1, 8))
     run = _run(
-        "10000", cal,
+        "10000",
+        cal,
         cashflows=[CashflowEvent(date(2024, 1, 5), D("500"))],
     )
     assert run.rows[0].contributions_cum == D("0.00")
@@ -414,15 +429,19 @@ def test_rows_are_strictly_dated_and_complete() -> None:
     assert empty.rows == ()
 
 
-@pytest.mark.parametrize("start,qty,price", [
-    ("100", 2, "100.00"),   # exactly $200 needed vs $100 held
-    ("149.99", 1, "150.00"),
-    ("10000", 3000, "5.00"),  # $15,000 vs $10,000
-])
+@pytest.mark.parametrize(
+    "start,qty,price",
+    [
+        ("100", 2, "100.00"),  # exactly $200 needed vs $100 held
+        ("149.99", 1, "150.00"),
+        ("10000", 3000, "5.00"),  # $15,000 vs $10,000
+    ],
+)
 def test_various_infeasible_buys_refuse(start: str, qty: int, price: str) -> None:
     cal = (date(2024, 1, 2),)
     run = _run(
-        start, cal,
+        start,
+        cal,
         executions=[TradeExecution(date(2024, 1, 2), "SPY", qty, D(price))],
         marks=[MarkObservation(date(2024, 1, 2), "SPY", D(price))],
     )
@@ -436,7 +455,8 @@ def test_timestamps_are_utc_and_fill_ids_unique() -> None:
     fills must satisfy both across same-session executions."""
     cal = (date(2024, 1, 2), date(2024, 1, 3))
     run = _run(
-        "100000", cal,
+        "100000",
+        cal,
         executions=[
             TradeExecution(date(2024, 1, 2), "SPY", 1, D("100.00")),
             TradeExecution(date(2024, 1, 2), "SPY", 1, D("100.00")),

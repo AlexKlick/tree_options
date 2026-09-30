@@ -150,9 +150,7 @@ class Enterer:
             # memory says done. The loop may only end when the book on disk
             # agrees — resuming re-adopts the durable state and the broker's
             # cumulative report reconciles against the durable checkpoint.
-            disk = BookState.load(
-                self.run_dir / "book.json", list(self.book.structures)
-            )
+            disk = BookState.load(self.run_dir / "book.json", list(self.book.structures))
             pending = [
                 sid
                 for sid, st in disk.structures.items()
@@ -226,7 +224,9 @@ class Enterer:
         for spread in self.plan.structures:
             if self.book.structures[spread.id].status in ENTRY_LANE:
                 self._cancel_and_settle(
-                    spread, close_reason=FLATTEN_REASON, event="entry_cancelled",
+                    spread,
+                    close_reason=FLATTEN_REASON,
+                    event="entry_cancelled",
                     reason=FLATTEN_REASON,
                 )
         self._save_book()
@@ -267,13 +267,13 @@ class Enterer:
         # PLANNED: nothing working (never placed, or a confirmed cancel)
         if st.filled_qty > 0:
             st.to(Status.OPEN, now_et())
-            log.warning("%s: entry stopped with %d filled; OPEN for the monitor", sid, st.filled_qty)
+            log.warning(
+                "%s: entry stopped with %d filled; OPEN for the monitor", sid, st.filled_qty
+            )
         else:
             st.to(Status.CLOSED, now_et())
             st.close_reason = close_reason
-        self.book.event(
-            self.events_path, event, structure=sid, reason=reason, filled=st.filled_qty
-        )
+        self.book.event(self.events_path, event, structure=sid, reason=reason, filled=st.filled_qty)
         return True
 
     def _reconcile(self, spread: PutSpread) -> bool:
@@ -292,13 +292,20 @@ class Enterer:
                     spread.id,
                 )
                 self.book.event(
-                    self.events_path, "entry_unresolved", structure=spread.id,
+                    self.events_path,
+                    "entry_unresolved",
+                    structure=spread.id,
                     order=st.entry_order,
                 )
             return False
         filled, avg = evidence
-        self._merge_order_total(spread.id, filled, avg or Decimal(0), "reconciled",
-                                st.entry_order or f"evidence-{spread.id}")
+        self._merge_order_total(
+            spread.id,
+            filled,
+            avg or Decimal(0),
+            "reconciled",
+            st.entry_order or f"evidence-{spread.id}",
+        )
         return True
 
     def _apply(self, spread: PutSpread, action: Action) -> None:
@@ -378,9 +385,10 @@ class Enterer:
             if ref.trade.orderStatus.status in ("Cancelled", "ApiCancelled", "Filled"):
                 break
         ref = self.orders.get(spread.id)
-        if (
-            ref is not None
-            and ref.trade.orderStatus.status not in ("Cancelled", "ApiCancelled", "Filled")
+        if ref is not None and ref.trade.orderStatus.status not in (
+            "Cancelled",
+            "ApiCancelled",
+            "Filled",
         ):
             log.warning("%s: cancel not confirmed; keeping old order this cycle", spread.id)
             return
@@ -406,8 +414,8 @@ class Enterer:
         Returns (status, changed)."""
         info = self.ib.order_status(ref)
         changed = self._merge_order_total(
-            sid, info.filled, info.avg_fill_price, info.status,
-            str(ref.trade.order.orderId))
+            sid, info.filled, info.avg_fill_price, info.status, str(ref.trade.order.orderId)
+        )
         return info, changed
 
     def _merge_order_total(
@@ -425,12 +433,23 @@ class Enterer:
         Returns True when the book changed (R2-01: every mutation must be
         persisted before the next reload)."""
         st = self.book.structures[sid]
-        before = (st.filled_qty, st.entry_fill, st.entry_order_seen,
-                  st.entry_order_notional, st.entry_unpriced_qty)
-        new = drain(st, WorkingOrder(role="entry", filled=filled, avg_fill_price=avg,
-                                     order_id=order_id))
-        after = (st.filled_qty, st.entry_fill, st.entry_order_seen,
-                 st.entry_order_notional, st.entry_unpriced_qty)
+        before = (
+            st.filled_qty,
+            st.entry_fill,
+            st.entry_order_seen,
+            st.entry_order_notional,
+            st.entry_unpriced_qty,
+        )
+        new = drain(
+            st, WorkingOrder(role="entry", filled=filled, avg_fill_price=avg, order_id=order_id)
+        )
+        after = (
+            st.filled_qty,
+            st.entry_fill,
+            st.entry_order_seen,
+            st.entry_order_notional,
+            st.entry_unpriced_qty,
+        )
         if new > 0:
             self.book.event(
                 self.events_path,
@@ -443,9 +462,13 @@ class Enterer:
             )
         elif after != before:
             self.book.event(
-                self.events_path, "entry_fill_revised", structure=sid,
-                filled=st.filled_qty, order_filled=filled,
-                avg=str(st.entry_fill), status=status,
+                self.events_path,
+                "entry_fill_revised",
+                structure=sid,
+                filled=st.filled_qty,
+                order_filled=filled,
+                avg=str(st.entry_fill),
+                status=status,
             )
         return after != before
 
@@ -496,9 +519,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--dry-run", action="store_true", help="show decisions, place no orders")
     args = ap.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 
     plan = load_legacy_plan(args.plan)  # put spreads only: multi-leg is the desk's
     run_dir = _run_dir(plan, args.state_dir)

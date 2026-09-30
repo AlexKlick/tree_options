@@ -34,9 +34,7 @@ log = logging.getLogger("trex.discovery.market")
 
 CBOE_QUOTE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/quotes/{sym}.json"
 CBOE_CHAIN_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json"
-NEWS_RSS_URL = (
-    "https://news.google.com/rss/search?q={sym}+stock&hl=en-US&gl=US&ceid=US:en"
-)
+NEWS_RSS_URL = "https://news.google.com/rss/search?q={sym}+stock&hl=en-US&gl=US&ceid=US:en"
 MOZILLA_UA = "Mozilla/5.0 (X11; Linux x86_64) trex-cockpit/1.0"
 
 REQUEST_TIMEOUT = 10.0

@@ -15,6 +15,7 @@ KILLED = the scoped vitest run fails. SURVIVED = it passes (a hole in
 the oracle net). Any HARNESS_ERROR (baseline fails, anchor drift, copy
 failure) aborts with the reason — it never counts as KILLED.
 """
+
 from __future__ import annotations
 
 import json
@@ -34,8 +35,14 @@ REPO = Path(__file__).resolve().parents[2]
 #: web/node_modules is symlinked (same dependency versions; deps are
 #: not under test).
 _COPY_IGNORE = (
-    ".venv", "__pycache__", ".git", "*.pyc", ".pytest_cache",
-    "artifacts", "dist", "node_modules",
+    ".venv",
+    "__pycache__",
+    ".git",
+    "*.pyc",
+    ".pytest_cache",
+    "artifacts",
+    "dist",
+    "node_modules",
 )
 
 _VITEST_FILES = [
@@ -67,8 +74,7 @@ _EFFECT_SUPERSEDE = (
     "void getForecastResult(runId).then((envelope) => {\n"
     "      if (superseded || resultFetchedFor.current !== runId) return\n"
     "      setResult(envelope)",
-    "void getForecastResult(runId).then((envelope) => {\n"
-    "      setResult(envelope)",
+    "void getForecastResult(runId).then((envelope) => {\n      setResult(envelope)",
 )
 
 _OUTLOOK = "src/components/ResearchOutlook.tsx"
@@ -81,32 +87,75 @@ def _one(rel: str, *edits: tuple[str, str]) -> tuple[str, tuple[tuple[str, str],
 
 _RegistryEntry = tuple[str, str, tuple[tuple[str, tuple[tuple[str, str], ...]], ...]]
 _REGISTRY: tuple[_RegistryEntry, ...] = (
-    ("M-C1", "horizon gating (disabled option becomes selectable)",
-     (_one(_OUTLOOK,
-           ("<option key={h.horizon} value={h.horizon} disabled>",
-            "<option key={h.horizon} value={h.horizon}>")),)),
-    ("M-C2", "no-fan-without-receipt (hasReceipt admits a refusal)",
-     (_one(_HELPERS, _HASRECEIPT_GUARD),)),
-    ("M-C3", "refusal renders as a receipt (inner schema gate dropped; redundant with hasReceipt)",
-     (_one(_OUTLOOK, _SCHEMA_GATE),)),
-    ("M-C3b", "BOTH refusal locks dropped (the combination must die)",
-     (_one(_OUTLOOK, _SCHEMA_GATE), _one(_HELPERS, _HASRECEIPT_GUARD))),
-    ("M-C4", "coverage without its n (hits/n becomes bare percent)",
-     (_one(_HELPERS,
-           ("const parts = [`${cov.hits}/${cov.n}`]",
-            "const parts = [cov.point !== null ? fmtPct(cov.point) : '']")),)),
-    ("M-C5", "exact disabled status_copy dropped from the option text",
-     (_one(_OUTLOOK,
-           ("{h.horizon} — {h.status_copy}",
-            "{h.horizon}")),)),
-    ("M-C6", "run-keying outer lock dropped (redundant with the effect drop)",
-     (_one(_OUTLOOK, _RECEIPT_READY_GUARD),)),
-    ("M-C6b", "BOTH run-keying locks dropped (the combination must die)",
-     (_one(_OUTLOOK, _RECEIPT_READY_GUARD, _EFFECT_SUPERSEDE),)),
-    ("M-C7", "empty-state copy says calibrate (banned word)",
-     (_one(_OUTLOOK,
-           ("No evaluation receipt for this horizon yet — run evaluation to",
-            "No evaluation receipt for this horizon yet — run to calibrate and")),)),
+    (
+        "M-C1",
+        "horizon gating (disabled option becomes selectable)",
+        (
+            _one(
+                _OUTLOOK,
+                (
+                    "<option key={h.horizon} value={h.horizon} disabled>",
+                    "<option key={h.horizon} value={h.horizon}>",
+                ),
+            ),
+        ),
+    ),
+    (
+        "M-C2",
+        "no-fan-without-receipt (hasReceipt admits a refusal)",
+        (_one(_HELPERS, _HASRECEIPT_GUARD),),
+    ),
+    (
+        "M-C3",
+        "refusal renders as a receipt (inner schema gate dropped; redundant with hasReceipt)",
+        (_one(_OUTLOOK, _SCHEMA_GATE),),
+    ),
+    (
+        "M-C3b",
+        "BOTH refusal locks dropped (the combination must die)",
+        (_one(_OUTLOOK, _SCHEMA_GATE), _one(_HELPERS, _HASRECEIPT_GUARD)),
+    ),
+    (
+        "M-C4",
+        "coverage without its n (hits/n becomes bare percent)",
+        (
+            _one(
+                _HELPERS,
+                (
+                    "const parts = [`${cov.hits}/${cov.n}`]",
+                    "const parts = [cov.point !== null ? fmtPct(cov.point) : '']",
+                ),
+            ),
+        ),
+    ),
+    (
+        "M-C5",
+        "exact disabled status_copy dropped from the option text",
+        (_one(_OUTLOOK, ("{h.horizon} — {h.status_copy}", "{h.horizon}")),),
+    ),
+    (
+        "M-C6",
+        "run-keying outer lock dropped (redundant with the effect drop)",
+        (_one(_OUTLOOK, _RECEIPT_READY_GUARD),),
+    ),
+    (
+        "M-C6b",
+        "BOTH run-keying locks dropped (the combination must die)",
+        (_one(_OUTLOOK, _RECEIPT_READY_GUARD, _EFFECT_SUPERSEDE),),
+    ),
+    (
+        "M-C7",
+        "empty-state copy says calibrate (banned word)",
+        (
+            _one(
+                _OUTLOOK,
+                (
+                    "No evaluation receipt for this horizon yet — run evaluation to",
+                    "No evaluation receipt for this horizon yet — run to calibrate and",
+                ),
+            ),
+        ),
+    ),
 )
 
 
@@ -115,13 +164,17 @@ def _run_vitest(web_dir: Path, log_path: Path) -> tuple[int, str]:
     ``log_path`` (durable, per mutant — including the partial output
     of a timed-out run)."""
     env = dict(os.environ)
-    env["HOME"] = "/home/alexk"          # npx/vitest need a real HOME
+    env["HOME"] = "/home/alexk"  # npx/vitest need a real HOME
     env["MEM0_TELEMETRY"] = "false"
     with open(log_path, "w") as log:
         proc = subprocess.Popen(
             ["npx", "vitest", "run", *_VITEST_FILES],
-            cwd=web_dir, env=env, stdout=log, stderr=subprocess.STDOUT,
-            text=True)
+            cwd=web_dir,
+            env=env,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
         try:
             proc.wait(timeout=600)
         except subprocess.TimeoutExpired:
@@ -143,8 +196,7 @@ def _apply(path: Path, edits: tuple[tuple[str, str], ...]) -> None:
     for anchor, replacement in edits:
         n = text.count(anchor)
         if n != 1:
-            raise RuntimeError(
-                f"anchor appears {n}x (must be exactly 1): {anchor[:60]!r}")
+            raise RuntimeError(f"anchor appears {n}x (must be exactly 1): {anchor[:60]!r}")
         text = text.replace(anchor, replacement)
     path.write_text(text)
 
@@ -161,19 +213,15 @@ def main() -> int:
     logs_dir.mkdir(exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="rl3b-spa-mut-") as tmp:
         copy = Path(tmp) / "repo"
-        shutil.copytree(
-            REPO, copy,
-            ignore=shutil.ignore_patterns(*_COPY_IGNORE))
+        shutil.copytree(REPO, copy, ignore=shutil.ignore_patterns(*_COPY_IGNORE))
         node_modules = REPO / "web" / "node_modules"
         if node_modules.is_dir():
-            os.symlink(node_modules.resolve(),
-                       copy / "web" / "node_modules")
+            os.symlink(node_modules.resolve(), copy / "web" / "node_modules")
 
         web = copy / "web"
         rels = {rel for _id, _g, files in _REGISTRY for rel, _e in files}
         targets = {rel: web / rel for rel in rels}
-        pristine = {rel: t.read_bytes() for rel, t in targets.items()
-                    if t.exists()}
+        pristine = {rel: t.read_bytes() for rel, t in targets.items() if t.exists()}
         missing = [rel for rel in rels if not targets[rel].exists()]
         if missing:
             print(f"HARNESS_ERROR: mutant target(s) missing: {missing}")
@@ -181,9 +229,11 @@ def main() -> int:
 
         rc, out = _run_vitest(web, logs_dir / "baseline.log")
         if rc != 0 or _FAILED_SUMMARY.search(out):
-            print("HARNESS_ERROR: pristine baseline fails the scoped "
-                  f"run (rc={rc}, log {logs_dir / 'baseline.log'}):\n"
-                  f"{out[-400:]}")
+            print(
+                "HARNESS_ERROR: pristine baseline fails the scoped "
+                f"run (rc={rc}, log {logs_dir / 'baseline.log'}):\n"
+                f"{out[-400:]}"
+            )
             return 2
         print("baseline: scoped vitest green on the disposable copy")
 
@@ -195,13 +245,14 @@ def main() -> int:
 
         for mid, gate, files in _REGISTRY:
             for rel, _edits in files:
-                targets[rel].write_bytes(pristine[rel])   # pristine start
+                targets[rel].write_bytes(pristine[rel])  # pristine start
             try:
                 for rel, edits in files:
                     _apply(targets[rel], edits)
             except RuntimeError as exc:
-                results.append({"id": mid, "gate": gate,
-                                "verdict": "HARNESS_ERROR", "detail": str(exc)})
+                results.append(
+                    {"id": mid, "gate": gate, "verdict": "HARNESS_ERROR", "detail": str(exc)}
+                )
                 _restore(files)
                 continue
             log_path = logs_dir / f"{mid}.log"
@@ -218,22 +269,30 @@ def main() -> int:
                 verdict = "KILLED"
                 detail = f"real test failures; log {log_path}"
             elif rc == 124:
-                results.append({"id": mid, "gate": gate,
-                                "verdict": "HARNESS_ERROR",
-                                "detail": f"vitest timeout (partial output "
-                                          f"retained); log {log_path}"})
+                results.append(
+                    {
+                        "id": mid,
+                        "gate": gate,
+                        "verdict": "HARNESS_ERROR",
+                        "detail": f"vitest timeout (partial output retained); log {log_path}",
+                    }
+                )
                 _restore(files)
                 continue
             else:
-                results.append({"id": mid, "gate": gate,
-                                "verdict": "HARNESS_ERROR",
-                                "detail": f"runner failure rc={rc} without a "
-                                          f"completed failing summary; "
-                                          f"log {log_path}"})
+                results.append(
+                    {
+                        "id": mid,
+                        "gate": gate,
+                        "verdict": "HARNESS_ERROR",
+                        "detail": f"runner failure rc={rc} without a "
+                        f"completed failing summary; "
+                        f"log {log_path}",
+                    }
+                )
                 _restore(files)
                 continue
-            results.append({"id": mid, "gate": gate, "verdict": verdict,
-                            "detail": detail})
+            results.append({"id": mid, "gate": gate, "verdict": verdict, "detail": detail})
             try:
                 _restore(files)
             except RuntimeError as exc:
@@ -243,18 +302,18 @@ def main() -> int:
     print(json.dumps(results, indent=2))
     by_id = {r["id"]: r for r in results}
     survived = [
-        r for r in results
+        r
+        for r in results
         if r["verdict"] == "SURVIVED"
-        and not (r["id"] in _COMBOS
-                 and by_id.get(_COMBOS[r["id"]], {}).get("verdict") == "KILLED")
+        and not (r["id"] in _COMBOS and by_id.get(_COMBOS[r["id"]], {}).get("verdict") == "KILLED")
     ]
     hard_errors = [r for r in results if r["verdict"] == "HARNESS_ERROR"]
     killed = sum(1 for r in results if r["verdict"] == "KILLED")
-    justified = sum(
-        1 for r in results
-        if r["verdict"] == "SURVIVED" and r not in survived)
-    print(f"mutation pass: {killed} KILLED / {len(survived)} SURVIVED "
-          f"/ {justified} justified-survivor / {len(results)} total")
+    justified = sum(1 for r in results if r["verdict"] == "SURVIVED" and r not in survived)
+    print(
+        f"mutation pass: {killed} KILLED / {len(survived)} SURVIVED "
+        f"/ {justified} justified-survivor / {len(results)} total"
+    )
     return 1 if (survived or hard_errors) else 0
 
 

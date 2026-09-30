@@ -3,6 +3,7 @@
 Reuse the existing broker fakes and plans rather than inventing a second broker
 interface. Test the drain directly so market-hour and trigger rules are irrelevant.
 """
+
 import json
 from decimal import Decimal
 
@@ -13,28 +14,28 @@ from tests.unit.test_trex_monitor import FakeIbkr, _monitor
 from tree_options.trex.state import BookState, Status
 
 
-@pytest.mark.parametrize('prior_qty,prior_price', [(0, '0'), (2, '1.00')])
+@pytest.mark.parametrize("prior_qty,prior_price", [(0, "0"), (2, "1.00")])
 def test_entry_revision_blends_current_order_not_whole_book(world, prior_qty, prior_price):
     ent = _enterer(world.root, FakeEntryIbkr(), world.now)
     sid = ent.plan.structures[0].id
     st = ent.book.structures[sid]
     st.filled_qty = prior_qty
     st.entry_fill = Decimal(prior_price) if prior_qty else None
-    ent._merge_order_total(sid, 2, Decimal('2.00'), 'Submitted', '701')
-    ent._merge_order_total(sid, 2, Decimal('3.00'), 'Submitted', '701')
-    expected = (prior_qty * Decimal(prior_price) + Decimal('6.00')) / (prior_qty + 2)
+    ent._merge_order_total(sid, 2, Decimal("2.00"), "Submitted", "701")
+    ent._merge_order_total(sid, 2, Decimal("3.00"), "Submitted", "701")
+    expected = (prior_qty * Decimal(prior_price) + Decimal("6.00")) / (prior_qty + 2)
     assert st.filled_qty == prior_qty + 2
     assert st.entry_fill == expected
-    assert st.entry_order_notional == Decimal('6.00')
+    assert st.entry_order_notional == Decimal("6.00")
     ent._save_book()  # persist the checkpoint, as the drain does
     ent._sync_book_from_disk()  # a restart/reload resumes from it
-    ent._merge_order_total(sid, 2, Decimal('3.00'), 'Submitted', '701')
+    ent._merge_order_total(sid, 2, Decimal("3.00"), "Submitted", "701")
     assert ent.book.structures[sid].entry_fill == expected
     assert ent.book.structures[sid].filled_qty == prior_qty + 2
-    assert ent.events_path.read_text().count('entry_fill_revised') == 1
+    assert ent.events_path.read_text().count("entry_fill_revised") == 1
 
 
-@pytest.mark.parametrize('prior_qty,prior_price', [(0, '0'), (1, '1.00')])
+@pytest.mark.parametrize("prior_qty,prior_price", [(0, "0"), (1, "1.00")])
 def test_exit_revision_blends_current_order_not_whole_book(world, prior_qty, prior_price):
     fake = FakeIbkr()
     mon = _monitor(world.root, fake, world.now)
@@ -49,23 +50,23 @@ def test_exit_revision_blends_current_order_not_whole_book(world, prior_qty, pri
     st.filled_qty = spec.quantity
     st.exit_filled_qty = prior_qty
     st.exit_fill = Decimal(prior_price) if prior_qty else None
-    ref = fake.place_combo(spec, 'SELL', spec.quantity - prior_qty, Decimal('2'))
+    ref = fake.place_combo(spec, "SELL", spec.quantity - prior_qty, Decimal("2"))
     mon.orders[sid] = ref
-    fake.fill(ref, 2, '2.00')
+    fake.fill(ref, 2, "2.00")
     mon._drain_orders()
-    fake.fill(ref, 2, '3.00')
+    fake.fill(ref, 2, "3.00")
     assert mon._drain_orders() is True  # price-only mutations must report changed
-    expected = (prior_qty * Decimal(prior_price) + Decimal('6')) / (prior_qty + 2)
+    expected = (prior_qty * Decimal(prior_price) + Decimal("6")) / (prior_qty + 2)
     # Averaging repeating Decimals can differ by one context ULP; compare
     # far below a monetary tick, not via a binary float.
     assert abs(st.exit_fill - expected) < Decimal("1e-24")
     assert st.exit_filled_qty == prior_qty + 2
-    assert st.exit_order_notional == Decimal('6.00')
+    assert st.exit_order_notional == Decimal("6.00")
     assert mon._drain_orders() is False
     # Averaging repeating Decimals can differ by one context ULP; compare
     # far below a monetary tick, not via a binary float.
     assert abs(st.exit_fill - expected) < Decimal("1e-24")
-    assert (mon.run_dir / 'events.jsonl').read_text().count('exit_fill_revised') == 1
+    assert (mon.run_dir / "events.jsonl").read_text().count("exit_fill_revised") == 1
 
 
 def test_entry_price_revision_survives_the_next_book_reload(world):
@@ -79,18 +80,18 @@ def test_entry_price_revision_survives_the_next_book_reload(world):
     sid = ent.plan.structures[0].id
     a = ent.orders[sid]
 
-    fake.fill_partial(a, 2, '0.44')
+    fake.fill_partial(a, 2, "0.44")
     ent._tick()
-    assert ent.book.structures[sid].entry_fill == Decimal('0.44')
+    assert ent.book.structures[sid].entry_fill == Decimal("0.44")
 
-    fake.fill_partial(a, 2, '0.50')  # same fills, revised average
+    fake.fill_partial(a, 2, "0.50")  # same fills, revised average
     ent._tick()
 
-    disk = BookState.load(ent.run_dir / 'book.json', [sid]).structures[sid]
-    assert disk.entry_fill == Decimal('0.50')
-    assert disk.entry_order_notional == Decimal('0.50') * 2
+    disk = BookState.load(ent.run_dir / "book.json", [sid]).structures[sid]
+    assert disk.entry_fill == Decimal("0.50")
+    assert disk.entry_order_notional == Decimal("0.50") * 2
 
-    fake.fill_partial(a, 2, '0.50')  # broker re-reports; must stay idempotent
+    fake.fill_partial(a, 2, "0.50")  # broker re-reports; must stay idempotent
     ent._tick()
     events = [json.loads(line) for line in ent.events_path.read_text().splitlines()]
-    assert sum(e.get('event') == 'entry_fill_revised' for e in events) == 1
+    assert sum(e.get("event") == "entry_fill_revised" for e in events) == 1

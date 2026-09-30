@@ -47,12 +47,22 @@ def _git_state(repo: Path | None) -> tuple[str, bool] | None:
     try:
         sha = subprocess.run(
             ["git", "rev-parse", "HEAD"],
-            cwd=repo, capture_output=True, text=True, timeout=10, check=True,
+            cwd=repo,
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=True,
         ).stdout.strip()
-        dirty = subprocess.run(
-            ["git", "status", "--porcelain"],
-            cwd=repo, capture_output=True, text=True, timeout=10,
-        ).stdout.strip() != ""
+        dirty = (
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=repo,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            ).stdout.strip()
+            != ""
+        )
         return (sha or "unknown", dirty)
     except (OSError, subprocess.SubprocessError):
         return None
@@ -159,9 +169,7 @@ def read_runs(state_dir: Path, limit: int = 10) -> list[dict[str, Any]]:
 # Claims are ordered by request_ts, never by the random id filename.
 
 
-def write_request(
-    spool_dir: Path, kind: str, request_id: str, payload: dict[str, Any]
-) -> Path:
+def write_request(spool_dir: Path, kind: str, request_id: str, payload: dict[str, Any]) -> Path:
     body = {"request_id": request_id, "kind": kind, **payload}
     _atomic_write(spool_dir / f"{kind}.request.{request_id}", body)
     return spool_dir / f"{kind}.request.{request_id}"
@@ -203,9 +211,7 @@ def claim_request(
     return None
 
 
-def complete_request(
-    spool_dir: Path, kind: str, request_id: str, result: dict[str, Any]
-) -> None:
+def complete_request(spool_dir: Path, kind: str, request_id: str, result: dict[str, Any]) -> None:
     # receipt FIRST: a crash between the steps then leaves a retryable
     # request (idempotent redo), never a request with no answer at all
     _atomic_write(spool_dir / f"{kind}.result", result)
@@ -237,9 +243,7 @@ def _reclaim_stale_claims(spool_dir: Path) -> None:
 
 
 def write_scan_request(spool_dir: Path, request_id: str, request_ts: datetime) -> Path:
-    return write_request(
-        spool_dir, "scan", request_id, {"request_ts": request_ts.isoformat()}
-    )
+    return write_request(spool_dir, "scan", request_id, {"request_ts": request_ts.isoformat()})
 
 
 def spool_pending(spool_dir: Path) -> bool:

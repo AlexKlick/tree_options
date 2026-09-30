@@ -299,9 +299,7 @@ def test_expiry_cap_and_param_clamping(client: TestClient) -> None:
     assert clamp_params(99, 99) == (15, 12)
 
 
-def test_walkback_when_newest_features_lacks_chain(
-    client: TestClient, tmp_path: Path
-) -> None:
+def test_walkback_when_newest_features_lacks_chain(client: TestClient, tmp_path: Path) -> None:
     store = tmp_path / "store"
     # a NEWER features session carries TEST but no chain was recorded for it
     _write_features(store, "2026-06-12", {"TEST": _feature_name(101.5)})

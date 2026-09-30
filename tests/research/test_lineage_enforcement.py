@@ -62,12 +62,15 @@ from tree_options.research.scenarios.spec_io import scenario_from_dict
 
 def _candidate(artifact_sha: str = "f" * 64) -> ResearchCandidate:
     return ResearchCandidate(
-        id="c1", family="f", version="v1",
+        id="c1",
+        family="f",
+        version="v1",
         evidence_kind=ResearchEvidenceKind.SYNTHETIC_BACKTEST,
         registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         disposition=ResearchDisposition.PASS,
         plot_funded_account=True,
-        supported_start=date(2024, 1, 2), supported_end=date(2024, 1, 31),
+        supported_start=date(2024, 1, 2),
+        supported_end=date(2024, 1, 31),
         funded_history=FundedHistorySupport.RECONSTRUCTED,
         artifact_hashes={"fixture": artifact_sha},
     )
@@ -107,27 +110,47 @@ def _spawn_parent(ws: Path, worker: ResearchWorker) -> str:
     pid = spec_hash(s)
     with open_runstate_store(ws) as store:
         store.put("spec", s.to_dict(), key=pid, at=datetime.now())
-        store.put("run", {"run_id": pid, "spec_hash": pid,
-                          "kind": "comparison", "status": "queued",
-                          "format_version": RUN_FORMAT_VERSION},
-                  key=pid, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": pid,
+                "spec_hash": pid,
+                "kind": "comparison",
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=pid,
+            at=datetime.now(),
+        )
     assert worker.step()
     return pid
 
 
 def _spawn_scenario(ws: Path, parent_run_id: str) -> str:
-    scn = scenario_from_dict(parent_run_id, {
-        "kind": "contribution_planning", "access_mode": "exploratory",
-        "diff": {"contribution_per_period": "500"},
-    })
+    scn = scenario_from_dict(
+        parent_run_id,
+        {
+            "kind": "contribution_planning",
+            "access_mode": "exploratory",
+            "diff": {"contribution_per_period": "500"},
+        },
+    )
     cid = scenario_spec_hash(scn)
     with open_runstate_store(ws) as store:
         store.put("spec", scn.to_dict(), key=cid, at=datetime.now())
-        store.put("run", {"run_id": cid, "spec_hash": cid,
-                          "kind": "scenario", "parent_run_id": parent_run_id,
-                          "status": "queued",
-                          "format_version": RUN_FORMAT_VERSION},
-                  key=cid, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": cid,
+                "spec_hash": cid,
+                "kind": "scenario",
+                "parent_run_id": parent_run_id,
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=cid,
+            at=datetime.now(),
+        )
     return cid
 
 
@@ -143,8 +166,8 @@ def test_engine_refuses_when_attach_ref_drifted(tmp_path):
 
     ws = _ws(tmp_path)
     worker = ResearchWorker(
-        workspace=ws, catalog_provider=lambda: [_candidate()],
-        engine_fn=run_comparison)
+        workspace=ws, catalog_provider=lambda: [_candidate()], engine_fn=run_comparison
+    )
     parent_id = _spawn_parent(ws, worker)
     with open_runstate_store(ws) as store:
         parent_result = store.get("result", parent_id)
@@ -154,14 +177,16 @@ def test_engine_refuses_when_attach_ref_drifted(tmp_path):
         parent_run_id=parent_id,
         parent_spec_hash=parent_result["spec_hash"],
         parent_engine_sha256="a" * 64,  # what the engine was AT ATTACH
-        parent_input_snapshot_sha256=parent_result[
-            "input_snapshot_sha256"],
+        parent_input_snapshot_sha256=parent_result["input_snapshot_sha256"],
         parent_calendar_sha256=parent_result["calendar_sha256"],
     )
-    scn = scenario_from_dict(parent_id, {
-        "kind": "contribution_planning",
-        "diff": {"contribution_per_period": "500"},
-    })
+    scn = scenario_from_dict(
+        parent_id,
+        {
+            "kind": "contribution_planning",
+            "diff": {"contribution_per_period": "500"},
+        },
+    )
     envelope = {
         "engine_sha256": parent_result["engine_sha256"],
         "input_snapshot_sha256": parent_result["input_snapshot_sha256"],
@@ -171,9 +196,13 @@ def test_engine_refuses_when_attach_ref_drifted(tmp_path):
     }
     with open_runstate_store(ws) as store:
         outcome = fork_parent_and_replay(
-            store, scenario=scn, parent_result_envelope=envelope,
+            store,
+            scenario=scn,
+            parent_result_envelope=envelope,
             catalog_provider=lambda: [_candidate()],
-            engine_fn=run_comparison, attach_ref=stale_ref)
+            engine_fn=run_comparison,
+            attach_ref=stale_ref,
+        )
     assert outcome.refusal is not None
     assert outcome.refusal.code == SCENARIO_PARENT_CHANGED
 
@@ -185,8 +214,8 @@ def test_engine_allows_when_attach_ref_matches(tmp_path):
 
     ws = _ws(tmp_path)
     worker = ResearchWorker(
-        workspace=ws, catalog_provider=lambda: [_candidate()],
-        engine_fn=run_comparison)
+        workspace=ws, catalog_provider=lambda: [_candidate()], engine_fn=run_comparison
+    )
     parent_id = _spawn_parent(ws, worker)
     with open_runstate_store(ws) as store:
         parent_result = store.get("result", parent_id)
@@ -201,19 +230,25 @@ def test_engine_allows_when_attach_ref_matches(tmp_path):
         parent_run_id=parent_id,
         parent_spec_hash=parent_result["spec_hash"],
         parent_engine_sha256=parent_result["engine_sha256"],
-        parent_input_snapshot_sha256=parent_result[
-            "input_snapshot_sha256"],
+        parent_input_snapshot_sha256=parent_result["input_snapshot_sha256"],
         parent_calendar_sha256=parent_result["calendar_sha256"],
     )
-    scn = scenario_from_dict(parent_id, {
-        "kind": "contribution_planning",
-        "diff": {"contribution_per_period": "500"},
-    })
+    scn = scenario_from_dict(
+        parent_id,
+        {
+            "kind": "contribution_planning",
+            "diff": {"contribution_per_period": "500"},
+        },
+    )
     with open_runstate_store(ws) as store:
         outcome = fork_parent_and_replay(
-            store, scenario=scn, parent_result_envelope=envelope,
+            store,
+            scenario=scn,
+            parent_result_envelope=envelope,
             catalog_provider=lambda: [_candidate()],
-            engine_fn=run_comparison, attach_ref=matching_ref)
+            engine_fn=run_comparison,
+            attach_ref=matching_ref,
+        )
     assert outcome.refusal is None
 
 
@@ -225,8 +260,8 @@ def test_worker_refuses_fork_of_drifted_parent(tmp_path):
     regression test."""
     ws = _ws(tmp_path)
     worker = ResearchWorker(
-        workspace=ws, catalog_provider=lambda: [_candidate()],
-        engine_fn=run_comparison)
+        workspace=ws, catalog_provider=lambda: [_candidate()], engine_fn=run_comparison
+    )
     parent_id = _spawn_parent(ws, worker)
     with open_runstate_store(ws) as store:
         current = store.get("result", parent_id)
@@ -239,6 +274,7 @@ def test_worker_refuses_fork_of_drifted_parent(tmp_path):
     )
     with open_runstate_store(ws) as store:
         from tree_options.research.scenarios.lineage import store_parent_ref
+
         store_parent_ref(store, stale, at=datetime.now())
     child_id = _spawn_scenario(ws, parent_id)
     assert worker.step()
@@ -261,13 +297,13 @@ def test_worker_refuses_fork_when_candidate_artifacts_drifted(tmp_path):
     receipt claims the parent's inputs."""
     ws = _ws(tmp_path)
     worker_parent = ResearchWorker(
-        workspace=ws, catalog_provider=lambda: [_candidate("f" * 64)],
-        engine_fn=run_comparison)
+        workspace=ws, catalog_provider=lambda: [_candidate("f" * 64)], engine_fn=run_comparison
+    )
     parent_id = _spawn_parent(ws, worker_parent)
     # The catalog now serves the same candidate id with drifted data.
     worker_child = ResearchWorker(
-        workspace=ws, catalog_provider=lambda: [_candidate("9" * 64)],
-        engine_fn=run_comparison)
+        workspace=ws, catalog_provider=lambda: [_candidate("9" * 64)], engine_fn=run_comparison
+    )
     child_id = _spawn_scenario(ws, parent_id)
     assert worker_child.step()
     with open_runstate_store(ws) as store:
@@ -277,7 +313,8 @@ def test_worker_refuses_fork_when_candidate_artifacts_drifted(tmp_path):
     assert "input" in result["wire"]["message"]
     # The refusal is honest about WHICH identity drifted.
     assert parent_result["input_snapshot_sha256"] != (
-        result["wire"].get("live_input_snapshot_sha256"))
+        result["wire"].get("live_input_snapshot_sha256")
+    )
 
 
 def test_worker_child_records_recomputed_input_snapshot(tmp_path):
@@ -287,8 +324,8 @@ def test_worker_child_records_recomputed_input_snapshot(tmp_path):
     bytes."""
     ws = _ws(tmp_path)
     worker = ResearchWorker(
-        workspace=ws, catalog_provider=lambda: [_candidate()],
-        engine_fn=run_comparison)
+        workspace=ws, catalog_provider=lambda: [_candidate()], engine_fn=run_comparison
+    )
     parent_id = _spawn_parent(ws, worker)
     child_id = _spawn_scenario(ws, parent_id)
     assert worker.step()
@@ -308,8 +345,8 @@ def test_unchanged_inputs_share_three_shas(tmp_path):
     calendar), while ``scenario_diff_sha256`` is child-only."""
     ws = _ws(tmp_path)
     worker = ResearchWorker(
-        workspace=ws, catalog_provider=lambda: [_candidate()],
-        engine_fn=run_comparison)
+        workspace=ws, catalog_provider=lambda: [_candidate()], engine_fn=run_comparison
+    )
     parent_id = _spawn_parent(ws, worker)
     child_id = _spawn_scenario(ws, parent_id)
     assert worker.step()
@@ -333,19 +370,29 @@ def test_cli_inspect_run_handles_scenario_run_id(tmp_path):
     lack that key. The CLI must print a payload and exit 0."""
     ws = _ws(tmp_path)
     worker = ResearchWorker(
-        workspace=ws, catalog_provider=lambda: [_candidate()],
-        engine_fn=run_comparison)
+        workspace=ws, catalog_provider=lambda: [_candidate()], engine_fn=run_comparison
+    )
     parent_id = _spawn_parent(ws, worker)
     child_id = _spawn_scenario(ws, parent_id)
     assert worker.step()
     env = dict(os.environ)
     env["PYTHONPATH"] = (
-        str(Path(__file__).resolve().parents[2] / "src")
-        + os.pathsep + env.get("PYTHONPATH", ""))
+        str(Path(__file__).resolve().parents[2] / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    )
     proc = subprocess.run(
-        [sys.executable, "-m", "tree_options.research",
-         "inspect", "--run", child_id, "--workspace", str(ws)],
-        capture_output=True, text=True, env=env,
+        [
+            sys.executable,
+            "-m",
+            "tree_options.research",
+            "inspect",
+            "--run",
+            child_id,
+            "--workspace",
+            str(ws),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
     )
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)

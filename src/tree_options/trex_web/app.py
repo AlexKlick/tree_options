@@ -208,9 +208,7 @@ def _plans_payload(
         position_rows.append(
             (
                 view.plan.id,
-                net_positions(
-                    specs, states, marks_view.get("structures") if marks_view else None
-                ),
+                net_positions(specs, states, marks_view.get("structures") if marks_view else None),
             )
         )
         plans.append(
@@ -289,9 +287,7 @@ def _account_age(payload: dict[str, Any]) -> int | None:
     return account_age_seconds(payload)
 
 
-def _plan_payload(
-    plan_id: str, state_root: Path, plans_root: Path
-) -> dict[str, object] | None:
+def _plan_payload(plan_id: str, state_root: Path, plans_root: Path) -> dict[str, object] | None:
     """GET /api/plans/{id} body: everything the plan detail view renders.
 
     Plain numbers + ISO strings (the client formats); prebuilt _usd label
@@ -398,7 +394,9 @@ def _plan_payload(
         "structures": structures,
         "marks": marks_view,
         "book_summary": book_summary,
-        "net_positions": net_positions(specs, structures, marks_view.get("structures") if marks_view else None),
+        "net_positions": net_positions(
+            specs, structures, marks_view.get("structures") if marks_view else None
+        ),
         "payoffs": payoffs,
         "history": history,
         "events": view.events,
@@ -425,17 +423,13 @@ def create_app(
     """
     state_root = _resolve_state_root(state_dir)
     plans_root = _resolve_plans_root(plans_dir)
-    static_root = (
-        Path(static_dir).expanduser() if static_dir else Path(__file__).parent / "static"
-    )
+    static_root = Path(static_dir).expanduser() if static_dir else Path(__file__).parent / "static"
     discovery_root = (
         Path(discovery_dir).expanduser()
         if discovery_dir
         else Path(os.environ.get("TREX_DISCOVERY_DIR", str(DEFAULT_DISCOVERY_ROOT)))
     )
-    discovery_config = Path(
-        os.environ.get("TREX_DISCOVERY_CONFIG", str(DEFAULT_DISCOVERY_CONFIG))
-    )
+    discovery_config = Path(os.environ.get("TREX_DISCOVERY_CONFIG", str(DEFAULT_DISCOVERY_CONFIG)))
     from tree_options.trex_web.gateway_view import (
         DEFAULT_EXIT_WATCH_STATE,
         DEFAULT_GATEWAY_STATE,
@@ -458,19 +452,13 @@ def create_app(
     from tree_options.desk.paths import state_root as _desk_state_root
     from tree_options.desk.paths import store_root as _desk_store_root
 
-    desk_paper_root = (
-        Path(desk_paper_dir).expanduser() if desk_paper_dir else _desk_paper_dir()
-    )
+    desk_paper_root = Path(desk_paper_dir).expanduser() if desk_paper_dir else _desk_paper_dir()
     desk_panel_path = desk_paper_root / "ohlc-panel.json"
-    desk_store_root = (
-        Path(desk_store_dir).expanduser() if desk_store_dir else _desk_store_root()
-    )
+    desk_store_root = Path(desk_store_dir).expanduser() if desk_store_dir else _desk_store_root()
     # the desk's job state (signals + the miner's entry queue). Default:
     # desk.paths' own conventions (env-overridable); an explicit override
     # pins BOTH under one root, the way the deployed unit sees them.
-    desk_state_root = (
-        Path(desk_state_dir).expanduser() if desk_state_dir else _desk_state_root()
-    )
+    desk_state_root = Path(desk_state_dir).expanduser() if desk_state_dir else _desk_state_root()
     desk_signals_dir = desk_state_root / "signals"
     desk_queue_dir = desk_state_root / "queue" if desk_state_dir else _desk_queue_dir()
     # the discovery lane's market cache (bars/news/viewchain envelopes);
@@ -490,13 +478,17 @@ def create_app(
 
     from tree_options.trex_web.desk_view import attach as attach_desk_evidence
 
-    attach_desk_evidence(app, database=desk_state_root / "evidence" / "desk.sqlite3",
-                         replay_dir=desk_store_root / "evaluations" / "historical-replay",
-                         portfolio_dir=desk_store_root / "evaluations" / "portfolio-scenario",
-                         intraday_dir=desk_store_root / "evaluations" / "intraday-graph",
-                         trade_floor_dir=desk_store_root / "evaluations" / "trade-floor",
-                         longrun_dir=desk_store_root / "evaluations" / "longrun",
-                         plans_root=plans_root, state_root=state_root)
+    attach_desk_evidence(
+        app,
+        database=desk_state_root / "evidence" / "desk.sqlite3",
+        replay_dir=desk_store_root / "evaluations" / "historical-replay",
+        portfolio_dir=desk_store_root / "evaluations" / "portfolio-scenario",
+        intraday_dir=desk_store_root / "evaluations" / "intraday-graph",
+        trade_floor_dir=desk_store_root / "evaluations" / "trade-floor",
+        longrun_dir=desk_store_root / "evaluations" / "longrun",
+        plans_root=plans_root,
+        state_root=state_root,
+    )
 
     # Research lane routes: RL-1 catalog + comparisons + evidence
     # drawer; RL-2 scenario branching (GET/POST /api/research/
@@ -543,8 +535,9 @@ def create_app(
         from tree_options.action_graph.proposal import load_design_example
 
         plan, receipt = load_design_example()
-        return JSONResponse({"plan": plan, "receipt": receipt},
-                            headers={"Cache-Control": "no-store"})
+        return JSONResponse(
+            {"plan": plan, "receipt": receipt}, headers={"Cache-Control": "no-store"}
+        )
 
     @app.get("/api/plans/{plan_id}")
     def api_plan_detail(plan_id: str) -> dict[str, object]:
@@ -597,9 +590,7 @@ def create_app(
         base["watch_origins"] = {
             row.get("symbol"): row.get("origin") for row in wl.get("symbols", [])
         }
-        base["proposals"] = [
-            p for p in wl.get("proposals", []) if p.get("status") == "pending"
-        ]
+        base["proposals"] = [p for p in wl.get("proposals", []) if p.get("status") == "pending"]
         base["last_proposal_run"] = wl.get("last_proposal_run")
         base["now"] = now_et().isoformat()
         return base
@@ -654,11 +645,7 @@ def create_app(
         bars_list = bars_payload.get("bars") if isinstance(bars_payload, dict) else None
         bars_series = _bars_series(bars_list)
         news_payload = news_env.get("payload") if news_env else None
-        news = (
-            news_payload.get("items", [])
-            if isinstance(news_payload, dict)
-            else []
-        )
+        news = news_payload.get("items", []) if isinstance(news_payload, dict) else []
         return {
             "now": now.isoformat(),
             "symbol": sym_up,
@@ -692,9 +679,7 @@ def create_app(
         now = now_et()
         body = dict(payload)
         body["now"] = now.isoformat()
-        body["history_age_seconds"] = history_age_seconds(
-            payload.get("panel_last_session"), now
-        )
+        body["history_age_seconds"] = history_age_seconds(payload.get("panel_last_session"), now)
         return JSONResponse(body, headers={"ETag": etag})
 
     @app.get("/api/market/{sym}/options")
@@ -878,7 +863,7 @@ def create_app(
             .replace("&", "\\u0026")
         )
         return HTMLResponse(
-            "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+            '<!doctype html><html lang="en"><head><meta charset="utf-8">'
             "<title>trex cockpit</title></head><body>"
             "<p>Opening the cockpit plan view…</p>"
             "<script>location.replace('../#/plan/' + encodeURIComponent("

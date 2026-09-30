@@ -33,12 +33,12 @@ def _panel(names: list[str], days: list[str]) -> dict[str, Any]:
 def client(tmp_path: Path) -> TestClient:
     paper = tmp_path / "paper"
     paper.mkdir()
-    days = [f"2024-01-{d:02d}" for d in range(1, 29)] + [
-        f"2024-02-{d:02d}" for d in range(1, 29)
-    ] + [f"2024-03-{d:02d}" for d in range(1, 29)]  # 84 sessions (28/day x 3)
-    (paper / "ohlc-panel.json").write_text(
-        json.dumps(_panel(["AAPL", "SPY"], days))
-    )
+    days = (
+        [f"2024-01-{d:02d}" for d in range(1, 29)]
+        + [f"2024-02-{d:02d}" for d in range(1, 29)]
+        + [f"2024-03-{d:02d}" for d in range(1, 29)]
+    )  # 84 sessions (28/day x 3)
+    (paper / "ohlc-panel.json").write_text(json.dumps(_panel(["AAPL", "SPY"], days)))
     (paper / "ohlc-panel.json.lock").write_text("")
     app = create_app(state_dir=str(tmp_path), plans_dir=str(tmp_path), desk_paper_dir=str(paper))
     return TestClient(app)

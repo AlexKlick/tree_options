@@ -35,7 +35,8 @@ HALT_FLATTEN_WARNING = (
     "HALT is also present. The desk runtime gates EXIT orders on HALT too, "
     "so this FLATTEN will not close anything until the HALT file is gone. "
     "To flatten now: `resume` (removes HALT and FLATTEN), then `flatten` "
-    "again.")
+    "again."
+)
 
 
 def _write_atomic(path: Path, text: str) -> None:
@@ -48,29 +49,38 @@ def _write_atomic(path: Path, text: str) -> None:
 # ------------------------------------------------------------------ status
 
 
-def collect_status(paths: DeskPaths, supervised: SupervisedPaths,
-                   *, now: datetime, events: int = 10) -> dict[str, Any]:
+def collect_status(
+    paths: DeskPaths, supervised: SupervisedPaths, *, now: datetime, events: int = 10
+) -> dict[str, Any]:
     """One read-only dump of the desk's on-disk state (no broker contact)."""
-    report: dict[str, Any] = {"schema": "desk-cli-status/1", "at": now.isoformat(),
-                              "run_dir": str(paths.root)}
-    report["kill_files"] = sorted(f.name for f in (paths.halt(), paths.flatten())
-                                  if f.exists())
+    report: dict[str, Any] = {
+        "schema": "desk-cli-status/1",
+        "at": now.isoformat(),
+        "run_dir": str(paths.root),
+    }
+    report["kill_files"] = sorted(f.name for f in (paths.halt(), paths.flatten()) if f.exists())
     owner = paths.root / "owner.json"
     report["owner"] = json.loads(owner.read_bytes()) if owner.exists() else None
     book = paths.book()
     if book.exists():
         raw = json.loads(book.read_bytes())
-        structures = {sid: {"status": st.get("status"),
-                            "open_qty": (int(st.get("filled_qty", 0))
-                                         - int(st.get("exit_filled_qty", 0)))}
-                      for sid, st in raw.get("structures", {}).items()}
+        structures = {
+            sid: {
+                "status": st.get("status"),
+                "open_qty": (int(st.get("filled_qty", 0)) - int(st.get("exit_filled_qty", 0))),
+            }
+            for sid, st in raw.get("structures", {}).items()
+        }
         report["book"] = structures
     else:
         report["book"] = None
     inbox = paths.root / "requests"
     if inbox.is_dir():
-        report["inbox"] = sorted(p.name for p in inbox.glob("*.json")
-                                 if not p.name.endswith((".result.json", ".claimed.json")))
+        report["inbox"] = sorted(
+            p.name
+            for p in inbox.glob("*.json")
+            if not p.name.endswith((".result.json", ".claimed.json"))
+        )
         results = sorted(inbox.glob("*.result.json"))
         report["last_results"] = [json.loads(p.read_bytes()) for p in results[-3:]]
     else:
@@ -79,21 +89,30 @@ def collect_status(paths: DeskPaths, supervised: SupervisedPaths,
     report["supervised"] = supervised_status(supervised, now=now)
     log = paths.events()
     if log.exists() and events > 0:
-        report["events"] = [json.loads(line) for line in
-                            log.read_text().splitlines()[-events:]]
+        report["events"] = [json.loads(line) for line in log.read_text().splitlines()[-events:]]
     return report
 
 
 # ------------------------------------------------------------------ request
 
 
-def compose_request(*, intent_id: str, account_id: str, underlying: str,
-                    buy_strike: Decimal, sell_strike: Decimal, expiry: date,
-                    debit: Decimal, cap: Decimal, entry_date: date,
-                    exit_deadline: date, tp_frac: Decimal | None,
-                    send_deadline: datetime, requested_by: str,
-                    tp_basis: Literal["width_frac", "gain_frac",
-                                      "credit_frac"] = "gain_frac") -> EntryRequest:
+def compose_request(
+    *,
+    intent_id: str,
+    account_id: str,
+    underlying: str,
+    buy_strike: Decimal,
+    sell_strike: Decimal,
+    expiry: date,
+    debit: Decimal,
+    cap: Decimal,
+    entry_date: date,
+    exit_deadline: date,
+    tp_frac: Decimal | None,
+    send_deadline: datetime,
+    requested_by: str,
+    tp_basis: Literal["width_frac", "gain_frac", "credit_frac"] = "gain_frac",
+) -> EntryRequest:
     """Build a validated put debit-vertical entry request (never sends).
 
     The take-profit basis is explicit (operator ruling 2026-09-29): the
@@ -104,23 +123,43 @@ def compose_request(*, intent_id: str, account_id: str, underlying: str,
     744/742 at $0.44 with width 2.00 put TP at $1.00, +127%). An unknown
     basis or a value out of the basis's range refuses (pydantic
     ValidationError is a ValueError)."""
-    legs = (Leg(right="P", action="BUY", strike=buy_strike, expiry=expiry),
-            Leg(right="P", action="SELL", strike=sell_strike, expiry=expiry))
-    exits = ExitRules(touch=False, breach=False, take_profit=(
-        TakeProfit(basis=tp_basis, value=tp_frac) if tp_frac is not None else None))
+    legs = (
+        Leg(right="P", action="BUY", strike=buy_strike, expiry=expiry),
+        Leg(right="P", action="SELL", strike=sell_strike, expiry=expiry),
+    )
+    exits = ExitRules(
+        touch=False,
+        breach=False,
+        take_profit=(TakeProfit(basis=tp_basis, value=tp_frac) if tp_frac is not None else None),
+    )
     structure = LegStructure(
-        id=intent_id, underlying=underlying, kind="debit_vertical", legs=legs,
-        quantity=1, entry_date=entry_date, exit_deadline=exit_deadline,
-        limit=cap, exits=exits)
+        id=intent_id,
+        underlying=underlying,
+        kind="debit_vertical",
+        legs=legs,
+        quantity=1,
+        entry_date=entry_date,
+        exit_deadline=exit_deadline,
+        limit=cap,
+        exits=exits,
+    )
     effect = SupervisedEffect(
-        intent_id=intent_id, account_id=account_id, structure=structure,
-        side=structure.open_side, quantity=1, limit=debit,
-        order_ref=supervised_order_ref(intent_id))
+        intent_id=intent_id,
+        account_id=account_id,
+        structure=structure,
+        side=structure.open_side,
+        quantity=1,
+        limit=debit,
+        order_ref=supervised_order_ref(intent_id),
+    )
     # the same bounds the broker adapter will enforce at the send boundary
     validate_package_order(structure, effect.side, effect.quantity, debit)
-    return EntryRequest(strategy_version="operational-canary/1",
-                        send_deadline=send_deadline, requested_by=requested_by,
-                        effect=effect)
+    return EntryRequest(
+        strategy_version="operational-canary/1",
+        send_deadline=send_deadline,
+        requested_by=requested_by,
+        effect=effect,
+    )
 
 
 # --------------------------------------------------------------------- CLI
@@ -129,9 +168,11 @@ def compose_request(*, intent_id: str, account_id: str, underlying: str,
 def _cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tree_options.trex.desk_cli",
-        description="Operate the supervised desk from files (no broker contact).")
-    parser.add_argument("--dir", type=Path, default=None,
-                        help="desk run dir (default TREX_DESK_RUN_DIR)")
+        description="Operate the supervised desk from files (no broker contact).",
+    )
+    parser.add_argument(
+        "--dir", type=Path, default=None, help="desk run dir (default TREX_DESK_RUN_DIR)"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("status", help="one read-only dump of the desk state")
     events_p = sub.add_parser("events", help="tail the desk event log")
@@ -139,67 +180,94 @@ def _cli(argv: list[str] | None = None) -> int:
     sub.add_parser("halt", help="place HALT (no new orders)")
     sub.add_parser("flatten", help="place FLATTEN (close everything)")
     sub.add_parser("resume", help="remove HALT and FLATTEN")
-    drill = sub.add_parser(
-        "drill-check", help="read-only Stage-B drill readiness gates (G2-G6)")
-    drill.add_argument("--buy-strike", type=Decimal, default=None,
-                       help="with --sell-strike/--expiry: probe this leg's quote rail")
+    drill = sub.add_parser("drill-check", help="read-only Stage-B drill readiness gates (G2-G6)")
+    drill.add_argument(
+        "--buy-strike",
+        type=Decimal,
+        default=None,
+        help="with --sell-strike/--expiry: probe this leg's quote rail",
+    )
     drill.add_argument("--sell-strike", type=Decimal, default=None)
     drill.add_argument("--expiry", type=date.fromisoformat, default=None)
     drill.add_argument("--underlying", default="SPY")
-    drill.add_argument("--gateway-state", type=Path, default=None,
-                       help="gateway watch state (default ~/.local/state/trex/gateway.json)")
+    drill.add_argument(
+        "--gateway-state",
+        type=Path,
+        default=None,
+        help="gateway watch state (default ~/.local/state/trex/gateway.json)",
+    )
     drill.add_argument("--exit-watch-state", type=Path, default=None)
-    drill.add_argument("--plans-dir", type=Path, default=None,
-                       help="legacy plan TOMLs for the ACCOUNT's other books "
-                            "(default the repo's plans/)")
-    drill.add_argument("--max-account-open-loss", type=Decimal, default=None,
-                       metavar="USD",
-                       help="operator rail: NO-GO when the ACCOUNT's open loss "
-                            "(desk book + every other book under the scan root) "
-                            "exceeds USD. Unset = reported, never enforced.")
+    drill.add_argument(
+        "--plans-dir",
+        type=Path,
+        default=None,
+        help="legacy plan TOMLs for the ACCOUNT's other books (default the repo's plans/)",
+    )
+    drill.add_argument(
+        "--max-account-open-loss",
+        type=Decimal,
+        default=None,
+        metavar="USD",
+        help="operator rail: NO-GO when the ACCOUNT's open loss "
+        "(desk book + every other book under the scan root) "
+        "exceeds USD. Unset = reported, never enforced.",
+    )
     req = sub.add_parser("request", help="compose+validate an entry request file")
     req.add_argument("--underlying", default="SPY")
     req.add_argument("--buy-strike", required=True, type=Decimal)
     req.add_argument("--sell-strike", required=True, type=Decimal)
     req.add_argument("--expiry", required=True, type=date.fromisoformat)
-    req.add_argument("--debit", required=True, type=Decimal,
-                     help="the order limit (debit orientation)")
-    req.add_argument("--cap", type=Decimal, default=Decimal("1.20"),
-                     help="the structure cap (default 1.20)")
+    req.add_argument(
+        "--debit", required=True, type=Decimal, help="the order limit (debit orientation)"
+    )
+    req.add_argument(
+        "--cap", type=Decimal, default=Decimal("1.20"), help="the structure cap (default 1.20)"
+    )
     req.add_argument("--entry-date", type=date.fromisoformat, default=None)
     req.add_argument("--exit-deadline", required=True, type=date.fromisoformat)
-    req.add_argument("--tp-frac", type=Decimal, default=Decimal("0.5"),
-                     help="take-profit threshold in the basis's units (default 0.5)")
-    req.add_argument("--tp-basis", default="gain_frac",
-                     choices=("width_frac", "gain_frac", "credit_frac"),
-                     help="take-profit basis (default gain_frac: TP at entry x "
-                          "(1 + tp_frac), i.e. +50%% of the debit paid at the "
-                          "default 0.5; width_frac: TP at tp_frac x the structure "
-                          "width - on a cheap wide vertical that targets a large "
-                          "multiple of entry; credit_frac: that fraction of the "
-                          "entry credit captured)")
-    req.add_argument("--intent-id", default=None,
-                     help="also the structure id and file name (default canary-<date>-<n>)")
+    req.add_argument(
+        "--tp-frac",
+        type=Decimal,
+        default=Decimal("0.5"),
+        help="take-profit threshold in the basis's units (default 0.5)",
+    )
+    req.add_argument(
+        "--tp-basis",
+        default="gain_frac",
+        choices=("width_frac", "gain_frac", "credit_frac"),
+        help="take-profit basis (default gain_frac: TP at entry x "
+        "(1 + tp_frac), i.e. +50%% of the debit paid at the "
+        "default 0.5; width_frac: TP at tp_frac x the structure "
+        "width - on a cheap wide vertical that targets a large "
+        "multiple of entry; credit_frac: that fraction of the "
+        "entry credit captured)",
+    )
+    req.add_argument(
+        "--intent-id",
+        default=None,
+        help="also the structure id and file name (default canary-<date>-<n>)",
+    )
     req.add_argument("--account", default=DEFAULT_ACCOUNT)
     req.add_argument("--requested-by", default="operator-terminal")
     args = parser.parse_args(argv)
 
     from tree_options.trex.clock import ET
+
     now = datetime.now(ET)
     root = args.dir or DeskPaths.default().root
     paths = DeskPaths(root)
-    supervised = SupervisedPaths(Path(os.environ.get(
-        "TREX_SUPERVISED_DIR", "~/.local/state/trex/supervised")).expanduser())
+    supervised = SupervisedPaths(
+        Path(os.environ.get("TREX_SUPERVISED_DIR", "~/.local/state/trex/supervised")).expanduser()
+    )
 
     if args.command == "status":
-        print(json.dumps(collect_status(paths, supervised, now=now), indent=2,
-                         default=str))
+        print(json.dumps(collect_status(paths, supervised, now=now), indent=2, default=str))
         return 0
     if args.command == "events":
         log = paths.events()
         if not log.exists():
             return 0
-        for line in log.read_text().splitlines()[-args.n:]:
+        for line in log.read_text().splitlines()[-args.n :]:
             print(line)
         return 0
     if args.command == "halt":
@@ -230,10 +298,14 @@ def _cli(argv: list[str] | None = None) -> int:
             print(f"usage error: {error}", file=sys.stderr)
             return 2
         return drill_check.run_drill_check(
-            paths, supervised, pair=pair,
-            gateway_state=args.gateway_state, exit_watch_state=args.exit_watch_state,
+            paths,
+            supervised,
+            pair=pair,
+            gateway_state=args.gateway_state,
+            exit_watch_state=args.exit_watch_state,
             max_account_open_loss=args.max_account_open_loss,
-            plans_root=args.plans_dir)
+            plans_root=args.plans_dir,
+        )
 
     # request
     entry_date = args.entry_date or now.date()
@@ -243,8 +315,10 @@ def _cli(argv: list[str] | None = None) -> int:
     intent_id = args.intent_id
     while intent_id is None:
         candidate = f"canary-{entry_date.isoformat()}-{chr(96 + n)}"
-        if not (inbox / f"{candidate}.json").exists() and \
-                not (inbox / f"{candidate}.result.json").exists():
+        if (
+            not (inbox / f"{candidate}.json").exists()
+            and not (inbox / f"{candidate}.result.json").exists()
+        ):
             intent_id = candidate
         n += 1
         if n > 26:
@@ -252,22 +326,36 @@ def _cli(argv: list[str] | None = None) -> int:
             return 2
     try:
         request = compose_request(
-            intent_id=intent_id, account_id=args.account, underlying=args.underlying,
-            buy_strike=args.buy_strike, sell_strike=args.sell_strike,
-            expiry=args.expiry, debit=args.debit, cap=args.cap,
-            entry_date=entry_date, exit_deadline=args.exit_deadline,
-            tp_frac=args.tp_frac, tp_basis=args.tp_basis,
-            send_deadline=now.replace(
-                hour=11, minute=15, second=0) if now.hour < 11 else now,
-            requested_by=args.requested_by)
+            intent_id=intent_id,
+            account_id=args.account,
+            underlying=args.underlying,
+            buy_strike=args.buy_strike,
+            sell_strike=args.sell_strike,
+            expiry=args.expiry,
+            debit=args.debit,
+            cap=args.cap,
+            entry_date=entry_date,
+            exit_deadline=args.exit_deadline,
+            tp_frac=args.tp_frac,
+            tp_basis=args.tp_basis,
+            send_deadline=now.replace(hour=11, minute=15, second=0) if now.hour < 11 else now,
+            requested_by=args.requested_by,
+        )
     except ValueError as error:
         print(f"refused: invalid_request {error}", file=sys.stderr)
         return 2
     out = inbox / f"{intent_id}.json"
-    _write_atomic(out, json.dumps(request.model_dump(mode="json", by_alias=True),
-                                  indent=2))
-    print(json.dumps({"written": str(out), "intent_id": intent_id,
-                      "debit": str(args.debit), "cap": str(args.cap)}))
+    _write_atomic(out, json.dumps(request.model_dump(mode="json", by_alias=True), indent=2))
+    print(
+        json.dumps(
+            {
+                "written": str(out),
+                "intent_id": intent_id,
+                "debit": str(args.debit),
+                "cap": str(args.cap),
+            }
+        )
+    )
     return 0
 
 

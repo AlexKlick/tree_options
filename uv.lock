@@ -1635,13 +1635,18 @@ broker-paper = [
     { name = "snaptrade-python-sdk" },
 ]
 dev = [
+    { name = "anyio" },
+    { name = "fastapi" },
+    { name = "httpx" },
     { name = "hypothesis" },
+    { name = "ib-async" },
     { name = "mypy" },
     { name = "pytest" },
     { name = "ruff" },
     { name = "snaptrade-python-sdk" },
     { name = "types-jsonschema" },
     { name = "types-pyyaml" },
+    { name = "uvicorn", extra = ["standard"] },
 ]
 trex = [
     { name = "ib-async" },
@@ -1664,13 +1669,18 @@ requires-dist = [
 [package.metadata.requires-dev]
 broker-paper = [{ name = "snaptrade-python-sdk", specifier = "==13.0.28" }]
 dev = [
+    { name = "anyio", specifier = ">=4.0,<4.8" },
+    { name = "fastapi", specifier = ">=0.110,<0.116" },
+    { name = "httpx", specifier = ">=0.27" },
     { name = "hypothesis", specifier = ">=6.100" },
+    { name = "ib-async", specifier = ">=2.1.0" },
     { name = "mypy", specifier = ">=2.3.1" },
     { name = "pytest", specifier = ">=8.2" },
     { name = "ruff", specifier = ">=0.5" },
     { name = "snaptrade-python-sdk", specifier = "==13.0.28" },
     { name = "types-jsonschema", specifier = ">=4.23" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20260815" },
+    { name = "uvicorn", extras = ["standard"], specifier = ">=0.29" },
 ]
 trex = [{ name = "ib-async", specifier = ">=2.1.0" }]
 trex-web = [

@@ -7,6 +7,7 @@ this test from the definition CRPS = E|X - y| - 1/2E|X - X'| (with
 E|X - X'| = (b - a)/3 for U[a, b], a textbook result re-derived in the
 comment), while the grid score is computed term by term.
 """
+
 from __future__ import annotations
 
 import math
@@ -43,18 +44,15 @@ class TestPinball:
         out = pinball_losses([105.0], [[100.0]], [0.9])
         assert out[0.9] == pytest.approx(4.5)
         # tau = 0.5 is symmetric: |y - q| / 2 either way
-        assert pinball_losses([100.0], [[105.0]], [0.5])[0.5] == \
-            pytest.approx(2.5)
-        assert pinball_losses([105.0], [[100.0]], [0.5])[0.5] == \
-            pytest.approx(2.5)
+        assert pinball_losses([100.0], [[105.0]], [0.5])[0.5] == pytest.approx(2.5)
+        assert pinball_losses([105.0], [[100.0]], [0.5])[0.5] == pytest.approx(2.5)
 
     def test_symmetric_sample_mean_is_tau_free(self) -> None:
         # Hand oracle: q = 100 against y in {100, 110, 90}. The three
         # pinballs are 0, 10*tau, 10*(1 - tau); their mean is 10/3 for
         # EVERY tau — the tau asymmetry cancels on a symmetric sample.
         for tau in QUANTILE_GRID:
-            out = pinball_losses([100.0, 110.0, 90.0],
-                                 [[100.0]] * 3, [tau])
+            out = pinball_losses([100.0, 110.0, 90.0], [[100.0]] * 3, [tau])
             assert out[tau] == pytest.approx(10.0 / 3.0)
 
     def test_shape_mismatch_raises(self) -> None:
@@ -76,8 +74,7 @@ class TestGridScoreIsNotCRPS:
         #   0.05 -> 0.05*0.45 = 0.0225 ; 0.25 -> 0.25*0.25 = 0.0625
         #   0.5  -> 0.0        ;         0.75 -> 0.25*0.25 = 0.0625
         #   0.95 -> 0.05*0.45 = 0.0225
-        expected = {0.05: 0.0225, 0.25: 0.0625, 0.5: 0.0,
-                    0.75: 0.0625, 0.95: 0.0225}
+        expected = {0.05: 0.0225, 0.25: 0.0625, 0.5: 0.0, 0.75: 0.0625, 0.95: 0.0225}
         for tau, want in expected.items():
             assert per_tau[tau] == pytest.approx(want)
         # grid mean pinball = 0.17/5 = 0.034, so the grid score is 0.068
@@ -95,8 +92,7 @@ class TestGridScoreIsNotCRPS:
         # The grid score is materially BELOW exact CRPS (18% low) — the
         # two must never be conflated:
         assert grid < crps
-        assert crps - grid == pytest.approx(1.0 / 12.0 - 0.068,
-                                            abs=1e-6)
+        assert crps - grid == pytest.approx(1.0 / 12.0 - 0.068, abs=1e-6)
 
     def test_grid_score_is_exactly_twice_the_grid_mean(self) -> None:
         vals = [0.1, 0.2, 0.3, 0.4, 0.5]
@@ -124,8 +120,7 @@ class TestCoverage:
         assert empirical_coverage(y, lo, hi) == (3, 5)
 
     def test_width(self) -> None:
-        assert mean_interval_width([1.0, 2.0], [3.0, 6.0]) == \
-            pytest.approx(3.0)
+        assert mean_interval_width([1.0, 2.0], [3.0, 6.0]) == pytest.approx(3.0)
 
 
 class TestWilson:
@@ -137,8 +132,7 @@ class TestWilson:
         z2 = z * z
         denom = 1.0 + z2 / n
         center = (p + z2 / (2.0 * n)) / denom
-        half = (z * math.sqrt(p * (1.0 - p) / n + z2 / (4.0 * n * n))) \
-            / denom
+        half = (z * math.sqrt(p * (1.0 - p) / n + z2 / (4.0 * n * n))) / denom
         lo, hi = wilson_interval(8, 20, z=1.96)
         assert lo == pytest.approx(center - half)
         assert hi == pytest.approx(center + half)
@@ -165,10 +159,8 @@ class TestWilson:
 class TestBootstrap:
     def test_deterministic_under_a_fixed_seed(self) -> None:
         hits = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0]
-        a = coverage_bootstrap_ci(hits, block_size=2, iterations=200,
-                                  seed=42)
-        b = coverage_bootstrap_ci(hits, block_size=2, iterations=200,
-                                  seed=42)
+        a = coverage_bootstrap_ci(hits, block_size=2, iterations=200, seed=42)
+        b = coverage_bootstrap_ci(hits, block_size=2, iterations=200, seed=42)
         assert a is not None and b is not None
         assert (a.lower, a.upper) == (b.lower, b.upper)
         assert 0.0 <= a.lower <= a.upper <= 1.0
@@ -181,23 +173,25 @@ class TestBootstrap:
         # self-validates the oracle — block 1 must genuinely differ on
         # this sample, else this test could not kill an
         # independent-observation mutant and must be re-derived.
-        hits = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0,
-                1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
+        hits = [1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0]
 
         def mean_stat(sample: list[float]) -> float | None:
             return sum(sample) / len(sample) if sample else None
 
-        got = coverage_bootstrap_ci(hits, block_size=BOOTSTRAP_BLOCK,
-                                    iterations=500, seed=7)
+        got = coverage_bootstrap_ci(hits, block_size=BOOTSTRAP_BLOCK, iterations=500, seed=7)
         want = block_bootstrap_ci(
-            hits, statistic=mean_stat,
-            block_size=BOOTSTRAP_BLOCK, iterations=500, seed=7,
-            confidence=0.95)
+            hits,
+            statistic=mean_stat,
+            block_size=BOOTSTRAP_BLOCK,
+            iterations=500,
+            seed=7,
+            confidence=0.95,
+        )
         assert got is not None and want is not None
         assert (got.lower, got.upper) == (want.lower, want.upper)
         indep = block_bootstrap_ci(
-            hits, statistic=mean_stat, block_size=1, iterations=500,
-            seed=7, confidence=0.95)
+            hits, statistic=mean_stat, block_size=1, iterations=500, seed=7, confidence=0.95
+        )
         assert indep is not None
         assert (indep.lower, indep.upper) != (got.lower, got.upper)
 
@@ -206,18 +200,14 @@ class TestBootstrap:
         # proportion, so a bootstrap interval is not uncertainty
         # evidence — the caller records the degenerate reason and keeps
         # Wilson.
-        assert coverage_bootstrap_ci([1.0] * 10, block_size=2,
-                                     iterations=100, seed=1) is None
-        assert coverage_bootstrap_ci([0.0] * 10, block_size=2,
-                                     iterations=100, seed=1) is None
-        assert coverage_bootstrap_ci([1.0], block_size=2,
-                                     iterations=100, seed=1) is None
+        assert coverage_bootstrap_ci([1.0] * 10, block_size=2, iterations=100, seed=1) is None
+        assert coverage_bootstrap_ci([0.0] * 10, block_size=2, iterations=100, seed=1) is None
+        assert coverage_bootstrap_ci([1.0], block_size=2, iterations=100, seed=1) is None
 
 
 class TestSkillMatched:
     def test_hand_skill(self) -> None:
-        out = skill_matched([2.0, 2.0, 2.0], [4.0, 4.0, 4.0],
-                            paired_floor=2)
+        out = skill_matched([2.0, 2.0, 2.0], [4.0, 4.0, 4.0], paired_floor=2)
         assert out["pinball_skill"] == pytest.approx(0.5)
         assert out["paired_n"] == 3
         assert out["reason"] is None
@@ -266,8 +256,7 @@ class TestDMHandOracle:
         assert out.n == 4
         assert out.mean == pytest.approx(2.5)
         assert out.stat == pytest.approx(4.0)
-        assert out.p_one_sided == pytest.approx(
-            0.5 * math.erfc(4.0 / math.sqrt(2.0)))
+        assert out.p_one_sided == pytest.approx(0.5 * math.erfc(4.0 / math.sqrt(2.0)))
 
     def test_lag_0(self) -> None:
         out = dm_on_differentials(self.D, lag=0)
@@ -278,8 +267,7 @@ class TestDMHandOracle:
         out = dm_on_differentials([-v for v in self.D], lag=1)
         assert out is not None
         assert out.stat == pytest.approx(-4.0)
-        assert out.p_one_sided == pytest.approx(
-            1.0 - 0.5 * math.erfc(4.0 / math.sqrt(2.0)))
+        assert out.p_one_sided == pytest.approx(1.0 - 0.5 * math.erfc(4.0 / math.sqrt(2.0)))
 
     def test_zero_variance_returns_none(self) -> None:
         # A constant differential carries no test — None on the wire
@@ -307,7 +295,6 @@ class TestPerOriginGridLosses:
         assert out[1] == pytest.approx(3.0)
 
     def test_perfect_forecast_is_zero(self) -> None:
-        out = per_origin_grid_losses([10.0, 10.0],
-                                     [[10.0] * 5] * 2, QUANTILE_GRID)
+        out = per_origin_grid_losses([10.0, 10.0], [[10.0] * 5] * 2, QUANTILE_GRID)
         assert out[0] == pytest.approx(0.0)
         assert out[1] == pytest.approx(0.0)

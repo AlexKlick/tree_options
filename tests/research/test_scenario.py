@@ -65,26 +65,35 @@ from tree_options.research.scenarios.spec_io import scenario_from_dict
 # -- fixtures ---------------------------------------------------------------
 
 
-SESSION_DATES = (date(2024, 1, 2), date(2024, 1, 3), date(2024, 1, 4),
-                date(2024, 1, 5), date(2024, 1, 8))
+SESSION_DATES = (
+    date(2024, 1, 2),
+    date(2024, 1, 3),
+    date(2024, 1, 4),
+    date(2024, 1, 5),
+    date(2024, 1, 8),
+)
 
 
-def _candidate(candidate_id: str = "c",
-               plot_funded_account: bool = True) -> ResearchCandidate:
+def _candidate(candidate_id: str = "c", plot_funded_account: bool = True) -> ResearchCandidate:
     return ResearchCandidate(
-        id=candidate_id, family="f", version="v1",
+        id=candidate_id,
+        family="f",
+        version="v1",
         evidence_kind=ResearchEvidenceKind.SYNTHETIC_BACKTEST,
         registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         disposition=ResearchDisposition.PASS,
         plot_funded_account=plot_funded_account,
-        supported_start=date(2024, 1, 2), supported_end=date(2024, 1, 31),
+        supported_start=date(2024, 1, 2),
+        supported_end=date(2024, 1, 31),
         funded_history=FundedHistorySupport.RECONSTRUCTED,
     )
 
 
-def _spec(contribution: str = "0",
-          cashflow_timing: str = "beginning_of_period",
-          cost_model: str = "five_bp_fixed") -> ComparisonSpec:
+def _spec(
+    contribution: str = "0",
+    cashflow_timing: str = "beginning_of_period",
+    cost_model: str = "five_bp_fixed",
+) -> ComparisonSpec:
     return ComparisonSpec(
         candidate_ids=("c",),
         starting_capital=Decimal("10000"),
@@ -113,6 +122,7 @@ class _MemoryStore:
     are not used here). ``self.spec_payload`` is the parent's
     ``ComparisonSpec.to_dict()``; ``self.result_envelope`` is the
     parent's stored result envelope."""
+
     def __init__(self, spec_payload: dict, result_envelope: dict) -> None:
         self.spec_payload = spec_payload
         self.result_envelope = result_envelope
@@ -164,7 +174,8 @@ def test_unmodified_fork_reproduces_parent_byte_for_byte():
     )
     store = _MemoryStore(parent_spec.to_dict(), envelope)
     out = fork_parent_and_replay(
-        store, scenario=scenario,
+        store,
+        scenario=scenario,
         parent_result_envelope=envelope,
         catalog_provider=lambda: [_candidate("c")],
     )
@@ -200,7 +211,8 @@ def test_contribution_changes_wealth_not_profit():
     )
     store = _MemoryStore(parent_spec.to_dict(), envelope)
     out = fork_parent_and_replay(
-        store, scenario=scenario,
+        store,
+        scenario=scenario,
         parent_result_envelope=envelope,
         catalog_provider=lambda: [_candidate("c")],
     )
@@ -222,11 +234,13 @@ def test_contribution_changes_wealth_not_profit():
     # made the oracle vacuously passable on an empty result).
     assert summary.rows_by_date, (
         "a contribution scenario must emit rows (the flow is an "
-        "observation, per the funded engine's missingness contract)")
+        "observation, per the funded engine's missingness contract)"
+    )
     first = min(summary.rows_by_date)
     assert summary.rows_by_date[first]["nav"] == "10500.00", (
         "contribution on first session must add exactly $500 "
-        "to NAV; this is wealth, not measured investment profit")
+        "to NAV; this is wealth, not measured investment profit"
+    )
 
 
 def test_withdrawal_overdraw_refuses_in_funded_engine():
@@ -247,14 +261,14 @@ def test_withdrawal_overdraw_refuses_in_funded_engine():
     # contribution_per_period=0 inherits that. Use direct negative
     # flow on a fresh plan to assert the refusal shape:
     from tree_options.research.comparison.funded import CashflowEvent
+
     _r2 = run_funded_account(
         candidate_id="c",
         starting_capital=Decimal("1000"),
         calendar=[date(2024, 1, 2)],
         executions=[],
         marks=[],
-        cashflows=[CashflowEvent(date=date(2024, 1, 2),
-                                 amount=Decimal("-2000"))],
+        cashflows=[CashflowEvent(date=date(2024, 1, 2), amount=Decimal("-2000"))],
         fee_model=None,
     )
     assert _r2.refusal_reason == "research.funded.insufficient_cash_for_flow"
@@ -277,17 +291,21 @@ def test_missing_capability_refused_when_funding_diff_targets_unplottable():
     )
     # Candidate exists but is unplottable (sealed-round data scenario).
     unplottable = ResearchCandidate(
-        id="c", family="f", version="v1",
+        id="c",
+        family="f",
+        version="v1",
         evidence_kind=ResearchEvidenceKind.SEALED_CAMPAIGN,
         registration=ResearchRegistration.RETROSPECTIVE_BACKFILL,
         disposition=ResearchDisposition.PASS,
         plot_funded_account=False,
-        supported_start=None, supported_end=None,
+        supported_start=None,
+        supported_end=None,
         funded_history=FundedHistorySupport.UNAVAILABLE,
     )
     store = _MemoryStore(parent_spec.to_dict(), envelope)
     out = fork_parent_and_replay(
-        store, scenario=scenario,
+        store,
+        scenario=scenario,
         parent_result_envelope=envelope,
         catalog_provider=lambda: [unplottable],
     )
@@ -302,19 +320,25 @@ def test_spec_io_rejects_diff_fields_outside_scenario_surface():
     """Anything in the diff outside SCENARIO_DIFF_FIELDS is rejected
     pre-write — the 'scenario != new base comparison' gate."""
     with pytest.raises(ValueError, match="outside the scenario surface"):
-        scenario_from_dict("parent_xyz", {
-            "kind": "contribution_planning",
-            "diff": {"starting_capital": "500"},
-        })
+        scenario_from_dict(
+            "parent_xyz",
+            {
+                "kind": "contribution_planning",
+                "diff": {"starting_capital": "500"},
+            },
+        )
 
 
 def test_spec_io_rejects_nonfinite_contribution():
     """contribution_per_period must be finite and decimal-parseable."""
     with pytest.raises(ValueError, match="must be finite"):
-        scenario_from_dict("parent_xyz", {
-            "kind": "contribution_planning",
-            "diff": {"contribution_per_period": "Infinity"},
-        })
+        scenario_from_dict(
+            "parent_xyz",
+            {
+                "kind": "contribution_planning",
+                "diff": {"contribution_per_period": "Infinity"},
+            },
+        )
 
 
 # -- lineage honesty ---------------------------------------------------------
@@ -330,8 +354,10 @@ def test_parent_changed_refuses_when_engine_sha_drifted():
         ParentRef,
         parent_changed,
     )
+
     ref = ParentRef(
-        parent_run_id="p", parent_spec_hash="x" * 64,
+        parent_run_id="p",
+        parent_spec_hash="x" * 64,
         parent_engine_sha256="a" * 64,
         parent_input_snapshot_sha256="b" * 64,
         parent_calendar_sha256="c" * 64,
@@ -354,8 +380,10 @@ def test_parent_changed_returns_none_when_all_shas_match():
         ParentRef,
         parent_changed,
     )
+
     ref = ParentRef(
-        parent_run_id="p", parent_spec_hash="x" * 64,
+        parent_run_id="p",
+        parent_spec_hash="x" * 64,
         parent_engine_sha256="a" * 64,
         parent_input_snapshot_sha256="b" * 64,
         parent_calendar_sha256="c" * 64,
@@ -372,6 +400,7 @@ def test_parent_missing_when_no_status():
     """A result envelope with no terminal status triggers
     SCENARIO_PARENT_MISSING: only a completed parent can be forked."""
     from tree_options.research.scenarios.lineage import parent_missing
+
     refusal = parent_missing({"engine_sha256": "x"})  # no status
     assert refusal is not None
     assert refusal.code == SCENARIO_PARENT_MISSING
@@ -392,7 +421,8 @@ def test_stress_scenario_refuses_with_typed_code():
     )
     store = _MemoryStore(parent_spec.to_dict(), envelope)
     out = fork_parent_and_replay(
-        store, scenario=scenario,
+        store,
+        scenario=scenario,
         parent_result_envelope=envelope,
         catalog_provider=lambda: [_candidate("c")],
     )

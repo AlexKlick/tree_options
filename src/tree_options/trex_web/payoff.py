@@ -22,9 +22,7 @@ from typing import Any
 MULT = 100
 
 
-def expiry_pnl(
-    long_strike: float, short_strike: float, entry: float, qty: int, s: float
-) -> float:
+def expiry_pnl(long_strike: float, short_strike: float, entry: float, qty: int, s: float) -> float:
     """Put-debit-spread P&L at expiry with the underlying at ``s``."""
     intrinsic = max(0.0, long_strike - s) - max(0.0, short_strike - s)
     return (intrinsic - entry) * qty * MULT
@@ -87,10 +85,7 @@ def payoff_series(
     xs.extend(k for k in (short_strike, long_strike, breakeven) if x_lo <= k <= x_hi)
     ordered = sorted({round(x, 6) for x in xs})
 
-    points = [
-        [x, round(expiry_pnl(long_strike, short_strike, entry, qty, x), 4)]
-        for x in ordered
-    ]
+    points = [[x, round(expiry_pnl(long_strike, short_strike, entry, qty, x), 4)] for x in ordered]
     return {
         "view": {"x_lo": x_lo, "x_hi": x_hi},
         "points": points,

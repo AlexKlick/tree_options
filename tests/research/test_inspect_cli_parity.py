@@ -58,7 +58,9 @@ from tree_options.trex_web.research_view import attach
 
 def _candidate() -> ResearchCandidate:
     return ResearchCandidate(
-        id="c1", family="f", version="v1",
+        id="c1",
+        family="f",
+        version="v1",
         evidence_kind=ResearchEvidenceKind.SYNTHETIC_BACKTEST,
         registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         disposition=ResearchDisposition.PASS,
@@ -95,23 +97,43 @@ def _spec() -> ComparisonSpec:
 def _spawn_parent_and_scenario(ws: Path) -> tuple[str, str]:
     spec = _spec()
     parent_id = spec_hash(spec)
-    scn = scenario_from_dict(parent_id, {
-        "kind": "contribution_planning", "access_mode": "exploratory",
-        "diff": {"contribution_per_period": "500"},
-    })
+    scn = scenario_from_dict(
+        parent_id,
+        {
+            "kind": "contribution_planning",
+            "access_mode": "exploratory",
+            "diff": {"contribution_per_period": "500"},
+        },
+    )
     child_id = scenario_spec_hash(scn)
     with open_runstate_store(ws) as store:
         store.put("spec", spec.to_dict(), key=parent_id, at=datetime.now())
-        store.put("run", {"run_id": parent_id, "spec_hash": parent_id,
-                          "kind": "comparison", "status": "queued",
-                          "format_version": RUN_FORMAT_VERSION},
-                  key=parent_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": parent_id,
+                "spec_hash": parent_id,
+                "kind": "comparison",
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=parent_id,
+            at=datetime.now(),
+        )
         store.put("spec", scn.to_dict(), key=child_id, at=datetime.now())
-        store.put("run", {"run_id": child_id, "spec_hash": child_id,
-                          "kind": "scenario", "parent_run_id": parent_id,
-                          "status": "queued",
-                          "format_version": RUN_FORMAT_VERSION},
-                  key=child_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": child_id,
+                "spec_hash": child_id,
+                "kind": "scenario",
+                "parent_run_id": parent_id,
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=child_id,
+            at=datetime.now(),
+        )
     return parent_id, child_id
 
 
@@ -123,32 +145,46 @@ def test_cli_scenario_inspect_matches_api_result(tmp_path):
     ws.mkdir()
     artifacts = tmp_path / "artifacts-empty"
     artifacts.mkdir()
-    worker = ResearchWorker(workspace=ws,
-                           catalog_provider=lambda: [_candidate()],
-                           engine_fn=run_comparison)
+    worker = ResearchWorker(
+        workspace=ws, catalog_provider=lambda: [_candidate()], engine_fn=run_comparison
+    )
     parent_id, child_id = _spawn_parent_and_scenario(ws)
     # Drive both queued runs through the worker.
     worker.step()
     worker.step()
 
     app = FastAPI()
-    attach(app, workspace=ws, candidate_scopes_root=artifacts,
-           start_worker=False, engine_fn=run_comparison)
+    attach(
+        app,
+        workspace=ws,
+        candidate_scopes_root=artifacts,
+        start_worker=False,
+        engine_fn=run_comparison,
+    )
     client = TestClient(app)
-    api_body = client.get(
-        f"/api/research/runs/{child_id}/result").json()
+    api_body = client.get(f"/api/research/runs/{child_id}/result").json()
 
     # Spawn the CLI subprocess so the command line is exercised
     # verbatim, not the in-process function.
     env = dict(os.environ)
     env["PYTHONPATH"] = (
-        str(Path(__file__).resolve().parents[3] / "src")
-        + os.pathsep + env.get("PYTHONPATH", ""))
+        str(Path(__file__).resolve().parents[3] / "src") + os.pathsep + env.get("PYTHONPATH", "")
+    )
     result = subprocess.run(
-        [sys.executable, "-m", "tree_options.research",
-         "inspect", "--scenario", child_id,
-         "--workspace", str(ws)],
-        capture_output=True, text=True, env=env, check=True,
+        [
+            sys.executable,
+            "-m",
+            "tree_options.research",
+            "inspect",
+            "--scenario",
+            child_id,
+            "--workspace",
+            str(ws),
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        check=True,
     )
     cli_payload = json.loads(result.stdout)
 
@@ -156,10 +192,8 @@ def test_cli_scenario_inspect_matches_api_result(tmp_path):
     # carry is compared for equality, not just presence (the original
     # oracle only compared engine_sha and truth-checked the diff sha).
     assert api_body["engine_sha256"] == cli_payload["engine_sha256"]
-    assert api_body["scenario_diff_sha256"] == cli_payload[
-        "scenario_diff_sha256"]
-    assert api_body["input_snapshot_sha256"] == cli_payload[
-        "input_snapshot_sha256"]
+    assert api_body["scenario_diff_sha256"] == cli_payload["scenario_diff_sha256"]
+    assert api_body["input_snapshot_sha256"] == cli_payload["input_snapshot_sha256"]
     assert api_body["calendar_sha256"] == cli_payload["calendar_sha256"]
     assert api_body["result_sha256"] == cli_payload["result_sha256"]
     assert cli_payload["parent_run_id"] == parent_id

@@ -60,14 +60,14 @@ class TestKey:
 
     def test_key_is_float_artifact_free(self) -> None:
         # 150 stored as 150.0 vs 150 must key identically
-        assert shadow_key("QQQ", "20261120", 150, 185) == shadow_key("QQQ", "20261120", 150.0, 185.0)
+        assert shadow_key("QQQ", "20261120", 150, 185) == shadow_key(
+            "QQQ", "20261120", 150.0, 185.0
+        )
 
 
 class TestOpenFromScan:
     def test_opens_one_contract_per_new_accepted_candidate(self, tmp_path: Path) -> None:
-        book = open_from_scan(
-            ShadowBook(), _payload([_cand()]), run_id="run-1", now=NOW
-        )
+        book = open_from_scan(ShadowBook(), _payload([_cand()]), run_id="run-1", now=NOW)
         assert len(book.positions) == 1
         pos = book.positions[0]
         assert pos.key == "NVDA|20261016|150|185"
@@ -92,9 +92,7 @@ class TestOpenFromScan:
     def test_excludes_live_plan_structures_normalized(self) -> None:
         # plan specs carry date objects + Decimal-able strikes
         excluded = [("NVDA", date(2026, 10, 16), "150", "185")]
-        book = open_from_scan(
-            ShadowBook(), _payload([_cand()]), "run-1", NOW, excluded=excluded
-        )
+        book = open_from_scan(ShadowBook(), _payload([_cand()]), "run-1", NOW, excluded=excluded)
         assert book.positions == []
 
     def test_only_accepted_candidates_open(self) -> None:
@@ -103,9 +101,7 @@ class TestOpenFromScan:
         assert book.positions == []
 
     def test_missing_debit_mid_is_skipped(self) -> None:
-        book = open_from_scan(
-            ShadowBook(), _payload([_cand(debit_mid=None)]), "run-1", NOW
-        )
+        book = open_from_scan(ShadowBook(), _payload([_cand(debit_mid=None)]), "run-1", NOW)
         assert book.positions == []
 
 
@@ -113,9 +109,7 @@ class TestMarkFromPayload:
     def test_marks_from_later_scan_rows(self) -> None:
         book = open_from_scan(ShadowBook(), _payload([_cand()]), "run-1", NOW)
         later = datetime(2026, 9, 23, 16, 11, tzinfo=ET)
-        book = mark_from_payload(
-            book, _payload([_cand(debit_mid=0.35)]), now=later
-        )
+        book = mark_from_payload(book, _payload([_cand(debit_mid=0.35)]), now=later)
         pos = book.positions[0]
         assert pos.last_mark == pytest.approx(0.35)
         assert pos.mark_source == "scan"
@@ -172,11 +166,7 @@ class TestPersistence:
         with path.open("a") as f:
             f.write("{torn")
         lines = path.read_text().splitlines()
-        rows = [
-            json.loads(line)
-            for line in lines
-            if line.startswith("{") and "run" in line
-        ]
+        rows = [json.loads(line) for line in lines if line.startswith("{") and "run" in line]
         assert len(rows) == 10
 
 

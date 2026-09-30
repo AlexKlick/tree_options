@@ -13,6 +13,8 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+    {include-group = "trex-web"},  # exercise cockpit projections in the default gate
+    {include-group = "trex"},  # preserve supervised IBKR compatibility coverage
     "pytest>=8.2",
     "snaptrade-python-sdk==13.0.28",  # SDK contract tests are mandatory in the dev gate
     "hypothesis>=6.100",
