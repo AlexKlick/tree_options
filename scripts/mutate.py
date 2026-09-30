@@ -7704,6 +7704,21 @@ MUTANTS.extend(
 )
 
 
+MUTANTS.append(
+    dict(
+        id="MG16-declared-cost-basis-custody",
+        owner="test_declared_derived_basis_cannot_downgrade_when_callback_has_no_cost_facts",
+        file="src/tree_options/desk/longrun.py",
+        anchor='protocol.cost_model == "derived-spread/1"',
+        replacement="False",
+        selectors=[
+            "tests/unit/test_desk_derived_cost_governance.py::test_declared_derived_basis_cannot_downgrade_when_callback_has_no_cost_facts"
+        ],
+        invariant="a registered derived basis remains retrospective when callback facts are missing",
+    )
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

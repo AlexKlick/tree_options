@@ -1851,7 +1851,10 @@ def score_run(
     counterfactual_refusals = sum(f.get("status") == "no_price" for f in pricing_facts)
     pricing_complete = no_price.as_dict()["total"] == 0 and counterfactual_refusals == 0
     derived = [f for f in pricing_facts if f.get("cost_model") == "derived-spread/1"]
-    cost_model = "derived-spread/1" if derived else outcomes.cost_model
+    declared_derived = (
+        protocol.cost_model == "derived-spread/1" or outcomes.cost_model == "derived-spread/1"
+    )
+    cost_model = "derived-spread/1" if derived or declared_derived else outcomes.cost_model
     cost_provenance = outcomes.cost_provenance or (
         derived[0].get("cost_provenance") if derived else None
     )

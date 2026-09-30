@@ -217,3 +217,26 @@ def test_derived_table_facts_cannot_be_relabelled_as_flat(tmp_path, status):
         longrun._v2_outcome(
             {"table": str(table), "cost_model": "flat"}, longrun.PluginContext(config_dir=tmp_path)
         )
+
+
+@pytest.mark.parametrize("no_fill", [False, True])
+def test_declared_derived_basis_cannot_downgrade_when_callback_has_no_cost_facts(no_fill):
+    boards, arms, receipts, cache, protocol = fixture()
+    if no_fill:
+        cache = longrun.OutcomeCache(lambda *_: None)
+    doc = longrun.score_run(
+        boards,
+        arms,
+        receipts,
+        cache,
+        replace(protocol, cost_model="derived-spread/1", min_test_entries=1),
+    )
+    assert doc["cost_model"] == "derived-spread/1"
+    assert doc["pricing_assessment"] == "derived_retrospective_sensitivity"
+    assert doc["assessment_class"] == "retrospective_descriptive"
+    assert doc["promotion"]["pre_registered_at"] is None
+    assert all(
+        f["rule_check"]["cost_basis_confirmatory"] is False
+        and f["eligible_for_operator_review"] is False
+        for f in doc["walk_forward"]["finalists"]
+    )
