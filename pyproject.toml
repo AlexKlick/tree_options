@@ -14,6 +14,7 @@ dependencies = [
 [dependency-groups]
 dev = [
     "pytest>=8.2",
+    "snaptrade-python-sdk==13.0.28",  # SDK contract tests are mandatory in the dev gate
     "hypothesis>=6.100",
     "ruff>=0.5",
     "mypy>=2.3.1",
@@ -22,6 +23,9 @@ dev = [
 ]
 trex = [
     "ib-async>=2.1.0",
+]
+broker-paper = [
+    "snaptrade-python-sdk==13.0.28",
 ]
 trex-web = [
     # Read-only status panel (HTTP). Kept broker-free: never pulls ib_async
