@@ -68,6 +68,7 @@ _KINDS: tuple[str, ...] = (
     "quant_snapshot",
     "quant_experiment",
     "quant_provenance",
+    "quant_backtest_period",
 )
 
 

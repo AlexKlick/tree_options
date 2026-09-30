@@ -299,7 +299,7 @@ def run_funded_account(
                 multiplier=1,
                 deliverable_shares_per_contract=Decimal("1"),
                 fees=fees,
-                execution_at=_utc_execution_at(s, fill_seq % 60),
+                execution_at=_utc_execution_at(s, fill_seq),
                 execution_session=s,
             )
             try:
