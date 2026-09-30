@@ -170,6 +170,7 @@ const duration = (seconds: number | null) =>
 function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
   const { aa, random_null: rn, walk_forward: wf } = digest
   const floor = wf.min_test_entries
+  const missingPrice = digest.pricing_status === 'DATA_GATED' || (digest.no_price?.total ?? 0) > 0
   const currentContract = wf.scoring_version === 'split-local-own-rate/v2'
     && wf.null_scope === 'split_local_own_entry_rate'
     && wf.entry_count_unit === 'distinct_evaluated_decision_boards'
@@ -181,11 +182,16 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
   const finalistText = (f: LongRunDigest['walk_forward']['finalists'][number]) => {
     const entries = f.test_entries
     const checks = f.rule_check
-    const eligible = currentContract && digest.complete && digest.evaluation_valid && aa.valid
-      && f.eligible_for_operator_review && f.test.net_total > 0
+    const requiredChecks = ['aa_valid', 'holm_p_below_alpha', 'vs_random_ci_low_above_0',
+      'vs_incumbent_ci_low_above_0', 'half_split_signs_agree', 'no_drop_one_sign_flip',
+      'test_net_positive', 'test_entries_at_least_floor', 'split_local_null_known',
+      'confirmatory_assessment']
+    const eligible = currentContract && !missingPrice && digest.complete === true
+      && digest.evaluation_valid === true && aa.valid === true && aa.status === 'valid'
+      && f.eligible_for_operator_review === true && f.test.net_total > 0
       && entries !== undefined && Number.isInteger(entries) && entries >= floor!
-      && checks?.test_net_positive && checks.test_entries_at_least_floor
-      && checks.split_local_null_known && checks.confirmatory_assessment
+      && requiredChecks.every(key => checks?.[key] === true)
+      && Object.values(checks ?? {}).every(value => value === true)
     const coverage = currentContract ? `, ${entries ?? 'unknown'}/${floor} evaluated entries` : ''
     const outcome = eligible ? ' — eligible for operator review'
       : currentContract ? ' — review conditions not met' : ' — descriptive only'
@@ -194,6 +200,8 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
   return (
     <>
       <p><strong>{digest.headline}</strong></p>
+      {digest.cost_model === 'derived-spread/1' && <p className="muted">Derived EOD cost sensitivity — modeled cells combine reported calibration marginals; these are not historical decision-clock quotes or broker fills.</p>}
+      {missingPrice && <p role="alert" data-testid="longrun-no-price">DATA_GATED · NO_PRICE: {digest.no_price?.total ?? 'unknown'} selected outcomes. {Object.entries(digest.no_price?.by_reason ?? {}).map(([reason, count]) => `${reason}: ${count}`).join('; ')} · missing pricing is not zero profit; review is blocked.</p>}
       <p data-testid="longrun-scoring-contract">{currentContract
         ? `Registered scoring contract: split-local own entry rates; minimum ${floor} distinct evaluated decision boards and positive test net for review.`
         : retrospective ? 'Retrospective scoring — descriptive only; no new confirmatory review eligibility.'
@@ -216,7 +224,7 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
               <tr key={row.arm} data-testid={`longrun-standing-${row.arm}`}>
                 <th scope="row">{row.arm}</th>
                 <td>{row.kind}</td>
-                <td>{row.entered}{row.unevaluable > 0 ? ` (${row.unevaluable} no fill)` : ''}</td>
+                <td>{row.entered}{row.unevaluable > 0 ? ` (${row.unevaluable} unevaluable outcomes)` : ''}</td>
                 <td>{row.failures}</td>
                 <td>{money(row.net_total)} {ciText(row.net_ci95)}</td>
                 <td>{row.vs_random_own

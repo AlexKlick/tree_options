@@ -202,7 +202,7 @@ it('renders the long-run card: progress bars, CI standings, A/A, random band, be
   expect(card.textContent).toMatch(/54\/54 decisions · 2 failed · paused 10 min/)
   const row = screen.getByTestId('longrun-standing-m31#1')
   expect(row.textContent).toMatch(/\+\$42\.50 \[−\$10\.25, \+\$80\.00\]/)
-  expect(row.textContent).toMatch(/1 no fill/)
+  expect(row.textContent).toMatch(/1 unevaluable outcomes/)
   expect(row.textContent).toMatch(/−\$12\.00 \[−\$60\.00, \+\$30\.00\]$/) // vs the bullish regime
   expect(screen.getByTestId('longrun-aa').textContent).toMatch(/A\/A valid: m31#1 vs m31#2 agree on 83\.3% of 4 boards/)
   expect(screen.getByTestId('longrun-random-band').textContent).toMatch(/75\.0%, 1000 seeds.*95% null band \[−\$30\.00, \+\$44\.00\]/)
@@ -253,7 +253,10 @@ function registeredLongRun(): LongRunView {
   Object.assign(current.digest!.walk_forward.finalists[0], {
     test_entries: 30, eligible_for_operator_review: true,
     rule_check: { test_net_positive: true, test_entries_at_least_floor: true,
-      split_local_null_known: true, confirmatory_assessment: true },
+      split_local_null_known: true, confirmatory_assessment: true,
+      aa_valid: true, holm_p_below_alpha: true, vs_random_ci_low_above_0: true,
+      vs_incumbent_ci_low_above_0: true, half_split_signs_agree: true,
+      no_drop_one_sign_flip: true },
   })
   return current
 }
@@ -273,6 +276,37 @@ it.each([{ entries: 29, net: 12 }, { entries: 30, net: 0 }])(
     const current = registeredLongRun()
     Object.assign(current.digest!.walk_forward.finalists[0], { test_entries: entries })
     current.digest!.walk_forward.finalists[0].test.net_total = net
+    vi.mocked(getLongRun).mockResolvedValue(current)
+    render(<ActionModelPage />)
+    const card = await screen.findByRole('region', { name: 'Desk long run' })
+    expect(card.textContent).not.toContain('— eligible for operator review')
+    expect(card.textContent).toContain('review conditions not met')
+  },
+)
+
+it('distinguishes missing derived cost inputs from zero profit and refuses review', async () => {
+  const current = registeredLongRun()
+  Object.assign(current.digest!, {
+    pricing_status: 'DATA_GATED', cost_model: 'derived-spread/1',
+    no_price: { total: 3, by_arm: { m31: 3 }, by_reason: { no_delta: 3 } },
+  })
+  vi.mocked(getLongRun).mockResolvedValue(current)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(card.textContent).toContain('NO_PRICE: 3 selected outcomes')
+  expect(card.textContent).toContain('no_delta: 3')
+  expect(card.textContent).toContain('Derived EOD cost sensitivity')
+  expect(card.textContent).toContain('missing pricing is not zero profit')
+  expect(card.textContent).not.toContain('— eligible for operator review')
+})
+
+it.each(['string-false', 'failed-holm', 'missing-stability'])(
+  'refuses incomplete or contradictory persisted review evidence: %s', async (mode) => {
+    const current = registeredLongRun()
+    const finalist = current.digest!.walk_forward.finalists[0]
+    if (mode === 'string-false') Object.assign(current.digest!, { evaluation_valid: 'false' })
+    if (mode === 'failed-holm') finalist.rule_check!.holm_p_below_alpha = false
+    if (mode === 'missing-stability') delete finalist.rule_check!.half_split_signs_agree
     vi.mocked(getLongRun).mockResolvedValue(current)
     render(<ActionModelPage />)
     const card = await screen.findByRole('region', { name: 'Desk long run' })

@@ -346,6 +346,10 @@ export interface LongRunFinalist {
 
 export interface LongRunDigest {
   assessment_class?: 'registered_protocol' | 'retrospective_descriptive'
+  pricing_status?: 'DATA_GATED' | 'PRICED_SIMULATION'
+  cost_model?: string
+  cost_provenance?: Record<string, unknown>
+  no_price?: { total: number; by_arm: Record<string, number>; by_reason: Record<string, number> }
   headline: string
   untrusted_note: string
   evaluation_valid: boolean
