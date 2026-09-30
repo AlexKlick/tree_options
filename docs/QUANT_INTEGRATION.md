@@ -183,6 +183,11 @@ cluster-exclusion issue was disproved by its actual supported-input catalog
 entry and a regression assertion against unchanged code. These reviews are
 source evidence, not provider account, browser or order qualification.
 
+Final strict-suite validation also exposed an existing RunstateStore race.
+Immutable existence/hash checks and mutable replacement ancestry now execute
+inside the write transaction. Deterministic concurrent-writer regressions cover
+duplicate idempotence, conflict refusal and the replacement audit chain.
+
 ## External qualification still required (BLOCKED)
 
 1. Provision a private SnapTrade binding and positively identify the dedicated

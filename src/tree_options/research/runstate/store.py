@@ -158,18 +158,19 @@ class RunstateStore:
         if kind not in _KINDS:
             raise RunstateStoreError(f"unknown kind: {kind!r}")
         sha, body, at_iso = _canonical_entry(payload, at)
-        cur = self.conn.execute(
-            "SELECT payload_sha256 FROM objects WHERE kind = ? AND object_key = ?",
-            (kind, key),
-        ).fetchone()
-        if cur is not None:
-            if cur["payload_sha256"] == sha:
-                return sha  # idempotent re-write
-            raise RunstateStoreError(
-                f"content_conflict: {kind}/{key} already exists with a different payload"
-            )
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            cur = self.conn.execute(
+                "SELECT payload_sha256 FROM objects WHERE kind = ? AND object_key = ?",
+                (kind, key),
+            ).fetchone()
+            if cur is not None:
+                if cur["payload_sha256"] == sha:
+                    self.conn.execute("COMMIT")
+                    return sha  # idempotent re-write, with no open transaction
+                raise RunstateStoreError(
+                    f"content_conflict: {kind}/{key} already exists with a different payload"
+                )
             self.conn.execute(
                 "INSERT INTO objects (kind, object_key, payload_sha256, payload_json, created_at) "
                 "VALUES (?, ?, ?, ?, ?)",
@@ -193,15 +194,15 @@ class RunstateStore:
         if kind not in _KINDS:
             raise RunstateStoreError(f"unknown kind: {kind!r}")
         sha, body, at_iso = _canonical_entry(payload, at)
-        cur = self.conn.execute(
-            "SELECT payload_sha256 FROM objects WHERE kind = ? AND object_key = ?",
-            (kind, key),
-        ).fetchone()
-        if cur is None:
-            raise RunstateStoreError(f"no such object: {kind}/{key} to replace")
-        prev_sha: str = cur["payload_sha256"]
         self.conn.execute("BEGIN IMMEDIATE")
         try:
+            cur = self.conn.execute(
+                "SELECT payload_sha256 FROM objects WHERE kind = ? AND object_key = ?",
+                (kind, key),
+            ).fetchone()
+            if cur is None:
+                raise RunstateStoreError(f"no such object: {kind}/{key} to replace")
+            prev_sha: str = cur["payload_sha256"]
             self.conn.execute(
                 "UPDATE objects SET payload_sha256 = ?, payload_json = ?, created_at = ? "
                 "WHERE kind = ? AND object_key = ?",
