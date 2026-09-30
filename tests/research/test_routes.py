@@ -493,7 +493,9 @@ def test_pre_custody_format_run_is_blocked_never_rerun(tmp_path: Path) -> None:
     """A spec record written by the pre-RL1-03 code (metadata embedded
     in the immutable payload) is preserved, reported as blocked, and
     never silently recomputed."""
+    from tree_options.research.runstate.spec_hash import spec_hash
     from tree_options.research.runstate.store import open_runstate_store
+    from tree_options.research.spec_io import spec_from_dict
 
     client, worker = _build_app(tmp_path)
     cat = client.get("/api/research/candidates").json()
@@ -504,20 +506,23 @@ def test_pre_custody_format_run_is_blocked_never_rerun(tmp_path: Path) -> None:
         "common_start": "2024-01-02",
         "common_end": "2026-09-25",
     }
-    run_id = client.post("/api/research/compare", json=spec).json()["run_id"]
-    # Simulate a legacy record: metadata embedded in the spec payload
-    # under the same key the old code used.
+    run_id = spec_hash(spec_from_dict(spec))
+    # Seed the actual legacy shape directly: only an immutable spec existed,
+    # with metadata embedded. Its audit chain must remain valid; deleting a
+    # modern run and its audit rows instead simulates corruption, not history.
+    legacy = {**spec, "id": run_id, "status": "queued", "queued_at": "2026-09-25T20:59:00"}
     with open_runstate_store(tmp_path / "workspace") as store:
-        store.replace(
-            "spec",
-            {**spec, "id": run_id, "status": "queued", "queued_at": "2026-09-25T20:59:00"},
-            key=run_id,
-        )
-        # and remove the modern run record to mimic the legacy shape
-        store.conn.execute("DELETE FROM objects WHERE kind = 'run'")
-        store.conn.execute("DELETE FROM audit WHERE kind = 'run'")
+        store.put("spec", legacy, key=run_id)
+        before = store.verify()
+        assert before["ok"] and before["objects"] == 1 and before["events"] == 1
+        assert store.get("run", run_id) is None
 
     status = client.get(f"/api/research/runs/{run_id}").json()
     assert status["status"] == "blocked"
     assert "pre-custody" in status["error"]
     assert worker.step() is False  # the legacy spec is never claimed
+    with open_runstate_store(tmp_path / "workspace") as store:
+        assert store.verify() == before
+        assert store.get("spec", run_id) == legacy
+        assert store.get("run", run_id) is None
+        assert store.get("result", run_id) is None
