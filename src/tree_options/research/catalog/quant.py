@@ -1,6 +1,6 @@
 """Initial strategy catalog metadata for integration with Research Lab."""
 
-from tree_options.strategy_lab.contracts import StrategyDefinition
+from tree_options.research.contracts import StrategyDefinition
 
 STRATEGIES: tuple[StrategyDefinition, ...] = (
     StrategyDefinition(

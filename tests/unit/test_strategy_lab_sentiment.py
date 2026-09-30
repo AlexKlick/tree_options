@@ -20,7 +20,10 @@ def row(entity, *, available, likes=100, comments=30):
 def test_future_social_event_does_not_enter_signal():
     cut = datetime(2026, 1, 2, tzinfo=UTC)
     result = aggregate_engagement(
-        [row("A", available=cut - timedelta(hours=1)), row("B", available=cut + timedelta(seconds=1))],
+        [
+            row("A", available=cut - timedelta(hours=1)),
+            row("B", available=cut + timedelta(seconds=1)),
+        ],
         decision_at=cut,
     )
     assert set(result) == {"A"}

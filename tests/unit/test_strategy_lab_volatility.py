@@ -18,5 +18,6 @@ def test_prediction_and_signal_hand_oracles():
 
 def test_signal_uses_next_period_return_not_same_period_future_return():
     from tree_options.strategy_lab.volatility import lagged_signal_returns
+
     assert lagged_signal_returns([1, -1, 1], [100.0, 0.1, 0.2]) == (None, 0.1, -0.2)
     assert lagged_signal_returns([1, -1, -1], [999.0, 0.1, 0.2]) == (None, 0.1, -0.2)

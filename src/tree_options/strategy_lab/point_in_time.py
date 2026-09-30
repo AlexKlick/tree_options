@@ -16,7 +16,6 @@ class PointInTimeViolation(ValueError):
     pass
 
 
-
 def require_available[T: Observation](observation: T, *, decision_at: datetime) -> T:
     cutoff = require_utc(decision_at, field_name="decision_at")
     if observation.available_at > cutoff:
@@ -28,7 +27,9 @@ def require_available[T: Observation](observation: T, *, decision_at: datetime) 
     return observation
 
 
-def available_only[T: Observation](observations: Iterable[T], *, decision_at: datetime) -> tuple[T, ...]:
+def available_only[T: Observation](
+    observations: Iterable[T], *, decision_at: datetime
+) -> tuple[T, ...]:
     cutoff = require_utc(decision_at, field_name="decision_at")
     return tuple(item for item in observations if item.available_at <= cutoff)
 

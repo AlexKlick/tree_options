@@ -41,12 +41,16 @@ def test_universe_explicitly_queries_names_active_on_historical_date():
 
 
 def test_financials_filter_future_filing_date_and_use_pit_query():
-    client = FakeClient(Page((
-        {"filing_date": "2024-01-10", "period_end": "2023-12-31", "x": 1},
-        # Keep a future row in the fake response to prove the local fail-closed
-        # filter is not delegated entirely to the provider query parameter.
-        {"filing_date": "2024-02-10", "period_end": "2023-12-31", "x": 2},
-    )))
+    client = FakeClient(
+        Page(
+            (
+                {"filing_date": "2024-01-10", "period_end": "2023-12-31", "x": 1},
+                # Keep a future row in the fake response to prove the local fail-closed
+                # filter is not delegated entirely to the provider query parameter.
+                {"filing_date": "2024-02-10", "period_end": "2023-12-31", "x": 2},
+            )
+        )
+    )
     adapter = MassiveEquityResearchAdapter(client)
     rows, receipt = adapter.financials_as_of(
         endpoint="/stocks/financials/v1/income-statements",
@@ -84,7 +88,16 @@ def test_latest_only_ratios_endpoint_is_refused_for_historical_pit_use():
 
 
 def test_grouped_daily_parses_decimal_ohlcv(static_calendar):
-    client = FakeClient(body={"request_id": "abc", "results": [{"T": "A", "o": 10, "h": 12, "l": 9, "c": 11, "v": 100, "vw": 10.5, "n": 4}]})
-    bars, receipt = MassiveEquityResearchAdapter(client, calendar=static_calendar).grouped_daily(session=date(2026, 1, 2))
+    client = FakeClient(
+        body={
+            "request_id": "abc",
+            "results": [
+                {"T": "A", "o": 10, "h": 12, "l": 9, "c": 11, "v": 100, "vw": 10.5, "n": 4}
+            ],
+        }
+    )
+    bars, receipt = MassiveEquityResearchAdapter(client, calendar=static_calendar).grouped_daily(
+        session=date(2026, 1, 2)
+    )
     assert bars[0].ticker == "A" and str(bars[0].close) == "11"
     assert receipt.request_ids == ("abc",)

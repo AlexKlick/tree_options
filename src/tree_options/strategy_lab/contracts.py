@@ -2,13 +2,39 @@
 
 from __future__ import annotations
 
-import copy
+import math
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
 from types import MappingProxyType
 from typing import Any
+
+from tree_options.research.contracts import StrategyDefinition as StrategyDefinition
+
+
+def freeze_metadata(value: Any) -> Any:
+    """Detach and recursively freeze JSON metadata; refuse opaque mutable objects."""
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError("metadata object keys must be strings")
+        return MappingProxyType({key: freeze_metadata(item) for key, item in value.items()})
+    if isinstance(value, list | tuple):
+        return tuple(freeze_metadata(item) for item in value)
+    if value is None or isinstance(value, str | bool | int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    raise ValueError("metadata must contain finite JSON-compatible values")
+
+
+def metadata_json(value: Any) -> Any:
+    """Return detached JSON containers for canonical hashing/export."""
+    if isinstance(value, Mapping):
+        return {key: metadata_json(item) for key, item in value.items()}
+    if isinstance(value, tuple | list):
+        return [metadata_json(item) for item in value]
+    return value
 
 
 def require_utc(value: datetime, *, field_name: str = "timestamp") -> datetime:
@@ -46,24 +72,12 @@ class Observation:
         if not self.entity_id or not self.source or not self.source_id:
             raise ValueError("entity_id, source and source_id must be non-empty")
         object.__setattr__(self, "values", MappingProxyType(dict(self.values)))
-        object.__setattr__(self, "metadata", MappingProxyType(copy.deepcopy(dict(self.metadata))))
+        object.__setattr__(self, "metadata", freeze_metadata(self.metadata))
         for key, value in self.values.items():
             if not key:
                 raise ValueError("observation value key must be non-empty")
             if not isinstance(value, Decimal) or not value.is_finite():
                 raise ValueError(f"{key} must be a finite Decimal")
-
-
-@dataclass(frozen=True, slots=True)
-class StrategyDefinition:
-    strategy_id: str
-    version: str
-    family: str
-    registration: str
-    required_inputs: tuple[str, ...]
-    description: str
-    data_status: str = "supported"
-    parameters: Mapping[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

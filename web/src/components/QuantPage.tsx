@@ -36,6 +36,9 @@ export function QuantPage() {
         {lab.comparisons.length === 0 ? <p>No comparison with common frozen inputs.</p> : lab.comparisons.map(c => <p key={`${c.candidate_run}-${c.control_run}`}>{c.candidate_run} versus {c.control_run} · {c.common_snapshot}</p>)}
       </section>
       <section className="card"><h2>Execution and reconciliation</h2>
+        <details><summary>Campaign, target, risk and permit provenance</summary>
+          <pre>{JSON.stringify({campaigns: lab.campaigns ?? [], risk: lab.execution.risk, edges: lab.execution.provenance ?? []}, null, 2)}</pre>
+        </details>
         {(lab.execution.executions ?? []).length === 0 && <p>No broker-paper lifecycle observed.</p>}
         {(lab.execution.executions ?? []).map(e => <details key={e.intent_id}><summary>{e.intent_id} · {e.state}</summary>
           <p>Broker order state: {e.broker_state}</p><p>Reconciliation: {e.reconciliation_clean ? 'clean' : e.findings.join(', ')}</p>

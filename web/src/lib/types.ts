@@ -1667,8 +1667,9 @@ export interface QuantLabProjection {
   versions: {version_id: string; config_sha256: string; code_sha: string; lock_sha256: string}[]
   experiments: {run_id: string; strategy_version: string; disposition: string; evidence_kind: string; knowledge_cutoff: string; universe: {as_of: string; members: string[]}; scores: {entity_id: string; score: string; rank: number}[]; targets: {entity_id: string; weight: string}[]; exclusions: Record<string, string>; evidence: {exact_versions: Record<string, string>}}[]
   comparisons: {candidate_run: string; control_run: string; common_snapshot: string}[]
+  campaigns?: Record<string, unknown>[]
   evidence_classes: string[]
-  execution: {state: string; environment: string; account_alias?: string; owner_epoch?: string; observed_at?: string; mandate?: {state: string}; executions?: {intent_id: string; state: string; broker_state: string; reconciliation_clean: boolean; findings: string[]; evidence_verdict: string; exact_economics: boolean; records: Record<string, unknown>[]}[]}
+  execution: {state: string; environment: string; provenance?: {operation: string; intent_id: string; refs: Record<string, unknown>}[]; risk?: Record<string, unknown>; account_alias?: string; owner_epoch?: string; observed_at?: string; mandate?: {state: string}; executions?: {intent_id: string; state: string; broker_state: string; reconciliation_clean: boolean; findings: string[]; evidence_verdict: string; exact_economics: boolean; records: Record<string, unknown>[]}[]}
   live_money: false
   execution_authorized: false
 }

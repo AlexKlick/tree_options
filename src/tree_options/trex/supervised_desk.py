@@ -94,7 +94,8 @@ EXIT_DISCONNECTED = 6
 
 class EntryRequest(StrictModel):
     schema_version: Literal["trex-desk-entry-request/1"] = Field(
-        default="trex-desk-entry-request/1", alias="schema")
+        default="trex-desk-entry-request/1", alias="schema"
+    )
     strategy_version: IdStr
     send_deadline: datetime
     requested_by: IdStr
@@ -114,12 +115,17 @@ def load_profile(path: Path) -> tuple[CapitalProfile, str]:
     if intended is None:
         raise ValueError("intended_capital required")
     profile = CapitalProfile(
-        profile_id=str(doc["profile_id"]), revision=int(doc["revision"]),
-        intended_capital=intended, risk_style=str(doc["risk_style"]),
+        profile_id=str(doc["profile_id"]),
+        revision=int(doc["revision"]),
+        intended_capital=intended,
+        risk_style=str(doc["risk_style"]),
         goals=tuple(doc["goals"]),
         allowed_strategy_versions=tuple(doc["allowed_strategy_versions"]),
-        max_loss_per_trade=money("max_loss_per_trade"), max_open_loss=money("max_open_loss"),
-        max_daily_loss=money("max_daily_loss"), horizon_days=doc.get("horizon_days"))
+        max_loss_per_trade=money("max_loss_per_trade"),
+        max_open_loss=money("max_open_loss"),
+        max_daily_loss=money("max_daily_loss"),
+        horizon_days=doc.get("horizon_days"),
+    )
     return profile, digest
 
 
@@ -139,12 +145,15 @@ class RiskView:
     def of(cls, structure: PutSpread | LegStructure) -> RiskView:
         if isinstance(structure, PutSpread):
             return cls(structure.limit_cap, structure.quantity, False, structure.entry_date)
-        return cls(structure.max_loss_per_package(), structure.quantity, structure.is_credit,
-                   structure.entry_date)
+        return cls(
+            structure.max_loss_per_package(),
+            structure.quantity,
+            structure.is_credit,
+            structure.entry_date,
+        )
 
 
-def open_loss_reservation(book: BookState, risks: Mapping[str, RiskView],
-                          today: date) -> Decimal:
+def open_loss_reservation(book: BookState, risks: Mapping[str, RiskView], today: date) -> Decimal:
     """Worst-case loss still at risk: open packages at the debit paid (or the
     cap/floor when unpriced), entries at their full size; a PLANNED entry
     whose date has passed can no longer enter.
@@ -181,8 +190,9 @@ def open_loss_reservation(book: BookState, risks: Mapping[str, RiskView],
     return total
 
 
-def realized_day_loss(book: BookState, risks: Mapping[str, RiskView],
-                      today: date) -> Decimal | None:
+def realized_day_loss(
+    book: BookState, risks: Mapping[str, RiskView], today: date
+) -> Decimal | None:
     """Losses realized by exits recorded today; None when any is unpriced."""
     loss = Decimal(0)
     for sid, risk in risks.items():
@@ -191,8 +201,12 @@ def realized_day_loss(book: BookState, risks: Mapping[str, RiskView],
             continue
         if st.updated_at.astimezone(ET).date() != today:
             continue
-        if (st.entry_fill is None or st.exit_fill is None or st.entry_unpriced_qty
-                or st.exit_unpriced_qty):
+        if (
+            st.entry_fill is None
+            or st.exit_fill is None
+            or st.entry_unpriced_qty
+            or st.exit_unpriced_qty
+        ):
             return None
         pnl = st.entry_fill - st.exit_fill if risk.is_credit else st.exit_fill - st.entry_fill
         loss += max(Decimal(0), -pnl) * 100 * st.exit_filled_qty
@@ -220,11 +234,18 @@ class LegacyBook:
 class SupervisedDesk:
     """Entry orchestration for one supervised desk process."""
 
-    def __init__(self, ib: IbkrTrex, runtime: DeskRuntime, broker: IbkrSupervisedBroker, *,
-                 supervised: SupervisedPaths, owner_epoch: str,
-                 dividends: DividendSource | None = None,
-                 legacy: Sequence[LegacyBook] = (),
-                 clock: Callable[[], datetime] | None = None) -> None:
+    def __init__(
+        self,
+        ib: IbkrTrex,
+        runtime: DeskRuntime,
+        broker: IbkrSupervisedBroker,
+        *,
+        supervised: SupervisedPaths,
+        owner_epoch: str,
+        dividends: DividendSource | None = None,
+        legacy: Sequence[LegacyBook] = (),
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self.ib = ib
         self.runtime = runtime
         self.broker = broker
@@ -249,8 +270,12 @@ class SupervisedDesk:
 
     def write_owner(self) -> None:
         self.paths.root.mkdir(parents=True, exist_ok=True)
-        doc = {"owner_epoch": self.owner_epoch, "client_id": self.ib.client_id,
-               "pid": os.getpid(), "started_at": self.clock().isoformat()}
+        doc = {
+            "owner_epoch": self.owner_epoch,
+            "client_id": self.ib.client_id,
+            "pid": os.getpid(),
+            "started_at": self.clock().isoformat(),
+        }
         tmp = self.owner_path().with_name("owner.json.tmp")
         tmp.write_text(json.dumps(doc, indent=2, sort_keys=True) + "\n")
         os.replace(tmp, self.owner_path())
@@ -271,8 +296,9 @@ class SupervisedDesk:
         open_loss: Decimal | None = Decimal(0)
         day_loss: Decimal | None = Decimal(0)
         for book, risks in views:
-            open_loss = (None if open_loss is None
-                         else open_loss + open_loss_reservation(book, risks, today))
+            open_loss = (
+                None if open_loss is None else open_loss + open_loss_reservation(book, risks, today)
+            )
             realized = realized_day_loss(book, risks, today)
             day_loss = None if day_loss is None or realized is None else day_loss + realized
         return open_loss, day_loss
@@ -297,15 +323,15 @@ class SupervisedDesk:
             tmp = out.with_name(out.name + ".tmp")
             tmp.write_text(json.dumps(result, indent=2, sort_keys=True, default=str) + "\n")
             os.replace(tmp, out)
-            self.runtime._event("entry_request", intent=result.get("intent_id"),
-                                status=result["status"])
+            self.runtime._event(
+                "entry_request", intent=result.get("intent_id"), status=result["status"]
+            )
             results.append(result)
         return results
 
     def _handle(self, claimed: Path, name: str) -> dict[str, Any]:
         now = self.clock()
-        base: dict[str, Any] = {"schema": RESULT_SCHEMA, "at": now.isoformat(),
-                                "request": name}
+        base: dict[str, Any] = {"schema": RESULT_SCHEMA, "at": now.isoformat(), "request": name}
         try:
             request = EntryRequest.model_validate(json.loads(claimed.read_bytes()))
         except (ValueError, OSError) as error:
@@ -315,8 +341,13 @@ class SupervisedDesk:
         try:
             return {**base, "intent_id": name, **self.enter(request, now)}
         except SupervisedRefused as refused:
-            return {**base, "intent_id": name, "status": "refused",
-                    "reason": refused.reason, "detail": refused.detail}
+            return {
+                **base,
+                "intent_id": name,
+                "status": "refused",
+                "reason": refused.reason,
+                "detail": refused.detail,
+            }
 
     def enter(self, request: EntryRequest, now: datetime) -> dict[str, Any]:
         """Mandate -> preflight -> screening -> intent -> permit -> register
@@ -330,9 +361,13 @@ class SupervisedDesk:
         if not self.profile_path().exists():
             return {"status": "blocked", "blockers": ["profile_absent"]}
         profile, digest = load_profile(self.profile_path())
-        mandate = active_mandate(self.supervised, now=now, account_id=effect.account_id,
-                                 owner_epoch=self.owner_epoch,
-                                 strategy_version=request.strategy_version)
+        mandate = active_mandate(
+            self.supervised,
+            now=now,
+            account_id=effect.account_id,
+            owner_epoch=self.owner_epoch,
+            strategy_version=request.strategy_version,
+        )
         if mandate.profile_digest != digest:
             return {"status": "blocked", "blockers": ["mandate_profile_mismatch"]}
         payload = effect_bytes(effect)
@@ -343,44 +378,79 @@ class SupervisedDesk:
         plan_ok, plan_why = assignment_plan(structure, snapshot, now.date())
         open_loss, day_loss = self.loss_facts(now.astimezone(ET).date())
         inputs = OperatorCanaryInputs(
-            owner_epoch=self.owner_epoch, owner_healthy=self.ib.connected,
+            owner_epoch=self.owner_epoch,
+            owner_healthy=self.ib.connected,
             assignment_plan_verified=plan_ok,
             protective_exit_ready=exit_owner_ready(self.paths, now),
-            current_open_loss=open_loss, realized_daily_loss=day_loss)
-        screening = collect_canary_screening(self.broker, effect, profile=profile,
-                                             mandate_account_id=mandate.account_id,
-                                             inputs=inputs, clock=self.clock)
-        facts = {"screening_sha256": screening.screening_sha256,
-                 "assignment_plan": plan_why,
-                 "open_loss": None if open_loss is None else str(open_loss),
-                 "day_loss": None if day_loss is None else str(day_loss)}
+            current_open_loss=open_loss,
+            realized_daily_loss=day_loss,
+        )
+        screening = collect_canary_screening(
+            self.broker,
+            effect,
+            profile=profile,
+            mandate_account_id=mandate.account_id,
+            inputs=inputs,
+            clock=self.clock,
+        )
+        facts = {
+            "screening_sha256": screening.screening_sha256,
+            "assignment_plan": plan_why,
+            "open_loss": None if open_loss is None else str(open_loss),
+            "day_loss": None if day_loss is None else str(day_loss),
+        }
         if not screening.clear or screening.facts is None:
             return {"status": "blocked", "blockers": list(screening.blockers), **facts}
         intent = SupervisedIntent(
             intent=OrderIntent(
-                intent_id=effect.intent_id, contract_id=f"BAG:{structure.id}", side="BUY",
-                position_effect="OPEN_LONG", quantity=effect.quantity, order_type="LIMIT",
-                limit_price=effect.limit, execution_style="package", package_id=structure.id,
-                intent_created_at=now, source=request.strategy_version,
-                source_sequence_id=f"desk-{effect.intent_id}"),
+                intent_id=effect.intent_id,
+                contract_id=f"BAG:{structure.id}",
+                side="BUY",
+                position_effect="OPEN_LONG",
+                quantity=effect.quantity,
+                order_type="LIMIT",
+                limit_price=effect.limit,
+                execution_style="package",
+                package_id=structure.id,
+                intent_created_at=now,
+                source=request.strategy_version,
+                source_sequence_id=f"desk-{effect.intent_id}",
+            ),
             package_intent_sha256=screening.facts.intent_sha256,
-            created_at=now, send_deadline=request.send_deadline)
+            created_at=now,
+            send_deadline=request.send_deadline,
+        )
         record_intent(self.supervised, intent)
         # Account-id pre-check: refuse BEFORE spending a permit. The mandate
         # already passed (the screening gate verified it); if the effect's
         # account diverged from that mandate (operator typo, replay, etc.)
         # we leak neither a permit nor a spec file.
         if mandate.account_id != effect.account_id:
-            return {"status": "blocked", "blockers": ["register_account_mismatch"],
-                    "account_id": effect.account_id,
-                    "mandate_account_id": mandate.account_id, **facts}
-        permit = issue_permit(self.supervised, now=now, account_id=effect.account_id,
-                              owner_epoch=self.owner_epoch, intent=intent,
-                              canary_blockers=screening.blockers, effect_payload=payload,
-                              screening_sha256=screening.screening_sha256)
+            return {
+                "status": "blocked",
+                "blockers": ["register_account_mismatch"],
+                "account_id": effect.account_id,
+                "mandate_account_id": mandate.account_id,
+                **facts,
+            }
+        permit = issue_permit(
+            self.supervised,
+            now=now,
+            account_id=effect.account_id,
+            owner_epoch=self.owner_epoch,
+            intent=intent,
+            canary_blockers=screening.blockers,
+            effect_payload=payload,
+            screening_sha256=screening.screening_sha256,
+        )
         self.runtime.register(effect)
-        receipt = send(self.supervised, now=now, permit_id=permit.permit_id,
-                       effect_payload=payload, broker=self.broker)
+        receipt = send(
+            self.supervised,
+            now=now,
+            permit_id=permit.permit_id,
+            effect_payload=payload,
+            broker=self.broker,
+        )
         return {"status": "sent", "permit_id": permit.permit_id, "receipt": receipt, **facts}
 
 
@@ -392,8 +462,13 @@ def in_session(now: datetime) -> bool:
     return is_session(local) and SESSION_OPEN <= local.time() <= SESSION_END
 
 
-def run_loop(desk: SupervisedDesk, *, interval_s: float,
-             stop: Callable[[], bool], max_ticks: int | None = None) -> int:
+def run_loop(
+    desk: SupervisedDesk,
+    *,
+    interval_s: float,
+    stop: Callable[[], bool],
+    max_ticks: int | None = None,
+) -> int:
     """Tick until ``stop()``; 6 when the gateway connection is lost."""
     ticks = 0
     while not stop():
@@ -430,14 +505,24 @@ def main(argv: list[str] | None = None) -> int:
     run.add_argument("--host", default="127.0.0.1")
     run.add_argument("--port", type=int, default=GATEWAY_PAPER_PORT)
     run.add_argument("--interval", type=float, default=5.0)
-    run.add_argument("--legacy-plan", type=Path, action="append", default=[],
-                     help="a legacy trex plan whose book counts toward open/day loss")
-    run.add_argument("--no-spots", action="store_true",
-                     help="no Polygon spot feed (touch/breach exits cannot fire)")
-    digest = sub.add_parser("profile-digest",
-                            help="print the digest a mandate must bind (no broker contact)")
-    digest.add_argument("--path", type=Path, default=None,
-                        help="profile.json (default: the desk run dir's)")
+    run.add_argument(
+        "--legacy-plan",
+        type=Path,
+        action="append",
+        default=[],
+        help="a legacy trex plan whose book counts toward open/day loss",
+    )
+    run.add_argument(
+        "--no-spots",
+        action="store_true",
+        help="no Polygon spot feed (touch/breach exits cannot fire)",
+    )
+    digest = sub.add_parser(
+        "profile-digest", help="print the digest a mandate must bind (no broker contact)"
+    )
+    digest.add_argument(
+        "--path", type=Path, default=None, help="profile.json (default: the desk run dir's)"
+    )
     args = ap.parse_args(argv)
     if args.command == "profile-digest":
         path = args.path or DeskPaths.default().root / "profile.json"
@@ -446,8 +531,16 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError, KeyError) as error:
             print(f"refused: invalid_profile {error!r}", file=sys.stderr)
             return 2
-        print(json.dumps({"profile_id": profile.profile_id, "revision": profile.revision,
-                          "profile_digest": value}, indent=2))
+        print(
+            json.dumps(
+                {
+                    "profile_id": profile.profile_id,
+                    "revision": profile.revision,
+                    "profile_digest": value,
+                },
+                indent=2,
+            )
+        )
         return 0
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
 
@@ -470,14 +563,16 @@ def main(argv: list[str] | None = None) -> int:
     notify_fn: Callable[[str, str, str], None] | None = None
     notify_cfg = notify.load_config()
     if notify_cfg is not None:
+
         def _push(title: str, message: str, priority: str = "default") -> None:
             notify.send(notify_cfg, title, message, priority)
 
         notify_fn = _push
     paths = DeskPaths.default()
     supervised = SupervisedPaths.default()
-    runtime = DeskRuntime(ib, paths, supervised=supervised, spots=spots,
-                          dividends=dividends, notify=notify_fn)
+    runtime = DeskRuntime(
+        ib, paths, supervised=supervised, spots=spots, dividends=dividends, notify=notify_fn
+    )
     runtime.acquire()
     epoch = f"desk{SUPERVISED_CLIENT_ID}-{int(wall.time()):x}"
     # One process-lifetime alias fence across execution providers. Existing
@@ -501,11 +596,18 @@ def main(argv: list[str] | None = None) -> int:
         runtime.release()
         ib.disconnect()
         raise
-    desk = SupervisedDesk(ib, runtime, IbkrSupervisedBroker(ib), supervised=supervised,
-                          owner_epoch=epoch, dividends=dividends,
-                          legacy=[LegacyBook(p, Path(os.environ.get(
-                              "TREX_STATE", Path.home() / ".local/state/trex")))
-                              for p in args.legacy_plan])
+    desk = SupervisedDesk(
+        ib,
+        runtime,
+        IbkrSupervisedBroker(ib),
+        supervised=supervised,
+        owner_epoch=epoch,
+        dividends=dividends,
+        legacy=[
+            LegacyBook(p, Path(os.environ.get("TREX_STATE", Path.home() / ".local/state/trex")))
+            for p in args.legacy_plan
+        ],
+    )
     desk.write_owner()
     log.info("supervised desk up: owner epoch %s (grant the mandate for it)", epoch)
     stopping = False

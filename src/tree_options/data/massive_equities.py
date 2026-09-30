@@ -168,7 +168,9 @@ class MassiveEquityResearchAdapter:
             ),
         )
 
-    def grouped_daily(self, *, session: date, adjusted: bool = True) -> tuple[tuple[DailyBar, ...], ProviderReceipt]:
+    def grouped_daily(
+        self, *, session: date, adjusted: bool = True
+    ) -> tuple[tuple[DailyBar, ...], ProviderReceipt]:
         if self.calendar is None:
             raise MassiveEquityError("daily bars require a TREX session calendar")
         self.calendar.ordinal(session)
@@ -197,10 +199,7 @@ class MassiveEquityResearchAdapter:
             raise MassiveEquityError("daily bars require a TREX session calendar")
         if start > end:
             raise MassiveEquityError("start must be <= end")
-        path = (
-            f"/v2/aggs/ticker/{ticker}/range/1/day/"
-            f"{start.isoformat()}/{end.isoformat()}"
-        )
+        path = f"/v2/aggs/ticker/{ticker}/range/1/day/{start.isoformat()}/{end.isoformat()}"
         page = self.client.paginate(
             path,
             {
@@ -296,7 +295,9 @@ class MassiveEquityResearchAdapter:
                 )
             )
         accepted.sort(key=lambda row: (row.filing_date, row.period_end or date.min), reverse=True)
-        return tuple(accepted), ProviderReceipt(endpoint=endpoint, request_ids=tuple(page.request_ids))
+        return tuple(accepted), ProviderReceipt(
+            endpoint=endpoint, request_ids=tuple(page.request_ids)
+        )
 
     @staticmethod
     def _parse_bar(raw: Mapping[str, Any], *, session: date) -> DailyBar:
@@ -314,7 +315,12 @@ class MassiveEquityResearchAdapter:
             vwap=_decimal(raw.get("vw"), field="vwap") if raw.get("vw") is not None else None,
             transactions=int(raw["n"]) if raw.get("n") is not None else None,
         )
-        if min(bar.open, bar.high, bar.low, bar.close) <= 0 or bar.low > bar.high or not bar.low <= bar.open <= bar.high or not bar.low <= bar.close <= bar.high:
+        if (
+            min(bar.open, bar.high, bar.low, bar.close) <= 0
+            or bar.low > bar.high
+            or not bar.low <= bar.open <= bar.high
+            or not bar.low <= bar.close <= bar.high
+        ):
             raise MassiveEquityError(f"invalid OHLC for {ticker} on {session}")
         if bar.volume < 0:
             raise MassiveEquityError(f"negative volume for {ticker} on {session}")

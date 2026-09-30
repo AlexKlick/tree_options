@@ -28,9 +28,9 @@ def garman_klass_volatility(*, open_: float, high: float, low: float, close: flo
         raise FeatureError("OHLC must be positive and low <= high")
     if not (low <= open_ <= high and low <= close <= high):
         raise FeatureError("open and close must lie within the reported low/high range")
-    return ((math.log(high) - math.log(low)) ** 2) / 2 - (
-        2 * math.log(2) - 1
-    ) * ((math.log(close) - math.log(open_)) ** 2)
+    return ((math.log(high) - math.log(low)) ** 2) / 2 - (2 * math.log(2) - 1) * (
+        (math.log(close) - math.log(open_)) ** 2
+    )
 
 
 def rsi(prices: Sequence[float], *, length: int = 20) -> float:
@@ -62,7 +62,9 @@ def atr(
     if not (h.size == low_array.size == c.size) or np.any(low_array > h):
         raise FeatureError("high/low/close arrays must align and low <= high")
     prev = c[:-1]
-    tr = np.maximum.reduce([h[1:] - low_array[1:], np.abs(h[1:] - prev), np.abs(low_array[1:] - prev)])
+    tr = np.maximum.reduce(
+        [h[1:] - low_array[1:], np.abs(h[1:] - prev), np.abs(low_array[1:] - prev)]
+    )
     return float(tr[-length:].mean())
 
 

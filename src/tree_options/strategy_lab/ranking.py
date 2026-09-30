@@ -65,9 +65,7 @@ def momentum_12_1_scores(
     formation_prices: Mapping[str, tuple[Decimal, Decimal]],
 ) -> tuple[StrategyScore, ...]:
     raw = {
-        ticker: twelve_minus_one_return(
-            price_t_minus_12=prices[0], price_t_minus_1=prices[1]
-        )
+        ticker: twelve_minus_one_return(price_t_minus_12=prices[0], price_t_minus_1=prices[1])
         for ticker, prices in formation_prices.items()
     }
     pct = percentile_scores(raw, higher_is_better=True)
@@ -79,7 +77,8 @@ def momentum_12_1_scores(
 
 def hqm_scores(
     returns: Mapping[str, Mapping[str, Decimal]],
-    *, horizons: Sequence[str] = ("1m", "3m", "6m", "12m"),
+    *,
+    horizons: Sequence[str] = ("1m", "3m", "6m", "12m"),
 ) -> tuple[StrategyScore, ...]:
     """Composite high-quality-momentum percentile score."""
 
@@ -88,8 +87,7 @@ def hqm_scores(
         if not all(horizon in metrics for horizon in horizons):
             continue
         eligible[ticker] = {
-            horizon: _finite(metrics[horizon], name=f"{ticker}:{horizon}")
-            for horizon in horizons
+            horizon: _finite(metrics[horizon], name=f"{ticker}:{horizon}") for horizon in horizons
         }
     if not eligible:
         return ()

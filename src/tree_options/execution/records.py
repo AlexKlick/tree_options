@@ -63,6 +63,18 @@ ExactMoney = Annotated[
 ExecutionUTCDatetime = Annotated[datetime, BeforeValidator(_require_execution_utc)]
 
 
+class UncertaintyObserved(StrictModel):
+    """An effect's outcome is unknown without asserting timeout/disconnect."""
+
+    record_type: Literal["UNCERTAINTY_OBSERVED"] = "UNCERTAINTY_OBSERVED"
+    record_id: IdStr
+    intent_id: IdStr
+    locally_received_at: ExecutionUTCDatetime
+    reason_code: IdStr
+    source: IdStr
+    source_sequence_id: IdStr
+
+
 class BrokerReadbackStatus(StrEnum):
     OPEN = "OPEN"
     PARTIALLY_FILLED = "PARTIALLY_FILLED"
@@ -300,6 +312,7 @@ ExecutionRecord = (
     | CompleteFill
     | TimeoutObserved
     | DisconnectObserved
+    | UncertaintyObserved
     | BrokerReadback
     | ReplaceIntent
 )

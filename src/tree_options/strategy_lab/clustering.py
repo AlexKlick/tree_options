@@ -40,7 +40,11 @@ def fit_kmeans(
     centers = np.asarray(initial_centroids, dtype=float).copy()
     if x.ndim != 2 or centers.ndim != 2 or x.shape[1] != centers.shape[1]:
         raise ClusteringError("values and centroids must be 2-D with the same feature count")
-    if x.shape[0] < centers.shape[0] or not np.all(np.isfinite(x)) or not np.all(np.isfinite(centers)):
+    if (
+        x.shape[0] < centers.shape[0]
+        or not np.all(np.isfinite(x))
+        or not np.all(np.isfinite(centers))
+    ):
         raise ClusteringError("finite data with at least one row per cluster is required")
     if max_iter < 1 or tolerance < 0:
         raise ClusteringError("invalid convergence controls")

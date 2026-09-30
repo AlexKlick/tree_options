@@ -65,6 +65,10 @@ class SnapTradeOrderSnapshot:
             if self.broker_placed_at.tzinfo is None or self.broker_placed_at.utcoffset() is None:
                 raise SnapTradeNormalizationError("broker_placed_at must be timezone-aware")
             object.__setattr__(self, "broker_placed_at", self.broker_placed_at.astimezone(UTC))
+        if type(self.filled_quantity) is not int or (
+            self.total_quantity is not None and type(self.total_quantity) is not int
+        ):
+            raise SnapTradeNormalizationError("integer quantities required")
         if self.total_quantity is not None and self.total_quantity < 1:
             raise SnapTradeNormalizationError("total_quantity must be >= 1 when present")
         if self.filled_quantity < 0:
@@ -120,7 +124,9 @@ def _digest_mapping(raw: Mapping[str, Any]) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def snapshot_from_mapping(raw: Mapping[str, Any], *, request_id: str | None = None) -> SnapTradeOrderSnapshot:
+def snapshot_from_mapping(
+    raw: Mapping[str, Any], *, request_id: str | None = None
+) -> SnapTradeOrderSnapshot:
     """Normalize a current SnapTrade order-details object.
 
     SnapTrade/broker payloads evolve and integration capabilities differ. This
@@ -179,7 +185,9 @@ def snapshot_from_mapping(raw: Mapping[str, Any], *, request_id: str | None = No
             "order snapshot requires time_updated; placement/execution/local poll times are not snapshot times"
         )
 
-    placed_at = _parse_time(raw["time_placed"], field="time_placed") if raw.get("time_placed") else None
+    placed_at = (
+        _parse_time(raw["time_placed"], field="time_placed") if raw.get("time_placed") else None
+    )
     client_order_id = raw.get("client_order_id")
     return SnapTradeOrderSnapshot(
         status=status.upper(),
@@ -194,7 +202,6 @@ def snapshot_from_mapping(raw: Mapping[str, Any], *, request_id: str | None = No
     )
 
 
-
 def _require_correlation(intent: OrderIntent, snapshot: SnapTradeOrderSnapshot) -> None:
     if snapshot.client_order_id is None:
         return
@@ -204,6 +211,7 @@ def _require_correlation(intent: OrderIntent, snapshot: SnapTradeOrderSnapshot) 
             f"client_order_id mismatch for {intent.intent_id}: expected {expected}, "
             f"observed {snapshot.client_order_id}"
         )
+
 
 def normalize_status(status: str) -> BrokerReadbackStatus:
     """Fail-closed mapping from SnapTrade order status to TREX readback state."""
@@ -316,9 +324,13 @@ def readback_from_snapshot(
     _require_correlation(intent, snapshot)
     status = normalize_status(snapshot.status)
     if snapshot.total_quantity is not None and snapshot.total_quantity != intent.quantity:
-        raise SnapTradeNormalizationError("provider total does not match intent quantity; replacement requires explicit domain records")
-    token = snapshot.request_id or snapshot.raw_digest or (
-        f"{snapshot.brokerage_order_id}:{snapshot.status}:{snapshot.filled_quantity}"
+        raise SnapTradeNormalizationError(
+            "provider total does not match intent quantity; replacement requires explicit domain records"
+        )
+    token = (
+        snapshot.request_id
+        or snapshot.raw_digest
+        or (f"{snapshot.brokerage_order_id}:{snapshot.status}:{snapshot.filled_quantity}")
     )
 
     if status in {
@@ -350,10 +362,14 @@ def readback_from_snapshot(
 
     # Tighten provider-status semantics before constructing the existing record.
     if status is BrokerReadbackStatus.OPEN and cumulative != 0:
-        raise SnapTradeNormalizationError("OPEN status with positive filled_quantity is inconsistent")
+        raise SnapTradeNormalizationError(
+            "OPEN status with positive filled_quantity is inconsistent"
+        )
     if status is BrokerReadbackStatus.PARTIALLY_FILLED:
         if cumulative <= 0 or total is None or cumulative >= total:
-            raise SnapTradeNormalizationError("PARTIAL requires 0 < filled_quantity < total_quantity")
+            raise SnapTradeNormalizationError(
+                "PARTIAL requires 0 < filled_quantity < total_quantity"
+            )
     if status is BrokerReadbackStatus.FILLED and cumulative != total:
         raise SnapTradeNormalizationError("FILLED requires filled_quantity == total_quantity")
 

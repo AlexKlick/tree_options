@@ -34,12 +34,19 @@ def normalize_nonnegative(weights: Mapping[str, Decimal]) -> tuple[TargetWeight,
     if total <= 0:
         raise PortfolioError("positive total weight required")
     ids = sorted(weights)
-    result = [TargetWeight(entity_id=entity_id, weight=weights[entity_id] / total) for entity_id in ids[:-1]]
-    result.append(TargetWeight(ids[-1], Decimal("1") - sum((w.weight for w in result), Decimal("0"))))
+    result = [
+        TargetWeight(entity_id=entity_id, weight=weights[entity_id] / total)
+        for entity_id in ids[:-1]
+    ]
+    result.append(
+        TargetWeight(ids[-1], Decimal("1") - sum((w.weight for w in result), Decimal("0")))
+    )
     return tuple(result)
 
 
-def capped_equal_weight(entity_ids: Sequence[str], *, max_weight: Decimal) -> tuple[TargetWeight, ...]:
+def capped_equal_weight(
+    entity_ids: Sequence[str], *, max_weight: Decimal
+) -> tuple[TargetWeight, ...]:
     ids = tuple(sorted(set(entity_ids)))
     if not ids:
         return ()
@@ -56,7 +63,9 @@ class PyPortfolioOptMaxSharpe:
 
     def construct(self, *, expected_returns, covariance, max_weight: float = 0.10):
         try:
-            EfficientFrontier = importlib.import_module("pypfopt.efficient_frontier").EfficientFrontier
+            EfficientFrontier = importlib.import_module(
+                "pypfopt.efficient_frontier"
+            ).EfficientFrontier
         except ImportError as error:  # pragma: no cover - optional integration
             raise PortfolioError("PyPortfolioOpt is not installed") from error
         frontier = EfficientFrontier(expected_returns, covariance, weight_bounds=(0.0, max_weight))

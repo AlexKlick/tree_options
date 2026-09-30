@@ -57,9 +57,17 @@ from tree_options.research.paths import assert_no_overlap_with_desk
 #   ``child``          — parent_run_id -> child_run_id pointer (ChildRef)
 # Both are immutable keys, written via the same ``put`` discipline.
 _KINDS: tuple[str, ...] = (
-    "run", "spec", "result", "evidence_snapshot", "comparison_row",
-    "scenario_parent", "child",
-    "quant_version", "quant_snapshot", "quant_experiment", "quant_provenance",
+    "run",
+    "spec",
+    "result",
+    "evidence_snapshot",
+    "comparison_row",
+    "scenario_parent",
+    "child",
+    "quant_version",
+    "quant_snapshot",
+    "quant_experiment",
+    "quant_provenance",
 )
 
 
@@ -138,8 +146,9 @@ class RunstateStore:
 
     # -- application -----------------------------------------------------
 
-    def put(self, kind: str, payload: dict[str, Any], *,
-            key: str, at: datetime | None = None) -> str:
+    def put(
+        self, kind: str, payload: dict[str, Any], *, key: str, at: datetime | None = None
+    ) -> str:
         """Record one immutable artifact. Returns the payload sha256.
 
         Idempotent on identical content. Raises ``RunstateStoreError``
@@ -157,8 +166,7 @@ class RunstateStore:
             if cur["payload_sha256"] == sha:
                 return sha  # idempotent re-write
             raise RunstateStoreError(
-                f"content_conflict: {kind}/{key} already exists with a "
-                "different payload"
+                f"content_conflict: {kind}/{key} already exists with a different payload"
             )
         self.conn.execute("BEGIN IMMEDIATE")
         try:
@@ -175,8 +183,9 @@ class RunstateStore:
             raise
         return sha
 
-    def replace(self, kind: str, payload: dict[str, Any], *,
-                key: str, at: datetime | None = None) -> str:
+    def replace(
+        self, kind: str, payload: dict[str, Any], *, key: str, at: datetime | None = None
+    ) -> str:
         """Publish a new state snapshot for a MUTABLE record (run
         lifecycle). Requires the key to exist; the full audit trail
         keeps every prior version. Returns the new payload sha256.
@@ -238,9 +247,7 @@ class RunstateStore:
             "SELECT payload_json, created_at FROM objects WHERE kind = ? ORDER BY created_at",
             (kind,),
         ).fetchall()
-        return tuple(
-            (json.loads(r["payload_json"]), r["created_at"]) for r in rows
-        )
+        return tuple((json.loads(r["payload_json"]), r["created_at"]) for r in rows)
 
     def verify(self) -> dict[str, Any]:
         """Read-only integrity verification (never writes). Raises
@@ -281,21 +288,20 @@ class RunstateStore:
             # 3) chain + committed head agreement
             head = self._compute_head()
             cur = self.conn.execute(
-                "SELECT head_sha256, events, objects, updated_at "
-                "FROM audit_head WHERE id = 1"
+                "SELECT head_sha256, events, objects, updated_at FROM audit_head WHERE id = 1"
             ).fetchone()
             if cur is None:
                 if head["events"] or head["objects"]:
                     raise RunstateStoreError(
-                        "missing audit_head: store has content but no "
-                        "committed head"
+                        "missing audit_head: store has content but no committed head"
                     )
-            elif (cur["head_sha256"] != head["head_sha256"]
-                  or cur["events"] != head["events"]
-                  or cur["objects"] != head["objects"]):
+            elif (
+                cur["head_sha256"] != head["head_sha256"]
+                or cur["events"] != head["events"]
+                or cur["objects"] != head["objects"]
+            ):
                 raise RunstateStoreError(
-                    f"audit_head mismatch: committed {dict(cur)} vs "
-                    f"computed {head}"
+                    f"audit_head mismatch: committed {dict(cur)} vs computed {head}"
                 )
         finally:
             self.conn.execute("COMMIT")
@@ -309,8 +315,9 @@ class RunstateStore:
 
     # -- internals --------------------------------------------------------
 
-    def _audit(self, kind: str, key: str, action: str, *,
-               prev: str | None, next_sha: str | None, at: str) -> None:
+    def _audit(
+        self, kind: str, key: str, action: str, *, prev: str | None, next_sha: str | None, at: str
+    ) -> None:
         self.conn.execute(
             "INSERT INTO audit (kind, object_key, action, prev_sha256, next_sha256, occurred_at) "
             "VALUES (?, ?, ?, ?, ?, ?)",
@@ -328,8 +335,7 @@ class RunstateStore:
             "ON CONFLICT(id) DO UPDATE SET head_sha256 = excluded.head_sha256, "
             "events = excluded.events, objects = excluded.objects, "
             "updated_at = excluded.updated_at",
-            (head["head_sha256"], head["events"], head["objects"],
-             head["updated_at"]),
+            (head["head_sha256"], head["events"], head["objects"], head["updated_at"]),
         )
 
     def _compute_head(self) -> dict[str, Any]:
@@ -341,9 +347,16 @@ class RunstateStore:
             "SELECT kind, object_key, action, prev_sha256, next_sha256, occurred_at "
             "FROM audit ORDER BY audit_seq"
         ):
-            row_str = "|".join((r["kind"], r["object_key"], r["action"],
-                                r["prev_sha256"] or "", r["next_sha256"] or "",
-                                r["occurred_at"]))
+            row_str = "|".join(
+                (
+                    r["kind"],
+                    r["object_key"],
+                    r["action"],
+                    r["prev_sha256"] or "",
+                    r["next_sha256"] or "",
+                    r["occurred_at"],
+                )
+            )
             h = _sha256_hex(prev + "|" + row_str)
             prev = h
             events += 1
@@ -365,6 +378,7 @@ def _canonical_entry(payload: dict[str, Any], at: datetime | None) -> tuple[str,
 
 def _sha256_hex(s: str) -> str:
     import hashlib
+
     return hashlib.sha256(s.encode("utf-8")).hexdigest()
 
 

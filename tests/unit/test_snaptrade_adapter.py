@@ -48,17 +48,28 @@ def test_unknown_and_pending_mutation_states_fail_closed():
 
 def test_fractional_quantity_refused_by_current_trex_schema():
     with pytest.raises(SnapTradeNormalizationError, match="fractional"):
-        snapshot_from_mapping({
-            "status": "PARTIAL", "brokerage_order_id": "b1", "total_quantity": "2.5",
-            "filled_quantity": "1", "time_updated": NOW.isoformat(),
-        })
+        snapshot_from_mapping(
+            {
+                "status": "PARTIAL",
+                "brokerage_order_id": "b1",
+                "total_quantity": "2.5",
+                "filled_quantity": "1",
+                "time_updated": NOW.isoformat(),
+            }
+        )
 
 
 def test_partial_readback_maps_without_fabricating_fill():
-    snap = snapshot_from_mapping({
-        "status": "PARTIAL", "brokerage_order_id": "b1", "total_quantity": 2,
-        "filled_quantity": 1, "time_updated": NOW.isoformat(),
-    }, request_id="req-1")
+    snap = snapshot_from_mapping(
+        {
+            "status": "PARTIAL",
+            "brokerage_order_id": "b1",
+            "total_quantity": 2,
+            "filled_quantity": 1,
+            "time_updated": NOW.isoformat(),
+        },
+        request_id="req-1",
+    )
     record = readback_from_snapshot(intent(), snap, locally_received_at=NOW + timedelta(seconds=1))
     assert record.status is BrokerReadbackStatus.PARTIALLY_FILLED
     assert record.cumulative_quantity == 1 and record.total_quantity == 2
@@ -66,26 +77,30 @@ def test_partial_readback_maps_without_fabricating_fill():
 
 def test_quantity_conservation_violation_is_refused():
     with pytest.raises(SnapTradeNormalizationError, match="must equal"):
-        snapshot_from_mapping({
-            "status": "PARTIAL_CANCELED",
-            "brokerage_order_id": "b1",
-            "total_quantity": 10,
-            "filled_quantity": 4,
-            "open_quantity": 1,
-            "canceled_quantity": 4,
-            "time_updated": NOW.isoformat(),
-        })
+        snapshot_from_mapping(
+            {
+                "status": "PARTIAL_CANCELED",
+                "brokerage_order_id": "b1",
+                "total_quantity": 10,
+                "filled_quantity": 4,
+                "open_quantity": 1,
+                "canceled_quantity": 4,
+                "time_updated": NOW.isoformat(),
+            }
+        )
 
 
 def test_ambiguous_or_rejected_positive_fill_is_not_erased():
     for status in ("NONE", "CANCEL_PENDING", "REJECTED"):
-        snap = snapshot_from_mapping({
-            "status": status,
-            "brokerage_order_id": "b1",
-            "total_quantity": 2,
-            "filled_quantity": 1,
-            "time_updated": NOW.isoformat(),
-        })
+        snap = snapshot_from_mapping(
+            {
+                "status": status,
+                "brokerage_order_id": "b1",
+                "total_quantity": 2,
+                "filled_quantity": 1,
+                "time_updated": NOW.isoformat(),
+            }
+        )
         with pytest.raises(SnapTradeNormalizationError, match="cannot be represented losslessly"):
             readback_from_snapshot(intent(), snap, locally_received_at=NOW + timedelta(seconds=1))
 
@@ -105,8 +120,20 @@ def test_real_lifecycle_readback_never_admits_fabricated_economics():
     from tree_options.execution.snaptrade_adapter import submit_attempt
 
     order = intent()
-    lifecycle = ExecutionLifecycle.start(order).apply(submit_attempt(order, attempt_id='s', send_attempt_at=NOW))
-    snap = snapshot_from_mapping({'status': 'EXECUTED', 'brokerage_order_id': 'b1', 'total_quantity': 2, 'filled_quantity': 2, 'time_updated': NOW.isoformat(), 'execution_price': '100', 'fees': None})
+    lifecycle = ExecutionLifecycle.start(order).apply(
+        submit_attempt(order, attempt_id="s", send_attempt_at=NOW)
+    )
+    snap = snapshot_from_mapping(
+        {
+            "status": "EXECUTED",
+            "brokerage_order_id": "b1",
+            "total_quantity": 2,
+            "filled_quantity": 2,
+            "time_updated": NOW.isoformat(),
+            "execution_price": "100",
+            "fees": None,
+        }
+    )
     row = readback_from_snapshot(order, snap, locally_received_at=NOW + timedelta(seconds=1))
     lifecycle = lifecycle.apply(row)
     assert reconcile(lifecycle).intent_id == order.intent_id
@@ -114,7 +141,9 @@ def test_real_lifecycle_readback_never_admits_fabricated_economics():
     assert lifecycle.apply(row) == lifecycle
     assert assess_evidence(lifecycle).economics is None
     assert not assess_evidence(lifecycle).is_admissible
-    assert all(record.record_type not in {'PARTIAL_FILL', 'COMPLETE_FILL'} for record in lifecycle.records)
+    assert all(
+        record.record_type not in {"PARTIAL_FILL", "COMPLETE_FILL"} for record in lifecycle.records
+    )
 
 
 def test_real_lifecycle_identity_collision_and_order_change():
@@ -126,27 +155,68 @@ def test_real_lifecycle_identity_collision_and_order_change():
     from tree_options.execution.snaptrade_adapter import submit_attempt
 
     order = intent()
-    base = ExecutionLifecycle.start(order).apply(submit_attempt(order, attempt_id='s', send_attempt_at=NOW))
-    snap = snapshot_from_mapping({'status': 'ACCEPTED', 'brokerage_order_id': 'b1', 'total_quantity': 2, 'filled_quantity': 0, 'time_updated': NOW.isoformat()}, request_id='req')
+    base = ExecutionLifecycle.start(order).apply(
+        submit_attempt(order, attempt_id="s", send_attempt_at=NOW)
+    )
+    snap = snapshot_from_mapping(
+        {
+            "status": "ACCEPTED",
+            "brokerage_order_id": "b1",
+            "total_quantity": 2,
+            "filled_quantity": 0,
+            "time_updated": NOW.isoformat(),
+        },
+        request_id="req",
+    )
     row = readback_from_snapshot(order, snap, locally_received_at=NOW + timedelta(seconds=1))
     base = base.apply(row)
     with pytest.raises(RecordIdentityCollisionError):
-        base.apply(row.model_copy(update={'locally_received_at': NOW + timedelta(seconds=2)}))
-    other = row.model_copy(update={'record_id': 'different', 'broker_sequence_id': 'different', 'source_sequence_id': 'different', 'broker_order_id': 'b2'})
+        base.apply(row.model_copy(update={"locally_received_at": NOW + timedelta(seconds=2)}))
+    other = row.model_copy(
+        update={
+            "record_id": "different",
+            "broker_sequence_id": "different",
+            "source_sequence_id": "different",
+            "broker_order_id": "b2",
+        }
+    )
     assert ReconciliationReason.BROKER_ORDER_ID_CONFLICT in base.apply(other).reconciliation_reasons
 
 
 def test_order_placement_time_is_not_a_snapshot_time():
-    with pytest.raises(SnapTradeNormalizationError, match='snapshot'):
-        snapshot_from_mapping({'status': 'ACCEPTED', 'brokerage_order_id': 'b1', 'total_quantity': 2, 'filled_quantity': 0, 'time_placed': NOW.isoformat()})
+    with pytest.raises(SnapTradeNormalizationError, match="snapshot"):
+        snapshot_from_mapping(
+            {
+                "status": "ACCEPTED",
+                "brokerage_order_id": "b1",
+                "total_quantity": 2,
+                "filled_quantity": 0,
+                "time_placed": NOW.isoformat(),
+            }
+        )
 
 
 def test_missing_fill_quantity_is_unknown_not_zero():
-    with pytest.raises(SnapTradeNormalizationError, match='filled_quantity'):
-        snapshot_from_mapping({'status': 'ACCEPTED', 'brokerage_order_id': 'b1', 'total_quantity': 2, 'time_updated': NOW.isoformat()})
+    with pytest.raises(SnapTradeNormalizationError, match="filled_quantity"):
+        snapshot_from_mapping(
+            {
+                "status": "ACCEPTED",
+                "brokerage_order_id": "b1",
+                "total_quantity": 2,
+                "time_updated": NOW.isoformat(),
+            }
+        )
 
 
 def test_provider_total_must_match_intent():
-    snap = snapshot_from_mapping({'status': 'ACCEPTED', 'brokerage_order_id': 'b1', 'total_quantity': 3, 'filled_quantity': 0, 'time_updated': NOW.isoformat()})
-    with pytest.raises(SnapTradeNormalizationError, match='intent quantity'):
+    snap = snapshot_from_mapping(
+        {
+            "status": "ACCEPTED",
+            "brokerage_order_id": "b1",
+            "total_quantity": 3,
+            "filled_quantity": 0,
+            "time_updated": NOW.isoformat(),
+        }
+    )
+    with pytest.raises(SnapTradeNormalizationError, match="intent quantity"):
         readback_from_snapshot(intent(), snap, locally_received_at=NOW + timedelta(seconds=1))

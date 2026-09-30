@@ -22,7 +22,11 @@ def prediction_premium(*, forecast_variance: float, realized_variance: float) ->
 
 
 def daily_volatility_signal(*, premium: float, rolling_premium_std: float) -> int | None:
-    if not math.isfinite(premium) or not math.isfinite(rolling_premium_std) or rolling_premium_std < 0:
+    if (
+        not math.isfinite(premium)
+        or not math.isfinite(rolling_premium_std)
+        or rolling_premium_std < 0
+    ):
         raise VolatilityError("invalid premium/std")
     if premium > rolling_premium_std:
         return 1
@@ -45,7 +49,9 @@ def intraday_breakout_signal(
     return None
 
 
-def tutorial_contrarian_position(*, daily_signal: int | None, intraday_signal: int | None) -> int | None:
+def tutorial_contrarian_position(
+    *, daily_signal: int | None, intraday_signal: int | None
+) -> int | None:
     """The tutorial's combined direction, isolated so it is easy to challenge."""
     if daily_signal == 1 and intraday_signal == 1:
         return -1
@@ -78,17 +84,23 @@ class ArchGarchForecaster:
         return value
 
 
-def lagged_signal_returns(signals: Sequence[int | None], realized_returns: Sequence[float]) -> tuple[float | None, ...]:
+def lagged_signal_returns(
+    signals: Sequence[int | None], realized_returns: Sequence[float]
+) -> tuple[float | None, ...]:
     """Evaluate each completed-period signal on the NEXT period's return.
 
     First period has no prior signal. The strategy remains data-gated until
     registered daily/intraday sources supply admissible availability manifests.
     """
     if len(signals) != len(realized_returns):
-        raise VolatilityError('signal/return alignment length mismatch')
-    if any(s not in {-1, 0, 1, None} for s in signals) or any(not math.isfinite(r) for r in realized_returns):
-        raise VolatilityError('invalid aligned inputs')
+        raise VolatilityError("signal/return alignment length mismatch")
+    if any(s not in {-1, 0, 1, None} for s in signals) or any(
+        not math.isfinite(r) for r in realized_returns
+    ):
+        raise VolatilityError("invalid aligned inputs")
     if not signals:
         return ()
     lagged = (None, *signals[:-1])
-    return tuple(None if s is None else s * r for s, r in zip(lagged, realized_returns, strict=True))
+    return tuple(
+        None if s is None else s * r for s, r in zip(lagged, realized_returns, strict=True)
+    )
