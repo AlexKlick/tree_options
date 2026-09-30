@@ -222,7 +222,7 @@ export function ResearchWorkspacePage() {
         {data?.deployments.map(d => <article className="workspace-item" key={d.deployment_id}>
           <h3>{d.strategy_version} · {d.account_alias}</h3><p>{d.status} · {d.execution_status}</p><p>Sleeve: {d.sleeve_id ?? 'unassigned'} · cap {usd(d.max_gross_notional_usd)} · {d.max_orders} order · TTL {d.ttl_seconds}s</p>
           {d.blockers.map(b => <p key={b}>{b}</p>)}
-          {['UNKNOWN', 'OBSERVED'].includes(d.execution_status) && <p>Reserved capital stays held until the existing owner reconciles the broker effect, including after HALT.</p>}
+          {d.execution_status.endsWith('_RECONCILIATION_REQUIRED') && <p>Reserved capital stays held until the existing owner reconciles the broker effect, including after HALT.</p>}
           <p>Exact external fill economics remain unavailable until the fill source is validated. Live money is disabled.</p>
           <button type="button" disabled={!haltEnabled || d.status === 'HALTED'} onClick={() => void act(() => api.haltPaperDeployment(d.deployment_id), 'Halt recorded. Existing broker orders still require reconciliation.')}>Halt paper deployment {d.deployment_id}</button>
         </article>)}

@@ -111,6 +111,7 @@ it('provides halt controls for an uncertain deployment without freeing its reser
   vi.mocked(api.haltPaperDeployment).mockResolvedValue({...deployment, status: 'HALTED'})
   render(<ResearchWorkspacePage />)
   await screen.findByText('RECOVERY_REQUIRED · UNKNOWN_RECONCILIATION_REQUIRED')
+  expect(screen.getByText('Reserved capital stays held until the existing owner reconciles the broker effect, including after HALT.')).toBeTruthy()
   fireEvent.click(screen.getByRole('button', {name: 'Halt paper deployment uncertain-one'}))
   await waitFor(() => expect(api.haltPaperDeployment).toHaveBeenCalledWith('uncertain-one'))
   expect(api.createPaperAllocation).not.toHaveBeenCalled()
