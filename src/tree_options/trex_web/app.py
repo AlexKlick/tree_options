@@ -500,6 +500,12 @@ def create_app(
 
     attach_quant(app)
 
+    from tree_options.trex_web.paper_view import attach as attach_paper_workspace
+    from tree_options.trex_web.quant_jobs_view import attach as attach_quant_jobs
+
+    attach_quant_jobs(app)
+    attach_paper_workspace(app)
+
     @app.get("/health")
     def health() -> dict[str, object]:
         return {

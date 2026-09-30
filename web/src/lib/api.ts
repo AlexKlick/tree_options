@@ -14,7 +14,7 @@ import type {
   SymbolOptions,
 } from './types'
 
-async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
+export async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, {
     ...init,
     headers: { Accept: 'application/json', ...init?.headers },

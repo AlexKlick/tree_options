@@ -7341,6 +7341,136 @@ MUTANTS = [
 ]
 
 
+# Research assignment, capital-sleeve and peer integration boundaries.
+MUTANTS.extend(
+    [
+        {
+            "id": "RW01-operator-disabled",
+            "owner": "test_operator_controls_disabled_by_default",
+            "file": "src/tree_options/trex_web/workspace_guard.py",
+            "anchor": "not controls_enabled()",
+            "replacement": "False",
+            "selectors": ["tests/unit/test_workspace_guard.py"],
+            "invariant": "workspace mutations require explicit local operator enablement",
+        },
+        {
+            "id": "RW02-cross-origin-control",
+            "owner": "test_cross_origin_and_missing_origin_refused",
+            "file": "src/tree_options/trex_web/workspace_guard.py",
+            "anchor": 'origin != f"{parsed.scheme}://{parsed.netloc}"',
+            "replacement": "False",
+            "selectors": ["tests/unit/test_workspace_guard.py"],
+            "invariant": "cross origin controls fail closed",
+        },
+        {
+            "id": "RW03-assignment-code-custody",
+            "owner": "test_worker_source_drift_fails_closed",
+            "file": "src/tree_options/research/quant_jobs.py",
+            "anchor": 'if identity != frozen["identity"]:',
+            "replacement": "if False:",
+            "selectors": ["tests/research/test_quant_jobs.py"],
+            "invariant": "queued quant runs bind submitted engine identity",
+        },
+        {
+            "id": "RW04-frozen-dataset-bytes",
+            "owner": "test_private_frozen_dataset_metadata_and_drift",
+            "file": "src/tree_options/research/quant_jobs.py",
+            "anchor": 'if hashlib.sha256(body).hexdigest() != row["input_sha256"]:',
+            "replacement": "if False:",
+            "selectors": ["tests/research/test_quant_jobs.py"],
+            "invariant": "revised dataset bytes require new research identity",
+        },
+        {
+            "id": "RW05-exchange-quote-age",
+            "owner": "test_invalid_facts_fail_closed",
+            "file": "src/tree_options/data/massive_quotes.py",
+            "anchor": "or not 0 <= now_ns - exchange <= 15000000000",
+            "replacement": "or False",
+            "selectors": ["tests/unit/test_massive_quotes.py"],
+            "invariant": "exchange quote generation time must be current",
+        },
+        {
+            "id": "RW06-fresh-quote-wire",
+            "owner": "test_exact_times_prices_and_provider_receipt_without_cache",
+            "file": "src/tree_options/data/massive_quotes.py",
+            "anchor": "use_cache=False",
+            "replacement": "use_cache=True",
+            "selectors": ["tests/unit/test_massive_quotes.py"],
+            "invariant": "canary quotes observe wire rather than stale cache",
+        },
+        {
+            "id": "RW07-sleeve-overreservation",
+            "owner": "test_sleeve_reservations_are_atomic_and_safe_halt_releases",
+            "file": "src/tree_options/trex/paper_workspace.py",
+            "anchor": 'request.max_gross_notional_usd + Decimal(sleeve["reserved_usd"])',
+            "replacement": 'request.max_gross_notional_usd + Decimal("0")',
+            "selectors": ["tests/unit/test_paper_workspace.py"],
+            "invariant": "sleeve reservations cannot spend the same capital twice",
+        },
+        {
+            "id": "RW08-retain-uncertain-capital",
+            "owner": "test_uncertain_effect_halt_keeps_cash_reserved",
+            "file": "src/tree_options/trex/paper_workspace.py",
+            "anchor": 'record["status"] in {"REVIEW_REQUIRED", "STAGED"}\n'
+            '                    and record.get("execution_status", "NOT_AUTHORIZED") == '
+            '"NOT_AUTHORIZED"',
+            "replacement": 'record["status"] != "HALTED"',
+            "selectors": ["tests/unit/test_paper_workspace.py"],
+            "invariant": "uncertain broker effects keep virtual capital reserved after halt",
+        },
+        {
+            "id": "RW09-canary-account-binding",
+            "owner": "test_staged_canary_runs_real_domain_once_and_retains_sleeve_provenance",
+            "file": "src/tree_options/trex/paper_workspace.py",
+            "anchor": "runtime.provider.binding.alias != request.account_alias",
+            "replacement": "runtime.provider.binding.alias == request.account_alias",
+            "selectors": ["tests/unit/test_paper_workspace.py"],
+            "invariant": "operator-approved canary binds exact provider account alias",
+        },
+        {
+            "id": "RW10-no-reapproval-after-claim",
+            "owner": "test_claimed_proposal_cannot_be_staged_again",
+            "file": "src/tree_options/trex/paper_workspace.py",
+            "anchor": 'if record["status"] != "STAGED":\n'
+            "                    raise "
+            'WorkspaceRefused("deployment_not_reviewable_reconcile_before_retry")',
+            "replacement": "if False:\n"
+            "                    raise "
+            'WorkspaceRefused("deployment_not_reviewable_reconcile_before_retry")',
+            "selectors": ["tests/unit/test_paper_workspace.py"],
+            "invariant": "claimed uncertain proposals cannot be restaged",
+        },
+        {
+            "id": "RW11-shadow-availability",
+            "owner": "test_chain_available_by_decision_is_required",
+            "file": "src/tree_options/desk/qsl.py",
+            "anchor": "or not event <= available <= cutoff",
+            "replacement": "or not event <= available",
+            "selectors": ["tests/desk_safety/test_qsl.py"],
+            "invariant": "shadow chain observations are available at the declared decision cutoff",
+        },
+        {
+            "id": "RW12-bootstrap-multiplicity",
+            "owner": "test_split_bootstrap_keeps_repeated_sampled_sessions",
+            "file": "src/tree_options/desk/vixfloor.py",
+            "anchor": "lo_sessions_ = np.flatnonzero(mask)[lo_idx]",
+            "replacement": "lo_sessions_ = np.unique(np.flatnonzero(mask)[lo_idx])",
+            "selectors": ["tests/unit/test_desk_vixfloor.py"],
+            "invariant": "session bootstrap retains repeated sampled sessions",
+        },
+        {
+            "id": "RW13-exhausted-entry-mandate",
+            "owner": "test_exhausted_entry_mandate_is_no_go_without_stopping_protective_exits",
+            "file": "src/tree_options/trex/drill_check.py",
+            "anchor": "if mandate.orders_used >= mandate.max_orders:",
+            "replacement": "if mandate.orders_used > mandate.max_orders:",
+            "selectors": ["tests/unit/test_desk_drill_check.py"],
+            "invariant": "G4 cannot report GO with no remaining entry permits",
+        },
+    ]
+)
+
+
 def registry_digest() -> str:
     """sha256 over the canonical MUTANTS list — the PRODUCER side of
     criterion 6's registry binding: stamped into every report this runner

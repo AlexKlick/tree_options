@@ -10,6 +10,7 @@ import { PlanList } from './components/PlanList'
 import { ResearchPage } from './components/ResearchPage'
 import { ActionModelPage } from './components/ActionModelPage'
 import { QuantPage } from './components/QuantPage'
+import { ResearchWorkspacePage } from './components/ResearchWorkspacePage'
 import { TradeFloorPage } from './components/TradeFloorPage'
 
 export default function App() {
@@ -37,6 +38,8 @@ export default function App() {
         <ActionModelPage />
       ) : route.view === 'quant' ? (
         <QuantPage />
+      ) : route.view === 'workspace' ? (
+        <ResearchWorkspacePage />
       ) : route.view === 'trade-floor' ? (
         <TradeFloorPage />
       ) : (
