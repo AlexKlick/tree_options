@@ -84,6 +84,20 @@
         the next slot retries; 1 a conflict with the written queue or a
         failure, 2 bad arguments. Places no orders.
 
+    qsl [--session D] [--dry-run] [--out PATH]
+        The QSL shadow-ledger queue (desk.qsl, prereg QSL-20260930): the
+        SPEC-3 deterministic candidates (put_credit / call_debit verticals
+        from the 0.30-delta short and the width-5 wing, gated by SPEC 2's
+        crossing-cost rule on D's own recorded chains) into
+        <TREX_DESK_STATE>/queue-qsl/<D>.json, schema trex.deal/1, written
+        once and marked done in stages/<D>/qsl.done.json. NEVER the
+        miner's queue dir, and the shadow runs that consume it take
+        --queue-dir queue-qsl --database evidence/qsl.sqlite3 so the live
+        desk-evidence.timer is untouched. --dry-run writes nothing. Exit 0
+        written or already done, 3 inputs not ready (no recorded chains
+        for D, or no DTB3 rate knowable at D), 1 a conflict, 2 bad
+        arguments. No model, no orders; the fill is the crossing price.
+
     challenge run --bundles-from DIR [--windows FILE] [--lab-root DIR]
                   [--rounds N] [--dry-run]
         The end-to-end challenge game: every policy (the archive pareto
@@ -265,6 +279,14 @@ def _parser() -> argparse.ArgumentParser:
     mn.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
     mn.add_argument("--desk-specs", type=Path, help="the desk runtime's spec dir (Wave 3)")
     mn.add_argument("--desk-book", type=Path, help="the desk runtime's book.json (Wave 3)")
+    qsl = sub.add_parser(
+        "qsl", help="the QSL shadow-ledger queue: SPEC-3 candidates into queue-qsl/ (no orders)"
+    )
+    qsl.add_argument("--session", type=date.fromisoformat)
+    qsl.add_argument(
+        "--dry-run", action="store_true", help="write nothing under the store or the state"
+    )
+    qsl.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
     from tree_options.desk import production
 
     production.register(sub)
@@ -553,6 +575,20 @@ def _mine(args: argparse.Namespace, *, clock: store.Clock, cal: Calendar) -> int
     return res.exit_code
 
 
+def _qsl(args: argparse.Namespace, *, clock: store.Clock, cal: Calendar) -> int:
+    from tree_options.desk import qsl as qsl_mod
+
+    res = qsl_mod.run_qsl(
+        session=args.session, now=clock(), cal=cal, dry_run=args.dry_run, out=args.out
+    )
+    for line in res.summary():
+        print(line)
+    print(res.line() + (" (dry run)" if args.dry_run else ""))
+    if res.exit_code == 2:
+        print(f"qsl: {res.detail}", file=sys.stderr)
+    return res.exit_code
+
+
 def _eod_equity(
     args: argparse.Namespace,
     *,
@@ -709,6 +745,8 @@ def run_cli(
             return _seal_macro(args, get=get or http.urllib_get, clock=clock, cal=cal)
         if args.command == "mine":
             return _mine(args, clock=clock, cal=cal)
+        if args.command == "qsl":
+            return _qsl(args, clock=clock, cal=cal)
         if args.command == "lab-run":
             from tree_options.desk.lab import _cli as _lab_cli
 

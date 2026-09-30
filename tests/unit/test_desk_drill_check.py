@@ -678,6 +678,36 @@ def test_mandate_for_an_old_epoch_is_no_go_with_the_fresh_command(tmp_path):
     assert f"--owner-epoch {OLD_EPOCH}" not in text
 
 
+def test_exhausted_entry_mandate_is_no_go_without_stopping_protective_exits(tmp_path):
+    root, _desk = _green_world(tmp_path)
+    paths = SupervisedPaths(root / "supervised")
+    mandate = _grant(paths.root)
+    exhausted = mandate.model_copy(update={"orders_used": mandate.max_orders})
+    paths.mandate().write_text(exhausted.model_dump_json(by_alias=True))
+
+    rc, text = _run(root, deps=_deps())
+
+    assert rc == 1
+    assert "G4 mandate: NO-GO (entry budget exhausted (2/2)" in text
+    assert "protective exits remain owned by the desk runtime" in text
+    assert not (root / "desk-paper" / "HALT").exists()
+
+
+def test_one_remaining_entry_permit_is_go(tmp_path):
+    root, _desk = _green_world(tmp_path)
+    paths = SupervisedPaths(root / "supervised")
+    mandate = _grant(paths.root)
+    paths.mandate().write_text(
+        mandate.model_copy(update={"orders_used": 1}).model_dump_json(by_alias=True)
+    )
+
+    rc, text = _run(root, deps=_deps())
+
+    assert rc == 0
+    assert "G4 mandate: GO" in text
+    assert "1 order(s) left" in text
+
+
 def test_expired_or_wrong_account_mandate_is_no_go(tmp_path):
     root, _desk = _green_world(tmp_path / "a")
     _grant(root / "supervised", ttl=3600, granted_hours_ago=2.0)

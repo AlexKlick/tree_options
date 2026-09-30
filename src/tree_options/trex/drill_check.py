@@ -725,6 +725,14 @@ def _gate_mandate(
             f"mandate binds account {mandate.account_id}, not {DEFAULT_ACCOUNT}",
             hint=_grant_hint(paths, epoch, now=now),
         )
+    if mandate.orders_used >= mandate.max_orders:
+        return Gate(
+            "G4",
+            "mandate",
+            NO_GO,
+            f"entry budget exhausted ({mandate.orders_used}/{mandate.max_orders}); "
+            "protective exits remain owned by the desk runtime",
+        )
     return Gate(
         "G4",
         "mandate",
