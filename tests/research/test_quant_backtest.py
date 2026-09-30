@@ -86,7 +86,15 @@ def test_costed_integer_roundtrip_uses_existing_funded_ledger(tmp_path, calendar
         assert result["exact_external_economics"] is False
         assert result["execution_authorized"] is False
         assert result["accounting_model"] == "existing_funded_account_fifo/1"
-        assert Decimal(result["fees"]) > 0
+        # Five basis points on each modeled order, rounded independently:
+        # buys: 49 * 100.10; sells: 49 * 89.91 and 49 * 119.88.
+        assert [Decimal(item["fees"]) for item in executions] == [
+            Decimal("2.45"),
+            Decimal("2.45"),
+            Decimal("2.20"),
+            Decimal("2.94"),
+        ]
+        assert Decimal(result["fees"]) == Decimal("10.04")
         assert Decimal(result["nav"]) == Decimal("10000") + sum(
             -Decimal(item["price"]) * item["signed_quantity"] - Decimal(item["fees"])
             for item in executions
