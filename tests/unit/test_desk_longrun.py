@@ -356,7 +356,9 @@ def test_score_run_matches_hand_computation() -> None:
         1,
     )
     assert [f["policy"] for f in wf["finalists"]] == ["m", "always_call_debit"]
-    assert wf["finalists"][0]["test"]["vs_random"]["diff_total"] == 11.5  # (20+10)/2 - 3.5
+    assert (
+        wf["finalists"][0]["test"]["vs_random"]["diff_total"] == 12.0
+    )  # test rate (1+.5)/2=.75; mean option 2 on 2 boards: 15-3
     assert doc["promotion"]["promoted"] is False
 
 
@@ -457,6 +459,8 @@ def test_walk_forward_eligibility_needs_every_clause() -> None:
         seed=1,
         alpha=0.05,
         aa_valid=True,
+        own_expected={name: np.zeros(24) for name in pooled},
+        test_entries={name: np.full(24, 3) for name in pooled},
     )
     top = wf["finalists"][0]
     assert top["policy"] == "challenger" and top["eligible_for_operator_review"] is True
@@ -473,6 +477,8 @@ def test_walk_forward_eligibility_needs_every_clause() -> None:
         seed=1,
         alpha=0.05,
         aa_valid=False,
+        own_expected={name: np.zeros(24) for name in pooled},
+        test_entries={name: np.full(24, 3) for name in pooled},
     )
     assert invalid["finalists"][0]["eligible_for_operator_review"] is False
 

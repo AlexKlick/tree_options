@@ -1363,6 +1363,7 @@ def redigest(
             complete=complete,
             clock=clock,
             skill_options=cfg.get("skill"),
+            retrospective=True,
         )
         if named:  # a subset digest is never mistaken for the full pairing
             doc["headline"] = (

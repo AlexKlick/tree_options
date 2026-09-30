@@ -81,6 +81,8 @@ STOP_FILE = "STOP"
 CAPITAL = 5000.0
 MAX_FINALISTS = 2
 MIN_RANDOM_SEEDS = 200
+SCORING_VERSION = "split-local-own-rate/v2"
+MIN_TEST_ENTRIES = 30
 EXACT_SIGN_FLIP_MAX = 16
 KINDS = ("model", "rule", "control")
 STRUCTURES = ("put_credit", "call_debit", "put_debit", "call_credit")
@@ -105,18 +107,22 @@ UNTRUSTED_NOTE = (
 
 PREREGISTERED_RULE = (
     "Pre-registered in plan.json before any scoring (desk long-run protocol "
-    "v1). A challenger policy is ELIGIBLE FOR OPERATOR REVIEW - never promoted "
+    "split-local-own-rate/v2). A challenger policy is ELIGIBLE FOR OPERATOR REVIEW - never promoted "
     "by code - only if ALL hold: (1) the A/A check is valid: the incumbent's "
     "two repeats on the same boards have a paired session-bootstrap 95% CI "
     "that contains 0; (2) it is one of at most 2 finalists chosen ONLY on the "
     "tune sessions (<= the cutoff) by the metric declared in the plan, and it "
     "was tested once on the test sessions (> the cutoff); (3) on the test "
     "sessions its paired diff vs the random-null expectation at the "
-    "incumbent's entry rate has a Holm-adjusted one-sided sign-flip p < alpha "
+    "policy's own entry rate in that split has a Holm-adjusted one-sided sign-flip p < alpha "
     "AND a 95% CI lower bound > 0; (4) on the test sessions its paired diff "
     "vs the incumbent has a 95% CI lower bound > 0; (5) stability on the test "
     "sessions: the two halves agree in sign and no single dropped session "
-    "flips the sign of the diff vs random. Promotion itself stays the "
+    "flips the sign of the diff vs random; (6) test net is strictly positive and "
+    "the test has at least Protocol.min_test_entries distinct evaluated decision "
+    "boards (default 30; repeat copies cannot increase this count). Tune null "
+    "participation and horizon menus use tune decisions only. Retrospective "
+    "rescoring is descriptive and cannot qualify for review. Promotion itself stays the "
     "operator's decision."
 )
 
@@ -380,8 +386,14 @@ class Protocol:
     #: the test split counts decisions entered >= this many sessions after the cutoff
     #: session (desk.purge); 1 = the first session after it (the pre-embargo split)
     embargo_sessions: int = 1
+    scoring_version: str = SCORING_VERSION
+    min_test_entries: int = MIN_TEST_ENTRIES
 
     def __post_init__(self) -> None:
+        if self.scoring_version != SCORING_VERSION:
+            raise ValueError("unsupported scoring_version; use a new run registration")
+        if type(self.min_test_entries) is not int or self.min_test_entries < 1:
+            raise ValueError("min_test_entries must be a positive integer")
         if not 1 <= self.embargo_sessions <= 60:
             raise ValueError("embargo_sessions must be 1..60")
         if not self.capital > 0:
@@ -1265,14 +1277,20 @@ def walk_forward(
     alpha: float,
     aa_valid: bool,
     embargo: int = 1,
+    own_expected: Mapping[str, np.ndarray] | None = None,
+    test_entries: Mapping[str, np.ndarray] | None = None,
+    min_test_entries: int = MIN_TEST_ENTRIES,
+    retrospective: bool = False,
 ) -> dict[str, Any]:
     """Rank candidates on tune sessions (<= cutoff) by the pre-declared metric,
     keep at most MAX_FINALISTS, test them ONCE on the sessions >= ``embargo``
     sessions after the cutoff session (score_run passes purged series)."""
+    if type(min_test_entries) is not int or min_test_entries < 1:
+        raise ValueError("min_test_entries must be a positive integer")
     if not sessions:
         return {"status": "not_applicable", "reason": "no scored sessions"}
     cutoff = cutoff or default_cutoff(sessions)
-    tune = np.array([s <= str(cutoff) for s in sessions])
+    tune = np.array([s <= str(cutoff) for s in sessions], dtype=bool)
     test = np.arange(len(sessions)) - (int(tune.sum()) - 1) >= max(1, embargo)
     test_sessions = [s for s, t in zip(sessions, test, strict=True) if t]
     base = {
@@ -1282,6 +1300,13 @@ def walk_forward(
         "test_sessions": int(test.sum()),
         "embargo_sessions": max(1, embargo),
         "embargoed_sessions": int((~tune & ~test).sum()),
+        "scoring_version": SCORING_VERSION,
+        "min_test_entries": min_test_entries,
+        "entry_count_unit": "distinct_evaluated_decision_boards",
+        "null_scope": "split_local_own_entry_rate"
+        if own_expected is not None
+        else "legacy_shared_incumbent",
+        "assessment_class": "retrospective_descriptive" if retrospective else "registered_protocol",
     }
     if not tune.any() or not test.any() or not pooled:
         return {
@@ -1293,7 +1318,10 @@ def walk_forward(
     ranking: list[dict[str, Any]] = []
     for name in sorted(pooled):
         series = pooled[name]
-        diff = series[tune] - expected[tune]
+        exp = expected if own_expected is None else own_expected[name]
+        if len(exp) != len(sessions):
+            raise ValueError("own null must align with sessions")
+        diff = series[tune] - exp[tune]
         if metric == "total":
             value = float(series[tune].sum())
         elif metric == "diff_vs_random":
@@ -1314,7 +1342,8 @@ def walk_forward(
     pvalues: dict[str, float] = {}
     for entry in finalists:
         name = entry["policy"]
-        series, exp = pooled[name][test], expected[test]
+        full_exp = expected if own_expected is None else own_expected[name]
+        series, exp = pooled[name][test], full_exp[test]
         vs_random = paired(series, exp, draws=draws, seed=seed)
         vs_incumbent = (
             paired(series, pooled[incumbent][test], draws=draws, seed=seed)
@@ -1323,10 +1352,20 @@ def walk_forward(
         )
         lo, hi = bootstrap_ci(series, draws=draws, seed=seed)
         pvalues[name] = vs_random["p_one_sided"]
+        counts = None if test_entries is None else test_entries.get(name)
+        if counts is not None and (
+            len(counts) != len(sessions)
+            or np.any(~np.isfinite(counts))
+            or np.any(counts < 0)
+            or np.any(counts != np.floor(counts))
+        ):
+            raise ValueError("test entry counts must be nonnegative integers aligned with sessions")
+        entered = 0 if counts is None else int(counts[test].sum())
         results.append(
             {
                 "policy": name,
                 "tune_metric": entry["metric_value"],
+                "test_entries": entered,
                 "test": {
                     "net_total": round(float(series.sum()), 2),
                     "net_ci95": [lo, hi],
@@ -1353,6 +1392,10 @@ def walk_forward(
             ),
             "half_split_signs_agree": bool(stab["half_split"]["signs_agree"]),
             "no_drop_one_sign_flip": stab["drop_one_sign_flips"] == 0,
+            "test_net_positive": test_doc["net_total"] > 0,
+            "test_entries_at_least_floor": result["test_entries"] >= min_test_entries,
+            "split_local_null_known": own_expected is not None,
+            "confirmatory_assessment": not retrospective,
         }
         result["rule_check"] = checks
         result["eligible_for_operator_review"] = name != incumbent and all(
@@ -1367,6 +1410,8 @@ def walk_forward(
         "note": (
             "finalists were chosen on the tune sessions only; the test "
             "figures are the single confirmatory look"
+            if not retrospective
+            else "Retrospective descriptive rescoring; no confirmatory eligibility"
         ),
     }
 
@@ -1453,6 +1498,7 @@ def score_run(
     complete: bool = True,
     clock: Clock = _utcnow,
     skill_options: Mapping[str, Any] | None = None,
+    retrospective: bool = False,
 ) -> dict[str, Any]:
     """The digest document. Pure over its inputs (fixed seeds throughout)."""
     outcomes.bind_boards(boards)
@@ -1470,12 +1516,14 @@ def score_run(
         net: list[float] = []
         gross: list[float] = []
         entered = unevaluable = 0
+        evaluated_flags: list[int] = []
         for board, (choice, horizon) in zip(scored, decisions, strict=True):
             value = None
             if choice is not None:
                 entered += 1
                 value = outcomes.get(board.snapshot, choice, horizon)
                 unevaluable += value is None
+            evaluated_flags.append(int(value is not None))
             gross.append(0.0 if value is None else value[0])
             net.append(0.0 if value is None else value[1])
         mine = receipts.get(arm.name, {})
@@ -1485,6 +1533,7 @@ def score_run(
             "net": net,
             "entered": entered,
             "unevaluable": unevaluable,
+            "evaluated_flags": evaluated_flags,
             "sessions": session_sums(board_sessions, net, sessions),
             "gross_total": float(sum(gross)),
             "failures": sum(
@@ -1526,6 +1575,14 @@ def score_run(
         series = data["sessions"]
         total = float(series.sum())
         evaluated = data["entered"] - data["unevaluable"]
+        own = random_null(
+            board_sessions,
+            sessions,
+            options,
+            data["entered"] / len(scored) if scored else 0.0,
+            seeds=protocol.random_seeds,
+            seed=seed,
+        )
         chosen_options: list[np.ndarray] = []
         realized = 0.0
         for board, (choice, horizon), value in zip(
@@ -1553,6 +1610,11 @@ def score_run(
                 "gross_total": round(data["gross_total"], 2),
                 "net_per_evaluated_entry": round(total / evaluated, 2) if evaluated else None,
                 "vs_random": paired(series, expected, draws=draws, seed=seed),
+                "vs_random_own": {
+                    **paired(series, own.expected_sessions, draws=draws, seed=seed),
+                    "p_enter": round(own.p_enter, 4),
+                },
+                "null_percentile_own": round(float(np.mean(own.totals < total)), 4),
                 "vs_first_row": (
                     paired(series, per_arm[first_row]["sessions"], draws=draws, seed=seed)
                     if first_row is not None and arm.name != first_row
@@ -1572,7 +1634,7 @@ def score_run(
                 "pick_null": pick_null(
                     realized, chosen_options, seeds=protocol.random_seeds, seed=seed
                 ),
-                "stability_vs_random": stability(series - expected, sessions),
+                "stability_vs_random": stability(series - own.expected_sessions, sessions),
                 "receipts": (receipts_files or {}).get(arm.name),
                 **(
                     {"failure_reasons": data["failure_reasons"]} if data["failure_reasons"] else {}
@@ -1582,7 +1644,7 @@ def score_run(
                 ),  # additive: a clean arm shows no heal tally
             }
         )
-    standings.sort(key=lambda r: (-r["vs_random"]["ci95"][0], r["arm"]))
+    standings.sort(key=lambda r: (-r["vs_random_own"]["ci95"][0], r["arm"]))
 
     aa = aa_check(per_arm, incumbent_arms, draws=draws, seed=seed)
     # purged walk-forward (desk.purge): selection never sees post-cutoff prices
@@ -1592,6 +1654,31 @@ def score_run(
     window = sorted({b.session for b in boards})
     selection = {a.name: per_arm[a.name]["sessions"] for a in arms}
     sel_expected, purge_doc = expected, None
+    tune_board = np.array([b.session <= str(cutoff) for b in scored])
+    test_board = np.array(
+        [
+            sessions.index(b.session) - (sum(s <= str(cutoff) for s in sessions) - 1)
+            >= protocol.embargo_sessions
+            for b in scored
+        ]
+    )
+    tune_horizons = (
+        horizons
+        if protocol.random_horizons is not None
+        else sorted(
+            {
+                h
+                for n in matched
+                for b, (c, h) in zip(scored, per_arm[n]["decisions"], strict=True)
+                if c is not None and b.session <= str(cutoff)
+            },
+            key=_horizon_key,
+        )
+        or [None]
+    )
+    own_expected: dict[str, np.ndarray] = {}
+    entry_pooled: dict[str, np.ndarray] = {}
+    split_rates: dict[str, dict[str, float]] = {}
     if cutoff is not None:
         by_arm: dict[str, dict[str, int]] = {}
         for arm in arms:
@@ -1624,6 +1711,65 @@ def score_run(
     for policy_name in sorted({a.policy.name for a in arms if a.policy.kind in ("model", "rule")}):
         members = [selection[a.name] for a in arms if a.policy.name == policy_name]
         pooled[policy_name] = np.mean(np.vstack(members), axis=0) if sessions else np.zeros(0)
+        policy_members = [per_arm[a.name] for a in arms if a.policy.name == policy_name]
+        distinct = (
+            np.max(np.array([m["evaluated_flags"] for m in policy_members]), axis=0)
+            if scored
+            else np.zeros(0)
+        )
+        entry_pooled[policy_name] = session_sums(
+            board_sessions, [float(v) for v in distinct], sessions
+        )
+        rates = {}
+        split_expected = np.zeros(len(sessions))
+        for split_name, mask in (("tune", tune_board), ("test", test_board)):
+            rate = (
+                float(
+                    np.mean(
+                        [
+                            sum(
+                                c is not None
+                                for keep, (c, _) in zip(mask, m["decisions"], strict=True)
+                                if keep
+                            )
+                            / int(mask.sum())
+                            for m in policy_members
+                        ]
+                    )
+                )
+                if mask.any()
+                else 0.0
+            )
+            rates[split_name] = rate
+            baseline, _ = (
+                purge.purged_null(
+                    scored,
+                    sessions,
+                    tune_horizons,
+                    outcomes.get,
+                    outcomes.exit_at,
+                    cutoff,
+                    rate,
+                    window,
+                )
+                if cutoff is not None
+                else (np.zeros(len(sessions)), {})
+            )
+            session_mask = (
+                np.array([s <= str(cutoff) for s in sessions], dtype=bool)
+                if split_name == "tune"
+                else np.array(
+                    [
+                        i - (sum(s <= str(cutoff) for s in sessions) - 1)
+                        >= protocol.embargo_sessions
+                        for i in range(len(sessions))
+                    ],
+                    dtype=bool,
+                )
+            )
+            split_expected[session_mask] = baseline[session_mask]
+        own_expected[policy_name] = split_expected
+        split_rates[policy_name] = rates
     wf = walk_forward(
         pooled,
         sel_expected,
@@ -1637,7 +1783,13 @@ def score_run(
         alpha=protocol.alpha,
         aa_valid=bool(aa["valid"]),
         embargo=protocol.embargo_sessions,
+        own_expected=own_expected,
+        test_entries=entry_pooled,
+        min_test_entries=protocol.min_test_entries,
+        retrospective=retrospective,
     )
+    wf["null_rates"] = split_rates
+    wf["null_horizons"] = tune_horizons
     if purge_doc is not None:
         wf["purge"] = purge_doc
     bench = benchmark_rows(
@@ -1647,6 +1799,8 @@ def score_run(
         f["policy"] for f in wf.get("finalists", []) if f.get("eligible_for_operator_review")
     ]
     headline = _headline(aa, wf, eligible, complete)
+    if retrospective:
+        headline = "RETROSPECTIVE DESCRIPTIVE - " + headline
     try:  # exact counterfactual accounting (desk.skill): descriptive, never fatal
         from tree_options.desk import skill
 
@@ -1661,8 +1815,9 @@ def score_run(
         "promotion": {
             "promoted": False,
             "rule": PREREGISTERED_RULE,
-            "pre_registered_at": plan_created,
+            "pre_registered_at": None if retrospective else plan_created,
         },
+        "assessment_class": "retrospective_descriptive" if retrospective else "registered_protocol",
         "headline": headline,
         "evaluation_valid": bool(aa["valid"]),
         "complete": complete,
@@ -1861,20 +2016,23 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         f"alpha {protocol['alpha']}"
     )
     add("")
-    add("## Standings (net $, 95% session-bootstrap CI; ordered by the vs-random CI low)")
+    add("## Standings (net $, 95% session-bootstrap CI; ordered by own-entry-rate CI low)")
+    add(
+        "Whole-window own-rate comparisons are descriptive; confirmatory null rates are split-local. The legacy incumbent-rate column is retained separately."
+    )
     add("")
     add(
         "| arm | kind | entered | unevaluable | failures | net total [95% CI] | "
-        f"vs random | vs first_row | vs incumbent | vs {REGIME} | null pctile |"
+        f"vs random (own rate) | vs random (legacy incumbent rate) | vs first_row | vs incumbent | vs {REGIME} | null pctile (own) |"
     )
-    add("|---|---|---|---|---|---|---|---|---|---|---|")
+    add("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for row in doc["standings"]:
         add(
             f"| {row['arm']} | {row['kind']} | {row['entered']} | {row['unevaluable']} | "
             f"{row['failures']} | {row['net_total']:+.2f} {_ci(row['net_ci95'])} | "
-            f"{_pair(row['vs_random'])} | {_pair(row['vs_first_row'])} | "
+            f"{_pair(row['vs_random_own'])} | {_pair(row['vs_random'])} | {_pair(row['vs_first_row'])} | "
             f"{_pair(row['vs_incumbent'])} | {_pair(row.get('vs_regime'))} | "
-            f"{row['null_percentile']:.3f} |"
+            f"{row['null_percentile_own']:.3f} |"
         )
     null = doc["random_null"]
     add(
@@ -1948,14 +2106,18 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
     )
     add("")
     wf = doc["walk_forward"]
-    add("## Walk-forward (confirmatory)")
+    add(
+        "## Walk-forward (retrospective descriptive)"
+        if doc.get("assessment_class") == "retrospective_descriptive"
+        else "## Walk-forward (confirmatory)"
+    )
     add("")
     if wf.get("status") != "ok":
         add(f"Not applicable - {wf.get('reason')}.")
     else:
         add(
             f"Cutoff {wf['cutoff']} ({wf['tune_sessions']} tune / {wf['test_sessions']} "
-            f"test sessions); metric {wf['metric']}; at most {wf['max_finalists']} "
+            f"test sessions); protocol {wf.get('scoring_version')}; minimum {wf.get('min_test_entries')} distinct evaluated decision boards; metric {wf['metric']}; at most {wf['max_finalists']} "
             "finalists."
         )
         add("")
@@ -1963,7 +2125,7 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
             test = f["test"]
             add(
                 f"- {f['policy']}: tune metric {f['tune_metric']:+.2f}; test net "
-                f"{test['net_total']:+.2f} {_ci(test['net_ci95'])}; vs random "
+                f"{test['net_total']:+.2f} {_ci(test['net_ci95'])}; {f.get('test_entries', 0)} distinct evaluated entries; vs own-rate random "
                 f"{_pair(test['vs_random'])}; Holm p {f['holm_p']:.4f}; vs incumbent "
                 f"{_pair(test['vs_incumbent'])}; eligible for operator review: "
                 f"{f['eligible_for_operator_review']}"
@@ -3056,6 +3218,8 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
         "net_total",
         "net_ci95",
         "vs_random",
+        "vs_random_own",
+        "null_percentile_own",
         "vs_first_row",
         "vs_incumbent",
         "vs_regime",
@@ -3072,6 +3236,7 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
         standings.append(projected)
     return {
         "headline": doc.get("headline"),
+        "assessment_class": doc.get("assessment_class"),
         "untrusted_note": doc.get("untrusted_note"),
         "evaluation_valid": doc.get("evaluation_valid"),
         "complete": doc.get("complete"),
@@ -3091,6 +3256,13 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
                 "tune_sessions",
                 "test_sessions",
                 "reason",
+                "scoring_version",
+                "null_scope",
+                "min_test_entries",
+                "entry_count_unit",
+                "assessment_class",
+                "null_rates",
+                "null_horizons",
             )
         }
         | {
@@ -3098,6 +3270,8 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
                 {
                     "policy": f.get("policy"),
                     "holm_p": f.get("holm_p"),
+                    "test_entries": f.get("test_entries"),
+                    "rule_check": f.get("rule_check"),
                     "test": {
                         k: f.get("test", {}).get(k)
                         for k in ("net_total", "net_ci95", "vs_random", "vs_incumbent")

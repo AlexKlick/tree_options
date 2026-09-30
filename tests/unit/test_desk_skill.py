@@ -543,6 +543,12 @@ def test_redigest_rescores_from_receipts_with_zero_model_calls(
     ]
     assert after["skill"]["arms"]["m#1"]["excess_total"] == 48.0
     assert after["promotion"]["promoted"] is False
+    assert after["assessment_class"] == "retrospective_descriptive"
+    assert after["promotion"]["pre_registered_at"] is None
+    assert after["headline"].startswith("RETROSPECTIVE DESCRIPTIVE")
+    assert all(
+        not row["eligible_for_operator_review"] for row in after["walk_forward"]["finalists"]
+    )
     # a live run (its lock held) is never touched in place; --out writes elsewhere
     stamp = (run_dir / "digest.json").stat().st_mtime_ns
     with open(run_dir / ".lock", "a") as handle:
