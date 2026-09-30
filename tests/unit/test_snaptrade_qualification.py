@@ -521,3 +521,17 @@ def test_qualifying_an_active_runtime_object_does_not_release_or_publish_it(tmp_
     assert runtime.ready and len(sdk.calls) == calls
     assert (runtime.paths.root / "projection.json").read_bytes() == before
     runtime.close()
+
+
+def test_personal_template_is_private_and_has_no_commercial_user_fields(tmp_path):
+    from tree_options.trex.snaptrade_qualification import initialize_binding
+
+    path = tmp_path / "personal.json"
+    initialize_binding(path, auth_mode="personal")
+    credentials = json.loads(path.read_text())["credentials"]
+    assert credentials == {"auth_mode": "personal", "client_id": "", "consumer_key": ""}
+    assert path.stat().st_mode & 0o777 == 0o600
+    before = path.read_bytes()
+    with pytest.raises(OSError):
+        initialize_binding(path, auth_mode="personal")
+    assert path.read_bytes() == before

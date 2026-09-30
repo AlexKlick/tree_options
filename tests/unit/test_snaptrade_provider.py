@@ -114,6 +114,7 @@ def test_real_sdk_retries_disabled_and_methods_present():
     from tree_options.execution.snaptrade_provider import build_sdk
 
     sdk = build_sdk(client_id="fixture", consumer_key="fixture")
+    assert sdk.trading.api_client.configuration.auth_mode == "commercialApiKey"
     assert sdk.trading.api_client.configuration.retries == 0
     assert sdk.trading.api_client.rest_client.pool_manager.connection_pool_kw["retries"].total == 0
     for namespace, method in [
@@ -255,3 +256,220 @@ def test_real_sdk_successful_readonly_response_parsing(monkeypatch):
     result = provider.account_snapshot()
     assert result.details.request_id == "raw-response-id"
     assert result.details.body["is_paper"] is True
+
+
+def test_personal_credentials_require_only_client_and_consumer_key(tmp_path):
+    import hashlib
+    import json
+
+    from tree_options.execution.snaptrade_provider import load_private_binding
+
+    path = tmp_path / "personal.json"
+    credentials = {
+        "auth_mode": "personal",
+        "client_id": "fixture-client",
+        "consumer_key": "fixture-key",
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "binding": {
+                    key: value
+                    for key, value in binding().model_dump().items()
+                    if key != "credential_sha256"
+                },
+                "credentials": credentials,
+            }
+        )
+    )
+    path.chmod(0o600)
+    actual, secrets = load_private_binding(path)
+    assert secrets.auth_mode == "personal"
+    assert secrets.user_id is None and secrets.user_secret is None
+    assert (
+        actual.credential_sha256
+        == hashlib.sha256(json.dumps(credentials, sort_keys=True).encode()).hexdigest()
+    )
+    for user_fields in (
+        {"user_id": "commercial-user"},
+        {"user_secret": "commercial-secret"},
+        {"user_id": None},
+    ):
+        path.write_text(
+            json.dumps(
+                {
+                    "binding": {
+                        key: value
+                        for key, value in binding().model_dump().items()
+                        if key != "credential_sha256"
+                    },
+                    "credentials": credentials | user_fields,
+                }
+            )
+        )
+        with pytest.raises(ProviderUnavailable):
+            load_private_binding(path)
+
+
+def test_legacy_commercial_credentials_preserve_exact_fingerprint(tmp_path):
+    import hashlib
+    import json
+
+    from tree_options.execution.snaptrade_provider import load_private_binding
+
+    path = tmp_path / "commercial.json"
+    credentials = {
+        "client_id": "fixture-client",
+        "consumer_key": "fixture-key",
+        "user_id": "fixture-user",
+        "user_secret": "fixture-user-secret",
+    }
+    path.write_text(
+        json.dumps(
+            {
+                "binding": {
+                    key: value
+                    for key, value in binding().model_dump().items()
+                    if key != "credential_sha256"
+                },
+                "credentials": credentials,
+            }
+        )
+    )
+    path.chmod(0o600)
+    actual, secrets = load_private_binding(path)
+    assert secrets.auth_mode == "commercial"
+    assert (
+        actual.credential_sha256
+        == hashlib.sha256(json.dumps(credentials, sort_keys=True).encode()).hexdigest()
+    )
+    del credentials["user_secret"]
+    path.write_text(
+        json.dumps(
+            {
+                "binding": {
+                    key: value
+                    for key, value in binding().model_dump().items()
+                    if key != "credential_sha256"
+                },
+                "credentials": credentials,
+            }
+        )
+    )
+    with pytest.raises(ProviderUnavailable):
+        load_private_binding(path)
+
+
+def test_personal_fake_provider_omits_user_scope_entirely():
+    from decimal import Decimal
+
+    sdk = FakeSDK()
+    provider = SnapTradeProvider(sdk, binding(), auth_mode="personal", clock=lambda: NOW)
+    provider.account_snapshot()
+    provider._submit(
+        symbol="AAPL", side="BUY", quantity=1, limit=Decimal("50"), client_order_id="fixture-1"
+    )
+    assert len(sdk.calls) == 6
+    assert all("user_id" not in kwargs and "user_secret" not in kwargs for _, kwargs in sdk.calls)
+    with pytest.raises(ProviderUnavailable):
+        SnapTradeProvider(
+            sdk,
+            binding(),
+            auth_mode="personal",
+            user_id="forbidden-user",
+            user_secret="forbidden-secret",
+        )
+
+
+def test_personal_real_generated_signed_wire_has_no_user_identity(monkeypatch):
+    import json
+    from decimal import Decimal
+    from urllib.parse import parse_qs, urlsplit
+
+    from tree_options.execution.snaptrade_provider import build_sdk
+
+    sdk = build_sdk(client_id="fixture-client", consumer_key="fixture-key", auth_mode="personal")
+    assert sdk.trading.api_client.configuration.auth_mode == "personalApiKey"
+    seen = []
+
+    def request(method, url, **kwargs):
+        seen.append((method, url, kwargs))
+        raise TimeoutError
+
+    monkeypatch.setattr(sdk.trading.api_client.rest_client.pool_manager, "request", request)
+    provider = SnapTradeProvider(
+        sdk,
+        binding().model_copy(update={"account_id": "00000000-0000-4000-8000-000000000001"}),
+        auth_mode="personal",
+    )
+    calls = [
+        lambda: provider.account_snapshot(),
+        lambda: provider._call(
+            "connections",
+            "detail_brokerage_authorization",
+            authorization_id="00000000-0000-4000-8000-000000000003",
+        ),
+        lambda: provider._submit(
+            symbol="AAPL",
+            side="BUY",
+            quantity=1,
+            limit=Decimal("50"),
+            client_order_id="00000000-0000-4000-8000-000000000002",
+        ),
+    ]
+    for call in calls:
+        with pytest.raises(TimeoutError):
+            call()
+    assert len(seen) == 3
+    for _, url, kwargs in seen:
+        query = parse_qs(urlsplit(url).query)
+        assert query["clientId"] == ["fixture-client"]
+        assert "userId" not in query and "userSecret" not in query
+        assert kwargs["timeout"].total == 10
+        assert kwargs["headers"].get("Signature") or kwargs["headers"].get("signature")
+        body = kwargs.get("body")
+        if body:
+            decoded = json.loads(body)
+            assert "userId" not in decoded and "userSecret" not in decoded
+            assert decoded["units"] == 1 and decoded["price"] == 50
+
+
+def test_from_private_file_propagates_personal_sdk_mode_and_scope(tmp_path, monkeypatch):
+    import json
+
+    import tree_options.execution.snaptrade_provider as module
+
+    path = tmp_path / "personal.json"
+    path.write_text(
+        json.dumps(
+            {
+                "binding": {
+                    key: value
+                    for key, value in binding().model_dump().items()
+                    if key != "credential_sha256"
+                },
+                "credentials": {
+                    "auth_mode": "personal",
+                    "client_id": "fixture-client",
+                    "consumer_key": "fixture-key",
+                },
+            }
+        )
+    )
+    path.chmod(0o600)
+    sdk = FakeSDK()
+    calls = []
+
+    def factory(**kwargs):
+        calls.append(kwargs)
+        return sdk
+
+    monkeypatch.setattr(module, "build_sdk", factory)
+    provider = module.SnapTradeProvider.from_private_file(path)
+    provider.clock = lambda: NOW
+    provider.account_snapshot()
+    assert calls == [
+        {"client_id": "fixture-client", "consumer_key": "fixture-key", "auth_mode": "personal"}
+    ]
+    assert provider.auth_mode == "personal"
+    assert all("user_id" not in kwargs and "user_secret" not in kwargs for _, kwargs in sdk.calls)

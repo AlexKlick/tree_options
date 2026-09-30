@@ -16,9 +16,9 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import Field, StrictStr
+from pydantic import Field, StrictStr, model_validator
 
 from tree_options.execution.records import ExactPrice
 from tree_options.schemas.common import IdStr, StrictModel
@@ -90,10 +90,26 @@ class AccountSnapshot:
 
 
 class PrivateCredentials(StrictModel):
+    auth_mode: Literal["commercial", "personal"] = "commercial"
     client_id: StrictStr = Field(min_length=1, repr=False)
     consumer_key: StrictStr = Field(min_length=1, repr=False)
-    user_id: StrictStr = Field(min_length=1, repr=False)
-    user_secret: StrictStr = Field(min_length=1, repr=False)
+    user_id: StrictStr | None = Field(default=None, min_length=1, repr=False)
+    user_secret: StrictStr | None = Field(default=None, min_length=1, repr=False)
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_scope(cls, value: Any) -> Any:
+        if isinstance(value, dict):
+            if value.get("auth_mode", "commercial") == "personal" and any(
+                key in value for key in ("user_id", "user_secret")
+            ):
+                raise ValueError("personal authentication forbids commercial user fields")
+            if value.get("auth_mode", "commercial") == "commercial" and any(
+                not isinstance(value.get(key), str) or not value[key].strip()
+                for key in ("user_id", "user_secret")
+            ):
+                raise ValueError("commercial authentication requires its user identity")
+        return value
 
 
 def load_private_binding(path: Path) -> tuple[PaperAccountBinding, PrivateCredentials]:
@@ -106,10 +122,15 @@ def load_private_binding(path: Path) -> tuple[PaperAccountBinding, PrivateCreden
                 raise ValueError
             config = json.load(stream)
         secrets = PrivateCredentials.model_validate(config["credentials"])
-        if any(not value.strip() for value in secrets.model_dump().values()):
+        credential_payload = secrets.model_dump(exclude_none=True)
+        if any(not value.strip() for value in credential_payload.values()):
             raise ValueError
+        # Preserve the prior commercial custody fingerprint byte for byte when
+        # existing configs omit the additive authentication mode field.
+        if "auth_mode" not in config["credentials"]:
+            credential_payload.pop("auth_mode")
         fingerprint = hashlib.sha256(
-            json.dumps(secrets.model_dump(), sort_keys=True).encode()
+            json.dumps(credential_payload, sort_keys=True).encode()
         ).hexdigest()
         binding = PaperAccountBinding.model_validate(
             {**config["binding"], "credential_sha256": fingerprint}
@@ -218,9 +239,19 @@ def account_findings(account: AccountSnapshot, now: datetime) -> tuple[str, ...]
     return tuple(dict.fromkeys(findings))
 
 
-def build_sdk(*, client_id: str, consumer_key: str) -> Any:
+def build_sdk(
+    *,
+    client_id: str,
+    consumer_key: str,
+    auth_mode: Literal["commercial", "personal"] = "commercial",
+) -> Any:
     sdk = importlib.import_module("snaptrade_client")
-    auth = sdk.SnapTradeAuth.commercial_api_key(client_id=client_id, consumer_key=consumer_key)
+    if auth_mode == "personal":
+        auth = sdk.SnapTradeAuth.personal_api_key(client_id=client_id, consumer_key=consumer_key)
+    elif auth_mode == "commercial":
+        auth = sdk.SnapTradeAuth.commercial_api_key(client_id=client_id, consumer_key=consumer_key)
+    else:
+        raise ProviderUnavailable("unsupported SnapTrade authentication mode")
     config = sdk.Configuration(auth=auth)
     config.retries = 0
     config.debug = False
@@ -248,11 +279,19 @@ class SnapTradeProvider:
         sdk: Any,
         binding: PaperAccountBinding,
         *,
-        user_id: str,
-        user_secret: str,
+        user_id: str | None = None,
+        user_secret: str | None = None,
+        auth_mode: Literal["commercial", "personal"] = "commercial",
         clock: Callable[[], datetime] | None = None,
     ) -> None:
+        if (
+            (auth_mode == "commercial" and (not user_id or not user_secret))
+            or (auth_mode == "personal" and (user_id is not None or user_secret is not None))
+            or auth_mode not in {"commercial", "personal"}
+        ):
+            raise ProviderUnavailable("SnapTrade authentication scope is invalid")
         self._sdk = sdk
+        self.auth_mode = auth_mode
         self.binding = binding
         self._user_id = user_id
         self._user_secret = user_secret
@@ -262,20 +301,30 @@ class SnapTradeProvider:
     def from_private_file(cls, path: Path) -> SnapTradeProvider:
         binding, secrets = load_private_binding(path)
         try:
-            sdk = build_sdk(client_id=secrets.client_id, consumer_key=secrets.consumer_key)
-            return cls(sdk, binding, user_id=secrets.user_id, user_secret=secrets.user_secret)
+            sdk = build_sdk(
+                client_id=secrets.client_id,
+                consumer_key=secrets.consumer_key,
+                auth_mode=secrets.auth_mode,
+            )
+            return cls(
+                sdk,
+                binding,
+                user_id=secrets.user_id,
+                user_secret=secrets.user_secret,
+                auth_mode=secrets.auth_mode,
+            )
         except Exception:
             raise ProviderUnavailable("invalid private SnapTrade binding or credentials") from None
 
     def _call(self, namespace: str, method: str, **kwargs: Any) -> ProviderObservation:
         try:
             scope = {} if namespace == "connections" else {"account_id": self.binding.account_id}
-            result = getattr(getattr(self._sdk, namespace), method)(
-                **scope,
-                user_id=self._user_id,
-                user_secret=self._user_secret,
-                **kwargs,
+            user_scope = (
+                {"user_id": self._user_id, "user_secret": self._user_secret}
+                if self.auth_mode == "commercial"
+                else {}
             )
+            result = getattr(getattr(self._sdk, namespace), method)(**scope, **user_scope, **kwargs)
             data = getattr(result.response, "data", None)
             body = json.loads(data, parse_float=Decimal) if data else result.body
             encoded = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)

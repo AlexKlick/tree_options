@@ -12,7 +12,7 @@ import json
 import os
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from tree_options.action_graph.proposal import canonical_bytes
 from tree_options.execution.snaptrade_provider import (
@@ -27,7 +27,9 @@ from tree_options.trex.snaptrade_runtime import SnapTradePaperRuntime
 from tree_options.trex.supervised import SupervisedPaths, SupervisedRefused, _atomic_write, _locked
 
 
-def initialize_binding(path: Path) -> None:
+def initialize_binding(
+    path: Path, *, auth_mode: Literal["commercial", "personal"] = "commercial"
+) -> None:
     """Create a nonfunctional private template, exclusively and without SDK calls."""
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     payload = {
@@ -41,6 +43,10 @@ def initialize_binding(path: Path) -> None:
         },
         "credentials": dict.fromkeys(("client_id", "consumer_key", "user_id", "user_secret"), ""),
     }
+    if auth_mode == "personal":
+        payload["credentials"] = {"auth_mode": "personal", "client_id": "", "consumer_key": ""}
+    elif auth_mode != "commercial":
+        raise ValueError("unsupported authentication mode")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "w") as stream:
         json.dump(payload, stream, indent=2)
@@ -182,12 +188,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--state", type=Path)
+    parser.add_argument(
+        "--auth-mode",
+        choices=("commercial", "personal"),
+        default="commercial",
+        help="Template authentication mode; default preserves existing commercial setup",
+    )
     parser.add_argument("--ownership-root", type=Path)
     parser.add_argument("command", choices=("init-binding", "check-config", "qualify"))
     args = parser.parse_args(argv)
     if args.command == "init-binding":
         try:
-            initialize_binding(args.config)
+            initialize_binding(args.config, auth_mode=args.auth_mode)
         except OSError:
             print("Private template was not created; existing files are never overwritten.")
             return 2
