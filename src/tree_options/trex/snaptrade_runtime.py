@@ -12,7 +12,7 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -245,6 +245,18 @@ class SnapTradePaperRuntime:
         now = self.clock()
         if not account.fresh_at(now) or account.binding != self.provider.binding:
             raise SupervisedRefused("account_snapshot_stale")
+        if not all(
+            isinstance(observation.body, list)
+            for observation in (account.balances, account.positions, account.orders)
+        ):
+            raise SupervisedRefused("account_snapshot_shape_invalid")
+        for row in account.orders.body:
+            if (
+                not isinstance(row, dict)
+                or not isinstance(row.get("status"), str)
+                or not row["status"]
+            ):
+                raise SupervisedRefused("account_order_shape_invalid")
         # The initial canary is intentionally isolated: existing holdings or
         # working orders block rather than inventing an equity risk ledger.
         if account.positions.body or any(
@@ -253,14 +265,21 @@ class SnapTradePaperRuntime:
             for row in account.orders.body
         ):
             raise SupervisedRefused("account_exposure_or_orders_present")
-        usd_cash = sum(
-            (
-                Decimal(str(row["cash"]))
-                for row in account.balances.body
-                if row.get("currency", {}).get("code") == "USD" and row.get("cash") is not None
-            ),
-            Decimal("0"),
-        )
+        usd_cash = Decimal("0")
+        for row in account.balances.body:
+            if not isinstance(row, dict) or not isinstance(row.get("currency"), dict):
+                raise SupervisedRefused("account_balance_shape_invalid")
+            code = row["currency"].get("code")
+            if not isinstance(code, str) or not code:
+                raise SupervisedRefused("account_balance_shape_invalid")
+            try:
+                cash = Decimal(str(row.get("cash")))
+            except (InvalidOperation, ValueError, TypeError):
+                raise SupervisedRefused("account_cash_invalid") from None
+            if not cash.is_finite():
+                raise SupervisedRefused("account_cash_invalid")
+            if code == "USD":
+                usd_cash += cash
         if usd_cash < effect.limit * effect.quantity:
             raise SupervisedRefused("insufficient_cash")
         if self.quote_source is None:
@@ -389,6 +408,13 @@ class SnapTradePaperRuntime:
         identities = json.loads(path.read_text()) if path.exists() else {}
         if broker_order_id in identities and identities[broker_order_id] != intent_id:
             raise SupervisedRefused("broker_order_identity_collision")
+        if any(
+            observed_id != broker_order_id and bound_intent == intent_id
+            for observed_id, bound_intent in identities.items()
+        ):
+            raise SupervisedRefused("broker_order_identity_changed")
+        if broker_order_id in identities:
+            return
         identities[broker_order_id] = intent_id
         _atomic_write(path, identities)
 
@@ -396,19 +422,26 @@ class SnapTradePaperRuntime:
         self, attempt: SubmitAttempt, effect_payload: bytes
     ) -> Acknowledged | Refused | Uncertain:
         if self._current is None or self._current.intent_id != attempt.intent_id:
-            return Uncertain("intent_not_preflighted", "")
+            return Uncertain("intent_not_preflighted", "no provider effect", "unclassified")
         consumed = self.paths.permit_consumed(attempt.source_sequence_id)
         if not consumed.exists():
-            return Uncertain("consumed_permit_absent", "no provider effect")
+            return Uncertain("consumed_permit_absent", "no provider effect", "unclassified")
         permit = EffectPermit.model_validate_json(consumed.read_bytes())
         if (
             permit.intent_id != attempt.intent_id
             or hashlib.sha256(effect_payload).hexdigest() != permit.effect_sha256
         ):
-            return Uncertain("consumed_permit_binding_mismatch", "no provider effect")
+            return Uncertain(
+                "consumed_permit_binding_mismatch", "no provider effect", "unclassified"
+            )
         effect = EquityPaperEffect.model_validate_json(effect_payload)
         try:
-            self.validate_effect(effect_payload, self._current, permit)
+            try:
+                self.validate_effect(effect_payload, self._current, permit)
+            except SupervisedRefused as refusal:
+                return Uncertain(
+                    "preflight_refused", f"no provider effect; {refusal.reason}", "unclassified"
+                )
             effect_at = self.clock()
             claim = SupervisedIntent.model_validate(
                 {
@@ -497,6 +530,8 @@ class SnapTradePaperRuntime:
                 fact = existing
             self.bind_broker_order(snap.brokerage_order_id, intent_id)
             return Submitted(snap.brokerage_order_id, (fact,))
+        except SupervisedRefused as refusal:
+            return LookupUnknown(refusal.reason)
         except Exception:
             return LookupUnknown("readback_unavailable_or_unrepresentable")
 

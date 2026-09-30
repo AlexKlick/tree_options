@@ -193,6 +193,81 @@ def test_order_id_cannot_be_reused_across_economic_intents(tmp_path):
     runtime.close()
 
 
+def test_one_intent_cannot_bind_changed_broker_identity(tmp_path):
+    import json
+
+    provider = FakeProvider()
+    runtime, paths, _effect, order = setup(tmp_path, provider)
+    try:
+        runtime.bind_broker_order("observed-first", order.intent_id)
+        runtime.bind_broker_order("observed-first", order.intent_id)
+        with pytest.raises(SupervisedRefused, match="broker_order_identity_changed"):
+            runtime.bind_broker_order("observed-replacement", order.intent_id)
+        assert json.loads((paths.root / "broker-order-identities.json").read_text()) == {
+            "observed-first": order.intent_id
+        }
+    finally:
+        runtime.close()
+
+
+def test_unrepresentable_ack_preserves_observed_identity_and_fences_changed_readback(tmp_path):
+    import json
+
+    from tree_options.execution.records import BrokerAcknowledgement
+    from tree_options.trex.supervised import LookupUnknown
+
+    provider = FakeProvider()
+    runtime, paths, effect, order = setup(tmp_path, provider)
+    original_submit = provider._submit
+
+    def missing_ack_time(**kwargs):
+        observed = original_submit(**kwargs)
+        observed.body.pop("time_placed")
+        return observed
+
+    provider._submit = missing_ack_time
+    try:
+        result = runtime.canary(order, effect, operator_approved=True)
+        assert result["outcome"] == "uncertain"
+        assert provider.calls == 1
+        assert not any(
+            isinstance(record, BrokerAcknowledgement)
+            for record in project_intent(paths, order.intent_id).records
+        )
+        assert json.loads((paths.root / "broker-order-identities.json").read_text()) == {
+            "b1": order.intent_id
+        }
+    finally:
+        runtime.close()
+
+    # The provider retains the intent correlation but changes the previously
+    # observed identity. There is no modeled replacement authorizing that change.
+    provider.rows[0]["brokerage_order_id"] = "b2"
+    restarted = SnapTradePaperRuntime(
+        provider,
+        paths,
+        ownership_root=tmp_path / "owners",
+        clock=lambda: shift_instant(NOW, 121),
+    )
+    try:
+        restarted.start()
+        lookup = restarted.lookup(order.intent_id)
+        assert isinstance(lookup, LookupUnknown)
+        assert lookup.reason == "broker_order_identity_changed"
+        assert not restarted.ready
+        assert provider.calls == 1
+        assert json.loads((paths.root / "broker-order-identities.json").read_text()) == {
+            "b1": order.intent_id
+        }
+        assert not paths.reconciled(order.intent_id).exists()
+        assert not any(
+            isinstance(record, BrokerAcknowledgement)
+            for record in project_intent(paths, order.intent_id).records
+        )
+    finally:
+        restarted.close()
+
+
 def test_missing_fees_cannot_be_exact_zero():
     from pydantic import ValidationError
 
@@ -240,7 +315,13 @@ def test_unknown_lookup_never_inherits_ready_from_terminal_journal(tmp_path):
         return observed
 
     provider._submit = rejected
-    runtime.canary(order, effect, operator_approved=True)
+    result = runtime.canary(order, effect, operator_approved=True)
+    assert result["outcome"] == "uncertain"
+    assert not any(
+        r.record_type == "ORDER_REJECT"
+        for r in project_intent(runtime.paths, order.intent_id).records
+    )
+    runtime.clock = lambda: shift_instant(NOW, 121)
     runtime.refresh()
     assert runtime.ready
     provider.order_readback = lambda _: (_ for _ in ()).throw(TimeoutError())
@@ -446,3 +527,125 @@ def test_preflight_uses_time_after_reads_and_expired_permit_never_submits(tmp_pa
     assert result["outcome"] == "uncertain"
     assert provider.calls == 0
     runtime.close()
+
+
+@pytest.mark.parametrize(
+    "surface,body,reason",
+    [
+        ("balances", [None], "account_balance_shape_invalid"),
+        ("balances", [{"currency": None, "cash": "1000"}], "account_balance_shape_invalid"),
+        ("balances", [{"currency": "USD", "cash": "1000"}], "account_balance_shape_invalid"),
+        ("balances", [{"currency": {"code": "USD"}, "cash": None}], "account_cash_invalid"),
+        ("balances", [{"currency": {"code": "USD"}, "cash": "bad"}], "account_cash_invalid"),
+        ("balances", [{"currency": {"code": "USD"}, "cash": "NaN"}], "account_cash_invalid"),
+        ("balances", [{"currency": {"code": "USD"}, "cash": "Infinity"}], "account_cash_invalid"),
+        ("orders", [None], "account_order_shape_invalid"),
+        ("orders", [{"status": None}], "account_order_shape_invalid"),
+    ],
+)
+def test_malformed_account_preflight_is_explicitly_refused(tmp_path, surface, body, reason):
+    provider = FakeProvider()
+    runtime, paths, effect, order = setup(tmp_path, provider)
+    original_snapshot = provider.account_snapshot
+
+    def malformed_snapshot():
+        account = original_snapshot()
+        setattr(account, surface, ProviderObservation(body, NOW, "malformed", "a" * 64))
+        return account
+
+    provider.account_snapshot = malformed_snapshot
+    try:
+        with pytest.raises(SupervisedRefused, match=reason):
+            runtime.canary(order, effect, operator_approved=True)
+        assert provider.calls == 0
+        assert not paths.terminal(order.intent_id).exists()
+    finally:
+        runtime.close()
+
+
+def test_preflight_refusal_after_permit_consumption_keeps_its_meaning(tmp_path):
+    provider = FakeProvider()
+    runtime, paths, effect, order = setup(tmp_path, provider)
+    validate = runtime.validate_effect
+    calls = 0
+
+    def refused_at_final_boundary(payload, intent, permit=None):
+        nonlocal calls
+        calls += 1
+        if calls == 3:
+            assert permit is not None and paths.permit_consumed(permit.permit_id).exists()
+            raise SupervisedRefused("risk_changed")
+        return validate(payload, intent, permit)
+
+    runtime.validate_effect = refused_at_final_boundary
+    try:
+        result = runtime.canary(order, effect, operator_approved=True)
+        assert result["outcome"] == "uncertain"
+        assert result["reason"] == "preflight_refused"
+        assert "no provider effect" in result["detail"]
+        assert provider.calls == 0
+        record_types = {r.record_type for r in project_intent(paths, order.intent_id).records}
+        assert "UNCERTAINTY_OBSERVED" in record_types
+        assert "TIMEOUT_OBSERVED" not in record_types
+        assert "DISCONNECT_OBSERVED" not in record_types
+        assert paths.permit_consumed(result["permit_id"]).exists()
+    finally:
+        runtime.close()
+
+
+def test_identity_refusal_after_submit_does_not_claim_no_provider_effect(tmp_path):
+    provider = FakeProvider()
+    runtime, _paths, effect, order = setup(tmp_path, provider)
+    try:
+        runtime.bind_broker_order("b1", "other-intent")
+        result = runtime.canary(order, effect, operator_approved=True)
+        assert result["outcome"] == "uncertain"
+        assert result["reason"] == "provider_facts_unrepresentable"
+        assert "no provider effect" not in result["detail"]
+        assert provider.calls == 1
+    finally:
+        runtime.close()
+
+
+@pytest.mark.parametrize(
+    "guard",
+    ["intent_not_preflighted", "consumed_permit_absent", "consumed_permit_binding_mismatch"],
+)
+def test_local_submit_guards_are_unclassified_without_provider_effect(tmp_path, guard):
+    from tree_options.execution.records import SubmitAttempt
+    from tree_options.trex.supervised import EffectPermit
+
+    provider = FakeProvider()
+    runtime, paths, effect, order = setup(tmp_path, provider)
+    attempt = SubmitAttempt(
+        record_id="local-attempt",
+        intent_id=order.intent_id,
+        send_attempt_at=NOW,
+        source="fixture",
+        source_sequence_id="local-permit",
+    )
+    if guard != "intent_not_preflighted":
+        runtime.validate_effect(effect.payload(), order)
+    if guard == "consumed_permit_binding_mismatch":
+        permit = EffectPermit(
+            permit_id="local-permit",
+            mandate_id="local-mandate",
+            intent_id="different-intent",
+            package_intent_sha256="a" * 64,
+            effect_sha256="b" * 64,
+            account_id=provider.binding.alias,
+            owner_epoch=runtime.owner.epoch,
+            strategy_version=effect.strategy_version,
+            screening_sha256="c" * 64,
+            issued_at=NOW,
+            expires_at=shift_instant(NOW, 15),
+        )
+        paths.permit_consumed(permit.permit_id).write_text(permit.model_dump_json())
+    try:
+        outcome = runtime.submit(attempt, effect.payload())
+        assert outcome.reason == guard
+        assert outcome.observation == "unclassified"
+        assert "no provider effect" in outcome.detail
+        assert provider.calls == 0
+    finally:
+        runtime.close()

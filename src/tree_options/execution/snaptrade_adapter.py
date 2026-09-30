@@ -297,17 +297,28 @@ def rejection_from_snapshot(
     snapshot: SnapTradeOrderSnapshot,
     *,
     locally_received_at: datetime,
+    broker_rejected_at: datetime | None = None,
 ) -> OrderReject:
     _require_correlation(intent, snapshot)
     if normalize_status(snapshot.status) is not BrokerReadbackStatus.REJECTED:
         raise SnapTradeNormalizationError(f"status {snapshot.status} is not a rejection")
+    if broker_rejected_at is None:
+        raise SnapTradeNormalizationError(
+            "authoritative rejection event time is required; placement/update times cannot substitute"
+        )
+    if snapshot.filled_quantity != 0:
+        raise SnapTradeNormalizationError(
+            "rejection with positive filled quantity cannot be represented losslessly"
+        )
     token = snapshot.request_id or snapshot.raw_digest or intent.intent_id
     return OrderReject(
         record_id=_record_id(intent.intent_id, token, "reject"),
         intent_id=intent.intent_id,
         broker_order_id=snapshot.brokerage_order_id,
         reason_code=f"SNAPTRADE_{snapshot.status}",
-        broker_acknowledged_at=snapshot.broker_snapshot_at,
+        broker_acknowledged_at=_parse_time(
+            broker_rejected_at, field="authoritative rejection time"
+        ),
         locally_received_at=locally_received_at,
         source=SOURCE,
         source_sequence_id=f"reject:{token}",

@@ -256,3 +256,53 @@ def test_observed_and_accepted_facts_cannot_contradict():
     for changes in ({"observed_order_id": "other-id"}, {"observed_total_quantity": 3}):
         with pytest.raises(ValidationError, match="disagree"):
             type(fact).model_validate({**fact.model_dump(), **changes})
+
+
+def rejected_snapshot():
+    return snapshot_from_mapping(
+        {
+            "status": "REJECTED",
+            "brokerage_order_id": "rejected-id",
+            "total_quantity": 2,
+            "filled_quantity": 0,
+            "time_placed": (NOW - timedelta(seconds=10)).isoformat(),
+            "time_updated": NOW.isoformat(),
+        }
+    )
+
+
+def test_rejection_event_time_cannot_be_inferred_from_snapshot():
+    from tree_options.execution.snaptrade_adapter import rejection_from_snapshot
+
+    with pytest.raises(SnapTradeNormalizationError, match="authoritative rejection"):
+        rejection_from_snapshot(intent(), rejected_snapshot(), locally_received_at=NOW)
+
+
+def test_rejection_event_time_uses_only_explicit_authoritative_event():
+    from tree_options.execution.snaptrade_adapter import rejection_from_snapshot
+
+    actual_rejection = NOW - timedelta(seconds=3)
+    record = rejection_from_snapshot(
+        intent(),
+        rejected_snapshot(),
+        locally_received_at=NOW,
+        broker_rejected_at=actual_rejection,
+    )
+    assert record.broker_acknowledged_at == actual_rejection
+    assert record.broker_acknowledged_at != rejected_snapshot().broker_snapshot_at
+    assert record.broker_acknowledged_at != rejected_snapshot().broker_placed_at
+
+
+def test_authoritative_rejection_time_cannot_erase_positive_execution():
+    from dataclasses import replace
+
+    from tree_options.execution.snaptrade_adapter import rejection_from_snapshot
+
+    snapshot = replace(rejected_snapshot(), filled_quantity=1)
+    with pytest.raises(SnapTradeNormalizationError, match="positive filled"):
+        rejection_from_snapshot(
+            intent(),
+            snapshot,
+            locally_received_at=NOW,
+            broker_rejected_at=NOW,
+        )
