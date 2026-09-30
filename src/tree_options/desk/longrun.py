@@ -70,6 +70,7 @@ from typing import Any
 import numpy as np
 
 PLAN_SCHEMA = "desk-longrun-plan/1"
+PLAN_CUSTODY_VERSION = 1
 RECEIPT_SCHEMA = "desk-longrun-receipt/1"
 PROGRESS_SCHEMA = "desk-longrun-progress/1"
 DIGEST_SCHEMA = "desk-longrun-digest/1"
@@ -1971,7 +1972,37 @@ def write_digest(run_dir: Path, doc: Mapping[str, Any]) -> None:
 def boards_fingerprint(boards: Sequence[Board]) -> str:
     digest = hashlib.sha256()
     for board in boards:
-        digest.update(json.dumps([board.snapshot, board.session, board.clock, board.ids]).encode())
+        digest.update(
+            json.dumps(
+                asdict(board), sort_keys=True, separators=(",", ":"), default=str, allow_nan=False
+            ).encode()
+        )
+        digest.update(b"\n")
+    return digest.hexdigest()
+
+
+def longrun_engine_identity() -> str:
+    """Bind the scorer and shipped board/outcome/policy helpers to exact source.
+
+    Injected callbacks still require an explicit identity in caller metadata.
+    This does not infer arbitrary closure identity or freeze third-party code.
+    """
+    root = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    for name in (
+        "longrun.py",
+        "purge.py",
+        "skill.py",
+        "outcomes.py",
+        "hindsight.py",
+        "intraday_action_graph.py",
+        "lab.py",
+        "theory_rules.py",
+        "forecast.py",
+    ):
+        source = (root / name).read_bytes()
+        digest.update(name.encode() + b"\0")
+        digest.update(hashlib.sha256(source).digest())
     return digest.hexdigest()
 
 
@@ -1987,6 +2018,7 @@ def _plan(
     boards (the pairing) or a changed protocol (the pre-registration)."""
     path = run_dir / "plan.json"
     fingerprint = boards_fingerprint(boards)
+    engine_sha256 = longrun_engine_identity()
     policy_docs = [
         {
             "name": p.name,
@@ -1999,19 +2031,30 @@ def _plan(
     ]
     if path.is_file():
         plan = json.loads(path.read_text(encoding="utf-8"))
+        if plan.get("custody_version") != PLAN_CUSTODY_VERSION:
+            raise ValueError("the pre-custody plan cannot be adopted; start a new run dir")
+        if plan.get("engine_sha256") != engine_sha256:
+            raise ValueError("the scoring engine changed; start a new run dir")
         if plan.get("boards_fingerprint") != fingerprint:
             raise ValueError("the boards changed since this run started; start a new run dir")
         if plan.get("protocol") != protocol.to_json():
             raise ValueError(
                 "the protocol is pre-registered in plan.json and cannot change on resume"
             )
-        plan["policies"] = policy_docs
+        if plan.get("policies") != policy_docs:
+            raise ValueError("the policy identities changed; start a new run dir")
+        if json.dumps(plan.get("meta"), sort_keys=True, default=str, allow_nan=False) != json.dumps(
+            dict(meta or {}), sort_keys=True, default=str, allow_nan=False
+        ):
+            raise ValueError("the source metadata changed; start a new run dir")
         plan["resumed_at"] = clock().isoformat()
         _write_json(path, plan)
         return dict(plan)
     sessions = sorted({b.session for b in boards})
     plan = {
         "schema": PLAN_SCHEMA,
+        "custody_version": PLAN_CUSTODY_VERSION,
+        "engine_sha256": engine_sha256,
         "run_id": run_dir.name,
         "created": clock().isoformat(),
         "boards": len(boards),
@@ -2252,7 +2295,11 @@ def _v1_boards(params: Mapping[str, Any], ctx: PluginContext) -> list[Board]:
     from tree_options.desk import intraday_action_graph as iag
 
     bundle = _resolve_path(ctx, params.get("bundle"))
-    raw = json.loads(bundle.read_bytes())
+    bundle_bytes = bundle.read_bytes()
+    raw = json.loads(bundle_bytes)
+    ctx.shared.setdefault("source_hashes", {})["boards_bundle_sha256"] = hashlib.sha256(
+        bundle_bytes
+    ).hexdigest()
     bars, contracts = hindsight.parse_bundle(raw)
     sessions = hindsight.all_sessions(raw)
     age_s = 15 * 60
@@ -2438,7 +2485,11 @@ def _v2_boards(params: Mapping[str, Any], ctx: PluginContext) -> list[Board]:
     from tree_options.desk import lab, outcomes
 
     bundle = _resolve_path(ctx, params.get("bundle"))
-    index = outcomes.prepare_index(json.loads(bundle.read_bytes()))
+    bundle_bytes = bundle.read_bytes()
+    index = outcomes.prepare_index(json.loads(bundle_bytes))
+    ctx.shared.setdefault("source_hashes", {})["boards_bundle_sha256"] = hashlib.sha256(
+        bundle_bytes
+    ).hexdigest()
     boards: list[Board] = []
     contexts: dict[str, Any] = {}
     for day in index.sessions:
@@ -2472,9 +2523,17 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     table_path = params.get("table")
     if table_path:
         table: dict[tuple[str, str, str], dict[str, Any] | None] = {}
-        with _resolve_path(ctx, table_path).open(encoding="utf-8") as stream:
+        identities: dict[tuple[str, str, str], str] = {}
+        table_digest = hashlib.sha256()
+        with _resolve_path(ctx, table_path).open("rb") as stream:
             for line in stream:
+                table_digest.update(line)
                 row = json.loads(line)
+                key = (row["snapshot"], row["candidate_id"], row["exit_mode"])
+                content = json.dumps(row, sort_keys=True, separators=(",", ":"), allow_nan=False)
+                if key in identities and identities[key] != content:
+                    raise ValueError("outcome table identity collision")
+                identities[key] = content
                 if row.get("status") == "no_fill" or row.get("net") is None:
                     value: dict[str, Any] | None = None
                 else:  # exit_at feeds the purged walk-forward (desk.purge)
@@ -2483,7 +2542,10 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
                         "net": float(row["net"]),
                         "exit_at": row.get("exit_at"),
                     }
-                table[(row["snapshot"], row["candidate_id"], row["exit_mode"])] = value
+                table[key] = value
+        ctx.shared.setdefault("source_hashes", {})["outcome_table_sha256"] = (
+            table_digest.hexdigest()
+        )
 
         def lookup(snapshot: str, candidate_id: str, horizon: str | None) -> dict[str, Any] | None:
             return table.get((snapshot, candidate_id, horizon or default_horizon))
@@ -2779,6 +2841,7 @@ def run_from_config(
         config_copy.write_bytes(raw_config)
     meta = {
         "config_sha256": hashlib.sha256(raw_config).hexdigest(),
+        "source_hashes": dict(ctx.shared.get("source_hashes", {})),
         "plugins": {
             k: (cfg.get(k) or {}).get("plugin")
             for k in ("boards", "outcome", "ask", "quota", "benchmarks")
