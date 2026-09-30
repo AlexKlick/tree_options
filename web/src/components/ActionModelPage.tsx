@@ -169,20 +169,47 @@ const duration = (seconds: number | null) =>
 
 function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
   const { aa, random_null: rn, walk_forward: wf } = digest
+  const floor = wf.min_test_entries
+  const currentContract = wf.scoring_version === 'split-local-own-rate/v2'
+    && wf.null_scope === 'split_local_own_entry_rate'
+    && wf.entry_count_unit === 'distinct_evaluated_decision_boards'
+    && wf.assessment_class === 'registered_protocol'
+    && digest.assessment_class === 'registered_protocol'
+    && floor !== undefined && Number.isInteger(floor) && floor > 0
+  const retrospective = digest.assessment_class === 'retrospective_descriptive'
+    || wf.assessment_class === 'retrospective_descriptive'
+  const finalistText = (f: LongRunDigest['walk_forward']['finalists'][number]) => {
+    const entries = f.test_entries
+    const checks = f.rule_check
+    const eligible = currentContract && digest.complete && digest.evaluation_valid && aa.valid
+      && f.eligible_for_operator_review && f.test.net_total > 0
+      && entries !== undefined && Number.isInteger(entries) && entries >= floor!
+      && checks?.test_net_positive && checks.test_entries_at_least_floor
+      && checks.split_local_null_known && checks.confirmatory_assessment
+    const coverage = currentContract ? `, ${entries ?? 'unknown'}/${floor} evaluated entries` : ''
+    const outcome = eligible ? ' — eligible for operator review'
+      : currentContract ? ' — review conditions not met' : ' — descriptive only'
+    return `${f.policy} test ${money(f.test.net_total)} ${ciText(f.test.net_ci95)}${coverage}, vs random ${pairText(f.test.vs_random)}, Holm p ${f.holm_p.toFixed(3)}${outcome}`
+  }
   return (
     <>
       <p><strong>{digest.headline}</strong></p>
+      <p data-testid="longrun-scoring-contract">{currentContract
+        ? `Registered scoring contract: split-local own entry rates; minimum ${floor} distinct evaluated decision boards and positive test net for review.`
+        : retrospective ? 'Retrospective scoring — descriptive only; no new confirmatory review eligibility.'
+          : 'Historical scoring contract — descriptive only; current review requirements were not recorded.'}</p>
       <p data-testid="longrun-aa">
         {aa.status === 'not_run'
           ? `A/A not run — ${aa.reason ?? 'no incumbent pair'}; every comparison is unvalidated.`
           : `A/A ${aa.status === 'valid' ? 'valid' : 'INVALID'}: ${(aa.pair ?? []).join(' vs ')} agree on ${aa.agreement === undefined ? '?' : (aa.agreement * 100).toFixed(1)}% of ${aa.boards ?? '?'} boards · diff ${pairText(aa.diff)}`}
       </p>
       <p data-testid="longrun-random-band">Random picker at the incumbent's entry rate ({(rn.p_enter * 100).toFixed(1)}%, {rn.seeds} seeds on the same boards): expected {money(rn.expected_total)} {ciText(rn.expected_ci95)} · 95% null band {ciText(rn.band95)}</p>
+      <p className="muted">Legacy incumbent comparison is descriptive; own-rate evidence is shown separately. Neither grants execution authority.</p>
       <p className="muted">{digest.boards.scored} of {digest.boards.total} boards scored ({digest.boards.excluded} excluded for a missing or failed decision in some arm) · {digest.boards.sessions.count} sessions. Totals are net modeled dollars with session-bootstrap 95% ranges.</p>
       <div className="table-scroll">
         <table>
           <thead>
-            <tr><th scope="col">Arm</th><th scope="col">Kind</th><th scope="col">Entered</th><th scope="col">Failed</th><th scope="col">Net total [95% CI]</th><th scope="col">vs random</th><th scope="col">vs incumbent</th><th scope="col">vs bullish regime</th></tr>
+            <tr><th scope="col">Arm</th><th scope="col">Kind</th><th scope="col">Entered</th><th scope="col">Failed</th><th scope="col">Net total [95% CI]</th><th scope="col">vs random (own entry rate)</th><th scope="col">vs random (legacy incumbent)</th><th scope="col">vs incumbent</th><th scope="col">vs bullish regime</th></tr>
           </thead>
           <tbody>
             {digest.standings.map((row) => (
@@ -192,26 +219,29 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
                 <td>{row.entered}{row.unevaluable > 0 ? ` (${row.unevaluable} no fill)` : ''}</td>
                 <td>{row.failures}</td>
                 <td>{money(row.net_total)} {ciText(row.net_ci95)}</td>
+                <td>{row.vs_random_own
+                  ? <>{pairText(row.vs_random_own)} · {(row.vs_random_own.p_enter * 100).toFixed(1)}%</>
+                  : 'Not recorded'}</td>
                 <td>{pairText(row.vs_random)}</td>
                 <td>{pairText(row.vs_incumbent)}</td>
                 <td>{pairText(row.vs_regime)}</td>
               </tr>
             ))}
             <tr data-testid="longrun-random">
-              <th scope="row">random (matched)</th><td>control</td><td>—</td><td>—</td>
-              <td>{money(rn.expected_total)} {ciText(rn.expected_ci95)}</td><td>—</td><td>—</td><td>—</td>
+              <th scope="row">random (legacy incumbent)</th><td>control</td><td>—</td><td>—</td>
+              <td>{money(rn.expected_total)} {ciText(rn.expected_ci95)}</td><td>—</td><td>—</td><td>—</td><td>—</td>
             </tr>
             {digest.benchmarks.map((bench) => bench.status === 'ok' && bench.net_total !== undefined && bench.net_ci95 ? (
               <tr key={bench.name} data-testid={`longrun-benchmark-${bench.name}`}>
                 <th scope="row">{bench.name} buy-and-hold</th><td>benchmark</td><td>—</td><td>—</td>
-                <td>{money(bench.net_total)} {ciText(bench.net_ci95)}</td><td>—</td><td>—</td><td>—</td>
+                <td>{money(bench.net_total)} {ciText(bench.net_ci95)}</td><td>—</td><td>—</td><td>—</td><td>—</td>
               </tr>
             ) : null)}
           </tbody>
         </table>
       </div>
       {wf.status === 'ok'
-        ? <p>Walk-forward (cutoff {wf.cutoff}, {wf.tune_sessions} tune / {wf.test_sessions} test sessions, at most {wf.max_finalists} finalists tested once): {wf.finalists.length === 0 ? 'no finalists.' : wf.finalists.map((f) => `${f.policy} test ${money(f.test.net_total)} ${ciText(f.test.net_ci95)}, vs random ${pairText(f.test.vs_random)}, Holm p ${f.holm_p.toFixed(3)}${f.eligible_for_operator_review ? ' — eligible for operator review' : ''}`).join('; ')}</p>
+        ? <p>Walk-forward (cutoff {wf.cutoff}, {wf.tune_sessions} tune / {wf.test_sessions} test sessions, at most {wf.max_finalists} finalists tested once): {wf.finalists.length === 0 ? 'no finalists.' : wf.finalists.map(finalistText).join('; ')}</p>
         : <p className="muted">Walk-forward not applicable{wf.reason ? ` — ${wf.reason}` : ''}.</p>}
       <p className="muted">Never promoted: the pre-registered rule is text for the operator. {digest.promotion.rule}</p>
     </>

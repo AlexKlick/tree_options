@@ -216,6 +216,71 @@ it('renders the long-run card: progress bars, CI standings, A/A, random band, be
   expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
 })
 
+it('distinguishes own-entry-rate evidence from the legacy shared null', async () => {
+  const own = structuredClone(LONG_RUN)
+  Object.assign(own.digest!.standings[0], { vs_random_own: { ...pair(6, 1, 9), p_enter: 0.5 } })
+  vi.mocked(getLongRun).mockResolvedValue(own)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(screen.getByRole('columnheader', { name: 'vs random (own entry rate)' })).toBeTruthy()
+  expect(screen.getByRole('columnheader', { name: 'vs random (legacy incumbent)' })).toBeTruthy()
+  const row = screen.getByTestId('longrun-standing-m31#1')
+  expect(row.textContent).toContain('+$6.00 [+$1.00, +$9.00]')
+  expect(row.textContent).toContain('50.0%')
+  expect(row.textContent).toContain('+$35.50 [−$17.00, +$73.00]')
+  expect(card.textContent).toContain('Legacy incumbent comparison is descriptive')
+})
+
+it('marks historical scoring rules and does not reuse their review eligibility', async () => {
+  const historical = structuredClone(LONG_RUN)
+  historical.digest!.walk_forward.finalists[0].eligible_for_operator_review = true
+  vi.mocked(getLongRun).mockResolvedValue(historical)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(card.textContent).toContain('Historical scoring contract')
+  expect(card.textContent).not.toContain('— eligible for operator review')
+  expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
+})
+
+function registeredLongRun(): LongRunView {
+  const current = structuredClone(LONG_RUN)
+  Object.assign(current.digest!, { assessment_class: 'registered_protocol' })
+  Object.assign(current.digest!.walk_forward, {
+    scoring_version: 'split-local-own-rate/v2', null_scope: 'split_local_own_entry_rate',
+    min_test_entries: 30, entry_count_unit: 'distinct_evaluated_decision_boards',
+    assessment_class: 'registered_protocol',
+  })
+  Object.assign(current.digest!.walk_forward.finalists[0], {
+    test_entries: 30, eligible_for_operator_review: true,
+    rule_check: { test_net_positive: true, test_entries_at_least_floor: true,
+      split_local_null_known: true, confirmatory_assessment: true },
+  })
+  return current
+}
+
+it('shows preregistered distinct-entry floors with registered review evidence', async () => {
+  vi.mocked(getLongRun).mockResolvedValue(registeredLongRun())
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(card.textContent).toContain('30 distinct evaluated decision boards')
+  expect(card.textContent).toContain('30/30 evaluated entries')
+  expect(card.textContent).toContain('— eligible for operator review')
+  expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
+})
+
+it.each([{ entries: 29, net: 12 }, { entries: 30, net: 0 }])(
+  'refuses contradictory eligibility with $entries entries and net $net', async ({ entries, net }) => {
+    const current = registeredLongRun()
+    Object.assign(current.digest!.walk_forward.finalists[0], { test_entries: entries })
+    current.digest!.walk_forward.finalists[0].test.net_total = net
+    vi.mocked(getLongRun).mockResolvedValue(current)
+    render(<ActionModelPage />)
+    const card = await screen.findByRole('region', { name: 'Desk long run' })
+    expect(card.textContent).not.toContain('— eligible for operator review')
+    expect(card.textContent).toContain('review conditions not met')
+  },
+)
+
 it('flags an invalid A/A pair and the empty store', async () => {
   const invalid: LongRunView = { ...LONG_RUN, digest: { ...LONG_RUN.digest!, evaluation_valid: false,
     headline: 'EVALUATION INVALID - the A/A pair differs significantly; nothing promoted.',

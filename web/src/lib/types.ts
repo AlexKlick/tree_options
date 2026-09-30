@@ -311,6 +311,8 @@ export interface LongRunStanding {
   net_total: number
   net_ci95: [number, number]
   vs_random: LongRunPaired
+  vs_random_own?: LongRunPaired & { p_enter: number }
+  null_percentile_own?: number
   vs_first_row: LongRunPaired | null
   vs_incumbent: LongRunPaired | null
   // vs the always_bullish regime baseline (null for that arm itself)
@@ -338,9 +340,12 @@ export interface LongRunFinalist {
     vs_incumbent: LongRunPaired | null
   }
   eligible_for_operator_review: boolean
+  test_entries?: number
+  rule_check?: Record<string, boolean>
 }
 
 export interface LongRunDigest {
+  assessment_class?: 'registered_protocol' | 'retrospective_descriptive'
   headline: string
   untrusted_note: string
   evaluation_valid: boolean
@@ -375,6 +380,11 @@ export interface LongRunDigest {
   }
   standings: LongRunStanding[]
   walk_forward: {
+    scoring_version?: string
+    null_scope?: string
+    min_test_entries?: number
+    entry_count_unit?: string
+    assessment_class?: 'registered_protocol' | 'retrospective_descriptive'
     status: string
     cutoff?: string | null
     metric?: string | null
