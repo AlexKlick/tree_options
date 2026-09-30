@@ -1,3 +1,4 @@
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -49,4 +50,46 @@ def test_invalid_or_stale_projection_never_reports_ready(tmp_path):
     assert result["execution"]["state"] == "STALE"
     assert result["execution"]["ready"] is False
     (state / "projection.json").write_text("{invalid")
+    assert TestClient(app).get("/api/research/quant").status_code == 503
+
+
+@pytest.mark.parametrize(
+    "corruption", ["naive_time", "missing_findings", "text_ready", "text_exact"]
+)
+def test_malformed_execution_projection_refuses_incomplete_proof(tmp_path, corruption):
+    import json
+    from datetime import UTC, datetime
+
+    source = {
+        "environment": "BROKER PAPER",
+        "live_money": False,
+        "observed_at": datetime.now(UTC).isoformat(),
+        "ready": False,
+        "owner_held": True,
+        "executions": [
+            {
+                "intent_id": "one",
+                "state": "SENT",
+                "broker_state": "AMBIGUOUS",
+                "reconciliation_clean": False,
+                "findings": ["UNKNOWN"],
+                "evidence_verdict": "REFUSED",
+                "exact_economics": False,
+                "records": [],
+            }
+        ],
+    }
+    if corruption == "naive_time":
+        source["observed_at"] = "2026-09-29T20:00:00"
+    elif corruption == "missing_findings":
+        del source["executions"][0]["findings"]
+    elif corruption == "text_ready":
+        source["ready"] = "false"
+    else:
+        source["executions"][0]["exact_economics"] = "false"
+    state = tmp_path / "broker"
+    state.mkdir()
+    (state / "projection.json").write_text(json.dumps(source))
+    app = FastAPI()
+    attach(app, workspace=tmp_path / "research", execution_state=state)
     assert TestClient(app).get("/api/research/quant").status_code == 503

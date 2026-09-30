@@ -59,9 +59,37 @@ def attach(
                 if source["environment"] != "BROKER PAPER" or source["live_money"] is not False:
                     raise ValueError
                 at = datetime.fromisoformat(source["observed_at"])
-                age = (datetime.now(UTC) - at).total_seconds()
-                if age < 0 or at.tzinfo is None:
+                if at.tzinfo is None:
                     raise ValueError
+                age = (datetime.now(UTC) - at).total_seconds()
+                if age < 0:
+                    raise ValueError
+                if type(source["ready"]) is not bool or type(source["owner_held"]) is not bool:
+                    raise ValueError
+                rows = source.get("executions", [])
+                if not isinstance(rows, list):
+                    raise ValueError
+                for row in rows:
+                    if not isinstance(row, dict):
+                        raise ValueError
+                    if any(
+                        not isinstance(row[key], str) or not row[key]
+                        for key in ("intent_id", "state", "broker_state", "evidence_verdict")
+                    ):
+                        raise ValueError
+                    if any(
+                        type(row[key]) is not bool
+                        for key in ("reconciliation_clean", "exact_economics")
+                    ):
+                        raise ValueError
+                    if not isinstance(row["findings"], list) or any(
+                        not isinstance(finding, str) for finding in row["findings"]
+                    ):
+                        raise ValueError
+                    if not isinstance(row["records"], list) or any(
+                        not isinstance(record, dict) for record in row["records"]
+                    ):
+                        raise ValueError
                 execution = {
                     k: source.get(k)
                     for k in (
@@ -77,6 +105,7 @@ def attach(
                     )
                 }
                 execution["state"] = "STALE" if age > 30 else "OBSERVED"
+                execution["executions"] = rows
                 execution["ready"] = (
                     bool(source["ready"]) and age <= 30 and bool(source["owner_held"])
                 )

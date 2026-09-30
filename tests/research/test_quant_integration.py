@@ -183,6 +183,9 @@ def test_cluster_lane_uses_frozen_features_and_exploratory_identity(tmp_path):
         assert result["disposition"] == "SCORED"
         assert result["targets"] == [{"entity_id": "D", "weight": "1"}]
         assert result["evidence"]["diagnostics"]["registration"] == "exploratory"
+        assert "D" not in result["exclusions"]
+        assert "D" not in result["evidence"]["diagnostics"]["exclusions"]
+        assert set(result["exclusions"]) == {"A", "B", "C"}
 
 
 def test_partial_fill_cannot_bypass_attribution_evidence_gate():
