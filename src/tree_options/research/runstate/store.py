@@ -59,6 +59,7 @@ from tree_options.research.paths import assert_no_overlap_with_desk
 _KINDS: tuple[str, ...] = (
     "run", "spec", "result", "evidence_snapshot", "comparison_row",
     "scenario_parent", "child",
+    "quant_version", "quant_snapshot", "quant_experiment", "quant_provenance",
 )
 
 
