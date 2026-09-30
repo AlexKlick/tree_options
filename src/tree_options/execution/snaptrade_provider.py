@@ -9,14 +9,16 @@ from __future__ import annotations
 import hashlib
 import importlib
 import json
+import os
+import stat
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from pydantic import Field
+from pydantic import Field, StrictStr
 
 from tree_options.execution.records import ExactPrice
 from tree_options.schemas.common import IdStr, StrictModel
@@ -66,16 +68,154 @@ class AccountSnapshot:
     positions: ProviderObservation
     orders: ProviderObservation
     holdings_at: datetime
+    connection: ProviderObservation | None = None
 
     def fresh_at(self, now: datetime, *, max_age_seconds: int = 30) -> bool:
-        stamps = (
+        stamps: tuple[datetime, ...] = (
             self.holdings_at,
             self.details.captured_at,
             self.balances.captured_at,
             self.positions.captured_at,
             self.orders.captured_at,
         )
-        return all(0 <= (now - t).total_seconds() <= max_age_seconds for t in stamps)
+        if self.connection is not None:
+            stamps += (self.connection.captured_at,)
+        try:
+            return now.utcoffset() is not None and all(
+                t.utcoffset() is not None and 0 <= (now - t).total_seconds() <= max_age_seconds
+                for t in stamps
+            )
+        except (TypeError, ValueError):
+            return False
+
+
+class PrivateCredentials(StrictModel):
+    client_id: StrictStr = Field(min_length=1, repr=False)
+    consumer_key: StrictStr = Field(min_length=1, repr=False)
+    user_id: StrictStr = Field(min_length=1, repr=False)
+    user_secret: StrictStr = Field(min_length=1, repr=False)
+
+
+def load_private_binding(path: Path) -> tuple[PaperAccountBinding, PrivateCredentials]:
+    """Offline validation using the opened file's identity, never printing values."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd) as stream:
+            info = os.fstat(stream.fileno())
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+                raise ValueError
+            config = json.load(stream)
+        secrets = PrivateCredentials.model_validate(config["credentials"])
+        if any(not value.strip() for value in secrets.model_dump().values()):
+            raise ValueError
+        fingerprint = hashlib.sha256(
+            json.dumps(secrets.model_dump(), sort_keys=True).encode()
+        ).hexdigest()
+        binding = PaperAccountBinding.model_validate(
+            {**config["binding"], "credential_sha256": fingerprint}
+        )
+        return binding, secrets
+    except Exception:
+        raise ProviderUnavailable("private SnapTrade binding unavailable or invalid") from None
+
+
+def account_findings(account: AccountSnapshot, now: datetime) -> tuple[str, ...]:
+    """Admit current read-only facts, without granting execution authority."""
+    from tree_options.execution.records import BrokerReadbackStatus
+    from tree_options.execution.snaptrade_adapter import (
+        snapshot_from_mapping,
+        validate_snapshot_status,
+    )
+
+    findings: list[str] = []
+    if not account.fresh_at(now):
+        findings.append("account_snapshot_stale")
+    raw = account.details.body
+    if not isinstance(raw, dict) or raw.get("id") != account.binding.account_id:
+        findings.append("account_identity_mismatch")
+        raw = {}
+    if (
+        raw.get("is_paper") is not True
+        or not isinstance(raw.get("institution_name"), str)
+        or raw["institution_name"].casefold() != "alpaca"
+    ):
+        findings.append("paper_environment_unverified")
+    sync_status = raw.get("sync_status")
+    holdings = sync_status.get("holdings", {}) if isinstance(sync_status, dict) else {}
+    if not isinstance(holdings, dict) or holdings.get("holdings_unavailable") is not False:
+        findings.append("holdings_availability_unknown")
+    connection = account.connection.body if account.connection is not None else {}
+    if not isinstance(connection, dict):
+        connection = {}
+    if not raw.get("brokerage_authorization") or connection.get("id") != raw.get(
+        "brokerage_authorization"
+    ):
+        findings.append("connection_identity_mismatch")
+    if connection.get("disabled") is not False:
+        findings.append("connection_disabled_or_unknown")
+    if connection.get("data_freshness_mode") != {
+        "institution": "realtime",
+        "snaptrade": "realtime",
+    }:
+        findings.append("connection_freshness_unverified")
+    if (
+        not isinstance(connection.get("brokerage"), dict)
+        or connection["brokerage"].get("slug") != account.binding.brokerage_slug
+    ):
+        findings.append("connection_brokerage_mismatch")
+    if not isinstance(connection.get("type"), str) or connection["type"] not in {"read", "trade"}:
+        findings.append("connection_permission_unknown")
+    for name in ("balances", "positions", "orders"):
+        observation = getattr(account, name)
+        if not isinstance(observation.body, list):
+            findings.append(f"account_{name}_shape_invalid")
+    if isinstance(account.balances.body, list):
+        if not account.balances.body:
+            findings.append("account_balances_unavailable")
+        currencies: set[str] = set()
+        for row in account.balances.body:
+            try:
+                code = row["currency"]["code"]
+                if not isinstance(code, str) or len(code) != 3 or code in currencies:
+                    raise ValueError
+                currencies.add(code)
+                if isinstance(row["cash"], bool) or not Decimal(str(row["cash"])).is_finite():
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, InvalidOperation):
+                findings.append("account_balance_invalid")
+    if isinstance(account.positions.body, list):
+        for row in account.positions.body:
+            try:
+                if (
+                    not isinstance(row["symbol"]["symbol"]["symbol"], str)
+                    or not row["symbol"]["symbol"]["symbol"]
+                ):
+                    raise ValueError
+                if isinstance(row["units"], bool) or not Decimal(str(row["units"])).is_finite():
+                    raise ValueError
+            except (KeyError, TypeError, ValueError, InvalidOperation):
+                findings.append("account_position_invalid")
+    if isinstance(account.orders.body, list):
+        seen: dict[str, str] = {}
+        for row in account.orders.body:
+            try:
+                if not isinstance(row, dict):
+                    raise ValueError
+                snap = snapshot_from_mapping(row)
+                if validate_snapshot_status(snap) is BrokerReadbackStatus.AMBIGUOUS:
+                    findings.append("account_order_ambiguous")
+                if snap.broker_snapshot_at > now:
+                    findings.append("account_order_future")
+                identity = snap.brokerage_order_id
+                if not identity:
+                    findings.append("account_order_identity_unknown")
+                elif identity in seen and seen[identity] != snap.raw_digest:
+                    findings.append("account_order_identity_collision")
+                elif identity:
+                    seen[identity] = snap.raw_digest
+            except (ValueError, TypeError, KeyError):
+                findings.append("account_order_invalid")
+    return tuple(dict.fromkeys(findings))
 
 
 def build_sdk(*, client_id: str, consumer_key: str) -> Any:
@@ -120,24 +260,18 @@ class SnapTradeProvider:
 
     @classmethod
     def from_private_file(cls, path: Path) -> SnapTradeProvider:
-        if path.stat().st_mode & 0o077:
-            raise ProviderUnavailable("credential file must be private (0600)")
+        binding, secrets = load_private_binding(path)
         try:
-            config = json.loads(path.read_text())
-            secrets = config["credentials"]
-            fingerprint = hashlib.sha256(json.dumps(secrets, sort_keys=True).encode()).hexdigest()
-            binding = PaperAccountBinding.model_validate(
-                {**config["binding"], "credential_sha256": fingerprint}
-            )
-            sdk = build_sdk(client_id=secrets["client_id"], consumer_key=secrets["consumer_key"])
-            return cls(sdk, binding, user_id=secrets["user_id"], user_secret=secrets["user_secret"])
+            sdk = build_sdk(client_id=secrets.client_id, consumer_key=secrets.consumer_key)
+            return cls(sdk, binding, user_id=secrets.user_id, user_secret=secrets.user_secret)
         except Exception:
             raise ProviderUnavailable("invalid private SnapTrade binding or credentials") from None
 
     def _call(self, namespace: str, method: str, **kwargs: Any) -> ProviderObservation:
         try:
+            scope = {} if namespace == "connections" else {"account_id": self.binding.account_id}
             result = getattr(getattr(self._sdk, namespace), method)(
-                account_id=self.binding.account_id,
+                **scope,
                 user_id=self._user_id,
                 user_secret=self._user_secret,
                 **kwargs,
@@ -176,7 +310,8 @@ class SnapTradeProvider:
         # environment fact. Operator labels alone cannot authorize effects.
         if (
             raw.get("is_paper") is not True
-            or raw.get("institution_name", "").casefold() != "alpaca"
+            or not isinstance(raw.get("institution_name"), str)
+            or raw["institution_name"].casefold() != "alpaca"
         ):
             raise ProviderUnavailable("provider did not positively identify Alpaca paper")
         try:
@@ -188,6 +323,12 @@ class SnapTradeProvider:
                 raise ValueError
         except (KeyError, TypeError, ValueError):
             raise ProviderUnavailable("account holdings freshness is unknown") from None
+        authorization_id = raw.get("brokerage_authorization")
+        if not isinstance(authorization_id, str) or not authorization_id:
+            raise ProviderUnavailable("account connection identity is unknown")
+        connection = self._call(
+            "connections", "detail_brokerage_authorization", authorization_id=authorization_id
+        )
         balances = self._call("account_information", "get_user_account_balance")
         positions = self._call("account_information", "get_all_account_positions")
         orders = self._call("account_information", "get_user_account_orders", state="all", days=7)
@@ -200,7 +341,7 @@ class SnapTradeProvider:
                 "account state must contain complete balances/positions/orders"
             )
         return AccountSnapshot(
-            self.binding, details, balances, positions, orders, at.astimezone(UTC)
+            self.binding, details, balances, positions, orders, at.astimezone(UTC), connection
         )
 
     def order_readback(self, broker_order_id: str) -> ProviderObservation:
@@ -263,7 +404,7 @@ class EquityPaperEffect(StrictModel):
     account_alias: IdStr
     owner_epoch: IdStr
     strategy_version: IdStr
-    symbol: str = Field(pattern=r"^[A-Z][A-Z.]{0,9}$")
+    symbol: str = Field(pattern=r"^[A-Z]+(?:\.[A-Z]+)?$", max_length=10)
     side: str = "BUY"
     quantity: int = Field(strict=True, ge=1)
     limit: ExactPrice

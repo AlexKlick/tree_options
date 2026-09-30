@@ -27,6 +27,7 @@ class FakeSDK:
         self.calls = []
         self.account_information = self
         self.trading = self
+        self.connections = self
 
     def __getattr__(self, name):
         def call(**kwargs):
@@ -36,16 +37,28 @@ class FakeSDK:
                     "id": "account-1",
                     "is_paper": True,
                     "institution_name": "Alpaca",
+                    "brokerage_authorization": "connection-1",
                     "sync_status": {
                         "holdings": {
                             "initial_sync_completed": True,
                             "last_successful_sync": NOW.isoformat(),
+                            "holdings_unavailable": False,
                         }
                     },
                 }
                 if name == "get_user_account_details"
                 else []
             )
+            if name == "detail_brokerage_authorization":
+                body = {
+                    "id": "connection-1",
+                    "disabled": False,
+                    "type": "read",
+                    "brokerage": {"slug": "ALPACA-PAPER"},
+                    "data_freshness_mode": {"institution": "realtime", "snaptrade": "realtime"},
+                }
+            if name == "get_user_account_balance":
+                body = [{"currency": {"code": "USD"}, "cash": "1000"}]
             return SimpleNamespace(
                 body=body,
                 headers={"X-Request-ID": f"req-{name}"},
@@ -66,11 +79,21 @@ def test_readonly_snapshot_calls_generated_methods_and_retains_provenance():
     assert state.orders.request_id == "req-get_user_account_orders"
     assert [n for n, _ in sdk.calls] == [
         "get_user_account_details",
+        "detail_brokerage_authorization",
         "get_user_account_balance",
         "get_all_account_positions",
         "get_user_account_orders",
     ]
-    assert all("timeout" not in k and k["account_id"] == "account-1" for _, k in sdk.calls)
+    assert all("timeout" not in k for _, k in sdk.calls)
+    assert all(
+        k["account_id"] == "account-1"
+        for name, k in sdk.calls
+        if name != "detail_brokerage_authorization"
+    )
+    assert (
+        sdk.calls[1][1]["authorization_id"] == "connection-1"
+        and "account_id" not in sdk.calls[1][1]
+    )
     assert "SECRET" not in repr(provider)
 
 
@@ -98,6 +121,7 @@ def test_real_sdk_retries_disabled_and_methods_present():
         ("account_information", "get_user_account_orders"),
         ("account_information", "get_user_account_order_detail"),
         ("account_information", "get_all_account_positions"),
+        ("connections", "detail_brokerage_authorization"),
         ("trading", "get_user_account_quotes"),
         ("trading", "place_force_order"),
         ("trading", "cancel_order"),
@@ -152,6 +176,11 @@ def test_real_generated_calls_reach_transport_with_deadline_and_no_retry(monkeyp
         ),
         lambda: provider.quotes("AAPL"),
         lambda: provider.activities(),
+        lambda: provider._call(
+            "connections",
+            "detail_brokerage_authorization",
+            authorization_id="00000000-0000-4000-8000-000000000003",
+        ),
         lambda: provider._submit(
             symbol="AAPL",
             side="BUY",
@@ -187,16 +216,28 @@ def test_real_sdk_successful_readonly_response_parsing(monkeypatch):
                 "id": account_id,
                 "is_paper": True,
                 "institution_name": "Alpaca",
+                "brokerage_authorization": "00000000-0000-4000-8000-000000000003",
                 "sync_status": {
                     "holdings": {
                         "initial_sync_completed": True,
                         "last_successful_sync": NOW.isoformat(),
+                        "holdings_unavailable": False,
                     }
                 },
             }
             if path.endswith(account_id)
             else []
         )
+        if "/authorizations/" in path:
+            body = {
+                "id": "00000000-0000-4000-8000-000000000003",
+                "disabled": False,
+                "type": "read",
+                "brokerage": {"slug": "ALPACA-PAPER"},
+                "data_freshness_mode": {"institution": "realtime", "snaptrade": "realtime"},
+            }
+        if path.endswith("/balances"):
+            body = [{"currency": {"code": "USD"}, "cash": 1000}]
         return urllib3.HTTPResponse(
             body=json.dumps(body).encode(),
             status=200,

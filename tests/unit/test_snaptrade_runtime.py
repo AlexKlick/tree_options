@@ -42,7 +42,30 @@ class FakeProvider:
         return SimpleNamespace(
             binding=self.binding,
             fresh_at=lambda now: True,
-            details=obs,
+            details=ProviderObservation(
+                {
+                    "id": "account-1",
+                    "is_paper": True,
+                    "institution_name": "Alpaca",
+                    "brokerage_authorization": "connection-1",
+                    "sync_status": {"holdings": {"holdings_unavailable": False}},
+                },
+                NOW,
+                "details",
+                "f" * 64,
+            ),
+            connection=ProviderObservation(
+                {
+                    "id": "connection-1",
+                    "disabled": False,
+                    "type": "trade",
+                    "brokerage": {"slug": "ALPACA-PAPER"},
+                    "data_freshness_mode": {"institution": "realtime", "snaptrade": "realtime"},
+                },
+                NOW,
+                "connection",
+                "e" * 64,
+            ),
             balances=ProviderObservation(
                 [{"currency": {"code": "USD"}, "cash": "1000"}], NOW, "b", "b" * 64
             ),

@@ -28,9 +28,11 @@ from tree_options.execution.snaptrade_adapter import (
     stable_client_order_id,
 )
 from tree_options.execution.snaptrade_provider import (
+    AccountSnapshot,
     EquityPaperEffect,
     ProviderDisconnected,
     SnapTradeProvider,
+    account_findings,
 )
 from tree_options.research.runstate.store import RunstateStore
 from tree_options.time.sessions import shift_instant
@@ -102,6 +104,17 @@ class SnapTradePaperRuntime:
         self.owner = AccountOwnership(
             ownership_root or default_ownership_root(), provider.binding.alias
         )
+        self.provider_owner = AccountOwnership(
+            self.owner.root,
+            "snaptrade-account:" + provider.binding.account_id,
+            epoch=self.owner.epoch,
+        )
+        self.account: AccountSnapshot | None = None
+        self.state_owner = AccountOwnership(
+            paths.root / "ownership", "snaptrade-paper-runtime", epoch=self.owner.epoch
+        )
+        self._state_bound = False
+        self.account_findings: tuple[str, ...] = ()
         self.ready = False
         self._current: OrderIntent | None = None
         self._screening: dict[str, Any] = {}
@@ -109,6 +122,36 @@ class SnapTradePaperRuntime:
     def start(self) -> None:
         self.owner.acquire()
         try:
+            self.provider_owner.acquire()
+            self.state_owner.acquire()
+            binding_path = self.paths.root / "account-binding.json"
+            binding = {
+                "account_alias": self.provider.binding.alias,
+                "provider_account_sha256": hashlib.sha256(
+                    self.provider.binding.account_id.encode()
+                ).hexdigest(),
+                "environment": self.execution_environment,
+            }
+            with _locked(self.paths):
+                if binding_path.exists():
+                    if json.loads(binding_path.read_text()) != binding:
+                        raise SupervisedRefused("state_account_binding_mismatch")
+                else:
+                    setup_names = {
+                        self.paths.lock().name,
+                        "ownership",
+                        "qualification",
+                        "read-only-qualification.json",
+                    }
+                    prepared_empty = {"permits", "outbox", "journal"}
+                    if any(
+                        p.name not in setup_names
+                        and not (p.name in prepared_empty and p.is_dir() and not any(p.iterdir()))
+                        for p in self.paths.root.iterdir()
+                    ):
+                        raise SupervisedRefused("state_account_binding_unknown")
+                    _atomic_write(binding_path, binding)
+                self._state_bound = True
             recover(self.paths, now=self.clock())
             self.refresh()
         except Exception:
@@ -117,13 +160,37 @@ class SnapTradePaperRuntime:
 
     def close(self) -> None:
         self.ready = False
-        self.owner.close()
-        self.publish()
+        try:
+            if (
+                self.owner.held
+                and self.provider_owner.held
+                and self.state_owner.held
+                and self._state_bound
+            ):
+                # Publish release while both leases still exclude contenders.
+                # A refused contender must never overwrite the active owner.
+                projection = self.projection()
+                projection["owner_held"] = False
+                _atomic_write(self.paths.root / "projection.json", projection)
+        finally:
+            self._state_bound = False
+            self.state_owner.close()
+            self.provider_owner.close()
+            self.owner.close()
 
     def refresh(self) -> None:
-        if not self.owner.held:
+        self.ready = False
+        self.account = None
+        if (
+            not self.owner.held
+            or not self.provider_owner.held
+            or not self.state_owner.held
+            or not self._state_bound
+        ):
             raise SupervisedRefused("account_owner_absent")
         account = self.provider.account_snapshot()
+        self.account = account
+        self.account_findings = account_findings(account, self.clock())
         _atomic_write(
             self.paths.root / "account-snapshot.json",
             {
@@ -132,7 +199,6 @@ class SnapTradePaperRuntime:
                 "holdings_at": account.holdings_at.isoformat(),
                 "observations": [
                     {
-                        "body": json.loads(json.dumps(o.body, default=str)),
                         "captured_at": o.captured_at.isoformat(),
                         "request_id": o.request_id,
                         "digest": o.digest,
@@ -141,7 +207,7 @@ class SnapTradePaperRuntime:
                 ],
             },
         )
-        self.ready = account.fresh_at(self.clock())
+        self.ready = not self.account_findings
         for terminal in self.paths.outbox_dir().glob("*.terminal.json"):
             if not self.paths.journal(terminal.name.removesuffix(".terminal.json")).exists():
                 self.ready = False  # orphan effect without a recoverable journal
@@ -203,7 +269,13 @@ class SnapTradePaperRuntime:
         if effect.payload() != payload:
             raise SupervisedRefused("effect_bytes_not_canonical")
         now = self.clock()
-        if not self.owner.held or effect.owner_epoch != self.owner.epoch:
+        if (
+            not self.owner.held
+            or not self.provider_owner.held
+            or not self.state_owner.held
+            or not self._state_bound
+            or effect.owner_epoch != self.owner.epoch
+        ):
             raise SupervisedRefused("account_owner_mismatch")
         if effect.account_alias != self.provider.binding.alias:
             raise SupervisedRefused("account_alias_mismatch")
@@ -282,6 +354,11 @@ class SnapTradePaperRuntime:
                 usd_cash += cash
         if usd_cash < effect.limit * effect.quantity:
             raise SupervisedRefused("insufficient_cash")
+        findings = account_findings(account, now)
+        if findings:
+            raise SupervisedRefused(findings[0])
+        if account.connection is None or account.connection.body.get("type") != "trade":
+            raise SupervisedRefused("connection_read_only")
         if self.quote_source is None:
             # SDK quote schema has no authoritative timestamp. Never call a
             # local receive time a quote event time to unblock the canary.
@@ -548,6 +625,13 @@ class SnapTradePaperRuntime:
         )
 
     def publish(self) -> None:
+        if (
+            not self.owner.held
+            or not self.provider_owner.held
+            or not self.state_owner.held
+            or not self._state_bound
+        ):
+            raise SupervisedRefused("account_owner_absent")
         _atomic_write(self.paths.root / "projection.json", self.projection())
 
     def halt(self) -> None:
@@ -592,6 +676,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="TREX SnapTrade paper read-only/recovery controls")
     parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--state", type=Path, required=True)
+    parser.add_argument("--ownership-root", type=Path)
     parser.add_argument("command", choices=("read-only", "recover", "status", "halt", "run"))
     args = parser.parse_args()
     paths = SupervisedPaths(args.state)
@@ -599,8 +684,15 @@ def main() -> int:
         revoke_mandate(paths, now=datetime.now(UTC), reason="operator_halt")
         print("Paper mandate revoked; existing broker orders require reconciliation.")
         return 0
+    if args.command == "read-only":
+        from tree_options.trex.snaptrade_qualification import main as qualify_main
+
+        arguments = ["--config", str(args.config), "--state", str(args.state)]
+        if args.ownership_root is not None:
+            arguments.extend(["--ownership-root", str(args.ownership_root)])
+        return qualify_main([*arguments, "qualify"])
     provider = SnapTradeProvider.from_private_file(args.config)
-    runtime = SnapTradePaperRuntime(provider, paths)
+    runtime = SnapTradePaperRuntime(provider, paths, ownership_root=args.ownership_root)
     try:
         runtime.start()
         runtime.publish()

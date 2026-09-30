@@ -326,6 +326,32 @@ def rejection_from_snapshot(
     )
 
 
+def validate_snapshot_status(snapshot: SnapTradeOrderSnapshot) -> BrokerReadbackStatus:
+    """Validate cumulative provider state without inventing a TREX intent."""
+    status = normalize_status(snapshot.status)
+    total = snapshot.total_quantity
+    cumulative = snapshot.filled_quantity
+    if status in {BrokerReadbackStatus.REJECTED, BrokerReadbackStatus.AMBIGUOUS}:
+        if cumulative != 0:
+            raise SnapTradeNormalizationError(
+                f"{status} status with positive filled_quantity cannot be represented losslessly"
+            )
+    elif total is None or not snapshot.brokerage_order_id:
+        raise SnapTradeNormalizationError("known broker state requires total quantity and identity")
+    if status is BrokerReadbackStatus.OPEN and cumulative != 0:
+        raise SnapTradeNormalizationError(
+            "OPEN status with positive filled_quantity is inconsistent"
+        )
+    if status is BrokerReadbackStatus.PARTIALLY_FILLED:
+        if cumulative <= 0 or total is None or cumulative >= total:
+            raise SnapTradeNormalizationError(
+                "PARTIAL requires 0 < filled_quantity < total_quantity"
+            )
+    if status is BrokerReadbackStatus.FILLED and cumulative != total:
+        raise SnapTradeNormalizationError("FILLED requires filled_quantity == total_quantity")
+    return status
+
+
 def readback_from_snapshot(
     intent: OrderIntent,
     snapshot: SnapTradeOrderSnapshot,
@@ -333,7 +359,7 @@ def readback_from_snapshot(
     locally_received_at: datetime,
 ) -> BrokerReadback:
     _require_correlation(intent, snapshot)
-    status = normalize_status(snapshot.status)
+    status = validate_snapshot_status(snapshot)
     if snapshot.total_quantity is not None and snapshot.total_quantity != intent.quantity:
         raise SnapTradeNormalizationError(
             "provider total does not match intent quantity; replacement requires explicit domain records"
@@ -370,19 +396,6 @@ def readback_from_snapshot(
         total = snapshot.total_quantity
         broker_order_id = snapshot.brokerage_order_id
         cumulative = snapshot.filled_quantity
-
-    # Tighten provider-status semantics before constructing the existing record.
-    if status is BrokerReadbackStatus.OPEN and cumulative != 0:
-        raise SnapTradeNormalizationError(
-            "OPEN status with positive filled_quantity is inconsistent"
-        )
-    if status is BrokerReadbackStatus.PARTIALLY_FILLED:
-        if cumulative <= 0 or total is None or cumulative >= total:
-            raise SnapTradeNormalizationError(
-                "PARTIAL requires 0 < filled_quantity < total_quantity"
-            )
-    if status is BrokerReadbackStatus.FILLED and cumulative != total:
-        raise SnapTradeNormalizationError("FILLED requires filled_quantity == total_quantity")
 
     return BrokerReadback(
         record_id=_record_id(intent.intent_id, token, "readback"),
