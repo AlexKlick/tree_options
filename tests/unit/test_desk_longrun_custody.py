@@ -174,3 +174,168 @@ def test_resume_refuses_changed_scoring_engine_before_reusing_receipts(tmp_path,
         plan(path)
     assert original["engine_sha256"] == "a" * 64
     assert (path / "plan.json").read_bytes() == before
+
+
+def plus_board(*ids):
+    return replace(board(), rows=[{"id": cid} for cid in ids])
+
+
+@pytest.mark.parametrize("ids", [("a+b",), ("a+b", "a", "b")])
+def test_whole_plus_row_keeps_single_choice_receipt(ids):
+    current = plus_board(*ids)
+    assert longrun._validated(current, "a+b", "intraday", "") == {
+        "note": "",
+        "choice": "a+b",
+        "horizon": "intraday",
+        "row": 0,
+    }
+
+
+def test_bound_outcomes_distinguish_whole_plus_row_and_actual_package():
+    calls = []
+    prices = {"a+b": 99, "a": 1, "b": 2, "c": 3}
+
+    def outcome(snapshot, candidate, horizon):
+        calls.append(candidate)
+        return {
+            "gross": prices[candidate],
+            "net": prices[candidate],
+            "exit_at": "2026-06-01T20:00:00+00:00",
+        }
+
+    current = plus_board("a+b", "a", "b", "c")
+    cache = longrun.OutcomeCache(outcome)
+    cache.bind_boards([current])
+    assert cache.get(current.snapshot, "a+b", None) == (99, 99)
+    assert calls == ["a+b"]
+    assert cache.get(current.snapshot, "a+c", None) == (4, 4)
+    assert cache.exit_at(current.snapshot, "a+c", None) == "2026-06-01T20:00:00+00:00"
+    assert calls == ["a+b", "a", "c"]
+    for invalid in ("a+missing", "a+a", "missing"):
+        with pytest.raises(ValueError, match="choice"):
+            cache.get(current.snapshot, invalid, None)
+    with pytest.raises(ValueError, match="snapshot"):
+        cache.get("unknown", "a", None)
+
+
+def test_prior_unbound_package_cannot_be_adopted_as_whole_row():
+    cache = longrun.OutcomeCache(lambda snapshot, cid, horizon: {"gross": 1, "net": 1})
+    current = plus_board("a+b", "a", "b")
+    assert cache.get(current.snapshot, "a+b", None) == (2, 2)
+    with pytest.raises(ValueError, match="unbound"):
+        cache.bind_boards([current])
+    assert cache.get(current.snapshot, "a+b", None) == (2, 2)
+
+
+def test_board_binding_is_immutable_and_rejects_conflicting_snapshot_membership():
+    cache = longrun.OutcomeCache(lambda *args: None)
+    current = plus_board("a", "b")
+    cache.bind_boards([current])
+    cache.bind_boards([current])
+    with pytest.raises(ValueError, match="binding"):
+        cache.bind_boards([plus_board("a", "c")])
+    fresh = longrun.OutcomeCache(lambda *args: None)
+    with pytest.raises(ValueError, match="snapshot"):
+        fresh.bind_boards([current, plus_board("a", "c")])
+    fresh.bind_boards([current])
+
+
+@pytest.mark.parametrize("right", ["2026-06-01T21:00:00", "bad-time"])
+def test_pair_exit_refuses_contradictory_or_malformed_instants_without_cached_success(right):
+    def outcome(snapshot, cid, horizon):
+        return {
+            "gross": 1,
+            "net": 1,
+            "exit_at": "2026-06-01T20:00:00+00:00" if cid == "a" else right,
+        }
+
+    cache = longrun.OutcomeCache(outcome)
+    for _ in range(2):
+        with pytest.raises(ValueError, match="exit"):
+            cache.get(board().snapshot, "a+b", None)
+
+
+def test_pair_completion_stays_unknown_if_either_exit_is_missing():
+    assert longrun._later_exit(None, "2026-06-01T20:00:00+00:00") is None
+    assert longrun._later_exit("2026-06-01T20:00:00+00:00", None) is None
+    assert longrun._later_exit(None, None) is None
+    with pytest.raises(ValueError, match="exit"):
+        longrun._later_exit(None, "2026-06-01T20:00:00")
+
+
+def test_direct_score_binds_whole_row_identity_before_any_outcome_lookup():
+    current = plus_board("a+b", "a", "b")
+    specs = [longrun.PolicySpec("whole", "rule", rule=lambda b: ("a+b", None))]
+    arms = longrun.arms_of(specs)
+    receipts = {arms[0].name: {current.snapshot: {"ok": True, "choice": "a+b", "horizon": None}}}
+    cache = longrun.OutcomeCache(
+        lambda snapshot, cid, horizon: {
+            "gross": 99 if cid == "a+b" else 1,
+            "net": 99 if cid == "a+b" else 1,
+        }
+    )
+    result = longrun.score_run(
+        [current], arms, receipts, cache, longrun.Protocol(draws=1000, random_seeds=200)
+    )
+    assert result["standings"][0]["net_total"] == 99
+
+
+def test_engine_identity_binds_runtime_versions(monkeypatch):
+    before = longrun.longrun_engine_identity()
+    monkeypatch.setattr(longrun.np, "__version__", "different-runtime")
+    assert longrun.longrun_engine_identity() != before
+
+
+def test_whole_plus_skill_keeps_single_row_decomposition_and_live_excess():
+    from tree_options.desk import skill
+
+    current = plus_board("a+b", "a", "b")
+    arms = longrun.arms_of([longrun.PolicySpec("whole", "rule", rule=lambda b: ("a+b", None))])
+    receipts = {arms[0].name: {current.snapshot: {"ok": True, "choice": "a+b", "horizon": None}}}
+    cache = longrun.OutcomeCache(
+        lambda snapshot, cid, horizon: {
+            "gross": 99 if cid == "a+b" else 1,
+            "net": 99 if cid == "a+b" else 1,
+        }
+    )
+    cache.bind_boards([current])
+    digest = skill.skill_section(
+        [current], arms, receipts, cache, longrun.Protocol(draws=1000, random_seeds=200)
+    )
+    entry = digest["arms"][arms[0].name]
+    assert entry.get("decomposition") != "n/a"
+    assert entry["net_total"] == 99
+    live = skill.progress_skill([current], arms, receipts, cache.get, {})
+    assert live["arms"][arms[0].name]["excess"] is not None
+    assert "pair arm" not in live["arms"][arms[0].name].get("note", "")
+
+
+def test_rule_run_binds_whole_plus_before_execution_and_scoring(tmp_path):
+    current = plus_board("a+b", "a", "b")
+    result = longrun.run_longrun(
+        tmp_path / "run",
+        boards=[current],
+        policies=[longrun.PolicySpec("whole", "rule", rule=lambda b: ("a+b", None))],
+        outcome=lambda snapshot, cid, horizon: {
+            "gross": 99 if cid == "a+b" else 1,
+            "net": 99 if cid == "a+b" else 1,
+        },
+        ask=None,
+        quota_ok=lambda: (True, "fixture"),
+        protocol=longrun.Protocol(draws=1000, random_seeds=200),
+    )
+    assert result["status"] == "finished"
+    receipt = longrun.load_receipts(longrun.receipts_path(tmp_path / "run", "whole"))[
+        current.snapshot
+    ]
+    assert receipt["ok"] and receipt["row"] == 0 and "legs" not in receipt
+    digest = json.loads((tmp_path / "run" / "digest.json").read_text())
+    assert digest["standings"][0]["net_total"] == 99
+
+
+def test_unbound_valid_package_memo_can_bind_without_changing_meaning():
+    cache = longrun.OutcomeCache(lambda snapshot, cid, horizon: {"gross": 1, "net": 1})
+    current = plus_board("a", "b")
+    assert cache.get(current.snapshot, "a+b", None) == (2, 2)
+    cache.bind_boards([current])
+    assert cache.get(current.snapshot, "a+b", None) == (2, 2)

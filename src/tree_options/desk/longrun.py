@@ -152,15 +152,23 @@ def pair_legs(choice: Any) -> list[str] | None:
 
 def _later_exit(a: str | None, b: str | None) -> str | None:
     """The later of two exit instants (a pair resolves when its last leg
-    does). None-safe; compared as instants when both parse, else lexically."""
-    if a is None:
-        return b
-    if b is None:
-        return a
-    try:
-        return a if datetime.fromisoformat(a) >= datetime.fromisoformat(b) else b
-    except ValueError:
-        return max(a, b)
+    does). Both must be known aware instants to identify pair completion."""
+    instants: list[datetime | None] = []
+    for value in (a, b):
+        if value is None:
+            instants.append(None)
+            continue
+        try:
+            instant = datetime.fromisoformat(value)
+        except (ValueError, TypeError):
+            raise ValueError("pair exit requires a well-formed aware ISO instant") from None
+        if instant.tzinfo is None or instant.utcoffset() is None:
+            raise ValueError("pair exit requires an aware ISO instant")
+        instants.append(instant)
+    left, right = instants
+    if left is None or right is None:
+        return None
+    return a if left >= right else b
 
 
 # ------------------------------------------------------------------ inputs
@@ -488,7 +496,7 @@ def _validated(board: Board, choice: Any, horizon: Any, note: Any) -> dict[str, 
         out.update(choice=None, horizon=None, row=None)
         return out
     horizon = None if horizon is None else str(horizon)[:40]
-    legs = pair_legs(choice)
+    legs = None if str(choice) in ids else pair_legs(choice)
     if legs is None:
         out.update(choice=str(choice), horizon=horizon, row=ids.index(str(choice)))
     else:
@@ -587,9 +595,52 @@ class OutcomeCache:
         self._memo: dict[tuple[str, str, str | None], tuple[float, float] | None] = {}
         self._exits: dict[tuple[str, str, str | None], str | None] = {}
         self._lock = threading.Lock()
+        self._board_ids: dict[str, frozenset[str]] | None = None
+        self._unbound_choices: set[tuple[str, str]] = set()
+
+    @staticmethod
+    def _bound_legs(
+        bindings: Mapping[str, frozenset[str]], snapshot: str, candidate: str
+    ) -> list[str] | None:
+        if snapshot not in bindings:
+            raise ValueError("outcome snapshot is not bound to a board")
+        ids = bindings[snapshot]
+        if candidate in ids:
+            return None
+        legs = pair_legs(candidate)
+        if legs is None or legs[0] == legs[1] or any(leg not in ids for leg in legs):
+            raise ValueError("outcome choice is not a row or valid pair on the bound board")
+        return legs
+
+    def bind_boards(self, boards: Sequence[Board]) -> None:
+        """Freeze choice meaning before scoring; never adopt earlier ambiguous facts."""
+        bindings: dict[str, frozenset[str]] = {}
+        for board in boards:
+            ids = frozenset(board.ids)
+            if board.snapshot in bindings and bindings[board.snapshot] != ids:
+                raise ValueError("conflicting outcome board snapshot membership")
+            bindings[board.snapshot] = ids
+        with self._lock:
+            if self._board_ids is not None:
+                if self._board_ids != bindings:
+                    raise ValueError("outcome board binding cannot change")
+                return
+            for snapshot, candidate in self._unbound_choices:
+                try:
+                    legs = self._bound_legs(bindings, snapshot, candidate)
+                except ValueError:
+                    raise ValueError("prior unbound outcome choice cannot be adopted") from None
+                if legs != pair_legs(candidate):
+                    raise ValueError("prior unbound outcome choice would change meaning")
+            self._board_ids = bindings
 
     def get(self, snapshot: str, candidate: str, horizon: str | None) -> tuple[float, float] | None:
-        legs = pair_legs(candidate)
+        with self._lock:
+            if self._board_ids is None:
+                legs = pair_legs(candidate)
+                self._unbound_choices.add((snapshot, candidate))
+            else:
+                legs = self._bound_legs(self._board_ids, snapshot, candidate)
         if legs is None:
             return self._single(snapshot, candidate, horizon)
         key = (snapshot, candidate, horizon)
@@ -604,8 +655,7 @@ class OutcomeCache:
             else (first[0] + second[0], first[1] + second[1])
         )
         with self._lock:
-            self._memo[key] = value
-            self._exits[key] = (
+            exit_at = (
                 None
                 if value is None
                 else _later_exit(
@@ -613,6 +663,8 @@ class OutcomeCache:
                     self._exits.get((snapshot, legs[1], horizon)),
                 )
             )
+            self._memo[key] = value
+            self._exits[key] = exit_at
         return value
 
     def _single(
@@ -1403,6 +1455,7 @@ def score_run(
     skill_options: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The digest document. Pure over its inputs (fixed seeds throughout)."""
+    outcomes.bind_boards(boards)
     draws, seed = protocol.draws, protocol.seed
     scored = [
         b
@@ -1988,7 +2041,7 @@ def longrun_engine_identity() -> str:
     This does not infer arbitrary closure identity or freeze third-party code.
     """
     root = Path(__file__).resolve().parent
-    digest = hashlib.sha256()
+    modules = {}
     for name in (
         "longrun.py",
         "purge.py",
@@ -2001,9 +2054,14 @@ def longrun_engine_identity() -> str:
         "forecast.py",
     ):
         source = (root / name).read_bytes()
-        digest.update(name.encode() + b"\0")
-        digest.update(hashlib.sha256(source).digest())
-    return digest.hexdigest()
+        modules[name] = hashlib.sha256(source).hexdigest()
+    return hashlib.sha256(
+        json.dumps(
+            {"modules": modules, "python": sys.version, "numpy": np.__version__},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
 
 
 def _plan(
@@ -2159,6 +2217,7 @@ def run_longrun(
             raise RunLocked(f"{run_dir.name}: another process holds this run")
         plan = _plan(run_dir, boards, policies, protocol, meta, clock)
         outcomes = OutcomeCache(outcome)
+        outcomes.bind_boards(boards)
         executor = _Executor(
             run_dir,
             boards,

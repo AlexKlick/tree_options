@@ -902,13 +902,19 @@ PAIR_NA = (
 )
 
 
-def _any_pair(receipts: Mapping[str, Mapping[str, Any]]) -> bool:
+def _any_pair(receipts: Mapping[str, Mapping[str, Any]], boards: Sequence[Board]) -> bool:
     """The arm ever held a two-leg package (an ok receipt with a pair choice)."""
-    return any(
-        longrun.pair_legs(rec.get("choice")) is not None
-        for rec in receipts.values()
-        if rec.get("ok")
-    )
+    for board in boards:
+        rec = receipts.get(board.snapshot, {})
+        choice = rec.get("choice")
+        if not rec.get("ok") or choice is None or choice in board.ids:
+            continue
+        legs = longrun.pair_legs(choice)
+        if legs is not None:
+            if legs[0] == legs[1] or any(leg not in board.ids for leg in legs):
+                raise ValueError("pair receipt is not a valid choice on its board")
+            return True
+    return False
 
 
 def pair_arm_skill(
@@ -976,7 +982,7 @@ def skill_section(
         mine = receipts.get(arm.name, {})
         covered = [b for b in boards if mine.get(b.snapshot, {}).get("ok")]
         complete = len(covered) == len(boards)
-        if _any_pair(mine):
+        if _any_pair(mine, boards):
             doc_arms[arm.name] = {
                 "policy": arm.policy.name,
                 "complete": complete,
@@ -1043,7 +1049,7 @@ def progress_skill(
     out: dict[str, Any] = {}
     for arm in arms:
         mine = receipts.get(arm.name, {})
-        if _any_pair(mine):
+        if _any_pair(mine, boards):
             decided = _ordered_ok(mine, set(by_snapshot))
             out[arm.name] = {
                 "decided": len(decided),
