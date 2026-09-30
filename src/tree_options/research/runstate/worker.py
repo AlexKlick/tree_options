@@ -55,10 +55,12 @@ one queued run synchronously.
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -87,6 +89,7 @@ from tree_options.research.forecast.sources import (
     session_authority_sha256,
 )
 from tree_options.research.forecast.spec_io import forecast_from_dict
+from tree_options.research.paths import assert_no_overlap_with_desk
 from tree_options.research.runstate.spec_hash import spec_hash as make_spec_hash
 from tree_options.research.runstate.store import (
     RunstateStoreError,
@@ -212,13 +215,22 @@ class ResearchWorker:
         """Claim and process at most one queued run. Returns True when
         a run was processed (so tests can drive exact counts and the
         thread loop can idle politely)."""
-        with open_runstate_store(self.workspace) as store:
-            claim = self._next_queued(store)
-            if claim is None:
+        assert_no_overlap_with_desk(workspace=self.workspace)
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        with (self.workspace / "worker.lock").open("a+b") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
                 return False
-            run_id, run = claim
-            self._process(store, run_id, run)
-            return True
+            with open_runstate_store(self.workspace) as store:
+                store.verify()
+                self._recover_interrupted(store)
+                claim = self._next_queued(store)
+                if claim is None:
+                    return False
+                run_id, run = claim
+                self._process(store, run_id, run)
+                return True
 
     def _next_queued(self, store: Any) -> tuple[str, dict[str, Any]] | None:
         queued = [
@@ -237,7 +249,12 @@ class ResearchWorker:
 
     def _process(self, store: Any, run_id: str, run: dict[str, Any]) -> None:
         now = datetime.now().isoformat()
-        store.replace("run", {**run, "status": "running", "started_at": now}, key=run_id)
+        with self._queue_control():
+            latest = store.get("run", run_id)
+            if latest is None or latest.get("status") != "queued":
+                return
+            run = latest
+            store.replace("run", {**run, "status": "running", "started_at": now}, key=run_id)
         try:
             spec_payload = store.get("spec", run_id)
             if spec_payload is None:
@@ -249,24 +266,43 @@ class ResearchWorker:
                 result_payload = self._compute_forecast(run_id, spec_payload, run)
             elif kind == "comparison":
                 result_payload = self._compute(run_id, spec_payload)
+            elif kind == "quant_campaign":
+                from tree_options.research.quant_jobs import compute_job
+
+                result_payload = compute_job(self.workspace, run_id, spec_payload)
             else:
                 # An unknown kind must FAIL loudly — pre-RL-3 it fell
                 # through to the comparison engine, computing a
                 # different job than the record describes.
                 raise RunstateStoreError(f"unknown run kind {kind!r} for run {run_id}")
         except Exception as exc:
-            store.replace(
-                "run",
-                {
-                    **run,
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "completed_at": datetime.now().isoformat(),
-                },
-                key=run_id,
+            halted = (
+                run.get("kind") == "quant_campaign"
+                and (self.workspace / "quant-jobs" / run_id / "STOP").exists()
             )
+            error = f"{type(exc).__name__}: {exc}"
+            if run.get("kind") == "quant_campaign":
+                from tree_options.research.quant_jobs import failure_code
+
+                error = failure_code(exc)
+            with self._queue_control():
+                latest = store.get("run", run_id) or run
+                halted = (
+                    run.get("kind") == "quant_campaign"
+                    and (self.workspace / "quant-jobs" / run_id / "STOP").exists()
+                )
+                store.replace(
+                    "run",
+                    {
+                        **latest,
+                        "status": "stopped" if halted else "failed",
+                        "error": error,
+                        **({"error_code": error} if run.get("kind") == "quant_campaign" else {}),
+                        "completed_at": datetime.now().isoformat(),
+                    },
+                    key=run_id,
+                )
             return
-        store.put("result", result_payload, key=run_id)
         replace_fields = {
             "completed_at": datetime.now().isoformat(),
             "result_sha256": result_payload["result_sha256"],
@@ -281,11 +317,24 @@ class ResearchWorker:
             replace_fields["scenario_diff_sha256"] = result_payload["scenario_diff_sha256"]
         if "parent_run_id" in result_payload:
             replace_fields["parent_run_id"] = result_payload["parent_run_id"]
-        store.replace(
-            "run",
-            {**run, "status": "completed", **replace_fields},
-            key=run_id,
-        )
+        with self._queue_control():
+            latest = store.get("run", run_id) or run
+            halted = (
+                run.get("kind") == "quant_campaign"
+                and (self.workspace / "quant-jobs" / run_id / "STOP").exists()
+            )
+            if halted:
+                store.replace("run", {**latest, "status": "stopped"}, key=run_id)
+                return
+            store.put("result", result_payload, key=run_id)
+            store.replace("run", {**latest, "status": "completed", **replace_fields}, key=run_id)
+
+    @contextmanager
+    def _queue_control(self) -> Iterator[None]:
+        """Short state writes serialize with controls; computation holds no control lock."""
+        with (self.workspace / "queue.control.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
 
     def _compute(self, run_id: str, spec_payload: dict[str, Any]) -> dict[str, Any]:
         """Parse the stored canonical spec, resolve candidates from the
@@ -755,12 +804,34 @@ class ResearchWorker:
         """A run left ``running`` by a dead process is explicitly
         re-queued at startup: recompute is deterministic and result puts
         are idempotent, so this is honest recovery, not silent reuse."""
-        with open_runstate_store(self.workspace) as store:
+        assert_no_overlap_with_desk(workspace=self.workspace)
+        self.workspace.mkdir(parents=True, exist_ok=True)
+        with (self.workspace / "worker.lock").open("a+b") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            with open_runstate_store(self.workspace) as store:
+                store.verify()
+                self._recover_interrupted(store)
+
+    def _recover_interrupted(self, store: Any) -> None:
+        """Only called under the cross-process worker fence. Free fence proves
+        no current worker owns a running job; a delayed standby can recover it."""
+        with self._queue_control():
             for payload, _at in store.all_at("run"):
-                if isinstance(payload, dict) and payload.get("status") == "running":
+                if isinstance(payload, dict) and payload.get("status") in {"running", "stopping"}:
+                    halted = (
+                        payload.get("kind") == "quant_campaign"
+                        and (self.workspace / "quant-jobs" / payload["run_id"] / "STOP").exists()
+                    )
                     store.replace(
                         "run",
-                        {**payload, "status": "queued", "requeued_at": datetime.now().isoformat()},
+                        {
+                            **payload,
+                            "status": "stopped" if halted else "queued",
+                            "requeued_at": datetime.now().isoformat(),
+                        },
                         key=payload["run_id"],
                     )
 
