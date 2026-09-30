@@ -7719,6 +7719,34 @@ MUTANTS.append(
 )
 
 
+MUTANTS.extend(
+    [
+        {
+            "id": "MG17-skill-cost-scope-complete",
+            "owner": "test_skill_only_cost_refusal_gates_full_counterfactual_scope",
+            "file": "src/tree_options/desk/longrun.py",
+            "anchor": "    for board in boards:\n        for candidate in board.ids:\n            for horizon in skill_horizons:",
+            "replacement": "    for board in []:\n        for candidate in board.ids:\n            for horizon in skill_horizons:",
+            "selectors": [
+                "tests/unit/test_desk_derived_cost_governance.py::test_skill_only_cost_refusal_gates_full_counterfactual_scope"
+            ],
+            "invariant": "skill-only horizons and excluded boards are priced before publishing statistical review",
+        },
+        {
+            "id": "MG18-cost-calendar-source-custody",
+            "owner": "test_engine_custody_includes_cost_calendar_helper_bytes",
+            "file": "src/tree_options/desk/longrun.py",
+            "anchor": "        outcomes,\n        purge,\n        sessions,\n        skill,\n        theory_rules,\n    ):",
+            "replacement": "        outcomes,\n        purge,\n        skill,\n        theory_rules,\n    ):",
+            "selectors": [
+                "tests/unit/test_desk_derived_cost_governance.py::test_engine_custody_includes_cost_calendar_helper_bytes"
+            ],
+            "invariant": "the DTE helper source bytes participate in cost/scoring engine custody",
+        },
+    ]
+)
+
+
 def _run(worktree: Path, args: list[str], timeout: int) -> subprocess.CompletedProcess:
     return subprocess.run(
         ["uv", "run", *args], cwd=worktree, capture_output=True, text=True, timeout=timeout

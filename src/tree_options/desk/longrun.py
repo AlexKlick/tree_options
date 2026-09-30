@@ -1847,6 +1847,18 @@ def score_run(
     bench = benchmark_rows(
         benchmarks or {}, sessions, capital=protocol.capital, draws=draws, seed=seed
     )
+    from tree_options.desk import skill
+
+    # Skill's power and counterfactual menus cover every input board, including
+    # boards excluded from the paired scoreboard. Freeze that pricing scope
+    # before publishing any gate or decomposition; probes never enter ledgers.
+    skill_horizons = (
+        protocol.random_horizons if protocol.random_horizons is not None else skill.MENU_HORIZONS
+    )
+    for board in boards:
+        for candidate in board.ids:
+            for horizon in skill_horizons:
+                outcomes.get(board.snapshot, candidate, horizon)
     pricing_facts = outcomes.pricing_facts()
     counterfactual_refusals = sum(f.get("status") == "no_price" for f in pricing_facts)
     pricing_complete = no_price.as_dict()["total"] == 0 and counterfactual_refusals == 0
@@ -2309,6 +2321,7 @@ def longrun_engine_identity() -> str:
         lab,
         outcomes,
         purge,
+        sessions,
         skill,
         theory_rules,
     )
@@ -2324,6 +2337,7 @@ def longrun_engine_identity() -> str:
         lab,
         outcomes,
         purge,
+        sessions,
         skill,
         theory_rules,
     ):

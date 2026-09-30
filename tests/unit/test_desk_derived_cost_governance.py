@@ -240,3 +240,49 @@ def test_declared_derived_basis_cannot_downgrade_when_callback_has_no_cost_facts
         and f["eligible_for_operator_review"] is False
         for f in doc["walk_forward"]["finalists"]
     )
+
+
+@pytest.mark.parametrize("excluded_only", [False, True])
+def test_skill_only_cost_refusal_gates_full_counterfactual_scope(excluded_only):
+    boards, arms, receipts, _, protocol = fixture()
+    excluded = boards[0].snapshot
+    if excluded_only:
+        receipts[arms[-1].name][excluded]["ok"] = False
+
+    def outcome(snapshot, candidate, horizon):
+        if horizon == "eod" and (not excluded_only or snapshot == excluded):
+            return refusal()
+        return dict(
+            gross=120 if candidate == "a" else -30,
+            net=100 if candidate == "a" else -30,
+            exit_at=None,
+        )
+
+    doc = longrun.score_run(boards, arms, receipts, longrun.OutcomeCache(outcome), protocol)
+    assert doc["no_price"]["total"] == 0
+    assert doc["pricing_coverage"]["counterfactual_refusals"] > 0
+    assert doc["pricing_status"] == "DATA_GATED"
+    assert doc["evaluation_valid"] is False
+    assert doc["skill"]["status"] == "DATA_GATED"
+    assert all(
+        f["rule_check"]["pricing_complete"] is False and f["eligible_for_operator_review"] is False
+        for f in doc["walk_forward"]["finalists"]
+    )
+    if excluded_only:
+        assert doc["boards"]["excluded"] == 1
+
+
+def test_engine_custody_includes_cost_calendar_helper_bytes(monkeypatch):
+    from pathlib import Path
+
+    from tree_options.desk import sessions
+
+    original = longrun.longrun_engine_identity()
+    read_bytes = Path.read_bytes
+
+    def changed(path):
+        content = read_bytes(path)
+        return content + b"\n# changed DTE calendar" if str(path) == sessions.__file__ else content
+
+    monkeypatch.setattr(Path, "read_bytes", changed)
+    assert longrun.longrun_engine_identity() != original
