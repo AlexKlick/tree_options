@@ -89,6 +89,16 @@ accepted order status or exact execution economics. `UncertaintyObserved` extend
 that do not faithfully mean timeout or disconnect, while those specific transport
 facts retain `TimeoutObserved`/`DisconnectObserved`.
 
+The durable identity registry also prevents different broker order IDs from
+binding to the same intent before an acknowledgement has been representable.
+A snapshot's update or placement timestamp is not a rejection event time:
+`rejection_from_snapshot` requires an explicit authoritative rejection event
+timestamp. Snapshot-only rejection remains readback evidence; it never creates
+an `OrderReject` with an inferred event time. Malformed account/order/balance
+rows refuse preflight. A local preflight refusal retains the consumed-permit
+fence and names that no provider effect occurred, without claiming a transport
+timeout or unrepresentable provider response.
+
 Primary contract references:
 [SnapTrade generated Python SDK](https://github.com/passiv/snaptrade-sdks/tree/master/sdks/python),
 [account details](https://docs.snaptrade.com/reference/Account%20Information/AccountInformation_getUserAccountDetails),
@@ -147,6 +157,9 @@ The UI distinguishes BACKTEST, DETERMINISTIC REPLAY, SIMULATED EXECUTION, BROKER
 PAPER and LIVE, and supplies no broker controls. Stale/invalid projections refuse
 readiness. Generated static assets were built only in the isolated worktree;
 they have not been deployed to the canonical/live cockpit.
+Projection validation requires actual boolean proof fields and complete
+execution evidence rows; missing reconciliation findings or string booleans
+are rejected before rendering.
 
 ## Validation custody
 
@@ -160,6 +173,15 @@ loosened or removed. Full command logs are captured, including failed iterations
 The final M0 receipt and engineering handback belong in ignored `artifacts/`,
 bound to the exact committed source HEAD; this document does not predict their
 results.
+
+Three read-only GLM-5.3 reviewers examined execution, PIT research and cockpit
+provenance. Provider responses identified `glm-5.3`; no Flash substitute was
+used. Completed conclusions, provider IDs, initial interrupted attempts and
+finding resolutions are retained in `artifacts/quant-integration/glm53/`.
+Execution and cockpit findings produced regression tests and fixes. The reported
+cluster-exclusion issue was disproved by its actual supported-input catalog
+entry and a regression assertion against unchanged code. These reviews are
+source evidence, not provider account, browser or order qualification.
 
 ## External qualification still required (BLOCKED)
 
