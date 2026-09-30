@@ -1,6 +1,46 @@
 import { getQuantLab } from '../lib/api'
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
+import type { QuantTheoryCampaign } from '../lib/types'
+
+function ratio(value: string | null, percent: boolean): string {
+  if (value === null || !Number.isFinite(Number(value))) return 'unavailable'
+  return `${(Number(value) * (percent ? 100 : 1)).toFixed(2)}${percent ? '%' : '×'}`
+}
+
+function TheoryCampaign({ campaign }: { campaign: QuantTheoryCampaign }) {
+  const nodeAnchor = (id: string) => `theory-${campaign.campaign_id}-${id}`
+  return <article>
+    <h3>{campaign.hypothesis}</h3>
+    <p>{campaign.data_class === 'synthetic_fixture' ? 'SYNTHETIC BACKTEST' : 'SIMULATED EXECUTION · USER-SUPPLIED UNQUALIFIED'}</p>
+    <p>Exploratory retrospective · {campaign.disposition} · Execution disabled · Exact external economics unavailable</p>
+    <p>Independent next-session open → close roundtrips</p>
+    <p>Objective: mean net return minus endpoint loss and turnover penalties. Returns use independent equal starting capital; no compounded NAV.</p>
+    <p>Candidates: {campaign.candidate_count} · Reflection calls: {campaign.reflection_calls}</p>
+    <p>Winner: {campaign.winner.strategy_id} · Version: {campaign.winner.version_id}</p>
+    <pre aria-label="Winner parameters">{JSON.stringify(campaign.winner.parameters, null, 2)}</pre>
+    <table aria-label="Held-out comparison"><thead><tr>
+      <th>Held-out lane</th><th>Periods scored</th><th>Mean net return</th><th>Endpoint loss</th><th>Turnover / starting capital</th>
+    </tr></thead><tbody>{(['candidate', 'control'] as const).map(lane => {
+      const metric = campaign.holdout[lane]
+      return <tr key={lane}><th>{lane === 'candidate' ? 'Candidate' : 'Control'}</th>
+        <td>{metric.scored_period_count}/{metric.period_count} · {metric.disposition}</td>
+        <td>{ratio(metric.mean_net_return, true)}</td><td>{ratio(metric.max_drawdown, true)}</td><td>{ratio(metric.turnover, false)}</td>
+      </tr>
+    })}</tbody></table>
+    <p>Endpoint loss measures the worst completed roundtrip loss, not intraday drawdown. Turnover counts gross buy and sell notional.</p>
+    <ul aria-label="Campaign limitations">{campaign.limitations.map((text, index) => <li key={index}>{text}</li>)}</ul>
+    <details><summary>Durable theory DAG · {campaign.campaign_id}</summary>
+      <p>Persisted research nodes; no execution authority.</p>
+      <table><thead><tr><th>Stage</th><th>Node</th><th>Payload digest</th><th>Parents</th></tr></thead>
+        <tbody>{campaign.graph.map(node => <tr key={node.node_id} id={nodeAnchor(node.node_id)}>
+          <th>{node.stage}</th><td>{node.node_id}</td><td>{node.payload_sha256}{node.payload_ref && <p>{node.payload_ref}</p>}</td>
+          <td>{node.parents.length === 0 ? 'root' : node.parents.map(parent => <a key={parent} href={`#${nodeAnchor(parent)}`}>{parent}</a>)}</td>
+        </tr>)}</tbody>
+      </table>
+    </details>
+  </article>
+}
 
 export function QuantPage() {
   const poll = usePoll(getQuantLab, 15_000)
@@ -20,6 +60,10 @@ export function QuantPage() {
           <p>{s.registration} · {s.data_status === 'supported' ? 'Research inputs supported' : 'DATA GATED'}</p>
           <p>{s.description}</p><p>Required inputs: {s.required_inputs.join(', ')}</p>
         </article>)}
+      </section>
+      <section className="card"><h2>Theory campaigns</h2>
+        {(lab.theory_campaigns ?? []).length === 0 && <p>No persisted theory campaign.</p>}
+        {(lab.theory_campaigns ?? []).map(campaign => <TheoryCampaign key={campaign.campaign_id} campaign={campaign} />)}
       </section>
       <section className="card"><h2>Experiments and provenance</h2>
         {lab.experiments.length === 0 && <p>No persisted quant experiment.</p>}
