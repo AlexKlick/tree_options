@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -182,7 +182,9 @@ def _objectives(policy: Mapping[str, Any]) -> tuple[Decimal, Decimal, int]:
     )
 
 
-def _dominates(a: tuple[Decimal, Decimal, int], b: tuple[Decimal, Decimal, int]) -> bool:
+def _dominates(
+    a: tuple[Decimal, Decimal, int | Decimal], b: tuple[Decimal, Decimal, int | Decimal]
+) -> bool:
     """a dominates b: at least as good on every objective, strictly better
     on at least one. Exact ties dominate nobody (both stay on the front)."""
     if a[0] < b[0] or a[1] < b[1] or a[2] > b[2]:
@@ -190,19 +192,21 @@ def _dominates(a: tuple[Decimal, Decimal, int], b: tuple[Decimal, Decimal, int])
     return a[0] > b[0] or a[1] > b[1] or a[2] < b[2]
 
 
-def pareto_front(policies: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def pareto_front(
+    policies: list[dict[str, Any]],
+    *,
+    objectives: Callable[[Mapping[str, Any]], tuple[Decimal, Decimal, int | Decimal]] = _objectives,
+) -> list[dict[str, Any]]:
     """The non-dominated policies, deterministic order (equal objectives keep
     the lower id first)."""
-    keyed = [(policy, _objectives(policy)) for policy in policies]
+    keyed = [(policy, objectives(policy)) for policy in policies]
     front = [
         policy
         for policy, objectives in keyed
         if not any(other is not policy and _dominates(score, objectives) for other, score in keyed)
     ]
     front.sort(key=lambda p: str(p.get("id")))
-    front.sort(
-        key=lambda p: (_objectives(p)[0], _objectives(p)[1], -_objectives(p)[2]), reverse=True
-    )
+    front.sort(key=lambda p: (objectives(p)[0], objectives(p)[1], -objectives(p)[2]), reverse=True)
     return front
 
 
