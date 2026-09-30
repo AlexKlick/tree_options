@@ -344,7 +344,7 @@ class SupervisedPaths:
 
 
 @contextlib.contextmanager
-def _locked(paths: SupervisedPaths) -> Iterator[None]:
+def _locked(paths: SupervisedPaths, *, blocking: bool = True) -> Iterator[None]:
     """Hold the state directory's advisory lock, or refuse ``state_busy``."""
     paths.prepare()
     with open(paths.lock(), "a+b") as handle:
@@ -354,7 +354,7 @@ def _locked(paths: SupervisedPaths) -> Iterator[None]:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
                 break
             except BlockingIOError:
-                if time.monotonic() >= deadline:
+                if not blocking or time.monotonic() >= deadline:
                     raise SupervisedRefused("state_busy", str(paths.lock())) from None
                 time.sleep(0.05)
         try:
@@ -430,6 +430,8 @@ def grant_mandate(
             f"ttl {ttl_seconds}s outside [{MIN_MANDATE_TTL_S}, {MAX_MANDATE_TTL_S}]",
         )
     with _locked(paths):
+        if (paths.root / "HALT").exists():
+            raise SupervisedRefused("effects_halted")
         if paths.mandate_revoked().exists():
             raise SupervisedRefused(
                 "mandate_revoked_permanent", "remove the tombstone by hand to re-arm"
@@ -459,10 +461,25 @@ def grant_mandate(
         return mandate
 
 
-def revoke_mandate(paths: SupervisedPaths, *, now: datetime, reason: str) -> None:
+def halt_effects(paths: SupervisedPaths, *, now: datetime, reason: str) -> None:
+    """Persist the established HALT kill-file without waiting for effect locks.
+
+    A remote request already in flight cannot be undone. All subsequent mandate
+    grants/preflights refuse until separately reviewed recovery removes the file.
+    """
+    _require_aware(now, "now")
+    _atomic_write(
+        paths.root / "HALT",
+        {"schema": "supervised-effect-halt/1", "at": now.isoformat(), "reason": reason},
+    )
+
+
+def revoke_mandate(
+    paths: SupervisedPaths, *, now: datetime, reason: str, blocking: bool = True
+) -> None:
     """Replace the mandate with a permanent tombstone."""
     _require_aware(now, "now")
-    with _locked(paths):
+    with _locked(paths, blocking=blocking):
         if not paths.mandate().exists():
             raise SupervisedRefused("mandate_absent")
         mandate = SupervisedMandate.model_validate(_read_model(paths.mandate()))
@@ -484,6 +501,8 @@ def active_mandate(
 ) -> SupervisedMandate:
     """Load the one mandate and refuse, with the reason, on any mismatch."""
     _require_aware(now, "now")
+    if (paths.root / "HALT").exists():
+        raise SupervisedRefused("effects_halted")
     if paths.mandate_revoked().exists():
         raise SupervisedRefused("mandate_revoked")
     if not paths.mandate().exists():
