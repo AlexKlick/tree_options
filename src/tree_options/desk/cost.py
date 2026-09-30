@@ -513,12 +513,29 @@ class SpreadCostModel:
         return (MEASURED_MEDIAN_FULL_SPREAD[bucket] / 2
                 * DTE_BAND_MULTIPLIER[band]).quantize(HALF_SPREAD_QUANTUM)
 
-    def price(self, legs: Sequence[Leg]) -> SpreadQuote:
+    def price(self, legs: Sequence[Leg], *,
+              delta_unavailable: Sequence[Leg] = ()) -> SpreadQuote:
         """Price a whole package, or refuse it. One unpriceable leg refuses
         every leg: pricing the cheap one and charging for it alone is exactly
-        the flattering error this gate exists to prevent."""
+        the flattering error this gate exists to prevent.
+
+        ``delta_unavailable`` is how a delta SOURCE says "I declined". A
+        derivation component that has a strike and an expiry but cannot
+        produce an ``|delta|`` -- outside its domain, or its inversion did
+        not converge -- passes the leg here and the package is refused with
+        reason ``delta_unavailable`` rather than priced from the boundary
+        bucket. Without this, the largest gap in the programme (the board
+        carries no delta; see the module docstring) would have no way to be
+        counted from inside the pricer, and a clamp would be indistinguishable
+        from a measurement.
+
+        It is checked BEFORE the per-leg loop, matching the detection order:
+        ``no_legs`` first, then this, then each leg's own refusals.
+        """
         if not legs:
             raise UnpricedCostError("no_legs", LegRef("", Decimal("0"), MIN_DTE))
+        for declined in delta_unavailable:
+            raise UnpricedCostError("delta_unavailable", declined)
         quoted: list[LegQuote] = []
         for index, leg in enumerate(legs):
             if leg.abs_delta is None:
@@ -550,7 +567,8 @@ class SpreadCostModel:
                            commission_per_leg=self.commission_per_leg,
                            multiplier=self.multiplier)
 
-    def round_trip(self, legs: Sequence[Leg]) -> Decimal:
+    def round_trip(self, legs: Sequence[Leg], *,
+                   delta_unavailable: Sequence[Leg] = ()) -> Decimal:
         """The whole package's round trip in dollars.
 
         ``legs`` is a REQUIRED POSITIONAL argument: ``outcomes._evaluate``
@@ -558,7 +576,7 @@ class SpreadCostModel:
         property of the candidate, not of the model. A model with the legs
         bound at construction would need one instance per candidate.
         """
-        return self.price(legs).total_round_trip
+        return self.price(legs, delta_unavailable=delta_unavailable).total_round_trip
 
 
 # ------------------------------------------------------------ provenance
@@ -578,6 +596,26 @@ class CostProvenance:
     universe_filter: str
     n_rows: int
     decision_clocks_et: tuple[str, ...]
+
+    @classmethod
+    def measured_corpus(cls) -> CostProvenance:
+        """The record of the corpus these marginals were measured on.
+
+        The single authority, so a caller reporting provenance cannot invent
+        a second version of it. The numbers are the ones the module's
+        constants were transcribed from; ``chains.json`` (612,371 rows,
+        184 CBOE chain files) is read only by an offline builder, and if it
+        ever yields different marginals the marginals and the tests change
+        together.
+        """
+        return cls(
+            source="cboe-delayed-eod-chains",
+            snapshot_window_et="17:45-06:30",
+            universe_filter=("symbol in IWM/QQQ/SPY, 7 <= dte <= 60, volume > 0, "
+                             "oi > 0, |delta| <= 0.70"),
+            n_rows=18_783,
+            decision_clocks_et=("10:00", "10:15", "15:15"),
+        )
 
     def as_dict(self) -> dict[str, Any]:
         gap = (f"the {self.source} corpus was captured {self.snapshot_window_et} ET, "

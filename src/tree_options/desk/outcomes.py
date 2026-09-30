@@ -58,7 +58,7 @@ import statistics
 import sys
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
@@ -403,24 +403,62 @@ def _price_candidate(costs: SpreadCostModel, candidate: Mapping[str, Any],
 
 
 def _candidate_legs(candidate: Mapping[str, Any]) -> list[Leg] | None:
-    """The candidate's measured legs, or ``None`` when it has no delta.
+    """The candidate's measured legs -- ONE PER STRUCTURE LEG -- or ``None``.
 
-    A board row that DOES carry a per-leg ``delta`` (a future producer, or a
-    miner quote) is priced. Today none does, and returning ``None`` is the
-    honest answer rather than a synthesised one.
+    A round trip is 2 legs x 2 fills, so the leg count is load-bearing: a
+    2-leg vertical priced as a single leg charges HALF what crossing both
+    legs costs. Every desk structure (``put_credit``, ``call_debit``, ...)
+    is a 2-leg vertical, so this used to under-charge by exactly 2x the
+    moment a delta source landed. Latent only because the board carries no
+    delta today; it is pinned by
+    ``test_a_two_leg_vertical_is_priced_as_two_legs``.
+
+    Two accepted shapes, checked in order:
+
+    * ``legs``: a per-leg sequence, each with its own ``delta`` (and optional
+      ``symbol``). This is what a real producer must emit.
+    * ``delta``: a single delta, for a genuinely single-leg structure. It
+      prices one leg and is NOT silently doubled -- a caller that means a
+      vertical must say so.
+
+    A board row with neither is a measurement gap, and returning ``None`` is
+    the honest answer rather than a synthesised one.
     """
-    delta = candidate.get("delta")
-    if delta is None:
-        return None
     expiry = candidate.get("expiry")
     session = candidate.get("session")
     stamp = candidate.get("source_timestamp_et")
     if expiry is None or session is None or stamp is None:
         return None
+    snapshot = bool(candidate.get("is_eod_snapshot", True))
+
+    per_leg = candidate.get("legs")
+    if per_leg is not None:
+        if isinstance(per_leg, (str, bytes)) or not isinstance(per_leg, Sequence):
+            return None
+        legs: list[Leg] = []
+        for entry in per_leg:
+            delta = entry.get("delta") if isinstance(entry, Mapping) else None
+            if delta is None:
+                # A leg with no delta is a gap in the WHOLE package: pricing
+                # the legs we can see would charge a partial cost for a full
+                # structure, which is the flattering error the model exists to
+                # prevent. Refuse the package.
+                return None
+            legs.append(Leg(
+                symbol=str((entry.get("symbol") if isinstance(entry, Mapping) else None)
+                           or candidate.get("underlying") or ""),
+                abs_delta=Decimal(str(delta)), dte=int(expiry),
+                source_session=str(session), source_timestamp_et=str(stamp),
+                is_eod_snapshot=snapshot))
+        return legs or None
+
+    delta = candidate.get("delta")
+    if delta is None:
+        return None
     return [Leg(symbol=str(candidate.get("underlying") or ""),
                 abs_delta=Decimal(str(delta)), dte=int(expiry),
                 source_session=str(session), source_timestamp_et=str(stamp),
-                is_eod_snapshot=bool(candidate.get("is_eod_snapshot", True)))]
+                is_eod_snapshot=snapshot)]
 
 
 def _unpriced_leg(candidate: Mapping[str, Any]) -> Leg:

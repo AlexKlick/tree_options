@@ -128,7 +128,13 @@ COMPONENTS = ("base", "participation", "horizon", "direction_tilt", "direction_t
 SELECTION_SPLIT = ("structure", "underlying", "row")
 POWER_TRADES = (250, 500, 1000, 2000, 5000)
 RISK_CAP = 300.0  # replay's per-trade max loss (outcomes' entry_risk_cap)
-MAX_COST = 50.0  # the EB bound's cap on a round-trip cost ($14.60 today)
+#: The EB bound's cap on one round trip. It must ABSORB the dearest priceable
+#: round trip, or the bound is tighter than the cost it exists to absorb and
+#: `monitor` reports `eb_unavailable` for a run that merely traded expensively.
+#: Under the measured model the dearest 2-leg cell is |delta| 0.50-0.70 at dte
+#: 46-60: 400 x 0.158365 + 2.60 = $65.946, so the cap is set above it. The flat
+#: model it replaces was a constant $14.60 for every leg combination.
+MAX_COST = 70.0
 MIN_BOOT_BLOCKS = 10  # a block-bootstrap CI from fewer blocks is flagged unreliable
 MIN_CS_BLOCKS = 20  # per parity, for the forward CS
 
@@ -448,8 +454,17 @@ def eb_cs(x: Sequence[float] | np.ndarray, lo: float, hi: float, alpha: float = 
 def excess_bound(boards: Sequence[Board]) -> float | None:
     """A-priori per-board |excess| bound from the board rows alone: a fill's
     gross lies in [-max_loss, width x 100 - max_loss] with max_loss <= 300
-    (the replay risk cap), net = gross - cost (cost <= 50), no fill = 0, so
-    |v - m| <= 100 x width + 300 + 50. None when a row carries no width."""
+    (the replay risk cap), net = gross - cost (cost <= MAX_COST), no fill = 0,
+    so |v - m| <= 100 x width + 300 + MAX_COST. None when a row carries no
+    width.
+
+    ``MAX_COST`` must cover the dearest round trip the desk can actually pay.
+    It was 50, which was generous while the flat model charged $14.60 for
+    every leg combination; the measured model's dearest 2-leg cell is $65.946
+    (|delta| 0.50-0.70 at dte 46-60), and a bound tighter than the cost it
+    exists to absorb makes ``monitor`` report ``eb_unavailable`` for a run
+    that merely traded expensively.
+    """
     widest = 0.0
     for board in boards:
         for row in board.rows:
@@ -679,8 +694,15 @@ def _drop_unpriced(boards: Sequence[Board], decisions: Sequence[tuple[str | None
         return list(boards), list(decisions), (None if order is None else list(order)), \
             dict(report)
     keep = [i for i, b in enumerate(boards) if b.snapshot not in refused]
-    new_order = None if order is None else [order.index(i) for i in keep
-                                            if i in set(order)]
+    # `excess` is indexed by the position of a board in the FILTERED list, so
+    # `ordered` must be the survivors' DECISION order expressed as positions in
+    # that filtered list. Walking `order` (decision order) and mapping each
+    # survivor to `keep.index(i)` does exactly that. The previous form walked
+    # `keep` in TIME order and took each survivor's rank in the PRE-drop
+    # `order`, which both inverted the axis and could exceed len(keep)-1 -- it
+    # emitted index 4 for a 4-element excess and raised inside monitor().
+    new_order = (None if order is None
+                 else [keep.index(i) for i in order if i in set(keep)])
     return ([boards[i] for i in keep], [decisions[i] for i in keep], new_order,
             dict(report))
 
@@ -1133,6 +1155,16 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
         raise ValueError(f"outcome plug-in {outcome_cfg.get('plugin')!r} has no table form; "
                          "pass --table to rescore under the v2 table explicitly")
     ctx = longrun.PluginContext(config_dir=run_dir, boards=boards)
+    # KNOWN RESIDUAL, and it is a real one: a redigest builds a FRESH
+    # PluginContext, so the live run's NoPriceLedger -- which only ever lived
+    # in that run's memory -- does not exist here. `score_run` is therefore
+    # called without it and this digest reports `no_price.total == 0` even
+    # when the run it rescores dropped boards. It is NOT papered over with a
+    # stale or empty ledger, which would be worse: a digest must not claim
+    # it looked when it did not. The original run's digest is the artifact
+    # that carries the count; this one carries a table-backed rescore and
+    # says nothing about refusals. Closing it means persisting the ledger
+    # with the outcome table.
     outcome = longrun.plugin("outcome", "v2")(
         {"table": str(table_path),
          "default_horizon": outcome_cfg.get("default_horizon", "intraday")}, ctx)
