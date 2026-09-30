@@ -347,6 +347,17 @@ it.each(['missing-incumbent', 'nonpositive-incumbent', 'failed-numeric-holm', 'u
   },
 )
 
+it('keeps derived retrospective sensitivity descriptive even with complete pricing', async () => {
+  const current = registeredLongRun()
+  Object.assign(current.digest!, { cost_model: 'derived-spread/1', pricing_status: 'PRICED_SIMULATION',
+    no_price: { total: 0, by_arm: {}, by_reason: {} } })
+  vi.mocked(getLongRun).mockResolvedValue(current)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(card.textContent).not.toContain('— eligible for operator review')
+  expect(card.textContent).toContain('sensitivity only; no confirmatory review')
+})
+
 it('flags an invalid A/A pair and the empty store', async () => {
   const invalid: LongRunView = { ...LONG_RUN, digest: { ...LONG_RUN.digest!, evaluation_valid: false,
     headline: 'EVALUATION INVALID - the A/A pair differs significantly; nothing promoted.',

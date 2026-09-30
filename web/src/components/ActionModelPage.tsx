@@ -192,7 +192,8 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
       'vs_incumbent_ci_low_above_0', 'half_split_signs_agree', 'no_drop_one_sign_flip',
       'test_net_positive', 'test_entries_at_least_floor', 'split_local_null_known',
       'confirmatory_assessment']
-    const eligible = currentContract && !missingPrice && digest.complete === true
+    const eligible = currentContract && digest.cost_model !== 'derived-spread/1'
+      && !missingPrice && digest.complete === true
       && digest.evaluation_valid === true && aa.valid === true && aa.status === 'valid'
       && f.eligible_for_operator_review === true && f.test.net_total > 0
       && Number.isFinite(f.holm_p) && f.holm_p >= 0 && f.holm_p < alpha!
@@ -210,7 +211,7 @@ function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
   return (
     <>
       <p><strong>{digest.headline}</strong></p>
-      {digest.cost_model === 'derived-spread/1' && <p className="muted">Derived EOD cost sensitivity — modeled cells combine reported calibration marginals; these are not historical decision-clock quotes or broker fills.</p>}
+      {digest.cost_model === 'derived-spread/1' && <p className="muted">Derived EOD cost sensitivity — sensitivity only; no confirmatory review. Modeled cells combine reported calibration marginals; these are not historical decision-clock quotes or broker fills.</p>}
       {missingPrice && <p role="alert" data-testid="longrun-no-price">DATA_GATED · NO_PRICE: {count !== undefined && Number.isInteger(count) && count >= 0 ? count : 'unknown'} selected outcomes. {Object.entries(digest.no_price?.by_reason ?? {}).map(([reason, total]) => `${reason}: ${total}`).join('; ')} · {pricingProofIncomplete && 'pricing proof is incomplete; '}missing pricing is not zero profit; review is blocked.</p>}
       <p data-testid="longrun-scoring-contract">{currentContract
         ? `Registered scoring contract: split-local own entry rates; minimum ${floor} distinct evaluated decision boards and positive test net for review.`
