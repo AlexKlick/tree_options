@@ -343,10 +343,11 @@ def test_walk_forward_caps_finalists_at_two() -> None:
     pooled = {"a": np.array([5.0, 5.0, 1.0]), "b": np.array([1.0, 1.0, 9.0]),
               "c": np.array([3.0, 3.0, 3.0]), "d": np.array([-1.0, 0.0, 0.0]),
               "e": np.array([4.0, 4.0, -9.0])}
+    entries = {name: np.full(3, 5.0) for name in pooled}
     for cap in (2, 5):  # even a caller asking for more gets at most two
         wf = longrun.walk_forward(pooled, np.zeros(3), sessions, incumbent=None, cutoff="d2",
                                   metric="total", max_finalists=cap, draws=2000, seed=1,
-                                  alpha=0.05, aa_valid=True)
+                                  alpha=0.05, aa_valid=True, test_entries=entries)
         assert wf["max_finalists"] == 2
         assert [f["policy"] for f in wf["finalists"]] == ["a", "e"]  # tune totals 10, 8
     assert [r["policy"] for r in wf["ranking"]] == ["a", "e", "c", "b", "d"]
@@ -358,7 +359,7 @@ def test_walk_forward_caps_finalists_at_two() -> None:
         Protocol(max_finalists=3)
     one = longrun.walk_forward(pooled, np.zeros(3), sessions, incumbent=None, cutoff="d3",
                                metric="total", max_finalists=2, draws=2000, seed=1,
-                               alpha=0.05, aa_valid=True)
+                               alpha=0.05, aa_valid=True, test_entries=entries)
     assert one["status"] == "not_applicable"
 
 
@@ -366,17 +367,108 @@ def test_walk_forward_eligibility_needs_every_clause() -> None:
     sessions = [f"d{i:02d}" for i in range(1, 25)]
     strong = np.full(24, 10.0)
     pooled = {"challenger": strong, "inc": np.zeros(24)}
+    # clause (6) is part of the rule now, so the caller has to say how many
+    # evaluated entries each policy has in the test window
+    entries = {"challenger": np.full(24, 5.0), "inc": np.zeros(24)}
     wf = longrun.walk_forward(pooled, np.zeros(24), sessions, incumbent="inc", cutoff="d12",
                               metric="ci_low_diff_vs_random", max_finalists=2, draws=2000,
-                              seed=1, alpha=0.05, aa_valid=True)
+                              seed=1, alpha=0.05, aa_valid=True, test_entries=entries)
     top = wf["finalists"][0]
     assert top["policy"] == "challenger" and top["eligible_for_operator_review"] is True
     assert all(v is True for v in top["rule_check"].values())
     invalid = longrun.walk_forward(pooled, np.zeros(24), sessions, incumbent="inc",
                                    cutoff="d12", metric="ci_low_diff_vs_random",
                                    max_finalists=2, draws=2000, seed=1, alpha=0.05,
-                                   aa_valid=False)
+                                   aa_valid=False, test_entries=entries)
     assert invalid["finalists"][0]["eligible_for_operator_review"] is False
+
+
+def test_promotion_rule_cannot_be_won_by_not_trading() -> None:
+    """A rule that abstention can satisfy is not a test of skill.
+
+    The finished run let ``refl-trend-persistent-bullish-trend`` through with
+    Holm p 0.0040, a vs_random CI of [+540.97, +2398.67] and a TEST net_total
+    of exactly $0.00: it entered nowhere in the confirmatory window and beat a
+    null whose own expectation there was -$1,494.53 by not trading. Reproduced
+    here in miniature - every pre-fix clause passes, so the finalist is
+    eligible today.
+    """
+    sessions = [f"d{i:02d}" for i in range(1, 25)]
+    abstainer = np.concatenate([np.full(12, 10.0), np.zeros(12)])  # test net $0.00
+    pooled = {"abstainer": abstainer,
+              "inc": np.concatenate([np.zeros(12), np.full(12, -1.0)])}
+    # the random null expects to LOSE money in the test window, so standing
+    # still reads as a large positive paired diff
+    expected = np.concatenate([np.zeros(12), np.full(12, -100.0)])
+    wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
+                              metric="total", max_finalists=2, draws=2000, seed=1,
+                              alpha=0.05, aa_valid=True,
+                              test_entries={"abstainer": np.zeros(24),
+                                            "inc": np.zeros(24)})
+    top = wf["finalists"][0]
+    assert top["policy"] == "abstainer"
+    assert top["test"]["net_total"] == 0.0  # it never traded in the test window
+    assert top["test"]["vs_random"]["ci95"][0] > 0  # ... and still "beat" the null
+    assert top["holm_p"] < 0.05
+    # the pre-existing clauses all pass; only the two new ones can catch it
+    assert [k for k, v in top["rule_check"].items()
+            if v is not True] == ["test_net_positive", "test_entries_at_least_floor"]
+    assert top["eligible_for_operator_review"] is False
+
+
+def test_promotion_rule_needs_enough_test_entries_to_carry_a_ci() -> None:
+    """Six fills with a positive CI and a positive net are still not a result:
+    the floor stops a handful of entries from carrying the confirmatory look."""
+    sessions = [f"d{i:02d}" for i in range(1, 25)]
+    lucky = np.concatenate([np.full(12, 10.0),          # tune: ranks first
+                            [10.0, 10.0, 10.0, 0.0, 0.0, 0.0,
+                             10.0, 10.0, 10.0, 0.0, 0.0, 0.0]])
+    pooled = {"lucky": lucky,
+              "inc": np.concatenate([np.zeros(12), np.full(12, -1.0)])}
+    expected = np.concatenate([np.zeros(12), np.full(12, -100.0)])
+    entries = {"lucky": np.concatenate([np.full(12, 5.0), np.full(6, 1.0), np.zeros(6)]),
+               "inc": np.zeros(24)}
+    wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
+                              metric="total", max_finalists=2, draws=2000, seed=1,
+                              alpha=0.05, aa_valid=True, test_entries=entries)
+    top = wf["finalists"][0]
+    assert top["policy"] == "lucky"
+    assert top["test"]["net_total"] == 60.0  # positive, so clause (a) alone passes it
+    assert top["test"]["vs_random"]["ci95"][0] > 0
+    assert top["test_entries"] == 6 < longrun.MIN_TEST_ENTRIES
+    assert top["rule_check"]["test_net_positive"] is True
+    assert top["rule_check"]["test_entries_at_least_floor"] is False
+    assert top["eligible_for_operator_review"] is False
+    # the same arm over the same test window, with the fills it would need
+    enough = {k: v.copy() for k, v in entries.items()}
+    enough["lucky"][12:24] = longrun.MIN_TEST_ENTRIES
+    ok_wf = longrun.walk_forward(pooled, expected, sessions, incumbent="inc", cutoff="d12",
+                                 metric="total", max_finalists=2, draws=2000, seed=1,
+                                 alpha=0.05, aa_valid=True, test_entries=enough)
+    assert all(v is True for v in ok_wf["finalists"][0]["rule_check"].values())
+    assert ok_wf["finalists"][0]["eligible_for_operator_review"] is True
+
+
+def test_score_run_counts_only_evaluated_entries_in_the_test_window() -> None:
+    """The floor reads real per-session entry counts off the run, not a guess:
+    an arm that stops entering at the cutoff scores 0 there, one that keeps
+    entering scores its priced fills."""
+    boards = boards_for(SESSIONS6[:5])
+    arms = longrun.arms_of([PolicySpec("early", "model"), PolicySpec("always", "model")])
+    early = {b.snapshot: ok("w" if b.session <= "2026-06-02" else None) for b in boards}
+    always = {b.snapshot: ok("w") for b in boards}
+    doc = longrun.score_run(boards, arms, {"early": early, "always": always},
+                            OutcomeCache(table_outcome),
+                            Protocol(draws=2000, random_seeds=200, incumbent="early",
+                                     cutoff="2026-06-02"))
+    wf = doc["walk_forward"]
+    assert (wf["tune_sessions"], wf["test_sessions"]) == (2, 3)  # sessions, not boards
+    entered = {f["policy"]: f["test_entries"] for f in wf["finalists"]}
+    assert entered == {"always": 6, "early": 0}
+    assert wf["min_test_entries"] == longrun.MIN_TEST_ENTRIES
+    for f in wf["finalists"]:
+        assert f["rule_check"]["test_entries_at_least_floor"] == (f["test_entries"]
+                                                                   >= longrun.MIN_TEST_ENTRIES)
 
 
 # --------------------------------------------------------------- executor

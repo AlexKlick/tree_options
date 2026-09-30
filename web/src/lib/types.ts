@@ -295,6 +295,8 @@ export interface LongRunFinalist {
     vs_random: LongRunPaired
     vs_incumbent: LongRunPaired | null
   }
+  /** evaluated entries in the confirmatory test window (clause 6's floor) */
+  test_entries?: number | null
   eligible_for_operator_review: boolean
 }
 
@@ -340,6 +342,7 @@ export interface LongRunDigest {
     tune_sessions?: number | null
     test_sessions?: number | null
     reason?: string | null
+    min_test_entries?: number | null
     finalists: LongRunFinalist[]
   }
   benchmarks: LongRunBenchmark[]
