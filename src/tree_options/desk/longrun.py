@@ -62,6 +62,7 @@ import time
 import urllib.request
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from copy import deepcopy
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
@@ -388,8 +389,11 @@ class Protocol:
     embargo_sessions: int = 1
     scoring_version: str = SCORING_VERSION
     min_test_entries: int = MIN_TEST_ENTRIES
+    cost_model: str = "flat"
 
     def __post_init__(self) -> None:
+        if self.cost_model not in ("flat", "derived-spread/1"):
+            raise ValueError("unsupported cost_model")
         if self.scoring_version != SCORING_VERSION:
             raise ValueError("unsupported scoring_version; use a new run registration")
         if type(self.min_test_entries) is not int or self.min_test_entries < 1:
@@ -604,6 +608,9 @@ class OutcomeCache:
 
     def __init__(self, outcome: OutcomeFn) -> None:
         self._outcome = outcome
+        self._facts: dict[tuple[str, str, str | None], dict[str, Any] | None] = {}
+        self.cost_model = getattr(outcome, "cost_model", "flat")
+        self.cost_provenance = deepcopy(getattr(outcome, "cost_provenance", None))
         self._memo: dict[tuple[str, str, str | None], tuple[float, float] | None] = {}
         self._exits: dict[tuple[str, str, str | None], str | None] = {}
         self._lock = threading.Lock()
@@ -677,6 +684,14 @@ class OutcomeCache:
             )
             self._memo[key] = value
             self._exits[key] = exit_at
+            self._facts[key] = next(
+                (
+                    deepcopy(self._facts.get((snapshot, leg, horizon)))
+                    for leg in legs
+                    if (self._facts.get((snapshot, leg, horizon)) or {}).get("status") == "no_price"
+                ),
+                None,
+            )
         return value
 
     def _single(
@@ -686,19 +701,41 @@ class OutcomeCache:
         with self._lock:
             if key in self._memo:
                 return self._memo[key]
-        raw = self._outcome(snapshot, candidate, horizon)
+        source_fact = self._outcome(snapshot, candidate, horizon)
+        raw = None if source_fact is None else deepcopy(dict(source_fact))
         value: tuple[float, float] | None = None
-        if raw is not None:
+        if raw is not None and raw.get("status") == "no_price":
+            from tree_options.desk.cost import NoPriceLedger
+
+            # Validate the complete refusal contract without recording a probe.
+            NoPriceLedger().record_outcome(
+                arm="validation",
+                snapshot=snapshot,
+                candidate_id=candidate,
+                exit_mode=str(raw.get("exit_mode") or horizon or "intraday"),
+                outcome=raw,
+            )
+        elif raw is not None:
             gross, net = float(raw["gross"]), float(raw["net"])
             if not (math.isfinite(gross) and math.isfinite(net)):
                 raise ValueError(f"non-finite outcome for {snapshot}/{candidate}")
             value = (gross, net)
         with self._lock:
             self._memo[key] = value
+            self._facts[key] = raw
             self._exits[key] = (
                 None if raw is None or not raw.get("exit_at") else str(raw["exit_at"])
             )
         return value
+
+    def observation(
+        self, snapshot: str, candidate: str, horizon: str | None
+    ) -> dict[str, Any] | None:
+        self.get(snapshot, candidate, horizon)
+        return deepcopy(self._facts.get((snapshot, candidate, horizon)))
+
+    def pricing_facts(self) -> list[dict[str, Any]]:
+        return [deepcopy(f) for f in self._facts.values() if f is not None]
 
     def net(self, snapshot: str, candidate: str, horizon: str | None) -> float:
         value = self.get(snapshot, candidate, horizon)
@@ -1301,6 +1338,7 @@ def walk_forward(
         "embargo_sessions": max(1, embargo),
         "embargoed_sessions": int((~tune & ~test).sum()),
         "scoring_version": SCORING_VERSION,
+        "alpha": alpha,
         "min_test_entries": min_test_entries,
         "entry_count_unit": "distinct_evaluated_decision_boards",
         "null_scope": "split_local_own_entry_rate"
@@ -1504,6 +1542,9 @@ def score_run(
     if len({b.snapshot for b in boards}) != len(boards):
         raise ValueError("duplicate board snapshot ids cannot inflate review coverage")
     outcomes.bind_boards(boards)
+    from tree_options.desk.cost import NoPriceLedger
+
+    no_price = NoPriceLedger()
     draws, seed = protocol.draws, protocol.seed
     scored = [
         b
@@ -1524,6 +1565,15 @@ def score_run(
             if choice is not None:
                 entered += 1
                 value = outcomes.get(board.snapshot, choice, horizon)
+                fact = outcomes.observation(board.snapshot, choice, horizon)
+                if fact is not None:
+                    no_price.record_outcome(
+                        arm=arm.name,
+                        snapshot=board.snapshot,
+                        candidate_id=choice,
+                        exit_mode=str(fact.get("exit_mode") or horizon or "intraday"),
+                        outcome=fact,
+                    )
                 unevaluable += value is None
             evaluated_flags.append(int(value is not None))
             gross.append(0.0 if value is None else value[0])
@@ -1797,17 +1847,55 @@ def score_run(
     bench = benchmark_rows(
         benchmarks or {}, sessions, capital=protocol.capital, draws=draws, seed=seed
     )
+    pricing_facts = outcomes.pricing_facts()
+    counterfactual_refusals = sum(f.get("status") == "no_price" for f in pricing_facts)
+    pricing_complete = no_price.as_dict()["total"] == 0 and counterfactual_refusals == 0
+    derived = [f for f in pricing_facts if f.get("cost_model") == "derived-spread/1"]
+    cost_model = "derived-spread/1" if derived else outcomes.cost_model
+    cost_provenance = outcomes.cost_provenance or (
+        derived[0].get("cost_provenance") if derived else None
+    )
+    pricing_status = "PRICED_SIMULATION" if pricing_complete else "DATA_GATED"
+    cost_basis_confirmatory = cost_model != "derived-spread/1"
+    pricing_assessment = (
+        "modeled_control" if cost_basis_confirmatory else "derived_retrospective_sensitivity"
+    )
+    retrospective = retrospective or not cost_basis_confirmatory
+    if retrospective:
+        wf["assessment_class"] = "retrospective_descriptive"
+    for finalist in wf.get("finalists", []):
+        finalist["rule_check"]["pricing_complete"] = pricing_complete
+        finalist["rule_check"]["cost_basis_confirmatory"] = cost_basis_confirmatory
+        if retrospective:
+            finalist["rule_check"]["confirmatory_assessment"] = False
+        if not pricing_complete or not cost_basis_confirmatory:
+            finalist["eligible_for_operator_review"] = False
+    for row in standings:
+        row["no_price"] = no_price.for_arm(row["arm"])
+        row["pricing_status"] = pricing_status
     eligible = [
         f["policy"] for f in wf.get("finalists", []) if f.get("eligible_for_operator_review")
     ]
     headline = _headline(aa, wf, eligible, complete)
     if retrospective:
         headline = "RETROSPECTIVE DESCRIPTIVE - " + headline
+    if not pricing_complete:
+        headline = (
+            "DATA_GATED - unavailable pricing evidence; descriptive evaluated subset only. "
+            + headline
+        )
     try:  # exact counterfactual accounting (desk.skill): descriptive, never fatal
         from tree_options.desk import skill
 
         skill_doc = skill.skill_section(
-            boards, arms, receipts, outcomes, protocol, options=skill_options
+            boards,
+            arms,
+            receipts,
+            outcomes,
+            protocol,
+            options=skill_options,
+            pricing_complete=pricing_complete,
+            no_price=no_price.as_dict(),
         )
     except Exception as error:
         skill_doc = {"status": "error", "error": f"{type(error).__name__}: {str(error)[:200]}"}
@@ -1821,7 +1909,13 @@ def score_run(
         },
         "assessment_class": "retrospective_descriptive" if retrospective else "registered_protocol",
         "headline": headline,
-        "evaluation_valid": bool(aa["valid"]),
+        "pricing_status": pricing_status,
+        "pricing_assessment": pricing_assessment,
+        "cost_model": cost_model,
+        "cost_provenance": cost_provenance,
+        "no_price": no_price.as_dict(),
+        "pricing_coverage": {"counterfactual_refusals": counterfactual_refusals},
+        "evaluation_valid": bool(aa["valid"]) and pricing_complete,
         "complete": complete,
         "run_id": run_id,
         "at": clock().isoformat(),
@@ -2205,6 +2299,7 @@ def longrun_engine_identity() -> str:
     This does not infer arbitrary closure identity or freeze third-party code.
     """
     from tree_options.desk import (
+        cost,
         forecast,
         hindsight,
         intraday_action_graph,
@@ -2219,6 +2314,7 @@ def longrun_engine_identity() -> str:
     # paths that could be confused with the desk's subprocess entrypoints.
     sources = {__name__: Path(__file__)}
     for module in (
+        cost,
         forecast,
         hindsight,
         intraday_action_graph,
@@ -2754,6 +2850,50 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
     the default CostModel and ``sync`` minutes, memoized. A missing horizon
     (rules that do not choose one) uses ``default_horizon``."""
     from tree_options.desk import outcomes
+    from tree_options.desk.cost import CostProvenance, SpreadCostModel
+
+    model_name = str(params.get("cost_model", "flat"))
+    if model_name not in ("flat", "derived-spread/1"):
+        raise ValueError("unsupported cost_model")
+    provenance = (
+        CostProvenance.measured_corpus().as_dict() if model_name == "derived-spread/1" else None
+    )
+
+    def project_outcome(row: Mapping[str, Any] | None, mode: str) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        if row.get("cost_model") is not None and row["cost_model"] != model_name:
+            raise ValueError("outcome cost_model differs from registered model")
+        if row.get("status") == "no_price":
+            return {**deepcopy(dict(row)), "exit_mode": mode}
+        if row.get("status") == "no_fill" or row.get("net") is None:
+            return None
+        if model_name == "derived-spread/1":
+            if (
+                row.get("cost_model") != model_name
+                or row.get("pricing_status") != "PRICED_SIMULATION"
+            ):
+                raise ValueError(
+                    "derived cost table requires explicit priced simulation provenance"
+                )
+            return {**deepcopy(dict(row)), "exit_mode": mode}
+        return {
+            "gross": float(row["gross"]),
+            "net": float(row["net"]),
+            "exit_at": row.get("exit_at"),
+        }
+
+    def bind_model(fn: OutcomeFn) -> OutcomeFn:
+        class BoundOutcome:
+            cost_model = model_name
+            cost_provenance = deepcopy(provenance)
+
+            def __call__(
+                self, snapshot: str, candidate: str, horizon: str | None
+            ) -> Mapping[str, Any] | None:
+                return fn(snapshot, candidate, horizon)
+
+        return BoundOutcome()
 
     default_horizon = str(params.get("default_horizon", "intraday"))
     if default_horizon not in outcomes.EXIT_MODES:
@@ -2772,14 +2912,7 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
                 if key in identities and identities[key] != content:
                     raise ValueError("outcome table identity collision")
                 identities[key] = content
-                if row.get("status") == "no_fill" or row.get("net") is None:
-                    value: dict[str, Any] | None = None
-                else:  # exit_at feeds the purged walk-forward (desk.purge)
-                    value = {
-                        "gross": float(row["gross"]),
-                        "net": float(row["net"]),
-                        "exit_at": row.get("exit_at"),
-                    }
+                value = project_outcome(row, key[2])
                 table[key] = value
         ctx.shared.setdefault("source_hashes", {})["outcome_table_sha256"] = (
             table_digest.hexdigest()
@@ -2788,12 +2921,14 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
         def lookup(snapshot: str, candidate_id: str, horizon: str | None) -> dict[str, Any] | None:
             return table.get((snapshot, candidate_id, horizon or default_horizon))
 
-        return lookup
+        return bind_model(lookup)
 
     state = ctx.shared.get("v2")
     if state is None:
         raise ValueError("the v2 outcome plug-in needs a table or the v2 boards plug-in")
-    costs = outcomes.CostModel()
+    costs: outcomes.CostModel | SpreadCostModel = (
+        SpreadCostModel() if model_name == "derived-spread/1" else outcomes.CostModel()
+    )
     sync = params.get("sync", 2)
     memo: dict[tuple[str, str, str], dict[str, Any] | None] = {}
 
@@ -2811,18 +2946,10 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
                 costs=costs,
                 leg_sync_minutes=None if sync in (None, "off") else int(sync),
             )
-            memo[key] = (
-                None
-                if doc is None or doc.get("status") == "no_fill" or doc.get("net") is None
-                else {
-                    "gross": float(doc["gross"]),
-                    "net": float(doc["net"]),
-                    "exit_at": doc.get("exit_at"),
-                }
-            )
+            memo[key] = project_outcome(doc, mode)
         return memo[key]
 
-    return live
+    return bind_model(live)
 
 
 def _v2_ask(params: Mapping[str, Any], ctx: PluginContext) -> AskFn:
@@ -2980,6 +3107,9 @@ def protocol_from_config(cfg: Mapping[str, Any]) -> Protocol:
         max_finalists=int(doc.get("max_finalists", MAX_FINALISTS)),
         alpha=float(doc.get("alpha", 0.05)),
         embargo_sessions=int(doc.get("embargo_sessions", 1)),
+        scoring_version=str(doc.get("scoring_version", SCORING_VERSION)),
+        min_test_entries=doc.get("min_test_entries", MIN_TEST_ENTRIES),
+        cost_model=str(doc.get("cost_model", (cfg.get("outcome") or {}).get("cost_model", "flat"))),
     )
 
 
@@ -3069,6 +3199,8 @@ def run_from_config(
     bench_cfg = cfg.get("benchmarks") or {"plugin": "none"}
     benchmarks = plugin("benchmarks", str(bench_cfg.get("plugin", "none")))(bench_cfg, ctx)
     protocol = protocol_from_config(cfg)
+    if protocol.cost_model != getattr(outcome, "cost_model", "flat"):
+        raise ValueError("protocol cost_model differs from outcome model")
     settings = settings_from_config(cfg, concurrency)
     if run_dir is None:
         root = _resolve_path(ctx, cfg["out_root"]) if cfg.get("out_root") else default_root()
@@ -3222,6 +3354,8 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
         "vs_random",
         "vs_random_own",
         "null_percentile_own",
+        "no_price",
+        "pricing_status",
         "vs_first_row",
         "vs_incumbent",
         "vs_regime",
@@ -3239,6 +3373,12 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "headline": doc.get("headline"),
         "assessment_class": doc.get("assessment_class"),
+        "pricing_status": doc.get("pricing_status"),
+        "pricing_assessment": doc.get("pricing_assessment"),
+        "cost_model": doc.get("cost_model"),
+        "cost_provenance": doc.get("cost_provenance"),
+        "no_price": doc.get("no_price"),
+        "pricing_coverage": doc.get("pricing_coverage"),
         "untrusted_note": doc.get("untrusted_note"),
         "evaluation_valid": doc.get("evaluation_valid"),
         "complete": doc.get("complete"),
@@ -3259,6 +3399,7 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
                 "test_sessions",
                 "reason",
                 "scoring_version",
+                "alpha",
                 "null_scope",
                 "min_test_entries",
                 "entry_count_unit",

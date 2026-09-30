@@ -966,9 +966,26 @@ def skill_section(
     protocol: Protocol,
     *,
     options: Mapping[str, Any] | SkillOptions | None = None,
+    pricing_complete: bool = True,
+    no_price: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The digest's ``skill`` section: every executed arm (rules and controls
     included) decomposed, bootstrapped, monitored; the power table."""
+    if not pricing_complete:
+        return {
+            "schema": SKILL_SCHEMA,
+            "status": "DATA_GATED",
+            "note": "Unpriced selected or counterfactual economics; no skill attribution.",
+            "no_price": dict(no_price or {}),
+            "arms": {
+                a.name: {
+                    "policy": a.policy.name,
+                    "pricing_status": "DATA_GATED",
+                    "verdict": "DATA_GATED: no statistical attribution",
+                }
+                for a in arms
+            },
+        }
     opts = options if isinstance(options, SkillOptions) else SkillOptions.from_mapping(options)
     horizons = (
         tuple(protocol.random_horizons) if protocol.random_horizons is not None else MENU_HORIZONS
@@ -1123,6 +1140,10 @@ def skill_markdown(section: Mapping[str, Any]) -> list[str]:
     add = lines.append
     add("## Skill accounting (exact counterfactual; descriptive, never promotes)")
     add("")
+    if section.get("status") == "DATA_GATED":
+        add(str(section.get("note")))
+        add("")
+        return lines
     if section.get("status") == "error":
         add(f"Unavailable: {section.get('error')}")
         add("")
@@ -1325,6 +1346,7 @@ def redigest(
         {
             "table": str(table_path),
             "default_horizon": outcome_cfg.get("default_horizon", "intraday"),
+            "cost_model": outcome_cfg.get("cost_model", protocol.cost_model),
         },
         ctx,
     )

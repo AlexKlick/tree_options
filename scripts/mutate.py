@@ -7532,8 +7532,8 @@ MUTANTS.extend(
             id="MG01-tune-rate-holdout-leak",
             owner="test_heldout_participation_cannot_change_tune_ranking",
             file="src/tree_options/desk/longrun.py",
-            anchor="if keep\n",
-            replacement="if True\n",
+            anchor="if keep\n                            )\n                            / int(mask.sum())",
+            replacement="if True\n                            )\n                            / len(scored)",
             selectors=[
                 "tests/unit/test_desk_measurement_governance.py::test_heldout_participation_cannot_change_tune_ranking"
             ],
@@ -7616,6 +7616,90 @@ MUTANTS.extend(
             ],
             invariant="duplicate snapshot identities cannot inflate review coverage or totals",
         ),
+    ]
+)
+
+
+# Derived cost sensitivity and refusal propagation boundaries.
+MUTANTS.extend(
+    [
+        {
+            "id": "MG09-cost-half-spread-convention",
+            "owner": "test_full_quote_is_halved_once_and_both_package_legs_pay_twice",
+            "file": "src/tree_options/desk/cost.py",
+            "anchor": "MEASURED_MEDIAN_FULL_SPREAD[bucket] / 2 * DTE_BAND_MULTIPLIER[band]\n                    ).quantize(HALF_SPREAD_QUANTUM)",
+            "replacement": "MEASURED_MEDIAN_FULL_SPREAD[bucket] / 1 * DTE_BAND_MULTIPLIER[band]\n                    ).quantize(HALF_SPREAD_QUANTUM)",
+            "selectors": [
+                "tests/unit/test_desk_derived_cost.py::test_full_quote_is_halved_once_and_both_package_legs_pay_twice"
+            ],
+            "invariant": "a full quote is halved once before two fills per package leg",
+        },
+        {
+            "id": "MG10-cost-future-availability",
+            "owner": "test_package_and_pit_inputs_fail_closed",
+            "file": "src/tree_options/desk/outcomes.py",
+            "anchor": "if event > decision_at or available > decision_at:",
+            "replacement": "if event > decision_at:",
+            "selectors": [
+                "tests/unit/test_desk_derived_cost.py::test_package_and_pit_inputs_fail_closed[future_availability-future_cost_input]"
+            ],
+            "invariant": "source availability must precede the decision, independently of event timestamp",
+        },
+        {
+            "id": "MG11-selected-refusal-attribution",
+            "owner": "test_no_price_selected_memo_is_attributed_to_each_arm_and_blocks_review",
+            "file": "src/tree_options/desk/longrun.py",
+            "anchor": "                    no_price.record_outcome(",
+            "replacement": "                    NoPriceLedger().record_outcome(",
+            "selectors": [
+                "tests/unit/test_desk_derived_cost_governance.py::test_no_price_selected_memo_is_attributed_to_each_arm_and_blocks_review"
+            ],
+            "invariant": "memoized selected refusal facts reach each arm ledger",
+        },
+        {
+            "id": "MG12-counterfactual-cost-coverage",
+            "owner": "test_unused_unpriced_probe_is_not_a_selected_refusal",
+            "file": "src/tree_options/desk/longrun.py",
+            "anchor": 'no_price.as_dict()["total"] == 0 and counterfactual_refusals == 0',
+            "replacement": 'no_price.as_dict()["total"] == 0',
+            "selectors": [
+                "tests/unit/test_desk_derived_cost_governance.py::test_unused_unpriced_probe_is_not_a_selected_refusal"
+            ],
+            "invariant": "unknown counterfactual costs cannot become a zero random baseline",
+        },
+        {
+            "id": "MG13-derived-confirmation-custody",
+            "owner": "test_priced_derived_basis_is_sensitivity_only_even_with_profitable_evidence",
+            "file": "src/tree_options/desk/longrun.py",
+            "anchor": 'cost_basis_confirmatory = cost_model != "derived-spread/1"',
+            "replacement": "cost_basis_confirmatory = True",
+            "selectors": [
+                "tests/unit/test_desk_derived_cost_governance.py::test_priced_derived_basis_is_sensitivity_only_even_with_profitable_evidence"
+            ],
+            "invariant": "late EOD-derived calibration is retrospective sensitivity, never historical confirmation",
+        },
+        {
+            "id": "MG14-config-review-floor",
+            "owner": "test_config_preserves_registered_floor_and_rejects_old_semantics",
+            "file": "src/tree_options/desk/longrun.py",
+            "anchor": 'min_test_entries=doc.get("min_test_entries", MIN_TEST_ENTRIES),',
+            "replacement": "min_test_entries=MIN_TEST_ENTRIES,",
+            "selectors": [
+                "tests/unit/test_desk_derived_cost_governance.py::test_config_preserves_registered_floor_and_rejects_old_semantics"
+            ],
+            "invariant": "configuration freezes the chosen review entry floor",
+        },
+        {
+            "id": "MG15-cost-source-custody",
+            "owner": "test_engine_custody_includes_derived_surface_bytes",
+            "file": "src/tree_options/desk/longrun.py",
+            "anchor": "    for module in (\n        cost,",
+            "replacement": "    for module in (",
+            "selectors": [
+                "tests/unit/test_desk_derived_cost_governance.py::test_engine_custody_includes_derived_surface_bytes"
+            ],
+            "invariant": "derived cost surface bytes participate in registered engine identity",
+        },
     ]
 )
 
