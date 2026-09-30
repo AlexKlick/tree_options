@@ -504,6 +504,9 @@ def create_app(
     from tree_options.trex_web.research_view import attach as attach_research
 
     attach_research(app)
+    from tree_options.trex_web.quant_view import attach as attach_quant
+
+    attach_quant(app)
 
     @app.get("/health")
     def health() -> dict[str, object]:

@@ -74,6 +74,7 @@ export function AppShell({
             >
               Action model
             </a>
+            <a href="#/quant" aria-current={title === 'Quant lab' ? 'page' : undefined}>Quant lab</a>
             <a
               href="#/trade-floor"
               aria-current={title === 'Trade floor' ? 'page' : undefined}

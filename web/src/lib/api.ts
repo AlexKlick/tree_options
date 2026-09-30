@@ -312,3 +312,5 @@ export const getForecastResult = (run_id: string): Promise<ForecastRunResultResp
 
 // Re-export for callers that already imported this from the old path.
 export type { CandidateResultSummary as CandidateResult }
+
+export const getQuantLab = (): Promise<import('./types').QuantLabProjection> => fetchJson('api/research/quant')
