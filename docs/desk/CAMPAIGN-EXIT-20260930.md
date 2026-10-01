@@ -187,6 +187,11 @@ denominators (C3/C4 of `docs/desk/RESTART-THRESHOLD.md`).
   failures/day (missing `EnvironmentFile=`) while exiting 0, so nothing
   alarmed. Do NOT "fix" the token — the loop should not run. Verified live
   2026-10-01: all three `systemctl --user is-enabled` → `disabled`.
+  **SUPERSEDED same day (operator acts):** the missing-token root cause was
+  fixed via `~/.config/environment.d/51-trex-desk.env.conf` (mode 600), a
+  clean probe passed, and the operator re-armed `desk-challenge.timer`
+  (19:00 MDT nightly; the 2026-10-01 run went 594/594 model calls with 0
+  failures). The two `desk-lab` timers remain disabled.
 - **NVDA flatten armed.** The `FLATTEN` kill file was armed 2026-09-30
   21:39 MDT in `~/.local/state/trex/putspread-20260922/` to close the two
   open NVDA debit verticals (nvda-oct 5 @ 0.21, nvda-nov 3 @ 1.24; last

@@ -64,6 +64,8 @@ BOARD_ROWS = 12  # the board a model sees: top candidates by reward/risk
 BURN_NOTE = "quota gate: no under-using window in the snapshot"
 #: archive policies (GEPA lane) run as model policies under this prefix
 GEPA_PREFIX = "gepa:"
+#: the trivial-picker control policy: first board row, no model, no quota
+FIRST_ROW_POLICY = "first_row"
 #: the default policy sentence of the board task; the GEPA lane evolves it
 POLICY_SENTENCE = (
     "You are a paper-trading policy choosing ONE defined-risk option spread board row, or skipping."
@@ -503,9 +505,23 @@ def run_lab(
             if boards >= config.boards_cap:
                 break
 
-    summary = iag.replay(
-        raw, sessions, decisions if model else None, policy="no_trade" if model else policy
-    )
+    if policy == FIRST_ROW_POLICY:
+        # the trivial-picker control: the FIRST row of every board, chosen
+        # deterministically with no model in the loop. An arm that only
+        # beats do-nothing by beating this control has no skill (#47 and
+        # the 2026-09-30 measured-cost verdict); it plays the same boards
+        # so the challenge digest can pair against it per session.
+        for day in sessions:
+            for clock in iag.schedule_for(day):
+                packet = iag.decision_packet(raw, day, clock)
+                rows = board_rows(packet)
+                if rows:
+                    decisions[packet["snapshot_id"]] = rows[0]["id"]
+        summary = iag.replay(raw, sessions, decisions, policy="no_trade")
+    else:
+        summary = iag.replay(
+            raw, sessions, decisions if model else None, policy="no_trade" if model else policy
+        )
     document: dict[str, Any] = {
         "schema": LAB_SCHEMA,
         "policy": policy,

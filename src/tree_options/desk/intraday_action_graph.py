@@ -368,9 +368,19 @@ def replay(
     last_day = None
     seen_decisions: set[str] = set()
     scheduled_snapshots = 0
+    by_session: list[dict[str, Any]] = []
+    day_start_capital = closed_capital
     for day in sessions:
         if day != last_day:
+            if last_day is not None:
+                by_session.append(
+                    {
+                        "session": last_day.isoformat(),
+                        "closed_pnl": str(closed_capital - day_start_capital),
+                    }
+                )
             daily_loss = Decimal(0)
+            day_start_capital = closed_capital
             last_day = day
         for clock in schedule_for(day):
             scheduled_snapshots += 1
@@ -503,6 +513,13 @@ def replay(
     unknown = set(decisions) - seen_decisions
     if unknown:
         raise ValueError(f"decisions outside window: {sorted(unknown)[:3]}")
+    if last_day is not None:
+        by_session.append(
+            {
+                "session": last_day.isoformat(),
+                "closed_pnl": str(closed_capital - day_start_capital),
+            }
+        )
     return {
         "schema": SCHEMA,
         "policy": "external_decisions" if external_decisions else policy,
@@ -513,6 +530,10 @@ def replay(
         "modeled_wins": modeled_wins,
         "modeled_losses": modeled_losses,
         "closed_capital_proxy": str(closed_capital),
+        # additive (paired-control lane): each session's own closed-capital
+        # delta, so policies playing the same boards can be paired per
+        # session; sums exactly to closed_capital_proxy - STARTING_CAPITAL
+        "by_session": by_session,
         "open_at_end": len(open_trades),
         "minimum_closed_capital_proxy": str(minimum_closed_capital),
         "peak_open_loss_reserved": str(peak_reserved),

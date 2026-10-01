@@ -57,12 +57,13 @@ UNTRUSTED_NOTE = (
     "Model output is untrusted prose. Outcomes are mechanical proxies from "
     "replay accounting on last-traded-minute closes, not executable fills. "
     "Nothing in this digest is promoted: promotion is the operator's "
-    "pre-registered-rule path (docs/desk/DESK-LAB.md)."
+    "pre-registered-rule path (docs/desk/PROMOTION-RULE.md)."
 )
 PROMOTION_RULE = (
-    "nothing is promoted; no promotion rule is registered — "
-    "promotion is the operator's pre-registered-rule path "
-    "(docs/desk/DESK-LAB.md)"
+    "nothing is promoted by a digest; the REGISTERED rule "
+    "(docs/desk/PROMOTION-RULE.md, sealed 2026-10-01) decides — clauses "
+    "evaluated by `challenge rule-check` against the standings, ruled on "
+    "by the operator"
 )
 
 
@@ -209,12 +210,17 @@ class PolicyEntry:
 
 
 def policy_field(lab_root: Path) -> list[PolicyEntry]:
-    """The field every bundle scores: the honest ``no_trade`` control ALWAYS,
-    plus the archive's pareto front (at most ``FRONT_MAX``) as model policies
-    ``gepa:<id>``; an empty archive fields the incumbent flash policy
-    ``model:zai`` instead, so the challenge always has one model policy."""
+    """The field every bundle scores: the honest ``no_trade`` control and the
+    ``first_row`` trivial-picker control ALWAYS (the paired bars the
+    registered promotion rule needs), plus the archive's pareto front (at
+    most ``FRONT_MAX``) as model policies ``gepa:<id>``; an empty archive
+    fields the incumbent flash policy ``model:zai`` instead, so the
+    challenge always has one model policy."""
     front = gepa.pareto_front(gepa.load_archive(Path(lab_root)))[:FRONT_MAX]
-    entries = [PolicyEntry(policy="no_trade", kind="rules")]
+    entries = [
+        PolicyEntry(policy="no_trade", kind="rules"),
+        PolicyEntry(policy=lab.FIRST_ROW_POLICY, kind="rules"),
+    ]
     for record in front:
         entries.append(
             PolicyEntry(
@@ -332,6 +338,62 @@ def _ranked(cards: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sorted(
         cards, key=lambda card: (-Decimal(str(card["closed_pnl_sum"])), str(card["policy"]))
     )
+
+
+def _session_series(runs: Sequence[Mapping[str, Any]]) -> dict[str, float]:
+    """One policy's per-session closed PnL, keyed by session date: the
+    pairing unit for the promotion rule's paired bars. Later runs (same
+    session replayed again) keep the LAST observation."""
+    series: dict[str, float] = {}
+    for document in runs:
+        for row in (document.get("summary", {}) or {}).get("by_session", []) or []:
+            series[str(row["session"])] = float(Decimal(str(row["closed_pnl"])))
+    return series
+
+
+def _with_paired_columns(
+    cards: list[dict[str, Any]], paired_cols: Mapping[str, Mapping[str, Mapping[str, Any]]]
+) -> list[dict[str, Any]]:
+    """Attach the paired-control columns to their scorecards (additive keys;
+    controls and cards without shared sessions simply carry none)."""
+    for card in cards:
+        cols = paired_cols.get(str(card["policy"]))
+        if cols:
+            card.update(cols)
+    return cards
+
+
+def _paired_columns(
+    runs: Mapping[str, list[Mapping[str, Any]]],
+    entries: Sequence[PolicyEntry],
+    *,
+    seed: int,
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Paired per-session differences vs the two controls for every policy
+    that shares sessions with them (``longrun.paired``: bootstrap CI and a
+    one-sided sign-flip p). The registered promotion rule's clauses 2-3 read
+    exactly these numbers; nothing about them is a model's claim."""
+    from tree_options.desk.longrun import paired
+
+    series = {e.policy: _session_series(runs[e.policy]) for e in entries}
+    out: dict[str, dict[str, dict[str, Any]]] = {}
+    for entry in entries:
+        own = series[entry.policy]
+        cols: dict[str, dict[str, Any]] = {}
+        for control in ("no_trade", lab.FIRST_ROW_POLICY):
+            base = series.get(control) or {}
+            keys = sorted(set(own) & set(base))
+            if entry.policy == control or len(keys) < 2:
+                continue
+            cols[f"vs_{control}"] = paired(
+                [own[k] for k in keys],
+                [base[k] for k in keys],
+                draws=2000,
+                seed=seed,
+            )
+        if cols:
+            out[entry.policy] = cols
+    return out
 
 
 def _sample_snapshots(days: Sequence[date]) -> list[str]:
@@ -522,7 +584,10 @@ def run_challenge(
                     "slices": [[d.isoformat() for d in part] for part in slices],
                     "skipped": skipped,
                     "scorecards": _ranked(
-                        [scorecard(entry, runs[entry.policy]) for entry in runners]
+                        _with_paired_columns(
+                            [scorecard(entry, runs[entry.policy]) for entry in runners],
+                            _paired_columns(runs, runners, seed=DEFAULT_SEED),
+                        )
                     ),
                     "gap_samples": samples,
                 }
@@ -604,6 +669,14 @@ def _digest_md(document: Mapping[str, Any]) -> str:
                 f"{card['worst_minimum_capital']}, peak reserved "
                 f"{card['peak_open_loss_reserved']}"
             )
+            for control in ("vs_no_trade", "vs_first_row"):
+                if card.get(control):
+                    p = card[control]
+                    add(
+                        f"  - {control}: diff {p['diff_total']} "
+                        f"ci95 [{p['ci95'][0]}, {p['ci95'][1]}] "
+                        f"p={p['p_one_sided']} over {p['sessions']} sessions"
+                    )
             add(f"  - run dirs: {', '.join(card['run_dirs'])}")
         for sample in entry.get("gap_samples", []):
             add(
