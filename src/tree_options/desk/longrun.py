@@ -1926,6 +1926,56 @@ def boards_fingerprint(boards: Sequence[Board]) -> str:
     return digest.hexdigest()
 
 
+def longrun_engine_identity() -> str:
+    """Bind the scorer and shipped board/outcome/policy helpers to exact source.
+
+    Injected callbacks still require an explicit identity in caller metadata.
+    This does not infer arbitrary closure identity or freeze third-party code.
+    (From the quant-research lane; additive.)
+    """
+    from tree_options.desk import (
+        cost,
+        forecast,
+        hindsight,
+        intraday_action_graph,
+        lab,
+        outcomes,
+        purge,
+        sessions,
+        skill,
+        theory_rules,
+    )
+
+    # Bind the actual statically imported helpers, rather than naming script
+    # paths that could be confused with the desk's subprocess entrypoints.
+    sources = {__name__: Path(__file__)}
+    for module in (
+        cost,
+        forecast,
+        hindsight,
+        intraday_action_graph,
+        lab,
+        outcomes,
+        purge,
+        sessions,
+        skill,
+        theory_rules,
+    ):
+        if module.__file__ is None:
+            raise RuntimeError(f"desk helper source unavailable: {module.__name__}")
+        sources[module.__name__] = Path(module.__file__)
+    modules = {
+        name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in sources.items()
+    }
+    return hashlib.sha256(
+        json.dumps(
+            {"modules": modules, "python": sys.version, "numpy": np.__version__},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+
+
 def _roster_amendments(before: Sequence[Mapping[str, Any]],
                        after: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """One record per pre-registered arm the new roster adds, drops or retunes.
