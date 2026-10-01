@@ -1,0 +1,13 @@
+[Unit]
+Description=Options desk: digest watch cadence (19:30 Denver, after the 19:00 game)
+
+[Timer]
+# half an hour after the 19:00 Denver challenge game: enough slack for the
+# game and its ExecStartPost standings rebuild to land, still the same
+# evening for the ops loop; Persistent catches a machine that was asleep.
+OnCalendar=*-*-* 19:30:00 America/Denver
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
