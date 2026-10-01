@@ -332,6 +332,133 @@ def test_score_run_matches_hand_computation() -> None:
     assert doc["promotion"]["promoted"] is False
 
 
+# ------------------------------------------- no-fill reason split (honesty)
+
+NO_FILL_WHY: dict[str, str | None] = {
+    "s:2026-06-01T10:00": "missing_later_entry_bars",
+    "s:2026-06-01T13:00": "missing_later_entry_bars",
+    "s:2026-06-02T10:00": "legs_out_of_sync",
+    "s:2026-06-02T13:00": None,  # a bare no-fill row: the table carried no reason
+}
+
+
+def reason_outcome(snapshot: str, candidate: str,
+                   horizon: str | None) -> dict[str, Any] | None:
+    """TABLE plus, on the never-filling row, the reason the outcome row carries."""
+    if candidate == "n":
+        why = NO_FILL_WHY[snapshot]
+        return {"no_fill_reason": why} if why else None
+    value = TABLE[candidate]
+    return None if value is None else {"gross": value[0], "net": value[1]}
+
+
+def test_score_run_splits_no_fill_reasons_per_arm() -> None:
+    boards, arms, receipts = _score_case()
+    proto = Protocol(draws=2000, random_seeds=200, incumbent="m", cutoff="2026-06-01")
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(reason_outcome), proto)
+    rows = {r["arm"]: r for r in doc["standings"]}
+    acd = rows["always_call_debit"]
+    # hand-derived: the arm enters "n" on all 4 boards; by snapshot the rows carry
+    # missing_later_entry_bars x2, legs_out_of_sync x1, and one row carries no reason
+    assert acd["no_fill_reasons"] == {"missing_later_entry_bars": 2,
+                                      "legs_out_of_sync": 1, "unknown": 1}
+    assert sum(acd["no_fill_reasons"].values()) == acd["unevaluable"] == 4
+    # the accounting convention is untouched: entered, $0 total, no evaluated entries
+    assert (acd["entered"], acd["net_total"], acd["net_per_evaluated_entry"]) == (4, 0.0, None)
+    # additive: an arm whose entries all resolved carries no key at all
+    for arm in ("m#1", "m#2", "first_row", "no_trade", "always_bullish"):
+        assert "no_fill_reasons" not in rows[arm], arm
+    # a bare None (no reason on the row) still splits - all of it lands in unknown
+    bare = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), proto)
+    bare_rows = {r["arm"]: r for r in bare["standings"]}
+    assert bare_rows["always_call_debit"]["no_fill_reasons"] == {"unknown": 4}
+
+
+def test_digest_markdown_reports_the_no_fill_reason_split() -> None:
+    boards, arms, receipts = _score_case()
+    proto = Protocol(draws=2000, random_seeds=200, incumbent="m", cutoff="2026-06-01")
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(reason_outcome), proto)
+    md = longrun.digest_markdown(doc)
+    assert "## No-fill reason split (per arm, from the outcome rows)" in md
+    line = next(line for line in md.splitlines() if line.startswith("- always_call_debit:"))
+    assert ("missing_later_entry_bars 2" in line and "legs_out_of_sync 1" in line
+            and "unknown 1" in line and "(unevaluable 4)" in line)
+    # the section names the unchanged convention - it must not change it
+    assert "scores $0" in md and "entry-rate denominator" in md
+    # a run with no no-fills carries no section and no per-arm key
+    clean_receipts = {**receipts,
+                      "always_call_debit": {b.snapshot: ok("l") for b in boards}}
+    clean = longrun.score_run(boards, arms, clean_receipts, OutcomeCache(table_outcome), proto)
+    assert "No-fill reason split" not in longrun.digest_markdown(clean)
+    assert all("no_fill_reasons" not in row for row in clean["standings"])
+
+
+def test_cockpit_projection_carries_the_no_fill_reason_split() -> None:
+    boards, arms, receipts = _score_case()
+    proto = Protocol(draws=2000, random_seeds=200, incumbent="m", cutoff="2026-06-01")
+    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(reason_outcome), proto)
+    rows = {r["arm"]: r for r in longrun._project_digest(doc)["standings"]}
+    assert rows["always_call_debit"]["no_fill_reasons"] == {
+        "missing_later_entry_bars": 2, "legs_out_of_sync": 1, "unknown": 1}
+    assert all("no_fill_reasons" not in row
+               for arm, row in rows.items() if arm != "always_call_debit")
+
+
+def test_outcome_cache_no_fill_reason_single_leg_and_pair() -> None:
+    calls: list[tuple[str, str, str | None]] = []
+
+    def outcome(snapshot: str, candidate: str,
+                horizon: str | None) -> dict[str, Any] | None:
+        calls.append((snapshot, candidate, horizon))
+        if candidate == "n":
+            return {"no_fill_reason": "missing_later_entry_bars"}
+        if candidate == "x":
+            return None  # a bare no-fill: the outcome fn knows nothing more
+        return {"gross": 12.0, "net": 10.0}
+
+    cache = OutcomeCache(outcome)
+    assert cache.get("s", "n", None) is None
+    assert cache.no_fill_reason("s", "n", None) == "missing_later_entry_bars"
+    assert cache.no_fill_reason("s", "w", None) is None  # a fill never carries one
+    assert cache.no_fill_reason("s", "x", None) is None  # an unattributed no-fill
+    # a pair is unevaluable when either leg is; the reason is the first no-fill
+    # leg that carries one (w+n -> n; x+n -> n, past the bare first leg)
+    assert cache.get("s", "w+n", None) is None
+    assert cache.no_fill_reason("s", "w+n", None) == "missing_later_entry_bars"
+    assert cache.get("s", "x+n", None) is None
+    assert cache.no_fill_reason("s", "x+n", None) == "missing_later_entry_bars"
+    assert cache.get("s", "w+w", None) == (24.0, 20.0)
+    assert cache.no_fill_reason("s", "w+w", None) is None
+    assert len(calls) == 3  # memoized: n, w and x answered exactly once each
+
+
+def test_v2_outcome_table_no_fill_reason_marker(tmp_path: Path) -> None:
+    rows = [
+        {"snapshot": "s:2026-06-01T10:00", "candidate_id": "w", "exit_mode": "intraday",
+         "status": "closed", "gross": "12.00", "net": "10.00",
+         "exit_at": "2026-06-01T14:45:00+00:00"},
+        {"snapshot": "s:2026-06-01T10:00", "candidate_id": "n", "exit_mode": "intraday",
+         "status": "no_fill", "gross": None, "net": None,
+         "exit_reason": "missing_later_entry_bars"},
+        {"snapshot": "s:2026-06-01T13:00", "candidate_id": "n", "exit_mode": "intraday",
+         "status": "no_fill", "gross": None, "net": None,
+         "exit_reason": "legs_out_of_sync"},
+        {"snapshot": "s:2026-06-02T10:00", "candidate_id": "n", "exit_mode": "intraday",
+         "status": "no_fill", "gross": None, "net": None},  # no reason on the row
+    ]
+    table = tmp_path / "table.jsonl"
+    table.write_text("".join(json.dumps(row) + "\n" for row in rows))
+    ctx = longrun.PluginContext(config_dir=tmp_path)
+    outcome = longrun.plugin("outcome", "v2")({"table": str(table)}, ctx)
+    cache = OutcomeCache(outcome)
+    assert cache.get("s:2026-06-01T10:00", "w", None) == (12.0, 10.0)
+    assert cache.no_fill_reason("s:2026-06-01T10:00", "w", None) is None
+    assert cache.get("s:2026-06-01T10:00", "n", None) is None
+    assert cache.no_fill_reason("s:2026-06-01T10:00", "n", None) == "missing_later_entry_bars"
+    assert cache.no_fill_reason("s:2026-06-01T13:00", "n", None) == "legs_out_of_sync"
+    assert cache.no_fill_reason("s:2026-06-02T10:00", "n", None) is None
+
+
 def test_aa_flags_the_evaluation_invalid_when_the_repeats_differ() -> None:
     boards = boards_for(SESSIONS6, clocks=("10:00",))
     arms = longrun.arms_of([PolicySpec("m", "model", repeats=2)])
@@ -1013,7 +1140,7 @@ def test_v2_plugins_match_env_v2_and_table_equals_live(
                 got_live, got_table = live(board.snapshot, cid, horizon), table(
                     board.snapshot, cid, horizon)
                 assert got_live == got_table
-                if got_live is not None:
+                if got_live is not None and "no_fill_reason" not in got_live:
                     compared += 1
                     assert got_live["net"] < got_live["gross"]  # costs are charged
     assert compared > 0

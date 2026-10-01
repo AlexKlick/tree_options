@@ -567,12 +567,18 @@ class OutcomeCache:
     legs pay by construction), a no-fill on EITHER leg -> None (unevaluable,
     exactly like a single no-fill), and ``exit_at`` the LATER of the legs'
     exits (a package resolves when its last leg does; desk.purge stays
-    correct)."""
+    correct).
+
+    An outcome fn may also return a NO-FILL MARKER, ``{"no_fill_reason": str}``,
+    for a row it knows is unevaluable: ``get`` treats it exactly like ``None``
+    (the $0-no-cost convention never changes) while :meth:`no_fill_reason`
+    reports why - measurement honesty, not a scoring change."""
 
     def __init__(self, outcome: OutcomeFn) -> None:
         self._outcome = outcome
         self._memo: dict[tuple[str, str, str | None], tuple[float, float] | None] = {}
         self._exits: dict[tuple[str, str, str | None], str | None] = {}
+        self._reasons: dict[tuple[str, str, str | None], str | None] = {}
         self._lock = threading.Lock()
 
     def get(self, snapshot: str, candidate: str, horizon: str | None) -> tuple[float, float] | None:
@@ -588,8 +594,16 @@ class OutcomeCache:
         value: tuple[float, float] | None = (
             None if first is None or second is None
             else (first[0] + second[0], first[1] + second[1]))
+        reason: str | None = None
+        if value is None:  # the first no-fill leg that carries a reason names the pair
+            for leg in legs:
+                leg_reason = self._reasons.get((snapshot, leg, horizon))
+                if self._memo.get((snapshot, leg, horizon)) is None and leg_reason:
+                    reason = leg_reason
+                    break
         with self._lock:
             self._memo[key] = value
+            self._reasons[key] = reason
             self._exits[key] = None if value is None else _later_exit(
                 self._exits.get((snapshot, legs[0], horizon)),
                 self._exits.get((snapshot, legs[1], horizon)))
@@ -603,13 +617,18 @@ class OutcomeCache:
                 return self._memo[key]
         raw = self._outcome(snapshot, candidate, horizon)
         value: tuple[float, float] | None = None
-        if raw is not None:
+        reason: str | None = None
+        if raw is not None and "no_fill_reason" in raw:
+            # a no-fill marker: not evaluable, but the row said why
+            reason = None if raw["no_fill_reason"] is None else str(raw["no_fill_reason"])
+        elif raw is not None:
             gross, net = float(raw["gross"]), float(raw["net"])
             if not (math.isfinite(gross) and math.isfinite(net)):
                 raise ValueError(f"non-finite outcome for {snapshot}/{candidate}")
             value = (gross, net)
         with self._lock:
             self._memo[key] = value
+            self._reasons[key] = reason
             self._exits[key] = None if raw is None or not raw.get("exit_at") \
                 else str(raw["exit_at"])
         return value
@@ -622,6 +641,14 @@ class OutcomeCache:
         """The outcome's exit instant when the plug-in reports one (desk.purge)."""
         self.get(snapshot, candidate, horizon)
         return self._exits.get((snapshot, candidate, horizon))
+
+    def no_fill_reason(self, snapshot: str, candidate: str,
+                       horizon: str | None) -> str | None:
+        """Why an unevaluable row had no outcome, when the outcome row says
+        (e.g. ``missing_later_entry_bars``); ``None`` for a fill or a bare
+        no-fill. Descriptive only - it never touches the $0-no-cost scoring."""
+        self.get(snapshot, candidate, horizon)
+        return self._reasons.get((snapshot, candidate, horizon))
 
 
 # ---------------------------------------------------------------- executor
@@ -1289,12 +1316,17 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
         gross: list[float] = []
         entered = unevaluable = 0
         entry_flags: list[float] = []
+        no_fill_reasons: dict[str, int] = {}
         for board, (choice, horizon) in zip(scored, decisions, strict=True):
             value = None
             if choice is not None:
                 entered += 1
                 value = outcomes.get(board.snapshot, choice, horizon)
                 unevaluable += value is None
+                if value is None:  # descriptive only: WHY, never a scoring change
+                    why = outcomes.no_fill_reason(board.snapshot, choice, horizon)
+                    bucket = why or "unknown"
+                    no_fill_reasons[bucket] = no_fill_reasons.get(bucket, 0) + 1
             entry_flags.append(1.0 if value is not None else 0.0)  # EVALUATED entries
             gross.append(0.0 if value is None else value[0])
             net.append(0.0 if value is None else value[1])
@@ -1309,6 +1341,7 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
                             and not mine[b.snapshot].get("ok")),
             "excluded": sum(1 for b in boards if not mine.get(b.snapshot, {}).get("ok")),
             "failure_reasons": failure_reasons(mine, boards),
+            "no_fill_reasons": no_fill_reasons,
             "heals": heal_tally(arm, mine, boards)}
 
     incumbent_arms = [a.name for a in arms if a.policy.name == protocol.incumbent]
@@ -1388,6 +1421,8 @@ def score_run(boards: Sequence[Board], arms: Sequence[Arm],
             "receipts": (receipts_files or {}).get(arm.name),
             **({"failure_reasons": data["failure_reasons"]}
                if data["failure_reasons"] else {}),  # additive: a clean arm shows none
+            **({"no_fill_reasons": data["no_fill_reasons"]}
+               if data["no_fill_reasons"] else {}),  # additive: an all-filled arm shows none
             **({"heals": data["heals"]}
                if data["heals"] else {}),  # additive: a clean arm shows no heal tally
         })
@@ -1658,6 +1693,21 @@ def digest_markdown(doc: Mapping[str, Any]) -> str:
         for arm, reasons in tallies:
             add(f"- {arm}: " + ", ".join(f"{reason} {count}" for reason, count
                                          in sorted(reasons.items())))
+        add("")
+    splits = [(row["arm"], row["no_fill_reasons"]) for row in doc["standings"]
+              if row.get("no_fill_reasons")]
+    if splits:  # measurement honesty: WHY an entered row had no outcome
+        add("## No-fill reason split (per arm, from the outcome rows)")
+        add("")
+        for arm, reasons in splits:
+            add(f"- {arm}: " + ", ".join(f"{reason} {count}" for reason, count
+                                         in sorted(reasons.items()))
+                + f" (unevaluable {sum(reasons.values())})")
+        add("")
+        add("Descriptive only: every unevaluable entry still scores $0 with no cost "
+            "(the pre-registered convention), and the entry-rate denominator is "
+            "unchanged - whether missing-data no-fills (e.g. missing_later_entry_bars) "
+            "belong in that denominator is an open operator decision, not a code fix.")
         add("")
     healed = [(row["arm"], row["heals"]) for row in doc["standings"] if row.get("heals")]
     if healed:  # who actually answered: the self-heal ladder in full view
@@ -2326,7 +2376,12 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
             for line in stream:
                 row = json.loads(line)
                 if row.get("status") == "no_fill" or row.get("net") is None:
-                    value: dict[str, Any] | None = None
+                    # a no_fill row that says why becomes a marker doc (the digest's
+                    # no-fill reason split); anything else stays a bare None
+                    value: dict[str, Any] | None = (
+                        {"no_fill_reason": str(row["exit_reason"])}
+                        if row.get("status") == "no_fill" and row.get("exit_reason")
+                        else None)
                 else:  # exit_at feeds the purged walk-forward (desk.purge)
                     value = {"gross": float(row["gross"]), "net": float(row["net"]),
                              "exit_at": row.get("exit_at")}
@@ -2369,10 +2424,17 @@ def _v2_outcome(params: Mapping[str, Any], ctx: PluginContext) -> OutcomeFn:
                 exit_mode=mode, costs=costs,
                 leg_sync_minutes=None if sync in (None, "off") else int(sync),
                 no_price=ctx.shared.get("no_price"))
-            memo[key] = (None if doc is None or doc.get("status") in ("no_fill", "no_price")
-                         or doc.get("net") is None
-                         else {"gross": float(doc["gross"]), "net": float(doc["net"]),
-                               "exit_at": doc.get("exit_at")})
+            if doc is None:
+                memo[key] = None
+            elif doc.get("status") == "no_fill":
+                # mirror the table path: a no_fill that says why becomes a marker
+                memo[key] = ({"no_fill_reason": str(doc["exit_reason"])}
+                             if doc.get("exit_reason") else None)
+            elif doc.get("status") == "no_price" or doc.get("net") is None:
+                memo[key] = None
+            else:
+                memo[key] = {"gross": float(doc["gross"]), "net": float(doc["net"]),
+                             "exit_at": doc.get("exit_at")}
         return memo[key]
     return live
 
@@ -2698,13 +2760,15 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
     keep = ("arm", "policy", "repeat", "kind", "boards", "entered", "entry_rate",
             "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_random_own",
             "vs_first_row", "vs_incumbent", "vs_regime", "null_percentile",
-            "null_percentile_own", "failure_reasons", "heals")
+            "null_percentile_own", "failure_reasons", "no_fill_reasons", "heals")
     wf = doc.get("walk_forward") or {}
     standings = []
     for row in doc.get("standings", []):
         projected = {k: row.get(k) for k in keep}
         if not projected.get("heals"):
             projected.pop("heals", None)  # additive: a clean arm carries no heals key
+        if not projected.get("no_fill_reasons"):
+            projected.pop("no_fill_reasons", None)  # additive: an all-filled arm shows none
         standings.append(projected)
     standings.sort(key=_standing_order)
     projection: dict[str, Any] = {"headline": doc.get("headline"),
@@ -2849,6 +2913,13 @@ def dispatch_cli(args: argparse.Namespace) -> int:
                      + f" net={arm.get('net')}")
     if view["digest"] is not None:
         lines.append(f"  digest: {view['digest']['headline']}")
+        no_fills = [(row["arm"], row["no_fill_reasons"])
+                    for row in view["digest"].get("standings", [])
+                    if row.get("no_fill_reasons")]
+        if no_fills:  # why the unevaluable entries had no outcome (missing data etc.)
+            lines.append("  no-fill reasons: " + "; ".join(
+                f"{arm} " + ", ".join(f"{r} {c}" for r, c in sorted(reasons.items()))
+                for arm, reasons in no_fills))
         healed = [(row["arm"], row["heals"]) for row in view["digest"].get("standings", [])
                   if row.get("heals")]
         if healed:  # the self-heal ladder: how much of the run the backups carried
