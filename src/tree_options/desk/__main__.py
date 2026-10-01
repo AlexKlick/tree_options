@@ -216,6 +216,12 @@ _SYMBOL = re.compile(r"^[A-Z][A-Z0-9.]{0,9}$")
 def _parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="python -m tree_options.desk")
     sub = ap.add_subparsers(dest="command", required=True)
+    cc = sub.add_parser(
+        "clock-coverage",
+        help="per-clock capture coverage of a session's A2 tier (ok/stale + the persistent stale set)",
+    )
+    cc.add_argument("--session", type=date.fromisoformat)
+    cc.add_argument("--min-ok", type=int, default=30, help="alert when a clock records fewer (default 30)")
     rc = sub.add_parser("record-chains", help="record the CBOE delayed option chains")
     rc.add_argument("--session", type=date.fromisoformat)
     rc.add_argument(
@@ -887,6 +893,32 @@ def run_cli(
                 clock=clock,
                 cal=cal,
             )
+        if args.command == "clock-coverage":
+            rows = store.ChainStore(paths.store_root()).clock_coverage(
+                args.session if args.session is not None else clock().astimezone(store.ET).date()
+            )
+            if not rows:
+                print("clock-coverage: no clock-tier manifests captured for that session")
+                return 3
+            persistent: set[str] | None = None
+            for row in rows:
+                print(
+                    f"clock {row['clock']}: ok {row['ok']} stale {row['stale']}"
+                    + (f" stale_names={','.join(row['stale_names'])}" if row["stale_names"] else "")
+                )
+                names = set(row["stale_names"])
+                persistent = names if persistent is None else (persistent & names)
+            if persistent:
+                print("persistent stale (every clock): " + ",".join(sorted(persistent)))
+            short = [r for r in rows if r["ok"] < args.min_ok]
+            if short:
+                print(
+                    f"ALERT: {len(short)} clock(s) below min-ok {args.min_ok}: "
+                    + ", ".join(f"{r['clock']}={r['ok']}" for r in short),
+                    file=sys.stderr,
+                )
+                return 1
+            return 0
         if args.command == "features":
             if args.session is None:
                 return econ_jobs.run_features(
