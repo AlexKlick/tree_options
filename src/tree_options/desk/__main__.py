@@ -26,6 +26,33 @@
         nothing stored, 2 bad arguments. The Polygon key is read from its
         key file inside the client and never printed.
 
+    forward-select [--selected-on D] [--strikes-per-group N] [--max-contracts N]
+        Re-select the forward minute-bar corpus's contracts from the latest
+        recorded CBOE chain at or before D (default: today ET): the measured
+        universe (IWM/QQQ/SPY, 7 <= dte <= 60, |delta| <= 0.70, volume > 0,
+        oi > 0, monthly third-Friday expiries), N nearest-the-money strikes
+        per (underlying, expiry, right), capped. No wire requests; write-once
+        per D into DESK_FORWARD_DIR/selection/<D>.json. Exit 0, 1 no chain
+        session records all three underlyings. Weekly slot: Sat 09:00 ET.
+
+    forward-minutes [--session D] [--selection PATH] [--budget N] [--massive-cache P]
+                    [--dry-run]
+        Capture D's Massive per-contract minute aggregates for the selection's
+        contracts into DESK_FORWARD_DIR/bars/<D>.json (default D: the latest
+        session whose 16:15 ET cutoff has passed; one request per contract,
+        cache hits free). A daily wire guard stops on exceed and logs every
+        refusal to DESK_FORWARD_DIR/budget/<date>.json. Write-once: a captured
+        session is never refetched. --dry-run is cache-only (no wire, writes
+        nothing). Exit 0, 3 retryable, 4 selection stale or
+        missing (run forward-select), 5 budget stopped the capture before
+        anything landed, 6 a decision clock (10:00/10:15/15:15 ET) is
+        uncovered. Slots: Mon-Fri 17:25 ET + Mon-Sat 06:50 catch-up.
+
+    forward-verify [--session D]
+        Decision-clock coverage verdict for D's captured bars into
+        DESK_FORWARD_DIR/verify/<D>.json (no wire; idempotent). Exit codes as
+        forward-minutes' 0/6.
+
     update-events [--horizon N] [--dry-run]
         Earnings timing (Nasdaq estimates; EDGAR 8-K 2.02 only when
         DESK_SEC_UA is set) and the macro seal/Fed-page check. Exit 0,
@@ -164,6 +191,7 @@ from tree_options.desk import (  # noqa: E402
     econ_jobs,
     eod_equity,
     events,
+    forward_minutes,
     http,
     indices,
     ivhist,
@@ -270,6 +298,36 @@ def _parser() -> argparse.ArgumentParser:
     mn.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
     mn.add_argument("--desk-specs", type=Path, help="the desk runtime's spec dir (Wave 3)")
     mn.add_argument("--desk-book", type=Path, help="the desk runtime's book.json (Wave 3)")
+    fw = sub.add_parser(
+        "forward-select",
+        help="refresh the forward minute-bar contract selection (weekly; no wire)",
+    )
+    fw.add_argument("--selected-on", type=date.fromisoformat,
+                    help="default: today ET (the Saturday 09:00 slot)")
+    fw.add_argument("--strikes-per-group", type=int,
+                    help=f"default {forward_minutes.STRIKES_PER_GROUP}")
+    fw.add_argument("--max-contracts", type=int,
+                    help=f"default {forward_minutes.MAX_CONTRACTS}")
+    fwd = sub.add_parser(
+        "forward-minutes",
+        help="capture the session's decision-clock minute bars (wire-budgeted)",
+    )
+    fwd.add_argument("--session", type=date.fromisoformat,
+                     help="default: the latest session whose 16:15 ET cutoff has passed")
+    fwd.add_argument("--selection", type=Path,
+                     help="default: the newest selection in the forward store")
+    fwd.add_argument("--budget", type=int,
+                     help=f"max wire requests for today (default {forward_minutes.DAILY_BUDGET_DEFAULT})")
+    fwd.add_argument("--massive-cache", type=Path,
+                     help="default: the desk captures' artifacts/massive-cache-desk")
+    fwd.add_argument("--dry-run", action="store_true",
+                     help="cache-only: no wire requests, nothing written")
+    fv = sub.add_parser(
+        "forward-verify",
+        help="decision-clock coverage verdict for a captured session (no wire)",
+    )
+    fv.add_argument("--session", type=date.fromisoformat,
+                    help="default: the latest session whose 16:15 ET cutoff has passed")
     from tree_options.desk import production
 
     production.register(sub)
@@ -486,6 +544,80 @@ def _record_dividends(
     return run.exit_code
 
 
+def _forward_select(args: argparse.Namespace, *, clock: store.Clock) -> int:
+    selected_on = args.selected_on or clock().astimezone(ET).date()
+    try:
+        report = forward_minutes.refresh_selection(
+            selected_on=selected_on,
+            strikes_per_group=args.strikes_per_group or forward_minutes.STRIKES_PER_GROUP,
+            max_contracts=args.max_contracts or forward_minutes.MAX_CONTRACTS,
+        )
+    except forward_minutes.SelectionError as exc:
+        print(f"forward-select: {exc}", file=sys.stderr)
+        return 1
+    print(f"forward-select: {selected_on} {report['status']} "
+          f"chain={report['chain_session']} contracts={len(report['contracts'])} "
+          f"skipped_groups={len(report['skipped_groups'])}")
+    return 0
+
+
+def _forward_minutes(
+    args: argparse.Namespace,
+    *,
+    client: MassiveClient | None,
+    clock: store.Clock,
+    cal: ClosingCalendar,
+) -> int:
+    now = clock()
+    if args.session is None:
+        session = latest_completed_session(now, cal)
+    elif not cal.is_session(args.session) or args.session > now.astimezone(ET).date():
+        print(f"forward-minutes: {args.session} is not a past NYSE session", file=sys.stderr)
+        return 2
+    else:
+        session = args.session
+    selection = (
+        json.loads(args.selection.read_text()) if args.selection
+        else forward_minutes.latest_selection()
+    )
+    if selection is None:
+        print("forward-minutes: no selection in the forward store; run forward-select",
+              file=sys.stderr)
+        return forward_minutes.STALE_SELECTION_EXIT
+    budget = forward_minutes.WireBudget.load(
+        forward_minutes.budget_path(now.astimezone(ET).date()),
+        cap=args.budget or forward_minutes.DAILY_BUDGET_DEFAULT,
+    )
+    if client is None:
+        try:
+            client = forward_minutes.build_client(
+                args.massive_cache or forward_minutes.default_massive_cache()
+            )
+        except MassiveError as exc:  # fixed text: no key material, no path
+            print(f"forward-minutes: no usable Massive key ({type(exc).__name__})",
+                  file=sys.stderr)
+            return 1
+    result = forward_minutes.capture_session(
+        session, selection=selection, client=client, budget=budget, now=now,
+        dry_run=args.dry_run,
+    )
+    print(result.line())
+    if result.status in ("written", "exists"):
+        verdict = forward_minutes.verify_session(session, now=now)
+        print(verdict.line())
+        return result.exit_code or verdict.exit_code
+    return result.exit_code
+
+
+def _forward_verify(args: argparse.Namespace, *, clock: store.Clock,
+                    cal: ClosingCalendar) -> int:
+    now = clock()
+    session = args.session or latest_completed_session(now, cal)
+    verdict = forward_minutes.verify_session(session, now=now)
+    print(verdict.line())
+    return verdict.exit_code
+
+
 def _record_chains(
     args: argparse.Namespace,
     *,
@@ -614,6 +746,7 @@ def run_cli(
     notify: eod_equity.Notify | None = None,
     get: http.Get | None = None,
     dividend_client: MassiveClient | None = None,
+    forward_client: MassiveClient | None = None,
 ) -> int:
     """The CLI with injectable I/O (tests); :func:`main` wires the real ones."""
     try:
@@ -692,6 +825,12 @@ def run_cli(
             )
         if args.command == "record-dividends":
             return _record_dividends(args, client=dividend_client, clock=clock, cal=cal)
+        if args.command == "forward-select":
+            return _forward_select(args, clock=clock)
+        if args.command == "forward-minutes":
+            return _forward_minutes(args, client=forward_client, clock=clock, cal=cal)
+        if args.command == "forward-verify":
+            return _forward_verify(args, clock=clock, cal=cal)
         if args.command == "update-events":
             return _update_events(
                 args,

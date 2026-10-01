@@ -1,0 +1,17 @@
+[Unit]
+Description=Capture the decision-clock minute bars for the latest closed session
+
+[Timer]
+# Massive (Polygon) minute aggregates for session D exist once D's options
+# close (16:15 ET for the late-close classes); the evening slot captures D
+# the same day and the Mon-Sat 06:50 catch-up is the second chance for a
+# missed evening (idempotent: a captured session is a pure cache no-op).
+# The capture refuses to run on a selection older than 10 days, which
+# forces desk-forward-select to have run.
+OnCalendar=Mon..Fri *-*-* 17:25:00 America/New_York
+OnCalendar=Mon..Sat *-*-* 06:50:00 America/New_York
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
