@@ -303,6 +303,18 @@ clock tier keeps no raw evidence (8×37×~5.8 MB/day would be ~1.7 GB for
 bytes the tier never re-reads; each document's `raw_sha256` still pins its
 content).
 
+**Day-1 follow-up (2026-10-01, evening): the persistent late cohort got
+its own EVENING tier.** Eight names (CRM, DIS, LLY, PEP, PG, V, XLE, XLV)
+were stale at every one of the eight clocks — their delayed publications
+never roll inside a 10-minute window — but have fully rolled by evening.
+The fix is deliberately NOT a clock backfill (point-in-time discipline:
+the clock namespace refuses post-window data by design): a separate
+post-close observation tier, `clock="evening"` — namespace
+`chains/clock=evening/<D>/`, manifest `manifest/clock=evening/<D>.json`,
+freshness = `source_as_of` at or after the session close (16:00 ET), one
+18:05 ET weekday capture, single pass (no probe, no retry passes).
+Design and rationale: `docs/desk/EVENING-TIER.md`.
+
 ## The paid alternative (operator's option)
 
 ThetaData Standard at **$80/mo, cancel anytime** — the cheapest
