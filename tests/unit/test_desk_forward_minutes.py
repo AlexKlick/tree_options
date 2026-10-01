@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import gzip
 import hashlib
+import argparse
 import json
 import re
 import urllib.parse
@@ -678,3 +679,62 @@ class TestCli:
         rc = run_cli(["forward-verify", "--session", str(SESSION)], now=NOW,
                      cal=static_calendar)
         assert rc == fm.COVERAGE_EXIT
+
+
+class TestCliExitMapping:
+    """The runbook's exit-2/3 contract at the CLI boundary: a tier boundary
+    is a purchase decision (exit 2), a dead key says rotate (exit 3), and
+    NEITHER is an unhandled traceback (the 2026-10-01 first fire died at
+    exit 1 with a stack)."""
+
+    def _run(self, monkeypatch, exc, static_calendar):
+        from tree_options.desk import __main__ as main_mod
+
+        monkeypatch.setattr(
+            main_mod.forward_minutes, "capture_session",
+            lambda *a, **k: (_ for _ in ()).throw(exc),
+        )
+        monkeypatch.setattr(
+            main_mod.forward_minutes, "latest_selection",
+            lambda: {"schema": "desk-forward-selection/1", "contracts": []},
+        )
+        args = argparse.Namespace(
+            session=None, selection=None, budget=None, dry_run=True,
+            massive_cache=None,
+        )
+        captured = {}
+
+        def fake_print(*a, **k):
+            captured["out"] = captured.get("out", "") + " ".join(map(str, a))
+
+        monkeypatch.setattr(main_mod.sys, "stderr", _Sink(fake_print))
+        rc = main_mod._forward_minutes(args, client=object(), clock=lambda: NOW, cal=static_calendar)
+        return rc, captured.get("out", "")
+
+    def test_not_entitled_maps_to_exit_2_purchase_decision(self, monkeypatch, static_calendar):
+        from tree_options.data.massive_client import MassiveNotEntitledError
+
+        rc, out = self._run(
+            monkeypatch,
+            MassiveNotEntitledError("/v2/aggs/...", "plan doesn't include this data"),
+            static_calendar,
+        )
+        assert rc == 2
+        assert "NOT_ENTITLED" in out and "purchase decision" in out
+
+    def test_auth_rejected_maps_to_exit_3_rotate(self, monkeypatch, static_calendar):
+        from tree_options.data.massive_client import MassiveAuthRejectedError
+
+        rc, out = self._run(
+            monkeypatch,
+            MassiveAuthRejectedError("/v2/aggs/...", 403, "key rejected"),
+            static_calendar,
+        )
+        assert rc == 3
+        assert "rotate the key" in out
+
+
+class _Sink:
+    def __init__(self, write): self._write = write
+    def write(self, s): self._write(s)
+    def flush(self): pass

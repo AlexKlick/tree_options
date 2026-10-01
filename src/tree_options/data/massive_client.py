@@ -661,6 +661,22 @@ class MassiveClient:
                 if status == 200:
                     return response.body
                 if status in AUTH_REJECTED_HTTP_STATUSES:
+                    # a tier boundary can ALSO arrive as a real HTTP 403
+                    # whose body carries the NOT_AUTHORIZED signature
+                    # (observed 2026-10-01: the free plan's options-minute
+                    # answer). The runbook's contract separates the two
+                    # operator stories: NOT_ENTITLED = purchase decision;
+                    # AUTH_REJECTED = rotate the key. Read the body before
+                    # blaming the key.
+                    try:
+                        decoded = self._decode(response.body, endpoint)
+                    except MassiveError:
+                        decoded = {}
+                    if decoded.get("status") == NOT_AUTHORIZED_STATUS:
+                        raise MassiveNotEntitledError(
+                            endpoint,
+                            self._vendor_message(decoded) or "(no vendor message)",
+                        )
                     raise MassiveAuthRejectedError(
                         endpoint,
                         status,
