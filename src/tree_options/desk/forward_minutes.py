@@ -542,14 +542,19 @@ class Verdict:
                 + (f" ({self.note})" if self.note else ""))
 
 
-def _clock_ms(session: date, clock: str) -> int:
+def clock_ms(session: date, clock: str) -> int:
+    """An ET clock's epoch ms on ``session`` (DST-correct via zoneinfo).
+
+    Public: the eight-clock coverage scorer (``forward_coverage.py``) must
+    reuse exactly this instant arithmetic, never re-derive it.
+    """
     hour, minute = (int(x) for x in clock.split(":"))
     return int(datetime.combine(session, time(hour, minute), tzinfo=ET).timestamp() * 1000)
 
 
 def _clock_covered(bars: list[dict[str, Any]], session: date, clock: str) -> bool:
     """A bar's minute [clock, clock+60s) ET (DST-correct via zoneinfo)."""
-    lo = _clock_ms(session, clock)
+    lo = clock_ms(session, clock)
     return any(lo <= b["t"] < lo + 60_000 for b in bars)
 
 
@@ -633,6 +638,7 @@ __all__ = [
     "budget_path",
     "build_client",
     "capture_session",
+    "clock_ms",
     "default_massive_cache",
     "forward_root",
     "latest_selection",
