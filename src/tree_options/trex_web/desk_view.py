@@ -6,13 +6,17 @@ import hashlib
 import json
 import os
 import sqlite3
+from datetime import date
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from tree_options.desk import book as desk_book
 from tree_options.desk import production, scorecards
+from tree_options.desk.book import BookSlice
 from tree_options.desk.contracts import ContractError
 from tree_options.desk.evidence import EvidenceError
 from tree_options.desk.lab_scoreboard import aggregate, best_advisory
@@ -29,10 +33,81 @@ from tree_options.trex_web.automation import (
 
 _ERRORS = (ContractError, EvidenceError, sqlite3.Error, OSError)
 
+#: who owns a book, by the ``BookPosition.source`` the adapter gives it.
+#: The desk book is the supervised desk's; every other book under the same
+#: state root belongs to the legacy trex monitor (a different service, on
+#: the same paper account).
+OWNERS = {'desk': 'supervised-desk'}
+
+#: the service that owns every non-desk book on this account
+LEGACY_OWNER = 'trex-monitor'
+
+
+def _owner(source: str) -> str:
+    return OWNERS.get(source, LEGACY_OWNER)
+
+
+def _money(value: Decimal | None) -> str | None:
+    """Money as a 2-dp string, or None when it is not countable (never a
+    number the cockpit could add up)."""
+    return None if value is None else f"{value:.2f}"
+
+
+def _slice_block(slice_: BookSlice) -> dict[str, Any]:
+    deadline = slice_.earliest_exit_deadline
+    return {
+        'structures': slice_.structures,
+        'legs': slice_.legs,
+        'max_loss_usd': _money(slice_.max_loss_usd),
+        'earliest_exit_deadline': None if deadline is None else deadline.isoformat(),
+        'exit_deadlines_unknown': slice_.unknown_deadlines,
+        'owners': sorted({_owner(p.source) for p in slice_.positions}),
+        'books': list(slice_.books),
+        'positions': [{
+            'id': p.id,
+            'book': p.source,
+            'owner': _owner(p.source),
+            'underlying': p.underlying,
+            'status': p.status,
+            'quantity': p.quantity,
+            'max_loss_usd': _money(p.max_loss_usd),
+            'exit_deadline': None if p.exit_deadline is None else p.exit_deadline.isoformat(),
+        } for p in slice_.positions],
+    }
+
+
+def account_block(paths: DeskPaths, *, plans_root: Path | None,
+                  state_root: Path | None, as_of: date) -> dict[str, Any]:
+    """The ACCOUNT's exposure as the files stand, split by owner: the desk
+    book against every other book under the same state root.
+
+    Read-only, exactly like the rest of this route: the same ``load_book``
+    adapter the desk's own admission screen uses (it already counts the
+    legacy books), never a broker call. ``countable`` false means a book
+    could not be read and no total may be claimed from this block."""
+    exposure = desk_book.account_exposure(
+        as_of=as_of, plans_root=plans_root, state_root=state_root,
+        desk_specs=paths.specs(), desk_book=paths.book())
+    return {
+        'schema': 'desk-account-exposure/1',
+        'as_of': as_of.isoformat(),
+        'state_root': None if state_root is None else str(state_root),
+        'desk_run_dir': str(paths.root),
+        'countable': exposure.countable,
+        'max_loss_usd': (
+            None if not exposure.countable
+            else _money((exposure.outside.max_loss_usd or Decimal(0))
+                        + (exposure.desk.max_loss_usd or Decimal(0)))),
+        'outside_desk_book': _slice_block(exposure.outside),
+        'desk_book': _slice_block(exposure.desk),
+        'problems': list(exposure.problems),
+    }
+
 
 def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
            portfolio_dir: Path | None = None, intraday_dir: Path | None = None,
-           trade_floor_dir: Path | None = None, longrun_dir: Path | None = None) -> None:
+           trade_floor_dir: Path | None = None, longrun_dir: Path | None = None,
+           plans_root: Path | None = None, state_root: Path | None = None) -> None:
     @app.get('/api/desk/health')
     def health() -> JSONResponse:
         try:
@@ -182,10 +257,17 @@ def attach(app: FastAPI, *, database: Path, replay_dir: Path | None = None,
 
         The desk process owns the broker session; this never contacts it —
         it serves the files as they stand (kill files, book, inbox,
-        mandate, outbox)."""
+        mandate, outbox, and the ACCOUNT's exposure: the desk book beside
+        every other book on the same account, since a flat desk book is
+        not a flat account)."""
         try:
-            doc = collect_status(DeskPaths.default(), SupervisedPaths.default(),
-                                 now=now_et(), events=20)
+            now = now_et()
+            desk_paths = DeskPaths.default()
+            doc = collect_status(desk_paths, SupervisedPaths.default(),
+                                 now=now, events=20)
+            doc['account_exposure'] = account_block(
+                desk_paths, plans_root=plans_root, state_root=state_root,
+                as_of=now.date())
         except (*_ERRORS, OSError, ValueError, KeyError, TypeError):
             return _unavailable()
         return JSONResponse(doc, headers={'Cache-Control': 'no-store'})

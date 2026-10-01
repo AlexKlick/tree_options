@@ -258,6 +258,27 @@ def test_implied_move_needs_one_event_in_both_expiries(cal: StaticSessionCalenda
     assert ev["implied_move"] is None and "second report" in ev["reason"]
 
 
+def test_after_next_report_is_exposure_never_a_second_anchor(cal: StaticSessionCalendar) -> None:
+    """The report after next rides along (additive key) but the split keeps
+    its one-event contract: multi-report spans are refused, not re-anchored."""
+    term = surface.atm_term(_quotes(), spot=S, rate=R)
+    # one report ahead, nothing known past it -> the key is absent
+    one = surface.implied_event_move(term, [REPORT], D, cal)
+    assert one["next_report"] == REPORT and "after_next_report" not in one
+    # a fully past report ahead of the anchor is not the after-next either
+    past = surface.implied_event_move(term, ["2026-07-30", REPORT], D, cal)
+    assert past["next_report"] == REPORT and "after_next_report" not in past
+    # a known report past the anchor is exposed even while the split
+    # refuses to price through it (both expiries must hold one event)
+    two = surface.implied_event_move(term, [REPORT, "2026-12-01"], D, cal)
+    assert two["after_next_report"] == "2026-12-01"
+    assert two["implied_move"] is None and "second report" in two["reason"]
+    # an after-next BEYOND the second expiry never blocks the split
+    far = surface.implied_event_move(term, [REPORT, "2027-06-01"], D, cal)
+    assert far["after_next_report"] == "2027-06-01"
+    assert far["implied_move"] == pytest.approx(JUMP, abs=1e-6)
+
+
 def test_historical_earnings_moves(cal: StaticSessionCalendar) -> None:
     closes = {"2026-07-20": 100.0, "2026-07-21": 101.0, "2026-07-22": 95.0, "2026-07-23": 96.0}
     bars = {d: {"close": str(c)} for d, c in closes.items()}
@@ -440,6 +461,9 @@ def test_features_cli_writes_the_session_file(
     )
     assert f["iv_rank"]["n"] == 130 and f["iv_rank"]["history_label"] == "ok"
     assert f["earnings"]["next_report"] == REPORT
+    # the timing file's estimated 2027-01-28 report rides along as the
+    # after-next (the split itself is unchanged by it)
+    assert f["earnings"]["after_next_report"] == "2027-01-28"
     fc = f["forecast"]
     expected_source = "har" if har.FORECAST_001_VERDICT == "PASS" else "rv22"
     assert fc["source"] == expected_source

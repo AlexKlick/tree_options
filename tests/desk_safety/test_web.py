@@ -1,6 +1,6 @@
 """Read-only evidence routes on the existing cockpit, not a second server."""
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from fastapi.testclient import TestClient
 
@@ -183,6 +183,92 @@ def test_supervised_status_is_unavailable_when_the_book_is_corrupt(world, monkey
     assert response.json()['error'] == 'evidence_unavailable'
     assert (run_dir / 'book.json').read_text() == 'not json'
     assert str(world.root) not in response.text
+
+
+def _legacy_account(world, monkeypatch):
+    """A legacy trex book on the SAME account as the desk: one plan TOML
+    and its book.json under the app's legacy state dir. Dates hang off the
+    world's session anchor, so nothing is wall-clock dependent."""
+    run_dir, _ = _supervised_world(world, monkeypatch)
+    run_dir.mkdir(parents=True)
+    (run_dir / 'book.json').write_text(json.dumps({'structures': {}}))
+    plans = world.root / 'plans'
+    plans.mkdir(parents=True, exist_ok=True)
+    legacy = world.root / 'legacy' / 'putspread-fixture'
+    legacy.mkdir(parents=True, exist_ok=True)
+    (plans / 'fixture.toml').write_text(f'''
+id = "putspread-fixture"
+account_mode = "paper"
+total_debit_cap = 1000.00
+entry_window_start = "09:45"
+entry_window_end = "12:00"
+
+[[structures]]
+id = "spx-oct"
+underlying = "SPX"
+entry_date = {(world.entry - timedelta(days=1)).isoformat()}
+expiry = {world.expiry.isoformat()}
+long_strike = 500.0
+short_strike = 470.0
+quantity = 4
+limit_cap = 0.60
+exit_deadline = {world.deadline.isoformat()}
+''')
+    (legacy / 'book.json').write_text(json.dumps({
+        'heartbeat': None, 'structures': {'spx-oct': {
+            'status': 'open', 'entry_fill': '0.50', 'filled_qty': 4,
+            'exit_filled_qty': 0}}}))
+    return run_dir
+
+
+def test_supervised_status_reports_the_account_outside_the_desk_book(world, monkeypatch):
+    """The desk book is flat here; the account is not. The block must name
+    the other book, its owner, its legs and its time stop, and never offer
+    the desk book as the account's whole exposure."""
+    _legacy_account(world, monkeypatch)
+    response = client(world).get('/api/desk/supervised')
+    assert response.status_code == 200
+    block = response.json()['account_exposure']
+    assert block['schema'] == 'desk-account-exposure/1'
+    assert block['countable'] is True and block['problems'] == []
+    assert block['desk_book']['structures'] == 0
+    assert block['desk_book']['max_loss_usd'] == '0.00'
+    # hand-computed: 0.50 x 4 x 100 = 200, one 2-leg spread
+    assert block['outside_desk_book']['structures'] == 1
+    assert block['outside_desk_book']['legs'] == 2
+    assert block['outside_desk_book']['max_loss_usd'] == '200.00'
+    assert block['max_loss_usd'] == '200.00'
+    assert block['outside_desk_book']['earliest_exit_deadline'] == world.deadline.isoformat()
+    # the owning service is named: this book is not the desk's
+    assert block['outside_desk_book']['owners'] == ['trex-monitor']
+    assert block['outside_desk_book']['books'] == ['legacy:putspread-fixture']
+    [row] = block['outside_desk_book']['positions']
+    assert row['id'] == 'legacy:putspread-fixture/spx-oct'
+    assert row['owner'] == 'trex-monitor' and row['quantity'] == 4
+    assert row['exit_deadline'] == world.deadline.isoformat()
+
+
+def test_account_exposure_never_claims_flat_when_a_book_cannot_be_read(world, monkeypatch):
+    _legacy_account(world, monkeypatch)
+    (world.root / 'legacy' / 'putspread-fixture' / 'book.json').write_text('not json')
+    block = client(world).get('/api/desk/supervised').json()['account_exposure']
+    assert block['countable'] is False
+    assert block['max_loss_usd'] is None
+    assert any('putspread-fixture/book.json unreadable' in p for p in block['problems'])
+
+
+def test_account_exposure_is_read_only_and_contacts_no_broker(world, monkeypatch):
+    run_dir = _legacy_account(world, monkeypatch)
+    before = {str(p.relative_to(world.root)): p.read_bytes()
+              for p in sorted(world.root.rglob('*')) if p.is_file()}
+    doc = client(world).get('/api/desk/supervised').json()
+    assert doc['account_exposure']['desk_run_dir'] == str(run_dir)
+    after = {str(p.relative_to(world.root)): p.read_bytes()
+             for p in sorted(world.root.rglob('*')) if p.is_file()}
+    assert after == before
+    # the route's stated contract: the desk's own files as they stand
+    assert doc['schema'] == 'desk-cli-status/1'
+    assert doc['book'] == {} and doc['account_exposure']['desk_book']['structures'] == 0
 
 
 def test_lab_scoreboard_aggregates_runs_and_never_promotes(world, monkeypatch):

@@ -18,7 +18,7 @@ never imports `ib_async`. Designed to run in parallel with the live
 | `/api/market/{sym}` | Symbol detail: quote + ~1y daily closes + news (discovery cache envelopes, ages disclosed) |
 | `/api/market/{sym}/history` | Long-term OHLCV from the desk panel (5y split-adjusted, `?range=1y\|3y\|5y\|max&max_points=`, row-decimated, ETag/304; `points:null` + `error` when the writer holds the panel lock, `in_panel:false` pre-backfill) |
 | `/api/market/{sym}/options` | Recorded options surface (nightly chain ATM slice + features cards + iv_rank + 2y IV30 history) plus `live` viewchain when warmed (`?window=&max_expiries=`) |
-| `/api/market/{sym}/ideas` | Advisory idea context: signals slice (xsmom rank/top3, PEAD, next report), desk-mine queue deals, paper positions, sealed cards, research lines, and the `protocol` block (`allowed_direction` from `desk.signals` — the UI's direction chips derive from it, nothing else) |
+| `/api/market/{sym}/ideas` | Advisory idea context: signals slice (xsmom rank/top3, PEAD, next report + the report after next via `signals.after_next_report`, present only when one is known), desk-mine queue deals, paper positions, sealed cards, research lines, and the `protocol` block (`allowed_direction` from `desk.signals` — the UI's direction chips derive from it, nothing else) |
 | `/api/market/refresh` `POST` | Spool a forced market refresh (warms quote/bars/news/viewchain for the symbols) |
 | `/plan/{plan_id}/book.json` | Raw `book.json` for debugging |
 | `/plan/{plan_id}/events.jsonl` | Raw `events.jsonl` |

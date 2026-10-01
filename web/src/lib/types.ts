@@ -129,15 +129,57 @@ export interface TradeFloorReplay {
   }[]
 }
 
+// The ACCOUNT's exposure as the desk's own book adapter reads it, split by
+// owner. The desk book is the supervised desk's; every other book under the
+// same state root belongs to the legacy trex monitor — a different service
+// on the same paper account. A flat desk book is NOT a flat account.
+// `countable` false: a book could not be read and no total may be claimed.
+export interface AccountExposurePosition {
+  id: string
+  book: string
+  owner: string
+  underlying: string
+  status: string
+  quantity: number
+  max_loss_usd: string | null
+  exit_deadline: string | null
+}
+
+export interface AccountExposureSlice {
+  structures: number
+  legs: number | null
+  max_loss_usd: string | null
+  earliest_exit_deadline: string | null
+  exit_deadlines_unknown: number
+  owners: string[]
+  books: string[]
+  positions: AccountExposurePosition[]
+}
+
+export interface AccountExposure {
+  schema: 'desk-account-exposure/1'
+  as_of: string
+  state_root: string | null
+  desk_run_dir: string
+  countable: boolean
+  max_loss_usd: string | null
+  outside_desk_book: AccountExposureSlice
+  desk_book: AccountExposureSlice
+  problems: string[]
+}
+
 // GET /api/desk/supervised: the desk CLI's files-only status dump. The
 // desk process owns the broker session; this payload is what it left on
-// disk (kill files, book, inbox, mandate, outbox, events).
+// disk (kill files, book, inbox, mandate, outbox, events) plus the
+// account exposure beside the desk book.
 export interface SupervisedDeskStatus {
   schema: 'desk-cli-status/1'
   at: string
   run_dir: string
   kill_files: string[]
   owner: Record<string, unknown> | null
+  /** absent on an older backend: the panel then shows no account banner */
+  account_exposure?: AccountExposure
   book: Record<string, { status: string | null; open_qty: number }> | null
   inbox: string[]
   last_results: {
@@ -295,6 +337,8 @@ export interface LongRunFinalist {
     vs_random: LongRunPaired
     vs_incumbent: LongRunPaired | null
   }
+  /** evaluated entries in the confirmatory test window (clause 6's floor) */
+  test_entries?: number | null
   eligible_for_operator_review: boolean
 }
 
@@ -340,6 +384,7 @@ export interface LongRunDigest {
     tune_sessions?: number | null
     test_sessions?: number | null
     reason?: string | null
+    min_test_entries?: number | null
     finalists: LongRunFinalist[]
   }
   benchmarks: LongRunBenchmark[]

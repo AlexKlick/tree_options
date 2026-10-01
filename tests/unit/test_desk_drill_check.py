@@ -11,6 +11,7 @@ a SKIPPED gate never fails the run, a measured miss always does.
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 
@@ -39,12 +40,35 @@ PROFILE = {"profile_id": "paper-canary", "revision": 1, "intended_capital": "100
 EXPECTED_MAX_ORDERS = 2
 
 
+#: the desk's own structure spec, as the runtime writes it (LegStructure
+#: JSON): a 0.74 cap debit vertical, so an open package with no fill on
+#: record risks 0.74 x 100 = $74.
+DESK_SPEC = {
+    "id": "drill-a", "underlying": "SPY", "kind": "debit_vertical",
+    "entry_date": "2026-09-30", "exit_deadline": "2026-10-09",
+    "quantity": 1, "limit": "0.74",
+    "legs": [{"right": "P", "action": "BUY", "strike": "740.0", "expiry": "2026-10-16"},
+             {"right": "P", "action": "SELL", "strike": "735.0", "expiry": "2026-10-16"}],
+    "exits": {"touch": True, "breach": False},
+}
+
+
+def _write_spec(specs, doc):
+    specs.mkdir(parents=True, exist_ok=True)
+    (specs / f"{doc['id']}.json").write_text(json.dumps(doc))
+
+
 def _green_world(tmp_path, now=NOW):
     """The runbook's all-green state on disk: fresh epoch, beating book,
-    clean monitor, settled gateway, quota snapshot, profile."""
+    clean monitor, settled gateway, quota snapshot, profile. The legacy
+    plans dir is present and EMPTY (the desk is the account's only book,
+    which is the state G2's account segment must report as such) and the
+    desk book's open structure has its spec, so the account reads."""
     root = tmp_path / "trex"
     desk = root / "desk-paper"
     desk.mkdir(parents=True, exist_ok=True)
+    (root / "plans").mkdir(exist_ok=True)
+    _write_spec(desk / "specs", DESK_SPEC)
     (desk / "owner.json").write_text(json.dumps(
         {"owner_epoch": EPOCH, "client_id": 83, "pid": PID,
          "started_at": (now - timedelta(hours=2)).isoformat()}))
@@ -97,7 +121,7 @@ def _grant(sup_dir, *, epoch=EPOCH, account="DUT143714", ttl=12 * 3600,
         max_orders=2, ttl_seconds=ttl, granted_by="operator-terminal")
 
 
-def _run(root, *, deps, pair=None, sup_dir=None):
+def _run(root, *, deps, pair=None, sup_dir=None, rail=None):
     lines: list[str] = []
     rc = drill_check.run_drill_check(
         DeskPaths(root / "desk-paper"),
@@ -105,6 +129,8 @@ def _run(root, *, deps, pair=None, sup_dir=None):
         deps=deps, pair=pair,
         gateway_state=root / "gateway.json",
         exit_watch_state=root / "exit_watch.json",
+        max_account_open_loss=rail,
+        plans_root=root / "plans",
         out=lines.append)
     return rc, "\n".join(lines)
 
@@ -118,10 +144,17 @@ def _rewrite(path, **changes):
 # ----------------------------------------------------------------- G2
 
 
+def _tree_bytes(root):
+    """Every file under ``root``, by relative path: the desk run dir now has
+    a specs/ subdir, so a top-level read is not the whole state any more."""
+    return {str(p.relative_to(root)): p.read_bytes()
+            for p in sorted(root.rglob("*")) if p.is_file()}
+
+
 def test_all_green_is_drill_go(tmp_path):
     root, desk = _green_world(tmp_path)
     _grant(root / "supervised")
-    before = {p.name: p.read_bytes() for p in desk.iterdir()}
+    before = _tree_bytes(desk)
 
     rc, text = _run(root, deps=_deps())
 
@@ -137,7 +170,7 @@ def test_all_green_is_drill_go(tmp_path):
     assert "G6 rehearsal: MANUAL" in text
     assert "DRILL: GO (G5 skipped)" in text
     # read-only: the run dir is byte-identical and no watchdog state appeared
-    assert {p.name: p.read_bytes() for p in desk.iterdir()} == before
+    assert _tree_bytes(desk) == before
     assert not (root / "exit_watch.json").exists()
 
 
@@ -226,6 +259,251 @@ def test_exit_watch_bad_verdict_fails_g2(tmp_path):
 
     assert rc == 1
     assert "exit_watch monitor_down" in text
+
+
+# ------------------------------------------------------------- G2 account truth
+
+#: the LIVE account (verified 2026-09-29, kept as the fixture's oracle):
+#: two NVDA put spreads in a legacy book, 0.21 x 5 x 100 = 105 and
+#: 1.24 x 3 x 100 = 372, so $477, with time stops 2026-10-09 / 2026-11-06.
+LEGACY_PLAN = """
+id = "putspread-20260922"
+account_mode = "paper"
+total_debit_cap = 1840.00
+entry_window_start = "09:45"
+entry_window_end = "12:00"
+
+[[structures]]
+id = "nvda-oct"
+underlying = "NVDA"
+entry_date = 2026-09-22
+expiry = 2026-10-16
+long_strike = 185.0
+short_strike = 150.0
+quantity = 5
+limit_cap = 0.50
+exit_deadline = 2026-10-09
+
+[[structures]]
+id = "qqq-nov"
+underlying = "QQQ"
+entry_date = 2026-09-22
+expiry = 2026-11-20
+long_strike = 600.0
+short_strike = 475.0
+quantity = 4
+limit_cap = 2.40
+exit_deadline = 2026-11-06
+
+[[structures]]
+id = "nvda-nov"
+underlying = "NVDA"
+entry_date = 2026-09-22
+expiry = 2026-11-20
+long_strike = 185.0
+short_strike = 150.0
+quantity = 3
+limit_cap = 2.10
+exit_deadline = 2026-11-06
+"""
+
+OPEN_LEGACY_BOOK = {
+    "heartbeat": (NOW - timedelta(seconds=3)).isoformat(),
+    "structures": {
+        "nvda-oct": {"status": "open", "entry_fill": "0.21", "filled_qty": 5,
+                     "exit_filled_qty": 0},
+        "qqq-nov": {"status": "closed", "filled_qty": 0, "exit_filled_qty": 0},
+        "nvda-nov": {"status": "open", "entry_fill": "1.24", "filled_qty": 3,
+                     "exit_filled_qty": 0},
+    },
+}
+
+#: the G2 account segment exactly as it will read on the live desk
+LIVE_ACCOUNT_SEGMENT = (
+    "account: 4 legs / 2 structures - $477.00 max loss outside the desk book "
+    "(legacy:putspread-20260922/nvda-oct @2026-10-09, nvda-nov @2026-11-06); "
+    "desk book: no exposure"
+)
+
+
+def _legacy_world(tmp_path, *, now=NOW, flat_desk=True, book=None):
+    """The green world PLUS the live legacy book on the same account
+    (``putspread-20260922``, monitored: a fresh heartbeat and clean tick
+    health, so exit_watch guards it too). ``flat_desk`` is the LIVE desk
+    shape — an empty desk book and no specs, exactly as on disk today —
+    which is the state that used to print a bare "no exposure"."""
+    root, desk = _green_world(tmp_path, now=now)
+    if flat_desk:
+        shutil.rmtree(desk / "specs")
+        _rewrite(desk / "book.json", structures={})
+    (root / "plans" / "2026-09-22.toml").write_text(LEGACY_PLAN)
+    legacy = root / "putspread-20260922"
+    legacy.mkdir()
+    (legacy / "book.json").write_text(
+        json.dumps(OPEN_LEGACY_BOOK if book is None else book))
+    (legacy / "monitor.json").write_text(json.dumps(
+        {"at": (now - timedelta(seconds=4)).timestamp(), "connected": True,
+         "tick_failures": 0}))
+    return root, desk
+
+
+def test_g2_names_the_legacy_book_the_legs_the_deadlines_and_the_total(tmp_path):
+    root, _desk = _legacy_world(tmp_path)
+    _grant(root / "supervised")
+
+    rc, text = _run(root, deps=_deps())
+
+    assert rc == 0
+    assert LIVE_ACCOUNT_SEGMENT in text
+    # the exit_watch note must not hide the other books' rows either
+    assert ("exit_watch ok (desk book: no exposure; other book(s) under the "
+            "scan root with exposure: putspread-20260922)") in text
+    assert "exit_watch ok (no exposure)" not in text
+    # the final summary carries the account total, rail or no rail
+    assert ("DRILL: GO (G5 skipped) [" in text
+            and "account open loss $477.00 account-wide (2 structures outside "
+                "the desk book, earliest exit 2026-10-09; desk book: no "
+                "exposure) - rail UNSET" in text)
+
+
+def test_an_empty_desk_book_never_reads_as_a_flat_account(tmp_path):
+    """The exact misleading case, pinned: the desk book has no row in
+    exit_watch and no positions, while another service's book holds $477."""
+    root, desk = _legacy_world(tmp_path)
+    _grant(root / "supervised")
+
+    rc, text = _run(root, deps=_deps())
+
+    assert json.loads((desk / "book.json").read_text())["structures"] == {}
+    assert rc == 0  # unset rail: today's behavior, the drill is not blocked
+    assert "account: 4 legs / 2 structures" in text
+    assert "desk book: no exposure" in text
+    assert "(no exposure)" not in text.split("DRILL:")[-1]
+
+
+def test_both_books_are_reported_and_never_merged_into_one_number(tmp_path):
+    root, _desk = _legacy_world(tmp_path, flat_desk=False)
+    _grant(root / "supervised")
+
+    rc, text = _run(root, deps=_deps())
+
+    # the desk row: drill-a is open with no fill on record, so it sits at
+    # its cap, 0.74 x 100 x 1 = $74. Both halves are named, neither stands
+    # in for the other, and the account total is the sum only where asked.
+    assert rc == 0
+    assert ("account: 4 legs / 2 structures - $477.00 max loss outside the "
+            "desk book (legacy:putspread-20260922/nvda-oct @2026-10-09, "
+            "nvda-nov @2026-11-06); desk book: 2 legs / 1 structure - "
+            "$74.00 max loss") in text
+    assert ("exit_watch ok (desk book guarded; other book(s) under the scan "
+            "root with exposure: putspread-20260922)") in text
+    assert "account open loss $551.00 account-wide" in text
+
+
+def test_an_unreadable_book_says_so_and_never_claims_no_exposure(tmp_path):
+    root, _desk = _legacy_world(tmp_path, book="not json")
+
+    _grant(root / "supervised")
+    rc, text = _run(root, deps=_deps())
+
+    # exit_watch already fails a book it cannot read (its own rule, since
+    # before this lane); the account segment must not read that as flat
+    assert rc == 1
+    assert "exit_watch monitor_down" in text
+    assert "putspread-20260922/book.json unreadable" in text
+    assert "account: exposure NOT COUNTABLE" in text
+    assert "putspread-20260922/book.json unreadable (ValueError)" in text
+    assert "no positions outside the desk book" not in text
+    assert "account open loss NOT COUNTABLE (" in text.split("DRILL:")[-1]
+
+
+def test_the_flag_is_off_unset_and_only_bites_when_the_total_exceeds_it(tmp_path):
+    root, _desk = _legacy_world(tmp_path)
+    _grant(root / "supervised")
+
+    rc, text = _run(root, deps=_deps())
+    assert rc == 0 and "rail UNSET (informational, no exposure gate)" in text
+
+    rc, text = _run(root, deps=_deps(), rail=Decimal("476.99"))
+    assert rc == 1
+    assert "G2 desk: NO-GO" in text
+    assert "account open loss $477.00 exceeds the --max-account-open-loss " \
+           "rail $476.99" in text
+    assert "DRILL: NO-GO (G2 failed)" in text
+    assert "rail $476.99 EXCEEDED" in text
+
+    rc, text = _run(root, deps=_deps(), rail=Decimal("477.00"))
+    assert rc == 0  # exactly at the rail is not over it
+    assert "within the $477.00 rail" in text
+
+    rc, text = _run(root, deps=_deps(), rail=Decimal("0"))
+    assert rc == 1 and "exceeds the --max-account-open-loss rail $0.00" in text
+
+
+def test_a_rail_against_an_uncountable_account_fails_closed(tmp_path):
+    root, _desk = _legacy_world(tmp_path, book="not json")
+    _grant(root / "supervised")
+
+    rc, text = _run(root, deps=_deps(), rail=Decimal("10000"))
+
+    assert rc == 1
+    assert ("account open loss NOT COUNTABLE against the "
+            "--max-account-open-loss rail $10000.00 (fail closed)") in text
+    assert "account open loss NOT COUNTABLE (0 structures read, 1 book " \
+           "problem)" in text.split("DRILL:")[-1]
+
+
+def test_the_account_rail_counts_the_desk_book_too(tmp_path):
+    root, _desk = _legacy_world(tmp_path, flat_desk=False)
+    _grant(root / "supervised")
+
+    # 477 legacy + 74 desk = 551: the legacy book alone passes a 500 rail,
+    # and the desk's own working entry is what turns it red
+    rc, _ = _run(root, deps=_deps(), rail=Decimal("500"))
+    assert rc == 1
+    rc, text = _run(root, deps=_deps(), rail=Decimal("551"))
+    assert rc == 0 and "within the $551.00 rail" in text
+    rc, text = _run(root, deps=_deps(), rail=Decimal("550.99"))
+    assert rc == 1 and "account open loss $551.00 exceeds" in text
+
+
+def test_account_truth_never_writes_a_byte(tmp_path):
+    root, _desk = _legacy_world(tmp_path)
+    _grant(root / "supervised")
+    before = {str(p.relative_to(root)): p.read_bytes()
+              for p in sorted(root.rglob("*")) if p.is_file()}
+
+    rc, _ = _run(root, deps=_deps(), rail=Decimal("1000"))
+
+    assert rc == 0
+    after = {str(p.relative_to(root)): p.read_bytes()
+             for p in sorted(root.rglob("*")) if p.is_file()}
+    assert after == before  # no exit_watch.json, no lock, no temp file
+
+
+def test_the_cli_carries_the_flag_and_refuses_a_negative_one(tmp_path, monkeypatch,
+                                                             capsys):
+    root, desk = _legacy_world(tmp_path)
+    _grant(root / "supervised")
+    monkeypatch.setenv("TREX_SUPERVISED_DIR", str(root / "supervised"))
+    monkeypatch.setattr(drill_check, "Deps", lambda: _deps())
+    argv = ["--dir", str(desk), "drill-check",
+            "--plans-dir", str(root / "plans"),
+            "--gateway-state", str(root / "gateway.json"),
+            "--exit-watch-state", str(root / "exit_watch.json")]
+
+    assert _cli([*argv, "--max-account-open-loss", "1000"]) == 0
+    out = capsys.readouterr().out
+    assert LIVE_ACCOUNT_SEGMENT in out
+    assert "within the $1000.00 rail" in out
+
+    assert _cli([*argv, "--max-account-open-loss", "10"]) == 1
+    assert "exceeds the --max-account-open-loss rail $10" in capsys.readouterr().out
+
+    assert _cli([*argv, "--max-account-open-loss", "-1"]) == 2
+    assert "usage error: --max-account-open-loss must be >= 0" in \
+        capsys.readouterr().err
+    assert not (root / "exit_watch.json").exists()  # still read-only
 
 
 # ----------------------------------------------------------------- G3
@@ -474,12 +752,15 @@ def test_cli_drill_check_end_to_end(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(drill_check, "Deps", lambda: _deps())
 
     rc = _cli(["--dir", str(desk), "drill-check",
+               "--plans-dir", str(root / "plans"),
                "--gateway-state", str(root / "gateway.json"),
                "--exit-watch-state", str(root / "exit_watch.json")])
 
     assert rc == 0
     out = capsys.readouterr().out
     assert out.startswith("G2 desk: ")
+    assert ("account: no positions outside the desk book; desk book: 2 legs / "
+            "1 structure - $74.00 max loss") in out
     assert "DRILL: GO (G5 skipped)" in out
     assert not (root / "exit_watch.json").exists()  # the dry run wrote nothing
 
@@ -490,6 +771,7 @@ def test_cli_drill_check_exits_1_when_a_gate_fails(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(drill_check, "Deps", lambda: _deps())
 
     rc = _cli(["--dir", str(desk), "drill-check",
+               "--plans-dir", str(root / "plans"),
                "--gateway-state", str(root / "gateway.json"),
                "--exit-watch-state", str(root / "exit_watch.json")])
 

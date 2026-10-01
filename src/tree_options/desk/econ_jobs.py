@@ -26,7 +26,7 @@ from typing import Any
 from tree_options.desk import evaluate, events, ivhist, paths, surface
 from tree_options.desk.panel import PanelLocked, read_panel_with_sha256
 from tree_options.desk.sessions import Calendar
-from tree_options.desk.store import atomic_write_bytes, atomic_write_json
+from tree_options.desk.store import RECORDED, atomic_write_bytes, atomic_write_json
 from tree_options.desk.universe import CHAIN_UNIVERSE
 
 HISTORY_FILE = "vwap_atm.json"
@@ -126,11 +126,58 @@ def load_labels(store: Path, history_sha: str | None, warnings: list[str]) -> di
 # --------------------------------------------------------------- features
 
 
-def run_features(session: date, cal: Calendar) -> int:
+def unsettled_symbols(store: Path, session: date) -> list[str]:
+    """Symbols in ``<store>/manifest/<D>.json`` that are not recorded yet.
+
+    ``ok`` / ``exists`` / ``conflict`` (:data:`store.RECORDED`) mean the
+    books on D are closed for that symbol; anything else (``stale``,
+    ``incomplete``, ``missing``, ``error``, ``invalid``) means the chain
+    recorder has not finished D. A manifest that is absent or unreadable
+    gates nothing -- the caller decides what an unknown D means.
+    """
+    try:
+        doc = _load_json(store / "manifest" / f"{session.isoformat()}.json")
+    except (OSError, ValueError):
+        return []
+    symbols = doc.get("symbols") if isinstance(doc, dict) else None
+    if not isinstance(symbols, dict):
+        return []
+    return sorted(
+        str(sym)
+        for sym, entry in symbols.items()
+        if not (isinstance(entry, dict) and entry.get("status") in RECORDED)
+    )
+
+
+def run_features(session: date, cal: Calendar, *, idempotent: bool = False) -> int:
+    """Write ``<store>/features/<D>.json`` from D's recorded chains.
+
+    ``idempotent`` is the timer's mode (deploy/desk/desk-features.service):
+    exit 0 when there is nothing to do (already written, or D's chains are
+    in), exit 3 when D is not closed yet so the next slot retries, and the
+    document is never rewritten from a half-recorded session. Without it
+    the miner's semantics are unchanged: 1 when D has no chains at all.
+    """
     if not cal.is_session(session):
         print(f"features: {session} is not an NYSE session", file=sys.stderr)
         return 2
     store = paths.store_root()
+    out = store / "features" / f"{session.isoformat()}.json"
+    if idempotent:
+        if out.exists():
+            print(f"features: {out} already written; nothing to do")
+            return 0
+        pending = unsettled_symbols(store, session)
+        if pending:
+            # D is still being recorded: building features from a partial
+            # chain set would freeze the shortfall into the document.
+            print(
+                f"features: {session} is still being recorded "
+                f"({len(pending)} of {len(CHAIN_UNIVERSE)} symbols pending, "
+                f"e.g. {', '.join(pending[:3])}); retry later",
+                file=sys.stderr,
+            )
+            return 3
     chain_dir = store / "chains" / session.isoformat()
     chains = {
         p.name[: -len(".json.gz")]: p
@@ -139,7 +186,7 @@ def run_features(session: date, cal: Calendar) -> int:
     }
     if not chains:
         print(f"features: no recorded chains for {session}", file=sys.stderr)
-        return 1
+        return 3 if idempotent else 1
     warnings: list[str] = []
     rates, warn = ivhist.rate_source_for_store(store)
     if warn:
@@ -175,7 +222,6 @@ def run_features(session: date, cal: Calendar) -> int:
         labels=labels,
         warnings=warnings,
     )
-    out = store / "features" / f"{session.isoformat()}.json"
     atomic_write_json(out, doc)
     for w in warnings:
         print(f"  warning: {w}")
