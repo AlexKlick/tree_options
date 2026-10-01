@@ -16,8 +16,11 @@ this current worktree without merging/resetting their branches.
 - `feat/strategy-vixfloor@1672e0c`: `desk/vixfloor.py` and unit tests.
 - `feat/strategy-qsl@0941b85`: `desk/qsl.py`, safety tests, additive desk CLI and sealed
   QSL preregistration. Current CLI commands and existing longrun interfaces remain owners.
-- `b757009` earnings-after-next is already an ancestor of this integration base.
-  The peer INDEX statement that it was unmerged is historical and superseded.
+- The earlier candidate incorrectly said `b757009` earnings-after-next was an
+  ancestor of its base. It was absent from that candidate. The full repository
+  integration merges main at `b757009` with candidate `cbf8911`, preserving the
+  actual earnings pair API, surface/refusal exposure, ideas and draft rendering,
+  and its tests. The peer INDEX statement that it was unmerged is historical.
 - Recorder-integrity and account-truth changes are preserved. No sealed playbook,
   execution allowlist, existing live runtime, or its mandate was changed.
 

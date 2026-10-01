@@ -135,9 +135,7 @@ def _after_next_report(store_root: Path, paper_dir: Path, sym: str, now: datetim
     raw = cal.get(sym) if cal is not None else None
     if not isinstance(raw, list):
         return None
-    future = [
-        x for x in sorted(y for y in raw if isinstance(y, str)) if x > now.date().isoformat()
-    ]
+    future = [x for x in sorted(y for y in raw if isinstance(y, str)) if x > now.date().isoformat()]
     return future[1] if len(future) > 1 else None
 
 
