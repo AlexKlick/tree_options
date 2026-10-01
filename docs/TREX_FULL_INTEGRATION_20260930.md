@@ -38,3 +38,5 @@ Broker/account binding, external read-only qualification, authoritative fills/fe
 ## Evidence gaps
 
 Only the previously bounded synthetic dataset is registered for the workspace. No large market corpus replay, newly demonstrated strategy edge, public authenticated controls or independent final-head model review is claimed. Superseded cost multipliers, volatility-index-as-price figures and oracle predictability claims are not restored by merging peer work.
+
+The first combined gate was interrupted with exit 143 during host shutdown, and its temporary transcript was lost on reboot. It is not a completed gate receipt. `scripts/run_m0_gate_captured.sh` now wraps the unchanged M0 gate with a durable transcript and an exit receipt under `artifacts/m0-captured` (or the supplied artifact directory). Invoke it through the existing gate-slot and host-test wrappers. An interrupted transcript remains interrupted evidence; a missing exit receipt is never a pass. This evidence-capture correction requires a fresh gate on its committed head.
