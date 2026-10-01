@@ -72,6 +72,7 @@ class CashflowEvent:
     session (a flow before the first session applies on the first
     session, one after the last session on the last session).
     """
+
     date: date
     amount: Decimal  # positive for contribution, negative for withdrawal
 
@@ -87,9 +88,10 @@ class TradeExecution:
     ``fees=None`` means "price it with the declared fee model"; an
     explicit fee is a pass-through observation and is applied as-is.
     """
+
     date: date
     symbol: str
-    signed_quantity: int   # positive for buy, negative for sell
+    signed_quantity: int  # positive for buy, negative for sell
     price: Decimal
     fees: Decimal | None = None
 
@@ -97,6 +99,7 @@ class TradeExecution:
 @dataclass(frozen=True)
 class MarkObservation:
     """A price observation for a symbol, carried forward until superseded."""
+
     date: date
     symbol: str
     price: Decimal
@@ -105,16 +108,17 @@ class MarkObservation:
 @dataclass(frozen=True)
 class FundedRow:
     """One dated row of the funded-account curve, on a declared session."""
+
     date: date
-    cash: Decimal                        # account cash (trading + flows)
+    cash: Decimal  # account cash (trading + flows)
     inventory: tuple[tuple[str, int], ...]  # symbols with nonzero holdings
-    marked_value: Decimal | None         # None when a held symbol is unmarked
-    nav: Decimal | None                  # cash + marked inventory; None = gap
+    marked_value: Decimal | None  # None when a held symbol is unmarked
+    nav: Decimal | None  # cash + marked inventory; None = gap
     contributions_cum: Decimal
     withdrawals_cum: Decimal
     fees_cum: Decimal
-    realized_pnl_cum: Decimal            # gross, from FIFO lots (informational)
-    investment_gain: Decimal | None      # NAV - opening - contribs + w/d
+    realized_pnl_cum: Decimal  # gross, from FIFO lots (informational)
+    investment_gain: Decimal | None  # NAV - opening - contribs + w/d
     missing_mark_symbols: tuple[str, ...] = ()
 
 
@@ -125,6 +129,7 @@ class FundedRun:
     A refused run (``refusal_reason`` set) has no rows: a misleading
     partial curve is worse than an honest blocker.
     """
+
     candidate_id: str
     rows: tuple[FundedRow, ...] = field(default_factory=tuple)
     ledger: LedgerBook = field(default_factory=lambda: LedgerBook(initial_cash=Decimal("0")))
@@ -150,6 +155,7 @@ def _utc_execution_at(day: date, seq: int) -> datetime:
     day for pathological same-session fill counts) — ordering, not
     wall time, is the contract."""
     from tree_options.time.sessions import shift_instant
+
     base = datetime(day.year, day.month, day.day, 21, 0, tzinfo=UTC)
     return shift_instant(base, seq)
 
@@ -206,8 +212,9 @@ def run_funded_account(
     # refused input — never an invented session.
     for ex in executions:
         if ex.date not in session_set:
-            return _refusal(ctx, REFUSAL_OFF_CALENDAR,
-                            f"execution {ex.symbol} on {ex.date.isoformat()}")
+            return _refusal(
+                ctx, REFUSAL_OFF_CALENDAR, f"execution {ex.symbol} on {ex.date.isoformat()}"
+            )
 
     # Group events by the session they apply on. Flows and marks dated
     # between sessions clamp forward to the next declared session.
@@ -220,8 +227,7 @@ def run_funded_account(
 
     flows_by_session: dict[date, list[Decimal]] = {}
     for cf in sorted(cashflows, key=lambda c: c.date):
-        flows_by_session.setdefault(_clamp_to_session(cf.date), []).append(
-            Decimal(cf.amount))
+        flows_by_session.setdefault(_clamp_to_session(cf.date), []).append(Decimal(cf.amount))
 
     marks_by_session: dict[date, list[MarkObservation]] = {}
     for m in sorted(marks, key=lambda m: (m.date, m.symbol)):
@@ -249,7 +255,8 @@ def run_funded_account(
             prospective_cash = book.cash + contributions_cum - withdrawals_cum
             if prospective_cash < 0:
                 return _refusal(
-                    ctx, REFUSAL_INSUFFICIENT_CASH_FOR_FLOW,
+                    ctx,
+                    REFUSAL_INSUFFICIENT_CASH_FOR_FLOW,
                     f"flow {amount} on {s.isoformat()} would overdraw "
                     f"account cash to {prospective_cash}",
                 )
@@ -272,7 +279,8 @@ def run_funded_account(
                 affordable = book.cash + contributions_cum - withdrawals_cum
                 if affordable < notional + fees:
                     return _refusal(
-                        ctx, REFUSAL_INSUFFICIENT_CASH,
+                        ctx,
+                        REFUSAL_INSUFFICIENT_CASH,
                         f"buy {qty} {ex.symbol} @ {ex.price} + {fees} fee needs "
                         f"{notional + fees}, account cash {affordable} "
                         f"on {s.isoformat()}",
@@ -291,7 +299,7 @@ def run_funded_account(
                 multiplier=1,
                 deliverable_shares_per_contract=Decimal("1"),
                 fees=fees,
-                execution_at=_utc_execution_at(s, fill_seq % 60),
+                execution_at=_utc_execution_at(s, fill_seq),
                 execution_session=s,
             )
             try:
@@ -309,9 +317,9 @@ def run_funded_account(
 
         # 4) value the account (public book surface only)
         held = tuple(
-            (sym, q) for sym, q in (
-                (sym, book.quantity(sym)) for sym in sorted(touched_symbols)
-            ) if q != 0
+            (sym, q)
+            for sym, q in ((sym, book.quantity(sym)) for sym in sorted(touched_symbols))
+            if q != 0
         )
         missing = tuple(sym for sym, _q in held if sym not in last_mark)
         if any(sym not in last_mark for sym, q in held):
@@ -322,27 +330,31 @@ def run_funded_account(
             marked_value = sum(
                 (Decimal(last_mark[sym]) * q for sym, q in held), Decimal("0")
             ).quantize(Decimal("0.01"))
-            nav = (book.cash + contributions_cum - withdrawals_cum
-                   + marked_value).quantize(Decimal("0.01"))
-            gain = (nav - Decimal(starting_capital)
-                    - contributions_cum + withdrawals_cum).quantize(Decimal("0.01"))
+            nav = (book.cash + contributions_cum - withdrawals_cum + marked_value).quantize(
+                Decimal("0.01")
+            )
+            gain = (nav - Decimal(starting_capital) - contributions_cum + withdrawals_cum).quantize(
+                Decimal("0.01")
+            )
 
-        rows.append(FundedRow(
-            date=s,
-            cash=(book.cash + contributions_cum - withdrawals_cum).quantize(Decimal("0.01")),
-            inventory=held,
-            marked_value=marked_value,
-            nav=nav,
-            contributions_cum=contributions_cum.quantize(Decimal("0.01")),
-            withdrawals_cum=withdrawals_cum.quantize(Decimal("0.01")),
-            fees_cum=book.total_fees.quantize(Decimal("0.01")),
-            realized_pnl_cum=sum(
-                (book.realized_pnl(sym) for sym in sorted(realized_symbols)),
-                Decimal("0"),
-            ).quantize(Decimal("0.01")),
-            investment_gain=gain,
-            missing_mark_symbols=missing,
-        ))
+        rows.append(
+            FundedRow(
+                date=s,
+                cash=(book.cash + contributions_cum - withdrawals_cum).quantize(Decimal("0.01")),
+                inventory=held,
+                marked_value=marked_value,
+                nav=nav,
+                contributions_cum=contributions_cum.quantize(Decimal("0.01")),
+                withdrawals_cum=withdrawals_cum.quantize(Decimal("0.01")),
+                fees_cum=book.total_fees.quantize(Decimal("0.01")),
+                realized_pnl_cum=sum(
+                    (book.realized_pnl(sym) for sym in sorted(realized_symbols)),
+                    Decimal("0"),
+                ).quantize(Decimal("0.01")),
+                investment_gain=gain,
+                missing_mark_symbols=missing,
+            )
+        )
 
     # The independent oracle gets the final word on the trading stream.
     book.assert_conservation()

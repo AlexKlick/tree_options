@@ -47,6 +47,7 @@ SAMPLE_FLOOR = 20
 @dataclass(frozen=True)
 class CandidateSummary:
     """One candidate's contribution to the comparison result."""
+
     candidate_id: str
     candidate: ResearchCandidate
     rows_by_date: dict[date, dict[str, Any]] = field(default_factory=dict)
@@ -63,6 +64,7 @@ class CandidateSummary:
 @dataclass(frozen=True)
 class ComparisonResult:
     """The full output of ``run_comparison``."""
+
     spec: ComparisonSpec
     candidates: tuple[CandidateSummary, ...]
     paired_diff: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
@@ -81,23 +83,17 @@ class ComparisonResult:
                 {
                     "candidate_id": s.candidate_id,
                     "candidate": s.candidate.to_dict(),
-                    "rows_by_date": {
-                        d.isoformat(): row
-                        for d, row in s.rows_by_date.items()
-                    },
-                    "drawdown": {
-                        d.isoformat(): cell
-                        for d, cell in s.drawdown.items()
-                    },
+                    "rows_by_date": {d.isoformat(): row for d, row in s.rows_by_date.items()},
+                    "drawdown": {d.isoformat(): cell for d, cell in s.drawdown.items()},
                     "fees_paid_total": str(s.fees_paid_total),
                     "excluded_out_of_window": s.excluded_out_of_window,
                     "sample_size": s.sample_size,
                     "sample_floor": s.sample_floor,
                     "sample_floor_met": s.sample_floor_met,
                     "rejection_reason": s.rejection_reason,
-                    "final_ending_value": (str(s.final_ending_value)
-                                            if s.final_ending_value is not None
-                                            else None),
+                    "final_ending_value": (
+                        str(s.final_ending_value) if s.final_ending_value is not None else None
+                    ),
                 }
                 for s in self.candidates
             ],
@@ -116,9 +112,9 @@ class ComparisonResult:
 # zero observations — never a fabricated curve.
 
 
-def _shadow_executions(candidate: ResearchCandidate,
-                       plan: ComparisonPlan | None = None,
-                       *args: Any, **kwargs: Any) -> tuple[list, list]:
+def _shadow_executions(
+    candidate: ResearchCandidate, plan: ComparisonPlan | None = None, *args: Any, **kwargs: Any
+) -> tuple[list, list]:
     """Shadow-proxy adapter (RL-2).
 
     Reads the desk's EOD-deadline proxy marks for ``candidate`` and
@@ -139,8 +135,9 @@ def _shadow_executions(candidate: ResearchCandidate,
     return [], []
 
 
-def _sealed_executions(candidate: ResearchCandidate,
-                      *args: Any, **kwargs: Any) -> tuple[list, list]:
+def _sealed_executions(
+    candidate: ResearchCandidate, *args: Any, **kwargs: Any
+) -> tuple[list, list]:
     """Adapter stub for ``evidence_kind=SEALED_CAMPAIGN``.
 
     Sealed trials are per-trial dispatch records, not a reconstructable
@@ -150,9 +147,9 @@ def _sealed_executions(candidate: ResearchCandidate,
     return [], []
 
 
-def _synthetic_executions(candidate: ResearchCandidate,
-                          plan: ComparisonPlan | None = None,
-                          *args: Any, **kwargs: Any) -> tuple[list, list]:
+def _synthetic_executions(
+    candidate: ResearchCandidate, plan: ComparisonPlan | None = None, *args: Any, **kwargs: Any
+) -> tuple[list, list]:
     """Synthetic/v1 fixture adapter — the RL-1 vertical slice.
 
     Loads the sha-pinned fixture (``data/research/fixtures/
@@ -248,52 +245,61 @@ def run_comparison(
             # Data capability speaks, not the verdict: a PASS without a
             # reconstructable funded history cannot plot, and the reason
             # is the missing data (RL1-06).
-            summaries.append(CandidateSummary(
-                candidate_id=cand.id,
-                candidate=cand,
-                rejection_reason=(
-                    f"no funded history ({cand.disposition.value}): "
-                    + (cand.ineligibility_reason
-                       or cand.funded_history_reason
-                       or "funded series not reconstructable")
-                ),
-            ))
+            summaries.append(
+                CandidateSummary(
+                    candidate_id=cand.id,
+                    candidate=cand,
+                    rejection_reason=(
+                        f"no funded history ({cand.disposition.value}): "
+                        + (
+                            cand.ineligibility_reason
+                            or cand.funded_history_reason
+                            or "funded series not reconstructable"
+                        )
+                    ),
+                )
+            )
             continue
 
         if cand.evidence_kind in (
             ResearchEvidenceKind.PAPER_EXECUTION,
             ResearchEvidenceKind.BROKER_PAPER,
         ):
-            summaries.append(CandidateSummary(
-                candidate_id=cand.id,
-                candidate=cand,
-                rejection_reason=reason_broker_paper().code,
-            ))
+            summaries.append(
+                CandidateSummary(
+                    candidate_id=cand.id,
+                    candidate=cand,
+                    rejection_reason=reason_broker_paper().code,
+                )
+            )
             continue
 
         # Candidate-level gates spoke first (their reasons are about the
         # candidate); a refused plan rejects everything that would
         # otherwise have run.
         if plan.refused:
-            summaries.append(CandidateSummary(
-                candidate_id=cand.id,
-                candidate=cand,
-                rejection_reason=plan.refusal_reason,
-            ))
+            summaries.append(
+                CandidateSummary(
+                    candidate_id=cand.id,
+                    candidate=cand,
+                    rejection_reason=plan.refusal_reason,
+                )
+            )
             continue
 
         adapter = _ADAPTERS.get(cand.evidence_kind)
         if adapter is None:
-            summaries.append(CandidateSummary(
-                candidate_id=cand.id,
-                candidate=cand,
-                rejection_reason="research.adapter_missing",
-            ))
+            summaries.append(
+                CandidateSummary(
+                    candidate_id=cand.id,
+                    candidate=cand,
+                    rejection_reason="research.adapter_missing",
+                )
+            )
             continue
 
         raw_executions, raw_marks = adapter(cand, plan)
-        executions, marks, excluded = _clip_to_window(
-            raw_executions, raw_marks, plan)
+        executions, marks, excluded = _clip_to_window(raw_executions, raw_marks, plan)
         run = run_funded_account(
             candidate_id=cand.id,
             starting_capital=spec.starting_capital,
@@ -304,11 +310,13 @@ def run_comparison(
             fee_model=plan.fee_model,
         )
         if run.refusal_reason is not None:
-            summaries.append(CandidateSummary(
-                candidate_id=cand.id,
-                candidate=cand,
-                rejection_reason=run.refusal_reason,
-            ))
+            summaries.append(
+                CandidateSummary(
+                    candidate_id=cand.id,
+                    candidate=cand,
+                    rejection_reason=run.refusal_reason,
+                )
+            )
             continue
         dd = compute_drawdown(
             candidate_id=cand.id,
@@ -326,8 +334,9 @@ def run_comparison(
                 "withdrawals_cum": str(r.withdrawals_cum),
                 "fees_cum": str(r.fees_cum),
                 "realized_pnl_cum": str(r.realized_pnl_cum),
-                "investment_gain": (str(r.investment_gain)
-                                    if r.investment_gain is not None else None),
+                "investment_gain": (
+                    str(r.investment_gain) if r.investment_gain is not None else None
+                ),
                 "missing_mark_symbols": list(r.missing_mark_symbols),
             }
             for r in run.rows
@@ -336,21 +345,25 @@ def run_comparison(
             dd_cell.date: {
                 "drawdown_dollar": str(dd_cell.drawdown_dollar),
                 "drawdown_pct": str(dd_cell.drawdown_pct),
-                "recovery_end_date": dd_cell.recovery_end_date.isoformat() if dd_cell.recovery_end_date else None,
+                "recovery_end_date": dd_cell.recovery_end_date.isoformat()
+                if dd_cell.recovery_end_date
+                else None,
             }
             for dd_cell in dd.cells
         }
-        summaries.append(CandidateSummary(
-            candidate_id=cand.id,
-            candidate=cand,
-            rows_by_date=rows_by_date,
-            drawdown=drawdown_by_date,
-            fees_paid_total=run.total_fees,
-            excluded_out_of_window=excluded,
-            sample_size=len(run.rows),
-            sample_floor_met=len(run.rows) >= SAMPLE_FLOOR,
-            final_ending_value=run.final_nav,
-        ))
+        summaries.append(
+            CandidateSummary(
+                candidate_id=cand.id,
+                candidate=cand,
+                rows_by_date=rows_by_date,
+                drawdown=drawdown_by_date,
+                fees_paid_total=run.total_fees,
+                excluded_out_of_window=excluded,
+                sample_size=len(run.rows),
+                sample_floor_met=len(run.rows) >= SAMPLE_FLOOR,
+                final_ending_value=run.final_nav,
+            )
+        )
 
     # Baseline run (same admission path as candidates — never a
     # privileged series).
@@ -359,8 +372,7 @@ def run_comparison(
             base_adapter = _ADAPTERS.get(baseline.evidence_kind)
             if base_adapter is not None:
                 base_ex, base_marks = base_adapter(baseline, plan)
-                base_ex, base_marks, _base_excluded = _clip_to_window(
-                    base_ex, base_marks, plan)
+                base_ex, base_marks, _base_excluded = _clip_to_window(base_ex, base_marks, plan)
                 baseline_run = run_funded_account(
                     candidate_id=baseline.id,
                     starting_capital=spec.starting_capital,
@@ -377,9 +389,7 @@ def run_comparison(
         for s in summaries:
             if s.candidate.plot_funded_account:
                 cand_by_session: dict[date, Decimal] = {
-                    d: Decimal(r["nav"])
-                    for d, r in s.rows_by_date.items()
-                    if r["nav"] is not None
+                    d: Decimal(r["nav"]) for d, r in s.rows_by_date.items() if r["nav"] is not None
                 }
                 series = align_pair(
                     s.candidate,
@@ -418,8 +428,7 @@ def _clip_to_window(
         return executions, marks, 0
     clipped_ex = [e for e in executions if lo <= e.date <= hi]
     clipped_marks = [m for m in marks if lo <= m.date <= hi]
-    excluded = ((len(executions) - len(clipped_ex))
-                + (len(marks) - len(clipped_marks)))
+    excluded = (len(executions) - len(clipped_ex)) + (len(marks) - len(clipped_marks))
     return clipped_ex, clipped_marks, excluded
 
 

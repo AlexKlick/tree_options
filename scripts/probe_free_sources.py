@@ -19,9 +19,7 @@ from tree_options.trex.clock import now_et
 
 CBOE_QUOTE_URL = "https://cdn.cboe.com/api/global/delayed_quotes/quotes/{sym}.json"
 CBOE_CHAIN_URL = "https://cdn.cboe.com/api/global/delayed_quotes/options/{sym}.json"
-NEWS_RSS_URL = (
-    "https://news.google.com/rss/search?q={query}+stock&hl=en-US&gl=US&ceid=US:en"
-)
+NEWS_RSS_URL = "https://news.google.com/rss/search?q={query}+stock&hl=en-US&gl=US&ceid=US:en"
 MOZILLA_UA = "Mozilla/5.0 (X11; Linux x86_64) trex-cockpit/1.0"
 LOCAL_LLM_BASE = "http://127.0.0.1:18000/v1"
 LOCAL_LLM_MODEL = "Qwen/Qwen3.8-27B"
@@ -85,9 +83,7 @@ def probe_news_rss(query: str) -> dict[str, object]:
 def probe_polygon_bars(sym: str) -> dict[str, object]:
     from tree_options.data.massive_client import MassiveClient, load_api_key
 
-    client = MassiveClient(
-        api_key=load_api_key(), cache_dir=None, timeout=15.0
-    )
+    client = MassiveClient(api_key=load_api_key(), cache_dir=None, timeout=15.0)
     body = client.get_json(
         f"/v2/aggs/ticker/{sym}/range/1/day/2026-08-01/2026-09-22",
         {"adjusted": "true", "sort": "asc", "limit": "120"},

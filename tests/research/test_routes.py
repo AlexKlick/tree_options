@@ -30,6 +30,7 @@ def test_attach_research_refuses_overlapping_workspace(monkeypatch: pytest.Monke
     """The attach-time guard refuses to wire the lane if the workspace
     path collides with a desk path."""
     from tree_options.desk.paths import state_root
+
     monkeypatch.setenv("RESEARCH_WORKSPACE_DIR", str(state_root()))
     # Importing attach triggers the guard indirectly via path resolution;
     # the direct call is:
@@ -62,16 +63,24 @@ def _build_app(tmp_path: Path, *, engine_fn=None) -> tuple[TestClient, object]:
     # Seed one minimal sealed-round scope so the catalog has something
     # to surface. Use a non-PASS disposition to exercise that path.
     (fake_scopes / "test-scope").mkdir()
-    (fake_scopes / "test-scope" / "sealed-round.json").write_text(json.dumps({
-        "family_verdict": "WITHDRAWN",
-        "frozen_inputs": {"calibration_v3_sha256": "deadbeef"},
-        "round": {},
-    }))
+    (fake_scopes / "test-scope" / "sealed-round.json").write_text(
+        json.dumps(
+            {
+                "family_verdict": "WITHDRAWN",
+                "frozen_inputs": {"calibration_v3_sha256": "deadbeef"},
+                "round": {},
+            }
+        )
+    )
 
     app = FastAPI()
-    worker = attach_research(app, workspace=fake_workspace,
-                             candidate_scopes_root=fake_scopes,
-                             engine_fn=engine_fn, start_worker=False)
+    worker = attach_research(
+        app,
+        workspace=fake_workspace,
+        candidate_scopes_root=fake_scopes,
+        engine_fn=engine_fn,
+        start_worker=False,
+    )
     return TestClient(app), worker
 
 
@@ -136,12 +145,15 @@ def test_compare_post_spools_a_run(tmp_path: Path) -> None:
     client, _worker = _build_app(tmp_path)
     cat = client.get("/api/research/candidates").json()
     cid = cat["candidates"][0]["id"]
-    r = client.post("/api/research/compare", json={
-        "candidate_ids": [cid],
-        "starting_capital": "10000.00",
-        "common_start": "2024-01-02",
-        "common_end": "2026-09-25",
-    })
+    r = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": [cid],
+            "starting_capital": "10000.00",
+            "common_start": "2024-01-02",
+            "common_end": "2026-09-25",
+        },
+    )
     assert r.status_code == 202
     body = r.json()
     assert "run_id" in body
@@ -161,8 +173,12 @@ def test_identical_post_is_idempotent_at_the_http_boundary(tmp_path: Path) -> No
     client, _worker = _build_app(tmp_path)
     cat = client.get("/api/research/candidates").json()
     cid = cat["candidates"][0]["id"]
-    spec = {"candidate_ids": [cid], "starting_capital": "10000",
-            "common_start": "2024-01-02", "common_end": "2026-09-25"}
+    spec = {
+        "candidate_ids": [cid],
+        "starting_capital": "10000",
+        "common_start": "2024-01-02",
+        "common_end": "2026-09-25",
+    }
     first = client.post("/api/research/compare", json=spec)
     second = client.post("/api/research/compare", json=spec)
     third = client.post("/api/research/compare", json=spec)
@@ -179,15 +195,21 @@ def test_invalid_capital_never_gets_queued(tmp_path: Path, capital: str) -> None
     client, _worker = _build_app(tmp_path)
     cat = client.get("/api/research/candidates").json()
     cid = cat["candidates"][0]["id"]
-    r = client.post("/api/research/compare", json={
-        "candidate_ids": [cid], "starting_capital": capital,
-        "common_start": "2024-01-02", "common_end": "2026-09-25",
-    })
+    r = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": [cid],
+            "starting_capital": capital,
+            "common_start": "2024-01-02",
+            "common_end": "2026-09-25",
+        },
+    )
     assert r.status_code == 400
     # nothing persisted: validation precedes any store write
     db = tmp_path / "workspace" / "runstate.sqlite3"
     if db.exists():
         from tree_options.research.runstate.store import RunstateStore
+
         probe = RunstateStore(db)
         try:
             assert probe.all("run") == ()
@@ -200,10 +222,15 @@ def test_unknown_candidate_is_refused_before_persisting(tmp_path: Path) -> None:
     """RL1-03: an unknown candidate id was queued (202) and only
     rejected later at result fetch. Membership is now a pre-write 400."""
     client, _worker = _build_app(tmp_path)
-    r = client.post("/api/research/compare", json={
-        "candidate_ids": ["nope-not-in-catalog"], "starting_capital": "10000",
-        "common_start": "2024-01-02", "common_end": "2026-09-25",
-    })
+    r = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": ["nope-not-in-catalog"],
+            "starting_capital": "10000",
+            "common_start": "2024-01-02",
+            "common_end": "2026-09-25",
+        },
+    )
     assert r.status_code == 400
     assert r.json()["detail"]["error"] == "candidate_not_in_catalog"
 
@@ -212,10 +239,15 @@ def test_reversed_date_range_is_refused(tmp_path: Path) -> None:
     client, _worker = _build_app(tmp_path)
     cat = client.get("/api/research/candidates").json()
     cid = cat["candidates"][0]["id"]
-    r = client.post("/api/research/compare", json={
-        "candidate_ids": [cid], "starting_capital": "10000",
-        "common_start": "2026-09-25", "common_end": "2024-01-02",
-    })
+    r = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": [cid],
+            "starting_capital": "10000",
+            "common_start": "2026-09-25",
+            "common_end": "2024-01-02",
+        },
+    )
     assert r.status_code == 400
     assert r.json()["detail"]["error"] == "research.plan.invalid_window"
 
@@ -224,9 +256,13 @@ def test_undeclared_window_is_refused(tmp_path: Path) -> None:
     client, _worker = _build_app(tmp_path)
     cat = client.get("/api/research/candidates").json()
     cid = cat["candidates"][0]["id"]
-    r = client.post("/api/research/compare", json={
-        "candidate_ids": [cid], "starting_capital": "10000",
-    })
+    r = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": [cid],
+            "starting_capital": "10000",
+        },
+    )
     assert r.status_code == 400
     assert r.json()["detail"]["error"] == "research.plan.window_required"
 
@@ -241,10 +277,13 @@ def test_json_array_body_is_a_client_error(tmp_path: Path) -> None:
 
 def test_compare_post_rejects_invalid_spec(tmp_path: Path) -> None:
     client, _worker = _build_app(tmp_path)
-    r = client.post("/api/research/compare", json={
-        "candidate_ids": [],  # empty — invalid
-        "starting_capital": "not-a-number",
-    })
+    r = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": [],  # empty — invalid
+            "starting_capital": "not-a-number",
+        },
+    )
     assert r.status_code == 400
 
 
@@ -282,11 +321,15 @@ def test_malformed_scope_surfaces_instead_of_vanishing(tmp_path: Path) -> None:
     fake_scopes.mkdir()
     good = fake_scopes / "good-scope"
     good.mkdir()
-    (good / "sealed-round.json").write_text(json.dumps({
-        "family_verdict": "WITHDRAWN",
-        "frozen_inputs": {"calibration_v3_sha256": "deadbeef"},
-        "round": {},
-    }))
+    (good / "sealed-round.json").write_text(
+        json.dumps(
+            {
+                "family_verdict": "WITHDRAWN",
+                "frozen_inputs": {"calibration_v3_sha256": "deadbeef"},
+                "round": {},
+            }
+        )
+    )
     bad = fake_scopes / "bad-scope"
     bad.mkdir()
     (bad / "sealed-round.json").write_text("12345")  # valid JSON, not an object
@@ -296,11 +339,15 @@ def test_malformed_scope_surfaces_instead_of_vanishing(tmp_path: Path) -> None:
     client = TestClient(app)
     body = client.get("/api/research/candidates").json()["candidates"]
     families = {c["family"] for c in body}
-    assert families == {"good-scope", "bad-scope",
-                        "synthetic-benchmark-v1",
-                        "synthetic-momentum-v1",
-                        "synthetic-drift-v1",
-                        "vix_term", "hold-20"}
+    assert families == {
+        "good-scope",
+        "bad-scope",
+        "synthetic-benchmark-v1",
+        "synthetic-momentum-v1",
+        "synthetic-drift-v1",
+        "vix_term",
+        "hold-20",
+    }
     bad_row = next(c for c in body if c["family"] == "bad-scope")
     assert bad_row["disposition"] == "DATA-GATED-NOT-RUN"
     assert "adapter" in bad_row["ineligibility_reason"]
@@ -319,11 +366,15 @@ def test_attach_survives_unwritable_workspace(tmp_path: Path) -> None:
     fake_scopes = tmp_path / "scopes"
     fake_scopes.mkdir()
     (fake_scopes / "test-scope").mkdir()
-    (fake_scopes / "test-scope" / "sealed-round.json").write_text(json.dumps({
-        "family_verdict": "WITHDRAWN",
-        "frozen_inputs": {"calibration_v3_sha256": "deadbeef"},
-        "round": {},
-    }))
+    (fake_scopes / "test-scope" / "sealed-round.json").write_text(
+        json.dumps(
+            {
+                "family_verdict": "WITHDRAWN",
+                "frozen_inputs": {"calibration_v3_sha256": "deadbeef"},
+                "round": {},
+            }
+        )
+    )
     # A workspace path occupied by an existing FILE: mkdir(exist_ok=True)
     # raises FileExistsError — same OSError class as a read-only unit
     # sandbox that lacks the research dir in ReadWritePaths.
@@ -342,12 +393,15 @@ def test_attach_survives_unwritable_workspace(tmp_path: Path) -> None:
 
     # The spec must pass validation (membership + plan) so the request
     # reaches the store and hits the unwritable-workspace degradation.
-    r2 = client.post("/api/research/compare", json={
-        "candidate_ids": [cid],
-        "starting_capital": "10000",
-        "common_start": "2024-01-02",
-        "common_end": "2026-09-25",
-    })
+    r2 = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": [cid],
+            "starting_capital": "10000",
+            "common_start": "2024-01-02",
+            "common_end": "2026-09-25",
+        },
+    )
     assert r2.status_code == 503
     assert r2.json()["detail"]["error"] == "research_workspace_unwritable"
 
@@ -355,8 +409,7 @@ def test_attach_survives_unwritable_workspace(tmp_path: Path) -> None:
     assert r3.status_code == 503
 
 
-def test_run_lifecycle_completed_result_is_immutable_and_read_only(
-        tmp_path: Path) -> None:
+def test_run_lifecycle_completed_result_is_immutable_and_read_only(tmp_path: Path) -> None:
     """RL1-03 end-to-end custody: POST spools a queued run; GET before
     compute reports pending WITHOUT invoking the engine; one worker
     step computes and publishes; repeated GETs return the SAME stored
@@ -373,10 +426,15 @@ def test_run_lifecycle_completed_result_is_immutable_and_read_only(
     client, worker = _build_app(tmp_path, engine_fn=counting_engine)
     cat = client.get("/api/research/candidates").json()
     cid = cat["candidates"][0]["id"]  # WITHDRAWN fixture: honest rejection path
-    r = client.post("/api/research/compare", json={
-        "candidate_ids": [cid], "starting_capital": "10000",
-        "common_start": "2024-01-02", "common_end": "2026-09-25",
-    })
+    r = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": [cid],
+            "starting_capital": "10000",
+            "common_start": "2024-01-02",
+            "common_end": "2026-09-25",
+        },
+    )
     assert r.status_code == 202
     run_id = r.json()["run_id"]
 
@@ -412,10 +470,15 @@ def test_failed_run_records_its_error_honestly(tmp_path: Path) -> None:
     client, worker = _build_app(tmp_path, engine_fn=exploding_engine)
     cat = client.get("/api/research/candidates").json()
     cid = cat["candidates"][0]["id"]
-    run_id = client.post("/api/research/compare", json={
-        "candidate_ids": [cid], "starting_capital": "10000",
-        "common_start": "2024-01-02", "common_end": "2026-09-25",
-    }).json()["run_id"]
+    run_id = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": [cid],
+            "starting_capital": "10000",
+            "common_start": "2024-01-02",
+            "common_end": "2026-09-25",
+        },
+    ).json()["run_id"]
     assert worker.step() is True
     status = client.get(f"/api/research/runs/{run_id}").json()
     assert status["status"] == "failed"
@@ -430,24 +493,36 @@ def test_pre_custody_format_run_is_blocked_never_rerun(tmp_path: Path) -> None:
     """A spec record written by the pre-RL1-03 code (metadata embedded
     in the immutable payload) is preserved, reported as blocked, and
     never silently recomputed."""
+    from tree_options.research.runstate.spec_hash import spec_hash
     from tree_options.research.runstate.store import open_runstate_store
+    from tree_options.research.spec_io import spec_from_dict
 
     client, worker = _build_app(tmp_path)
     cat = client.get("/api/research/candidates").json()
     cid = cat["candidates"][0]["id"]
-    spec = {"candidate_ids": [cid], "starting_capital": "10000",
-            "common_start": "2024-01-02", "common_end": "2026-09-25"}
-    run_id = client.post("/api/research/compare", json=spec).json()["run_id"]
-    # Simulate a legacy record: metadata embedded in the spec payload
-    # under the same key the old code used.
+    spec = {
+        "candidate_ids": [cid],
+        "starting_capital": "10000",
+        "common_start": "2024-01-02",
+        "common_end": "2026-09-25",
+    }
+    run_id = spec_hash(spec_from_dict(spec))
+    # Seed the actual legacy shape directly: only an immutable spec existed,
+    # with metadata embedded. Its audit chain must remain valid; deleting a
+    # modern run and its audit rows instead simulates corruption, not history.
+    legacy = {**spec, "id": run_id, "status": "queued", "queued_at": "2026-09-25T20:59:00"}
     with open_runstate_store(tmp_path / "workspace") as store:
-        store.replace("spec", {**spec, "id": run_id, "status": "queued",
-                               "queued_at": "2026-09-25T20:59:00"}, key=run_id)
-        # and remove the modern run record to mimic the legacy shape
-        store.conn.execute("DELETE FROM objects WHERE kind = 'run'")
-        store.conn.execute("DELETE FROM audit WHERE kind = 'run'")
+        store.put("spec", legacy, key=run_id)
+        before = store.verify()
+        assert before["ok"] and before["objects"] == 1 and before["events"] == 1
+        assert store.get("run", run_id) is None
 
     status = client.get(f"/api/research/runs/{run_id}").json()
     assert status["status"] == "blocked"
     assert "pre-custody" in status["error"]
     assert worker.step() is False  # the legacy spec is never claimed
+    with open_runstate_store(tmp_path / "workspace") as store:
+        assert store.verify() == before
+        assert store.get("spec", run_id) == legacy
+        assert store.get("run", run_id) is None
+        assert store.get("result", run_id) is None

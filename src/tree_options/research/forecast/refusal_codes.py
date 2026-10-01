@@ -7,6 +7,7 @@ content-bound result record (never a 404, never a silently dropped run).
 ``payload`` carries structured evidence — the origin tally and ledger for
 ``insufficient_origins``, BOTH shas for the drift/changed refusals.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping

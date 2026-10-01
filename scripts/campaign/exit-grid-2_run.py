@@ -97,11 +97,12 @@ import os
 import statistics
 import subprocess
 import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 for _name in (
     "OPENBLAS_NUM_THREADS",
@@ -172,92 +173,208 @@ BREADTH_THRESHOLD = Decimal("0.40")
 # the slot doc's tables verbatim; the spec dicts drive the simulator.
 CONFIGS: dict[str, dict[str, Any]] = {
     # -- scope A: pead_beat hold-20 x post-entry conditioning (spot proxy) --
-    "a-hold20": {"scope": SCOPE_A, "family": "pead_beat", "base": True, "spec": {"kind": "hold"},
-                 "semantics": "the sealed rule: time-stop at close[t+20]"},
-    "a-adv05-arm5": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                     "spec": {"kind": "adverse", "level": "0.05", "arm": 5},
-                     "semantics": "first close at i>=5 with close/entry-1 <= -5%"},
-    "a-adv10-arm5": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                     "spec": {"kind": "adverse", "level": "0.10", "arm": 5},
-                     "semantics": "first close at i>=5 with close/entry-1 <= -10%"},
-    "a-adv05-arm10": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                      "spec": {"kind": "adverse", "level": "0.05", "arm": 10},
-                      "semantics": "first close at i>=10 with close/entry-1 <= -5%"},
-    "a-adv10-arm10": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                      "spec": {"kind": "adverse", "level": "0.10", "arm": 10},
-                      "semantics": "first close at i>=10 with close/entry-1 <= -10%"},
-    "a-trail10-arm5": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                       "spec": {"kind": "trail", "level": "0.10", "arm": 5},
-                       "semantics": "first close at i>=5 with close <= running-max(prior closes)*(1-0.10)"},
-    "a-trail15-arm5": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                       "spec": {"kind": "trail", "level": "0.15", "arm": 5},
-                       "semantics": "first close at i>=5 with close <= running-max(prior closes)*(1-0.15)"},
-    "a-vixterm": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                  "spec": {"kind": "vixterm", "arm": 1},
-                  "semantics": "first close whose PRIOR session has VIX close >= VIX3M close"},
-    "a-breadth40": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                    "spec": {"kind": "breadth", "arm": 1},
-                    "semantics": "first close whose PRIOR session's breadth (36 tradables, close > prior close) < 0.40"},
-    "a-mom20flip": {"scope": SCOPE_A, "family": "pead_beat", "base": False,
-                    "spec": {"kind": "mom20flip", "arm": 1},
-                    "semantics": "first close whose PRIOR session's name mom20 (close/close[-20]-1) <= 0"},
+    "a-hold20": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": True,
+        "spec": {"kind": "hold"},
+        "semantics": "the sealed rule: time-stop at close[t+20]",
+    },
+    "a-adv05-arm5": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "adverse", "level": "0.05", "arm": 5},
+        "semantics": "first close at i>=5 with close/entry-1 <= -5%",
+    },
+    "a-adv10-arm5": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "adverse", "level": "0.10", "arm": 5},
+        "semantics": "first close at i>=5 with close/entry-1 <= -10%",
+    },
+    "a-adv05-arm10": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "adverse", "level": "0.05", "arm": 10},
+        "semantics": "first close at i>=10 with close/entry-1 <= -5%",
+    },
+    "a-adv10-arm10": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "adverse", "level": "0.10", "arm": 10},
+        "semantics": "first close at i>=10 with close/entry-1 <= -10%",
+    },
+    "a-trail10-arm5": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "trail", "level": "0.10", "arm": 5},
+        "semantics": "first close at i>=5 with close <= running-max(prior closes)*(1-0.10)",
+    },
+    "a-trail15-arm5": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "trail", "level": "0.15", "arm": 5},
+        "semantics": "first close at i>=5 with close <= running-max(prior closes)*(1-0.15)",
+    },
+    "a-vixterm": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "vixterm", "arm": 1},
+        "semantics": "first close whose PRIOR session has VIX close >= VIX3M close",
+    },
+    "a-breadth40": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "breadth", "arm": 1},
+        "semantics": "first close whose PRIOR session's breadth (36 tradables, close > prior close) < 0.40",
+    },
+    "a-mom20flip": {
+        "scope": SCOPE_A,
+        "family": "pead_beat",
+        "base": False,
+        "spec": {"kind": "mom20flip", "arm": 1},
+        "semantics": "first close whose PRIOR session's name mom20 (close/close[-20]-1) <= 0",
+    },
     # -- scope B: xsmom_top3 monthly card exits (spot proxy) --
-    "b-hold20": {"scope": SCOPE_B, "family": "xsmom_top3", "base": True, "spec": {"kind": "hold"},
-                 "semantics": "the sealed rule: exit at close[t+20]"},
-    "b-trail10-arm5": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                       "spec": {"kind": "trail", "level": "0.10", "arm": 5},
-                       "semantics": "trailing -10% off the running max close, armed i>=5"},
-    "b-trail15-arm5": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                       "spec": {"kind": "trail", "level": "0.15", "arm": 5},
-                       "semantics": "trailing -15% off the running max close, armed i>=5"},
-    "b-trail20-arm5": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                       "spec": {"kind": "trail", "level": "0.20", "arm": 5},
-                       "semantics": "trailing -20% off the running max close, armed i>=5"},
-    "b-adv10": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                "spec": {"kind": "adverse", "level": "0.10", "arm": 1},
-                "semantics": "static adverse: first close <= entry*0.90"},
-    "b-adv15": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                "spec": {"kind": "adverse", "level": "0.15", "arm": 1},
-                "semantics": "static adverse: first close <= entry*0.85"},
-    "b-adv10-arm10": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                      "spec": {"kind": "adverse", "level": "0.10", "arm": 10},
-                      "semantics": "adverse -10% armed i>=10"},
-    "b-mom20flip": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                    "spec": {"kind": "mom20flip", "arm": 1},
-                    "semantics": "exit leg at first close whose PRIOR session's leg mom20 <= 0"},
-    "b-vixterm": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                  "spec": {"kind": "vixterm", "arm": 1, "all_legs": True},
-                  "semantics": "exit ALL open legs at first close whose PRIOR session has VIX >= VIX3M"},
-    "b-breadth40": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                    "spec": {"kind": "breadth", "arm": 1},
-                    "semantics": "exit at first close whose PRIOR session's breadth < 0.40"},
-    "b-monthend": {"scope": SCOPE_B, "family": "xsmom_top3", "base": False,
-                   "spec": {"kind": "monthend"},
-                   "semantics": "calendar-aligned time-stop: exit at the month's last NYSE session in the hold window"},
+    "b-hold20": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": True,
+        "spec": {"kind": "hold"},
+        "semantics": "the sealed rule: exit at close[t+20]",
+    },
+    "b-trail10-arm5": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "trail", "level": "0.10", "arm": 5},
+        "semantics": "trailing -10% off the running max close, armed i>=5",
+    },
+    "b-trail15-arm5": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "trail", "level": "0.15", "arm": 5},
+        "semantics": "trailing -15% off the running max close, armed i>=5",
+    },
+    "b-trail20-arm5": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "trail", "level": "0.20", "arm": 5},
+        "semantics": "trailing -20% off the running max close, armed i>=5",
+    },
+    "b-adv10": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "adverse", "level": "0.10", "arm": 1},
+        "semantics": "static adverse: first close <= entry*0.90",
+    },
+    "b-adv15": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "adverse", "level": "0.15", "arm": 1},
+        "semantics": "static adverse: first close <= entry*0.85",
+    },
+    "b-adv10-arm10": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "adverse", "level": "0.10", "arm": 10},
+        "semantics": "adverse -10% armed i>=10",
+    },
+    "b-mom20flip": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "mom20flip", "arm": 1},
+        "semantics": "exit leg at first close whose PRIOR session's leg mom20 <= 0",
+    },
+    "b-vixterm": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "vixterm", "arm": 1, "all_legs": True},
+        "semantics": "exit ALL open legs at first close whose PRIOR session has VIX >= VIX3M",
+    },
+    "b-breadth40": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "breadth", "arm": 1},
+        "semantics": "exit at first close whose PRIOR session's breadth < 0.40",
+    },
+    "b-monthend": {
+        "scope": SCOPE_B,
+        "family": "xsmom_top3",
+        "base": False,
+        "spec": {"kind": "monthend"},
+        "semantics": "calendar-aligned time-stop: exit at the month's last NYSE session in the hold window",
+    },
     # -- scope C: options-expression exits (DATA-GATED; never run) --
-    "c-ts20": {"scope": SCOPE_C, "family": "pead_beat-debit-spread", "base": True,
-               "spec": {"kind": "option-time-stop", "sessions": 20},
-               "semantics": "time-stop: close the spread at session t+20 (BASE)"},
-    "c-ts5": {"scope": SCOPE_C, "family": "pead_beat-debit-spread", "base": False,
-              "spec": {"kind": "option-time-stop", "sessions": 5},
-              "semantics": "time-stop at t+5"},
-    "c-ts10": {"scope": SCOPE_C, "family": "pead_beat-debit-spread", "base": False,
-               "spec": {"kind": "option-time-stop", "sessions": 10},
-               "semantics": "time-stop at t+10"},
-    "c-dstop70": {"scope": SCOPE_C, "family": "pead_beat-debit-spread", "base": False,
-                  "spec": {"kind": "option-delta-stop", "leg": "short", "abs_delta_ge": "0.70"},
-                  "semantics": "exit when short-leg abs(delta) >= 0.70"},
-    "c-dstop15": {"scope": SCOPE_C, "family": "pead_beat-debit-spread", "base": False,
-                  "spec": {"kind": "option-delta-stop", "leg": "long", "abs_delta_le": "0.15"},
-                  "semantics": "exit when long-leg abs(delta) <= 0.15"},
-    "c-expiry": {"scope": SCOPE_C, "family": "pead_beat-debit-spread", "base": False,
-                 "spec": {"kind": "option-expiry"},
-                 "semantics": "ride to expiry settlement (wave0 arm-B precedent)"},
+    "c-ts20": {
+        "scope": SCOPE_C,
+        "family": "pead_beat-debit-spread",
+        "base": True,
+        "spec": {"kind": "option-time-stop", "sessions": 20},
+        "semantics": "time-stop: close the spread at session t+20 (BASE)",
+    },
+    "c-ts5": {
+        "scope": SCOPE_C,
+        "family": "pead_beat-debit-spread",
+        "base": False,
+        "spec": {"kind": "option-time-stop", "sessions": 5},
+        "semantics": "time-stop at t+5",
+    },
+    "c-ts10": {
+        "scope": SCOPE_C,
+        "family": "pead_beat-debit-spread",
+        "base": False,
+        "spec": {"kind": "option-time-stop", "sessions": 10},
+        "semantics": "time-stop at t+10",
+    },
+    "c-dstop70": {
+        "scope": SCOPE_C,
+        "family": "pead_beat-debit-spread",
+        "base": False,
+        "spec": {"kind": "option-delta-stop", "leg": "short", "abs_delta_ge": "0.70"},
+        "semantics": "exit when short-leg abs(delta) >= 0.70",
+    },
+    "c-dstop15": {
+        "scope": SCOPE_C,
+        "family": "pead_beat-debit-spread",
+        "base": False,
+        "spec": {"kind": "option-delta-stop", "leg": "long", "abs_delta_le": "0.15"},
+        "semantics": "exit when long-leg abs(delta) <= 0.15",
+    },
+    "c-expiry": {
+        "scope": SCOPE_C,
+        "family": "pead_beat-debit-spread",
+        "base": False,
+        "spec": {"kind": "option-expiry"},
+        "semantics": "ride to expiry settlement (wave0 arm-B precedent)",
+    },
 }
 MENU_CONFIG_IDS = tuple(CONFIGS)
 
-VERDICT_VOCABULARY = ("PASS", "FAIL", "UNDERPOWERED", "DATA-GATED-NOT-RUN",
-                      "HOLD-STANDS", "EXIT-SUCCESSOR-NOMINATED")
+VERDICT_VOCABULARY = (
+    "PASS",
+    "FAIL",
+    "UNDERPOWERED",
+    "DATA-GATED-NOT-RUN",
+    "HOLD-STANDS",
+    "EXIT-SUCCESSOR-NOMINATED",
+)
 
 
 def _sha256_file(path: Path) -> str:
@@ -438,7 +555,9 @@ def load_and_bind() -> Inputs:
     slot_doc_sha256 = _sha256_file(SLOT_DOC_PATH)
     pinned_doc = menu["dataset_pinning"].get(str(SLOT_DOC_PATH.relative_to(REPO_ROOT)))
     if pinned_doc is None:
-        pinned_doc = menu["dataset_pinning"].get("docs/theory/campaign-2026-09/slots/exit-grid-2.md")
+        pinned_doc = menu["dataset_pinning"].get(
+            "docs/theory/campaign-2026-09/slots/exit-grid-2.md"
+        )
     if pinned_doc is None or pinned_doc != slot_doc_sha256:
         raise Refused(
             f"{SLOT_DOC_PATH.name}: sha256 {slot_doc_sha256} != the menu's pinned slot-doc hash"
@@ -460,7 +579,9 @@ def load_and_bind() -> Inputs:
     ):
         want = pinning.get(label)
         if want is None or want != got:
-            raise Refused(f"{label}: sha256 {got} != the menu's pinned {want} -- swapped inputs refuse")
+            raise Refused(
+                f"{label}: sha256 {got} != the menu's pinned {want} -- swapped inputs refuse"
+            )
 
     panel = json.loads(PANEL_PATH.read_text(encoding="utf-8"))
     earnings = json.loads(EARNINGS_PATH.read_text(encoding="utf-8"))
@@ -802,7 +923,7 @@ def build_pead_stream(inputs: Inputs) -> StreamBuild:
     signals: list[Signal] = []
     n_dropped_hold = 0
     boundary_last_entry: str | None = None
-    for (name, entry_iso) in sorted(by_key, key=lambda k: (k[1], k[0])):
+    for name, entry_iso in sorted(by_key, key=lambda k: (k[1], k[0])):
         report_date, move = by_key[(name, entry_iso)]
         path, _why = _hold_path(inputs, name, entry_iso)
         if path is None or not path:
@@ -928,11 +1049,7 @@ def _t_stats(diffs: Sequence[float], clusters: Sequence[str]) -> tuple[float, fl
     if len(day_means) < 2:
         return (naive, naive)
     sd_days = statistics.stdev(day_means)
-    clustered = (
-        m / (sd_days / len(day_means) ** 0.5)
-        if sd_days
-        else (float("inf") if m else 0.0)
-    )
+    clustered = m / (sd_days / len(day_means) ** 0.5) if sd_days else (float("inf") if m else 0.0)
     return (naive, clustered)
 
 
@@ -1015,7 +1132,9 @@ def cell_statistics(base_run: Mapping[str, Any] | None, run: Mapping[str, Any]) 
         "t_naive": naive,
         "t_clustered": clustered,
         "t_conservative": (
-            min(naive, clustered) if not (math.isnan(naive) or math.isnan(clustered)) else float("nan")
+            min(naive, clustered)
+            if not (math.isnan(naive) or math.isnan(clustered))
+            else float("nan")
         ),
     }
     return out
@@ -1050,7 +1169,9 @@ def _hyperparameters(inputs: Inputs, config_id: str) -> dict[str, Any]:
         "hold_sessions": HOLD_SESSIONS,
         "rt_primary_bp": 5,
         "rt_robust_bp": 10,
-        "sealed_era": list(era) if era else "mirrors A on whatever bar span passes the data gate (never reached)",
+        "sealed_era": list(era)
+        if era
+        else "mirrors A on whatever bar span passes the data gate (never reached)",
         "cluster_convention": "signal session (A) / rebalance session (B)",
         "inner_loop": "EMPTY BY DESIGN (menu fold_mapping.inner); one scored run per cell on the sealed era",
         "multiplicity_m": M_ALTERNATIVES[cfg["scope"]],
@@ -1063,7 +1184,9 @@ def _hyperparameters(inputs: Inputs, config_id: str) -> dict[str, Any]:
             if cfg["scope"] == SCOPE_B
             else {"min_spread_episodes": POWER_FLOOR_C_EPISODES}
         ),
-        "paired_base": None if cfg["base"] else ("a-hold20" if cfg["scope"] == SCOPE_A else "b-hold20"),
+        "paired_base": None
+        if cfg["base"]
+        else ("a-hold20" if cfg["scope"] == SCOPE_A else "b-hold20"),
         "calendar_exclusions": [PHANTOM_ISO],
         "universe": {
             "panel_names": 37,
@@ -1092,7 +1215,9 @@ def _config_hash(hyperparameters: Mapping[str, Any]) -> str:
 
 
 def _scope(inputs: Inputs, scope_id: str) -> TrialScope:
-    era = {"c09-eg2-a": ERA_A, "c09-eg2-b": ERA_B, "c09-eg2-c": ("mirrors-A", "data-gated")}[scope_id]
+    era = {"c09-eg2-a": ERA_A, "c09-eg2-b": ERA_B, "c09-eg2-c": ("mirrors-A", "data-gated")}[
+        scope_id
+    ]
     return TrialScope(
         protocol_id="tree_options",
         protocol_hash=inputs.protocol_canonical_sha256,
@@ -1224,16 +1349,24 @@ def _stamp(
 def phase_plan() -> int:
     inputs = load_and_bind()
     _bind_calendar_for_simulator(inputs.calendar)
-    print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified; slot doc {inputs.slot_doc_sha256[:16]}...)")
-    print(f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}...")
-    print(f"tnull v3: CALIBRATED (family scoring unfrozen)")
+    print(
+        f"menu sha256 {inputs.menu_sha256} (sidecar-verified; slot doc {inputs.slot_doc_sha256[:16]}...)"
+    )
+    print(
+        f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}..."
+    )
+    print("tnull v3: CALIBRATED (family scoring unfrozen)")
     print(f"sealed_eg2a (pead_beat, beats-only, hold-complete): {ERA_A[0]}..{ERA_A[1]}")
-    print(f"sealed_eg2b (xsmom_top3 monthly cards): {ERA_B[0]}..{ERA_B[1]} -> 23 rebalances / 69 legs (cross-checked at execute)")
-    print(f"scope C: DATA-GATED (capture in flight + post-M0 short-leg machinery absent)")
+    print(
+        f"sealed_eg2b (xsmom_top3 monthly cards): {ERA_B[0]}..{ERA_B[1]} -> 23 rebalances / 69 legs (cross-checked at execute)"
+    )
+    print("scope C: DATA-GATED (capture in flight + post-M0 short-leg machinery absent)")
     for scope_id in (SCOPE_A, SCOPE_B, SCOPE_C):
         ids = [c for c in MENU_CONFIG_IDS if CONFIGS[c]["scope"] == scope_id]
-        print(f"scope {scope_id}: {len(ids)} configs, m={M_ALTERNATIVES[scope_id]},"
-              f" crit_t={_critical_t(M_ALTERNATIVES[scope_id]):.4f}")
+        print(
+            f"scope {scope_id}: {len(ids)} configs, m={M_ALTERNATIVES[scope_id]},"
+            f" crit_t={_critical_t(M_ALTERNATIVES[scope_id]):.4f}"
+        )
     print(f"registry db: {REGISTRY_PATH}")
     print(f"artifacts dir: {SLOT_DIR}")
     return 0
@@ -1243,11 +1376,29 @@ def phase_selftest() -> int:
     """Synthetic-bar checks of the simulator (no real data, no outcomes)."""
     cal = SealedCalendar(
         [
-            "2026-03-02", "2026-03-03", "2026-03-04", "2026-03-05", "2026-03-06",
-            "2026-03-09", "2026-03-10", "2026-03-11", "2026-03-12", "2026-03-13",
-            "2026-03-16", "2026-03-17", "2026-03-18", "2026-03-19", "2026-03-20",
-            "2026-03-23", "2026-03-24", "2026-03-25", "2026-03-26", "2026-03-27",
-            "2026-03-30", "2026-03-31", "2026-04-01",
+            "2026-03-02",
+            "2026-03-03",
+            "2026-03-04",
+            "2026-03-05",
+            "2026-03-06",
+            "2026-03-09",
+            "2026-03-10",
+            "2026-03-11",
+            "2026-03-12",
+            "2026-03-13",
+            "2026-03-16",
+            "2026-03-17",
+            "2026-03-18",
+            "2026-03-19",
+            "2026-03-20",
+            "2026-03-23",
+            "2026-03-24",
+            "2026-03-25",
+            "2026-03-26",
+            "2026-03-27",
+            "2026-03-30",
+            "2026-03-31",
+            "2026-04-01",
         ]
     )
     _bind_calendar_for_simulator(cal)
@@ -1257,8 +1408,11 @@ def phase_selftest() -> int:
         breadth={"2026-03-09": 0.39, "2026-03-10": 0.41},
         mom20={("X", "2026-03-11"): -0.01, ("X", "2026-03-12"): 0.02},
         month_last={
-            "2026-03-13": True, "2026-03-31": True, "2026-03-30": False,
-            "2026-03-16": False, "2026-03-02": False,
+            "2026-03-13": True,
+            "2026-03-31": True,
+            "2026-03-30": False,
+            "2026-03-16": False,
+            "2026-03-02": False,
         },
     )
     D = Decimal
@@ -1266,13 +1420,26 @@ def phase_selftest() -> int:
         (i, iso, c)
         for i, (iso, c) in enumerate(
             [
-                ("2026-03-03", D("101")), ("2026-03-04", D("102")), ("2026-03-05", D("103")),
-                ("2026-03-06", D("104")), ("2026-03-09", D("120")), ("2026-03-10", D("118")),
-                ("2026-03-11", D("107")), ("2026-03-12", D("106")), ("2026-03-13", D("105")),
-                ("2026-03-16", D("104")), ("2026-03-17", D("103")), ("2026-03-18", D("102")),
-                ("2026-03-19", D("101")), ("2026-03-20", D("100")), ("2026-03-23", D("99")),
-                ("2026-03-24", D("98")), ("2026-03-25", D("97")), ("2026-03-26", D("96")),
-                ("2026-03-27", D("95")), ("2026-03-30", D("94")),
+                ("2026-03-03", D("101")),
+                ("2026-03-04", D("102")),
+                ("2026-03-05", D("103")),
+                ("2026-03-06", D("104")),
+                ("2026-03-09", D("120")),
+                ("2026-03-10", D("118")),
+                ("2026-03-11", D("107")),
+                ("2026-03-12", D("106")),
+                ("2026-03-13", D("105")),
+                ("2026-03-16", D("104")),
+                ("2026-03-17", D("103")),
+                ("2026-03-18", D("102")),
+                ("2026-03-19", D("101")),
+                ("2026-03-20", D("100")),
+                ("2026-03-23", D("99")),
+                ("2026-03-24", D("98")),
+                ("2026-03-25", D("97")),
+                ("2026-03-26", D("96")),
+                ("2026-03-27", D("95")),
+                ("2026-03-30", D("94")),
             ],
             start=1,
         )
@@ -1310,12 +1477,16 @@ def phase_selftest() -> int:
     for spec, entry, name, want_i, want_reason in cases:
         fill = simulate_exit(spec, entry, path, ctx, name)
         ok = fill.i == want_i and fill.reason == want_reason
-        print(f"{'ok ' if ok else 'FAIL'} {json.dumps(spec, sort_keys=True):58s} -> i={fill.i} ({fill.reason})")
+        print(
+            f"{'ok ' if ok else 'FAIL'} {json.dumps(spec, sort_keys=True):58s} -> i={fill.i} ({fill.reason})"
+        )
         failures += 0 if ok else 1
     # paired-stats conventions on a tiny synthetic set
     naive, clustered = _t_stats([0.01, 0.02, 0.03, 0.04], ["a", "a", "b", "b"])
     ok = not (math.isnan(naive) or math.isnan(clustered)) and naive > 0 and clustered > 0
-    print(f"{'ok ' if ok else 'FAIL'} _t_stats conventions -> naive={naive:.3f} clustered={clustered:.3f}")
+    print(
+        f"{'ok ' if ok else 'FAIL'} _t_stats conventions -> naive={naive:.3f} clustered={clustered:.3f}"
+    )
     failures += 0 if ok else 1
     zero_sd = _t_stats([0.01, 0.01, 0.01, 0.01], ["a", "a", "b", "b"])
     ok = zero_sd[0] == float("inf")
@@ -1332,7 +1503,7 @@ def phase_register() -> int:
         existing = [c for c in MENU_CONFIG_IDS if registry.is_registered(_trial_id(c))]
         if existing:
             raise Refused(
-                f"registration is one-shot: {[ _trial_id(c) for c in existing ]} already registered"
+                f"registration is one-shot: {[_trial_id(c) for c in existing]} already registered"
             )
         for config_id in MENU_CONFIG_IDS:
             hyper = _hyperparameters(inputs, config_id)
@@ -1346,11 +1517,11 @@ def phase_register() -> int:
                 dataset_manifest_hash=inputs.dataset_manifest_hash,
                 train_window=None,  # inner loop EMPTY BY DESIGN
                 validation_window=None,  # nothing selected on data
-                test_window=(
-                    date.fromisoformat(ERA_A[0]), date.fromisoformat(ERA_A[1])
-                ) if CONFIGS[config_id]["scope"] == SCOPE_A else (
-                    date.fromisoformat(ERA_B[0]), date.fromisoformat(ERA_B[1])
-                ) if CONFIGS[config_id]["scope"] == SCOPE_B else None,
+                test_window=(date.fromisoformat(ERA_A[0]), date.fromisoformat(ERA_A[1]))
+                if CONFIGS[config_id]["scope"] == SCOPE_A
+                else (date.fromisoformat(ERA_B[0]), date.fromisoformat(ERA_B[1]))
+                if CONFIGS[config_id]["scope"] == SCOPE_B
+                else None,
                 hyperparameters=hyper,
                 scope_key=scope.scope_key(),
             )
@@ -1372,7 +1543,7 @@ def _scope_c_gate_evidence() -> dict[str, Any]:
         "gates": [
             {
                 "gate": "(i) the long-dated option-bar capture lands and passes a"
-                        " coverage/integrity check on the evaluation span",
+                " coverage/integrity check on the evaluation span",
                 "status": "UNMET",
                 "evidence": [
                     "menu data_gates / rules.data_gates_campaign: capture IN FLIGHT, ETA ~2026-09-27",
@@ -1385,8 +1556,8 @@ def _scope_c_gate_evidence() -> dict[str, Any]:
             },
             {
                 "gate": "(ii) the post-M0 short-leg machinery exists (debit-spread short"
-                        " legs require expiration/early-assignment/dividend/"
-                        "exercise-by-exception logic, tested)",
+                " legs require expiration/early-assignment/dividend/"
+                "exercise-by-exception logic, tested)",
                 "status": "UNMET",
                 "evidence": [
                     "research_protocol.yaml short_options: policy prohibited; short legs in"
@@ -1414,7 +1585,9 @@ def phase_withdraw_c() -> int:
             if not registry.is_registered(_trial_id(config_id)):
                 raise Refused(f"{_trial_id(config_id)} is not registered -- INV-13 order violated")
             if registry.has_outcome(_trial_id(config_id)):
-                raise Refused(f"{_trial_id(config_id)} already carries an outcome -- not a withdrawal")
+                raise Refused(
+                    f"{_trial_id(config_id)} already carries an outcome -- not a withdrawal"
+                )
     finally:
         registry.close()
     SLOT_DIR.mkdir(parents=True, exist_ok=True)
@@ -1432,7 +1605,7 @@ def phase_withdraw_c() -> int:
             "spec": dict(CONFIGS[config_id]["spec"]),
             "gates": evidence["gates"],
             "note": "withdrawn exactly as the menu marks it; no proxy improvised;"
-                    " the trial row stays REGISTERED with no outcome (never run)",
+            " the trial row stays REGISTERED with no outcome (never run)",
         }
         _trial_artifact_path(config_id).write_text(
             json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -1454,7 +1627,9 @@ def phase_withdraw_c() -> int:
     WITHDRAWAL_PATH.write_text(
         json.dumps(withdrawal, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(f"scope C withdrawal stamped at {WITHDRAWAL_PATH}; scope value collapses to A+B, disclosed")
+    print(
+        f"scope C withdrawal stamped at {WITHDRAWAL_PATH}; scope value collapses to A+B, disclosed"
+    )
     return 0
 
 
@@ -1468,7 +1643,9 @@ def phase_execute() -> int:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise Refused("another exit-grid-2 execution holds the lock -- one run at a time") from None
+            raise Refused(
+                "another exit-grid-2 execution holds the lock -- one run at a time"
+            ) from None
         registry = _open_registry()
         try:
             ctx_maps = build_context_maps(inputs)
@@ -1655,7 +1832,7 @@ def phase_evaluate() -> int:
     verdicts: dict[str, Any] = {"cells": {}, "scopes": {}}
     for scope_id, base_id in ((SCOPE_A, "a-hold20"), (SCOPE_B, "b-hold20")):
         ids = [c for c in MENU_CONFIG_IDS if CONFIGS[c]["scope"] == scope_id]
-        base_body = _read_artifact(inputs, base_id)
+        _base_body = _read_artifact(inputs, base_id)
         scope_cells: dict[str, Any] = {}
         any_pass = False
         for config_id in ids:
@@ -1677,9 +1854,7 @@ def phase_evaluate() -> int:
             if row["verdict"] == "PASS":
                 any_pass = True
         verdicts["cells"][scope_id] = scope_cells
-        verdicts["scopes"][scope_id] = (
-            "EXIT-SUCCESSOR-NOMINATED" if any_pass else "HOLD-STANDS"
-        )
+        verdicts["scopes"][scope_id] = "EXIT-SUCCESSOR-NOMINATED" if any_pass else "HOLD-STANDS"
     c_bodies = {}
     for config_id in MENU_CONFIG_IDS:
         if CONFIGS[config_id]["scope"] != SCOPE_C:
@@ -1711,8 +1886,8 @@ def phase_evaluate() -> int:
             "adoption": inputs.menu["rules"]["adoption"],
             "nothing_adopts": True,
             "dsr": "any survivor still faces the ledger's base-rate/holdout deflations and a"
-                   " DSR report at N = 24 declared alternatives (DESK-CHECKS convention);"
-                   " the RESEARCH-LEDGER is owned by the consolidator, not this executor",
+            " DSR report at N = 24 declared alternatives (DESK-CHECKS convention);"
+            " the RESEARCH-LEDGER is owned by the consolidator, not this executor",
             "multiplicity": "charged at the full declared scope count (m=9/10/5) regardless of run subset",
         },
         "notes": [
@@ -1747,8 +1922,12 @@ def main(argv: list[str] | None = None) -> int:
         description=__doc__,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument("--plan", action="store_true", help="read-only: bind and print the geometry")
-    parser.add_argument("--selftest", action="store_true", help="synthetic-bar simulator checks (no outcomes)")
+    parser.add_argument(
+        "--plan", action="store_true", help="read-only: bind and print the geometry"
+    )
+    parser.add_argument(
+        "--selftest", action="store_true", help="synthetic-bar simulator checks (no outcomes)"
+    )
     parser.add_argument(
         "--register",
         action="store_true",

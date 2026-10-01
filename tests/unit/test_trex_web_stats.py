@@ -70,16 +70,31 @@ class TestEquitySeries:
 class TestRealizedByDay:
     def test_diffs_cumulative_proceeds_across_days(self) -> None:
         events = [
-            {"ts": _iso(10, 0), "event": "entry_fill", "structure": "nvda-oct",
-             "filled": 5, "avg": "0.21"},
+            {
+                "ts": _iso(10, 0),
+                "event": "entry_fill",
+                "structure": "nvda-oct",
+                "filled": 5,
+                "avg": "0.21",
+            },
             # day 1: exit 2 at 0.35 -> proceeds 0.70 - 2*0.21 = +28
-            {"ts": _iso(11, 0), "event": "exit_fill", "structure": "nvda-oct",
-             "filled": 2, "avg": "0.35"},
+            {
+                "ts": _iso(11, 0),
+                "event": "exit_fill",
+                "structure": "nvda-oct",
+                "filled": 2,
+                "avg": "0.35",
+            },
             # day 2: the remaining 3 exit at 0.50 each. The event carries
             # the BLENDED cumulative avg (2*0.35+3*0.50)/5 = 0.44:
             # proceeds delta (5*0.44 - 2*0.35) - 3*0.21 = +87
-            {"ts": _iso(10, 30, day=23), "event": "exit_fill", "structure": "nvda-oct",
-             "filled": 5, "avg": "0.44"},
+            {
+                "ts": _iso(10, 30, day=23),
+                "event": "exit_fill",
+                "structure": "nvda-oct",
+                "filled": 5,
+                "avg": "0.44",
+            },
         ]
         by_day = realized_by_day(events, {"nvda-oct": 0.21})
         assert by_day["2026-09-22"] == pytest.approx(28.0)
@@ -95,8 +110,13 @@ class TestRealizedByDay:
 
     def test_unknown_entry_is_skipped_not_fabricated(self) -> None:
         events = [
-            {"ts": _iso(11, 0), "event": "exit_fill", "structure": "qqq-nov",
-             "filled": 2, "avg": "0.35"},
+            {
+                "ts": _iso(11, 0),
+                "event": "exit_fill",
+                "structure": "qqq-nov",
+                "filled": 2,
+                "avg": "0.35",
+            },
         ]
         assert realized_by_day(events, {}) == {}
 
@@ -166,22 +186,32 @@ class TestStatsPayload:
         )
         from tree_options.trex.history import append_line
 
-        append_line(run / "marks_history.jsonl", {
-            "ts": _iso(10, 0), "total_unrealized": "0.00",
-            "total_unrealized_open": "0.00",
-            "quote_coverage": {"open": 1, "quoted": 1},
-        })
-        append_line(run / "marks_history.jsonl", {
-            "ts": _iso(15, 0), "total_unrealized": "-5.00",
-            "total_unrealized_open": "-5.00",
-            "quote_coverage": {"open": 1, "quoted": 1},
-        })
+        append_line(
+            run / "marks_history.jsonl",
+            {
+                "ts": _iso(10, 0),
+                "total_unrealized": "0.00",
+                "total_unrealized_open": "0.00",
+                "quote_coverage": {"open": 1, "quoted": 1},
+            },
+        )
+        append_line(
+            run / "marks_history.jsonl",
+            {
+                "ts": _iso(15, 0),
+                "total_unrealized": "-5.00",
+                "total_unrealized_open": "-5.00",
+                "quote_coverage": {"open": 1, "quoted": 1},
+            },
+        )
         disc = tmp_path / "discovery"
         disc.mkdir()
-        append_line(disc / "account_history.jsonl",
-                    {"ts": _iso(12, 0), "net_liquidation": "1000000.00"})
-        append_line(disc / "account_history.jsonl",
-                    {"ts": _iso(15, 0), "net_liquidation": "1000005.00"})
+        append_line(
+            disc / "account_history.jsonl", {"ts": _iso(12, 0), "net_liquidation": "1000000.00"}
+        )
+        append_line(
+            disc / "account_history.jsonl", {"ts": _iso(15, 0), "net_liquidation": "1000005.00"}
+        )
         return state, plans, disc
 
     def test_payload_shape_and_math(self, tmp_path: Path) -> None:
@@ -194,8 +224,12 @@ class TestStatsPayload:
         assert payload["totals"]["unrealized_last"] == pytest.approx(-5.0)
         assert payload["totals"]["structures_closed"] == 0
         assert payload["days"] == [
-            {"date": "2026-09-22", "realized": pytest.approx(28.0),
-             "unrealized_eod": pytest.approx(-5.0), "total": pytest.approx(23.0)}
+            {
+                "date": "2026-09-22",
+                "realized": pytest.approx(28.0),
+                "unrealized_eod": pytest.approx(-5.0),
+                "total": pytest.approx(23.0),
+            }
         ]
         assert payload["per_plan"][0]["plan_id"] == "putspread-test"
         row = payload["per_structure"][0]
@@ -208,7 +242,9 @@ class TestStatsPayload:
         disc = tmp_path / "discovery"
         disc.mkdir()
         payload = stats_payload(
-            tmp_path / "state", tmp_path / "plans", disc,
+            tmp_path / "state",
+            tmp_path / "plans",
+            disc,
             datetime(2026, 9, 22, 16, 0, tzinfo=ET),
         )
         assert payload["equity"] is None

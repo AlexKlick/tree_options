@@ -37,6 +37,7 @@ class PairCell:
 
     A cell with ``value is None`` carries a non-null ``reason``. A cell
     with ``value`` set carries ``reason=None``."""
+
     date: date
     value: Decimal | None
     reason: MissingnessReason | None
@@ -53,8 +54,10 @@ class PairSeries:
 
 
 def intersect_window(
-    a_start: date | None, a_end: date | None,
-    b_start: date | None, b_end: date | None,
+    a_start: date | None,
+    a_end: date | None,
+    b_start: date | None,
+    b_end: date | None,
 ) -> tuple[date | None, date | None]:
     """Intersect two supported-date windows. None on either side means
     'unknown' — never 'open-ended'. The intersection is conservative:
@@ -101,14 +104,18 @@ def align_pair(
     if baseline is None:
         if sessions is not None:
             paired_cells = [
-                PairCell(date=d, value=candidate_value_by_session.get(d),
-                         reason=(None if d in candidate_value_by_session
-                                 else MissingnessReason(
-                                     code="research.pair.candidate_missing",
-                                     description=(
-                                         f"candidate has no observation on {d.isoformat()}"
-                                     ),
-                                 )))
+                PairCell(
+                    date=d,
+                    value=candidate_value_by_session.get(d),
+                    reason=(
+                        None
+                        if d in candidate_value_by_session
+                        else MissingnessReason(
+                            code="research.pair.candidate_missing",
+                            description=(f"candidate has no observation on {d.isoformat()}"),
+                        )
+                    ),
+                )
                 for d in sessions
             ]
             return PairSeries(candidate.id, None, tuple(paired_cells))
@@ -120,35 +127,46 @@ def align_pair(
             return PairSeries(candidate.id, None, tuple(paired_cells_legacy))
         return PairSeries(candidate.id, None, ())
 
-    declared = sessions if sessions is not None else tuple(
-        sorted(set(candidate_value_by_session) | set(baseline_value_by_session)))
+    declared = (
+        sessions
+        if sessions is not None
+        else tuple(sorted(set(candidate_value_by_session) | set(baseline_value_by_session)))
+    )
 
     paired_cells = []
     for d in declared:
         c_val = candidate_value_by_session.get(d)
         b_val = baseline_value_by_session.get(d)
         if c_val is None and b_val is None:
-            paired_cells.append(PairCell(
-                date=d, value=None,
-                reason=MissingnessReason(
-                    code="research.pair.no_observation",
-                    description=(f"neither candidate nor baseline observed "
-                                 f"{d.isoformat()}"),
-                ),
-            ))
+            paired_cells.append(
+                PairCell(
+                    date=d,
+                    value=None,
+                    reason=MissingnessReason(
+                        code="research.pair.no_observation",
+                        description=(f"neither candidate nor baseline observed {d.isoformat()}"),
+                    ),
+                )
+            )
         elif c_val is None:
-            paired_cells.append(PairCell(
-                date=d, value=None,
-                reason=MissingnessReason(
-                    code="research.pair.candidate_missing",
-                    description=f"candidate has no observation on {d.isoformat()}",
-                ),
-            ))
+            paired_cells.append(
+                PairCell(
+                    date=d,
+                    value=None,
+                    reason=MissingnessReason(
+                        code="research.pair.candidate_missing",
+                        description=f"candidate has no observation on {d.isoformat()}",
+                    ),
+                )
+            )
         elif b_val is None:
-            paired_cells.append(PairCell(
-                date=d, value=None,
-                reason=reason_benchmark_overlap_missing(d.isoformat()),
-            ))
+            paired_cells.append(
+                PairCell(
+                    date=d,
+                    value=None,
+                    reason=reason_benchmark_overlap_missing(d.isoformat()),
+                )
+            )
         else:
             paired_cells.append(PairCell(date=d, value=c_val - b_val, reason=None))
     return PairSeries(candidate.id, baseline.id, tuple(paired_cells))

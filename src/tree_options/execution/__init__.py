@@ -48,6 +48,7 @@ from tree_options.execution.records import (
     ReplaceIntent,
     SubmitAttempt,
     TimeoutObserved,
+    UncertaintyObserved,
 )
 
 __all__ = [
@@ -88,6 +89,7 @@ __all__ = [
     "TemporalOrderError",
     "TimeoutObserved",
     "TransitionRefusedError",
+    "UncertaintyObserved",
     "assess_evidence",
     "reconcile",
 ]

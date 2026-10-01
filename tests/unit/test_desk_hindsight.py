@@ -33,9 +33,13 @@ def multi_day_bundle(*days: date) -> dict[str, Any]:
         one = _bundle(day)
         low.extend(one["contracts"][LOW]["results"])
         high.extend(one["contracts"][HIGH]["results"])
-    return {"schema": "desk-option-minute-bars/1", "contracts": {
-        LOW: {"ticker": LOW, "timespan": "minute", "results": low},
-        HIGH: {"ticker": HIGH, "timespan": "minute", "results": high}}}
+    return {
+        "schema": "desk-option-minute-bars/1",
+        "contracts": {
+            LOW: {"ticker": LOW, "timespan": "minute", "results": low},
+            HIGH: {"ticker": HIGH, "timespan": "minute", "results": high},
+        },
+    }
 
 
 class ChoosingTransport:
@@ -45,14 +49,14 @@ class ChoosingTransport:
         self.index = index
         self.calls: list[dict[str, Any]] = []
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         self.calls.append({"url": url, "body": json.loads(body)})
         rows = json.loads(json.loads(body)["messages"][0]["content"])["board"]
         choice = rows[self.index]["id"] if self.index < len(rows) else None
         content = json.dumps({"choice": choice, "note": "fixed index"})
-        envelope = {"choices": [{"message": {"content": content},
-                                 "finish_reason": "stop"}]}
+        envelope = {"choices": [{"message": {"content": content}, "finish_reason": "stop"}]}
         return 200, json.dumps(envelope).encode()
 
 
@@ -65,8 +69,11 @@ def _fake_keys(monkeypatch: pytest.MonkeyPatch) -> None:
 def _exit_pnl(result: dict[str, Any], snapshot: str) -> Decimal | None:
     """The modeled-exit PnL replay attributed to this snapshot's action."""
     action = f"a:{snapshot}"
-    closes = [edge["to"] for edge in result["edges"]
-              if edge["from"] == action and edge["kind"] == "later_mark"]
+    closes = [
+        edge["to"]
+        for edge in result["edges"]
+        if edge["from"] == action and edge["kind"] == "later_mark"
+    ]
     assert len(closes) <= 1
     if not closes:
         return None
@@ -74,14 +81,23 @@ def _exit_pnl(result: dict[str, Any], snapshot: str) -> Decimal | None:
     return Decimal(node["pnl"])
 
 
-def _lab_run(raw: dict[str, Any], tmp_path: Path, transport: Any,
-             boards_cap: int = 24) -> dict[str, Any]:
+def _lab_run(
+    raw: dict[str, Any], tmp_path: Path, transport: Any, boards_cap: int = 24
+) -> dict[str, Any]:
     bundle_path = tmp_path / "bundle.json"
     bundle_path.write_text(json.dumps(raw))
-    return run_lab(LabConfig(bundle=bundle_path, policy="model:zai", sessions=1,
-                             boards_cap=boards_cap,
-                             lab_root=tmp_path / "lab"),
-                   windows=UNDER, transport=transport, now=T0)
+    return run_lab(
+        LabConfig(
+            bundle=bundle_path,
+            policy="model:zai",
+            sessions=1,
+            boards_cap=boards_cap,
+            lab_root=tmp_path / "lab",
+        ),
+        windows=UNDER,
+        transport=transport,
+        now=T0,
+    )
 
 
 # ------------------------------------------------------------------ oracle
@@ -125,13 +141,29 @@ def test_open_at_window_end_is_not_an_outcome() -> None:
     # entry fills exist (the 14:01 bars) but every later bar is stale at the
     # next snapshot, so the trade never closes inside the window: replay
     # reports it as open_at_end with no final PnL, so there is no outcome
-    raw = {"schema": "desk-option-minute-bars/1", "contracts": {
-        LOW: {"ticker": LOW, "timespan": "minute", "results": [
-            _bar(day, 13, 59, "4"), _bar(day, 14, 1, "4.1"),
-            _bar(day, 14, 2, "4.15")]},
-        HIGH: {"ticker": HIGH, "timespan": "minute", "results": [
-            _bar(day, 13, 59, "2"), _bar(day, 14, 1, "2.1"),
-            _bar(day, 14, 2, "2.15")]}}}
+    raw = {
+        "schema": "desk-option-minute-bars/1",
+        "contracts": {
+            LOW: {
+                "ticker": LOW,
+                "timespan": "minute",
+                "results": [
+                    _bar(day, 13, 59, "4"),
+                    _bar(day, 14, 1, "4.1"),
+                    _bar(day, 14, 2, "4.15"),
+                ],
+            },
+            HIGH: {
+                "ticker": HIGH,
+                "timespan": "minute",
+                "results": [
+                    _bar(day, 13, 59, "2"),
+                    _bar(day, 14, 1, "2.1"),
+                    _bar(day, 14, 2, "2.15"),
+                ],
+            },
+        },
+    }
     packet = iag.decision_packet(raw, day, "10:00")
     assert packet["candidates"]  # the board is real
     assert hindsight.board_outcomes(raw, day, "10:00", sessions=[day]) == {}
@@ -142,8 +174,7 @@ def test_board_outcomes_rejects_clocks_outside_the_window() -> None:
     with pytest.raises(ValueError):
         hindsight.board_outcomes(_bundle(day), day, "10:07")
     with pytest.raises(ValueError):
-        hindsight.board_outcomes(_bundle(day), day, "10:00",
-                                 sessions=[date(2026, 9, 23)])
+        hindsight.board_outcomes(_bundle(day), day, "10:00", sessions=[date(2026, 9, 23)])
 
 
 # --------------------------------------------------------------- gap report
@@ -165,9 +196,18 @@ def test_gap_math_chosen_vs_best_with_feature_rows(tmp_path: Path) -> None:
     assert Decimal(board["gap"]) == Decimal("20.0")
     assert board["best_in_shown_rows"] is True
     # the feature rows reuse lab.board_rows fields, aliased
-    fields = {"id", "structure", "width", "premium", "max_loss", "max_gain",
-              "reward_risk", "long_recent_move", "short_recent_move",
-              "data_kind"}
+    fields = {
+        "id",
+        "structure",
+        "width",
+        "premium",
+        "max_loss",
+        "max_gain",
+        "reward_risk",
+        "long_recent_move",
+        "short_recent_move",
+        "data_kind",
+    }
     assert set(board["chosen_row"]) == fields
     assert set(board["best_row"]) == fields
     assert board["chosen_row"]["id"] == board["chosen"]
@@ -200,11 +240,11 @@ def test_no_outcome_boards_are_excluded_not_zeroed(tmp_path: Path) -> None:
 def test_top_gaps_orders_by_gap_desc_deterministically(tmp_path: Path) -> None:
     day = date(2026, 9, 24)
     raw = _bundle(day)
-    report = hindsight.gap_report(_lab_run(raw, tmp_path, FakeTransport("bogus")),
-                                  raw)
+    report = hindsight.gap_report(_lab_run(raw, tmp_path, FakeTransport("bogus")), raw)
     ranked = hindsight.top_gaps(report, limit=5)
     assert ranked
     gaps = [Decimal(b["gap"]) for b in ranked]
     assert gaps == sorted(gaps, reverse=True)
-    assert all(set(b) >= {"snapshot", "chosen", "best", "gap", "chosen_row",
-                          "best_row"} for b in ranked)
+    assert all(
+        set(b) >= {"snapshot", "chosen", "best", "gap", "chosen_row", "best_row"} for b in ranked
+    )

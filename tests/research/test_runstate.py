@@ -89,8 +89,7 @@ def test_verify_returns_ok_envelope(tmp_path: Path) -> None:
 # -- RL1-04: the verifier must actually verify -------------------------------
 
 
-def test_verify_allows_a_legitimate_append_after_a_previous_verification(
-        tmp_path: Path) -> None:
+def test_verify_allows_a_legitimate_append_after_a_previous_verification(tmp_path: Path) -> None:
     """The pre-correction verifier cached a head that later valid
     writes never updated, so append-after-verify FAILED with an
     audit_head mismatch. The head now commits in the same transaction
@@ -103,8 +102,7 @@ def test_verify_allows_a_legitimate_append_after_a_previous_verification(
         assert head["objects"] == 2
 
 
-def test_verify_rejects_payload_tampering_without_rewritten_hash(
-        tmp_path: Path) -> None:
+def test_verify_rejects_payload_tampering_without_rewritten_hash(tmp_path: Path) -> None:
     """Changing only ``payload_json`` while leaving the claimed hash
     untouched used to pass verification. The verifier now rehashes the
     stored bytes."""
@@ -136,19 +134,20 @@ def test_verify_rejects_a_broken_audit_chain(tmp_path: Path) -> None:
             store.verify()
 
 
-def test_replace_appends_state_and_keeps_every_version_audited(
-        tmp_path: Path) -> None:
+def test_replace_appends_state_and_keeps_every_version_audited(tmp_path: Path) -> None:
     """Mutable run records: replace() supersedes the payload but the
     audit trail keeps every version (put + replaces)."""
     with open_runstate_store(tmp_path) as store:
         store.put("run", {"status": "queued"}, key="r", at=datetime(2026, 9, 25))
-        store.replace("run", {"status": "running"}, key="r",
-                      at=datetime(2026, 9, 25, 12, 0))
-        store.replace("run", {"status": "completed"}, key="r",
-                      at=datetime(2026, 9, 25, 13, 0))
+        store.replace("run", {"status": "running"}, key="r", at=datetime(2026, 9, 25, 12, 0))
+        store.replace("run", {"status": "completed"}, key="r", at=datetime(2026, 9, 25, 13, 0))
         assert store.get("run", "r") == {"status": "completed"}
-        actions = [r["action"] for r in store.conn.execute(
-            "SELECT action FROM audit WHERE kind = 'run' ORDER BY audit_seq")]
+        actions = [
+            r["action"]
+            for r in store.conn.execute(
+                "SELECT action FROM audit WHERE kind = 'run' ORDER BY audit_seq"
+            )
+        ]
         assert actions == ["put", "replace", "replace"]
         head = store.verify()  # head agrees with the replaced content
         assert head["objects"] == 1
@@ -167,25 +166,115 @@ def test_concurrent_duplicate_puts_land_idempotently(tmp_path: Path) -> None:
     import threading
 
     barrier = threading.Barrier(2)
+    errors: list[Exception] = []
 
     def writer() -> None:
-        barrier.wait()
-        with open_runstate_store(tmp_path) as store:
-            store.put("run", {"run_id": "r", "status": "queued"}, key="r",
-                      at=datetime(2026, 9, 25))
+        try:
+            with open_runstate_store(tmp_path) as store:
+                barrier.wait(timeout=3)
+                store.put(
+                    "run", {"run_id": "r", "status": "queued"}, key="r", at=datetime(2026, 9, 25)
+                )
+        except Exception as exc:
+            errors.append(exc)
 
     threads = [threading.Thread(target=writer) for _ in range(2)]
     for t in threads:
         t.start()
     for t in threads:
-        t.join()
+        t.join(timeout=6)
+    assert all(not t.is_alive() for t in threads)
+    assert errors == []
     with open_runstate_store(tmp_path) as store:
         assert len(store.all("run")) == 1
         store.verify()  # must not raise
 
 
+@pytest.mark.parametrize("operation", ["duplicate", "conflict", "replace"])
+def test_concurrent_writes_check_content_under_the_write_lock(
+    tmp_path: Path, operation: str
+) -> None:
+    """Force the second writer to begin while the first insert is uncommitted.
+
+    A pre-transaction SELECT sees absent/stale content; checking only after
+    BEGIN IMMEDIATE acquires the lock sees the committed predecessor.
+    """
+    import threading
+
+    if operation == "replace":
+        with open_runstate_store(tmp_path) as store:
+            store.put("run", {"x": 0}, key="r")
+    ready = threading.Barrier(3)
+    first_paused = threading.Event()
+    second_begin = threading.Event()
+    release_first = threading.Event()
+    errors: dict[int, Exception] = {}
+    hashes: dict[int, str] = {}
+
+    def writer(index: int) -> None:
+        try:
+            with open_runstate_store(tmp_path) as store:
+                if index == 0:
+                    audit = store._audit
+
+                    def paused_audit(*args, **kwargs):
+                        first_paused.set()
+                        assert release_first.wait(timeout=3)
+                        return audit(*args, **kwargs)
+
+                    store._audit = paused_audit
+                else:
+
+                    def trace(statement: str) -> None:
+                        if statement == "BEGIN IMMEDIATE":
+                            second_begin.set()
+
+                    store.conn.set_trace_callback(trace)
+                ready.wait(timeout=3)  # both connections/schema exist before any write
+                if index == 1:
+                    assert first_paused.wait(timeout=3)
+                value = 1 if index == 0 or operation == "duplicate" else 2
+                write = store.replace if operation == "replace" else store.put
+                hashes[index] = write("run", {"x": value}, key="r")
+        except Exception as exc:
+            errors[index] = exc
+
+    threads = [threading.Thread(target=writer, args=(index,)) for index in range(2)]
+    for thread in threads:
+        thread.start()
+    try:
+        ready.wait(timeout=3)
+        assert second_begin.wait(timeout=3)
+    finally:
+        release_first.set()
+        for thread in threads:
+            thread.join(timeout=6)
+    assert all(not thread.is_alive() for thread in threads)
+    if operation == "conflict":
+        assert set(errors) == {1}
+        assert isinstance(errors[1], RunstateStoreError)
+        assert "content_conflict" in str(errors[1])
+    else:
+        assert errors == {}
+    with open_runstate_store(tmp_path) as store:
+        if operation == "replace":
+            rows = store.conn.execute(
+                "SELECT prev_sha256, next_sha256 FROM audit ORDER BY audit_seq"
+            ).fetchall()
+            assert rows[-1]["prev_sha256"] == hashes[0]
+            assert rows[-1]["next_sha256"] == hashes[1]
+            assert store.get("run", "r") == {"x": 2}
+        else:
+            assert store.get("run", "r") == {"x": 1}
+            assert store.verify()["events"] == 1
+            if operation == "duplicate":
+                assert hashes[0] == hashes[1]
+        store.verify()
+
+
 def test_open_runstate_store_refuses_a_descendant_of_desk_state(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """RL1-04: the old guard compared EXACT equality only — a research
     workspace INSIDE the desk evidence directory passed. Containment is
     now checked in both directions, on the explicit argument."""
@@ -198,8 +287,7 @@ def test_open_runstate_store_refuses_a_descendant_of_desk_state(
             pass
 
 
-def test_open_runstate_store_refuses_a_workspace_containing_desk_state(
-        tmp_path: Path) -> None:
+def test_open_runstate_store_refuses_a_workspace_containing_desk_state(tmp_path: Path) -> None:
     from tree_options.desk.paths import state_root
 
     with pytest.raises(RuntimeError, match="collides"):

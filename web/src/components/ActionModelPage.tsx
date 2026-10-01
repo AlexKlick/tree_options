@@ -4,6 +4,7 @@ import type { ActionNode, LabScoreboard, LongRunDigest, LongRunPaired, Supervise
 import { usePoll } from '../hooks/usePoll'
 import { AppShell } from './AppShell'
 import { AccountExposureBanner } from './AccountExposureBanner'
+import { TableScroll } from './TableScroll'
 
 function NodeInspector({ node }: { node: ActionNode }) {
   return (
@@ -129,8 +130,8 @@ function AutomationCard() {
             <button type="button" onClick={() => control('flatten')} disabled={busy !== null}>FLATTEN</button>{' '}
             <button type="button" onClick={() => control('resume')} disabled={busy !== null}>Resume</button>
           </p>
-          <div className="table-scroll">
-            <table>
+          <TableScroll label="Automation timer columns">
+            <table className="retain-row-identity">
               <thead>
                 <tr><th scope="col">Timer</th><th scope="col">State</th><th scope="col">Next fire</th><th scope="col">Last run</th><th scope="col">Controls</th></tr>
               </thead>
@@ -151,7 +152,7 @@ function AutomationCard() {
                 ))}
               </tbody>
             </table>
-          </div>
+          </TableScroll>
         </>
       )}
     </section>
@@ -169,51 +170,100 @@ const duration = (seconds: number | null) =>
 
 function LongRunDigestBlock({ digest }: { digest: LongRunDigest }) {
   const { aa, random_null: rn, walk_forward: wf } = digest
+  const floor = wf.min_test_entries
+  const alpha = wf.alpha
+  const count = digest.no_price?.total
+  const pricingProofIncomplete = digest.cost_model === 'derived-spread/1'
+    && ((digest.pricing_status !== 'PRICED_SIMULATION' && digest.pricing_status !== 'DATA_GATED')
+      || count === undefined || !Number.isInteger(count) || count < 0)
+  const missingPrice = pricingProofIncomplete || digest.pricing_status === 'DATA_GATED' || (count ?? 0) > 0
+  const currentContract = wf.scoring_version === 'split-local-own-rate/v2'
+    && wf.null_scope === 'split_local_own_entry_rate'
+    && wf.entry_count_unit === 'distinct_evaluated_decision_boards'
+    && wf.assessment_class === 'registered_protocol'
+    && digest.assessment_class === 'registered_protocol'
+    && floor !== undefined && Number.isInteger(floor) && floor > 0
+    && alpha !== undefined && Number.isFinite(alpha) && alpha > 0 && alpha < 0.5
+  const retrospective = digest.assessment_class === 'retrospective_descriptive'
+    || wf.assessment_class === 'retrospective_descriptive'
+  const finalistText = (f: LongRunDigest['walk_forward']['finalists'][number]) => {
+    const entries = f.test_entries
+    const checks = f.rule_check
+    const requiredChecks = ['aa_valid', 'holm_p_below_alpha', 'vs_random_ci_low_above_0',
+      'vs_incumbent_ci_low_above_0', 'half_split_signs_agree', 'no_drop_one_sign_flip',
+      'test_net_positive', 'test_entries_at_least_floor', 'split_local_null_known',
+      'confirmatory_assessment']
+    const eligible = currentContract && digest.cost_model !== 'derived-spread/1'
+      && !missingPrice && digest.complete === true
+      && digest.evaluation_valid === true && aa.valid === true && aa.status === 'valid'
+      && f.eligible_for_operator_review === true && f.test.net_total > 0
+      && Number.isFinite(f.holm_p) && f.holm_p >= 0 && f.holm_p < alpha!
+      && Number.isFinite(f.test.vs_random.ci95[0]) && f.test.vs_random.ci95[0] > 0
+      && f.test.vs_incumbent !== null && Number.isFinite(f.test.vs_incumbent.ci95[0])
+      && f.test.vs_incumbent.ci95[0] > 0
+      && entries !== undefined && Number.isInteger(entries) && entries >= floor!
+      && requiredChecks.every(key => checks?.[key] === true)
+      && Object.values(checks ?? {}).every(value => value === true)
+    const coverage = currentContract ? `, ${entries ?? 'unknown'}/${floor} evaluated entries` : ''
+    const outcome = eligible ? ' — eligible for operator review'
+      : currentContract ? ' — review conditions not met' : ' — descriptive only'
+    return `${f.policy} test ${money(f.test.net_total)} ${ciText(f.test.net_ci95)}${coverage}, vs random ${pairText(f.test.vs_random)}, Holm p ${f.holm_p.toFixed(3)}${outcome}`
+  }
   return (
     <>
       <p><strong>{digest.headline}</strong></p>
+      {digest.cost_model === 'derived-spread/1' && <p className="muted">Derived EOD cost sensitivity — sensitivity only; no confirmatory review. Modeled cells combine reported calibration marginals; these are not historical decision-clock quotes or broker fills.</p>}
+      {missingPrice && <p role="alert" data-testid="longrun-no-price">DATA_GATED · NO_PRICE: {count !== undefined && Number.isInteger(count) && count >= 0 ? count : 'unknown'} selected outcomes. {Object.entries(digest.no_price?.by_reason ?? {}).map(([reason, total]) => `${reason}: ${total}`).join('; ')} · {pricingProofIncomplete && 'pricing proof is incomplete; '}missing pricing is not zero profit; review is blocked.</p>}
+      <p data-testid="longrun-scoring-contract">{currentContract
+        ? `Registered scoring contract: split-local own entry rates; minimum ${floor} distinct evaluated decision boards and positive test net for review.`
+        : retrospective ? 'Retrospective scoring — descriptive only; no new confirmatory review eligibility.'
+          : 'Historical scoring contract — descriptive only; current review requirements were not recorded.'}</p>
       <p data-testid="longrun-aa">
         {aa.status === 'not_run'
           ? `A/A not run — ${aa.reason ?? 'no incumbent pair'}; every comparison is unvalidated.`
           : `A/A ${aa.status === 'valid' ? 'valid' : 'INVALID'}: ${(aa.pair ?? []).join(' vs ')} agree on ${aa.agreement === undefined ? '?' : (aa.agreement * 100).toFixed(1)}% of ${aa.boards ?? '?'} boards · diff ${pairText(aa.diff)}`}
       </p>
       <p data-testid="longrun-random-band">Random picker at the incumbent's entry rate ({(rn.p_enter * 100).toFixed(1)}%, {rn.seeds} seeds on the same boards): expected {money(rn.expected_total)} {ciText(rn.expected_ci95)} · 95% null band {ciText(rn.band95)}</p>
+      <p className="muted">Legacy incumbent comparison is descriptive; own-rate evidence is shown separately. Neither grants execution authority.</p>
       <p className="muted">{digest.boards.scored} of {digest.boards.total} boards scored ({digest.boards.excluded} excluded for a missing or failed decision in some arm) · {digest.boards.sessions.count} sessions. Totals are net modeled dollars with session-bootstrap 95% ranges.</p>
-      <div className="table-scroll">
-        <table>
+      <TableScroll label="Long-run standings columns">
+        <table className="retain-row-identity">
           <thead>
-            <tr><th scope="col">Arm</th><th scope="col">Kind</th><th scope="col">Entered</th><th scope="col">Failed</th><th scope="col">Net total [95% CI]</th><th scope="col">vs random</th><th scope="col">vs incumbent</th><th scope="col">vs bullish regime</th></tr>
+            <tr><th scope="col">Arm</th><th scope="col">Kind</th><th scope="col">Entered</th><th scope="col">Failed</th><th scope="col">Net total [95% CI]</th><th scope="col">vs random (own entry rate)</th><th scope="col">vs random (legacy incumbent)</th><th scope="col">vs incumbent</th><th scope="col">vs bullish regime</th></tr>
           </thead>
           <tbody>
             {digest.standings.map((row) => (
               <tr key={row.arm} data-testid={`longrun-standing-${row.arm}`}>
                 <th scope="row">{row.arm}</th>
                 <td>{row.kind}</td>
-                <td>{row.entered}{row.unevaluable > 0 ? ` (${row.unevaluable} no fill)` : ''}</td>
+                <td>{row.entered}{row.unevaluable > 0 ? ` (${row.unevaluable} unevaluable outcomes)` : ''}</td>
                 <td>{row.failures}</td>
                 <td>{money(row.net_total)} {ciText(row.net_ci95)}</td>
+                <td>{row.vs_random_own
+                  ? <>{pairText(row.vs_random_own)} · {(row.vs_random_own.p_enter * 100).toFixed(1)}%</>
+                  : 'Not recorded'}</td>
                 <td>{pairText(row.vs_random)}</td>
                 <td>{pairText(row.vs_incumbent)}</td>
                 <td>{pairText(row.vs_regime)}</td>
               </tr>
             ))}
             <tr data-testid="longrun-random">
-              <th scope="row">random (matched)</th><td>control</td><td>—</td><td>—</td>
-              <td>{money(rn.expected_total)} {ciText(rn.expected_ci95)}</td><td>—</td><td>—</td><td>—</td>
+              <th scope="row">random (legacy incumbent)</th><td>control</td><td>—</td><td>—</td>
+              <td>{money(rn.expected_total)} {ciText(rn.expected_ci95)}</td><td>—</td><td>—</td><td>—</td><td>—</td>
             </tr>
             {digest.benchmarks.map((bench) => bench.status === 'ok' && bench.net_total !== undefined && bench.net_ci95 ? (
               <tr key={bench.name} data-testid={`longrun-benchmark-${bench.name}`}>
                 <th scope="row">{bench.name} buy-and-hold</th><td>benchmark</td><td>—</td><td>—</td>
-                <td>{money(bench.net_total)} {ciText(bench.net_ci95)}</td><td>—</td><td>—</td><td>—</td>
+                <td>{money(bench.net_total)} {ciText(bench.net_ci95)}</td><td>—</td><td>—</td><td>—</td><td>—</td>
               </tr>
             ) : null)}
           </tbody>
         </table>
-      </div>
+      </TableScroll>
       {wf.status === 'ok'
-        ? <p>Walk-forward (cutoff {wf.cutoff}, {wf.tune_sessions} tune / {wf.test_sessions} test sessions, at most {wf.max_finalists} finalists tested once): {wf.finalists.length === 0 ? 'no finalists.' : wf.finalists.map((f) => `${f.policy} test ${money(f.test.net_total)} ${ciText(f.test.net_ci95)}, vs random ${pairText(f.test.vs_random)}, Holm p ${f.holm_p.toFixed(3)}${f.eligible_for_operator_review ? ' — eligible for operator review' : ''}`).join('; ')}</p>
+        ? <p>Walk-forward (cutoff {wf.cutoff}, {wf.tune_sessions} tune / {wf.test_sessions} test sessions, at most {wf.max_finalists} finalists{currentContract ? ' tested once under the registered protocol' : '; descriptive reconstruction'}): {wf.finalists.length === 0 ? 'no finalists.' : wf.finalists.map(finalistText).join('; ')}</p>
         : <p className="muted">Walk-forward not applicable{wf.reason ? ` — ${wf.reason}` : ''}.</p>}
-      <p className="muted">Never promoted: the pre-registered rule is text for the operator. {digest.promotion.rule}</p>
+      <p className="muted">Never promoted: {currentContract ? 'the pre-registered rule is text for the operator' : 'the recorded rule is historical text for the operator'}. {digest.promotion.rule}</p>
     </>
   )
 }

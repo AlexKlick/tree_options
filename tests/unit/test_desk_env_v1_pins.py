@@ -37,14 +37,24 @@ def v1_candidates() -> list[dict[str, Any]]:
     for i in range(20):
         structure = STRUCTURES[i % 4]
         rr = f"{(i * 37) % 23 / 4 + 0.25:.2f}"
-        out.append({"id": f"{i:016x}", "structure": structure, "underlying": "SPY",
-                    "expiry": "2026-10-16", "long": "O:SPY261016C00500000",
-                    "short": "O:SPY261016C00505000", "width": "5",
-                    "observed_premium": f"{1 + i / 10:.2f}", "max_loss_proxy": str(100 + i),
-                    "max_gain_proxy": str(200 - i), "reward_to_risk_proxy": rr,
-                    "long_recent_trade_move": None if i % 3 else "0.0123",
-                    "short_recent_trade_move": "0.0045",
-                    "data_kind": "last-traded-minute-close"})
+        out.append(
+            {
+                "id": f"{i:016x}",
+                "structure": structure,
+                "underlying": "SPY",
+                "expiry": "2026-10-16",
+                "long": "O:SPY261016C00500000",
+                "short": "O:SPY261016C00505000",
+                "width": "5",
+                "observed_premium": f"{1 + i / 10:.2f}",
+                "max_loss_proxy": str(100 + i),
+                "max_gain_proxy": str(200 - i),
+                "reward_to_risk_proxy": rr,
+                "long_recent_trade_move": None if i % 3 else "0.0123",
+                "short_recent_trade_move": "0.0045",
+                "data_kind": "last-traded-minute-close",
+            }
+        )
     return out
 
 
@@ -58,10 +68,14 @@ def test_v1_board_rows_prompt_and_parser_are_byte_identical() -> None:
     assert len(rows) == lab.BOARD_ROWS == 12
     assert _digest(rows) == PINS["board_rows"]
     assert _digest(lab.board_prompt(rows)) == PINS["board_prompt"]
-    assert _digest(lab.board_prompt(rows, policy_prompt="Custom policy.")) == PINS["board_prompt_custom"]
+    assert (
+        _digest(lab.board_prompt(rows, policy_prompt="Custom policy."))
+        == PINS["board_prompt_custom"]
+    )
     assert lab.POLICY_SENTENCE == (
         "You are a paper-trading policy choosing ONE defined-risk option "
-        "spread board row, or skipping.")
+        "spread board row, or skipping."
+    )
     assert lab.parse_choice({"choice": "c0", "note": "n"}, {"c0"}) == ("c0", "n")
     assert lab.parse_choice({"choice": "zz"}, {"c0"}) == (None, "unknown id rejected: zz")
     assert lab.parse_choice({"choice": None, "horizon": "eod"}, {"c0"}) == (None, "")
@@ -82,12 +96,16 @@ def test_v1_replay_and_decision_packet_are_byte_identical() -> None:
 def test_v1_lab_run_document_is_byte_identical(tmp_path: Path) -> None:
     bundle = tmp_path / "bundle.json"
     bundle.write_text(json.dumps(_bundle(date(2026, 9, 24))))
-    document = lab.run_lab(lab.LabConfig(bundle=bundle, policy="model:zai", sessions=1,
-                                         lab_root=tmp_path / "lab"),
-                           windows=UNDER, transport=FakeTransport("first"), now=T0)
+    document = lab.run_lab(
+        lab.LabConfig(bundle=bundle, policy="model:zai", sessions=1, lab_root=tmp_path / "lab"),
+        windows=UNDER,
+        transport=FakeTransport("first"),
+        now=T0,
+    )
     stable = {k: v for k, v in document.items() if k != "run_dir"}
-    stable["receipts"] = [{k: v for k, v in r.items() if k != "latency_s"}
-                          for r in document["receipts"]]
+    stable["receipts"] = [
+        {k: v for k, v in r.items() if k != "latency_s"} for r in document["receipts"]
+    ]
     assert _digest(stable) == PINS["lab_run"]
 
 

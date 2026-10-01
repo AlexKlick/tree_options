@@ -40,8 +40,9 @@ from tree_options.research.contracts import (
 _MAX_CAPITAL = Decimal("999999999999999.99")
 
 
-def _decimal(payload: dict[str, Any], field: str, *,
-             default: str = "0", positive: bool = False) -> Decimal:
+def _decimal(
+    payload: dict[str, Any], field: str, *, default: str = "0", positive: bool = False
+) -> Decimal:
     raw = payload.get(field, default)
     try:
         value = Decimal(str(raw))
@@ -52,8 +53,7 @@ def _decimal(payload: dict[str, Any], field: str, *,
     if positive and value <= 0:
         raise ValueError(f"field {field!r} must be positive, got {raw!r}")
     if positive and value > _MAX_CAPITAL:
-        raise ValueError(f"field {field!r} exceeds the representable maximum "
-                         f"{_MAX_CAPITAL}")
+        raise ValueError(f"field {field!r} exceeds the representable maximum {_MAX_CAPITAL}")
     return value
 
 
@@ -66,8 +66,7 @@ def _candidate_ids(payload: dict[str, Any]) -> tuple[str, ...]:
     ids: list[str] = []
     for item in raw:
         if not isinstance(item, str) or not item.strip():
-            raise ValueError(f"'candidate_ids' entries must be non-empty "
-                             f"strings, got {item!r}")
+            raise ValueError(f"'candidate_ids' entries must be non-empty strings, got {item!r}")
         if item in ids:
             raise ValueError(f"'candidate_ids' contains duplicates: {item!r}")
         ids.append(item)
@@ -96,8 +95,9 @@ def spec_from_dict(payload: dict[str, Any]) -> ComparisonSpec:
         try:
             cutoff = datetime.fromisoformat(str(cutoff_raw))
         except ValueError as exc:
-            raise ValueError(f"field 'knowledge_cutoff' not an ISO datetime: "
-                             f"{cutoff_raw!r}") from exc
+            raise ValueError(
+                f"field 'knowledge_cutoff' not an ISO datetime: {cutoff_raw!r}"
+            ) from exc
     benchmark = payload.get("benchmark_candidate_id")
     if benchmark is not None and not isinstance(benchmark, str):
         raise ValueError("'benchmark_candidate_id' must be a string or null")
@@ -112,16 +112,13 @@ def spec_from_dict(payload: dict[str, Any]) -> ComparisonSpec:
         starting_capital=_decimal(payload, "starting_capital", positive=True),
         common_start=_iso_date(payload, "common_start"),
         common_end=_iso_date(payload, "common_end"),
-        cashflow_timing=CashflowTiming(
-            payload.get("cashflow_timing", "beginning_of_period")),
+        cashflow_timing=CashflowTiming(payload.get("cashflow_timing", "beginning_of_period")),
         contribution_per_period=_decimal(payload, "contribution_per_period"),
-        cost_model_kind=CostModelKind(
-            payload.get("cost_model_kind", "five_bp_fixed")),
+        cost_model_kind=CostModelKind(payload.get("cost_model_kind", "five_bp_fixed")),
         benchmark_candidate_id=benchmark,
         currency=Currency(payload.get("currency", "USD")),
         price_basis=PriceBasis(payload.get("price_basis", "nominal_pretax")),
-        idle_cash_policy=IdleCashPolicy(
-            payload.get("idle_cash_policy", "cash_yields_zero")),
+        idle_cash_policy=IdleCashPolicy(payload.get("idle_cash_policy", "cash_yields_zero")),
         rebalancing=Rebalancing(payload.get("rebalancing", "none")),
         position_sizing=PositionSizing(payload.get("position_sizing", "integer")),
         collateral=CollateralPolicy(payload.get("collateral", "none")),

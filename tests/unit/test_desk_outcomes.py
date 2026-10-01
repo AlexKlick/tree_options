@@ -43,29 +43,46 @@ def _b(day: date, hour: int, minute: int, price: str) -> dict[str, Any]:
 
 
 def _raw(contracts: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
-    return {"schema": "desk-option-minute-bars/1", "contracts": {
-        ticker: {"ticker": ticker, "timespan": "minute",
-                 "results": sorted(bars, key=lambda bar: bar["t"])}
-        for ticker, bars in contracts.items()}}
+    return {
+        "schema": "desk-option-minute-bars/1",
+        "contracts": {
+            ticker: {
+                "ticker": ticker,
+                "timespan": "minute",
+                "results": sorted(bars, key=lambda bar: bar["t"]),
+            }
+            for ticker, bars in contracts.items()
+        },
+    }
 
 
-def _pair(long_ticker: str, short_ticker: str,
-          rows: list[tuple[date, int, int, str, str]]) -> dict[str, Any]:
+def _pair(
+    long_ticker: str, short_ticker: str, rows: list[tuple[date, int, int, str, str]]
+) -> dict[str, Any]:
     low = [_b(d, h, m, lo) for d, h, m, lo, _ in rows]
     high = [_b(d, h, m, hi) for d, h, m, _, hi in rows]
     return _raw({long_ticker: low, short_ticker: high})
 
 
 def _cid(raw: dict[str, Any], day: date, clock: str, structure: str) -> str:
-    return next(c["id"] for c in iag.decision_packet(raw, day, clock)["candidates"]
-                if c["structure"] == structure)
+    return next(
+        c["id"]
+        for c in iag.decision_packet(raw, day, clock)["candidates"]
+        if c["structure"] == structure
+    )
 
 
 # ------------------------------------------------------------------ fixtures
 # UTC stamps; September is EDT, so 13:59Z = 09:59 ET and the 10:00 ET board.
 # Sep 7 2026 is Labor Day: the bundle's sessions skip it (holiday walk).
-D1, D2, D3, D4, D5, D6 = (date(2026, 9, 4), date(2026, 9, 8), date(2026, 9, 9),
-                          date(2026, 9, 10), date(2026, 9, 11), date(2026, 9, 14))
+D1, D2, D3, D4, D5, D6 = (
+    date(2026, 9, 4),
+    date(2026, 9, 8),
+    date(2026, 9, 9),
+    date(2026, 9, 10),
+    date(2026, 9, 11),
+    date(2026, 9, 14),
+)
 LADDER = [D1, D2, D3, D4, D5, D6]
 
 
@@ -75,30 +92,52 @@ def ladder_bundle() -> dict[str, Any]:
     D1 10:00 call_debit fills 4.1-2.1 = 2.00 at 14:01Z; later spread marks:
     D1 10:45 2.10 | D1 15:15 2.50 | D2 15:15 1.60 | D4 15:15 none (only a
     stale 14:00Z print) -> D5 10:00 5.50 (clamped) | D6 15:15 1.50."""
-    return _pair(LOW, HIGH, [
-        (D1, 13, 59, "4", "2"), (D1, 14, 1, "4.1", "2.1"),
-        (D1, 14, 45, "4.4", "2.3"), (D1, 19, 15, "5.0", "2.5"),
-        (D2, 19, 15, "4.0", "2.4"),
-        (D3, 14, 0, "4.2", "2.2"), (D3, 14, 1, "4.25", "2.25"),
-        (D4, 14, 0, "4.3", "2.2"),
-        (D5, 14, 0, "7.5", "2.0"),
-        (D6, 19, 15, "3.0", "1.5")])
+    return _pair(
+        LOW,
+        HIGH,
+        [
+            (D1, 13, 59, "4", "2"),
+            (D1, 14, 1, "4.1", "2.1"),
+            (D1, 14, 45, "4.4", "2.3"),
+            (D1, 19, 15, "5.0", "2.5"),
+            (D2, 19, 15, "4.0", "2.4"),
+            (D3, 14, 0, "4.2", "2.2"),
+            (D3, 14, 1, "4.25", "2.25"),
+            (D4, 14, 0, "4.3", "2.2"),
+            (D5, 14, 0, "7.5", "2.0"),
+            (D6, 19, 15, "3.0", "1.5"),
+        ],
+    )
 
 
-E1, E2, E3, E4, E5, E6, E7 = (date(2026, 9, 8), date(2026, 9, 9), date(2026, 9, 17),
-                              date(2026, 9, 18), date(2026, 9, 21), date(2026, 9, 22),
-                              date(2026, 9, 23))
+E1, E2, E3, E4, E5, E6, E7 = (
+    date(2026, 9, 8),
+    date(2026, 9, 9),
+    date(2026, 9, 17),
+    date(2026, 9, 18),
+    date(2026, 9, 21),
+    date(2026, 9, 22),
+    date(2026, 9, 23),
+)
 
 
 def expiry_bundle() -> dict[str, Any]:
     """LOWX/HIGHX expire Sep 18 (E4), inside the data. The planted prints after
     expiry (9/1 -> spread 8) must never value a held position."""
-    return _pair(LOWX, HIGHX, [
-        (E1, 13, 59, "4", "2"), (E1, 14, 1, "4.1", "2.1"),
-        (E2, 14, 0, "4.2", "2.2"),
-        (E3, 19, 15, "4.6", "2.1"),
-        (E4, 19, 0, "6.0", "3.0"),
-        (E5, 19, 15, "9", "1"), (E6, 19, 15, "9", "1"), (E7, 19, 15, "9", "1")])
+    return _pair(
+        LOWX,
+        HIGHX,
+        [
+            (E1, 13, 59, "4", "2"),
+            (E1, 14, 1, "4.1", "2.1"),
+            (E2, 14, 0, "4.2", "2.2"),
+            (E3, 19, 15, "4.6", "2.1"),
+            (E4, 19, 0, "6.0", "3.0"),
+            (E5, 19, 15, "9", "1"),
+            (E6, 19, 15, "9", "1"),
+            (E7, 19, 15, "9", "1"),
+        ],
+    )
 
 
 SYNC_DAY = date(2026, 9, 24)
@@ -108,20 +147,40 @@ def entry_sync_bundle() -> dict[str, Any]:
     """First later prints: LOW 14:01Z, HIGH 14:06Z (5 min apart); LOW prints
     again at 14:07Z (1 min from HIGH)."""
     d = SYNC_DAY
-    return _raw({
-        LOW: [_b(d, 13, 59, "4"), _b(d, 14, 1, "4.1"), _b(d, 14, 7, "4.2"), _b(d, 14, 45, "4.4")],
-        HIGH: [_b(d, 13, 59, "2"), _b(d, 14, 6, "2.15"), _b(d, 14, 45, "2.3")]})
+    return _raw(
+        {
+            LOW: [
+                _b(d, 13, 59, "4"),
+                _b(d, 14, 1, "4.1"),
+                _b(d, 14, 7, "4.2"),
+                _b(d, 14, 45, "4.4"),
+            ],
+            HIGH: [_b(d, 13, 59, "2"), _b(d, 14, 6, "2.15"), _b(d, 14, 45, "2.3")],
+        }
+    )
 
 
 def exit_sync_bundle() -> dict[str, Any]:
     """At the 10:45 ET clock the latest prints are LOW 14:45Z / HIGH 14:35Z
     (10 min apart); LOW also printed at 14:36Z (1 min from HIGH)."""
     d = SYNC_DAY
-    return _raw({
-        LOW: [_b(d, 13, 59, "4"), _b(d, 14, 1, "4.1"), _b(d, 14, 36, "4.3"),
-              _b(d, 14, 45, "4.4"), _b(d, 15, 30, "4.6")],
-        HIGH: [_b(d, 13, 59, "2"), _b(d, 14, 1, "2.1"), _b(d, 14, 35, "2.2"),
-               _b(d, 15, 30, "2.4")]})
+    return _raw(
+        {
+            LOW: [
+                _b(d, 13, 59, "4"),
+                _b(d, 14, 1, "4.1"),
+                _b(d, 14, 36, "4.3"),
+                _b(d, 14, 45, "4.4"),
+                _b(d, 15, 30, "4.6"),
+            ],
+            HIGH: [
+                _b(d, 13, 59, "2"),
+                _b(d, 14, 1, "2.1"),
+                _b(d, 14, 35, "2.2"),
+                _b(d, 15, 30, "2.4"),
+            ],
+        }
+    )
 
 
 def random_bundle(seed: int, days: list[date]) -> dict[str, Any]:
@@ -135,8 +194,10 @@ def random_bundle(seed: int, days: list[date]) -> dict[str, Any]:
                 bars: list[dict[str, Any]] = []
                 for day in days:
                     minutes = sorted(rng.sample(range(13 * 60 + 30, 20 * 60), rng.randint(5, 90)))
-                    bars += [_b(day, m // 60, m % 60, f"{rng.randint(20, 500) / 100:.2f}")
-                             for m in minutes]
+                    bars += [
+                        _b(day, m // 60, m % 60, f"{rng.randint(20, 500) / 100:.2f}")
+                        for m in minutes
+                    ]
                 contracts[f"O:{symbol}261016{right}{strike * 1000:08d}"] = bars
     return _raw(contracts)
 
@@ -201,8 +262,9 @@ def _oracle(raw: dict[str, Any], sessions: list[date]) -> tuple[int, int]:
     for day in sessions:
         for clock in iag.schedule_for(day):
             for candidate in iag.decision_packet(raw, day, clock)["candidates"]:
-                expected = hindsight._candidate_outcome(bars, sessions, day, clock,
-                                                        candidate, 15 * 60)
+                expected = hindsight._candidate_outcome(
+                    bars, sessions, day, clock, candidate, 15 * 60
+                )
                 got = candidate_outcome(index, day, clock, candidate["id"])
                 assert got is not None, candidate["id"]
                 if expected is None:
@@ -246,8 +308,10 @@ def test_oracle_ladder_and_parity_fixtures_equal_hindsight() -> None:
 def _all_modes(raw: dict[str, Any], day: date, structure: str, **kw: Any) -> dict[str, Any]:
     index = prepare_index(raw)
     cid = _cid(raw, day, "10:00", structure)
-    return {mode: candidate_outcome(index, day, "10:00", cid, exit_mode=mode, **kw)
-            for mode in EXIT_MODES}
+    return {
+        mode: candidate_outcome(index, day, "10:00", cid, exit_mode=mode, **kw)
+        for mode in EXIT_MODES
+    }
 
 
 def test_exit_modes_on_the_ladder() -> None:
@@ -285,11 +349,15 @@ def test_credit_orientation_mirrors_the_debit() -> None:
 def test_eod_walks_to_the_next_session_when_the_day_has_no_later_mark() -> None:
     raw = ladder_bundle()
     index = prepare_index(raw)
-    out = candidate_outcome(index, D3, "10:00", _cid(raw, D3, "10:00", "call_debit"),
-                            exit_mode="eod")
+    out = candidate_outcome(
+        index, D3, "10:00", _cid(raw, D3, "10:00", "call_debit"), exit_mode="eod"
+    )
     assert out is not None
     assert (out["status"], out["gross"], out["exit_reason"]) == (
-        "closed", Decimal("10"), "eod_next_session_mark")
+        "closed",
+        Decimal("10"),
+        "eod_next_session_mark",
+    )
     assert out["exit_at"] == "2026-09-10T14:00:00+00:00"
 
 
@@ -310,16 +378,21 @@ def test_expiry_inside_the_data_caps_every_horizon() -> None:
 
 def test_a_fill_with_no_later_mark_is_marked_at_entry_not_dropped() -> None:
     day = date(2026, 9, 24)
-    raw = _pair(LOW, HIGH, [(day, 13, 59, "4", "2"), (day, 14, 1, "4.1", "2.1"),
-                            (day, 14, 2, "4.15", "2.15")])
+    raw = _pair(
+        LOW,
+        HIGH,
+        [(day, 13, 59, "4", "2"), (day, 14, 1, "4.1", "2.1"), (day, 14, 2, "4.15", "2.15")],
+    )
     index = prepare_index(raw)
     cid = _cid(raw, day, "10:00", "call_debit")
     for mode in EXIT_MODES:
-        out = candidate_outcome(index, day, "10:00", cid, exit_mode=mode,
-                                costs=CostModel())
+        out = candidate_outcome(index, day, "10:00", cid, exit_mode=mode, costs=CostModel())
         assert out is not None
         assert (out["status"], out["gross"], out["exit_reason"]) == (
-            "marked_at_end", Decimal("0"), "no_mark_after_entry"), mode
+            "marked_at_end",
+            Decimal("0"),
+            "no_mark_after_entry",
+        ), mode
         assert out["net"] == Decimal("-14.60")
         assert out["exit_at"] == out["entry_at"] == "2026-09-24T14:01:00+00:00"
 
@@ -330,14 +403,24 @@ def test_no_fill_statuses_and_reasons() -> None:
     index = prepare_index(raw)
     for candidate in iag.decision_packet(raw, day, "10:45")["candidates"]:
         out = candidate_outcome(index, day, "10:45", candidate["id"], costs=CostModel())
-        assert out == {"gross": None, "net": None, "entry_at": None, "exit_at": None,
-                       "hold_minutes": None, "status": "no_fill",
-                       "exit_reason": "missing_later_entry_bars"}
+        assert out == {
+            "gross": None,
+            "net": None,
+            "entry_at": None,
+            "exit_at": None,
+            "hold_minutes": None,
+            "status": "no_fill",
+            "exit_reason": "missing_later_entry_bars",
+        }
     # a fill the replay risk caps refuse: the credit's max loss 5-0.5 = 450 > 300
-    refused = _pair(LOW, HIGH, [(day, 13, 59, "4", "2"), (day, 14, 1, "2.6", "2.1"),
-                                (day, 14, 45, "4.4", "2.3")])
-    out = candidate_outcome(prepare_index(refused), day, "10:00",
-                            _cid(refused, day, "10:00", "call_credit"))
+    refused = _pair(
+        LOW,
+        HIGH,
+        [(day, 13, 59, "4", "2"), (day, 14, 1, "2.6", "2.1"), (day, 14, 45, "4.4", "2.3")],
+    )
+    out = candidate_outcome(
+        prepare_index(refused), day, "10:00", _cid(refused, day, "10:00", "call_credit")
+    )
     assert out is not None and (out["status"], out["exit_reason"]) == ("no_fill", "entry_risk_cap")
 
 
@@ -382,8 +465,9 @@ def test_cost_model_round_trip_math() -> None:
     assert CostModel().round_trip() == Decimal("14.60")  # 4 x 3.00 + 4 x 0.65
     wide = CostModel(half_spread_per_share=Decimal("0.06"))
     assert wide.round_trip() == Decimal("26.60")
-    assert CostModel(commission_per_leg=Decimal(0), half_spread_per_share=Decimal("0.001"),
-                     multiplier=100).round_trip() == Decimal("0.400")
+    assert CostModel(
+        commission_per_leg=Decimal(0), half_spread_per_share=Decimal("0.001"), multiplier=100
+    ).round_trip() == Decimal("0.400")
     got = _all_modes(ladder_bundle(), D1, "call_debit", costs=wide)
     assert got["intraday"]["gross"] == Decimal("10")
     assert got["intraday"]["net"] == Decimal("-16.60")
@@ -450,8 +534,13 @@ def test_outcome_table_covers_every_candidate_and_mode() -> None:
     assert {r["status"] for r in rows} <= {"closed", "marked_at_end", "no_fill"}
     assert {r["exit_mode"] for r in rows} == set(EXIT_MODES)
     json.dumps(rows)  # JSON-ready
-    first = next(r for r in rows if r["snapshot"] == f"s:{D1}T10:00"
-                 and r["structure"] == "call_debit" and r["exit_mode"] == "hold:3")
+    first = next(
+        r
+        for r in rows
+        if r["snapshot"] == f"s:{D1}T10:00"
+        and r["structure"] == "call_debit"
+        and r["exit_mode"] == "hold:3"
+    )
     assert first["direction"] == "bullish" and Decimal(first["gross"]) == Decimal("300")
     assert Decimal(first["net"]) == Decimal("300") - Decimal("14.60")
     assert first["status"] == "closed" and first["candidate_id"]
@@ -460,26 +549,51 @@ def test_outcome_table_covers_every_candidate_and_mode() -> None:
     assert set(summary["modes"]["intraday"]["by_direction"]) == {"bullish", "bearish"}
 
 
-def test_outcome_table_cli_writes_rows_and_a_summary(tmp_path: Path,
-                                                     capsys: pytest.CaptureFixture[str]) -> None:
+def test_outcome_table_cli_writes_rows_and_a_summary(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
     from tree_options.desk.__main__ import run_cli
 
     bundle = tmp_path / "bundle.json"
     bundle.write_text(json.dumps(ladder_bundle()))
     out = tmp_path / "table.jsonl"
-    rc = run_cli(["outcome-table", "--bundle", str(bundle), "--out", str(out),
-                  "--sync", "2", "--half-spread", "0.06"])
+    rc = run_cli(
+        [
+            "outcome-table",
+            "--bundle",
+            str(bundle),
+            "--out",
+            str(out),
+            "--sync",
+            "2",
+            "--half-spread",
+            "0.06",
+        ]
+    )
     assert rc == 0
     rows = [json.loads(line) for line in out.read_text().splitlines()]
     assert rows and all(r["exit_mode"] in EXIT_MODES for r in rows)
-    first = next(r for r in rows if r["snapshot"] == f"s:{D1}T10:00"
-                 and r["structure"] == "call_debit" and r["exit_mode"] == "intraday")
+    first = next(
+        r
+        for r in rows
+        if r["snapshot"] == f"s:{D1}T10:00"
+        and r["structure"] == "call_debit"
+        and r["exit_mode"] == "intraday"
+    )
     assert (Decimal(first["gross"]), first["net"]) == (Decimal("10"), "-16.60")
     summary = json.loads(Path(f"{out}.summary.json").read_text())
     assert summary["rows"] == len(rows)
     assert summary["sync_minutes"] == 2 and summary["round_trip_cost"] == "26.60"
     assert json.loads(capsys.readouterr().out)["rows"] == len(rows)
-    assert run_cli(["outcome-table", "--bundle", str(bundle), "--out", str(out),
-                    "--sync", "-3"]) == 2
-    assert outcomes.EXIT_MODES == ("intraday", "eod", "hold:1", "hold:3", "hold:5",
-                                   "hold:10", "expiry")
+    assert (
+        run_cli(["outcome-table", "--bundle", str(bundle), "--out", str(out), "--sync", "-3"]) == 2
+    )
+    assert outcomes.EXIT_MODES == (
+        "intraday",
+        "eod",
+        "hold:1",
+        "hold:3",
+        "hold:5",
+        "hold:10",
+        "expiry",
+    )

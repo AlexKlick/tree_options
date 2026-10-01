@@ -93,8 +93,9 @@ def monthly_expiry(year: int, month: int, sessions: Iterable[date]) -> date:
     return before[-1]
 
 
-def served_sessions(references: Iterable[date], sessions: Iterable[date],
-                    window_end: date) -> dict[date, list[date]]:
+def served_sessions(
+    references: Iterable[date], sessions: Iterable[date], window_end: date
+) -> dict[date, list[date]]:
     """Reference date -> the window sessions it serves: (m_k, m_k+1], the
     last reference up to ``window_end``. A reference serving no session is
     absent."""
@@ -112,8 +113,9 @@ def served_sessions(references: Iterable[date], sessions: Iterable[date],
 # ------------------------------------------------------------------ strikes
 
 
-def short_strike_target(spot: Decimal, sigma: Decimal, years: Decimal, delta: Decimal,
-                        right: str) -> Decimal:
+def short_strike_target(
+    spot: Decimal, sigma: Decimal, years: Decimal, delta: Decimal, right: str
+) -> Decimal:
     """The strike whose Black-Scholes delta (r = q = 0) is ``delta`` in
     magnitude: the put below spot, the call above it."""
     if right not in ("C", "P") or not (0 < delta < Decimal("0.5")):
@@ -137,8 +139,9 @@ def snap(strikes: Iterable[Decimal], target: Decimal, right: str) -> Decimal:
     return min(listed, key=lambda k: (abs(k - target), -k))
 
 
-def wings(listed: Iterable[Decimal], short: Decimal, right: str,
-          widths: Iterable[Decimal]) -> list[Decimal]:
+def wings(
+    listed: Iterable[Decimal], short: Decimal, right: str, widths: Iterable[Decimal]
+) -> list[Decimal]:
     """The long legs K -/+ w listed at exactly width w (further OTM)."""
     available = set(listed)
     sign = -1 if right == "P" else 1
@@ -162,8 +165,9 @@ def median_dte(expiry: date, served: Iterable[date]) -> int | None:
     return None if not usable else int(statistics.median_low(usable))
 
 
-def master_chains(master: Mapping[str, Any], underlying: str
-                  ) -> dict[tuple[date, str], dict[Decimal, str]]:
+def master_chains(
+    master: Mapping[str, Any], underlying: str
+) -> dict[tuple[date, str], dict[Decimal, str]]:
     """(expiry, right) -> {strike: ticker} of one contract master; only
     standard 100-share OCC tickers of ``underlying`` (adjusted and
     non-standard deliverables never parse)."""
@@ -178,15 +182,22 @@ def master_chains(master: Mapping[str, Any], underlying: str
                 continue
             if contract.underlying != underlying or row.get("shares_per_contract", 100) != 100:
                 continue
-            chains.setdefault((contract.expiry, contract.right), {})[contract.strike] = \
+            chains.setdefault((contract.expiry, contract.right), {})[contract.strike] = (
                 contract.ticker
+            )
     return chains
 
 
-def select_reference(master: Mapping[str, Any], underlying: str, spot: Decimal,
-                     sigma: Decimal, served: list[date], sessions: Iterable[date],
-                     deltas: Iterable[Decimal] = DEFAULT_DELTAS,
-                     widths: Iterable[Decimal] = DEFAULT_WIDTHS) -> list[dict[str, Any]]:
+def select_reference(
+    master: Mapping[str, Any],
+    underlying: str,
+    spot: Decimal,
+    sigma: Decimal,
+    served: list[date],
+    sessions: Iterable[date],
+    deltas: Iterable[Decimal] = DEFAULT_DELTAS,
+    widths: Iterable[Decimal] = DEFAULT_WIDTHS,
+) -> list[dict[str, Any]]:
     """Every contract one reference snapshot selects for one underlying:
     [{ticker, expiry, right, strike, role, delta_target, target_strike,
     dte_ref}] (a contract picked twice keeps its first role)."""
@@ -210,15 +221,24 @@ def select_reference(master: Mapping[str, Any], underlying: str, spot: Decimal,
             for delta in deltas:
                 target = short_strike_target(spot, sigma, years, delta, right)
                 short = snap(chain, target, right)
-                entries = [(short, "short")] + [(k, "wing") for k in
-                                                wings(chain, short, right, widths)]
+                entries = [(short, "short")] + [
+                    (k, "wing") for k in wings(chain, short, right, widths)
+                ]
                 for strike, role in entries:
                     ticker = chain[strike]
-                    picked.setdefault(ticker, {
-                        "ticker": ticker, "expiry": expiry.isoformat(), "right": right,
-                        "strike": str(strike), "role": role, "delta_target": str(delta),
-                        "target_strike": str(target.quantize(Decimal("0.01"))),
-                        "dte_ref": dte})
+                    picked.setdefault(
+                        ticker,
+                        {
+                            "ticker": ticker,
+                            "expiry": expiry.isoformat(),
+                            "right": right,
+                            "strike": str(strike),
+                            "role": role,
+                            "delta_target": str(delta),
+                            "target_strike": str(target.quantize(Decimal("0.01"))),
+                            "dte_ref": dte,
+                        },
+                    )
     return [picked[ticker] for ticker in sorted(picked)]
 
 
@@ -228,8 +248,7 @@ def select_reference(master: Mapping[str, Any], underlying: str, spot: Decimal,
 def iv_closes(rows: Iterable[tuple[str, ...]], start: date, end: date) -> dict[str, str]:
     """{ISO date: close} of a stored index history (``indices`` rows:
     date, open, high, low, close) between start and end inclusive."""
-    return {row[0]: row[4] for row in rows
-            if row[4] and start <= date.fromisoformat(row[0]) <= end}
+    return {row[0]: row[4] for row in rows if row[4] and start <= date.fromisoformat(row[0]) <= end}
 
 
 def iv_prev_close(closes: Mapping[date, Decimal], day: date) -> Decimal | None:
@@ -255,17 +274,27 @@ def verify_body(ticker: str, body: Mapping[str, Any]) -> list[dict[str, Any]]:
     if body.get("status") not in ("OK", "DELAYED") or body.get("ticker") != ticker:
         raise ValueError(f"unusable minute response for {ticker}")
     bars = list(body.get("results") or [])
-    if body.get("next_url") or len(bars) >= 50000 or body.get("resultsCount", len(bars)) != len(bars):
+    if (
+        body.get("next_url")
+        or len(bars) >= 50000
+        or body.get("resultsCount", len(bars)) != len(bars)
+    ):
         raise ValueError(f"truncated minute response for {ticker}")
     if any(not isinstance(bar.get("t"), int) or bar.get("v", 0) <= 0 for bar in bars):
         raise ValueError(f"invalid bars for {ticker}")
     return bars
 
 
-def assemble_bundle(selection: Mapping[str, Any], series: Mapping[str, list[dict[str, Any]]],
-                    iv_context: Mapping[str, Any] | None, *, selection_sha256: str,
-                    captured_at: str, wire_requests: int,
-                    sources: Mapping[str, str]) -> dict[str, Any]:
+def assemble_bundle(
+    selection: Mapping[str, Any],
+    series: Mapping[str, list[dict[str, Any]]],
+    iv_context: Mapping[str, Any] | None,
+    *,
+    selection_sha256: str,
+    captured_at: str,
+    wire_requests: int,
+    sources: Mapping[str, str],
+) -> dict[str, Any]:
     """The new vintage: each selected contract's bars from its listing
     session on (earlier bars dropped; later bars kept for marks), its
     listing interval, the pairing rule and the iv context. ``series`` maps
@@ -293,17 +322,30 @@ def assemble_bundle(selection: Mapping[str, Any], series: Mapping[str, list[dict
         listing[ticker] = {"from": spec["listed_from"], "until": spec.get("listed_until")}
     widths = selection["rule"]["widths"]
     document: dict[str, Any] = {
-        "schema": BUNDLE_SCHEMA, "vintage": selection["vintage"],
-        "start": selection["window_start"], "end": selection["window_end"],
-        "selection_sha256": selection_sha256, "selection_rule": selection["rule"]}
+        "schema": BUNDLE_SCHEMA,
+        "vintage": selection["vintage"],
+        "start": selection["window_start"],
+        "end": selection["window_end"],
+        "selection_sha256": selection_sha256,
+        "selection_rule": selection["rule"],
+    }
     if widths != "adjacent":  # absent key = iag's v1 adjacent-strike pairing
         document["candidate_pairing"] = {"rule": "widths", "widths": [str(w) for w in widths]}
-    return {**document, "iv_context": iv_context, "listing": listing,
-            "captured_at": captured_at, "requested": len(selection["contracts"]),
-            "found": len(contracts), "missing_tickers": missing,
-            "empty_after_listing": empty, "bars_dropped_before_listing": dropped_bars,
-            "wire_requests": wire_requests, "series_sources": dict(sorted(sources.items())),
-            "contracts": contracts, "execution_authorized": False}
+    return {
+        **document,
+        "iv_context": iv_context,
+        "listing": listing,
+        "captured_at": captured_at,
+        "requested": len(selection["contracts"]),
+        "found": len(contracts),
+        "missing_tickers": missing,
+        "empty_after_listing": empty,
+        "bars_dropped_before_listing": dropped_bars,
+        "wire_requests": wire_requests,
+        "series_sources": dict(sorted(sources.items())),
+        "contracts": contracts,
+        "execution_authorized": False,
+    }
 
 
 def canonical_sha256(document: Any) -> str:

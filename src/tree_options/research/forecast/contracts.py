@@ -37,6 +37,7 @@ engine code produces a NEW run — an engine fix can never re-serve a
 stale receipt, and a vendor revision can never publish revised bytes
 under the submission's identity.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -119,18 +120,21 @@ class ForecastSpec:
             "horizon": int(self.horizon),
             "evaluation_start": self.evaluation_start.isoformat(),
             "evaluation_end": (
-                self.evaluation_end.isoformat()
-                if self.evaluation_end is not None else None
+                self.evaluation_end.isoformat() if self.evaluation_end is not None else None
             ),
             "proposed_by": self.proposed_by,
             "notes": self.notes,
         }
 
 
-def forecast_run_id(spec: ForecastSpec, *, series_sha256: str,
-                    calendar_sha256: str,
-                    session_authority_sha256: str,
-                    engine_sha256: str) -> str:
+def forecast_run_id(
+    spec: ForecastSpec,
+    *,
+    series_sha256: str,
+    calendar_sha256: str,
+    session_authority_sha256: str,
+    engine_sha256: str,
+) -> str:
     """Execution-bound run id: sha256 over the canonical binding of
     spec + series bytes + BOTH calendar shas + engine sha.
 
@@ -144,14 +148,16 @@ def forecast_run_id(spec: ForecastSpec, *, series_sha256: str,
     P1-1). Domain-separated from the comparison and scenario hash
     schemes by the embedded schema string.
     """
-    payload = canonical({
-        "schema": "forecast-run/2",
-        "spec": spec.to_dict(),
-        "series_sha256": series_sha256,
-        "calendar_sha256": calendar_sha256,
-        "session_authority_sha256": session_authority_sha256,
-        "engine_sha256": engine_sha256,
-    })
+    payload = canonical(
+        {
+            "schema": "forecast-run/2",
+            "spec": spec.to_dict(),
+            "series_sha256": series_sha256,
+            "calendar_sha256": calendar_sha256,
+            "session_authority_sha256": session_authority_sha256,
+            "engine_sha256": engine_sha256,
+        }
+    )
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -197,8 +203,8 @@ class LedgerRow:
     #: (the reason says so; an invented target date would be dishonest).
     target_date: date | None
     training_count: int
-    status: str            # "evaluated" | "failed" | "excluded"
-    reason: str | None     # failure/exclusion reason, None when evaluated
+    status: str  # "evaluated" | "failed" | "excluded"
+    reason: str | None  # failure/exclusion reason, None when evaluated
     actual: float | None
     quantiles: tuple[float, ...] = ()
     losses_by_tau: tuple[float, ...] = ()
@@ -206,9 +212,7 @@ class LedgerRow:
     def to_dict(self) -> dict[str, Any]:
         return {
             "origin_date": self.origin_date.isoformat(),
-            "target_date": (
-                self.target_date.isoformat()
-                if self.target_date is not None else None),
+            "target_date": (self.target_date.isoformat() if self.target_date is not None else None),
             "training_count": self.training_count,
             "status": self.status,
             "reason": self.reason,
@@ -242,8 +246,7 @@ class ModelReceipt:
         }
 
 
-def tally_identity_ok(total: int, evaluated: int, excluded: int,
-                      failed: int) -> bool:
+def tally_identity_ok(total: int, evaluated: int, excluded: int, failed: int) -> bool:
     """The enforced per-model accounting identity (§10 uncensoring):
     every origin is exactly one of evaluated / excluded / failed."""
     return total == evaluated + excluded + failed

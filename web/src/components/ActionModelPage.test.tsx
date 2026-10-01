@@ -202,7 +202,7 @@ it('renders the long-run card: progress bars, CI standings, A/A, random band, be
   expect(card.textContent).toMatch(/54\/54 decisions · 2 failed · paused 10 min/)
   const row = screen.getByTestId('longrun-standing-m31#1')
   expect(row.textContent).toMatch(/\+\$42\.50 \[−\$10\.25, \+\$80\.00\]/)
-  expect(row.textContent).toMatch(/1 no fill/)
+  expect(row.textContent).toMatch(/1 unevaluable outcomes/)
   expect(row.textContent).toMatch(/−\$12\.00 \[−\$60\.00, \+\$30\.00\]$/) // vs the bullish regime
   expect(screen.getByTestId('longrun-aa').textContent).toMatch(/A\/A valid: m31#1 vs m31#2 agree on 83\.3% of 4 boards/)
   expect(screen.getByTestId('longrun-random-band').textContent).toMatch(/75\.0%, 1000 seeds.*95% null band \[−\$30\.00, \+\$44\.00\]/)
@@ -210,10 +210,152 @@ it('renders the long-run card: progress bars, CI standings, A/A, random band, be
   expect(screen.getByTestId('longrun-benchmark-SPY').textContent).toMatch(/SPY buy-and-hold.*\+\$118\.20 \[−\$40\.00, \+\$260\.00\]/)
   expect(screen.queryByTestId('longrun-benchmark-EW')).toBeNull()
   expect(card.textContent).toMatch(/UNTRUSTED \/ NEVER PROMOTED/)
-  expect(card.textContent).toMatch(/Never promoted: the pre-registered rule is text for the operator/)
-  expect(card.textContent).toMatch(/at most 2 finalists tested once/)
+  expect(card.textContent).toMatch(/Never promoted: the recorded rule is historical text for the operator/)
+  expect(card.textContent).toMatch(/at most 2 finalists; descriptive reconstruction/)
   expect(card.textContent).not.toMatch(/eligible for operator review —/)
   expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
+})
+
+it('distinguishes own-entry-rate evidence from the legacy shared null', async () => {
+  const own = structuredClone(LONG_RUN)
+  Object.assign(own.digest!.standings[0], { vs_random_own: { ...pair(6, 1, 9), p_enter: 0.5 } })
+  vi.mocked(getLongRun).mockResolvedValue(own)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(screen.getByRole('columnheader', { name: 'vs random (own entry rate)' })).toBeTruthy()
+  expect(screen.getByRole('columnheader', { name: 'vs random (legacy incumbent)' })).toBeTruthy()
+  const row = screen.getByTestId('longrun-standing-m31#1')
+  expect(row.textContent).toContain('+$6.00 [+$1.00, +$9.00]')
+  expect(row.textContent).toContain('50.0%')
+  expect(row.textContent).toContain('+$35.50 [−$17.00, +$73.00]')
+  expect(card.textContent).toContain('Legacy incumbent comparison is descriptive')
+})
+
+it('marks historical scoring rules and does not reuse their review eligibility', async () => {
+  const historical = structuredClone(LONG_RUN)
+  historical.digest!.walk_forward.finalists[0].eligible_for_operator_review = true
+  vi.mocked(getLongRun).mockResolvedValue(historical)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(card.textContent).toContain('Historical scoring contract')
+  expect(card.textContent).not.toContain('— eligible for operator review')
+  expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
+})
+
+function registeredLongRun(): LongRunView {
+  const current = structuredClone(LONG_RUN)
+  Object.assign(current.digest!, { assessment_class: 'registered_protocol' })
+  Object.assign(current.digest!.walk_forward, {
+    scoring_version: 'split-local-own-rate/v2', null_scope: 'split_local_own_entry_rate',
+    min_test_entries: 30, entry_count_unit: 'distinct_evaluated_decision_boards',
+    assessment_class: 'registered_protocol', alpha: 0.05,
+  })
+  Object.assign(current.digest!.walk_forward.finalists[0], {
+    test_entries: 30, eligible_for_operator_review: true, holm_p: 0.01,
+    rule_check: { test_net_positive: true, test_entries_at_least_floor: true,
+      split_local_null_known: true, confirmatory_assessment: true,
+      aa_valid: true, holm_p_below_alpha: true, vs_random_ci_low_above_0: true,
+      vs_incumbent_ci_low_above_0: true, half_split_signs_agree: true,
+      no_drop_one_sign_flip: true },
+  })
+  current.digest!.walk_forward.finalists[0].test.vs_incumbent = pair(6, 1, 10)
+  return current
+}
+
+it('shows preregistered distinct-entry floors with registered review evidence', async () => {
+  vi.mocked(getLongRun).mockResolvedValue(registeredLongRun())
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(card.textContent).toContain('30 distinct evaluated decision boards')
+  expect(card.textContent).toContain('30/30 evaluated entries')
+  expect(card.textContent).toContain('— eligible for operator review')
+  expect(screen.queryByRole('button', { name: /promote/i })).toBeNull()
+})
+
+it.each([{ entries: 29, net: 12 }, { entries: 30, net: 0 }])(
+  'refuses contradictory eligibility with $entries entries and net $net', async ({ entries, net }) => {
+    const current = registeredLongRun()
+    Object.assign(current.digest!.walk_forward.finalists[0], { test_entries: entries })
+    current.digest!.walk_forward.finalists[0].test.net_total = net
+    vi.mocked(getLongRun).mockResolvedValue(current)
+    render(<ActionModelPage />)
+    const card = await screen.findByRole('region', { name: 'Desk long run' })
+    expect(card.textContent).not.toContain('— eligible for operator review')
+    expect(card.textContent).toContain('review conditions not met')
+  },
+)
+
+it('distinguishes missing derived cost inputs from zero profit and refuses review', async () => {
+  const current = registeredLongRun()
+  Object.assign(current.digest!, {
+    pricing_status: 'DATA_GATED', cost_model: 'derived-spread/1',
+    no_price: { total: 3, by_arm: { m31: 3 }, by_reason: { no_delta: 3 } },
+  })
+  vi.mocked(getLongRun).mockResolvedValue(current)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(card.textContent).toContain('NO_PRICE: 3 selected outcomes')
+  expect(card.textContent).toContain('no_delta: 3')
+  expect(card.textContent).toContain('Derived EOD cost sensitivity')
+  expect(card.textContent).toContain('missing pricing is not zero profit')
+  expect(card.textContent).not.toContain('— eligible for operator review')
+})
+
+it.each(['string-false', 'failed-holm', 'missing-stability'])(
+  'refuses incomplete or contradictory persisted review evidence: %s', async (mode) => {
+    const current = registeredLongRun()
+    const finalist = current.digest!.walk_forward.finalists[0]
+    if (mode === 'string-false') Object.assign(current.digest!, { evaluation_valid: 'false' })
+    if (mode === 'failed-holm') finalist.rule_check!.holm_p_below_alpha = false
+    if (mode === 'missing-stability') delete finalist.rule_check!.half_split_signs_agree
+    vi.mocked(getLongRun).mockResolvedValue(current)
+    render(<ActionModelPage />)
+    const card = await screen.findByRole('region', { name: 'Desk long run' })
+    expect(card.textContent).not.toContain('— eligible for operator review')
+    expect(card.textContent).toContain('review conditions not met')
+  },
+)
+
+it.each(['missing-status', 'missing-ledger', 'negative-total'])(
+  'blocks derived costs without complete pricing proof: %s', async (mode) => {
+    const current = registeredLongRun()
+    Object.assign(current.digest!, { cost_model: 'derived-spread/1', pricing_status: 'PRICED_SIMULATION',
+      no_price: { total: 0, by_arm: {}, by_reason: {} } })
+    if (mode === 'missing-status') delete current.digest!.pricing_status
+    if (mode === 'missing-ledger') delete current.digest!.no_price
+    if (mode === 'negative-total') current.digest!.no_price!.total = -1
+    vi.mocked(getLongRun).mockResolvedValue(current)
+    render(<ActionModelPage />)
+    const card = await screen.findByRole('region', { name: 'Desk long run' })
+    expect(card.textContent).not.toContain('— eligible for operator review')
+    expect(card.textContent).toContain('pricing proof is incomplete')
+  },
+)
+
+it.each(['missing-incumbent', 'nonpositive-incumbent', 'failed-numeric-holm', 'unknown-alpha'])(
+  'refuses numeric review contradictions despite affirmative flags: %s', async (mode) => {
+    const current = registeredLongRun()
+    const finalist = current.digest!.walk_forward.finalists[0]
+    if (mode === 'missing-incumbent') finalist.test.vs_incumbent = null
+    if (mode === 'nonpositive-incumbent') finalist.test.vs_incumbent = pair(6, 0, 10)
+    if (mode === 'failed-numeric-holm') finalist.holm_p = 0.5
+    if (mode === 'unknown-alpha') delete (current.digest!.walk_forward as { alpha?: number }).alpha
+    vi.mocked(getLongRun).mockResolvedValue(current)
+    render(<ActionModelPage />)
+    const card = await screen.findByRole('region', { name: 'Desk long run' })
+    expect(card.textContent).not.toContain('— eligible for operator review')
+  },
+)
+
+it('keeps derived retrospective sensitivity descriptive even with complete pricing', async () => {
+  const current = registeredLongRun()
+  Object.assign(current.digest!, { cost_model: 'derived-spread/1', pricing_status: 'PRICED_SIMULATION',
+    no_price: { total: 0, by_arm: {}, by_reason: {} } })
+  vi.mocked(getLongRun).mockResolvedValue(current)
+  render(<ActionModelPage />)
+  const card = await screen.findByRole('region', { name: 'Desk long run' })
+  expect(card.textContent).not.toContain('— eligible for operator review')
+  expect(card.textContent).toContain('sensitivity only; no confirmatory review')
 })
 
 it('flags an invalid A/A pair and the empty store', async () => {

@@ -53,9 +53,7 @@ def _bars(closes: list[float]) -> list[tuple[int, float]]:
 
 
 class TestPricing:
-    @pytest.mark.parametrize(
-        ("spot", "expected"), [(90.0, 5.0), (97.0, 3.0), (102.0, 0.0)]
-    )
+    @pytest.mark.parametrize(("spot", "expected"), [(90.0, 5.0), (97.0, 3.0), (102.0, 0.0)])
     def test_expiry_is_intrinsic_clipped_to_width(self, spot: float, expected: float) -> None:
         assert spread_value(spot, 95.0, 100.0, 0, 0.3) == pytest.approx(expected)
 
@@ -83,8 +81,14 @@ class TestScenario:
     def test_flat_market_every_otm_analog_loses_its_debit(self) -> None:
         debit = _oracle_spread(100.0, 90.0, 95.0, 10, 0.30)
         out = valuation_scenario(
-            short=90.0, long_=95.0, dte_days=10, spot_now=100.0,
-            debit_mid=debit, debit_ask=None, bars=_bars([100.0] * 30), iv30=None,
+            short=90.0,
+            long_=95.0,
+            dte_days=10,
+            spot_now=100.0,
+            debit_mid=debit,
+            debit_ask=None,
+            bars=_bars([100.0] * 30),
+            iv30=None,
         )
         assert out["error"] is None
         assert out["iv"] == pytest.approx(0.30, abs=1e-4)
@@ -98,8 +102,14 @@ class TestScenario:
         closes = [100.0] * 15 + [80.0] * 15
         debit = _oracle_spread(100.0, 90.0, 95.0, 10, 0.30)
         out = valuation_scenario(
-            short=90.0, long_=95.0, dte_days=10, spot_now=100.0,
-            debit_mid=debit, debit_ask=debit + 0.10, bars=_bars(closes), iv30=None,
+            short=90.0,
+            long_=95.0,
+            dte_days=10,
+            spot_now=100.0,
+            debit_mid=debit,
+            debit_ask=debit + 0.10,
+            bars=_bars(closes),
+            iv30=None,
         )
         assert out["error"] is None
         # analogs opened at 100 that expire after the drop settle at full width
@@ -120,8 +130,14 @@ class TestScenario:
         closes = [100.0 - 0.3 * i for i in range(40)]
         debit = _oracle_spread(100.0, 90.0, 95.0, 10, 0.30)
         out = valuation_scenario(
-            short=90.0, long_=95.0, dte_days=10, spot_now=100.0,
-            debit_mid=debit, debit_ask=None, bars=_bars(closes), iv30=None,
+            short=90.0,
+            long_=95.0,
+            dte_days=10,
+            spot_now=100.0,
+            debit_mid=debit,
+            debit_ask=None,
+            bars=_bars(closes),
+            iv30=None,
         )
         band = out["iv_band_mean_pnl"]
         # higher vol = dearer entry for an OTM debit spread = lower hold P&L
@@ -129,15 +145,27 @@ class TestScenario:
 
     def test_too_few_windows_is_an_explained_error(self) -> None:
         out = valuation_scenario(
-            short=90.0, long_=95.0, dte_days=40, spot_now=100.0,
-            debit_mid=0.5, debit_ask=None, bars=_bars([100.0] * 30), iv30=20.0,
+            short=90.0,
+            long_=95.0,
+            dte_days=40,
+            spot_now=100.0,
+            debit_mid=0.5,
+            debit_ask=None,
+            bars=_bars([100.0] * 30),
+            iv30=20.0,
         )
         assert out["error"] and "analog" in out["error"]
 
     def test_iv30_fallback_when_calibration_fails(self) -> None:
         out = valuation_scenario(
-            short=90.0, long_=95.0, dte_days=10, spot_now=100.0,
-            debit_mid=9.0, debit_ask=None, bars=_bars([100.0] * 30), iv30=22.0,
+            short=90.0,
+            long_=95.0,
+            dte_days=10,
+            spot_now=100.0,
+            debit_mid=9.0,
+            debit_ask=None,
+            bars=_bars([100.0] * 30),
+            iv30=22.0,
         )
         assert out["error"] is None
         assert out["iv"] == pytest.approx(0.22)
@@ -145,16 +173,23 @@ class TestScenario:
 
     def test_bad_structure_rejected(self) -> None:
         out = valuation_scenario(
-            short=95.0, long_=90.0, dte_days=10, spot_now=100.0,
-            debit_mid=0.5, debit_ask=None, bars=_bars([100.0] * 30), iv30=20.0,
+            short=95.0,
+            long_=90.0,
+            dte_days=10,
+            spot_now=100.0,
+            debit_mid=0.5,
+            debit_ask=None,
+            bars=_bars([100.0] * 30),
+            iv30=20.0,
         )
         assert out["error"]
 
 
 class TestArtifacts:
     def test_round_trip_and_key_guard(self, tmp_path: Path) -> None:
-        write_artifact(tmp_path, "QQQ|20261016|642|657", {"key": "QQQ|20261016|642|657",
-                                                           "label": LABEL})
+        write_artifact(
+            tmp_path, "QQQ|20261016|642|657", {"key": "QQQ|20261016|642|657", "label": LABEL}
+        )
         assert read_artifact(tmp_path, "QQQ|20261016|642|657")["label"] == LABEL
         assert read_artifact(tmp_path, "QQQ|20261016|642|658") is None
 
@@ -174,16 +209,42 @@ class TestArtifacts:
         assert read_artifact(tmp_path, "SPY|20261016|500|510") is None  # oldest pruned
 
     def test_find_structure_from_latest_then_shadow(self, tmp_path: Path) -> None:
-        (tmp_path / "latest.json").write_text(json.dumps({"payload": {
-            "candidates": [{"underlying": "QQQ", "expiry": "20261016", "dte": 24,
-                            "short_strike": 642.0, "long_strike": 657.0,
-                            "debit_mid": 0.195, "debit_ask": 0.23}],
-            "rejected": [],
-        }}))
-        (tmp_path / "shadow_book.json").write_text(json.dumps({"positions": [
-            {"key": "SPY|20261120|700|710", "underlying": "SPY", "expiry": "20261120",
-             "short_strike": 700.0, "long_strike": 710.0, "debit_paid": 0.8},
-        ]}))
+        (tmp_path / "latest.json").write_text(
+            json.dumps(
+                {
+                    "payload": {
+                        "candidates": [
+                            {
+                                "underlying": "QQQ",
+                                "expiry": "20261016",
+                                "dte": 24,
+                                "short_strike": 642.0,
+                                "long_strike": 657.0,
+                                "debit_mid": 0.195,
+                                "debit_ask": 0.23,
+                            }
+                        ],
+                        "rejected": [],
+                    }
+                }
+            )
+        )
+        (tmp_path / "shadow_book.json").write_text(
+            json.dumps(
+                {
+                    "positions": [
+                        {
+                            "key": "SPY|20261120|700|710",
+                            "underlying": "SPY",
+                            "expiry": "20261120",
+                            "short_strike": 700.0,
+                            "long_strike": 710.0,
+                            "debit_paid": 0.8,
+                        },
+                    ]
+                }
+            )
+        )
         row = find_structure(tmp_path, "QQQ|20261016|642|657")
         assert row is not None and row["debit_ask"] == pytest.approx(0.23)
         assert row["found_in"] == "latest scan"

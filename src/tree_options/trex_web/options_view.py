@@ -180,9 +180,7 @@ def _slice_rows(
     rows: list[dict[str, Any]] = []
     for exp in sorted(by_exp)[:max_expiries]:
         idxs = by_exp[exp]
-        ladder = sorted(
-            {strikes[i] for i in idxs if isinstance(strikes[i], (int, float))}
-        )
+        ladder = sorted({strikes[i] for i in idxs if isinstance(strikes[i], (int, float))})
         if not ladder:
             continue
         atm_strike = min(ladder, key=lambda s: (abs(s - spot), s))

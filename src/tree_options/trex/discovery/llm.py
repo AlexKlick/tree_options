@@ -50,9 +50,7 @@ PROVIDERS: dict[str, dict[str, Any]] = {
     # Hosted keys: the claude-zai / claude-minimax2 launcher names in
     # ~/.claude/.env first (the unit loads that file), older names after.
     "zai": {
-        "base_url": os.environ.get(
-            "ZAI_OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4"
-        ),
+        "base_url": os.environ.get("ZAI_OPENAI_BASE_URL", "https://api.z.ai/api/coding/paas/v4"),
         "model": "glm-5.3-flash",
         "key_env": ("ANTHROPIC_AUTH_TOKEN_ZAI", "ZAI_CODING_API_KEY"),
         # same reason as local: with thinking the reply ran 16-20s+
@@ -182,8 +180,11 @@ def chat_json(
     key_envs: tuple[str, ...] = spec["key_env"] or ()
     if key_envs:
         found = next(
-            ((name, os.environ[name].strip()) for name in key_envs
-             if os.environ.get(name, "").strip()),
+            (
+                (name, os.environ[name].strip())
+                for name in key_envs
+                if os.environ.get(name, "").strip()
+            ),
             None,
         )
         if found is None:
@@ -204,9 +205,7 @@ def chat_json(
         }
     ).encode()
     try:
-        status, raw = transport(
-            f"{spec['base_url']}/chat/completions", body, headers, timeout
-        )
+        status, raw = transport(f"{spec['base_url']}/chat/completions", body, headers, timeout)
     except Exception as exc:  # never re-raise: messages can embed headers
         raise LlmError(f"{provider}: {type(exc).__name__}") from None
     if status != 200:
@@ -223,9 +222,7 @@ def chat_json(
     # model, so a 200 proves nothing: the envelope's model must echo the
     # requested id (M3.1-Flash is not listed in GET /v1/models).
     if spec.get("verify_model") and served is not None and served != used_model:
-        raise LlmError(
-            f"{provider}: served model {str(served)[:60]!r} != requested {used_model!r}"
-        )
+        raise LlmError(f"{provider}: served model {str(served)[:60]!r} != requested {used_model!r}")
     if finish == "length":  # a cut-off list can still hold a parseable inner object
         raise LlmError(f"{provider}: {TRUNCATED_NOTE}")
     try:
@@ -235,7 +232,10 @@ def chat_json(
 
 
 def escalation_budget(
-    provider: str, *, max_tokens: int | None, timeout: float | None,
+    provider: str,
+    *,
+    max_tokens: int | None,
+    timeout: float | None,
     extra: dict[str, Any] | None,
 ) -> tuple[dict[str, Any], float, int]:
     """The budget of the ONE retry a caller makes after TRUNCATED_NOTE:
@@ -244,10 +244,8 @@ def escalation_budget(
     (extra body fields, timeout, max_tokens); the caller's other extra
     fields (e.g. reasoning_effort) are preserved and max_tokens is set."""
     spec = PROVIDERS.get(provider, {})
-    start_tokens = int(max_tokens if max_tokens is not None
-                       else spec.get("max_tokens", MAX_TOKENS))
-    start_timeout = float(timeout if timeout is not None
-                          else spec.get("timeout", REQUEST_TIMEOUT))
+    start_tokens = int(max_tokens if max_tokens is not None else spec.get("max_tokens", MAX_TOKENS))
+    start_timeout = float(timeout if timeout is not None else spec.get("timeout", REQUEST_TIMEOUT))
     tokens = min(2 * start_tokens, ESCALATE_TOKENS_CAP)
     seconds = min(2 * start_timeout, ESCALATE_TIMEOUT_CAP)
     return {**(extra or {}), "max_tokens": tokens}, seconds, tokens
@@ -259,9 +257,14 @@ GENERIC_EXTRA_KEYS = frozenset({"max_tokens"})
 
 
 def ask_json(
-    provider: str, messages: list[dict[str, str]], *, fallback: str | None = None,
-    transport: PostTransport | None = None, extra: dict[str, Any] | None = None,
-    timeout: float | None = None, max_tokens: int | None = None,
+    provider: str,
+    messages: list[dict[str, str]],
+    *,
+    fallback: str | None = None,
+    transport: PostTransport | None = None,
+    extra: dict[str, Any] | None = None,
+    timeout: float | None = None,
+    max_tokens: int | None = None,
 ) -> tuple[dict[str, Any], str, dict[str, Any]]:
     """chat_json for one decision with the three self-heals the desk lanes share:
 
@@ -286,8 +289,9 @@ def ask_json(
     if transport is not None:
         base["transport"] = transport
 
-    def call(name: str, call_extra: dict[str, Any] | None
-             ) -> tuple[dict[str, Any], str, dict[str, Any]]:
+    def call(
+        name: str, call_extra: dict[str, Any] | None
+    ) -> tuple[dict[str, Any], str, dict[str, Any]]:
         kwargs = dict(base)
         if call_extra:
             kwargs["extra"] = dict(call_extra)
@@ -300,13 +304,16 @@ def ask_json(
             text = str(error)
             if TRUNCATED_NOTE in text:
                 retry_extra, seconds, tokens = escalation_budget(
-                    name, max_tokens=max_tokens, timeout=timeout, extra=call_extra)
-                retry_kwargs: dict[str, Any] = {**kwargs, "extra": retry_extra,
-                                                "timeout": seconds}
+                    name, max_tokens=max_tokens, timeout=timeout, extra=call_extra
+                )
+                retry_kwargs: dict[str, Any] = {**kwargs, "extra": retry_extra, "timeout": seconds}
                 meta = {"escalated": True, "max_tokens": tokens, "timeout": seconds}
             elif text.endswith("TimeoutError"):
-                start = float(timeout if timeout is not None
-                              else PROVIDERS.get(name, {}).get("timeout", REQUEST_TIMEOUT))
+                start = float(
+                    timeout
+                    if timeout is not None
+                    else PROVIDERS.get(name, {}).get("timeout", REQUEST_TIMEOUT)
+                )
                 seconds = min(2 * start, ESCALATE_TIMEOUT_CAP)
                 retry_kwargs = {**kwargs, "timeout": seconds}
                 meta = {"timeout_escalated": True, "timeout": seconds}
@@ -321,8 +328,9 @@ def ask_json(
     except LlmError:
         if not fallback or fallback == provider:
             raise
-        backup_extra = {key: value for key, value in (extra or {}).items()
-                        if key in GENERIC_EXTRA_KEYS}
+        backup_extra = {
+            key: value for key, value in (extra or {}).items() if key in GENERIC_EXTRA_KEYS
+        }
         reply, model, meta = call(fallback, backup_extra or None)
         return reply, model, {**meta, "provider": fallback, "fallback": True}
 
@@ -380,9 +388,7 @@ def normalize(
             conf = 0.5
         conf = min(1.0, max(0.0, conf)) if conf == conf else 0.5  # NaN -> 0.5
         rationale = " ".join(str(item.get("rationale", "")).split())[:RATIONALE_MAX]
-        out.append(
-            {"symbol": sym, "action": action, "rationale": rationale, "confidence": conf}
-        )
+        out.append({"symbol": sym, "action": action, "rationale": rationale, "confidence": conf})
         seen.add(sym)
         if len(out) >= max_n:
             break
@@ -424,9 +430,7 @@ def propose(
             notes.append(str(exc))
             continue
         try:
-            proposals, drop_notes = normalize(
-                raw, watched=watched, blocked=blocked, max_n=max_n
-            )
+            proposals, drop_notes = normalize(raw, watched=watched, blocked=blocked, max_n=max_n)
         except Exception as exc:  # untrusted shape: fall through to the next
             notes.append(f"{provider}: unusable proposals ({type(exc).__name__})")
             continue

@@ -68,8 +68,17 @@ STRUCTURES = ("put_credit", "call_debit", "put_debit", "call_credit")
 BULLISH = frozenset({"put_credit", "call_debit"})
 #: outcomes.EXIT_MODES (kept local: this module must not import the outcome engine)
 HORIZONS = ("intraday", "eod", "hold:1", "hold:3", "hold:5", "hold:10", "expiry")
-DIRECTIONS = ("any", "bullish", "bearish", "momentum_20s", "reversal_1s",
-              "xs_weak_20s", "xs_strong_20s", "xs_weak_5s", "xs_strong_5s")
+DIRECTIONS = (
+    "any",
+    "bullish",
+    "bearish",
+    "momentum_20s",
+    "reversal_1s",
+    "xs_weak_20s",
+    "xs_strong_20s",
+    "xs_weak_5s",
+    "xs_strong_5s",
+)
 KEYS = ("board_order", "max_reward_risk", "min_max_loss", "max_max_loss", "max_otm", "min_otm")
 TIMES_OF_DAY = ("open", "morning", "midday", "afternoon", "close")
 BOUNDED = ("dte", "otm", "rv", "max_loss")
@@ -79,9 +88,23 @@ SLOT_MINUTES = 45
 #: module imports nothing from the harness; a test pins the equality)
 PAIR_SEP = "+"
 _EPOCH = date(1970, 1, 1)  # day index by subtraction (no ordinal arithmetic in src)
-_ENTRY_KEYS = frozenset({"name", "kind", "builtin", "repeats", "structures", "horizon",
-                         "direction", "alternate", "require_all", "pair", "time_of_day",
-                         "key", *(f"{b}_{end}" for b in BOUNDED for end in ("min", "max"))})
+_ENTRY_KEYS = frozenset(
+    {
+        "name",
+        "kind",
+        "builtin",
+        "repeats",
+        "structures",
+        "horizon",
+        "direction",
+        "alternate",
+        "require_all",
+        "pair",
+        "time_of_day",
+        "key",
+        *(f"{b}_{end}" for b in BOUNDED for end in ("min", "max")),
+    }
+)
 
 
 def _num(value: Any) -> float | None:
@@ -112,8 +135,9 @@ def slot_index(session: str, clock: str) -> int:
     """Calendar ordinal + 45-minute clock index: consecutive decision clocks of a day
     are consecutive integers, and the same clock moves by one per calendar day."""
     hours, minutes = clock.split(":")
-    return (date.fromisoformat(session) - _EPOCH).days \
-        + (int(hours) * 60 + int(minutes)) // SLOT_MINUTES
+    return (date.fromisoformat(session) - _EPOCH).days + (
+        int(hours) * 60 + int(minutes)
+    ) // SLOT_MINUTES
 
 
 def _context(board: Board, row: Mapping[str, Any], field: str) -> float | None:
@@ -135,8 +159,11 @@ class TheoryParams:
     key: str = "board_order"
 
     def __post_init__(self) -> None:
-        if not self.structures or len(set(self.structures)) != len(self.structures) \
-                or any(s not in STRUCTURES for s in self.structures):
+        if (
+            not self.structures
+            or len(set(self.structures)) != len(self.structures)
+            or any(s not in STRUCTURES for s in self.structures)
+        ):
             raise ValueError(f"structures must be distinct members of {STRUCTURES}")
         if self.horizon is not None and self.horizon not in HORIZONS:
             raise ValueError(f"horizon must be one of {HORIZONS}")
@@ -147,12 +174,12 @@ class TheoryParams:
         if self.pair and (not self.require_all or len(self.structures) != 2):
             raise ValueError("pair needs require_all and exactly two structures")
         if self.pair and self.alternate is not None:
-            raise ValueError("pair trades both structures every board; alternate "
-                             "rotates one")
+            raise ValueError("pair trades both structures every board; alternate rotates one")
         if self.key not in KEYS:
             raise ValueError(f"key must be one of {KEYS}")
         if self.time_of_day is not None and (
-                not self.time_of_day or any(t not in TIMES_OF_DAY for t in self.time_of_day)):
+            not self.time_of_day or any(t not in TIMES_OF_DAY for t in self.time_of_day)
+        ):
             raise ValueError(f"time_of_day must be a non-empty subset of {TIMES_OF_DAY}")
         for field, low, high in self.bounds:
             if field not in BOUNDED:
@@ -173,18 +200,26 @@ class TheoryParams:
         for field in BOUNDED:
             low, high = entry.get(f"{field}_min"), entry.get(f"{field}_max")
             if low is not None or high is not None:
-                bounds.append((field, None if low is None else float(low),
-                               None if high is None else float(high)))
+                bounds.append(
+                    (
+                        field,
+                        None if low is None else float(low),
+                        None if high is None else float(high),
+                    )
+                )
         horizon = entry.get("horizon")
         alternate = entry.get("alternate")
-        return cls(structures=tuple(str(s) for s in structures),
-                   horizon=None if horizon is None else str(horizon),
-                   direction=str(entry.get("direction", "any")),
-                   alternate=None if alternate is None else str(alternate),
-                   require_all=bool(entry.get("require_all", False)),
-                   pair=bool(entry.get("pair", False)),
-                   time_of_day=None if tod is None else tuple(str(t) for t in tod),
-                   bounds=tuple(bounds), key=str(entry.get("key", "board_order")))
+        return cls(
+            structures=tuple(str(s) for s in structures),
+            horizon=None if horizon is None else str(horizon),
+            direction=str(entry.get("direction", "any")),
+            alternate=None if alternate is None else str(alternate),
+            require_all=bool(entry.get("require_all", False)),
+            pair=bool(entry.get("pair", False)),
+            time_of_day=None if tod is None else tuple(str(t) for t in tod),
+            bounds=tuple(bounds),
+            key=str(entry.get("key", "board_order")),
+        )
 
 
 def _field(board: Board, row: Mapping[str, Any], field: str) -> float | None:
@@ -201,8 +236,9 @@ def xs_extreme(board: Board, field: str, *, lowest: bool) -> str | None:
     """The underlying with the strictly lowest (highest) ``field`` across the board's
     context; None with fewer than two known values or a tie at the extreme."""
     per = (board.context or {}).get("underlyings") or {}
-    known = sorted((v, u) for u, doc in per.items()
-                   if (v := _num((doc or {}).get(field))) is not None)
+    known = sorted(
+        (v, u) for u, doc in per.items() if (v := _num((doc or {}).get(field))) is not None
+    )
     if len(known) < 2:
         return None
     first, second = (known[0], known[1]) if lowest else (known[-1], known[-2])
@@ -244,6 +280,7 @@ def _order(key: str) -> Callable[[tuple[int, dict[str, Any]]], tuple[float, int]
         if v is None:
             return math.inf, item[0]
         return (-v if key.startswith("max_") else v), item[0]
+
     return order
 
 
@@ -259,14 +296,19 @@ def rule_theory(entry: Mapping[str, Any] | TheoryParams) -> Callable[[Board], Ch
             return False
         for field, low, high in params.bounds:
             value = _field(board, row, field)
-            if value is None or (low is not None and value < low) \
-                    or (high is not None and value > high):
+            if (
+                value is None
+                or (low is not None and value < low)
+                or (high is not None and value > high)
+            ):
                 return False
         return True
 
     def rule(board: Board) -> Choice:
-        if params.time_of_day is not None and \
-                (board.context or {}).get("time_of_day") not in params.time_of_day:
+        if (
+            params.time_of_day is not None
+            and (board.context or {}).get("time_of_day") not in params.time_of_day
+        ):
             return None, None
         rows = [(i, row) for i, row in enumerate(board.rows) if eligible(board, row)]
         if params.require_all:
@@ -285,19 +327,18 @@ def rule_theory(entry: Mapping[str, Any] | TheoryParams) -> Callable[[Board], Ch
                 legs = best.setdefault(row.get("underlying"), {})
                 if structure not in legs or rank < legs[structure][0]:
                     legs[structure] = (rank, row)
-            full_legs = [legs for legs in best.values()
-                         if set(legs) >= set(params.structures)]
+            full_legs = [legs for legs in best.values() if set(legs) >= set(params.structures)]
             if not full_legs:
                 return None, None
-            chosen = min(full_legs,
-                         key=lambda per: min(rank for rank, _ in per.values()))
-            return PAIR_SEP.join(str(chosen[s][1]["id"]) for s in params.structures), \
-                params.horizon
+            chosen = min(full_legs, key=lambda per: min(rank for rank, _ in per.values()))
+            return PAIR_SEP.join(str(chosen[s][1]["id"]) for s in params.structures), params.horizon
         if params.alternate == "slot":
-            target = params.structures[slot_index(board.session, board.clock)
-                                       % len(params.structures)]
+            target = params.structures[
+                slot_index(board.session, board.clock) % len(params.structures)
+            ]
             rows = [(i, row) for i, row in rows if row["structure"] == target]
         if not rows:
             return None, None
         return str(min(rows, key=order)[1]["id"]), params.horizon
+
     return rule

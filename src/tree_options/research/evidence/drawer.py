@@ -96,14 +96,12 @@ def evidence_for_point(
     ):
         return _broker_paper_envelope(candidate, session)
     if candidate.evidence_kind is ResearchEvidenceKind.SEALED_CAMPAIGN:
-        return _sealed_envelope(candidate, session,
-                                cutoff_instant_value=knowledge_cutoff)
+        return _sealed_envelope(candidate, session, cutoff_instant_value=knowledge_cutoff)
     if candidate.evidence_kind is ResearchEvidenceKind.SYNTHETIC_BACKTEST:
-        return _synthetic_envelope(candidate, session,
-                                   cutoff_instant_value=knowledge_cutoff)
-    return _shadow_envelope(candidate, session,
-                           cutoff_instant_value=knowledge_cutoff,
-                           database=database)
+        return _synthetic_envelope(candidate, session, cutoff_instant_value=knowledge_cutoff)
+    return _shadow_envelope(
+        candidate, session, cutoff_instant_value=knowledge_cutoff, database=database
+    )
 
 
 def _sealed_envelope(
@@ -113,8 +111,7 @@ def _sealed_envelope(
     cutoff_instant_value: datetime | None,
 ) -> EvidenceEnvelope:
     scope_dir = _REPO_ROOT / "artifacts" / "campaign-2026-09" / candidate.family
-    artifact_paths = tuple(p for p in (scope_dir / "sealed-round.json",)
-                           if p.is_file())
+    artifact_paths = tuple(p for p in (scope_dir / "sealed-round.json",) if p.is_file())
     source_artifacts = _hash_source_artifacts(artifact_paths)
     warnings: list[str] = list(candidate.warnings)
     # Changed-source guard: the freshly hashed bytes must still match the
@@ -131,8 +128,10 @@ def _sealed_envelope(
                 "after cataloging — re-catalog before trusting this envelope"
             )
     elif source_artifacts and claimed is None:
-        warnings.append("research.source_unbound: candidate carries no "
-                        "sealed-round.json hash to bind provenance")
+        warnings.append(
+            "research.source_unbound: candidate carries no "
+            "sealed-round.json hash to bind provenance"
+        )
 
     return EvidenceEnvelope(
         candidate_id=candidate.id,
@@ -153,8 +152,7 @@ def _sealed_envelope(
             "funded_history_reason": candidate.funded_history_reason,
             "plot_funded_account": candidate.plot_funded_account,
             "warnings": list(candidate.warnings),
-            "as_of_cutoff": (cutoff_instant_value.isoformat()
-                             if cutoff_instant_value else None),
+            "as_of_cutoff": (cutoff_instant_value.isoformat() if cutoff_instant_value else None),
         },
         robustness=(f"sealed_round.json sha: {claimed or '?'}",),
         source_artifacts=source_artifacts,
@@ -181,7 +179,8 @@ def _shadow_envelope(
     if not deal_ids:
         warnings.append(
             "research.no_desk_association: candidate declares no shadow "
-            "deal (source_url); no desk marks are attributable to it")
+            "deal (source_url); no desk marks are attributable to it"
+        )
 
     quality_audit: list[dict[str, Any]] = []
     mark_audit: list[dict[str, Any]] = []
@@ -205,14 +204,11 @@ def _shadow_envelope(
                         if _normalize_instant(at) <= cutoff_instant_value
                     ]
                 else:
-                    quality_pairs = [(doc, None)
-                                     for doc in store.all("quality")]
+                    quality_pairs = [(doc, None) for doc in store.all("quality")]
                     mark_pairs = [(doc, None) for doc in store.all("mark")]
-                quality_audit = _scoped(quality_pairs, deal_ids, session,
-                                        kind="quality")
+                quality_audit = _scoped(quality_pairs, deal_ids, session, kind="quality")
                 mark_audit = _scoped(mark_pairs, deal_ids, session, kind="mark")
-    except (EvidenceError, FileNotFoundError, OSError,
-            sqlite3_OperationalError) as exc:
+    except (EvidenceError, FileNotFoundError, OSError, sqlite3_OperationalError) as exc:
         read_error = str(exc)
 
     if read_error:
@@ -225,8 +221,7 @@ def _shadow_envelope(
             f"shadow_proxy mark for {candidate.family} on "
             f"{session.isoformat() if session else '(session-agnostic)'}"
         ),
-        estimand="EOD-deadline shadow mark (proxy valuation — never "
-                 "execution evidence)",
+        estimand="EOD-deadline shadow mark (proxy valuation — never execution evidence)",
         exact_versions={
             "strategy": candidate.family,
             "data": "desk-evidence/desk-mark/2",
@@ -236,8 +231,7 @@ def _shadow_envelope(
         cohort_membership=tuple(deal_ids),
         registered_or_exploratory=candidate.registration,
         diagnostics={
-            "as_of_cutoff": (cutoff_instant_value.isoformat()
-                             if cutoff_instant_value else None),
+            "as_of_cutoff": (cutoff_instant_value.isoformat() if cutoff_instant_value else None),
             "quality_event_count": len(quality_audit),
             "mark_event_count": len(mark_audit),
             "deals": list(deal_ids),
@@ -256,14 +250,17 @@ def _associated_deal_ids(candidate: ResearchCandidate) -> tuple[str, ...]:
     guessed) via ``source_url = "shadow/<deal_id>"``."""
     prefix = "shadow/"
     if candidate.source_url.startswith(prefix):
-        return (candidate.source_url[len(prefix):],)
+        return (candidate.source_url[len(prefix) :],)
     return ()
 
 
-def _scoped(pairs: list[tuple[dict[str, Any], datetime | None]],
-            deal_ids: tuple[str, ...],
-            session: date | None,
-            *, kind: str) -> list[dict[str, Any]]:
+def _scoped(
+    pairs: list[tuple[dict[str, Any], datetime | None]],
+    deal_ids: tuple[str, ...],
+    session: date | None,
+    *,
+    kind: str,
+) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for doc, at in pairs:
         # fail-closed: no declared association ⇒ NOTHING is attributable
@@ -272,8 +269,7 @@ def _scoped(pairs: list[tuple[dict[str, Any], datetime | None]],
             continue
         if session is not None and doc.get("session") != session.isoformat():
             continue
-        out.append({"doc": doc, "at": at.isoformat() if at is not None else None,
-                    "kind": kind})
+        out.append({"doc": doc, "at": at.isoformat() if at is not None else None, "kind": kind})
     return out
 
 
@@ -303,8 +299,7 @@ def _synthetic_envelope(
         cohort_membership=(candidate.family,),
         registered_or_exploratory=candidate.registration,
         diagnostics={
-            "as_of_cutoff": (cutoff_instant_value.isoformat()
-                             if cutoff_instant_value else None),
+            "as_of_cutoff": (cutoff_instant_value.isoformat() if cutoff_instant_value else None),
             "fixture_hashes": {k: v for k, v in candidate.artifact_hashes.items()},
         },
         robustness=("fixture plots never become live research results",),
@@ -315,16 +310,19 @@ def _synthetic_envelope(
     )
 
 
-def _broker_paper_envelope(candidate: ResearchCandidate,
-                           session: date | None) -> EvidenceEnvelope:
+def _broker_paper_envelope(candidate: ResearchCandidate, session: date | None) -> EvidenceEnvelope:
     reason = reason_broker_paper()
     return EvidenceEnvelope(
         candidate_id=candidate.id,
         point_session=session,
         hypothesis="Out of scope for RL-1 (E5 broker-paper requires operator approval).",
         estimand="n/a",
-        exact_versions={"strategy": candidate.family, "data": "n/a",
-                        "miner": "n/a", "playbook": "n/a"},
+        exact_versions={
+            "strategy": candidate.family,
+            "data": "n/a",
+            "miner": "n/a",
+            "playbook": "n/a",
+        },
         cohort_membership=(),
         registered_or_exploratory=candidate.registration,
         diagnostics={"reason_code": reason.code},

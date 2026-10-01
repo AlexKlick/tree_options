@@ -311,6 +311,8 @@ export interface LongRunStanding {
   net_total: number
   net_ci95: [number, number]
   vs_random: LongRunPaired
+  vs_random_own?: LongRunPaired & { p_enter: number }
+  null_percentile_own?: number
   vs_first_row: LongRunPaired | null
   vs_incumbent: LongRunPaired | null
   // vs the always_bullish regime baseline (null for that arm itself)
@@ -338,9 +340,16 @@ export interface LongRunFinalist {
     vs_incumbent: LongRunPaired | null
   }
   eligible_for_operator_review: boolean
+  test_entries?: number
+  rule_check?: Record<string, boolean>
 }
 
 export interface LongRunDigest {
+  assessment_class?: 'registered_protocol' | 'retrospective_descriptive'
+  pricing_status?: 'DATA_GATED' | 'PRICED_SIMULATION'
+  cost_model?: string
+  cost_provenance?: Record<string, unknown>
+  no_price?: { total: number; by_arm: Record<string, number>; by_reason: Record<string, number> }
   headline: string
   untrusted_note: string
   evaluation_valid: boolean
@@ -375,6 +384,12 @@ export interface LongRunDigest {
   }
   standings: LongRunStanding[]
   walk_forward: {
+    alpha?: number
+    scoring_version?: string
+    null_scope?: string
+    min_test_entries?: number
+    entry_count_unit?: string
+    assessment_class?: 'registered_protocol' | 'retrospective_descriptive'
     status: string
     cutoff?: string | null
     metric?: string | null
@@ -1660,4 +1675,64 @@ export interface ForecastRunResponse {
   spec_hash: string
   kind: 'forecast'
   [key: string]: unknown
+}
+
+export interface QuantTheoryMetrics {
+  evidence_kind: 'BACKTEST'
+  capital_policy: 'independent_equal_capital_roundtrips'
+  disposition: 'SCORED' | 'INCOMPLETE'
+  period_count: number
+  scored_period_count: number
+  compound_nav: null
+  max_drawdown_scope: 'endpoint_loss_only'
+  mean_net_return: string | null
+  max_drawdown: string | null
+  turnover: string | null
+  fees: string | null
+  execution_authorized: false
+  exact_external_economics: false
+}
+
+export interface QuantTheoryNode {
+  schema: 'quant-research-node/1'
+  node_id: string
+  campaign_id: string
+  stage: string
+  payload_sha256: string
+  payload_ref?: string
+  parents: string[]
+  execution_authorized: false
+}
+
+export interface QuantTheoryCampaign {
+  schema: 'quant-theory-result/1'
+  campaign_id: string
+  hypothesis: string
+  data_class: 'synthetic_fixture' | 'user_supplied_unqualified'
+  evidence_kind: 'synthetic_backtest' | 'simulated_execution'
+  registration: 'exploratory_retrospective'
+  candidate_count: number
+  reflection_calls: number
+  winner: {strategy_id: string; parameters: {top_n?: number}; version_id: string}
+  holdout: {candidate: QuantTheoryMetrics; control: QuantTheoryMetrics}
+  graph: QuantTheoryNode[]
+  disposition: 'REVIEW_REQUIRED' | 'HOLDOUT_INCOMPLETE'
+  objective: string
+  limitations: string[]
+  execution_authorized: false
+  exact_external_economics: false
+  live_money: false
+}
+
+export interface QuantLabProjection {
+  strategies: {strategy_id: string; version: string; registration: string; data_status: string; description: string; required_inputs: string[]}[]
+  versions: {version_id: string; config_sha256: string; code_sha: string; lock_sha256: string}[]
+  experiments: {run_id: string; strategy_version: string; disposition: string; evidence_kind: string; knowledge_cutoff: string; universe: {as_of: string; members: string[]}; scores: {entity_id: string; score: string; rank: number}[]; targets: {entity_id: string; weight: string}[]; exclusions: Record<string, string>; evidence: {exact_versions: Record<string, string>}}[]
+  comparisons: {candidate_run: string; control_run: string; common_snapshot: string}[]
+  campaigns?: Record<string, unknown>[]
+  theory_campaigns?: QuantTheoryCampaign[]
+  evidence_classes: string[]
+  execution: {state: string; environment: string; provenance?: {operation: string; intent_id: string; refs: Record<string, unknown>}[]; risk?: Record<string, unknown>; account_alias?: string; owner_epoch?: string; observed_at?: string; mandate?: {state: string}; executions?: {intent_id: string; state: string; broker_state: string; reconciliation_clean: boolean; findings: string[]; evidence_verdict: string; exact_economics: boolean; records: Record<string, unknown>[]}[]}
+  live_money: false
+  execution_authorized: false
 }

@@ -51,7 +51,9 @@ from tree_options.trex_web.research_view import attach
 
 def _candidate() -> ResearchCandidate:
     return ResearchCandidate(
-        id="c1", family="f", version="v1",
+        id="c1",
+        family="f",
+        version="v1",
         evidence_kind=ResearchEvidenceKind.SYNTHETIC_BACKTEST,
         registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         disposition=ResearchDisposition.PASS,
@@ -93,7 +95,8 @@ def client(tmp_path: Path):
     artifacts.mkdir()
     app = FastAPI()
     worker = attach(
-        app, workspace=ws,
+        app,
+        workspace=ws,
         candidate_scopes_root=artifacts,
         start_worker=False,
         engine_fn=run_comparison,
@@ -108,24 +111,41 @@ def _spawn_parent(ws: Path) -> str:
     parent_id = spec_hash(spec)
     with open_runstate_store(ws) as store:
         store.put("spec", spec.to_dict(), key=parent_id, at=datetime.now())
-        store.put("run",
-                  {"run_id": parent_id, "spec_hash": parent_id,
-                   "kind": "comparison", "status": "completed",
-                   "format_version": RUN_FORMAT_VERSION,
-                   "completed_at": datetime.now().isoformat()},
-                  key=parent_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": parent_id,
+                "spec_hash": parent_id,
+                "kind": "comparison",
+                "status": "completed",
+                "format_version": RUN_FORMAT_VERSION,
+                "completed_at": datetime.now().isoformat(),
+            },
+            key=parent_id,
+            at=datetime.now(),
+        )
         # The worker writes a result record when it computes; tests
         # that simulate an "existing parent" need that record too.
-        store.put("result",
-                  {"run_id": parent_id, "spec_hash": parent_id,
-                   "format_version": RUN_FORMAT_VERSION,
-                   "engine_sha256": "e" * 64,
-                   "input_snapshot_sha256": "i" * 64,
-                   "calendar_sha256": "c" * 64,
-                   "result_sha256": "r" * 64,
-                   "wire": {"spec": spec.to_dict(), "rejection": None,
-                            "candidates": [], "paired_diff": {}}},
-                  key=parent_id, at=datetime.now())
+        store.put(
+            "result",
+            {
+                "run_id": parent_id,
+                "spec_hash": parent_id,
+                "format_version": RUN_FORMAT_VERSION,
+                "engine_sha256": "e" * 64,
+                "input_snapshot_sha256": "i" * 64,
+                "calendar_sha256": "c" * 64,
+                "result_sha256": "r" * 64,
+                "wire": {
+                    "spec": spec.to_dict(),
+                    "rejection": None,
+                    "candidates": [],
+                    "paired_diff": {},
+                },
+            },
+            key=parent_id,
+            at=datetime.now(),
+        )
     return parent_id
 
 
@@ -134,9 +154,10 @@ def test_post_scenario_rejects_unknown_diff_fields_pre_write(client):
     outside SCENARIO_DIFF_FIELDS is rejected with 400."""
     tc, ws, _ = client
     parent_id = _spawn_parent(ws)
-    r = tc.post(f"/api/research/scenarios/{parent_id}",
-                json={"kind": "contribution_planning",
-                      "diff": {"starting_capital": "5000"}})
+    r = tc.post(
+        f"/api/research/scenarios/{parent_id}",
+        json={"kind": "contribution_planning", "diff": {"starting_capital": "5000"}},
+    )
     assert r.status_code == 400
     body = r.json()
     assert "outside the scenario surface" in body["detail"]["message"]
@@ -152,8 +173,11 @@ def test_post_scenario_is_idempotent_on_identical_body(client):
     (200 second time, never a 409)."""
     tc, ws, _ = client
     parent_id = _spawn_parent(ws)
-    body = {"kind": "contribution_planning", "access_mode": "exploratory",
-            "diff": {"contribution_per_period": "500"}}
+    body = {
+        "kind": "contribution_planning",
+        "access_mode": "exploratory",
+        "diff": {"contribution_per_period": "500"},
+    }
     r1 = tc.post(f"/api/research/scenarios/{parent_id}", json=body)
     assert r1.status_code == 202
     child_id = r1.json()["run_id"]
@@ -164,10 +188,8 @@ def test_post_scenario_is_idempotent_on_identical_body(client):
 
 def test_post_scenario_404s_on_unknown_parent(client):
     tc, _ws, _ = client
-    body = {"kind": "contribution_planning",
-            "diff": {"contribution_per_period": "500"}}
-    r = tc.post("/api/research/scenarios/missing_parent_id",
-                json=body)
+    body = {"kind": "contribution_planning", "diff": {"contribution_per_period": "500"}}
+    r = tc.post("/api/research/scenarios/missing_parent_id", json=body)
     assert r.status_code == 404
     assert r.json()["detail"]["error"] == "parent_not_found"
 
@@ -181,14 +203,20 @@ def test_post_scenario_409s_on_parent_with_no_result_envelope(client):
     parent_id = spec_hash(spec)
     with open_runstate_store(ws) as store:
         store.put("spec", spec.to_dict(), key=parent_id, at=datetime.now())
-        store.put("run",
-                  {"run_id": parent_id, "spec_hash": parent_id,
-                   "kind": "comparison", "status": "completed",
-                   "format_version": RUN_FORMAT_VERSION},
-                  key=parent_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": parent_id,
+                "spec_hash": parent_id,
+                "kind": "comparison",
+                "status": "completed",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=parent_id,
+            at=datetime.now(),
+        )
         # Note: no result record.
-    body = {"kind": "contribution_planning",
-            "diff": {"contribution_per_period": "500"}}
+    body = {"kind": "contribution_planning", "diff": {"contribution_per_period": "500"}}
     r = tc.post(f"/api/research/scenarios/{parent_id}", json=body)
     assert r.status_code == 409
     assert r.json()["detail"]["error"] == "parent_missing_result"
@@ -200,15 +228,12 @@ def test_list_scenarios_returns_children_for_parent(client):
     diff is a unique child_run_id by spec_hash)."""
     tc, ws, _ = client
     parent_id = _spawn_parent(ws)
-    body1 = {"kind": "contribution_planning",
-             "diff": {"contribution_per_period": "500"}}
-    body2 = {"kind": "contribution_planning",
-             "diff": {"contribution_per_period": "1000"}}
+    body1 = {"kind": "contribution_planning", "diff": {"contribution_per_period": "500"}}
+    body2 = {"kind": "contribution_planning", "diff": {"contribution_per_period": "1000"}}
     r1 = tc.post(f"/api/research/scenarios/{parent_id}", json=body1)
     r2 = tc.post(f"/api/research/scenarios/{parent_id}", json=body2)
     assert r1.json()["run_id"] != r2.json()["run_id"]
-    r = tc.get("/api/research/scenarios",
-               params={"parent_run_id": parent_id})
+    r = tc.get("/api/research/scenarios", params={"parent_run_id": parent_id})
     assert r.status_code == 200
     body = r.json()
     assert len(body["scenarios"]) == 2
@@ -219,9 +244,10 @@ def test_post_scenario_rejects_nonfinite_contribution_at_parse(client):
     """RL1-03 boundary: contribution_per_period must be finite."""
     tc, ws, _ = client
     parent_id = _spawn_parent(ws)
-    r = tc.post(f"/api/research/scenarios/{parent_id}",
-                json={"kind": "contribution_planning",
-                      "diff": {"contribution_per_period": "Infinity"}})
+    r = tc.post(
+        f"/api/research/scenarios/{parent_id}",
+        json={"kind": "contribution_planning", "diff": {"contribution_per_period": "Infinity"}},
+    )
     assert r.status_code == 400
     assert "must be finite" in r.json()["detail"]["message"]
 
@@ -243,15 +269,21 @@ def test_post_scenario_409s_when_stored_parent_ref_drifted(client):
     # Simulate an attach that happened when the parent's engine sha
     # was different from what its current result record claims.
     with open_runstate_store(ws) as store:
-        store_parent_ref(store, ParentRef(
-            parent_run_id=parent_id,
-            parent_spec_hash="x" * 64,
-            parent_engine_sha256="Z" * 64,   # drifted vs "e"*64
-            parent_input_snapshot_sha256="b" * 64,
-            parent_calendar_sha256="c" * 64,
-        ), at=datetime.now())
-    body = {"kind": "contribution_planning",
-            "diff": {"contribution_per_period": "750"}}  # fresh child
+        store_parent_ref(
+            store,
+            ParentRef(
+                parent_run_id=parent_id,
+                parent_spec_hash="x" * 64,
+                parent_engine_sha256="Z" * 64,  # drifted vs "e"*64
+                parent_input_snapshot_sha256="b" * 64,
+                parent_calendar_sha256="c" * 64,
+            ),
+            at=datetime.now(),
+        )
+    body = {
+        "kind": "contribution_planning",
+        "diff": {"contribution_per_period": "750"},
+    }  # fresh child
     r = tc.post(f"/api/research/scenarios/{parent_id}", json=body)
     assert r.status_code == 409
     assert r.json()["detail"]["error"] == "research.scenario.parent_changed"

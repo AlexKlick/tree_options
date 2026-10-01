@@ -103,7 +103,8 @@ EDGE_CAP = 0.25
 #: MiniMax-M3.1 reasoning_effort values (always-on thinking; the default is max)
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 FORECAST_SENTENCE = (
-    "You are a calibrated probabilistic forecaster for a paper-trading research desk.")
+    "You are a calibrated probabilistic forecaster for a paper-trading research desk."
+)
 _INF = Decimal("Infinity")
 
 
@@ -130,8 +131,9 @@ class Label:
     exit_slot: int
 
 
-def _print_after(points: list[tuple[datetime, Decimal]], after: datetime | None,
-                 at: datetime) -> Decimal | None:
+def _print_after(
+    points: list[tuple[datetime, Decimal]], after: datetime | None, at: datetime
+) -> Decimal | None:
     """iag._latest(points, at, SPOT_AGE_S), restricted to prints strictly
     after ``after`` (None: no lower bound)."""
     i = bisect_right(points, (at, _INF)) - 1
@@ -145,8 +147,9 @@ def _print_after(points: list[tuple[datetime, Decimal]], after: datetime | None,
     return price if (at - stamp).total_seconds() <= outcomes.SPOT_AGE_S else None
 
 
-def exit_spot(index: outcomes.OutcomeIndex, after: datetime | None,
-              at: datetime) -> dict[str, Decimal]:
+def exit_spot(
+    index: outcomes.OutcomeIndex, after: datetime | None, at: datetime
+) -> dict[str, Decimal]:
     """outcomes' parity spot at ``at`` (C - P + K, median over the nearest
     unexpired expiry with fresh pairs) from prints strictly after ``after``."""
     if at.tzinfo is None or (after is not None and not after < at):
@@ -189,8 +192,9 @@ class Spots:
         return self._exit[key]
 
 
-def exit_slot(index: outcomes.OutcomeIndex, slot: int, horizon: str,
-              marked: Callable[[int], bool]) -> int | None:
+def exit_slot(
+    index: outcomes.OutcomeIndex, slot: int, horizon: str, marked: Callable[[int], bool]
+) -> int | None:
     """outcomes._exit's clock rule for ``horizon`` with ``marked`` as the
     mark test; no expiry cap (an underlying has none): None = unresolved."""
     if horizon not in outcomes.EXIT_MODES or horizon == "expiry":
@@ -214,9 +218,12 @@ def exit_slot(index: outcomes.OutcomeIndex, slot: int, horizon: str,
     return None
 
 
-def board_labels(index: outcomes.OutcomeIndex, slot: int, spots: Spots | None = None,
-                 horizons: Sequence[str] = FORECAST_HORIZONS
-                 ) -> dict[str, dict[str, Label | None]]:
+def board_labels(
+    index: outcomes.OutcomeIndex,
+    slot: int,
+    spots: Spots | None = None,
+    horizons: Sequence[str] = FORECAST_HORIZONS,
+) -> dict[str, dict[str, Label | None]]:
     """{alias: {horizon: Label | None}} of one board. The exit side reads
     only prints strictly after the board's as-of instant."""
     spots = spots or Spots(index)
@@ -239,18 +246,26 @@ def board_labels(index: outcomes.OutcomeIndex, slot: int, spots: Spots | None = 
                 per[horizon] = None
                 continue
             end = spots.exit(found, as_of)[underlying]
-            per[horizon] = Label(y=int(end > start), ret_bps=float((end / start - 1) * 10_000),
-                                 entry=start, exit=end, exit_slot=found)
+            per[horizon] = Label(
+                y=int(end > start),
+                ret_bps=float((end / start - 1) * 10_000),
+                entry=start,
+                exit=end,
+                exit_slot=found,
+            )
         out[alias] = per
     return out
 
 
-def label_table(index: outcomes.OutcomeIndex, horizons: Sequence[str] = FORECAST_HORIZONS
-                ) -> dict[str, dict[str, dict[str, Label | None]]]:
+def label_table(
+    index: outcomes.OutcomeIndex, horizons: Sequence[str] = FORECAST_HORIZONS
+) -> dict[str, dict[str, dict[str, Label | None]]]:
     """Every scheduled board of the index: {snapshot: {alias: {horizon: Label | None}}}."""
     spots = Spots(index)
-    return {snapshot_id(day, clock): board_labels(index, slot, spots, horizons)
-            for slot, (day, clock, _at) in enumerate(index.timeline)}
+    return {
+        snapshot_id(day, clock): board_labels(index, slot, spots, horizons)
+        for slot, (day, clock, _at) in enumerate(index.timeline)
+    }
 
 
 # ------------------------------------------------------- prompt and parsing
@@ -272,25 +287,33 @@ def shown_labels(count: int) -> list[str]:
     return [f"U{k + 1}" for k in range(count)]
 
 
-def forecast_prompt(context: Mapping[str, Any], perm: Sequence[str],
-                    sentence: str | None = None) -> list[dict[str, str]]:
+def forecast_prompt(
+    context: Mapping[str, Any], perm: Sequence[str], sentence: str | None = None
+) -> list[dict[str, str]]:
     """The forecast task. Display label U{k+1} is the canonical underlying
     ``perm[k]``; only the public context is rendered (no rows)."""
     per = context["underlyings"]
-    shown = {label: per[canonical] for label, canonical in zip(shown_labels(len(perm)), perm,
-                                                                strict=True)}
+    shown = {
+        label: per[canonical]
+        for label, canonical in zip(shown_labels(len(perm)), perm, strict=True)
+    }
     if context.get("time_of_day") == "close":  # lab's bucket for the session's LAST clock
-        exits = ("Exits for THIS question (it is the session's last decision clock): intraday "
-                 "and eod both = the next session's first decision clock (tomorrow morning); ")
+        exits = (
+            "Exits for THIS question (it is the session's last decision clock): intraday "
+            "and eod both = the next session's first decision clock (tomorrow morning); "
+        )
     else:
-        exits = ("Exits: intraday = the next decision clock (about 45 minutes later); eod = "
-                 "this session's last decision clock (later today); ")
+        exits = (
+            "Exits: intraday = the next decision clock (about 45 minutes later); eod = "
+            "this session's last decision clock (later today); "
+        )
     task = (
         (sentence or FORECAST_SENTENCE)
         + " The underlyings are broad US equity index ETFs under arbitrary aliases (U1, U2, "
         "...), relabelled and reordered for every question. For EACH underlying and EACH "
         "exit give the probability that its price at the exit is STRICTLY HIGHER than now. "
-        + exits + "hold:5 = the last decision clock of the fifth following session. "
+        + exits
+        + "hold:5 = the last decision clock of the fifth following session. "
         "The context gives each "
         "underlying's as-of returns over 1/5/20 sessions and its 20-session annualized "
         "realized vol, in percent (null = not enough history), and the time of day. You are "
@@ -299,9 +322,13 @@ def forecast_prompt(context: Mapping[str, Any], perm: Sequence[str],
         "return to each exit in basis points. Return STRICT JSON "
         '{"p_up": {"U1": {"intraday": <p>, "eod": <p>, "hold:5": <p>}, ... one entry per '
         'underlying}, "exp_ret_bps": {same shape, optional}, "note": "<=40 chars"}. '
-        "Numbers only; no other text.")
-    rendered = {"time_of_day": context.get("time_of_day"),
-                "session_ordinal": context.get("session_ordinal"), "underlyings": shown}
+        "Numbers only; no other text."
+    )
+    rendered = {
+        "time_of_day": context.get("time_of_day"),
+        "session_ordinal": context.get("session_ordinal"),
+        "underlyings": shown,
+    }
     return [{"role": "user", "content": json.dumps({"task": task, "context": rendered})}]
 
 
@@ -323,9 +350,9 @@ def _bps(value: Any) -> float:
     return x
 
 
-def parse_forecast(reply: Mapping[str, Any], perm: Sequence[str],
-                   horizons: Sequence[str] = FORECAST_HORIZONS
-                   ) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]] | None]:
+def parse_forecast(
+    reply: Mapping[str, Any], perm: Sequence[str], horizons: Sequence[str] = FORECAST_HORIZONS
+) -> tuple[dict[str, dict[str, float]], dict[str, dict[str, float]] | None]:
     """(p_up, exp_ret_bps | None) keyed by CANONICAL alias. p_up must name
     exactly the shown underlyings with every horizon (extra keys ignored);
     an invalid optional exp_ret_bps block is dropped, never repaired."""
@@ -343,8 +370,10 @@ def parse_forecast(reply: Mapping[str, Any], perm: Sequence[str],
     raw = reply.get("exp_ret_bps")
     if isinstance(raw, dict) and set(raw) == set(shown):
         try:
-            exp = {canonical: {h: _bps(raw[label][h]) for h in horizons}
-                   for label, canonical in zip(shown, perm, strict=True)}
+            exp = {
+                canonical: {h: _bps(raw[label][h]) for h in horizons}
+                for label, canonical in zip(shown, perm, strict=True)
+            }
         except (ForecastError, KeyError, TypeError):
             exp = None
     return p_up, exp
@@ -358,19 +387,23 @@ def edge(p: float) -> float:
     return round(abs(p - 0.5), 9)
 
 
-def cap_views(p_up: Mapping[str, Mapping[str, float]],
-              cap: float) -> dict[str, dict[str, float]]:
+def cap_views(p_up: Mapping[str, Mapping[str, float]], cap: float) -> dict[str, dict[str, float]]:
     """The decision-side views: every p clipped to [0.5 - cap, 0.5 + cap]."""
     if not 0 < cap <= 0.5:
         raise ValueError("edge_cap must be in (0, 0.5]")
-    return {u: {h: min(0.5 + cap, max(0.5 - cap, float(p))) for h, p in by_h.items()}
-            for u, by_h in p_up.items()}
+    return {
+        u: {h: min(0.5 + cap, max(0.5 - cap, float(p))) for h, p in by_h.items()}
+        for u, by_h in p_up.items()
+    }
 
 
-def fit_payoff_map(index: outcomes.OutcomeIndex,
-                   labels: Mapping[str, Mapping[str, Mapping[str, Label | None]]],
-                   outcome: longrun.OutcomeFn, cutoff: str,
-                   horizons: Sequence[str] = FORECAST_HORIZONS) -> dict[str, dict[str, Any]]:
+def fit_payoff_map(
+    index: outcomes.OutcomeIndex,
+    labels: Mapping[str, Mapping[str, Mapping[str, Label | None]]],
+    outcome: longrun.OutcomeFn,
+    cutoff: str,
+    horizons: Sequence[str] = FORECAST_HORIZONS,
+) -> dict[str, dict[str, Any]]:
     """Per structure x horizon on TRAIN boards (session <= cutoff): ``a`` =
     mean gross / max_gain when the row's direction was right, ``b`` = mean
     -gross / max_loss when it was wrong (a tie is "not higher")."""
@@ -405,12 +438,15 @@ def fit_payoff_map(index: outcomes.OutcomeIndex,
             table[structure][horizon] = {
                 "a": round(float(np.mean(won)), 6) if won else 0.0,
                 "b": round(float(np.mean(lost)), 6) if lost else 0.0,
-                "n_win": len(won), "n_loss": len(lost)}
+                "n_win": len(won),
+                "n_loss": len(lost),
+            }
     return table
 
 
-def expected_net(row: Mapping[str, Any], p_up: float, payoff: Mapping[str, Any],
-                 cost: float) -> float | None:
+def expected_net(
+    row: Mapping[str, Any], p_up: float, payoff: Mapping[str, Any], cost: float
+) -> float | None:
     """p_win*a*max_gain - (1-p_win)*b*max_loss - cost (None: no economics)."""
     gain, loss = longrun._num(row, "max_gain"), longrun._num(row, "max_loss")
     if gain is None or loss is None or gain <= 0 or loss <= 0:
@@ -423,10 +459,14 @@ def round_trip_cost() -> float:
     return float(outcomes.CostModel().round_trip())
 
 
-def decide_ev(rows: Sequence[Mapping[str, Any]], p_up: Mapping[str, Mapping[str, float]],
-              payoff: Mapping[str, Mapping[str, Any]], tau: float | None, cost: float,
-              horizons: Sequence[str] = FORECAST_HORIZONS
-              ) -> tuple[str | None, str | None, dict[str, Any]]:
+def decide_ev(
+    rows: Sequence[Mapping[str, Any]],
+    p_up: Mapping[str, Mapping[str, float]],
+    payoff: Mapping[str, Mapping[str, Any]],
+    tau: float | None,
+    cost: float,
+    horizons: Sequence[str] = FORECAST_HORIZONS,
+) -> tuple[str | None, str | None, dict[str, Any]]:
     """The best (row, horizon) by approximate expected net; enter only when
     its view's edge >= tau and EV > 0 (tau None: never enter)."""
     detail: dict[str, Any] = {"rule": "ev", "tau": tau}
@@ -456,9 +496,13 @@ def decide_ev(rows: Sequence[Mapping[str, Any]], p_up: Mapping[str, Mapping[str,
     return str(row["id"]), horizon, detail
 
 
-def decide_direction(board: Board, p_up: Mapping[str, Mapping[str, float]], tau: float | None,
-                     horizons: Sequence[str] = FORECAST_HORIZONS, key: str = "board_order"
-                     ) -> tuple[str | None, str | None, dict[str, Any]]:
+def decide_direction(
+    board: Board,
+    p_up: Mapping[str, Mapping[str, float]],
+    tau: float | None,
+    horizons: Sequence[str] = FORECAST_HORIZONS,
+    key: str = "board_order",
+) -> tuple[str | None, str | None, dict[str, Any]]:
     """Forecast-only direction: the strongest view (edge >= tau) picks the
     underlying, direction and horizon; the harness's own row choice
     (``longrun._best`` by ``key``) picks the row; a view without a row in
@@ -466,8 +510,10 @@ def decide_direction(board: Board, p_up: Mapping[str, Mapping[str, float]], tau:
     detail: dict[str, Any] = {"rule": "direction", "tau": tau}
     if tau is None:
         return None, None, {**detail, "reason": "no_tau"}
-    views = sorted(((edge(p_up[u][h]), u, i, h) for u in sorted(p_up)
-                    for i, h in enumerate(horizons)), key=lambda v: (-v[0], v[1], v[2]))
+    views = sorted(
+        ((edge(p_up[u][h]), u, i, h) for u in sorted(p_up) for i, h in enumerate(horizons)),
+        key=lambda v: (-v[0], v[1], v[2]),
+    )
     for view, underlying, _i, horizon in views:
         if view < tau or view == 0:
             break
@@ -478,18 +524,31 @@ def decide_direction(board: Board, p_up: Mapping[str, Mapping[str, float]], tau:
 
         choice = longrun._best(board, keep, key)
         if choice is not None:
-            return choice, horizon, {**detail, "edge": view, "underlying": underlying,
-                                     "direction": "bullish" if bullish else "bearish"}
+            return (
+                choice,
+                horizon,
+                {
+                    **detail,
+                    "edge": view,
+                    "underlying": underlying,
+                    "direction": "bullish" if bullish else "bearish",
+                },
+            )
     return None, None, {**detail, "reason": "no_view_above_tau"}
 
 
-Decider = Callable[[Board, Mapping[str, Mapping[str, float]], float | None],
-                   tuple[str | None, str | None, dict[str, Any]]]
+Decider = Callable[
+    [Board, Mapping[str, Mapping[str, float]], float | None],
+    tuple[str | None, str | None, dict[str, Any]],
+]
 
 
-def fit_tau(train: Sequence[tuple[Board, Mapping[str, Mapping[str, float]]]], decide: Decider,
-            net: Callable[[str, str, str | None], float],
-            grid: Sequence[float] = TAU_GRID) -> dict[str, Any]:
+def fit_tau(
+    train: Sequence[tuple[Board, Mapping[str, Mapping[str, float]]]],
+    decide: Decider,
+    net: Callable[[str, str, str | None], float],
+    grid: Sequence[float] = TAU_GRID,
+) -> dict[str, Any]:
     """tau maximizing the TRAIN net total (ties: the larger tau); a best
     total <= 0 means no train edge: tau None (the arm never enters)."""
     rows: list[dict[str, Any]] = []
@@ -505,9 +564,13 @@ def fit_tau(train: Sequence[tuple[Board, Mapping[str, Mapping[str, float]]]], de
         return {"tau": None, "reason": "empty grid", "grid": rows}
     best = max(rows, key=lambda r: (r["train_net"], r["tau"]))
     fitted = best["tau"] if best["train_net"] > 0 else None
-    return {"tau": fitted, "train_net": best["train_net"], "train_boards": len(train),
-            "reason": "best train net" if fitted is not None else "no positive train net",
-            "grid": rows}
+    return {
+        "tau": fitted,
+        "train_net": best["train_net"],
+        "train_boards": len(train),
+        "reason": "best train net" if fitted is not None else "no positive train net",
+        "grid": rows,
+    }
 
 
 # ------------------------------------------------------------------ scoring
@@ -541,13 +604,25 @@ def murphy(p: np.ndarray, y: np.ndarray, bins: int = BINS) -> dict[str, Any]:
         p_k, y_k = float(np.mean(p[mask])), float(np.mean(y[mask]))
         rel += n_k * (p_k - y_k) ** 2
         res += n_k * (y_k - ybar) ** 2
-        table.append({"bin": [k / bins, (k + 1) / bins], "n": n_k, "mean_p": round(p_k, 4),
-                      "freq": round(y_k, 4)})
+        table.append(
+            {
+                "bin": [k / bins, (k + 1) / bins],
+                "n": n_k,
+                "mean_p": round(p_k, 4),
+                "freq": round(y_k, 4),
+            }
+        )
     rel, res, unc = rel / n, res / n, ybar * (1.0 - ybar)
     score = brier(p, y)
-    return {"n": n, "brier": round(score, 6), "reliability": round(rel, 6),
-            "resolution": round(res, 6), "uncertainty": round(unc, 6),
-            "residual": round(score - (rel - res + unc), 6), "bins": table}
+    return {
+        "n": n,
+        "brier": round(score, 6),
+        "reliability": round(rel, 6),
+        "resolution": round(res, 6),
+        "uncertainty": round(unc, 6),
+        "residual": round(score - (rel - res + unc), 6),
+        "bins": table,
+    }
 
 
 def block_bootstrap(per_session: np.ndarray, block: int, draws: int, seed: int) -> np.ndarray:
@@ -570,8 +645,17 @@ def _ci(values: np.ndarray) -> list[float] | None:
     return [round(float(lo), 6), round(float(hi), 6)]
 
 
-def score_set(p: np.ndarray, y: np.ndarray, p_clim: np.ndarray, p_mom: np.ndarray,
-              session: np.ndarray, *, block: int, draws: int, seed: int) -> dict[str, Any]:
+def score_set(
+    p: np.ndarray,
+    y: np.ndarray,
+    p_clim: np.ndarray,
+    p_mom: np.ndarray,
+    session: np.ndarray,
+    *,
+    block: int,
+    draws: int,
+    seed: int,
+) -> dict[str, Any]:
     """One scored set: point scores plus block-bootstrap 95% CIs over the
     sessions present (``session`` = date-ordered session positions)."""
     n = len(p)
@@ -581,32 +665,47 @@ def score_set(p: np.ndarray, y: np.ndarray, p_clim: np.ndarray, p_mom: np.ndarra
     b, b_clim, b_mom = float(se.mean()), float(se_clim.mean()), float(se_mom.mean())
     decided = p != 0.5
     out: dict[str, Any] = {
-        "n": n, "base_rate": round(float(y.mean()), 4), "mean_p": round(float(p.mean()), 4),
-        "brier": round(b, 6), "brier_clim": round(b_clim, 6), "brier_mom": round(b_mom, 6),
+        "n": n,
+        "base_rate": round(float(y.mean()), 4),
+        "mean_p": round(float(p.mean()), 4),
+        "brier": round(b, 6),
+        "brier_clim": round(b_clim, 6),
+        "brier_mom": round(b_mom, 6),
         "bss_clim": round(1 - b / b_clim, 6) if b_clim > 0 else None,
         "bss_mom": round(1 - b / b_mom, 6) if b_mom > 0 else None,
-        "log_loss": round(log_loss(p, y), 6), "log_loss_clim": round(log_loss(p_clim, y), 6),
+        "log_loss": round(log_loss(p, y), 6),
+        "log_loss_clim": round(log_loss(p_clim, y), 6),
         "log_loss_mom": round(log_loss(p_mom, y), 6),
-        "hit_rate": (round(float(np.mean((p[decided] > 0.5) == (y[decided] == 1))), 4)
-                     if decided.any() else None),
-        "murphy": murphy(p, y)}
+        "hit_rate": (
+            round(float(np.mean((p[decided] > 0.5) == (y[decided] == 1))), 4)
+            if decided.any()
+            else None
+        ),
+        "murphy": murphy(p, y),
+    }
     present = np.unique(session)
     rows = np.zeros((len(present), 4))
-    np.add.at(rows, np.searchsorted(present, session),
-              np.column_stack([np.ones(n), se, se_clim, se_mom]))
+    np.add.at(
+        rows, np.searchsorted(present, session), np.column_stack([np.ones(n), se, se_clim, se_mom])
+    )
     boot = block_bootstrap(rows, block, draws, seed)
     with np.errstate(divide="ignore", invalid="ignore"):
-        out["ci95"] = {"brier": _ci(boot[:, 1] / boot[:, 0]),
-                       "bss_clim": _ci(1 - boot[:, 1] / boot[:, 2]),
-                       "bss_mom": _ci(1 - boot[:, 1] / boot[:, 3]),
-                       "brier_minus_clim": _ci((boot[:, 1] - boot[:, 2]) / boot[:, 0])}
+        out["ci95"] = {
+            "brier": _ci(boot[:, 1] / boot[:, 0]),
+            "bss_clim": _ci(1 - boot[:, 1] / boot[:, 2]),
+            "bss_mom": _ci(1 - boot[:, 1] / boot[:, 3]),
+            "brier_minus_clim": _ci((boot[:, 1] - boot[:, 2]) / boot[:, 0]),
+        }
     out["sessions"], out["block"] = len(present), max(1, min(block, len(present)))
     return out
 
 
-def fit_climatology(labels: Mapping[str, Mapping[str, Mapping[str, Label | None]]],
-                    sessions: Mapping[str, str], cutoff: str,
-                    horizons: Sequence[str] = FORECAST_HORIZONS) -> dict[str, dict[str, float]]:
+def fit_climatology(
+    labels: Mapping[str, Mapping[str, Mapping[str, Label | None]]],
+    sessions: Mapping[str, str],
+    cutoff: str,
+    horizons: Sequence[str] = FORECAST_HORIZONS,
+) -> dict[str, dict[str, float]]:
     """The TRAIN base rate per underlying x horizon (0.5 without data)."""
     counts: dict[tuple[str, str], list[int]] = {}
     for snapshot, per in labels.items():
@@ -618,9 +717,13 @@ def fit_climatology(labels: Mapping[str, Mapping[str, Mapping[str, Label | None]
                 if label is not None:
                     counts.setdefault((alias, horizon), []).append(label.y)
     aliases = sorted({alias for per in labels.values() for alias in per})
-    return {alias: {h: (round(float(np.mean(counts[(alias, h)])), 6)
-                        if counts.get((alias, h)) else 0.5) for h in horizons}
-            for alias in aliases}
+    return {
+        alias: {
+            h: (round(float(np.mean(counts[(alias, h)])), 6) if counts.get((alias, h)) else 0.5)
+            for h in horizons
+        }
+        for alias in aliases
+    }
 
 
 def momentum_sign(context: Mapping[str, Any] | None, alias: str) -> int:
@@ -672,11 +775,14 @@ def fit_state(ctx: PluginContext, cutoff: str) -> dict[str, Any]:
                 if label is not None:
                     samples[horizon].append((momentum_sign(public, alias), label.y))
     outcome = ctx.shared.get("outcome")
-    fitted = {"cutoff": cutoff, "labels": labels, "sessions": sessions,
-              "climatology": fit_climatology(labels, sessions, cutoff),
-              "momentum_k": fit_momentum(samples),
-              "payoff": (None if outcome is None
-                         else fit_payoff_map(index, labels, outcome, cutoff))}
+    fitted = {
+        "cutoff": cutoff,
+        "labels": labels,
+        "sessions": sessions,
+        "climatology": fit_climatology(labels, sessions, cutoff),
+        "momentum_k": fit_momentum(samples),
+        "payoff": (None if outcome is None else fit_payoff_map(index, labels, outcome, cutoff)),
+    }
     cache[cutoff] = fitted
     return dict(fitted)
 
@@ -690,11 +796,23 @@ class ForecastAsk:
 
     wants_arm = True  # longrun.call_ask passes the arm: its repeat seeds the order
 
-    def __init__(self, *, provider: str, transport: Any, seed: int, decision: str,
-                 tau: float | None, payoff: Mapping[str, Any] | None, key: str = "board_order",
-                 cost: float | None = None, edge_cap: float = EDGE_CAP,
-                 effort: str | None = None, max_tokens: int | None = None,
-                 timeout: float | None = None, fallback_provider: str | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        provider: str,
+        transport: Any,
+        seed: int,
+        decision: str,
+        tau: float | None,
+        payoff: Mapping[str, Any] | None,
+        key: str = "board_order",
+        cost: float | None = None,
+        edge_cap: float = EDGE_CAP,
+        effort: str | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
+        fallback_provider: str | None = None,
+    ) -> None:
         if decision not in DECISIONS:
             raise ValueError(f"decision must be one of {DECISIONS}")
         if decision == "ev" and payoff is None:
@@ -702,12 +820,12 @@ class ForecastAsk:
         if effort is not None and effort not in EFFORTS:
             raise ValueError(f"effort must be one of {EFFORTS}")
         if (timeout is not None and not 0 < timeout <= 900) or (
-                max_tokens is not None and not 0 < max_tokens <= 64000):
+            max_tokens is not None and not 0 < max_tokens <= 64000
+        ):
             raise ValueError("timeout must be in (0, 900] s and max_tokens in (0, 64000]")
         if fallback_provider is not None:
             if fallback_provider not in llm.PROVIDERS:
-                raise ValueError(
-                    f"fallback_provider must be one of {sorted(llm.PROVIDERS)}")
+                raise ValueError(f"fallback_provider must be one of {sorted(llm.PROVIDERS)}")
             if fallback_provider == provider:
                 raise ValueError("fallback_provider must differ from provider")
         self.provider, self.transport, self.seed = provider, transport, seed
@@ -717,20 +835,21 @@ class ForecastAsk:
         self.max_tokens, self.timeout = max_tokens, timeout
         self.fallback_provider = fallback_provider
 
-    def decide(self, board: Board, p_up: Mapping[str, Mapping[str, float]]
-               ) -> tuple[str | None, str | None, dict[str, Any]]:
+    def decide(
+        self, board: Board, p_up: Mapping[str, Mapping[str, float]]
+    ) -> tuple[str | None, str | None, dict[str, Any]]:
         views = cap_views(p_up, self.edge_cap)
         if self.decision == "ev" and self.payoff is not None:
-            choice, horizon, detail = decide_ev(board.rows, views, self.payoff, self.tau,
-                                                self.cost)
+            choice, horizon, detail = decide_ev(board.rows, views, self.payoff, self.tau, self.cost)
         elif self.decision == "direction":
             choice, horizon, detail = decide_direction(board, views, self.tau, key=self.key)
         else:
             choice, horizon, detail = None, None, {"rule": "none"}
         return choice, horizon, {**detail, "edge_cap": self.edge_cap}
 
-    def __call__(self, spec: PolicySpec, board: Board, arm: Arm
-                 ) -> tuple[str | None, str | None, str, dict[str, Any]]:
+    def __call__(
+        self, spec: PolicySpec, board: Board, arm: Arm
+    ) -> tuple[str | None, str | None, str, dict[str, Any]]:
         context = board.context or {}
         if not isinstance(context.get("underlyings"), dict) or not context["underlyings"]:
             raise ForecastError("the board carries no public context")
@@ -746,15 +865,27 @@ class ForecastAsk:
         if self.fallback_provider is not None and self.fallback_provider != provider:
             fallback = self.fallback_provider
         reply, model, meta = llm.ask_json(
-            provider, messages, fallback=fallback, transport=self.transport,
-            extra=extra or None, timeout=self.timeout, max_tokens=self.max_tokens)
+            provider,
+            messages,
+            fallback=fallback,
+            transport=self.transport,
+            extra=extra or None,
+            timeout=self.timeout,
+            max_tokens=self.max_tokens,
+        )
         p_up, exp = parse_forecast(reply, perm)
         choice, horizon, detail = self.decide(board, p_up)
-        forecast = {"schema": FORECAST_SCHEMA, "model": model, "seed": self.seed,
-                    "effort": self.effort,
-                    "perm": perm, "p_up": p_up, "exp_ret_bps": exp, "decision": detail,
-                    "prompt_sha256": hashlib.sha256(
-                        messages[0]["content"].encode()).hexdigest()}
+        forecast = {
+            "schema": FORECAST_SCHEMA,
+            "model": model,
+            "seed": self.seed,
+            "effort": self.effort,
+            "perm": perm,
+            "p_up": p_up,
+            "exp_ret_bps": exp,
+            "decision": detail,
+            "prompt_sha256": hashlib.sha256(messages[0]["content"].encode()).hexdigest(),
+        }
         return choice, horizon, str(reply.get("note", ""))[:60], {**meta, "forecast": forecast}
 
 
@@ -775,18 +906,20 @@ def ask_plugin(params: Mapping[str, Any], ctx: PluginContext) -> ForecastAsk:
     payoff = fit_state(ctx, cutoff)["payoff"] if decision == "ev" else None
     effort = params.get("effort")
     fallback = params.get("fallback_provider")
-    return ForecastAsk(provider=str(params.get("provider", "minimax-flash")),
-                       transport=ctx.shared.get("transport"),
-                       seed=int(params.get("seed", DEFAULT_SEED)), decision=decision,
-                       tau=_tau_param(params.get("tau", DEFAULT_TAU)), payoff=payoff,
-                       key=str(params.get("key", "board_order")),
-                       edge_cap=float(params.get("edge_cap", EDGE_CAP)),
-                       effort=None if effort is None else str(effort),
-                       max_tokens=(None if params.get("max_tokens") is None
-                                   else int(params["max_tokens"])),
-                       timeout=(None if params.get("timeout") is None
-                                else float(params["timeout"])),
-                       fallback_provider=None if fallback is None else str(fallback))
+    return ForecastAsk(
+        provider=str(params.get("provider", "minimax-flash")),
+        transport=ctx.shared.get("transport"),
+        seed=int(params.get("seed", DEFAULT_SEED)),
+        decision=decision,
+        tau=_tau_param(params.get("tau", DEFAULT_TAU)),
+        payoff=payoff,
+        key=str(params.get("key", "board_order")),
+        edge_cap=float(params.get("edge_cap", EDGE_CAP)),
+        effort=None if effort is None else str(effort),
+        max_tokens=(None if params.get("max_tokens") is None else int(params["max_tokens"])),
+        timeout=(None if params.get("timeout") is None else float(params["timeout"])),
+        fallback_provider=None if fallback is None else str(fallback),
+    )
 
 
 # ------------------------------------------------------------------ report
@@ -801,12 +934,29 @@ def forecast_receipt(rec: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return forecast
 
 
-def _records(arm: Arm, boards: Sequence[Board], receipts: Mapping[str, Mapping[str, Any]],
-             state: Mapping[str, Any], order: Mapping[str, int]) -> dict[str, np.ndarray]:
+def _records(
+    arm: Arm,
+    boards: Sequence[Board],
+    receipts: Mapping[str, Mapping[str, Any]],
+    state: Mapping[str, Any],
+    order: Mapping[str, int],
+) -> dict[str, np.ndarray]:
     """Flat arrays of every labeled forecast of one arm on ``boards``."""
-    cols: dict[str, list[Any]] = {k: [] for k in (
-        "snapshot", "alias", "horizon", "p", "y", "p_clim", "p_mom", "session", "train",
-        "position")}
+    cols: dict[str, list[Any]] = {
+        k: []
+        for k in (
+            "snapshot",
+            "alias",
+            "horizon",
+            "p",
+            "y",
+            "p_clim",
+            "p_mom",
+            "session",
+            "train",
+            "position",
+        )
+    }
     for board in boards:
         forecast = forecast_receipt(receipts.get(board.snapshot))
         if forecast is None:
@@ -835,14 +985,23 @@ def _score_arm(rows: Mapping[str, np.ndarray], *, draws: int, seed: int) -> dict
     out: dict[str, Any] = {}
     if len(rows["p"]) == 0:
         return out
-    for split, mask in (("test", ~rows["train"].astype(bool)), ("train", rows["train"].astype(bool))):
+    for split, mask in (
+        ("test", ~rows["train"].astype(bool)),
+        ("train", rows["train"].astype(bool)),
+    ):
         out[split] = {}
         for horizon in ("all", *FORECAST_HORIZONS):
             sel = mask if horizon == "all" else mask & (rows["horizon"] == horizon)
             out[split][horizon] = score_set(
-                rows["p"][sel].astype(float), rows["y"][sel].astype(float),
-                rows["p_clim"][sel].astype(float), rows["p_mom"][sel].astype(float),
-                rows["session"][sel].astype(int), block=BLOCKS[horizon], draws=draws, seed=seed)
+                rows["p"][sel].astype(float),
+                rows["y"][sel].astype(float),
+                rows["p_clim"][sel].astype(float),
+                rows["p_mom"][sel].astype(float),
+                rows["session"][sel].astype(int),
+                block=BLOCKS[horizon],
+                draws=draws,
+                seed=seed,
+            )
     return out
 
 
@@ -851,21 +1010,38 @@ def _position_bias(rows: Mapping[str, np.ndarray]) -> list[dict[str, Any]]:
     for k in sorted({int(v) for v in rows["position"]} - {-1}):
         sel = rows["position"] == k
         p, y = rows["p"][sel].astype(float), rows["y"][sel].astype(float)
-        out.append({"shown_as": f"U{k + 1}", "n": int(sel.sum()),
-                    "mean_p": round(float(p.mean()), 4), "base_rate": round(float(y.mean()), 4),
-                    "mean_p_minus_y": round(float((p - y).mean()), 4)})
+        out.append(
+            {
+                "shown_as": f"U{k + 1}",
+                "n": int(sel.sum()),
+                "mean_p": round(float(p.mean()), 4),
+                "base_rate": round(float(y.mean()), 4),
+                "mean_p_minus_y": round(float((p - y).mean()), 4),
+            }
+        )
     return out
 
 
-def order_check(a: Mapping[str, np.ndarray], b: Mapping[str, np.ndarray],
-                same_order: Mapping[str, bool], *, draws: int, seed: int) -> dict[str, Any]:
+def order_check(
+    a: Mapping[str, np.ndarray],
+    b: Mapping[str, np.ndarray],
+    same_order: Mapping[str, bool],
+    *,
+    draws: int,
+    seed: int,
+) -> dict[str, Any]:
     """A/A on order sensitivity: the two repeats' forecasts on the same
     (board, underlying, horizon). Boards whose seeded orders coincide
     measure sampling noise alone; the rest add any order effect."""
-    key_a = {(s, u, h): i for i, (s, u, h) in enumerate(zip(a["snapshot"], a["alias"],
-                                                             a["horizon"], strict=True))}
-    pairs = [(key_a[k], j) for j, k in enumerate(zip(b["snapshot"], b["alias"], b["horizon"],
-                                                     strict=True)) if k in key_a]
+    key_a = {
+        (s, u, h): i
+        for i, (s, u, h) in enumerate(zip(a["snapshot"], a["alias"], a["horizon"], strict=True))
+    }
+    pairs = [
+        (key_a[k], j)
+        for j, k in enumerate(zip(b["snapshot"], b["alias"], b["horizon"], strict=True))
+        if k in key_a
+    ]
     if not pairs:
         return {"status": "not_run", "reason": "no paired forecasts"}
     ia, ib = np.array([p[0] for p in pairs]), np.array([p[1] for p in pairs])
@@ -881,27 +1057,42 @@ def order_check(a: Mapping[str, np.ndarray], b: Mapping[str, np.ndarray],
     np.add.at(rows, np.searchsorted(present, session), np.column_stack([np.ones(len(y)), se_diff]))
     boot = block_bootstrap(rows, BLOCKS["all"], draws, seed)
     ci = _ci(boot[:, 1] / boot[:, 0])
-    corr = (float(np.corrcoef(pa, pb)[0, 1]) if len(pa) > 1 and pa.std() > 0 and pb.std() > 0
-            else None)
-    return {"status": "ok", "n": len(pa),
-            "mean_abs_diff": round(float(diff.mean()), 4),
-            "mean_abs_diff_same_order": (round(float(diff[same].mean()), 4)
-                                         if same.any() else None),
-            "mean_abs_diff_other_order": (round(float(diff[~same].mean()), 4)
-                                          if (~same).any() else None),
-            "same_order_share": round(float(same.mean()), 4),
-            "corr": None if corr is None else round(corr, 4),
-            "side_disagreement": (round(float(np.mean((pa[sided] > 0.5) != (pb[sided] > 0.5))), 4)
-                                  if sided.any() else None),
-            "brier_diff": round(float(se_diff.mean()), 6), "brier_diff_ci95": ci,
-            "order_sensitive": bool(ci is not None and (ci[0] > 0 or ci[1] < 0))}
+    corr = (
+        float(np.corrcoef(pa, pb)[0, 1]) if len(pa) > 1 and pa.std() > 0 and pb.std() > 0 else None
+    )
+    return {
+        "status": "ok",
+        "n": len(pa),
+        "mean_abs_diff": round(float(diff.mean()), 4),
+        "mean_abs_diff_same_order": (round(float(diff[same].mean()), 4) if same.any() else None),
+        "mean_abs_diff_other_order": (
+            round(float(diff[~same].mean()), 4) if (~same).any() else None
+        ),
+        "same_order_share": round(float(same.mean()), 4),
+        "corr": None if corr is None else round(corr, 4),
+        "side_disagreement": (
+            round(float(np.mean((pa[sided] > 0.5) != (pb[sided] > 0.5))), 4)
+            if sided.any()
+            else None
+        ),
+        "brier_diff": round(float(se_diff.mean()), 6),
+        "brier_diff_ci95": ci,
+        "order_sensitive": bool(ci is not None and (ci[0] > 0 or ci[1] < 0)),
+    }
 
 
-def _derive(source_arms: Sequence[Arm], variant: str, boards: Sequence[Board],
-            receipts: Mapping[str, Mapping[str, Mapping[str, Any]]], state: Mapping[str, Any],
-            net: Callable[[str, str, str | None], float], grid: Sequence[float],
-            run_dir: Path | None, key: str, edge_cap: float = EDGE_CAP
-            ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def _derive(
+    source_arms: Sequence[Arm],
+    variant: str,
+    boards: Sequence[Board],
+    receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    state: Mapping[str, Any],
+    net: Callable[[str, str, str | None], float],
+    grid: Sequence[float],
+    run_dir: Path | None,
+    key: str,
+    edge_cap: float = EDGE_CAP,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """One derived deterministic arm per source repeat, tau fit on TRAIN
     (decisions see the capped views, like the model arm's)."""
     cost = round_trip_cost()
@@ -910,12 +1101,15 @@ def _derive(source_arms: Sequence[Arm], variant: str, boards: Sequence[Board],
         if payoff is None:
             raise ValueError("the ev variant needs the payoff map (an outcome plug-in)")
 
-        def decide(board: Board, p_up: Mapping[str, Mapping[str, float]],
-                   tau: float | None) -> tuple[str | None, str | None, dict[str, Any]]:
+        def decide(
+            board: Board, p_up: Mapping[str, Mapping[str, float]], tau: float | None
+        ) -> tuple[str | None, str | None, dict[str, Any]]:
             return decide_ev(board.rows, p_up, payoff, tau, cost)
     elif variant == "direction":
-        def decide(board: Board, p_up: Mapping[str, Mapping[str, float]],
-                   tau: float | None) -> tuple[str | None, str | None, dict[str, Any]]:
+
+        def decide(
+            board: Board, p_up: Mapping[str, Mapping[str, float]], tau: float | None
+        ) -> tuple[str | None, str | None, dict[str, Any]]:
             return decide_direction(board, p_up, tau, key=key)
     else:
         raise ValueError(f"unknown derived variant {variant!r}")
@@ -930,26 +1124,38 @@ def _derive(source_arms: Sequence[Arm], variant: str, boards: Sequence[Board],
     for arm_obj, source in zip(longrun.arms_of([spec]), source_arms, strict=True):
         mine = receipts.get(source.name, {})
         forecasts = [(board, forecast_receipt(mine.get(board.snapshot))) for board in boards]
-        usable = [(board, cap_views(f["p_up"], edge_cap)) for board, f in forecasts
-                  if f is not None]
-        fit = fit_tau([(b, p) for b, p in usable if b.session <= state["cutoff"]], decide, net,
-                      grid)
+        usable = [
+            (board, cap_views(f["p_up"], edge_cap)) for board, f in forecasts if f is not None
+        ]
+        fit = fit_tau(
+            [(b, p) for b, p in usable if b.session <= state["cutoff"]], decide, net, grid
+        )
         fits[arm_obj.name] = {k: fit[k] for k in fit if k != "grid"} | {"grid": fit["grid"]}
         recs: dict[str, dict[str, Any]] = {}
         for board, p_up in usable:
             choice, horizon, detail = decide(board, p_up, fit["tau"])
             recs[board.snapshot] = {
-                "schema": longrun.RECEIPT_SCHEMA, "arm": arm_obj.name, "policy": name,
-                "repeat": arm_obj.repeat, "kind": "rule", "snapshot": board.snapshot,
-                "session": board.session, "board_rows": len(board.rows), "ok": True,
-                "derived_from": source.name, "decision": detail,
-                **longrun._validated(board, choice, horizon, f"derived {variant}")}
+                "schema": longrun.RECEIPT_SCHEMA,
+                "arm": arm_obj.name,
+                "policy": name,
+                "repeat": arm_obj.repeat,
+                "kind": "rule",
+                "snapshot": board.snapshot,
+                "session": board.session,
+                "board_rows": len(board.rows),
+                "ok": True,
+                "derived_from": source.name,
+                "decision": detail,
+                **longrun._validated(board, choice, horizon, f"derived {variant}"),
+            }
         path = ""
         if run_dir is not None:
             target = longrun.receipts_path(run_dir, arm_obj.name)
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text("".join(json.dumps(r, sort_keys=True) + "\n"
-                                      for r in recs.values()), encoding="utf-8")
+            target.write_text(
+                "".join(json.dumps(r, sort_keys=True) + "\n" for r in recs.values()),
+                encoding="utf-8",
+            )
             path = str(target)
         items.append({"arm": arm_obj, "receipts": recs, "file": path})
     return items, {"policy": name, "variant": variant, "fits": fits}
@@ -964,12 +1170,17 @@ def _fmt_ci(ci: Sequence[float] | None, digits: int = 4) -> str:
 
 
 def report_markdown(section: Mapping[str, Any]) -> str:
-    lines = [f"Forecaster `{section['source']}`: {section['boards_scored']} paired boards; "
-             f"TRAIN <= {section['cutoff']} < TEST. Labels: strictly-higher spot at the exit "
-             "(outcomes.py exit clocks; exit side from prints strictly after as-of). "
-             "Scores are descriptive on TRAIN and confirmatory on TEST.", ""]
-    lines.append("| arm | split | horizon | n | Brier [95% CI] | BSS vs clim [95% CI] | "
-                 "BSS vs momentum [95% CI] | log loss | REL | RES | UNC | hit |")
+    lines = [
+        f"Forecaster `{section['source']}`: {section['boards_scored']} paired boards; "
+        f"TRAIN <= {section['cutoff']} < TEST. Labels: strictly-higher spot at the exit "
+        "(outcomes.py exit clocks; exit side from prints strictly after as-of). "
+        "Scores are descriptive on TRAIN and confirmatory on TEST.",
+        "",
+    ]
+    lines.append(
+        "| arm | split | horizon | n | Brier [95% CI] | BSS vs clim [95% CI] | "
+        "BSS vs momentum [95% CI] | log loss | REL | RES | UNC | hit |"
+    )
     lines.append("|---|---|---|---|---|---|---|---|---|---|---|---|")
     for arm, splits in section["scores"].items():
         for split in ("test", "train"):
@@ -983,31 +1194,39 @@ def report_markdown(section: Mapping[str, Any]) -> str:
                     f"{_fmt_ci(ci['brier'])} | {_fmt(s['bss_clim'])} {_fmt_ci(ci['bss_clim'])} | "
                     f"{_fmt(s['bss_mom'])} {_fmt_ci(ci['bss_mom'])} | {s['log_loss']:.4f} | "
                     f"{m['reliability']:.4f} | {m['resolution']:.4f} | {m['uncertainty']:.4f} | "
-                    f"{hit} |")
+                    f"{hit} |"
+                )
     lines.append("")
     aa = section.get("aa_order") or {}
     if aa.get("status") == "ok":
-        lines.append(f"A/A order check ({aa['n']} paired forecasts): mean |dp| "
-                     f"{aa['mean_abs_diff']:.4f} (same order {aa['mean_abs_diff_same_order']}, "
-                     f"other order {aa['mean_abs_diff_other_order']}); corr {aa['corr']}; side "
-                     f"disagreement {aa['side_disagreement']}; Brier diff "
-                     f"{aa['brier_diff']:+.5f} {_fmt_ci(aa['brier_diff_ci95'], 5)}; order "
-                     f"sensitive: {aa['order_sensitive']}.")
+        lines.append(
+            f"A/A order check ({aa['n']} paired forecasts): mean |dp| "
+            f"{aa['mean_abs_diff']:.4f} (same order {aa['mean_abs_diff_same_order']}, "
+            f"other order {aa['mean_abs_diff_other_order']}); corr {aa['corr']}; side "
+            f"disagreement {aa['side_disagreement']}; Brier diff "
+            f"{aa['brier_diff']:+.5f} {_fmt_ci(aa['brier_diff_ci95'], 5)}; order "
+            f"sensitive: {aa['order_sensitive']}."
+        )
     else:
         lines.append(f"A/A order check: {aa.get('status', 'not_run')} - {aa.get('reason', '')}")
     lines.append("")
     for arm, rows in section["position_bias"].items():
-        cells = "; ".join(f"{r['shown_as']}: p {r['mean_p']:.3f} vs y {r['base_rate']:.3f}"
-                          for r in rows)
+        cells = "; ".join(
+            f"{r['shown_as']}: p {r['mean_p']:.3f} vs y {r['base_rate']:.3f}" for r in rows
+        )
         lines.append(f"- position bias {arm}: {cells}")
     for derived in section["derived"].values():
         for arm, fit in derived.get("fits", {}).items():
-            lines.append(f"- derived {arm} ({derived['variant']}): tau fit on TRAIN = "
-                         f"{fit.get('tau')} (train net {fit.get('train_net')}, "
-                         f"{fit.get('train_boards')} train boards; {fit.get('reason')})")
+            lines.append(
+                f"- derived {arm} ({derived['variant']}): tau fit on TRAIN = "
+                f"{fit.get('tau')} (train net {fit.get('train_net')}, "
+                f"{fit.get('train_boards')} train boards; {fit.get('reason')})"
+            )
     k = section["momentum_k"]
-    lines.append(f"- momentum baseline k (TRAIN): {k}; climatology (TRAIN base rates): "
-                 f"{section['climatology']}")
+    lines.append(
+        f"- momentum baseline k (TRAIN): {k}; climatology (TRAIN base rates): "
+        f"{section['climatology']}"
+    )
     if section.get("warnings"):
         lines.append(f"- warnings: {section['warnings']}")
     return "\n".join(lines)
@@ -1026,9 +1245,15 @@ def report_plugin(params: Mapping[str, Any], ctx: PluginContext) -> Callable[...
     edge_cap = float(params.get("edge_cap", EDGE_CAP))
     state = fit_state(ctx, cutoff)
 
-    def report(*, run_dir: Path | None, boards: Sequence[Board], arms: Sequence[Arm],
-               receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
-               outcomes: longrun.OutcomeCache, protocol: Protocol) -> dict[str, Any]:
+    def report(
+        *,
+        run_dir: Path | None,
+        boards: Sequence[Board],
+        arms: Sequence[Arm],
+        receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
+        outcomes: longrun.OutcomeCache,
+        protocol: Protocol,
+    ) -> dict[str, Any]:
         draws = int(params.get("draws", protocol.draws))
         seed = protocol.seed
         warnings = []
@@ -1036,50 +1261,87 @@ def report_plugin(params: Mapping[str, Any], ctx: PluginContext) -> Callable[...
             warnings.append(f"report cutoff {cutoff} != protocol cutoff {protocol.cutoff}")
         sources = sorted((a for a in arms if a.policy.name == source), key=lambda a: a.repeat)
         if not sources:
-            return {"section": {"schema": REPORT_SCHEMA, "status": "no_source",
-                                "source": source, "markdown": f"No arm of policy {source!r}."}}
-        paired = [b for b in boards
-                  if all(forecast_receipt(receipts.get(a.name, {}).get(b.snapshot))
-                         for a in sources)]
+            return {
+                "section": {
+                    "schema": REPORT_SCHEMA,
+                    "status": "no_source",
+                    "source": source,
+                    "markdown": f"No arm of policy {source!r}.",
+                }
+            }
+        paired = [
+            b
+            for b in boards
+            if all(forecast_receipt(receipts.get(a.name, {}).get(b.snapshot)) for a in sources)
+        ]
         order = {s: i for i, s in enumerate(sorted({b.session for b in boards}))}
-        rows = {a.name: _records(a, paired, receipts.get(a.name, {}), state, order)
-                for a in sources}
+        rows = {
+            a.name: _records(a, paired, receipts.get(a.name, {}), state, order) for a in sources
+        }
         scores = {name: _score_arm(r, draws=draws, seed=seed) for name, r in rows.items()}
         aa: dict[str, Any] = {"status": "not_run", "reason": "the source needs repeats >= 2"}
         if len(sources) >= 2:
             first, second = (receipts.get(a.name, {}) for a in sources[:2])
-            same = {b.snapshot: (forecast_receipt(first.get(b.snapshot)) or {}).get("perm")
-                    == (forecast_receipt(second.get(b.snapshot)) or {}).get("perm")
-                    for b in paired}
-            aa = order_check(rows[sources[0].name], rows[sources[1].name], same, draws=draws,
-                             seed=seed)
+            same = {
+                b.snapshot: (forecast_receipt(first.get(b.snapshot)) or {}).get("perm")
+                == (forecast_receipt(second.get(b.snapshot)) or {}).get("perm")
+                for b in paired
+            }
+            aa = order_check(
+                rows[sources[0].name], rows[sources[1].name], same, draws=draws, seed=seed
+            )
         derived_items: list[dict[str, Any]] = []
         derived: dict[str, Any] = {}
         for variant in variants:
-            items, info = _derive(sources, variant, paired, receipts, state, outcomes.net,
-                                  grid, run_dir, key, edge_cap)
+            items, info = _derive(
+                sources,
+                variant,
+                paired,
+                receipts,
+                state,
+                outcomes.net,
+                grid,
+                run_dir,
+                key,
+                edge_cap,
+            )
             derived_items.extend(items)
             derived[info["policy"]] = info
-        section = {"schema": REPORT_SCHEMA, "status": "ok", "source": source,
-                   "cutoff": cutoff, "boards_scored": len(paired),
-                   "forecasts_scored": {n: len(r["p"]) for n, r in rows.items()},
-                   "horizons": list(FORECAST_HORIZONS), "blocks": BLOCKS, "draws": draws,
-                   "log_loss_clip": [LOGLOSS_EPS, 1 - LOGLOSS_EPS],
-                   "climatology": state["climatology"], "momentum_k": state["momentum_k"],
-                   "payoff_map": state["payoff"], "round_trip_cost": round_trip_cost(),
-                   "scores": scores, "aa_order": aa,
-                   "position_bias": {n: _position_bias(r) for n, r in rows.items()},
-                   "derived": derived, "warnings": warnings}
+        section = {
+            "schema": REPORT_SCHEMA,
+            "status": "ok",
+            "source": source,
+            "cutoff": cutoff,
+            "boards_scored": len(paired),
+            "forecasts_scored": {n: len(r["p"]) for n, r in rows.items()},
+            "horizons": list(FORECAST_HORIZONS),
+            "blocks": BLOCKS,
+            "draws": draws,
+            "log_loss_clip": [LOGLOSS_EPS, 1 - LOGLOSS_EPS],
+            "climatology": state["climatology"],
+            "momentum_k": state["momentum_k"],
+            "payoff_map": state["payoff"],
+            "round_trip_cost": round_trip_cost(),
+            "scores": scores,
+            "aa_order": aa,
+            "position_bias": {n: _position_bias(r) for n, r in rows.items()},
+            "derived": derived,
+            "warnings": warnings,
+        }
         section["markdown"] = report_markdown(section)
         return {"section": section, "derived": derived_items}
+
     return report
 
 
 # ------------------------------------------------------------ power + smoke
 
 
-def label_summary(labels: Mapping[str, Mapping[str, Mapping[str, Label | None]]],
-                  sessions: Mapping[str, str], cutoff: str) -> dict[str, Any]:
+def label_summary(
+    labels: Mapping[str, Mapping[str, Mapping[str, Label | None]]],
+    sessions: Mapping[str, str],
+    cutoff: str,
+) -> dict[str, Any]:
     """Base rates per split and the dependence that shrinks the effective
     sample: the mean cross-underlying label correlation on a board and the
     within-session correlation (all boards of a session, same underlying)."""
@@ -1095,9 +1357,10 @@ def label_summary(labels: Mapping[str, Mapping[str, Mapping[str, Label | None]]]
         total = sum(len(ys) for ys in by_board.values())
         cross = []
         for i, left in enumerate(aliases):
-            for right in aliases[i + 1:]:
-                both = [(ys[left], ys[right]) for ys in by_board.values()
-                        if left in ys and right in ys]
+            for right in aliases[i + 1 :]:
+                both = [
+                    (ys[left], ys[right]) for ys in by_board.values() if left in ys and right in ys
+                ]
                 xs, zs = np.array([b[0] for b in both]), np.array([b[1] for b in both])
                 if len(both) > 2 and xs.std() > 0 and zs.std() > 0:
                     cross.append(float(np.corrcoef(xs, zs)[0, 1]))
@@ -1115,11 +1378,15 @@ def label_summary(labels: Mapping[str, Mapping[str, Mapping[str, Label | None]]]
             splits["train" if sessions[snapshot] <= cutoff else "test"].extend(ys.values())
         out[horizon] = {
             "labeled": total,
-            **{f"base_rate_{name}": (round(float(np.mean(ys)), 4) if ys else None)
-               for name, ys in splits.items()},
-            "cross_underlying_corr": round(rho_u, 4), "within_session_icc": round(icc, 4),
+            **{
+                f"base_rate_{name}": (round(float(np.mean(ys)), 4) if ys else None)
+                for name, ys in splits.items()
+            },
+            "cross_underlying_corr": round(rho_u, 4),
+            "within_session_icc": round(icc, 4),
             "design_effect": round(design, 2),
-            "effective_n": round(total / design, 1) if design > 0 else None}
+            "effective_n": round(total / design, 1) if design > 0 else None,
+        }
     return out
 
 
@@ -1148,8 +1415,9 @@ class CapturingTransport:
         self.calls: list[dict[str, Any]] = []
         self._lock = threading.Lock()
 
-    def __call__(self, url: str, body: bytes, headers: dict[str, str],
-                 timeout: float) -> tuple[int, bytes]:
+    def __call__(
+        self, url: str, body: bytes, headers: dict[str, str], timeout: float
+    ) -> tuple[int, bytes]:
         started = time.monotonic()
         entry: dict[str, Any] = {}
         try:
@@ -1162,9 +1430,11 @@ class CapturingTransport:
             try:
                 envelope = json.loads(raw)
                 choice = envelope["choices"][0]
-                entry.update(finish_reason=choice.get("finish_reason"),
-                             usage=envelope.get("usage"),
-                             content=str(choice["message"].get("content") or "")[-4000:])
+                entry.update(
+                    finish_reason=choice.get("finish_reason"),
+                    usage=envelope.get("usage"),
+                    content=str(choice["message"].get("content") or "")[-4000:],
+                )
             except (ValueError, KeyError, IndexError, TypeError, AttributeError):
                 entry["envelope"] = "unparsed"
             return status, raw
@@ -1178,10 +1448,20 @@ def _pct(values: Sequence[float], q: float) -> float | None:
     return None if not values else round(float(np.percentile(values, q)), 2)
 
 
-def smoke(*, bundle: Path, table: Path, out_root: Path, boards: int = 24, repeats: int = 2,
-          concurrency: int = 3, provider: str = "minimax-flash", effort: str | None = None,
-          transport: llm.PostTransport | None = None,
-          quota: longrun.QuotaFn | None = None, now: datetime | None = None) -> dict[str, Any]:
+def smoke(
+    *,
+    bundle: Path,
+    table: Path,
+    out_root: Path,
+    boards: int = 24,
+    repeats: int = 2,
+    concurrency: int = 3,
+    provider: str = "minimax-flash",
+    effort: str | None = None,
+    transport: llm.PostTransport | None = None,
+    quota: longrun.QuotaFn | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
     """A small live run of the forecaster (``boards`` boards spread evenly
     over the window, ``repeats`` repeats) through the real harness, plus
     transport statistics. Refuses to start without quota headroom."""
@@ -1200,55 +1480,88 @@ def smoke(*, bundle: Path, table: Path, out_root: Path, boards: int = 24, repeat
     outcome = longrun.plugin("outcome", "v2")({"table": str(table)}, ctx)
     ctx.shared["outcome"] = outcome
     name = "m31-fc"
-    ask = longrun.PolicyAsk(None, {name: ask_plugin({"provider": provider, "effort": effort},
-                                                    ctx)})
+    ask = longrun.PolicyAsk(None, {name: ask_plugin({"provider": provider, "effort": effort}, ctx)})
     report = report_plugin({"source": name, "draws": 2000}, ctx)
     run_dir = longrun.new_run_dir(out_root, now or datetime.now(UTC))
-    policies = [PolicySpec(name, "model", repeats=repeats),
-                *longrun.builtin_controls("intraday")]
+    policies = [PolicySpec(name, "model", repeats=repeats), *longrun.builtin_controls("intraday")]
     result = longrun.run_longrun(
-        run_dir, boards=chosen, policies=policies, outcome=outcome, ask=ask, quota_ok=quota_ok,
-        protocol=Protocol(draws=2000, random_seeds=200, cutoff=DEFAULT_CUTOFF,
-                          incumbent=name if repeats >= 2 else None,
-                          random_horizons=("intraday", "eod", "hold:5", "expiry")),
+        run_dir,
+        boards=chosen,
+        policies=policies,
+        outcome=outcome,
+        ask=ask,
+        quota_ok=quota_ok,
+        protocol=Protocol(
+            draws=2000,
+            random_seeds=200,
+            cutoff=DEFAULT_CUTOFF,
+            incumbent=name if repeats >= 2 else None,
+            random_horizons=("intraday", "eod", "hold:5", "expiry"),
+        ),
         settings=longrun.ExecSettings(concurrency=concurrency, pause_s=60.0, max_pause_s=0.0),
         reports={"forecast": report},
-        meta={"smoke": True, "boards": [b.snapshot for b in chosen]})
+        meta={"smoke": True, "boards": [b.snapshot for b in chosen]},
+    )
     calls = capture.calls
     latencies = [c["latency_s"] for c in calls if c.get("status") == 200]
     usage = [c["usage"] for c in calls if isinstance(c.get("usage"), dict)]
     completion = [float(u.get("completion_tokens", 0)) for u in usage]
     prompt = [float(u.get("prompt_tokens", 0)) for u in usage]
     model_files = [longrun.receipts_path(run_dir, arm) for arm in policies[0].arm_names()]
-    receipts = [json.loads(line) for path in model_files if path.is_file()  # model arm only
-                for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+    receipts = [
+        json.loads(line)
+        for path in model_files
+        if path.is_file()  # model arm only
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
     failures = [r.get("error", "") for r in receipts if not r.get("ok")]
-    digest = (json.loads((run_dir / "digest.json").read_text(encoding="utf-8"))
-              if (run_dir / "digest.json").is_file() else {})
+    digest = (
+        json.loads((run_dir / "digest.json").read_text(encoding="utf-8"))
+        if (run_dir / "digest.json").is_file()
+        else {}
+    )
     section = (digest.get("reports") or {}).get("forecast") or {}
     summary = {
-        "schema": "desk-forecast-smoke/1", "run_dir": str(run_dir), "status": result["status"],
-        "provider": provider, "effort": effort, "boards": len(chosen), "repeats": repeats,
-        "calls": len(calls), "http_200": sum(1 for c in calls if c.get("status") == 200),
+        "schema": "desk-forecast-smoke/1",
+        "run_dir": str(run_dir),
+        "status": result["status"],
+        "provider": provider,
+        "effort": effort,
+        "boards": len(chosen),
+        "repeats": repeats,
+        "calls": len(calls),
+        "http_200": sum(1 for c in calls if c.get("status") == 200),
         "transport_errors": sum(1 for c in calls if c.get("status") is None),
         "truncated": sum(1 for c in calls if c.get("finish_reason") == "length"),
-        "receipts": len(receipts), "parsed_ok": sum(1 for r in receipts if r.get("ok")),
-        "parse_rate": (round(sum(1 for r in receipts if r.get("ok")) / len(receipts), 4)
-                       if receipts else None),
+        "receipts": len(receipts),
+        "parsed_ok": sum(1 for r in receipts if r.get("ok")),
+        "parse_rate": (
+            round(sum(1 for r in receipts if r.get("ok")) / len(receipts), 4) if receipts else None
+        ),
         "failures": failures[:20],
-        "latency_s": {"p50": _pct(latencies, 50), "p90": _pct(latencies, 90),
-                      "max": max(latencies) if latencies else None},
-        "tokens": {"completion_mean": round(float(np.mean(completion)), 1) if completion else None,
-                   "completion_p90": _pct(completion, 90),
-                   "prompt_mean": round(float(np.mean(prompt)), 1) if prompt else None},
-        "forecast_report": {k: section.get(k) for k in ("status", "boards_scored",
-                                                        "forecasts_scored", "aa_order")},
-        "scores_all": {arm: {split: (s.get(split) or {}).get("all")
-                             for split in ("train", "test")}
-                       for arm, s in (section.get("scores") or {}).items()},
-        "headline": digest.get("headline")}
-    (run_dir / "smoke-summary.json").write_text(json.dumps(summary, indent=2, default=str),
-                                                encoding="utf-8")
+        "latency_s": {
+            "p50": _pct(latencies, 50),
+            "p90": _pct(latencies, 90),
+            "max": max(latencies) if latencies else None,
+        },
+        "tokens": {
+            "completion_mean": round(float(np.mean(completion)), 1) if completion else None,
+            "completion_p90": _pct(completion, 90),
+            "prompt_mean": round(float(np.mean(prompt)), 1) if prompt else None,
+        },
+        "forecast_report": {
+            k: section.get(k) for k in ("status", "boards_scored", "forecasts_scored", "aa_order")
+        },
+        "scores_all": {
+            arm: {split: (s.get(split) or {}).get("all") for split in ("train", "test")}
+            for arm, s in (section.get("scores") or {}).items()
+        },
+        "headline": digest.get("headline"),
+    }
+    (run_dir / "smoke-summary.json").write_text(
+        json.dumps(summary, indent=2, default=str), encoding="utf-8"
+    )
     with (run_dir / "transport-calls.jsonl").open("w", encoding="utf-8") as stream:
         for call in calls:
             stream.write(json.dumps(call, default=str) + "\n")
@@ -1256,8 +1569,10 @@ def smoke(*, bundle: Path, table: Path, out_root: Path, boards: int = 24, repeat
 
 
 def _cli(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="python -m tree_options.desk.forecast",
-                                     description="Desk forecaster: labels summary and smoke.")
+    parser = argparse.ArgumentParser(
+        prog="python -m tree_options.desk.forecast",
+        description="Desk forecaster: labels summary and smoke.",
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     labels = sub.add_parser("labels", help="label base rates + effective-sample summary")
     labels.add_argument("--bundle", required=True, type=Path)
@@ -1271,31 +1586,68 @@ def _cli(argv: list[str] | None = None) -> int:
     run.add_argument("--repeats", type=int, default=2)
     run.add_argument("--concurrency", type=int, default=3)
     run.add_argument("--provider", default="minimax-flash")
-    run.add_argument("--effort", choices=EFFORTS, default=None,
-                     help="M3.1 reasoning_effort (default: the provider's, max)")
+    run.add_argument(
+        "--effort",
+        choices=EFFORTS,
+        default=None,
+        help="M3.1 reasoning_effort (default: the provider's, max)",
+    )
     args = parser.parse_args(argv)
     if args.command == "labels":
         index = outcomes.prepare_index(json.loads(args.bundle.read_bytes()))
         table = label_table(index)
         sessions = {snapshot_id(d, c): d.isoformat() for d, c, _ in index.timeline}
-        doc = {"schema": "desk-forecast-labels/1", "bundle": str(args.bundle),
-               "cutoff": args.cutoff, "boards": len(table),
-               "sessions": [index.sessions[0].isoformat(), index.sessions[-1].isoformat(),
-                            len(index.sessions)],
-               "summary": label_summary(table, sessions, args.cutoff)}
+        doc = {
+            "schema": "desk-forecast-labels/1",
+            "bundle": str(args.bundle),
+            "cutoff": args.cutoff,
+            "boards": len(table),
+            "sessions": [
+                index.sessions[0].isoformat(),
+                index.sessions[-1].isoformat(),
+                len(index.sessions),
+            ],
+            "summary": label_summary(table, sessions, args.cutoff),
+        }
         args.out.parent.mkdir(parents=True, exist_ok=True)
         with args.out.with_suffix(".jsonl").open("w", encoding="utf-8") as stream:
             for snapshot, per in table.items():
-                stream.write(json.dumps({"snapshot": snapshot, "labels": {
-                    alias: {h: (None if lab is None else {"y": lab.y, "ret_bps": round(
-                        lab.ret_bps, 3), "exit_slot": lab.exit_slot}) for h, lab in by_h.items()}
-                    for alias, by_h in per.items()}}) + "\n")
+                stream.write(
+                    json.dumps(
+                        {
+                            "snapshot": snapshot,
+                            "labels": {
+                                alias: {
+                                    h: (
+                                        None
+                                        if lab is None
+                                        else {
+                                            "y": lab.y,
+                                            "ret_bps": round(lab.ret_bps, 3),
+                                            "exit_slot": lab.exit_slot,
+                                        }
+                                    )
+                                    for h, lab in by_h.items()
+                                }
+                                for alias, by_h in per.items()
+                            },
+                        }
+                    )
+                    + "\n"
+                )
         args.out.write_text(json.dumps(doc, indent=2), encoding="utf-8")
         print(json.dumps(doc, indent=2))
         return 0
-    summary = smoke(bundle=args.bundle, table=args.table, out_root=args.out_root,
-                    boards=args.boards, repeats=args.repeats, concurrency=args.concurrency,
-                    provider=args.provider, effort=args.effort)
+    summary = smoke(
+        bundle=args.bundle,
+        table=args.table,
+        out_root=args.out_root,
+        boards=args.boards,
+        repeats=args.repeats,
+        concurrency=args.concurrency,
+        provider=args.provider,
+        effort=args.effort,
+    )
     print(json.dumps(summary, indent=2, default=str))
     return 0 if summary.get("status") == "finished" else 3
 

@@ -115,7 +115,9 @@ def _greeks_sample(
     return {"rows_total": total, "rows_with_greeks": with_greeks, "expiry": expiry}
 
 
-def probe_json(ibk: IbkrTrex, underlyings: list[str], now: datetime | None = None) -> dict[str, Any]:
+def probe_json(
+    ibk: IbkrTrex, underlyings: list[str], now: datetime | None = None
+) -> dict[str, Any]:
     """Capability report: account + chains + greeks, no files written."""
     from tree_options.trex.clock import ET
 

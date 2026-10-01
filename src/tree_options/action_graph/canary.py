@@ -73,7 +73,10 @@ def review_canary(profile: CapitalProfile, facts: CanaryFacts) -> tuple[str, ...
     """Return blockers, never an authorization or inferred broker state."""
 
     blockers: list[str] = []
-    if not profile.complete_for_review or "operational-canary/1" not in profile.allowed_strategy_versions:
+    if (
+        not profile.complete_for_review
+        or "operational-canary/1" not in profile.allowed_strategy_versions
+    ):
         blockers.append("profile_or_canary_scope_missing")
     if not facts.paper_gateway_verified or facts.observed_account_id != facts.mandate_account_id:
         blockers.append("paper_account_mismatch_or_unverified")
@@ -98,7 +101,10 @@ def review_canary(profile: CapitalProfile, facts: CanaryFacts) -> tuple[str, ...
         blockers.append("protective_exit_unavailable")
     if facts.worst_case_loss > profile.intended_capital:
         blockers.append("trade_exceeds_intended_capital")
-    if profile.max_loss_per_trade is not None and facts.worst_case_loss > profile.max_loss_per_trade:
+    if (
+        profile.max_loss_per_trade is not None
+        and facts.worst_case_loss > profile.max_loss_per_trade
+    ):
         blockers.append("trade_loss_cap_exceeded")
     if facts.temporary_assignment_exposure > profile.intended_capital:
         blockers.append("assignment_exposure_exceeds_budget")
@@ -108,19 +114,24 @@ def review_canary(profile: CapitalProfile, facts: CanaryFacts) -> tuple[str, ...
         blockers.append("broker_margin_exceeds_budget")
     if facts.current_open_loss is None:
         blockers.append("open_exposure_unknown")
-    elif (profile.max_open_loss is not None
-          and facts.current_open_loss + facts.worst_case_loss > profile.max_open_loss):
+    elif (
+        profile.max_open_loss is not None
+        and facts.current_open_loss + facts.worst_case_loss > profile.max_open_loss
+    ):
         blockers.append("open_loss_cap_exceeded")
     if facts.realized_daily_loss is None:
         blockers.append("daily_loss_unknown")
-    elif (profile.max_daily_loss is not None
-          and facts.realized_daily_loss + facts.worst_case_loss > profile.max_daily_loss):
+    elif (
+        profile.max_daily_loss is not None
+        and facts.realized_daily_loss + facts.worst_case_loss > profile.max_daily_loss
+    ):
         blockers.append("daily_loss_cap_exceeded")
     return tuple(blockers)
 
 
-def package_intent_sha256(profile: CapitalProfile, structure: LegStructure,
-                          account_id: str, owner_epoch: str) -> str:
+def package_intent_sha256(
+    profile: CapitalProfile, structure: LegStructure, account_id: str, owner_epoch: str
+) -> str:
     """Hash package, policy revision and paper account/owner binding.
 
     A later effect permit must also bind live quote and broker snapshots.
@@ -128,30 +139,37 @@ def package_intent_sha256(profile: CapitalProfile, structure: LegStructure,
     if not account_id or not owner_epoch:
         raise ValueError("account and owner identity required")
     payload = {
-        "schema": "operational-canary-intent/1", "environment": "ibkr-paper",
-        "account_id": account_id, "owner_epoch": owner_epoch,
+        "schema": "operational-canary-intent/1",
+        "environment": "ibkr-paper",
+        "account_id": account_id,
+        "owner_epoch": owner_epoch,
         "profile": {
-            "id": profile.profile_id, "revision": profile.revision,
+            "id": profile.profile_id,
+            "revision": profile.revision,
             "intended_capital": str(profile.intended_capital),
-            "risk_style": profile.risk_style, "goals": profile.goals,
+            "risk_style": profile.risk_style,
+            "goals": profile.goals,
             "max_loss_per_trade": str(profile.max_loss_per_trade),
             "max_open_loss": str(profile.max_open_loss),
             "max_daily_loss": str(profile.max_daily_loss),
             "horizon_days": profile.horizon_days,
             "allowed_strategy_versions": profile.allowed_strategy_versions,
-            "reward_tiers": [{"min_ratio": str(tier.min_ratio),
-                              "max_trade_loss": str(tier.max_trade_loss)}
-                             for tier in profile.reward_tiers],
-            "steady_win_floor": (str(profile.steady_win_floor)
-                                 if profile.steady_win_floor is not None else None),
+            "reward_tiers": [
+                {"min_ratio": str(tier.min_ratio), "max_trade_loss": str(tier.max_trade_loss)}
+                for tier in profile.reward_tiers
+            ],
+            "steady_win_floor": (
+                str(profile.steady_win_floor) if profile.steady_win_floor is not None else None
+            ),
         },
         "structure": structure.model_dump(mode="json"),
     }
     return sha256(canonical_bytes(payload)).hexdigest()
 
 
-def review_canary_package(profile: CapitalProfile, structure: LegStructure,
-                          facts: CanaryFacts) -> tuple[str, ...]:
+def review_canary_package(
+    profile: CapitalProfile, structure: LegStructure, facts: CanaryFacts
+) -> tuple[str, ...]:
     """Bind pure readiness screening to one immutable, defined-risk vertical."""
     blockers = list(review_canary(profile, facts))
     if structure.kind not in ("debit_vertical", "credit_vertical"):
@@ -160,7 +178,9 @@ def review_canary_package(profile: CapitalProfile, structure: LegStructure,
         blockers.append("package_quantity_mismatch")
     if structure.max_loss() != facts.worst_case_loss:
         blockers.append("package_loss_mismatch")
-    if package_intent_sha256(profile, structure, facts.mandate_account_id,
-                             facts.owner_epoch) != facts.intent_sha256:
+    if (
+        package_intent_sha256(profile, structure, facts.mandate_account_id, facts.owner_epoch)
+        != facts.intent_sha256
+    ):
         blockers.append("intent_hash_mismatch")
     return tuple(blockers)

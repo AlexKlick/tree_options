@@ -36,8 +36,11 @@ def _structural_capture_active() -> bool:
             args = (entry / "cmdline").read_bytes().split(b"\0")
         except (OSError, PermissionError):
             continue
-        if (args and b"python" in Path(args[0].decode(errors="ignore")).name.encode()
-                and any(arg.endswith(b"/scripts/capture_massive_structural.py") for arg in args[1:])):
+        if (
+            args
+            and b"python" in Path(args[0].decode(errors="ignore")).name.encode()
+            and any(arg.endswith(b"/scripts/capture_massive_structural.py") for arg in args[1:])
+        ):
             try:
                 state = (entry / "stat").read_text().rsplit(") ", 1)[1][0]
             except (OSError, IndexError):
@@ -49,8 +52,12 @@ def _structural_capture_active() -> bool:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--contracts", type=Path, required=True,
-                        help="JSON {selected_as_of, source_sha256, tickers:[O:...]}")
+    parser.add_argument(
+        "--contracts",
+        type=Path,
+        required=True,
+        help="JSON {selected_as_of, source_sha256, tickers:[O:...]}",
+    )
     parser.add_argument("--start", type=date.fromisoformat, required=True)
     parser.add_argument("--end", type=date.fromisoformat, required=True)
     parser.add_argument("--cache", type=Path, required=True)
@@ -62,11 +69,18 @@ def main() -> int:
     spec = json.loads(args.contracts.read_text())
     selected = date.fromisoformat(spec["selected_as_of"])
     tickers = spec["tickers"]
-    if (selected > args.start or not isinstance(spec.get("source_sha256"), str)
-            or len(spec["source_sha256"]) != 64 or not isinstance(tickers, list)
-            or len(tickers) != len(set(tickers))):
+    if (
+        selected > args.start
+        or not isinstance(spec.get("source_sha256"), str)
+        or len(spec["source_sha256"]) != 64
+        or not isinstance(tickers, list)
+        or len(tickers) != len(set(tickers))
+    ):
         parser.error("contract provenance must predate window and have unique tickers")
-    if hashlib.sha256(json.dumps(spec.get("source_files"), sort_keys=True).encode()).hexdigest() != spec["source_sha256"]:
+    if (
+        hashlib.sha256(json.dumps(spec.get("source_files"), sort_keys=True).encode()).hexdigest()
+        != spec["source_sha256"]
+    ):
         parser.error("contract source hash mismatch")
     for ticker in tickers:
         parse_contract(ticker)
@@ -85,7 +99,9 @@ def main() -> int:
             body = loads_exact(cached)
         elif used < args.wire_budget:
             if _structural_capture_active():
-                raise RuntimeError("structural Massive capture resumed; stopping before another wire request")
+                raise RuntimeError(
+                    "structural Massive capture resumed; stopping before another wire request"
+                )
             if client is None:
                 client = client_from_environment(cache_dir=args.cache)
             if used + client.backoff.max_attempts > args.wire_budget:
@@ -100,20 +116,43 @@ def main() -> int:
         if body.get("status") not in ("OK", "DELAYED") or body.get("ticker") != ticker:
             raise ValueError(f"unusable minute response for {ticker}")
         bars = body.get("results", [])
-        if body.get("next_url") or len(bars) >= 50000 or body.get("resultsCount", len(bars)) != len(bars):
+        if (
+            body.get("next_url")
+            or len(bars) >= 50000
+            or body.get("resultsCount", len(bars)) != len(bars)
+        ):
             raise ValueError(f"truncated minute response for {ticker}")
         if any(not isinstance(bar.get("t"), int) or bar.get("v", 0) <= 0 for bar in bars):
             raise ValueError(f"invalid bars for {ticker}")
         found[ticker] = {"ticker": ticker, "timespan": "minute", "results": bars}
-    report = {"schema": "desk-option-minute-bars/1", "start": str(args.start), "end": str(args.end),
-              "selected_as_of": str(selected), "contract_source_sha256": spec["source_sha256"],
-              "captured_at": datetime.now(UTC).isoformat(), "requested": len(tickers),
-              "found": len(found), "missing_tickers": missing, "wire_requests": used,
-              "contracts": found, "execution_authorized": False}
+    report = {
+        "schema": "desk-option-minute-bars/1",
+        "start": str(args.start),
+        "end": str(args.end),
+        "selected_as_of": str(selected),
+        "contract_source_sha256": spec["source_sha256"],
+        "captured_at": datetime.now(UTC).isoformat(),
+        "requested": len(tickers),
+        "found": len(found),
+        "missing_tickers": missing,
+        "wire_requests": used,
+        "contracts": found,
+        "execution_authorized": False,
+    }
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(report, indent=2, sort_keys=True, default=str) + "\n")
-    print(json.dumps({"out": str(args.out), "requested": len(tickers), "found": len(found),
-                      "missing": len(missing), "wire_requests": used}, sort_keys=True))
+    print(
+        json.dumps(
+            {
+                "out": str(args.out),
+                "requested": len(tickers),
+                "found": len(found),
+                "missing": len(missing),
+                "wire_requests": used,
+            },
+            sort_keys=True,
+        )
+    )
     return 0
 
 

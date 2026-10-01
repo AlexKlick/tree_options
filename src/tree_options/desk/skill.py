@@ -122,8 +122,7 @@ from tree_options.desk.longrun import Arm, Board, OutcomeCache, Protocol
 SKILL_SCHEMA = "desk-longrun-skill/1"
 #: the v2 horizon menu (== lab.V2_HORIZONS; a test pins the equality)
 MENU_HORIZONS: tuple[str, ...] = ("intraday", "eod", "hold:5", "expiry")
-COMPONENTS = ("base", "participation", "horizon", "direction_tilt", "direction_timing",
-              "selection")
+COMPONENTS = ("base", "participation", "horizon", "direction_tilt", "direction_timing", "selection")
 SELECTION_SPLIT = ("structure", "underlying", "row")
 POWER_TRADES = (250, 500, 1000, 2000, 5000)
 RISK_CAP = 300.0  # replay's per-trade max loss (outcomes' entry_risk_cap)
@@ -165,8 +164,9 @@ class SkillOptions:
         unknown = sorted(set(doc) - known)
         if unknown:
             raise ValueError(f"unknown skill option(s) {unknown}; known {sorted(known)}")
-        values: dict[str, Any] = {k: (int(v) if k in ("max_block", "expiry_span") else float(v))
-                                  for k, v in doc.items()}
+        values: dict[str, Any] = {
+            k: (int(v) if k in ("max_block", "expiry_span") else float(v)) for k, v in doc.items()
+        }
         return cls(**values)
 
 
@@ -211,7 +211,8 @@ class ValueBook:
     def bullish(self, board: Board) -> np.ndarray:
         if board.snapshot not in self._bullish:
             self._bullish[board.snapshot] = np.array(
-                [longrun.is_bullish(row) for row in board.rows], dtype=bool)
+                [longrun.is_bullish(row) for row in board.rows], dtype=bool
+            )
         return self._bullish[board.snapshot]
 
 
@@ -232,8 +233,9 @@ class Decomposition:
 
     @property
     def excess(self) -> np.ndarray:
-        return self.parts["direction_tilt"] + self.parts["direction_timing"] \
-            + self.parts["selection"]
+        return (
+            self.parts["direction_tilt"] + self.parts["direction_timing"] + self.parts["selection"]
+        )
 
     @property
     def alpha(self) -> np.ndarray:
@@ -244,9 +246,12 @@ class Decomposition:
         return self.realized - self.parts["base"]
 
 
-def decompose(book: ValueBook, boards: Sequence[Board],
-              decisions: Sequence[tuple[str | None, str | None]],
-              basis: str = "net") -> Decomposition:
+def decompose(
+    book: ValueBook,
+    boards: Sequence[Board],
+    decisions: Sequence[tuple[str | None, str | None]],
+    basis: str = "net",
+) -> Decomposition:
     """The exact six-part decomposition of an arm's per-board value (plus the
     exact structure/pick split of SELECTION)."""
     boards = list(boards)
@@ -277,10 +282,11 @@ def decompose(book: ValueBook, boards: Sequence[Board],
         same_direction = bull == bull[r]
         chosen = board.rows[r]
         same_structure = same_direction & np.array(
-            [row.get("structure") == chosen.get("structure") for row in board.rows], dtype=bool)
+            [row.get("structure") == chosen.get("structure") for row in board.rows], dtype=bool
+        )
         same_underlying = same_structure & np.array(
-            [row.get("underlying") == chosen.get("underlying") for row in board.rows],
-            dtype=bool)
+            [row.get("underlying") == chosen.get("underlying") for row in board.rows], dtype=bool
+        )
         m = float(vals.mean())
         m_d = float(vals[same_direction].mean())
         m_s = float(vals[same_structure].mean())
@@ -300,15 +306,23 @@ def decompose(book: ValueBook, boards: Sequence[Board],
     tilt = np.where(entered, ((xbar or 0.0) - share) * spread, 0.0)
     parts["direction_tilt"] = tilt
     parts["direction_timing"] = direction - tilt
-    return Decomposition(boards=boards, entered=entered, realized=realized, parts=parts,
-                         selection_split=split, rho=rho, bullish_share=xbar)
+    return Decomposition(
+        boards=boards,
+        entered=entered,
+        realized=realized,
+        parts=parts,
+        selection_split=split,
+        rho=rho,
+        bullish_share=xbar,
+    )
 
 
 # ------------------------------------------------------------ dependence
 
 
-def horizon_span(horizon: str | None, row: Mapping[str, Any] | None, sessions_left: int,
-                 expiry_span: int = 15) -> int:
+def horizon_span(
+    horizon: str | None, row: Mapping[str, Any] | None, sessions_left: int, expiry_span: int = 15
+) -> int:
     """Sessions a trade's future path covers: intraday/eod 1, hold:N N, expiry
     the row's dte in sessions (x 252/365; ``expiry_span`` without one), each
     capped at the sessions left in the window (at least 1)."""
@@ -331,8 +345,9 @@ def block_length(spans: Sequence[int], max_block: int = 20) -> int:
     return int(max(1, min(max_block, math.ceil(float(np.percentile(spans, 75))))))
 
 
-def block_bootstrap_sums(series: Sequence[float] | np.ndarray, block: int, *, draws: int,
-                         seed: int) -> np.ndarray:
+def block_bootstrap_sums(
+    series: Sequence[float] | np.ndarray, block: int, *, draws: int, seed: int
+) -> np.ndarray:
     """Circular block bootstrap (Politis & Romano 1992) of the series SUM:
     ceil(n / block) blocks of ``block`` consecutive values (wrapping at the
     end) from uniform starts, truncated to n. ``block = 1`` is the plain
@@ -350,7 +365,7 @@ def block_bootstrap_sums(series: Sequence[float] | np.ndarray, block: int, *, dr
         m = min(1000, draws - start)
         starts = rng.integers(0, n, size=(m, k))
         idx = ((starts[:, :, None] + offsets) % n).reshape(m, k * block)[:, :n]
-        out[start:start + m] = arr[idx].sum(axis=1)
+        out[start : start + m] = arr[idx].sum(axis=1)
     return out
 
 
@@ -359,8 +374,9 @@ def _pct(sums: np.ndarray) -> list[float]:
     return [round(float(lo), 2), round(float(hi), 2)]
 
 
-def interval_report(series: Sequence[float] | np.ndarray, block: int, *, draws: int,
-                    seed: int) -> dict[str, Any]:
+def interval_report(
+    series: Sequence[float] | np.ndarray, block: int, *, draws: int, seed: int
+) -> dict[str, Any]:
     """Session vs circular-block bootstrap 95% CIs of the series sum, the
     width ratio, the effective sample size n x var_session / var_block, and
     the number of blocks the window holds (reliable when >= 10)."""
@@ -372,18 +388,25 @@ def interval_report(series: Sequence[float] | np.ndarray, block: int, *, draws: 
     var_iid, var_blk = float(iid.var()), float(blk.var())
     s_width, b_width = s_ci[1] - s_ci[0], b_ci[1] - b_ci[0]
     blocks = arr.size / block
-    return {"total": round(float(arr.sum()), 2), "sessions": int(arr.size), "block": block,
-            "blocks": round(blocks, 1), "reliable": bool(blocks >= MIN_BOOT_BLOCKS),
-            "session_ci95": s_ci, "block_ci95": b_ci,
-            "width_ratio": round(b_width / s_width, 3) if s_width > 0 else None,
-            "ess_sessions": round(arr.size * var_iid / var_blk, 1) if var_blk > 0 else None}
+    return {
+        "total": round(float(arr.sum()), 2),
+        "sessions": int(arr.size),
+        "block": block,
+        "blocks": round(blocks, 1),
+        "reliable": bool(blocks >= MIN_BOOT_BLOCKS),
+        "session_ci95": s_ci,
+        "block_ci95": b_ci,
+        "width_ratio": round(b_width / s_width, 3) if s_width > 0 else None,
+        "ess_sessions": round(arr.size * var_iid / var_blk, 1) if var_blk > 0 else None,
+    }
 
 
 # ------------------------------------------------------------ confidence sequences
 
 
-def asymptotic_cs(x: Sequence[float] | np.ndarray, alpha: float = 0.05,
-                  t_star: float | None = None) -> tuple[np.ndarray, np.ndarray]:
+def asymptotic_cs(
+    x: Sequence[float] | np.ndarray, alpha: float = 0.05, t_star: float | None = None
+) -> tuple[np.ndarray, np.ndarray]:
     """Gaussian-mixture asymptotic CS for the MEAN (Waudby-Smith, Arbour,
     Sinha, Kennedy & Ramdas 2024, Ann. Statist., Thm 2.2)::
 
@@ -400,14 +423,16 @@ def asymptotic_cs(x: Sequence[float] | np.ndarray, alpha: float = 0.05,
     mean = np.cumsum(arr) / t
     var = np.maximum(np.cumsum(arr * arr) / t - mean * mean, 0.0)
     rho2 = (-2 * math.log(alpha) + math.log(1 - 2 * math.log(alpha))) / float(t_star or n)
-    radius = np.sqrt(var) * np.sqrt(2 * (t * rho2 + 1) / (t * t * rho2)
-                                    * np.log(np.sqrt(t * rho2 + 1) / alpha))
+    radius = np.sqrt(var) * np.sqrt(
+        2 * (t * rho2 + 1) / (t * t * rho2) * np.log(np.sqrt(t * rho2 + 1) / alpha)
+    )
     radius[0] = np.inf
     return mean - radius, mean + radius
 
 
-def eb_cs(x: Sequence[float] | np.ndarray, lo: float, hi: float, alpha: float = 0.05,
-          c: float = 0.5) -> tuple[np.ndarray, np.ndarray]:
+def eb_cs(
+    x: Sequence[float] | np.ndarray, lo: float, hi: float, alpha: float = 0.05, c: float = 0.5
+) -> tuple[np.ndarray, np.ndarray]:
     """Predictable plug-in empirical-Bernstein CS for the MEAN of values in
     [lo, hi] (Waudby-Smith & Ramdas 2024, JRSS-B 86(1), Thm 2), on the
     rescaled y = (x - lo) / (hi - lo) in [0, 1]::
@@ -468,35 +493,49 @@ def _round_total(value: float) -> float | None:
     return round(float(value), 2) if math.isfinite(value) else None
 
 
-def monitor(values: Sequence[float] | np.ndarray, population: int, *, alpha: float,
-            bound: float | None, eb_c: float = 0.5) -> dict[str, Any]:
+def monitor(
+    values: Sequence[float] | np.ndarray,
+    population: int,
+    *,
+    alpha: float,
+    bound: float | None,
+    eb_c: float = 0.5,
+) -> dict[str, Any]:
     """IN-SAMPLE anytime CS: a random-order sample of per-board excess (0 =
     skip), mapped to the population TOTAL (mean x ``population``)."""
     arr = np.asarray(values, dtype=float)
-    doc: dict[str, Any] = {"target": "this run's in-sample total excess (random decision "
-                                     "order; not superpopulation skill)",
-                           "observed": int(arr.size), "population": int(population),
-                           "excess_observed": round(float(arr.sum()), 2)}
+    doc: dict[str, Any] = {
+        "target": "this run's in-sample total excess (random decision "
+        "order; not superpopulation skill)",
+        "observed": int(arr.size),
+        "population": int(population),
+        "excess_observed": round(float(arr.sum()), 2),
+    }
     if arr.size == 0:
         return {**doc, "eb": None, "asymptotic": None, "significant": False}
     a_lo, a_hi = asymptotic_cs(arr, alpha, t_star=population)
     doc["asymptotic"] = {
         "cs_total": [_round_total(a_lo[-1] * population), _round_total(a_hi[-1] * population)],
-        "significant": bool(a_lo[-1] > 0), "first_significant_at": _first_true(a_lo > 0),
+        "significant": bool(a_lo[-1] > 0),
+        "first_significant_at": _first_true(a_lo > 0),
         "method": "Waudby-Smith, Arbour, Sinha, Kennedy & Ramdas 2024 (Ann. Statist.) "
-                  "Gaussian-mixture asymptotic CS, Thm 2.2"}
+        "Gaussian-mixture asymptotic CS, Thm 2.2",
+    }
     if bound is None or float(np.abs(arr).max()) > bound:
         doc["eb"] = None  # no a-priori bound (or it was violated): the asymptotic CS only
-        doc["eb_unavailable"] = ("no a-priori bound" if bound is None
-                                 else f"a value exceeds the a-priori bound {bound}")
+        doc["eb_unavailable"] = (
+            "no a-priori bound" if bound is None else f"a value exceeds the a-priori bound {bound}"
+        )
     else:
         e_lo, e_hi = eb_cs(arr, -bound, bound, alpha, eb_c)
         doc["eb"] = {
             "cs_total": [_round_total(e_lo[-1] * population), _round_total(e_hi[-1] * population)],
-            "significant": bool(e_lo[-1] > 0), "first_significant_at": _first_true(e_lo > 0),
+            "significant": bool(e_lo[-1] > 0),
+            "first_significant_at": _first_true(e_lo > 0),
             "bound": bound,
             "method": "Waudby-Smith & Ramdas 2024 (JRSS-B) predictable plug-in "
-                      "empirical-Bernstein CS, Thm 2"}
+            "empirical-Bernstein CS, Thm 2",
+        }
     primary = doc["eb"] if doc["eb"] is not None else doc["asymptotic"]
     doc["significant"] = bool(primary["significant"])
     return doc
@@ -510,8 +549,9 @@ def _block_sums(per_session: np.ndarray, block: int) -> np.ndarray:
     return per_session[:full].reshape(-1, block).sum(axis=1) if full else np.zeros(0)
 
 
-def forward_cs(per_session: Sequence[float] | np.ndarray, block: int,
-               alpha: float = 0.05) -> dict[str, Any]:
+def forward_cs(
+    per_session: Sequence[float] | np.ndarray, block: int, alpha: float = 0.05
+) -> dict[str, Any]:
     """The forward (time-ordered) CS of the TOTAL excess: odd and even block
     sums each get the asymptotic CS at alpha / 2 (each parity is a
     martingale-difference sequence under the no-skill null when trades
@@ -519,34 +559,52 @@ def forward_cs(per_session: Sequence[float] | np.ndarray, block: int,
     excess with probability >= 1 - alpha (union bound)."""
     arr = np.asarray(per_session, dtype=float)
     blocks = _block_sums(arr, block)
-    doc: dict[str, Any] = {"block": int(max(1, block)), "blocks": int(blocks.size),
-                           "sessions_used": int(blocks.size * max(1, block)),
-                           "method": ("odd/even lag-1 block split, asymptotic CS (Waudby-Smith "
-                                      "et al. 2024, Thm 2.2) at alpha/2 each, intersected")}
+    doc: dict[str, Any] = {
+        "block": int(max(1, block)),
+        "blocks": int(blocks.size),
+        "sessions_used": int(blocks.size * max(1, block)),
+        "method": (
+            "odd/even lag-1 block split, asymptotic CS (Waudby-Smith "
+            "et al. 2024, Thm 2.2) at alpha/2 each, intersected"
+        ),
+    }
     odd, even = blocks[0::2], blocks[1::2]
     if min(odd.size, even.size) < MIN_CS_BLOCKS:
-        return {**doc, "cs_total": None, "significant": False, "reliable": False,
-                "per_parity": [int(odd.size), int(even.size)],
-                "reason": (f"fewer than {MIN_CS_BLOCKS} blocks per parity: the window is too "
-                           "short to monitor this arm dependence-aware")}
+        return {
+            **doc,
+            "cs_total": None,
+            "significant": False,
+            "reliable": False,
+            "per_parity": [int(odd.size), int(even.size)],
+            "reason": (
+                f"fewer than {MIN_CS_BLOCKS} blocks per parity: the window is too "
+                "short to monitor this arm dependence-aware"
+            ),
+        }
     o_lo, o_hi = asymptotic_cs(odd, alpha / 2)
     e_lo, e_hi = asymptotic_cs(even, alpha / 2)
     lower, upper = max(o_lo[-1], e_lo[-1]), min(o_hi[-1], e_hi[-1])
     k = blocks.size
-    return {**doc, "per_parity": [int(odd.size), int(even.size)],
-            "cs_total": [_round_total(lower * k), _round_total(upper * k)],
-            "significant": bool(lower > 0), "reliable": True}
+    return {
+        **doc,
+        "per_parity": [int(odd.size), int(even.size)],
+        "cs_total": [_round_total(lower * k), _round_total(upper * k)],
+        "significant": bool(lower > 0),
+        "reliable": True,
+    }
 
 
 # ------------------------------------------------------------ per arm
 
 
-def _ordered_ok(receipts: Mapping[str, Mapping[str, Any]],
-                snapshots: set[str]) -> list[str]:
+def _ordered_ok(receipts: Mapping[str, Mapping[str, Any]], snapshots: set[str]) -> list[str]:
     """The arm's ok snapshots in the order they were decided (receipt ``at``,
     else file order)."""
-    items = [(str(rec.get("at") or ""), i, snap) for i, (snap, rec) in enumerate(receipts.items())
-             if rec.get("ok") and snap in snapshots]
+    items = [
+        (str(rec.get("at") or ""), i, snap)
+        for i, (snap, rec) in enumerate(receipts.items())
+        if rec.get("ok") and snap in snapshots
+    ]
     return [snap for _, _, snap in sorted(items)]
 
 
@@ -555,24 +613,37 @@ def _windows(boards: Sequence[Board]) -> tuple[list[str], dict[str, int]]:
     return sessions, {s: i for i, s in enumerate(sessions)}
 
 
-def menu_block(boards: Sequence[Board], horizons: Sequence[str | None],
-               options: SkillOptions) -> int:
+def menu_block(
+    boards: Sequence[Board], horizons: Sequence[str | None], options: SkillOptions
+) -> int:
     """The block length for series built on ``base`` (every menu horizon)."""
     sessions, pos = _windows(boards)
     blocks = []
     for h in horizons:
-        spans = [horizon_span(h, row, len(sessions) - 1 - pos[b.session], options.expiry_span)
-                 for b in boards for row in b.rows]
+        spans = [
+            horizon_span(h, row, len(sessions) - 1 - pos[b.session], options.expiry_span)
+            for b in boards
+            for row in b.rows
+        ]
         blocks.append(block_length(spans, options.max_block))
     return max(blocks) if blocks else 1
 
 
-def arm_skill(book: ValueBook, boards: Sequence[Board],
-              decisions: Sequence[tuple[str | None, str | None]], *,
-              window: Sequence[Board], order: Sequence[int] | None = None,
-              options: SkillOptions, draws: int, seed: int, bound: float | None,
-              base_block: int, population: int | None = None,
-              kind: str = "model") -> dict[str, Any]:
+def arm_skill(
+    book: ValueBook,
+    boards: Sequence[Board],
+    decisions: Sequence[tuple[str | None, str | None]],
+    *,
+    window: Sequence[Board],
+    order: Sequence[int] | None = None,
+    options: SkillOptions,
+    draws: int,
+    seed: int,
+    bound: float | None,
+    base_block: int,
+    population: int | None = None,
+    kind: str = "model",
+) -> dict[str, Any]:
     """The skill document of one arm over its covered ``boards`` (time order).
 
     ``window`` is every board of the run (its sessions are the bootstrap's
@@ -588,16 +659,30 @@ def arm_skill(book: ValueBook, boards: Sequence[Board],
     def per_session(values: np.ndarray) -> np.ndarray:
         return longrun.session_sums(board_sessions, values.tolist(), sessions)
 
-    spans = [horizon_span(h, b.rows[b.ids.index(c)], len(sessions) - 1 - pos[b.session],
-                          options.expiry_span)
-             for b, (c, h) in zip(boards, decisions, strict=True) if c is not None]
+    spans = [
+        horizon_span(
+            h, b.rows[b.ids.index(c)], len(sessions) - 1 - pos[b.session], options.expiry_span
+        )
+        for b, (c, h) in zip(boards, decisions, strict=True)
+        if c is not None
+    ]
     block = block_length(spans, options.max_block)
-    series = {"net": net.realized, "excess": net.excess, "alpha": net.alpha,
-              "selection": net.parts["selection"], "vs_random": net.vs_random}
-    intervals = {name: interval_report(per_session(values),
-                                       max(block, base_block) if name == "vs_random" else block,
-                                       draws=draws, seed=seed)
-                 for name, values in series.items()}
+    series = {
+        "net": net.realized,
+        "excess": net.excess,
+        "alpha": net.alpha,
+        "selection": net.parts["selection"],
+        "vs_random": net.vs_random,
+    }
+    intervals = {
+        name: interval_report(
+            per_session(values),
+            max(block, base_block) if name == "vs_random" else block,
+            draws=draws,
+            seed=seed,
+        )
+        for name, values in series.items()
+    }
     net_total = float(net.realized.sum())
     ordered = list(order) if order is not None else list(range(len(boards)))
     excess = net.excess
@@ -606,7 +691,9 @@ def arm_skill(book: ValueBook, boards: Sequence[Board],
         if choice is not None:
             horizons[str(h)] = horizons.get(str(h), 0) + 1
     doc: dict[str, Any] = {
-        "kind": kind, "boards": len(boards), "entered": int(net.entered.sum()),
+        "kind": kind,
+        "boards": len(boards),
+        "entered": int(net.entered.sum()),
         "entry_rate": round(net.rho, 4),
         "bullish_share": None if net.bullish_share is None else round(net.bullish_share, 4),
         "horizon_mix": dict(sorted(horizons.items())),
@@ -614,22 +701,35 @@ def arm_skill(book: ValueBook, boards: Sequence[Board],
         "gross_total": round(float(gross.realized.sum()), 2),
         "cost_drag": round(float(gross.realized.sum()) - net_total, 2),
         "components": {name: round(net.total(name), 2) for name in COMPONENTS},
-        "selection_split": {name: round(float(v.sum()), 2)
-                            for name, v in net.selection_split.items()},
+        "selection_split": {
+            name: round(float(v.sum()), 2) for name, v in net.selection_split.items()
+        },
         "components_gross": {name: round(gross.total(name), 2) for name in COMPONENTS},
         "identity_residual": round(net_total - sum(net.total(k) for k in COMPONENTS), 6),
         "excess_total": round(float(excess.sum()), 2),
         "alpha_total": round(float(net.alpha.sum()), 2),
         "vs_random_total": round(float(net.vs_random.sum()), 2),
-        "block": {"length": block, "base_length": max(block, base_block),
-                  "spans_p75": (round(float(np.percentile(spans, 75)), 1) if spans else None),
-                  "rule": ("ceil(p75 of the arm's trade spans in sessions), clamped to "
-                           f"[1, {options.max_block}]; vs_random uses max(arm, menu) block")},
+        "block": {
+            "length": block,
+            "base_length": max(block, base_block),
+            "spans_p75": (round(float(np.percentile(spans, 75)), 1) if spans else None),
+            "rule": (
+                "ceil(p75 of the arm's trade spans in sessions), clamped to "
+                f"[1, {options.max_block}]; vs_random uses max(arm, menu) block"
+            ),
+        },
         "intervals": intervals,
         "cs_forward": forward_cs(per_session(excess), block, options.alpha),
-        "cs_in_sample": {"order": "decision" if order is not None else "time",
-                         **monitor(excess[ordered], population or len(boards),
-                                   alpha=options.alpha, bound=bound, eb_c=options.eb_c)},
+        "cs_in_sample": {
+            "order": "decision" if order is not None else "time",
+            **monitor(
+                excess[ordered],
+                population or len(boards),
+                alpha=options.alpha,
+                bound=bound,
+                eb_c=options.eb_c,
+            ),
+        },
     }
     doc["verdict"] = verdict(doc)
     return doc
@@ -648,42 +748,65 @@ def verdict(doc: Mapping[str, Any], prefix: str = "") -> str:
     span = f"[block CI {lo:+.0f}, {hi:+.0f}; L={ex['block']}]"
     weak = "" if ex["reliable"] else f" (only {ex['blocks']} blocks: CI unreliable)"
     split = doc.get("selection_split") or {}
-    parts = (f"selection {comps['selection']:+.0f} = structure {split.get('structure', 0):+.0f}"
-             f" + underlying {split.get('underlying', 0):+.0f} + row {split.get('row', 0):+.0f}")
+    parts = (
+        f"selection {comps['selection']:+.0f} = structure {split.get('structure', 0):+.0f}"
+        f" + underlying {split.get('underlying', 0):+.0f} + row {split.get('row', 0):+.0f}"
+    )
     alpha_text = f"alpha {al['total']:+.0f} [{alo:+.0f}, {ahi:+.0f}]"
     if lo > 0 and alo > 0:
-        core = (f"EXCESS over a random row {ex['total']:+.0f} {span}{weak} survives removing "
-                f"the static direction tilt ({alpha_text}; {parts})")
+        core = (
+            f"EXCESS over a random row {ex['total']:+.0f} {span}{weak} survives removing "
+            f"the static direction tilt ({alpha_text}; {parts})"
+        )
     elif lo > 0:
-        core = (f"EXCESS over a random row {ex['total']:+.0f} {span}{weak} is carried by the "
-                f"static direction tilt {comps['direction_tilt']:+.0f} (regime beta); "
-                f"{alpha_text} is not significant")
+        core = (
+            f"EXCESS over a random row {ex['total']:+.0f} {span}{weak} is carried by the "
+            f"static direction tilt {comps['direction_tilt']:+.0f} (regime beta); "
+            f"{alpha_text} is not significant"
+        )
     elif alo > 0:
-        core = (f"excess over a random row {ex['total']:+.0f} {span}{weak} spans 0, but "
-                f"{alpha_text} is positive: {parts} and timing "
-                f"{comps['direction_timing']:+.0f}, offset by the static direction tilt "
-                f"{comps['direction_tilt']:+.0f}")
+        core = (
+            f"excess over a random row {ex['total']:+.0f} {span}{weak} spans 0, but "
+            f"{alpha_text} is positive: {parts} and timing "
+            f"{comps['direction_timing']:+.0f}, offset by the static direction tilt "
+            f"{comps['direction_tilt']:+.0f}"
+        )
     elif hi < 0:
         core = f"picks WORSE than a random row: excess {ex['total']:+.0f} {span}{weak}"
     else:
-        core = (f"NO SKILL DETECTED: excess over a random row {ex['total']:+.0f} {span}{weak} "
-                "spans 0")
+        core = (
+            f"NO SKILL DETECTED: excess over a random row {ex['total']:+.0f} {span}{weak} spans 0"
+        )
     fwd = doc.get("cs_forward") or {}
-    flag = (("significant" if fwd.get("significant") else "not significant")
-            if fwd.get("reliable") else f"n/a ({fwd.get('per_parity')} blocks per parity < "
-                                        f"{MIN_CS_BLOCKS})")
-    rule = ("; a FIXED RULE: its excess is a regime-dependent payoff, not decision skill"
-            if doc.get("kind") in ("rule", "control") else "")
-    return (f"{prefix}{core}; net {doc['net_total']:+.0f} mostly {carrier} "
-            f"{comps[carrier]:+.0f}; forward CS {flag}{rule}. Descriptive; nothing promoted.")
+    flag = (
+        ("significant" if fwd.get("significant") else "not significant")
+        if fwd.get("reliable")
+        else f"n/a ({fwd.get('per_parity')} blocks per parity < {MIN_CS_BLOCKS})"
+    )
+    rule = (
+        "; a FIXED RULE: its excess is a regime-dependent payoff, not decision skill"
+        if doc.get("kind") in ("rule", "control")
+        else ""
+    )
+    return (
+        f"{prefix}{core}; net {doc['net_total']:+.0f} mostly {carrier} "
+        f"{comps[carrier]:+.0f}; forward CS {flag}{rule}. Descriptive; nothing promoted."
+    )
 
 
 # ------------------------------------------------------------ power
 
 
-def power_table(book: ValueBook, boards: Sequence[Board], horizons: Sequence[str | None], *,
-                trades: Sequence[int] = POWER_TRADES, alpha: float = 0.05, power: float = 0.8,
-                options: SkillOptions | None = None) -> dict[str, Any]:
+def power_table(
+    book: ValueBook,
+    boards: Sequence[Board],
+    horizons: Sequence[str | None],
+    *,
+    trades: Sequence[int] = POWER_TRADES,
+    alpha: float = 0.05,
+    power: float = 0.8,
+    options: SkillOptions | None = None,
+) -> dict[str, Any]:
     """Minimum detectable per-trade effect (two-sided ``alpha``, ``power``)
     of one random-row trade per board: raw net (i.i.d.; and with the board
     mean's batch-means long-run variance over horizon blocks) vs the
@@ -699,71 +822,104 @@ def power_table(book: ValueBook, boards: Sequence[Board], horizons: Sequence[str
         within = np.array([float(book.values(b, h).var()) for b in boards])
         s2_e = float(within.mean())
         s2_m = float(means.var())
-        spans = [horizon_span(h, row, len(sessions) - 1 - pos[b.session], options.expiry_span)
-                 for b in boards for row in b.rows]
+        spans = [
+            horizon_span(h, row, len(sessions) - 1 - pos[b.session], options.expiry_span)
+            for b in boards
+            for row in b.rows
+        ]
         block = block_length(spans, options.max_block)
         batch = np.array([pos[b.session] // block for b in boards])
         sums = np.bincount(batch, weights=means - means.mean())
-        s2_m_lr = float((sums ** 2).sum() / len(boards))
+        s2_m_lr = float((sums**2).sum() / len(boards))
         raw, raw_lr = s2_m + s2_e, s2_m_lr + s2_e
         # the excess of a random BULLISH row (boards that carry one): its board-level
         # part m_bull - m moves with the market, so it gets the long-run variance too
         bull_boards = [i for i, b in enumerate(boards) if book.bullish(b).any()]
         s2_dir: float | None = None
         if bull_boards:
-            tilt = np.array([float(book.values(boards[i], h)[book.bullish(boards[i])].mean())
-                             - means[i] for i in bull_boards])
-            noise = float(np.mean([book.values(boards[i], h)[book.bullish(boards[i])].var()
-                                   for i in bull_boards]))
+            tilt = np.array(
+                [
+                    float(book.values(boards[i], h)[book.bullish(boards[i])].mean()) - means[i]
+                    for i in bull_boards
+                ]
+            )
+            noise = float(
+                np.mean(
+                    [book.values(boards[i], h)[book.bullish(boards[i])].var() for i in bull_boards]
+                )
+            )
             dir_sums = np.bincount(batch[bull_boards], weights=tilt - tilt.mean())
-            s2_dir = float((dir_sums ** 2).sum() / len(bull_boards)) + noise
+            s2_dir = float((dir_sums**2).sum() / len(bull_boards)) + noise
 
         def mde(var: float | None, n: int) -> float | None:
             return None if var is None else round(z * math.sqrt(var / n), 2)
 
         out[str(h)] = {
-            "boards": len(boards), "mean_row_value": round(float(means.mean()), 2),
-            "sd_raw": round(math.sqrt(raw), 2), "sd_raw_dependent": round(math.sqrt(raw_lr), 2),
+            "boards": len(boards),
+            "mean_row_value": round(float(means.mean()), 2),
+            "sd_raw": round(math.sqrt(raw), 2),
+            "sd_raw_dependent": round(math.sqrt(raw_lr), 2),
             "sd_excess": round(math.sqrt(s2_e), 2),
-            "sd_bullish_bet_dependent": (None if s2_dir is None
-                                         else round(math.sqrt(s2_dir), 2)),
+            "sd_bullish_bet_dependent": (None if s2_dir is None else round(math.sqrt(s2_dir), 2)),
             "vrf_iid": round(raw / s2_e, 3) if s2_e > 0 else None,
             "vrf_dependent": round(raw_lr / s2_e, 3) if s2_e > 0 else None,
-            "block": block, "batches": int(sums.size),
-            "rows": [{"trades": n, "mde_raw_iid": mde(raw, n),
-                      "mde_raw_dependent": mde(raw_lr, n), "mde_excess": mde(s2_e, n),
-                      "mde_bullish_bet_dependent": mde(s2_dir, n)}
-                     for n in trades]}
+            "block": block,
+            "batches": int(sums.size),
+            "rows": [
+                {
+                    "trades": n,
+                    "mde_raw_iid": mde(raw, n),
+                    "mde_raw_dependent": mde(raw_lr, n),
+                    "mde_excess": mde(s2_e, n),
+                    "mde_bullish_bet_dependent": mde(s2_dir, n),
+                }
+                for n in trades
+            ],
+        }
     return {"z": round(z, 4), "alpha": alpha, "power": power, "horizons": out}
 
 
 # ------------------------------------------------------------ digest section
 
 
-NOTE = ("Descriptive and mechanical; nothing promoted. excess = pnl - the mean of the SAME "
-        "board's rows at the SAME horizon (known exactly from the outcome table; a no-fill "
-        "row is 0 as in the harness); components sum exactly to each arm's net (identity "
-        "residual shown). Coverage is each arm's own ok receipts. CIs: session vs circular "
-        "block bootstrap over the window's sessions (unreliable below 10 blocks), per arm "
-        "and UNCORRECTED for the number of arms (confirmatory claims go through the "
-        "walk-forward section). The forward CS is the superpopulation monitor; the in-sample "
-        "CS only forecasts this run's own total excess.")
+NOTE = (
+    "Descriptive and mechanical; nothing promoted. excess = pnl - the mean of the SAME "
+    "board's rows at the SAME horizon (known exactly from the outcome table; a no-fill "
+    "row is 0 as in the harness); components sum exactly to each arm's net (identity "
+    "residual shown). Coverage is each arm's own ok receipts. CIs: session vs circular "
+    "block bootstrap over the window's sessions (unreliable below 10 blocks), per arm "
+    "and UNCORRECTED for the number of arms (confirmatory claims go through the "
+    "walk-forward section). The forward CS is the superpopulation monitor; the in-sample "
+    "CS only forecasts this run's own total excess."
+)
 
-PAIR_NA = ("two-leg package arm ('idA+idB' rule choice): the exact single-row counterfactual "
-           "decomposition does not apply (one leg is bullish, the other bearish: DIRECTION "
-           "and the structure/row split are not defined for a package), so it is marked "
-           "n/a here rather than approximated; the arm's net is on the same paired "
-           "scoreboard, scored against the single-row random null")
+PAIR_NA = (
+    "two-leg package arm ('idA+idB' rule choice): the exact single-row counterfactual "
+    "decomposition does not apply (one leg is bullish, the other bearish: DIRECTION "
+    "and the structure/row split are not defined for a package), so it is marked "
+    "n/a here rather than approximated; the arm's net is on the same paired "
+    "scoreboard, scored against the single-row random null"
+)
 
 
-def _any_pair(receipts: Mapping[str, Mapping[str, Any]]) -> bool:
+def _any_pair(receipts: Mapping[str, Mapping[str, Any]], boards: Sequence[Board]) -> bool:
     """The arm ever held a two-leg package (an ok receipt with a pair choice)."""
-    return any(longrun.pair_legs(rec.get("choice")) is not None
-               for rec in receipts.values() if rec.get("ok"))
+    for board in boards:
+        rec = receipts.get(board.snapshot, {})
+        choice = rec.get("choice")
+        if not rec.get("ok") or choice is None or choice in board.ids:
+            continue
+        legs = longrun.pair_legs(choice)
+        if legs is not None:
+            if legs[0] == legs[1] or any(leg not in board.ids for leg in legs):
+                raise ValueError("pair receipt is not a valid choice on its board")
+            return True
+    return False
 
 
-def pair_arm_skill(outcomes: OutcomeCache, covered: Sequence[Board],
-                   mine: Mapping[str, Mapping[str, Any]]) -> dict[str, Any]:
+def pair_arm_skill(
+    outcomes: OutcomeCache, covered: Sequence[Board], mine: Mapping[str, Mapping[str, Any]]
+) -> dict[str, Any]:
     """A package arm's reduced skill doc: realized net/gross and entry
     accounting only; the six-part decomposition is explicitly n/a (PAIR_NA),
     never silently approximated."""
@@ -782,27 +938,58 @@ def pair_arm_skill(outcomes: OutcomeCache, covered: Sequence[Board],
             unevaluable += 1
             continue
         gross, net = gross + value[0], net + value[1]
-    return {"boards": len(covered), "entered": entered, "unevaluable": unevaluable,
-            "entry_rate": round(entered / len(covered), 4) if covered else 0.0,
-            "horizon_mix": dict(sorted(horizons.items())),
-            "net_total": round(net, 2), "gross_total": round(gross, 2),
-            "cost_drag": round(gross - net, 2),
-            "decomposition": "n/a", "decomposition_note": PAIR_NA,
-            "verdict": (f"PAIR ARM: {entered} two-leg package(s), net {net:+.2f} "
-                        f"({unevaluable} unevaluable); the single-row counterfactual "
-                        "decomposition is n/a; scored against the single-row random null. "
-                        "Descriptive; nothing promoted.")}
+    return {
+        "boards": len(covered),
+        "entered": entered,
+        "unevaluable": unevaluable,
+        "entry_rate": round(entered / len(covered), 4) if covered else 0.0,
+        "horizon_mix": dict(sorted(horizons.items())),
+        "net_total": round(net, 2),
+        "gross_total": round(gross, 2),
+        "cost_drag": round(gross - net, 2),
+        "decomposition": "n/a",
+        "decomposition_note": PAIR_NA,
+        "verdict": (
+            f"PAIR ARM: {entered} two-leg package(s), net {net:+.2f} "
+            f"({unevaluable} unevaluable); the single-row counterfactual "
+            "decomposition is n/a; scored against the single-row random null. "
+            "Descriptive; nothing promoted."
+        ),
+    }
 
 
-def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
-                  receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
-                  outcomes: OutcomeCache, protocol: Protocol, *,
-                  options: Mapping[str, Any] | SkillOptions | None = None) -> dict[str, Any]:
+def skill_section(
+    boards: Sequence[Board],
+    arms: Sequence[Arm],
+    receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    outcomes: OutcomeCache,
+    protocol: Protocol,
+    *,
+    options: Mapping[str, Any] | SkillOptions | None = None,
+    pricing_complete: bool = True,
+    no_price: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
     """The digest's ``skill`` section: every executed arm (rules and controls
     included) decomposed, bootstrapped, monitored; the power table."""
+    if not pricing_complete:
+        return {
+            "schema": SKILL_SCHEMA,
+            "status": "DATA_GATED",
+            "note": "Unpriced selected or counterfactual economics; no skill attribution.",
+            "no_price": dict(no_price or {}),
+            "arms": {
+                a.name: {
+                    "policy": a.policy.name,
+                    "pricing_status": "DATA_GATED",
+                    "verdict": "DATA_GATED: no statistical attribution",
+                }
+                for a in arms
+            },
+        }
     opts = options if isinstance(options, SkillOptions) else SkillOptions.from_mapping(options)
-    horizons = (tuple(protocol.random_horizons) if protocol.random_horizons is not None
-                else MENU_HORIZONS)
+    horizons = (
+        tuple(protocol.random_horizons) if protocol.random_horizons is not None else MENU_HORIZONS
+    )
     book = ValueBook(outcomes.get, horizons)
     boards = list(boards)
     bound = excess_bound(boards)
@@ -812,34 +999,62 @@ def skill_section(boards: Sequence[Board], arms: Sequence[Arm],
         mine = receipts.get(arm.name, {})
         covered = [b for b in boards if mine.get(b.snapshot, {}).get("ok")]
         complete = len(covered) == len(boards)
-        if _any_pair(mine):
-            doc_arms[arm.name] = {"policy": arm.policy.name, "complete": complete,
-                                  "kind": arm.policy.kind,
-                                  **pair_arm_skill(outcomes, covered, mine)}
+        if _any_pair(mine, boards):
+            doc_arms[arm.name] = {
+                "policy": arm.policy.name,
+                "complete": complete,
+                "kind": arm.policy.kind,
+                **pair_arm_skill(outcomes, covered, mine),
+            }
             continue
-        decisions = [(mine[b.snapshot].get("choice"), mine[b.snapshot].get("horizon"))
-                     for b in covered]
+        decisions = [
+            (mine[b.snapshot].get("choice"), mine[b.snapshot].get("horizon")) for b in covered
+        ]
         where = {b.snapshot: i for i, b in enumerate(covered)}
         order = [where[s] for s in _ordered_ok(mine, set(where))]
-        doc = arm_skill(book, covered, decisions, window=boards, order=order, options=opts,
-                        draws=protocol.draws, seed=protocol.seed, bound=bound,
-                        base_block=base_block, population=len(boards), kind=arm.policy.kind)
+        doc = arm_skill(
+            book,
+            covered,
+            decisions,
+            window=boards,
+            order=order,
+            options=opts,
+            draws=protocol.draws,
+            seed=protocol.seed,
+            bound=bound,
+            base_block=base_block,
+            population=len(boards),
+            kind=arm.policy.kind,
+        )
         doc = {"policy": arm.policy.name, "complete": complete, **doc}
         if not complete:
             doc["verdict"] = verdict(doc, f"PARTIAL ({len(covered)}/{len(boards)} boards): ")
         doc_arms[arm.name] = doc
-    return {"schema": SKILL_SCHEMA, "note": NOTE, "options": asdict(opts),
-            "base_horizons": [str(h) for h in horizons], "excess_bound": bound,
-            "menu_block": base_block, "components": list(COMPONENTS),
-            "random_control": ("the random picker's excess, participation, horizon, direction "
-                               "and selection are 0 by construction; its total is BASE"),
-            "arms": doc_arms,
-            "power": power_table(book, boards, horizons, options=opts)}
+    return {
+        "schema": SKILL_SCHEMA,
+        "note": NOTE,
+        "options": asdict(opts),
+        "base_horizons": [str(h) for h in horizons],
+        "excess_bound": bound,
+        "menu_block": base_block,
+        "components": list(COMPONENTS),
+        "random_control": (
+            "the random picker's excess, participation, horizon, direction "
+            "and selection are 0 by construction; its total is BASE"
+        ),
+        "arms": doc_arms,
+        "power": power_table(book, boards, horizons, options=opts),
+    }
 
 
-def progress_skill(boards: Sequence[Board], arms: Sequence[Arm],
-                   receipts: Mapping[str, Mapping[str, Mapping[str, Any]]], get: GetFn,
-                   memo: dict[str, Any], alpha: float = 0.05) -> dict[str, Any]:
+def progress_skill(
+    boards: Sequence[Board],
+    arms: Sequence[Arm],
+    receipts: Mapping[str, Mapping[str, Mapping[str, Any]]],
+    get: GetFn,
+    memo: dict[str, Any],
+    alpha: float = 0.05,
+) -> dict[str, Any]:
     """The live field: per arm, the excess so far and the in-sample anytime
     CS of the run's final total excess (random decision order)."""
     book = memo.get("book")
@@ -851,15 +1066,18 @@ def progress_skill(boards: Sequence[Board], arms: Sequence[Arm],
     out: dict[str, Any] = {}
     for arm in arms:
         mine = receipts.get(arm.name, {})
-        if _any_pair(mine):
+        if _any_pair(mine, boards):
             decided = _ordered_ok(mine, set(by_snapshot))
             out[arm.name] = {
                 "decided": len(decided),
                 "entered": sum(1 for s in decided if mine[s].get("choice") is not None),
-                "excess": None, "in_sample_significant": None,
-                "cs_total_excess": None, "cs_total_excess_asymptotic": None,
+                "excess": None,
+                "in_sample_significant": None,
+                "cs_total_excess": None,
+                "cs_total_excess_asymptotic": None,
                 "note": "pair arm: the single-row excess and decomposition are n/a "
-                        "(see the digest's skill section)"}
+                "(see the digest's skill section)",
+            }
             continue
         values: list[float] = []
         entered = 0
@@ -875,28 +1093,39 @@ def progress_skill(boards: Sequence[Board], arms: Sequence[Arm],
             values.append(float(vals[board.ids.index(choice)] - vals.mean()))
         live = monitor(values, len(boards), alpha=alpha, bound=memo["bound"])
         out[arm.name] = {
-            "decided": live["observed"], "entered": entered,
+            "decided": live["observed"],
+            "entered": entered,
             "excess": live["excess_observed"],
             "in_sample_significant": live["significant"],
             "cs_total_excess": (live["eb"] or live["asymptotic"] or {}).get("cs_total"),
-            "cs_total_excess_asymptotic": (live["asymptotic"] or {}).get("cs_total")}
-    return {"note": ("excess = pnl - the random row's mean on the same board and horizon. The "
-                     "CS (empirical-Bernstein, Waudby-Smith & Ramdas 2024) is anytime-valid "
-                     "for THIS run's final in-sample total excess under the random decision "
-                     "order; it is not superpopulation skill (see the digest's forward CS "
-                     "and block CIs)"),
-            "arms": out}
+            "cs_total_excess_asymptotic": (live["asymptotic"] or {}).get("cs_total"),
+        }
+    return {
+        "note": (
+            "excess = pnl - the random row's mean on the same board and horizon. The "
+            "CS (empirical-Bernstein, Waudby-Smith & Ramdas 2024) is anytime-valid "
+            "for THIS run's final in-sample total excess under the random decision "
+            "order; it is not superpopulation skill (see the digest's forward CS "
+            "and block CIs)"
+        ),
+        "arms": out,
+    }
 
 
 def cockpit_projection(section: Mapping[str, Any] | None) -> dict[str, Any] | None:
     if not isinstance(section, Mapping):
         return None
     arms = section.get("arms") or {}
-    return {name: {"verdict": a.get("verdict"), "excess_total": a.get("excess_total"),
-                   "excess_block_ci95": ((a.get("intervals") or {}).get("excess") or {})
-                   .get("block_ci95"),
-                   "forward_significant": (a.get("cs_forward") or {}).get("significant")}
-            for name, a in arms.items() if isinstance(a, Mapping)}
+    return {
+        name: {
+            "verdict": a.get("verdict"),
+            "excess_total": a.get("excess_total"),
+            "excess_block_ci95": ((a.get("intervals") or {}).get("excess") or {}).get("block_ci95"),
+            "forward_significant": (a.get("cs_forward") or {}).get("significant"),
+        }
+        for name, a in arms.items()
+        if isinstance(a, Mapping)
+    }
 
 
 def _ci(ci: Sequence[float | None] | None) -> str:
@@ -911,55 +1140,70 @@ def skill_markdown(section: Mapping[str, Any]) -> list[str]:
     add = lines.append
     add("## Skill accounting (exact counterfactual; descriptive, never promotes)")
     add("")
+    if section.get("status") == "DATA_GATED":
+        add(str(section.get("note")))
+        add("")
+        return lines
     if section.get("status") == "error":
         add(f"Unavailable: {section.get('error')}")
         add("")
         return lines
     add(section["note"])
     add("")
-    add("pnl = base + participation + horizon + direction_tilt + direction_timing + selection "
+    add(
+        "pnl = base + participation + horizon + direction_tilt + direction_timing + selection "
         "(exact per board); excess = direction + selection; alpha = timing + selection; "
         "selection = structure + underlying + row. Component totals ($) are accounting "
         "identities; their uncertainty is in the second block (session vs circular-block "
-        "bootstrap 95% CIs).")
+        "bootstrap 95% CIs)."
+    )
     add("")
     width = max([len(str(n)) for n in section["arms"]] + [4])
-    singles = [name for name, a in section["arms"].items()
-               if a.get("decomposition") != "n/a"]
+    singles = [name for name, a in section["arms"].items() if a.get("decomposition") != "n/a"]
     if len(singles) != len(section["arms"]):
         pairs = [str(n) for n in section["arms"] if n not in singles]
-        add(f"Two-leg package arm(s) {', '.join(pairs)}: decomposition n/a (the single-row "
-            "counterfactual does not apply to a package); net on the paired scoreboard.")
+        add(
+            f"Two-leg package arm(s) {', '.join(pairs)}: decomposition n/a (the single-row "
+            "counterfactual does not apply to a package); net on the paired scoreboard."
+        )
         add("")
     add("```text")
-    add(f"{'arm':<{width}} {'boards':>6} {'enter':>5} {'net':>8} {'base':>8} {'partic':>7} "
+    add(
+        f"{'arm':<{width}} {'boards':>6} {'enter':>5} {'net':>8} {'base':>8} {'partic':>7} "
         f"{'horizon':>8} {'dirTilt':>8} {'dirTime':>8} {'select':>8} {'struct':>8} "
-        f"{'undl':>7} {'row':>7} {'cost':>7} residual")
+        f"{'undl':>7} {'row':>7} {'cost':>7} residual"
+    )
     for name in singles:
         a = section["arms"][name]
         c, s = a["components"], a["selection_split"]
-        add(f"{name:<{width}} {a['boards']:>6} {a['entered']:>5} {a['net_total']:>+8.0f} "
+        add(
+            f"{name:<{width}} {a['boards']:>6} {a['entered']:>5} {a['net_total']:>+8.0f} "
             f"{c['base']:>+8.0f} {c['participation']:>+7.0f} {c['horizon']:>+8.0f} "
             f"{c['direction_tilt']:>+8.0f} {c['direction_timing']:>+8.0f} "
             f"{c['selection']:>+8.0f} {s['structure']:>+8.0f} {s['underlying']:>+7.0f} "
-            f"{s['row']:>+7.0f} {a['cost_drag']:>+7.0f} {a['identity_residual']:.1e}")
+            f"{s['row']:>+7.0f} {a['cost_drag']:>+7.0f} {a['identity_residual']:.1e}"
+        )
     add("```")
     add("")
     add("```text")
-    add(f"{'arm':<{width}} {'L':>2} {'blk':>5} {'net session CI':>17} {'net block CI':>17} "
+    add(
+        f"{'arm':<{width}} {'L':>2} {'blk':>5} {'net session CI':>17} {'net block CI':>17} "
         f"{'ratio':>6} {'ESS':>5}  {'excess [block CI]':<26} {'alpha [block CI]':<26} "
-        "forward CS (total excess)")
+        "forward CS (total excess)"
+    )
     for name in singles:
         a = section["arms"][name]
         iv = a["intervals"]
         fwd = a["cs_forward"]
         excess = f"{iv['excess']['total']:+.0f} {_ci(iv['excess']['block_ci95'])}"
         alpha = f"{iv['alpha']['total']:+.0f} {_ci(iv['alpha']['block_ci95'])}"
-        add(f"{name:<{width}} {a['block']['length']:>2} {iv['net']['blocks']:>5} "
+        add(
+            f"{name:<{width}} {a['block']['length']:>2} {iv['net']['blocks']:>5} "
             f"{_ci(iv['net']['session_ci95']):>17} {_ci(iv['net']['block_ci95']):>17} "
             f"{iv['net']['width_ratio']!s:>6} {iv['net']['ess_sessions']!s:>5}  "
             f"{excess:<26} {alpha:<26} {_ci(fwd.get('cs_total'))}"
-            f"{'' if fwd.get('reliable') else ' (unreliable)'}")
+            f"{'' if fwd.get('reliable') else ' (unreliable)'}"
+        )
     add("```")
     add("")
     for name, a in section["arms"].items():
@@ -967,18 +1211,24 @@ def skill_markdown(section: Mapping[str, Any]) -> list[str]:
     add("")
     power = section.get("power") or {}
     if power.get("horizons"):
-        add(f"Power (one random-row trade per board; two-sided alpha {power['alpha']}, power "
-            f"{power['power']}): minimum detectable per-trade effect in $.")
+        add(
+            f"Power (one random-row trade per board; two-sided alpha {power['alpha']}, power "
+            f"{power['power']}): minimum detectable per-trade effect in $."
+        )
         add("")
         add("```text")
-        add(f"{'horizon':<9} {'trades':>6} {'raw iid':>8} {'raw dep':>8} {'excess':>8} "
-            f"{'bull dep':>8} {'VRF iid':>8} {'VRF dep':>8} block")
+        add(
+            f"{'horizon':<9} {'trades':>6} {'raw iid':>8} {'raw dep':>8} {'excess':>8} "
+            f"{'bull dep':>8} {'VRF iid':>8} {'VRF dep':>8} block"
+        )
         for h, doc in power["horizons"].items():
             for row in doc["rows"]:
-                add(f"{h:<9} {row['trades']:>6} {row['mde_raw_iid']:>8.2f} "
+                add(
+                    f"{h:<9} {row['trades']:>6} {row['mde_raw_iid']:>8.2f} "
                     f"{row['mde_raw_dependent']:>8.2f} {row['mde_excess']:>8.2f} "
                     f"{row['mde_bullish_bet_dependent']!s:>8} "
-                    f"{doc['vrf_iid']!s:>8} {doc['vrf_dependent']!s:>8} {doc['block']}")
+                    f"{doc['vrf_iid']!s:>8} {doc['vrf_dependent']!s:>8} {doc['block']}"
+                )
         add("```")
         add("")
     return lines
@@ -1004,15 +1254,21 @@ def load_boards(run_dir: Path) -> list[Board]:
         for line in stream:
             if line.strip():
                 d = json.loads(line)
-                boards.append(Board(d["snapshot"], d["session"], d["clock"], d["rows"],
-                                    d.get("context")))
+                boards.append(
+                    Board(d["snapshot"], d["session"], d["clock"], d["rows"], d.get("context"))
+                )
     return boards
 
 
-def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = None,
-             sessions: tuple[str | None, str | None] | None = None,
-             arms: Sequence[str] | None = None,
-             clock: Callable[[], datetime] = _utcnow) -> dict[str, Any]:
+def redigest(
+    run_dir: Path,
+    *,
+    table: Path | None = None,
+    out: Path | None = None,
+    sessions: tuple[str | None, str | None] | None = None,
+    arms: Sequence[str] | None = None,
+    clock: Callable[[], datetime] = _utcnow,
+) -> dict[str, Any]:
     """Re-score a run dir from its receipts + the outcome table: the full
     digest plus the skill section. ZERO model calls (no ask plug-in is ever
     built) and no bundle parse. In place only when the run is not live (its
@@ -1034,8 +1290,10 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
         if name and name not in named:
             named.append(str(name))
     if arms is not None and not named:
-        raise ValueError("--arms names at least one arm (comma-separated; the built-in "
-                         "controls are only included when named)")
+        raise ValueError(
+            "--arms names at least one arm (comma-separated; the built-in "
+            "controls are only included when named)"
+        )
     cfg = json.loads((run_dir / "config.json").read_text(encoding="utf-8"))
     plan = json.loads((run_dir / "plan.json").read_text(encoding="utf-8"))
     boards = load_boards(run_dir)
@@ -1045,20 +1303,27 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
         if out is None:
             raise ValueError("a session-window redigest needs --out")
         first, last = sessions
-        boards = [b for b in boards if (first is None or b.session >= first)
-                  and (last is None or b.session <= last)]
+        boards = [
+            b
+            for b in boards
+            if (first is None or b.session >= first) and (last is None or b.session <= last)
+        ]
         if not boards:
             raise ValueError(f"no boards in the session window {first}..{last}")
-    policies = longrun.policies_from_config(cfg["policies"],
-                                            builtin=bool(cfg.get("builtin_controls", True)),
-                                            horizon=cfg.get("control_horizon"))
+    policies = longrun.policies_from_config(
+        cfg["policies"],
+        builtin=bool(cfg.get("builtin_controls", True)),
+        horizon=cfg.get("control_horizon"),
+    )
     every = longrun.arms_of(policies)
     if named:
         known = {a.name for a in every}
         unknown = [name for name in named if name not in known]
         if unknown:
-            raise ValueError(f"unknown arm(s) {', '.join(unknown)}; the config's arms are: "
-                             + ", ".join(a.name for a in every))
+            raise ValueError(
+                f"unknown arm(s) {', '.join(unknown)}; the config's arms are: "
+                + ", ".join(a.name for a in every)
+            )
         keep = set(named)
         arms_used = [a for a in every if a.name in keep]  # config order, once each
     else:
@@ -1067,48 +1332,78 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
     outcome_cfg = dict(cfg.get("outcome") or {})
     table_path = table or (Path(str(outcome_cfg["table"])) if outcome_cfg.get("table") else None)
     if table_path is None:
-        raise ValueError("redigest needs an outcome table (--table or the config's "
-                         "outcome.table); it never parses the bundle or calls a model")
+        raise ValueError(
+            "redigest needs an outcome table (--table or the config's "
+            "outcome.table); it never parses the bundle or calls a model"
+        )
     if outcome_cfg.get("plugin") not in (None, "v2") and table is None:
-        raise ValueError(f"outcome plug-in {outcome_cfg.get('plugin')!r} has no table form; "
-                         "pass --table to rescore under the v2 table explicitly")
+        raise ValueError(
+            f"outcome plug-in {outcome_cfg.get('plugin')!r} has no table form; "
+            "pass --table to rescore under the v2 table explicitly"
+        )
     ctx = longrun.PluginContext(config_dir=run_dir, boards=boards)
     outcome = longrun.plugin("outcome", "v2")(
-        {"table": str(table_path),
-         "default_horizon": outcome_cfg.get("default_horizon", "intraday")}, ctx)
+        {
+            "table": str(table_path),
+            "default_horizon": outcome_cfg.get("default_horizon", "intraday"),
+            "cost_model": outcome_cfg.get("cost_model", protocol.cost_model),
+        },
+        ctx,
+    )
     notes: list[str] = []
     bench_cfg = cfg.get("benchmarks") or {"plugin": "none"}
     try:
         benchmarks = longrun.plugin("benchmarks", str(bench_cfg.get("plugin", "none")))(
-            bench_cfg, ctx)
+            bench_cfg, ctx
+        )
     except (OSError, ValueError, KeyError, TypeError) as error:
         benchmarks = {}
         notes.append(f"benchmarks unavailable: {type(error).__name__}")
-    receipts = {a.name: longrun.load_receipts(longrun.receipts_path(run_dir, a.name))
-                for a in arms_used}
-    if named and not any(all(receipts[a.name].get(b.snapshot, {}).get("ok") for a in arms_used)
-                         for b in boards):
+    receipts = {
+        a.name: longrun.load_receipts(longrun.receipts_path(run_dir, a.name)) for a in arms_used
+    }
+    if named and not any(
+        all(receipts[a.name].get(b.snapshot, {}).get("ok") for a in arms_used) for b in boards
+    ):
         raise ValueError("no board has an ok receipt for every named arm; nothing to pair")
-    complete = all(receipts[a.name].get(b.snapshot, {}).get("ok")
-                   for a in arms_used for b in boards)
+    complete = all(
+        receipts[a.name].get(b.snapshot, {}).get("ok") for a in arms_used for b in boards
+    )
     files = {a.name: str(longrun.receipts_path(run_dir, a.name)) for a in arms_used}
 
     def score() -> dict[str, Any]:
-        doc = longrun.score_run(boards, arms_used, receipts, OutcomeCache(outcome), protocol,
-                                benchmarks=benchmarks, receipts_files=files,
-                                run_id=run_dir.name, plan_created=plan.get("created"),
-                                complete=complete, clock=clock, skill_options=cfg.get("skill"))
+        doc = longrun.score_run(
+            boards,
+            arms_used,
+            receipts,
+            OutcomeCache(outcome),
+            protocol,
+            benchmarks=benchmarks,
+            receipts_files=files,
+            run_id=run_dir.name,
+            plan_created=plan.get("created"),
+            complete=complete,
+            clock=clock,
+            skill_options=cfg.get("skill"),
+            retrospective=True,
+        )
         if named:  # a subset digest is never mistaken for the full pairing
-            doc["headline"] = (f"ARM SUBSET ({doc['boards']['scored']} boards where all "
-                               f"{len(arms_used)} arms answered) - {doc['headline']}")
-        doc["redigest"] = {"at": clock().isoformat(), "model_calls": 0,
-                           "source": "receipts on disk + the outcome table (no model, no bundle)",
-                           "table": str(table_path), "notes": notes,
-                           "written_to": str(out if out is not None else run_dir),
-                           "arms": [a.name for a in arms_used] if named else None,
-                           "sessions": None if sessions is None else {
-                               "first": sessions[0], "last": sessions[1],
-                               "boards": len(boards)}}
+            doc["headline"] = (
+                f"ARM SUBSET ({doc['boards']['scored']} boards where all "
+                f"{len(arms_used)} arms answered) - {doc['headline']}"
+            )
+        doc["redigest"] = {
+            "at": clock().isoformat(),
+            "model_calls": 0,
+            "source": "receipts on disk + the outcome table (no model, no bundle)",
+            "table": str(table_path),
+            "notes": notes,
+            "written_to": str(out if out is not None else run_dir),
+            "arms": [a.name for a in arms_used] if named else None,
+            "sessions": None
+            if sessions is None
+            else {"first": sessions[0], "last": sessions[1], "boards": len(boards)},
+        }
         return doc
 
     if out is not None:
@@ -1118,8 +1413,10 @@ def redigest(run_dir: Path, *, table: Path | None = None, out: Path | None = Non
         return doc
     with longrun._run_lock(run_dir) as owned:
         if not owned:
-            raise longrun.RunLocked(f"{run_dir.name} is live (its lock is held); pass --out DIR "
-                                    "to redigest without touching it")
+            raise longrun.RunLocked(
+                f"{run_dir.name} is live (its lock is held); pass --out DIR "
+                "to redigest without touching it"
+            )
         doc = score()
         prior = run_dir / "digest.json"
         backup = run_dir / "digest.pre-redigest.json"
@@ -1134,16 +1431,19 @@ def redigest_cli(args: argparse.Namespace) -> int:
     if getattr(args, "sessions", None):
         first, sep, last = str(args.sessions).partition(":")
         if not sep:
-            print("longrun redigest: refused: --sessions is FIRST:LAST (either may be empty)",
-                  file=sys.stderr)
+            print(
+                "longrun redigest: refused: --sessions is FIRST:LAST (either may be empty)",
+                file=sys.stderr,
+            )
             return 2
         window = (first or None, last or None)
     arm_names: list[str] | None = None
     if getattr(args, "arms", None) is not None:  # '' or 'a,b' given: never silently "all"
         arm_names = [name.strip() for name in str(args.arms).split(",")]
     try:
-        doc = redigest(args.run_dir, table=args.table, out=args.out, sessions=window,
-                       arms=arm_names)
+        doc = redigest(
+            args.run_dir, table=args.table, out=args.out, sessions=window, arms=arm_names
+        )
     except longrun.RunLocked as error:
         print(f"longrun redigest: {error}", file=sys.stderr)
         return 3
@@ -1151,10 +1451,19 @@ def redigest_cli(args: argparse.Namespace) -> int:
         print(f"longrun redigest: refused: {error}", file=sys.stderr)
         return 2
     skill = doc.get("skill") or {}
-    print(json.dumps({"headline": doc["headline"], "complete": doc["complete"],
-                      "scored_boards": doc["boards"]["scored"],
-                      "written_to": doc["redigest"]["written_to"], "model_calls": 0,
-                      "skill_verdicts": {k: v.get("verdict")
-                                         for k, v in (skill.get("arms") or {}).items()}},
-                     indent=2))
+    print(
+        json.dumps(
+            {
+                "headline": doc["headline"],
+                "complete": doc["complete"],
+                "scored_boards": doc["boards"]["scored"],
+                "written_to": doc["redigest"]["written_to"],
+                "model_calls": 0,
+                "skill_verdicts": {
+                    k: v.get("verdict") for k, v in (skill.get("arms") or {}).items()
+                },
+            },
+            indent=2,
+        )
+    )
     return 0

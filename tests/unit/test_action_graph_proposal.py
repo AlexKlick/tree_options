@@ -54,12 +54,25 @@ def test_proposal_refuses_authority_and_broken_bindings(change: str) -> None:
 
 def test_cockpit_exposes_only_get_example(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("TREX_RESEARCH_WORKER", "0")
-    client = TestClient(create_app(state_dir=str(tmp_path / "state"),
-                                   plans_dir=str(tmp_path / "plans"),
-                                   discovery_dir=str(tmp_path / "discovery"),
-                                   desk_state_dir=str(tmp_path / "desk")))
+    client = TestClient(
+        create_app(
+            state_dir=str(tmp_path / "state"),
+            plans_dir=str(tmp_path / "plans"),
+            discovery_dir=str(tmp_path / "discovery"),
+            desk_state_dir=str(tmp_path / "desk"),
+        )
+    )
     response = client.get("/api/action-model/example")
     assert response.status_code == 200
     assert response.headers["cache-control"] == "no-store"
     assert response.json()["receipt"]["execution_authorized"] is False
     assert client.post("/api/action-model/example").status_code == 405
+
+
+def test_snaptrade_provider_is_behind_same_governed_effect_boundary():
+    _, registry, schema = _fixture()
+    plan = json.loads((ROOT / "research-to-broker-paper.plan.json").read_text())
+    receipt = validate(plan, registry, schema)
+    assert receipt["execution_authorized"] is False
+    assert receipt["broker_contacted"] is False
+    assert "broker.snaptrade.submit" in json.dumps(plan)

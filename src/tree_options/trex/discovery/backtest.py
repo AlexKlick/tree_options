@@ -54,9 +54,7 @@ MIN_ANALOGS = 5
 DST_SLACK_MS = 2 * 3_600_000
 
 
-def spread_value(
-    spot: float, short: float, long_: float, dte_days: int, iv: float
-) -> float:
+def spread_value(spot: float, short: float, long_: float, dte_days: int, iv: float) -> float:
     """Model value of a put debit spread (long the higher strike). At or
     past expiry the value is intrinsic - never the pricer's half-day
     floor, which would leak time value into an expired position."""
@@ -129,9 +127,7 @@ def _analog(
         value = spread_value(spot, short, long_, remaining, iv)
         path.append((t, (value - debit) * MULTIPLIER))
     # the last observed session at/before expiry settles at intrinsic
-    t_last, spot_last = next(
-        (t, s) for t, s in reversed(bars[start:]) if t <= cutoff_ms
-    )
+    t_last, spot_last = next((t, s) for t, s in reversed(bars[start:]) if t <= cutoff_ms)
     final = (spread_value(spot_last, short, long_, 0, iv) - debit) * MULTIPLIER
     path[-1] = (t_last, final)
     return debit, path

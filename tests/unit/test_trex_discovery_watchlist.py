@@ -39,7 +39,7 @@ class TestLoadSeed:
         (plans / "p.toml").write_text(
             'id = "p"\naccount_mode = "paper"\ntotal_debit_cap = 100.0\n'
             'entry_window_start = "09:45"\nentry_window_end = "12:00"\n\n'
-            "[[structures]]\nid = \"a\"\nunderlying = \"MU\"\n"
+            '[[structures]]\nid = "a"\nunderlying = "MU"\n'
             "entry_date = 2026-09-18\nexpiry = 2026-10-16\nlong_strike = 100.0\n"
             "short_strike = 95.0\nquantity = 1\nlimit_cap = 0.5\nexit_deadline = 2026-10-09\n"
         )
@@ -84,8 +84,12 @@ class TestProposalLifecycle:
     """M6 (Codex-arch #12): durable ids + provenance, no regenerate-over-
     pending, no reviving dismissals for a week, idempotent decisions."""
 
-    PROV: ClassVar[dict] = {"provider": "local", "model": "Qwen/Qwen3.8-27B",
-                            "trigger": "operator", "source_id": "r1"}
+    PROV: ClassVar[dict] = {
+        "provider": "local",
+        "model": "Qwen/Qwen3.8-27B",
+        "trigger": "operator",
+        "source_id": "r1",
+    }
 
     def _wl(self, tmp_path: Path) -> None:
         load_watchlist(tmp_path, seed=["SPY", "QQQ"], now=NOW)
@@ -95,8 +99,11 @@ class TestProposalLifecycle:
 
         self._wl(tmp_path)
         ids = record_proposals(
-            tmp_path, [{"symbol": "TSM", "action": "add", "rationale": "r", "confidence": 0.7}],
-            self.PROV, NOW, run_note={"status": "ok"},
+            tmp_path,
+            [{"symbol": "TSM", "action": "add", "rationale": "r", "confidence": 0.7}],
+            self.PROV,
+            NOW,
+            run_note={"status": "ok"},
         )
         assert len(ids) == 1
         doc = load_watchlist(tmp_path)
@@ -134,7 +141,9 @@ class TestProposalLifecycle:
 
         self._wl(tmp_path)
         (pid,) = record_proposals(tmp_path, [{"symbol": "TSM", "action": "add"}], self.PROV, NOW)
-        assert apply_watch_op(tmp_path, "dismiss", proposal_id=pid, now=NOW)["status"] == "dismissed"
+        assert (
+            apply_watch_op(tmp_path, "dismiss", proposal_id=pid, now=NOW)["status"] == "dismissed"
+        )
         doc = load_watchlist(tmp_path)
         assert "TSM" not in [r["symbol"] for r in doc["symbols"]]
         six_days = datetime(2026, 9, 28, 19, 0, tzinfo=ET)
@@ -144,7 +153,9 @@ class TestProposalLifecycle:
 
     def test_unknown_proposal_is_invalid(self, tmp_path: Path) -> None:
         self._wl(tmp_path)
-        assert apply_watch_op(tmp_path, "approve", proposal_id="nope", now=NOW)["status"] == "invalid"
+        assert (
+            apply_watch_op(tmp_path, "approve", proposal_id="nope", now=NOW)["status"] == "invalid"
+        )
 
     def test_long_decided_proposals_are_pruned_pending_kept(self, tmp_path: Path) -> None:
         from tree_options.trex.discovery.watchlist import record_proposals
@@ -178,18 +189,33 @@ class TestCodexM456Watchlist:
         load_watchlist(tmp_path, seed=[], now=NOW)
         doc = load_watchlist(tmp_path)
         doc["proposals"] = [
-            {"id": f"p{i}", "symbol": f"S{chr(65 + i % 26)}{chr(65 + i // 26)}",
-             "action": "add", "status": "pending", "created_at": NOW.isoformat(),
-             "decided_at": None}
+            {
+                "id": f"p{i}",
+                "symbol": f"S{chr(65 + i % 26)}{chr(65 + i // 26)}",
+                "action": "add",
+                "status": "pending",
+                "created_at": NOW.isoformat(),
+                "decided_at": None,
+            }
             for i in range(MAX_PROPOSALS_KEPT)
         ]
-        doc["proposals"].insert(0, {"id": "old-dismissed", "symbol": "TSM", "action": "add",
-                                    "status": "dismissed", "created_at": "2026-01-01T00:00:00-05:00",
-                                    "decided_at": NOW.isoformat()})
+        doc["proposals"].insert(
+            0,
+            {
+                "id": "old-dismissed",
+                "symbol": "TSM",
+                "action": "add",
+                "status": "dismissed",
+                "created_at": "2026-01-01T00:00:00-05:00",
+                "decided_at": NOW.isoformat(),
+            },
+        )
         (tmp_path / "watchlist.json").write_text(json.dumps(doc))
         record_proposals(tmp_path, [{"symbol": "ZZ", "action": "add"}], self.PROV, NOW)
         after = load_watchlist(tmp_path)
         ids = {p["id"] for p in after["proposals"]}
         assert {f"p{i}" for i in range(MAX_PROPOSALS_KEPT)} <= ids  # no pending evicted
         assert "old-dismissed" in ids and "TSM" in blocked_symbols(after, NOW)
-        assert apply_watch_op(tmp_path, "approve", proposal_id="p0", now=NOW)["status"] == "approved"
+        assert (
+            apply_watch_op(tmp_path, "approve", proposal_id="p0", now=NOW)["status"] == "approved"
+        )

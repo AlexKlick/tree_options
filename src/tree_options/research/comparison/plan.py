@@ -54,6 +54,7 @@ REFUSAL_UNSUPPORTED_SIZING = "research.plan.unsupported_sizing"
 @dataclass(frozen=True)
 class ComparisonPlan:
     """Everything ``run_comparison`` needs that the spec only names."""
+
     spec: ComparisonSpec
     sessions: tuple[date, ...] = ()
     window_start: date | None = None
@@ -80,51 +81,68 @@ def resolve_plan(spec: ComparisonSpec) -> ComparisonPlan:
 
     # -- controls that must be implemented or refused --------------------
     if spec.rebalancing is not Rebalancing.NONE:
-        return _refusal(spec, REFUSAL_UNSUPPORTED_REBALANCING,
-                        f"rebalancing={spec.rebalancing.value} is not implemented",
-                        calendar_id)
+        return _refusal(
+            spec,
+            REFUSAL_UNSUPPORTED_REBALANCING,
+            f"rebalancing={spec.rebalancing.value} is not implemented",
+            calendar_id,
+        )
     if spec.position_sizing is not PositionSizing.INTEGER:
-        return _refusal(spec, REFUSAL_UNSUPPORTED_SIZING,
-                        f"position_sizing={spec.position_sizing.value} is not implemented",
-                        calendar_id)
+        return _refusal(
+            spec,
+            REFUSAL_UNSUPPORTED_SIZING,
+            f"position_sizing={spec.position_sizing.value} is not implemented",
+            calendar_id,
+        )
 
     # -- window ------------------------------------------------------------
     if spec.common_start is None or spec.common_end is None:
-        return _refusal(spec, REFUSAL_WINDOW_REQUIRED,
-                        "a comparison must declare both common_start and common_end "
-                        "(the common basis is the point of the exercise)",
-                        calendar_id)
+        return _refusal(
+            spec,
+            REFUSAL_WINDOW_REQUIRED,
+            "a comparison must declare both common_start and common_end "
+            "(the common basis is the point of the exercise)",
+            calendar_id,
+        )
     if spec.common_start > spec.common_end:
-        return _refusal(spec, REFUSAL_INVALID_WINDOW,
-                        f"common_start {spec.common_start} is after common_end "
-                        f"{spec.common_end}",
-                        calendar_id)
+        return _refusal(
+            spec,
+            REFUSAL_INVALID_WINDOW,
+            f"common_start {spec.common_start} is after common_end {spec.common_end}",
+            calendar_id,
+        )
     sessions = sessions_between(spec.common_start, spec.common_end)
     if not sessions:
-        return _refusal(spec, REFUSAL_NO_SESSIONS,
-                        f"no declared sessions between {spec.common_start} and "
-                        f"{spec.common_end}",
-                        calendar_id)
+        return _refusal(
+            spec,
+            REFUSAL_NO_SESSIONS,
+            f"no declared sessions between {spec.common_start} and {spec.common_end}",
+            calendar_id,
+        )
 
     # -- contribution schedule ----------------------------------------------
     if spec.contribution_per_period < 0:
-        return _refusal(spec, REFUSAL_NEGATIVE_CONTRIBUTION,
-                        f"contribution_per_period {spec.contribution_per_period} < 0",
-                        calendar_id)
-    cashflows = _contribution_schedule(
-        spec.contribution_per_period, sessions, spec.cashflow_timing)
+        return _refusal(
+            spec,
+            REFUSAL_NEGATIVE_CONTRIBUTION,
+            f"contribution_per_period {spec.contribution_per_period} < 0",
+            calendar_id,
+        )
+    cashflows = _contribution_schedule(spec.contribution_per_period, sessions, spec.cashflow_timing)
 
     # -- knowledge cutoff ----------------------------------------------------
     if spec.knowledge_cutoff is not None and spec.knowledge_cutoff.tzinfo is None:
-        return _refusal(spec, REFUSAL_CUTOFF_NEEDS_TIMEZONE,
-                        "knowledge_cutoff must be timezone-aware (an instant, "
-                        "not a wall-clock ambiguity)",
-                        calendar_id)
+        return _refusal(
+            spec,
+            REFUSAL_CUTOFF_NEEDS_TIMEZONE,
+            "knowledge_cutoff must be timezone-aware (an instant, not a wall-clock ambiguity)",
+            calendar_id,
+        )
 
     # -- cost model -----------------------------------------------------------
-    fee_model = (FiveBasisPointFeeModel()
-                 if spec.cost_model_kind is CostModelKind.FIVE_BP_FIXED
-                 else None)  # pass_through: explicit per-execution fees only
+    fee_model = (
+        FiveBasisPointFeeModel() if spec.cost_model_kind is CostModelKind.FIVE_BP_FIXED else None
+    )  # pass_through: explicit per-execution fees only
 
     return ComparisonPlan(
         spec=spec,
@@ -139,11 +157,12 @@ def resolve_plan(spec: ComparisonSpec) -> ComparisonPlan:
     )
 
 
-def _refusal(spec: ComparisonSpec, code: str, detail: str,
-             calendar_id: str) -> ComparisonPlan:
+def _refusal(spec: ComparisonSpec, code: str, detail: str, calendar_id: str) -> ComparisonPlan:
     return ComparisonPlan(
-        spec=spec, calendar_sha256=calendar_id,
-        refusal_reason=code, refusal_detail=detail,
+        spec=spec,
+        calendar_sha256=calendar_id,
+        refusal_reason=code,
+        refusal_detail=detail,
     )
 
 
@@ -166,9 +185,7 @@ def _contribution_schedule(
         dates[0] if timing is CashflowTiming.BEGINNING_OF_PERIOD else dates[-1]
         for dates in by_month.values()
     )
-    return tuple(
-        CashflowEvent(date=d, amount=per_period) for d in sorted(flow_dates)
-    )
+    return tuple(CashflowEvent(date=d, amount=per_period) for d in sorted(flow_dates))
 
 
 __all__ = [

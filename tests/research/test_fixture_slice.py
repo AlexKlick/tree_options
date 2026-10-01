@@ -57,9 +57,7 @@ def _cands() -> dict[str, object]:
 
 def test_fixture_is_present_pinned_and_synthetic_labeled() -> None:
     cands = _cands()
-    assert set(cands) == {"synthetic-benchmark-v1",
-                          "synthetic-momentum-v1",
-                          "synthetic-drift-v1"}
+    assert set(cands) == {"synthetic-benchmark-v1", "synthetic-momentum-v1", "synthetic-drift-v1"}
     for c in cands.values():
         assert c.plot_funded_account is True
         assert c.funded_history.value == "reconstructed"
@@ -93,8 +91,7 @@ def test_benchmark_and_two_versions_on_a_common_basis() -> None:
     assert set(mom.rows_by_date) == set(drf.rows_by_date)
 
     # paired difference against the benchmark exists and is nonempty
-    assert set(res.paired_diff) == {"synthetic-momentum-v1",
-                                    "synthetic-drift-v1"}
+    assert set(res.paired_diff) == {"synthetic-momentum-v1", "synthetic-drift-v1"}
     final_day = max(mom.rows_by_date)
     mom_diff = res.paired_diff["synthetic-momentum-v1"][final_day.isoformat()]
     # 10,628.04 - 10,283.20 = 344.84
@@ -102,9 +99,12 @@ def test_benchmark_and_two_versions_on_a_common_basis() -> None:
 
     # the benchmark itself computes to its own hand oracle
     bench = run_comparison(
-        ComparisonSpec(candidate_ids=("synthetic-benchmark-v1",),
-                       starting_capital=D("10000"),
-                       common_start=_WSTART, common_end=_WEND),
+        ComparisonSpec(
+            candidate_ids=("synthetic-benchmark-v1",),
+            starting_capital=D("10000"),
+            common_start=_WSTART,
+            common_end=_WEND,
+        ),
         (cands["synthetic-benchmark-v1"],),
     )
     assert bench.candidates[0].final_ending_value == D("10283.20")
@@ -115,16 +115,15 @@ def test_observed_drawdown_and_recovery_render_in_the_slice() -> None:
     res = run_comparison(_slice_spec(), (cands["synthetic-benchmark-v1"],))
     s = res.candidates[0]
     assert s.drawdown  # the February dip produced drawdown cells
-    recovered = [cell for cell in s.drawdown.values()
-                 if cell["recovery_end_date"] is not None]
+    recovered = [cell for cell in s.drawdown.values() if cell["recovery_end_date"] is not None]
     assert recovered  # recovery to 412 is OBSERVED and reported
 
 
 def test_nonempty_result_serializes_and_is_json_safe() -> None:
     cands = _cands()
-    res = run_comparison(_slice_spec(),
-                         (cands["synthetic-momentum-v1"],),
-                         baseline=cands["synthetic-benchmark-v1"])
+    res = run_comparison(
+        _slice_spec(), (cands["synthetic-momentum-v1"],), baseline=cands["synthetic-benchmark-v1"]
+    )
     wire = res.to_wire()
     text = json.dumps(wire)
     assert '"2024-03-28"' in text
@@ -141,32 +140,37 @@ def test_worker_publishes_the_slice_end_to_end(tmp_path) -> None:
     scopes = tmp_path / "scopes"
     scopes.mkdir()
     app = FastAPI()
-    worker = attach_research(app, workspace=tmp_path / "ws",
-                             candidate_scopes_root=scopes, start_worker=False)
+    worker = attach_research(
+        app, workspace=tmp_path / "ws", candidate_scopes_root=scopes, start_worker=False
+    )
     client = TestClient(app)
 
     cat = client.get("/api/research/candidates").json()["candidates"]
     synthetic_ids = {c["id"] for c in cat if c["evidence_kind"] == "synthetic_backtest"}
-    assert synthetic_ids == {"synthetic-benchmark-v1",
-                             "synthetic-momentum-v1",
-                             "synthetic-drift-v1"}
+    assert synthetic_ids == {
+        "synthetic-benchmark-v1",
+        "synthetic-momentum-v1",
+        "synthetic-drift-v1",
+    }
     for c in cat:
         if c["evidence_kind"] == "synthetic_backtest":
             assert c["warnings"] == ["research.fixture_slice_machinery_validation"]
 
-    run_id = client.post("/api/research/compare", json={
-        "candidate_ids": ["synthetic-momentum-v1", "synthetic-drift-v1"],
-        "benchmark_candidate_id": "synthetic-benchmark-v1",
-        "starting_capital": "10000",
-        "common_start": "2024-01-02",
-        "common_end": "2024-03-28",
-    }).json()["run_id"]
+    run_id = client.post(
+        "/api/research/compare",
+        json={
+            "candidate_ids": ["synthetic-momentum-v1", "synthetic-drift-v1"],
+            "benchmark_candidate_id": "synthetic-benchmark-v1",
+            "starting_capital": "10000",
+            "common_start": "2024-01-02",
+            "common_end": "2024-03-28",
+        },
+    ).json()["run_id"]
     assert worker.step() is True
     body = client.get(f"/api/research/runs/{run_id}/result").json()
     assert body["status"] == "completed"
     result = body["result"]
-    finals = {s["candidate_id"]: s["final_ending_value"]
-              for s in result["candidates"]}
+    finals = {s["candidate_id"]: s["final_ending_value"] for s in result["candidates"]}
     assert finals["synthetic-momentum-v1"] == "10628.04"
     assert finals["synthetic-drift-v1"] == "10205.22"
     # the stored artifact is bound to its inputs

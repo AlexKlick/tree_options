@@ -25,8 +25,7 @@ from tree_options.research.contracts import (
 )
 
 
-def _candidate(supported_start=None, supported_end=None, *,
-               family="vix_term") -> ResearchCandidate:
+def _candidate(supported_start=None, supported_end=None, *, family="vix_term") -> ResearchCandidate:
     return ResearchCandidate(
         id=f"{family}-v2",
         family=family,
@@ -42,29 +41,38 @@ def _candidate(supported_start=None, supported_end=None, *,
 
 def test_intersect_window_uses_both_starts_and_ends() -> None:
     lo, hi = intersect_window(
-        date(2024, 1, 2), date(2026, 9, 25),
-        date(2024, 6, 1), date(2026, 6, 30),
+        date(2024, 1, 2),
+        date(2026, 9, 25),
+        date(2024, 6, 1),
+        date(2026, 6, 30),
     )
     assert lo == date(2024, 6, 1)
     assert hi == date(2026, 6, 30)
 
 
 def test_intersect_window_returns_none_if_either_unknown() -> None:
-    assert intersect_window(None, date(2026, 1, 1), date(2024, 1, 1),
-                             date(2026, 1, 1)) == (None, None)
-    assert intersect_window(date(2024, 1, 1), None, date(2024, 1, 1),
-                             date(2026, 1, 1)) == (None, None)
+    assert intersect_window(None, date(2026, 1, 1), date(2024, 1, 1), date(2026, 1, 1)) == (
+        None,
+        None,
+    )
+    assert intersect_window(date(2024, 1, 1), None, date(2024, 1, 1), date(2026, 1, 1)) == (
+        None,
+        None,
+    )
 
 
 def test_align_pair_emits_null_when_baseline_missing() -> None:
     c = _candidate(date(2024, 1, 1), date(2026, 9, 25))
     b = _candidate(date(2024, 1, 1), date(2026, 9, 25), family="bh")
     pair = align_pair(
-        c, b,
-        {date(2024, 1, 2): Decimal("100"), date(2024, 1, 3): Decimal("101"),
-         date(2024, 6, 1): Decimal("110")},
-        {date(2024, 1, 2): Decimal("100"),
-         date(2024, 6, 1): Decimal("105")},
+        c,
+        b,
+        {
+            date(2024, 1, 2): Decimal("100"),
+            date(2024, 1, 3): Decimal("101"),
+            date(2024, 6, 1): Decimal("110"),
+        },
+        {date(2024, 1, 2): Decimal("100"), date(2024, 6, 1): Decimal("105")},
     )
     # 2024-01-03: candidate=101, baseline missing → null + benchmark
     # overlap-missing reason (the baseline is the comparison partner; its
@@ -88,7 +96,8 @@ def test_align_pair_emits_benchmark_overlap_missing_when_baseline_lacks_date() -
     c = _candidate(date(2024, 1, 1), date(2026, 9, 25))
     b = _candidate(date(2024, 1, 1), date(2026, 9, 25), family="bh")
     pair = align_pair(
-        c, b,
+        c,
+        b,
         {date(2024, 6, 1): Decimal("110"), date(2024, 6, 2): Decimal("112")},
         {date(2024, 6, 1): Decimal("105")},  # 2024-06-02 missing for baseline
     )
@@ -101,7 +110,8 @@ def test_align_pair_emits_benchmark_overlap_missing_when_baseline_lacks_date() -
 def test_align_pair_without_baseline_emits_unpaired_series() -> None:
     c = _candidate(date(2024, 1, 1), date(2024, 6, 30))
     pair = align_pair(
-        c, None,
+        c,
+        None,
         {date(2024, 1, 2): Decimal("100"), date(2024, 1, 3): Decimal("101")},
         {},
     )
@@ -120,11 +130,13 @@ def test_align_pair_bound_by_declared_sessions_not_observed_union() -> None:
     b = _candidate(date(2024, 1, 1), date(2027, 1, 1), family="bh")
     declared = (date(2026, 6, 29), date(2026, 6, 30), date(2026, 7, 1))
     pair = align_pair(
-        c, b,
-        {date(2026, 6, 30): Decimal("110"),
-         date(2026, 12, 31): Decimal("120")},  # outside the declared basis
-        {date(2026, 6, 30): Decimal("105"),
-         date(2026, 12, 31): Decimal("108")},
+        c,
+        b,
+        {
+            date(2026, 6, 30): Decimal("110"),
+            date(2026, 12, 31): Decimal("120"),
+        },  # outside the declared basis
+        {date(2026, 6, 30): Decimal("105"), date(2026, 12, 31): Decimal("108")},
         sessions=declared,
     )
     dates = [cell.date for cell in pair.cells]
@@ -143,7 +155,8 @@ def test_align_pair_legacy_path_uses_candidate_dates_without_union() -> None:
     c = _candidate(date(2024, 1, 1), date(2026, 6, 30))
     b = _candidate(date(2024, 1, 1), date(2027, 1, 1), family="bh")
     pair = align_pair(
-        c, b,
+        c,
+        b,
         {date(2026, 6, 30): Decimal("110")},
         {},  # baseline observed nothing
     )
@@ -156,7 +169,8 @@ def test_diff_in_dollars_serializes_decimals_as_strings() -> None:
     c = _candidate(date(2024, 1, 1), date(2024, 6, 30))
     b = _candidate(date(2024, 1, 1), date(2024, 6, 30), family="bh")
     pair = align_pair(
-        c, b,
+        c,
+        b,
         {date(2024, 1, 2): Decimal("100.50")},
         {date(2024, 1, 2): Decimal("100.25")},
     )

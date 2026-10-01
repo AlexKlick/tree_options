@@ -362,9 +362,7 @@ class TestPayoffChart:
         assert expiry_pnl(s=184.79, **kw) == pytest.approx(0.0, abs=0.5)
 
     def test_summarize_book_takes_wings_and_debits(self) -> None:
-        summary = summarize_book(
-            [(185.0, 150.0, 0.21, 5), (185.0, 150.0, 1.24, 3)]
-        )
+        summary = summarize_book([(185.0, 150.0, 0.21, 5), (185.0, 150.0, 1.24, 3)])
         assert summary["committed"] == pytest.approx(477.0)
         assert summary["max_gain"] == pytest.approx(27523.0)
         assert summary["max_loss"] == pytest.approx(-477.0)
@@ -384,9 +382,7 @@ class TestPayoffSeries:
         for kink in (150.0, 185.0, 184.79):
             assert any(abs(x - kink) < 1e-6 for x in xs), f"kink {kink} missing"
         for x, y in pts:
-            assert y == pytest.approx(
-                expiry_pnl(185.0, 150.0, 0.21, 5, x), abs=1e-3
-            )
+            assert y == pytest.approx(expiry_pnl(185.0, 150.0, 0.21, 5, x), abs=1e-3)
         assert series["levels"]["max_gain"] == 17395.0
         assert series["levels"]["breakeven"] == pytest.approx(184.79)
         assert series["labels"]["max_gain"] == "+$17,395"
@@ -449,12 +445,8 @@ class TestHistorySeries:
         series = pnl_history_series(samples)
         assert series is not None
         assert len(series["points"]) <= 600
-        first_ts = int(
-            datetime.fromisoformat(samples[0]["ts"]).timestamp() * 1000
-        )
-        last_ts = int(
-            datetime.fromisoformat(samples[-1]["ts"]).timestamp() * 1000
-        )
+        first_ts = int(datetime.fromisoformat(samples[0]["ts"]).timestamp() * 1000)
+        last_ts = int(datetime.fromisoformat(samples[-1]["ts"]).timestamp() * 1000)
         assert series["points"][0][0] == first_ts
         assert series["points"][-1][0] == last_ts
 
@@ -590,8 +582,16 @@ class TestNetPositions:
         """M8/Codex S3: the monitor's `unrealized` is FILLED-basis; the row
         must value the 3 contracts still open, from the exact quote mid."""
         states = {"nvda-oct": {"entry_fill": 0.21, "filled_qty": 5, "open_qty": 3}}
-        marks = {"nvda-oct": {"qty": 5, "entry": "0.21", "bid": "0.18", "ask": "0.21",
-                              "mark": "0.20", "unrealized": "-7.50"}}
+        marks = {
+            "nvda-oct": {
+                "qty": 5,
+                "entry": "0.21",
+                "bid": "0.18",
+                "ask": "0.21",
+                "mark": "0.20",
+                "unrealized": "-7.50",
+            }
+        }
         rows = net_positions(self._specs()[:1], states, marks)
         assert rows[0]["unrealized"] == pytest.approx((0.195 - 0.21) * 3 * 100)
 
@@ -759,8 +759,9 @@ class TestPortfolioPayload:
         the CENT-ROUNDED mark. 0.18/0.21 -> mid 0.195, stored mark "0.20"."""
         run = self._seed_open_book(tmp_path)
         marks = json.loads((run / "marks.json").read_text())
-        marks["structures"]["nvda-oct"].update(bid="0.18", ask="0.21", mark="0.20",
-                                               unrealized="-7.50")
+        marks["structures"]["nvda-oct"].update(
+            bid="0.18", ask="0.21", mark="0.20", unrealized="-7.50"
+        )
         marks["total_unrealized"] = "-7.50"
         (run / "marks.json").write_text(json.dumps(marks))
         client = _client(tmp_path / "state", tmp_path / "plans")
@@ -888,7 +889,10 @@ class TestDiscoveryEndpoints:
 
     def _stamp(self) -> DiscoveryStamp:
         return DiscoveryStamp(
-            git_sha="test", config_hash="x", generated_at=datetime.now(ET).isoformat(), runner="manual"
+            git_sha="test",
+            config_hash="x",
+            generated_at=datetime.now(ET).isoformat(),
+            runner="manual",
         )
 
     def test_empty_state(self, tmp_path: Path) -> None:
@@ -1153,9 +1157,7 @@ class TestDiscoveryShadowBlock:
         assert shadow["stats"]["not_executed"] is True
 
     def test_shadow_absent_is_none(self, tmp_path: Path) -> None:
-        client = _client(
-            tmp_path / "state", tmp_path / "plans", tmp_path / "discovery"
-        )
+        client = _client(tmp_path / "state", tmp_path / "plans", tmp_path / "discovery")
         assert client.get("/api/discovery").json()["shadow"] is None
 
 
@@ -1191,9 +1193,16 @@ class TestMarketWatchAndSymbol:
             _json.dumps(
                 {
                     "last_refresh": "2026-09-22T18:59:30-04:00",
-                    "symbols": {"SPY": {"bid": 1.0, "ask": 1.1, "close": 1.05,
-                                         "iv30": 11.0, "change_pct": 0.1,
-                                         "source_as_of": "2026-09-22 18:59:00"}},
+                    "symbols": {
+                        "SPY": {
+                            "bid": 1.0,
+                            "ask": 1.1,
+                            "close": 1.05,
+                            "iv30": 11.0,
+                            "change_pct": 0.1,
+                            "source_as_of": "2026-09-22 18:59:00",
+                        }
+                    },
                     "errors": {},
                 }
             )
@@ -1209,8 +1218,7 @@ class TestMarketWatchAndSymbol:
         news_env = {
             "fetched_at": fresh,
             "ttl_seconds": 1800,
-            "payload": {"items": [{"title": "t", "link": "https://x", "pub": None,
-                                    "source": "s"}]},
+            "payload": {"items": [{"title": "t", "link": "https://x", "pub": None, "source": "s"}]},
         }
         (disc / "market" / "cache" / "news").mkdir(parents=True, exist_ok=True)
         (disc / "market" / "cache" / "news" / "SPY.json").write_text(_json.dumps(news_env))
@@ -1234,8 +1242,10 @@ class TestMarketWatchAndSymbol:
         old = "2026-01-02T10:00:00-05:00"  # far past every TTL
         for kind, payload in (
             ("bars", {"bars": [{"t": 1789992000000, "c": 750.1, "v": 1}]}),
-            ("news", {"items": [{"title": "old", "link": "https://x", "pub": None,
-                                  "source": "s"}]}),
+            (
+                "news",
+                {"items": [{"title": "old", "link": "https://x", "pub": None, "source": "s"}]},
+            ),
         ):
             (disc / "market" / "cache" / kind).mkdir(parents=True, exist_ok=True)
             (disc / "market" / "cache" / kind / "SPY.json").write_text(
@@ -1279,8 +1289,14 @@ class TestBacktestApi:
         assert "debit" not in body  # client-supplied prices never reach the runner
 
     @pytest.mark.parametrize(
-        "bad", ["", "qqq|20261016|642|657", "QQQ|2026-10-16|642|657", "QQQ|20261016|x|657",
-                "../etc|20261016|1|2"],
+        "bad",
+        [
+            "",
+            "qqq|20261016|642|657",
+            "QQQ|2026-10-16|642|657",
+            "QQQ|20261016|x|657",
+            "../etc|20261016|1|2",
+        ],
     )
     def test_post_rejects_malformed_keys(self, tmp_path: Path, bad: str) -> None:
         client = _client(tmp_path / "state", tmp_path / "plans", tmp_path / "discovery")
@@ -1292,8 +1308,16 @@ class TestBacktestApi:
         disc = tmp_path / "discovery"
         client = _client(tmp_path / "state", tmp_path / "plans", disc)
         assert client.get("/api/discovery/backtest", params={"key": self.KEY}).status_code == 404
-        write_artifact(disc, self.KEY, {"key": self.KEY, "label": LABEL, "error": None,
-                                        "generated_at": datetime.now(ET).isoformat()})
+        write_artifact(
+            disc,
+            self.KEY,
+            {
+                "key": self.KEY,
+                "label": LABEL,
+                "error": None,
+                "generated_at": datetime.now(ET).isoformat(),
+            },
+        )
         resp = client.get("/api/discovery/backtest", params={"key": self.KEY})
         assert resp.status_code == 200
         doc = resp.json()
@@ -1305,17 +1329,28 @@ class TestProposalsApi:
     def test_market_carries_pending_proposals_and_last_run(self, tmp_path: Path) -> None:
         disc = tmp_path / "discovery"
         disc.mkdir(parents=True)
-        (disc / "watchlist.json").write_text(json.dumps({
-            "version": 1,
-            "symbols": [{"symbol": "SPY", "origin": "seed", "added_at": "x"}],
-            "proposals": [
-                {"id": "a1", "symbol": "TSM", "action": "add", "status": "pending",
-                 "rationale": "r", "confidence": 0.6, "created_at": "x",
-                 "provenance": {"provider": "local", "model": "Qwen/Qwen3.8-27B"}},
-                {"id": "a2", "symbol": "SMH", "action": "add", "status": "dismissed"},
-            ],
-            "last_proposal_run": {"status": "ok", "provider": "local", "added": 1},
-        }))
+        (disc / "watchlist.json").write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "symbols": [{"symbol": "SPY", "origin": "seed", "added_at": "x"}],
+                    "proposals": [
+                        {
+                            "id": "a1",
+                            "symbol": "TSM",
+                            "action": "add",
+                            "status": "pending",
+                            "rationale": "r",
+                            "confidence": 0.6,
+                            "created_at": "x",
+                            "provenance": {"provider": "local", "model": "Qwen/Qwen3.8-27B"},
+                        },
+                        {"id": "a2", "symbol": "SMH", "action": "add", "status": "dismissed"},
+                    ],
+                    "last_proposal_run": {"status": "ok", "provider": "local", "added": 1},
+                }
+            )
+        )
         client = _client(tmp_path / "state", tmp_path / "plans", disc)
         body = client.get("/api/market").json()
         assert [p["id"] for p in body["proposals"]] == ["a1"]

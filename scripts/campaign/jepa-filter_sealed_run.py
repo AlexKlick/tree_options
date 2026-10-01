@@ -106,9 +106,10 @@ import os
 import statistics
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 for _name in (
     "OPENBLAS_NUM_THREADS",
@@ -198,9 +199,7 @@ def _bind_frozen_root() -> tuple[Path, dict[str, Any]]:
     )
     missing = [rel for rel in required if not (frozen / rel).exists()]
     if missing:
-        raise SystemExit(
-            f"REFUSED: the frozen root {frozen} is missing required inputs: {missing}"
-        )
+        raise SystemExit(f"REFUSED: the frozen root {frozen} is missing required inputs: {missing}")
     menu = json.loads(
         (REPO_ROOT / "docs" / "theory" / "campaign-2026-09-registration.json").read_text(
             encoding="utf-8"
@@ -434,7 +433,9 @@ def _boot_paired_one_sided(
         "n_origins": n,
         "rho_challenger": rho_c,
         "rho_incumbent": rho_i,
-        "d_challenger_minus_incumbent": (rho_c - rho_i) if (rho_c is not None and rho_i is not None) else None,
+        "d_challenger_minus_incumbent": (rho_c - rho_i)
+        if (rho_c is not None and rho_i is not None)
+        else None,
         "valid_resamples": valid,
         "le_zero": le0,
     }
@@ -477,9 +478,7 @@ def _outer_span_ords(inputs: r1.Inputs) -> list[int]:  # type: ignore[name-defin
     for h, want in N_COMPLETE_ORIGINS.items():
         got = sum(1 for o in span if o + h <= cutoff_ord)
         if got != want:
-            raise Refused(
-                f"complete outer origins at h={h}: {got}, not the registration's {want}"
-            )
+            raise Refused(f"complete outer origins at h={h}: {got}, not the registration's {want}")
     return span
 
 
@@ -518,7 +517,10 @@ def _vintage_in_force(vintages: Sequence[r1.Vintage], ord_prev: int) -> r1.Vinta
 
 
 def _label_and_baseline_grids(
-    inputs: r1.Inputs, ft: r1.FeatureTables, roster: Sequence[str], h: int  # type: ignore[name-defined]
+    inputs: r1.Inputs,
+    ft: r1.FeatureTables,
+    roster: Sequence[str],
+    h: int,  # type: ignore[name-defined]
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     n_sessions = len(ft.grid)
     label = np.full((len(roster), n_sessions), np.nan)
@@ -531,7 +533,11 @@ def _label_and_baseline_grids(
             if i + h < n_sessions and cl[i] is not None and cl[i + h] is not None:
                 if cl[i] > 0 and cl[i + h] > 0:
                     label[ni, i] = math.log(cl[i + h] / cl[i])
-            if i >= r1.XSMOM_LOOKBACK and cl[i] is not None and cl[i - r1.XSMOM_LOOKBACK] is not None:
+            if (
+                i >= r1.XSMOM_LOOKBACK
+                and cl[i] is not None
+                and cl[i - r1.XSMOM_LOOKBACK] is not None
+            ):
                 if cl[i - r1.XSMOM_LOOKBACK] > 0:
                     xsmom[ni, i] = cl[i] / cl[i - r1.XSMOM_LOOKBACK] - 1.0
             x = ft.eq_raw[name]["lnrv20"][i]
@@ -544,16 +550,16 @@ def _label_and_baseline_grids(
 
 
 def _partial_ic_origin(
-    s_std: np.ndarray, r: np.ndarray, x: np.ndarray, l: np.ndarray
+    s_std: np.ndarray, r: np.ndarray, x: np.ndarray, lnrv: np.ndarray
 ) -> tuple[float | None, int]:
     """OLS-residualize the standardized surprise and the forward return on
     {XSMOM score, lnRV21} (intercept, per-session cross-section); Spearman of
     the residuals in the SAME declared direction (long LOW / short HIGH)."""
-    m = np.isfinite(s_std) & np.isfinite(r) & np.isfinite(x) & np.isfinite(l)
+    m = np.isfinite(s_std) & np.isfinite(r) & np.isfinite(x) & np.isfinite(lnrv)
     n = int(m.sum())
     if n < 3:
         return None, n
-    xs = np.column_stack([np.ones(n), x[m], l[m]])
+    xs = np.column_stack([np.ones(n), x[m], lnrv[m]])
     ss, rs = s_std[m], r[m]
     beta_s, *_ = np.linalg.lstsq(xs, ss, rcond=None)
     beta_r, *_ = np.linalg.lstsq(xs, rs, rcond=None)
@@ -616,13 +622,19 @@ def score_cell_a(inputs: r1.Inputs, ft: r1.FeatureTables) -> dict[str, Any]:  # 
         sel_a = absr21[ok, u_ord]
         fin_x, fin_l, fin_a = np.isfinite(sel_x), np.isfinite(sel_l), np.isfinite(sel_a)
         row["ic_xsmom"] = (
-            _spearman_safe(sel_x[fin_x], r[fin_x]) if int(fin_x.sum()) >= r1.BREADTH_MIN_NAMES else None
+            _spearman_safe(sel_x[fin_x], r[fin_x])
+            if int(fin_x.sum()) >= r1.BREADTH_MIN_NAMES
+            else None
         )
         row["ic_lnrv21_control"] = (
-            _spearman_safe(-sel_l[fin_l], r[fin_l]) if int(fin_l.sum()) >= r1.BREADTH_MIN_NAMES else None
+            _spearman_safe(-sel_l[fin_l], r[fin_l])
+            if int(fin_l.sum()) >= r1.BREADTH_MIN_NAMES
+            else None
         )
         row["ic_absr21_control"] = (
-            _spearman_safe(-sel_a[fin_a], r[fin_a]) if int(fin_a.sum()) >= r1.BREADTH_MIN_NAMES else None
+            _spearman_safe(-sel_a[fin_a], r[fin_a])
+            if int(fin_a.sum()) >= r1.BREADTH_MIN_NAMES
+            else None
         )
         pic, pn = _partial_ic_origin(s_std, r, sel_x, sel_l)
         row["ic_partial"] = pic
@@ -642,7 +654,9 @@ def score_cell_a(inputs: r1.Inputs, ft: r1.FeatureTables) -> dict[str, Any]:  # 
             seg_eval_cells[vin.quarter] = cells
         if vin.quarter not in sampled_segments:  # future-poison sample per segment
             sampled_segments.add(vin.quarter)
-            sampled_surprises[u_iso] = {nm: float(s_raw[i]) for i, nm in enumerate(roster) if np.isfinite(s_raw[i])}
+            sampled_surprises[u_iso] = {
+                nm: float(s_raw[i]) for i, nm in enumerate(roster) if np.isfinite(s_raw[i])
+            }
 
     if origins_scored == 0:
         raise Refused(f"{CELL_A}: 0 scored outer origins -- machinery defect, no artifact")
@@ -761,10 +775,18 @@ def score_cell_a(inputs: r1.Inputs, ft: r1.FeatureTables) -> dict[str, Any]:  # 
                 "per_seed": {
                     seed: {
                         "mean_ic": statistics.fmean(
-                            [row[f"ic_null_{seed}"] for row in rows if row.get(f"ic_null_{seed}") is not None]
+                            [
+                                row[f"ic_null_{seed}"]
+                                for row in rows
+                                if row.get(f"ic_null_{seed}") is not None
+                            ]
                         ),
                         "bootstrap": _boot_mean_one_sided(
-                            [row[f"ic_null_{seed}"] for row in rows if row.get(f"ic_null_{seed}") is not None],
+                            [
+                                row[f"ic_null_{seed}"]
+                                for row in rows
+                                if row.get(f"ic_null_{seed}") is not None
+                            ],
                             h,
                         ),
                     }
@@ -804,7 +826,8 @@ def score_cell_a(inputs: r1.Inputs, ft: r1.FeatureTables) -> dict[str, Any]:  # 
 
 
 def _spy_targets(
-    inputs: r1.Inputs, ft: r1.FeatureTables  # type: ignore[name-defined]
+    inputs: r1.Inputs,
+    ft: r1.FeatureTables,  # type: ignore[name-defined]
 ) -> tuple[dict[int, float], dict[int, float]]:
     """Forward RV21(SPY) = sum_{j=1..21} v^SPY_{u+j} (rv.py proxy) and the
     MDD21 twin, keyed by origin ordinal (complete 21-session windows only)."""
@@ -932,7 +955,9 @@ def score_cell_b(inputs: r1.Inputs, ft: r1.FeatureTables) -> dict[str, Any]:  # 
             seg_eval_cells[vin.quarter] = cells
         if vin.quarter not in sampled_segments:
             sampled_segments.add(vin.quarter)
-            sampled_surprises[u_iso] = {nm: float(s_raw[i]) for i, nm in enumerate(roster) if np.isfinite(s_raw[i])}
+            sampled_surprises[u_iso] = {
+                nm: float(s_raw[i]) for i, nm in enumerate(roster) if np.isfinite(s_raw[i])
+            }
 
     if origins_scored == 0:
         raise Refused(f"{CELL_B}: 0 scored outer origins -- machinery defect, no artifact")
@@ -970,7 +995,11 @@ def score_cell_b(inputs: r1.Inputs, ft: r1.FeatureTables) -> dict[str, Any]:  # 
         S, VT, MDD, h, "MDD21 twin: S_u vs vix_term on forward MDD21(SPY) — disclosure only"
     )
     boot_paired_disp = _boot_paired_one_sided(
-        DISP, VT, RV, h, "dispersion twin: mean|std s| vs vix_term on forward RV21(SPY) — disclosure only"
+        DISP,
+        VT,
+        RV,
+        h,
+        "dispersion twin: mean|std s| vs vix_term on forward RV21(SPY) — disclosure only",
     )
     nw = r1.nw_t([float(x) for x in S], h)
 
@@ -1121,9 +1150,7 @@ def _tercile_card_lift(
 
     from tree_options.desk import signals as signals_mod
 
-    cal = _SealedCalendar(
-        json.loads(r1.CALENDAR_PATH.read_text(encoding="utf-8"))["sessions"]
-    )
+    cal = _SealedCalendar(json.loads(r1.CALENDAR_PATH.read_text(encoding="utf-8"))["sessions"])
     cuts = _training_tercile_cuts(inputs, ft, roster, vintages, h)
     S_by_iso = {row["u"]: row["S_u"] for row in b_rows}
     vintage_by_iso = {row["u"]: row["vintage"] for row in b_rows}
@@ -1305,12 +1332,12 @@ def _verify_frozen_selection() -> dict[str, Any]:
         raise Refused("the round-1 runner's sha256 moved — the identical-path guarantee is void")
     cal_sha = _sha256_file(r1.TNULL_V3_PATH)
     if cal_sha != CALIBRATION_V3_SHA256:
-        raise Refused(f"tnull calibration-v3 sha256 {cal_sha} is not the pinned {CALIBRATION_V3_SHA256}")
+        raise Refused(
+            f"tnull calibration-v3 sha256 {cal_sha} is not the pinned {CALIBRATION_V3_SHA256}"
+        )
     sel_sha = _sha256_file(r1.SELECTION_PATH)
     if sel_sha != SELECTION_SHA256:
-        raise Refused(
-            f"round-1 selection sha256 {sel_sha} is not the frozen {SELECTION_SHA256}"
-        )
+        raise Refused(f"round-1 selection sha256 {sel_sha} is not the frozen {SELECTION_SHA256}")
     selection = json.loads(r1.SELECTION_PATH.read_text(encoding="utf-8"))
     if selection.get("stamp", {}).get("registration_menu_sha256") != r1._sha256_file(
         r1.REGISTRATION_PATH
@@ -1341,7 +1368,9 @@ def _verify_frozen_selection() -> dict[str, Any]:
 
 
 def _stamp(
-    inputs: r1.Inputs, config_id: str, frozen: Mapping[str, Any]  # type: ignore[name-defined]
+    inputs: r1.Inputs,
+    config_id: str,
+    frozen: Mapping[str, Any],  # type: ignore[name-defined]
 ) -> dict[str, Any]:
     return {
         "program": "campaign-2026-09",
@@ -1396,7 +1425,9 @@ def _stamp(
 
 
 def _hyperparameters_sealed(
-    inputs: r1.Inputs, cfg: Mapping[str, Any], frozen: Mapping[str, Any]  # type: ignore[name-defined]
+    inputs: r1.Inputs,
+    cfg: Mapping[str, Any],
+    frozen: Mapping[str, Any],  # type: ignore[name-defined]
 ) -> dict[str, Any]:
     base = r1._hyperparameters(inputs, cfg)
     base.update(
@@ -1442,23 +1473,39 @@ def phase_plan() -> int:
     inputs = r1.load_and_bind()
     span = _outer_span_ords(inputs)
     firsts = _outer_first_iso(inputs)
-    print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified); slot doc {inputs.slot_doc_sha256[:16]}...")
-    print(f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}...")
+    print(
+        f"menu sha256 {inputs.menu_sha256} (sidecar-verified); slot doc {inputs.slot_doc_sha256[:16]}..."
+    )
+    print(
+        f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}..."
+    )
     print(f"frozen root {FROZEN_ROOT}")
-    print(f"desk-universe binding: worktree bytes ({FROZEN_BINDING['desk_universe_binding']['config_panel_names']} names) = frozen 37-pin + PLTR/SPCX; universe derives from the pinned 37-name panel")
-    print(f"dataset_pinning sweep: {len(FROZEN_BINDING['pinning_sweep'])} frozen inputs re-verified byte-exact")
-    print(f"tnull calibration-v3: {inputs.tnull_v3['verdict']['slot']} (sha {frozen['calibration_v3_sha256'][:16]}...)")
+    print(
+        f"desk-universe binding: worktree bytes ({FROZEN_BINDING['desk_universe_binding']['config_panel_names']} names) = frozen 37-pin + PLTR/SPCX; universe derives from the pinned 37-name panel"
+    )
+    print(
+        f"dataset_pinning sweep: {len(FROZEN_BINDING['pinning_sweep'])} frozen inputs re-verified byte-exact"
+    )
+    print(
+        f"tnull calibration-v3: {inputs.tnull_v3['verdict']['slot']} (sha {frozen['calibration_v3_sha256'][:16]}...)"
+    )
     print(f"round-1 runner sha256 {frozen['round1_runner_sha256'][:16]}... (identical-path pin)")
-    print(f"round-1 selection sha256 {frozen['selection_sha256'][:16]}... (SEL-a h=5 = JF-V2-H5 frozen; SEL-b = JF-V1-H21 fixed)")
+    print(
+        f"round-1 selection sha256 {frozen['selection_sha256'][:16]}... (SEL-a h=5 = JF-V2-H5 frozen; SEL-b = JF-V1-H21 fixed)"
+    )
     print(
         f"outer span: {inputs.grid[span[0]]}..{inputs.grid[span[-1]]} = {len(span)} sessions;"
         f" complete origins {N_COMPLETE_ORIGINS[5]} (h=5) / {N_COMPLETE_ORIGINS[21]} (h=21);"
         " last h=21 origin = "
         f"{inputs.grid[inputs.ordinals[inputs.cutoff_iso] - 21]}"
     )
-    print(f"sealed vintages (first session): {list(zip([f'{y}-{m:02d}' for y, m in OUTER_QUARTERS], firsts))}")
+    print(
+        f"sealed vintages (first session): {list(zip([f'{y}-{m:02d}' for y, m in OUTER_QUARTERS], firsts, strict=True))}"
+    )
     print(f"cutoff (earliest last session, chain35): {inputs.cutoff_iso}")
-    print(f"cells: (a) {CELL_A} on the outer window; (b) {CELL_B} S_u vs vix_term; (a) h=21 carried FAIL (no outer run)")
+    print(
+        f"cells: (a) {CELL_A} on the outer window; (b) {CELL_B} S_u vs vix_term; (a) h=21 carried FAIL (no outer run)"
+    )
     print(f"registry db: {r1.REGISTRY_PATH}; artifacts: {r1.TRIALS_DIR}")
     print("NO sealed outcome computed or viewed by this phase")
     print(f"elapsed {time.monotonic() - t0:.1f}s")
@@ -1524,11 +1571,15 @@ def phase_execute() -> int:
         try:
             fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            raise Refused("another jepa-filter execution holds the lock -- one run at a time") from None
+            raise Refused(
+                "another jepa-filter execution holds the lock -- one run at a time"
+            ) from None
         registry = r1._open_registry()
         try:
             print("building chain-35 feature tables ...", flush=True)
-            ft = r1.build_feature_tables(inputs.panel, inputs.index_rows, inputs.grid, inputs.chain35)
+            ft = r1.build_feature_tables(
+                inputs.panel, inputs.index_rows, inputs.grid, inputs.chain35
+            )
             for cfg in (CFG_A, CFG_B):
                 config_id = cfg["config_id"]
                 trial_id = _trial_id(config_id)
@@ -1596,7 +1647,9 @@ def phase_execute() -> int:
 
 
 def _read_sealed_artifact(
-    inputs: r1.Inputs, frozen: Mapping[str, Any], config_id: str  # type: ignore[name-defined]
+    inputs: r1.Inputs,
+    frozen: Mapping[str, Any],
+    config_id: str,  # type: ignore[name-defined]
 ) -> Mapping[str, Any]:
     artifact = _artifact_path(config_id)
     body = json.loads(artifact.read_text(encoding="utf-8"))
@@ -1676,8 +1729,7 @@ def phase_stamp() -> int:
         verdict_b = "PASS"
         mdd = pb["mdd21_twin_disclosure"]["paired_bootstrap"]
         mdd_note = (
-            "MDD21 twin: challenger also beats the incumbent on the forward"
-            " max-drawdown twin"
+            "MDD21 twin: challenger also beats the incumbent on the forward max-drawdown twin"
             if (mdd.get("d_challenger_minus_incumbent") or 0) > 0
             and (mdd.get("p_one_sided") or 1) < 0.05
             else "MDD21 twin LOSS disclosed (the forward-vol correlation remains the verdict of record)"

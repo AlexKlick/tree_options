@@ -98,9 +98,10 @@ import random
 import statistics
 import sys
 import time
+from collections.abc import Mapping, Sequence
 from datetime import date
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[2]  # the EXECUTION worktree
 R1_PATH = REPO_ROOT / "scripts" / "campaign" / "vrp-cond_run.py"
@@ -165,9 +166,7 @@ def _bind_frozen_root() -> tuple[Path, dict[str, Any]]:
     )
     missing = [rel for rel in required if not (frozen / rel).exists()]
     if missing:
-        raise SystemExit(
-            f"REFUSED: the frozen root {frozen} is missing required inputs: {missing}"
-        )
+        raise SystemExit(f"REFUSED: the frozen root {frozen} is missing required inputs: {missing}")
     import tomllib
 
     frozen_universe_path = frozen / "desk-universe.toml"
@@ -303,8 +302,7 @@ def _artifact_path(config_id: str) -> Path:
 
 def _sealed_sessions(inputs: r1.Inputs) -> list[date]:  # type: ignore[name-defined]
     sessions = [
-        inputs.window_sessions[o - 1]
-        for o in range(r1.ORD_SEALED_START, r1.ORD_SEALED_END + 1)
+        inputs.window_sessions[o - 1] for o in range(r1.ORD_SEALED_START, r1.ORD_SEALED_END + 1)
     ]
     if (
         len(sessions) != N_SEALED_SESSIONS
@@ -321,9 +319,7 @@ def _sealed_sessions(inputs: r1.Inputs) -> list[date]:  # type: ignore[name-defi
 def _verify_frozen_inputs() -> dict[str, Any]:
     """Bind the frozen round-1 selection + calibration + round-1 runner."""
     if _sha256_file(R1_PATH) != R1_RUNNER_SHA256:
-        raise r1.Refused(
-            "the round-1 runner's sha256 moved — the identical-path guarantee is void"
-        )
+        raise r1.Refused("the round-1 runner's sha256 moved — the identical-path guarantee is void")
     cal_sha = _sha256_file(r1.CALIBRATION_V3_PATH)
     if cal_sha != CALIBRATION_V3_SHA256:
         raise r1.Refused(
@@ -373,8 +369,7 @@ def xsmom_base_sealed(inputs: r1.Inputs) -> list[dict[str, Any]]:  # type: ignor
             )
     if tuple(rebalances) != XSMOM_SEALED_REBALANCES:
         raise r1.Refused(
-            f"sealed rebalances {rebalances} are not the registration's 3"
-            f" {XSMOM_SEALED_REBALANCES}"
+            f"sealed rebalances {rebalances} are not the registration's 3 {XSMOM_SEALED_REBALANCES}"
         )
     if len(rows) != len(XSMOM_SEALED_REBALANCES) * r1.signals_mod.XSMOM_TOPK:
         raise r1.Refused(
@@ -580,14 +575,8 @@ def _score_sealed(
                 ne_notes[key] = ne_notes.get(key, 0) + 1
             continue
         entry_session: date = row["session"]  # no defer config in the sealed set
-        if not (
-            r1.ORD_SEALED_START
-            <= inputs.window_ordinal(entry_session)
-            <= r1.ORD_SEALED_END
-        ):
-            raise r1.Refused(
-                f"{config_id}: entry {entry_session} falls outside the sealed window"
-            )
+        if not (r1.ORD_SEALED_START <= inputs.window_ordinal(entry_session) <= r1.ORD_SEALED_END):
+            raise r1.Refused(f"{config_id}: entry {entry_session} falls outside the sealed window")
         t = r1._complete_trade(
             inputs, row["name"], entry_session, dec.weight, row["detail"] + f";{config_id}"
         )
@@ -719,7 +708,9 @@ def _stamp(inputs: r1.Inputs, config_id: str, frozen: Mapping[str, Any]) -> dict
 
 
 def _hyperparameters_sealed(
-    inputs: r1.Inputs, config_id: str, frozen: Mapping[str, Any]  # type: ignore[name-defined]
+    inputs: r1.Inputs,
+    config_id: str,
+    frozen: Mapping[str, Any],  # type: ignore[name-defined]
 ) -> dict[str, Any]:
     family = "xe" if config_id.startswith("xe-") else "xp"
     r1_hyper = r1._hyperparameters(inputs, config_id)
@@ -774,10 +765,10 @@ def phase_plan() -> int:
     feats = r1.build_features(inputs)
     grid = _sealed_sessions(inputs)
     print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified)")
-    print(f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}...")
     print(
-        f"tnull calibration-v3: CALIBRATED (sha {frozen['calibration_v3_sha256'][:16]}...)"
+        f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}..."
     )
+    print(f"tnull calibration-v3: CALIBRATED (sha {frozen['calibration_v3_sha256'][:16]}...)")
     print(f"round-1 runner sha256 {frozen['round1_runner_sha256'][:16]}... (identical-path pin)")
     print(f"round-1 selection sha256 {frozen['selection_sha256'][:16]}... (promoted frozen)")
     print(
@@ -787,7 +778,7 @@ def phase_plan() -> int:
     print(f"HAR h20 origins: {feats.har_first_origin}..{feats.har_last_origin}")
     print(f"evaluable r name-sessions (union, feature values only): {feats.n_r_union}")
     print(f"registry db: {r1.REGISTRY_PATH}")
-    print(f"NO sealed outcome computed or viewed by this phase")
+    print("NO sealed outcome computed or viewed by this phase")
     print(f"elapsed {time.monotonic() - t0:.1f}s")
     return 0
 
@@ -906,9 +897,7 @@ def phase_execute() -> int:
                 artifact.write_text(
                     json.dumps(body, indent=2, sort_keys=True) + "\n", encoding="utf-8"
                 )
-                registry.complete(
-                    trial_id, metrics_uri=str(artifact), outcome_at=r1._utcnow()
-                )
+                registry.complete(trial_id, metrics_uri=str(artifact), outcome_at=r1._utcnow())
                 omo = payload["on_minus_off"].get("on_minus_off_5bp")
                 fl = payload["power_floor"]
                 print(
@@ -924,7 +913,9 @@ def phase_execute() -> int:
 
 
 def _read_sealed_artifact(
-    inputs: r1.Inputs, frozen: Mapping[str, Any], config_id: str  # type: ignore[name-defined]
+    inputs: r1.Inputs,
+    frozen: Mapping[str, Any],
+    config_id: str,  # type: ignore[name-defined]
 ) -> Mapping[str, Any]:
     artifact = _artifact_path(config_id)
     body = json.loads(artifact.read_text(encoding="utf-8"))
@@ -950,8 +941,7 @@ def phase_stamp() -> int:
     if SEAL_PATH.exists():
         raise r1.Refused(f"{SEAL_PATH} already exists -- the sealed stamp is one-shot")
     artifacts = {
-        config_id: _read_sealed_artifact(inputs, frozen, config_id)
-        for config_id in SEALED_CONFIGS
+        config_id: _read_sealed_artifact(inputs, frozen, config_id) for config_id in SEALED_CONFIGS
     }
     criteria_text = inputs.slot["acceptance_criteria"][1]
     floors_text = inputs.slot["acceptance_criteria"][2]

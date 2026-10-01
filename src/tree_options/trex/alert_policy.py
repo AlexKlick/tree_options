@@ -105,7 +105,7 @@ def urgency(now: float, *, exposed: bool, quiet: QuietHours | None) -> Urgency:
 
 
 def et_label(epoch: float) -> str:
-    """"Wed 14:05 ET" for push text."""
+    """ "Wed 14:05 ET" for push text."""
     return datetime.fromtimestamp(epoch, ET).strftime("%a %H:%M ET")
 
 

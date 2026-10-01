@@ -51,6 +51,7 @@ SPA's candidate list (the campaign never claims a re-runnable
 historical strategy — the operator inspects the curves as
 machinery-validation evidence of the shadow->funded conversion).
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable
@@ -80,6 +81,7 @@ class ShadowMark:
     per-underlying inventory + the EOD-deadline closing price + the
     proxy's source-as-of timestamp. ``cumulative_realized_pnl`` is
     from the proxy, not invented here."""
+
     session: date
     deal_id: str
     underlying: str
@@ -95,6 +97,7 @@ class ShadowDefense:
     the shadow-to-funded conversion: which sessions were observed,
     which were missing, what the gap rate is, why the rest of the
     period is honest."""
+
     total_sessions_with_marks: int
     missing_sessions: tuple[date, ...]
     gap_rate: Decimal
@@ -112,11 +115,14 @@ class ShadowDefense:
         )
 
 
-def build_vix_term_candidate(support: FundedHistorySupport,
-                              defense: ShadowDefense | None,
-                              *, supported_start: date | None,
-                              supported_end: date | None,
-                              version: str = "v1") -> ResearchCandidate:
+def build_vix_term_candidate(
+    support: FundedHistorySupport,
+    defense: ShadowDefense | None,
+    *,
+    supported_start: date | None,
+    supported_end: date | None,
+    version: str = "v1",
+) -> ResearchCandidate:
     """The catalog adapter produces a vix_term ResearchCandidate with
     ``evidence_kind=shadow_proxy``. The ``funded_history`` reflects
     what the desk's shadow tables actually contain: if any session
@@ -129,30 +135,34 @@ def build_vix_term_candidate(support: FundedHistorySupport,
         evidence_kind=ResearchEvidenceKind.SHADOW_PROXY,
         registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         disposition=ResearchDisposition.PASS,
-        plot_funded_account=(
-            support is FundedHistorySupport.RECONSTRUCTED),
+        plot_funded_account=(support is FundedHistorySupport.RECONSTRUCTED),
         supported_start=supported_start,
         supported_end=supported_end,
         funded_history=support,
         funded_history_reason=(
-            defense.to_reason_text() if defense is not None
-            else "shadow_proxy: no shadow tables for this scope"),
+            defense.to_reason_text()
+            if defense is not None
+            else "shadow_proxy: no shadow tables for this scope"
+        ),
         artifact_hashes=defense.artifacts if defense else {},
         capabilities=("plot_funded_account", "view_published_study")
-                     if support is FundedHistorySupport.RECONSTRUCTED
-                     else ("view_published_study",),
+        if support is FundedHistorySupport.RECONSTRUCTED
+        else ("view_published_study",),
         warnings=("research.shadow_proxy_machinery_validation",)
-                 if support is FundedHistorySupport.RECONSTRUCTED else
-                 ("research.data_gated",),
+        if support is FundedHistorySupport.RECONSTRUCTED
+        else ("research.data_gated",),
         source_url=f"shadow-proxy/{SHADOW_FAMILY_VIX_TERM}",
     )
 
 
-def build_hold_20_candidate(support: FundedHistorySupport,
-                             defense: ShadowDefense | None,
-                             *, supported_start: date | None,
-                             supported_end: date | None,
-                             version: str = "v1") -> ResearchCandidate:
+def build_hold_20_candidate(
+    support: FundedHistorySupport,
+    defense: ShadowDefense | None,
+    *,
+    supported_start: date | None,
+    supported_end: date | None,
+    version: str = "v1",
+) -> ResearchCandidate:
     """Mirror of build_vix_term_candidate for the hold-20 incumbent."""
     return ResearchCandidate(
         id=f"{SHADOW_FAMILY_HOLD_20}-{version}",
@@ -161,21 +171,22 @@ def build_hold_20_candidate(support: FundedHistorySupport,
         evidence_kind=ResearchEvidenceKind.SHADOW_PROXY,
         registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         disposition=ResearchDisposition.PASS,
-        plot_funded_account=(
-            support is FundedHistorySupport.RECONSTRUCTED),
+        plot_funded_account=(support is FundedHistorySupport.RECONSTRUCTED),
         supported_start=supported_start,
         supported_end=supported_end,
         funded_history=support,
         funded_history_reason=(
-            defense.to_reason_text() if defense is not None
-            else "shadow_proxy: no shadow tables for this scope"),
+            defense.to_reason_text()
+            if defense is not None
+            else "shadow_proxy: no shadow tables for this scope"
+        ),
         artifact_hashes=defense.artifacts if defense else {},
         capabilities=("plot_funded_account", "view_published_study")
-                     if support is FundedHistorySupport.RECONSTRUCTED
-                     else ("view_published_study",),
+        if support is FundedHistorySupport.RECONSTRUCTED
+        else ("view_published_study",),
         warnings=("research.shadow_proxy_machinery_validation",)
-                 if support is FundedHistorySupport.RECONSTRUCTED else
-                 ("research.data_gated",),
+        if support is FundedHistorySupport.RECONSTRUCTED
+        else ("research.data_gated",),
         source_url=f"shadow-proxy/{SHADOW_FAMILY_HOLD_20}",
     )
 
@@ -213,18 +224,22 @@ def convert_shadow_to_funded_inputs(
     for mark in shadow_marks:
         if mark.deal_id not in seen_deals:
             seen_deals.add(mark.deal_id)
-            executions.append(TradeExecution(
+            executions.append(
+                TradeExecution(
+                    date=mark.session,
+                    symbol=mark.underlying,
+                    signed_quantity=mark.quantity,
+                    price=mark.price,
+                    fees=Decimal("0"),
+                )
+            )
+        marks.append(
+            MarkObservation(
                 date=mark.session,
                 symbol=mark.underlying,
-                signed_quantity=mark.quantity,
                 price=mark.price,
-                fees=Decimal("0"),
-            ))
-        marks.append(MarkObservation(
-            date=mark.session,
-            symbol=mark.underlying,
-            price=mark.price,
-        ))
+            )
+        )
     return executions, marks
 
 

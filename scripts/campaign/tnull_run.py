@@ -109,12 +109,12 @@ import os
 import statistics
 import subprocess
 import sys
-import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 for _name in (
     "OPENBLAS_NUM_THREADS",
@@ -368,7 +368,9 @@ def load_and_bind() -> Inputs:
     ):
         want = pinning.get(label)
         if want is None or want != got:
-            raise Refused(f"{label}: sha256 {got} != the menu's pinned {want} -- swapped inputs refuse")
+            raise Refused(
+                f"{label}: sha256 {got} != the menu's pinned {want} -- swapped inputs refuse"
+            )
 
     panel = json.loads(PANEL_PATH.read_text(encoding="utf-8"))
     earnings = json.loads(EARNINGS_PATH.read_text(encoding="utf-8"))
@@ -411,7 +413,9 @@ def load_and_bind() -> Inputs:
     for name, start, end in SUB_ERAS:
         sub_eras[name] = (start, end if end is not None else minus_h(JEPA_H))
     if not UNION_START <= sub_eras["jepa-outer"][0] < sub_eras["jepa-outer"][1] <= UNION_END:
-        raise Refused(f"computed jepa-outer window is not inside the union span: {sub_eras['jepa-outer']}")
+        raise Refused(
+            f"computed jepa-outer window is not inside the union span: {sub_eras['jepa-outer']}"
+        )
 
     manifest_body = "".join(
         f"{label}\0{pinning[label]}\n"
@@ -456,9 +460,7 @@ class Trade:
     detail: str  # provenance (report date or "first-of-month hash top3")
 
 
-def _complete_trade(
-    inputs: Inputs, name: str, entry: date, sub_era: str, detail: str
-) -> Trade:
+def _complete_trade(inputs: Inputs, name: str, entry: date, sub_era: str, detail: str) -> Trade:
     cal, panel = inputs.calendar, inputs.panel
     bars = panel[name]
     entry_iso = entry.isoformat()
@@ -510,12 +512,13 @@ def event_stream(inputs: Inputs, seed: str) -> list[Trade]:
     trades: list[Trade] = []
     for entry in sorted(by_entry):
         candidates = by_entry[entry]
-        pick = max(candidates, key=lambda nr: (null_score(seed=seed, session=entry, security_id=nr[0]), nr[0]))
+        pick = max(
+            candidates,
+            key=lambda nr: (null_score(seed=seed, session=entry, security_id=nr[0]), nr[0]),
+        )
         name, report_iso = pick
         sub_era = _sub_era_of(inputs, entry)
-        trades.append(
-            _complete_trade(inputs, name, entry, sub_era, f"post-report:{report_iso}")
-        )
+        trades.append(_complete_trade(inputs, name, entry, sub_era, f"post-report:{report_iso}"))
     return trades
 
 
@@ -808,7 +811,7 @@ def phase_register() -> int:
         existing = [c for c in configs if registry.is_registered(_trial_id(c))]
         if existing:
             raise Refused(
-                f"registration is one-shot: {[ _trial_id(c) for c in existing ]} already registered"
+                f"registration is one-shot: {[_trial_id(c) for c in existing]} already registered"
             )
         for config in configs:
             hyper = _hyperparameters(inputs, config)
@@ -980,7 +983,7 @@ def phase_calibrate() -> int:
                     f"entry floor missed: {union['n_entries']} < {ENTRY_FLOORS[stream_key]}"
                 )
             else:
-                for label, start, end in _windows(inputs):
+                for label, _start, _end in _windows(inputs):
                     if label == "union":
                         continue  # floors bind on the union; bands on the sub-eras
                     cell = windows[label]
@@ -1131,7 +1134,9 @@ def _read_v1_calibration(inputs: Inputs) -> Mapping[str, Any]:
     menu's ``supersedes`` pin, the same pinned inputs, the same trial ids,
     and the same panel cutoff (which fixes the jepa-outer window)."""
     if not CALIBRATION_PATH.exists():
-        raise Refused(f"{CALIBRATION_PATH} is missing -- the v1 calibration is the sealed seed evidence")
+        raise Refused(
+            f"{CALIBRATION_PATH} is missing -- the v1 calibration is the sealed seed evidence"
+        )
     body = json.loads(CALIBRATION_PATH.read_text(encoding="utf-8"))
     stamp = body.get("stamp", {})
     supersedes = inputs.menu.get("supersedes")
@@ -1176,16 +1181,8 @@ def _registry_g2_check(inputs: Inputs) -> None:
 
     conn = sqlite3.connect(f"file:{REGISTRY_PATH}?mode=ro", uri=True)
     try:
-        rows = dict(
-            conn.execute(
-                "SELECT trial_id, status FROM trials"
-            ).fetchall()
-        )
-        hypers = dict(
-            conn.execute(
-                "SELECT trial_id, hyperparameters_json FROM trials"
-            ).fetchall()
-        )
+        rows = dict(conn.execute("SELECT trial_id, status FROM trials").fetchall())
+        hypers = dict(conn.execute("SELECT trial_id, hyperparameters_json FROM trials").fetchall())
     finally:
         conn.close()
     for config in _slot_configs(inputs):
@@ -1211,9 +1208,7 @@ def _check_v1_window_alignment(inputs: Inputs, v1: Mapping[str, Any]) -> None:
     union_lo = date.fromisoformat(UNION_START)
     union_hi = date.fromisoformat(UNION_END)
     fom = [
-        s
-        for s in cal.sessions()
-        if union_lo <= s <= union_hi and cal.is_first_session_of_month(s)
+        s for s in cal.sessions() if union_lo <= s <= union_hi and cal.is_first_session_of_month(s)
     ]
     entry_sessions = set()
     for name in inputs.reporters:
@@ -1223,7 +1218,9 @@ def _check_v1_window_alignment(inputs: Inputs, v1: Mapping[str, Any]) -> None:
                 entry_sessions.add(entry)
     for label, start, end in _windows(inputs):
         fom_n = sum(1 for s in fom if date.fromisoformat(start) <= s <= date.fromisoformat(end))
-        ev_n = sum(1 for s in entry_sessions if date.fromisoformat(start) <= s <= date.fromisoformat(end))
+        ev_n = sum(
+            1 for s in entry_sessions if date.fromisoformat(start) <= s <= date.fromisoformat(end)
+        )
         for slot_id, blk in v1["verdict"]["seeds"].items():
             cells = blk["cells"]
             got_x = cells["xsmom"]["windows"][label]["n_entries"]
@@ -1305,7 +1302,9 @@ def _v2_stream_checks(
         return (
             "NOT_EVALUABLE",
             [],
-            [f"entry floor missed: {seed_cells['floor_entries_union']} < {ENTRY_FLOORS[stream_key]}"],
+            [
+                f"entry floor missed: {seed_cells['floor_entries_union']} < {ENTRY_FLOORS[stream_key]}"
+            ],
             checks,
         )
     for label, _s, _e in _windows(inputs):
@@ -1511,7 +1510,9 @@ def phase_baseline() -> int:
             ]
         )
         DEFECT_FLAG_V2_PATH.write_text(flag, encoding="utf-8")
-        print(f"DEFECT-FLAGGED (v2) -- flag file {DEFECT_FLAG_V2_PATH}; family scoring stays frozen")
+        print(
+            f"DEFECT-FLAGGED (v2) -- flag file {DEFECT_FLAG_V2_PATH}; family scoring stays frozen"
+        )
         for r in defect_reasons:
             print(f"  - {r}")
     else:
@@ -1529,7 +1530,9 @@ def _read_v2_calibration(inputs: Inputs) -> Mapping[str, Any]:
     this menu's ``supersedes`` pin, the same pinned inputs, the same
     trial ids, and the same panel cutoff (which fixes jepa-outer)."""
     if not CALIBRATION_V2_PATH.exists():
-        raise Refused(f"{CALIBRATION_V2_PATH} is missing -- the v2 stamp is the sealed cell evidence")
+        raise Refused(
+            f"{CALIBRATION_V2_PATH} is missing -- the v2 stamp is the sealed cell evidence"
+        )
     body = json.loads(CALIBRATION_V2_PATH.read_text(encoding="utf-8"))
     stamp = body.get("stamp", {})
     supersedes = inputs.menu.get("supersedes")
@@ -1746,9 +1749,12 @@ def phase_v3_floor() -> int:
                     slot_id = config["slot_id"]
                     if label == "union":
                         row_class = "EVALUABLE"  # the union span floors the stream (criterion 3)
-                        if v2["verdict"]["seeds"][slot_id]["cells"][stream_key][
-                            "floor_entries_union"
-                        ] < ENTRY_FLOORS[stream_key]:
+                        if (
+                            v2["verdict"]["seeds"][slot_id]["cells"][stream_key][
+                                "floor_entries_union"
+                            ]
+                            < ENTRY_FLOORS[stream_key]
+                        ):
                             row_class = "NOT_EVALUABLE"
                     else:
                         row_class = seed_blocks[slot_id]["cells"][stream_key]["v3_cells"][label][
@@ -1863,7 +1869,9 @@ def phase_v3_floor() -> int:
             ]
         )
         DEFECT_FLAG_V3_PATH.write_text(flag, encoding="utf-8")
-        print(f"DEFECT-FLAGGED (v3) -- flag file {DEFECT_FLAG_V3_PATH}; family scoring stays frozen")
+        print(
+            f"DEFECT-FLAGGED (v3) -- flag file {DEFECT_FLAG_V3_PATH}; family scoring stays frozen"
+        )
         for r in defect_reasons:
             print(f"  - {r}")
     else:
@@ -1874,11 +1882,15 @@ def phase_v3_floor() -> int:
 def phase_plan() -> int:
     inputs = load_and_bind()
     print(f"menu sha256 {inputs.menu_sha256} (sidecar-verified)")
-    print(f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}...")
+    print(
+        f"protocol raw {inputs.protocol_raw_sha256[:16]}... canonical {inputs.protocol_canonical_sha256[:16]}..."
+    )
     print(f"cutoff (earliest last session, chain35): {inputs.cutoff_iso}")
     for label, start, end in _windows(inputs):
         print(f"window {label}: {start}..{end}")
-    print(f"universe: tradables={len(inputs.tradables)} chain35={len(inputs.chain35)} reporters={len(inputs.reporters)}")
+    print(
+        f"universe: tradables={len(inputs.tradables)} chain35={len(inputs.chain35)} reporters={len(inputs.reporters)}"
+    )
     print(f"registry db: {REGISTRY_PATH}")
     return 0
 

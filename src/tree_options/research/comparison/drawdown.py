@@ -28,8 +28,8 @@ date = _dt.date  # type alias used inside function bodies; field annotations use
 @dataclass(frozen=True)
 class DrawdownCell:
     date: _dt.date
-    drawdown_dollar: Decimal      # signed negative; >= ending_value - peak
-    drawdown_pct: Decimal          # signed negative; pct off peak
+    drawdown_dollar: Decimal  # signed negative; >= ending_value - peak
+    drawdown_pct: Decimal  # signed negative; pct off peak
     recovery_end_date: _dt.date | None  # None = still underwater at last observation
 
 
@@ -55,8 +55,7 @@ def compute_drawdown(
     (>=) — or None when it never does within the observation.
     """
     if not ending_value_by_session:
-        return DrawdownSeries(candidate_id, registration, (), Decimal("0"),
-                             date(1970, 1, 1))
+        return DrawdownSeries(candidate_id, registration, (), Decimal("0"), date(1970, 1, 1))
 
     sorted_dates = sorted(ending_value_by_session)
     peak_value = ending_value_by_session[sorted_dates[0]]
@@ -85,12 +84,14 @@ def compute_drawdown(
             if ending_value_by_session[d2] >= peak:
                 forward_rec = d2
                 break
-        cells.append(DrawdownCell(
-            date=d,
-            drawdown_dollar=dd_dollar,
-            drawdown_pct=dd_pct,
-            recovery_end_date=forward_rec,
-        ))
+        cells.append(
+            DrawdownCell(
+                date=d,
+                drawdown_dollar=dd_dollar,
+                drawdown_pct=dd_pct,
+                recovery_end_date=forward_rec,
+            )
+        )
 
     return DrawdownSeries(
         candidate_id=candidate_id,

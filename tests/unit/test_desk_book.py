@@ -671,8 +671,9 @@ class TestExitDeadline:
         specs = tmp_path / "desk" / "specs"
         specs.mkdir(parents=True)
         (specs / "d1.json").write_text(_spec().model_dump_json())
-        pos = _by_id(desk_book.load_book(
-            as_of=AS_OF, plans_root=plans, state_root=state, desk_specs=specs))
+        pos = _by_id(
+            desk_book.load_book(as_of=AS_OF, plans_root=plans, state_root=state, desk_specs=specs)
+        )
         # hand-read from the fixture's plan TOMLs, not from the code under test
         assert pos["legacy:putspread-20260922/nvda-oct"].exit_deadline == date(2026, 10, 9)
         assert pos["legacy:putspread-20260922/nvda-nov"].exit_deadline == date(2026, 11, 6)
@@ -691,8 +692,7 @@ class TestExitDeadline:
         import inspect
 
         params = inspect.signature(desk_book.load_book).parameters
-        assert list(params) == ["as_of", "plans_root", "state_root",
-                                "desk_specs", "desk_book"]
+        assert list(params) == ["as_of", "plans_root", "state_root", "desk_specs", "desk_book"]
         assert params["as_of"].kind is inspect.Parameter.KEYWORD_ONLY
         for name in ("plans_root", "state_root", "desk_specs", "desk_book"):
             assert params[name].default is None
@@ -716,8 +716,12 @@ class TestAccountExposure:
         (specs / "d1.json").write_text(_spec().model_dump_json())
         run = tmp_path / "desk"
         exposure = desk_book.account_exposure(
-            as_of=AS_OF, plans_root=plans, state_root=state,
-            desk_specs=specs, desk_book=run / "book.json")
+            as_of=AS_OF,
+            plans_root=plans,
+            state_root=state,
+            desk_specs=specs,
+            desk_book=run / "book.json",
+        )
         assert exposure.problems == ()
         assert exposure.outside.structures == 2
         assert exposure.outside.books == ("legacy:putspread-20260922",)
@@ -727,8 +731,7 @@ class TestAccountExposure:
 
     def test_counts_totals_and_the_earliest_time_stop(self, legacy) -> None:
         plans, state = legacy
-        exposure = desk_book.account_exposure(
-            as_of=AS_OF, plans_root=plans, state_root=state)
+        exposure = desk_book.account_exposure(as_of=AS_OF, plans_root=plans, state_root=state)
         # hand-computed: 0.21 x 5 x 100 = 105 and 1.24 x 3 x 100 = 372
         assert exposure.outside.max_loss_usd == D("477.00")
         assert exposure.outside.legs == 4  # two 2-leg spreads
@@ -739,8 +742,8 @@ class TestAccountExposure:
     def test_an_empty_desk_book_leaves_the_legacy_books_outside(self, legacy) -> None:
         plans, state = legacy
         exposure = desk_book.account_exposure(
-            as_of=AS_OF, plans_root=plans, state_root=state,
-            desk_specs=None, desk_book=None)
+            as_of=AS_OF, plans_root=plans, state_root=state, desk_specs=None, desk_book=None
+        )
         assert exposure.desk.structures == 0
         assert exposure.outside.structures == 2
         assert exposure.countable is True
@@ -748,11 +751,9 @@ class TestAccountExposure:
     def test_an_unreadable_book_makes_the_whole_account_uncountable(self, legacy) -> None:
         plans, state = legacy
         (state / "putspread-20260922" / "book.json").write_text("{not json")
-        exposure = desk_book.account_exposure(
-            as_of=AS_OF, plans_root=plans, state_root=state)
+        exposure = desk_book.account_exposure(as_of=AS_OF, plans_root=plans, state_root=state)
         assert exposure.countable is False
-        assert any("putspread-20260922/book.json unreadable" in p
-                   for p in exposure.problems)
+        assert any("putspread-20260922/book.json unreadable" in p for p in exposure.problems)
         # counted positions may still show, but no total is claimable
         assert exposure.outside.max_loss_usd == D(0)
 

@@ -50,20 +50,29 @@ import statistics
 import sys
 from bisect import bisect_right
 from collections import Counter
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from tree_options.desk import hindsight
 from tree_options.desk import intraday_action_graph as iag
+from tree_options.desk.cost import (
+    TRADEABLE_SYMBOLS,
+    CostProvenance,
+    Leg,
+    LegRef,
+    SpreadCostModel,
+    UnpricedCostError,
+)
+from tree_options.desk.sessions import calendar_days_between
 from tree_options.trex.clock import session_calendar
 
 TABLE_SCHEMA = "desk-outcome-table/1"
 EXIT_MODES = ("intraday", "eod", "hold:1", "hold:3", "hold:5", "hold:10", "expiry")
-STATUSES = ("closed", "marked_at_end", "no_fill")
+STATUSES = ("closed", "marked_at_end", "no_fill", "no_price")
 STRUCTURES = ("put_credit", "put_debit", "call_credit", "call_debit")
 BULLISH = frozenset({"put_credit", "call_debit"})
 AGE_S = 15 * 60  # replay's freshness / entry-delay limit (seconds)
@@ -98,8 +107,9 @@ class CostModel:
 
     def round_trip(self, legs: int = 2) -> Decimal:
         fills = 2 * legs
-        return (fills * self.half_spread_per_share * self.multiplier
-                + fills * self.commission_per_leg)
+        return (
+            fills * self.half_spread_per_share * self.multiplier + fills * self.commission_per_leg
+        )
 
 
 @dataclass(frozen=True)
@@ -120,10 +130,10 @@ class OutcomeIndex:
     #: underlying -> {date: implied-vol index close} (the bundle's
     #: ``iv_context``; empty for a bundle without one)
     iv: dict[str, dict[date, Decimal]] = field(default_factory=dict)
-    _boards: dict[int, list[dict[str, Any]]] = field(default_factory=dict, repr=False,
-                                                     compare=False)
-    _spot: dict[str, dict[date, Decimal]] = field(default_factory=dict, repr=False,
-                                                  compare=False)
+    _boards: dict[int, list[dict[str, Any]]] = field(
+        default_factory=dict, repr=False, compare=False
+    )
+    _spot: dict[str, dict[date, Decimal]] = field(default_factory=dict, repr=False, compare=False)
 
 
 def prepare_index(raw: Mapping[str, Any], sessions: list[date] | None = None) -> OutcomeIndex:
@@ -145,13 +155,23 @@ def prepare_index(raw: Mapping[str, Any], sessions: list[date] | None = None) ->
     for ticker, contract in contracts.items():
         key = (contract.underlying, contract.expiry, contract.strike)
         rights.setdefault(key, {})[contract.right] = ticker
-    pairs = {key: (legs["C"], legs["P"]) for key, legs in sorted(rights.items())
-             if "C" in legs and "P" in legs}
-    return OutcomeIndex(bars=bars, contracts=contracts, sessions=tuple(window),
-                        timeline=tuple(timeline), slots=slots, last_slot=last_slot,
-                        session_pos={day: i for i, day in enumerate(window)},
-                        underlyings=tuple(sorted({c.underlying for c in contracts.values()})),
-                        parity_pairs=pairs, iv=_iv_context(raw))
+    pairs = {
+        key: (legs["C"], legs["P"])
+        for key, legs in sorted(rights.items())
+        if "C" in legs and "P" in legs
+    }
+    return OutcomeIndex(
+        bars=bars,
+        contracts=contracts,
+        sessions=tuple(window),
+        timeline=tuple(timeline),
+        slots=slots,
+        last_slot=last_slot,
+        session_pos={day: i for i, day in enumerate(window)},
+        underlyings=tuple(sorted({c.underlying for c in contracts.values()})),
+        parity_pairs=pairs,
+        iv=_iv_context(raw),
+    )
 
 
 def _iv_context(raw: Mapping[str, Any]) -> dict[str, dict[date, Decimal]]:
@@ -182,8 +202,9 @@ def board_candidates(index: OutcomeIndex, day: date, clock: str) -> list[dict[st
     """The as-of board (iag's candidates, memoized per clock)."""
     slot = _slot(index, day, clock)
     if slot not in index._boards:
-        index._boards[slot] = iag._candidates(index.contracts, index.bars,
-                                              index.timeline[slot][2], AGE_S)
+        index._boards[slot] = iag._candidates(
+            index.contracts, index.bars, index.timeline[slot][2], AGE_S
+        )
     return index._boards[slot]
 
 
@@ -200,12 +221,15 @@ class _Entry:
 
 def _fresh(stamp: datetime, at: datetime) -> bool:
     """iag._latest's freshness rule: same ET session day, at most AGE_S old."""
-    return (stamp.astimezone(iag.ET).date() == at.astimezone(iag.ET).date()
-            and (at - stamp).total_seconds() <= AGE_S)
+    return (
+        stamp.astimezone(iag.ET).date() == at.astimezone(iag.ET).date()
+        and (at - stamp).total_seconds() <= AGE_S
+    )
 
 
-def _enter(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
-           sync_s: int | None) -> _Entry | str:
+def _enter(
+    index: OutcomeIndex, slot: int, candidate: Mapping[str, Any], sync_s: int | None
+) -> _Entry | str:
     """The entry fill (replay's rule, plus the optional leg sync) or the
     no-fill reason."""
     now = index.timeline[slot][2]
@@ -224,8 +248,9 @@ def _enter(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
             if i >= len(long_points) or j >= len(short_points):
                 return "legs_out_of_sync"
             long_stamp, short_stamp = long_points[i][0], short_points[j][0]
-            if ((long_stamp - now).total_seconds() > AGE_S
-                    or (short_stamp - now).total_seconds() > AGE_S):
+            if (long_stamp - now).total_seconds() > AGE_S or (
+                short_stamp - now
+            ).total_seconds() > AGE_S:
                 return "legs_out_of_sync"
             gap = (long_stamp - short_stamp).total_seconds()
             if abs(gap) <= sync_s:
@@ -242,12 +267,17 @@ def _enter(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
     max_gain = ((width - entry_debit) if debit else -entry_debit) * 100
     if max_loss <= 0 or max_loss > 300 or max_gain <= 0:
         return "entry_risk_cap"  # replay refuses this entry
-    return _Entry(debit=entry_debit, max_loss=max_loss, max_gain=max_gain,
-                  at=max(long_points[i][0], short_points[j][0]))
+    return _Entry(
+        debit=entry_debit,
+        max_loss=max_loss,
+        max_gain=max_gain,
+        at=max(long_points[i][0], short_points[j][0]),
+    )
 
 
-def _mark(index: OutcomeIndex, candidate: Mapping[str, Any], slot: int,
-          sync_s: int | None) -> Decimal | None:
+def _mark(
+    index: OutcomeIndex, candidate: Mapping[str, Any], slot: int, sync_s: int | None
+) -> Decimal | None:
     """The spread mark (long - short) at a clock, or None when it has none."""
     at = index.timeline[slot][2]
     long_points = index.bars[candidate["long"]]
@@ -274,8 +304,9 @@ def _mark(index: OutcomeIndex, candidate: Mapping[str, Any], slot: int,
     return None
 
 
-def _backward(index: OutcomeIndex, candidate: Mapping[str, Any], sync_s: int | None,
-              high: int, low: int) -> tuple[int, Decimal] | None:
+def _backward(
+    index: OutcomeIndex, candidate: Mapping[str, Any], sync_s: int | None, high: int, low: int
+) -> tuple[int, Decimal] | None:
     """The latest clock in (low, high] with a mark."""
     for slot in range(high, low, -1):
         mark = _mark(index, candidate, slot, sync_s)
@@ -287,8 +318,14 @@ def _backward(index: OutcomeIndex, candidate: Mapping[str, Any], sync_s: int | N
 _Exit = tuple[int | None, Decimal | None, str, str]  # slot, mark, status, reason
 
 
-def _expiry_rule(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
-                 sync_s: int | None, closed_reason: str, end_reason: str) -> _Exit:
+def _expiry_rule(
+    index: OutcomeIndex,
+    slot: int,
+    candidate: Mapping[str, Any],
+    sync_s: int | None,
+    closed_reason: str,
+    end_reason: str,
+) -> _Exit:
     """The last mark on/before expiry; past the data end, the last mark."""
     expiry = date.fromisoformat(candidate["expiry"])
     if expiry > index.sessions[-1]:
@@ -303,13 +340,15 @@ def _expiry_rule(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
     return found[0], found[1], "closed", closed_reason
 
 
-def _exit(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
-          sync_s: int | None, mode: str) -> _Exit:
+def _exit(
+    index: OutcomeIndex, slot: int, candidate: Mapping[str, Any], sync_s: int | None, mode: str
+) -> _Exit:
     day = index.timeline[slot][0]
     expiry = date.fromisoformat(candidate["expiry"])
     if mode == "expiry":
-        return _expiry_rule(index, slot, candidate, sync_s, "expiry_last_mark",
-                            "target_past_data_end")
+        return _expiry_rule(
+            index, slot, candidate, sync_s, "expiry_last_mark", "target_past_data_end"
+        )
     if mode == "intraday":
         start, reason = slot + 1, "next_clock_mark"
     elif mode == "eod":
@@ -320,8 +359,9 @@ def _exit(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
     else:
         target = index.session_pos[day] + int(mode.split(":", 1)[1])
         if target >= len(index.sessions):
-            return _expiry_rule(index, slot, candidate, sync_s, "capped_at_expiry",
-                                "target_past_data_end")
+            return _expiry_rule(
+                index, slot, candidate, sync_s, "capped_at_expiry", "target_past_data_end"
+            )
         start, reason = index.last_slot[index.sessions[target]], "hold_mark"
     for later in range(start, len(index.timeline)):
         if index.timeline[later][0] > expiry:
@@ -330,23 +370,161 @@ def _exit(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
         if mark is not None:
             return later, mark, "closed", reason
     # the walk passed the expiry or the data end without a mark
-    return _expiry_rule(index, slot, candidate, sync_s, "capped_at_expiry",
-                        "no_mark_after_target")
+    return _expiry_rule(index, slot, candidate, sync_s, "capped_at_expiry", "no_mark_after_target")
 
 
 def _no_fill(reason: str) -> dict[str, Any]:
-    return {"gross": None, "net": None, "entry_at": None, "exit_at": None,
-            "hold_minutes": None, "status": "no_fill", "exit_reason": reason}
+    return {
+        "gross": None,
+        "net": None,
+        "entry_at": None,
+        "exit_at": None,
+        "hold_minutes": None,
+        "status": "no_fill",
+        "exit_reason": reason,
+    }
 
 
-def _evaluate(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
-              modes: Iterable[str], costs: CostModel | None,
-              sync_s: int | None) -> dict[str, dict[str, Any]]:
+def _cost_legs(candidate: Mapping[str, Any], decision_at: datetime) -> tuple[Leg, ...]:
+    """Bind both package legs to explicit, available delta inputs.
+
+    Minute closes do not supply delta or quotes. No delta reconstruction or
+    EOD-source inference occurs here. Source timestamps describe delta inputs,
+    separately from the EOD-derived cost calibration. DTE uses the actual
+    package expiry and decision session, rather than a copied calibration DTE.
+    """
+    reference = LegRef(str(candidate.get("underlying", "")), None, 0)
+
+    def refuse(reason: str) -> NoReturn:
+        raise UnpricedCostError(reason, reference)
+
+    supplied = candidate.get("cost_legs")
+    if supplied is None:
+        refuse("delta_unavailable")
+    if (
+        not isinstance(supplied, Sequence)
+        or isinstance(supplied, (str, bytes))
+        or len(supplied) != 2
+        or not all(isinstance(row, Mapping) for row in supplied)
+    ):
+        refuse("incomplete_package")
+    assert isinstance(supplied, Sequence)
+    identities = (candidate.get("long"), candidate.get("short"))
+    if not all(isinstance(ticker, str) and ticker for ticker in identities):
+        refuse("incomplete_package")
+    expected = (str(identities[0]), str(identities[1]))
+    if (
+        len(set(expected)) != 2
+        or not all(isinstance(row.get("ticker"), str) for row in supplied)
+        or {row["ticker"] for row in supplied} != set(expected)
+    ):
+        refuse("incomplete_package")
+    if (
+        not isinstance(candidate.get("underlying"), str)
+        or candidate["underlying"] not in TRADEABLE_SYMBOLS
+    ):
+        refuse("unknown_symbol")
+    try:
+        expiry = date.fromisoformat(candidate["expiry"])
+        dte = int(
+            calendar_days_between(
+                decision_at.astimezone(iag.ET).date().isoformat(), expiry.isoformat()
+            )
+        )
+        if any(
+            iag.parse_contract(ticker).expiry != expiry
+            or iag.parse_contract(ticker).underlying != candidate.get("underlying")
+            for ticker in expected
+        ):
+            refuse("incomplete_package")
+    except (TypeError, ValueError, KeyError):
+        refuse("incomplete_package")
+    legs = []
+    by_ticker = {row["ticker"]: row for row in supplied}
+    for ticker in expected:
+        row = by_ticker[ticker]
+        if type(row.get("dte")) is not int or row["dte"] != dte:
+            refuse("inconsistent_dte")
+        if row.get("symbol") != candidate.get("underlying"):
+            refuse("incomplete_package")
+        try:
+            event = datetime.fromisoformat(row["source_timestamp_et"])
+            available = datetime.fromisoformat(row["available_at"])
+            session = date.fromisoformat(row["source_session"])
+            if (
+                event.tzinfo is None
+                or available.tzinfo is None
+                or event.utcoffset() is None
+                or available.utcoffset() is None
+                or event.astimezone(iag.ET).date() != session
+                or available < event
+                or type(row["is_eod_snapshot"]) is not bool
+            ):
+                refuse("invalid_provenance")
+            if event > decision_at or available > decision_at:
+                refuse("future_cost_input")
+        except UnpricedCostError:
+            raise
+        except (TypeError, ValueError, KeyError):
+            refuse("invalid_provenance")
+        try:
+            delta = None if row.get("abs_delta") is None else Decimal(str(row["abs_delta"]))
+        except ArithmeticError:
+            refuse("invalid_delta")
+        legs.append(
+            Leg(
+                row["symbol"],
+                delta,
+                dte,
+                row["source_session"],
+                row["source_timestamp_et"],
+                row["is_eod_snapshot"],
+            )
+        )
+    return tuple(legs)
+
+
+def _no_price(error: UnpricedCostError) -> dict[str, Any]:
+    return {
+        **_no_fill(error.reason),
+        "status": "no_price",
+        "pricing_status": "NO_PRICE",
+        "pricing_reason": error.reason,
+        "pricing_key": error.key.to_json(),
+        "cost_model": "derived-spread/1",
+        "cost_provenance": CostProvenance.measured_corpus().as_dict(),
+    }
+
+
+def _evaluate(
+    index: OutcomeIndex,
+    slot: int,
+    candidate: Mapping[str, Any],
+    modes: Iterable[str],
+    costs: CostModel | SpreadCostModel | None,
+    sync_s: int | None,
+) -> dict[str, dict[str, Any]]:
     """Every requested mode's outcome from ONE entry (shared across modes)."""
     entry = _enter(index, slot, candidate, sync_s)
     if isinstance(entry, str):
         return {mode: _no_fill(entry) for mode in modes}
-    cost = costs.round_trip() if costs is not None else None
+    metadata: dict[str, Any] = {}
+    cost: Decimal | None
+    if isinstance(costs, SpreadCostModel):
+        try:
+            quote = costs.price(_cost_legs(candidate, index.timeline[slot][2]))
+        except UnpricedCostError as error:
+            return {mode: _no_price(error) for mode in modes}
+        cost = quote.total_round_trip
+        metadata = {
+            "pricing_status": "PRICED_SIMULATION",
+            "cost_model": "derived-spread/1",
+            "cost_provenance": CostProvenance.measured_corpus().as_dict(),
+            "modeled_round_trip_cost": str(cost),
+            "cost_quote": quote.to_json(),
+        }
+    else:
+        cost = costs.round_trip() if costs is not None else None
     answer: dict[str, dict[str, Any]] = {}
     for mode in modes:
         exit_slot, mark, status, reason = _exit(index, slot, candidate, sync_s, mode)
@@ -356,18 +534,27 @@ def _evaluate(index: OutcomeIndex, slot: int, candidate: Mapping[str, Any],
             exit_at = index.timeline[exit_slot][2]
         pnl = (mark - entry.debit) * 100
         gross = min(entry.max_gain, max(-entry.max_loss, pnl))
-        answer[mode] = {"gross": gross, "net": gross if cost is None else gross - cost,
-                        "entry_at": entry.at.isoformat(), "exit_at": exit_at.isoformat(),
-                        "hold_minutes": int((exit_at - entry.at).total_seconds() // 60),
-                        "status": status, "exit_reason": reason}
+        answer[mode] = {
+            **metadata,
+            "gross": gross,
+            "net": gross if cost is None else gross - cost,
+            "entry_at": entry.at.isoformat(),
+            "exit_at": exit_at.isoformat(),
+            "hold_minutes": int((exit_at - entry.at).total_seconds() // 60),
+            "status": status,
+            "exit_reason": reason,
+        }
     return answer
 
 
 def _sync_seconds(leg_sync_minutes: int | None) -> int | None:
     if leg_sync_minutes is None:
         return None
-    if isinstance(leg_sync_minutes, bool) or not isinstance(leg_sync_minutes, int) \
-            or leg_sync_minutes < 0:
+    if (
+        isinstance(leg_sync_minutes, bool)
+        or not isinstance(leg_sync_minutes, int)
+        or leg_sync_minutes < 0
+    ):
         raise ValueError("leg_sync_minutes must be None or a non-negative integer")
     return leg_sync_minutes * 60
 
@@ -380,9 +567,16 @@ def _check_modes(modes: Iterable[str]) -> tuple[str, ...]:
     return chosen
 
 
-def candidate_outcome(index: OutcomeIndex, day: date, clock: str, candidate_id: str, *,
-                      exit_mode: str = "intraday", costs: CostModel | None = None,
-                      leg_sync_minutes: int | None = None) -> dict[str, Any] | None:
+def candidate_outcome(
+    index: OutcomeIndex,
+    day: date,
+    clock: str,
+    candidate_id: str,
+    *,
+    exit_mode: str = "intraday",
+    costs: CostModel | SpreadCostModel | None = None,
+    leg_sync_minutes: int | None = None,
+) -> dict[str, Any] | None:
     """The outcome of entering ``candidate_id`` on the (day, clock) board.
 
     Returns {gross, net, entry_at, exit_at, hold_minutes, status,
@@ -391,8 +585,9 @@ def candidate_outcome(index: OutcomeIndex, day: date, clock: str, candidate_id: 
     (mode,) = _check_modes((exit_mode,))
     sync_s = _sync_seconds(leg_sync_minutes)
     slot = _slot(index, day, clock)
-    candidate = next((c for c in board_candidates(index, day, clock)
-                      if c["id"] == candidate_id), None)
+    candidate = next(
+        (c for c in board_candidates(index, day, clock) if c["id"] == candidate_id), None
+    )
     if candidate is None:
         return None
     return _evaluate(index, slot, candidate, (mode,), costs, sync_s)[mode]
@@ -407,8 +602,11 @@ def _parity_spot(index: OutcomeIndex, at: datetime) -> dict[str, Decimal]:
     today = at.astimezone(iag.ET).date()
     by: dict[str, dict[date, list[Decimal]]] = {}
     for (underlying, expiry, strike), (call, put) in index.parity_pairs.items():
-        if (expiry < today or not iag.is_listed(index.contracts, call, today)
-                or not iag.is_listed(index.contracts, put, today)):
+        if (
+            expiry < today
+            or not iag.is_listed(index.contracts, call, today)
+            or not iag.is_listed(index.contracts, put, today)
+        ):
             continue
         call_price = iag._latest(index.bars[call], at, SPOT_AGE_S)
         put_price = iag._latest(index.bars[put], at, SPOT_AGE_S)
@@ -443,9 +641,13 @@ def spot_series(index: OutcomeIndex) -> dict[str, dict[date, Decimal]]:
 # ------------------------------------------------------------------ table
 
 
-def outcome_table(index: OutcomeIndex, *, modes: Iterable[str] = EXIT_MODES,
-                  costs: CostModel | None = None,
-                  leg_sync_minutes: int | None = None) -> Iterator[dict[str, Any]]:
+def outcome_table(
+    index: OutcomeIndex,
+    *,
+    modes: Iterable[str] = EXIT_MODES,
+    costs: CostModel | SpreadCostModel | None = None,
+    leg_sync_minutes: int | None = None,
+) -> Iterator[dict[str, Any]]:
     """One JSON-ready row per (board, candidate, exit mode), every board of
     the window in time order."""
     chosen = _check_modes(modes)
@@ -456,12 +658,18 @@ def outcome_table(index: OutcomeIndex, *, modes: Iterable[str] = EXIT_MODES,
             results = _evaluate(index, slot, candidate, chosen, costs, sync_s)
             for mode in chosen:
                 outcome = results[mode]
-                yield {"snapshot": snapshot, "candidate_id": candidate["id"], "exit_mode": mode,
-                       "structure": candidate["structure"],
-                       "direction": direction(candidate["structure"]),
-                       "underlying": candidate["underlying"],
-                       **{key: (str(value) if isinstance(value, Decimal) else value)
-                          for key, value in outcome.items()}}
+                yield {
+                    "snapshot": snapshot,
+                    "candidate_id": candidate["id"],
+                    "exit_mode": mode,
+                    "structure": candidate["structure"],
+                    "direction": direction(candidate["structure"]),
+                    "underlying": candidate["underlying"],
+                    **{
+                        key: (str(value) if isinstance(value, Decimal) else value)
+                        for key, value in outcome.items()
+                    },
+                }
 
 
 class _Summary:
@@ -473,14 +681,22 @@ class _Summary:
 
     def add(self, row: Mapping[str, Any]) -> None:
         self.rows += 1
-        mode = self.modes.setdefault(row["exit_mode"], {
-            "rows": 0, "status": Counter(), "reasons": Counter(),
-            "gross": [], "net": [], "closed_net": [],
-            "by_direction": {"bullish": [], "bearish": []}})
+        mode = self.modes.setdefault(
+            row["exit_mode"],
+            {
+                "rows": 0,
+                "status": Counter(),
+                "reasons": Counter(),
+                "gross": [],
+                "net": [],
+                "closed_net": [],
+                "by_direction": {"bullish": [], "bearish": []},
+            },
+        )
         mode["rows"] += 1
         mode["status"][row["status"]] += 1
         mode["reasons"][row["exit_reason"]] += 1
-        if row["status"] == "no_fill":
+        if row["status"] in {"no_fill", "no_price"}:
             return
         gross, net = Decimal(str(row["gross"])), Decimal(str(row["net"]))
         mode["gross"].append(gross)
@@ -497,13 +713,20 @@ class _Summary:
         for name in [m for m in EXIT_MODES if m in self.modes]:
             mode = self.modes[name]
             modes[name] = {
-                "rows": mode["rows"], "status": dict(mode["status"]),
+                "rows": mode["rows"],
+                "status": dict(mode["status"]),
                 "reasons": dict(sorted(mode["reasons"].items())),
                 "no_fill_share": round(mode["status"]["no_fill"] / mode["rows"], 4),
-                "filled": len(mode["gross"]), "mean_gross": mean(mode["gross"]),
-                "mean_net": mean(mode["net"]), "mean_net_closed_only": mean(mode["closed_net"]),
-                "by_direction": {side: {"filled": len(values), "mean_net": mean(values)}
-                                 for side, values in mode["by_direction"].items()}}
+                "no_price_share": round(mode["status"]["no_price"] / mode["rows"], 4),
+                "filled": len(mode["gross"]),
+                "mean_gross": mean(mode["gross"]),
+                "mean_net": mean(mode["net"]),
+                "mean_net_closed_only": mean(mode["closed_net"]),
+                "by_direction": {
+                    side: {"filled": len(values), "mean_net": mean(values)}
+                    for side, values in mode["by_direction"].items()
+                },
+            }
         return {"rows": self.rows, "modes": modes}
 
 
@@ -522,20 +745,34 @@ def summarize(rows: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
 def _cli(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="python -m tree_options.desk outcome-table",
-        description="Every candidate on every board x every exit mode, gross and net.")
+        description="Every candidate on every board x every exit mode, gross and net.",
+    )
     parser.add_argument("--bundle", required=True, type=Path)
     parser.add_argument("--out", required=True, type=Path, help="rows (.jsonl)")
-    parser.add_argument("--sync", default="2",
-                        help="leg sync minutes at entry and marks (default 2; 'off' = v1)")
+    parser.add_argument(
+        "--sync", default="2", help="leg sync minutes at entry and marks (default 2; 'off' = v1)"
+    )
     parser.add_argument("--half-spread", default="0.03", help="per share, per leg fill")
     parser.add_argument("--commission", default="0.65", help="per leg fill")
+    parser.add_argument(
+        "--cost-model",
+        choices=("flat", "derived"),
+        default="flat",
+        help="flat compatibility control or opt-in EOD-derived sensitivity model",
+    )
     args = parser.parse_args(argv)
     try:
         sync = None if args.sync == "off" else int(args.sync)
         if sync is not None and sync < 0:
             raise ValueError("--sync must be >= 0 or 'off'")
-        costs = CostModel(commission_per_leg=Decimal(args.commission),
-                          half_spread_per_share=Decimal(args.half_spread))
+        costs: CostModel | SpreadCostModel
+        if args.cost_model == "derived":
+            costs = SpreadCostModel(commission_per_leg=Decimal(args.commission))
+        else:
+            costs = CostModel(
+                commission_per_leg=Decimal(args.commission),
+                half_spread_per_share=Decimal(args.half_spread),
+            )
         raw = json.loads(args.bundle.read_bytes())
         index = prepare_index(raw)
     except (ValueError, ArithmeticError, OSError, KeyError) as error:
@@ -553,15 +790,37 @@ def _cli(argv: list[str] | None = None) -> int:
             stream.write(json.dumps(row, separators=(",", ":")) + "\n")
             summary.add(row)
     partial.replace(args.out)
-    document = {"schema": TABLE_SCHEMA, "bundle": str(args.bundle), "out": str(args.out),
-                "sessions": [index.sessions[0].isoformat(), index.sessions[-1].isoformat(),
-                             len(index.sessions)],
-                "boards": boards, "candidates": candidates, "exit_modes": list(EXIT_MODES),
-                "sync_minutes": sync, "round_trip_cost": str(costs.round_trip()),
-                "costs": {"commission_per_leg": str(costs.commission_per_leg),
-                          "half_spread_per_share": str(costs.half_spread_per_share),
-                          "multiplier": costs.multiplier},
-                **summary.result()}
+    summary_result = summary.result()
+    incomplete = any(mode["status"].get("no_price", 0) for mode in summary_result["modes"].values())
+    cost_facts: dict[str, Any] = {
+        "cost_model": "derived-spread/1" if isinstance(costs, SpreadCostModel) else "flat-spread/1",
+        "commission_per_leg": str(costs.commission_per_leg),
+        "multiplier": costs.multiplier,
+        "exact_execution_economics": False,
+        "execution_authorized": False,
+    }
+    if isinstance(costs, SpreadCostModel):
+        cost_facts["cost_provenance"] = CostProvenance.measured_corpus().as_dict()
+    else:
+        cost_facts["half_spread_per_share"] = str(costs.half_spread_per_share)
+    document = {
+        "schema": TABLE_SCHEMA,
+        "bundle": str(args.bundle),
+        "out": str(args.out),
+        "sessions": [
+            index.sessions[0].isoformat(),
+            index.sessions[-1].isoformat(),
+            len(index.sessions),
+        ],
+        "boards": boards,
+        "candidates": candidates,
+        "exit_modes": list(EXIT_MODES),
+        "sync_minutes": sync,
+        "round_trip_cost": None if isinstance(costs, SpreadCostModel) else str(costs.round_trip()),
+        "costs": cost_facts,
+        "assessment": "DATA_GATED" if incomplete else "SIMULATED_RESEARCH",
+        **summary_result,
+    }
     Path(f"{args.out}.summary.json").write_text(json.dumps(document, indent=2))
     print(json.dumps(document, indent=2))
     return 0

@@ -48,8 +48,13 @@ def parse_contract(ticker: str) -> Contract:
     if match is None:
         raise ValueError(f"invalid OCC ticker: {ticker}")
     symbol, year, month, day, right, strike = match.groups()
-    return Contract(ticker, symbol, date(2000 + int(year), int(month), int(day)),
-                    right, Decimal(int(strike)) / Decimal(1000))
+    return Contract(
+        ticker,
+        symbol,
+        date(2000 + int(year), int(month), int(day)),
+        right,
+        Decimal(int(strike)) / Decimal(1000),
+    )
 
 
 class ContractUniverse(dict[str, Contract]):
@@ -75,8 +80,12 @@ def bundle_contracts(raw: Mapping[str, Any], tickers: Any) -> ContractUniverse:
     pairing = raw.get("candidate_pairing")
     if pairing is not None:
         widths = pairing.get("widths") if isinstance(pairing, Mapping) else None
-        if (not isinstance(pairing, Mapping) or pairing.get("rule") != "widths"
-                or not isinstance(widths, list) or not widths):
+        if (
+            not isinstance(pairing, Mapping)
+            or pairing.get("rule") != "widths"
+            or not isinstance(widths, list)
+            or not widths
+        ):
             raise ValueError("candidate_pairing must be {rule: widths, widths: [...]}")
         parsed = frozenset(Decimal(str(w)) for w in widths)
         if any(not w.is_finite() or w <= 0 for w in parsed):
@@ -106,15 +115,16 @@ def is_listed(contracts: Mapping[str, Contract], ticker: str, day: date) -> bool
     return start <= day and (end is None or day <= end)
 
 
-def _strike_pairs(chain: list[Contract], widths: frozenset[Decimal] | None
-                  ) -> list[tuple[Contract, Contract]]:
+def _strike_pairs(
+    chain: list[Contract], widths: frozenset[Decimal] | None
+) -> list[tuple[Contract, Contract]]:
     """(low, high) strike pairs of one strike-sorted chain."""
     if widths is None:
         return list(pairwise(chain))
     top = max(widths)
     pairs = []
     for position, low in enumerate(chain):
-        for high in chain[position + 1:]:
+        for high in chain[position + 1 :]:
             width = high.strike - low.strike
             if width > top:
                 break
@@ -123,8 +133,9 @@ def _strike_pairs(chain: list[Contract], widths: frozenset[Decimal] | None
     return pairs
 
 
-def windows(sessions: list[date], *, months: int = 3, stride_sessions: int = 21
-            ) -> list[tuple[date, date]]:
+def windows(
+    sessions: list[date], *, months: int = 3, stride_sessions: int = 21
+) -> list[tuple[date, date]]:
     """Rolling calendar-month windows, stepped by a fixed number of sessions."""
     if months != 3 or stride_sessions < 1 or sessions != sorted(set(sessions)):
         raise ValueError("requires sorted unique sessions, three months, positive stride")
@@ -135,7 +146,9 @@ def windows(sessions: list[date], *, months: int = 3, stride_sessions: int = 21
         year += (month - 1) // 12
         month = (month - 1) % 12 + 1
         end = date(year, month, min(d.day, monthrange(year, month)[1]))
-        next_session = next((day for day in session_calendar().sessions() if day > sessions[-1]), None)
+        next_session = next(
+            (day for day in session_calendar().sessions() if day > sessions[-1]), None
+        )
         if next_session is not None and next_session < end:
             break
         contained = [day for day in sessions if d <= day < end]
@@ -179,19 +192,23 @@ def _read_bars(raw: Mapping[str, Any]) -> dict[str, list[tuple[datetime, Decimal
 
 # Ages are whole seconds between UTC instants (the calendar guard bans naive
 # timedelta arithmetic outside time/; every instant here is UTC).
-def _latest(points: list[tuple[datetime, Decimal]], now: datetime,
-            max_age_s: int) -> Decimal | None:
+def _latest(
+    points: list[tuple[datetime, Decimal]], now: datetime, max_age_s: int
+) -> Decimal | None:
     index = bisect_right(points, (now, Decimal("Infinity"))) - 1
     if index >= 0:
         stamp, price = points[index]
-        if (stamp.astimezone(ET).date() == now.astimezone(ET).date()
-                and (now - stamp).total_seconds() <= max_age_s):
+        if (
+            stamp.astimezone(ET).date() == now.astimezone(ET).date()
+            and (now - stamp).total_seconds() <= max_age_s
+        ):
             return price
     return None
 
 
-def _next(points: list[tuple[datetime, Decimal]], now: datetime,
-          max_delay_s: int) -> Decimal | None:
+def _next(
+    points: list[tuple[datetime, Decimal]], now: datetime, max_delay_s: int
+) -> Decimal | None:
     index = bisect_right(points, (now, Decimal("Infinity")))
     if index < len(points):
         stamp, price = points[index]
@@ -203,21 +220,28 @@ def _recent_option_move(points: list[tuple[datetime, Decimal]], now: datetime) -
     """Mean absolute return across recent observed trades, not implied vol."""
     end = bisect_right(points, (now, Decimal("Infinity")))
     since = shift_instant(now, -5 * 86400)
-    sample = [(t, p) for t, p in points[max(0, end-21):end] if t >= since]
+    sample = [(t, p) for t, p in points[max(0, end - 21) : end] if t >= since]
     if len(sample) < 6:
         return None
-    moves = [abs(new/old-1) for (_, old), (_, new) in pairwise(sample)]
-    return str((sum(moves, Decimal(0))/len(moves)).quantize(Decimal("0.0001")))
+    moves = [abs(new / old - 1) for (_, old), (_, new) in pairwise(sample)]
+    return str((sum(moves, Decimal(0)) / len(moves)).quantize(Decimal("0.0001")))
 
 
-def _candidates(contracts: dict[str, Contract], bars: dict[str, list[tuple[datetime, Decimal]]],
-                now: datetime, max_age_s: int) -> list[dict[str, Any]]:
+def _candidates(
+    contracts: dict[str, Contract],
+    bars: dict[str, list[tuple[datetime, Decimal]]],
+    now: datetime,
+    max_age_s: int,
+) -> list[dict[str, Any]]:
     grouped: dict[tuple[str, date, str], list[Contract]] = {}
     today = now.astimezone(ET).date()
     for contract in contracts.values():
-        if (7 <= (contract.expiry - today).days <= 60
-                and is_listed(contracts, contract.ticker, today)):
-            grouped.setdefault((contract.underlying, contract.expiry, contract.right), []).append(contract)
+        if 7 <= (contract.expiry - today).days <= 60 and is_listed(
+            contracts, contract.ticker, today
+        ):
+            grouped.setdefault((contract.underlying, contract.expiry, contract.right), []).append(
+                contract
+            )
     candidates = []
     widths = getattr(contracts, "widths", None)
     for group in sorted(grouped):
@@ -232,28 +256,51 @@ def _candidates(contracts: dict[str, Contract], bars: dict[str, list[tuple[datet
                 continue
             # Both orientations are possible; bar closes are valuation proxies.
             for label, long, short, debit in (
-                ("call_debit" if low.right == "C" else "put_credit", low, high, low_price-high_price),
-                ("call_credit" if low.right == "C" else "put_debit", high, low, high_price-low_price),
+                (
+                    "call_debit" if low.right == "C" else "put_credit",
+                    low,
+                    high,
+                    low_price - high_price,
+                ),
+                (
+                    "call_credit" if low.right == "C" else "put_debit",
+                    high,
+                    low,
+                    high_price - low_price,
+                ),
             ):
                 if label.endswith("debit"):
                     premium = debit
                     max_loss = premium * 100
                 else:
                     premium = -debit
-                    max_loss = (width-premium) * 100
+                    max_loss = (width - premium) * 100
                 if premium <= 0 or premium >= width or max_loss <= 0 or max_loss > 300:
                     continue
-                max_gain = (width-premium)*100 if label.endswith("debit") else premium*100
-                key = hashlib.sha256(f"{now.isoformat()}:{label}:{long.ticker}:{short.ticker}".encode()).hexdigest()[:16]
-                candidates.append({"id": key, "structure": label, "underlying": low.underlying,
-                                   "expiry": low.expiry.isoformat(), "long": long.ticker,
-                                   "short": short.ticker, "width": str(width),
-                                   "observed_premium": str(premium), "max_loss_proxy": str(max_loss),
-                                   "max_gain_proxy": str(max_gain),
-                                   "reward_to_risk_proxy": str((max_gain/max_loss).quantize(Decimal("0.01"))),
-                                   "long_recent_trade_move": _recent_option_move(bars[long.ticker], now),
-                                   "short_recent_trade_move": _recent_option_move(bars[short.ticker], now),
-                                   "data_kind": "last-traded-minute-close"})
+                max_gain = (width - premium) * 100 if label.endswith("debit") else premium * 100
+                key = hashlib.sha256(
+                    f"{now.isoformat()}:{label}:{long.ticker}:{short.ticker}".encode()
+                ).hexdigest()[:16]
+                candidates.append(
+                    {
+                        "id": key,
+                        "structure": label,
+                        "underlying": low.underlying,
+                        "expiry": low.expiry.isoformat(),
+                        "long": long.ticker,
+                        "short": short.ticker,
+                        "width": str(width),
+                        "observed_premium": str(premium),
+                        "max_loss_proxy": str(max_loss),
+                        "max_gain_proxy": str(max_gain),
+                        "reward_to_risk_proxy": str(
+                            (max_gain / max_loss).quantize(Decimal("0.01"))
+                        ),
+                        "long_recent_trade_move": _recent_option_move(bars[long.ticker], now),
+                        "short_recent_trade_move": _recent_option_move(bars[short.ticker], now),
+                        "data_kind": "last-traded-minute-close",
+                    }
+                )
     return candidates
 
 
@@ -265,16 +312,31 @@ def decision_packet(raw: Mapping[str, Any], day: date, clock: str) -> dict[str, 
     now = _instant(day, clock)
     contracts = bundle_contracts(raw, bars)
     candidates = _candidates(contracts, bars, now, 15 * 60)
-    return {"schema": "desk-intraday-decision/1", "snapshot_id": f"s:{day}T{clock}",
-            "as_of": now.isoformat(), "candidates": candidates,
-            "allowed_actions": ["skip", "enter_one_candidate"],
-            "capital_profile": {"intended_capital": "5000", "per_trade_loss_cap": "300",
-                                "combined_open_loss_cap": "1500", "daily_realized_loss_cap": "300"},
-            "data_kind": "last-traded-minute-close", "execution_authorized": False}
+    return {
+        "schema": "desk-intraday-decision/1",
+        "snapshot_id": f"s:{day}T{clock}",
+        "as_of": now.isoformat(),
+        "candidates": candidates,
+        "allowed_actions": ["skip", "enter_one_candidate"],
+        "capital_profile": {
+            "intended_capital": "5000",
+            "per_trade_loss_cap": "300",
+            "combined_open_loss_cap": "1500",
+            "daily_realized_loss_cap": "300",
+        },
+        "data_kind": "last-traded-minute-close",
+        "execution_authorized": False,
+    }
 
 
-def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str, str | None] | None = None,
-           *, max_age_minutes: int = 15, policy: str = "no_trade") -> dict[str, Any]:
+def replay(
+    raw: Mapping[str, Any],
+    sessions: list[date],
+    decisions: Mapping[str, str | None] | None = None,
+    *,
+    max_age_minutes: int = 15,
+    policy: str = "no_trade",
+) -> dict[str, Any]:
     """Build potential and chosen action graph for one bounded window.
 
     Decisions map snapshot IDs to candidate IDs or null. Fixed policy baselines
@@ -314,14 +376,21 @@ def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str,
             scheduled_snapshots += 1
             now = _instant(day, clock)
             sid = f"s:{day.isoformat()}T{clock}"
-            nodes.append({"id": sid, "kind": "snapshot", "as_of": now.isoformat(),
-                          "session": day.isoformat(), "clock_et": clock})
+            nodes.append(
+                {
+                    "id": sid,
+                    "kind": "snapshot",
+                    "as_of": now.isoformat(),
+                    "session": day.isoformat(),
+                    "clock_et": clock,
+                }
+            )
             remaining = []
             for open_trade in open_trades:
                 long_mark = _latest(bars[open_trade["long"]], now, age)
                 short_mark = _latest(bars[open_trade["short"]], now, age)
                 if long_mark is not None and short_mark is not None:
-                    pnl = ((long_mark-short_mark) - open_trade["entry_debit"]) * 100
+                    pnl = ((long_mark - short_mark) - open_trade["entry_debit"]) * 100
                     pnl = min(open_trade["max_gain"], max(-open_trade["max_loss"], pnl))
                     closed_capital += pnl
                     minimum_closed_capital = min(minimum_closed_capital, closed_capital)
@@ -329,9 +398,18 @@ def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str,
                     modeled_losses += int(pnl < 0)
                     daily_loss += min(Decimal(0), pnl)
                     close_id = f"x:{sid}:{open_trade['action_id']}"
-                    nodes.append({"id": close_id, "kind": "modeled_exit", "pnl": str(pnl),
-                                  "capital_after": str(closed_capital), "data_kind": "last-traded-minute-close"})
-                    edges.append({"from": open_trade["action_id"], "to": close_id, "kind": "later_mark"})
+                    nodes.append(
+                        {
+                            "id": close_id,
+                            "kind": "modeled_exit",
+                            "pnl": str(pnl),
+                            "capital_after": str(closed_capital),
+                            "data_kind": "last-traded-minute-close",
+                        }
+                    )
+                    edges.append(
+                        {"from": open_trade["action_id"], "to": close_id, "kind": "later_mark"}
+                    )
                 else:
                     remaining.append(open_trade)
             open_trades = remaining
@@ -343,8 +421,10 @@ def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str,
             if decisions == {} and policy != "no_trade":
                 eligible = [c for c in candidates if c["structure"] == policy]
                 if eligible:
-                    selected = min(eligible, key=lambda c: (Decimal(c["max_loss_proxy"]),
-                                                             c["underlying"], c["id"]))["id"]
+                    selected = min(
+                        eligible,
+                        key=lambda c: (Decimal(c["max_loss_proxy"]), c["underlying"], c["id"]),
+                    )["id"]
             if sid in decisions:
                 seen_decisions.add(sid)
             action_id = f"a:{sid}"
@@ -355,8 +435,8 @@ def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str,
             elif chosen is not None and daily_loss <= -300:
                 reason = "daily_loss_cap"
             elif chosen is not None and any(
-                    t["long"] == chosen["long"] and t["short"] == chosen["short"]
-                    for t in open_trades):
+                t["long"] == chosen["long"] and t["short"] == chosen["short"] for t in open_trades
+            ):
                 reason = "same_spread_still_open"
             entry_receipt = None
             if reason == "selected" and chosen is not None:
@@ -367,28 +447,52 @@ def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str,
                 else:
                     entry_debit = long_fill - short_fill
                     width = Decimal(chosen["width"])
-                    max_loss = (entry_debit if chosen["structure"].endswith("debit")
-                                else width + entry_debit) * 100
-                    max_gain = ((width-entry_debit) if chosen["structure"].endswith("debit")
-                                else -entry_debit) * 100
+                    max_loss = (
+                        entry_debit
+                        if chosen["structure"].endswith("debit")
+                        else width + entry_debit
+                    ) * 100
+                    max_gain = (
+                        (width - entry_debit)
+                        if chosen["structure"].endswith("debit")
+                        else -entry_debit
+                    ) * 100
                     reserved = sum((t["max_loss"] for t in open_trades), Decimal(0))
-                    if (max_loss <= 0 or max_loss > 300 or max_gain <= 0
-                            or reserved+max_loss > closed_capital):
+                    if (
+                        max_loss <= 0
+                        or max_loss > 300
+                        or max_gain <= 0
+                        or reserved + max_loss > closed_capital
+                    ):
                         reason = "entry_risk_cap"
                     elif reserved + max_loss > 1500:
                         reason = "combined_open_loss_cap"
                     else:
-                        open_trades.append({"long": chosen["long"], "short": chosen["short"],
-                                            "entry_debit": entry_debit, "max_loss": max_loss,
-                                            "max_gain": max_gain,
-                                            "action_id": action_id})
-                        peak_reserved = max(peak_reserved, reserved+max_loss)
-                        entry_receipt = {"entry_debit_proxy": str(entry_debit),
-                                         "max_loss_at_entry_proxy": str(max_loss),
-                                         "max_gain_at_entry_proxy": str(max_gain)}
-            action = {"id": action_id, "kind": "trade_action", "snapshot": sid,
-                      "candidate_id": selected, "decision": "enter" if reason == "selected" else "skip",
-                      "reason": reason, "execution_authorized": False}
+                        open_trades.append(
+                            {
+                                "long": chosen["long"],
+                                "short": chosen["short"],
+                                "entry_debit": entry_debit,
+                                "max_loss": max_loss,
+                                "max_gain": max_gain,
+                                "action_id": action_id,
+                            }
+                        )
+                        peak_reserved = max(peak_reserved, reserved + max_loss)
+                        entry_receipt = {
+                            "entry_debit_proxy": str(entry_debit),
+                            "max_loss_at_entry_proxy": str(max_loss),
+                            "max_gain_at_entry_proxy": str(max_gain),
+                        }
+            action = {
+                "id": action_id,
+                "kind": "trade_action",
+                "snapshot": sid,
+                "candidate_id": selected,
+                "decision": "enter" if reason == "selected" else "skip",
+                "reason": reason,
+                "execution_authorized": False,
+            }
             if entry_receipt is not None:
                 action.update(entry_receipt)
             nodes.append(action)
@@ -399,16 +503,28 @@ def replay(raw: Mapping[str, Any], sessions: list[date], decisions: Mapping[str,
     unknown = set(decisions) - seen_decisions
     if unknown:
         raise ValueError(f"decisions outside window: {sorted(unknown)[:3]}")
-    return {"schema": SCHEMA, "policy": "external_decisions" if external_decisions else policy,
-            "sessions": len(sessions), "scheduled_snapshots": scheduled_snapshots,
-            "potential_trades": sum(n["kind"] == "potential_trade" for n in nodes),
-            "entered": sum(a["decision"] == "enter" for a in receipts),
-            "modeled_wins": modeled_wins, "modeled_losses": modeled_losses,
-            "closed_capital_proxy": str(closed_capital), "open_at_end": len(open_trades),
-            "minimum_closed_capital_proxy": str(minimum_closed_capital),
-            "peak_open_loss_reserved": str(peak_reserved),
-            "nodes": nodes, "edges": edges, "actions": receipts,
-            "limitations": ["trade bars are not executable bid/ask quotes", "stale or absent bars omit candidates",
-                            "first later trade bars are valuation proxies, not fills",
-                            "open positions at window end have no final PnL", "no assignment or fees modeled"],
-            "execution_authorized": False}
+    return {
+        "schema": SCHEMA,
+        "policy": "external_decisions" if external_decisions else policy,
+        "sessions": len(sessions),
+        "scheduled_snapshots": scheduled_snapshots,
+        "potential_trades": sum(n["kind"] == "potential_trade" for n in nodes),
+        "entered": sum(a["decision"] == "enter" for a in receipts),
+        "modeled_wins": modeled_wins,
+        "modeled_losses": modeled_losses,
+        "closed_capital_proxy": str(closed_capital),
+        "open_at_end": len(open_trades),
+        "minimum_closed_capital_proxy": str(minimum_closed_capital),
+        "peak_open_loss_reserved": str(peak_reserved),
+        "nodes": nodes,
+        "edges": edges,
+        "actions": receipts,
+        "limitations": [
+            "trade bars are not executable bid/ask quotes",
+            "stale or absent bars omit candidates",
+            "first later trade bars are valuation proxies, not fills",
+            "open positions at window end have no final PnL",
+            "no assignment or fees modeled",
+        ],
+        "execution_authorized": False,
+    }

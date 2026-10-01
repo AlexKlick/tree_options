@@ -9,6 +9,7 @@ operator's own systemctl use is not logged here).
 The systemctl runner is injectable so tests never touch the real
 session bus.
 """
+
 from __future__ import annotations
 
 import json
@@ -23,16 +24,26 @@ from tree_options.trex.desk_cli import HALT_FLATTEN_WARNING
 
 #: the desk's own timers -> their oneshot services (the whole surface)
 AUTOMATION_UNITS: dict[str, dict[str, str]] = {
-    "desk-lab": {"timer": "desk-lab.timer", "service": "desk-lab.service",
-                 "what": "hourly flash boards on the frozen bundle (quota-gated)"},
-    "desk-lab-overnight": {"timer": "desk-lab-overnight.timer",
-                           "service": "desk-lab-overnight.service",
-                           "what": "nightly hindsight-gap + GEPA policy evolution"},
-    "desk-challenge": {"timer": "desk-challenge.timer", "service": "desk-challenge.service",
-                       "what": "nightly end-to-end challenge scoreboard"},
-    "desk-supervised-preview": {"timer": "desk-supervised-preview.timer",
-                                "service": "desk-supervised-preview.service",
-                                "what": "E6 shadow request previews (entry window)"},
+    "desk-lab": {
+        "timer": "desk-lab.timer",
+        "service": "desk-lab.service",
+        "what": "hourly flash boards on the frozen bundle (quota-gated)",
+    },
+    "desk-lab-overnight": {
+        "timer": "desk-lab-overnight.timer",
+        "service": "desk-lab-overnight.service",
+        "what": "nightly hindsight-gap + GEPA policy evolution",
+    },
+    "desk-challenge": {
+        "timer": "desk-challenge.timer",
+        "service": "desk-challenge.service",
+        "what": "nightly end-to-end challenge scoreboard",
+    },
+    "desk-supervised-preview": {
+        "timer": "desk-supervised-preview.timer",
+        "service": "desk-supervised-preview.service",
+        "what": "E6 shadow request previews (entry window)",
+    },
 }
 
 #: kill-file controls (the supervised desk's stop states)
@@ -47,52 +58,72 @@ def real_systemctl(args: list[str]) -> str:
     A failed call must never look like empty state: the first live deploy
     showed every timer "disabled" because the unit sandbox blocked the
     session bus (AF_UNIX) and the empty stdout was displayed as fact."""
-    result = subprocess.run(["systemctl", "--user", *args],
-                            capture_output=True, text=True, timeout=30, check=False)
+    result = subprocess.run(
+        ["systemctl", "--user", *args], capture_output=True, text=True, timeout=30, check=False
+    )
     if result.returncode != 0:
-        raise RuntimeError(f"systemctl {' '.join(args[:2])}: rc={result.returncode} "
-                           f"{result.stderr.strip()[:120]}")
+        raise RuntimeError(
+            f"systemctl {' '.join(args[:2])}: rc={result.returncode} {result.stderr.strip()[:120]}"
+        )
     return result.stdout
 
 
 def _audit(run_dir: Path, action: str, subject: str, detail: str = "") -> None:
     run_dir.mkdir(parents=True, exist_ok=True)
-    record = {"at": datetime.now(ET).isoformat(), "actor": "cockpit",
-              "action": action, "subject": subject, "detail": detail}
+    record = {
+        "at": datetime.now(ET).isoformat(),
+        "actor": "cockpit",
+        "action": action,
+        "subject": subject,
+        "detail": detail,
+    }
     with (run_dir / "automation.jsonl").open("a", encoding="utf-8") as stream:
         stream.write(json.dumps(record, sort_keys=True) + "\n")
 
 
-def automation_status(run_dir: Path, *, systemctl: SystemctlRunner = real_systemctl
-                      ) -> dict[str, Any]:
+def automation_status(
+    run_dir: Path, *, systemctl: SystemctlRunner = real_systemctl
+) -> dict[str, Any]:
     """Timer states + kill files for the cockpit's automation card."""
     timers: list[dict[str, Any]] = []
     for key, spec in AUTOMATION_UNITS.items():
         timer, service = spec["timer"], spec["service"]
+
         def query(unit: str, prop: str) -> str:
             return systemctl(["show", unit, "--property", prop, "--value"]).strip()
-        timers.append({
-            "key": key, "what": spec["what"], "timer": timer, "service": service,
-            "enabled": query(timer, "UnitFileState") == "enabled",
-            "active": query(timer, "ActiveState") == "active",
-            "next_elapse": query(timer, "NextElapseUSecRealtime"),
-            "last_result": query(service, "Result"),
-            "last_exit": query(service, "ExecMainExitTimestamp"),
-        })
-    return {"schema": "desk-automation/1",
-            "kill_files": sorted(f for f in KILL_FILES if (run_dir / f).exists()),
-            "timers": timers}
+
+        timers.append(
+            {
+                "key": key,
+                "what": spec["what"],
+                "timer": timer,
+                "service": service,
+                "enabled": query(timer, "UnitFileState") == "enabled",
+                "active": query(timer, "ActiveState") == "active",
+                "next_elapse": query(timer, "NextElapseUSecRealtime"),
+                "last_result": query(service, "Result"),
+                "last_exit": query(service, "ExecMainExitTimestamp"),
+            }
+        )
+    return {
+        "schema": "desk-automation/1",
+        "kill_files": sorted(f for f in KILL_FILES if (run_dir / f).exists()),
+        "timers": timers,
+    }
 
 
-def automation_action(run_dir: Path, key: str, action: str, *,
-                      systemctl: SystemctlRunner = real_systemctl) -> dict[str, Any]:
+def automation_action(
+    run_dir: Path, key: str, action: str, *, systemctl: SystemctlRunner = real_systemctl
+) -> dict[str, Any]:
     """enable/disable a whitelisted timer, or run its service once now."""
     if key not in AUTOMATION_UNITS:
         raise KeyError(key)
     spec = AUTOMATION_UNITS[key]
-    commands = {"enable": ["enable", "--now", spec["timer"]],
-                "disable": ["disable", "--now", spec["timer"]],
-                "run": ["start", spec["service"]]}
+    commands = {
+        "enable": ["enable", "--now", spec["timer"]],
+        "disable": ["disable", "--now", spec["timer"]],
+        "run": ["start", spec["service"]],
+    }
     if action not in commands:
         raise ValueError(action)
     systemctl(commands[action])

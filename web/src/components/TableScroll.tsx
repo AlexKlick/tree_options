@@ -5,7 +5,7 @@
 
 import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
-export function TableScroll({ children }: { children: ReactNode }) {
+export function TableScroll({ children, label = 'Scrollable table' }: { children: ReactNode; label?: string }) {
   const ref = useRef<HTMLDivElement | null>(null)
   const [more, setMore] = useState(false)
 
@@ -32,7 +32,7 @@ export function TableScroll({ children }: { children: ReactNode }) {
           scroll for more columns →
         </p>
       )}
-      <div ref={ref} className={`table-scroll${more ? ' has-more' : ''}`}>
+      <div ref={ref} className={`table-scroll${more ? ' has-more' : ''}`} role="region" aria-label={label} tabIndex={0}>
         {children}
       </div>
     </>

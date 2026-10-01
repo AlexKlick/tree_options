@@ -18,9 +18,7 @@ from tree_options.trex.series import decimate_pairs, level_extent
 from tree_options.trex_web.reader import list_plans, read_marks_history
 
 
-def equity_series(
-    records: list[dict[str, Any]], max_points: int = 600
-) -> dict[str, Any] | None:
+def equity_series(records: list[dict[str, Any]], max_points: int = 600) -> dict[str, Any] | None:
     """Net-liquidation over time; same series shape the SPA charts take."""
     pts: list[tuple[int, float]] = []
     for r in records:
@@ -52,9 +50,7 @@ def _day(ts: object) -> str | None:
         return None
 
 
-def realized_by_day(
-    events: list[Any], entry_fills: dict[str, float]
-) -> dict[str, float]:
+def realized_by_day(events: list[Any], entry_fills: dict[str, float]) -> dict[str, float]:
     """Realized P&L per ISO date, diffed from cumulative exit_fill events.
 
     Events carry CUMULATIVE quantity and the BLENDED cumulative average,
@@ -104,6 +100,7 @@ def unrealized_eod_by_day(rows: list[dict[str, Any]]) -> dict[str, float | None]
     from the first line) fall back to None rather than the filled-basis
     total.
     """
+
     def _inst(row: dict[str, Any]) -> float:
         ts = row.get("ts")
         if not isinstance(ts, str):
@@ -160,15 +157,9 @@ def stats_payload(
     equity_account: str | None = None
     equity_rows: list[dict[str, Any]] = []
     if equity_rows_all:
-        freshest = max(
-            equity_rows_all, key=lambda r: str(r.get("ts", ""))
-        )
-        equity_account = (
-            str(freshest.get("account_id")) if freshest.get("account_id") else None
-        )
-        equity_rows = [
-            r for r in equity_rows_all if r.get("account_id") == equity_account
-        ]
+        freshest = max(equity_rows_all, key=lambda r: str(r.get("ts", "")))
+        equity_account = str(freshest.get("account_id")) if freshest.get("account_id") else None
+        equity_rows = [r for r in equity_rows_all if r.get("account_id") == equity_account]
 
     realized_days: dict[str, float] = {}
     unrealized_days: dict[str, float | None] = {}
@@ -225,11 +216,7 @@ def stats_payload(
             st = view.structures.get(sid)
             realized = None
             if st is not None:
-                realized = (
-                    float(st.realized_pnl)
-                    if st.realized_pnl is not None
-                    else None
-                )
+                realized = float(st.realized_pnl) if st.realized_pnl is not None else None
                 if st.state.value == "closed":
                     structures_closed += 1
                     if realized is not None:

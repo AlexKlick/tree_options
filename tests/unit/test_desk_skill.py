@@ -44,26 +44,56 @@ from tree_options.desk.longrun import Board, OutcomeCache, PolicySpec, Protocol
 BULL, BEAR = "put_credit", "call_credit"
 H = ("h1", "h2")
 FIXTURE: dict[str, tuple[str, list[tuple[str, str, float | None, float | None]]]] = {
-    "b1": ("2026-06-01", [("A", BULL, 12, 20), ("B", "call_debit", 4, 0),
-                          ("C", BEAR, -6, 4), ("D", "put_debit", -2, -8)]),
+    "b1": (
+        "2026-06-01",
+        [
+            ("A", BULL, 12, 20),
+            ("B", "call_debit", 4, 0),
+            ("C", BEAR, -6, 4),
+            ("D", "put_debit", -2, -8),
+        ],
+    ),
     "b2": ("2026-06-01", [("E", BULL, 9, -6), ("F", BEAR, -3, 6), ("G", BEAR, 0, 3)]),
     "b3": ("2026-06-02", [("H", BULL, 5, -10), ("I", BEAR, None, 2)]),
     "b4": ("2026-06-02", [("J", BULL, 1, -5), ("K", BULL, 3, -3)]),
 }
-DECISIONS: list[tuple[str | None, str | None]] = [("A", "h2"), ("F", "h1"), (None, None),
-                                                   ("K", "h1")]
+DECISIONS: list[tuple[str | None, str | None]] = [
+    ("A", "h2"),
+    ("F", "h1"),
+    (None, None),
+    ("K", "h1"),
+]
 #   selection = structure + underlying + row: b1 A is the only put_credit (m_s 20 vs
 #   m_d 10: structure +10); b2 F shares call_credit with G but not its underlying
 #   (m_s -1.5, m_su -3: underlying -1.5); b4 J, K share structure and underlying (row +1)
-UNDERLYING = {"A": "X", "B": "X", "C": "Y", "D": "Y", "E": "X", "F": "X", "G": "Y",
-              "H": "X", "I": "Y", "J": "X", "K": "X"}
+UNDERLYING = {
+    "A": "X",
+    "B": "X",
+    "C": "Y",
+    "D": "Y",
+    "E": "X",
+    "F": "X",
+    "G": "Y",
+    "H": "X",
+    "I": "Y",
+    "J": "X",
+    "K": "X",
+}
 
 
 def fixture_boards() -> list[Board]:
-    return [Board(name, session, "10:00",
-                  [{"id": rid, "structure": structure, "underlying": UNDERLYING[rid]}
-                   for rid, structure, _, _ in rows])
-            for name, (session, rows) in FIXTURE.items()]
+    return [
+        Board(
+            name,
+            session,
+            "10:00",
+            [
+                {"id": rid, "structure": structure, "underlying": UNDERLYING[rid]}
+                for rid, structure, _, _ in rows
+            ],
+        )
+        for name, (session, rows) in FIXTURE.items()
+    ]
 
 
 def fixture_get(snapshot: str, rid: str, horizon: str | None) -> tuple[float, float] | None:
@@ -78,8 +108,14 @@ def test_decomposition_matches_the_hand_computation_and_sums_exactly() -> None:
     book = skill.ValueBook(fixture_get, H)
     dec = skill.decompose(book, fixture_boards(), DECISIONS)
     totals = {name: dec.total(name) for name in skill.COMPONENTS}
-    expect = {"base": 2.0625, "participation": 1.4375, "horizon": 4.5,
-              "direction_tilt": 5.5, "direction_timing": -3.0, "selection": 9.5}
+    expect = {
+        "base": 2.0625,
+        "participation": 1.4375,
+        "horizon": 4.5,
+        "direction_tilt": 5.5,
+        "direction_timing": -3.0,
+        "selection": 9.5,
+    }
     assert totals == pytest.approx(expect, abs=1e-12)
     assert dec.rho == 0.75 and dec.bullish_share == pytest.approx(2 / 3)
     assert dec.realized.tolist() == [20.0, -3.0, 0.0, 3.0]
@@ -108,9 +144,17 @@ def test_decompose_refuses_a_choice_that_is_not_a_board_row() -> None:
 def test_arm_skill_reports_the_identity_and_an_honest_verdict() -> None:
     book = skill.ValueBook(fixture_get, H)
     boards = fixture_boards()
-    doc = skill.arm_skill(book, boards, DECISIONS, window=boards,
-                          options=skill.SkillOptions(), draws=2000, seed=1, bound=None,
-                          base_block=1)
+    doc = skill.arm_skill(
+        book,
+        boards,
+        DECISIONS,
+        window=boards,
+        options=skill.SkillOptions(),
+        draws=2000,
+        seed=1,
+        bound=None,
+        base_block=1,
+    )
     assert doc["net_total"] == 20.0 and doc["identity_residual"] == 0.0
     assert doc["components"]["selection"] == 9.5 and doc["cost_drag"] == 6.0
     assert doc["excess_total"] == 12.0 and doc["alpha_total"] == 6.5
@@ -142,8 +186,7 @@ def test_circular_block_bootstrap_hand_cases() -> None:
     # one block covering the whole circle: every resample is a rotation
     assert set(skill.block_bootstrap_sums([3.0, -1.0, 5.0], 3, draws=1000, seed=1)) == {7.0}
     # block 1 is the i.i.d. bootstrap: [0, 10] -> 0/10/20
-    assert skill._pct(skill.block_bootstrap_sums([0.0, 10.0], 1, draws=4000, seed=2)) == [
-        0.0, 20.0]
+    assert skill._pct(skill.block_bootstrap_sums([0.0, 10.0], 1, draws=4000, seed=2)) == [0.0, 20.0]
 
 
 def test_block_bootstrap_widens_for_a_persistent_series() -> None:
@@ -177,8 +220,10 @@ def test_forward_cs_splits_odd_and_even_blocks() -> None:
     blocks = noisy.reshape(-1, 2).sum(axis=1)
     o_lo, o_hi = skill.asymptotic_cs(blocks[0::2], 0.025)
     e_lo, e_hi = skill.asymptotic_cs(blocks[1::2], 0.025)
-    assert fwd["cs_total"] == [round(max(o_lo[-1], e_lo[-1]) * 100, 2),
-                               round(min(o_hi[-1], e_hi[-1]) * 100, 2)]
+    assert fwd["cs_total"] == [
+        round(max(o_lo[-1], e_lo[-1]) * 100, 2),
+        round(min(o_hi[-1], e_hi[-1]) * 100, 2),
+    ]
     assert fwd["reliable"] is True and fwd["significant"] is True
 
 
@@ -202,8 +247,9 @@ def _asymp_oracle(x: list[float], alpha: float, t_star: float) -> tuple[float, f
     mean = sum(x) / t
     sd = math.sqrt(sum((v - mean) ** 2 for v in x) / t)
     rho2 = (-2 * math.log(alpha) + math.log(-2 * math.log(alpha) + 1)) / t_star
-    radius = sd * math.sqrt(2 * (t * rho2 + 1) / (t * t * rho2)
-                            * math.log(math.sqrt(t * rho2 + 1) / alpha))
+    radius = sd * math.sqrt(
+        2 * (t * rho2 + 1) / (t * t * rho2) * math.log(math.sqrt(t * rho2 + 1) / alpha)
+    )
     return mean - radius, mean + radius
 
 
@@ -216,8 +262,10 @@ def test_asymptotic_cs_matches_the_published_formula() -> None:
     # rho tuned to t* is the tightest choice at t*
     rng = np.random.default_rng(0)
     y = rng.normal(size=400)
-    width = {ts: float(np.subtract(*skill.asymptotic_cs(y, 0.05, ts)[::-1])[-1])
-             for ts in (100, 400, 1600)}
+    width = {
+        ts: float(np.subtract(*skill.asymptotic_cs(y, 0.05, ts)[::-1])[-1])
+        for ts in (100, 400, 1600)
+    }
     assert width[400] < width[100] and width[400] < width[1600]
 
 
@@ -292,8 +340,10 @@ def test_excess_bound_from_board_rows() -> None:
 
 
 def test_power_table_hand_case() -> None:
-    boards = [Board("p1", "2026-06-01", "10:00", [{"id": "x"}, {"id": "y"}]),
-              Board("p2", "2026-06-02", "10:00", [{"id": "x"}, {"id": "y"}])]
+    boards = [
+        Board("p1", "2026-06-01", "10:00", [{"id": "x"}, {"id": "y"}]),
+        Board("p2", "2026-06-02", "10:00", [{"id": "x"}, {"id": "y"}]),
+    ]
     values = {("p1", "x"): 10.0, ("p1", "y"): -10.0, ("p2", "x"): 4.0, ("p2", "y"): 0.0}
 
     def get(snapshot: str, rid: str, horizon: str | None) -> tuple[float, float]:
@@ -323,8 +373,9 @@ def test_power_table_bullish_bet_column_hand_case() -> None:
     def get(snapshot: str, rid: str, horizon: str | None) -> tuple[float, float]:
         return values[(snapshot, rid)], values[(snapshot, rid)]
 
-    doc = skill.power_table(skill.ValueBook(get, ("intraday",)), boards,
-                            ("intraday",))["horizons"]["intraday"]
+    doc = skill.power_table(skill.ValueBook(get, ("intraday",)), boards, ("intraday",))["horizons"][
+        "intraday"
+    ]
     assert doc["sd_bullish_bet_dependent"] == 2.5
     z = 1.959963984540054 + 0.8416212335729143
     assert doc["rows"][1]["mde_bullish_bet_dependent"] == round(z * 2.5 / math.sqrt(500), 2)
@@ -334,8 +385,9 @@ def test_power_table_long_run_variance_uses_horizon_blocks() -> None:
     # board means 1, 1, -1, -1 over four sessions, within variance 1 each; hold:2 spans
     # 2, 2, 1, 1 sessions -> block 2 -> batch sums (2, -2) -> long-run 8/4 = 2 -> raw 3
     means = [1.0, 1.0, -1.0, -1.0]
-    boards = [Board(f"q{i}", f"2026-06-0{i + 1}", "10:00", [{"id": "u"}, {"id": "d"}])
-              for i in range(4)]
+    boards = [
+        Board(f"q{i}", f"2026-06-0{i + 1}", "10:00", [{"id": "u"}, {"id": "d"}]) for i in range(4)
+    ]
 
     def get(snapshot: str, rid: str, horizon: str | None) -> tuple[float, float]:
         m = means[int(snapshot[1:])]
@@ -357,22 +409,32 @@ def test_score_run_carries_the_hand_checked_skill_section() -> None:
     doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome), proto)
     section = doc["skill"]
     assert section["schema"] == skill.SKILL_SCHEMA and section["base_horizons"] == list(
-        skill.MENU_HORIZONS)
+        skill.MENU_HORIZONS
+    )
     arms_doc = section["arms"]
     # rows l (bear, -4), w (bull, +10), n (bull, no fill = 0): m = 2, m_bull 5, m_bear -4,
     # delta 9, f = 2/3 on every board and horizon
     assert arms_doc["m#1"]["components"] == {
-        "base": 8.0, "participation": 0.0, "horizon": 0.0, "direction_tilt": 12.0,
-        "direction_timing": 0.0, "selection": 20.0}
+        "base": 8.0,
+        "participation": 0.0,
+        "horizon": 0.0,
+        "direction_tilt": 12.0,
+        "direction_timing": 0.0,
+        "selection": 20.0,
+    }
     assert arms_doc["m#2"]["components"] == {
-        "base": 6.0, "participation": 0.0, "horizon": 0.0, "direction_tilt": 9.0,
-        "direction_timing": 0.0, "selection": 15.0}
+        "base": 6.0,
+        "participation": 0.0,
+        "horizon": 0.0,
+        "direction_tilt": 9.0,
+        "direction_timing": 0.0,
+        "selection": 15.0,
+    }
     assert arms_doc["first_row"]["components"]["direction_tilt"] == -24.0
     acd = arms_doc["always_call_debit"]
     assert (acd["net_total"], acd["components"]["selection"]) == (0.0, -20.0)
     assert arms_doc["no_trade"]["verdict"].startswith("NO TRADES")
-    assert arms_doc["m#1"]["selection_split"] == {"structure": 20.0, "underlying": 0.0,
-                                                  "row": 0.0}
+    assert arms_doc["m#1"]["selection_split"] == {"structure": 20.0, "underlying": 0.0, "row": 0.0}
     assert "FIXED RULE" in arms_doc["first_row"]["verdict"]
     assert "FIXED RULE" not in arms_doc["m#1"]["verdict"]
     for name, arm in arms_doc.items():
@@ -418,16 +480,24 @@ def _table_file(path: Path, boards: list[Board]) -> None:
             for cid in board.ids:
                 value = table_outcome(board.snapshot, cid, None)
                 for mode in ("intraday", "eod", "hold:5", "expiry"):
-                    stream.write(json.dumps({
-                        "snapshot": board.snapshot, "candidate_id": cid, "exit_mode": mode,
-                        "status": "no_fill" if value is None else "closed",
-                        "gross": None if value is None else value["gross"],
-                        "net": None if value is None else value["net"]}) + "\n")
+                    stream.write(
+                        json.dumps(
+                            {
+                                "snapshot": board.snapshot,
+                                "candidate_id": cid,
+                                "exit_mode": mode,
+                                "status": "no_fill" if value is None else "closed",
+                                "gross": None if value is None else value["gross"],
+                                "net": None if value is None else value["net"],
+                            }
+                        )
+                        + "\n"
+                    )
 
 
 def test_redigest_rescores_from_receipts_with_zero_model_calls(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str]) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     from tree_options.desk.__main__ import run_cli
 
     boards = boards_for(SESSIONS6[:3])
@@ -436,13 +506,21 @@ def test_redigest_rescores_from_receipts_with_zero_model_calls(
     monkeypatch.setitem(longrun.PLUGINS["ask"], "pytest", lambda p, c: ask)
     _table_file(tmp_path / "table.jsonl", boards)
     config = tmp_path / "longrun.json"
-    config.write_text(json.dumps({
-        "out_root": "out", "incumbent": "m", "concurrency": 2,
-        "boards": {"plugin": "pytest"},
-        "outcome": {"plugin": "v2", "table": str(tmp_path / "table.jsonl")},
-        "ask": {"plugin": "pytest"}, "quota": {"plugin": "always"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "m", "kind": "model", "repeats": 2}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": "out",
+                "incumbent": "m",
+                "concurrency": 2,
+                "boards": {"plugin": "pytest"},
+                "outcome": {"plugin": "v2", "table": str(tmp_path / "table.jsonl")},
+                "ask": {"plugin": "pytest"},
+                "quota": {"plugin": "always"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [{"name": "m", "kind": "model", "repeats": 2}],
+            }
+        )
+    )
     assert run_cli(["longrun", "run", "--config", str(config)]) == 0
     run_dir = Path(json.loads(capsys.readouterr().out)["run_dir"])
     before = json.loads((run_dir / "digest.json").read_text())
@@ -461,17 +539,23 @@ def test_redigest_rescores_from_receipts_with_zero_model_calls(
     assert (run_dir / "digest.pre-redigest.json").is_file()
     assert after["redigest"]["model_calls"] == 0
     assert [(r["arm"], r["net_total"], r["net_ci95"]) for r in after["standings"]] == [
-        (r["arm"], r["net_total"], r["net_ci95"]) for r in before["standings"]]
+        (r["arm"], r["net_total"], r["net_ci95"]) for r in before["standings"]
+    ]
     assert after["skill"]["arms"]["m#1"]["excess_total"] == 48.0
     assert after["promotion"]["promoted"] is False
+    assert after["assessment_class"] == "retrospective_descriptive"
+    assert after["promotion"]["pre_registered_at"] is None
+    assert after["headline"].startswith("RETROSPECTIVE DESCRIPTIVE")
+    assert all(
+        not row["eligible_for_operator_review"] for row in after["walk_forward"]["finalists"]
+    )
     # a live run (its lock held) is never touched in place; --out writes elsewhere
     stamp = (run_dir / "digest.json").stat().st_mtime_ns
     with open(run_dir / ".lock", "a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
         assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir)]) == 3
         out = tmp_path / "side"
-        assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out",
-                        str(out)]) == 0
+        assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(out)]) == 0
     capsys.readouterr()
     assert (out / "digest.json").is_file() and (out / "digest.md").is_file()
     assert (run_dir / "digest.json").stat().st_mtime_ns == stamp
@@ -479,47 +563,109 @@ def test_redigest_rescores_from_receipts_with_zero_model_calls(
     # needs --out, and refuses an empty window or a malformed spec
     s0, s1, s2 = sorted({b.session for b in boards})
     window = tmp_path / "window"
-    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(window),
-                    "--sessions", f"{s1}:"]) == 0
+    assert (
+        run_cli(
+            [
+                "longrun",
+                "redigest",
+                "--run-dir",
+                str(run_dir),
+                "--out",
+                str(window),
+                "--sessions",
+                f"{s1}:",
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
     doc = json.loads((window / "digest.json").read_text())
     assert doc["redigest"]["sessions"] == {"first": s1, "last": None, "boards": 4}
     assert doc["skill"]["arms"]["m#1"]["excess_total"] == 32.0
-    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(window),
-                    "--sessions", f":{s0}"]) == 0
+    assert (
+        run_cli(
+            [
+                "longrun",
+                "redigest",
+                "--run-dir",
+                str(run_dir),
+                "--out",
+                str(window),
+                "--sessions",
+                f":{s0}",
+            ]
+        )
+        == 0
+    )
     capsys.readouterr()
-    assert json.loads((window / "digest.json").read_text())["skill"]["arms"]["m#1"][
-        "excess_total"] == 16.0
-    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir),
-                    "--sessions", f"{s1}:{s2}"]) == 2  # no --out
-    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(window),
-                    "--sessions", "2001-01-01:2001-01-02"]) == 2  # empty window
-    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(window),
-                    "--sessions", s1]) == 2  # not FIRST:LAST
+    assert (
+        json.loads((window / "digest.json").read_text())["skill"]["arms"]["m#1"]["excess_total"]
+        == 16.0
+    )
+    assert (
+        run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--sessions", f"{s1}:{s2}"]) == 2
+    )  # no --out
+    assert (
+        run_cli(
+            [
+                "longrun",
+                "redigest",
+                "--run-dir",
+                str(run_dir),
+                "--out",
+                str(window),
+                "--sessions",
+                "2001-01-01:2001-01-02",
+            ]
+        )
+        == 2
+    )  # empty window
+    assert (
+        run_cli(
+            [
+                "longrun",
+                "redigest",
+                "--run-dir",
+                str(run_dir),
+                "--out",
+                str(window),
+                "--sessions",
+                s1,
+            ]
+        )
+        == 2
+    )  # not FIRST:LAST
     capsys.readouterr()
     assert (run_dir / "digest.json").stat().st_mtime_ns == stamp
     # no table anywhere: refused, never a bundle parse
     cfg = json.loads((run_dir / "config.json").read_text())
     cfg["outcome"] = {"plugin": "v2"}
     (run_dir / "config.json").write_text(json.dumps(cfg))
-    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out",
-                    str(out)]) == 2
+    assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir), "--out", str(out)]) == 2
 
 
 def test_partial_arms_are_labelled_and_scored_on_their_own_boards() -> None:
     boards = boards_for(SESSIONS6[:2])
-    arms = longrun.arms_of([PolicySpec("m", "model"), PolicySpec(
-        "first_row", "control", rule=longrun.rule_first_row())])
-    receipts = {"m": {boards[0].snapshot: ok("w")},
-                "first_row": {b.snapshot: ok("l") for b in boards}}
-    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome),
-                            Protocol(draws=1000, random_seeds=200))
+    arms = longrun.arms_of(
+        [
+            PolicySpec("m", "model"),
+            PolicySpec("first_row", "control", rule=longrun.rule_first_row()),
+        ]
+    )
+    receipts = {
+        "m": {boards[0].snapshot: ok("w")},
+        "first_row": {b.snapshot: ok("l") for b in boards},
+    }
+    doc = longrun.score_run(
+        boards, arms, receipts, OutcomeCache(table_outcome), Protocol(draws=1000, random_seeds=200)
+    )
     assert doc["boards"]["scored"] == 1  # the paired standings shrink to the common board
     m = doc["skill"]["arms"]["m"]
     assert m["boards"] == 1 and m["complete"] is False and m["excess_total"] == 8.0
     assert m["verdict"].startswith("PARTIAL (1/4 boards): ")
     assert m["cs_in_sample"]["population"] == 4
     assert doc["skill"]["arms"]["first_row"]["boards"] == 4
+
 
 # ------------------------------------------------------ redigest --arms subset
 
@@ -828,13 +974,17 @@ def test_status_line_surfaces_the_self_heal_tally(
 
 def test_pair_arms_get_an_explicit_n_a_decomposition_not_a_crash() -> None:
     boards = boards_for(SESSIONS6[:3])
-    specs = [PolicySpec("shortvol_pair", "rule", rule=lambda b: ("w+l", None)),
-             *longrun.builtin_controls()]
+    specs = [
+        PolicySpec("shortvol_pair", "rule", rule=lambda b: ("w+l", None)),
+        *longrun.builtin_controls(),
+    ]
     arms = longrun.arms_of(specs)
-    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards}
-                for arm in arms}
-    doc = longrun.score_run(boards, arms, receipts, OutcomeCache(table_outcome),
-                            Protocol(draws=1000, random_seeds=200))
+    receipts = {
+        arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards} for arm in arms
+    }
+    doc = longrun.score_run(
+        boards, arms, receipts, OutcomeCache(table_outcome), Protocol(draws=1000, random_seeds=200)
+    )
     assert "error" not in doc["skill"]
     arm = doc["skill"]["arms"]["shortvol_pair"]
     assert arm["decomposition"] == "n/a" and "package" in arm["decomposition_note"]
@@ -851,8 +1001,9 @@ def test_progress_skill_marks_a_pair_arm_n_a_instead_of_a_silent_zero() -> None:
     boards = boards_for(SESSIONS6[:3])
     specs = [PolicySpec("shortvol_pair", "rule", rule=lambda b: ("w+l", None))]
     arms = longrun.arms_of(specs)
-    receipts = {arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards}
-                for arm in arms}
+    receipts = {
+        arm.name: {b.snapshot: longrun.decide(arm, b, None) for b in boards} for arm in arms
+    }
     live = skill.progress_skill(boards, arms, receipts, OutcomeCache(table_outcome).get, {})
     entry = live["arms"]["shortvol_pair"]
     assert entry["decided"] == 6 and entry["entered"] == 6
@@ -861,22 +1012,37 @@ def test_progress_skill_marks_a_pair_arm_n_a_instead_of_a_silent_zero() -> None:
 
 
 def test_redigest_rescores_a_run_with_a_pair_arm_with_zero_model_calls(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-        capsys: pytest.CaptureFixture[str]) -> None:
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     from tree_options.desk.__main__ import run_cli
 
     boards = boards_for(SESSIONS6[:3])
     monkeypatch.setitem(longrun.PLUGINS["boards"], "pytest", lambda p, c: boards)
     _table_file(tmp_path / "table.jsonl", boards)
     config = tmp_path / "pair.json"
-    config.write_text(json.dumps({
-        "out_root": "out", "concurrency": 2, "boards": {"plugin": "pytest"},
-        "outcome": {"plugin": "v2", "table": str(tmp_path / "table.jsonl")},
-        "quota": {"plugin": "always"},
-        "protocol": {"draws": 1000, "random_seeds": 200},
-        "policies": [{"name": "shortvol_pair_h5", "kind": "control", "builtin": "theory",
-                      "structures": ["put_credit", "call_credit"], "require_all": True,
-                      "pair": True, "horizon": "hold:5"}]}))
+    config.write_text(
+        json.dumps(
+            {
+                "out_root": "out",
+                "concurrency": 2,
+                "boards": {"plugin": "pytest"},
+                "outcome": {"plugin": "v2", "table": str(tmp_path / "table.jsonl")},
+                "quota": {"plugin": "always"},
+                "protocol": {"draws": 1000, "random_seeds": 200},
+                "policies": [
+                    {
+                        "name": "shortvol_pair_h5",
+                        "kind": "control",
+                        "builtin": "theory",
+                        "structures": ["put_credit", "call_credit"],
+                        "require_all": True,
+                        "pair": True,
+                        "horizon": "hold:5",
+                    }
+                ],
+            }
+        )
+    )
     assert run_cli(["longrun", "run", "--config", str(config)]) == 0
     run_dir = Path(json.loads(capsys.readouterr().out)["run_dir"])
     assert run_cli(["longrun", "redigest", "--run-dir", str(run_dir)]) == 0

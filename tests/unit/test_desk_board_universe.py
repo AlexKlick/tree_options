@@ -41,10 +41,18 @@ def _bar(day: date, hour: int, minute: int, price: str) -> dict[str, Any]:
 def _raw(prices: dict[str, str], days: tuple[date, ...] = (D1,), **extra: Any) -> dict[str, Any]:
     rules = "candidate_pairing" in extra or "listing" in extra
     schema = "desk-option-minute-bars/2" if rules else "desk-option-minute-bars/1"
-    return {"schema": schema, **extra, "contracts": {
-        ticker: {"ticker": ticker, "timespan": "minute",
-                 "results": [_bar(day, 13, 59, price) for day in days]}
-        for ticker, price in prices.items()}}
+    return {
+        "schema": schema,
+        **extra,
+        "contracts": {
+            ticker: {
+                "ticker": ticker,
+                "timespan": "minute",
+                "results": [_bar(day, 13, 59, price) for day in days],
+            }
+            for ticker, price in prices.items()
+        },
+    }
 
 
 def _legs(candidates: list[dict[str, Any]]) -> set[tuple[str, str, str, str]]:
@@ -57,8 +65,12 @@ def _legs(candidates: list[dict[str, Any]]) -> set[tuple[str, str, str, str]]:
 def test_no_pairing_key_keeps_the_v1_adjacent_pairs() -> None:
     got = iag.decision_packet(_raw(PRICES), D1, "10:00")["candidates"]
     # adjacent strikes only: 500/501 (width 1) and 501/505 (width 4)
-    assert _legs(got) == {("call_debit", A, B, "0.5"), ("call_credit", B, A, "0.5"),
-                          ("call_debit", B, C, "1.5"), ("call_credit", C, B, "1.5")}
+    assert _legs(got) == {
+        ("call_debit", A, B, "0.5"),
+        ("call_credit", B, A, "0.5"),
+        ("call_debit", B, C, "1.5"),
+        ("call_credit", C, B, "1.5"),
+    }
 
 
 def test_width_pairing_pairs_every_listed_width() -> None:
@@ -66,19 +78,31 @@ def test_width_pairing_pairs_every_listed_width() -> None:
     got = iag.decision_packet(raw, D1, "10:00")["candidates"]
     # 500/501 and 500/505; 501/505 is width 4 (not listed); the 5-wide credit
     # collects 2.00 -> max loss exactly 300, inside the cap
-    assert _legs(got) == {("call_debit", A, B, "0.5"), ("call_credit", B, A, "0.5"),
-                          ("call_debit", A, C, "2"), ("call_credit", C, A, "2")}
+    assert _legs(got) == {
+        ("call_debit", A, B, "0.5"),
+        ("call_credit", B, A, "0.5"),
+        ("call_debit", A, C, "2"),
+        ("call_credit", C, A, "2"),
+    }
     assert {c["max_loss_proxy"] for c in got if c["short"] == A and c["long"] == C} == {"300"}
     only4 = _raw(PRICES, candidate_pairing={"rule": "widths", "widths": ["4"]})
     assert _legs(iag.decision_packet(only4, D1, "10:00")["candidates"]) == {
-        ("call_debit", B, C, "1.5"), ("call_credit", C, B, "1.5")}
+        ("call_debit", B, C, "1.5"),
+        ("call_credit", C, B, "1.5"),
+    }
 
 
 def test_listing_gates_each_board_day_on_both_board_paths() -> None:
-    raw = _raw(PRICES, (D1, D2), candidate_pairing={"rule": "widths", "widths": ["1", "4", "5"]},
-               listing={A: {"from": "2026-09-24", "until": "2026-09-24"},
-                        B: {"from": "2026-09-25", "until": None},
-                        C: {"from": "2026-09-24"}})
+    raw = _raw(
+        PRICES,
+        (D1, D2),
+        candidate_pairing={"rule": "widths", "widths": ["1", "4", "5"]},
+        listing={
+            A: {"from": "2026-09-24", "until": "2026-09-24"},
+            B: {"from": "2026-09-25", "until": None},
+            C: {"from": "2026-09-24"},
+        },
+    )
     day1 = {("call_debit", A, C, "2"), ("call_credit", C, A, "2")}  # A and C listed
     day2 = {("call_debit", B, C, "1.5"), ("call_credit", C, B, "1.5")}  # B and C listed
     assert _legs(iag.decision_packet(raw, D1, "10:00")["candidates"]) == day1
@@ -88,14 +112,22 @@ def test_listing_gates_each_board_day_on_both_board_paths() -> None:
     assert _legs(outcomes.board_candidates(index, D2, "10:00")) == day2
 
 
-@pytest.mark.parametrize("extra", [
-    {"candidate_pairing": {"rule": "adjacent"}},
-    {"candidate_pairing": {"rule": "widths", "widths": []}},
-    {"candidate_pairing": {"rule": "widths", "widths": ["0"]}},
-    {"listing": {A: {"from": "2026-09-24"}}},  # must name every contract
-    {"listing": {A: {"from": "2026-09-24", "until": "2026-09-23"},
-                 B: {"from": "2026-09-24"}, C: {"from": "2026-09-24"}}},
-])
+@pytest.mark.parametrize(
+    "extra",
+    [
+        {"candidate_pairing": {"rule": "adjacent"}},
+        {"candidate_pairing": {"rule": "widths", "widths": []}},
+        {"candidate_pairing": {"rule": "widths", "widths": ["0"]}},
+        {"listing": {A: {"from": "2026-09-24"}}},  # must name every contract
+        {
+            "listing": {
+                A: {"from": "2026-09-24", "until": "2026-09-23"},
+                B: {"from": "2026-09-24"},
+                C: {"from": "2026-09-24"},
+            }
+        },
+    ],
+)
 def test_malformed_candidate_rules_are_refused(extra: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         iag.decision_packet(_raw(PRICES, **extra), D1, "10:00")
@@ -103,13 +135,16 @@ def test_malformed_candidate_rules_are_refused(extra: dict[str, Any]) -> None:
 
 def test_candidate_rules_need_the_v2_schema_and_v2_needs_no_rules() -> None:
     # a /1 bundle is what pre-v3 readers accept: it must never carry rules
-    ruled = {**_raw(PRICES, candidate_pairing={"rule": "widths", "widths": ["1"]}),
-             "schema": "desk-option-minute-bars/1"}
+    ruled = {
+        **_raw(PRICES, candidate_pairing={"rule": "widths", "widths": ["1"]}),
+        "schema": "desk-option-minute-bars/1",
+    }
     with pytest.raises(ValueError, match="require"):
         iag.decision_packet(ruled, D1, "10:00")
     plain_v2 = {**_raw(PRICES), "schema": "desk-option-minute-bars/2"}
     assert _legs(iag.decision_packet(plain_v2, D1, "10:00")["candidates"]) == _legs(
-        iag.decision_packet(_raw(PRICES), D1, "10:00")["candidates"])
+        iag.decision_packet(_raw(PRICES), D1, "10:00")["candidates"]
+    )
     with pytest.raises(ValueError):
         iag.decision_packet({**_raw(PRICES), "schema": "desk-option-minute-bars/3"}, D1, "10:00")
 
@@ -121,9 +156,18 @@ def test_parity_spot_uses_listed_pairs_only() -> None:
     at = iag._instant(D2, "10:00")
     both = outcomes.prepare_index(_raw(prices, (D2,)))
     assert outcomes.spot_asof(both, at) == {"SPY": Decimal("510")}  # median(505, 515)
-    gated = outcomes.prepare_index(_raw(prices, (D2,), listing={
-        k500c: {"from": "2026-09-24"}, k500p: {"from": "2026-09-24"},
-        k510c: {"from": "2026-09-24", "until": "2026-09-24"}, k510p: {"from": "2026-09-24"}}))
+    gated = outcomes.prepare_index(
+        _raw(
+            prices,
+            (D2,),
+            listing={
+                k500c: {"from": "2026-09-24"},
+                k500p: {"from": "2026-09-24"},
+                k510c: {"from": "2026-09-24", "until": "2026-09-24"},
+                k510p: {"from": "2026-09-24"},
+            },
+        )
+    )
     assert outcomes.spot_asof(gated, at) == {"SPY": Decimal("505")}
 
 
@@ -167,12 +211,14 @@ def test_short_strike_target_hits_the_requested_delta() -> None:
     # hand: z = N^-1(0.8) = 0.841621; sigma sqrt(T) = 0.1; sigma^2 T / 2 = 0.005
     # put 100 exp(0.005 - 0.0841621) = 92.389; call 100 exp(0.0891621) = 109.326
     put = bu.short_strike_target(Decimal(100), Decimal("0.2"), Decimal("0.25"), Decimal("0.2"), "P")
-    call = bu.short_strike_target(Decimal(100), Decimal("0.2"), Decimal("0.25"), Decimal("0.2"), "C")
+    call = bu.short_strike_target(
+        Decimal(100), Decimal("0.2"), Decimal("0.25"), Decimal("0.2"), "C"
+    )
     assert round(float(put), 3) == 92.389
     assert round(float(call), 3) == 109.326
 
     def delta(strike: float, right: str) -> float:  # Black-Scholes, r = 0, from the definition
-        d1 = (math.log(100 / strike) + 0.2 ** 2 * 0.25 / 2) / (0.2 * math.sqrt(0.25))
+        d1 = (math.log(100 / strike) + 0.2**2 * 0.25 / 2) / (0.2 * math.sqrt(0.25))
         return NormalDist().cdf(d1) - (1 if right == "P" else 0)
 
     assert delta(float(put), "P") == pytest.approx(-0.20, abs=1e-9)
@@ -199,16 +245,26 @@ def test_served_sessions_dte_and_months() -> None:
     assert bu.median_dte(date(2026, 7, 17), days[:3]) == 43
     assert bu.median_dte(date(2026, 7, 17), [date(2026, 5, 15)]) is None
     assert bu.candidate_months(date(2026, 11, 30), date(2026, 12, 2)) == [
-        (2026, 11), (2026, 12), (2027, 1), (2027, 2), (2027, 3)]
+        (2026, 11),
+        (2026, 12),
+        (2027, 1),
+        (2027, 2),
+        (2027, 3),
+    ]
 
 
 def _master() -> dict[str, Any]:
-    rows = [{"ticker": f"O:SPY260717{r}{k * 1000:08d}", "shares_per_contract": 100}
-            for k in range(88, 113) for r in ("C", "P")]
+    rows = [
+        {"ticker": f"O:SPY260717{r}{k * 1000:08d}", "shares_per_contract": 100}
+        for k in range(88, 113)
+        for r in ("C", "P")
+    ]
     # a 10-share deliverable at 94.5 (nearer the 94.437 put target) and an
     # adjusted ticker: neither may ever be picked
-    rows += [{"ticker": "O:SPY260717P00094500", "shares_per_contract": 10},
-             {"ticker": "O:SPY1260717P00094000"}]
+    rows += [
+        {"ticker": "O:SPY260717P00094500", "shares_per_contract": 10},
+        {"ticker": "O:SPY1260717P00094000"},
+    ]
     return {"underlying_ticker": "SPY", "pages": [{"results": rows[:30]}, {"results": rows[30:]}]}
 
 
@@ -217,13 +273,27 @@ def test_select_reference_picks_delta_shorts_and_exact_wings() -> None:
     # hand: T = 46/365; sigma sqrt(T) = 0.0710004; sigma^2 T / 2 = 0.0025205
     # put  100 exp(0.0025205 - 0.841621 * 0.0710004) = 94.437 -> 94; wings 93 92 89
     # call 100 exp(0.0025205 + 0.841621 * 0.0710004) = 106.426 -> 106; wings 107 108 111
-    picked = bu.select_reference(_master(), "SPY", Decimal(100), Decimal("0.2"),
-                                 [date(2026, 6, 1)], session_calendar().sessions(),
-                                 (Decimal("0.2"),), (Decimal(1), Decimal(2), Decimal(5)))
+    picked = bu.select_reference(
+        _master(),
+        "SPY",
+        Decimal(100),
+        Decimal("0.2"),
+        [date(2026, 6, 1)],
+        session_calendar().sessions(),
+        (Decimal("0.2"),),
+        (Decimal(1), Decimal(2), Decimal(5)),
+    )
     got = {(p["right"], p["strike"], p["role"]) for p in picked}
-    assert got == {("P", "94", "short"), ("P", "93", "wing"), ("P", "92", "wing"),
-                   ("P", "89", "wing"), ("C", "106", "short"), ("C", "107", "wing"),
-                   ("C", "108", "wing"), ("C", "111", "wing")}
+    assert got == {
+        ("P", "94", "short"),
+        ("P", "93", "wing"),
+        ("P", "92", "wing"),
+        ("P", "89", "wing"),
+        ("C", "106", "short"),
+        ("C", "107", "wing"),
+        ("C", "108", "wing"),
+        ("C", "111", "wing"),
+    }
     assert {p["dte_ref"] for p in picked} == {46}
     with pytest.raises(ValueError):
         bu.master_chains({"underlying_ticker": "QQQ", "pages": []}, "SPY")
@@ -233,23 +303,43 @@ def test_select_reference_picks_delta_shorts_and_exact_wings() -> None:
 
 
 def _selection(widths: Any) -> dict[str, Any]:
-    return {"schema": bu.SELECTION_SCHEMA, "vintage": "t", "window_start": "2026-09-23",
-            "window_end": "2026-09-25", "rule": {"widths": widths}, "contracts": {
-                A: {"listed_from": "2026-09-24", "listed_until": None},
-                B: {"listed_from": "2026-09-25", "listed_until": "2026-09-25"},
-                C: {"listed_from": "2026-09-24"}}}
+    return {
+        "schema": bu.SELECTION_SCHEMA,
+        "vintage": "t",
+        "window_start": "2026-09-23",
+        "window_end": "2026-09-25",
+        "rule": {"widths": widths},
+        "contracts": {
+            A: {"listed_from": "2026-09-24", "listed_until": None},
+            B: {"listed_from": "2026-09-25", "listed_until": "2026-09-25"},
+            C: {"listed_from": "2026-09-24"},
+        },
+    }
 
 
 def test_assemble_drops_bars_before_listing_and_records_gaps() -> None:
-    series = {A: [_bar(D0, 20, 0, "4"),   # 16:00 ET 09-23: before the listing, dropped
-                  _bar(D1, 3, 30, "4"),   # 23:30 ET 09-23 (a UTC 09-24 stamp): dropped
-                  _bar(D1, 4, 30, "4"),   # 00:30 ET 09-24: kept (cutoff 04:00Z)
-                  _bar(D1, 13, 59, "4")],
-              B: [_bar(D1, 13, 59, "3.5")]}  # only before its listing: empty
-    bundle = bu.assemble_bundle(_selection(["1", "5"]), series, None, selection_sha256="x",
-                                captured_at="now", wire_requests=0, sources={})
+    series = {
+        A: [
+            _bar(D0, 20, 0, "4"),  # 16:00 ET 09-23: before the listing, dropped
+            _bar(D1, 3, 30, "4"),  # 23:30 ET 09-23 (a UTC 09-24 stamp): dropped
+            _bar(D1, 4, 30, "4"),  # 00:30 ET 09-24: kept (cutoff 04:00Z)
+            _bar(D1, 13, 59, "4"),
+        ],
+        B: [_bar(D1, 13, 59, "3.5")],
+    }  # only before its listing: empty
+    bundle = bu.assemble_bundle(
+        _selection(["1", "5"]),
+        series,
+        None,
+        selection_sha256="x",
+        captured_at="now",
+        wire_requests=0,
+        sources={},
+    )
     assert [bar["t"] for bar in bundle["contracts"][A]["results"]] == [
-        series[A][2]["t"], series[A][3]["t"]]
+        series[A][2]["t"],
+        series[A][3]["t"],
+    ]
     assert bundle["bars_dropped_before_listing"] == 3
     assert bundle["missing_tickers"] == [C] and bundle["empty_after_listing"] == [B]
     assert bundle["listing"] == {A: {"from": "2026-09-24", "until": None}}
@@ -257,18 +347,28 @@ def test_assemble_drops_bars_before_listing_and_records_gaps() -> None:
     assert bundle["schema"] == "desk-option-minute-bars/2"  # pre-v3 readers refuse it
     universe = iag.bundle_contracts(bundle, bundle["contracts"])
     assert universe.widths == frozenset({Decimal(1), Decimal(5)})
-    adjacent = bu.assemble_bundle(_selection("adjacent"), series, None, selection_sha256="x",
-                                  captured_at="now", wire_requests=0, sources={})
+    adjacent = bu.assemble_bundle(
+        _selection("adjacent"),
+        series,
+        None,
+        selection_sha256="x",
+        captured_at="now",
+        wire_requests=0,
+        sources={},
+    )
     assert "candidate_pairing" not in adjacent
 
 
-@pytest.mark.parametrize("body", [
-    {"status": "NOT_AUTHORIZED", "ticker": A, "results": []},
-    {"status": "OK", "ticker": B, "results": []},
-    {"status": "OK", "ticker": A, "results": [], "next_url": "https://api.polygon.io/x"},
-    {"status": "OK", "ticker": A, "results": [{"t": 1, "c": 1, "v": 0}]},
-    {"status": "OK", "ticker": A, "resultsCount": 2, "results": [{"t": 1, "c": 1, "v": 1}]},
-])
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"status": "NOT_AUTHORIZED", "ticker": A, "results": []},
+        {"status": "OK", "ticker": B, "results": []},
+        {"status": "OK", "ticker": A, "results": [], "next_url": "https://api.polygon.io/x"},
+        {"status": "OK", "ticker": A, "results": [{"t": 1, "c": 1, "v": 0}]},
+        {"status": "OK", "ticker": A, "resultsCount": 2, "results": [{"t": 1, "c": 1, "v": 1}]},
+    ],
+)
 def test_verify_body_refuses_unusable_series(body: dict[str, Any]) -> None:
     with pytest.raises(ValueError):
         bu.verify_body(A, body)
@@ -283,8 +383,11 @@ V1_REL = Path("evaluations/intraday-graph/20260927-v1/minute-bars-4mo-expanded.j
 def _v1_bundle() -> Path | None:
     from tree_options.desk import paths
 
-    options = [os.environ.get("TREX_V1_PIN_BUNDLE", ""), str(paths.store_root() / V1_REL),
-               str(Path.home() / "documents/tree_options/artifacts/desk-store" / V1_REL)]
+    options = [
+        os.environ.get("TREX_V1_PIN_BUNDLE", ""),
+        str(paths.store_root() / V1_REL),
+        str(Path.home() / "documents/tree_options/artifacts/desk-store" / V1_REL),
+    ]
     return next((Path(p) for p in options if p and Path(p).is_file()), None)
 
 
@@ -319,7 +422,11 @@ def test_the_frozen_v1_vintage_is_byte_identical_under_the_new_rules() -> None:
         rows_seen += 1
     assert rows_seen == 861
     assert table.hexdigest() == "b28a5467aff8864c6eb5e57e21f2fe1624002c14dee126382d238163ddd21a61"
-    packets = [iag.decision_packet(raw, d, c)["candidates"]
-               for d, c in [(index.sessions[0], "10:00"), (index.sessions[40], "13:00")]]
-    assert hashlib.sha256(json.dumps(packets, sort_keys=True).encode()).hexdigest() == \
-        "34f2c50c682ecb2095032b8151d2e4747552fceae83848da7456a7fb6c864e14"
+    packets = [
+        iag.decision_packet(raw, d, c)["candidates"]
+        for d, c in [(index.sessions[0], "10:00"), (index.sessions[40], "13:00")]
+    ]
+    assert (
+        hashlib.sha256(json.dumps(packets, sort_keys=True).encode()).hexdigest()
+        == "34f2c50c682ecb2095032b8151d2e4747552fceae83848da7456a7fb6c864e14"
+    )

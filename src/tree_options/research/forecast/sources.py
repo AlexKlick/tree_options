@@ -21,6 +21,7 @@ distinction is declared. The provenance lookup takes the LATEST line
 matching ``source == name`` with a successful status — the file's last
 line can be another instrument.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -47,8 +48,7 @@ _SYNTHETIC_FIXTURE = _FIXTURES / "synthetic-forecast-v1.json"
 #: The closure-corrected session authority (DATA file; its sha is bound
 #: into every index ForecastSeries so the intersection is reproducible).
 _SESSION_AUTHORITY = (
-    _REPO_ROOT / "data" / "calendar" / "trex"
-    / "nyse_sessions_2018_01_02_2028_12_29.json"
+    _REPO_ROOT / "data" / "calendar" / "trex" / "nyse_sessions_2018_01_02_2028_12_29.json"
 )
 #: Declared evaluation scope: the pinned research calendar's own range.
 SCOPE_START: Final[date] = date(2018, 1, 2)
@@ -69,8 +69,7 @@ INTERVAL_SEMANTICS: Final[str] = (
     "a block-bootstrap sensitivity."
 )
 
-_SUCCESS_STATUSES: Final[frozenset[str]] = frozenset(
-    {"new", "updated", "revised", "unchanged"})
+_SUCCESS_STATUSES: Final[frozenset[str]] = frozenset({"new", "updated", "revised", "unchanged"})
 
 
 @dataclass(frozen=True)
@@ -100,8 +99,7 @@ SOURCE_REGISTRY: Final[Mapping[ForecastSourceId, SourceDescriptor]] = {
         source_id=ForecastSourceId.INDEX_VIX,
         label="VIX (CBOE via desk-store)",
         basis="desk-store latest revision (latest-vintage retrospective)",
-        grid_basis="observed vendor dates intersected with "
-                   "closure-corrected sessions",
+        grid_basis="observed vendor dates intersected with closure-corrected sessions",
         enabled_horizons=(5, 20),
         listed_horizons=(5, 20, 63, 126),
     ),
@@ -127,16 +125,13 @@ class ForecastSeries:
     def summary(self) -> dict[str, Any]:
         return {
             "n_sessions": len(self.sessions),
-            "first_session": (
-                self.sessions[0].isoformat() if self.sessions else None),
-            "last_session": (
-                self.sessions[-1].isoformat() if self.sessions else None),
+            "first_session": (self.sessions[0].isoformat() if self.sessions else None),
+            "last_session": (self.sessions[-1].isoformat() if self.sessions else None),
             "series_sha256": self.series_sha256,
             "basis": self.basis,
             "grid_basis": self.grid_basis,
             "provenance": dict(self.provenance),
-            "excluded_rows": {k: list(v)
-                              for k, v in self.excluded_rows.items()},
+            "excluded_rows": {k: list(v) for k, v in self.excluded_rows.items()},
             "n_source_rows": self.n_source_rows,
         }
 
@@ -153,7 +148,8 @@ def load_synthetic(
     """
     fixture = (
         fixtures_dir / "synthetic-forecast-v1.json"
-        if fixtures_dir is not None else _SYNTHETIC_FIXTURE
+        if fixtures_dir is not None
+        else _SYNTHETIC_FIXTURE
     )
     sidecar = fixture.with_name(fixture.name + ".sha256")
     if not fixture.is_file():
@@ -172,9 +168,9 @@ def load_synthetic(
                     f"synthetic fixture sha drift: sidecar pins "
                     f"{expected}, file hashes {series_sha} — the frozen "
                     f"fixture changed; it is truth, so update the sidecar "
-                    f"deliberately or restore the bytes"),
-                payload={"sidecar_sha256": expected,
-                         "file_sha256": series_sha},
+                    f"deliberately or restore the bytes"
+                ),
+                payload={"sidecar_sha256": expected, "file_sha256": series_sha},
             )
     try:
         doc = json.loads(body)
@@ -218,8 +214,7 @@ def load_synthetic(
         series_sha256=series_sha,
         basis=descriptor.basis,
         grid_basis=descriptor.grid_basis,
-        provenance={"kind": "synthetic-fixture",
-                    "generator": doc.get("generator", {})},
+        provenance={"kind": "synthetic-fixture", "generator": doc.get("generator", {})},
         excluded_rows={},
         n_source_rows=len(sessions),
     )
@@ -246,7 +241,8 @@ def load_index(
     named by another revision's sha.
     """
     root = (
-        store_root if store_root is not None
+        store_root
+        if store_root is not None
         else _REPO_ROOT / "artifacts" / "desk-store" / "indices"
     )
     path = root / f"{name}.csv"
@@ -272,8 +268,7 @@ def load_index(
         # crash into a generic failed run (checkpoint B-prime, N2)
         return ForecastRefusal(
             code=FORECAST_SOURCE_INVALID,
-            message=f"closure-corrected session authority unreadable: "
-                    f"{exc}",
+            message=f"closure-corrected session authority unreadable: {exc}",
         )
 
     sessions: list[date] = []
@@ -297,7 +292,8 @@ def load_index(
                 message=(
                     f"index row {row[0]} has a non-finite or non-positive "
                     f"close ({row[4]!r}) — refusing rather than skipping "
-                    f"a row silently"),
+                    f"a row silently"
+                ),
             )
         if not (SCOPE_START <= d <= SCOPE_END):
             out_of_scope += 1
@@ -335,13 +331,11 @@ def load_index(
     )
 
 
-def _validate_grid(sessions: list[date],
-                   closes: list[float]) -> str | None:
+def _validate_grid(sessions: list[date], closes: list[float]) -> str | None:
     """Shared grid invariants; a message when violated, None when ok."""
     for a, b in itertools.pairwise(sessions):
         if b <= a:
-            return (f"sessions not strictly increasing: "
-                    f"{a.isoformat()} -> {b.isoformat()}")
+            return f"sessions not strictly increasing: {a.isoformat()} -> {b.isoformat()}"
     for v in closes:
         # isfinite rejects +inf too (a NaN-only check would accept it)
         if not math.isfinite(v) or v <= 0.0:
@@ -371,12 +365,13 @@ def _session_authority() -> tuple[frozenset[str], str]:
     that into a typed refusal."""
     body = _SESSION_AUTHORITY.read_bytes()
     doc = json.loads(body)
-    return (frozenset(str(s) for s in doc["sessions"]),
-            hashlib.sha256(body).hexdigest())
+    return (frozenset(str(s) for s in doc["sessions"]), hashlib.sha256(body).hexdigest())
 
 
 def _latest_provenance(
-    root: Path, name: str, authority_sha: str,
+    root: Path,
+    name: str,
+    authority_sha: str,
 ) -> Mapping[str, Any] | ForecastRefusal:
     """The latest SUCCESSFUL provenance line for THIS source. The last
     line of the file can be another instrument (verified live: the file
@@ -386,7 +381,7 @@ def _latest_provenance(
         return ForecastRefusal(
             code=FORECAST_SOURCE_DRIFT,
             message=f"provenance.jsonl absent under {root}; cannot bind "
-                    f"vendor provenance for {name}",
+            f"vendor provenance for {name}",
         )
     latest: dict[str, Any] | None = None
     for line in prov_path.read_text().splitlines():
@@ -396,8 +391,7 @@ def _latest_provenance(
             entry = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if entry.get("source") == name and \
-                entry.get("status") in _SUCCESS_STATUSES:
+        if entry.get("source") == name and entry.get("status") in _SUCCESS_STATUSES:
             latest = entry
     if latest is None:
         return ForecastRefusal(
@@ -413,8 +407,8 @@ def _latest_provenance(
         "vendor_last_date": latest.get("last_date"),
         "session_authority_sha256": authority_sha,
         "sha_note": "vendor_body_sha256 hashes the downloaded vendor "
-                    "body; series_sha256 hashes the stored CSV bytes — "
-                    "they differ by design and both are recorded",
+        "body; series_sha256 hashes the stored CSV bytes — "
+        "they differ by design and both are recorded",
     }
 
 

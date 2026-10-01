@@ -57,41 +57,67 @@ CON = {
     ("STK", "SPY", "", 0.0, ""): 1,
 }
 PROFILE = CapitalProfile(
-    profile_id="canary-5k", revision=1, intended_capital=Decimal("5000"),
-    risk_style="defined-risk", goals=("operational-canary",),
-    allowed_strategy_versions=(STRATEGY,), max_loss_per_trade=Decimal("300"),
-    max_open_loss=Decimal("1500"), max_daily_loss=Decimal("600"), horizon_days=30)
+    profile_id="canary-5k",
+    revision=1,
+    intended_capital=Decimal("5000"),
+    risk_style="defined-risk",
+    goals=("operational-canary",),
+    allowed_strategy_versions=(STRATEGY,),
+    max_loss_per_trade=Decimal("300"),
+    max_open_loss=Decimal("1500"),
+    max_daily_loss=Decimal("600"),
+    horizon_days=30,
+)
 
 
-def _vertical(sid: str = "dv1", quantity: int = 1, kind: str = "debit_vertical",
-              limit: str = "1.00") -> LegStructure:
+def _vertical(
+    sid: str = "dv1", quantity: int = 1, kind: str = "debit_vertical", limit: str = "1.00"
+) -> LegStructure:
     first, second = ("BUY", "SELL") if kind == "debit_vertical" else ("SELL", "BUY")
     return LegStructure(
-        id=sid, underlying="SPY", kind=kind,
-        legs=[{"right": "P", "action": first, "strike": "100", "expiry": date(2026, 10, 16)},
-              {"right": "P", "action": second, "strike": "95", "expiry": date(2026, 10, 16)}],
-        quantity=quantity, entry_date=date(2026, 9, 28), exit_deadline=date(2026, 10, 9),
-        limit=limit, exits={"touch": False, "breach": False})
+        id=sid,
+        underlying="SPY",
+        kind=kind,
+        legs=[
+            {"right": "P", "action": first, "strike": "100", "expiry": date(2026, 10, 16)},
+            {"right": "P", "action": second, "strike": "95", "expiry": date(2026, 10, 16)},
+        ],
+        quantity=quantity,
+        entry_date=date(2026, 9, 28),
+        exit_deadline=date(2026, 10, 9),
+        limit=limit,
+        exits={"touch": False, "breach": False},
+    )
 
 
 def _effect(structure: LegStructure | None = None, **overrides: Any) -> SupervisedEffect:
     structure = structure or _vertical()
     fields: dict[str, Any] = {
-        "intent_id": "sup-001", "account_id": ACCOUNT, "structure": structure,
-        "side": structure.open_side, "quantity": 1, "limit": Decimal("0.90"),
-        "order_ref": supervised_order_ref("sup-001")}
+        "intent_id": "sup-001",
+        "account_id": ACCOUNT,
+        "structure": structure,
+        "side": structure.open_side,
+        "quantity": 1,
+        "limit": Decimal("0.90"),
+        "order_ref": supervised_order_ref("sup-001"),
+    }
     fields.update(overrides)
     return SupervisedEffect(**fields)
 
 
 INPUTS = OperatorCanaryInputs(
-    owner_epoch="sup-83-epoch-1", owner_healthy=True, assignment_plan_verified=True,
-    protective_exit_ready=True, current_open_loss=Decimal("0"),
-    realized_daily_loss=Decimal("0"))
+    owner_epoch="sup-83-epoch-1",
+    owner_healthy=True,
+    assignment_plan_verified=True,
+    protective_exit_ready=True,
+    current_open_loss=Decimal("0"),
+    realized_daily_loss=Decimal("0"),
+)
 
 
-def _live(tick_age_s: int | None = 5, client_id: int = SUPERVISED_CLIENT_ID
-          ) -> tuple[IbkrSupervisedBroker, SupervisedGateway]:
+def _live(
+    tick_age_s: int | None = 5, client_id: int = SUPERVISED_CLIENT_ID
+) -> tuple[IbkrSupervisedBroker, SupervisedGateway]:
     """A connected paper session with a two-sided quote ticked ``tick_age_s`` ago."""
     gw = SupervisedGateway(CON, ACCOUNT)
     ib = IbkrTrex(client_id=client_id)
@@ -105,10 +131,19 @@ def _live(tick_age_s: int | None = 5, client_id: int = SUPERVISED_CLIENT_ID
     return IbkrSupervisedBroker(ib), gw
 
 
-def _screen(broker: IbkrSupervisedBroker, effect: SupervisedEffect | None = None,
-            inputs: OperatorCanaryInputs = INPUTS, mandate_account: str = ACCOUNT):
-    return collect_canary_screening(broker, effect or _effect(), profile=PROFILE,
-                                    mandate_account_id=mandate_account, inputs=inputs)
+def _screen(
+    broker: IbkrSupervisedBroker,
+    effect: SupervisedEffect | None = None,
+    inputs: OperatorCanaryInputs = INPUTS,
+    mandate_account: str = ACCOUNT,
+):
+    return collect_canary_screening(
+        broker,
+        effect or _effect(),
+        profile=PROFILE,
+        mandate_account_id=mandate_account,
+        inputs=inputs,
+    )
 
 
 # ---------------------------------------------------------------- clear
@@ -136,8 +171,10 @@ def test_screening_digest_moves_with_the_evidence():
 
 
 def _bag(symbol: str, order_ref: str, order_id: int) -> SimpleNamespace:
-    return SimpleNamespace(contract=SimpleNamespace(secType="BAG", symbol=symbol),
-                           order=SimpleNamespace(orderRef=order_ref, orderId=order_id))
+    return SimpleNamespace(
+        contract=SimpleNamespace(secType="BAG", symbol=symbol),
+        order=SimpleNamespace(orderRef=order_ref, orderId=order_id),
+    )
 
 
 def test_same_underlying_positions_and_working_orders_block():
@@ -199,11 +236,19 @@ def test_wide_vertical_margin_and_assignment_exposure_block():
     gw.quote(40, 0.05, 0.10)
     gw.tickers[40].time = shift_instant(datetime.now(UTC), -5)  # type: ignore[attr-defined]
     wide = LegStructure(
-        id="cv-wide", underlying="SPY", kind="credit_vertical",
-        legs=[{"right": "P", "action": "SELL", "strike": "100", "expiry": date(2026, 10, 16)},
-              {"right": "P", "action": "BUY", "strike": "40", "expiry": date(2026, 10, 16)}],
-        quantity=1, entry_date=date(2026, 9, 28), exit_deadline=date(2026, 10, 9),
-        limit="1.00", exits={"touch": False, "breach": False})
+        id="cv-wide",
+        underlying="SPY",
+        kind="credit_vertical",
+        legs=[
+            {"right": "P", "action": "SELL", "strike": "100", "expiry": date(2026, 10, 16)},
+            {"right": "P", "action": "BUY", "strike": "40", "expiry": date(2026, 10, 16)},
+        ],
+        quantity=1,
+        entry_date=date(2026, 9, 28),
+        exit_deadline=date(2026, 10, 9),
+        limit="1.00",
+        exits={"touch": False, "breach": False},
+    )
     screening = _screen(broker, _effect(wide, limit=Decimal("1.10")))
     assert screening.evidence["modeled_margin"] == "6000"
     assert screening.evidence["assignment_exposure"] == "6000"
@@ -251,13 +296,16 @@ def test_limit_above_the_cap_is_an_unverified_contract():
     assert "contract_or_quote_unverified" in blockers
 
 
-@pytest.mark.parametrize("change, blocker", [
-    ({"owner_healthy": False}, "broker_owner_unhealthy"),
-    ({"protective_exit_ready": False}, "protective_exit_unavailable"),
-    ({"assignment_plan_verified": False}, "package_or_assignment_risk_unverified"),
-    ({"current_open_loss": None}, "open_exposure_unknown"),
-    ({"realized_daily_loss": Decimal("550")}, "daily_loss_cap_exceeded"),
-])
+@pytest.mark.parametrize(
+    "change, blocker",
+    [
+        ({"owner_healthy": False}, "broker_owner_unhealthy"),
+        ({"protective_exit_ready": False}, "protective_exit_unavailable"),
+        ({"assignment_plan_verified": False}, "package_or_assignment_risk_unverified"),
+        ({"current_open_loss": None}, "open_exposure_unknown"),
+        ({"realized_daily_loss": Decimal("550")}, "daily_loss_cap_exceeded"),
+    ],
+)
 def test_operator_inputs_are_never_inferred(change, blocker):
     broker, _ = _live()
     inputs = OperatorCanaryInputs(**{**INPUTS.__dict__, **change})
@@ -290,41 +338,79 @@ def test_supervised_chain_rehearsal_on_fakes(tmp_path):
     broker, gw = _live()
     paths = SupervisedPaths(tmp_path / "supervised")
     now = datetime.now(UTC)
-    grant_mandate(paths, now=now, account_id=ACCOUNT, owner_epoch=INPUTS.owner_epoch,
-                  strategy_version=STRATEGY, profile_digest="c" * 64, max_orders=1,
-                  ttl_seconds=900, granted_by="operator-terminal")
+    grant_mandate(
+        paths,
+        now=now,
+        account_id=ACCOUNT,
+        owner_epoch=INPUTS.owner_epoch,
+        strategy_version=STRATEGY,
+        profile_digest="c" * 64,
+        max_orders=1,
+        ttl_seconds=900,
+        granted_by="operator-terminal",
+    )
     effect = _effect()
     payload = effect_bytes(effect)
     intent = SupervisedIntent(
-        intent=OrderIntent(intent_id="sup-001", contract_id="BAG:dv1", side="BUY",
-                           position_effect="OPEN_LONG", quantity=1, order_type="LIMIT",
-                           limit_price=Decimal("0.90"), execution_style="package",
-                           package_id="dv1", intent_created_at=now, source=STRATEGY,
-                           source_sequence_id="seq-sup-001"),
+        intent=OrderIntent(
+            intent_id="sup-001",
+            contract_id="BAG:dv1",
+            side="BUY",
+            position_effect="OPEN_LONG",
+            quantity=1,
+            order_type="LIMIT",
+            limit_price=Decimal("0.90"),
+            execution_style="package",
+            package_id="dv1",
+            intent_created_at=now,
+            source=STRATEGY,
+            source_sequence_id="seq-sup-001",
+        ),
         package_intent_sha256=_screen(broker).facts.intent_sha256,  # type: ignore[union-attr]
-        created_at=now, send_deadline=shift_instant(now, 120))
+        created_at=now,
+        send_deadline=shift_instant(now, 120),
+    )
     record_intent(paths, intent)
 
     # A blocked screening (a SPY position: same underlying) cannot mint a permit.
     gw.position_rows.append(position_row(12, -2, account=ACCOUNT, symbol="SPY"))
     blocked = _screen(broker)
     with pytest.raises(SupervisedRefused) as caught:
-        issue_permit(paths, now=now, account_id=ACCOUNT, owner_epoch=INPUTS.owner_epoch,
-                     intent=intent, canary_blockers=blocked.blockers,
-                     effect_payload=payload, screening_sha256=blocked.screening_sha256)
+        issue_permit(
+            paths,
+            now=now,
+            account_id=ACCOUNT,
+            owner_epoch=INPUTS.owner_epoch,
+            intent=intent,
+            canary_blockers=blocked.blockers,
+            effect_payload=payload,
+            screening_sha256=blocked.screening_sha256,
+        )
     assert caught.value.reason == "canary_blockers"
 
     # Flat book: the screening clears and its digest is bound into the permit.
     gw.position_rows.clear()
     screening = _screen(broker)
     assert screening.clear
-    permit = issue_permit(paths, now=now, account_id=ACCOUNT, owner_epoch=INPUTS.owner_epoch,
-                          intent=intent, canary_blockers=screening.blockers,
-                          effect_payload=payload, screening_sha256=screening.screening_sha256)
+    permit = issue_permit(
+        paths,
+        now=now,
+        account_id=ACCOUNT,
+        owner_epoch=INPUTS.owner_epoch,
+        intent=intent,
+        canary_blockers=screening.blockers,
+        effect_payload=payload,
+        screening_sha256=screening.screening_sha256,
+    )
     assert permit.screening_sha256 == screening.screening_sha256
 
-    receipt = send(paths, now=shift_instant(now, 1), permit_id=permit.permit_id,
-                   effect_payload=payload, broker=broker)
+    receipt = send(
+        paths,
+        now=shift_instant(now, 1),
+        permit_id=permit.permit_id,
+        effect_payload=payload,
+        broker=broker,
+    )
     assert receipt["outcome"] == "acknowledged"
     (trade,) = gw.trades
     assert (trade.order.orderRef, trade.order.account) == ("trex:sup:sup-001", ACCOUNT)

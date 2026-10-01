@@ -84,12 +84,15 @@ def _parent_spec() -> ComparisonSpec:
 
 def _candidate(candidate_id: str = "c1") -> ResearchCandidate:
     return ResearchCandidate(
-        id=candidate_id, family="f", version="v1",
+        id=candidate_id,
+        family="f",
+        version="v1",
         evidence_kind=ResearchEvidenceKind.SYNTHETIC_BACKTEST,
         registration=ResearchRegistration.BEFORE_ENTRY_WINDOW_END,
         disposition=ResearchDisposition.PASS,
         plot_funded_account=True,
-        supported_start=date(2024, 1, 2), supported_end=date(2024, 1, 31),
+        supported_start=date(2024, 1, 2),
+        supported_end=date(2024, 1, 31),
         funded_history=FundedHistorySupport.RECONSTRUCTED,
     )
 
@@ -112,36 +115,58 @@ def _spawn_parent(worker: ResearchWorker, workspace: Path) -> str:
     spec = _parent_spec()
     parent_run_id = comp_spec_hash(spec)
     with open_runstate_store(workspace) as store:
-        store.put("spec", spec.to_dict(), key=parent_run_id,
-                  at=datetime.now())
-        store.put("run", {"run_id": parent_run_id, "spec_hash": parent_run_id,
-                          "kind": "comparison",
-                          "status": "queued",
-                          "format_version": RUN_FORMAT_VERSION},
-                  key=parent_run_id, at=datetime.now())
+        store.put("spec", spec.to_dict(), key=parent_run_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": parent_run_id,
+                "spec_hash": parent_run_id,
+                "kind": "comparison",
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=parent_run_id,
+            at=datetime.now(),
+        )
     worked = worker.step()
     assert worked
     return parent_run_id
 
 
-def _spawn_scenario(workspace: Path, parent_run_id: str,
-                    body: dict, *, kind: str = "contribution_planning",
-                    access_mode: str = "exploratory") -> str:
-    spec = scenario_from_dict(parent_run_id, {
-        "kind": kind, "access_mode": access_mode,
-        "diff": body.get("diff", {}),
-        "proposed_by": "operator", "notes": "",
-    })
+def _spawn_scenario(
+    workspace: Path,
+    parent_run_id: str,
+    body: dict,
+    *,
+    kind: str = "contribution_planning",
+    access_mode: str = "exploratory",
+) -> str:
+    spec = scenario_from_dict(
+        parent_run_id,
+        {
+            "kind": kind,
+            "access_mode": access_mode,
+            "diff": body.get("diff", {}),
+            "proposed_by": "operator",
+            "notes": "",
+        },
+    )
     run_id = scenario_spec_hash(spec)
     with open_runstate_store(workspace) as store:
-        store.put("spec", spec.to_dict(), key=run_id,
-                  at=datetime.now())
-        store.put("run", {"run_id": run_id, "spec_hash": run_id,
-                          "kind": "scenario",       # dispatch label
-                          "parent_run_id": parent_run_id,
-                          "status": "queued",
-                          "format_version": RUN_FORMAT_VERSION},
-                  key=run_id, at=datetime.now())
+        store.put("spec", spec.to_dict(), key=run_id, at=datetime.now())
+        store.put(
+            "run",
+            {
+                "run_id": run_id,
+                "spec_hash": run_id,
+                "kind": "scenario",  # dispatch label
+                "parent_run_id": parent_run_id,
+                "status": "queued",
+                "format_version": RUN_FORMAT_VERSION,
+            },
+            key=run_id,
+            at=datetime.now(),
+        )
     return run_id
 
 
@@ -149,7 +174,8 @@ def _spawn_scenario(workspace: Path, parent_run_id: str,
 
 
 def test_scenario_publishes_content_bound_result(
-    workspace, catalog_provider,
+    workspace,
+    catalog_provider,
 ):
     """A scenario that re-runs the engine publishes a content-bound
     result with the four identity shas + parent_run_id + scenario_diff."""
@@ -159,9 +185,13 @@ def test_scenario_publishes_content_bound_result(
         engine_fn=run_comparison,
     )
     parent_run_id = _spawn_parent(worker, workspace)
-    child_run_id = _spawn_scenario(workspace, parent_run_id, {
-        "diff": {"contribution_per_period": "500"},
-    })
+    child_run_id = _spawn_scenario(
+        workspace,
+        parent_run_id,
+        {
+            "diff": {"contribution_per_period": "500"},
+        },
+    )
     worked = worker.step()
     assert worked
     with open_runstate_store(workspace) as store:
@@ -183,7 +213,8 @@ def test_scenario_publishes_content_bound_result(
 
 
 def test_scenario_idempotency_records_one_child_per_unique_run_id(
-    workspace, catalog_provider,
+    workspace,
+    catalog_provider,
 ):
     """Two identically-submitted scenarios collapse to the same run_id
     (``scenario_spec_hash`` is the canonical id) — the worker does
@@ -205,7 +236,8 @@ def test_scenario_idempotency_records_one_child_per_unique_run_id(
 
 
 def test_stress_scenario_refuses_with_typed_code(
-    workspace, catalog_provider,
+    workspace,
+    catalog_provider,
 ):
     """A type-B stress scenario publishes a content-bound refusal
     envelope — never a crash, never an empty row."""
@@ -215,8 +247,7 @@ def test_stress_scenario_refuses_with_typed_code(
         engine_fn=run_comparison,
     )
     parent_run_id = _spawn_parent(worker, workspace)
-    child_run_id = _spawn_scenario(
-        workspace, parent_run_id, {}, kind="conditional_stress")
+    child_run_id = _spawn_scenario(workspace, parent_run_id, {}, kind="conditional_stress")
     worked = worker.step()
     assert worked
     with open_runstate_store(workspace) as store:
@@ -229,7 +260,8 @@ def test_stress_scenario_refuses_with_typed_code(
 
 
 def test_scenario_with_missing_parent_refuses_with_typed_code(
-    workspace, catalog_provider,
+    workspace,
+    catalog_provider,
 ):
     """A scenario whose parent has no stored result record refuses
     with SCENARIO_PARENT_MISSING. The lineage is honest about an
@@ -241,8 +273,8 @@ def test_scenario_with_missing_parent_refuses_with_typed_code(
     )
     # No parent spawned -> child claims with no parent result.
     child_run_id = _spawn_scenario(
-        workspace, "parent_does_not_exist",
-        {"diff": {"contribution_per_period": "500"}})
+        workspace, "parent_does_not_exist", {"diff": {"contribution_per_period": "500"}}
+    )
     worked = worker.step()
     assert worked
     with open_runstate_store(workspace) as store:
@@ -255,7 +287,8 @@ def test_scenario_with_missing_parent_refuses_with_typed_code(
 
 
 def test_parent_ref_persisted_on_first_fork_then_idempotent(
-    workspace, catalog_provider,
+    workspace,
+    catalog_provider,
 ):
     """The parent's effective identity is recorded ONCE — re-forking
     against the same parent never re-writes the ParentRef."""
@@ -265,9 +298,13 @@ def test_parent_ref_persisted_on_first_fork_then_idempotent(
         engine_fn=run_comparison,
     )
     parent_run_id = _spawn_parent(worker, workspace)
-    _spawn_scenario(workspace, parent_run_id, {
-        "diff": {"contribution_per_period": "500"},
-    })
+    _spawn_scenario(
+        workspace,
+        parent_run_id,
+        {
+            "diff": {"contribution_per_period": "500"},
+        },
+    )
     worked = worker.step()
     assert worked
     # The parent_ref is now present under scenario_parent kind.

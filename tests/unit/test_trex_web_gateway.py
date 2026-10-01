@@ -37,13 +37,27 @@ def _client(tmp_path: Path, state: dict[str, object] | None) -> TestClient:
 
 def test_needs_login_carries_link_since_and_retry_budget(tmp_path: Path) -> None:
     now = time.time()
-    body = _client(tmp_path, {
-        "status": "needs_login", "since": now - 3600, "detail": "login screen open",
-        "checked_at": now - 20, "login_url": "https://example.invalid/vnc.html?path=vnc",
-        "restarts": [now - 600], "restarts_left": 3, "next_restart_at": now + 6600,
-        "ibc_phase": "login_dialog", "api_ok": False, "vnc_running": True,
-        "events": [{"at": now, "kind": "notify"}],
-    }).get("/api/gateway").json()
+    body = (
+        _client(
+            tmp_path,
+            {
+                "status": "needs_login",
+                "since": now - 3600,
+                "detail": "login screen open",
+                "checked_at": now - 20,
+                "login_url": "https://example.invalid/vnc.html?path=vnc",
+                "restarts": [now - 600],
+                "restarts_left": 3,
+                "next_restart_at": now + 6600,
+                "ibc_phase": "login_dialog",
+                "api_ok": False,
+                "vnc_running": True,
+                "events": [{"at": now, "kind": "notify"}],
+            },
+        )
+        .get("/api/gateway")
+        .json()
+    )
     assert body["status"] == "needs_login"
     assert body["since"] == pytest.approx(now - 3600)
     assert body["login_url"].endswith("path=vnc")
@@ -55,8 +69,11 @@ def test_needs_login_carries_link_since_and_retry_budget(tmp_path: Path) -> None
 
 def test_stale_file_is_flagged(tmp_path: Path) -> None:
     now = time.time()
-    body = _client(tmp_path, {"status": "ok", "since": now - 9000,
-                              "checked_at": now - 900}).get("/api/gateway").json()
+    body = (
+        _client(tmp_path, {"status": "ok", "since": now - 9000, "checked_at": now - 900})
+        .get("/api/gateway")
+        .json()
+    )
     assert body["status"] == "ok"
     assert body["watch_stale"] is True
     assert body["age_seconds"] >= 900

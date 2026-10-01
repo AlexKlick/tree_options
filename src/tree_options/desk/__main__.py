@@ -84,6 +84,20 @@
         the next slot retries; 1 a conflict with the written queue or a
         failure, 2 bad arguments. Places no orders.
 
+    qsl [--session D] [--dry-run] [--out PATH]
+        The QSL shadow-ledger queue (desk.qsl, prereg QSL-20260930): the
+        SPEC-3 deterministic candidates (put_credit / call_debit verticals
+        from the 0.30-delta short and the width-5 wing, gated by SPEC 2's
+        crossing-cost rule on D's own recorded chains) into
+        <TREX_DESK_STATE>/queue-qsl/<D>.json, schema trex.deal/1, written
+        once and marked done in stages/<D>/qsl.done.json. NEVER the
+        miner's queue dir, and the shadow runs that consume it take
+        --queue-dir queue-qsl --database evidence/qsl.sqlite3 so the live
+        desk-evidence.timer is untouched. --dry-run writes nothing. Exit 0
+        written or already done, 3 inputs not ready (no recorded chains
+        for D, or no DTB3 rate knowable at D), 1 a conflict, 2 bad
+        arguments. No model, no orders; the fill is the crossing price.
+
     challenge run --bundles-from DIR [--windows FILE] [--lab-root DIR]
                   [--rounds N] [--dry-run]
         The end-to-end challenge game: every policy (the archive pareto
@@ -265,6 +279,14 @@ def _parser() -> argparse.ArgumentParser:
     mn.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
     mn.add_argument("--desk-specs", type=Path, help="the desk runtime's spec dir (Wave 3)")
     mn.add_argument("--desk-book", type=Path, help="the desk runtime's book.json (Wave 3)")
+    qsl = sub.add_parser(
+        "qsl", help="the QSL shadow-ledger queue: SPEC-3 candidates into queue-qsl/ (no orders)"
+    )
+    qsl.add_argument("--session", type=date.fromisoformat)
+    qsl.add_argument(
+        "--dry-run", action="store_true", help="write nothing under the store or the state"
+    )
+    qsl.add_argument("--out", type=Path, help="write the payload here, not to the queue dir")
     from tree_options.desk import production
 
     production.register(sub)
@@ -277,34 +299,39 @@ def _parser() -> argparse.ArgumentParser:
     lab.add_argument("--lab-root", type=Path)
     sub.add_parser("lab-scoreboard", help="aggregate lab runs into a per-policy scoreboard")
     ovn = sub.add_parser(
-        "lab-overnight",
-        help="the overnight lab: hindsight gaps + GEPA policy evolution + digest")
+        "lab-overnight", help="the overnight lab: hindsight gaps + GEPA policy evolution + digest"
+    )
     ovn.add_argument("--bundle", required=True, type=Path)
     ovn.add_argument("--windows", type=Path)
     ovn.add_argument("--lab-root", type=Path)
-    ch = sub.add_parser("challenge",
-                        help="the end-to-end challenge game over the frozen bundles")
+    ch = sub.add_parser("challenge", help="the end-to-end challenge game over the frozen bundles")
     ch_sub = ch.add_subparsers(dest="challenge_command", required=True)
-    ch_run = ch_sub.add_parser(
-        "run", help="score every policy on every frozen bundle, one digest")
-    ch_run.add_argument("--bundles-from", type=Path,
-                        help="the desk store holding evaluations/intraday-graph "
-                             "(default DESK_STORE)")
-    ch_run.add_argument("--windows", type=Path,
-                        help="quota snapshot (a FRESH snapshot gates model policies)")
+    ch_run = ch_sub.add_parser("run", help="score every policy on every frozen bundle, one digest")
+    ch_run.add_argument(
+        "--bundles-from",
+        type=Path,
+        help="the desk store holding evaluations/intraday-graph (default DESK_STORE)",
+    )
+    ch_run.add_argument(
+        "--windows", type=Path, help="quota snapshot (a FRESH snapshot gates model policies)"
+    )
     ch_run.add_argument("--lab-root", type=Path)
     ch_run.add_argument("--rounds", type=int, help="play only the newest N bundles")
-    ch_run.add_argument("--dry-run", action="store_true",
-                        help="compute and print the plan; write nothing")
-    ot = sub.add_parser("outcome-table",
-                        help="environment v2: per-candidate outcomes x exit modes, gross/net")
+    ch_run.add_argument(
+        "--dry-run", action="store_true", help="compute and print the plan; write nothing"
+    )
+    ot = sub.add_parser(
+        "outcome-table", help="environment v2: per-candidate outcomes x exit modes, gross/net"
+    )
     ot.add_argument("--bundle", required=True, type=Path)
     ot.add_argument("--out", required=True, type=Path)
     ot.add_argument("--sync", default="2")
     ot.add_argument("--half-spread", default="0.03")
     ot.add_argument("--commission", default="0.65")
-    sup = sub.add_parser("supervised-previews",
-                         help="E6 shadow: request previews from the deal queue (never the inbox)")
+    sup = sub.add_parser(
+        "supervised-previews",
+        help="E6 shadow: request previews from the deal queue (never the inbox)",
+    )
     sup.add_argument("--session", type=date.fromisoformat)
     sup.add_argument("--queue-dir", type=Path)
     sup.add_argument("--run-dir", type=Path, help="the desk run dir (HALT/AUTO_OFF, previews)")
@@ -548,6 +575,20 @@ def _mine(args: argparse.Namespace, *, clock: store.Clock, cal: Calendar) -> int
     return res.exit_code
 
 
+def _qsl(args: argparse.Namespace, *, clock: store.Clock, cal: Calendar) -> int:
+    from tree_options.desk import qsl as qsl_mod
+
+    res = qsl_mod.run_qsl(
+        session=args.session, now=clock(), cal=cal, dry_run=args.dry_run, out=args.out
+    )
+    for line in res.summary():
+        print(line)
+    print(res.line() + (" (dry run)" if args.dry_run else ""))
+    if res.exit_code == 2:
+        print(f"qsl: {res.detail}", file=sys.stderr)
+    return res.exit_code
+
+
 def _eod_equity(
     args: argparse.Namespace,
     *,
@@ -622,9 +663,20 @@ def run_cli(
     if args.command == "outcome-table":  # pure mechanics: writes only --out, no state lock
         from tree_options.desk.outcomes import _cli as _outcomes_cli
 
-        return _outcomes_cli(["--bundle", str(args.bundle), "--out", str(args.out),
-                              "--sync", args.sync, "--half-spread", args.half_spread,
-                              "--commission", args.commission])
+        return _outcomes_cli(
+            [
+                "--bundle",
+                str(args.bundle),
+                "--out",
+                str(args.out),
+                "--sync",
+                args.sync,
+                "--half-spread",
+                args.half_spread,
+                "--commission",
+                args.commission,
+            ]
+        )
     if args.command == "longrun":  # its own per-run-dir lock; `status` is read-only
         from tree_options.desk import longrun
 
@@ -693,14 +745,25 @@ def run_cli(
             return _seal_macro(args, get=get or http.urllib_get, clock=clock, cal=cal)
         if args.command == "mine":
             return _mine(args, clock=clock, cal=cal)
+        if args.command == "qsl":
+            return _qsl(args, clock=clock, cal=cal)
         if args.command == "lab-run":
             from tree_options.desk.lab import _cli as _lab_cli
 
             return _lab_cli(
-                ["--bundle", str(args.bundle), "--policy", args.policy,
-                 "--sessions", str(args.sessions), "--boards-cap", str(args.boards_cap)]
+                [
+                    "--bundle",
+                    str(args.bundle),
+                    "--policy",
+                    args.policy,
+                    "--sessions",
+                    str(args.sessions),
+                    "--boards-cap",
+                    str(args.boards_cap),
+                ]
                 + (["--windows", str(args.windows)] if args.windows else [])
-                + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
+                + (["--lab-root", str(args.lab_root)] if args.lab_root else [])
+            )
         if args.command == "lab-scoreboard":
             from tree_options.desk.lab import default_root as _lab_root
             from tree_options.desk.lab_scoreboard import aggregate
@@ -713,27 +776,33 @@ def run_cli(
             return _overnight_cli(
                 ["--bundle", str(args.bundle)]
                 + (["--windows", str(args.windows)] if args.windows else [])
-                + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
+                + (["--lab-root", str(args.lab_root)] if args.lab_root else [])
+            )
         if args.command == "challenge":
             from tree_options.desk.challenge import _cli as _challenge_cli
 
             return _challenge_cli(
                 ["run"]
-                + (["--bundles-from", str(args.bundles_from)]
-                   if args.bundles_from else [])
+                + (["--bundles-from", str(args.bundles_from)] if args.bundles_from else [])
                 + (["--windows", str(args.windows)] if args.windows else [])
                 + (["--lab-root", str(args.lab_root)] if args.lab_root else [])
-                + (["--rounds", str(args.rounds)]
-                   if args.rounds is not None else [])
-                + (["--dry-run"] if args.dry_run else []))
+                + (["--rounds", str(args.rounds)] if args.rounds is not None else [])
+                + (["--dry-run"] if args.dry_run else [])
+            )
         if args.command == "supervised-previews":
             from tree_options.desk import enter_supervised
 
             try:
                 doc = enter_supervised.write_previews(
-                    now=clock(), cal=cal, session=args.session, queue_dir=args.queue_dir,
-                    run_dir=args.run_dir, database=args.database, account_id=args.account,
-                    dry_run=args.dry_run)
+                    now=clock(),
+                    cal=cal,
+                    session=args.session,
+                    queue_dir=args.queue_dir,
+                    run_dir=args.run_dir,
+                    database=args.database,
+                    account_id=args.account,
+                    dry_run=args.dry_run,
+                )
             except ValueError as error:
                 print(f"supervised-previews: {error}", file=sys.stderr)
                 return 2

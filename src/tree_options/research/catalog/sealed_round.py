@@ -54,8 +54,7 @@ _DISPOSITION_MAP: dict[str, ResearchDisposition] = {
     "INSUFFICIENT_N": ResearchDisposition.INSUFFICIENT_N,
     "INSUFFICIENT_COVERAGE": ResearchDisposition.INSUFFICIENT_COVERAGE,
     "NOT_CANDIDATE": ResearchDisposition.NOT_CANDIDATE,
-    "DESCRIPTIVE-ONLY:NO-REGIME-SIGNAL":
-        ResearchDisposition.DESCRIPTIVE_ONLY_NO_REGIME_SIGNAL,
+    "DESCRIPTIVE-ONLY:NO-REGIME-SIGNAL": ResearchDisposition.DESCRIPTIVE_ONLY_NO_REGIME_SIGNAL,
 }
 
 
@@ -96,7 +95,9 @@ def _file_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _candidate_supported_window(scope_dir: Path, sealed: dict[str, Any]) -> tuple[date | None, date | None]:
+def _candidate_supported_window(
+    scope_dir: Path, sealed: dict[str, Any]
+) -> tuple[date | None, date | None]:
     """Window of supported trial dates for this scope.
 
     Looks in three places, in order:
@@ -201,9 +202,7 @@ def build_candidate(scope_dir: Path, *, scope_id: str | None = None) -> Research
 
     # Frozen-input hashes — every scope names its key set.
     frozen = sealed.get("frozen_inputs") or {}
-    artifact_hashes = {
-        f"sealed-round.{k}": str(v) for k, v in frozen.items() if isinstance(v, str)
-    }
+    artifact_hashes = {f"sealed-round.{k}": str(v) for k, v in frozen.items() if isinstance(v, str)}
     # Plus the sealed-round.json itself (sha256 of bytes), which is what
     # RL §7 needs in the evidence envelope.
     try:
@@ -212,8 +211,11 @@ def build_candidate(scope_dir: Path, *, scope_id: str | None = None) -> Research
         pass
 
     supported_start, supported_end = _candidate_supported_window(scope_dir, sealed)
-    version = (artifact_hashes.get("sealed-round.round1_selection_sha256")
-               or artifact_hashes.get("sealed-round.json") or "v?")[:12]
+    version = (
+        artifact_hashes.get("sealed-round.round1_selection_sha256")
+        or artifact_hashes.get("sealed-round.json")
+        or "v?"
+    )[:12]
 
     # RL1-06: data capability is derived from what the artifacts can
     # actually reconstruct, NOT from the scientific verdict. A sealed
@@ -229,10 +231,16 @@ def build_candidate(scope_dir: Path, *, scope_id: str | None = None) -> Research
     )
     plot = False  # funded_history is RECONSTRUCTED is the gate; it is not
     ineligibility_reason = (
-        None if plot
-        else (f"{funded_history_reason}"
-              + (f" (disposition {disposition.value})"
-                 if disposition not in PLOT_FUNDED_ALLOWED else ""))
+        None
+        if plot
+        else (
+            f"{funded_history_reason}"
+            + (
+                f" (disposition {disposition.value})"
+                if disposition not in PLOT_FUNDED_ALLOWED
+                else ""
+            )
+        )
     )
 
     return ResearchCandidate(
@@ -248,12 +256,9 @@ def build_candidate(scope_dir: Path, *, scope_id: str | None = None) -> Research
         funded_history=funded_history,
         funded_history_reason=funded_history_reason,
         artifact_hashes=artifact_hashes,
-        capabilities=_capabilities(disposition,
-                                   trials_present=_has_trials(scope_dir)),
+        capabilities=_capabilities(disposition, trials_present=_has_trials(scope_dir)),
         ineligibility_reason=ineligibility_reason,
-        warnings=_warnings(sealed,
-                          supported_start=supported_start,
-                          supported_end=supported_end),
+        warnings=_warnings(sealed, supported_start=supported_start, supported_end=supported_end),
         source_url=f"sealed-round/{family}",
     )
 
@@ -275,8 +280,7 @@ def _first_verdict_value(verdicts: Any) -> str | None:
     return None
 
 
-def _capabilities(disposition: ResearchDisposition,
-                  *, trials_present: bool) -> tuple[str, ...]:
+def _capabilities(disposition: ResearchDisposition, *, trials_present: bool) -> tuple[str, ...]:
     """The handoff §4 capability matrix, derived from DATA support.
 
     ``plot_funded_account``/``rerun_historical_strategy`` require a
@@ -296,15 +300,19 @@ def _capabilities(disposition: ResearchDisposition,
     return tuple(caps)
 
 
-def _warnings(sealed: dict[str, Any], *,
-            supported_start: date | None,
-            supported_end: date | None) -> tuple[str, ...]:
+def _warnings(
+    sealed: dict[str, Any], *, supported_start: date | None, supported_end: date | None
+) -> tuple[str, ...]:
     """Per-candidate warnings. The window-unparsed warning only fires
     when both the explicit fields AND the trials fallback failed to
     produce a usable date — not when the trials fallback succeeded."""
     out: list[str] = []
     sw = sealed.get("sealed_window")
-    rnd_window = sealed.get("round", {}).get("scope_window") if isinstance(sealed.get("round"), dict) else None
+    rnd_window = (
+        sealed.get("round", {}).get("scope_window")
+        if isinstance(sealed.get("round"), dict)
+        else None
+    )
     if supported_start is None or supported_end is None:
         if sw is None and rnd_window is None:
             out.append("research.window_unparsed")
