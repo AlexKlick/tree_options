@@ -351,6 +351,220 @@ def _session_series(runs: Sequence[Mapping[str, Any]]) -> dict[str, float]:
     return series
 
 
+# ------------------------------------------------------------- standings
+
+
+#: the seal-time digest set (PROMOTION-RULE clause 1): digests at or before
+#: this id are the registration sample and NEVER count toward promotion
+REGISTRATION_SAMPLE_THROUGH = "20261001T162152Z"
+#: measured round-trip cost of one game (2026-09-30 measured-cost lane)
+COST_BASELINE_PER_GAME = 14.60
+STANDINGS_SCHEMA = "desk-challenge-standings/1"
+
+
+def accumulate_standings(store_root: Path) -> dict[str, Any]:
+    """Rebuild (never append — digests are immutable evidence) the
+    cross-digest standings every clause of the registered rule reads:
+    per-policy totals plus the per-session paired series recomputed over
+    every post-seal digest's run summaries."""
+    base = Path(store_root) / "evaluations" / "challenge"
+    rows: dict[str, dict[str, Any]] = {}
+    counted = 0
+    digests = sorted(base.glob("*/digest.json")) if base.is_dir() else []
+    for path in digests:
+        digest_id = path.parent.name
+        if digest_id <= REGISTRATION_SAMPLE_THROUGH:
+            continue  # clause 1: never overlap the registration sample
+        try:
+            doc = json.loads(path.read_text())
+        except (OSError, ValueError):
+            continue
+        if doc.get("status") != "ok":
+            continue  # only executed games accumulate
+        counted += 1
+        for summary_path in sorted((path.parent / "runs").glob("*/summary.json")):
+            try:
+                run = json.loads(summary_path.read_text())
+            except (OSError, ValueError):
+                continue
+            policy = str(run.get("policy"))
+            if not policy or run.get("status") != "ok":
+                continue
+            row = rows.setdefault(
+                policy,
+                {
+                    "policy": policy,
+                    "games": 0,
+                    "boards": 0,
+                    "entered": 0,
+                    "closed_pnl_sum": Decimal(0),
+                    "worst_minimum_capital": None,
+                    "model_calls": 0,
+                    "model_failures": 0,
+                    "session_dates": set(),
+                    "session_pnl": {},
+                    "digest_ids": set(),
+                },
+            )
+            s = run.get("summary", {}) or {}
+            row["digest_ids"].add(digest_id)
+            row["boards"] += int(run.get("boards_shown", 0) or 0)
+            row["entered"] += int(s.get("entered", 0) or 0)
+            closed = s.get("closed_capital_proxy")
+            if closed is not None:
+                row["closed_pnl_sum"] += Decimal(str(closed)) - STARTING_CAPITAL
+            low = s.get("minimum_closed_capital_proxy")
+            if low is not None:
+                value = Decimal(str(low))
+                row["worst_minimum_capital"] = (
+                    value
+                    if row["worst_minimum_capital"] is None
+                    else min(Decimal(str(row["worst_minimum_capital"])), value)
+                )
+            row["model_calls"] += int(run.get("model_calls", 0) or 0)
+            row["model_failures"] += int(run.get("model_failures", 0) or 0)
+            for entry in s.get("by_session", []) or []:
+                key = f"{digest_id}:{entry['session']}"
+                row["session_pnl"][key] = float(Decimal(str(entry["closed_pnl"])))
+                row["session_dates"].add(str(entry["session"]))
+    out_rows = []
+    for policy in sorted(rows):
+        row = rows[policy]
+        out_rows.append(
+            {
+                "policy": policy,
+                "kind": "rules" if policy in ("no_trade", lab.FIRST_ROW_POLICY) else "model",
+                "games": len(row["digest_ids"]),
+                "boards": row["boards"],
+                "entered": row["entered"],
+                "closed_pnl_sum": str(row["closed_pnl_sum"]),
+                "worst_minimum_capital": None
+                if row["worst_minimum_capital"] is None
+                else str(row["worst_minimum_capital"]),
+                "model_calls": row["model_calls"],
+                "model_failures": row["model_failures"],
+                "sessions_distinct": len(row["session_dates"]),
+                "session_pnl": dict(sorted(row["session_pnl"].items())),
+            }
+        )
+    return {
+        "schema": STANDINGS_SCHEMA,
+        "registration_sample_through": REGISTRATION_SAMPLE_THROUGH,
+        "games_counted": counted,
+        "cost_baseline_per_game": COST_BASELINE_PER_GAME,
+        "policies": out_rows,
+        "untrusted_note": UNTRUSTED_NOTE,
+    }
+
+
+def rule_check(standings: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """The registered PROMOTION-RULE clauses evaluated per model policy
+    against the standings. Informational only: promotion is the operator's
+    act; this prints pass/fail, it promotes nothing."""
+    from tree_options.desk.longrun import holm, paired
+
+    rows = {r["policy"]: r for r in standings.get("policies", [])}
+    checks: list[dict[str, Any]] = []
+    p_values: dict[str, float] = {}
+    for policy, row in sorted(rows.items()):
+        if policy in ("no_trade", lab.FIRST_ROW_POLICY):
+            continue  # the controls are the bars, not the candidates
+        base = rows.get("no_trade")
+        first = rows.get(lab.FIRST_ROW_POLICY)
+        own = row.get("session_pnl") or {}
+        clauses: list[dict[str, Any]] = []
+        sample_ok = row["boards"] >= 500 and row["sessions_distinct"] >= 20
+        clauses.append(
+            {
+                "clause": 1,
+                "name": "sample >=500 boards / >=20 sessions, post-seal",
+                "pass": sample_ok,
+                "detail": f"boards {row['boards']}, sessions {row['sessions_distinct']}",
+            }
+        )
+        beats = base is not None and Decimal(row["closed_pnl_sum"]) > Decimal(
+            base["closed_pnl_sum"]
+        )
+        clauses.append(
+            {
+                "clause": 2,
+                "name": "closed pnl above no_trade",
+                "pass": beats,
+                "detail": f"{row['closed_pnl_sum']} vs {base['closed_pnl_sum'] if base else 'n/a'}",
+            }
+        )
+        paired_vs_null = None
+        if base:
+            shared = sorted(set(own) & set(base.get("session_pnl") or {}))
+            if len(shared) >= 2:
+                paired_vs_null = paired(
+                    [own[k] for k in shared],
+                    [base["session_pnl"][k] for k in shared],
+                    draws=2000,
+                    seed=7,
+                )
+                p_values[policy] = paired_vs_null["p_one_sided"]
+        clauses.append(
+            {
+                "clause": 3,
+                "name": "paired CI95 > 0 vs no_trade",
+                "pass": bool(paired_vs_null and paired_vs_null["ci95"][0] > 0),
+                "detail": "no shared sessions" if not paired_vs_null else str(paired_vs_null["ci95"]),
+            }
+        )
+        first_ci = None
+        if first:
+            shared = sorted(set(first.get("session_pnl") or {}) & set(base.get("session_pnl") or {}))
+            if len(shared) >= 2:
+                first_ci = paired(
+                    [first["session_pnl"][k] for k in shared],
+                    [base["session_pnl"][k] for k in shared],
+                    draws=2000,
+                    seed=7,
+                )["ci95"]
+        clauses.append(
+            {
+                "clause": 4,
+                "name": "first_row control FAILS clause 3",
+                "pass": bool(first_ci and first_ci[0] <= 0),
+                "detail": "no first_row sessions" if not first_ci else str(first_ci),
+            }
+        )
+        worst = row.get("worst_minimum_capital")
+        clauses.append(
+            {
+                "clause": 5,
+                "name": "worst minimum capital >= 4500",
+                "pass": worst is not None and Decimal(worst) >= 4500,
+                "detail": str(worst),
+            }
+        )
+        calls = row["model_calls"]
+        fails = row["model_failures"]
+        clauses.append(
+            {
+                "clause": 6,
+                "name": "model-failure rate < 5%",
+                "pass": calls == 0 or (fails / calls) < 0.05,
+                "detail": f"{fails}/{calls}",
+            }
+        )
+        checks.append(
+            {
+                "policy": policy,
+                "clauses": clauses,
+                "all_pass": all(c["pass"] for c in clauses),
+                "paired_vs_no_trade": paired_vs_null,
+            }
+        )
+    adjusted = holm(p_values) if p_values else {}
+    for check in checks:
+        check["holm_p"] = adjusted.get(check["policy"])
+        check["holm_pass"] = check.get("holm_p") is not None and check["holm_p"] < 0.05
+        check["all_pass"] = bool(check["all_pass"] and check["holm_pass"])
+    return checks
+
+
 def _with_paired_columns(
     cards: list[dict[str, Any]], paired_cols: Mapping[str, Mapping[str, Mapping[str, Any]]]
 ) -> list[dict[str, Any]]:

@@ -372,6 +372,20 @@ def _parser() -> argparse.ArgumentParser:
     ch_run.add_argument("--rounds", type=int, help="play only the newest N bundles")
     ch_run.add_argument("--dry-run", action="store_true",
                         help="compute and print the plan; write nothing")
+    ch_standings = ch_sub.add_parser(
+        "standings",
+        help="rebuild the cross-digest standings (post-seal digests only) "
+             "and write evaluations/challenge/standings.json")
+    ch_standings.add_argument("--bundles-from", type=Path,
+                              help="the desk store (default DESK_STORE)")
+    ch_standings.add_argument("--dry-run", action="store_true",
+                              help="print the standings; write nothing")
+    ch_rule = ch_sub.add_parser(
+        "rule-check",
+        help="evaluate the REGISTERED promotion rule's clauses against the "
+             "standings (informational; promotes nothing)")
+    ch_rule.add_argument("--bundles-from", type=Path,
+                         help="the desk store (default DESK_STORE)")
     ot = sub.add_parser("outcome-table",
                         help="environment v2: per-candidate outcomes x exit modes, gross/net")
     ot.add_argument("--bundle", required=True, type=Path)
@@ -999,6 +1013,41 @@ def run_cli(
                 + (["--windows", str(args.windows)] if args.windows else [])
                 + (["--lab-root", str(args.lab_root)] if args.lab_root else []))
         if args.command == "challenge":
+            if args.challenge_command == "standings":
+                from tree_options.desk import challenge as challenge_mod
+
+                root = Path(args.bundles_from) if args.bundles_from else paths.store_root()
+                standings = challenge_mod.accumulate_standings(root)
+                if not args.dry_run:
+                    out = Path(root) / "evaluations" / "challenge" / "standings.json"
+                    out.write_text(json.dumps(standings, indent=2, default=str))
+                    print(f"standings: {standings['games_counted']} post-seal game(s) -> {out}")
+                else:
+                    print(f"standings (dry run): {standings['games_counted']} post-seal game(s)")
+                for row in standings["policies"]:
+                    print(
+                        f"  {row['policy']} ({row['kind']}): games {row['games']}, "
+                        f"boards {row['boards']}, entered {row['entered']}, "
+                        f"pnl {row['closed_pnl_sum']}, sessions {row['sessions_distinct']}"
+                    )
+                return 0
+            if args.challenge_command == "rule-check":
+                from tree_options.desk import challenge as challenge_mod
+
+                root = Path(args.bundles_from) if args.bundles_from else paths.store_root()
+                standings = challenge_mod.accumulate_standings(root)
+                checks = challenge_mod.rule_check(standings)
+                if not checks:
+                    print("rule-check: no model policies in the standings yet")
+                    return 3
+                for check in checks:
+                    verdict = "ALL CLAUSES PASS (operator rules on promotion)" if check["all_pass"] else "not promotable yet"
+                    print(f"{check['policy']}: {verdict}")
+                    for cl in check["clauses"]:
+                        mark = "x" if cl["pass"] else " "
+                        print(f"  [{mark}] {cl['clause']}. {cl['name']} — {cl['detail']}")
+                    print(f"  holm_p={check['holm_p']} ({'pass' if check['holm_pass'] else 'fail'})")
+                return 0
             from tree_options.desk.challenge import _cli as _challenge_cli
 
             return _challenge_cli(
