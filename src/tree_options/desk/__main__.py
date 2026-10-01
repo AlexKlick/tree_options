@@ -227,8 +227,9 @@ def _parser() -> argparse.ArgumentParser:
     rc.add_argument(
         "--clock",
         help=(
-            "record the intraday A2 clock tier: a decision clock (HH:MM ET) "
-            "or 'auto' (the open clock from the 8-clock schedule)"
+            "record the intraday A2 clock tier: a decision clock (HH:MM ET), "
+            "'auto' (the open clock from the 8-clock schedule), or 'evening' "
+            "(the post-close observation tier; docs/desk/EVENING-TIER.md)"
         ),
     )
     rc.add_argument(
@@ -719,19 +720,25 @@ def _record_chains(
                 )
                 return 0
             target = open_clocks[-1]
+        elif target == store_mod.EVENING:
+            # the evening tier observes the settled session: every delayed
+            # publication has rolled by 18:05 ET, so there is no clock
+            # window to probe for and no retry pass to run
+            pass
         elif target not in SCHEDULE:
             print(
                 f"record-chains: --clock {target} is not a decision clock "
-                f"({','.join(SCHEDULE)})",
+                f"({','.join(SCHEDULE)}) or '{store_mod.EVENING}'",
                 file=sys.stderr,
             )
             return 2
-        ready, why = _probe_clock_tier(
-            target, session, transport=transport, sleep=sleep, clock=clock, cal=cal
-        )
-        if not ready:
-            print(f"record-chains: {why}", file=sys.stderr)
-            return 1
+        if target != store_mod.EVENING:
+            ready, why = _probe_clock_tier(
+                target, session, transport=transport, sleep=sleep, clock=clock, cal=cal
+            )
+            if not ready:
+                print(f"record-chains: {why}", file=sys.stderr)
+                return 1
         symbols = list(CHAIN_UNIVERSE)
         if args.symbols:
             symbols = [s.strip() for s in args.symbols.split(",") if s.strip()]

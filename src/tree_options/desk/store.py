@@ -75,11 +75,21 @@ RAW_KEEP_SESSIONS = 20
 # source_as_of lands inside [clock, clock + CLOCK_WINDOW). The probe
 # measured ~2-4 min publication lag, so captures fire at clock+3.
 EOD = "eod"
+# Evening observation tier (day-1 clock evidence, 2026-10-01): a persistent
+# late cohort (CRM/DIS/LLY/PEP/PG/V/XLE/XLV stale at EVERY clock) never
+# rolls inside a 10-minute window, but by evening every delayed publication
+# has rolled. One honest post-close observation per name per session:
+# chains/clock=evening/<D>/ + manifest/clock=evening/<D>.json. NOT a clock
+# backfill and NOT decision-time data (docs/desk/EVENING-TIER.md).
+EVENING = "evening"
 CLOCK_WINDOW_S = 600
 # clock-tier retry policy: after the first sweep, re-fetch only the stale
 # names this many times, pausing between passes so late rolls land (the
 # 2026-10-01 cohorts: 13-16 stale per sweep, publications rolling 1-4 min
-# behind the clock; a pass costs one paced request per stale name)
+# behind the clock; a pass costs one paced request per stale name). CLOCK
+# TIERS ONLY: the evening tier is single-pass - by its 18:05 ET fire every
+# publication has rolled, so a stale verdict is a frozen feed, not a late
+# roll, and retrying cannot help.
 CLOCK_RETRY_PASSES = 2
 CLOCK_RETRY_PAUSE_S = 60.0
 
@@ -313,7 +323,10 @@ def validate(
     A non-eod ``clock`` replaces the settle checks with SELF-freshness: the
     payload's own capture instant must land inside the clock's window (a
     delayed publication carrying pre-clock content is stale, not D's clock
-    observation)."""
+    observation). ``clock="evening"`` instead shares the eod post-close
+    tail with the SESSION close (16:00 ET) as the boundary: by evening the
+    delayed publications have rolled, so a payload stamped before the close
+    is a feed that never rolled - stale by design."""
     us = underlying_session(parsed)
     if us is None:
         return Verdict("invalid", "underlying has no last-trade time to date the payload", None)
@@ -321,7 +334,7 @@ def validate(
         return Verdict("stale", f"underlying last traded {us}, not {session} yet", us)
     if us > session:
         return Verdict("missing", f"feed already moved past {session} to {us}", us)
-    if clock != EOD:
+    if clock not in (EOD, EVENING):
         inst = clock_instant(session, clock)
         if parsed.source_as_of < inst:
             return Verdict(
@@ -350,12 +363,16 @@ def validate(
     if ps is not None and ps < session:
         return Verdict("stale", f"options mostly last traded {ps}, not {session} yet", ps)
     close = equity_close(session, cal)
-    cutoff = options_close(session, cal, late=_late_close(parsed, close))
+    # evening freshness mirrors this post-close tail with the session close
+    # itself as the boundary (no options-close wait, no late-close class
+    # logic: by 18:05 ET every publication has rolled past the close)
+    cutoff = close if clock == EVENING else options_close(session, cal, late=_late_close(parsed, close))
     if parsed.source_as_of < cutoff:
+        boundary = "session close" if clock == EVENING else "options close"
         return Verdict(
             "stale",
             f"source_as_of {parsed.source_as_of.isoformat()} before the "
-            f"{session} {cutoff:%H:%M} ET options close",
+            f"{session} {cutoff:%H:%M} ET {boundary}",
             us,
         )
     # a snapshot stamped after the close may still hold intraday content
@@ -537,8 +554,9 @@ def _record_symbol(
     if existing is None and verdict.status == "ok" and not dry_run:
         # evidence first: the hash-addressed raw bytes, then the immutable
         # chain. The clock tier keeps NO raw evidence: 8 clocks x 37 names
-        # x ~5.8 MB would be ~1.7 GB/day for bytes the tier never re-reads;
-        # the document's raw_sha256 still pins each capture's content.
+        # x ~5.8 MB would be ~1.7 GB/day for bytes the tier never re-reads
+        # (the evening tier the same, ~215 MB/day); the document's
+        # raw_sha256 still pins each capture's content.
         if tier == EOD:
             _write_raw(store, session, sym, raw, raw_sha)
         doc = encode_document(build_document(parsed, session, raw_sha, fetched_at, clock=tier))
@@ -701,7 +719,10 @@ def record_session(
     then (unless dry-run) the manifest, gaps and raw retention. A non-eod
     ``tier`` writes only its own chain namespace and its own manifest: the
     eod session-close bookkeeping (finalize/gaps/raw pruning) is not the
-    clock tier's to touch."""
+    clock tier's to touch. The HH:MM clock tiers add the bounded stale-
+    retry passes; the evening tier is a single pass (its data is fully
+    rolled - a stale name is a frozen feed, and the overnight eod recorder
+    is its safety net)."""
     results: dict[str, SymbolResult] = {}
     fetched = [False]
 
@@ -723,12 +744,13 @@ def record_session(
             tier=tier,
             before_fetch=pace,
         )
-    if tier != EOD and not dry_run:
+    if tier not in (EOD, EVENING) and not dry_run:
         # the delayed feed publishes per-name on its own schedule: a name
         # stale at sweep time has often rolled a minute or two later. Two
         # bounded passes over ONLY the stale names, inside the clock's own
         # freshness window (the validate branch refuses anything past it
-        # anyway, so the window is the bound).
+        # anyway, so the window is the bound). Clock tiers only: the
+        # evening tier runs a single pass (see CLOCK_RETRY_PASSES).
         for attempt in range(CLOCK_RETRY_PASSES):
             stale = [s for s, r in results.items() if r.status == "stale"]
             if not stale:

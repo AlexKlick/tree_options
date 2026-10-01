@@ -1,0 +1,17 @@
+[Unit]
+Description=Options desk: evening observation tier capture (18:05 ET weekdays, post-close)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/EVENING-TIER.md
+
+[Timer]
+# SHIPS UNINSTALLED: nothing here is installed into ~/.config/systemd or any
+# other unit path; the operator installs it (or not) by hand.
+# 18:05 America/New_York: past the 16:00 ET session close (and the 16:15
+# options settle) with margin for the delayed feed's rolls, still the same
+# evening for the ops loop. Persistent catches a machine that was asleep:
+# a later fire still satisfies the tier's at-or-after-close freshness rule.
+OnCalendar=Mon..Fri *-*-* 18:05:00 America/New_York
+Persistent=true
+Unit=desk-chain-evening.service
+
+[Install]
+WantedBy=timers.target
