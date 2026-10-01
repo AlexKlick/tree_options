@@ -81,16 +81,30 @@ def test_v1_board_rows_prompt_and_parser_are_byte_identical() -> None:
     assert lab.parse_choice({"choice": None, "horizon": "eod"}, {"c0"}) == (None, "")
 
 
+def _without_by_session(doc: dict[str, Any]) -> dict[str, Any]:
+    """Strip the ONE additive key the paired-control lane (2026-10-01)
+    introduced; everything else must still hash to the pre-v2 pin."""
+    out = {k: v for k, v in doc.items() if k != "by_session"}
+    return out
+
+
 def test_v1_replay_and_decision_packet_are_byte_identical() -> None:
     raw = multi_day_bundle(*DAYS)
-    assert _digest(iag.replay(raw, DAYS)) == PINS["replay_no_trade"]
-    assert _digest(iag.replay(raw, DAYS, policy="call_debit")) == PINS["replay_call_debit"]
-    assert _digest(iag.replay(raw, DAYS, policy="put_credit")) == PINS["replay_put_credit"]
+    for name, doc in (
+        ("replay_no_trade", iag.replay(raw, DAYS)),
+        ("replay_call_debit", iag.replay(raw, DAYS, policy="call_debit")),
+        ("replay_put_credit", iag.replay(raw, DAYS, policy="put_credit")),
+    ):
+        # the v1 bytes are unchanged EXCEPT the additive by_session lane:
+        # stripped must still hit the pre-v2 pin, full doc hits the 2026-10-01 pin
+        assert _digest(_without_by_session(doc)) == PINS[name]
+        assert _digest(doc) == PINS[name + "_with_by_session"]
     packet = iag.decision_packet(raw, DAYS[0], "10:00")
     assert _digest(packet) == PINS["packet"]
     choice = sorted(c["id"] for c in packet["candidates"])[0]
     decided = iag.replay(raw, DAYS, {f"s:{DAYS[0]}T10:00": choice})
-    assert _digest(decided) == PINS["replay_decided"]
+    assert _digest(_without_by_session(decided)) == PINS["replay_decided"]
+    assert _digest(decided) == PINS["replay_decided_with_by_session"]
 
 
 def test_v1_lab_run_document_is_byte_identical(tmp_path: Path) -> None:
@@ -106,7 +120,10 @@ def test_v1_lab_run_document_is_byte_identical(tmp_path: Path) -> None:
     stable["receipts"] = [
         {k: v for k, v in r.items() if k != "latency_s"} for r in document["receipts"]
     ]
-    assert _digest(stable) == PINS["lab_run"]
+    assert _digest(stable) == PINS["lab_run_with_by_session"]
+    summary = _without_by_session(stable["summary"])
+    stripped = dict(stable, summary=summary)
+    assert _digest(stripped) == PINS["lab_run"]
 
 
 def test_v1_model_provider_mapping_is_unchanged() -> None:
@@ -128,4 +145,12 @@ PINS = {  # computed on dd1fe8c (pre-v2); a v1 change must be deliberate, never 
     "packet": "bdfd93b3a3de8d28da44393366573dc9b985ce6acb64fcd3b2f5d8fc92cdf850",
     "replay_decided": "b11945cab92b7fe39c9b7fb3e355eeec82c095a1eddea13d812f64aa70eb41ca",
     "lab_run": "884ccd09b3a545b9efc43b7a0f0bc74b9ec5f05f643defc39f0ff816f0169021",
+    # computed 2026-10-01 (paired-control lane): the SAME documents plus the
+    # additive by_session key; the tests above strip it and still hold the
+    # pre-v2 pins, so any OTHER byte change remains a hard failure
+    "replay_no_trade_with_by_session": "dc86b590840d2266b7be3d138dd213a1c9418df3a9a0bc5b4159c89fc7c0a709",
+    "replay_call_debit_with_by_session": "c540d5df8228cae1cb53040830c02585f6ba82cdea1ba88f22c47b77e129575c",
+    "replay_put_credit_with_by_session": "1f8dbc767bfaad4eb4daebc11df79d0c504cb0f7feb21dcfc1ceaa1341527207",
+    "replay_decided_with_by_session": "adc939027309081b4eb00448636ec4d3bf5dc8dee5767314ceadff779944f49a",
+    "lab_run_with_by_session": "d8f6a08efae2655c28c19d08c5c096a63af27b4da432b0e977e367d2b19cb77c",
 }
