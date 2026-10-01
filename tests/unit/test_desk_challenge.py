@@ -164,6 +164,7 @@ def test_an_empty_archive_fields_the_control_and_the_incumbent(tmp_path: Path) -
     field = policy_field(tmp_path / "lab")
     assert [(entry.policy, entry.kind, entry.prompt) for entry in field] == [
         ("no_trade", "rules", None),
+        ("first_row", "rules", None),
         ("model:zai", "model", None),
     ]
 
@@ -199,9 +200,10 @@ def test_the_field_is_the_archive_front_capped_at_three(tmp_path: Path) -> None:
     field = policy_field(lab_root)
     archive = gepa.load_archive(lab_root)
     assert len(archive) == 4
-    assert len(field) == 1 + 3  # the control ALWAYS + at most FRONT_MAX=3
+    assert len(field) == 2 + 3  # both controls ALWAYS + at most FRONT_MAX=3
     assert field[0] == challenge.PolicyEntry(policy="no_trade", kind="rules")
-    for entry in field[1:]:
+    assert field[1] == challenge.PolicyEntry(policy="first_row", kind="rules")
+    for entry in field[2:]:
         assert entry.policy.startswith("gepa:") and entry.prompt
 
 
@@ -286,7 +288,7 @@ def test_one_round_end_to_end(tmp_path: Path) -> None:
     round_entry = document["rounds"][0]
     assert round_entry["vintage"] == VINTAGE
     cards = {card["policy"]: card for card in round_entry["scorecards"]}
-    assert set(cards) == {"no_trade", "model:zai"}
+    assert set(cards) == {"no_trade", "first_row", "model:zai"}
     control = cards["no_trade"]
     assert (control["entered"], control["closed_pnl_sum"], control["model_calls"]) == (0, "0", 0)
     ranked = [Decimal(card["closed_pnl_sum"]) for card in round_entry["scorecards"]]
@@ -343,7 +345,7 @@ def test_a_challenge_with_zero_boards_everywhere_is_not_ok(tmp_path):
     )
     assert document["status"] == "empty_bundles"
     assert sum(sc.get("boards", 0) for rnd in document["rounds"] for sc in rnd["scorecards"]) == 0
-    assert [p["policy"] for p in document["policies"]] == ["no_trade", "model:zai"]
+    assert [p["policy"] for p in document["policies"]] == ["no_trade", "first_row", "model:zai"]
     # zero candidates -> zero boards -> the model is never called: no burn
     assert len(transport.calls) == 0
     assert document["budget"]["boards_used"] <= HARD_ROUND_BOARDS
@@ -375,7 +377,7 @@ def test_the_archive_front_plays_and_the_digest_snapshots_stats_only(tmp_path: P
         store_root=store, now=T0, lab_root=lab_root, transport=BoardTransport()
     )
     assert document["status"] == "ok"
-    assert [p["policy"] for p in document["policies"]] == ["no_trade", f"gepa:{champion['id']}"]
+    assert [p["policy"] for p in document["policies"]] == ["no_trade", "first_row", f"gepa:{champion['id']}"]
     cards = {card["policy"]: card for card in document["rounds"][0]["scorecards"]}
     assert cards[f"gepa:{champion['id']}"]["model_calls"] >= 1
     # the archive snapshot AFTER the challenge: ids + mechanical stats only
@@ -408,7 +410,7 @@ def test_fresh_on_plan_windows_skip_model_policies_but_rules_score(tmp_path: Pat
     round_entry = document["rounds"][0]
     assert round_entry["skipped"] == [{"policy": "model:zai", "reason": "quota_dry"}]
     cards = {card["policy"] for card in round_entry["scorecards"]}
-    assert cards == {"no_trade"}  # the rules control still scored
+    assert cards == {"no_trade", "first_row"}  # the rules controls still scored
     assert round_entry["gap_samples"] == []  # no model receipts to measure
     markdown = (Path(document["digest_dir"]) / "digest.md").read_text()
     assert "skipped model:zai: quota_dry" in markdown
@@ -461,7 +463,7 @@ def test_dry_run_computes_the_plan_and_writes_nothing(tmp_path: Path) -> None:
     assert document["boards_per_run"] == min(HARD_ROUND_BOARDS, HARD_CHALLENGE_BOARDS // 2) // PARTS
     assert [entry["vintage"] for entry in document["rounds"]] == ["20260920-v1", VINTAGE]
     assert all(entry["slices"] for entry in document["rounds"])
-    assert [p["policy"] for p in document["policies"]] == ["no_trade", "model:zai"]
+    assert [p["policy"] for p in document["policies"]] == ["no_trade", "first_row", "model:zai"]
     assert transport.calls == []
     assert "digest_dir" not in document
     assert not (store / "evaluations" / "challenge").exists()

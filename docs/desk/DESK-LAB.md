@@ -69,18 +69,17 @@ scoreboard number alone promotes nothing.
 - glm-5.3-flash answers the boards; per the standing tiering rule it is
   never a judge, never a scorer, never quoted as must-be-right.
 
-## Promotion rule DRAFT (not registered)
+## Promotion rule REGISTERED (sealed 2026-10-01)
 
-An advisory policy may be promoted to ADVISORY-LIVE (its advice shown on
-REAL entry requests, still never binding) only when a rule like this is
-REGISTERED by the operator, run SEALED, and RULED on by the operator:
-
-- >= 500 boards across >= 20 distinct sessions, no window overlapping the
-  registration sample;
-- summed closed-capital proxy above the no_trade baseline under the SAME
-  capital/open-cap constraints (5000/300/1500);
-- worst minimum closed capital never below 4500;
-- model-failure rate below 5% across the sample.
+The rule below was a DRAFT until 2026-10-01, when the operator registered
+it as **`docs/desk/PROMOTION-RULE.md`** (sha256 sidecar
+`docs/desk/PROMOTION-RULE.sha256`, sealed before any digest carried paired
+columns). The registered rule is the DRAFT plus the #47/measured-cost
+lessons: a paired-CI significance clause, the **first_row control must FAIL
+the same bar**, Holm across tested arms, and a euthanasia clause (40
+sessions with no arm passing → the program closes). Read the registered
+artifact for the exact clauses; the digest's `vs_no_trade`/`vs_first_row`
+columns are its mechanical inputs.
 
 Nothing in this repo implements promotion: `best_advisory` returns
 `promoted: false` by construction, and the register -> seal -> rule steps
