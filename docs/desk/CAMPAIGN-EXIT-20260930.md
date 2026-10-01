@@ -286,6 +286,18 @@ against the Massive forward capture (#55) rather than assumed dead. Full
 evidence: `~/.local/state/trex/A0-cboe-inaday-probe-20261001.md`. Re-probe
 on the day of any build decision; feed behavior is evidently not stable.
 
+**BUILT same day** (operator-approved): the clock tier landed exactly as
+designed above — `clock="eod"` default key (`chains/clock=<C>/<D>/…`
+namespace, every eod reader byte-unchanged), additive `clock` header field
+with no schema bump, branched `validate()` self-freshness (the payload's
+own capture instant must land in `[clock, clock+10 min)`), one manifest per
+clock tier (`manifest/clock=<C>/<D>.json`), and the 8-clock OnCalendar
+timer at clock+3 with a SPY probe that waits for the delayed roll before
+the universe sweep (`deploy/desk/desk-chain-clock.{service,timer}`). The
+clock tier keeps no raw evidence (8×37×~5.8 MB/day would be ~1.7 GB for
+bytes the tier never re-reads; each document's `raw_sha256` still pins its
+content).
+
 ## The paid alternative (operator's option)
 
 ThetaData Standard at **$80/mo, cancel anytime** — the cheapest

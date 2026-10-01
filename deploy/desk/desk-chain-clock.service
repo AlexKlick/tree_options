@@ -1,0 +1,23 @@
+[Unit]
+Description=Options desk: record the A2 intraday clock tier of the CBOE chains (the open decision clock)
+Documentation=file:///home/alexk/documents/tree_options/docs/desk/CAMPAIGN-EXIT-20260930.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+Slice=host-work.slice
+Nice=10
+Environment=HOME=/home/alexk
+WorkingDirectory=/home/alexk/documents/tree_options
+Environment=PYTHONPATH=/home/alexk/documents/tree_options/src
+# 'auto' derives the open decision clock from the fire time; outside the
+# 8-clock schedule the run exits 0 without fetching. A pre-clock publication
+# is probed (SPY, ~20 s interval) until the delayed feed rolls to the
+# clock's content, then the universe sweep records the tier.
+ExecStart=/home/alexk/documents/tree_options/.venv/bin/python -m tree_options.desk record-chains --clock auto
+# exit 3 = stale/incomplete this attempt; the next clock's slot is a fresh
+# window. exit 0 outside the schedule is a no-op by design.
+SuccessExitStatus=3
+# the probe's retry budget plus the paced universe sweep
+TimeoutStartSec=1500
