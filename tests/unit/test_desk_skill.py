@@ -765,8 +765,11 @@ def test_redigest_arms_subset_scores_the_intersection_only(
     assert doc["skill"]["arms"]["m#1"]["excess_total"] == 40.0
     assert doc["skill"]["arms"]["m#2"]["excess_total"] == 32.0
     assert doc["skill"]["arms"]["m#2"]["boards"] == 4  # its own ok coverage, nothing padded
-    # the label travels in the headline, the markdown and the redigest block
-    assert doc["headline"].startswith("ARM SUBSET (4 boards where all 2 arms answered) - ")
+    # the label travels in the headline, the markdown and the redigest block;
+    # since the assessment-class adoption the RETROSPECTIVE DESCRIPTIVE label
+    # leads (every redigest is descriptive; the subset scope nests inside it)
+    assert doc["headline"].startswith(
+        "RETROSPECTIVE DESCRIPTIVE - ARM SUBSET (4 boards where all 2 arms answered) - ")
     assert doc["complete"] is False  # m#2 still owes boards even on the subset
     md = (out / "digest.md").read_text()
     assert "ARM SUBSET (4 boards where all 2 arms answered)" in md

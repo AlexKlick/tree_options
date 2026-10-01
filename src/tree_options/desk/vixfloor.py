@@ -430,7 +430,8 @@ def evaluate_arm(
     arms = arms_of([policy])
     receipts = {arm.name: deterministic_receipts(policy.rule, boards) for arm in arms}
     digest = score_run(
-        list(boards), arms, receipts, OutcomeCache(outcome), arm_protocol(base, policy.name)
+        list(boards), arms, receipts, OutcomeCache(outcome), arm_protocol(base, policy.name),
+        assessment_class="retrospective_descriptive",  # a frozen corpus re-scored after the fact
     )
     docs = {}
     for arm in arms:
