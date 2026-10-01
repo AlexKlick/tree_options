@@ -190,8 +190,10 @@ from tree_options.models.determinism import force_single_threaded_blas
 force_single_threaded_blas()
 
 from tree_options.data.massive_client import (  # noqa: E402
+    MassiveAuthRejectedError,
     MassiveClient,
     MassiveError,
+    MassiveNotEntitledError,
     RateGovernor,
     default_cache_dir,
     load_api_key,
@@ -642,10 +644,21 @@ def _forward_minutes(
             print(f"forward-minutes: no usable Massive key ({type(exc).__name__})",
                   file=sys.stderr)
             return 1
-    result = forward_minutes.capture_session(
-        session, selection=selection, client=client, budget=budget, now=now,
-        dry_run=args.dry_run,
-    )
+    try:
+        result = forward_minutes.capture_session(
+            session, selection=selection, client=client, budget=budget, now=now,
+            dry_run=args.dry_run,
+        )
+    except MassiveNotEntitledError as exc:
+        # the runbook's exit-2 story: a tier boundary is a purchase
+        # decision, not a key problem and not a crash
+        print(f"forward-minutes: NOT_ENTITLED — tier boundary ({exc}); accept the "
+              "gap or take the purchase decision (docs/m4-massive-runbook.md)",
+              file=sys.stderr)
+        return 2
+    except MassiveAuthRejectedError as exc:
+        print(f"forward-minutes: AUTH_REJECTED — rotate the key ({exc})", file=sys.stderr)
+        return 3
     print(result.line())
     if result.status in ("written", "exists"):
         verdict = forward_minutes.verify_session(session, now=now)

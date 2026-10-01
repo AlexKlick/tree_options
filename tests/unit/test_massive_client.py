@@ -443,6 +443,21 @@ def test_retry_after_nan_falls_back_to_the_policy_delay() -> None:
 # ---- entitlement and body-level refusals -------------------------------------
 
 
+@pytest.mark.parametrize("status", [403, 401])
+def test_not_authorized_arrives_as_http_403_and_is_still_not_entitled(status: int) -> None:
+    """The vendor moved the tier boundary to a REAL HTTP 403 (observed
+    2026-10-01 on the free plan's options-minute answer): same NOT_AUTHORIZED
+    body, new wrapper. The body wins over the status — a plan gap is a
+    purchase decision, never a rotate-the-key instruction."""
+    transport = fx.FakeTransport([fx.FakeResponse(status=status, body=fx.NOT_AUTHORIZED_SNAPSHOT)])
+    client = make_client(transport)
+    with pytest.raises(MassiveNotEntitledError) as exc:
+        client.get_json("/v2/aggs/ticker/O:IWM261016C00277000/range/1/minute/2026-10-01/2026-10-01")
+    assert exc.value.vendor_message == fx.NOT_AUTHORIZED_MESSAGE
+    assert "not entitled" in str(exc.value)
+    assert transport.calls == 1  # terminal on first sight, like every entitlement refusal
+
+
 def test_not_authorized_arrives_as_http_200_and_still_raises() -> None:
     transport = fx.FakeTransport([fx.FakeResponse(status=200, body=fx.NOT_AUTHORIZED_SNAPSHOT)])
     client = make_client(transport)
