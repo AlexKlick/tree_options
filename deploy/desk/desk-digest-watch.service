@@ -21,6 +21,8 @@ WorkingDirectory=/home/alexk/documents/tree_options
 # evaluations/challenge/, (2) its digest.json status is ok, (3) standings.json
 # is NEWER than the digest (the challenge service's ExecStartPost ran), and
 # (4) model_failures across the digest is zero (warned, never failed).
+# SHIPS UNINSTALLED: nothing here is installed into ~/.config/systemd or any
+# other unit path; the operator installs it (or not) by hand.
 # No notifications, no network, no writes: journald is the whole surface —
 # the ops loop reads `journalctl --user -u desk-digest-watch.service`.
 # exit 0 = every check passed (warnings allowed); exit 1 = a check failed
