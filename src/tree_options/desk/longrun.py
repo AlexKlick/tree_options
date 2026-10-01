@@ -2353,6 +2353,18 @@ def _project_progress(doc: Mapping[str, Any]) -> dict[str, Any]:
     raise ValueError("unrecognized progress document")
 
 
+def _standing_order(row: Mapping[str, Any]) -> tuple[float, str]:
+    """Rank a standings row on its OWN-entry-rate null when the digest carries
+    one. The legacy ``vs_random`` column is arithmetically degenerate as a
+    ranking key -- it is each arm's net minus ONE shared constant (the shared
+    null's expectation), so it can only ever echo the net ranking -- and it is
+    kept purely as the fallback for digests old enough to predate the
+    per-arm-null columns (those keep their on-disk order byte-for-byte)."""
+    pair = row.get("vs_random_own") or row.get("vs_random") or {}
+    ci95 = pair.get("ci95") or [0.0]
+    return (-float(ci95[0]), str(row.get("arm") or ""))
+
+
 def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
     if doc.get("schema") != DIGEST_SCHEMA:
         raise ValueError("unrecognized digest document")
@@ -2360,8 +2372,9 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
     if not isinstance(promotion, dict) or promotion.get("promoted") is not False:
         raise ValueError("a digest must carry promoted: false")
     keep = ("arm", "policy", "repeat", "kind", "boards", "entered", "entry_rate",
-            "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_first_row",
-            "vs_incumbent", "vs_regime", "null_percentile", "failure_reasons", "heals")
+            "unevaluable", "failures", "net_total", "net_ci95", "vs_random", "vs_random_own",
+            "vs_first_row", "vs_incumbent", "vs_regime", "null_percentile",
+            "null_percentile_own", "failure_reasons", "heals")
     wf = doc.get("walk_forward") or {}
     standings = []
     for row in doc.get("standings", []):
@@ -2369,6 +2382,7 @@ def _project_digest(doc: Mapping[str, Any]) -> dict[str, Any]:
         if not projected.get("heals"):
             projected.pop("heals", None)  # additive: a clean arm carries no heals key
         standings.append(projected)
+    standings.sort(key=_standing_order)
     return {"headline": doc.get("headline"), "untrusted_note": doc.get("untrusted_note"),
             "evaluation_valid": doc.get("evaluation_valid"), "complete": doc.get("complete"),
             "at": doc.get("at"),

@@ -406,7 +406,10 @@ def test_progress_shows_the_live_excess_and_cs(tmp_path: Path) -> None:
     assert arms["no_trade"]["in_sample_significant"] is False
     view = longrun.cockpit_view(run_dir)
     assert view["progress"]["skill"]["arms"]["m#1"]["excess"] == 48.0
-    assert view["digest"]["skill"]["m#1"]["excess_total"] == 48.0
+    # the served skill payload wraps the arms (the section-level no_price
+    # ledger lives beside them); a pre-ledger section serves no_price: None
+    assert view["digest"]["skill"]["arms"]["m#1"]["excess_total"] == 48.0
+    assert view["digest"]["skill"]["no_price"] is None
 
 
 # ------------------------------------------------------------ redigest CLI
