@@ -63,6 +63,13 @@ export const getLabScoreboard = (): Promise<import('./types').LabScoreboard> =>
 export const getLongRun = (): Promise<import('./types').LongRunView> =>
   fetchJson('api/desk/longrun')
 
+/** The challenge standings the sealed promotion rule reads: per-policy
+ * mechanical totals over the post-seal digests, served from the nightly
+ * standings.json when fresh (the server recomputes otherwise, read-only).
+ * Never promoted; the clauses are the operator's to read. */
+export const getDeskStandings = (): Promise<import('./types').DeskStandings> =>
+  fetchJson('api/desk/standings')
+
 /** Timer settings + kill-file states for the desk's own units. */
 export const getAutomation = (): Promise<import('./types').AutomationStatus> =>
   fetchJson('api/desk/automation')

@@ -486,6 +486,7 @@ def create_app(
         intraday_dir=desk_store_root / "evaluations" / "intraday-graph",
         trade_floor_dir=desk_store_root / "evaluations" / "trade-floor",
         longrun_dir=desk_store_root / "evaluations" / "longrun",
+        challenge_dir=desk_store_root / "evaluations" / "challenge",
         plans_root=plans_root,
         state_root=state_root,
     )
